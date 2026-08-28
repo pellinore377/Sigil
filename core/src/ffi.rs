@@ -29,3 +29,11 @@ pub fn sigiltext_render(source: String) -> String {
 pub fn engine_version() -> String {
     env!("CARGO_PKG_VERSION").to_string()
 }
+
+/// The motion specification: timings, Bézier easings and per-animation
+/// parameters. Static, so a frontend fetches it once and drives its own
+/// animation system with the numbers rather than choosing any.
+#[uniffi::export]
+pub fn sigiltext_motion() -> String {
+    crate::timeline::motion::all().to_string()
+}

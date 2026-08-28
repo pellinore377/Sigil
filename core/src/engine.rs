@@ -269,6 +269,7 @@ impl Engine {
             "message.react" => crate::timeline::actions::react(self.clone(), Self::str_param(p, "roomId"), p).await,
             "message.redact" => crate::timeline::actions::redact(self.clone(), Self::str_param(p, "roomId"), p).await,
             "readReceipt" => crate::timeline::actions::read_receipt(self.clone(), Self::str_param(p, "roomId"), p).await,
+            "sigiltext.motion" => Reply::ok(crate::timeline::motion::all()),
             #[cfg(feature = "calls")]
             r if r.starts_with("call.") => self.rtc.dispatch(r, p).await,
             #[cfg(not(feature = "calls"))]

@@ -10,10 +10,13 @@ the engine and nothing else. No login, no sync, no rooms.
 ## What works
 
 `sigiltext_render` crosses the FFI boundary and Compose draws the result:
-colours, gradients, rainbow, bold/italic/strike/underline, size steps and
-`mark` highlights. Colour values come from the engine already resolved for both
-grounds — this frontend never decides what `red` looks like. Verified on a
-OnePlus 6, arm64-v8a, Android 11.
+colours, gradients, rainbow, bold/italic/strike/underline, size steps, `mark`
+highlights, and the shake, wave, pulse, glow, barrel and flip animations.
+
+Nothing here chooses a number. Colours arrive resolved for both grounds,
+gradient stops arrive resolved, and `sigiltext_motion()` supplies every
+duration, cubic-Bézier easing and displacement. Verified on a OnePlus 6,
+arm64-v8a, Android 11.
 
 ## Building
 
@@ -37,10 +40,13 @@ adb install -r app/build/outputs/apk/debug/app-debug.apk
 - **Calls are compiled out** (`--no-default-features`). LiveKit/libwebrtc has no
   Android build wired up, and the camera backend is v4l2. The engine's `rtc`
   module is feature-gated behind `calls` so the rest still builds.
-- **Animations are static.** `shake`, `wave`, `pulse` and the rest parse and
-  arrive correctly but nothing drives them yet. The timings belong in the engine
-  before they are implemented here, or Compose and QML will drift — see
-  `docs/sigiltext.md`.
+- **`sparkle`, `glitch`, `blur` and `typewriter` are not drawn yet.** Their
+  specs ship from the engine; `SigilText.kt` implements shake, wave, pulse,
+  glow, barrel and flip. The remaining four need particle, shader and reveal
+  work respectively.
+- **The Omarchy frontend still hardcodes its animation values.** The engine now
+  owns them (`sigiltext.motion`), and QML should consume that instead of its own
+  copy — until it does, the two can drift.
 - **The FFI surface is one function.** Login, sync and the timeline still need
   exposing. The protocol is JSON in/JSON out by design, so that is a wider
   `handle_request` rather than a binding per call.

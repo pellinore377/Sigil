@@ -185,41 +185,49 @@ Bare `small` / `big` alias to step 2. **Sizes must be clamped** — reject or sa
 
 ### Reference timings
 
-Implemented values. Durations are milliseconds. Per-character stagger is
-`index * 90 ms`, then reduced per effect as shown — that stagger *is* the
-effect, and a client using a different one produces visibly different motion
-from identical text.
+The engine ships these; a frontend fetches them once and drives its own
+animation system with the numbers rather than choosing any. Over the socket:
+`sigiltext.motion`. Linked in-process: `sigiltext_motion()`. Source:
+`core/src/timeline/motion.rs`.
 
-| Animation | Sequence | Motion | Easing | Stagger |
+Per-character stagger is `index * 90 ms`, reduced per effect by the modulo
+shown — that stagger *is* the effect, and a client using a different one
+produces visibly different motion from identical text.
+
+| Animation | Steps (ms) | Motion | Easing | Stagger |
 |---|---|---|---|---|
-| `shake` | 80 / 80 / 80 | x ±0.8 px | linear | `phase % 160` |
-| `wave` | 520 / 520 / 260 | y −1.8 → +1.8 → 0 px | in-out sine | `phase` |
-| `pulse` | 500 / 500 | scale 1.0 ↔ 1.18 | in-out quad | `phase % 300` |
-| `glow` | 1600 | — | in-out quad | — |
-| `sparkle` | 900 | 3 particles; scale 1.1 ↔ 1.5, opacity 0.05 ↔ 0.45 | in-out sine | — |
-| `glitch` | 90 / 70 / 110, then 260 pause | offset ±2 → ∓1.5 → 0 px | linear | `(index * 53) % 400` |
-| `typewriter` | 620 | reveal per character | out cubic | — |
-| `flip` | — | 180° per glyph, run order reversed | — | — |
-| `barrel` | continuous rotation | — | — | — |
-| `blur` | layer enabled for the span | blur amount animates | — | — |
+| `shake` | 80, 80, 80 | x ±0.8 px | linear | `% 160` |
+| `wave` | 520, 520, 260 | y ±1.8 px | in-out sine | none |
+| `pulse` | 500, 500 | scale 1.0 ↔ 1.18 | in-out quad | `% 300` |
+| `glow` | 1600 | alpha 0 ↔ 1 | in-out quad | none |
+| `sparkle` | 900 | 3 particles, scale 1.1↔1.5, alpha 0.05↔0.45 | in-out sine | none |
+| `glitch` | 90, 70, 110, 260 | x −2 / +1.5 px | linear | stride 53, `% 400` |
+| `typewriter` | 620 | reveal per character | out cubic | none |
+| `flip` | — | 180°, run reversed | — | none |
+| `barrel` | 1200 | 360°, continuous | linear | none |
+| `blur` | 900 | radius → 6 px | in-out quad | none |
 
-`glitch` splits into two chromatic-aberration copies at **`rgba(1, 0.15, 0.25, 0.7)`**
-(red, leading) and **`rgba(0.15, 0.95, 1, 0.7)`** (cyan, trailing), each offset in
-the opposite direction.
+`glitch` splits into two chromatic-aberration copies at `#FF2640` (leading) and
+`#26F2FF` (trailing), each at alpha 0.7 and offset oppositely.
 
 Sizes: `small3`..`big3` map to **0.7, 0.8, 0.9, 1.0, 1.2, 1.4, 1.6** by step
 `-3..=3`, clamped.
 
-> **Portability note.** The easings above are named Qt curves. `in-out sine` and
-> `in-out quad` are trigonometric and polynomial, not cubic Béziers, and the
-> equivalently-named curves in Compose, CSS and Slint are different shapes. For
-> a normative spec these should be restated as explicit Bézier control points —
-> a sub-pixel change to current rendering, but a deliberate one. Qt can consume
-> control points directly via `easing.bezierCurve`.
->
-> Particle systems (`sparkle`) and shader effects (`glitch`, `blur`) genuinely
-> differ between toolkits. Expect the same family, not identical pixels; keeping
-> the parameters shared is what stops them diverging further.
+**Easings are cubic Bézier control points, not names.** `InOutSine` in Qt,
+`FastOutSlowInEasing` in Compose and `ease-in-out` in CSS are three different
+curves; control points are the only encoding all three read identically. The
+engine emits them in CSS `cubic-bezier(x1, y1, x2, y2)` order:
+
+| Name | Control points |
+|---|---|
+| linear | `0, 0, 1, 1` |
+| in-out sine | `0.37, 0, 0.63, 1` |
+| in-out quad | `0.45, 0, 0.55, 1` |
+| out cubic | `0.33, 1, 0.68, 1` |
+
+Particle systems (`sparkle`) and shader effects (`glitch`, `blur`) genuinely
+differ between toolkits. Expect the same family, not identical pixels; sharing
+the parameters is what stops them diverging further.
 
 All motion stops under a reduced-motion setting and when the span is off-screen.
 

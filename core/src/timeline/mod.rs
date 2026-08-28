@@ -2,6 +2,7 @@
 pub mod contacts;
 pub mod vcard;
 pub mod palette;
+pub mod motion;
 pub mod effects;
 pub mod code;
 pub mod extras;
