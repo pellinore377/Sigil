@@ -263,6 +263,7 @@ async fn activate(engine: SharedEngine, client: Client) {
     }
 
     crate::notify::install(engine.clone(), client.clone());
+    #[cfg(feature = "calls")]
     crate::rtc::install(engine.clone(), client.clone());
     crate::sync::start(engine.clone(), client.clone()).await;
     crate::session::recovery::watch(engine.clone(), client.clone());
@@ -284,6 +285,7 @@ pub async fn restore(engine: SharedEngine) -> anyhow::Result<bool> {
 }
 
 pub async fn logout(engine: SharedEngine, wipe: bool) -> Reply {
+    #[cfg(feature = "calls")]
     engine.rtc.leave("logout").await;
     let client = engine.client();
     let _ = crate::sync::stop(&engine).await;

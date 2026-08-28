@@ -65,7 +65,11 @@ async fn users_of_interest(engine: &SharedEngine, client: &Client) -> BTreeSet<O
 async fn busy_users(client: &Client) -> BTreeSet<OwnedUserId> {
     let mut out = BTreeSet::new();
     for room in client.joined_rooms() {
-        for (uid, _device) in crate::rtc::signaling::other_active_members(&room).await {
+        #[cfg(feature = "calls")]
+        let members = crate::rtc::signaling::other_active_members(&room).await;
+        #[cfg(not(feature = "calls"))]
+        let members: Vec<(ruma::OwnedUserId, String)> = Vec::new();
+        for (uid, _device) in members {
             out.insert(uid);
         }
     }
@@ -93,7 +97,11 @@ async fn poll_once(engine: &SharedEngine, client: &Client) {
     }
     // The server never reports us as busy; we know that locally.
     if let Some(me) = client.user_id() {
-        let mine = if engine.rtc.in_call() { "busy" } else { "online" };
+        #[cfg(feature = "calls")]
+        let in_call = engine.rtc.in_call();
+        #[cfg(not(feature = "calls"))]
+        let in_call = false;
+        let mine = if in_call { "busy" } else { "online" };
         map.insert(
             me.to_string(),
             json!({"state": "online", "busy": mine == "busy", "currentlyActive": true, "lastActiveAgo": 0, "statusMsg": ""}),

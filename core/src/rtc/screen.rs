@@ -11,7 +11,7 @@ use livekit::webrtc::video_source::native::NativeVideoSource;
 use parking_lot::Mutex;
 use tracing::{info, warn};
 
-use super::shm::ShmWriter;
+use crate::shm::ShmWriter;
 
 pub struct ScreenHandle {
     stop: Arc<AtomicBool>,
@@ -61,7 +61,7 @@ pub async fn start(source: NativeVideoSource, preview: Arc<Mutex<Option<ShmWrite
                         let (dy, du, dv) = buf.data_mut();
                         yuv_helper::argb_to_i420(data, stride as u32, dy, sy, du, su, dv, sv, w as i32, h as i32);
                     }
-                    let vf = VideoFrame { rotation: VideoRotation::VideoRotation0, timestamp_us: super::shm::monotonic_us() as i64, frame_metadata: None, buffer: buf };
+                    let vf = VideoFrame { rotation: VideoRotation::VideoRotation0, timestamp_us: crate::shm::monotonic_us() as i64, frame_metadata: None, buffer: buf };
                     source.capture_frame(&vf);
                     if !announced {
                         announced = true;

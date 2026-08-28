@@ -66,6 +66,7 @@ pub struct State {
 pub struct Engine {
     pub hub: Hub,
     pub state: Mutex<State>,
+    #[cfg(feature = "calls")]
     pub rtc: Arc<crate::rtc::CallManager>,
     /// Local video playback (ffmpeg → shm) for the media viewer.
     pub playback: Mutex<Option<crate::media::player::Playback>>,
@@ -81,11 +82,13 @@ impl Engine {
         let e = Arc::new(Engine {
             hub,
             state: Mutex::new(State { sync_state: "offline".into(), ..Default::default() }),
+            #[cfg(feature = "calls")]
             rtc: crate::rtc::CallManager::new(),
             playback: Mutex::new(None),
             recording: Mutex::new(None),
             audio_play: Mutex::new(None),
         });
+        #[cfg(feature = "calls")]
         e.rtc.attach(&e);
         e
     }
@@ -144,6 +147,7 @@ impl Engine {
         if !s.rooms_snapshot.is_null() { v.push(s.rooms_snapshot.clone()); }
         if !s.space_index.tree.is_null() { v.push(s.space_index.tree.clone()); }
         drop(s);
+        #[cfg(feature = "calls")]
         v.push(self.rtc.state_json());
         let p = self.state.lock().presence_snapshot.clone();
         if !p.is_null() { v.push(p); }
@@ -265,7 +269,10 @@ impl Engine {
             "message.react" => crate::timeline::actions::react(self.clone(), Self::str_param(p, "roomId"), p).await,
             "message.redact" => crate::timeline::actions::redact(self.clone(), Self::str_param(p, "roomId"), p).await,
             "readReceipt" => crate::timeline::actions::read_receipt(self.clone(), Self::str_param(p, "roomId"), p).await,
+            #[cfg(feature = "calls")]
             r if r.starts_with("call.") => self.rtc.dispatch(r, p).await,
+            #[cfg(not(feature = "calls"))]
+            r if r.starts_with("call.") => Reply::err("unsupported", "this build has no call support"),
             "media.get" => crate::media::get(self.clone(), p).await,
             "media.saveAs" => crate::media::save_as(self.clone(), p).await,
             "attachment.send" => crate::media::send_attachment(self.clone(), p).await,

@@ -3,7 +3,6 @@ pub mod camera;
 pub mod e2ee;
 pub mod livekit_room;
 pub mod screen;
-pub mod shm;
 pub mod signaling;
 pub mod transport;
 
@@ -695,7 +694,7 @@ async fn member_profile(room: &Room, user_id: &str) -> (String, String) {
 pub fn install(engine: SharedEngine, client: Client) {
     let cm = engine.rtc.clone();
     cm.attach(&engine);
-    shm::sweep();
+    crate::shm::sweep();
     {
         let cm2 = cm.clone();
         let c2 = client.clone();

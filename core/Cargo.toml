@@ -4,8 +4,18 @@ version = "0.1.0"
 edition = "2021"
 rust-version = "1.93"
 build = "build.rs"
-license = "MIT"
+license = "LicenseRef-Proprietary"
 description = "Sigil — the Matrix client daemon: session, E2EE, media and calls behind a local JSON protocol"
+
+[lib]
+name = "sigil_engine"
+path = "src/lib.rs"
+# cdylib so Android and iOS can link it; rlib so the daemon and examples can.
+crate-type = ["lib", "cdylib"]
+
+[[bin]]
+name = "uniffi-bindgen"
+path = "uniffi-bindgen.rs"
 
 [[bin]]
 name = "sigil-engine"
@@ -16,6 +26,7 @@ default = ["calls"]
 calls = ["dep:livekit", "dep:webrtc-sys", "dep:libwebrtc", "dep:nokhwa"]
 
 [dependencies]
+uniffi = { version = "0.28", features = ["cli"] }
 tokio = { version = "1", features = ["full"] }
 tokio-util = "0.7"
 futures-util = "0.3"

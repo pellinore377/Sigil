@@ -11,7 +11,7 @@ use nokhwa::Camera;
 use parking_lot::Mutex;
 use tracing::{info, warn};
 
-use super::shm::ShmWriter;
+use crate::shm::ShmWriter;
 
 /// Truncated-MJPEG detector: the bottom band's mean and spread jump while the mid band stays still.
 #[derive(Default, Clone, Copy)]
@@ -121,7 +121,7 @@ pub fn start(device: &str, width: u32, height: u32, fps: u32, source: NativeVide
                 let (dy, du, dv) = buf.data_mut();
                 yuv_helper::abgr_to_i420(&rgba, w * 4, dy, sy, du, su, dv, sv, w as i32, h as i32);
             }
-            let vf = VideoFrame { rotation: VideoRotation::VideoRotation0, timestamp_us: super::shm::monotonic_us() as i64, frame_metadata: None, buffer: buf };
+            let vf = VideoFrame { rotation: VideoRotation::VideoRotation0, timestamp_us: crate::shm::monotonic_us() as i64, frame_metadata: None, buffer: buf };
             source.capture_frame(&vf);
             frames += 1;
             if frames % 300 == 0 { info!("camera: {frames} frames"); }

@@ -1,19 +1,8 @@
-//! sigil-engine — the Sigil Matrix client. Owns the session, encryption,
-//! media and calls; frontends are views over its socket protocol.
+//! sigil-engine — the daemon wrapper around the `sigil_engine` library:
+//! a unix socket speaking JSON lines. The Matrix logic lives in the library.
 
-mod docs;
-mod engine;
-mod geo;
-mod ipc;
-mod media;
-mod notify;
-mod maps;
-mod paths;
-mod presence;
-mod rtc;
-mod session;
-mod sync;
-mod timeline;
+use sigil_engine::{docs, engine, geo, ipc, maps, media, notify, paths, presence, session, shm, sync, timeline};
+
 
 use clap::{Parser, Subcommand};
 
@@ -68,7 +57,7 @@ enum Cmd {
 }
 
 fn main() -> anyhow::Result<()> {
-    rustls::crypto::aws_lc_rs::default_provider().install_default().ok();
+    sigil_engine::init_crypto();
     let cli = Cli::parse();
     match cli.cmd.unwrap_or(Cmd::Daemon { socket: None, log_level: "info".into() }) {
         Cmd::Daemon { socket, log_level } => {
@@ -140,7 +129,7 @@ fn livekit_version() -> &'static str {
 }
 
 fn shmtest(w: u32, h: u32, fps: u32, seconds: u32, grow_at: u32) -> anyhow::Result<()> {
-    let mut wr = rtc::shm::ShmWriter::create("test", w, h)?;
+    let mut wr = shm::ShmWriter::create("test", w, h)?;
     println!("writing {} ({w}x{h} @{fps} for {seconds}s)", wr.path().display());
     let frames = fps * seconds;
     let period = std::time::Duration::from_micros(1_000_000 / fps as u64);
@@ -175,7 +164,7 @@ fn shmdump(key: &str, out: &std::path::Path) -> anyhow::Result<()> {
     let data = std::fs::read(&path)?;
     let u32_at = |o: usize| u32::from_le_bytes(data[o..o + 4].try_into().unwrap());
     let u64_at = |o: usize| u64::from_le_bytes(data[o..o + 8].try_into().unwrap());
-    anyhow::ensure!(u32_at(0) == rtc::shm::MAGIC, "bad magic");
+    anyhow::ensure!(u32_at(0) == shm::MAGIC, "bad magic");
     let header_size = u32_at(0x08) as usize;
     let slot_stride = u32_at(0x10) as usize;
     let latest = u64_at(0x28);
@@ -183,7 +172,7 @@ fn shmdump(key: &str, out: &std::path::Path) -> anyhow::Result<()> {
     let slot = (latest & 0xff) as usize;
     let base = header_size + slot * slot_stride;
     let (w, h, stride) = (u32_at(base + 4), u32_at(base + 8), u32_at(base + 12) as usize);
-    let px = base + rtc::shm::SLOT_HDR;
+    let px = base + shm::SLOT_HDR;
     let mut img = image::RgbaImage::new(w, h);
     for y in 0..h as usize {
         let row = &data[px + y * stride..px + y * stride + w as usize * 4];

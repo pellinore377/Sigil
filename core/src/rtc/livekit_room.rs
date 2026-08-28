@@ -21,7 +21,7 @@ use tracing::{debug, info, warn};
 
 use super::camera::CameraHandle;
 use super::screen::ScreenHandle;
-use super::shm::ShmWriter;
+use crate::shm::ShmWriter;
 
 #[derive(Debug, Clone)]
 pub enum SessionEvent {

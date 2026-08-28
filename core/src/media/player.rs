@@ -9,7 +9,7 @@ use std::sync::Arc;
 use anyhow::Context;
 use tracing::{info, warn};
 
-use crate::rtc::shm::ShmWriter;
+use crate::shm::ShmWriter;
 
 pub struct Playback {
     stop: Arc<AtomicBool>,
