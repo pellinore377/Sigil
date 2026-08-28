@@ -1,0 +1,3 @@
+module OmarchyMatrixVideo
+plugin omarchymatrixvideo
+classname OmarchyMatrixVideoPlugin

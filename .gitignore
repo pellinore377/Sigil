@@ -1,0 +1,25 @@
+# Build output
+core/target/
+shared/icongen/target/
+omarchy/video/*.so
+omarchy/video/.qt-version
+*.tmp
+__pycache__/
+
+# Fonts are canonical in shared/fonts/ and copied into each frontend's bundle
+# at build time. The copy is generated, never edited or committed.
+omarchy/fonts/
+
+# Local state must never enter the tree; it lives in ~/.local/state/sigil/.
+session.json
+store.key
+settings.json
+store/
+*.log
+
+# Editor and OS junk
+.vscode/
+.idea/
+*.swp
+*~
+.DS_Store

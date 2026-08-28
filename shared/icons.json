@@ -1,0 +1,522 @@
+{
+  "back": {
+    "codepoint": "E5C4",
+    "material": "arrow_back",
+    "group": "navigation"
+  },
+  "close": {
+    "codepoint": "E5CD",
+    "material": "close",
+    "group": "navigation"
+  },
+  "chevronDown": {
+    "codepoint": "E5CF",
+    "material": "expand_more",
+    "group": "navigation"
+  },
+  "chevronUp": {
+    "codepoint": "E5CE",
+    "material": "expand_less",
+    "group": "navigation"
+  },
+  "chevronRight": {
+    "codepoint": "E5CC",
+    "material": "chevron_right",
+    "group": "navigation"
+  },
+  "arrowDown": {
+    "codepoint": "E5DB",
+    "material": "arrow_downward",
+    "group": "navigation"
+  },
+  "arrowUp": {
+    "codepoint": "E5D8",
+    "material": "arrow_upward",
+    "group": "navigation"
+  },
+  "home": {
+    "codepoint": "E9B2",
+    "material": "home",
+    "group": "navigation"
+  },
+  "maximize": {
+    "codepoint": "E5D0",
+    "material": "fullscreen",
+    "group": "navigation"
+  },
+  "fullscreen": {
+    "codepoint": "E5D0",
+    "material": "fullscreen",
+    "group": "navigation"
+  },
+  "windowed": {
+    "codepoint": "E8AA",
+    "material": "picture_in_picture",
+    "group": "navigation"
+  },
+  "pip": {
+    "codepoint": "F64D",
+    "material": "pip",
+    "group": "navigation"
+  },
+  "statusRing": {
+    "codepoint": "EEE1",
+    "material": "circle_circle",
+    "group": "navigation"
+  },
+  "statusDot": {
+    "codepoint": "EF4A",
+    "material": "circle",
+    "group": "navigation"
+  },
+  "checkCircle": {
+    "codepoint": "E86C",
+    "material": "check_circle",
+    "group": "navigation"
+  },
+  "errorMark": {
+    "codepoint": "E000",
+    "material": "error",
+    "group": "navigation"
+  },
+  "collapse": {
+    "codepoint": "F1CF",
+    "material": "close_fullscreen",
+    "group": "navigation"
+  },
+  "plus": {
+    "codepoint": "E145",
+    "material": "add",
+    "group": "action"
+  },
+  "plusCircle": {
+    "codepoint": "E990",
+    "material": "add_circle",
+    "group": "action"
+  },
+  "cancel": {
+    "codepoint": "E888",
+    "material": "cancel",
+    "group": "action"
+  },
+  "check": {
+    "codepoint": "E668",
+    "material": "check",
+    "group": "action"
+  },
+  "search": {
+    "codepoint": "EF7A",
+    "material": "search",
+    "group": "action"
+  },
+  "edit": {
+    "codepoint": "F097",
+    "material": "edit",
+    "group": "action"
+  },
+  "copy": {
+    "codepoint": "E14D",
+    "material": "content_copy",
+    "group": "action"
+  },
+  "cut": {
+    "codepoint": "E14E",
+    "material": "content_cut",
+    "group": "action"
+  },
+  "paste": {
+    "codepoint": "E14F",
+    "material": "content_paste",
+    "group": "action"
+  },
+  "selectAll": {
+    "codepoint": "E162",
+    "material": "select_all",
+    "group": "action"
+  },
+  "trash": {
+    "codepoint": "E92E",
+    "material": "delete",
+    "group": "action"
+  },
+  "reply": {
+    "codepoint": "E15E",
+    "material": "reply",
+    "group": "action"
+  },
+  "replyArrow": {
+    "codepoint": "E15E",
+    "material": "reply",
+    "group": "action"
+  },
+  "retry": {
+    "codepoint": "E5D5",
+    "material": "refresh",
+    "group": "action"
+  },
+  "forward": {
+    "codepoint": "E154",
+    "material": "forward",
+    "group": "action"
+  },
+  "share": {
+    "codepoint": "E80D",
+    "material": "share",
+    "group": "action"
+  },
+  "link": {
+    "codepoint": "E250",
+    "material": "link",
+    "group": "action"
+  },
+  "download": {
+    "codepoint": "F090",
+    "material": "download",
+    "group": "action"
+  },
+  "attach": {
+    "codepoint": "E226",
+    "material": "attach_file",
+    "group": "action"
+  },
+  "send": {
+    "codepoint": "E163",
+    "material": "send",
+    "group": "action"
+  },
+  "react": {
+    "codepoint": "E1D3",
+    "material": "add_reaction",
+    "group": "action"
+  },
+  "refresh": {
+    "codepoint": "E5D5",
+    "material": "refresh",
+    "group": "action"
+  },
+  "stop": {
+    "codepoint": "E047",
+    "material": "stop",
+    "group": "action"
+  },
+  "settings": {
+    "codepoint": "E8B8",
+    "material": "settings",
+    "group": "action"
+  },
+  "moreVertical": {
+    "codepoint": "E5D4",
+    "material": "more_vert",
+    "group": "action"
+  },
+  "moreHorizontal": {
+    "codepoint": "E5D3",
+    "material": "more_horiz",
+    "group": "action"
+  },
+  "spinner": {
+    "codepoint": "E9D0",
+    "material": "progress_activity",
+    "group": "action"
+  },
+  "chat": {
+    "codepoint": "E0C9",
+    "material": "chat",
+    "group": "content"
+  },
+  "thread": {
+    "codepoint": "E0B9",
+    "material": "comment",
+    "group": "content"
+  },
+  "pin": {
+    "codepoint": "F10D",
+    "material": "push_pin",
+    "group": "content"
+  },
+  "keep": {
+    "codepoint": "E6AA",
+    "material": "keep",
+    "group": "content"
+  },
+  "file": {
+    "codepoint": "E873",
+    "material": "description",
+    "group": "content"
+  },
+  "folder": {
+    "codepoint": "E2C7",
+    "material": "folder",
+    "group": "content"
+  },
+  "camera": {
+    "codepoint": "E412",
+    "material": "photo_camera",
+    "group": "content"
+  },
+  "codeBlocks": {
+    "codepoint": "F84D",
+    "material": "code_blocks",
+    "group": "content"
+  },
+  "image": {
+    "codepoint": "E3F4",
+    "material": "image",
+    "group": "content"
+  },
+  "voiceMemo": {
+    "codepoint": "E1B8",
+    "material": "graphic_eq",
+    "group": "content"
+  },
+  "music": {
+    "codepoint": "E405",
+    "material": "music_note",
+    "group": "content"
+  },
+  "audioNote": {
+    "codepoint": "EB82",
+    "material": "audio_file",
+    "group": "content"
+  },
+  "sticker": {
+    "codepoint": "E707",
+    "material": "sticker",
+    "group": "content"
+  },
+  "emoji": {
+    "codepoint": "EA22",
+    "material": "mood",
+    "group": "content"
+  },
+  "poll": {
+    "codepoint": "E172",
+    "material": "ballot",
+    "group": "content"
+  },
+  "note": {
+    "codepoint": "E26C",
+    "material": "notes",
+    "group": "content"
+  },
+  "email": {
+    "codepoint": "E159",
+    "material": "mail",
+    "group": "content"
+  },
+  "palette": {
+    "codepoint": "E40A",
+    "material": "palette",
+    "group": "content"
+  },
+  "logout": {
+    "codepoint": "E9BA",
+    "material": "logout",
+    "group": "content"
+  },
+  "space": {
+    "codepoint": "EA0F",
+    "material": "workspaces",
+    "group": "content"
+  },
+  "lowPriority": {
+    "codepoint": "E16D",
+    "material": "low_priority",
+    "group": "content"
+  },
+  "emojiMore": {
+    "codepoint": "E1D3",
+    "material": "add_reaction",
+    "group": "content"
+  },
+  "people": {
+    "codepoint": "EA21",
+    "material": "group",
+    "group": "people"
+  },
+  "person": {
+    "codepoint": "E7FD",
+    "material": "person",
+    "group": "people"
+  },
+  "personAdd": {
+    "codepoint": "EA4D",
+    "material": "person_add",
+    "group": "people"
+  },
+  "play": {
+    "codepoint": "E037",
+    "material": "play_arrow",
+    "group": "media"
+  },
+  "pause": {
+    "codepoint": "E034",
+    "material": "pause",
+    "group": "media"
+  },
+  "phone": {
+    "codepoint": "E0B0",
+    "material": "call",
+    "group": "call"
+  },
+  "callEnd": {
+    "codepoint": "F0BC",
+    "material": "call_end",
+    "group": "call"
+  },
+  "micOn": {
+    "codepoint": "E31D",
+    "material": "mic",
+    "group": "call"
+  },
+  "record": {
+    "codepoint": "E029",
+    "material": "mic",
+    "group": "call"
+  },
+  "micOff": {
+    "codepoint": "E02B",
+    "material": "mic_off",
+    "group": "call"
+  },
+  "videoOn": {
+    "codepoint": "E04B",
+    "material": "videocam",
+    "group": "call"
+  },
+  "videoOff": {
+    "codepoint": "E04C",
+    "material": "videocam_off",
+    "group": "call"
+  },
+  "screenShare": {
+    "codepoint": "E0E2",
+    "material": "screen_share",
+    "group": "call"
+  },
+  "screenShareAlt": {
+    "codepoint": "E0DF",
+    "material": "present_to_all",
+    "group": "call"
+  },
+  "speaker": {
+    "codepoint": "E050",
+    "material": "volume_up",
+    "group": "call"
+  },
+  "signalOff": {
+    "codepoint": "F239",
+    "material": "signal_disconnected",
+    "group": "call"
+  },
+  "location": {
+    "codepoint": "F1DB",
+    "material": "place",
+    "group": "location"
+  },
+  "liveLocation": {
+    "codepoint": "F05F",
+    "material": "share_location",
+    "group": "location"
+  },
+  "myLocation": {
+    "codepoint": "E55C",
+    "material": "my_location",
+    "group": "location"
+  },
+  "pinDrop": {
+    "codepoint": "E55E",
+    "material": "pin_drop",
+    "group": "location"
+  },
+  "recentre": {
+    "codepoint": "E55C",
+    "material": "my_location",
+    "group": "location"
+  },
+  "lock": {
+    "codepoint": "E897",
+    "material": "lock",
+    "group": "security"
+  },
+  "lockOff": {
+    "codepoint": "E898",
+    "material": "lock_open",
+    "group": "security"
+  },
+  "recoveryKey": {
+    "codepoint": "E73C",
+    "material": "key",
+    "group": "security"
+  },
+  "login": {
+    "codepoint": "EA77",
+    "material": "login",
+    "group": "security"
+  },
+  "eye": {
+    "codepoint": "E8F4",
+    "material": "visibility",
+    "group": "security"
+  },
+  "eyeOff": {
+    "codepoint": "E8F5",
+    "material": "visibility_off",
+    "group": "security"
+  },
+  "clock": {
+    "codepoint": "EFD6",
+    "material": "schedule",
+    "group": "status"
+  },
+  "alert": {
+    "codepoint": "F083",
+    "material": "warning",
+    "group": "status"
+  },
+  "errorCircle": {
+    "codepoint": "F8B6",
+    "material": "error",
+    "group": "status"
+  },
+  "globe": {
+    "codepoint": "E80B",
+    "material": "public",
+    "group": "spaces and settings"
+  },
+  "shield": {
+    "codepoint": "E9E0",
+    "material": "shield",
+    "group": "spaces and settings"
+  },
+  "moderator": {
+    "codepoint": "F7AC",
+    "material": "chat_error",
+    "group": "spaces and settings"
+  },
+  "leave": {
+    "codepoint": "E9BA",
+    "material": "logout",
+    "group": "spaces and settings"
+  },
+  "hash": {
+    "codepoint": "E9EF",
+    "material": "tag",
+    "group": "spaces and settings"
+  },
+  "star": {
+    "codepoint": "E838",
+    "material": "star",
+    "group": "spaces and settings"
+  },
+  "bell": {
+    "codepoint": "E7F4",
+    "material": "notifications",
+    "group": "spaces and settings"
+  },
+  "bellOff": {
+    "codepoint": "E7F6",
+    "material": "notifications_off",
+    "group": "spaces and settings"
+  }
+}

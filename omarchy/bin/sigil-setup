@@ -1,0 +1,85 @@
+#!/usr/bin/env bash
+#
+# sigil-setup — build and install the two native pieces of the Sigil plugin:
+#   1. sigil-engine  (Rust: matrix-sdk + LiveKit)     → ~/.local/bin/sigil-engine
+#   2. OmarchyMatrixVideo QML plugin (C++, qmake6)    → <plugin>/video/libomarchymatrixvideo.so
+#
+# Builds happen out-of-tree under ~/.cache/omarchy-matrix/build so the shell's
+# plugin hot-reloader (inotify on ~/.config/omarchy/plugins) is not spammed;
+# only the final artefacts are moved into place. Re-run after Qt upgrades
+# (`--check` rebuilds the .so only when the Qt version changed) or after
+# pulling a new plugin version.
+#
+#   sigil-setup            build both, install, restart the engine
+#   sigil-setup --check    rebuild the video plugin only if Qt changed
+#   sigil-setup --engine   engine only
+#   sigil-setup --video    video plugin only
+set -euo pipefail
+
+PLUGIN_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+REPO="$(cd "$PLUGIN_DIR/.." && pwd)"
+BIN_DIR="${BIN_DIR:-$HOME/.local/bin}"
+BUILD="${SIGIL_BUILD_DIR:-$HOME/.cache/omarchy-matrix/build}"
+MODE="all"
+case "${1:-}" in --check) MODE=check;; --engine) MODE=engine;; --video) MODE=video;; esac
+
+say() { printf 'sigil-setup: %s\n' "$*" >&2; }
+need() { command -v "$1" >/dev/null 2>&1 || { say "missing: $1 ($2)"; exit 1; }; }
+
+build_engine() {
+  need cargo "install rustup, then: rustup default stable"
+  need clang "sudo pacman -S --needed clang"
+  need pkg-config "sudo pacman -S --needed pkgconf"
+  say "building sigil-engine (first build downloads the prebuilt libwebrtc, ~300 MB)…"
+  mkdir -p "$BUILD" "$BIN_DIR"
+  (cd "$REPO/core" && CARGO_TARGET_DIR="$BUILD" cargo build --release --locked 2>&1 | tail -n 3 >&2)
+  install -Dm755 "$BUILD/release/sigil-engine" "$BIN_DIR/sigil-engine"
+  say "installed $BIN_DIR/sigil-engine"
+}
+
+build_video() {
+  need qmake6 "sudo pacman -S --needed qt6-base qt6-declarative"
+  need make "sudo pacman -S --needed base-devel"
+  local vdir="$PLUGIN_DIR/video" b="$BUILD/video"
+  local qtver; qtver="$(qmake6 -query QT_VERSION)"
+  if [ "$MODE" = check ] && [ -f "$vdir/libomarchymatrixvideo.so" ] && [ "$(cat "$vdir/.qt-version" 2>/dev/null)" = "$qtver" ]; then
+    return 0
+  fi
+  say "building OmarchyMatrixVideo QML plugin for Qt $qtver…"
+  mkdir -p "$b"
+  (cd "$b" && qmake6 "$vdir/video.pro" >/dev/null && make -j"$(nproc)" 2>&1 | grep -E "error" >&2 || true)
+  [ -f "$b/libomarchymatrixvideo.so" ] || { say "video plugin build failed"; exit 1; }
+  # New inode: a running shell keeps its old mapping; it picks the new one up on restart.
+  install -m644 "$b/libomarchymatrixvideo.so" "$vdir/.new.so" && mv -f "$vdir/.new.so" "$vdir/libomarchymatrixvideo.so"
+  printf '%s\n' "$qtver" > "$vdir/.qt-version"
+  say "installed $vdir/libomarchymatrixvideo.so"
+}
+
+# Fonts are canonical in shared/fonts and bundled into each frontend. The icons
+# are private-use codepoints: without the font they do not show tofu, they draw a
+# DIFFERENT glyph from whatever else claims that range. So a missing font is a
+# failed build, never a runtime fallback.
+bundle_fonts() {
+  local src="$REPO/shared/fonts" dst="$PLUGIN_DIR/fonts"
+  [ -d "$src" ] || { say "missing $src"; exit 1; }
+  mkdir -p "$dst"
+  cp -f "$src"/*.ttf "$src"/LICENSE-*.txt "$dst"/
+  for f in Roboto-Regular Roboto-Medium Roboto-Bold RobotoMono-Regular \
+           MaterialSymbolsRounded MaterialSymbolsRounded-Filled; do
+    [ -s "$dst/$f.ttf" ] || { say "font missing after copy: $f.ttf"; exit 1; }
+  done
+  say "bundled $(ls "$dst"/*.ttf | wc -l) fonts into $dst"
+}
+
+restart_engine() {
+  # The shell's Service.qml respawns the engine within ~1.5 s.
+  pkill -f "^$BIN_DIR/sigil-engine daemon" 2>/dev/null || true
+}
+
+case "$MODE" in
+  all)    bundle_fonts; build_engine; build_video; restart_engine ;;
+  engine) build_engine; restart_engine ;;
+  video)  build_video ;;
+  check)  bundle_fonts; build_video ;;
+esac
+say "done"

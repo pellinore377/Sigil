@@ -1,0 +1,18 @@
+# Standalone by design: the icon table must build without the engine's toolchain,
+# so this crate is not in `engine/`'s tree and has no workspace above it.
+[workspace]
+
+[package]
+name = "icongen"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "Generates the per-platform icon tables from shared/icons.json"
+
+[[bin]]
+name = "icongen"
+path = "src/main.rs"
+
+[dependencies]
+# `preserve_order` keeps icons.json's grouping order in the generated files.
+serde_json = { version = "1", features = ["preserve_order"] }

@@ -1,0 +1,38 @@
+{
+  "schemaVersion": 1,
+  "id": "pellinore.sigil",
+  "name": "Sigil",
+  "version": "0.1.0",
+  "author": "pellinore377",
+  "license": "LicenseRef-Proprietary",
+  "description": "Sigil \u2014 a cross-platform native Matrix client: rooms, DMs, spaces, media and native voice/video calls, backed by sigil-engine. This plugin is its Omarchy bar widget and panel. Toggle with: omarchy-shell shell toggle pellinore.sigil",
+  "kinds": [
+    "service",
+    "panel",
+    "bar-widget"
+  ],
+  "entryPoints": {
+    "service": "Service.qml",
+    "panel": "Panel.qml",
+    "barWidget": "BarWidget.qml"
+  },
+  "keepLoaded": true,
+  "barWidget": {
+    "displayName": "Sigil",
+    "description": "Bar icon that toggles the Sigil (Matrix) window; badges unread messages, mentions and an active call",
+    "category": "System",
+    "allowMultiple": false,
+    "defaultSection": "right",
+    "defaults": {
+      "showCount": true
+    },
+    "schema": [
+      {
+        "key": "showCount",
+        "type": "bool",
+        "label": "Show unread count",
+        "defaultValue": true
+      }
+    ]
+  }
+}
