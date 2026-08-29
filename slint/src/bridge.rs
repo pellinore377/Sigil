@@ -817,8 +817,16 @@ pub fn rebuild_timeline(ui: &mut UiState, win: &AppWindow) {
                     crate::actions::fetch_doc_thumb(&req, &room_id, &event_id, key2);
                 }
                 Some(v) if !v.is_null() => {
+                    // Lines arrive structured: {"t":"p","text"} or {"t":"row","cells"}.
                     doc_lines = v["lines"].as_array().map(|a| {
-                        a.iter().filter_map(Value::as_str).map(SharedString::from).take(6).collect()
+                        a.iter().take(6).map(|l| {
+                            match l["t"].as_str() {
+                                Some("row") => l["cells"].as_array().map(|c| {
+                                    c.iter().filter_map(Value::as_str).collect::<Vec<_>>().join(" · ")
+                                }).unwrap_or_default(),
+                                _ => l["text"].as_str().unwrap_or("").to_string(),
+                            }
+                        }).filter(|t| !t.is_empty()).map(SharedString::from).collect()
                     }).unwrap_or_default();
                     doc_chip = v["chip"].as_str()
                         .or(v["kind"].as_str())

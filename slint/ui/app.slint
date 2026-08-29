@@ -635,22 +635,31 @@ export component AppWindow inherits Window {
                 search-edited(q) => { root.act("forward-search", q, ""); }
                 picked(id) => { root.act("forward-picked", id, ""); }
             } }
-        if root.attach-open : AttachMenu {
+        if root.attach-open : att-wrap := Rectangle {
             width: 100%; height: 100%;
-            stickers: root.at-stickers; stickers-loaded: root.at-stickers-loaded;
-            pick-files => { root.act("pick-attach-files", "", ""); }
-            open-location(mode) => { root.act("attach-location", mode, ""); }
-            insert-emoji(e) => { root.act("composer-insert", e, ""); }
-            create-poll(q, opts, closed2) => {
-                root.act("create-poll", q, (closed2 ? "1" : "0")
-                    + "\u{1f}" + opts[0] + "\u{1f}" + opts[1] + "\u{1f}" + opts[2]
-                    + "\u{1f}" + opts[3] + "\u{1f}" + opts[4] + "\u{1f}" + opts[5]
-                    + "\u{1f}" + opts[6] + "\u{1f}" + opts[7]);
+            background: Theme.background.with-alpha(0.35);
+            TouchArea { clicked => { root.attach-open = false; } }
+            att := AttachMenu {
+                x: 0;
+                width: att-wrap.width;
+                // A drawer riding above the composer; its own height binding
+                // (per page) stays in charge.
+                y: att-wrap.height - self.height - 66px;
+                stickers: root.at-stickers; stickers-loaded: root.at-stickers-loaded;
+                pick-files => { root.act("pick-attach-files", "", ""); }
+                open-location(mode) => { root.act("attach-location", mode, ""); }
+                insert-emoji(e) => { root.act("composer-insert", e, ""); }
+                create-poll(q, opts, closed2) => {
+                    root.act("create-poll", q, (closed2 ? "1" : "0")
+                        + "\u{1f}" + opts[0] + "\u{1f}" + opts[1] + "\u{1f}" + opts[2]
+                        + "\u{1f}" + opts[3] + "\u{1f}" + opts[4] + "\u{1f}" + opts[5]
+                        + "\u{1f}" + opts[6] + "\u{1f}" + opts[7]);
+                }
+                send-sticker(i) => { root.act("send-sticker", "" + i, ""); }
+                load-stickers => { root.act("load-stickers", "", ""); }
+                load-emoji => { root.act("emoji-search", "", ""); }
+                close-requested => { root.attach-open = false; }
             }
-            send-sticker(i) => { root.act("send-sticker", "" + i, ""); }
-            load-stickers => { root.act("load-stickers", "", ""); }
-            load-emoji => { root.act("emoji-search", "", ""); }
-            close-requested => { root.attach-open = false; }
         }
         if root.recorder-open : VoiceRecorder {
             width: 100%; height: 100%;

@@ -9,7 +9,7 @@
 
 import { Theme } from "style.slint";
 import { Icons } from "icons.slint";
-import { IconLabel, Avatar } from "components.slint";
+import { IconLabel, Avatar, HoldArea } from "components.slint";
 import { Spinner } from "furniture.slint";
 import { TimelineRow, ReactionChip, PollOption } from "model.slint";
 
@@ -64,6 +64,13 @@ export component Bubble inherits Rectangle {
 
     height: col.preferred-height;
     background: transparent;
+    public function open-menu() {
+        // Row geometry: `bubble` lives inside the is-msg branch and is out of
+        // scope here; the sheet's spotlight placement only needs the vicinity.
+        root.menu-requested(item,
+            root.absolute-position.x + 14px, root.absolute-position.y,
+            root.width - 28px, root.height);
+    }
 
     col := VerticalLayout {
         padding-left: 14px; padding-right: 14px;
@@ -301,7 +308,7 @@ export component Bubble inherits Rectangle {
                                 width: 100%; height: 100%;
                             }
                         }
-                        TouchArea { clicked => { root.open-document(item); } }
+                        HoldArea { clicked => { if (!self.fired) { root.open-document(item); } self.fired = false; } held => { root.open-menu(); } }
                     }
 
                     if root.file-kind && !root.voice-kind && item.doc-chip == "" : file-row := Rectangle {
@@ -450,7 +457,7 @@ export component Bubble inherits Rectangle {
                                 overflow: elide;
                             }
                         }
-                        TouchArea { clicked => { root.open-location(item); } }
+                        HoldArea { clicked => { if (!self.fired) { root.open-location(item); } self.fired = false; } held => { root.open-menu(); } }
                     }
 
                     // Caption under full-bleed media: its own padded band, the

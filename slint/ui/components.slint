@@ -172,3 +172,33 @@ export component TextWell inherits Rectangle {
         }
     }
 }
+
+
+// A tap surface that also recognises a hold. Inner media areas use this so
+// long-press opens the message menu from anywhere on a bubble, as in QML.
+export component HoldArea inherits TouchArea {
+    callback held;
+    property <bool> fired: false;
+    hold-timer := Timer {
+        interval: 500ms;
+        running: false;
+        triggered => {
+            self.running = false;
+            root.fired = true;
+            root.held();
+        }
+    }
+    pointer-event(ev) => {
+        if (ev.kind == PointerEventKind.down) {
+            root.fired = false;
+            hold-timer.running = true;
+        } else if (ev.kind == PointerEventKind.up || ev.kind == PointerEventKind.cancel) {
+            hold-timer.running = false;
+        }
+    }
+    moved => {
+        if (abs((self.mouse-x - self.pressed-x) / 1px) > 12 || abs((self.mouse-y - self.pressed-y) / 1px) > 12) {
+            hold-timer.running = false;
+        }
+    }
+}
