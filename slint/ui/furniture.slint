@@ -314,13 +314,20 @@ export component ChoiceSheet inherits Rectangle {
 }
 
 // The spinner glyph, turning.
-export component Spinner inherits Text {
+export component Spinner inherits Rectangle {
     in property <length> size: Theme.icon-size;
-    text: Icons.spinner;
-    color: Theme.foreground;
-    font-family: Theme.font-icon;
-    font-size: root.size;
-    transform-rotation: 360deg * (animation-tick() / 900ms);
+    in property <color> spin-color: Theme.foreground;
+    width: root.size; height: root.size;
+    background: transparent;
+    Text {
+        text: Icons.spinner;
+        color: root.spin-color;
+        font-family: Theme.font-icon;
+        font-size: root.size;
+        width: 100%; height: 100%;
+        horizontal-alignment: center; vertical-alignment: center;
+        transform-rotation: 360deg * (animation-tick() / 900ms);
+    }
 }
 
 // A slide-in page layer: slide from the right, opaque ground, event sink.

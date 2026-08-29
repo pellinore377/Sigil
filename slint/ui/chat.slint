@@ -1,15 +1,21 @@
-// One room: header, timeline, composer — the load-bearing shape of
-// mobile/ChatPage.qml + BubbleDelegate.qml. Bubble fills are opaque
-// pre-blends over the popup surface, identical to the QML mix() math.
-// v1 renders text kinds and placeholders for media; SigilText effects and
-// media bodies come after the protocol path is proven.
+// Conversation page — ChatPage.qml: back header with call buttons, bubble
+// timeline, pill composer with the reply/edit quote inside the input surface,
+// typing indicator, pagination spinner, jump-to-latest button, header menu,
+// invite banner, and the long-press message sheet as an overlay.
+//
+// Divergences (all in WIRING-chat.md): chat themes/wallpaper wait for the
+// theme store; Enter always newlines on a multi-line TextInput, so sending is
+// the send button (the phone convention anyway); no frosted-glass sheet scrim.
 
 import { ListView } from "std-widgets.slint";
 import { Theme } from "style.slint";
 import { Icons } from "icons.slint";
-import { IconLabel, ActionButton, Avatar } from "components.slint";
-
-import { TimelineRow, ReactionChip, ReplyRef } from "model.slint";
+import { IconLabel, ActionButton, Avatar, SButton } from "components.slint";
+import { Spinner } from "furniture.slint";
+import { OverflowMenu, MenuEntry } from "furniture.slint";
+import { TimelineRow, ReactionChip, ReplyRef, EmojiItem } from "model.slint";
+import { Bubble } from "bubble.slint";
+import { MessageSheet } from "sheet.slint";
 
 export component ChatPage inherits Rectangle {
     in property <string> room-name;
@@ -17,36 +23,99 @@ export component ChatPage inherits Rectangle {
     in property <bool> room-encrypted;
     in property <string> room-initials;
     in property <image> room-avatar;
-    in property <color> room-tint;
+    in property <color> room-tint: Theme.accent;
     in property <[TimelineRow]> items;
     in property <string> typing-line;
-    callback back;
-    callback send(string);
-    callback composer-edited(string);
+    in property <image> typing-avatar;
+    in property <string> typing-initials;
+    in property <color> typing-tint: Theme.accent;
+    in property <bool> is-dm;
+    in property <bool> is-invite;
+    in property <bool> is-thread;
+    in property <string> pagination-state: "idle";  // idle | paginating | timelineStart
+    in property <bool> in-call;          // any call, disables the start buttons
+    in property <bool> call-here;        // live call in THIS room: Join chip
+    in property <[MenuEntry]> sheet-actions;
+    in property <[[EmojiItem]]> emoji-rows;
+    in property <[int]> emoji-cat-rows;
+    in property <color> fg: Theme.menu-text;
+    in property <color> accent: Theme.accent;
     /// Extra bottom padding while the virtual keyboard is up, from the window.
     in property <length> bottom-inset: 0px;
 
-    background: Theme.menu-background;
+    // Composer staging (page-local, exactly like ChatPage.qml's).
+    in-out property <string> reply-to;
+    in-out property <string> reply-name;
+    in-out property <string> reply-body;
+    in-out property <string> edit-of;
+
+    callback back;
+    callback send(string);
+    callback send-reply(string /*event-id*/, string /*text*/);
+    callback send-edit(string /*event-id*/, string /*text*/);
+    callback composer-edited(string);
+    callback start-call(bool /*video*/);
+    callback join-call;
+    callback nav-requested(string);   // search threads pins chattheme roomsettings
+    callback open-attach;
+    callback open-recorder;
+    callback accept-invite;
+    callback decline-invite;
+    callback paginate;
+    callback menu-action(string /*action*/, string /*event-id*/);
+    callback react(string, string);
+    callback reply-arm(string, string, string); // sheet "reply" → arm composer
+    callback open-image(TimelineRow);
+    callback play-video(TimelineRow);
+    callback open-document(TimelineRow);
+    callback open-audio(TimelineRow);
+    callback open-location(TimelineRow);
+    callback open-thread(string);
+    callback voice-toggled(string);
+    callback voice-seeked(string, float);
+    callback vote(string, string);
+    callback emoji-search(string);
+    callback mark-read;
 
     public function scroll-to-end() {
         list.viewport-y = min(0px, list.visible-height - list.viewport-height);
     }
-    public function clear-composer() { composer-input.text = ""; }
+    public function clear-composer() {
+        composer-input.text = "";
+        root.reply-to = ""; root.reply-name = ""; root.reply-body = ""; root.edit-of = "";
+    }
+    public function arm-reply(event-id: string, sender: string, body: string) {
+        root.reply-to = event-id; root.reply-name = sender; root.reply-body = body;
+        root.edit-of = "";
+    }
+    public function arm-edit(event-id: string, body: string) {
+        root.edit-of = event-id; root.reply-to = "";
+        root.reply-name = "Edit message"; root.reply-body = body;
+        composer-input.text = body;
+    }
+
+    property <bool> menu-open: false;
+    property <bool> quote-armed: root.reply-to != "" || root.edit-of != "";
+    // ChatPage.qml convoC: menu.background darkened 1.35, 18% accent.
+    property <color> convo-c: Theme.menu-background.darker(0.26).mix(root.accent, 0.82);
+    property <length> from-end: max(0px, (list.viewport-height - list.visible-height) + list.viewport-y);
+
+    background: Theme.menu-background;
 
     VerticalLayout {
-        // Header: 52 one line, 56 two (ui-conventions: counts go in the subtitle)
+        // Header
         header := Rectangle {
-            height: root.room-subtitle == "" ? 56px : 60px;
-            background: Theme.menu-background;
+            height: 52px;
             HorizontalLayout {
-                padding-left: 6px; padding-right: 10px;
-                spacing: 8px;
+                padding-left: 6px; padding-right: 8px;
+                spacing: 4px;
                 Rectangle {
-                    width: 44px;
-                    back-btn := ActionButton {
+                    width: 40px;
+                    ActionButton {
                         y: (header.height - self.height) / 2;
-                        width: 44px; height: 44px;
+                        width: 40px; height: 40px;
                         icon: Icons.back;
+                        foreground: root.fg;
                         clicked => { root.back(); }
                     }
                 }
@@ -61,236 +130,285 @@ export component ChatPage inherits Rectangle {
                 }
                 VerticalLayout {
                     alignment: center;
-                    spacing: 1px;
                     horizontal-stretch: 1;
                     HorizontalLayout {
                         alignment: start;
                         spacing: 5px;
                         Text {
-                            text: root.room-name;
-                            color: Theme.menu-text;
-                            font-family: Theme.font-ui;
-                            font-size: Theme.heading;
-                            font-weight: 700;
+                            text: root.is-thread ? "Thread" : root.room-name;
+                            color: root.fg;
+                            font-family: Theme.font-ui; font-size: Theme.subtitle; font-weight: 700;
                             overflow: elide;
                         }
                         if root.room-encrypted : IconLabel {
                             text: Icons.lock;
                             font-size: Theme.caption;
-                            color: Theme.menu-text.with-alpha(0.35);
+                            color: root.fg.with-alpha(0.35);
                             vertical-alignment: center;
                         }
                     }
-                    if root.room-subtitle != "" : Text {
-                        text: root.room-subtitle;
-                        color: Theme.menu-text.with-alpha(0.55);
-                        font-family: Theme.font-ui;
-                        font-size: Theme.caption;
+                    if root.room-subtitle != "" || root.typing-line != "" : Text {
+                        text: root.typing-line != "" ? root.typing-line
+                            : root.is-thread ? root.room-name : root.room-subtitle;
+                        color: root.typing-line != "" ? root.accent : root.fg.with-alpha(0.5);
+                        font-family: Theme.font-ui; font-size: Theme.caption;
                         overflow: elide;
                     }
+                }
+                // A live call in this room replaces the start-a-call buttons.
+                if root.call-here && !root.is-thread : join-chip := Rectangle {
+                    y: (header.height - 28px) / 2;
+                    width: join-row.preferred-width + 22px;
+                    height: 28px; border-radius: 14px;
+                    background: root.accent.with-alpha(0.9);
+                    join-row := HorizontalLayout {
+                        alignment: center;
+                        spacing: 5px;
+                        IconLabel { text: Icons.phone; color: #141414; font-size: Theme.caption; vertical-alignment: center; }
+                        Text { text: "Join"; color: #141414; font-family: Theme.font-ui; font-size: Theme.caption; font-weight: 700; vertical-alignment: center; }
+                    }
+                    TouchArea { clicked => { root.join-call(); } }
+                }
+                if !root.call-here && !root.is-thread : ActionButton {
+                    y: (header.height - self.height) / 2;
+                    icon: Icons.phone;
+                    foreground: root.fg;
+                    opacity: root.in-call ? 0.4 : 1;
+                    clicked => { if (!root.in-call) { root.start-call(false); } }
+                }
+                if !root.call-here && !root.is-thread : ActionButton {
+                    y: (header.height - self.height) / 2;
+                    icon: Icons.videoOn;
+                    foreground: root.fg;
+                    opacity: root.in-call ? 0.4 : 1;
+                    clicked => { if (!root.in-call) { root.start-call(true); } }
+                }
+                if !root.is-thread : ActionButton {
+                    y: (header.height - self.height) / 2;
+                    icon: Icons.moreVertical;
+                    foreground: root.fg;
+                    clicked => { root.menu-open = true; }
                 }
             }
         }
 
-        // Conversation ground: top corners cut away, revealing the header tone
+        // Invite banner
+        if root.is-invite : invite-bar := Rectangle {
+            height: 52px;
+            background: root.accent.with-alpha(0.1);
+            HorizontalLayout {
+                alignment: center;
+                spacing: 10px;
+                padding-top: 8px; padding-bottom: 8px;
+                SButton { text: "Accept invite"; clicked => { root.accept-invite(); } }
+                SButton { text: "Decline"; foreground: Theme.urgent; clicked => { root.decline-invite(); } }
+            }
+        }
+
+        // Conversation ground: rounded top corners revealing the header tone.
         convo := Rectangle {
             vertical-stretch: 1;
-            // ChatPage.qml convoC: menu.background darkened 1.35, 18% accent.
-            background: Theme.menu-background.darker(0.26).mix(Theme.accent, 0.82);
+            background: root.convo-c.with-alpha(0.94);
             border-top-left-radius: 24px;
             border-top-right-radius: 24px;
             clip: true;
 
             VerticalLayout {
+                // Pagination spinner rides the top of the list.
+                if root.pagination-state == "paginating" : Rectangle {
+                    height: 34px;
+                    Spinner {
+                        x: (convo.width - self.width) / 2;
+                        y: (34px - self.height) / 2;
+                        spin-color: root.fg.with-alpha(0.5);
+                        size: Theme.body;
+                    }
+                }
+
                 list := ListView {
                     vertical-stretch: 1;
-                    for item in root.items : trow := Rectangle {
-                        height: t-inner.preferred-height;
-                        t-inner := VerticalLayout {
-                            padding-left: 12px; padding-right: 12px;
-                            padding-top: item.group-start ? 8px : 2px;
-                            padding-bottom: item.group-end ? 4px : 0px;
+                    // Fetch older history a screen and a half early (maybePaginate).
+                    changed viewport-y => {
+                        if (self.viewport-y > -1.5 * self.visible-height
+                            && root.pagination-state == "idle"
+                            && self.viewport-height > self.visible-height) {
+                            root.paginate();
+                        }
+                        if (root.from-end < 4px) { root.mark-read(); }
+                    }
+                    for item in root.items : Bubble {
+                        item: item;
+                        fg: root.fg;
+                        accent: root.accent;
+                        dm: root.is-dm;
+                        encrypted: root.room-encrypted;
+                        convo-ground: root.convo-c;
+                        menu-requested(it, x, y, w, h) => {
+                            sheet.item = it;
+                            sheet.actions = root.sheet-actions;
+                            root.menu-action("prepare", it.event-id);
+                            sheet.open-for(x, y, w, h);
+                        }
+                        reply-requested(e, n, b) => { root.arm-reply(e, n, b); }
+                        open-image(it) => { root.open-image(it); }
+                        play-video(it) => { root.play-video(it); }
+                        open-document(it) => { root.open-document(it); }
+                        open-audio(it) => { root.open-audio(it); }
+                        open-location(it) => { root.open-location(it); }
+                        open-thread(id) => { root.open-thread(id); }
+                        react(id, key) => { root.react(id, key); }
+                        voice-toggled(id) => { root.voice-toggled(id); }
+                        voice-seeked(id, pos) => { root.voice-seeked(id, pos); }
+                        vote(id, opt) => { root.vote(id, opt); }
+                    }
+                }
 
-                            // Day divider
-                            if item.kind == "dayDivider" : HorizontalLayout {
-                                alignment: center;
-                                padding-top: 10px; padding-bottom: 6px;
-                                Rectangle {
-                                    width: divider-text.preferred-width + 20px;
-                                    height: 22px;
-                                    border-radius: self.height / 2;
-                                    background: Theme.menu-text.with-alpha(0.06);
-                                    divider-text := Text {
-                                        text: item.body;
-                                        color: Theme.menu-text.with-alpha(0.55);
-                                        font-family: Theme.font-ui;
-                                        font-size: Theme.caption;
-                                        horizontal-alignment: center; vertical-alignment: center;
-                                        width: 100%; height: 100%;
-                                    }
-                                }
-                            }
-
-                            // State / membership lines, centred and quiet
-                            if item.kind == "state" : Text {
-                                text: item.body;
-                                color: Theme.menu-text.with-alpha(0.45);
-                                font-family: Theme.font-ui;
-                                font-size: Theme.caption;
-                                horizontal-alignment: center;
-                                wrap: word-wrap;
-                            }
-
-                            // Message bubble
-                            if item.kind == "text" || item.kind == "notice" || item.kind == "emote" || item.kind == "media" || item.kind == "unsupported" : HorizontalLayout {
-                                alignment: item.is-own ? end : start;
-                                spacing: 8px;
-                                if !item.is-own : Rectangle {
-                                    width: 34px;
-                                    if item.show-avatar : av := Avatar {
-                                        y: bubble.height - self.height;
-                                        size: 34px;
-                                        initials: item.initials;
-                                        tint: item.tint;
-                                    }
-                                }
-                                bubble := Rectangle {
-                                    background: item.is-own
-                                        ? Theme.accent.mix(Theme.popup-background, 0.42)
-                                        : item.highlighted
-                                        ? Theme.accent.mix(Theme.popup-background, 0.24)
-                                        : Theme.menu-text.mix(Theme.popup-background, 0.22);
-                                    // Consecutive bubbles from one sender share small
-                                    // corners on that side; a lone bubble is round.
-                                    border-top-left-radius: (!item.is-own && !item.group-start) ? 5px : 16px;
-                                    border-bottom-left-radius: (!item.is-own && !item.group-end) ? 5px : 16px;
-                                    border-top-right-radius: (item.is-own && !item.group-start) ? 5px : 16px;
-                                    border-bottom-right-radius: (item.is-own && !item.group-end) ? 5px : 16px;
-                                    // Width from content, capped at 72% of the page;
-                                    // preferred-* never reads assigned size, so no loop.
-                                    width: min(root.width * 0.72, b-inner.preferred-width + 20px);
-                                    height: b-inner.preferred-height + 20px;
-                                    b-inner := VerticalLayout {
-                                        x: 10px; y: 10px;
-                                        width: bubble.width - 20px;
-                                        spacing: 4px;
-                                        if item.show-header : Text {
-                                            text: item.sender-name;
-                                            color: item.tint;
-                                            font-family: Theme.font-ui;
-                                            font-size: Theme.body-small;
-                                            font-weight: 700;
-                                        }
-                                        HorizontalLayout {
-                                            alignment: start;
-                                            spacing: 6px;
-                                            if item.media-icon != "" : IconLabel {
-                                                text: item.media-icon;
-                                                color: Theme.menu-text.with-alpha(0.7);
-                                                vertical-alignment: center;
-                                            }
-                                            b-body := Text {
-                                                text: item.body;
-                                                color: Theme.menu-text;
-                                                font-family: Theme.font-ui;
-                                                font-size: Theme.body;
-                                                font-italic: item.kind == "emote" || item.kind == "notice";
-                                                wrap: word-wrap;
-                                                horizontal-stretch: 1;
-                                            }
-                                        }
-                                        HorizontalLayout {
-                                            alignment: end;
-                                            spacing: 4px;
-                                            if item.edited : Text {
-                                                text: "edited";
-                                                color: Theme.menu-text.with-alpha(0.4);
-                                                font-family: Theme.font-ui;
-                                                font-size: Theme.caption;
-                                                font-italic: true;
-                                            }
-                                            Text {
-                                                text: item.stamp;
-                                                color: Theme.menu-text.with-alpha(0.4);
-                                                font-family: Theme.font-ui;
-                                                font-size: Theme.caption;
-                                            }
-                                        }
-                                    }
-                                }
+                // Typing indicator: avatar then three dots bouncing in sequence.
+                if root.typing-line != "" : typing-row := Rectangle {
+                    height: 38px;
+                    HorizontalLayout {
+                        alignment: start;
+                        padding-left: 14px;
+                        spacing: 7px;
+                        Avatar {
+                            y: (38px - 22px) / 2;
+                            size: 22px;
+                            source: root.typing-avatar;
+                            initials: root.typing-initials;
+                            tint: root.typing-tint;
+                        }
+                        HorizontalLayout {
+                            spacing: 5px;
+                            for di in [0, 1, 2] : dot := Rectangle {
+                                property <duration> cycle: 840ms;
+                                property <float> t: ((animation-tick() + di * 140ms) / self.cycle).mod(1.0);
+                                width: 6px; height: 6px; border-radius: 3px;
+                                background: root.fg.with-alpha(0.55);
+                                y: 19px - 3px - (self.t < 0.26 ? 4px * (self.t / 0.26)
+                                    : self.t < 0.57 ? 4px * (1 - (self.t - 0.26) / 0.31) : 0px);
                             }
                         }
                     }
                 }
 
-                if root.typing-line != "" : Rectangle {
-                    height: 22px;
-                    Text {
-                        x: 16px;
-                        text: root.typing-line;
-                        color: Theme.accent;
-                        font-family: Theme.font-ui;
-                        font-size: Theme.caption;
-                        vertical-alignment: center;
-                        height: 100%;
-                    }
-                }
-
                 // Composer
                 composer := Rectangle {
-                    height: 62px + root.bottom-inset;
+                    height: 62px + (root.quote-armed ? 42px : 0px) + root.bottom-inset;
                     HorizontalLayout {
                         padding-left: 12px; padding-right: 12px;
                         padding-top: 8px; padding-bottom: 12px + root.bottom-inset;
                         spacing: 8px;
                         well := Rectangle {
                             horizontal-stretch: 1;
-                            border-radius: self.height / 2;
-                            background: Theme.menu-text.with-alpha(0.07);
+                            border-radius: 21px;
+                            background: root.fg.with-alpha(0.07);
                             border-width: 1px;
-                            border-color: composer-input.has-focus ? Theme.accent.with-alpha(0.4) : transparent;
-                            HorizontalLayout {
-                                padding-left: 16px; padding-right: 12px;
-                                Rectangle {
-                                    clip: true;
-                                    horizontal-stretch: 1;
-                                    composer-input := TextInput {
-                                        color: Theme.menu-text;
-                                        font-family: Theme.font-ui;
-                                        font-size: Theme.body;
-                                        vertical-alignment: center;
-                                        height: 100%; width: 100%;
-                                        single-line: true;
-                                        accepted => {
-                                            if (self.text != "") { root.send(self.text); }
+                            border-color: composer-input.has-focus ? root.accent.with-alpha(0.4) : transparent;
+                            VerticalLayout {
+                                // Reply/edit quote lives INSIDE the input surface (GM style).
+                                if root.quote-armed : quote := Rectangle {
+                                    height: 42px;
+                                    HorizontalLayout {
+                                        padding-left: 16px; padding-right: 8px;
+                                        padding-top: 5px;
+                                        spacing: 6px;
+                                        quote-box := Rectangle {
+                                            horizontal-stretch: 1;
+                                            border-radius: 15px;
+                                            background: root.convo-c.with-alpha(0.92);
+                                            VerticalLayout {
+                                                padding-left: 12px; padding-right: 6px;
+                                                alignment: center;
+                                                spacing: 1px;
+                                                Text {
+                                                    text: root.edit-of != "" ? "Edit message" : root.reply-name;
+                                                    color: root.fg;
+                                                    font-family: Theme.font-ui; font-size: Theme.body-small; font-weight: 700;
+                                                    overflow: elide;
+                                                }
+                                                if root.reply-body != "" : Text {
+                                                    text: root.reply-body;
+                                                    color: root.fg.with-alpha(0.6);
+                                                    font-family: Theme.font-ui; font-size: Theme.caption;
+                                                    overflow: elide;
+                                                }
+                                            }
                                         }
-                                        edited => { root.composer-edited(self.text); }
+                                        quote-close := Rectangle {
+                                            y: (42px - 26px) / 2;
+                                            width: 26px; height: 26px; border-radius: 13px;
+                                            background: qc-t.pressed || qc-t.has-hover ? root.fg.with-alpha(0.12) : transparent;
+                                            IconLabel {
+                                                text: Icons.close; color: root.fg;
+                                                font-size: Theme.body-small;
+                                                width: 100%; height: 100%;
+                                            }
+                                            qc-t := TouchArea {
+                                                clicked => {
+                                                    root.reply-to = ""; root.edit-of = "";
+                                                    root.reply-name = ""; root.reply-body = "";
+                                                    composer-input.text = "";
+                                                }
+                                            }
+                                        }
                                     }
-                                    if composer-input.text == "" : Text {
-                                        text: "Message";
-                                        color: Theme.menu-text.with-alpha(0.45);
-                                        font-family: Theme.font-ui;
-                                        font-size: Theme.body;
-                                        vertical-alignment: center;
-                                        height: 100%;
+                                }
+                                HorizontalLayout {
+                                    padding-left: 6px; padding-right: 12px;
+                                    spacing: 2px;
+                                    // plus-circle attach toggle
+                                    attach-btn := Rectangle {
+                                        width: 34px;
+                                        IconLabel {
+                                            text: Icons.plusCircle; filled: false;
+                                            color: at-t.pressed || at-t.has-hover ? #c6c6c6 : #c6c6c6.with-alpha(0.85);
+                                            font-size: Theme.icon-large;
+                                            width: 100%; height: 100%;
+                                        }
+                                        at-t := TouchArea { clicked => { root.open-attach(); } }
+                                    }
+                                    Rectangle {
+                                        clip: true;
+                                        horizontal-stretch: 1;
+                                        composer-input := TextInput {
+                                            color: root.fg;
+                                            font-family: Theme.font-ui; font-size: Theme.body;
+                                            vertical-alignment: center;
+                                            height: 100%; width: 100%;
+                                            single-line: false;
+                                            wrap: word-wrap;
+                                            edited => { root.composer-edited(self.text); }
+                                        }
+                                        if composer-input.text == "" : Text {
+                                            text: "Message";
+                                            color: root.fg.with-alpha(0.45);
+                                            font-family: Theme.font-ui; font-size: Theme.body;
+                                            vertical-alignment: center;
+                                            height: 100%;
+                                        }
                                     }
                                 }
                             }
                         }
+                        // Empty composer → voice button; otherwise send.
                         send-btn := Rectangle {
-                            width: 42px; height: 42px;
-                            border-radius: self.height / 2;
-                            background: composer-input.text != ""
-                                ? Theme.accent.with-alpha(send-touch.pressed ? 1.0 : 0.9)
-                                : Theme.menu-text.with-alpha(0.08);
+                            property <bool> send-mode: composer-input.text != "";
+                            y: composer.height - self.height - 12px - root.bottom-inset;
+                            width: 42px; height: 42px; border-radius: 21px;
+                            background: root.accent.with-alpha(send-t.pressed ? 1.0 : 0.9);
                             IconLabel {
-                                text: Icons.send;
-                                color: composer-input.text != "" ? Theme.background : Theme.menu-text.with-alpha(0.4);
+                                text: send-btn.send-mode ? Icons.send : Icons.voiceMemo;
+                                color: Theme.background;
+                                font-size: Theme.icon-large;
                                 width: 100%; height: 100%;
                             }
-                            send-touch := TouchArea {
+                            send-t := TouchArea {
                                 clicked => {
-                                    if (composer-input.text != "") { root.send(composer-input.text); }
+                                    if (!send-btn.send-mode) { root.open-recorder(); return; }
+                                    if (root.edit-of != "") { root.send-edit(root.edit-of, composer-input.text); }
+                                    else if (root.reply-to != "") { root.send-reply(root.reply-to, composer-input.text); }
+                                    else { root.send(composer-input.text); }
+                                    root.clear-composer();
                                 }
                             }
                         }
@@ -298,5 +416,58 @@ export component ChatPage inherits Rectangle {
                 }
             }
         }
+    }
+
+    // Jump-to-latest: appears once there is a real gap below the viewport.
+    if root.from-end > 300px : jump-btn := Rectangle {
+        x: root.width - self.width - 14px;
+        y: root.height - self.height - composer.height - 10px;
+        width: 40px; height: 40px; border-radius: 20px;
+        background: Theme.popup-background;
+        border-width: 1px; border-color: Theme.popup-border;
+        IconLabel {
+            text: Icons.arrowDown;
+            color: root.fg;
+            width: 100%; height: 100%;
+        }
+        TouchArea { clicked => { root.scroll-to-end(); } }
+    }
+
+    // Header ⋮ menu
+    chat-menu := OverflowMenu {
+        width: 100%; height: 100%;
+        open <=> root.menu-open;
+        top-inset: 50px;
+        fg: root.fg;
+        model: [
+            { t: "Search", a: "search", icon: Icons.search, danger: false },
+            { t: "Threads", a: "threads", icon: Icons.thread, danger: false },
+            { t: "Pins", a: "pins", icon: Icons.pin, danger: false },
+            { t: "Chat theme", a: "chattheme", icon: Icons.palette, danger: false },
+            { t: "Settings", a: "roomsettings", icon: Icons.settings, danger: false },
+        ];
+        picked(a) => { root.nav-requested(a); }
+    }
+
+    // Long-press message sheet.
+    sheet := MessageSheet {
+        width: 100%; height: 100%;
+        fg: root.fg;
+        accent: root.accent;
+        emoji-rows: root.emoji-rows;
+        emoji-cat-rows: root.emoji-cat-rows;
+        act(action, event-id) => {
+            if (action == "reply") {
+                root.arm-reply(event-id, sheet.item.sender-name, sheet.item.body);
+            } else if (action == "edit") {
+                root.arm-edit(event-id, sheet.item.body);
+            } else if (action == "thread" || action == "openthread") {
+                root.open-thread(event-id);
+            } else {
+                root.menu-action(action, event-id);
+            }
+        }
+        react(id, key) => { root.react(id, key); }
+        emoji-search(q) => { root.emoji-search(q); }
     }
 }

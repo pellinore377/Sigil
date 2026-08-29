@@ -1,0 +1,591 @@
+// One timeline row — the port of BubbleDelegate.qml. Google-Messages shape:
+// own messages right in accent bubbles, others left with an avatar on group
+// ends; day chips; tiny state captions; reactions straddle the bubble's top
+// corner; the pin sits proud of it; own messages wear a mark line.
+//
+// Ported except: link-preview cards, GIF inline playback (Slint has no
+// animated image), code-part splitting (needs a parts field on TimelineRow),
+// and SigilText per-character effects — all listed in WIRING-chat.md.
+
+import { Theme } from "style.slint";
+import { Icons } from "icons.slint";
+import { IconLabel, Avatar } from "components.slint";
+import { Spinner } from "furniture.slint";
+import { TimelineRow, ReactionChip, PollOption } from "model.slint";
+
+export component Bubble inherits Rectangle {
+    in property <TimelineRow> item;
+    in property <color> fg: Theme.menu-text;
+    in property <color> accent: Theme.accent;
+    in property <bool> dm;
+    in property <bool> encrypted;
+    in property <color> convo-ground: Theme.menu-background;
+    in-out property <bool> details-open: false;
+
+    callback menu-requested(TimelineRow, length, length, length, length);
+    callback reply-requested(string, string, string);
+    callback open-image(TimelineRow);
+    callback play-video(TimelineRow);
+    callback open-document(TimelineRow);
+    callback open-audio(TimelineRow);
+    callback open-location(TimelineRow);
+    callback open-thread(string);
+    callback react(string, string);
+    callback voice-toggled(string);
+    callback voice-seeked(string, float);
+    callback vote(string, string);
+
+    property <length> bubble-max: root.width * 0.78;
+    property <bool> is-msg: item.kind != "state" && item.kind != "dayDivider" && !item.is-read-marker;
+    property <bool> media-kind: item.kind == "image" || item.kind == "sticker" || item.kind == "video";
+    property <bool> voice-kind: item.kind == "voice";
+    property <bool> file-kind: item.kind == "file" || item.kind == "audio";
+    property <bool> full-bleed: root.media-kind;
+    property <bool> caption-visible: root.media-kind && item.body != "" && item.body != item.media-filename;
+    // Opaque pre-blends over the popup surface — the QML mix() math verbatim.
+    property <color> bubble-fill: item.is-own ? root.accent.mix(Theme.popup-background, 0.42)
+        : item.highlighted ? root.accent.mix(Theme.popup-background, 0.24)
+        : root.fg.mix(Theme.popup-background, 0.22);
+    property <length> r-big: 16px;
+    property <length> r-small: 5px;
+    property <length> r-tl: (!item.is-own && !item.group-start) ? r-small : r-big;
+    property <length> r-bl: (!item.is-own && !item.group-end) ? r-small : r-big;
+    property <length> r-tr: (item.is-own && !item.group-start) ? r-small : r-big;
+    property <length> r-br: (item.is-own && !item.group-end) ? r-small : r-big;
+    property <length> reaction-lift: item.reactions.length > 0 ? 13px : 0px;
+    // Media box size, computed once from the event's own dimensions so nothing
+    // downstream has to read bubble.width (which would loop through preferred).
+    property <float> media-iw: item.thumb-w > 0px ? item.thumb-w / 1px : 400;
+    property <float> media-ih: item.thumb-h > 0px ? item.thumb-h / 1px : 300;
+    property <float> media-s: min(1.0, min(root.bubble-max / 1px / root.media-iw, 300.0 / root.media-ih));
+    property <length> media-w: max(120px, root.media-iw * root.media-s * 1px);
+    property <length> media-h: max(80px, root.media-ih * root.media-s * 1px);
+    property <length> pin-lift: item.pinned ? 4px : 0px;
+
+    height: col.preferred-height;
+    background: transparent;
+
+    col := VerticalLayout {
+        padding-left: 14px; padding-right: 14px;
+
+        // Session stamp (GM style)
+        if item.day-label != "" : Rectangle {
+            height: 30px;
+            Text {
+                text: item.day-label;
+                color: root.fg.with-alpha(0.55);
+                font-family: Theme.font-ui; font-size: Theme.caption; font-weight: 700;
+                horizontal-alignment: center; vertical-alignment: center;
+                width: 100%; height: 100%;
+            }
+        }
+
+        // Unread divider
+        if item.is-read-marker : Rectangle {
+            height: 20px;
+            Rectangle {
+                y: 9.5px; width: 100%; height: 1px;
+                background: Theme.urgent.with-alpha(0.5);
+            }
+            unread-pill := Rectangle {
+                x: (root.width - 28px - self.width) / 2;
+                y: 2px;
+                width: unread-text.preferred-width + 14px; height: 16px;
+                border-radius: 8px;
+                background: Theme.urgent;
+                unread-text := Text {
+                    text: "Unread";
+                    color: Theme.background;
+                    font-family: Theme.font-ui; font-size: 9px; font-weight: 700;
+                    horizontal-alignment: center; vertical-alignment: center;
+                    width: 100%; height: 100%;
+                }
+            }
+        }
+
+        // State caption
+        if item.kind == "state" && item.body != "" : Rectangle {
+            height: state-text.preferred-height + 10px;
+            state-text := Text {
+                y: 10px;
+                width: 100%;
+                text: item.body;
+                color: root.fg.with-alpha(0.42);
+                font-family: Theme.font-ui; font-size: Theme.caption;
+                horizontal-alignment: center;
+                wrap: word-wrap;
+            }
+        }
+
+        // Sender header: avatar beside the name, group starts in group rooms only.
+        if root.is-msg && item.show-header && !root.dm && !item.is-own : Rectangle {
+            height: 28px;
+            HorizontalLayout {
+                alignment: start;
+                padding-bottom: 2px;
+                spacing: 7px;
+                Avatar {
+                    y: 4px;
+                    size: 20px;
+                    source: item.avatar;
+                    initials: item.initials;
+                    tint: item.tint;
+                }
+                Text {
+                    text: item.sender-name;
+                    color: root.fg.with-alpha(0.6);
+                    font-family: Theme.font-ui; font-size: Theme.caption; font-weight: 700;
+                    vertical-alignment: center;
+                }
+            }
+        }
+
+        // Bubble row
+        if root.is-msg : brow := Rectangle {
+            height: bubble.height + (item.group-start ? 10px : 3px) + max(root.reaction-lift, root.pin-lift);
+
+            bubble := Rectangle {
+                x: item.is-own ? brow.width - self.width : 0px;
+                y: brow.height - self.height;
+                width: min(root.bubble-max, b-inner.preferred-width + (root.full-bleed ? 0px : 20px));
+                height: b-inner.preferred-height + (root.full-bleed ? 0px : 20px);
+                background: root.bubble-fill;
+                border-top-left-radius: root.r-tl;
+                border-bottom-left-radius: root.r-bl;
+                border-top-right-radius: root.r-tr;
+                border-bottom-right-radius: root.r-br;
+                clip: true;
+
+                b-inner := VerticalLayout {
+                    x: root.full-bleed ? 0px : 10px;
+                    y: root.full-bleed ? 0px : 10px;
+                    width: bubble.width - (root.full-bleed ? 0px : 20px);
+                    spacing: 4px;
+
+                    // Reply quote
+                    if item.has-reply : reply-strip := Rectangle {
+                        height: 36px;
+                        border-radius: 10px;
+                        background: Theme.background.with-alpha(0.35);
+                        VerticalLayout {
+                            padding-left: 10px; padding-right: 8px;
+                            alignment: center;
+                            Text {
+                                text: item.reply.sender-name;
+                                color: root.fg.with-alpha(0.75);
+                                font-family: Theme.font-ui; font-size: 10px; font-weight: 700;
+                            }
+                            Text {
+                                text: item.reply.kind == "image" ? "📷 Photo" : item.reply.body;
+                                color: root.fg.with-alpha(0.55);
+                                font-family: Theme.font-ui; font-size: 10px;
+                                overflow: elide;
+                            }
+                        }
+                    }
+
+                    // Image / sticker / video poster
+                    if root.media-kind : media-box := Rectangle {
+                        width: root.media-w;
+                        height: root.media-h;
+                        background: root.fg.with-alpha(0.08);
+                        if item.thumb.width > 0 : Image {
+                            source: item.thumb;
+                            width: 100%; height: 100%;
+                            image-fit: cover;
+                        }
+                        if item.thumb.width == 0 : Spinner {
+                            x: (media-box.width - self.width) / 2;
+                            y: (media-box.height - self.height) / 2;
+                            spin-color: root.fg.with-alpha(0.5);
+                        }
+                        if item.kind == "video" : Rectangle {
+                            x: (media-box.width - 48px) / 2;
+                            y: (media-box.height - 48px) / 2;
+                            width: 48px; height: 48px; border-radius: 24px;
+                            background: #000000.with-alpha(0.55);
+                            IconLabel { text: Icons.play; color: #ffffff; font-size: Theme.icon-large; width: 100%; height: 100%; }
+                        }
+                        TouchArea {
+                            clicked => {
+                                if (item.kind == "video") { root.play-video(item); }
+                                else { root.open-image(item); }
+                            }
+                        }
+                    }
+
+                    // Voice note: play disc + waveform + countdown
+                    if root.voice-kind : voice-row := Rectangle {
+                        height: 40px;
+                        width: min(root.bubble-max - 20px, 240px);
+                        HorizontalLayout {
+                            spacing: 8px;
+                            vplay := Rectangle {
+                                y: (40px - 34px) / 2;
+                                width: 34px; height: 34px; border-radius: 17px;
+                                background: #f2f2f2;
+                                IconLabel {
+                                    text: item.voice-playing ? Icons.pause : Icons.play;
+                                    color: #1a1a1a;
+                                    width: 100%; height: 100%;
+                                }
+                                TouchArea { clicked => { root.voice-toggled(item.event-id); } }
+                            }
+                            vwave := Rectangle {
+                                horizontal-stretch: 1;
+                                height: 40px;
+                                HorizontalLayout {
+                                    spacing: 2px;
+                                    alignment: start;
+                                    for amp[i] in item.waveform : Rectangle {
+                                        y: (40px - self.height) / 2;
+                                        width: 3px;
+                                        height: max(3px, 22px * min(1.0, amp));
+                                        border-radius: 1.5px;
+                                        background: (i / max(1, item.waveform.length)) <= item.voice-frac
+                                            ? root.fg.with-alpha(0.95) : root.fg.with-alpha(0.35);
+                                    }
+                                }
+                                TouchArea {
+                                    clicked => { root.voice-seeked(item.event-id, self.pressed-x / vwave.width); }
+                                }
+                            }
+                            Text {
+                                text: item.duration;
+                                color: root.fg.with-alpha(0.8);
+                                font-family: Theme.font-ui; font-size: Theme.caption;
+                                vertical-alignment: center;
+                            }
+                        }
+                    }
+
+                    // File / music chip
+                    if root.file-kind && !root.voice-kind : file-row := Rectangle {
+                        height: 42px;
+                        HorizontalLayout {
+                            spacing: 8px;
+                            alignment: start;
+                            Rectangle {
+                                y: (42px - 34px) / 2;
+                                width: 34px; height: 34px; border-radius: 17px;
+                                background: root.accent.with-alpha(0.25);
+                                IconLabel {
+                                    text: item.kind == "audio" ? Icons.music : Icons.file;
+                                    color: root.fg;
+                                    width: 100%; height: 100%;
+                                }
+                            }
+                            VerticalLayout {
+                                alignment: center;
+                                Text {
+                                    text: item.media-filename != "" ? item.media-filename : item.body;
+                                    color: root.fg;
+                                    font-family: Theme.font-ui; font-size: Theme.body-small;
+                                    overflow: elide;
+                                }
+                                if item.media-size != "" : Text {
+                                    text: item.media-size;
+                                    color: root.fg.with-alpha(0.5);
+                                    font-family: Theme.font-ui; font-size: Theme.caption;
+                                }
+                            }
+                        }
+                        TouchArea {
+                            clicked => {
+                                if (item.kind == "audio") { root.open-audio(item); }
+                                else { root.open-document(item); }
+                            }
+                        }
+                    }
+
+                    // Poll (MSC3381)
+                    if item.kind == "poll" : poll-col := VerticalLayout {
+                        spacing: 6px;
+                        Text {
+                            text: item.poll-question;
+                            color: root.fg;
+                            font-family: Theme.font-ui; font-size: Theme.body; font-weight: 700;
+                            wrap: word-wrap;
+                        }
+                        for opt in item.poll-options : opt-row := Rectangle {
+                            height: 34px;
+                            border-radius: 10px;
+                            background: root.fg.with-alpha(opt.mine ? 0.16 : 0.08);
+                            border-width: opt.winner ? 1px : 0px;
+                            border-color: root.accent.with-alpha(0.6);
+                            // votes bar behind the label
+                            Rectangle {
+                                width: item.poll-total > 0 ? opt-row.width * opt.votes / item.poll-total : 0px;
+                                height: 100%;
+                                border-radius: 10px;
+                                background: root.accent.with-alpha(0.18);
+                            }
+                            HorizontalLayout {
+                                padding-left: 10px; padding-right: 10px;
+                                Text {
+                                    text: opt.text;
+                                    color: root.fg;
+                                    font-family: Theme.font-ui; font-size: Theme.body-small;
+                                    vertical-alignment: center;
+                                    overflow: elide;
+                                    horizontal-stretch: 1;
+                                }
+                                Text {
+                                    text: "\{opt.votes}";
+                                    color: root.fg.with-alpha(0.6);
+                                    font-family: Theme.font-ui; font-size: Theme.caption;
+                                    vertical-alignment: center;
+                                }
+                            }
+                            TouchArea {
+                                enabled: !item.poll-ended;
+                                clicked => { root.vote(item.event-id, opt.id); }
+                            }
+                        }
+                        Text {
+                            text: item.poll-ended
+                                ? "Final result · \{item.poll-total} votes"
+                                : "\{item.poll-total} votes";
+                            color: root.fg.with-alpha(0.5);
+                            font-family: Theme.font-ui; font-size: Theme.caption;
+                        }
+                    }
+
+                    // Contact card
+                    if item.kind == "contact" : contact-row := Rectangle {
+                        height: 48px;
+                        HorizontalLayout {
+                            spacing: 10px;
+                            alignment: start;
+                            Avatar {
+                                y: 4px;
+                                size: 40px;
+                                initials: item.initials;
+                                tint: item.tint;
+                            }
+                            VerticalLayout {
+                                alignment: center;
+                                Text {
+                                    text: item.contact-name;
+                                    color: root.fg;
+                                    font-family: Theme.font-ui; font-size: Theme.body; font-weight: 700;
+                                    overflow: elide;
+                                }
+                                Text {
+                                    text: item.contact-id;
+                                    color: root.fg.with-alpha(0.55);
+                                    font-family: Theme.font-ui; font-size: Theme.caption;
+                                    overflow: elide;
+                                }
+                            }
+                        }
+                    }
+
+                    // Location card: static placeholder — Slint has no map widget.
+                    if item.kind == "location" : loc-box := Rectangle {
+                        width: root.bubble-max - 20px;
+                        height: (root.bubble-max - 20px) * 0.62;
+                        border-radius: 10px;
+                        background: root.fg.with-alpha(0.10);
+                        VerticalLayout {
+                            alignment: center;
+                            spacing: 6px;
+                            IconLabel {
+                                text: item.location-live ? Icons.liveLocation : Icons.pinDrop;
+                                color: item.location-live && !item.location-ended ? root.accent : root.fg.with-alpha(0.7);
+                                font-size: 34px;
+                                horizontal-alignment: center;
+                            }
+                            Text {
+                                text: item.location-ended ? "Live location ended"
+                                    : item.location-live ? "Live location"
+                                    : (item.location-label != "" ? item.location-label : "Location");
+                                color: root.fg.with-alpha(0.75);
+                                font-family: Theme.font-ui; font-size: Theme.body-small;
+                                horizontal-alignment: center;
+                                overflow: elide;
+                            }
+                        }
+                        TouchArea { clicked => { root.open-location(item); } }
+                    }
+
+                    // Body text / caption / utd / redacted
+                    if (item.kind == "text" || item.kind == "notice" || item.kind == "emote"
+                        || item.kind == "utd" || item.kind == "redacted" || item.kind == "unsupported"
+                        || root.caption-visible) : body-text := Text {
+                        text: item.kind == "utd" ? "🔒 Waiting for keys…"
+                            : item.kind == "redacted" ? "Message deleted"
+                            : item.kind == "unsupported" ? "Unsupported message"
+                            : item.body;
+                        color: item.kind == "utd" || item.kind == "redacted"
+                            ? root.fg.with-alpha(0.55) : root.fg;
+                        font-family: Theme.font-ui; font-size: Theme.body;
+                        font-italic: item.kind == "emote" || item.kind == "redacted";
+                        wrap: word-wrap;
+                        // Captions under media carry their own padding; width comes
+                        // from the media's computed size, never bubble.width (loop).
+                        width: root.full-bleed ? root.media-w : min(root.bubble-max - 20px, self.preferred-width);
+                    }
+
+                    // Thread summary chip
+                    if item.thread-count > 0 : thread-chip := Rectangle {
+                        height: 34px;
+                        border-radius: 10px;
+                        background: Theme.background.with-alpha(0.35);
+                        HorizontalLayout {
+                            padding-left: 9px; padding-right: 9px;
+                            spacing: 6px;
+                            IconLabel {
+                                text: Icons.thread; filled: false;
+                                color: root.fg.with-alpha(0.75);
+                                font-size: Theme.caption;
+                                vertical-alignment: center;
+                            }
+                            Text {
+                                text: item.thread-count == 1 ? "1 reply" : "\{item.thread-count} replies";
+                                color: root.fg.with-alpha(0.75);
+                                font-family: Theme.font-ui; font-size: Theme.caption; font-weight: 700;
+                                vertical-alignment: center;
+                                horizontal-stretch: 1;
+                            }
+                            IconLabel {
+                                text: Icons.chevronRight;
+                                color: root.fg.with-alpha(0.5);
+                                font-size: Theme.caption;
+                                vertical-alignment: center;
+                            }
+                        }
+                        TouchArea { clicked => { root.open-thread(item.event-id); } }
+                    }
+                }
+
+                // Tap = details; long-press = menu (synthesised: Slint has no onLongPressed).
+                press-area := TouchArea {
+                    clicked => {
+                        if (!long-timer.fired) { root.details-open = !root.details-open; }
+                        long-timer.fired = false;
+                    }
+                    pointer-event(ev) => {
+                        if (ev.kind == PointerEventKind.down) {
+                            long-timer.fired = false;
+                            long-timer.running = true;
+                        } else if (ev.kind == PointerEventKind.up || ev.kind == PointerEventKind.cancel) {
+                            long-timer.running = false;
+                        }
+                    }
+                    moved => {
+                        if (abs((self.mouse-x - self.pressed-x) / 1px) > 12 || abs((self.mouse-y - self.pressed-y) / 1px) > 12) {
+                            long-timer.running = false;
+                        }
+                    }
+                }
+                long-timer := Timer {
+                    property <bool> fired: false;
+                    interval: 500ms;
+                    running: false;
+                    triggered => {
+                        self.running = false;
+                        self.fired = true;
+                        root.menu-requested(item,
+                            bubble.absolute-position.x, bubble.absolute-position.y,
+                            bubble.width, bubble.height);
+                    }
+                }
+            }
+
+            // Reactions straddle the bubble's inner top corner.
+            if item.reactions.length > 0 : reaction-row := HorizontalLayout {
+                x: item.is-own ? bubble.x - 9px
+                              : bubble.x + bubble.width + 9px - self.preferred-width;
+                y: bubble.y - self.preferred-height / 2;
+                spacing: 2px;
+                for chip in item.reactions : r-chip := HorizontalLayout {
+                    spacing: 1px;
+                    Text {
+                        text: chip.key;
+                        color: root.fg;
+                        font-size: 20px;
+                    }
+                    if chip.count > 1 : Text {
+                        text: "\{chip.count}";
+                        color: chip.mine ? root.accent : root.fg.with-alpha(0.65);
+                        font-family: Theme.font-ui; font-size: 11px;
+                        font-weight: chip.mine ? 700 : 400;
+                        vertical-alignment: center;
+                    }
+                    TouchArea { clicked => { root.react(item.event-id, chip.key); } }
+                }
+            }
+
+            // Pin marker, proud of the corner away from the sender's side.
+            if item.pinned : pin-mark := Rectangle {
+                x: item.is-own ? bubble.x + bubble.width - 22px : bubble.x + 2px;
+                y: bubble.y - 4px;
+                width: 20px; height: 20px; border-radius: 10px;
+                background: root.accent;
+                border-width: 1.5px;
+                border-color: Theme.popup-background;
+                IconLabel {
+                    text: Icons.pin;
+                    color: Theme.background;
+                    font-size: Theme.caption;
+                    transform-rotation: item.is-own ? 35deg : -35deg;
+                    width: 100%; height: 100%;
+                }
+            }
+        }
+
+        // Details / mark line: sending dot, failure mark, sent tick, read count.
+        if root.is-msg && item.is-own && (item.owns-receipt || item.send-state != "sent" || root.details-open) : detail-row := Rectangle {
+            height: 17px;
+            HorizontalLayout {
+                alignment: end;
+                spacing: 5px;
+                padding-right: 2px;
+                if root.details-open : Text {
+                    text: item.edited ? "\{item.stamp} · Edited" : item.stamp;
+                    color: item.send-state == "failed" ? Theme.urgent : root.fg.with-alpha(0.5);
+                    font-family: Theme.font-ui; font-size: 10px;
+                    vertical-alignment: center;
+                }
+                if root.details-open : IconLabel {
+                    text: root.encrypted ? Icons.lock : Icons.lockOff;
+                    filled: false;
+                    color: item.send-state == "failed" ? Theme.urgent : root.fg.with-alpha(0.5);
+                    font-size: 10px;
+                    vertical-alignment: center;
+                }
+                if item.send-state == "sending" : IconLabel {
+                    text: Icons.statusDot; color: root.fg.with-alpha(0.55);
+                    font-size: 13px; vertical-alignment: center;
+                }
+                if item.send-state == "failed" : IconLabel {
+                    text: Icons.errorMark; color: Theme.urgent;
+                    font-size: 13px; vertical-alignment: center;
+                }
+                if item.send-state == "sent" && item.receipt-count == 0 : IconLabel {
+                    text: Icons.checkCircle; color: root.accent;
+                    font-size: 13px; vertical-alignment: center;
+                }
+                if item.send-state == "sent" && item.receipt-count > 0 : Rectangle {
+                    width: read-n.preferred-width + 15px;
+                    height: 13px;
+                    HorizontalLayout {
+                        spacing: 2px;
+                        IconLabel {
+                            text: Icons.eye; filled: false;
+                            color: root.accent; font-size: 12px;
+                            vertical-alignment: center;
+                        }
+                        read-n := Text {
+                            text: "\{item.receipt-count}";
+                            color: root.accent;
+                            font-family: Theme.font-ui; font-size: 10px; font-weight: 700;
+                            vertical-alignment: center;
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

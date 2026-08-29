@@ -266,7 +266,6 @@ fn wire_callbacks(win: &AppWindow, req: Requester) {
         let req = req.clone();
         move || req.fire("logout", json!({"wipe": true}))
     });
-    win.on_new_chat(|| tracing::info!("new chat: not built yet"));
 }
 
 fn handle_event(ui: &mut UiState, v: &Value) {
