@@ -78,8 +78,11 @@ export component SearchPage inherits Rectangle {
         }
 
         content := Flickable {
+            vertical-stretch: 1;
+            viewport-height: content-l.preferred-height + 20px;
             content-l := VerticalLayout {
-                vertical-stretch: 1;
+                width: content.width;
+                spacing: 4px;
 
                 // Text results while typing.
                 for r in (root.searching ? root.results : []) : rrow := Rectangle {
@@ -137,11 +140,14 @@ export component SearchPage inherits Rectangle {
                     vertical-alignment: center;
                 }
                 if !root.searching : img-flow := Rectangle {
+                    // SearchPage.qml: a centred Flow, columns following the width.
+                    property <int> cols: max(1, floor((self.width - 28px) / 90px));
+                    property <length> x0: (self.width - self.cols * 90px) / 2;
                     height: root.images.length == 0 ? 0px
-                        : (floor((root.images.length - 1) / 4) + 1) * 90px;
+                        : (floor((root.images.length - 1) / self.cols) + 1) * 90px;
                     for img[i] in root.images : cell := Rectangle {
-                        x: 14px + mod(i, 4) * 90px;
-                        y: floor(i / 4) * 90px;
+                        x: img-flow.x0 + mod(i, img-flow.cols) * 90px;
+                        y: floor(i / img-flow.cols) * 90px;
                         width: 84px; height: 84px;
                         border-radius: 10px;
                         clip: true;

@@ -103,6 +103,10 @@ export component ImageViewer inherits Rectangle {
         height: root.page-h;
         clip: true;
 
+        // Tap outside the picture closes the viewer (ImageViewer.qml:286).
+        // Behind `media`, so its own handlers win over the letterbox.
+        TouchArea { clicked => { root.closed(); } }
+
         media := Rectangle {
             x: (stage.width - root.fit-w * root.zoom) / 2 + root.ox + root.drag-dx;
             y: (stage.height - root.fit-h * root.zoom) / 2 + root.oy;
@@ -226,28 +230,32 @@ export component ImageViewer inherits Rectangle {
                 Text { text: root.it.is-own ? "You" : root.it.sender-name; color: root.fg; font-family: Theme.font-ui; font-size: Theme.subtitle; font-weight: 700; overflow: elide; }
                 Text { text: root.it.ts-label; color: root.fg.with-alpha(0.55); font-family: Theme.font-ui; font-size: Theme.caption; }
             }
+            // 22px PanelActionButtons at spacing 2 (ImageViewer.qml:508).
             Rectangle {
-                width: 40px;
+                width: 24px;
                 ActionButton {
                     y: (56px - self.height) / 2;
+                    width: 22px; height: 22px;
                     icon: Icons.download; filled: false;
                     foreground: root.fg;
                     clicked => { root.download-requested(); }
                 }
             }
             if root.it.can-redact : Rectangle {
-                width: 40px;
+                width: 24px;
                 ActionButton {
                     y: (56px - self.height) / 2;
+                    width: 22px; height: 22px;
                     icon: Icons.trash; filled: false;
                     foreground: root.fg;
                     clicked => { root.delete-requested(); }
                 }
             }
             Rectangle {
-                width: 40px;
+                width: 24px;
                 ActionButton {
                     y: (56px - self.height) / 2;
+                    width: 22px; height: 22px;
                     icon: Icons.moreVertical; filled: false;
                     foreground: root.fg;
                     clicked => { root.more-open = !root.more-open; }
@@ -342,7 +350,7 @@ export component ImageViewer inherits Rectangle {
         TouchArea { clicked => { root.more-open = false; root.fwd-open = false; } }
         if root.more-open : more-card := Rectangle {
             x: root.width - self.width - 10px;
-            y: 58px;
+            y: 42px;
             width: 160px;
             height: 72px;
             border-radius: 12px;
@@ -374,7 +382,7 @@ export component ImageViewer inherits Rectangle {
         }
         if root.fwd-open : fwd-card := Rectangle {
             x: root.width - self.width - 10px;
-            y: 58px;
+            y: 42px;
             width: 240px;
             height: min(330px, fwd-col.preferred-height + 12px);
             border-radius: 12px;
@@ -384,6 +392,7 @@ export component ImageViewer inherits Rectangle {
             fwd-col := VerticalLayout {
                 padding: 6px;
                 Text { text: "Forward to"; color: root.fg.with-alpha(0.6); font-family: Theme.font-ui; font-size: Theme.caption; font-weight: 700; }
+                Rectangle { height: 4px; }
                 for name[i] in root.forward-names : fwd-item := Rectangle {
                     height: 30px; border-radius: 8px;
                     background: fi-t.pressed || fi-t.has-hover ? root.fg.with-alpha(0.1) : transparent;

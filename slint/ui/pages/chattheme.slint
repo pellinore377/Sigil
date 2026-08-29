@@ -139,7 +139,9 @@ export component ChatThemePage inherits Rectangle {
                         width: 100%; height: 100%;
                         image-fit: cover;
                     }
-                    if root.pending-wallpaper != "" && root.gradients.length == 9 && root.wallpaper-img.width == 0 : prev-grad := Rectangle {
+                    // Gradient ONLY for a grad:* wallpaper (grad-sel < 0 for a
+                    // photo): an undecoded photo shows the tint, not gradient 0.
+                    if root.grad-sel >= 0 && root.pending-wallpaper != "" && root.gradients.length == 9 && root.wallpaper-img.width == 0 : prev-grad := Rectangle {
                         width: 100%; height: 100%;
                         // Rust passes the selected gradient resolved as pair 0..8;
                         // display uses the pending index handed down in grad-sel.
@@ -193,7 +195,10 @@ export component ChatThemePage inherits Rectangle {
             // Tinted lower section
             section := Rectangle {
                 height: sec-col.preferred-height + 32px;
-                border-radius: 20px;
+                border-top-left-radius: 20px;
+                border-top-right-radius: 20px;
+                border-bottom-left-radius: 22px;
+                border-bottom-right-radius: 22px;
                 background: root.tint-bg(root.pend-accent, root.themed ? 0.35 : 0.06);
                 sec-col := VerticalLayout {
                     x: 16px; y: 16px;
@@ -222,7 +227,17 @@ export component ChatThemePage inherits Rectangle {
                                 border-width: 2px;
                                 border-color: root.custom-sel ? root.fg : cs-t.pressed ? root.fg.with-alpha(0.45) : transparent;
                             }
-                            cs-t := TouchArea { clicked => { root.picking = true; } }
+                            cs-t := TouchArea { clicked => {
+                                // Re-seed the sliders from the live accent when
+                                // re-opening on the custom colour (QML:357).
+                                if (root.custom-sel) {
+                                    root.pick-h = root.pend-accent.to-hsv().hue / 360.0;
+                                    root.pick-s = root.pend-accent.to-hsv().saturation;
+                                    root.pick-v = root.pend-accent.to-hsv().value;
+                                    root.pick-changed(root.pick-h, root.pick-s, root.pick-v);
+                                }
+                                root.picking = true;
+                            } }
                         }
                     }
                     Rectangle { height: 4px; }
@@ -259,7 +274,6 @@ export component ChatThemePage inherits Rectangle {
                     }
                 }
             }
-            Rectangle { height: 10px; }
         }
     }
 
