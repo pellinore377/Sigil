@@ -71,6 +71,7 @@ export component AddPeoplePage inherits Rectangle {
                         spacing: 8px;
                         IconLabel {
                             text: Icons.search;
+                            filled: false;   // QML omits filled → outlined family
                             color: root.fg.with-alpha(0.5);
                             vertical-alignment: center;
                         }
@@ -85,10 +86,13 @@ export component AddPeoplePage inherits Rectangle {
                                 single-line: true;
                                 edited => {
                                     root.note = "";
-                                    if (self.text != "") {
+                                    // AddPeoplePage.qml: the directory query needs
+                                    // two characters; shorter text clears results.
+                                    if (self.text.character-count >= 2) {
                                         debounce.running = false;
                                         debounce.running = true;
                                     } else {
+                                        debounce.running = false;
                                         root.search("");
                                     }
                                 }
@@ -107,8 +111,9 @@ export component AddPeoplePage inherits Rectangle {
         }
 
         if root.note != "" : Rectangle {
-            height: note-text.preferred-height + 8px;
+            height: note-text.preferred-height + 4px;
             note-text := Text {
+                y: 4px;   // QML: topPadding 4, nothing below
                 text: root.note;
                 color: Theme.accent;
                 font-family: Theme.font-ui; font-size: Theme.caption;
@@ -138,6 +143,7 @@ export component AddPeoplePage inherits Rectangle {
                             source: user.avatar;
                             initials: user.initials;
                             tint: user.tint;
+                            status: user.presence;
                         }
                     }
                     VerticalLayout {

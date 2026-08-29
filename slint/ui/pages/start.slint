@@ -115,7 +115,7 @@ export component StartPage inherits Rectangle {
                     border-radius: 12px;
                     background: qa1-t.pressed || qa1-t.has-hover ? root.fg.with-alpha(0.05) : transparent;
                 }
-                IconLabel { x: 22px; height: 100%; text: Icons.plus; color: root.fg.with-alpha(0.7); }
+                IconLabel { x: 22px; height: 100%; text: Icons.plus; filled: false; color: root.fg.with-alpha(0.7); }
                 Text {
                     x: 56px; height: 100%;
                     text: "New room";
@@ -133,7 +133,7 @@ export component StartPage inherits Rectangle {
                     border-radius: 12px;
                     background: qa2-t.pressed || qa2-t.has-hover ? root.fg.with-alpha(0.05) : transparent;
                 }
-                IconLabel { x: 22px; height: 100%; text: Icons.space; color: root.fg.with-alpha(0.7); }
+                IconLabel { x: 22px; height: 100%; text: Icons.space; filled: false; color: root.fg.with-alpha(0.7); }
                 Text {
                     x: 56px; height: 100%;
                     text: "New space";
@@ -151,13 +151,8 @@ export component StartPage inherits Rectangle {
                     border-radius: 12px;
                     background: qa3-t.pressed || qa3-t.has-hover ? root.fg.with-alpha(0.05) : transparent;
                 }
-                Text {
-                    x: 22px; height: 100%;
-                    text: "#";
-                    color: root.fg.with-alpha(0.7);
-                    font-family: Theme.font-ui; font-size: Theme.icon-size;
-                    vertical-alignment: center;
-                }
+                // The QML draws "#" through IconLabel — the icon font, not UI.
+                IconLabel { x: 22px; height: 100%; text: "#"; filled: false; color: root.fg.with-alpha(0.7); }
                 Text {
                     x: 56px; height: 100%;
                     text: "Join room by address";
@@ -169,6 +164,8 @@ export component StartPage inherits Rectangle {
             }
             if root.mode != "" : Rectangle {
                 height: 52px;
+                // Qt.callLater(extra.forceActiveFocus): focus rides instantiation.
+                init => { extra-input.focus(); }
                 HorizontalLayout {
                     padding-left: 14px; padding-right: 14px;
                     padding-top: 4px; padding-bottom: 8px;
@@ -191,7 +188,7 @@ export component StartPage inherits Rectangle {
                                     height: 100%; width: 100%;
                                     single-line: true;
                                     accepted => {
-                                        if (self.text != "" && !root.busy) { root.submit-extra(root.mode, self.text); }
+                                        if (!root.busy) { root.submit-extra(root.mode, self.text); }
                                     }
                                 }
                                 if extra-input.text == "" : Text {
@@ -207,8 +204,10 @@ export component StartPage inherits Rectangle {
                             }
                             SButton {
                                 y: (extra-well.height - self.height) / 2;
-                                text: root.mode == "join" ? "Join" : "Create";
-                                enabled: !root.busy && extra-input.text != "";
+                                // StartChatPage.qml: "Create" only in create mode —
+                                // the space quick-action submits as "Join" too.
+                                text: root.mode == "create" ? "Create" : "Join";
+                                enabled: !root.busy;
                                 clicked => { root.submit-extra(root.mode, extra-input.text); }
                             }
                         }
@@ -217,6 +216,7 @@ export component StartPage inherits Rectangle {
             }
         }
 
+        if root.error != "" : Rectangle { height: 4px; }
         if root.error != "" : Text {
             text: root.error;
             color: Theme.urgent;
@@ -225,8 +225,11 @@ export component StartPage inherits Rectangle {
             horizontal-alignment: center;
         }
 
+        Rectangle { height: 10px; }
         Text {
-            text: search-input.text != "" ? "Results" : "Suggestions";
+            // The caption flips at two characters, with the list (QML trims;
+            // Slint has no trim, so whitespace-only text still flips it).
+            text: search-input.text.character-count >= 2 ? "Results" : "Suggestions";
             color: root.fg.with-alpha(0.55);
             font-family: Theme.font-ui;
             font-size: Theme.caption;
@@ -256,6 +259,7 @@ export component StartPage inherits Rectangle {
                             source: person.avatar;
                             initials: person.initials;
                             tint: person.tint;
+                            status: person.presence;
                         }
                     }
                     VerticalLayout {

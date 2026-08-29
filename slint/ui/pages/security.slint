@@ -26,8 +26,10 @@ export component SecurityPage inherits Rectangle {
     callback closed;
     callback save(string, string, bool);   // joinRule, historyVisibility, encrypted
 
-    property <bool> dirty: root.join-rule-edit != root.model.join-rule
-        || root.history-edit != root.model.history-visibility
+    // SecurityPage.qml: Save stays disabled until load() has seeded the edits —
+    // comparing empty edits against the model would light Save on first paint.
+    property <bool> dirty: (root.join-rule-edit != "" && root.join-rule-edit != root.model.join-rule)
+        || (root.history-edit != "" && root.history-edit != root.model.history-visibility)
         || (root.want-encrypted && !root.model.encrypted);
     background: transparent;
 

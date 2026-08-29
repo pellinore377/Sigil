@@ -404,8 +404,8 @@ export component ChatPage inherits Rectangle {
                                         IconLabel {
                                             text: root.attach-open ? Icons.cancel : Icons.plusCircle;
                                             filled: root.attach-open;
-                                            rotation-angle: root.attach-open ? 90deg : 0deg;
-                                            animate rotation-angle { duration: 180ms; easing: ease-in-out; }
+                                            transform-rotation: root.attach-open ? 90deg : 0deg;
+                                            animate transform-rotation { duration: 180ms; easing: ease-in-out; }
                                             color: at-t.pressed || at-t.has-hover ? #c6c6c6 : #c6c6c6.with-alpha(0.85);
                                             font-size: Theme.icon-large;
                                             width: 100%; height: 100%;

@@ -67,7 +67,7 @@ export component ThreadsPage inherits Rectangle {
 
         ground := Rectangle {
             vertical-stretch: 1;
-            background: Theme.menu-background.darker(0.26).mix(root.accent, 0.82);
+            background: Theme.menu-background.darker(0.35).mix(root.accent, 0.82);
             border-top-left-radius: 24px;
             border-top-right-radius: 24px;
             clip: true;
@@ -106,7 +106,7 @@ export component ThreadsPage inherits Rectangle {
                 y: 6px;
                 width: 100%; height: ground.height - 6px;
                 for thread in root.threads : trow := Rectangle {
-                    height: 72px;
+                    height: 64px;
                     Rectangle {
                         x: 8px; width: trow.width - 16px;
                         y: 4px; height: trow.height - 8px;

@@ -111,7 +111,7 @@ export component PermissionsPage inherits Rectangle {
         width: note-text.preferred-width + 28px;
         height: 34px;
         border-radius: 17px;
-        background: Theme.popup-background.with-alpha(0.98);
+        background: Theme.popup-background;
         opacity: root.note != "" ? 1 : 0;
         visible: self.opacity > 0.01;
         animate opacity { duration: 150ms; }

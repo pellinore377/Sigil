@@ -379,7 +379,7 @@ fn rebuild_start_suggestions(ui: &mut UiState, win: &AppWindow) {
     let rows: Vec<_> = ui.rooms_json.iter()
         .filter(|r| b(r, "isDm"))
         .take(12)
-        .map(|r| project::user_row(&json!({"userId": s(r, "dmUserId"), "displayName": s(r, "name")}), false))
+        .map(|r| project::user_row(&json!({"userId": s(r, "dmUserId"), "displayName": s(r, "name")}), false, &ui.presence_by_user))
         .collect();
     win.set_st_people(ModelRc::new(VecModel::from(rows)));
 }
@@ -1085,10 +1085,10 @@ fn dir_search(ui: &mut UiState, win: &AppWindow, which: &str, q: &str) {
             return; // superseded
         }
         if start { win.set_st_busy(true); }
-        call_ui(&ui.req.clone(), "users.search", json!({"query": q, "limit": 12}), move |_ui, win, out| {
+        call_ui(&ui.req.clone(), "users.search", json!({"query": q, "limit": 12}), move |ui, win, out| {
             if start { win.set_st_busy(false); }
             if let Ok(v) = out {
-                let rows: Vec<_> = v["users"].as_array().map(|a| a.iter().map(|u| project::user_row(u, false)).collect()).unwrap_or_default();
+                let rows: Vec<_> = v["users"].as_array().map(|a| a.iter().map(|u| project::user_row(u, false, &ui.presence_by_user)).collect()).unwrap_or_default();
                 let model = ModelRc::new(VecModel::from(rows));
                 if start { win.set_st_people(model); } else { win.set_ap_results(model); }
             }

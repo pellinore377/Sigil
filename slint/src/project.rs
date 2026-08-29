@@ -46,22 +46,25 @@ pub fn member_row(v: &Value, presence: &Value) -> MemberRow {
         role: if level >= 100 { "Admin" } else if level >= 50 { "Moderator" } else { "" }.into(),
         membership: s(v, "membership").into(),
         presence: if b(p, "busy") { "busy".into() } else { SharedString::from(s(p, "state")) },
+        is_name_ambiguous: b(v, "isNameAmbiguous"),
         ..Default::default()
     }
 }
 
-pub fn user_row(v: &Value, saved: bool) -> UserRow {
+pub fn user_row(v: &Value, saved: bool, presence: &Value) -> UserRow {
     let uid = s(v, "userId").to_string();
     let name = match s(v, "displayName") {
         "" => uid.trim_start_matches('@').split(':').next().unwrap_or("").to_string(),
         d => d.to_string(),
     };
+    let p = &presence[&uid];
     UserRow {
         user_id: uid.clone().into(),
         display_name: name.clone().into(),
         initials: initials(&name).into(),
         tint: tint_for(&uid),
         saved,
+        presence: if b(p, "busy") { "busy".into() } else { SharedString::from(s(p, "state")) },
         ..Default::default()
     }
 }

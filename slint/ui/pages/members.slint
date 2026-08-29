@@ -73,8 +73,8 @@ export component MembersPage inherits Rectangle {
 
         ground := Rectangle {
             vertical-stretch: 1;
-            // Conversation-style ground: menu.background darkened 1.35.
-            background: Theme.menu-background.darker(0.26);
+            // Conversation-style ground: menu.background ÷1.35 (Slint darker(f) = ÷(1+f)).
+            background: Theme.menu-background.darker(0.35);
             border-top-left-radius: 24px;
             border-top-right-radius: 24px;
             clip: true;
@@ -111,7 +111,6 @@ export component MembersPage inherits Rectangle {
                                 source: member.avatar;
                                 initials: member.initials;
                                 tint: member.tint;
-                        status: member.presence;
                             }
                         }
                         VerticalLayout {
@@ -124,7 +123,9 @@ export component MembersPage inherits Rectangle {
                                 font-family: Theme.font-ui; font-size: Theme.body;
                                 overflow: elide;
                             }
-                            if member.display-name == "" || member.display-name != member.user-id : Text {
+                            // MembersPage.qml: the id line shows only for an
+                            // ambiguous or missing display name.
+                            if member.is-name-ambiguous || member.display-name == "" : Text {
                                 text: member.user-id;
                                 color: root.fg.with-alpha(0.5);
                                 font-family: Theme.font-ui; font-size: Theme.caption;

@@ -77,7 +77,7 @@ export component ChatThemePage inherits Rectangle {
     property <bool> themed: root.pending-accent != "";
     // ChatThemePage.qml tintBg(): menu.background darkened 1.35, mixed toward base.
     pure function tint-bg(base: color, amt: float) -> color {
-        return Theme.menu-background.darker(0.26).mix(base, 1.0 - amt);
+        return Theme.menu-background.darker(0.35).mix(base, 1.0 - amt);
     }
     pure function bubble-fill(base: color) -> color {
         return base.mix(Theme.popup-background, 0.42);

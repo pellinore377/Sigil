@@ -72,7 +72,7 @@ export component PinsPage inherits Rectangle {
 
         ground := Rectangle {
             vertical-stretch: 1;
-            background: Theme.menu-background.darker(0.26).mix(root.accent, 0.82);
+            background: Theme.menu-background.darker(0.35).mix(root.accent, 0.82);
             border-top-left-radius: 24px;
             border-top-right-radius: 24px;
             clip: true;
@@ -157,7 +157,7 @@ export component PinsPage inherits Rectangle {
                                 clicked => { root.unpin(item.event-id); }
                             }
                             card := Rectangle {
-                                width: min(prow.width * 0.78, card-inner.preferred-width + 22px);
+                                width: max(40px, min(prow.width * 0.78, card-inner.preferred-width + 22px));
                                 height: card-inner.preferred-height + 20px;
                                 border-radius: 16px;
                                 background: root.bubble-fill(item.is-own);
@@ -168,7 +168,7 @@ export component PinsPage inherits Rectangle {
                                     width: 20px; height: 20px;
                                     border-radius: 10px;
                                     background: root.accent;
-                                    border-width: 1px;
+                                    border-width: 2px;
                                     border-color: Theme.popup-background;
                                     Text {
                                         text: Icons.pin;
@@ -204,12 +204,19 @@ export component PinsPage inherits Rectangle {
                                             vertical-alignment: center;
                                         }
                                     }
-                                    body-text := Text {
-                                        text: item.body;
-                                        color: root.fg;
-                                        font-family: Theme.font-ui;
-                                        font-size: Theme.body;
-                                        wrap: word-wrap;
+                                    // PinsPage.qml clamps the body at six lines;
+                                    // no maximumLineCount in Slint, so clip there.
+                                    Rectangle {
+                                        clip: true;
+                                        height: min(body-text.preferred-height, 6 * Theme.body * 1.35);
+                                        body-text := Text {
+                                            width: 100%;
+                                            text: item.body;
+                                            color: root.fg;
+                                            font-family: Theme.font-ui;
+                                            font-size: Theme.body;
+                                            wrap: word-wrap;
+                                        }
                                     }
                                 }
                                 TouchArea { clicked => { root.jump-requested(item.event-id); } }

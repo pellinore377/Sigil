@@ -99,9 +99,9 @@ export component RolesPage inherits Rectangle {
         model: root.my-level >= 100 ? self.admin-choices
              : root.my-level >= 50 ? self.mod-choices : self.member-choices;
         chose(v) => {
-            if (v == "100" && root.my-level >= 100) { return; }
-            if (v == "50" && root.my-level >= 50 && root.my-level < 100) { return; }
-            if (v == "0" && root.my-level < 50) { return; }
+            // RolesPage.qml: a no-op only when the pick equals your exact level;
+            // a non-canonical level (say 75) still confirms a move to 50.
+            if ((v == "100" ? 100 : v == "50" ? 50 : 0) == root.my-level) { return; }
             root.demote-level = v == "100" ? 100 : (v == "50" ? 50 : 0);
             root.demote-open = true;
         }

@@ -150,6 +150,7 @@ export struct MemberRow {
     role: string,        // Admin | Moderator | ""
     membership: string,  // join | invite | ban | leave
     presence: string,    // online | away | busy | offline | ""
+    is-name-ambiguous: bool,
 }
 
 export struct SpaceRow {
@@ -195,6 +196,7 @@ export struct UserRow {
     avatar: image,
     tint: color,
     saved: bool,
+    presence: string,
 }
 
 // room.settings in one struct: everything the settings pages read.

@@ -178,6 +178,7 @@ export component RoomSettingsPage inherits Rectangle {
                                 source: member.avatar;
                                 initials: member.initials;
                                 tint: member.tint;
+                                status: member.presence;
                             }
                         }
                         VerticalLayout {
@@ -190,7 +191,7 @@ export component RoomSettingsPage inherits Rectangle {
                                 font-family: Theme.font-ui; font-size: Theme.body;
                                 overflow: elide;
                             }
-                            if member.display-name != member.user-id : Text {
+                            if member.user-id != "" && member.display-name != member.user-id : Text {
                                 text: member.user-id;
                                 color: root.fg.with-alpha(0.5);
                                 font-family: Theme.font-ui; font-size: Theme.caption;
@@ -239,9 +240,9 @@ export component RoomSettingsPage inherits Rectangle {
                 }
             }
 
-            Rectangle { height: 14px; }
-
-            // Spaces — a space's contents are state on the SPACE.
+            // The 14px lead and 10px tail live with the spaces block: they
+            // disappear together when there are no spaces (QML implicitHeight).
+            if root.spaces.length > 0 && !root.model.is-dm : Rectangle { height: 14px; }
             if root.spaces.length > 0 && !root.model.is-dm : VerticalLayout {
                 spacing: 4px;
                 Rectangle {
@@ -294,8 +295,8 @@ export component RoomSettingsPage inherits Rectangle {
                     }
                 }
             }
+            if root.spaces.length > 0 && !root.model.is-dm : Rectangle { height: 10px; }
 
-            Rectangle { height: 10px; }
             leave-btn := Rectangle {
                 x: 20px; width: fl.width - 40px; height: 44px;
                 border-radius: 14px;
