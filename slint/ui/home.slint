@@ -1,7 +1,11 @@
-// Home: header + search + segmented tabs (Chats | Spaces) + room list —
+// Home: header + search + segmented tabs (Chats | Spaces) + room/space list —
 // mobile/HomePage.qml. Filtering and ordering stay in Rust: the engine already
 // sorts rooms (pinned, highlights, unread, recency), and re-sorting in the view
 // is how the QML side ended up owning a copy of that rule.
+//
+// Not ported: the "Open as window" PanelActionButton (a desktop-panel
+// affordance with no Android meaning) and the FrameAnimation glide on the
+// scroll-to-top button (the tap jumps instead).
 
 import { TouchList } from "furniture.slint";
 import { Theme } from "style.slint";
@@ -18,10 +22,14 @@ export component HomePage inherits Rectangle {
     in property <color> my-tint;
     in property <string> my-name;
     in property <string> my-user-id;
+    in property <string> my-presence;
     in property <bool> needs-recovery;
     in property <string> sync-line;   // non-empty: engine is catching up / erroring
     in property <bool> rooms-loaded;  // first rooms.list has arrived
     in-out property <int> tab: 0;     // 0 chats, 1 spaces
+    // Non-empty: Home is showing one space's rooms behind a filter chip.
+    in-out property <string> space-filter;
+    in-out property <string> space-filter-name;
     callback room-clicked(string);
     callback search-edited(string);
     callback new-chat;
@@ -32,12 +40,14 @@ export component HomePage inherits Rectangle {
     // Drawn in-page, not as a popup (HomePage.qml accountOpen).
     in-out property <bool> account-open: false;
 
+    property <bool> chats-mode: root.tab == 0 || root.space-filter != "";
+
     background: Theme.menu-background;
 
     VerticalLayout {
         // Header
         header := Rectangle {
-            height: 56px;
+            height: 54px;
             HorizontalLayout {
                 padding-left: 18px;
                 padding-right: 10px;
@@ -51,12 +61,13 @@ export component HomePage inherits Rectangle {
                     horizontal-stretch: 1;
                 }
                 Rectangle {
-                    width: 40px;
+                    width: 36px;
                     Avatar {
-                        size: 32px;
+                        size: 28px;
                         source: root.my-avatar;
                         initials: root.my-initials;
                         tint: root.my-tint;
+                        status: root.my-presence;
                     }
                     TouchArea { clicked => { root.account-open = !root.account-open; } }
                 }
@@ -65,10 +76,10 @@ export component HomePage inherits Rectangle {
 
         // Search pill
         Rectangle {
-            height: 52px;
+            height: 46px;
             HorizontalLayout {
                 padding-left: 14px; padding-right: 14px;
-                padding-top: 2px; padding-bottom: 10px;
+                padding-top: 2px; padding-bottom: 8px;
                 pill := Rectangle {
                     border-radius: self.height / 2;
                     background: Theme.menu-text.with-alpha(0.07);
@@ -108,12 +119,12 @@ export component HomePage inherits Rectangle {
             }
         }
 
-        // Segmented tabs
+        // Segmented tabs. Switching tabs clears any space filter.
         Rectangle {
-            height: 48px;
+            height: 44px;
             seg := Rectangle {
                 width: root.width - 28px;
-                height: 38px;
+                height: 34px;
                 x: 14px;
                 y: 5px;
                 border-radius: self.height / 2;
@@ -141,7 +152,7 @@ export component HomePage inherits Rectangle {
                             horizontal-alignment: center; vertical-alignment: center;
                             width: 100%; height: 100%;
                         }
-                        TouchArea { clicked => { root.tab = 0; } }
+                        TouchArea { clicked => { root.tab = 0; root.space-filter = ""; } }
                     }
                     tab1 := Rectangle {
                         Text {
@@ -153,9 +164,37 @@ export component HomePage inherits Rectangle {
                             horizontal-alignment: center; vertical-alignment: center;
                             width: 100%; height: 100%;
                         }
-                        TouchArea { clicked => { root.tab = 1; } }
+                        TouchArea { clicked => { root.tab = 1; root.space-filter = ""; } }
                     }
                 }
+            }
+        }
+
+        // Space-filter chip: Home is scoped to one space; tapping clears it.
+        if root.space-filter != "" : Rectangle {
+            height: 36px;
+            chip-pill := Rectangle {
+                x: 14px;
+                y: (36px - self.height) / 2;
+                width: chip-row.preferred-width + 18px;
+                height: 26px;
+                border-radius: 13px;
+                background: Theme.accent.with-alpha(0.18);
+                border-width: 1px;
+                border-color: Theme.accent.with-alpha(0.3);
+                chip-row := HorizontalLayout {
+                    alignment: center;
+                    spacing: 6px;
+                    IconLabel { text: Icons.home; color: Theme.menu-text; font-size: Theme.caption; vertical-alignment: center; }
+                    Text {
+                        text: root.space-filter-name;
+                        color: Theme.menu-text;
+                        font-family: Theme.font-ui; font-size: Theme.body-small;
+                        vertical-alignment: center;
+                    }
+                    IconLabel { text: Icons.close; color: Theme.menu-text.with-alpha(0.6); font-size: Theme.caption; vertical-alignment: center; }
+                }
+                TouchArea { clicked => { root.space-filter = ""; root.tab = 1; } }
             }
         }
 
@@ -175,11 +214,11 @@ export component HomePage inherits Rectangle {
 
         // Empty states name their emptiness: "no rooms" is a fact about the
         // account, "looking" is a fact about us (ui-conventions.md).
-        if (root.tab == 0 ? root.rooms.length : root.spaces.length) == 0 : Rectangle {
+        if (root.chats-mode ? root.rooms.length : root.spaces.length) == 0 : Rectangle {
             vertical-stretch: 1;
             Text {
                 text: !root.rooms-loaded ? "Looking for your rooms…"
-                    : root.tab == 0 ? "No chats yet" : "No spaces yet";
+                    : root.chats-mode ? "No chats yet" : "No spaces yet";
                 color: Theme.menu-text.with-alpha(0.5);
                 font-family: Theme.font-ui;
                 font-size: Theme.body;
@@ -189,10 +228,53 @@ export component HomePage inherits Rectangle {
             }
         }
 
-        // Room list
+        // Room / space list
         list := TouchList {
             vertical-stretch: 1;
-            for room in (root.tab == 0 ? root.rooms : root.spaces) : rrow := Rectangle {
+
+            // Spaces hero — the tab's list header (HomePage.qml spacesHero).
+            if !root.chats-mode : hero := VerticalLayout {
+                spacing: 6px;
+                padding-bottom: 16px;
+                Rectangle { height: 20px; }
+                Rectangle {
+                    height: 64px;
+                    hero-tile := Rectangle {
+                        x: (hero.width - 64px) / 2;
+                        width: 64px; height: 64px;
+                        border-radius: 18px;
+                        background: Theme.menu-text.with-alpha(0.07);
+                        IconLabel {
+                            text: Icons.space;
+                            color: Theme.menu-text.with-alpha(0.55);
+                            font-size: 30px;
+                            width: 100%; height: 100%;
+                        }
+                    }
+                }
+                Text {
+                    text: "Spaces";
+                    color: Theme.menu-text;
+                    font-family: Theme.font-ui; font-size: Theme.display; font-weight: 700;
+                    horizontal-alignment: center;
+                }
+                Text {
+                    text: root.spaces.length == 1 ? "1 Space" : "\{root.spaces.length} Spaces";
+                    color: Theme.menu-text.with-alpha(0.55);
+                    font-family: Theme.font-ui; font-size: Theme.body;
+                    horizontal-alignment: center;
+                }
+                Text {
+                    text: "Spaces you have created or joined.";
+                    color: Theme.menu-text.with-alpha(0.6);
+                    font-family: Theme.font-ui; font-size: Theme.body-small;
+                    horizontal-alignment: center;
+                }
+                Rectangle { height: 8px; }
+                Rectangle { height: 1px; background: Theme.menu-text.with-alpha(0.08); }
+            }
+
+            for room in (root.chats-mode ? root.rooms : root.spaces) : rrow := Rectangle {
                 height: 64px;
                 Rectangle {
                     x: 8px; width: rrow.width - 16px;
@@ -201,7 +283,9 @@ export component HomePage inherits Rectangle {
                     background: row-touch.pressed ? Theme.menu-text.with-alpha(0.08)
                              : row-touch.has-hover ? Theme.menu-text.with-alpha(0.05) : transparent;
                 }
-                HorizontalLayout {
+
+                // ---- chat row ----
+                if root.chats-mode : HorizontalLayout {
                     padding-left: 16px; padding-right: 16px;
                     spacing: 12px;
                     Rectangle {
@@ -222,6 +306,7 @@ export component HomePage inherits Rectangle {
                         HorizontalLayout {
                             alignment: start;
                             spacing: 5px;
+                            padding-right: 8px;
                             name-text := Text {
                                 text: room.name;
                                 color: Theme.menu-text;
@@ -243,10 +328,18 @@ export component HomePage inherits Rectangle {
                                 vertical-alignment: center;
                             }
                         }
-                        if room.preview != "" || room.preview-icon != "" : HorizontalLayout {
+                        // Preview: an unsent message is marked with a red "Draft:".
+                        preview-line := HorizontalLayout {
                             alignment: start;
                             spacing: 4px;
-                            if room.preview-icon != "" : IconLabel {
+                            padding-right: 8px;
+                            if room.draft != "" : Text {
+                                text: "Draft:";
+                                color: Theme.urgent;
+                                font-family: Theme.font-ui; font-size: Theme.body-small;
+                                font-italic: true;
+                            }
+                            if room.draft == "" && room.preview-icon != "" : IconLabel {
                                 text: room.preview-icon;
                                 font-size: Theme.body-small;
                                 color: room.has-call ? Theme.accent
@@ -254,12 +347,13 @@ export component HomePage inherits Rectangle {
                                 vertical-alignment: center;
                             }
                             preview-text := Text {
-                                text: room.preview;
+                                text: room.draft != "" ? room.draft : room.preview;
                                 color: room.is-typing ? Theme.accent
                                      : room.has-call ? Theme.accent
                                      : Theme.menu-text.with-alpha(room.unread ? 0.8 : 0.55);
                                 font-family: Theme.font-ui;
                                 font-size: Theme.body-small;
+                                font-italic: room.draft != "";
                                 overflow: elide;
                                 horizontal-stretch: 1;
                             }
@@ -280,8 +374,8 @@ export component HomePage inherits Rectangle {
                             alignment: end;
                             spacing: 5px;
                             if room.badge != "" : Rectangle {
-                                width: max(21px, badge-text.preferred-width + 11px);
-                                height: 21px;
+                                width: max(19px, badge-text.preferred-width + 10px);
+                                height: 19px;
                                 border-radius: self.height / 2;
                                 background: room.badge-urgent ? Theme.urgent : Theme.accent.with-alpha(0.9);
                                 badge-text := Text {
@@ -297,25 +391,90 @@ export component HomePage inherits Rectangle {
                             if room.is-favourite : IconLabel {
                                 text: Icons.pin;
                                 font-size: Theme.caption;
-                                color: Theme.menu-text.with-alpha(0.4);
+                                color: Theme.menu-text.with-alpha(0.55);
                             }
                         }
                     }
                 }
+
+                // ---- space row: rounded-SQUARE avatar, lock line, counts, chevron ----
+                if !root.chats-mode : HorizontalLayout {
+                    padding-left: 16px; padding-right: 18px;
+                    spacing: 12px;
+                    Rectangle {
+                        width: 44px;
+                        sq-av := Rectangle {
+                            y: (64px - 44px) / 2;
+                            width: 44px; height: 44px;
+                            border-radius: 12px;
+                            clip: true;
+                            background: room.avatar.width > 0 ? transparent : room.tint.with-alpha(0.55);
+                            if room.avatar.width > 0 : Image {
+                                source: room.avatar;
+                                width: 44px; height: 44px;
+                                image-fit: cover;
+                            }
+                            if room.avatar.width == 0 : Text {
+                                text: room.initials;
+                                color: Theme.foreground;
+                                font-family: Theme.font-ui;
+                                font-size: max(8px, 44px * 0.42);
+                                font-weight: 700;
+                                horizontal-alignment: center; vertical-alignment: center;
+                                width: 100%; height: 100%;
+                            }
+                        }
+                    }
+                    VerticalLayout {
+                        alignment: center;
+                        spacing: 2px;
+                        horizontal-stretch: 1;
+                        Text {
+                            text: room.name != "" ? room.name : room.id;
+                            color: Theme.menu-text;
+                            font-family: Theme.font-ui; font-size: Theme.subtitle;
+                            overflow: elide;
+                        }
+                        HorizontalLayout {
+                            alignment: start;
+                            spacing: 5px;
+                            IconLabel { text: Icons.lock; color: Theme.menu-text.with-alpha(0.4); font-size: Theme.caption; vertical-alignment: center; }
+                            Text {
+                                text: "Private";
+                                color: Theme.menu-text.with-alpha(0.5);
+                                font-family: Theme.font-ui; font-size: Theme.body-small;
+                                vertical-alignment: center;
+                            }
+                        }
+                        Text {
+                            text: (room.child-count == 1 ? "1 room" : "\{room.child-count} rooms")
+                                + (room.member-count <= 0 ? ""
+                                   : room.member-count == 1 ? " · 1 member" : " · \{room.member-count} members");
+                            color: Theme.menu-text.with-alpha(0.5);
+                            font-family: Theme.font-ui; font-size: Theme.body-small;
+                        }
+                    }
+                    IconLabel {
+                        text: Icons.chevronRight;
+                        color: Theme.menu-text.with-alpha(0.4);
+                        vertical-alignment: center;
+                    }
+                }
+
                 row-touch := TouchArea { clicked => {
-                    if (room.is-space) { root.space-opened(room.id); }
+                    if (room.is-space && !root.chats-mode) { root.space-opened(room.id); }
                     else { root.room-clicked(room.id); }
                 } }
             }
         }
     }
 
-    // New-chat FAB
+    // New-chat FAB (bottom-right). On the Spaces tab the plus makes a space.
     fab := Rectangle {
-        x: root.width - self.width - 16px;
-        y: root.height - self.height - 16px;
-        width: 56px; height: 56px;
-        border-radius: 18px;
+        x: root.width - self.width - 14px;
+        y: root.height - self.height - 14px;
+        width: 48px; height: 48px;
+        border-radius: 16px;
         background: Theme.accent.with-alpha(fab-touch.pressed ? 1.0 : 0.9);
         IconLabel {
             text: Icons.plus;
@@ -323,10 +482,23 @@ export component HomePage inherits Rectangle {
             font-size: Theme.icon-large;
             width: 100%; height: 100%;
         }
-        // On the Spaces tab the plus makes a space, not a chat (HomePage.qml).
         fab-touch := TouchArea { clicked => {
-            if (root.tab == 1) { root.new-space(); } else { root.new-chat(); }
+            if (root.tab == 1 && root.space-filter == "") { root.new-space(); } else { root.new-chat(); }
         } }
+    }
+
+    // Scroll-to-top: bottom-centred once the list has run 3/4 of a screen.
+    if list.viewport-y < -(list.height * 0.75) : top-btn := Rectangle {
+        x: (root.width - self.width) / 2;
+        y: root.height - self.height - 18px;
+        width: 38px; height: 38px; border-radius: 19px;
+        background: Theme.popup-background;
+        IconLabel {
+            text: Icons.arrowUp;
+            color: Theme.menu-text;
+            width: 100%; height: 100%;
+        }
+        TouchArea { clicked => { list.viewport-y = 0; } }
     }
 
     // Account menu: page-level scrim (a scrim inside a control cluster makes
@@ -336,69 +508,75 @@ export component HomePage inherits Rectangle {
         background: Theme.background.with-alpha(0.35);
         TouchArea { clicked => { root.account-open = false; } }
         menu-card := Rectangle {
-            x: root.width - self.width - 10px;
-            y: 54px;
-            width: 240px;
-            height: card-col.preferred-height;
+            x: root.width - self.width - 12px;
+            y: 48px;
+            width: 230px;
+            height: card-col.preferred-height + 20px;
             border-radius: 14px;
-            background: Theme.popup-background;
-            border-width: 1px;
-            border-color: Theme.popup-border;
+            background: Theme.popup-background.with-alpha(0.98);
             card-col := VerticalLayout {
-                padding-top: 12px; padding-bottom: 6px;
-                VerticalLayout {
-                    padding-left: 16px; padding-right: 16px; padding-bottom: 10px;
-                    spacing: 2px;
-                    Text {
-                        text: root.my-name;
-                        color: Theme.popup-text;
-                        font-family: Theme.font-ui;
-                        font-size: Theme.subtitle;
-                        font-weight: 700;
-                        overflow: elide;
-                    }
-                    Text {
-                        text: root.my-user-id;
-                        color: Theme.popup-text.with-alpha(0.55);
-                        font-family: Theme.font-ui;
-                        font-size: Theme.caption;
-                        overflow: elide;
-                    }
+                x: 10px; y: 10px;
+                width: menu-card.width - 20px;
+                spacing: 4px;
+                Text {
+                    text: root.my-name;
+                    color: Theme.popup-text;
+                    font-family: Theme.font-ui;
+                    font-size: Theme.body;
+                    font-weight: 700;
+                    overflow: elide;
                 }
-                Rectangle { height: 1px; background: Theme.popup-border; }
+                Text {
+                    text: root.my-user-id;
+                    color: Theme.popup-text.with-alpha(0.6);
+                    font-family: Theme.font-ui;
+                    font-size: Theme.caption;
+                    overflow: elide;
+                }
+                Rectangle { height: 4px; }
+                Rectangle { height: 1px; background: Theme.popup-text.with-alpha(0.1); }
+                Rectangle { height: 4px; }
+                // No QML counterpart: the phone holds the recovery key, so the
+                // menu is where the user asked to reach the recovery page.
                 if root.needs-recovery : mi-recover := Rectangle {
-                    height: 46px;
-                    background: mi-recover-t.pressed ? Theme.popup-text.with-alpha(0.07) : transparent;
-                    HorizontalLayout {
-                        padding-left: 16px; padding-right: 16px;
-                        spacing: 12px;
-                        IconLabel { text: Icons.recoveryKey; filled: false; color: Theme.popup-text; vertical-alignment: center; }
-                        Text {
-                            text: "Enter recovery key";
-                            color: Theme.popup-text;
-                            font-family: Theme.font-ui;
-                            font-size: Theme.body;
-                            vertical-alignment: center;
-                            horizontal-stretch: 1;
-                        }
+                    height: 30px;
+                    border-radius: 8px;
+                    background: mi-recover-t.pressed || mi-recover-t.has-hover ? Theme.popup-text.with-alpha(0.1) : transparent;
+                    IconLabel {
+                        x: 8px;
+                        y: (30px - self.preferred-height) / 2;
+                        text: Icons.recoveryKey;
+                        color: Theme.popup-text;
+                        opacity: 0.85;
+                    }
+                    Text {
+                        x: 34px;
+                        text: "Enter recovery key";
+                        color: Theme.popup-text;
+                        font-family: Theme.font-ui; font-size: Theme.body;
+                        vertical-alignment: center;
+                        height: 100%;
                     }
                     mi-recover-t := TouchArea { clicked => { root.account-open = false; root.open-recovery(); } }
                 }
                 mi-out := Rectangle {
-                    height: 46px;
-                    background: mi-out-t.pressed ? Theme.urgent.with-alpha(0.10) : transparent;
-                    HorizontalLayout {
-                        padding-left: 16px; padding-right: 16px;
-                        spacing: 12px;
-                        IconLabel { text: Icons.logout; filled: false; color: Theme.urgent; vertical-alignment: center; }
-                        Text {
-                            text: "Sign out";
-                            color: Theme.urgent;
-                            font-family: Theme.font-ui;
-                            font-size: Theme.body;
-                            vertical-alignment: center;
-                            horizontal-stretch: 1;
-                        }
+                    height: 30px;
+                    border-radius: 8px;
+                    background: mi-out-t.pressed || mi-out-t.has-hover ? Theme.popup-text.with-alpha(0.1) : transparent;
+                    IconLabel {
+                        x: 8px;
+                        y: (30px - self.preferred-height) / 2;
+                        text: Icons.logout;
+                        color: Theme.urgent;
+                        opacity: 0.85;
+                    }
+                    Text {
+                        x: 34px;
+                        text: "Sign out";
+                        color: Theme.urgent;
+                        font-family: Theme.font-ui; font-size: Theme.body;
+                        vertical-alignment: center;
+                        height: 100%;
                     }
                     mi-out-t := TouchArea { clicked => { root.account-open = false; root.sign-out(); } }
                 }

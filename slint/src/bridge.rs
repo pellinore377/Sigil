@@ -80,6 +80,8 @@ pub struct UiState {
     // ---- Service.qml parity ----
     pub spaces_tree: Vec<Value>,
     pub receipts_by_room: HashMap<String, Vec<Value>>,
+    /// roomId -> unsent composer text (Panel.qml drafts).
+    pub drafts: HashMap<String, String>,
     pub presence_by_user: Value,
     pub pinned_by_room: HashMap<String, Vec<String>>,
     pub pagination_by_room: HashMap<String, String>,
@@ -158,6 +160,7 @@ pub fn start(win: &AppWindow, rt: &tokio::runtime::Runtime, icons: IconSet) -> R
         typing_sent: false,
         spaces_tree: Vec::new(),
         receipts_by_room: HashMap::new(),
+        drafts: HashMap::new(),
         presence_by_user: Value::Null,
         pinned_by_room: HashMap::new(),
         pagination_by_room: HashMap::new(),
@@ -428,6 +431,8 @@ fn handle_event(ui: &mut UiState, v: &Value) {
         }
         "spaces.tree" => {
             ui.spaces_tree = v["spaces"].as_array().cloned().unwrap_or_default();
+            // Levels and children feed the Spaces tab rows.
+            rebuild_rooms(ui, &win);
         }
         "room.receipts" => {
             let room = v["roomId"].as_str().unwrap_or("").to_string();
@@ -438,6 +443,14 @@ fn handle_event(ui: &mut UiState, v: &Value) {
         }
         "presence.list" => {
             ui.presence_by_user = v["users"].clone();
+            // Your own dot on the Home header avatar.
+            let me = &ui.presence_by_user[ui.my_user.as_str()];
+            win.set_my_presence(if me["busy"].as_bool().unwrap_or(false) {
+                "busy".into()
+            } else {
+                me["state"].as_str().unwrap_or("").into()
+            });
+            rebuild_rooms(ui, &win);
         }
         "room.pinned" => {
             let room = v["roomId"].as_str().unwrap_or("").to_string();
@@ -623,6 +636,14 @@ fn avatar(ui: &mut UiState, path: &str) -> Option<slint::Image> {
 }
 
 pub fn open_room(ui: &mut UiState, win: &AppWindow, id: &str) {
+    // Panel.qml keeps unsent composer text per room: bank the outgoing room's
+    // draft, and restore the incoming one below.
+    if !ui.open_room.is_empty() && ui.open_room != id {
+        let leaving = crate::actions::room_of_key(&ui.open_room);
+        let text = win.get_ct_composer_text().to_string();
+        if text.trim().is_empty() { ui.drafts.remove(&leaving); }
+        else { ui.drafts.insert(leaving, text); }
+    }
     ui.open_room = id.to_string();
     ui.shadow.clear();
     ui.typing_sent = false;
@@ -638,6 +659,10 @@ pub fn open_room(ui: &mut UiState, win: &AppWindow, id: &str) {
     // Pins come as a reply here and as room.pinned pushes afterwards.
     let rid = crate::actions::room_of_key(&ui.open_room);
     crate::actions::load_pinned_ids(ui, &rid);
+    // Restore this room's unsent draft into the composer.
+    let draft = ui.drafts.get(&rid).cloned().unwrap_or_default();
+    let cursor = draft.len() as i32;
+    win.invoke_chat_composer_set(draft.into(), cursor);
 }
 
 /// Point the chat surface at a different view key (a thread) without the
@@ -692,6 +717,17 @@ pub fn room_row_of(ui: &mut UiState, room: &Value) -> RoomRow {
         is_invite: room["isInvite"].as_bool().unwrap_or(false),
         is_typing: preview.typing,
         presence: presence.into(),
+        // A draft outranks the last message unless someone is typing (QML
+        // showDraft); invites keep their invitation line.
+        draft: if typing.is_empty() && !room["isInvite"].as_bool().unwrap_or(false) {
+            ui.drafts.get(&id).map(|d| d.trim().to_string()).unwrap_or_default().into()
+        } else {
+            SharedString::new()
+        },
+        child_count: ui.spaces_tree.iter()
+            .find(|sp| sp["id"].as_str() == Some(id.as_str()))
+            .and_then(|sp| sp["children"].as_array().map(|c| c.len() as i32))
+            .unwrap_or(0),
     }
 }
 
@@ -707,7 +743,14 @@ pub fn rebuild_rooms(ui: &mut UiState, win: &AppWindow) {
         }
         let row = room_row_of(ui, room);
         if room["isSpace"].as_bool().unwrap_or(false) {
-            spaces.push(row);
+            // HomePage.qml lists only top-level spaces on the Spaces tab.
+            let top_level = ui.spaces_tree.iter()
+                .find(|sp| sp["id"].as_str() == room["id"].as_str())
+                .map(|sp| sp["level"].as_i64().unwrap_or(0) == 0)
+                .unwrap_or(true);
+            if top_level {
+                spaces.push(row);
+            }
         } else {
             chats.push(row);
         }
@@ -1001,6 +1044,7 @@ fn start_demo(win: &AppWindow, rt: &tokio::runtime::Runtime, icons: IconSet) -> 
         typing_sent: false,
         spaces_tree: Vec::new(),
         receipts_by_room: HashMap::new(),
+        drafts: HashMap::new(),
         presence_by_user: Value::Null,
         pinned_by_room: HashMap::new(),
         pagination_by_room: HashMap::new(),

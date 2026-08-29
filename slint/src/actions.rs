@@ -130,6 +130,17 @@ pub fn on_nav_opened(ui: &mut UiState, win: &AppWindow, page: &str) {
             win.set_ns_busy(false);
         }
         "addpeople" => win.set_ap_results(ModelRc::new(VecModel::from(Vec::new()))),
+        // Back on Home: bank the open room's unsent composer text so its row
+        // can wear the "Draft:" preview (Panel.qml drafts).
+        "home" => {
+            if !ui.open_room.is_empty() {
+                let rid = room_of_key(&ui.open_room);
+                let text = win.get_ct_composer_text().to_string();
+                if text.trim().is_empty() { ui.drafts.remove(&rid); }
+                else { ui.drafts.insert(rid, text); }
+                crate::bridge::rebuild_rooms(ui, win);
+            }
+        }
         _ => {}
     }
 }

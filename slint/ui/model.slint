@@ -136,6 +136,8 @@ export struct RoomRow {
     is-space: bool,
     topic: string,
     member-count: int,
+    draft: string,       // unsent composer text: red italic "Draft:" preview
+    child-count: int,    // spaces: rooms inside (spaceRow's "N rooms" line)
 }
 
 export struct MemberRow {

@@ -63,6 +63,7 @@ export component AppWindow inherits Window {
     in property <color> my-tint: Theme.accent;
     in property <string> my-name;
     in property <string> my-user-id;
+    in property <string> my-presence;
     in property <[RoomRow]> rooms;
     in property <bool> rooms-loaded;
     in property <[RoomRow]> spaces;
@@ -352,6 +353,7 @@ export component AppWindow inherits Window {
             my-tint: root.my-tint;
             my-name: root.my-name;
             my-user-id: root.my-user-id;
+            my-presence: root.my-presence;
             needs-recovery: root.needs-recovery;
             sync-line: root.sync-line;
             room-clicked(id) => { root.room-clicked(id); root.nav = "chat"; }
