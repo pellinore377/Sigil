@@ -51,11 +51,13 @@ export component ChatPage inherits Rectangle {
     in-out property <string> reply-name;
     in-out property <string> reply-body;
     in-out property <string> edit-of;
+    in-out property <string> caption-of;
 
     callback back;
     callback send(string);
     callback send-reply(string /*event-id*/, string /*text*/);
     callback send-edit(string /*event-id*/, string /*text*/);
+    callback send-caption(string /*event-id*/, string /*text*/);
     callback composer-edited(string);
     callback start-call(bool /*video*/);
     callback join-call;
@@ -86,15 +88,26 @@ export component ChatPage inherits Rectangle {
     public function clear-composer() {
         composer-input.text = "";
         root.reply-to = ""; root.reply-name = ""; root.reply-body = ""; root.edit-of = "";
+        root.caption-of = "";
     }
     public function arm-reply(event-id: string, sender: string, body: string) {
         root.reply-to = event-id; root.reply-name = sender; root.reply-body = body;
         root.edit-of = "";
     }
     public function arm-edit(event-id: string, body: string) {
-        root.edit-of = event-id; root.reply-to = "";
+        root.edit-of = event-id; root.reply-to = ""; root.caption-of = "";
         root.reply-name = "Edit message"; root.reply-body = body;
         composer-input.text = body;
+    }
+    // Panel.messageAction("caption"): the quote shows the filename; the well
+    // holds the current caption, ready to edit.
+    public function arm-caption(event-id: string, filename: string, cap: string) {
+        root.reply-to = ""; root.edit-of = "";
+        root.caption-of = event-id;
+        root.reply-name = filename != "" ? filename : "Attachment";
+        root.reply-body = cap;
+        composer-input.text = cap;
+        composer-input.focus();
     }
     // ChatPage.qml onInsertEmoji: insert at the cursor, keep focus. Slint has
     // no string slicing, so the splice happens in Rust against these.
@@ -107,7 +120,7 @@ export component ChatPage inherits Rectangle {
     }
 
     property <bool> menu-open: false;
-    property <bool> quote-armed: root.reply-to != "" || root.edit-of != "";
+    property <bool> quote-armed: root.reply-to != "" || root.edit-of != "" || root.caption-of != "";
     /// A chat theme accent is set for this room (the mix below is gated on it).
     in property <bool> themed: false;
     // ChatPage.qml convoC: menu.background ÷1.35, then 18% accent ONLY when themed.
@@ -362,7 +375,9 @@ export component ChatPage inherits Rectangle {
                                             alignment: center;
                                             spacing: 1px;
                                             Text {
-                                                text: root.edit-of != "" ? "Edit message" : root.reply-name;
+                                                text: root.caption-of != ""
+                                                    ? (root.reply-body != "" ? "Edit caption" : "Add caption")
+                                                    : root.edit-of != "" ? "Edit message" : root.reply-name;
                                                 color: root.fg;
                                                 font-family: Theme.font-ui; font-size: Theme.body-small; font-weight: 700;
                                                 overflow: elide;
@@ -386,7 +401,7 @@ export component ChatPage inherits Rectangle {
                                             }
                                             qc-t := TouchArea {
                                                 clicked => {
-                                                    root.reply-to = ""; root.edit-of = "";
+                                                    root.reply-to = ""; root.edit-of = ""; root.caption-of = "";
                                                     root.reply-name = ""; root.reply-body = "";
                                                     composer-input.text = "";
                                                 }
@@ -450,7 +465,8 @@ export component ChatPage inherits Rectangle {
                             send-t := TouchArea {
                                 clicked => {
                                     if (!send-btn.send-mode) { root.open-recorder(); return; }
-                                    if (root.edit-of != "") { root.send-edit(root.edit-of, composer-input.text); }
+                                    if (root.caption-of != "") { root.send-caption(root.caption-of, composer-input.text); }
+                                    else if (root.edit-of != "") { root.send-edit(root.edit-of, composer-input.text); }
                                     else if (root.reply-to != "") { root.send-reply(root.reply-to, composer-input.text); }
                                     else { root.send(composer-input.text); }
                                     root.clear-composer();
@@ -506,6 +522,9 @@ export component ChatPage inherits Rectangle {
                 root.arm-reply(event-id, sheet.item.sender-name, sheet.item.body);
             } else if (action == "edit") {
                 root.arm-edit(event-id, sheet.item.body);
+            } else if (action == "caption") {
+                root.arm-caption(event-id, sheet.item.media-filename,
+                    sheet.item.body != sheet.item.media-filename ? sheet.item.body : "");
             } else if (action == "thread" || action == "openthread") {
                 root.open-thread(event-id);
             } else {

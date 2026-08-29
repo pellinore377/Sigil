@@ -465,6 +465,11 @@ pub fn on_act(ui: &mut UiState, win: &AppWindow, action: &str, a: &str, b2: &str
         "mark-read" => req.fire("room.markRead", json!({"roomId": open_room})),
         // PollBody.pick(): single-select taps toggle (own answer again retracts);
         // multi-select builds the selection set up to maxSelections.
+        // Caption edit on a media event: empty body clears the caption.
+        "send-caption" => {
+            req.fire("message.editCaption", json!({"roomId": open_room, "eventId": a, "body": b2}));
+            win.invoke_clear_composer();
+        }
         "vote" => {
             let poll = ui.shadow.iter()
                 .find(|i| i["eventId"].as_str() == Some(a))
@@ -914,15 +919,29 @@ fn build_sheet(ui: &mut UiState, win: &AppWindow, event_id: &str) {
         add("Forward", "forward", g.get_forward(), false);
         add("Copy", "copy", g.get_copy(), false);
         if !s(&item, "eventId").is_empty() {
+            // Matrix has no nested threads: from inside one, or once a summary
+            // exists, the entry opens the thread instead of starting one.
+            if !s(&item, "threadRoot").is_empty() || !item["threadSummary"].is_null() {
+                add("Open thread", "openthread", g.get_thread(), false);
+            } else {
+                add("Reply in thread", "thread", g.get_thread(), false);
+            }
             let room = room_of_key(&ui.open_room);
             let pinned = ui.pinned_by_room.get(&room).map(|p| p.iter().any(|e| e == s(&item, "eventId"))).unwrap_or(false);
             add(if pinned { "Unpin" } else { "Pin" }, "pin", g.get_pin(), false);
-            add("Reply in thread", "thread", g.get_thread(), false);
         }
         if b(&can, "edit") && kind != "poll" {
-            add("Edit", "edit", g.get_edit(), false);
+            // Media edits its caption, not its body (actionsFor's mediaKind arm).
+            let media_kind = matches!(kind, "image" | "video" | "file" | "audio");
+            if media_kind {
+                let body = s(&item, "body");
+                let has_caption = !body.is_empty() && body != item["media"]["filename"].as_str().unwrap_or("");
+                add(if has_caption { "Edit caption" } else { "Add caption" }, "caption", g.get_edit(), false);
+            } else {
+                add("Edit", "edit", g.get_edit(), false);
+            }
         }
-        if kind == "poll" && b(&can, "redact") {
+        if kind == "poll" && !item["poll"]["ended"].as_bool().unwrap_or(false) && b(&can, "redact") {
             add("End poll", "endpoll", g.get_poll(), false);
         }
         if b(&can, "redact") {
