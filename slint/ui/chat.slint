@@ -92,6 +92,15 @@ export component ChatPage inherits Rectangle {
         root.reply-name = "Edit message"; root.reply-body = body;
         composer-input.text = body;
     }
+    // ChatPage.qml onInsertEmoji: insert at the cursor, keep focus. Slint has
+    // no string slicing, so the splice happens in Rust against these.
+    out property <string> composer-text <=> composer-input.text;
+    out property <int> composer-cursor <=> composer-input.cursor-position-byte-offset;
+    public function set-composer(t: string, cursor: int) {
+        composer-input.text = t;
+        composer-input.set-selection-offsets(cursor, cursor);
+        composer-input.focus();
+    }
 
     property <bool> menu-open: false;
     property <bool> quote-armed: root.reply-to != "" || root.edit-of != "";

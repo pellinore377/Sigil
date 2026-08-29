@@ -11,7 +11,7 @@ import { RecoveryPage } from "recovery.slint";
 import { HomePage } from "home.slint";
 import { ChatPage } from "chat.slint";
 import { PageHolder, MenuEntry } from "furniture.slint";
-import { RoomRow, TimelineRow, MemberRow, SpaceRow, HierarchyRow, ThreadRow, UserRow, RoomSettingsModel, PowerRow, ReactionChip, EmojiItem, ReplyRef, CallParticipant, DeviceRow, PollOption } from "model.slint";
+import { RoomRow, TimelineRow, MemberRow, SpaceRow, HierarchyRow, ThreadRow, UserRow, RoomSettingsModel, PowerRow, ReactionChip, EmojiItem, ReplyRef, CallParticipant, DeviceRow, PollOption, ReaderRow, DocLine } from "model.slint";
 
 import { StartPage } from "pages/start.slint";
 import { ForwardPage } from "pages/forward.slint";
@@ -40,7 +40,7 @@ import { CallPage, Floater } from "callpage.slint";
 import { CallPip } from "callpip.slint";
 import { CallBanner } from "callbanner.slint";
 
-export { ViewerItem, StickerItem, MenuEntry, RoomRow, TimelineRow, MemberRow, SpaceRow, HierarchyRow, ThreadRow, UserRow, RoomSettingsModel, PowerRow, ReactionChip, EmojiItem, ReplyRef, CallParticipant, DeviceRow, PollOption, SpaceMembershipRow, GradPair, DocBlock, SheetRow, SheetTab, DocPageImage, Icons }
+export { ViewerItem, StickerItem, MenuEntry, RoomRow, TimelineRow, MemberRow, SpaceRow, HierarchyRow, ThreadRow, UserRow, RoomSettingsModel, PowerRow, ReactionChip, EmojiItem, ReplyRef, CallParticipant, DeviceRow, PollOption, ReaderRow, DocLine, SpaceMembershipRow, GradPair, DocBlock, SheetRow, SheetTab, DocPageImage, Icons }
 
 export component AppWindow inherits Window {
     title: "Sigil";
@@ -263,6 +263,9 @@ export component AppWindow inherits Window {
     public function restore-timeline-from-end(d: length) { chat.restore-from-end(d); }
     out property <length> chat-from-end: chat.from-end;
     public function clear-composer() { chat.clear-composer(); }
+    out property <string> ct-composer-text: chat.composer-text;
+    out property <int> ct-composer-cursor: chat.composer-cursor;
+    public function chat-composer-set(t: string, cursor: int) { chat.set-composer(t, cursor); }
 
     public function go(page: string) {
         if (page == "addpeople") { addpeople-page.reset(); }

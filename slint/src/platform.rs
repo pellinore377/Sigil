@@ -57,8 +57,7 @@ fn open_url_android(url: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Put text on the clipboard. Desktop: wl-copy. Android: no JNI clipboard
-/// wired yet — logged, and the caller's toast still explains itself.
+/// Put text on the clipboard. Desktop: wl-copy. Android: ClipboardManager.
 pub fn copy_text(text: &str) {
     #[cfg(not(target_os = "android"))]
     {
@@ -72,7 +71,53 @@ pub fn copy_text(text: &str) {
         tracing::warn!("wl-copy unavailable; clipboard write dropped");
     }
     #[cfg(target_os = "android")]
-    tracing::warn!("clipboard on Android not wired yet ({} chars dropped)", text.len());
+    if let Err(e) = copy_text_android(text) {
+        tracing::warn!("clipboard: {e:#}");
+    }
+}
+
+/// getSystemService(CLIPBOARD_SERVICE).setPrimaryClip(ClipData.newPlainText(...)).
+#[cfg(target_os = "android")]
+fn copy_text_android(text: &str) -> anyhow::Result<()> {
+    use jni::objects::{JObject, JValue};
+    let ctx = ndk_context::android_context();
+    let vm = unsafe { jni::JavaVM::from_raw(ctx.vm().cast()) }?;
+    let mut env = vm.attach_current_thread()?;
+    let context = unsafe { JObject::from_raw(ctx.context().cast()) };
+
+    let service = env.new_string("clipboard")?;
+    let manager = env
+        .call_method(
+            &context,
+            "getSystemService",
+            "(Ljava/lang/String;)Ljava/lang/Object;",
+            &[JValue::Object(&service)],
+        )?
+        .l()?;
+    anyhow::ensure!(!manager.is_null(), "no clipboard service");
+
+    let label = env.new_string("Sigil")?;
+    let value = env.new_string(text)?;
+    let clip = env
+        .call_static_method(
+            "android/content/ClipData",
+            "newPlainText",
+            "(Ljava/lang/CharSequence;Ljava/lang/CharSequence;)Landroid/content/ClipData;",
+            &[JValue::Object(&label), JValue::Object(&value)],
+        )?
+        .l()?;
+    let result = env.call_method(
+        &manager,
+        "setPrimaryClip",
+        "(Landroid/content/ClipData;)V",
+        &[JValue::Object(&clip)],
+    );
+    if env.exception_check().unwrap_or(false) {
+        env.exception_describe().ok();
+        env.exception_clear().ok(); // a pending exception at detach is fatal
+    }
+    result?;
+    Ok(())
 }
 
 /// Pick one file. Desktop: omarchy-file-select. Android: needs a SAF intent

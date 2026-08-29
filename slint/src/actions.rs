@@ -452,7 +452,32 @@ pub fn on_act(ui: &mut UiState, win: &AppWindow, action: &str, a: &str, b2: &str
             }
         }
         "mark-read" => req.fire("room.markRead", json!({"roomId": open_room})),
-        "vote" => req.fire("poll.vote", json!({"roomId": ui.open_room, "eventId": a, "answers": [b2]})),
+        // PollBody.pick(): single-select taps toggle (own answer again retracts);
+        // multi-select builds the selection set up to maxSelections.
+        "vote" => {
+            let poll = ui.shadow.iter()
+                .find(|i| i["eventId"].as_str() == Some(a))
+                .map(|i| i["poll"].clone())
+                .unwrap_or(serde_json::Value::Null);
+            let max = poll["maxSelections"].as_i64().unwrap_or(1).max(1);
+            let mine: Vec<String> = poll["answers"].as_array().map(|ans| ans.iter()
+                .filter(|o| o["mine"].as_bool().unwrap_or(false))
+                .filter_map(|o| o["id"].as_str().map(str::to_string))
+                .collect()).unwrap_or_default();
+            let tapped_mine = mine.iter().any(|m| m == b2);
+            let answers: Option<Vec<String>> = if max <= 1 {
+                Some(if tapped_mine { vec![] } else { vec![b2.to_string()] })
+            } else if tapped_mine {
+                Some(mine.into_iter().filter(|m| m != b2).collect())
+            } else if (mine.len() as i64) < max {
+                let mut sel = mine; sel.push(b2.to_string()); Some(sel)
+            } else {
+                None // selection full: QML pick() bails
+            };
+            if let Some(answers) = answers {
+                req.fire("poll.vote", json!({"roomId": ui.open_room, "eventId": a, "answers": answers}));
+            }
+        }
         "start-call" => req.fire("call.start", json!({"roomId": open_room, "video": a == "true"})),
         "join-call" => req.fire("call.join", json!({"roomId": open_room, "video": false})),
         "call-accept" => {
@@ -756,7 +781,16 @@ pub fn on_act(ui: &mut UiState, win: &AppWindow, action: &str, a: &str, b2: &str
         }
         "pick-attach-files" => attach_files(ui),
         "attach-location" => tracing::info!("location share ({a}): the maps gap — no picker without a map widget"),
-        "composer-insert" => tracing::info!("composer emoji insert needs a chat-page function; deferred"),
+        // ChatPage.qml onInsertEmoji: input.insert(input.cursorPosition, ch).
+        "composer-insert" => {
+            let text = win.get_ct_composer_text().to_string();
+            let mut cur = (win.get_ct_composer_cursor().max(0) as usize).min(text.len());
+            while cur > 0 && !text.is_char_boundary(cur) {
+                cur -= 1;
+            }
+            let spliced = format!("{}{}{}", &text[..cur], a, &text[cur..]);
+            win.invoke_chat_composer_set(spliced.into(), (cur + a.len()) as i32);
+        }
         "create-poll" => create_poll(ui, a, b2),
         "load-stickers" => load_stickers(ui, win),
         "send-sticker" => send_sticker(ui, a),

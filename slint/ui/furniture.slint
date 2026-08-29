@@ -22,15 +22,18 @@ export component SettingsHeader inherits Rectangle {
         padding-left: 6px; padding-right: 18px;
         spacing: 6px;
         Rectangle {
-            width: 44px;
-            ActionButton {
+            // PanelActionButton is 22×22 (Style.qml:36), putting the title at
+            // x≈34. The tap surface spans the header height for fingers.
+            width: 22px;
+            back-btn := ActionButton {
                 y: (56px - self.height) / 2;
-                width: 44px; height: 44px;
+                width: 22px; height: 22px;
                 icon: Icons.back;
                 filled: false;
                 foreground: root.fg;
                 clicked => { root.back(); }
             }
+            TouchArea { clicked => { root.back(); } }
         }
         Text {
             text: root.title;
@@ -130,13 +133,20 @@ export component SettingsRow inherits Rectangle {
             font-size: Theme.body;
             overflow: elide;
         }
-        if root.sublabel != "" : Text {
-            text: root.sublabel;
-            color: root.ink.with-alpha(0.55);
-            font-family: Theme.font-ui;
-            font-size: Theme.caption;
-            wrap: word-wrap;
-            overflow: elide;
+        // SettingsRow.qml caps the sublabel at two lines; Slint has no
+        // maximumLineCount, so clip at two line-heights instead.
+        if root.sublabel != "" : Rectangle {
+            clip: true;
+            height: min(sub-text.preferred-height, 2 * Theme.caption * 1.35);
+            sub-text := Text {
+                width: 100%;
+                text: root.sublabel;
+                color: root.ink.with-alpha(0.55);
+                font-family: Theme.font-ui;
+                font-size: Theme.caption;
+                wrap: word-wrap;
+                overflow: elide;
+            }
         }
     }
     tail := Rectangle {
@@ -211,24 +221,23 @@ export component SettingsRow inherits Rectangle {
 export component OverflowMenu inherits Rectangle {
     in property <[MenuEntry]> model;
     in-out property <bool> open: false;
-    in property <length> top-inset: 48px;
+    in property <length> top-inset: 50px;
     in property <color> fg: Theme.menu-text;
     callback picked(string);
     visible: root.open;
     TouchArea { clicked => { root.open = false; } }
+    // ChatPage.qml menu card: 170 wide at y 50, rows 34/r9, popups @0.98, no border.
     card := Rectangle {
         x: root.width - self.width - 10px;
         y: root.top-inset;
-        width: 210px;
+        width: 170px;
         height: col.preferred-height + 12px;
         border-radius: 14px;
-        background: Theme.popup-background;
-        border-width: 1px;
-        border-color: Theme.popup-border;
+        background: Theme.popup-background.with-alpha(0.98);
         col := VerticalLayout {
             padding: 6px;
             for entry in root.model : mrow := Rectangle {
-                height: 38px;
+                height: 34px;
                 border-radius: 9px;
                 background: mrow-t.pressed || mrow-t.has-hover ? root.fg.with-alpha(0.08) : transparent;
                 property <color> ink: entry.danger ? Theme.urgent : root.fg;
@@ -356,11 +365,14 @@ export component PageHolder inherits Rectangle {
 // this instead. It trades ListView's lazy instantiation away; the QML side
 // already ran with delegate reuse off, so the parity cost is bounded.
 export component TouchList inherits Flickable {
+    // ChatPage.qml's ListView is BottomToTop: content shorter than the view
+    // hangs from the composer, not the header. `end` reproduces that.
+    in property <LayoutAlignment> content-alignment: start;
     // Vertical-only: content width is the visible width, which also stops
     // row widths feeding back into the viewport (binding loop).
     viewport-width: self.width;
     VerticalLayout {
-        alignment: start;
+        alignment: root.content-alignment;
         @children
     }
 }

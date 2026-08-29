@@ -25,6 +25,19 @@ export struct PollOption {
     winner: bool,
 }
 
+/// One reader face on an own message's mark line (BubbleDelegate's MarkStack).
+export struct ReaderRow {
+    avatar: image,
+    initials: string,
+    tint: color,
+}
+
+/// One line of a document preview card, with its heading level (0 = body).
+export struct DocLine {
+    text: string,
+    level: int,
+}
+
 export struct TimelineRow {
     id: string,
     event-id: string,
@@ -62,6 +75,7 @@ export struct TimelineRow {
     reactions: [ReactionChip],
     thread-root: string,
     thread-count: int,
+    thread-latest: string,   // latest reply body for the thread chip preview
     can-edit: bool,
     can-reply: bool,
     can-redact: bool,
@@ -77,6 +91,9 @@ export struct TimelineRow {
     poll-total: int,
     poll-ended: bool,
     poll-multi: bool,
+    poll-max: int,
+    poll-disclosed: bool,
+    poll-vote-sum: int,   // Σ answer votes (≥ voters when multi-select)
     // contact card
     contact-name: string,
     contact-id: string,
@@ -85,13 +102,14 @@ export struct TimelineRow {
     location-live: bool,
     location-ended: bool,
     // read marker / receipts
-    doc-lines: [string],
+    doc-lines: [DocLine],
     doc-chip: string,        // TEXT / PDF / …; non-empty draws the page card
     doc-thumb: image,        // rendered page (pdf) when the engine returns one
     has-doc-image: bool,
     is-read-marker: bool,
     owns-receipt: bool,    // this own message wears the sent/read mark
     receipt-count: int,
+    readers: [ReaderRow],  // stacked faces on the mark line
     pinned: bool,
 }
 

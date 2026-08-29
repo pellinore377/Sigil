@@ -40,7 +40,17 @@ export component Bubble inherits Rectangle {
     property <bool> media-kind: item.kind == "image" || item.kind == "sticker" || item.kind == "video";
     property <bool> voice-kind: item.kind == "voice";
     property <bool> file-kind: item.kind == "file" || item.kind == "audio";
-    property <bool> full-bleed: root.media-kind;
+    // BubbleDelegate fullBleed: media (location included) + doc/contact cards
+    // run edge to edge; link cards / track / code stay unported (WIRING-chat.md).
+    property <bool> doc-kind: root.file-kind && !root.voice-kind && item.doc-chip != "";
+    property <bool> full-bleed: root.media-kind || item.kind == "location"
+        || root.doc-kind || item.kind == "contact";
+    // A poll draws its own card, so the bubble contributes no padding or fill.
+    property <bool> pad-free: root.full-bleed || item.kind == "poll";
+    property <int> poll-sum: item.poll-vote-sum;
+    property <string> votes-word: item.poll-total == 1 ? "1 vote" : "\{item.poll-total} votes";
+    /// Jump landing: a brief accent ring on the message you asked for.
+    in property <bool> jump-flash: false;
     property <bool> caption-visible: root.media-kind && item.body != "" && item.body != item.media-filename;
     // Opaque pre-blends over the popup surface — the QML mix() math verbatim.
     property <color> bubble-fill: item.is-own ? root.accent.mix(Theme.popup-background, 0.42)
@@ -154,19 +164,47 @@ export component Bubble inherits Rectangle {
             bubble := Rectangle {
                 x: item.is-own ? brow.width - self.width : 0px;
                 y: brow.height - self.height;
-                width: min(root.bubble-max, b-inner.preferred-width + (root.full-bleed ? 0px : 20px));
-                height: b-inner.preferred-height + (root.full-bleed ? 0px : 20px);
-                background: root.bubble-fill;
+                // QML: text content is implicitWidth + 22 with a 40px floor.
+                width: min(root.bubble-max, max(40px, b-inner.preferred-width + (root.pad-free ? 0px : 22px)));
+                height: b-inner.preferred-height + (root.pad-free ? 0px : 20px);
+                background: item.kind == "poll" ? transparent : root.bubble-fill;
+                border-width: root.jump-flash ? 2px : 0px;
+                border-color: root.jump-flash ? root.accent.with-alpha(0.9) : transparent;
+                animate border-width { duration: 220ms; easing: cubic-bezier(0.33, 1, 0.68, 1); }
                 border-top-left-radius: root.r-tl;
                 border-bottom-left-radius: root.r-bl;
                 border-top-right-radius: root.r-tr;
                 border-bottom-right-radius: root.r-br;
                 clip: true;
 
+                // Declared BEFORE the content so every inner TouchArea (media,
+                // voice, poll, file, thread chip) sits above it — QML's
+                // TapHandlers live on the bubble behind the bodies' MouseAreas.
+                // Plain text has no handler of its own and falls through here.
+                press-area := TouchArea {
+                    clicked => {
+                        if (!long-timer.fired) { root.details-open = !root.details-open; }
+                        long-timer.fired = false;
+                    }
+                    pointer-event(ev) => {
+                        if (ev.kind == PointerEventKind.down) {
+                            long-timer.fired = false;
+                            long-timer.running = true;
+                        } else if (ev.kind == PointerEventKind.up || ev.kind == PointerEventKind.cancel) {
+                            long-timer.running = false;
+                        }
+                    }
+                    moved => {
+                        if (abs((self.mouse-x - self.pressed-x) / 1px) > 12 || abs((self.mouse-y - self.pressed-y) / 1px) > 12) {
+                            long-timer.running = false;
+                        }
+                    }
+                }
+
                 b-inner := VerticalLayout {
-                    x: root.full-bleed ? 0px : 10px;
-                    y: root.full-bleed ? 0px : 10px;
-                    width: bubble.width - (root.full-bleed ? 0px : 20px);
+                    x: root.pad-free ? 0px : 11px;
+                    y: root.pad-free ? 0px : 10px;
+                    width: bubble.width - (root.pad-free ? 0px : 22px);
                     spacing: 4px;
 
                     // Reply quote
@@ -224,7 +262,7 @@ export component Bubble inherits Rectangle {
                     // Voice note: play disc + waveform + countdown
                     if root.voice-kind : voice-row := Rectangle {
                         height: 40px;
-                        width: min(root.bubble-max - 20px, 240px);
+                        width: min(root.bubble-max, 260px);
                         HorizontalLayout {
                             spacing: 8px;
                             vplay := Rectangle {
@@ -240,12 +278,13 @@ export component Bubble inherits Rectangle {
                             }
                             vwave := Rectangle {
                                 horizontal-stretch: 1;
-                                height: 40px;
+                                y: (40px - 26px) / 2;
+                                height: 26px;
                                 HorizontalLayout {
                                     spacing: 2px;
                                     alignment: start;
                                     for amp[i] in item.waveform : Rectangle {
-                                        y: (40px - self.height) / 2;
+                                        y: (26px - self.height) / 2;
                                         width: 3px;
                                         height: max(3px, 22px * min(1.0, amp));
                                         border-radius: 1.5px;
@@ -269,25 +308,31 @@ export component Bubble inherits Rectangle {
                     // File / music chip
                     // Document preview: the first lines drawn as a page — QML's
                     // docThumb card. A PDF arrives drawn (imagePath) instead.
-                    if root.file-kind && !root.voice-kind && item.doc-chip != "" : doc-card := Rectangle {
-                        width: min(root.bubble-max - 20px, 250px);
-                        height: item.has-doc-image ? 180px : 24px + item.doc-lines.length * 16px;
-                        border-radius: 10px;
-                        background: #f4f4f2;
+                    if root.doc-kind : doc-card := Rectangle {
+                        // fullBleed: the page card spans the bubble (DocThumb at bubbleMax).
+                        width: root.bubble-max;
+                        height: item.has-doc-image ? 180px : doc-col-h.preferred-height;
+                        background: #f7f5f0;
                         clip: true;
                         if item.has-doc-image : Image {
                             source: item.doc-thumb;
                             width: 100%; height: 100%;
                             image-fit: cover;
                         }
-                        if !item.has-doc-image : doc-col := VerticalLayout {
+                        // Always present so the card can size from it (ids inside
+                        // `if` are unreachable); invisible under a rendered page.
+                        doc-col-h := VerticalLayout {
+                            visible: !item.has-doc-image;
                             padding: 12px;
+                            padding-bottom: 30px;   // room for the kind badge
                             spacing: 3px;
+                            // DocThumb: headings 1-2 at bodySmall and bold; body at caption.
                             for line in item.doc-lines : Text {
-                                text: line;
+                                text: line.text;
                                 color: #2a2a2a;
                                 font-family: Theme.font-ui;
-                                font-size: 10px;
+                                font-size: line.level >= 1 && line.level <= 2 ? Theme.body-small : Theme.caption;
+                                font-weight: line.level > 0 ? 700 : 400;
                                 overflow: elide;
                             }
                         }
@@ -295,14 +340,14 @@ export component Bubble inherits Rectangle {
                             x: 8px;
                             y: doc-card.height - self.height - 8px;
                             width: chip-text.preferred-width + 12px;
-                            height: 18px;
+                            height: 16px;
                             border-radius: 4px;
-                            background: #2a2a2acc;
+                            background: #000000.with-alpha(0.55);
                             chip-text := Text {
                                 text: item.doc-chip;
                                 color: #ffffff;
                                 font-family: Theme.font-ui;
-                                font-size: 9px;
+                                font-size: 8px;
                                 font-weight: 700;
                                 horizontal-alignment: center; vertical-alignment: center;
                                 width: 100%; height: 100%;
@@ -349,56 +394,92 @@ export component Bubble inherits Rectangle {
                         }
                     }
 
-                    // Poll (MSC3381)
-                    if item.kind == "poll" : poll-col := VerticalLayout {
-                        spacing: 6px;
-                        Text {
-                            text: item.poll-question;
-                            color: root.fg;
-                            font-family: Theme.font-ui; font-size: Theme.body; font-weight: 700;
-                            wrap: word-wrap;
-                        }
-                        for opt in item.poll-options : opt-row := Rectangle {
-                            height: 34px;
-                            border-radius: 10px;
-                            background: root.fg.with-alpha(opt.mine ? 0.16 : 0.08);
-                            border-width: opt.winner ? 1px : 0px;
-                            border-color: root.accent.with-alpha(0.6);
-                            // votes bar behind the label
-                            Rectangle {
-                                width: item.poll-total > 0 ? opt-row.width * opt.votes / item.poll-total : 0px;
-                                height: 100%;
-                                border-radius: 10px;
-                                background: root.accent.with-alpha(0.18);
+                    // Poll (MSC3381) — PollBody.qml. The poll wears its own card
+                    // (the bubble behind it is transparent); counts only exist
+                    // once disclosed or ended; the pick dot marks your answer.
+                    if item.kind == "poll" : poll-card := Rectangle {
+                        property <bool> show-counts: item.poll-ended || item.poll-disclosed;
+                        property <bool> can-vote: !item.poll-ended;
+                        property <int> total-votes: root.poll-sum;
+                        width: min(root.bubble-max, 252px);
+                        height: poll-col.preferred-height + 24px;
+                        border-radius: 16px;
+                        background: Theme.background.with-alpha(0.55);
+                        poll-col := VerticalLayout {
+                            x: 12px; y: 12px;
+                            width: poll-card.width - 24px;
+                            spacing: 7px;
+                            Text {
+                                text: item.poll-question;
+                                color: root.fg;
+                                font-family: Theme.font-ui; font-size: Theme.body; font-weight: 700;
+                                wrap: word-wrap;
                             }
-                            HorizontalLayout {
-                                padding-left: 10px; padding-right: 10px;
+                            for opt in item.poll-options : opt-row := Rectangle {
+                                property <float> share: poll-card.show-counts && poll-card.total-votes > 0
+                                    ? opt.votes / poll-card.total-votes : 0.0;
+                                property <bool> leading: poll-card.show-counts && opt.winner;
+                                property <bool> dot-visible: poll-card.can-vote || opt.mine;
+                                height: 34px;
+                                border-radius: 11px;
+                                background: #000000.with-alpha(opt-touch.has-hover && poll-card.can-vote ? 0.30 : 0.22);
+                                clip: true;
+                                Rectangle {
+                                    x: 0; width: opt-row.width * max(0.0, min(1.0, opt-row.share));
+                                    height: 100%;
+                                    border-radius: 11px;
+                                    background: root.accent.with-alpha(opt-row.leading ? 0.55 : 0.28);
+                                    animate width { duration: 320ms; easing: cubic-bezier(0.33, 1, 0.68, 1); }
+                                }
+                                // Your pick as a filled dot; empty ring while open.
+                                if opt-row.dot-visible : pick-dot := Rectangle {
+                                    x: 10px; y: (34px - 15px) / 2;
+                                    width: 15px; height: 15px; border-radius: 7.5px;
+                                    background: opt.mine ? root.accent : transparent;
+                                    border-width: opt.mine ? 0px : 2px;
+                                    border-color: root.fg.with-alpha(0.4);
+                                    if opt.mine : IconLabel {
+                                        text: Icons.check;
+                                        color: Theme.background;
+                                        font-size: 9px;
+                                        width: 100%; height: 100%;
+                                    }
+                                }
                                 Text {
+                                    x: opt-row.dot-visible ? 33px : 12px;
+                                    width: tally.x - self.x - 8px;
+                                    height: 100%;
                                     text: opt.text;
                                     color: root.fg;
                                     font-family: Theme.font-ui; font-size: Theme.body-small;
                                     vertical-alignment: center;
                                     overflow: elide;
-                                    horizontal-stretch: 1;
                                 }
-                                Text {
-                                    text: "\{opt.votes}";
-                                    color: root.fg.with-alpha(0.6);
-                                    font-family: Theme.font-ui; font-size: Theme.caption;
+                                tally := Text {
+                                    x: opt-row.width - self.preferred-width - 11px;
+                                    height: 100%;
+                                    visible: poll-card.show-counts;
+                                    text: poll-card.total-votes <= 0 ? "0"
+                                        : "\{opt.votes}  \{round(opt-row.share * 100)}%";
+                                    color: root.fg.with-alpha(0.7);
+                                    font-family: Theme.font-ui; font-size: 10px;
+                                    font-weight: opt-row.leading ? 700 : 400;
                                     vertical-alignment: center;
                                 }
+                                opt-touch := TouchArea {
+                                    enabled: poll-card.can-vote;
+                                    clicked => { root.vote(item.event-id, opt.id); }
+                                }
                             }
-                            TouchArea {
-                                enabled: !item.poll-ended;
-                                clicked => { root.vote(item.event-id, opt.id); }
+                            Text {
+                                text: item.poll-ended ? "Final results · \{root.votes-word}"
+                                    : !item.poll-disclosed ? "Results hidden until the poll ends · \{root.votes-word}"
+                                    : item.poll-max > 1 ? "Pick up to \{item.poll-max} · \{root.votes-word}"
+                                    : root.votes-word;
+                                color: root.fg.with-alpha(0.5);
+                                font-family: Theme.font-ui; font-size: 10px;
+                                wrap: word-wrap;
                             }
-                        }
-                        Text {
-                            text: item.poll-ended
-                                ? "Final result · \{item.poll-total} votes"
-                                : "\{item.poll-total} votes";
-                            color: root.fg.with-alpha(0.5);
-                            font-family: Theme.font-ui; font-size: Theme.caption;
                         }
                     }
 
@@ -433,28 +514,40 @@ export component Bubble inherits Rectangle {
                     }
 
                     // Location card: static placeholder — Slint has no map widget.
+                    // LocationBody's fallback is a bare 40px pin, no caption; a live
+                    // share carries a top-right pill (countdown unported — no
+                    // per-second clock in the row; state text stands in).
                     if item.kind == "location" : loc-box := Rectangle {
-                        width: root.bubble-max - 20px;
-                        height: (root.bubble-max - 20px) * 0.62;
-                        border-radius: 10px;
+                        width: root.bubble-max;
+                        height: root.bubble-max * 0.625;
                         background: root.fg.with-alpha(0.10);
-                        VerticalLayout {
-                            alignment: center;
-                            spacing: 6px;
-                            IconLabel {
-                                text: item.location-live ? Icons.liveLocation : Icons.pinDrop;
-                                color: item.location-live && !item.location-ended ? root.accent : root.fg.with-alpha(0.7);
-                                font-size: 34px;
-                                horizontal-alignment: center;
-                            }
-                            Text {
-                                text: item.location-ended ? "Live location ended"
-                                    : item.location-live ? "Live location"
-                                    : (item.location-label != "" ? item.location-label : "Location");
-                                color: root.fg.with-alpha(0.75);
-                                font-family: Theme.font-ui; font-size: Theme.body-small;
-                                horizontal-alignment: center;
-                                overflow: elide;
+                        IconLabel {
+                            text: Icons.location;
+                            color: root.accent.with-alpha(0.85);
+                            font-size: 40px;
+                            width: 100%; height: 100%;
+                        }
+                        if item.location-live || item.location-ended : live-pill := Rectangle {
+                            x: loc-box.width - self.width - 8px;
+                            y: 8px;
+                            width: live-row.preferred-width + 16px;
+                            height: 22px;
+                            border-radius: 11px;
+                            background: #000000.with-alpha(0.45);
+                            live-row := HorizontalLayout {
+                                alignment: center;
+                                spacing: 5px;
+                                if !item.location-ended : Rectangle {
+                                    y: (22px - 7px) / 2;
+                                    width: 7px; height: 7px; border-radius: 3.5px;
+                                    background: #e88b90;
+                                }
+                                Text {
+                                    text: item.location-ended ? "Live location ended" : "Live";
+                                    color: #ffffff;
+                                    font-family: Theme.font-ui; font-size: Theme.caption;
+                                    vertical-alignment: center;
+                                }
                             }
                         }
                         HoldArea { clicked => { if (!self.fired) { root.open-location(item); } self.fired = false; } held => { root.open-menu(); } }
@@ -509,8 +602,17 @@ export component Bubble inherits Rectangle {
                                 color: root.fg.with-alpha(0.75);
                                 font-family: Theme.font-ui; font-size: Theme.caption; font-weight: 700;
                                 vertical-alignment: center;
+                            }
+                            // Latest reply, one line, between the count and the chevron.
+                            if item.thread-latest != "" : Text {
+                                text: item.thread-latest;
+                                color: root.fg.with-alpha(0.55);
+                                font-family: Theme.font-ui; font-size: Theme.caption;
+                                vertical-alignment: center;
+                                overflow: elide;
                                 horizontal-stretch: 1;
                             }
+                            if item.thread-latest == "" : Rectangle { horizontal-stretch: 1; }
                             IconLabel {
                                 text: Icons.chevronRight;
                                 color: root.fg.with-alpha(0.5);
@@ -522,26 +624,6 @@ export component Bubble inherits Rectangle {
                     }
                 }
 
-                // Tap = details; long-press = menu (synthesised: Slint has no onLongPressed).
-                press-area := TouchArea {
-                    clicked => {
-                        if (!long-timer.fired) { root.details-open = !root.details-open; }
-                        long-timer.fired = false;
-                    }
-                    pointer-event(ev) => {
-                        if (ev.kind == PointerEventKind.down) {
-                            long-timer.fired = false;
-                            long-timer.running = true;
-                        } else if (ev.kind == PointerEventKind.up || ev.kind == PointerEventKind.cancel) {
-                            long-timer.running = false;
-                        }
-                    }
-                    moved => {
-                        if (abs((self.mouse-x - self.pressed-x) / 1px) > 12 || abs((self.mouse-y - self.pressed-y) / 1px) > 12) {
-                            long-timer.running = false;
-                        }
-                    }
-                }
                 long-timer := Timer {
                     property <bool> fired: false;
                     interval: 500ms;
@@ -567,7 +649,8 @@ export component Bubble inherits Rectangle {
                     Text {
                         text: chip.key;
                         color: root.fg;
-                        font-size: 20px;
+                        // QML scales non-mine chips to 0.92.
+                        font-size: chip.mine ? 20px : 18.4px;
                     }
                     if chip.count > 1 : Text {
                         text: "\{chip.count}";
@@ -598,13 +681,59 @@ export component Bubble inherits Rectangle {
             }
         }
 
-        // Details / mark line: sending dot, failure mark, sent tick, read count.
-        if root.is-msg && item.is-own && (item.owns-receipt || item.send-state != "sent" || root.details-open) : detail-row := Rectangle {
-            height: 17px;
+        // Details / mark line — BubbleDelegate's detailRow. The mark leads
+        // (sending dot, failure, tick, or the stacked reader faces); tapping
+        // the bubble grows "· timestamp lock" beside it. Non-own messages get
+        // the row too, left-anchored with the mark hidden.
+        if root.is-msg && ((item.is-own && (item.owns-receipt || item.send-state != "sent")) || root.details-open) : detail-row := Rectangle {
+            property <length> mark-dot: 13px;
+            property <bool> show-faces: item.is-own && item.send-state == "sent" && item.readers.length > 0;
+            height: self.mark-dot + 4px;
             HorizontalLayout {
-                alignment: end;
+                alignment: item.is-own ? end : start;
                 spacing: 5px;
                 padding-right: 2px;
+                padding-left: 2px;
+                // The mark: dot / error / tick / MarkStack faces (own only).
+                if item.is-own && item.send-state == "sending" : IconLabel {
+                    text: Icons.statusDot; color: root.fg.with-alpha(0.55);
+                    font-size: 13px; vertical-alignment: center;
+                }
+                if item.is-own && item.send-state == "failed" : IconLabel {
+                    text: Icons.errorMark; color: Theme.urgent;
+                    font-size: 13px; vertical-alignment: center;
+                }
+                if item.is-own && item.send-state == "sent" && item.readers.length == 0 : IconLabel {
+                    text: Icons.checkCircle; color: root.accent;
+                    font-size: 13px; vertical-alignment: center;
+                }
+                if detail-row.show-faces : faces := Rectangle {
+                    width: detail-row.mark-dot + max(0, item.readers.length - 1) * detail-row.mark-dot * 0.68;
+                    height: detail-row.mark-dot;
+                    for reader[i] in item.readers : Rectangle {
+                        x: faces.width - detail-row.mark-dot - i * detail-row.mark-dot * 0.68;
+                        width: detail-row.mark-dot; height: detail-row.mark-dot;
+                        // Faces overlap; each needs something solid behind it.
+                        Rectangle {
+                            x: -1px; y: -1px;
+                            width: detail-row.mark-dot + 2px; height: self.width;
+                            border-radius: self.width / 2;
+                            background: root.convo-ground;
+                        }
+                        Avatar {
+                            size: detail-row.mark-dot;
+                            source: reader.avatar;
+                            initials: reader.initials;
+                            tint: reader.tint;
+                        }
+                    }
+                }
+                if root.details-open && item.is-own : Text {
+                    text: "·";
+                    color: root.fg.with-alpha(0.5);
+                    font-family: Theme.font-ui; font-size: 10px;
+                    vertical-alignment: center;
+                }
                 if root.details-open : Text {
                     text: item.edited ? "\{item.stamp} · Edited" : item.stamp;
                     color: item.send-state == "failed" ? Theme.urgent : root.fg.with-alpha(0.5);
@@ -617,36 +746,6 @@ export component Bubble inherits Rectangle {
                     color: item.send-state == "failed" ? Theme.urgent : root.fg.with-alpha(0.5);
                     font-size: 10px;
                     vertical-alignment: center;
-                }
-                if item.send-state == "sending" : IconLabel {
-                    text: Icons.statusDot; color: root.fg.with-alpha(0.55);
-                    font-size: 13px; vertical-alignment: center;
-                }
-                if item.send-state == "failed" : IconLabel {
-                    text: Icons.errorMark; color: Theme.urgent;
-                    font-size: 13px; vertical-alignment: center;
-                }
-                if item.send-state == "sent" && item.receipt-count == 0 : IconLabel {
-                    text: Icons.checkCircle; color: root.accent;
-                    font-size: 13px; vertical-alignment: center;
-                }
-                if item.send-state == "sent" && item.receipt-count > 0 : Rectangle {
-                    width: read-n.preferred-width + 15px;
-                    height: 13px;
-                    HorizontalLayout {
-                        spacing: 2px;
-                        IconLabel {
-                            text: Icons.eye; filled: false;
-                            color: root.accent; font-size: 12px;
-                            vertical-alignment: center;
-                        }
-                        read-n := Text {
-                            text: "\{item.receipt-count}";
-                            color: root.accent;
-                            font-family: Theme.font-ui; font-size: 10px; font-weight: 700;
-                            vertical-alignment: center;
-                        }
-                    }
                 }
             }
         }

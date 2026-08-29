@@ -805,7 +805,7 @@ pub fn rebuild_timeline(ui: &mut UiState, win: &AppWindow) {
         }
         // Files with readable previews render as a page card (QML docThumb).
         let doc_key = format!("{room_id}|{event_id}");
-        let mut doc_lines: Vec<slint::SharedString> = Vec::new();
+        let mut doc_lines: Vec<crate::DocLine> = Vec::new();
         let mut doc_chip = String::new();
         let mut doc_img: Option<slint::Image> = None;
         if kind == "file" && !event_id.is_empty() {
@@ -819,14 +819,19 @@ pub fn rebuild_timeline(ui: &mut UiState, win: &AppWindow) {
                 Some(v) if !v.is_null() => {
                     // Lines arrive structured: {"t":"p","text"} or {"t":"row","cells"}.
                     doc_lines = v["lines"].as_array().map(|a| {
-                        a.iter().take(6).map(|l| {
-                            match l["t"].as_str() {
+                        a.iter().take(6).filter_map(|l| {
+                            let text = match l["t"].as_str() {
                                 Some("row") => l["cells"].as_array().map(|c| {
                                     c.iter().filter_map(Value::as_str).collect::<Vec<_>>().join(" · ")
                                 }).unwrap_or_default(),
                                 _ => l["text"].as_str().unwrap_or("").to_string(),
-                            }
-                        }).filter(|t| !t.is_empty()).map(SharedString::from).collect()
+                            };
+                            if text.is_empty() { return None; }
+                            Some(crate::DocLine {
+                                text: text.into(),
+                                level: l["level"].as_i64().unwrap_or(0) as i32,
+                            })
+                        }).collect()
                     }).unwrap_or_default();
                     doc_chip = v["chip"].as_str()
                         .or(v["kind"].as_str())
@@ -855,6 +860,19 @@ pub fn rebuild_timeline(ui: &mut UiState, win: &AppWindow) {
             }
         }).collect()).unwrap_or_default();
         let read_count = item["readBy"].as_array().map(|a| a.iter().filter(|r| r["userId"].as_str() != Some(my_user.as_str())).count()).unwrap_or(0);
+        // The mark line draws reader faces, not a count (MarkStack). Only the
+        // own message that wears the receipt needs them (readers = ownsReceipt ? … : []).
+        let mut readers: Vec<crate::ReaderRow> = Vec::new();
+        if let Some(rb) = item["readBy"].as_array().filter(|_| is_own && !event_id.is_empty() && event_id == receipt_owner) {
+            for r in rb.iter().filter(|r| r["userId"].as_str() != Some(my_user.as_str())) {
+                let rname = r["displayName"].as_str().unwrap_or("");
+                readers.push(crate::ReaderRow {
+                    avatar: avatar(ui, r["avatarPath"].as_str().unwrap_or("")).unwrap_or_default(),
+                    initials: rows::initials(rname).into(),
+                    tint: rows::tint_for(r["userId"].as_str().unwrap_or("")),
+                });
+            }
+        }
         let poll = item.get("poll").cloned().unwrap_or(Value::Null);
         // The engine speaks MSC3381: `answers`, `voters`, `maxSelections`.
         let ended = poll["ended"].as_bool().unwrap_or(false);
@@ -914,6 +932,7 @@ pub fn rebuild_timeline(ui: &mut UiState, win: &AppWindow) {
             reactions: slint::ModelRc::new(VecModel::from(reactions)),
             thread_root: item["threadRoot"].as_str().unwrap_or("").into(),
             thread_count: item["threadSummary"]["count"].as_i64().unwrap_or(0) as i32,
+            thread_latest: item["threadSummary"]["body"].as_str().unwrap_or("").into(),
             can_edit: item["can"]["edit"].as_bool().unwrap_or(false),
             can_reply: item["can"]["reply"].as_bool().unwrap_or(false),
             can_redact: item["can"]["redact"].as_bool().unwrap_or(false),
@@ -927,6 +946,9 @@ pub fn rebuild_timeline(ui: &mut UiState, win: &AppWindow) {
             poll_total: poll["voters"].as_i64().unwrap_or(0) as i32,
             poll_ended: poll["ended"].as_bool().unwrap_or(false),
             poll_multi: poll["maxSelections"].as_i64().unwrap_or(1) > 1,
+            poll_max: poll["maxSelections"].as_i64().unwrap_or(1).max(1) as i32,
+            poll_disclosed: poll["disclosed"].as_bool().unwrap_or(false),
+            poll_vote_sum: poll["answers"].as_array().map(|a| a.iter().map(|o| o["votes"].as_i64().unwrap_or(0)).sum::<i64>()).unwrap_or(0) as i32,
             contact_name: contact["displayName"].as_str().unwrap_or("").into(),
             contact_id: contact["userId"].as_str().unwrap_or("").into(),
             location_label: location["description"].as_str().unwrap_or("").into(),
@@ -939,6 +961,7 @@ pub fn rebuild_timeline(ui: &mut UiState, win: &AppWindow) {
             is_read_marker: false,
             owns_receipt: is_own && !event_id.is_empty() && event_id == receipt_owner,
             receipt_count: read_count as i32,
+            readers: slint::ModelRc::new(VecModel::from(readers)),
             pinned: pinned_ids.iter().any(|p| p == &event_id),
             html_ish: false,
         });

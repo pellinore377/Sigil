@@ -61,12 +61,21 @@ fn hsl_to_rgb(h: f64, s: f64, l: f64) -> (u8, u8, u8) {
 }
 
 /// Avatar.qml: one letter, uppercased, from the name with sigils stripped.
+// Avatar.qml: strip the sigil, split on space/underscore/dash/dot, and take
+// two letters when the name has two parts ("Jane Doe" → "JD"), else one.
 pub fn initials(name: &str) -> String {
-    name.trim_start_matches(['@', '#', '!'])
-        .chars()
-        .next()
-        .map(|c| c.to_uppercase().to_string())
-        .unwrap_or_default()
+    let n = name.trim_start_matches(['@', '#', '!']).trim();
+    if n.is_empty() {
+        return "?".into();
+    }
+    let mut parts = n.split(|c: char| c.is_whitespace() || matches!(c, '_' | '-' | '.')).filter(|p| !p.is_empty());
+    let first = parts.next().and_then(|p| p.chars().next());
+    let second = parts.next().and_then(|p| p.chars().next());
+    match (first, second) {
+        (Some(a), Some(b)) => format!("{}{}", a.to_uppercase(), b.to_uppercase()),
+        (Some(a), None) => a.to_uppercase().to_string(),
+        _ => "?".into(),
+    }
 }
 
 /// HomePage.qml's preview line: typing > invite > call > last message,
