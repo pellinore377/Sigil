@@ -1461,12 +1461,13 @@ fn attach_files(ui: &mut UiState) {
 fn create_poll(ui: &mut UiState, question: &str, packed: &str) {
     let mut parts = packed.split('\u{1f}');
     let closed = parts.next().unwrap_or("0") == "1";
-    let options: Vec<&str> = parts.filter(|o| !o.trim().is_empty()).collect();
+    // AttachMenu sends the trimmed question and only the non-blank trimmed options.
+    let options: Vec<&str> = parts.map(str::trim).filter(|o| !o.is_empty()).collect();
     if options.len() < 2 || question.trim().is_empty() {
         return;
     }
     let room = room_of_key(&ui.open_room);
-    ui.req.fire("poll.create", json!({"roomId": room, "question": question, "options": options, "closed": closed}));
+    ui.req.fire("poll.create", json!({"roomId": room, "question": question.trim(), "options": options, "closed": closed}));
     if let Some(win) = ui.win.upgrade() {
         win.set_attach_open(false);
     }
