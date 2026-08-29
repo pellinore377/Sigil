@@ -39,9 +39,10 @@ Live findings; struck through when fixed and verified on device.
 ## Open items (next session)
 - [ ] Long-press on media bubbles (inner tap TouchAreas eat the press;
       QML opens the menu from media too).
-- [ ] Android back: close-request path does not fire; Escape-key FocusScope
-      attempt in test. If Slint delivers neither, upstream issue + JNI key
-      interception is the remaining route.
+- [!] Android back: UPSTREAM. Slint delivers the back key as neither a
+      close-request nor any UI key (FocusScope with focus receives nothing).
+      Interim: the activity exits; session restore is fast. File with a
+      key-logging repro; the fix belongs in i-slint-backend-android-activity.
 - [ ] Bubble inter-group spacing: measure against QML with same-density
       fixture (earlier read may have been correct behavior).
 - [ ] Settings identity avatar image (fix landed; verify).
