@@ -1,30 +1,338 @@
-// DocPage — port of the QML page of the same name. STUB: a fork replaces
-// this file wholesale; add properties/callbacks here and list the app.slint +
-// bridge wiring you need in your WIRING file.
+// DocPage — mobile/DocumentPage.qml. Reader for the engine's document
+// previews: a sheet grid (spreadsheets), rendered Markdown-ish blocks, PDF
+// pages as images, and paragraph blocks for everything else.
 
 import { Theme } from "../style.slint";
 import { Icons } from "../icons.slint";
-import { IconLabel, ActionButton, Avatar, SButton, TextWell } from "../components.slint";
-import { SettingsHeader, SettingsGroup, SettingsRow, OverflowMenu, ChoiceSheet, Spinner, MenuEntry, ChoiceEntry } from "../furniture.slint";
-import { RoomRow, TimelineRow, MemberRow, SpaceRow, HierarchyRow, ThreadRow, UserRow, RoomSettingsModel, PowerRow, ReactionChip, EmojiItem } from "../model.slint";
+import { IconLabel, ActionButton } from "../components.slint";
+import { ListView } from "std-widgets.slint";
+
+export struct DocBlock { t: string, text: string, title: string, level: int, bullet: bool }
+export struct SheetRow { cells: [string] }
+export struct SheetTab { name: string }
+export struct DocPageImage { img: image, failed: bool, loaded: bool }
 
 export component DocPage inherits Rectangle {
     in property <color> fg: Theme.menu-text;
+    in property <color> accent: Theme.accent;
     callback closed;
+
+    in property <string> file-name;
+    in property <string> status: "";      // "" | "loading" | "error"
+    in property <string> error;
+    in property <string> size-label;
+    in property <string> kind: "";        // pdf sheet slides markdown text document
+    in property <string> subtitle;        // built Rust-side like the QML binding
+    in property <[DocBlock]> blocks;
+    in property <bool> pdf-pages: false;
+    in property <[DocPageImage]> pages;   // filled lazily by page-requested
+    in property <float> page-aspect: 1.294;
+    in property <[SheetTab]> sheets;
+    in-out property <int> sheet-index: 0;
+    in property <[SheetRow]> sheet-rows;  // rows of sheet-index, from Rust
+    in property <int> sheet-cols: 1;
+    in property <string> toast;
+
+    callback download-requested;
+    callback page-requested(int, length); // index, pixel width wanted
+    callback sheet-picked(int);
+
+    property <color> paper: #f7f5f0;
+    property <color> ink: #292624;
+    property <string> kind-word: root.kind == "pdf" ? "PDF"
+        : root.kind == "sheet" ? "Spreadsheet"
+        : root.kind == "slides" ? "Slides"
+        : root.kind == "markdown" ? "Markdown"
+        : root.kind == "text" ? "Text file" : "Document";
+
     background: transparent;
-    VerticalLayout {
-        SettingsHeader {
-            title: "Doc";
-            fg: root.fg;
-            back => { root.closed(); }
-        }
-        Rectangle {
-            vertical-stretch: 1;
+
+    header := Rectangle {
+        height: 52px;
+        HorizontalLayout {
+            padding-left: 6px; padding-right: 12px;
+            spacing: 8px;
+            Rectangle {
+                width: 44px;
+                ActionButton {
+                    y: (52px - self.height) / 2;
+                    width: 44px; height: 44px;
+                    icon: Icons.back;
+                    filled: false;
+                    foreground: root.fg;
+                    clicked => { root.closed(); }
+                }
+            }
             Text {
-                text: "Doc — not ported yet";
-                color: root.fg.with-alpha(0.5);
+                text: "Document";
+                color: root.fg;
                 font-family: Theme.font-ui;
-                font-size: Theme.body;
+                font-size: Theme.subtitle;
+                font-weight: 700;
+                vertical-alignment: center;
+                horizontal-stretch: 1;
+            }
+        }
+    }
+
+    paper-box := Rectangle {
+        y: 52px;
+        width: 100%; height: root.height - 52px;
+        border-top-left-radius: 24px;
+        border-top-right-radius: 24px;
+        clip: true;
+        background: root.paper;
+
+        // Sheet tabs for a workbook with more than one.
+        tabs := Rectangle {
+            visible: root.kind == "sheet" && root.sheets.length > 1;
+            x: 16px; y: 12px;
+            width: paper-box.width - 32px;
+            height: self.visible ? 34px : 0px;
+            clip: true;
+            HorizontalLayout {
+                alignment: start;
+                spacing: 6px;
+                for tab[i] in root.sheets : tab-pill := Rectangle {
+                    height: 28px;
+                    width: tab-label.preferred-width + 22px;
+                    border-radius: 14px;
+                    background: i == root.sheet-index ? root.accent.with-alpha(0.85) : #00000012;
+                    tab-label := Text {
+                        text: tab.name;
+                        color: i == root.sheet-index ? #141414 : root.ink;
+                        font-family: Theme.font-ui;
+                        font-size: Theme.caption;
+                        font-weight: i == root.sheet-index ? 700 : 400;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                        width: 100%; height: 100%;
+                    }
+                    TouchArea { clicked => { root.sheet-index = i; root.sheet-picked(i); } }
+                }
+            }
+        }
+
+        body := Rectangle {
+            x: 16px;
+            y: tabs.visible ? 60px : 14px;
+            width: paper-box.width - 32px;
+            height: shelf.y - self.y - 10px;
+            clip: true;
+
+            // Loading / error / unreadable
+            if root.status != "" : VerticalLayout {
+                alignment: center;
+                spacing: 10px;
+                IconLabel {
+                    text: root.status == "error" ? Icons.errorCircle : Icons.file;
+                    filled: false;
+                    color: root.status == "error" ? Theme.urgent : root.ink.with-alpha(0.7);
+                    font-size: 40px;
+                    horizontal-alignment: center;
+                }
+                Text {
+                    text: root.status == "error" ? root.error : "Reading the document…";
+                    color: root.ink.with-alpha(0.65);
+                    font-family: Theme.font-ui;
+                    font-size: Theme.caption;
+                    horizontal-alignment: center;
+                    wrap: word-wrap;
+                }
+            }
+
+            // Sheet grid: both-ways scroll, first row reads as the header.
+            if root.status == "" && root.kind == "sheet" : sheet-flick := Flickable {
+                width: 100%; height: 100%;
+                viewport-width: max(body.width, root.sheet-cols * 120px);
+                viewport-height: root.sheet-rows.length * 30px;
+                for row[ri] in root.sheet-rows : sheet-row := Rectangle {
+                    y: ri * 30px;
+                    width: max(body.width, root.sheet-cols * 120px);
+                    height: 30px;
+                    background: ri == 0 ? root.accent.with-alpha(0.22)
+                              : mod(ri, 2) == 0 ? transparent : #00000009;
+                    for cell[ci] in row.cells : Rectangle {
+                        x: ci * 120px;
+                        width: 120px; height: 30px;
+                        Text {
+                            x: 8px;
+                            width: 104px; height: 100%;
+                            text: cell;
+                            color: root.ink;
+                            font-family: Theme.font-ui;
+                            font-size: Theme.caption;
+                            font-weight: ri == 0 ? 700 : 400;
+                            vertical-alignment: center;
+                            overflow: elide;
+                        }
+                        Rectangle { x: 119px; width: 1px; height: 100%; background: #00000017; }
+                    }
+                }
+            }
+
+            // PDF pages, requested as they scroll into view.
+            if root.status == "" && root.pdf-pages : page-list := ListView {
+                width: 100%; height: 100%;
+                for pg[i] in root.pages : page-cell := Rectangle {
+                    height: body.width * root.page-aspect + 10px;
+                    page-frame := Rectangle {
+                        width: body.width;
+                        height: body.width * root.page-aspect;
+                        border-radius: 4px;
+                        background: root.paper.darker(0.03);
+                        if pg.loaded : Image {
+                            source: pg.img;
+                            width: 100%; height: 100%;
+                            image-fit: contain;
+                        }
+                        if !pg.loaded : Text {
+                            text: pg.failed ? "Page " + (i + 1) + " could not be drawn" : (i + 1);
+                            color: root.ink.with-alpha(0.35);
+                            font-family: Theme.font-ui;
+                            font-size: pg.failed ? Theme.caption : Theme.subtitle;
+                            horizontal-alignment: center;
+                            vertical-alignment: center;
+                            width: 100%; height: 100%;
+                        }
+                        init => { root.page-requested(i, body.width * 2 / 1px * 1px); }
+                    }
+                }
+            }
+
+            // Blocks: markdown (engine-rendered to blocks Rust-side), text,
+            // slides, PDFs without a rasteriser.
+            if root.status == "" && !root.pdf-pages && root.kind != "sheet" && root.kind != "" : block-list := ListView {
+                width: 100%; height: 100%;
+                for blk in root.blocks : blk-cell := Rectangle {
+                    height: blk.t == "section" ? blk-sec.preferred-height + 18px
+                          : blk-text.preferred-height + 2px;
+                    if blk.t == "section" : Rectangle {
+                        y: (self.height) / 2;
+                        width: 100%; height: 1px;
+                        background: #0000001e;
+                    }
+                    blk-sec := Rectangle {
+                        visible: blk.t == "section";
+                        x: (body.width - self.width) / 2;
+                        y: (blk-cell.height - 20px) / 2;
+                        width: blk-sec-label.preferred-width + 16px;
+                        height: 20px; border-radius: 10px;
+                        background: #0000000f;
+                        blk-sec-label := Text {
+                            text: blk.title;
+                            color: root.ink.with-alpha(0.6);
+                            font-family: Theme.font-ui;
+                            font-size: 10px;
+                            font-weight: 700;
+                            horizontal-alignment: center;
+                            vertical-alignment: center;
+                            width: 100%; height: 100%;
+                        }
+                    }
+                    blk-text := Text {
+                        visible: blk.t == "p";
+                        x: blk.bullet ? 10px : 0px;
+                        width: body.width - self.x;
+                        text: (blk.bullet ? "•  " : "") + blk.text;
+                        color: root.ink;
+                        font-family: Theme.font-ui;
+                        // Level 1 is a title, 6 barely larger than body (QML formula).
+                        font-size: blk.level > 0 ? Theme.body + max(0, 7 - blk.level) * 1px : Theme.body;
+                        font-weight: blk.level > 0 ? 700 : 400;
+                        wrap: word-wrap;
+                    }
+                }
+            }
+        }
+
+        // Shelf: "This file" card with Download.
+        shelf := Rectangle {
+            y: paper-box.height - self.height;
+            width: 100%;
+            height: shelf-col.preferred-height + 32px;
+            border-top-left-radius: 24px;
+            border-top-right-radius: 24px;
+            background: Theme.popup-background;
+            TouchArea { }
+            shelf-col := VerticalLayout {
+                x: 14px; y: 14px;
+                width: shelf.width - 28px;
+                spacing: 10px;
+                Text {
+                    text: "This file";
+                    color: root.fg;
+                    font-family: Theme.font-ui;
+                    font-size: Theme.body;
+                    font-weight: 700;
+                }
+                file-card := Rectangle {
+                    height: 60px;
+                    border-radius: 18px;
+                    background: root.fg.with-alpha(0.10);
+                    file-disc := Rectangle {
+                        x: 11px; y: (60px - self.height) / 2;
+                        width: 38px; height: 38px; border-radius: 19px;
+                        background: root.accent.with-alpha(0.25);
+                        IconLabel { text: Icons.file; filled: false; color: root.fg; width: 100%; height: 100%; }
+                    }
+                    file-labels := VerticalLayout {
+                        x: 60px;
+                        width: save-pill.x - 70px;
+                        alignment: center;
+                        spacing: 2px;
+                        Text {
+                            text: root.file-name;
+                            color: root.fg;
+                            font-family: Theme.font-ui;
+                            font-size: Theme.body;
+                            font-weight: 700;
+                            overflow: elide;
+                        }
+                        Text {
+                            text: root.kind-word
+                                + (root.size-label != "" ? " · " + root.size-label : "")
+                                + (root.subtitle != "" ? " · " + root.subtitle : "");
+                            color: root.fg.with-alpha(0.6);
+                            font-family: Theme.font-ui;
+                            font-size: Theme.caption;
+                            overflow: elide;
+                        }
+                    }
+                    save-pill := Rectangle {
+                        x: file-card.width - self.width - 10px;
+                        y: (60px - self.height) / 2;
+                        width: save-label.preferred-width + 26px;
+                        height: 34px; border-radius: 17px;
+                        background: root.accent.with-alpha(save-t.pressed ? 1.0 : 0.9);
+                        save-label := Text {
+                            text: "Download";
+                            color: #141414;
+                            font-family: Theme.font-ui;
+                            font-size: Theme.body-small;
+                            font-weight: 700;
+                            horizontal-alignment: center;
+                            vertical-alignment: center;
+                            width: 100%; height: 100%;
+                        }
+                        save-t := TouchArea { clicked => { root.download-requested(); } }
+                    }
+                }
+            }
+        }
+
+        if root.toast != "" : doc-toast := Rectangle {
+            x: (paper-box.width - self.width) / 2;
+            y: shelf.y - 40px;
+            width: min(doc-toast-text.preferred-width + 22px, paper-box.width - 60px);
+            height: 28px; border-radius: 14px;
+            background: Theme.background.with-alpha(0.85);
+            doc-toast-text := Text {
+                text: root.toast;
+                color: #ececec;
+                font-family: Theme.font-ui;
+                font-size: Theme.caption;
+                overflow: elide;
                 horizontal-alignment: center;
                 vertical-alignment: center;
                 width: 100%; height: 100%;

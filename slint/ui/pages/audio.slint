@@ -1,30 +1,228 @@
-// AudioPage — port of the QML page of the same name. STUB: a fork replaces
-// this file wholesale; add properties/callbacks here and list the app.slint +
-// bridge wiring you need in your WIRING file.
+// AudioPage — mobile/AudioPage.qml. Flat header, full-bleed tinted stage with
+// cover art, a rounded shelf carrying the transport. No skip controls: one
+// track, nowhere to skip to.
 
 import { Theme } from "../style.slint";
 import { Icons } from "../icons.slint";
-import { IconLabel, ActionButton, Avatar, SButton, TextWell } from "../components.slint";
-import { SettingsHeader, SettingsGroup, SettingsRow, OverflowMenu, ChoiceSheet, Spinner, MenuEntry, ChoiceEntry } from "../furniture.slint";
-import { RoomRow, TimelineRow, MemberRow, SpaceRow, HierarchyRow, ThreadRow, UserRow, RoomSettingsModel, PowerRow, ReactionChip, EmojiItem } from "../model.slint";
+import { IconLabel, ActionButton } from "../components.slint";
 
 export component AudioPage inherits Rectangle {
     in property <color> fg: Theme.menu-text;
+    in property <color> accent: Theme.accent;
     callback closed;
+
+    in property <string> title;
+    in property <string> size-label;
+    in property <string> status: "";      // "" | "loading" | "error"
+    in property <image> art;
+    in property <bool> have-art: false;
+    in property <color> tone: Theme.accent;   // audio.info's accent, or fallback
+    in property <float> duration: 0;          // seconds
+    in property <bool> playing: false;
+    in property <float> position: 0;          // seconds, panel playback clock
+    in property <string> toast: "";
+    in property <bool> can-download: true;
+
+    callback toggle-requested;
+    callback seek-requested(float);
+    callback download-requested;
+
+    property <float> frac: root.duration > 0 ? max(0, min(1, root.position / root.duration)) : 0;
+
+    function clock(t: float) -> string {
+        return floor(t / 60) + ":" + (mod(floor(t), 60) < 10 ? "0" : "") + mod(floor(t), 60);
+    }
+
     background: transparent;
-    VerticalLayout {
-        SettingsHeader {
-            title: "Audio";
-            fg: root.fg;
-            back => { root.closed(); }
-        }
-        Rectangle {
-            vertical-stretch: 1;
+
+    header := Rectangle {
+        height: 52px;
+        HorizontalLayout {
+            padding-left: 6px; padding-right: 12px;
+            spacing: 8px;
+            Rectangle {
+                width: 44px;
+                ActionButton {
+                    y: (52px - self.height) / 2;
+                    width: 44px; height: 44px;
+                    icon: Icons.back;
+                    filled: false;
+                    foreground: root.fg;
+                    clicked => { root.closed(); }
+                }
+            }
             Text {
-                text: "Audio — not ported yet";
-                color: root.fg.with-alpha(0.5);
+                text: "Audio";
+                color: root.fg;
                 font-family: Theme.font-ui;
-                font-size: Theme.body;
+                font-size: Theme.subtitle;
+                font-weight: 700;
+                vertical-alignment: center;
+                overflow: elide;
+                horizontal-stretch: 1;
+            }
+        }
+    }
+
+    // Stage: tinted gradient behind the art, cut at the header with round corners.
+    stage := Rectangle {
+        y: 52px;
+        width: 100%;
+        height: root.height - 52px;
+        border-top-left-radius: 24px;
+        border-top-right-radius: 24px;
+        clip: true;
+        background: @linear-gradient(180deg, root.tone.darker(1.1) 0%, root.tone.darker(2.0) 100%);
+
+        cover-stack := Rectangle {
+            property <length> box: min(stage.width - 56px, 300px);
+            x: (stage.width - self.box) / 2;
+            y: max(10px, (stage.height - shelf.height - self.box) / 2);
+            width: self.box; height: self.box;
+            border-radius: 18px;
+            clip: true;
+            background: root.have-art ? transparent : #ffffff.with-alpha(0.07);
+            if root.have-art : Image {
+                source: root.art;
+                width: 100%; height: 100%;
+                image-fit: cover;
+            }
+            if !root.have-art && root.status != "loading" : IconLabel {
+                text: Icons.music;
+                filled: false;
+                color: #ffffff.with-alpha(0.5);
+                font-size: 72px;
+                width: 100%; height: 100%;
+            }
+            if !root.have-art && root.status == "loading" : Text {
+                text: "Reading the track…";
+                color: #ffffff.with-alpha(0.5);
+                font-family: Theme.font-ui;
+                font-size: Theme.caption;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+                width: 100%; height: 100%;
+            }
+            // playing "breathes" the art (0.97 <-> 1.0 in QML)
+            opacity: root.playing || !root.have-art ? 1.0 : 0.97;
+        }
+
+        dl-disc := Rectangle {
+            x: stage.width - self.width - 12px; y: 12px;
+            width: 38px; height: 38px; border-radius: 19px;
+            background: #000000.with-alpha(dl-t.pressed ? 0.6 : 0.42);
+            IconLabel { text: Icons.download; filled: false; color: #ffffff; width: 100%; height: 100%; }
+            dl-t := TouchArea {
+                enabled: root.can-download;
+                clicked => { root.download-requested(); }
+            }
+        }
+
+        // Shelf
+        shelf := Rectangle {
+            y: stage.height - self.height;
+            width: 100%;
+            height: shelf-col.preferred-height + 32px;
+            border-top-left-radius: 24px;
+            border-top-right-radius: 24px;
+            background: Theme.popup-background;
+            TouchArea { }
+            shelf-col := VerticalLayout {
+                x: 16px; y: 14px;
+                width: shelf.width - 32px;
+                spacing: 10px;
+                Text {
+                    text: root.title;
+                    color: root.fg;
+                    font-family: Theme.font-ui;
+                    font-size: Theme.body;
+                    font-weight: 700;
+                    overflow: elide;
+                }
+                // Scrubber
+                scrub-box := Rectangle {
+                    height: 16px;
+                    track := Rectangle {
+                        y: (16px - 4px) / 2;
+                        width: 100%; height: 4px; border-radius: 2px;
+                        background: root.fg.with-alpha(0.18);
+                        Rectangle {
+                            width: track.width * root.frac;
+                            height: 100%; border-radius: 2px;
+                            background: root.accent;
+                        }
+                    }
+                    knob := Rectangle {
+                        x: max(0px, min(track.width - self.width, track.width * root.frac - self.width / 2));
+                        y: (16px - self.height) / 2;
+                        // pressed feedback replaces the QML hover scale
+                        width: scrub-t.pressed ? 17px : 13px;
+                        height: scrub-t.pressed ? 17px : 13px;
+                        border-radius: self.width / 2;
+                        background: root.accent;
+                        animate width, height { duration: 100ms; }
+                    }
+                    scrub-t := TouchArea {
+                        enabled: root.duration > 0;
+                        clicked => { root.seek-requested((self.mouse-x / self.width) * root.duration); }
+                        moved => {
+                            if (self.pressed) {
+                                root.seek-requested((max(0px, min(self.width, self.mouse-x)) / self.width) * root.duration);
+                            }
+                        }
+                    }
+                }
+                // Transport + times
+                transport := Rectangle {
+                    height: 48px;
+                    Text {
+                        text: root.clock(root.position);
+                        color: root.fg.with-alpha(0.6);
+                        font-family: Theme.font-ui;
+                        font-size: Theme.caption;
+                        vertical-alignment: center;
+                        height: 100%;
+                    }
+                    play-disc := Rectangle {
+                        x: (transport.width - self.width) / 2;
+                        y: (48px - self.height) / 2;
+                        width: 48px; height: 48px; border-radius: 24px;
+                        background: root.accent;
+                        opacity: play-t.pressed ? 0.85 : 1.0;
+                        IconLabel {
+                            text: root.playing ? Icons.pause : Icons.play;
+                            color: #141414;
+                            font-size: 22px;
+                            width: 100%; height: 100%;
+                        }
+                        play-t := TouchArea { clicked => { root.toggle-requested(); } }
+                    }
+                    Text {
+                        x: transport.width - self.preferred-width;
+                        text: root.duration > 0 ? root.clock(root.duration) : root.size-label;
+                        color: root.fg.with-alpha(0.6);
+                        font-family: Theme.font-ui;
+                        font-size: Theme.caption;
+                        vertical-alignment: center;
+                        height: 100%;
+                    }
+                }
+            }
+        }
+
+        // Toast
+        if root.toast != "" : toast-pill := Rectangle {
+            x: (stage.width - self.width) / 2;
+            y: shelf.y - 40px;
+            width: min(toast-text.preferred-width + 22px, stage.width - 60px);
+            height: 28px; border-radius: 14px;
+            background: Theme.background.with-alpha(0.85);
+            toast-text := Text {
+                text: root.toast;
+                color: #ececec;
+                font-family: Theme.font-ui;
+                font-size: Theme.caption;
+                overflow: elide;
                 horizontal-alignment: center;
                 vertical-alignment: center;
                 width: 100%; height: 100%;

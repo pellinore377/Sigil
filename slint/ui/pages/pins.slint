@@ -1,33 +1,228 @@
-// PinsPage — port of the QML page of the same name. STUB: a fork replaces
-// this file wholesale; add properties/callbacks here and list the app.slint +
-// bridge wiring you need in your WIRING file.
+// PinsPage — a room's pinned messages as a timeline. Pinned events are
+// fetched by id (`pins.items`); TimelineFocus::PinnedEvents is not usable
+// here (PinsPage.qml). Rows arrive as TimelineRow with the pins stamp format
+// ("Today · 1:58 PM") in `stamp` and the kind chip words in `media-filename`.
 
+import { ListView } from "std-widgets.slint";
 import { Theme } from "../style.slint";
 import { Icons } from "../icons.slint";
-import { IconLabel, ActionButton, Avatar, SButton, TextWell } from "../components.slint";
-import { SettingsHeader, SettingsGroup, SettingsRow, OverflowMenu, ChoiceSheet, Spinner, MenuEntry, ChoiceEntry } from "../furniture.slint";
-import { RoomRow, TimelineRow, MemberRow, SpaceRow, HierarchyRow, ThreadRow, UserRow, RoomSettingsModel, PowerRow, ReactionChip, EmojiItem } from "../model.slint";
+import { IconLabel, ActionButton, Avatar } from "../components.slint";
+import { TimelineRow } from "../model.slint";
 
 export component PinsPage inherits Rectangle {
     in property <color> fg: Theme.menu-text;
+    in property <color> accent: Theme.accent;
+    in property <string> room-name;
+    in property <bool> room-is-dm;
+    in property <[TimelineRow]> items;
+    in property <bool> loading;
+    in property <bool> loaded;
+
     callback closed;
-    background: transparent;
+    callback jump-requested(string);
+    callback unpin(string);
+
+    background: Theme.menu-background.brighter(0.35);
+
+    // The exact fill BubbleDelegate uses; an approximation does not match the room.
+    pure function bubble-fill(own: bool) -> color {
+        return own ? root.accent.mix(Theme.popup-background, 0.42)
+                   : root.fg.mix(Theme.popup-background, 0.22);
+    }
+
     VerticalLayout {
-        SettingsHeader {
-            title: "Pins";
-            fg: root.fg;
-            back => { root.closed(); }
+        header := Rectangle {
+            height: 56px;
+            HorizontalLayout {
+                padding-left: 6px; padding-right: 14px;
+                spacing: 6px;
+                Rectangle {
+                    width: 44px;
+                    ActionButton {
+                        y: (56px - self.height) / 2;
+                        width: 44px; height: 44px;
+                        icon: Icons.back; filled: false;
+                        foreground: root.fg;
+                        clicked => { root.closed(); }
+                    }
+                }
+                VerticalLayout {
+                    alignment: center;
+                    horizontal-stretch: 1;
+                    Text {
+                        text: "Pinned";
+                        color: root.fg;
+                        font-family: Theme.font-ui;
+                        font-size: Theme.heading;
+                        font-weight: 700;
+                        overflow: elide;
+                    }
+                    Text {
+                        text: root.items.length > 0
+                            ? "\{root.room-name} · \{root.items.length} pinned"
+                            : root.room-name;
+                        color: root.fg.with-alpha(0.55);
+                        font-family: Theme.font-ui;
+                        font-size: Theme.caption;
+                        overflow: elide;
+                    }
+                }
+            }
         }
-        Rectangle {
+
+        ground := Rectangle {
             vertical-stretch: 1;
-            Text {
-                text: "Pins — not ported yet";
-                color: root.fg.with-alpha(0.5);
-                font-family: Theme.font-ui;
-                font-size: Theme.body;
-                horizontal-alignment: center;
-                vertical-alignment: center;
-                width: 100%; height: 100%;
+            background: Theme.menu-background.darker(0.26).mix(root.accent, 0.82);
+            border-top-left-radius: 24px;
+            border-top-right-radius: 24px;
+            clip: true;
+
+            if root.items.length == 0 : VerticalLayout {
+                alignment: center;
+                padding-left: 30px; padding-right: 30px;
+                spacing: 10px;
+                IconLabel {
+                    text: Icons.pin;
+                    filled: false;
+                    color: root.accent.with-alpha(0.8);
+                    font-size: 44px;
+                    horizontal-alignment: center;
+                    transform-rotation: 35deg;
+                }
+                Text {
+                    text: root.loading || !root.loaded ? "Loading pinned messages…" : "Nothing pinned yet";
+                    color: root.fg;
+                    font-family: Theme.font-ui;
+                    font-size: Theme.body;
+                    font-weight: 700;
+                    horizontal-alignment: center;
+                }
+                if root.loaded && !root.loading : Text {
+                    text: "Pin a message from its menu to keep it here.";
+                    color: root.fg.with-alpha(0.6);
+                    font-family: Theme.font-ui;
+                    font-size: Theme.caption;
+                    horizontal-alignment: center;
+                    wrap: word-wrap;
+                }
+            }
+
+            if root.items.length > 0 : ListView {
+                y: 10px;
+                width: 100%; height: ground.height - 10px;
+                for item in root.items : prow := Rectangle {
+                    height: p-inner.preferred-height + 12px;
+                    p-inner := VerticalLayout {
+                        width: prow.width;
+                        spacing: 4px;
+                        // Centred stamp above each pinned card.
+                        Text {
+                            text: item.stamp;
+                            color: root.fg.with-alpha(0.55);
+                            font-family: Theme.font-ui;
+                            font-size: Theme.caption;
+                            font-weight: 700;
+                            horizontal-alignment: center;
+                        }
+                        // Sender row — a DM shows no sender header in the room,
+                        // so none here either.
+                        if !item.is-own && !root.room-is-dm : HorizontalLayout {
+                            padding-left: 14px;
+                            spacing: 7px;
+                            alignment: start;
+                            Avatar {
+                                size: 20px;
+                                source: item.avatar;
+                                initials: item.initials;
+                                tint: item.tint;
+                            }
+                            Text {
+                                text: item.sender-name;
+                                color: root.fg.with-alpha(0.6);
+                                font-family: Theme.font-ui;
+                                font-size: Theme.caption;
+                                font-weight: 700;
+                                vertical-alignment: center;
+                            }
+                        }
+                        // Card + trailing unpin, aligned per ownership.
+                        HorizontalLayout {
+                            alignment: item.is-own ? end : start;
+                            padding-left: 14px; padding-right: 14px;
+                            spacing: 4px;
+                            if item.is-own : ActionButton {
+                                y: (card.height - self.height) / 2;
+                                icon: Icons.close; filled: false;
+                                foreground: root.fg;
+                                clicked => { root.unpin(item.event-id); }
+                            }
+                            card := Rectangle {
+                                width: min(prow.width * 0.78, card-inner.preferred-width + 22px);
+                                height: card-inner.preferred-height + 20px;
+                                border-radius: 16px;
+                                background: root.bubble-fill(item.is-own);
+                                // The pin badge overhangs the top corner.
+                                pin-badge := Rectangle {
+                                    x: item.is-own ? card.width - 15px : -5px;
+                                    y: -5px;
+                                    width: 20px; height: 20px;
+                                    border-radius: 10px;
+                                    background: root.accent;
+                                    border-width: 1px;
+                                    border-color: Theme.popup-background;
+                                    Text {
+                                        text: Icons.pin;
+                                        color: Theme.background;
+                                        font-family: Theme.font-icon;
+                                        font-size: Theme.caption;
+                                        horizontal-alignment: center;
+                                        vertical-alignment: center;
+                                        width: 100%; height: 100%;
+                                        transform-rotation: item.is-own ? 35deg : -35deg;
+                                    }
+                                }
+                                card-inner := VerticalLayout {
+                                    x: 11px; y: 10px;
+                                    width: card.width - 22px;
+                                    spacing: 3px;
+                                    // Icon and words are separate elements: one
+                                    // family per element (kind chip).
+                                    if item.media-filename != "" : HorizontalLayout {
+                                        alignment: start;
+                                        spacing: 4px;
+                                        IconLabel {
+                                            text: item.media-icon;
+                                            color: root.fg.with-alpha(0.6);
+                                            font-size: Theme.caption;
+                                            vertical-alignment: center;
+                                        }
+                                        Text {
+                                            text: item.media-filename;
+                                            color: root.fg.with-alpha(0.6);
+                                            font-family: Theme.font-ui;
+                                            font-size: Theme.caption;
+                                            vertical-alignment: center;
+                                        }
+                                    }
+                                    body-text := Text {
+                                        text: item.body;
+                                        color: root.fg;
+                                        font-family: Theme.font-ui;
+                                        font-size: Theme.body;
+                                        wrap: word-wrap;
+                                    }
+                                }
+                                TouchArea { clicked => { root.jump-requested(item.event-id); } }
+                            }
+                            if !item.is-own : ActionButton {
+                                y: (card.height - self.height) / 2;
+                                icon: Icons.close; filled: false;
+                                foreground: root.fg;
+                                clicked => { root.unpin(item.event-id); }
+                            }
+                        }
+                    }
+                }
             }
         }
     }

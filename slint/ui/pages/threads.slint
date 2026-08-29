@@ -1,33 +1,176 @@
-// ThreadsPage — port of the QML page of the same name. STUB: a fork replaces
-// this file wholesale; add properties/callbacks here and list the app.slint +
-// bridge wiring you need in your WIRING file.
+// ThreadsPage — every thread in a room, most recently active first (server
+// order). Opening one is not a special view: the engine builds a
+// thread-focused timeline and the ordinary chat page renders it
+// (ThreadsPage.qml). Chat-theme tones arrive pre-mixed via `accent`;
+// the full ChatPage derivation is noted in WIRING-spaces.md.
 
+import { ListView } from "std-widgets.slint";
 import { Theme } from "../style.slint";
 import { Icons } from "../icons.slint";
-import { IconLabel, ActionButton, Avatar, SButton, TextWell } from "../components.slint";
-import { SettingsHeader, SettingsGroup, SettingsRow, OverflowMenu, ChoiceSheet, Spinner, MenuEntry, ChoiceEntry } from "../furniture.slint";
-import { RoomRow, TimelineRow, MemberRow, SpaceRow, HierarchyRow, ThreadRow, UserRow, RoomSettingsModel, PowerRow, ReactionChip, EmojiItem } from "../model.slint";
+import { IconLabel, ActionButton, Avatar } from "../components.slint";
+import { ThreadRow } from "../model.slint";
 
 export component ThreadsPage inherits Rectangle {
     in property <color> fg: Theme.menu-text;
+    in property <color> accent: Theme.accent;
+    in property <string> room-name;
+    in property <[ThreadRow]> threads;
+    in property <bool> loading;
+    in property <bool> loaded;
+
     callback closed;
-    background: transparent;
+    callback thread-picked(string);
+
+    background: Theme.menu-background.brighter(0.35);
+
     VerticalLayout {
-        SettingsHeader {
-            title: "Threads";
-            fg: root.fg;
-            back => { root.closed(); }
+        // Header: title + unconditional subtitle (a subtitle that appears only
+        // once the count lands makes the title jump on load).
+        header := Rectangle {
+            height: 56px;
+            HorizontalLayout {
+                padding-left: 6px; padding-right: 14px;
+                spacing: 6px;
+                Rectangle {
+                    width: 44px;
+                    ActionButton {
+                        y: (56px - self.height) / 2;
+                        width: 44px; height: 44px;
+                        icon: Icons.back; filled: false;
+                        foreground: root.fg;
+                        clicked => { root.closed(); }
+                    }
+                }
+                VerticalLayout {
+                    alignment: center;
+                    horizontal-stretch: 1;
+                    Text {
+                        text: "Threads";
+                        color: root.fg;
+                        font-family: Theme.font-ui;
+                        font-size: Theme.heading;
+                        font-weight: 700;
+                        overflow: elide;
+                    }
+                    Text {
+                        text: root.threads.length == 0 ? root.room-name
+                            : root.threads.length == 1 ? "\{root.room-name} · 1 thread"
+                            : "\{root.room-name} · \{root.threads.length} threads";
+                        color: root.fg.with-alpha(0.55);
+                        font-family: Theme.font-ui;
+                        font-size: Theme.caption;
+                        overflow: elide;
+                    }
+                }
+            }
         }
-        Rectangle {
+
+        ground := Rectangle {
             vertical-stretch: 1;
-            Text {
-                text: "Threads — not ported yet";
-                color: root.fg.with-alpha(0.5);
-                font-family: Theme.font-ui;
-                font-size: Theme.body;
-                horizontal-alignment: center;
-                vertical-alignment: center;
-                width: 100%; height: 100%;
+            background: Theme.menu-background.darker(0.26).mix(root.accent, 0.82);
+            border-top-left-radius: 24px;
+            border-top-right-radius: 24px;
+            clip: true;
+
+            // Empty and loading say different things.
+            if root.threads.length == 0 : VerticalLayout {
+                alignment: center;
+                padding-left: 30px; padding-right: 30px;
+                spacing: 10px;
+                IconLabel {
+                    text: Icons.thread;
+                    filled: false;
+                    color: root.accent.with-alpha(0.8);
+                    font-size: 44px;
+                    horizontal-alignment: center;
+                }
+                Text {
+                    text: root.loading || !root.loaded ? "Looking for threads…" : "No threads yet";
+                    color: root.fg;
+                    font-family: Theme.font-ui;
+                    font-size: Theme.body;
+                    font-weight: 700;
+                    horizontal-alignment: center;
+                }
+                if root.loaded && !root.loading : Text {
+                    text: "Reply in thread from a message's menu to start one.";
+                    color: root.fg.with-alpha(0.6);
+                    font-family: Theme.font-ui;
+                    font-size: Theme.caption;
+                    horizontal-alignment: center;
+                    wrap: word-wrap;
+                }
+            }
+
+            if root.threads.length > 0 : ListView {
+                y: 6px;
+                width: 100%; height: ground.height - 6px;
+                for thread in root.threads : trow := Rectangle {
+                    height: 72px;
+                    Rectangle {
+                        x: 8px; width: trow.width - 16px;
+                        y: 4px; height: trow.height - 8px;
+                        border-radius: 14px;
+                        background: trow-t.pressed || trow-t.has-hover
+                            ? root.fg.with-alpha(0.05) : transparent;
+                    }
+                    HorizontalLayout {
+                        padding-left: 16px; padding-right: 16px;
+                        spacing: 12px;
+                        Rectangle {
+                            width: 44px;
+                            Avatar {
+                                y: (trow.height - self.height) / 2;
+                                size: 44px;
+                                source: thread.avatar;
+                                initials: thread.initials;
+                                tint: thread.tint;
+                            }
+                        }
+                        VerticalLayout {
+                            alignment: center;
+                            spacing: 2px;
+                            horizontal-stretch: 1;
+                            Text {
+                                text: thread.sender-name;
+                                color: root.fg;
+                                font-family: Theme.font-ui;
+                                font-size: Theme.subtitle;
+                                font-weight: 700;
+                                overflow: elide;
+                            }
+                            HorizontalLayout {
+                                alignment: start;
+                                spacing: 5px;
+                                if thread.reply-count > 0 : Text {
+                                    text: thread.reply-count == 1 ? "1 reply" : "\{thread.reply-count} replies";
+                                    color: root.accent.with-alpha(0.9);
+                                    font-family: Theme.font-ui;
+                                    font-size: Theme.body-small;
+                                    font-weight: 700;
+                                    vertical-alignment: center;
+                                }
+                                Text {
+                                    text: thread.body != "" ? thread.body : "Thread";
+                                    color: root.fg.with-alpha(0.55);
+                                    font-family: Theme.font-ui;
+                                    font-size: Theme.body-small;
+                                    overflow: elide;
+                                    vertical-alignment: center;
+                                    horizontal-stretch: 1;
+                                }
+                            }
+                        }
+                        Text {
+                            text: thread.last-ts-label;
+                            color: root.fg.with-alpha(0.45);
+                            font-family: Theme.font-ui;
+                            font-size: Theme.caption;
+                            vertical-alignment: center;
+                        }
+                    }
+                    trow-t := TouchArea { clicked => { root.thread-picked(thread.root-id); } }
+                }
             }
         }
     }
