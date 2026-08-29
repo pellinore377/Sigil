@@ -5,9 +5,14 @@ other frontend — built to decide whether Slint *becomes* Sigil's UI toolkit.
 Android is the proving ground because it is the platform QML cannot follow us
 to; the same crate runs on the desktop for fast iteration.
 
-**Status: a test case, on the `slint` branch.** Login, room list and a text
-timeline against a real homeserver. No calls, no media bodies, no SigilText
-effects yet.
+**Status: the full port, on the `slint` branch.** Every QML page exists in
+Slint and is wired to the engine: login/recovery, home, full chat (replies,
+edits, reactions, media bodies, polls, voice, receipts, the action sheet,
+pagination), all settings pages, spaces and their management, threads, pins,
+search, forward, start-chat, the image viewer, documents, audio, chat themes,
+attach with polls and stickers, and the voice recorder. Calls and maps are
+wired shells: Android builds the engine without the calls feature, and Slint
+has no map renderer — both recorded as decision evidence, not surprises.
 
 ## Architecture
 

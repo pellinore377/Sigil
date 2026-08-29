@@ -421,6 +421,18 @@ pub fn on_act(ui: &mut UiState, win: &AppWindow, action: &str, a: &str, b2: &str
         "vote" => req.fire("poll.vote", json!({"roomId": ui.open_room, "eventId": a, "answers": [b2]})),
         "start-call" => req.fire("call.start", json!({"roomId": open_room, "video": a == "true"})),
         "join-call" => req.fire("call.join", json!({"roomId": open_room, "video": false})),
+        "call-accept" => {
+            let room = ui.call["incoming"]["roomId"].as_str().unwrap_or("").to_string();
+            if !room.is_empty() {
+                req.fire("call.join", json!({"roomId": room, "video": a == "true"}));
+            }
+        }
+        "call-decline" => {
+            let room = ui.call["incoming"]["roomId"].as_str().unwrap_or("").to_string();
+            if !room.is_empty() {
+                req.fire("call.decline", json!({"roomId": room}));
+            }
+        }
         "accept-invite" => req.fire("room.join", json!({"roomIdOrAlias": open_room})),
         "decline-invite" => {
             req.fire("room.leave", json!({"roomId": open_room}));

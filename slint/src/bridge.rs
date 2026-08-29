@@ -451,6 +451,23 @@ fn handle_event(ui: &mut UiState, v: &Value) {
         }
         "call.state" => {
             ui.call = v.clone();
+            win.set_call_state(v["state"].as_str().unwrap_or("idle").into());
+            let incoming = &v["incoming"];
+            let has_incoming = !incoming.is_null();
+            win.set_call_incoming(has_incoming);
+            if has_incoming {
+                let caller = incoming["senderName"].as_str()
+                    .or(incoming["sender"].as_str())
+                    .unwrap_or("Incoming call");
+                win.set_call_incoming_name(caller.into());
+                win.set_call_incoming_tint(rows::tint_for(incoming["sender"].as_str().unwrap_or(caller)));
+                let room = incoming["roomId"].as_str().unwrap_or("");
+                let name = ui.rooms_json.iter()
+                    .find(|r| r["id"].as_str() == Some(room))
+                    .and_then(|r| r["name"].as_str())
+                    .unwrap_or("");
+                win.set_call_room_name(name.into());
+            }
         }
         "call.devices" => {
             ui.devices = v.clone();

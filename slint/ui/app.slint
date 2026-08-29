@@ -36,6 +36,9 @@ import { AudioPage } from "pages/audio.slint";
 import { ImageViewer, ViewerItem } from "viewer.slint";
 import { AttachMenu, StickerItem } from "attach.slint";
 import { VoiceRecorder } from "voicerec.slint";
+import { CallPage, Floater } from "callpage.slint";
+import { CallPip } from "callpip.slint";
+import { CallBanner } from "callbanner.slint";
 
 export { ViewerItem, StickerItem, MenuEntry, RoomRow, TimelineRow, MemberRow, SpaceRow, HierarchyRow, ThreadRow, UserRow, RoomSettingsModel, PowerRow, ReactionChip, EmojiItem, ReplyRef, CallParticipant, DeviceRow, PollOption, SpaceMembershipRow, GradPair, DocBlock, SheetRow, SheetTab, DocPageImage, Icons }
 
@@ -219,6 +222,14 @@ export component AppWindow inherits Window {
     in property <[StickerItem]> at-stickers;
     in property <bool> at-stickers-loaded;
     in-out property <bool> recorder-open: false;
+    // Calls: rendered from the call.state digest; live wiring is the desktop
+    // pass — Android builds the engine without the calls feature.
+    in property <string> call-state: "idle";
+    in property <string> call-room-name;
+    in property <bool> call-incoming: false;
+    in property <string> call-incoming-name;
+    in property <color> call-incoming-tint: Theme.accent;
+    in-out property <bool> call-page-open: false;
     in property <string> rec-state: "idle";
     in property <float> rec-elapsed;
     in property <float> rec-clip-duration;
@@ -635,6 +646,15 @@ export component AppWindow inherits Window {
             restart => { root.act("voice-restart", "", ""); }
             attach => { root.act("voice-attach", "", ""); }
             cancelled => { root.act("voice-cancel", "", ""); root.recorder-open = false; }
+        }
+        if root.call-incoming : CallBanner {
+            width: 100%;
+            caller-name: root.call-incoming-name;
+            caller-tint: root.call-incoming-tint;
+            room-name: root.call-room-name;
+            accept => { root.act("call-accept", "false", ""); }
+            accept-video => { root.act("call-accept", "true", ""); }
+            decline => { root.act("call-decline", "", ""); }
         }
         if root.viewer-open : ImageViewer {
             width: 100%; height: 100%;
