@@ -260,6 +260,8 @@ export component AppWindow inherits Window {
     callback act(string, string, string);
 
     public function scroll-timeline-to-end() { chat.scroll-to-end(); }
+    public function restore-timeline-from-end(d: length) { chat.restore-from-end(d); }
+    out property <length> chat-from-end: chat.from-end;
     public function clear-composer() { chat.clear-composer(); }
 
     public function go(page: string) {

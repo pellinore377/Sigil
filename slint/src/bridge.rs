@@ -71,6 +71,10 @@ pub struct UiState {
     pub login_url: String,
     /// Avatar images by path; a cache because rooms.list re-arrives constantly.
     pub avatars: HashMap<String, slint::Image>,
+    /// THE timeline model. Mutated in place: handing the ListView a fresh
+    /// model on every diff resets the viewport, which reads as "cannot
+    /// scroll" the moment receipts start flowing.
+    pub items_model: std::rc::Rc<VecModel<TimelineRow>>,
     /// Whether the last typing notice we sent said "typing".
     pub typing_sent: bool,
     // ---- Service.qml parity ----
@@ -148,6 +152,7 @@ pub fn start(win: &AppWindow, rt: &tokio::runtime::Runtime, icons: IconSet) -> R
         my_user: String::new(),
         login_url: String::new(),
         avatars: HashMap::new(),
+        items_model: std::rc::Rc::new(VecModel::default()),
         typing_sent: false,
         spaces_tree: Vec::new(),
         receipts_by_room: HashMap::new(),
@@ -495,15 +500,20 @@ fn handle_event(ui: &mut UiState, v: &Value) {
             if v["roomId"].as_str().unwrap_or("") != ui.open_room {
                 return;
             }
-            let mut at_end = false;
+            let mut grew_tail = false;
             for op in v["ops"].as_array().map(|a| a.as_slice()).unwrap_or(&[]) {
-                at_end |= apply_diff(&mut ui.shadow, op);
+                grew_tail |= apply_diff(&mut ui.shadow, op);
             }
+            // QML's atYEnd rule: stick to the bottom only when the reader is
+            // there; otherwise hold their distance from it across the rebuild
+            // (prepends from pagination included).
+            let from_end = win.get_chat_from_end();
             rebuild_timeline(ui, &win);
-            if at_end {
+            if grew_tail && from_end < 8.0 {
                 win.invoke_scroll_timeline_to_end();
-                // The room is on screen; reading it is what looking at it means.
-                ui.req.fire("room.markRead", json!({"roomId": ui.open_room}));
+                ui.req.fire("room.markRead", json!({"roomId": crate::actions::room_of_key(&ui.open_room)}));
+            } else {
+                win.invoke_restore_timeline_from_end(from_end);
             }
         }
         _ => {}
@@ -604,7 +614,7 @@ pub fn open_room(ui: &mut UiState, win: &AppWindow, id: &str) {
     ui.open_room = id.to_string();
     ui.shadow.clear();
     ui.typing_sent = false;
-    win.set_items(ModelRc::new(VecModel::from(Vec::<TimelineRow>::new())));
+    ui.items_model.set_vec(Vec::new());
     win.set_typing_line(typing_line(ui).into());
     win.set_chat_is_thread(false);
     win.set_pagination_state("idle".into());
@@ -620,10 +630,10 @@ pub fn open_room(ui: &mut UiState, win: &AppWindow, id: &str) {
 
 /// Point the chat surface at a different view key (a thread) without the
 /// room.open side effects — thread.open already opened it engine-side.
-pub fn switch_timeline(ui: &mut UiState, win: &AppWindow, key: &str) {
+pub fn switch_timeline(ui: &mut UiState, _win: &AppWindow, key: &str) {
     ui.open_room = key.to_string();
     ui.shadow.clear();
-    win.set_items(ModelRc::new(VecModel::from(Vec::<TimelineRow>::new())));
+    ui.items_model.set_vec(Vec::new());
 }
 
 pub fn room_row_of(ui: &mut UiState, room: &Value) -> RoomRow {
@@ -865,7 +875,8 @@ pub fn rebuild_timeline(ui: &mut UiState, win: &AppWindow) {
             html_ish: false,
         });
     }
-    win.set_items(ModelRc::new(VecModel::from(rows_out)));
+    ui.items_model.set_vec(rows_out);
+    win.set_items(ModelRc::from(ui.items_model.clone()));
 }
 
 fn start_demo(win: &AppWindow, rt: &tokio::runtime::Runtime, icons: IconSet) -> Requester {
@@ -883,6 +894,7 @@ fn start_demo(win: &AppWindow, rt: &tokio::runtime::Runtime, icons: IconSet) -> 
         my_user: "@pell:demo.host".into(),
         login_url: String::new(),
         avatars: HashMap::new(),
+        items_model: std::rc::Rc::new(VecModel::default()),
         typing_sent: false,
         spaces_tree: Vec::new(),
         receipts_by_room: HashMap::new(),

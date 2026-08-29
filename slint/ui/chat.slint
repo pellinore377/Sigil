@@ -98,7 +98,12 @@ export component ChatPage inherits Rectangle {
     property <bool> quote-armed: root.reply-to != "" || root.edit-of != "";
     // ChatPage.qml convoC: menu.background darkened 1.35, 18% accent.
     property <color> convo-c: Theme.menu-background.darker(0.26).mix(root.accent, 0.82);
-    property <length> from-end: max(0px, (list.viewport-height - list.visible-height) + list.viewport-y);
+    out property <length> from-end: max(0px, (list.viewport-height - list.visible-height) + list.viewport-y);
+    /// Put the view back at the same distance from the bottom — how scroll
+    /// position survives the bridge rebuilding the model (prepends included).
+    public function restore-from-end(d: length) {
+        list.viewport-y = min(0px, (list.visible-height - list.viewport-height) + d);
+    }
 
     background: Theme.menu-background;
 
