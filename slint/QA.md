@@ -47,3 +47,41 @@ Live findings; struck through when fixed and verified on device.
       fixture (earlier read may have been correct behavior).
 - [ ] Settings identity avatar image (fix landed; verify).
 - [ ] GIF playback, rich text bodies, link previews (structural, in readout).
+
+## Verified on device (evening run, 29 Aug — build fdaa767)
+- Pin marker renders on the pinned message (pins.list reply now handled).
+- 🎯 reaction from the desktop QML session shows cross-device.
+- Doc preview card: white page, text lines, TEXT chip, correct height.
+- Attach menu: bottom drawer, opaque chrome, all seven tiles
+  (Files/Emojis/Stickers/Poll/Current Location/Live Location/Drop a Pin),
+  scrim over the timeline. Matches the QML drawer.
+- Voice recorder: QML-style bottom card — "Tap to record your voice",
+  Cancel · mic · Attach row. Replaced the full-screen overlay.
+- Keyboard inset: composer rises above the IME; content height shrinks.
+- History state events render as centered notices (power levels, history
+  visibility, avatar changes); location cards + "Live location ended";
+  scroll-to-bottom FAB appears when scrolled up.
+- Header "1 members" is verbatim QML (ChatPage.qml:1012 concatenates
+  joinedMembers + " members" with no singular form) — kept 1:1.
+- Cargo.toml: lto = "thin" restored for shipping; final LTO build validated.
+
+## Still open (deferred, in the readout)
+- [ ] Thread-count chip on the thread root not yet sighted on device
+      (bridge reads threadSummary.count; field confirmed in core — verify
+      with a fresh follow dump of the root item).
+- [ ] Threads page / Pins page on-device pass with the seeded fixtures.
+- [ ] Image viewer open/zoom/download; search page; forward flow; theme apply.
+- [ ] Composer-insert for emoji picker; Android SAF file pick; clipboard JNI.
+
+## End of run (29 Aug ~5pm)
+- Threads page verified on device: "Sigil Test · 2 threads", avatar rows,
+  bold reply count + root body + timestamp. Thread view verified: root with
+  pin marker and 🎯 reaction, thread reply, lock glyph, read tick.
+- Home header renders the real account avatar image (open item closed).
+- SESSION INVALIDATED BY SERVER mid-run: MAS rejected the phone's OAuth
+  refresh token ("invalid_grant" after ~24h suspended). The engine emitted
+  the invalidation and the app dropped to the login page — correct behavior,
+  same as QML. Phone needs a fresh SSO sign-in; further authenticated
+  on-device QA blocked until then.
+- Pins page: not reached before the invalidation — first open item for the
+  next signed-in session.
