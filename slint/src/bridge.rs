@@ -631,9 +631,9 @@ pub fn open_room(ui: &mut UiState, win: &AppWindow, id: &str) {
     ui.req.fire("room.open", json!({"roomId": ui.open_room, "initialItems": 80}));
     ui.req.fire("ui.focus", json!({"roomId": crate::actions::room_of_key(&ui.open_room), "visible": true}));
     ui.req.fire("room.markRead", json!({"roomId": crate::actions::room_of_key(&ui.open_room)}));
-    // A thread and the pinned list are timelines under a key beginning with
-    // the room id (Service.qml); pins ride the room.pinned event instead.
-    ui.req.fire("pins.list", json!({"roomId": crate::actions::room_of_key(&ui.open_room)}));
+    // Pins come as a reply here and as room.pinned pushes afterwards.
+    let rid = crate::actions::room_of_key(&ui.open_room);
+    crate::actions::load_pinned_ids(ui, &rid);
 }
 
 /// Point the chat surface at a different view key (a thread) without the

@@ -318,6 +318,20 @@ fn load_pins(ui: &mut UiState, win: &AppWindow) {
     });
 }
 
+/// pins.list reply → pinned ids cache → pin markers on bubbles.
+pub fn load_pinned_ids(ui: &mut UiState, room_id: &str) {
+    let rid = room_id.to_string();
+    call_ui(&ui.req.clone(), "pins.list", json!({"roomId": rid.clone()}), move |ui, win, out| {
+        if let Ok(v) = out {
+            let ids: Vec<String> = v["events"].as_array().map(|a| {
+                a.iter().filter_map(|e| e.as_str().map(str::to_string)).collect()
+            }).unwrap_or_default();
+            ui.pinned_by_room.insert(rid, ids);
+            rebuild_timeline(ui, win);
+        }
+    });
+}
+
 pub fn reload_pins_if_open(ui: &mut UiState, win: &AppWindow) {
     if win.get_nav() == "pins" {
         load_pins(ui, win);
