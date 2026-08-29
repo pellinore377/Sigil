@@ -29,6 +29,7 @@ export component Bubble inherits Rectangle {
     callback open-document(TimelineRow);
     callback open-audio(TimelineRow);
     callback open-location(TimelineRow);
+    callback open-link(TimelineRow);
     callback open-thread(string);
     callback react(string, string);
     callback voice-toggled(string);
@@ -43,8 +44,11 @@ export component Bubble inherits Rectangle {
     // BubbleDelegate fullBleed: media (location included) + doc/contact cards
     // run edge to edge; link cards / track / code stay unported (WIRING-chat.md).
     property <bool> doc-kind: root.file-kind && !root.voice-kind && item.doc-chip != "";
+    property <bool> code-kind: item.parts.length > 0;
+    property <bool> link-card: item.link-has && !root.media-kind && !item.link-only;
     property <bool> full-bleed: root.media-kind || item.kind == "location"
-        || root.doc-kind || item.kind == "contact" || item.kind == "audio";
+        || root.doc-kind || item.kind == "contact" || item.kind == "audio"
+        || root.code-kind || root.link-card || item.link-only;
     // A poll draws its own card, so the bubble contributes no padding or fill.
     property <bool> pad-free: root.full-bleed || item.kind == "poll";
     property <int> poll-sum: item.poll-vote-sum;
@@ -170,7 +174,8 @@ export component Bubble inherits Rectangle {
                 // QML: text content is implicitWidth + 22 with a 40px floor.
                 width: min(root.bubble-max, max(40px, b-inner.preferred-width + (root.pad-free ? 0px : 22px)));
                 height: b-inner.preferred-height + (root.pad-free ? 0px : 20px);
-                background: item.kind == "poll" ? transparent : root.bubble-fill;
+                // cardOnly: a body that IS the link renders the card alone.
+                background: item.kind == "poll" || item.link-only ? transparent : root.bubble-fill;
                 border-width: root.jump-flash ? 2px : 0px;
                 border-color: root.jump-flash ? root.accent.with-alpha(0.9) : transparent;
                 animate border-width { duration: 220ms; easing: cubic-bezier(0.33, 1, 0.68, 1); }
@@ -618,6 +623,129 @@ export component Bubble inherits Rectangle {
                         HoldArea { clicked => { if (!self.fired) { root.open-location(item); } self.fired = false; } held => { root.open-menu(); } }
                     }
 
+                    // Link preview card: og image + info over the page accent
+                    // (BubbleDelegate's lp loader).
+                    if item.link-has && !root.media-kind : link-card-box := Rectangle {
+                        width: root.bubble-max;
+                        height: (item.link-img.width > 0 ? lp-img.height : 0px) + lp-info.preferred-height;
+                        background: item.link-accent;
+                        clip: true;
+                        lp-img := Rectangle {
+                            y: 0; width: 100%;
+                            height: item.link-img.width > 0
+                                ? min(340px, root.bubble-max * (item.link-ih > 0 && item.link-iw > 0 ? item.link-ih / item.link-iw : 0.52))
+                                : 0px;
+                            clip: true;
+                            if item.link-img.width > 0 : Image {
+                                source: item.link-img;
+                                width: 100%; height: 100%;
+                                image-fit: cover;
+                            }
+                            if item.link-is-video : Rectangle {
+                                x: (lp-img.width - 52px) / 2;
+                                y: (lp-img.height - 52px) / 2;
+                                width: 52px; height: 52px; border-radius: 26px;
+                                background: #000000.with-alpha(0.5);
+                                IconLabel { text: Icons.play; color: #ffffff; font-size: 24px; width: 100%; height: 100%; }
+                            }
+                        }
+                        lp-info := VerticalLayout {
+                            y: lp-img.height;
+                            width: 100%;
+                            padding: 10px;
+                            spacing: 4px;
+                            if item.link-title != "" : Rectangle {
+                                clip: true;
+                                height: min(lp-title.preferred-height, 2 * Theme.body * 1.35);
+                                lp-title := Text {
+                                    width: 100%;
+                                    text: item.link-title;
+                                    color: #ffffff;
+                                    font-family: Theme.font-ui; font-size: Theme.body; font-weight: 700;
+                                    wrap: word-wrap;
+                                    overflow: elide;
+                                }
+                            }
+                            if item.link-desc != "" : Rectangle {
+                                clip: true;
+                                height: min(lp-desc.preferred-height, 2 * Theme.body-small * 1.35);
+                                lp-desc := Text {
+                                    width: 100%;
+                                    text: item.link-desc;
+                                    color: #ffffff.with-alpha(0.8);
+                                    font-family: Theme.font-ui; font-size: Theme.body-small;
+                                    wrap: word-wrap;
+                                    overflow: elide;
+                                }
+                            }
+                            HorizontalLayout {
+                                alignment: start;
+                                spacing: 6px;
+                                padding-top: 2px;
+                                fav-sq := Rectangle {
+                                    y: (lp-domain.preferred-height - 16px) / 2;
+                                    width: 16px; height: 16px; border-radius: 4px;
+                                    background: #ffffff.with-alpha(0.9);
+                                    Text {
+                                        text: item.link-initial;
+                                        color: item.link-accent;
+                                        font-family: Theme.font-ui; font-size: 9px; font-weight: 700;
+                                        horizontal-alignment: center; vertical-alignment: center;
+                                        width: 100%; height: 100%;
+                                    }
+                                }
+                                lp-domain := Text {
+                                    text: item.link-domain;
+                                    color: #ffffff.with-alpha(0.85);
+                                    font-family: Theme.font-ui; font-size: Theme.caption;
+                                    vertical-alignment: center;
+                                }
+                            }
+                        }
+                        HoldArea {
+                            clicked => { if (!self.fired) { root.open-link(item); } self.fired = false; }
+                            held => { root.open-menu(); }
+                        }
+                    }
+
+                    // Fenced code: the body laid out as parts — text runs padded,
+                    // code runs on the highlighter's dark ground with a lang tag.
+                    // (Highlight colours need rich text; flattened for now.)
+                    if root.code-kind : parts-col := VerticalLayout {
+                        spacing: 4px;
+                        for part in item.parts : Rectangle {
+                            height: part.t == "code"
+                                ? max(34px, part-code.preferred-height + 22px)
+                                : part-text.preferred-height + 8px;
+                            background: part.t == "code" ? #242428 : transparent;
+                            part-text := Text {
+                                x: 11px; y: 4px;
+                                width: parent.width - 22px;
+                                visible: part.t != "code";
+                                text: part.body;
+                                color: root.fg;
+                                font-family: Theme.font-ui; font-size: Theme.body;
+                                wrap: word-wrap;
+                            }
+                            part-code := Text {
+                                x: 11px; y: 11px;
+                                width: parent.width - 22px;
+                                visible: part.t == "code";
+                                text: part.body;
+                                color: #d6d6d6;
+                                font-family: Theme.font-mono; font-size: Theme.body-small;
+                                wrap: word-wrap;
+                            }
+                            if part.t == "code" && part.lang != "" : Text {
+                                x: parent.width - self.preferred-width - 8px;
+                                y: 6px;
+                                text: part.lang;
+                                color: #ffffff.with-alpha(0.4);
+                                font-family: Theme.font-mono; font-size: 9px;
+                            }
+                        }
+                    }
+
                     // Caption under full-bleed media: its own padded band, the
                     // media's width, so text never touches the bubble edge.
                     if root.caption-visible : caption-band := Rectangle {
@@ -635,7 +763,8 @@ export component Bubble inherits Rectangle {
 
                     // Body text / utd / redacted
                     if (item.kind == "text" || item.kind == "notice" || item.kind == "emote"
-                        || item.kind == "utd" || item.kind == "redacted" || item.kind == "unsupported") : body-text := Text {
+                        || item.kind == "utd" || item.kind == "redacted" || item.kind == "unsupported")
+                        && !root.code-kind && !item.link-only : body-text := Text {
                         text: item.kind == "utd" ? "🔒 Waiting for keys…"
                             : item.kind == "redacted" ? "Message deleted"
                             : item.kind == "unsupported" ? "Unsupported message"
@@ -645,8 +774,11 @@ export component Bubble inherits Rectangle {
                         font-family: Theme.font-ui; font-size: Theme.body;
                         font-italic: item.kind == "emote" || item.kind == "redacted";
                         wrap: word-wrap;
-                        width: min(root.bubble-max - 20px, self.preferred-width);
+                        // Under a link card the bubble is pad-free: pad here.
+                        x: root.link-card ? 11px : 0px;
+                        width: min(root.bubble-max - 22px, self.preferred-width);
                     }
+                    if root.link-card && item.body != "" : Rectangle { height: 6px; }
 
                     // Thread summary chip
                     if item.thread-count > 0 : thread-chip := Rectangle {

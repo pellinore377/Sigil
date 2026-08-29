@@ -11,7 +11,7 @@ import { RecoveryPage } from "recovery.slint";
 import { HomePage } from "home.slint";
 import { ChatPage } from "chat.slint";
 import { PageHolder, MenuEntry } from "furniture.slint";
-import { RoomRow, TimelineRow, MemberRow, SpaceRow, HierarchyRow, ThreadRow, UserRow, RoomSettingsModel, PowerRow, ReactionChip, EmojiItem, ReplyRef, CallParticipant, DeviceRow, PollOption, ReaderRow, DocLine } from "model.slint";
+import { RoomRow, TimelineRow, MemberRow, SpaceRow, HierarchyRow, ThreadRow, UserRow, RoomSettingsModel, PowerRow, ReactionChip, EmojiItem, ReplyRef, CallParticipant, DeviceRow, PollOption, ReaderRow, DocLine, MsgPart } from "model.slint";
 
 import { StartPage } from "pages/start.slint";
 import { ForwardPage } from "pages/forward.slint";
@@ -40,7 +40,7 @@ import { CallPage, Floater } from "callpage.slint";
 import { CallPip } from "callpip.slint";
 import { CallBanner } from "callbanner.slint";
 
-export { ViewerItem, StickerItem, MenuEntry, RoomRow, TimelineRow, MemberRow, SpaceRow, HierarchyRow, ThreadRow, UserRow, RoomSettingsModel, PowerRow, ReactionChip, EmojiItem, ReplyRef, CallParticipant, DeviceRow, PollOption, ReaderRow, DocLine, SpaceMembershipRow, GradPair, DocBlock, SheetRow, SheetTab, DocPageImage, Icons }
+export { ViewerItem, StickerItem, MenuEntry, RoomRow, TimelineRow, MemberRow, SpaceRow, HierarchyRow, ThreadRow, UserRow, RoomSettingsModel, PowerRow, ReactionChip, EmojiItem, ReplyRef, CallParticipant, DeviceRow, PollOption, ReaderRow, DocLine, MsgPart, SpaceMembershipRow, GradPair, DocBlock, SheetRow, SheetTab, DocPageImage, Icons }
 
 export component AppWindow inherits Window {
     title: "Sigil";
@@ -412,6 +412,7 @@ export component AppWindow inherits Window {
                 send-reply(ev, text) => { root.act("send-reply", ev, text); }
                 send-edit(ev, text) => { root.act("send-edit", ev, text); }
                 send-caption(ev, text) => { root.act("send-caption", ev, text); }
+                open-link(url) => { root.act("open-link", url, ""); }
                 send-voice(caption) => { root.act("voice-send", caption, ""); }
                 voice-discard => { root.act("voice-discard", "", ""); }
                 voice-preview(play) => { root.act("voice-preview", play ? "1" : "0", ""); }

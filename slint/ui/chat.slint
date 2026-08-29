@@ -84,6 +84,7 @@ export component ChatPage inherits Rectangle {
     callback open-document(TimelineRow);
     callback open-audio(TimelineRow);
     callback open-location(TimelineRow);
+    callback open-link(string);
     callback open-thread(string);
     callback voice-toggled(string);
     callback voice-seeked(string, float);
@@ -316,6 +317,7 @@ export component ChatPage inherits Rectangle {
                         open-document(it) => { root.open-document(it); }
                         open-audio(it) => { root.open-audio(it); }
                         open-location(it) => { root.open-location(it); }
+                        open-link(it) => { root.open-link(it.link-url); }
                         open-thread(id) => { root.open-thread(id); }
                         react(id, key) => { root.react(id, key); }
                         voice-toggled(id) => { root.voice-toggled(id); }

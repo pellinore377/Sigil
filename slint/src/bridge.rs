@@ -121,6 +121,8 @@ pub struct UiState {
     pub doc_thumbs: HashMap<String, Value>,
     /// roomId|eventId -> audio.info reply (Null = asked, pending).
     pub audio_infos: HashMap<String, Value>,
+    /// url -> link.preview reply (Null = asked, pending; false = failed).
+    pub link_previews: HashMap<String, Value>,
 }
 
 thread_local! {
@@ -201,6 +203,7 @@ pub fn start(win: &AppWindow, rt: &tokio::runtime::Runtime, icons: IconSet) -> R
         doc_preview: Value::Null,
         doc_thumbs: HashMap::new(),
         audio_infos: HashMap::new(),
+        link_previews: HashMap::new(),
     }));
     UI.with(|ui| *ui.borrow_mut() = Some(state));
 
@@ -907,6 +910,42 @@ pub fn rebuild_timeline(ui: &mut UiState, win: &AppWindow) {
                 _ => {}
             }
         }
+        // Fenced code splits the body into parts; the highlighter's markup is
+        // flattened to plain text (Slint has no rich text — WIRING-chat.md).
+        let parts: Vec<crate::MsgPart> = item["parts"].as_array().map(|a| a.iter().map(|p| {
+            let t = p["t"].as_str().unwrap_or("text");
+            let raw = p["html"].as_str().or(p["text"].as_str()).unwrap_or("");
+            crate::MsgPart {
+                t: t.into(),
+                body: rows::strip_markup(raw).into(),
+                lang: p["lang"].as_str().unwrap_or("").into(),
+            }
+        }).filter(|p: &crate::MsgPart| !p.body.is_empty()).collect()).unwrap_or_default();
+        // og: card for the first link in a text body.
+        let mut link_data = Value::Null;
+        let mut link_url = String::new();
+        if (kind == "text" || kind == "notice") && item["parts"].as_array().map(|a| a.is_empty()).unwrap_or(true) {
+            if let Some(url) = rows::first_url(&body) {
+                link_url = url.clone();
+                match ui.link_previews.get(&url) {
+                    None => {
+                        ui.link_previews.insert(url.clone(), Value::Null);
+                        crate::actions::fetch_link_preview(&ui.req.clone(), url);
+                    }
+                    Some(v) if v.is_object() => link_data = v.clone(),
+                    _ => {}
+                }
+            }
+        }
+        let link_has = link_data.is_object()
+            && (!link_data["title"].as_str().unwrap_or("").is_empty()
+                || !link_data["imagePath"].as_str().unwrap_or("").is_empty());
+        let link_only = link_has && body.trim() == link_url;
+        let link_img = if link_has { avatar(ui, link_data["imagePath"].as_str().unwrap_or("")) } else { None };
+        let link_accent = link_data["accent"].as_str()
+            .and_then(|h| u32::from_str_radix(h.trim_start_matches('#'), 16).ok())
+            .map(|c| slint::Color::from_rgb_u8((c >> 16) as u8, (c >> 8) as u8, c as u8))
+            .unwrap_or(slint::Color::from_argb_u8(115, 0, 0, 0));
         // Music files render AudioBody's card: cover art + a strip tinted from
         // the art's palette (audio.info hands both over).
         let mut audio_art: Option<slint::Image> = None;
@@ -1024,6 +1063,19 @@ pub fn rebuild_timeline(ui: &mut UiState, win: &AppWindow) {
             thread_root: item["threadRoot"].as_str().unwrap_or("").into(),
             thread_count: item["threadSummary"]["count"].as_i64().unwrap_or(0) as i32,
             thread_latest: item["threadSummary"]["body"].as_str().unwrap_or("").into(),
+            parts: slint::ModelRc::new(VecModel::from(parts)),
+            link_has,
+            link_only,
+            link_title: link_data["title"].as_str().unwrap_or("").into(),
+            link_desc: link_data["description"].as_str().unwrap_or("").into(),
+            link_domain: rows::domain_of(&link_url).into(),
+            link_initial: rows::domain_of(&link_url).chars().next().map(|c| c.to_uppercase().to_string()).unwrap_or_default().into(),
+            link_url: link_url.clone().into(),
+            link_iw: link_data["imageWidth"].as_f64().unwrap_or(0.0) as f32,
+            link_ih: link_data["imageHeight"].as_f64().unwrap_or(0.0) as f32,
+            link_is_video: link_data["isVideo"].as_bool().unwrap_or(false),
+            link_accent,
+            link_img: link_img.unwrap_or_default(),
             can_edit: item["can"]["edit"].as_bool().unwrap_or(false),
             can_reply: item["can"]["reply"].as_bool().unwrap_or(false),
             can_redact: item["can"]["redact"].as_bool().unwrap_or(false),
@@ -1123,6 +1175,7 @@ fn start_demo(win: &AppWindow, rt: &tokio::runtime::Runtime, icons: IconSet) -> 
         doc_preview: Value::Null,
         doc_thumbs: HashMap::new(),
         audio_infos: HashMap::new(),
+        link_previews: HashMap::new(),
     }));
     UI.with(|ui| *ui.borrow_mut() = Some(state));
 

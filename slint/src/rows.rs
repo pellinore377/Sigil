@@ -262,3 +262,45 @@ pub fn resample_wave(arr: &[f64], n: usize) -> Vec<f32> {
         })
         .collect()
 }
+
+/// Flatten sanitized/highlighted markup to plain text: tags out, entities back.
+pub fn strip_markup(html: &str) -> String {
+    let mut out = String::with_capacity(html.len());
+    let mut in_tag = false;
+    for ch in html.chars() {
+        match ch {
+            '<' => in_tag = true,
+            '>' => in_tag = false,
+            c if !in_tag => out.push(c),
+            _ => {}
+        }
+    }
+    out.replace("&amp;", "&")
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&quot;", "\"")
+        .replace("&#39;", "'")
+        .replace("&#x27;", "'")
+        .replace("&nbsp;", " ")
+        .trim_matches('\n')
+        .to_string()
+}
+
+/// First http(s) URL in a body — the QML's /https?:\/\/[^\s<>"]+/ match.
+pub fn first_url(body: &str) -> Option<String> {
+    let at = body.find("https://").or_else(|| body.find("http://"))?;
+    let tail = &body[at..];
+    let end = tail.find(|c: char| c.is_whitespace() || matches!(c, '<' | '>' | '"')).unwrap_or(tail.len());
+    let url = &tail[..end];
+    // Trim trailing punctuation a sentence would add.
+    let url = url.trim_end_matches(['.', ',', ')', ']', '!', '?']);
+    if url.len() > 10 { Some(url.to_string()) } else { None }
+}
+
+/// Host part of a URL, with any leading www. dropped.
+pub fn domain_of(url: &str) -> String {
+    url.split("://").nth(1).unwrap_or("")
+        .split('/').next().unwrap_or("")
+        .trim_start_matches("www.")
+        .to_string()
+}

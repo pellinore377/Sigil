@@ -56,6 +56,19 @@ pub fn fetch_doc_thumb(req: &Requester, room_id: &str, event_id: &str, key: Stri
     });
 }
 
+/// og: card for the first link in a message (svc.linkPreview).
+pub fn fetch_link_preview(req: &Requester, url: String) {
+    let key = url.clone();
+    call_ui(req, "link.preview", json!({"url": url}), move |ui, win, out| {
+        let val = match out {
+            Ok(v) => v,
+            _ => json!(false),
+        };
+        ui.link_previews.insert(key, val);
+        rebuild_timeline(ui, win);
+    });
+}
+
 /// Cover art + palette for a music message's card (AudioBody's audio.info).
 pub fn fetch_audio_info(req: &Requester, room_id: &str, event_id: &str, key: String) {
     call_ui(req, "audio.info", json!({"roomId": room_id, "eventId": event_id, "size": 512}), move |ui, win, out| {

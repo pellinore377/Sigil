@@ -38,6 +38,14 @@ export struct DocLine {
     level: int,
 }
 
+/// A slice of a message with fenced code: plain text runs and code runs
+/// (the engine's `parts`; highlighting markup is flattened — no rich text).
+export struct MsgPart {
+    t: string,      // "text" | "code"
+    body: string,
+    lang: string,
+}
+
 export struct TimelineRow {
     id: string,
     event-id: string,
@@ -76,6 +84,20 @@ export struct TimelineRow {
     thread-root: string,
     thread-count: int,
     thread-latest: string,   // latest reply body for the thread chip preview
+    parts: [MsgPart],        // non-empty: the body is laid out as parts (code)
+    // link preview card (link.preview, cached per url)
+    link-has: bool,
+    link-only: bool,         // the body IS the url: the card stands alone
+    link-title: string,
+    link-desc: string,
+    link-domain: string,
+    link-initial: string,   // first letter of the domain (Slint can't substring)
+    link-url: string,
+    link-img: image,
+    link-iw: float,
+    link-ih: float,
+    link-accent: color,
+    link-is-video: bool,
     can-edit: bool,
     can-reply: bool,
     can-redact: bool,
