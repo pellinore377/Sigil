@@ -34,6 +34,24 @@ pub fn run_app() -> anyhow::Result<()> {
         }
     };
     bridge::start(&win, &rt, icons);
+    // Android delivers the back gesture as a close request; unwind our nav
+    // first and only let the OS have it from the home screen.
+    #[cfg(target_os = "android")]
+    {
+        let weak = win.as_weak();
+        win.window().on_close_requested(move || {
+            if let Some(w) = weak.upgrade() {
+                if w.get_nav() != "home" || w.get_viewer_open() || w.get_attach_open() || w.get_recorder_open() {
+                    if w.get_viewer_open() { w.set_viewer_open(false); }
+                    else if w.get_attach_open() { w.set_attach_open(false); }
+                    else if w.get_recorder_open() { w.set_recorder_open(false); }
+                    else { w.invoke_go_back(); }
+                    return slint::CloseRequestResponse::KeepWindowShown;
+                }
+            }
+            slint::CloseRequestResponse::HideWindow
+        });
+    }
     win.run()?;
     Ok(())
 }

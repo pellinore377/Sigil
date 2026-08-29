@@ -60,7 +60,9 @@ theme = "@android:style/Theme.DeviceDefault.NoActionBar"
 
 [profile.release]
 opt-level = 3
-lto = "thin"
+# QA-day setting: thin-LTO links of skia+engine cost ~12 min per cycle.
+# Restore lto = "thin" for shipping builds.
+lto = false
 strip = "debuginfo"
 
 # Dev signing: the adb debug keystore. A real release key comes with real releases.

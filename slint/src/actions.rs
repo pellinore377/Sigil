@@ -205,11 +205,12 @@ fn load_settings(ui: &mut UiState, _win: &AppWindow) {
 pub fn push_settings(ui: &mut UiState, win: &AppWindow) {
     let rid = ui.settings_room.clone();
     let room = ui.rooms_json.iter().find(|r| s(r, "id") == rid).cloned().unwrap_or(Value::Null);
-    win.set_rs_model(project::settings_model(&rid, &ui.settings, &room));
+    let av = crate::bridge::avatar_pub(ui, room["avatarPath"].as_str().unwrap_or("")).unwrap_or_default();
+    win.set_rs_model(project::settings_model(&rid, &ui.settings, &room, av));
     win.set_rs_spaces(ModelRc::new(VecModel::from(project::space_membership_rows(&ui.spaces_tree, &rid))));
     win.set_rs_pinned_count(ui.rooms_json.iter().filter(|r| b(r, "isFavourite")).count() as i32);
     win.set_rs_dm_user(s(&room, "dmUserId").into());
-    win.set_no_mode(match s(&ui.settings, "notificationMode") { "" => "default", m => m }.into());
+    win.set_no_mode(match s(&ui.settings, "notificationMode") { "default" => "", m => m }.into());
     let users = ui.settings["powerLevels"]["users"].as_object().cloned().unwrap_or_default();
     let admins = users.values().filter(|l| l.as_i64().unwrap_or(0) >= 100).count();
     let mods = users.values().filter(|l| { let n = l.as_i64().unwrap_or(0); (50..100).contains(&n) }).count();
@@ -513,7 +514,7 @@ pub fn on_act(ui: &mut UiState, win: &AppWindow, action: &str, a: &str, b2: &str
             });
         }
         "notif-mode" => {
-            win.set_no_mode(a.into());
+            win.set_no_mode(if a == "default" { "" } else { a }.into());
             win.set_no_busy(true);
             let rid = ui.settings_room.clone();
             call_ui(&req, "room.setSettings", json!({"roomId": rid, "notificationMode": a}), move |ui, win, out| {

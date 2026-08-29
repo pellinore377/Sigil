@@ -107,7 +107,7 @@ export component MessageSheet inherits Rectangle {
             padding-left: 10px; padding-right: 10px;
             spacing: 6px;
             alignment: center;
-            for e in ["👍", "❤️", "😂", "😮", "😢", "😡"] : q-cell := Rectangle {
+            for e in ["👍", "❤", "😂", "😮", "😢", "😡"] : q-cell := Rectangle {
                 width: 36px; height: 36px; border-radius: 18px;
                 y: (root.pill-h - 36px) / 2;
                 background: q-t.pressed || q-t.has-hover ? root.accent.with-alpha(0.32) : transparent;

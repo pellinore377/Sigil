@@ -250,7 +250,6 @@ export component ChatPage inherits Rectangle {
                         convo-ground: root.convo-c;
                         menu-requested(it, x, y, w, h) => {
                             sheet.item = it;
-                            sheet.actions = root.sheet-actions;
                             root.menu-action("prepare", it.event-id);
                             sheet.open-for(x, y, w, h);
                         }
@@ -456,6 +455,7 @@ export component ChatPage inherits Rectangle {
 
     // Long-press message sheet.
     sheet := MessageSheet {
+        actions: root.sheet-actions;
         width: 100%; height: 100%;
         fg: root.fg;
         accent: root.accent;

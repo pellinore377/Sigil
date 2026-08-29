@@ -85,7 +85,7 @@ pub fn thread_row(v: &Value) -> ThreadRow {
 }
 
 /// room.settings reply + the room's rooms.list summary → the settings model.
-pub fn settings_model(room_id: &str, settings: &Value, room: &Value) -> RoomSettingsModel {
+pub fn settings_model(room_id: &str, settings: &Value, room: &Value, avatar: slint::Image) -> RoomSettingsModel {
     let name = match s(settings, "name") {
         "" => s(room, "name").to_string(),
         v => v.to_string(),
@@ -97,6 +97,7 @@ pub fn settings_model(room_id: &str, settings: &Value, room: &Value) -> RoomSett
         topic: if s(settings, "topic").is_empty() { s(room, "topic") } else { s(settings, "topic") }.into(),
         canonical_alias: s(room, "canonicalAlias").into(),
         initials: initials(&name).into(),
+        avatar,
         tint: tint_for(room_id),
         is_space: b(room, "isSpace"),
         is_dm: b(room, "isDm"),

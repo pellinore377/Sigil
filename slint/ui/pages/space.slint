@@ -96,10 +96,11 @@ export component SpacePage inherits Rectangle {
 
         // Hero: big avatar, name, visibility, member chip
         hero := Rectangle {
-            height: hero-col.preferred-height + 28px;
+            height: hero-col.preferred-height;
             hero-col := VerticalLayout {
-                y: 14px;
                 width: 100%;
+                padding-top: 14px;
+                padding-bottom: 14px;
                 spacing: 6px;
                 HorizontalLayout {
                     alignment: center;
