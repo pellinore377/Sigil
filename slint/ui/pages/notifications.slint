@@ -1,33 +1,98 @@
-// NotificationsPage — port of the QML page of the same name. STUB: a fork replaces
-// this file wholesale; add properties/callbacks here and list the app.slint +
-// bridge wiring you need in your WIRING file.
+// NotificationsPage — mobile/NotificationsPage.qml. Matrix has three states
+// here, not two: a room follows the account default or carries its own rule.
+// "Allow custom setting" is that distinction — off means no per-room push rule
+// exists at all, so turning it off deletes the rule rather than setting "all".
 
 import { Theme } from "../style.slint";
-import { Icons } from "../icons.slint";
-import { IconLabel, ActionButton, Avatar, SButton, TextWell } from "../components.slint";
-import { SettingsHeader, SettingsGroup, SettingsRow, OverflowMenu, ChoiceSheet, Spinner, MenuEntry, ChoiceEntry } from "../furniture.slint";
-import { RoomRow, TimelineRow, MemberRow, SpaceRow, HierarchyRow, ThreadRow, UserRow, RoomSettingsModel, PowerRow, ReactionChip, EmojiItem } from "../model.slint";
+import { SettingsHeader, SettingsGroup, SettingsRow } from "../furniture.slint";
 
 export component NotificationsPage inherits Rectangle {
     in property <color> fg: Theme.menu-text;
+    /// "" = no per-room rule (account default) | all | mentions | mute.
+    /// The bridge shows writes optimistically: an immediate re-read still
+    /// returns the old value (docs/development.md).
+    in property <string> mode;
+    in property <bool> encrypted;
+    in property <bool> busy;
+    in property <string> error;
     callback closed;
+    /// "default" deletes the per-room rule; all | mentions | mute write one.
+    callback set-mode(string);
+
+    property <bool> custom: root.mode != "";
     background: transparent;
+
     VerticalLayout {
-        SettingsHeader {
-            title: "Notifications";
+        alignment: start;
+        SettingsHeader { fg: root.fg; title: "Notifications"; back => { root.closed(); } }
+
+        SettingsRow {
             fg: root.fg;
-            back => { root.closed(); }
+            label: "Allow custom setting";
+            sublabel: "Turning this on will override your default setting";
+            trailing: "toggle";
+            on: root.custom;
+            enabled: !root.busy;
+            // Off deletes the room's rule; on starts from "all messages".
+            clicked => { root.set-mode(root.custom ? "default" : "all"); }
         }
-        Rectangle {
-            vertical-stretch: 1;
-            Text {
-                text: "Notifications — not ported yet";
-                color: root.fg.with-alpha(0.5);
-                font-family: Theme.font-ui;
-                font-size: Theme.body;
-                horizontal-alignment: center;
-                vertical-alignment: center;
-                width: 100%; height: 100%;
+
+        // Only one of these two bands is ever on screen.
+        if !root.custom : SettingsGroup {
+            fg: root.fg;
+            title: "Default setting";
+            Rectangle {
+                height: default-note.preferred-height + 8px;
+                default-note := Text {
+                    x: 22px; width: root.width - 44px;
+                    wrap: word-wrap;
+                    text: "This chat follows your account-wide setting.";
+                    color: root.fg.with-alpha(0.55);
+                    font-family: Theme.font-ui; font-size: Theme.body-small;
+                }
+            }
+            SettingsRow {
+                fg: root.fg;
+                label: "All messages";
+                trailing: "radio"; on: true; enabled: false;
+            }
+        }
+
+        if root.custom : SettingsGroup {
+            fg: root.fg;
+            title: "Notify me in this chat for";
+            SettingsRow {
+                fg: root.fg;
+                label: "All messages";
+                trailing: "radio"; on: root.mode == "all"; enabled: !root.busy;
+                clicked => { root.set-mode("all"); }
+            }
+            SettingsRow {
+                fg: root.fg;
+                label: "Mentions and replies only";
+                // Server-side push rules cannot see inside an encrypted message,
+                // so this mode is best-effort in encrypted rooms.
+                sublabel: root.encrypted
+                    ? "Encrypted messages are matched on the device, so some may not notify."
+                    : "";
+                trailing: "radio"; on: root.mode == "mentions"; enabled: !root.busy;
+                clicked => { root.set-mode("mentions"); }
+            }
+            SettingsRow {
+                fg: root.fg;
+                label: "Mute";
+                trailing: "radio"; on: root.mode == "mute"; enabled: !root.busy;
+                clicked => { root.set-mode("mute"); }
+            }
+        }
+
+        Rectangle { height: 10px; }
+        if root.error != "" : Rectangle {
+            height: err.preferred-height;
+            err := Text {
+                x: 22px; width: root.width - 44px;
+                text: root.error; color: Theme.urgent; wrap: word-wrap;
+                font-family: Theme.font-ui; font-size: Theme.body-small;
             }
         }
     }

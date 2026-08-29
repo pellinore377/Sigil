@@ -1,34 +1,191 @@
-// NewSpacePage — port of the QML page of the same name. STUB: a fork replaces
-// this file wholesale; add properties/callbacks here and list the app.slint +
-// bridge wiring you need in your WIRING file.
+// NewSpacePage — create a space: picture, name, topic, and who can get in.
+// Access is asked here because a space created private and opened later keeps
+// its old history rules (NewSpacePage.qml).
 
 import { Theme } from "../style.slint";
 import { Icons } from "../icons.slint";
-import { IconLabel, ActionButton, Avatar, SButton, TextWell } from "../components.slint";
-import { SettingsHeader, SettingsGroup, SettingsRow, OverflowMenu, ChoiceSheet, Spinner, MenuEntry, ChoiceEntry } from "../furniture.slint";
-import { RoomRow, TimelineRow, MemberRow, SpaceRow, HierarchyRow, ThreadRow, UserRow, RoomSettingsModel, PowerRow, ReactionChip, EmojiItem } from "../model.slint";
+import { IconLabel, Avatar } from "../components.slint";
+import { SettingsHeader, SettingsGroup, SettingsRow } from "../furniture.slint";
 
 export component NewSpacePage inherits Rectangle {
     in property <color> fg: Theme.menu-text;
+    /// Set by the shell once the platform file picker returns.
+    in property <image> avatar-preview;
+    in property <bool> has-avatar;
+    in property <bool> busy;
+    in property <string> error;
+
     callback closed;
-    background: transparent;
+    callback pick-avatar;
+    /// (name, topic, private)
+    callback create(string, string, bool);
+
+    in-out property <bool> is-private: true;
+
+    public function reset() {
+        name-input.text = "";
+        topic-input.text = "";
+        root.is-private = true;
+    }
+
+    property <bool> valid: name-input.text != "" && !root.busy;
+
+    background: Theme.menu-background.brighter(0.35);
+
     VerticalLayout {
         SettingsHeader {
-            title: "NewSpace";
             fg: root.fg;
+            title: "New space";
+            action: root.busy ? "Creating…" : "Create";
+            action-enabled: root.valid;
             back => { root.closed(); }
+            actioned => { root.create(name-input.text, topic-input.text, root.is-private); }
         }
+
+        // Picture + name
         Rectangle {
-            vertical-stretch: 1;
-            Text {
-                text: "NewSpace — not ported yet";
-                color: root.fg.with-alpha(0.5);
-                font-family: Theme.font-ui;
-                font-size: Theme.body;
-                horizontal-alignment: center;
-                vertical-alignment: center;
-                width: 100%; height: 100%;
+            height: 96px;
+            av-pick := Rectangle {
+                x: 22px; y: 26px;
+                width: 64px; height: 64px;
+                if !root.has-avatar : Rectangle {
+                    width: 100%; height: 100%;
+                    border-radius: 20px;
+                    border-width: 1px;
+                    border-color: root.fg.with-alpha(0.3);
+                    IconLabel {
+                        text: Icons.camera;
+                        color: root.fg.with-alpha(0.7);
+                        font-size: Theme.icon-large;
+                        width: 100%; height: 100%;
+                    }
+                }
+                if root.has-avatar : Avatar {
+                    size: 64px;
+                    source: root.avatar-preview;
+                    initials: "";
+                    tint: Theme.accent;
+                }
+                TouchArea { clicked => { root.pick-avatar(); } }
+            }
+            VerticalLayout {
+                x: 102px; y: 14px;
+                width: root.width - 102px - 22px;
+                spacing: 6px;
+                Text {
+                    text: "Name";
+                    color: root.fg;
+                    font-family: Theme.font-ui;
+                    font-size: Theme.body-small;
+                }
+                name-well := Rectangle {
+                    height: 44px;
+                    border-radius: 10px;
+                    border-width: 1px;
+                    border-color: name-input.has-focus ? Theme.accent.with-alpha(0.8) : root.fg.with-alpha(0.2);
+                    HorizontalLayout {
+                        padding-left: 12px; padding-right: 12px;
+                        Rectangle {
+                            clip: true;
+                            name-input := TextInput {
+                                color: root.fg;
+                                font-family: Theme.font-ui;
+                                font-size: Theme.body;
+                                vertical-alignment: center;
+                                height: 100%; width: 100%;
+                                single-line: true;
+                                accepted => {
+                                    if (root.valid) { root.create(self.text, topic-input.text, root.is-private); }
+                                }
+                            }
+                            if name-input.text == "" : Text {
+                                text: "Add name…";
+                                color: root.fg.with-alpha(0.4);
+                                font-family: Theme.font-ui;
+                                font-size: Theme.body;
+                                vertical-alignment: center;
+                                height: 100%;
+                            }
+                        }
+                    }
+                }
             }
         }
+
+        // Topic
+        Rectangle { height: 10px; }
+        Text {
+            x: 22px;
+            text: "Topic (optional)";
+            color: root.fg;
+            font-family: Theme.font-ui;
+            font-size: Theme.body-small;
+        }
+        Rectangle { height: 6px; }
+        HorizontalLayout {
+            padding-left: 22px; padding-right: 22px;
+            topic-well := Rectangle {
+                height: 64px;
+                border-radius: 10px;
+                border-width: 1px;
+                border-color: topic-input.has-focus ? Theme.accent.with-alpha(0.8) : root.fg.with-alpha(0.2);
+                Rectangle {
+                    x: 12px; y: 12px;
+                    width: topic-well.width - 24px; height: topic-well.height - 24px;
+                    clip: true;
+                    topic-input := TextInput {
+                        color: root.fg;
+                        font-family: Theme.font-ui;
+                        font-size: Theme.body;
+                        width: 100%; height: 100%;
+                        wrap: word-wrap;
+                    }
+                    if topic-input.text == "" : Text {
+                        text: "Add description…";
+                        color: root.fg.with-alpha(0.4);
+                        font-family: Theme.font-ui;
+                        font-size: Theme.body;
+                    }
+                }
+            }
+        }
+        Rectangle { height: 16px; }
+
+        // Access
+        SettingsGroup {
+            fg: root.fg;
+            title: "Who has access";
+            SettingsRow {
+                fg: root.fg;
+                icon: Icons.globe;
+                label: "Public";
+                sublabel: "Anyone can join.";
+                trailing: "radio";
+                on: !root.is-private;
+                clicked => { root.is-private = false; }
+            }
+            SettingsRow {
+                fg: root.fg;
+                icon: Icons.lock;
+                label: "Private";
+                sublabel: "Only people invited can join.";
+                trailing: "radio";
+                on: root.is-private;
+                clicked => { root.is-private = true; }
+            }
+        }
+
+        Rectangle { height: 10px; }
+        if root.error != "" : HorizontalLayout {
+            padding-left: 22px; padding-right: 22px;
+            Text {
+                text: root.error;
+                color: Theme.urgent;
+                font-family: Theme.font-ui;
+                font-size: Theme.body-small;
+                wrap: word-wrap;
+            }
+        }
+        Rectangle { vertical-stretch: 1; }
     }
 }

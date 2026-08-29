@@ -1,34 +1,131 @@
-// PermissionsPage — port of the QML page of the same name. STUB: a fork replaces
-// this file wholesale; add properties/callbacks here and list the app.slint +
-// bridge wiring you need in your WIRING file.
+// PermissionsPage — mobile/PermissionsPage.qml. The minimum role for each
+// capability. Every row writes one key of the same m.room.power_levels event,
+// sent one at a time through room.setPowerLevel — a batch that half-applies
+// leaves a state nobody chose.
 
 import { Theme } from "../style.slint";
-import { Icons } from "../icons.slint";
-import { IconLabel, ActionButton, Avatar, SButton, TextWell } from "../components.slint";
-import { SettingsHeader, SettingsGroup, SettingsRow, OverflowMenu, ChoiceSheet, Spinner, MenuEntry, ChoiceEntry } from "../furniture.slint";
-import { RoomRow, TimelineRow, MemberRow, SpaceRow, HierarchyRow, ThreadRow, UserRow, RoomSettingsModel, PowerRow, ReactionChip, EmojiItem } from "../model.slint";
+import { SettingsHeader, SettingsGroup, SettingsRow, ChoiceSheet } from "../furniture.slint";
+import { PowerRow } from "../model.slint";
 
 export component PermissionsPage inherits Rectangle {
     in property <color> fg: Theme.menu-text;
+    // Three fixed bands, labels supplied by the bridge with the levels.
+    in property <[PowerRow]> member-perms;   // invite kick ban
+    in property <[PowerRow]> detail-perms;   // name avatar topic
+    in property <[PowerRow]> content-perms;  // eventsDefault redact liveLocation
+    in property <bool> may-edit;
+    in property <bool> busy;
+    in-out property <string> note;
     callback closed;
+    callback set-level(string, int);
+
+    property <string> pending-key;
     background: transparent;
-    VerticalLayout {
-        SettingsHeader {
-            title: "Permissions";
-            fg: root.fg;
-            back => { root.closed(); }
-        }
-        Rectangle {
-            vertical-stretch: 1;
-            Text {
-                text: "Permissions — not ported yet";
-                color: root.fg.with-alpha(0.5);
-                font-family: Theme.font-ui;
-                font-size: Theme.body;
-                horizontal-alignment: center;
-                vertical-alignment: center;
-                width: 100%; height: 100%;
+
+    function role-name(l: int) -> string {
+        return l >= 100 ? "Admin" : (l >= 50 ? "Moderator" : "Member");
+    }
+    function choose(key: string, level: int) {
+        if (!root.may-edit) { return; }
+        root.pending-key = key;
+        pick.value = root.role-name(level);
+        pick.open = true;
+    }
+
+    fl := Flickable {
+        width: 100%; height: 100%;
+        viewport-height: content.preferred-height + 24px;
+        content := VerticalLayout {
+            width: fl.width;
+            alignment: start;
+            SettingsHeader { fg: root.fg; title: "Permissions"; back => { root.closed(); } }
+            SettingsGroup {
+                fg: root.fg;
+                title: "Manage members";
+                divided: false;
+                for row in root.member-perms : SettingsRow {
+                    fg: root.fg;
+                    label: row.label;
+                    trailing: "value";
+                    value: root.role-name(row.level);
+                    enabled: root.may-edit && !root.busy;
+                    clicked => { root.choose(row.key, row.level); }
+                }
+            }
+            SettingsGroup {
+                fg: root.fg;
+                title: "Edit details";
+                for row in root.detail-perms : SettingsRow {
+                    fg: root.fg;
+                    label: row.label;
+                    trailing: "value";
+                    value: root.role-name(row.level);
+                    enabled: root.may-edit && !root.busy;
+                    clicked => { root.choose(row.key, row.level); }
+                }
+            }
+            SettingsGroup {
+                fg: root.fg;
+                title: "Messages and content";
+                for row in root.content-perms : SettingsRow {
+                    fg: root.fg;
+                    label: row.label;
+                    trailing: "value";
+                    value: root.role-name(row.level);
+                    enabled: root.may-edit && !root.busy;
+                    clicked => { root.choose(row.key, row.level); }
+                }
+            }
+            Rectangle { height: 10px; }
+            if !root.may-edit : Rectangle {
+                height: no-edit.preferred-height;
+                no-edit := Text {
+                    x: 22px; width: fl.width - 44px;
+                    text: "Only an admin can change permissions.";
+                    color: root.fg.with-alpha(0.5); wrap: word-wrap;
+                    font-family: Theme.font-ui; font-size: Theme.body-small;
+                }
             }
         }
+    }
+
+    pick := ChoiceSheet {
+        width: 100%; height: 100%;
+        fg: root.fg;
+        title: "Minimum role";
+        model: [
+            { t: "Member", v: "Member", sub: "Everyone in the room." },
+            { t: "Moderator", v: "Moderator", sub: "Level 50 and above." },
+            { t: "Admin", v: "Admin", sub: "Level 100 only." },
+        ];
+        chose(v) => {
+            root.set-level(root.pending-key, v == "Admin" ? 100 : (v == "Moderator" ? 50 : 0));
+            root.pending-key = "";
+        }
+    }
+
+    // Transient notice, bottom-centred.
+    note-pill := Rectangle {
+        x: (root.width - self.width) / 2;
+        y: root.height - self.height - 20px;
+        width: note-text.preferred-width + 28px;
+        height: 34px;
+        border-radius: 17px;
+        background: Theme.popup-background.with-alpha(0.98);
+        opacity: root.note != "" ? 1 : 0;
+        visible: self.opacity > 0.01;
+        animate opacity { duration: 150ms; }
+        note-text := Text {
+            text: root.note;
+            color: root.fg;
+            font-family: Theme.font-ui; font-size: Theme.body-small;
+            horizontal-alignment: center; vertical-alignment: center;
+            width: 100%; height: 100%;
+        }
+    }
+    note-timer := Timer {
+        interval: 2600ms;
+        running: root.note != "";
+        triggered => { root.note = ""; }
     }
 }

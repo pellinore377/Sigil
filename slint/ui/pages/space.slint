@@ -1,34 +1,411 @@
-// SpacePage — port of the QML page of the same name. STUB: a fork replaces
-// this file wholesale; add properties/callbacks here and list the app.slint +
-// bridge wiring you need in your WIRING file.
+// SpacePage — one space: its contents and the actions on it. Rows come from
+// `space.hierarchy`, not the room list: a space's children include rooms this
+// account has not joined, which have no rooms entry at all (SpacePage.qml).
 
+import { ListView } from "std-widgets.slint";
 import { Theme } from "../style.slint";
 import { Icons } from "../icons.slint";
-import { IconLabel, ActionButton, Avatar, SButton, TextWell } from "../components.slint";
-import { SettingsHeader, SettingsGroup, SettingsRow, OverflowMenu, ChoiceSheet, Spinner, MenuEntry, ChoiceEntry } from "../furniture.slint";
-import { RoomRow, TimelineRow, MemberRow, SpaceRow, HierarchyRow, ThreadRow, UserRow, RoomSettingsModel, PowerRow, ReactionChip, EmojiItem } from "../model.slint";
+import { IconLabel, ActionButton, Avatar } from "../components.slint";
+import { OverflowMenu, MenuEntry } from "../furniture.slint";
+import { HierarchyRow } from "../model.slint";
 
 export component SpacePage inherits Rectangle {
     in property <color> fg: Theme.menu-text;
+    in property <string> space-id;
+    in property <string> space-name;
+    in property <image> space-avatar;
+    in property <string> space-initials;
+    in property <color> space-tint: Theme.accent;
+    in property <bool> is-public;
+    in property <int> member-count;
+    in property <[HierarchyRow]> children;
+    in property <bool> loading;
+    in property <bool> loaded;
+    in-out property <string> note;
+
     callback closed;
-    background: transparent;
+    callback open-room(string);
+    callback join-room(string);
+    callback create-room;
+    callback add-existing;
+    callback manage-rooms;
+    callback view-members;
+    callback open-settings;
+    callback share-space;
+    callback leave-space;
+
+    in-out property <bool> confirm-leave: false;
+
+    background: Theme.menu-background.brighter(0.35);
+
+    note-timer := Timer {
+        interval: 2600ms;
+        running: root.note != "";
+        triggered => { root.note = ""; self.running = false; }
+    }
+
     VerticalLayout {
-        SettingsHeader {
-            title: "Space";
-            fg: root.fg;
-            back => { root.closed(); }
-        }
-        Rectangle {
-            vertical-stretch: 1;
-            Text {
-                text: "Space — not ported yet";
-                color: root.fg.with-alpha(0.5);
-                font-family: Theme.font-ui;
-                font-size: Theme.body;
-                horizontal-alignment: center;
-                vertical-alignment: center;
-                width: 100%; height: 100%;
+        // Header: back, small avatar, name, ⋮
+        header := Rectangle {
+            height: 56px;
+            HorizontalLayout {
+                padding-left: 6px; padding-right: 6px;
+                spacing: 4px;
+                Rectangle {
+                    width: 44px;
+                    ActionButton {
+                        y: (56px - self.height) / 2;
+                        width: 44px; height: 44px;
+                        icon: Icons.back; filled: false;
+                        foreground: root.fg;
+                        clicked => { root.closed(); }
+                    }
+                }
+                Rectangle {
+                    width: 32px;
+                    Avatar {
+                        y: (56px - self.height) / 2;
+                        size: 28px;
+                        source: root.space-avatar;
+                        initials: root.space-initials;
+                        tint: root.space-tint;
+                    }
+                }
+                Text {
+                    text: root.space-name;
+                    color: root.fg;
+                    font-family: Theme.font-ui;
+                    font-size: Theme.heading;
+                    font-weight: 700;
+                    vertical-alignment: center;
+                    overflow: elide;
+                    horizontal-stretch: 1;
+                }
+                Rectangle {
+                    width: 44px;
+                    ActionButton {
+                        y: (56px - self.height) / 2;
+                        width: 44px; height: 44px;
+                        icon: Icons.moreVertical; filled: false;
+                        foreground: root.fg;
+                        clicked => { menu.open = !menu.open; }
+                    }
+                }
             }
+        }
+
+        // Hero: big avatar, name, visibility, member chip
+        hero := Rectangle {
+            height: hero-col.preferred-height + 28px;
+            hero-col := VerticalLayout {
+                y: 14px;
+                width: 100%;
+                spacing: 6px;
+                HorizontalLayout {
+                    alignment: center;
+                    Avatar {
+                        size: 72px;
+                        source: root.space-avatar;
+                        initials: root.space-initials;
+                        tint: root.space-tint;
+                    }
+                }
+                Text {
+                    text: root.space-name;
+                    color: root.fg;
+                    font-family: Theme.font-ui;
+                    font-size: 24px;
+                    font-weight: 700;
+                    horizontal-alignment: center;
+                    overflow: elide;
+                }
+                HorizontalLayout {
+                    alignment: center;
+                    spacing: 5px;
+                    IconLabel {
+                        text: root.is-public ? Icons.globe : Icons.lock;
+                        color: root.fg.with-alpha(0.55);
+                        font-size: Theme.body-small;
+                        vertical-alignment: center;
+                    }
+                    Text {
+                        text: root.is-public ? "Public" : "Private";
+                        color: root.fg.with-alpha(0.55);
+                        font-family: Theme.font-ui;
+                        font-size: Theme.body;
+                        vertical-alignment: center;
+                    }
+                }
+                HorizontalLayout {
+                    alignment: center;
+                    mem-chip := Rectangle {
+                        width: chip-row.preferred-width + 18px;
+                        height: 28px;
+                        border-radius: 14px;
+                        background: mem-touch.pressed || mem-touch.has-hover
+                            ? root.fg.with-alpha(0.12) : root.fg.with-alpha(0.07);
+                        chip-row := HorizontalLayout {
+                            alignment: center;
+                            spacing: 5px;
+                            IconLabel {
+                                text: Icons.person;
+                                color: root.fg.with-alpha(0.7);
+                                font-size: Theme.body-small;
+                                vertical-alignment: center;
+                            }
+                            Text {
+                                text: root.member-count;
+                                color: root.fg.with-alpha(0.7);
+                                font-family: Theme.font-ui;
+                                font-size: Theme.body-small;
+                                vertical-alignment: center;
+                            }
+                        }
+                        mem-touch := TouchArea { clicked => { root.view-members(); } }
+                    }
+                }
+            }
+        }
+
+        // Rooms on the darkened convo ground with cut-away corners.
+        rooms-ground := Rectangle {
+            vertical-stretch: 1;
+            background: Theme.menu-background.darker(0.26);
+            border-top-left-radius: 24px;
+            border-top-right-radius: 24px;
+            clip: true;
+
+            // Empty and loading say different things.
+            if root.children.length == 0 : VerticalLayout {
+                alignment: center;
+                padding-left: 30px; padding-right: 30px;
+                spacing: 10px;
+                IconLabel {
+                    text: Icons.space;
+                    color: Theme.accent.with-alpha(0.8);
+                    font-size: 44px;
+                    horizontal-alignment: center;
+                }
+                Text {
+                    text: root.loading || !root.loaded ? "Looking inside…" : "No rooms in this space";
+                    color: root.fg;
+                    font-family: Theme.font-ui;
+                    font-size: Theme.body;
+                    font-weight: 700;
+                    horizontal-alignment: center;
+                }
+                if root.loaded && !root.loading : Text {
+                    text: "Create a room here, or add one you are already in.";
+                    color: root.fg.with-alpha(0.6);
+                    font-family: Theme.font-ui;
+                    font-size: Theme.caption;
+                    horizontal-alignment: center;
+                    wrap: word-wrap;
+                }
+            }
+
+            if root.children.length > 0 : ListView {
+                y: 6px;
+                width: 100%; height: rooms-ground.height - 6px;
+                for child in root.children : crow := Rectangle {
+                    height: 72px;
+                    Rectangle {
+                        x: 8px; width: crow.width - 16px;
+                        y: 4px; height: crow.height - 8px;
+                        border-radius: 14px;
+                        background: crow-touch.pressed || crow-touch.has-hover
+                            ? root.fg.with-alpha(0.05) : transparent;
+                    }
+                    HorizontalLayout {
+                        padding-left: 16px; padding-right: 16px;
+                        spacing: 12px;
+                        Rectangle {
+                            width: 44px;
+                            Avatar {
+                                y: (crow.height - self.height) / 2;
+                                size: 44px;
+                                source: child.avatar;
+                                initials: child.initials;
+                                tint: child.tint;
+                            }
+                        }
+                        VerticalLayout {
+                            alignment: center;
+                            spacing: 2px;
+                            horizontal-stretch: 1;
+                            Text {
+                                text: child.name != "" ? child.name : child.id;
+                                color: root.fg;
+                                font-family: Theme.font-ui;
+                                font-size: Theme.subtitle;
+                                font-weight: 700;
+                                overflow: elide;
+                            }
+                            HorizontalLayout {
+                                alignment: start;
+                                spacing: 5px;
+                                IconLabel {
+                                    // The hierarchy's world-readable flag; falls
+                                    // back like SpaceRoomsPage: public ≈ !encrypted.
+                                    text: !child.encrypted ? Icons.globe : Icons.lock;
+                                    color: root.fg.with-alpha(0.45);
+                                    font-size: Theme.caption;
+                                    vertical-alignment: center;
+                                }
+                                Text {
+                                    text: !child.encrypted ? "Public" : "Private";
+                                    color: root.fg.with-alpha(0.55);
+                                    font-family: Theme.font-ui;
+                                    font-size: Theme.body-small;
+                                    vertical-alignment: center;
+                                }
+                            }
+                            Text {
+                                text: child.member-count == 1 ? "1 Member" : "\{child.member-count} Members";
+                                color: root.fg.with-alpha(0.55);
+                                font-family: Theme.font-ui;
+                                font-size: Theme.body-small;
+                            }
+                        }
+                        if !child.joined : Rectangle {
+                            width: join-text.preferred-width + 22px;
+                            join-btn := Rectangle {
+                                y: (crow.height - self.height) / 2;
+                                width: join-text.preferred-width + 22px;
+                                height: 30px;
+                                border-radius: 15px;
+                                background: join-touch.pressed || join-touch.has-hover
+                                    ? Theme.accent.brighter(0.1) : Theme.accent;
+                                join-text := Text {
+                                    text: "Join";
+                                    color: Theme.background;
+                                    font-family: Theme.font-ui;
+                                    font-size: Theme.body-small;
+                                    font-weight: 700;
+                                    horizontal-alignment: center; vertical-alignment: center;
+                                    width: 100%; height: 100%;
+                                }
+                                join-touch := TouchArea { clicked => { root.join-room(child.id); } }
+                            }
+                        }
+                    }
+                    crow-touch := TouchArea {
+                        enabled: child.joined;
+                        clicked => { root.open-room(child.id); }
+                    }
+                }
+            }
+        }
+    }
+
+    menu := OverflowMenu {
+        width: 100%; height: 100%;
+        fg: root.fg;
+        top-inset: 48px;
+        model: [
+            { t: "Create room", a: "create", icon: Icons.plus, danger: false },
+            { t: "Add existing rooms", a: "add", icon: Icons.hash, danger: false },
+            { t: "Manage rooms", a: "manage", icon: Icons.edit, danger: false },
+            { t: "View members", a: "members", icon: Icons.person, danger: false },
+            { t: "Share", a: "share", icon: Icons.share, danger: false },
+            { t: "Settings", a: "settings", icon: Icons.settings, danger: false },
+            { t: "Leave space", a: "leave", icon: Icons.leave, danger: true },
+        ];
+        picked(a) => {
+            if (a == "create") { root.create-room(); }
+            if (a == "add") { root.add-existing(); }
+            if (a == "manage") { root.manage-rooms(); }
+            if (a == "members") { root.view-members(); }
+            if (a == "settings") { root.open-settings(); }
+            if (a == "share") { root.share-space(); }
+            if (a == "leave") { root.confirm-leave = true; }
+        }
+    }
+
+    // Leaving is irreversible, so it asks, and the wording names the space.
+    if root.confirm-leave : Rectangle {
+        width: 100%; height: 100%;
+        background: #000000.with-alpha(0.5);
+        TouchArea { clicked => { root.confirm-leave = false; } }
+        dialog := Rectangle {
+            x: (root.width - self.width) / 2;
+            y: (root.height - self.height) / 2;
+            width: min(root.width - 60px, 320px);
+            height: dcol.preferred-height + 32px;
+            border-radius: 18px;
+            background: Theme.popup-background;
+            TouchArea { }
+            dcol := VerticalLayout {
+                x: 18px; y: 16px;
+                width: dialog.width - 36px;
+                spacing: 10px;
+                Text {
+                    text: "Leave \{root.space-name}?";
+                    color: root.fg;
+                    font-family: Theme.font-ui;
+                    font-size: Theme.subtitle;
+                    font-weight: 700;
+                    wrap: word-wrap;
+                }
+                Text {
+                    text: "You will stay in the rooms inside it that you have joined.";
+                    color: root.fg.with-alpha(0.6);
+                    font-family: Theme.font-ui;
+                    font-size: Theme.body-small;
+                    wrap: word-wrap;
+                }
+                HorizontalLayout {
+                    alignment: end;
+                    spacing: 8px;
+                    cancel-btn := Rectangle {
+                        width: cancel-t.preferred-width + 26px; height: 34px;
+                        border-radius: 17px;
+                        background: cancel-touch.pressed || cancel-touch.has-hover
+                            ? root.fg.with-alpha(0.12) : root.fg.with-alpha(0.07);
+                        cancel-t := Text {
+                            text: "Cancel"; color: root.fg;
+                            font-family: Theme.font-ui; font-size: Theme.body-small;
+                            horizontal-alignment: center; vertical-alignment: center;
+                            width: 100%; height: 100%;
+                        }
+                        cancel-touch := TouchArea { clicked => { root.confirm-leave = false; } }
+                    }
+                    leave-btn := Rectangle {
+                        width: leave-t.preferred-width + 26px; height: 34px;
+                        border-radius: 17px;
+                        background: leave-touch.pressed || leave-touch.has-hover
+                            ? Theme.urgent.brighter(0.1) : Theme.urgent;
+                        leave-t := Text {
+                            text: "Leave"; color: Theme.background;
+                            font-family: Theme.font-ui; font-size: Theme.body-small;
+                            font-weight: 700;
+                            horizontal-alignment: center; vertical-alignment: center;
+                            width: 100%; height: 100%;
+                        }
+                        leave-touch := TouchArea {
+                            clicked => { root.confirm-leave = false; root.leave-space(); }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Note toast, bottom-centred.
+    if root.note != "" : Rectangle {
+        x: (root.width - self.width) / 2;
+        y: root.height - self.height - 20px;
+        width: note-t.preferred-width + 28px;
+        height: 34px;
+        border-radius: 17px;
+        background: Theme.popup-background;
+        note-t := Text {
+            text: root.note;
+            color: root.fg;
+            font-family: Theme.font-ui;
+            font-size: Theme.body-small;
+            horizontal-alignment: center; vertical-alignment: center;
+            width: 100%; height: 100%;
         }
     }
 }

@@ -1,33 +1,166 @@
-// AddPeoplePage — port of the QML page of the same name. STUB: a fork replaces
-// this file wholesale; add properties/callbacks here and list the app.slint +
-// bridge wiring you need in your WIRING file.
+// AddPeoplePage — mobile/AddPeoplePage.qml. Invite people to the current room
+// (start-chat style user search). The homeserver's directory only knows local
+// users and remote users who share a room here, so empty results are normal.
 
+import { ListView } from "std-widgets.slint";
 import { Theme } from "../style.slint";
 import { Icons } from "../icons.slint";
-import { IconLabel, ActionButton, Avatar, SButton, TextWell } from "../components.slint";
-import { SettingsHeader, SettingsGroup, SettingsRow, OverflowMenu, ChoiceSheet, Spinner, MenuEntry, ChoiceEntry } from "../furniture.slint";
-import { RoomRow, TimelineRow, MemberRow, SpaceRow, HierarchyRow, ThreadRow, UserRow, RoomSettingsModel, PowerRow, ReactionChip, EmojiItem } from "../model.slint";
+import { IconLabel, ActionButton, Avatar } from "../components.slint";
+import { UserRow } from "../model.slint";
 
 export component AddPeoplePage inherits Rectangle {
     in property <color> fg: Theme.menu-text;
+    in property <[UserRow]> results;
+    in-out property <string> note;
     callback closed;
+    /// Fired debounced; "" clears results.
+    callback search(string);
+    callback invite-user(string);
+
     background: transparent;
-    VerticalLayout {
-        SettingsHeader {
-            title: "AddPeople";
-            fg: root.fg;
-            back => { root.closed(); }
+    public function focus-search() { search-input.focus(); }
+    public function reset() { search-input.text = ""; root.note = ""; }
+
+    debounce := Timer {
+        interval: 300ms;
+        running: false;
+        triggered => {
+            self.running = false;
+            root.search(search-input.text);
         }
+    }
+
+    VerticalLayout {
+        header := Rectangle {
+            height: 54px;
+            HorizontalLayout {
+                padding-left: 6px;
+                spacing: 6px;
+                Rectangle {
+                    width: 44px;
+                    ActionButton {
+                        y: (54px - self.height) / 2;
+                        width: 44px; height: 44px;
+                        icon: Icons.back; filled: false;
+                        foreground: root.fg;
+                        clicked => { root.closed(); }
+                    }
+                }
+                Text {
+                    text: "Add people";
+                    color: root.fg;
+                    font-family: Theme.font-ui; font-size: Theme.heading;
+                    font-weight: 700;
+                    vertical-alignment: center;
+                    horizontal-stretch: 1;
+                }
+            }
+        }
+
         Rectangle {
-            vertical-stretch: 1;
-            Text {
-                text: "AddPeople — not ported yet";
-                color: root.fg.with-alpha(0.5);
-                font-family: Theme.font-ui;
-                font-size: Theme.body;
+            height: 46px;
+            HorizontalLayout {
+                padding-left: 14px; padding-right: 14px; padding-bottom: 8px;
+                pill := Rectangle {
+                    border-radius: self.height / 2;
+                    background: root.fg.with-alpha(0.07);
+                    border-width: 1px;
+                    border-color: search-input.has-focus ? Theme.accent.with-alpha(0.4) : transparent;
+                    HorizontalLayout {
+                        padding-left: 14px; padding-right: 12px;
+                        spacing: 8px;
+                        IconLabel {
+                            text: Icons.search;
+                            color: root.fg.with-alpha(0.5);
+                            vertical-alignment: center;
+                        }
+                        Rectangle {
+                            clip: true;
+                            horizontal-stretch: 1;
+                            search-input := TextInput {
+                                color: root.fg;
+                                font-family: Theme.font-ui; font-size: Theme.body;
+                                vertical-alignment: center;
+                                height: 100%; width: 100%;
+                                single-line: true;
+                                edited => {
+                                    root.note = "";
+                                    if (self.text != "") {
+                                        debounce.running = false;
+                                        debounce.running = true;
+                                    } else {
+                                        root.search("");
+                                    }
+                                }
+                            }
+                            if search-input.text == "" : Text {
+                                text: "Search for someone";
+                                color: root.fg.with-alpha(0.45);
+                                font-family: Theme.font-ui; font-size: Theme.body;
+                                vertical-alignment: center;
+                                height: 100%;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        if root.note != "" : Rectangle {
+            height: note-text.preferred-height + 8px;
+            note-text := Text {
+                text: root.note;
+                color: Theme.accent;
+                font-family: Theme.font-ui; font-size: Theme.caption;
                 horizontal-alignment: center;
-                vertical-alignment: center;
-                width: 100%; height: 100%;
+                width: 100%;
+            }
+        }
+
+        people := ListView {
+            vertical-stretch: 1;
+            for user in root.results : prow := Rectangle {
+                height: 56px;
+                Rectangle {
+                    x: 10px; width: prow.width - 20px;
+                    y: 4px; height: prow.height - 8px;
+                    border-radius: 12px;
+                    background: prow-touch.pressed || prow-touch.has-hover
+                        ? root.fg.with-alpha(0.05) : transparent;
+                }
+                HorizontalLayout {
+                    padding-left: 16px; padding-right: 12px;
+                    spacing: 12px;
+                    Rectangle {
+                        width: 38px;
+                        Avatar {
+                            size: 38px;
+                            source: user.avatar;
+                            initials: user.initials;
+                            tint: user.tint;
+                        }
+                    }
+                    VerticalLayout {
+                        alignment: center;
+                        horizontal-stretch: 1;
+                        Text {
+                            text: user.display-name != "" ? user.display-name : user.user-id;
+                            color: root.fg;
+                            font-family: Theme.font-ui; font-size: Theme.body;
+                            font-weight: 700;
+                            overflow: elide;
+                        }
+                        Text {
+                            text: user.user-id;
+                            color: root.fg.with-alpha(0.5);
+                            font-family: Theme.font-ui; font-size: Theme.caption;
+                            overflow: elide;
+                        }
+                    }
+                }
+                prow-touch := TouchArea {
+                    clicked => { root.invite-user(user.user-id); }
+                }
             }
         }
     }

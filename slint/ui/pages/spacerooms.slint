@@ -1,34 +1,208 @@
-// SpaceRoomsPage — port of the QML page of the same name. STUB: a fork replaces
-// this file wholesale; add properties/callbacks here and list the app.slint +
-// bridge wiring you need in your WIRING file.
+// SpaceRoomsPage — add rooms to a space, or take them out again. One page in
+// two modes: the same multi-select screen with the list inverted and the verb
+// flipped (SpaceRoomsPage.qml). The bridge supplies `rows` already filtered
+// per mode: "manage" = the space's current children, "add" = joined rooms not
+// yet in the space (rooms only — adding a space here would allow nesting one
+// inside itself).
 
+import { ListView } from "std-widgets.slint";
 import { Theme } from "../style.slint";
 import { Icons } from "../icons.slint";
-import { IconLabel, ActionButton, Avatar, SButton, TextWell } from "../components.slint";
-import { SettingsHeader, SettingsGroup, SettingsRow, OverflowMenu, ChoiceSheet, Spinner, MenuEntry, ChoiceEntry } from "../furniture.slint";
-import { RoomRow, TimelineRow, MemberRow, SpaceRow, HierarchyRow, ThreadRow, UserRow, RoomSettingsModel, PowerRow, ReactionChip, EmojiItem } from "../model.slint";
+import { IconLabel, ActionButton, Avatar } from "../components.slint";
+import { HierarchyRow } from "../model.slint";
 
 export component SpaceRoomsPage inherits Rectangle {
     in property <color> fg: Theme.menu-text;
+    in property <string> mode: "manage";   // manage | add
+    in property <[HierarchyRow]> rows;
+    in property <bool> loading;
+    in property <bool> busy;
+    in-out property <string> note;
+    /// Selected room ids — the bridge owns the set; `selected` marks rows.
+    in property <int> selected-count;
+
     callback closed;
-    background: transparent;
+    callback toggle(string);
+    callback apply;
+
+    property <bool> adding: root.mode == "add";
+
+    background: Theme.menu-background.brighter(0.35);
+
+    note-timer := Timer {
+        interval: 2600ms;
+        running: root.note != "";
+        triggered => { root.note = ""; self.running = false; }
+    }
+
     VerticalLayout {
-        SettingsHeader {
-            title: "SpaceRooms";
-            fg: root.fg;
-            back => { root.closed(); }
+        // Header: close, "N selected", Add/Remove action.
+        header := Rectangle {
+            height: 56px;
+            HorizontalLayout {
+                padding-left: 6px; padding-right: 18px;
+                spacing: 6px;
+                Rectangle {
+                    width: 44px;
+                    ActionButton {
+                        y: (56px - self.height) / 2;
+                        width: 44px; height: 44px;
+                        icon: Icons.close; filled: false;
+                        foreground: root.fg;
+                        clicked => { root.closed(); }
+                    }
+                }
+                Text {
+                    text: "\{root.selected-count} selected";
+                    color: root.fg;
+                    font-family: Theme.font-ui;
+                    font-size: Theme.heading;
+                    font-weight: 700;
+                    vertical-alignment: center;
+                    overflow: elide;
+                    horizontal-stretch: 1;
+                }
+                act := Rectangle {
+                    width: act-t.preferred-width + 16px;
+                    act-t := Text {
+                        text: root.busy ? "Working…" : (root.adding ? "Add" : "Remove");
+                        color: root.selected-count > 0 && !root.busy
+                            ? (root.adding ? Theme.accent : Theme.urgent)
+                            : root.fg.with-alpha(0.35);
+                        font-family: Theme.font-ui;
+                        font-size: Theme.body;
+                        font-weight: 700;
+                        vertical-alignment: center;
+                        horizontal-alignment: center;
+                        width: 100%; height: 100%;
+                    }
+                    TouchArea {
+                        enabled: root.selected-count > 0 && !root.busy;
+                        clicked => { root.apply(); }
+                    }
+                }
+            }
         }
-        Rectangle {
+
+        body := Rectangle {
             vertical-stretch: 1;
-            Text {
-                text: "SpaceRooms — not ported yet";
-                color: root.fg.with-alpha(0.5);
+
+            // Empty and loading say different things.
+            if root.rows.length == 0 : Text {
+                text: root.loading ? "Looking…"
+                    : (root.adding ? "Every room you are in is already here"
+                                   : "No rooms in this space");
+                color: root.fg.with-alpha(0.6);
                 font-family: Theme.font-ui;
                 font-size: Theme.body;
                 horizontal-alignment: center;
                 vertical-alignment: center;
+                wrap: word-wrap;
                 width: 100%; height: 100%;
             }
+
+            if root.rows.length > 0 : ListView {
+                width: 100%; height: body.height;
+                for row in root.rows : srow := Rectangle {
+                    height: 72px;
+                    Rectangle {
+                        x: 8px; width: srow.width - 16px;
+                        y: 4px; height: srow.height - 8px;
+                        border-radius: 14px;
+                        background: row.in-space && root.adding ? transparent
+                            : row.in-space || (srow-touch.pressed || srow-touch.has-hover)
+                            ? (row.in-space ? Theme.accent.with-alpha(0.12) : root.fg.with-alpha(0.05))
+                            : transparent;
+                    }
+                    HorizontalLayout {
+                        padding-left: 16px; padding-right: 22px;
+                        spacing: 12px;
+                        Rectangle {
+                            width: 44px;
+                            Avatar {
+                                y: (srow.height - self.height) / 2;
+                                size: 44px;
+                                source: row.avatar;
+                                initials: row.initials;
+                                tint: row.tint;
+                            }
+                        }
+                        VerticalLayout {
+                            alignment: center;
+                            spacing: 2px;
+                            horizontal-stretch: 1;
+                            Text {
+                                text: row.name != "" ? row.name : row.id;
+                                color: root.fg;
+                                font-family: Theme.font-ui;
+                                font-size: Theme.subtitle;
+                                font-weight: 700;
+                                overflow: elide;
+                            }
+                            HorizontalLayout {
+                                alignment: start;
+                                spacing: 5px;
+                                IconLabel {
+                                    text: !row.encrypted ? Icons.globe : Icons.lock;
+                                    color: root.fg.with-alpha(0.45);
+                                    font-size: Theme.caption;
+                                    vertical-alignment: center;
+                                }
+                                Text {
+                                    text: !row.encrypted ? "Public" : "Private";
+                                    color: root.fg.with-alpha(0.55);
+                                    font-family: Theme.font-ui;
+                                    font-size: Theme.body-small;
+                                    vertical-alignment: center;
+                                }
+                            }
+                            if row.member-count > 0 : Text {
+                                text: row.member-count == 1 ? "1 Member" : "\{row.member-count} Members";
+                                color: root.fg.with-alpha(0.55);
+                                font-family: Theme.font-ui;
+                                font-size: Theme.body-small;
+                            }
+                        }
+                        Rectangle {
+                            width: 22px;
+                            box := Rectangle {
+                                y: (srow.height - self.height) / 2;
+                                width: 22px; height: 22px;
+                                border-radius: 4px;
+                                // `in-space` doubles as "picked" here: the bridge
+                                // flips it per selection, keeping one struct.
+                                background: row.in-space ? Theme.accent : transparent;
+                                border-width: 2px;
+                                border-color: row.in-space ? Theme.accent : root.fg.with-alpha(0.35);
+                                if row.in-space : IconLabel {
+                                    text: Icons.check;
+                                    color: Theme.background;
+                                    font-size: Theme.body-small;
+                                    width: 100%; height: 100%;
+                                }
+                            }
+                        }
+                    }
+                    srow-touch := TouchArea { clicked => { root.toggle(row.id); } }
+                }
+            }
+        }
+    }
+
+    if root.note != "" : Rectangle {
+        x: (root.width - self.width) / 2;
+        y: root.height - self.height - 20px;
+        width: note-t.preferred-width + 28px;
+        height: 34px;
+        border-radius: 17px;
+        background: Theme.popup-background;
+        note-t := Text {
+            text: root.note;
+            color: root.fg;
+            font-family: Theme.font-ui;
+            font-size: Theme.body-small;
+            horizontal-alignment: center; vertical-alignment: center;
+            width: 100%; height: 100%;
         }
     }
 }
