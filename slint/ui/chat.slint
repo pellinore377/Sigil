@@ -1,0 +1,314 @@
+// One room: header, timeline, composer — the load-bearing shape of
+// mobile/ChatPage.qml + BubbleDelegate.qml. Bubble fills are opaque
+// pre-blends over the popup surface, identical to the QML mix() math.
+// v1 renders text kinds and placeholders for media; SigilText effects and
+// media bodies come after the protocol path is proven.
+
+import { ListView } from "std-widgets.slint";
+import { Theme } from "style.slint";
+import { Icons } from "icons.slint";
+import { IconLabel, ActionButton, Avatar } from "components.slint";
+
+export struct TimelineRow {
+    id: string,
+    kind: string,        // text notice emote dayDivider state media unsupported
+    body: string,
+    sender: string,      // display name, shown when show-sender
+    show-sender: bool,   // group start, not own, not a DM
+    initials: string,
+    tint: color,
+    show-avatar: bool,   // group end, not own, not a DM
+    is-own: bool,
+    group-start: bool,
+    group-end: bool,
+    stamp: string,
+    edited: bool,
+    highlighted: bool,
+    media-icon: string,  // non-empty: body is a placeholder chip for kind
+}
+
+export component ChatPage inherits Rectangle {
+    in property <string> room-name;
+    in property <string> room-subtitle;
+    in property <bool> room-encrypted;
+    in property <string> room-initials;
+    in property <image> room-avatar;
+    in property <color> room-tint;
+    in property <[TimelineRow]> items;
+    in property <string> typing-line;
+    callback back;
+    callback send(string);
+    callback composer-edited(string);
+
+    background: Theme.menu-background;
+
+    public function scroll-to-end() {
+        list.viewport-y = min(0px, list.visible-height - list.viewport-height);
+    }
+    public function clear-composer() { composer-input.text = ""; }
+
+    VerticalLayout {
+        // Header: 52 one line, 56 two (ui-conventions: counts go in the subtitle)
+        header := Rectangle {
+            height: root.room-subtitle == "" ? 52px : 56px;
+            background: Theme.menu-background;
+            HorizontalLayout {
+                padding-left: 6px; padding-right: 10px;
+                spacing: 8px;
+                Rectangle {
+                    width: 36px;
+                    back-btn := ActionButton {
+                        y: (header.height - self.height) / 2;
+                        icon: Icons.back;
+                        clicked => { root.back(); }
+                    }
+                }
+                Rectangle {
+                    width: 36px;
+                    Avatar {
+                        size: 32px;
+                        source: root.room-avatar;
+                        initials: root.room-initials;
+                        tint: root.room-tint;
+                    }
+                }
+                VerticalLayout {
+                    alignment: center;
+                    spacing: 1px;
+                    horizontal-stretch: 1;
+                    HorizontalLayout {
+                        alignment: start;
+                        spacing: 5px;
+                        Text {
+                            text: root.room-name;
+                            color: Theme.menu-text;
+                            font-family: Theme.font-ui;
+                            font-size: Theme.heading;
+                            font-weight: 700;
+                            overflow: elide;
+                        }
+                        if root.room-encrypted : IconLabel {
+                            text: Icons.lock;
+                            font-size: Theme.caption;
+                            color: Theme.menu-text.with-alpha(0.35);
+                            vertical-alignment: center;
+                        }
+                    }
+                    if root.room-subtitle != "" : Text {
+                        text: root.room-subtitle;
+                        color: Theme.menu-text.with-alpha(0.55);
+                        font-family: Theme.font-ui;
+                        font-size: Theme.caption;
+                        overflow: elide;
+                    }
+                }
+            }
+        }
+
+        // Conversation ground: top corners cut away, revealing the header tone
+        convo := Rectangle {
+            vertical-stretch: 1;
+            background: Theme.popup-background;
+            border-top-left-radius: 24px;
+            border-top-right-radius: 24px;
+            clip: true;
+
+            VerticalLayout {
+                list := ListView {
+                    vertical-stretch: 1;
+                    for item in root.items : trow := Rectangle {
+                        height: t-inner.preferred-height;
+                        t-inner := VerticalLayout {
+                            padding-left: 12px; padding-right: 12px;
+                            padding-top: item.group-start ? 8px : 2px;
+                            padding-bottom: item.group-end ? 4px : 0px;
+
+                            // Day divider
+                            if item.kind == "dayDivider" : HorizontalLayout {
+                                alignment: center;
+                                padding-top: 10px; padding-bottom: 6px;
+                                Rectangle {
+                                    width: divider-text.preferred-width + 20px;
+                                    height: 22px;
+                                    border-radius: self.height / 2;
+                                    background: Theme.menu-text.with-alpha(0.06);
+                                    divider-text := Text {
+                                        text: item.body;
+                                        color: Theme.menu-text.with-alpha(0.55);
+                                        font-family: Theme.font-ui;
+                                        font-size: Theme.caption;
+                                        horizontal-alignment: center; vertical-alignment: center;
+                                        width: 100%; height: 100%;
+                                    }
+                                }
+                            }
+
+                            // State / membership lines, centred and quiet
+                            if item.kind == "state" : Text {
+                                text: item.body;
+                                color: Theme.menu-text.with-alpha(0.45);
+                                font-family: Theme.font-ui;
+                                font-size: Theme.caption;
+                                horizontal-alignment: center;
+                                wrap: word-wrap;
+                            }
+
+                            // Message bubble
+                            if item.kind == "text" || item.kind == "notice" || item.kind == "emote" || item.kind == "media" || item.kind == "unsupported" : HorizontalLayout {
+                                alignment: item.is-own ? end : start;
+                                spacing: 8px;
+                                if !item.is-own : Rectangle {
+                                    width: 34px;
+                                    if item.show-avatar : av := Avatar {
+                                        y: bubble.height - self.height;
+                                        size: 34px;
+                                        initials: item.initials;
+                                        tint: item.tint;
+                                    }
+                                }
+                                bubble := Rectangle {
+                                    background: item.is-own
+                                        ? Theme.accent.mix(Theme.popup-background, 0.42)
+                                        : item.highlighted
+                                        ? Theme.accent.mix(Theme.popup-background, 0.24)
+                                        : Theme.menu-text.mix(Theme.popup-background, 0.22);
+                                    // Consecutive bubbles from one sender share small
+                                    // corners on that side; a lone bubble is round.
+                                    border-top-left-radius: (!item.is-own && !item.group-start) ? 5px : 16px;
+                                    border-bottom-left-radius: (!item.is-own && !item.group-end) ? 5px : 16px;
+                                    border-top-right-radius: (item.is-own && !item.group-start) ? 5px : 16px;
+                                    border-bottom-right-radius: (item.is-own && !item.group-end) ? 5px : 16px;
+                                    // Width from content, capped at 72% of the page;
+                                    // preferred-* never reads assigned size, so no loop.
+                                    width: min(root.width * 0.72, b-inner.preferred-width + 20px);
+                                    height: b-inner.preferred-height + 20px;
+                                    b-inner := VerticalLayout {
+                                        x: 10px; y: 10px;
+                                        width: bubble.width - 20px;
+                                        spacing: 4px;
+                                        if item.show-sender : Text {
+                                            text: item.sender;
+                                            color: item.tint;
+                                            font-family: Theme.font-ui;
+                                            font-size: Theme.body-small;
+                                            font-weight: 700;
+                                        }
+                                        HorizontalLayout {
+                                            alignment: start;
+                                            spacing: 6px;
+                                            if item.media-icon != "" : IconLabel {
+                                                text: item.media-icon;
+                                                color: Theme.menu-text.with-alpha(0.7);
+                                                vertical-alignment: center;
+                                            }
+                                            b-body := Text {
+                                                text: item.body;
+                                                color: Theme.menu-text;
+                                                font-family: Theme.font-ui;
+                                                font-size: Theme.body;
+                                                font-italic: item.kind == "emote" || item.kind == "notice";
+                                                wrap: word-wrap;
+                                                horizontal-stretch: 1;
+                                            }
+                                        }
+                                        HorizontalLayout {
+                                            alignment: end;
+                                            spacing: 4px;
+                                            if item.edited : Text {
+                                                text: "edited";
+                                                color: Theme.menu-text.with-alpha(0.4);
+                                                font-family: Theme.font-ui;
+                                                font-size: Theme.caption;
+                                                font-italic: true;
+                                            }
+                                            Text {
+                                                text: item.stamp;
+                                                color: Theme.menu-text.with-alpha(0.4);
+                                                font-family: Theme.font-ui;
+                                                font-size: Theme.caption;
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                if root.typing-line != "" : Rectangle {
+                    height: 22px;
+                    Text {
+                        x: 16px;
+                        text: root.typing-line;
+                        color: Theme.accent;
+                        font-family: Theme.font-ui;
+                        font-size: Theme.caption;
+                        vertical-alignment: center;
+                        height: 100%;
+                    }
+                }
+
+                // Composer
+                composer := Rectangle {
+                    height: 56px;
+                    HorizontalLayout {
+                        padding-left: 12px; padding-right: 12px;
+                        padding-top: 8px; padding-bottom: 10px;
+                        spacing: 8px;
+                        well := Rectangle {
+                            horizontal-stretch: 1;
+                            border-radius: self.height / 2;
+                            background: Theme.menu-text.with-alpha(0.07);
+                            border-width: 1px;
+                            border-color: composer-input.has-focus ? Theme.accent.with-alpha(0.4) : transparent;
+                            HorizontalLayout {
+                                padding-left: 16px; padding-right: 12px;
+                                Rectangle {
+                                    clip: true;
+                                    horizontal-stretch: 1;
+                                    composer-input := TextInput {
+                                        color: Theme.menu-text;
+                                        font-family: Theme.font-ui;
+                                        font-size: Theme.body;
+                                        vertical-alignment: center;
+                                        height: 100%; width: 100%;
+                                        single-line: true;
+                                        accepted => {
+                                            if (self.text != "") { root.send(self.text); }
+                                        }
+                                        edited => { root.composer-edited(self.text); }
+                                    }
+                                    if composer-input.text == "" : Text {
+                                        text: "Message";
+                                        color: Theme.menu-text.with-alpha(0.45);
+                                        font-family: Theme.font-ui;
+                                        font-size: Theme.body;
+                                        vertical-alignment: center;
+                                        height: 100%;
+                                    }
+                                }
+                            }
+                        }
+                        send-btn := Rectangle {
+                            width: 38px; height: 38px;
+                            border-radius: self.height / 2;
+                            background: composer-input.text != ""
+                                ? Theme.accent.with-alpha(send-touch.pressed ? 1.0 : 0.9)
+                                : Theme.menu-text.with-alpha(0.08);
+                            IconLabel {
+                                text: Icons.send;
+                                color: composer-input.text != "" ? Theme.background : Theme.menu-text.with-alpha(0.4);
+                                width: 100%; height: 100%;
+                            }
+                            send-touch := TouchArea {
+                                clicked => {
+                                    if (composer-input.text != "") { root.send(composer-input.text); }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

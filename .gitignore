@@ -1,6 +1,7 @@
 # Build output
 core/target/
 shared/icongen/target/
+slint/target/
 omarchy/video/*.so
 omarchy/video/.qt-version
 *.tmp

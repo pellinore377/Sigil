@@ -75,11 +75,30 @@ pub async fn login_start(engine: SharedEngine, homeserver: String, open_browser:
     if homeserver.is_empty() {
         return Reply::err("bad_request", "homeserver is required");
     }
-    match engine.session() {
-        SessionState::LoggedIn => return Reply::err("bad_request", "already logged in"),
-        SessionState::LoginPending => return Reply::err("login_in_progress", "a login is already in progress"),
-        _ => {}
+    // Check and claim in ONE lock scope. Checking then awaiting lets a second
+    // login.start through before the first sets pending, and two build_client
+    // calls race their migrations over one sqlite store (seen on Android,
+    // where a debug build made the window seconds wide).
+    {
+        let mut s = engine.state.lock();
+        match s.session.unwrap_or(SessionState::LoggedOut) {
+            SessionState::LoggedIn => return Reply::err("bad_request", "already logged in"),
+            SessionState::LoginPending => return Reply::err("login_in_progress", "a login is already in progress"),
+            _ => s.session = Some(SessionState::LoginPending),
+        }
     }
+    engine.broadcast_status();
+    let reply = login_begin(engine.clone(), homeserver, open_browser).await;
+    // Every error return in login_begin happens before its flow task spawns,
+    // so an Err here means nothing is running: release the claim. Failures
+    // after the spawn go through finish_failed instead.
+    if matches!(reply, Reply::Err(_)) {
+        engine.set_session(SessionState::LoggedOut);
+    }
+    reply
+}
+
+async fn login_begin(engine: SharedEngine, homeserver: String, open_browser: bool) -> Reply {
     let client = match build_client(&homeserver).await {
         Ok(c) => c,
         Err(e) => return Reply::err("network", format!("{e:#}")),

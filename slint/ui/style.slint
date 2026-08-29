@@ -1,0 +1,56 @@
+// The design-token contract from docs/portability.md, as a Slint global.
+// The QML frontend gets these from the Omarchy host (qs.Commons / qs.Ui);
+// here they are Sigil's own. Same names, same roles: a component asks for a
+// token, never a literal.
+//
+// `Style.space(n)` does not exist here on purpose: Slint's `px` is already a
+// logical pixel scaled by the platform's device pixel ratio, which is the whole
+// job Style.space did on Quickshell. A design px in QML is a `px` here, 1:1.
+
+// The bundled fonts, embedded at compile time. Nothing asks the system for a font.
+import "../../shared/fonts/Roboto-Regular.ttf";
+import "../../shared/fonts/Roboto-Medium.ttf";
+import "../../shared/fonts/Roboto-Bold.ttf";
+import "../../shared/fonts/RobotoMono-Regular.ttf";
+import "../../shared/fonts/MaterialSymbolsRounded.ttf";
+import "../../shared/fonts/MaterialSymbolsRounded-Filled.ttf";
+
+export global Theme {
+    // Colours. A stand-in dark palette shaped like the host tokens; a theme
+    // system later swaps these values, never the call sites.
+    out property <color> accent: #7aa2f7;
+    out property <color> background: #0f0f11;
+    out property <color> foreground: #d8dbe2;
+    out property <color> muted: #8b8f98;
+    out property <color> urgent: #f38ba8;
+
+    out property <color> menu-text: #d8dbe2;
+    out property <color> menu-background: #16161a;
+    out property <color> menu-border: #26262c;
+
+    out property <color> popup-text: #d8dbe2;
+    out property <color> popup-background: #1b1b20;
+    out property <color> popup-border: #2a2a31;
+
+    // Fonts, by the family names the bundled files declare.
+    out property <string> font-ui: "Roboto";
+    out property <string> font-mono: "Roboto Mono";
+    out property <string> font-icon: "Material Symbols Rounded";
+    out property <string> font-icon-filled: "Material Symbols Rounded Filled";
+
+    // Type scale — Style.font.* in QML.
+    out property <length> caption: 11px;
+    out property <length> body-small: 12px;
+    out property <length> body: 14px;
+    out property <length> subtitle: 15px;
+    out property <length> title: 16px;
+    out property <length> heading: 18px;
+    out property <length> icon-size: 16px;
+    out property <length> icon-large: 20px;
+
+    // Spacing steps — Style.spacing.* in QML.
+    out property <length> sp-sm: 6px;
+    out property <length> sp-md: 10px;
+    out property <length> sp-lg: 14px;
+    out property <length> sp-xl: 20px;
+}

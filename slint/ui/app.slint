@@ -1,0 +1,93 @@
+// The window: one page visible at a time, chosen by the session state the
+// engine broadcasts and the navigation the user has done. Pages own their
+// look; this file owns only which page is up.
+
+import { Theme } from "style.slint";
+import { Icons } from "icons.slint";
+import { LoginPage } from "login.slint";
+import { HomePage, RoomRow } from "home.slint";
+import { ChatPage, TimelineRow } from "chat.slint";
+
+export { RoomRow, TimelineRow, Icons }
+
+export component AppWindow inherits Window {
+    title: "Sigil";
+    background: Theme.menu-background;
+    default-font-family: Theme.font-ui;
+    preferred-width: 411px;
+    preferred-height: 823px;
+
+    // Engine state, written by Rust
+    in property <string> session: "restoring";  // loggedOut loginPending restoring loggedIn
+    in property <string> login-error;
+    in property <string> sync-line;
+    in property <[RoomRow]> rooms;
+    in property <[RoomRow]> spaces;
+    in property <string> my-initials;
+    in property <image> my-avatar;
+    in property <color> my-tint: Theme.accent;
+
+    // Open room
+    in property <bool> in-chat: false;
+    in property <string> room-name;
+    in property <string> room-subtitle;
+    in property <bool> room-encrypted;
+    in property <string> room-initials;
+    in property <image> room-avatar;
+    in property <color> room-tint: Theme.accent;
+    in property <[TimelineRow]> items;
+    in property <string> typing-line;
+
+    // Actions, handled by Rust
+    callback sign-in(string);
+    callback open-again;
+    callback cancel-login;
+    callback room-clicked(string);
+    callback search-edited(string);
+    callback back-to-home;
+    callback send-message(string);
+    callback composer-edited(string);
+    callback new-chat;
+
+    public function scroll-timeline-to-end() { chat.scroll-to-end(); }
+    public function clear-composer() { chat.clear-composer(); }
+
+    if root.session != "loggedIn" : LoginPage {
+        width: 100%; height: 100%;
+        pending: root.session == "loginPending";
+        restoring: root.session == "restoring";
+        error: root.login-error;
+        sign-in(hs) => { root.sign-in(hs); }
+        open-again => { root.open-again(); }
+        cancel-login => { root.cancel-login(); }
+    }
+
+    if root.session == "loggedIn" && !root.in-chat : HomePage {
+        width: 100%; height: 100%;
+        rooms: root.rooms;
+        spaces: root.spaces;
+        my-initials: root.my-initials;
+        my-avatar: root.my-avatar;
+        my-tint: root.my-tint;
+        sync-line: root.sync-line;
+        room-clicked(id) => { root.room-clicked(id); }
+        search-edited(q) => { root.search-edited(q); }
+        new-chat => { root.new-chat(); }
+    }
+
+    chat := ChatPage {
+        width: 100%; height: 100%;
+        visible: root.session == "loggedIn" && root.in-chat;
+        room-name: root.room-name;
+        room-subtitle: root.room-subtitle;
+        room-encrypted: root.room-encrypted;
+        room-initials: root.room-initials;
+        room-avatar: root.room-avatar;
+        room-tint: root.room-tint;
+        items: root.items;
+        typing-line: root.typing-line;
+        back => { root.back-to-home(); }
+        send(text) => { root.send-message(text); }
+        composer-edited(text) => { root.composer-edited(text); }
+    }
+}

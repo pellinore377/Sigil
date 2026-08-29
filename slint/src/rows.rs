@@ -1,0 +1,225 @@
+//! JSON from the engine → the row structs the UI draws. The mapping rules are
+//! ports of mobile/HomePage.qml and BubbleDelegate.qml; where a rule exists on
+//! both sides (avatar hue, preview marks) the QML file is the reference.
+
+use serde_json::Value;
+
+/// The icon strings a row can carry, fetched once from the generated `Icons`
+/// global so the codepoints stay single-sourced in shared/icons.json.
+#[derive(Clone, Default)]
+pub struct IconSet {
+    pub camera: slint::SharedString,
+    pub video_on: slint::SharedString,
+    pub mic_on: slint::SharedString,
+    pub attach: slint::SharedString,
+    pub phone: slint::SharedString,
+    pub code_blocks: slint::SharedString,
+    pub poll: slint::SharedString,
+    pub sticker: slint::SharedString,
+    pub location: slint::SharedString,
+    pub person: slint::SharedString,
+}
+
+fn s<'a>(v: &'a Value, k: &str) -> &'a str {
+    v.get(k).and_then(Value::as_str).unwrap_or("")
+}
+fn b(v: &Value, k: &str) -> bool {
+    v.get(k).and_then(Value::as_bool).unwrap_or(false)
+}
+fn n(v: &Value, k: &str) -> i64 {
+    v.get(k).and_then(Value::as_i64).unwrap_or(0)
+}
+
+/// Avatar.qml's hashed hue, exactly: h = (h*31 + code) >>> 0 over userId||name,
+/// then a fixed hue table at HSL(?, 0.35, 0.55).
+pub fn tint_for(key: &str) -> slint::Color {
+    let mut h: u32 = 0;
+    // JS charCodeAt is UTF-16; Matrix ids are ASCII in practice, chars() matches.
+    for c in key.chars() {
+        h = h.wrapping_mul(31).wrapping_add(c as u32);
+    }
+    const HUES: [f64; 10] = [0.00, 0.08, 0.16, 0.33, 0.50, 0.58, 0.66, 0.75, 0.83, 0.92];
+    let hue = HUES[(h % 10) as usize];
+    let (r, g, bl) = hsl_to_rgb(hue, 0.35, 0.55);
+    slint::Color::from_rgb_u8(r, g, bl)
+}
+
+fn hsl_to_rgb(h: f64, s: f64, l: f64) -> (u8, u8, u8) {
+    let c = (1.0 - (2.0 * l - 1.0).abs()) * s;
+    let hp = h * 6.0;
+    let x = c * (1.0 - (hp % 2.0 - 1.0).abs());
+    let (r, g, b) = match hp as u32 {
+        0 => (c, x, 0.0),
+        1 => (x, c, 0.0),
+        2 => (0.0, c, x),
+        3 => (0.0, x, c),
+        4 => (x, 0.0, c),
+        _ => (c, 0.0, x),
+    };
+    let m = l - c / 2.0;
+    (((r + m) * 255.0) as u8, ((g + m) * 255.0) as u8, ((b + m) * 255.0) as u8)
+}
+
+/// Avatar.qml: one letter, uppercased, from the name with sigils stripped.
+pub fn initials(name: &str) -> String {
+    name.trim_start_matches(['@', '#', '!'])
+        .chars()
+        .next()
+        .map(|c| c.to_uppercase().to_string())
+        .unwrap_or_default()
+}
+
+/// HomePage.qml's preview line: typing > invite > call > last message,
+/// with the leading icon mark in its own element.
+pub struct Preview {
+    pub icon: slint::SharedString,
+    pub text: String,
+    pub typing: bool,
+}
+
+pub fn preview_for(room: &Value, typing: &[Value], icons: &IconSet) -> Preview {
+    if let Some(first) = typing.first() {
+        let who = s(first, "displayName");
+        return Preview {
+            icon: Default::default(),
+            text: format!("{who} is typing…"),
+            typing: true,
+        };
+    }
+    if b(room, "isInvite") {
+        return Preview { icon: Default::default(), text: "Invitation — tap to respond".into(), typing: false };
+    }
+    if b(room, "hasActiveCall") {
+        return Preview { icon: icons.phone.clone(), text: "Ongoing call".into(), typing: false };
+    }
+    let lm = &room["lastMessage"];
+    if lm.is_null() {
+        return Preview { icon: Default::default(), text: String::new(), typing: false };
+    }
+    let icon = if b(lm, "hasCode") {
+        icons.code_blocks.clone()
+    } else {
+        match s(lm, "kind") {
+            "image" => icons.camera.clone(),
+            "video" => icons.video_on.clone(),
+            "audio" | "voice" => icons.mic_on.clone(),
+            "file" => icons.attach.clone(),
+            "call" => icons.phone.clone(),
+            _ => Default::default(),
+        }
+    };
+    let sender = s(lm, "senderName");
+    let body = match (s(lm, "kind"), s(lm, "body")) {
+        ("call", "") => "Call",
+        (_, body) => body,
+    };
+    let text = if b(room, "isDm") || sender.is_empty() {
+        body.to_string()
+    } else {
+        format!("{sender}: {body}")
+    };
+    Preview { icon, text, typing: false }
+}
+
+/// HomePage.qml's badge: highlights count when highlighted, else unread;
+/// invites show "!". Server counts are 0 for E2EE rooms, so combine.
+pub fn badge_for(room: &Value) -> (String, bool) {
+    let unread = n(room, "unread").max(n(room, "unreadMessages"));
+    let highlights = n(room, "highlights");
+    if b(room, "isInvite") {
+        return ("!".into(), true);
+    }
+    let count = if highlights > 0 { highlights } else { unread };
+    if count == 0 {
+        return (String::new(), false);
+    }
+    let label = if count > 99 { "99+".into() } else { count.to_string() };
+    (label, highlights > 0)
+}
+
+/// timeline/fmt.rs `short()` runs engine-side and arrives as `stamp`;
+/// this is only for in-bubble times.
+pub fn bubble_stamp(ts_ms: i64) -> String {
+    use chrono::TimeZone;
+    match chrono::Local.timestamp_millis_opt(ts_ms).single() {
+        Some(t) => t.format("%H:%M").to_string(),
+        None => String::new(),
+    }
+}
+
+pub fn day_divider_label(ts_ms: i64) -> String {
+    use chrono::{Datelike, Local, TimeZone};
+    let Some(t) = Local.timestamp_millis_opt(ts_ms).single() else { return String::new() };
+    let now = Local::now();
+    let days = now.date_naive().signed_duration_since(t.date_naive()).num_days();
+    if days == 0 {
+        return "Today".into();
+    }
+    if days == 1 {
+        return "Yesterday".into();
+    }
+    if t.year() == now.year() {
+        return t.format("%A, %-d %B").to_string();
+    }
+    t.format("%-d %B %Y").to_string()
+}
+
+/// Which timeline kinds draw as bubbles, which as centred state lines, and
+/// which do not draw at all. The shadow list keeps every item (filtering the
+/// model the diffs index into is how views desynchronise — ui-conventions.md);
+/// only this projection skips rows.
+pub enum RowShape {
+    Bubble { media_icon: slint::SharedString, body_override: Option<String> },
+    State(String),
+    Divider(String),
+    Skip,
+}
+
+pub fn shape_for(item: &Value, icons: &IconSet) -> RowShape {
+    let kind = s(item, "kind");
+    match kind {
+        "text" | "notice" | "emote" => RowShape::Bubble { media_icon: Default::default(), body_override: None },
+        "image" => RowShape::Bubble { media_icon: icons.camera.clone(), body_override: media_body(item, "Photo") },
+        "video" => RowShape::Bubble { media_icon: icons.video_on.clone(), body_override: media_body(item, "Video") },
+        "audio" | "voice" => RowShape::Bubble { media_icon: icons.mic_on.clone(), body_override: media_body(item, "Audio") },
+        "file" => RowShape::Bubble { media_icon: icons.attach.clone(), body_override: media_body(item, "File") },
+        "sticker" => RowShape::Bubble { media_icon: icons.sticker.clone(), body_override: media_body(item, "Sticker") },
+        "poll" => RowShape::Bubble { media_icon: icons.poll.clone(), body_override: Some("Poll".into()) },
+        "redacted" => RowShape::Bubble { media_icon: Default::default(), body_override: Some("Message deleted".into()) },
+        "utd" => RowShape::Bubble { media_icon: Default::default(), body_override: Some("Waiting for this message…".into()) },
+        "unsupported" => RowShape::Bubble { media_icon: Default::default(), body_override: Some("Unsupported message".into()) },
+        "dayDivider" => RowShape::Divider(day_divider_label(n(item, "ts"))),
+        "membership" | "profile" | "state" | "call" | "rtcNotification" => {
+            let text = match s(item, "stateText") {
+                "" => s(item, "body").to_string(),
+                t => t.to_string(),
+            };
+            if text.is_empty() { RowShape::Skip } else { RowShape::State(text) }
+        }
+        "timelineStart" => RowShape::State("Beginning of conversation".into()),
+        _ => RowShape::Skip, // readMarker and anything newer than us
+    }
+}
+
+fn media_body(item: &Value, fallback: &str) -> Option<String> {
+    let body = s(item, "body");
+    if !body.is_empty() {
+        return Some(body.to_string());
+    }
+    let name = item.get("media").map(|m| s(m, "filename")).unwrap_or("");
+    Some(if name.is_empty() { fallback.to_string() } else { name.to_string() })
+}
+
+/// Bubble grouping: consecutive messages from one sender within five minutes
+/// on the same day share small corners.
+pub fn same_group(a: &Value, bv: &Value) -> bool {
+    let bubble = |v: &Value| !matches!(s(v, "kind"), "dayDivider" | "membership" | "profile" | "state" | "call" | "rtcNotification" | "readMarker" | "timelineStart");
+    if !bubble(a) || !bubble(bv) {
+        return false;
+    }
+    if s(a, "sender") != s(bv, "sender") {
+        return false;
+    }
+    let (ta, tb) = (n(a, "ts"), n(bv, "ts"));
+    (ta - tb).abs() <= 5 * 60 * 1000
+}

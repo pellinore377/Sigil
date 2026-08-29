@@ -1,7 +1,7 @@
 //! Turns `shared/icons.json` into the per-platform icon tables.
 //!
 //! One emitter per target: add Swift, Kotlin or TypeScript by writing another
-//! `emit_*` and another `Target` in `TARGETS`. Run it from anywhere:
+//! `emit_*` and another `Target` in `TARGETS`. QML and Slint exist so far. Run it from anywhere:
 //!
 //!     cargo run --manifest-path shared/icongen/Cargo.toml
 
@@ -29,7 +29,10 @@ struct Target {
     render: fn(&[Icon]) -> String,
 }
 
-const TARGETS: [Target; 1] = [Target { path: "omarchy/components/Icons.qml", render: emit_qml }];
+const TARGETS: [Target; 2] = [
+    Target { path: "omarchy/components/Icons.qml", render: emit_qml },
+    Target { path: "slint/ui/icons.slint", render: emit_slint },
+];
 
 fn main() {
     let root = repo_root();
@@ -108,6 +111,39 @@ fn emit_qml(icons: &[Icon]) -> String {
         let _ = writeln!(
             out,
             "  readonly property string {:pad$} \"\\u{}\"  // {}",
+            format!("{}:", icon.name),
+            icon.codepoint,
+            icon.material,
+            pad = pad + 1
+        );
+    }
+    out.push_str("}\n");
+    out
+}
+
+/// A Slint global, imported as `import { Icons } from "icons.slint";`.
+/// Slint has no per-element font fallback either, so the same two traps apply:
+/// an icon never shares a `Text` with words, and the wrong family silently
+/// draws a different glyph, not tofu.
+fn emit_slint(icons: &[Icon]) -> String {
+    let pad = icons.iter().map(|i| i.name.len()).max().unwrap_or(0);
+    let mut out = header("//");
+    out.push_str("\n// Every icon in Sigil, by what it means here rather than what the icon set calls it.\n");
+    out.push_str("// Call sites say `Icons.back`, never a glyph literal. Draw them with `IconLabel`.\n");
+    for trap in TRAPS {
+        let _ = writeln!(out, "// {trap}");
+    }
+    out.push_str("// Trailing comments are the canonical Material Symbols names: fonts.google.com/icons.\n");
+    out.push_str("export global Icons {\n");
+    let mut group = "";
+    for icon in icons {
+        if icon.group != group {
+            group = &icon.group;
+            let _ = writeln!(out, "\n    // {group}");
+        }
+        let _ = writeln!(
+            out,
+            "    out property <string> {:pad$} \"\\u{{{}}}\";  // {}",
             format!("{}:", icon.name),
             icon.codepoint,
             icon.material,

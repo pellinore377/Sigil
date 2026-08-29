@@ -1,0 +1,313 @@
+// Home: header + search + segmented tabs (Chats | Spaces) + room list —
+// mobile/HomePage.qml. Filtering and ordering stay in Rust: the engine already
+// sorts rooms (pinned, highlights, unread, recency), and re-sorting in the view
+// is how the QML side ended up owning a copy of that rule.
+
+import { ListView } from "std-widgets.slint";
+import { Theme } from "style.slint";
+import { Icons } from "icons.slint";
+import { IconLabel, ActionButton, Avatar } from "components.slint";
+
+export struct RoomRow {
+    id: string,
+    name: string,
+    initials: string,
+    avatar: image,
+    tint: color,
+    preview: string,
+    preview-icon: string,     // leading mark: needs its own element, one family per Text
+    stamp: string,
+    badge: string,            // "", "3", "99+", "!"
+    badge-urgent: bool,
+    unread: bool,
+    is-favourite: bool,
+    is-encrypted: bool,
+    has-call: bool,
+    is-invite: bool,
+    is-typing: bool,
+}
+
+export component HomePage inherits Rectangle {
+    in property <[RoomRow]> rooms;
+    in property <[RoomRow]> spaces;
+    in property <string> my-initials;
+    in property <image> my-avatar;
+    in property <color> my-tint;
+    in property <string> sync-line;   // non-empty: engine is catching up / erroring
+    in-out property <int> tab: 0;     // 0 chats, 1 spaces
+    callback room-clicked(string);
+    callback search-edited(string);
+    callback new-chat;
+
+    background: Theme.menu-background;
+
+    VerticalLayout {
+        // Header
+        header := Rectangle {
+            height: 54px;
+            HorizontalLayout {
+                padding-left: 18px;
+                padding-right: 10px;
+                Text {
+                    text: "Sigil";
+                    color: Theme.menu-text;
+                    font-family: Theme.font-ui;
+                    font-size: Theme.heading;
+                    font-weight: 700;
+                    vertical-alignment: center;
+                    horizontal-stretch: 1;
+                }
+                Rectangle {
+                    width: 36px;
+                    Avatar {
+                        size: 28px;
+                        source: root.my-avatar;
+                        initials: root.my-initials;
+                        tint: root.my-tint;
+                    }
+                }
+            }
+        }
+
+        // Search pill
+        Rectangle {
+            height: 46px;
+            HorizontalLayout {
+                padding-left: 14px; padding-right: 14px;
+                padding-top: 2px; padding-bottom: 8px;
+                pill := Rectangle {
+                    border-radius: self.height / 2;
+                    background: Theme.menu-text.with-alpha(0.07);
+                    border-width: 1px;
+                    border-color: search-input.has-focus ? Theme.accent.with-alpha(0.4) : transparent;
+                    HorizontalLayout {
+                        padding-left: 14px; padding-right: 12px;
+                        spacing: 8px;
+                        IconLabel {
+                            text: Icons.search;
+                            color: Theme.menu-text.with-alpha(0.5);
+                            vertical-alignment: center;
+                        }
+                        input-holder := Rectangle {
+                            clip: true;
+                            horizontal-stretch: 1;
+                            search-input := TextInput {
+                                color: Theme.menu-text;
+                                font-family: Theme.font-ui;
+                                font-size: Theme.body;
+                                vertical-alignment: center;
+                                height: 100%; width: 100%;
+                                single-line: true;
+                                edited => { root.search-edited(self.text); }
+                            }
+                            if search-input.text == "" : Text {
+                                text: root.tab == 0 ? "Search chats" : "Search spaces";
+                                color: Theme.menu-text.with-alpha(0.45);
+                                font-family: Theme.font-ui;
+                                font-size: Theme.body;
+                                vertical-alignment: center;
+                                height: 100%;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Segmented tabs
+        Rectangle {
+            height: 44px;
+            seg := Rectangle {
+                width: root.width - 28px;
+                height: 34px;
+                x: 14px;
+                y: 5px;
+                border-radius: self.height / 2;
+                background: Theme.menu-text.with-alpha(0.06);
+                thumb := Rectangle {
+                    width: seg.width / 2 - 3px;
+                    height: seg.height - 6px;
+                    border-radius: self.height / 2;
+                    x: 3px + (root.tab == 0 ? 0px : seg.width / 2);
+                    y: 3px;
+                    background: Theme.accent.with-alpha(0.22);
+                    border-width: 1px;
+                    border-color: Theme.accent.with-alpha(0.35);
+                    // OutCubic, from the engine's easing table
+                    animate x { duration: 160ms; easing: cubic-bezier(0.33, 1, 0.68, 1); }
+                }
+                HorizontalLayout {
+                    tab0 := Rectangle {
+                        Text {
+                            text: "Chats";
+                            color: root.tab == 0 ? Theme.menu-text : Theme.menu-text.with-alpha(0.55);
+                            font-family: Theme.font-ui;
+                            font-size: Theme.body;
+                            font-weight: root.tab == 0 ? 700 : 400;
+                            horizontal-alignment: center; vertical-alignment: center;
+                            width: 100%; height: 100%;
+                        }
+                        TouchArea { clicked => { root.tab = 0; } }
+                    }
+                    tab1 := Rectangle {
+                        Text {
+                            text: "Spaces";
+                            color: root.tab == 1 ? Theme.menu-text : Theme.menu-text.with-alpha(0.55);
+                            font-family: Theme.font-ui;
+                            font-size: Theme.body;
+                            font-weight: root.tab == 1 ? 700 : 400;
+                            horizontal-alignment: center; vertical-alignment: center;
+                            width: 100%; height: 100%;
+                        }
+                        TouchArea { clicked => { root.tab = 1; } }
+                    }
+                }
+            }
+        }
+
+        // Sync state, only while it is worth saying
+        if root.sync-line != "" : Rectangle {
+            height: 24px;
+            Text {
+                text: root.sync-line;
+                color: Theme.muted;
+                font-family: Theme.font-ui;
+                font-size: Theme.caption;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+                width: 100%; height: 100%;
+            }
+        }
+
+        // Room list
+        list := ListView {
+            vertical-stretch: 1;
+            for room in (root.tab == 0 ? root.rooms : root.spaces) : rrow := Rectangle {
+                height: 64px;
+                Rectangle {
+                    x: 8px; width: rrow.width - 16px;
+                    y: 4px; height: rrow.height - 8px;
+                    border-radius: 14px;
+                    background: row-touch.has-hover ? Theme.menu-text.with-alpha(0.05) : transparent;
+                }
+                HorizontalLayout {
+                    padding-left: 16px; padding-right: 16px;
+                    spacing: 12px;
+                    Rectangle {
+                        width: 44px;
+                        Avatar {
+                            size: 44px;
+                            source: room.avatar;
+                            initials: room.initials;
+                            tint: room.tint;
+                        }
+                    }
+                    // name + flags | preview
+                    VerticalLayout {
+                        alignment: center;
+                        spacing: 2px;
+                        horizontal-stretch: 1;
+                        HorizontalLayout {
+                            alignment: start;
+                            spacing: 5px;
+                            name-text := Text {
+                                text: room.name;
+                                color: Theme.menu-text;
+                                font-family: Theme.font-ui;
+                                font-size: Theme.subtitle;
+                                font-weight: room.unread ? 700 : 400;
+                                overflow: elide;
+                            }
+                            if room.is-encrypted : IconLabel {
+                                text: Icons.lock;
+                                font-size: Theme.caption;
+                                color: Theme.menu-text.with-alpha(0.35);
+                                vertical-alignment: center;
+                            }
+                            if room.has-call : IconLabel {
+                                text: Icons.phone;
+                                font-size: Theme.caption;
+                                color: Theme.accent;
+                                vertical-alignment: center;
+                            }
+                        }
+                        HorizontalLayout {
+                            alignment: start;
+                            spacing: 4px;
+                            if room.preview-icon != "" : IconLabel {
+                                text: room.preview-icon;
+                                font-size: Theme.body-small;
+                                color: room.has-call ? Theme.accent
+                                     : Theme.menu-text.with-alpha(room.unread ? 0.8 : 0.55);
+                                vertical-alignment: center;
+                            }
+                            preview-text := Text {
+                                text: room.preview;
+                                color: room.is-typing ? Theme.accent
+                                     : room.has-call ? Theme.accent
+                                     : Theme.menu-text.with-alpha(room.unread ? 0.8 : 0.55);
+                                font-family: Theme.font-ui;
+                                font-size: Theme.body-small;
+                                overflow: elide;
+                                horizontal-stretch: 1;
+                            }
+                        }
+                    }
+                    // stamp | badge + pin
+                    VerticalLayout {
+                        alignment: center;
+                        spacing: 4px;
+                        Text {
+                            text: room.stamp;
+                            color: room.unread ? Theme.accent : Theme.menu-text.with-alpha(0.45);
+                            font-family: Theme.font-ui;
+                            font-size: Theme.caption;
+                            horizontal-alignment: right;
+                        }
+                        HorizontalLayout {
+                            alignment: end;
+                            spacing: 5px;
+                            if room.badge != "" : Rectangle {
+                                width: max(19px, badge-text.preferred-width + 10px);
+                                height: 19px;
+                                border-radius: self.height / 2;
+                                background: room.badge-urgent ? Theme.urgent : Theme.accent.with-alpha(0.9);
+                                badge-text := Text {
+                                    text: room.badge;
+                                    color: Theme.background;
+                                    font-family: Theme.font-ui;
+                                    font-size: Theme.caption;
+                                    font-weight: 700;
+                                    horizontal-alignment: center; vertical-alignment: center;
+                                    width: 100%; height: 100%;
+                                }
+                            }
+                            if room.is-favourite : IconLabel {
+                                text: Icons.pin;
+                                font-size: Theme.caption;
+                                color: Theme.menu-text.with-alpha(0.4);
+                            }
+                        }
+                    }
+                }
+                row-touch := TouchArea { clicked => { root.room-clicked(room.id); } }
+            }
+        }
+    }
+
+    // New-chat FAB
+    fab := Rectangle {
+        x: root.width - self.width - 14px;
+        y: root.height - self.height - 14px;
+        width: 48px; height: 48px;
+        border-radius: 16px;
+        background: Theme.accent.with-alpha(fab-touch.pressed ? 1.0 : 0.9);
+        IconLabel {
+            text: Icons.plus;
+            color: Theme.background;
+            font-size: Theme.icon-large;
+            width: 100%; height: 100%;
+        }
+        fab-touch := TouchArea { clicked => { root.new-chat(); } }
+    }
+}
