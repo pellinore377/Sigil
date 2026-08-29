@@ -10,7 +10,7 @@ import { LoginPage } from "login.slint";
 import { RecoveryPage } from "recovery.slint";
 import { HomePage } from "home.slint";
 import { ChatPage } from "chat.slint";
-import { PageHolder } from "furniture.slint";
+import { PageHolder, MenuEntry } from "furniture.slint";
 import { RoomRow, TimelineRow, MemberRow, SpaceRow, HierarchyRow, ThreadRow, UserRow, RoomSettingsModel, PowerRow, ReactionChip, EmojiItem, ReplyRef, CallParticipant, DeviceRow, PollOption } from "model.slint";
 
 import { StartPage } from "pages/start.slint";
@@ -34,7 +34,7 @@ import { MapPage } from "pages/map.slint";
 import { DocPage, DocBlock, SheetRow, SheetTab, DocPageImage } from "pages/doc.slint";
 import { AudioPage } from "pages/audio.slint";
 
-export { RoomRow, TimelineRow, MemberRow, SpaceRow, HierarchyRow, ThreadRow, UserRow, RoomSettingsModel, PowerRow, ReactionChip, EmojiItem, ReplyRef, CallParticipant, DeviceRow, PollOption, SpaceMembershipRow, GradPair, DocBlock, SheetRow, SheetTab, DocPageImage, Icons }
+export { MenuEntry, RoomRow, TimelineRow, MemberRow, SpaceRow, HierarchyRow, ThreadRow, UserRow, RoomSettingsModel, PowerRow, ReactionChip, EmojiItem, ReplyRef, CallParticipant, DeviceRow, PollOption, SpaceMembershipRow, GradPair, DocBlock, SheetRow, SheetTab, DocPageImage, Icons }
 
 export component AppWindow inherits Window {
     title: "Sigil";
@@ -70,6 +70,18 @@ export component AppWindow inherits Window {
     in property <color> room-tint: Theme.accent;
     in property <[TimelineRow]> items;
     in property <string> typing-line;
+    in property <image> typing-avatar;
+    in property <string> typing-initials;
+    in property <color> typing-tint: Theme.accent;
+    in property <bool> chat-is-dm;
+    in property <bool> chat-is-invite;
+    in property <bool> chat-is-thread;
+    in property <string> pagination-state: "idle";
+    in property <bool> in-call;
+    in property <bool> call-here;
+    in property <[MenuEntry]> sheet-actions;
+    in property <[[EmojiItem]]> emoji-rows;
+    in property <[int]> emoji-cat-rows;
 
     // ---- per-page data (prefixes match the page) ----
     in property <string> sp-name;
@@ -310,9 +322,45 @@ export component AppWindow inherits Window {
                 room-tint: root.room-tint;
                 items: root.items;
                 typing-line: root.typing-line;
+                typing-avatar: root.typing-avatar;
+                typing-initials: root.typing-initials;
+                typing-tint: root.typing-tint;
+                is-dm: root.chat-is-dm;
+                is-invite: root.chat-is-invite;
+                is-thread: root.chat-is-thread;
+                pagination-state: root.pagination-state;
+                in-call: root.in-call;
+                call-here: root.call-here;
+                sheet-actions: root.sheet-actions;
+                emoji-rows: root.emoji-rows;
+                emoji-cat-rows: root.emoji-cat-rows;
+                bottom-inset: 0px;
                 back => { root.go-back(); }
                 send(text) => { root.send-message(text); }
+                send-reply(ev, text) => { root.act("send-reply", ev, text); }
+                send-edit(ev, text) => { root.act("send-edit", ev, text); }
                 composer-edited(text) => { root.composer-edited(text); }
+                start-call(video) => { root.act("start-call", video ? "true" : "false", ""); }
+                join-call => { root.act("join-call", "", ""); }
+                nav-requested(page) => { root.go(page); }
+                open-attach => { root.act("open-attach", "", ""); }
+                open-recorder => { root.act("open-recorder", "", ""); }
+                accept-invite => { root.act("accept-invite", "", ""); }
+                decline-invite => { root.act("decline-invite", "", ""); }
+                paginate => { root.act("paginate", "", ""); }
+                menu-action(action, ev) => { root.act("menu-action", action, ev); }
+                react(ev, key) => { root.act("react", ev, key); }
+                open-image(item) => { root.act("viewer-open", item.event-id, ""); }
+                play-video(item) => { root.act("viewer-open", item.event-id, "video"); }
+                open-document(item) => { root.act("open-doc", item.event-id, ""); root.go("doc"); }
+                open-audio(item) => { root.act("open-audio-page", item.event-id, ""); root.go("audio"); }
+                open-location(item) => { root.act("open-map", item.event-id, ""); root.go("map"); }
+                open-thread(rootId) => { root.act("open-thread", rootId, ""); }
+                voice-toggled(ev) => { root.act("voice-toggle", ev, ""); }
+                voice-seeked(ev, frac) => { root.act("voice-seek", ev, "" + frac); }
+                vote(ev, opt) => { root.act("vote", ev, opt); }
+                emoji-search(q) => { root.act("emoji-search", q, ""); }
+                mark-read => { root.act("mark-read", "", ""); }
             }
         }
 

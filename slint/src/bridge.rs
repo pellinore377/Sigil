@@ -26,6 +26,10 @@ pub struct Requester {
 }
 
 impl Requester {
+    pub fn handle(&self) -> tokio::runtime::Handle {
+        self.handle.clone()
+    }
+
     pub fn fire(&self, req: &str, params: Value) {
         self.call(req, params, |_| {});
     }
@@ -69,6 +73,36 @@ pub struct UiState {
     pub avatars: HashMap<String, slint::Image>,
     /// Whether the last typing notice we sent said "typing".
     pub typing_sent: bool,
+    // ---- Service.qml parity ----
+    pub spaces_tree: Vec<Value>,
+    pub receipts_by_room: HashMap<String, Vec<Value>>,
+    pub presence_by_user: Value,
+    pub pinned_by_room: HashMap<String, Vec<String>>,
+    pub pagination_by_room: HashMap<String, String>,
+    pub call: Value,
+    pub devices: Value,
+    pub voice_level: f32,
+    // ---- per-page working state ----
+    pub space_hierarchy: Vec<Value>,       // last space.hierarchy rooms
+    pub spacerooms_mode: String,
+    pub spacerooms_selected: std::collections::HashSet<String>,
+    pub members_filter: i64,
+    pub members: Vec<Value>,               // room.members of settings_room
+    pub settings_room: String,             // roomId the settings pages serve
+    pub settings: Value,                   // last room.settings reply
+    pub search_query: String,
+    pub forward_query: String,
+    pub forward_item: Value,               // staged message for forward
+    pub start_query_epoch: u64,
+    pub dir_query_epoch: u64,
+    pub doc_ctx: (String, String),         // roomId, eventId the doc page shows
+    pub audio_ctx: (String, String),
+    pub audio_playing: bool,
+    pub new_space_avatar: String,
+    pub sheet_item: Value,                 // message the action sheet targets
+    pub emojis: Vec<(String, String)>,     // glyph, keywords
+    pub voice_positions: HashMap<String, f64>, // eventId -> seconds (playback)
+    pub chat_themes: Value,
 }
 
 thread_local! {
@@ -107,6 +141,34 @@ pub fn start(win: &AppWindow, rt: &tokio::runtime::Runtime, icons: IconSet) -> R
         login_url: String::new(),
         avatars: HashMap::new(),
         typing_sent: false,
+        spaces_tree: Vec::new(),
+        receipts_by_room: HashMap::new(),
+        presence_by_user: Value::Null,
+        pinned_by_room: HashMap::new(),
+        pagination_by_room: HashMap::new(),
+        call: Value::Null,
+        devices: Value::Null,
+        voice_level: 0.0,
+        space_hierarchy: Vec::new(),
+        spacerooms_mode: "manage".into(),
+        spacerooms_selected: Default::default(),
+        members_filter: -1,
+        members: Vec::new(),
+        settings_room: String::new(),
+        settings: Value::Null,
+        search_query: String::new(),
+        forward_query: String::new(),
+        forward_item: Value::Null,
+        start_query_epoch: 0,
+        dir_query_epoch: 0,
+        doc_ctx: Default::default(),
+        audio_ctx: Default::default(),
+        audio_playing: false,
+        new_space_avatar: String::new(),
+        sheet_item: Value::Null,
+        emojis: Vec::new(),
+        voice_positions: HashMap::new(),
+        chat_themes: serde_json::json!({}),
     }));
     UI.with(|ui| *ui.borrow_mut() = Some(state));
 
@@ -128,6 +190,7 @@ pub fn start(win: &AppWindow, rt: &tokio::runtime::Runtime, icons: IconSet) -> R
         rt.spawn(async move { engine.startup().await });
     }
     wire_callbacks(win, req.clone());
+    crate::actions::wire_extra(win);
     req
 }
 
@@ -183,16 +246,7 @@ fn wire_callbacks(win: &AppWindow, req: Requester) {
     win.on_room_clicked(|id| {
         with_ui(|ui| {
             let Some(win) = ui.win.upgrade() else { return };
-            ui.open_room = id.to_string();
-            ui.shadow.clear();
-            ui.typing_sent = false;
-            win.set_items(ModelRc::new(VecModel::from(Vec::<TimelineRow>::new())));
-            win.set_typing_line(typing_line(ui).into());
-            set_chat_header(ui, &win);
-            win.set_nav("chat".into());
-            ui.req.fire("room.open", json!({"roomId": ui.open_room, "initialItems": 60}));
-            ui.req.fire("ui.focus", json!({"roomId": ui.open_room, "visible": true}));
-            ui.req.fire("room.markRead", json!({"roomId": ui.open_room}));
+            open_room(ui, &win, id.as_str());
         });
     });
     win.on_back_to_home(|| {
@@ -344,6 +398,50 @@ fn handle_event(ui: &mut UiState, v: &Value) {
                 win.set_typing_line(typing_line(ui).into());
             }
         }
+        "spaces.tree" => {
+            ui.spaces_tree = v["spaces"].as_array().cloned().unwrap_or_default();
+        }
+        "room.receipts" => {
+            let room = v["roomId"].as_str().unwrap_or("").to_string();
+            ui.receipts_by_room.insert(room.clone(), v["users"].as_array().cloned().unwrap_or_default());
+            if room == ui.open_room {
+                rebuild_timeline(ui, &win);
+            }
+        }
+        "presence.list" => {
+            ui.presence_by_user = v["users"].clone();
+        }
+        "room.pinned" => {
+            let room = v["roomId"].as_str().unwrap_or("").to_string();
+            let ids: Vec<String> = v["events"].as_array().map(|a| {
+                a.iter().filter_map(|e| e.as_str().map(str::to_string)).collect()
+            }).unwrap_or_default();
+            ui.pinned_by_room.insert(room.clone(), ids);
+            if crate::actions::room_of_key(&ui.open_room) == room {
+                rebuild_timeline(ui, &win);
+                crate::actions::reload_pins_if_open(ui, &win);
+            }
+        }
+        "timeline.paginationState" => {
+            let room = v["roomId"].as_str().unwrap_or("").to_string();
+            let state = v["state"].as_str().unwrap_or("idle").to_string();
+            if room == ui.open_room {
+                win.set_pagination_state(state.clone().into());
+            }
+            ui.pagination_by_room.insert(room, state);
+        }
+        "media.ready" => {
+            crate::actions::apply_media_ready(ui, &win, v);
+        }
+        "call.state" => {
+            ui.call = v.clone();
+        }
+        "call.devices" => {
+            ui.devices = v.clone();
+        }
+        "voice.level" => {
+            ui.voice_level = v["level"].as_f64().unwrap_or(0.0) as f32;
+        }
         "timeline.reset" => {
             if v["roomId"].as_str().unwrap_or("") != ui.open_room {
                 return;
@@ -445,6 +543,10 @@ fn typing_line(ui: &UiState) -> String {
     }
 }
 
+pub fn avatar_pub(ui: &mut UiState, path: &str) -> Option<slint::Image> {
+    avatar(ui, path)
+}
+
 fn avatar(ui: &mut UiState, path: &str) -> Option<slint::Image> {
     if path.is_empty() {
         return None;
@@ -457,51 +559,81 @@ fn avatar(ui: &mut UiState, path: &str) -> Option<slint::Image> {
     Some(img)
 }
 
+pub fn open_room(ui: &mut UiState, win: &AppWindow, id: &str) {
+    ui.open_room = id.to_string();
+    ui.shadow.clear();
+    ui.typing_sent = false;
+    win.set_items(ModelRc::new(VecModel::from(Vec::<TimelineRow>::new())));
+    win.set_typing_line(typing_line(ui).into());
+    win.set_chat_is_thread(false);
+    win.set_pagination_state("idle".into());
+    set_chat_header(ui, win);
+    win.set_nav("chat".into());
+    ui.req.fire("room.open", json!({"roomId": ui.open_room, "initialItems": 80}));
+    ui.req.fire("ui.focus", json!({"roomId": crate::actions::room_of_key(&ui.open_room), "visible": true}));
+    ui.req.fire("room.markRead", json!({"roomId": crate::actions::room_of_key(&ui.open_room)}));
+    // A thread and the pinned list are timelines under a key beginning with
+    // the room id (Service.qml); pins ride the room.pinned event instead.
+    ui.req.fire("pins.list", json!({"roomId": crate::actions::room_of_key(&ui.open_room)}));
+}
+
+/// Point the chat surface at a different view key (a thread) without the
+/// room.open side effects — thread.open already opened it engine-side.
+pub fn switch_timeline(ui: &mut UiState, win: &AppWindow, key: &str) {
+    ui.open_room = key.to_string();
+    ui.shadow.clear();
+    win.set_items(ModelRc::new(VecModel::from(Vec::<TimelineRow>::new())));
+}
+
+pub fn room_row_of(ui: &mut UiState, room: &Value) -> RoomRow {
+    let name = room["name"].as_str().unwrap_or("").to_string();
+    let id = room["id"].as_str().unwrap_or("").to_string();
+    let is_dm = room["isDm"].as_bool().unwrap_or(false);
+    let tint_key = if is_dm {
+        room["dmUserId"].as_str().unwrap_or(&id).to_string()
+    } else {
+        id.clone()
+    };
+    let typing = ui.typing.get(&id).cloned().unwrap_or_default();
+    let preview = rows::preview_for(room, &typing, &ui.icons);
+    let (badge, badge_urgent) = rows::badge_for(room);
+    let unread = room["unread"].as_i64().unwrap_or(0).max(room["unreadMessages"].as_i64().unwrap_or(0)) > 0;
+    RoomRow {
+        id: id.clone().into(),
+        is_dm,
+        is_space: room["isSpace"].as_bool().unwrap_or(false),
+        topic: room["topic"].as_str().unwrap_or("").into(),
+        member_count: room["joinedMembers"].as_i64().unwrap_or(0) as i32,
+        is_low_priority: room["isLowPriority"].as_bool().unwrap_or(false),
+        name: name.clone().into(),
+        initials: rows::initials(&name).into(),
+        avatar: avatar(ui, room["avatarPath"].as_str().unwrap_or("")).unwrap_or_default(),
+        tint: rows::tint_for(&tint_key),
+        preview: preview.text.into(),
+        preview_icon: preview.icon,
+        stamp: room["stamp"].as_str().unwrap_or("").into(),
+        badge: badge.into(),
+        badge_urgent,
+        unread,
+        is_favourite: room["isFavourite"].as_bool().unwrap_or(false),
+        is_encrypted: room["isEncrypted"].as_bool().unwrap_or(false),
+        has_call: room["hasActiveCall"].as_bool().unwrap_or(false),
+        is_invite: room["isInvite"].as_bool().unwrap_or(false),
+        is_typing: preview.typing,
+    }
+}
+
 pub fn rebuild_rooms(ui: &mut UiState, win: &AppWindow) {
     let q = ui.search.to_lowercase();
     let mut chats: Vec<RoomRow> = Vec::new();
     let mut spaces: Vec<RoomRow> = Vec::new();
     let rooms_json = std::mem::take(&mut ui.rooms_json);
     for room in &rooms_json {
-        let name = room["name"].as_str().unwrap_or("").to_string();
+        let name = room["name"].as_str().unwrap_or("");
         if !q.is_empty() && !name.to_lowercase().contains(&q) {
             continue;
         }
-        let id = room["id"].as_str().unwrap_or("").to_string();
-        let is_dm = room["isDm"].as_bool().unwrap_or(false);
-        let tint_key = if is_dm {
-            room["dmUserId"].as_str().unwrap_or(&id).to_string()
-        } else {
-            id.clone()
-        };
-        let typing = ui.typing.get(&id).cloned().unwrap_or_default();
-        let preview = rows::preview_for(room, &typing, &ui.icons);
-        let (badge, badge_urgent) = rows::badge_for(room);
-        let unread = room["unread"].as_i64().unwrap_or(0).max(room["unreadMessages"].as_i64().unwrap_or(0)) > 0;
-        let row = RoomRow {
-            id: id.clone().into(),
-            is_dm,
-            is_space: room["isSpace"].as_bool().unwrap_or(false),
-            topic: room["topic"].as_str().unwrap_or("").into(),
-            member_count: room["joinedMembers"].as_i64().unwrap_or(0) as i32,
-            is_low_priority: room["isLowPriority"].as_bool().unwrap_or(false),
-            name: name.clone().into(),
-            initials: rows::initials(&name).into(),
-            avatar: avatar(ui, room["avatarPath"].as_str().unwrap_or("")).unwrap_or_default(),
-            tint: rows::tint_for(&tint_key),
-            preview: preview.text.into(),
-            preview_icon: preview.icon,
-            stamp: room["stamp"].as_str().unwrap_or("").into(),
-            badge: badge.into(),
-            badge_urgent,
-            unread,
-            is_favourite: room["isFavourite"].as_bool().unwrap_or(false),
-            is_encrypted: room["isEncrypted"].as_bool().unwrap_or(false),
-            has_call: room["hasActiveCall"].as_bool().unwrap_or(false),
-            is_invite: room["isInvite"].as_bool().unwrap_or(false),
-            is_typing: preview.typing,
-            ..Default::default()
-        };
+        let row = room_row_of(ui, room);
         if room["isSpace"].as_bool().unwrap_or(false) {
             spaces.push(row);
         } else {
@@ -511,8 +643,6 @@ pub fn rebuild_rooms(ui: &mut UiState, win: &AppWindow) {
     ui.rooms_json = rooms_json;
     win.set_rooms(ModelRc::new(VecModel::from(chats)));
     win.set_spaces(ModelRc::new(VecModel::from(spaces)));
-
-    // The open room's header can change under us (name, encryption, call).
     if !ui.open_room.is_empty() {
         set_chat_header(ui, win);
     }
@@ -534,6 +664,8 @@ pub fn set_chat_header(ui: &mut UiState, win: &AppWindow) {
         &ui.open_room
     }));
     win.set_room_avatar(avatar(ui, room["avatarPath"].as_str().unwrap_or("")).unwrap_or_default());
+    win.set_chat_is_dm(is_dm);
+    win.set_chat_is_invite(room["isInvite"].as_bool().unwrap_or(false));
     // Counts go in the subtitle, worded unconditionally (ui-conventions.md).
     win.set_room_subtitle(if is_dm {
         SharedString::new()
@@ -543,37 +675,93 @@ pub fn set_chat_header(ui: &mut UiState, win: &AppWindow) {
 }
 
 pub fn rebuild_timeline(ui: &mut UiState, win: &AppWindow) {
-    let is_dm = ui
-        .rooms_json
-        .iter()
-        .find(|r| r["id"].as_str() == Some(ui.open_room.as_str()))
-        .and_then(|r| r["isDm"].as_bool())
-        .unwrap_or(false);
-    let mut rows_out: Vec<TimelineRow> = Vec::with_capacity(ui.shadow.len());
-    for (i, item) in ui.shadow.iter().enumerate() {
+    let key = ui.open_room.clone();
+    let room_id = crate::actions::room_of_key(&key);
+    let room = ui.rooms_json.iter().find(|r| r["id"].as_str() == Some(room_id.as_str())).cloned();
+    let is_dm = room.as_ref().and_then(|r| r["isDm"].as_bool()).unwrap_or(false);
+    let pinned_ids = ui.pinned_by_room.get(&room_id).cloned().unwrap_or_default();
+    let my_user = ui.my_user.clone();
+    // The newest own message with an event id wears the sent/read mark.
+    let receipt_owner = ui.shadow.iter().rev()
+        .find(|i| i["isOwn"].as_bool().unwrap_or(false) && i["eventId"].as_str().map(|e| !e.is_empty()).unwrap_or(false))
+        .and_then(|i| i["eventId"].as_str())
+        .unwrap_or("")
+        .to_string();
+    let shadow = ui.shadow.clone();
+    let mut rows_out: Vec<TimelineRow> = Vec::with_capacity(shadow.len());
+    for (i, item) in shadow.iter().enumerate() {
         let shape = rows::shape_for(item, &ui.icons);
-        let (kind, body, media_icon): (&str, String, SharedString) = match shape {
-            RowShape::Skip => continue,
-            RowShape::Divider(label) => ("dayDivider", label, Default::default()),
-            RowShape::State(text) => ("state", text, Default::default()),
-            RowShape::Bubble { media_icon, body_override } => {
+        let (kind, body, media_icon): (&str, String, slint::SharedString) = match shape {
+            rows::RowShape::Skip => continue,
+            rows::RowShape::Marker => {
+                rows_out.push(TimelineRow { id: item["id"].as_str().unwrap_or("").into(), kind: "readMarker".into(), is_read_marker: true, ..Default::default() });
+                continue;
+            }
+            rows::RowShape::Divider(label) => ("dayDivider", label, Default::default()),
+            rows::RowShape::State(text) => ("state", text, Default::default()),
+            rows::RowShape::Bubble { media_icon, body_override } => {
                 let body = body_override.unwrap_or_else(|| item["body"].as_str().unwrap_or("").to_string());
                 let k = match item["kind"].as_str().unwrap_or("text") {
-                    k @ ("text" | "notice" | "emote") => k,
-                    _ => "media",
+                    k @ ("text" | "notice" | "emote" | "image" | "video" | "voice" | "audio" | "file" | "sticker" | "poll" | "contact" | "location") => k,
+                    "liveLocation" => "location",
+                    "redacted" | "utd" | "unsupported" => "notice",
+                    _ => "text",
                 };
                 (k, body, media_icon)
             }
         };
         let is_own = item["isOwn"].as_bool().unwrap_or(false);
         let sender = item["sender"].as_str().unwrap_or("").to_string();
-        let sender_name = item["senderName"].as_str().unwrap_or(&sender).to_string();
-        let group_start = !i.checked_sub(1).map(|p| rows::same_group(&ui.shadow[p], item)).unwrap_or(false);
-        let group_end = !ui.shadow.get(i + 1).map(|nx| rows::same_group(item, nx)).unwrap_or(false);
+        let sender_name = match item["senderName"].as_str().unwrap_or("") { "" => sender.clone(), d => d.to_string() };
+        let group_start = !i.checked_sub(1).map(|p| rows::same_group(&shadow[p], item)).unwrap_or(false);
+        let group_end = !shadow.get(i + 1).map(|nx| rows::same_group(item, nx)).unwrap_or(false);
         let bubble = kind != "dayDivider" && kind != "state";
+        let ts = item["ts"].as_i64().unwrap_or(0);
+        // Session stamp above the row: day changed against the older
+        // neighbour, or more than an hour passed (Service.recomputeGrouping).
+        let day_label = if bubble && ts > 0 {
+            let older = i.checked_sub(1).and_then(|p| shadow.get(p)).and_then(|o| o["ts"].as_i64()).filter(|t| *t > 0);
+            match older {
+                Some(ot) if rows::same_day(ts, ot) && ts - ot <= 3_600_000 => String::new(),
+                _ => crate::project::session_label(ts),
+            }
+        } else {
+            String::new()
+        };
+        let media = item.get("media").cloned().unwrap_or(Value::Null);
+        let thumb_path = media["thumbnailPath"].as_str().or(media["path"].as_str()).unwrap_or("").to_string();
+        let event_id = item["eventId"].as_str().unwrap_or("").to_string();
+        // An image without a local file yet: ask for it; media.ready patches us.
+        if kind == "image" && thumb_path.is_empty() && !event_id.is_empty() {
+            ui.req.fire("media.get", json!({"roomId": room_id, "eventId": event_id, "thumbnail": {"width": 600, "height": 600}}));
+        }
+        let waveform: Vec<f64> = media["waveform"].as_array().map(|a| a.iter().filter_map(Value::as_f64).collect()).unwrap_or_default();
+        let duration_ms = media["duration"].as_f64().unwrap_or(0.0);
+        let reply = item.get("replyTo").cloned().filter(|r| !r.is_null());
+        let reactions: Vec<crate::ReactionChip> = item["reactions"].as_array().map(|a| a.iter().map(|r| {
+            let senders: Vec<&str> = r["senders"].as_array().map(|s2| s2.iter().filter_map(Value::as_str).collect()).unwrap_or_default();
+            crate::ReactionChip {
+                key: r["key"].as_str().unwrap_or("").into(),
+                count: r["count"].as_i64().unwrap_or(senders.len() as i64) as i32,
+                mine: senders.contains(&my_user.as_str()),
+                senders_text: senders.join(", ").into(),
+            }
+        }).collect()).unwrap_or_default();
+        let read_count = item["readBy"].as_array().map(|a| a.iter().filter(|r| r["userId"].as_str() != Some(my_user.as_str())).count()).unwrap_or(0);
+        let poll = item.get("poll").cloned().unwrap_or(Value::Null);
+        let poll_options: Vec<crate::PollOption> = poll["options"].as_array().map(|a| a.iter().map(|o| crate::PollOption {
+            id: o["id"].as_str().unwrap_or("").into(),
+            text: o["text"].as_str().unwrap_or("").into(),
+            votes: o["votes"].as_i64().unwrap_or(0) as i32,
+            mine: o["mine"].as_bool().unwrap_or(false),
+            winner: o["winner"].as_bool().unwrap_or(false),
+        }).collect()).unwrap_or_default();
+        let contact = item.get("contact").cloned().unwrap_or(Value::Null);
+        let location = item.get("location").cloned().unwrap_or(Value::Null);
+        let live = item.get("liveShare").cloned().unwrap_or(Value::Null);
         rows_out.push(TimelineRow {
             id: item["id"].as_str().unwrap_or("").into(),
-            event_id: item["eventId"].as_str().unwrap_or("").into(),
+            event_id: event_id.clone().into(),
             kind: kind.into(),
             body: body.into(),
             sender: sender.clone().into(),
@@ -581,23 +769,64 @@ pub fn rebuild_timeline(ui: &mut UiState, win: &AppWindow) {
             show_header: bubble && group_start && !is_own && !is_dm && !sender_name.is_empty(),
             initials: rows::initials(&sender_name).into(),
             tint: rows::tint_for(&sender),
+            avatar: avatar(ui, item["senderAvatarPath"].as_str().unwrap_or("")).unwrap_or_default(),
             show_avatar: bubble && group_end && !is_own && !is_dm,
             is_own,
             group_start,
             group_end,
-            stamp: rows::bubble_stamp(item["ts"].as_i64().unwrap_or(0)).into(),
+            stamp: rows::bubble_stamp(ts).into(),
+            day_label: day_label.into(),
             edited: item["isEdited"].as_bool().unwrap_or(false),
             highlighted: item["isHighlighted"].as_bool().unwrap_or(false),
+            send_state: item["sendState"].as_str().unwrap_or("sent").into(),
+            send_error: item["sendError"].as_str().unwrap_or("").into(),
+            read_count: read_count as i32,
             media_icon,
-            ..Default::default()
+            thumb: avatar(ui, &thumb_path).unwrap_or_default(),
+            thumb_w: media["width"].as_f64().unwrap_or(0.0) as f32,
+            thumb_h: media["height"].as_f64().unwrap_or(0.0) as f32,
+            media_filename: media["filename"].as_str().unwrap_or("").into(),
+            media_size: media["sizeLabel"].as_str().unwrap_or("").into(),
+            duration: if duration_ms > 0.0 { format!("{}:{:02}", (duration_ms as u64 / 1000) / 60, (duration_ms as u64 / 1000) % 60) } else { String::new() }.into(),
+            reply: reply.as_ref().map(|r| crate::ReplyRef {
+                event_id: r["eventId"].as_str().unwrap_or("").into(),
+                sender_name: r["senderName"].as_str().unwrap_or("").into(),
+                kind: r["kind"].as_str().unwrap_or("").into(),
+                body: r["body"].as_str().unwrap_or("").into(),
+                tint: rows::tint_for(r["sender"].as_str().unwrap_or("")),
+            }).unwrap_or_default(),
+            has_reply: reply.is_some(),
+            reactions: slint::ModelRc::new(VecModel::from(reactions)),
+            thread_root: item["threadRoot"].as_str().unwrap_or("").into(),
+            thread_count: item["threadSummary"]["count"].as_i64().unwrap_or(0) as i32,
+            can_edit: item["can"]["edit"].as_bool().unwrap_or(false),
+            can_reply: item["can"]["reply"].as_bool().unwrap_or(false),
+            can_redact: item["can"]["redact"].as_bool().unwrap_or(false),
+            can_react: item["can"]["react"].as_bool().unwrap_or(false),
+            utd: item["kind"].as_str() == Some("utd"),
+            waveform: slint::ModelRc::new(VecModel::from(rows::resample_wave(&waveform, 28))),
+            voice_playing: ui.audio_playing && ui.audio_ctx.1 == event_id,
+            voice_frac: if duration_ms > 0.0 { (ui.voice_positions.get(&event_id).copied().unwrap_or(0.0) * 1000.0 / duration_ms) as f32 } else { 0.0 },
+            poll_question: poll["question"].as_str().unwrap_or("").into(),
+            poll_options: slint::ModelRc::new(VecModel::from(poll_options)),
+            poll_total: poll["total"].as_i64().unwrap_or(0) as i32,
+            poll_ended: poll["ended"].as_bool().unwrap_or(false),
+            poll_multi: poll["multi"].as_bool().unwrap_or(false),
+            contact_name: contact["displayName"].as_str().unwrap_or("").into(),
+            contact_id: contact["userId"].as_str().unwrap_or("").into(),
+            location_label: location["description"].as_str().unwrap_or("").into(),
+            location_live: live["live"].as_bool().unwrap_or(false),
+            location_ended: item["kind"].as_str() == Some("liveLocation") && !live["live"].as_bool().unwrap_or(false),
+            is_read_marker: false,
+            owns_receipt: is_own && !event_id.is_empty() && event_id == receipt_owner,
+            receipt_count: read_count as i32,
+            pinned: pinned_ids.iter().any(|p| p == &event_id),
+            html_ish: false,
         });
     }
     win.set_items(ModelRc::new(VecModel::from(rows_out)));
 }
 
-/// UI-iteration harness: the same UiState, models and event handlers as the
-/// real bridge, fed canned events instead of an engine. What this renders is
-/// what the pipeline renders; only the source of JSON differs.
 fn start_demo(win: &AppWindow, rt: &tokio::runtime::Runtime, icons: IconSet) -> Requester {
     let engine = Engine::new(Hub::new());
     let req = Requester { handle: rt.handle().clone(), engine };
@@ -614,6 +843,34 @@ fn start_demo(win: &AppWindow, rt: &tokio::runtime::Runtime, icons: IconSet) -> 
         login_url: String::new(),
         avatars: HashMap::new(),
         typing_sent: false,
+        spaces_tree: Vec::new(),
+        receipts_by_room: HashMap::new(),
+        presence_by_user: Value::Null,
+        pinned_by_room: HashMap::new(),
+        pagination_by_room: HashMap::new(),
+        call: Value::Null,
+        devices: Value::Null,
+        voice_level: 0.0,
+        space_hierarchy: Vec::new(),
+        spacerooms_mode: "manage".into(),
+        spacerooms_selected: Default::default(),
+        members_filter: -1,
+        members: Vec::new(),
+        settings_room: String::new(),
+        settings: Value::Null,
+        search_query: String::new(),
+        forward_query: String::new(),
+        forward_item: Value::Null,
+        start_query_epoch: 0,
+        dir_query_epoch: 0,
+        doc_ctx: Default::default(),
+        audio_ctx: Default::default(),
+        audio_playing: false,
+        new_space_avatar: String::new(),
+        sheet_item: Value::Null,
+        emojis: Vec::new(),
+        voice_positions: HashMap::new(),
+        chat_themes: serde_json::json!({}),
     }));
     UI.with(|ui| *ui.borrow_mut() = Some(state));
 

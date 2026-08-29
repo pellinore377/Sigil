@@ -4,8 +4,10 @@
 
 slint::include_modules!();
 
+pub mod actions;
 pub mod bridge;
 pub mod platform;
+pub mod project;
 pub mod rows;
 
 pub fn run_app() -> anyhow::Result<()> {

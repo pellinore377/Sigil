@@ -172,6 +172,7 @@ pub enum RowShape {
     Bubble { media_icon: slint::SharedString, body_override: Option<String> },
     State(String),
     Divider(String),
+    Marker,
     Skip,
 }
 
@@ -197,7 +198,14 @@ pub fn shape_for(item: &Value, icons: &IconSet) -> RowShape {
             if text.is_empty() { RowShape::Skip } else { RowShape::State(text) }
         }
         "timelineStart" => RowShape::State("Beginning of conversation".into()),
-        _ => RowShape::Skip, // readMarker and anything newer than us
+        "location" | "liveLocation" => RowShape::Bubble {
+            media_icon: icons.location.clone(),
+            body_override: Some(match s(item, "body") { "" => "Location".into(), b => b.to_string() }),
+        },
+        "contact" => RowShape::Bubble { media_icon: icons.person.clone(), body_override: None },
+        "readMarker" => RowShape::Marker,
+        "liveLocationEnd" => RowShape::Skip, // protocol noise (BubbleDelegate.hiddenItem)
+        _ => RowShape::Skip,
     }
 }
 
@@ -210,10 +218,18 @@ fn media_body(item: &Value, fallback: &str) -> Option<String> {
     Some(if name.is_empty() { fallback.to_string() } else { name.to_string() })
 }
 
+pub fn same_day(a_ms: i64, b_ms: i64) -> bool {
+    use chrono::{Local, TimeZone};
+    match (Local.timestamp_millis_opt(a_ms).single(), Local.timestamp_millis_opt(b_ms).single()) {
+        (Some(a), Some(b)) => a.date_naive() == b.date_naive(),
+        _ => false,
+    }
+}
+
 /// Bubble grouping: consecutive messages from one sender within five minutes
 /// on the same day share small corners.
 pub fn same_group(a: &Value, bv: &Value) -> bool {
-    let bubble = |v: &Value| !matches!(s(v, "kind"), "dayDivider" | "membership" | "profile" | "state" | "call" | "rtcNotification" | "readMarker" | "timelineStart");
+    let bubble = |v: &Value| !matches!(s(v, "kind"), "dayDivider" | "membership" | "profile" | "state" | "call" | "rtcNotification" | "readMarker" | "timelineStart" | "liveLocationEnd");
     if !bubble(a) || !bubble(bv) {
         return false;
     }
@@ -222,4 +238,18 @@ pub fn same_group(a: &Value, bv: &Value) -> bool {
     }
     let (ta, tb) = (n(a, "ts"), n(bv, "ts"));
     (ta - tb).abs() <= 5 * 60 * 1000
+}
+
+/// BubbleDelegate.resampleWave: fit a waveform to n bars, peak-preserving.
+pub fn resample_wave(arr: &[f64], n: usize) -> Vec<f32> {
+    if arr.is_empty() || n == 0 {
+        return Vec::new();
+    }
+    (0..n)
+        .map(|i| {
+            let a = i * arr.len() / n;
+            let b = ((i + 1) * arr.len() / n).max(a + 1).min(arr.len());
+            arr[a..b].iter().cloned().fold(0.0f64, f64::max) as f32
+        })
+        .collect()
 }

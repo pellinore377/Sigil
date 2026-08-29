@@ -56,3 +56,39 @@ fn open_url_android(url: &str) -> anyhow::Result<()> {
     result?;
     Ok(())
 }
+
+/// Put text on the clipboard. Desktop: wl-copy. Android: no JNI clipboard
+/// wired yet — logged, and the caller's toast still explains itself.
+pub fn copy_text(text: &str) {
+    #[cfg(not(target_os = "android"))]
+    {
+        use std::io::Write;
+        if let Ok(mut child) = std::process::Command::new("wl-copy").stdin(std::process::Stdio::piped()).spawn() {
+            if let Some(stdin) = child.stdin.as_mut() {
+                let _ = stdin.write_all(text.as_bytes());
+            }
+            return;
+        }
+        tracing::warn!("wl-copy unavailable; clipboard write dropped");
+    }
+    #[cfg(target_os = "android")]
+    tracing::warn!("clipboard on Android not wired yet ({} chars dropped)", text.len());
+}
+
+/// Pick one file. Desktop: omarchy-file-select. Android: needs a SAF intent
+/// round-trip NativeActivity cannot do without extra glue — returns None.
+pub async fn pick_file() -> Option<String> {
+    #[cfg(not(target_os = "android"))]
+    {
+        let out = tokio::process::Command::new("omarchy-file-select")
+            .arg("--title").arg("Choose picture")
+            .output().await.ok()?;
+        let path = String::from_utf8_lossy(&out.stdout).trim().to_string();
+        if path.is_empty() { None } else { Some(path) }
+    }
+    #[cfg(target_os = "android")]
+    {
+        tracing::warn!("file picking on Android needs the SAF seam; not wired yet");
+        None
+    }
+}
