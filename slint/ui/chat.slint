@@ -39,6 +39,10 @@ export component ChatPage inherits Rectangle {
     in property <[int]> emoji-cat-rows;
     in property <color> fg: Theme.menu-text;
     in property <color> accent: Theme.accent;
+    /// DM presence for the header avatar dot (svc.presenceOf(dmUserId)).
+    in property <string> room-presence;
+    /// The attach drawer is open: the + becomes a cancel affordance.
+    in property <bool> attach-open: false;
     /// Extra bottom padding while the virtual keyboard is up, from the window.
     in property <length> bottom-inset: 0px;
 
@@ -104,8 +108,14 @@ export component ChatPage inherits Rectangle {
 
     property <bool> menu-open: false;
     property <bool> quote-armed: root.reply-to != "" || root.edit-of != "";
-    // ChatPage.qml convoC: menu.background darkened 1.35, 18% accent.
-    property <color> convo-c: Theme.menu-background.darker(0.26).mix(root.accent, 0.82);
+    /// A chat theme accent is set for this room (the mix below is gated on it).
+    in property <bool> themed: false;
+    // ChatPage.qml convoC: menu.background ÷1.35, then 18% accent ONLY when themed.
+    property <color> convo-c: root.themed
+        ? Theme.menu-background.darker(0.35).mix(root.accent, 0.82)
+        : Theme.menu-background.darker(0.35);
+    property <length> composer-h: root.is-invite ? 0px
+        : 56px + (root.quote-armed ? 52px : 0px) + root.bottom-inset;
     out property <length> from-end: max(0px, (list.viewport-height - list.height) + list.viewport-y);
     /// Put the view back at the same distance from the bottom — how scroll
     /// position survives the bridge rebuilding the model (prepends included).
@@ -133,17 +143,19 @@ export component ChatPage inherits Rectangle {
                     }
                 }
                 Rectangle {
-                    width: 36px;
+                    width: 32px;
                     Avatar {
                         size: 32px;
                         source: root.room-avatar;
                         initials: root.room-initials;
                         tint: root.room-tint;
+                        status: root.room-presence;
                     }
                 }
                 VerticalLayout {
                     alignment: center;
                     horizontal-stretch: 1;
+                    padding-left: 6px;   // 10px avatar↔title gap with the 4px spacing
                     HorizontalLayout {
                         alignment: start;
                         spacing: 5px;
@@ -226,6 +238,14 @@ export component ChatPage inherits Rectangle {
             border-top-right-radius: 24px;
             clip: true;
 
+            // 46px highlight across the rounded top (ChatPage.qml:966).
+            top-sheen := Rectangle {
+                y: 0; width: 100%; height: 46px;
+                background: @linear-gradient(180deg,
+                    Theme.menu-background.brighter(0.35).with-alpha(0.3) 0%,
+                    transparent 100%);
+            }
+
             VerticalLayout {
                 // Pagination spinner rides the top of the list.
                 if root.pagination-state == "paginating" : Rectangle {
@@ -240,6 +260,8 @@ export component ChatPage inherits Rectangle {
 
                 list := TouchList {
                     vertical-stretch: 1;
+                    // BottomToTop: short conversations hang from the composer.
+                    content-alignment: end;
                     // Fetch older history a screen and a half early (maybePaginate).
                     changed viewport-y => {
                         if (self.viewport-y > -1.5 * self.height
@@ -249,6 +271,8 @@ export component ChatPage inherits Rectangle {
                         }
                         if (root.from-end < 4px) { root.mark-read(); }
                     }
+                    // ListView header/footer: 8px breathing room at both ends.
+                    Rectangle { height: 8px; }
                     for item in root.items : Bubble {
                         item: item;
                         fg: root.fg;
@@ -273,6 +297,7 @@ export component ChatPage inherits Rectangle {
                         voice-seeked(id, pos) => { root.voice-seeked(id, pos); }
                         vote(id, opt) => { root.vote(id, opt); }
                     }
+                    Rectangle { height: 8px; }
                 }
 
                 // Typing indicator: avatar then three dots bouncing in sequence.
@@ -303,51 +328,55 @@ export component ChatPage inherits Rectangle {
                     }
                 }
 
-                // Composer
+                // Composer — its own tinted band over the convo ground, hidden
+                // entirely on an invite (ChatPage.qml:1223).
                 composer := Rectangle {
-                    height: 62px + (root.quote-armed ? 42px : 0px) + root.bottom-inset;
+                    height: root.composer-h;
+                    visible: !root.is-invite;
+                    background: root.convo-c.with-alpha(0.55);
+                    border-bottom-left-radius: 22px;
+                    border-bottom-right-radius: 22px;
                     HorizontalLayout {
                         padding-left: 12px; padding-right: 12px;
-                        padding-top: 8px; padding-bottom: 12px + root.bottom-inset;
+                        padding-top: 9px; padding-bottom: 9px + root.bottom-inset;
                         spacing: 8px;
+                        // inputPill: fill only, no focus border, radius 19.
                         well := Rectangle {
                             horizontal-stretch: 1;
-                            border-radius: 21px;
+                            border-radius: 19px;
                             background: root.fg.with-alpha(0.07);
-                            border-width: 1px;
-                            border-color: composer-input.has-focus ? root.accent.with-alpha(0.4) : transparent;
                             VerticalLayout {
-                                // Reply/edit quote lives INSIDE the input surface (GM style).
+                                // Reply/edit quote lives INSIDE the input surface: a
+                                // 52px block whose card is inset 5px, close button
+                                // inside the card at the right (ChatPage.qml:1630).
                                 if root.quote-armed : quote := Rectangle {
-                                    height: 42px;
-                                    HorizontalLayout {
-                                        padding-left: 16px; padding-right: 8px;
-                                        padding-top: 5px;
-                                        spacing: 6px;
-                                        quote-box := Rectangle {
-                                            horizontal-stretch: 1;
-                                            border-radius: 15px;
-                                            background: root.convo-c.with-alpha(0.92);
-                                            VerticalLayout {
-                                                padding-left: 12px; padding-right: 6px;
-                                                alignment: center;
-                                                spacing: 1px;
-                                                Text {
-                                                    text: root.edit-of != "" ? "Edit message" : root.reply-name;
-                                                    color: root.fg;
-                                                    font-family: Theme.font-ui; font-size: Theme.body-small; font-weight: 700;
-                                                    overflow: elide;
-                                                }
-                                                if root.reply-body != "" : Text {
-                                                    text: root.reply-body;
-                                                    color: root.fg.with-alpha(0.6);
-                                                    font-family: Theme.font-ui; font-size: Theme.caption;
-                                                    overflow: elide;
-                                                }
+                                    height: 52px;
+                                    quote-box := Rectangle {
+                                        x: 5px; y: 5px;
+                                        width: quote.width - 10px;
+                                        height: 43px;
+                                        border-radius: 15px;
+                                        background: root.convo-c.with-alpha(0.92);
+                                        VerticalLayout {
+                                            padding-left: 12px; padding-right: 42px;
+                                            alignment: center;
+                                            spacing: 1px;
+                                            Text {
+                                                text: root.edit-of != "" ? "Edit message" : root.reply-name;
+                                                color: root.fg;
+                                                font-family: Theme.font-ui; font-size: Theme.body-small; font-weight: 700;
+                                                overflow: elide;
+                                            }
+                                            if root.reply-body != "" : Text {
+                                                text: root.reply-body;
+                                                color: root.fg.with-alpha(0.6);
+                                                font-family: Theme.font-ui; font-size: Theme.caption;
+                                                overflow: elide;
                                             }
                                         }
                                         quote-close := Rectangle {
-                                            y: (42px - 26px) / 2;
+                                            x: quote-box.width - self.width - 8px;
+                                            y: (43px - 26px) / 2;
                                             width: 26px; height: 26px; border-radius: 13px;
                                             background: qc-t.pressed || qc-t.has-hover ? root.fg.with-alpha(0.12) : transparent;
                                             IconLabel {
@@ -368,11 +397,15 @@ export component ChatPage inherits Rectangle {
                                 HorizontalLayout {
                                     padding-left: 6px; padding-right: 12px;
                                     spacing: 2px;
-                                    // plus-circle attach toggle
+                                    // The attach toggle becomes the cancel affordance
+                                    // while the sheet is open: glyph swap + 90° turn.
                                     attach-btn := Rectangle {
                                         width: 34px;
                                         IconLabel {
-                                            text: Icons.plusCircle; filled: false;
+                                            text: root.attach-open ? Icons.cancel : Icons.plusCircle;
+                                            filled: root.attach-open;
+                                            rotation-angle: root.attach-open ? 90deg : 0deg;
+                                            animate rotation-angle { duration: 180ms; easing: ease-in-out; }
                                             color: at-t.pressed || at-t.has-hover ? #c6c6c6 : #c6c6c6.with-alpha(0.85);
                                             font-size: Theme.icon-large;
                                             width: 100%; height: 100%;
@@ -402,11 +435,11 @@ export component ChatPage inherits Rectangle {
                                 }
                             }
                         }
-                        // Empty composer → voice button; otherwise send.
+                        // Empty composer → voice button; otherwise send. 38×38 r19.
                         send-btn := Rectangle {
                             property <bool> send-mode: composer-input.text != "";
-                            y: composer.height - self.height - 12px - root.bottom-inset;
-                            width: 42px; height: 42px; border-radius: 21px;
+                            y: composer.height - self.height - 9px - root.bottom-inset;
+                            width: 38px; height: 38px; border-radius: 19px;
                             background: root.accent.with-alpha(send-t.pressed ? 1.0 : 0.9);
                             IconLabel {
                                 text: send-btn.send-mode ? Icons.send : Icons.voiceMemo;
@@ -430,13 +463,12 @@ export component ChatPage inherits Rectangle {
         }
     }
 
-    // Jump-to-latest: appears once there is a real gap below the viewport.
-    if root.from-end > 300px : jump-btn := Rectangle {
-        x: root.width - self.width - 14px;
-        y: root.height - self.height - composer.height - 10px;
-        width: 40px; height: 40px; border-radius: 20px;
+    // Jump-to-latest: bottom-centred once the gap below exceeds ¾ of a screen.
+    if root.from-end > list.height * 0.75 : jump-btn := Rectangle {
+        x: (root.width - self.width) / 2;
+        y: root.height - self.height - root.composer-h - 18px;
+        width: 38px; height: 38px; border-radius: 19px;
         background: Theme.popup-background;
-        border-width: 1px; border-color: Theme.popup-border;
         IconLabel {
             text: Icons.arrowDown;
             color: root.fg;

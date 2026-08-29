@@ -647,7 +647,9 @@ export component Bubble inherits Rectangle {
                 for chip in item.reactions : r-chip := HorizontalLayout {
                     spacing: 1px;
                     Text {
-                        text: chip.key;
+                        // femtovg draws U+2764+VS16 as tofu; display the bare
+                        // heart, the reaction key itself stays untouched.
+                        text: chip.key == "❤️" ? "❤" : chip.key;
                         color: root.fg;
                         // QML scales non-mine chips to 0.92.
                         font-size: chip.mine ? 20px : 18.4px;

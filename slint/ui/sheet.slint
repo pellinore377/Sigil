@@ -54,6 +54,13 @@ export component MessageSheet inherits Rectangle {
     property <length> card-x: max(12px, min(
         item.is-own ? root.hole-x + root.hole-w - 220px : root.hole-x,
         root.width - 220px - 12px));
+    // The pill clamps with its OWN width, not the menu's (MessageSheet.qml:234).
+    property <length> pill-w: pill-row-probe;
+    property <length> pill-x: max(12px, min(
+        item.is-own ? root.hole-x + root.hole-w - root.pill-w : root.hole-x,
+        root.width - root.pill-w - 12px));
+    // 7 cells at 36 + 6×6 spacing + 20 = 292px, static so the clamp needs no id.
+    property <length> pill-row-probe: 7 * 36px + 6 * 6px + 20px;
 
     visible: root.open;
     background: transparent;
@@ -95,24 +102,25 @@ export component MessageSheet inherits Rectangle {
         }
     }
 
-    // Quick reactions pill.
-    if !root.drawer-open && !root.confirm-open : pill := Rectangle {
-        x: root.card-x;
+    // Quick reactions pill. The QML reacts with "❤️" (U+2764 U+FE0F) — the key
+    // must match the desktop's; femtovg draws the VS16 pair as tofu, so the
+    // pill DISPLAYS the bare heart while SENDING the emoji-presentation key.
+    if !root.drawer-open : pill := Rectangle {
+        x: root.pill-x;
         y: root.dest-y - root.gap - self.height;
-        width: pill-row.preferred-width + 20px;
+        width: root.pill-w;
         height: root.pill-h;
         border-radius: root.pill-h / 2;
         background: root.surface;
         pill-row := HorizontalLayout {
-            padding-left: 10px; padding-right: 10px;
             spacing: 6px;
             alignment: center;
-            for e in ["👍", "❤", "😂", "😮", "😢", "😡"] : q-cell := Rectangle {
+            for e in ["👍", "❤️", "😂", "😮", "😢", "😡"] : q-cell := Rectangle {
                 width: 36px; height: 36px; border-radius: 18px;
                 y: (root.pill-h - 36px) / 2;
                 background: q-t.pressed || q-t.has-hover ? root.accent.with-alpha(0.32) : transparent;
                 Text {
-                    text: e;
+                    text: e == "❤️" ? "❤" : e;
                     font-size: 19px;
                     horizontal-alignment: center; vertical-alignment: center;
                     width: 100%; height: 100%;
@@ -136,11 +144,13 @@ export component MessageSheet inherits Rectangle {
     }
 
     // Action menu. Rows come from the same rules as MessageSheet.actionsFor.
-    if !root.drawer-open && !root.confirm-open : menu-box := Rectangle {
+    // Stays visible behind the delete-confirm (only the emoji drawer hides it).
+    if !root.drawer-open : menu-box := Rectangle {
         x: root.card-x;
         y: min(root.dest-y + root.hole-h + root.gap, root.height - self.height - 12px);
         width: 220px;
-        height: menu-col.preferred-height + 16px;
+        // preferred-height already contains the 8px paddings (= QML's +16).
+        height: menu-col.preferred-height;
         border-radius: 16px;
         background: root.surface;
         menu-col := VerticalLayout {
@@ -152,7 +162,7 @@ export component MessageSheet inherits Rectangle {
                 HorizontalLayout {
                     padding-left: 10px;
                     spacing: 12px;
-                    IconLabel {
+                    if entry.icon != "" : IconLabel {
                         text: entry.icon; filled: false;
                         color: entry.danger ? Theme.urgent : root.fg.with-alpha(0.75);
                         vertical-alignment: center;
@@ -163,7 +173,7 @@ export component MessageSheet inherits Rectangle {
                         font-family: Theme.font-ui; font-size: Theme.body;
                         vertical-alignment: center;
                         overflow: elide;
-                        horizontal-stretch: 1;
+                        width: 150px;
                     }
                 }
                 a-t := TouchArea {
@@ -176,11 +186,19 @@ export component MessageSheet inherits Rectangle {
         }
     }
 
+    // The confirm draws its own dim over the sheet (QML: #000000 @ 0.5).
+    if root.confirm-open : Rectangle {
+        width: 100%; height: 100%;
+        background: #000000.with-alpha(0.5);
+        TouchArea { clicked => { root.confirm-open = false; } }
+    }
+
     // Delete confirm: redactions are permanent, so it slides up and asks.
     if root.confirm-open : confirm-sheet := Rectangle {
         y: root.height - self.height;
         width: 100%;
-        height: conf-col.preferred-height + 26px;
+        // preferred-height already carries the 10/16 paddings (= QML's +26).
+        height: conf-col.preferred-height;
         border-top-left-radius: 20px;
         border-top-right-radius: 20px;
         background: root.surface;

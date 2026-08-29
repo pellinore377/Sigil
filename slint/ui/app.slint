@@ -70,6 +70,7 @@ export component AppWindow inherits Window {
     // ---- open room / chat ----
     in property <string> room-name;
     in property <string> room-subtitle;
+    in property <string> room-presence;
     in property <bool> room-encrypted;
     in property <string> room-initials;
     in property <image> room-avatar;
@@ -371,10 +372,14 @@ export component AppWindow inherits Window {
                 width: 100%; height: 100%;
                 room-name: root.room-name;
                 room-subtitle: root.room-subtitle;
+                room-presence: root.room-presence;
                 room-encrypted: root.room-encrypted;
                 room-initials: root.room-initials;
                 room-avatar: root.room-avatar;
                 room-tint: root.room-tint;
+                themed: root.ct-accent != "";
+                accent: root.ct-accent != "" ? root.ct-color : Theme.accent;
+                attach-open: root.attach-open;
                 items: root.items;
                 typing-line: root.typing-line;
                 typing-avatar: root.typing-avatar;
@@ -398,7 +403,11 @@ export component AppWindow inherits Window {
                 start-call(video) => { root.act("start-call", video ? "true" : "false", ""); }
                 join-call => { root.act("join-call", "", ""); }
                 nav-requested(page) => { root.go(page); }
-                open-attach => { root.attach-open = true; root.act("open-attach", "", ""); }
+                open-attach => {
+                    // The + is a toggle: cancel affordance while the sheet is open.
+                    if (root.attach-open) { root.attach-open = false; }
+                    else { root.attach-open = true; root.act("open-attach", "", ""); }
+                }
                 open-recorder => { root.recorder-open = true; root.act("open-recorder", "", ""); }
                 accept-invite => { root.act("accept-invite", "", ""); }
                 decline-invite => { root.act("decline-invite", "", ""); }

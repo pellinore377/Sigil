@@ -290,6 +290,10 @@ fn wire_callbacks(win: &AppWindow, req: Requester) {
     win.on_send_message(|text| {
         with_ui(|ui| {
             let Some(win) = ui.win.upgrade() else { return };
+            // ChatPage.send() returns early on whitespace-only input.
+            if text.trim().is_empty() {
+                return;
+            }
             ui.req.fire(
                 "message.send",
                 json!({"roomId": ui.open_room, "body": text.as_str(), "markdown": true}),
@@ -732,6 +736,14 @@ pub fn set_chat_header(ui: &mut UiState, win: &AppWindow) {
         &ui.open_room
     }));
     win.set_room_avatar(avatar(ui, room["avatarPath"].as_str().unwrap_or("")).unwrap_or_default());
+    // A room has no presence; the person on the other end of a DM does.
+    win.set_room_presence(if is_dm {
+        let p = &ui.presence_by_user[room["dmUserId"].as_str().unwrap_or("")];
+        if p["busy"].as_bool().unwrap_or(false) { "busy".into() }
+        else { p["state"].as_str().unwrap_or("").into() }
+    } else {
+        SharedString::new()
+    });
     win.set_chat_is_dm(is_dm);
     win.set_chat_is_invite(room["isInvite"].as_bool().unwrap_or(false));
     // Counts go in the subtitle, worded unconditionally (ui-conventions.md).
