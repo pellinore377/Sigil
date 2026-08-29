@@ -305,6 +305,9 @@ export component AppWindow inherits Window {
     // and unwinds our own navigation instead.
     back-scope := FocusScope {
         width: 100%; height: 100%;
+        // Keys only route through the focus chain; own it from the start so
+        // the Android back key has somewhere to land.
+        init => { self.focus(); }
         key-pressed(event) => {
             if (event.text == Key.Escape) {
                 root.go-back();

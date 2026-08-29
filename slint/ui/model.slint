@@ -85,6 +85,10 @@ export struct TimelineRow {
     location-live: bool,
     location-ended: bool,
     // read marker / receipts
+    doc-lines: [string],
+    doc-chip: string,        // TEXT / PDF / …; non-empty draws the page card
+    doc-thumb: image,        // rendered page (pdf) when the engine returns one
+    has-doc-image: bool,
     is-read-marker: bool,
     owns-receipt: bool,    // this own message wears the sent/read mark
     receipt-count: int,

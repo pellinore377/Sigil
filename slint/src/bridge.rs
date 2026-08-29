@@ -115,6 +115,8 @@ pub struct UiState {
     pub rec_levels: Vec<f32>,
     pub theme_pending: Value,
     pub doc_preview: Value,
+    /// roomId|eventId -> doc.thumb reply (Null = asked, pending).
+    pub doc_thumbs: HashMap<String, Value>,
 }
 
 thread_local! {
@@ -190,6 +192,7 @@ pub fn start(win: &AppWindow, rt: &tokio::runtime::Runtime, icons: IconSet) -> R
         rec_levels: Vec::new(),
         theme_pending: serde_json::json!({}),
         doc_preview: Value::Null,
+        doc_thumbs: HashMap::new(),
     }));
     UI.with(|ui| *ui.borrow_mut() = Some(state));
 
@@ -800,6 +803,37 @@ pub fn rebuild_timeline(ui: &mut UiState, win: &AppWindow) {
         if kind == "image" && thumb_path.is_empty() && !event_id.is_empty() {
             ui.req.fire("media.get", json!({"roomId": room_id, "eventId": event_id, "thumbnail": {"width": 600, "height": 600}}));
         }
+        // Files with readable previews render as a page card (QML docThumb).
+        let doc_key = format!("{room_id}|{event_id}");
+        let mut doc_lines: Vec<slint::SharedString> = Vec::new();
+        let mut doc_chip = String::new();
+        let mut doc_img: Option<slint::Image> = None;
+        if kind == "file" && !event_id.is_empty() {
+            match ui.doc_thumbs.get(&doc_key) {
+                None => {
+                    ui.doc_thumbs.insert(doc_key.clone(), Value::Null);
+                    let req = ui.req.clone();
+                    let key2 = doc_key.clone();
+                    crate::actions::fetch_doc_thumb(&req, &room_id, &event_id, key2);
+                }
+                Some(v) if !v.is_null() => {
+                    doc_lines = v["lines"].as_array().map(|a| {
+                        a.iter().filter_map(Value::as_str).map(SharedString::from).take(6).collect()
+                    }).unwrap_or_default();
+                    doc_chip = v["chip"].as_str()
+                        .or(v["kind"].as_str())
+                        .unwrap_or("").to_uppercase();
+                    let ipath = v["imagePath"].as_str().unwrap_or("").to_string();
+                    if !ipath.is_empty() {
+                        doc_img = avatar(ui, &ipath);
+                    }
+                    if doc_chip.is_empty() && (!doc_lines.is_empty() || doc_img.is_some()) {
+                        doc_chip = "DOC".into();
+                    }
+                }
+                _ => {}
+            }
+        }
         let waveform: Vec<f64> = media["waveform"].as_array().map(|a| a.iter().filter_map(Value::as_f64).collect()).unwrap_or_default();
         let duration_ms = media["duration"].as_f64().unwrap_or(0.0);
         let reply = item.get("replyTo").cloned().filter(|r| !r.is_null());
@@ -814,12 +848,20 @@ pub fn rebuild_timeline(ui: &mut UiState, win: &AppWindow) {
         }).collect()).unwrap_or_default();
         let read_count = item["readBy"].as_array().map(|a| a.iter().filter(|r| r["userId"].as_str() != Some(my_user.as_str())).count()).unwrap_or(0);
         let poll = item.get("poll").cloned().unwrap_or(Value::Null);
-        let poll_options: Vec<crate::PollOption> = poll["options"].as_array().map(|a| a.iter().map(|o| crate::PollOption {
-            id: o["id"].as_str().unwrap_or("").into(),
-            text: o["text"].as_str().unwrap_or("").into(),
-            votes: o["votes"].as_i64().unwrap_or(0) as i32,
-            mine: o["mine"].as_bool().unwrap_or(false),
-            winner: o["winner"].as_bool().unwrap_or(false),
+        // The engine speaks MSC3381: `answers`, `voters`, `maxSelections`.
+        let ended = poll["ended"].as_bool().unwrap_or(false);
+        let top_votes = poll["answers"].as_array().map(|a| {
+            a.iter().map(|o| o["votes"].as_i64().unwrap_or(0)).max().unwrap_or(0)
+        }).unwrap_or(0);
+        let poll_options: Vec<crate::PollOption> = poll["answers"].as_array().map(|a| a.iter().map(|o| {
+            let votes = o["votes"].as_i64().unwrap_or(0);
+            crate::PollOption {
+                id: o["id"].as_str().unwrap_or("").into(),
+                text: o["text"].as_str().unwrap_or("").into(),
+                votes: votes as i32,
+                mine: o["mine"].as_bool().unwrap_or(false),
+                winner: ended && votes > 0 && votes == top_votes,
+            }
         }).collect()).unwrap_or_default();
         let contact = item.get("contact").cloned().unwrap_or(Value::Null);
         let location = item.get("location").cloned().unwrap_or(Value::Null);
@@ -874,14 +916,18 @@ pub fn rebuild_timeline(ui: &mut UiState, win: &AppWindow) {
             voice_frac: if duration_ms > 0.0 { (ui.voice_positions.get(&event_id).copied().unwrap_or(0.0) * 1000.0 / duration_ms) as f32 } else { 0.0 },
             poll_question: poll["question"].as_str().unwrap_or("").into(),
             poll_options: slint::ModelRc::new(VecModel::from(poll_options)),
-            poll_total: poll["total"].as_i64().unwrap_or(0) as i32,
+            poll_total: poll["voters"].as_i64().unwrap_or(0) as i32,
             poll_ended: poll["ended"].as_bool().unwrap_or(false),
-            poll_multi: poll["multi"].as_bool().unwrap_or(false),
+            poll_multi: poll["maxSelections"].as_i64().unwrap_or(1) > 1,
             contact_name: contact["displayName"].as_str().unwrap_or("").into(),
             contact_id: contact["userId"].as_str().unwrap_or("").into(),
             location_label: location["description"].as_str().unwrap_or("").into(),
             location_live: live["live"].as_bool().unwrap_or(false),
             location_ended: item["kind"].as_str() == Some("liveLocation") && !live["live"].as_bool().unwrap_or(false),
+            doc_lines: slint::ModelRc::new(VecModel::from(doc_lines)),
+            doc_chip: doc_chip.into(),
+            has_doc_image: doc_img.is_some(),
+            doc_thumb: doc_img.unwrap_or_default(),
             is_read_marker: false,
             owns_receipt: is_own && !event_id.is_empty() && event_id == receipt_owner,
             receipt_count: read_count as i32,
@@ -946,6 +992,7 @@ fn start_demo(win: &AppWindow, rt: &tokio::runtime::Runtime, icons: IconSet) -> 
         rec_levels: Vec::new(),
         theme_pending: serde_json::json!({}),
         doc_preview: Value::Null,
+        doc_thumbs: HashMap::new(),
     }));
     UI.with(|ui| *ui.borrow_mut() = Some(state));
 

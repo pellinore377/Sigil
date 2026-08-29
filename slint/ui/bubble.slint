@@ -260,7 +260,51 @@ export component Bubble inherits Rectangle {
                     }
 
                     // File / music chip
-                    if root.file-kind && !root.voice-kind : file-row := Rectangle {
+                    // Document preview: the first lines drawn as a page — QML's
+                    // docThumb card. A PDF arrives drawn (imagePath) instead.
+                    if root.file-kind && !root.voice-kind && item.doc-chip != "" : doc-card := Rectangle {
+                        width: min(root.bubble-max - 20px, 250px);
+                        height: item.has-doc-image ? 180px : doc-col.preferred-height + 24px;
+                        border-radius: 10px;
+                        background: #f4f4f2;
+                        clip: true;
+                        if item.has-doc-image : Image {
+                            source: item.doc-thumb;
+                            width: 100%; height: 100%;
+                            image-fit: cover;
+                        }
+                        if !item.has-doc-image : doc-col := VerticalLayout {
+                            padding: 12px;
+                            spacing: 3px;
+                            for line in item.doc-lines : Text {
+                                text: line;
+                                color: #2a2a2a;
+                                font-family: Theme.font-ui;
+                                font-size: 10px;
+                                overflow: elide;
+                            }
+                        }
+                        chip := Rectangle {
+                            x: 8px;
+                            y: doc-card.height - self.height - 8px;
+                            width: chip-text.preferred-width + 12px;
+                            height: 18px;
+                            border-radius: 4px;
+                            background: #2a2a2acc;
+                            chip-text := Text {
+                                text: item.doc-chip;
+                                color: #ffffff;
+                                font-family: Theme.font-ui;
+                                font-size: 9px;
+                                font-weight: 700;
+                                horizontal-alignment: center; vertical-alignment: center;
+                                width: 100%; height: 100%;
+                            }
+                        }
+                        TouchArea { clicked => { root.open-document(item); } }
+                    }
+
+                    if root.file-kind && !root.voice-kind && item.doc-chip == "" : file-row := Rectangle {
                         height: 42px;
                         HorizontalLayout {
                             spacing: 8px;
@@ -409,10 +453,24 @@ export component Bubble inherits Rectangle {
                         TouchArea { clicked => { root.open-location(item); } }
                     }
 
-                    // Body text / caption / utd / redacted
+                    // Caption under full-bleed media: its own padded band, the
+                    // media's width, so text never touches the bubble edge.
+                    if root.caption-visible : caption-band := Rectangle {
+                        width: root.media-w;
+                        height: cap-text.preferred-height + 14px;
+                        cap-text := Text {
+                            x: 10px; y: 7px;
+                            width: root.media-w - 20px;
+                            text: item.body;
+                            color: root.fg;
+                            font-family: Theme.font-ui; font-size: Theme.body;
+                            wrap: word-wrap;
+                        }
+                    }
+
+                    // Body text / utd / redacted
                     if (item.kind == "text" || item.kind == "notice" || item.kind == "emote"
-                        || item.kind == "utd" || item.kind == "redacted" || item.kind == "unsupported"
-                        || root.caption-visible) : body-text := Text {
+                        || item.kind == "utd" || item.kind == "redacted" || item.kind == "unsupported") : body-text := Text {
                         text: item.kind == "utd" ? "🔒 Waiting for keys…"
                             : item.kind == "redacted" ? "Message deleted"
                             : item.kind == "unsupported" ? "Unsupported message"
@@ -422,9 +480,7 @@ export component Bubble inherits Rectangle {
                         font-family: Theme.font-ui; font-size: Theme.body;
                         font-italic: item.kind == "emote" || item.kind == "redacted";
                         wrap: word-wrap;
-                        // Captions under media carry their own padding; width comes
-                        // from the media's computed size, never bubble.width (loop).
-                        width: root.full-bleed ? root.media-w : min(root.bubble-max - 20px, self.preferred-width);
+                        width: min(root.bubble-max - 20px, self.preferred-width);
                     }
 
                     // Thread summary chip

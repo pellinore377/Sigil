@@ -42,6 +42,20 @@ fn call_ui(
     });
 }
 
+/// Ask the engine for a document's bubble preview; the reply re-renders the
+/// timeline through the cache (Service.docThumb).
+pub fn fetch_doc_thumb(req: &Requester, room_id: &str, event_id: &str, key: String) {
+    call_ui(req, "doc.thumb", json!({"roomId": room_id, "eventId": event_id, "size": 0}), move |ui, win, out| {
+        let val = match out {
+            Ok(v) if v["lines"].as_array().map(|a| !a.is_empty()).unwrap_or(false)
+                || !v["imagePath"].as_str().unwrap_or("").is_empty() => v,
+            _ => json!(false),
+        };
+        ui.doc_thumbs.insert(key, val);
+        rebuild_timeline(ui, win);
+    });
+}
+
 /// Public face of `after` for the bridge's layout-settle scrolls.
 pub fn after_pub(req: &Requester, ms: u64, f: impl FnOnce(&mut UiState, &AppWindow) + Send + 'static) {
     after(req, ms, f);
