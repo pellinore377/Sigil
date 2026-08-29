@@ -137,3 +137,24 @@ composer band, ground tone, sheen) render correctly.
   Android SAF seam first; "Open as window" header button (desktop-only).
 - Slint trim() gaps: send guarded in Rust; two caption gates use
   character-count without trimming.
+
+## Second evening round (29 Aug, after the audit sweep)
+- Voice clips now STAGE in the composer like the QML (light chip inset in
+  the pill: play/pause preview via audio.playFile, waveform, duration,
+  discard ×; placeholder flips to "Add text"; send posts the clip with the
+  typed caption). voice-attach no longer fires the send directly.
+- Viewer filmstrip: the neighbouring image peeks in during a drag
+  (SnapOneItem look, 12px page gap).
+- 120–130ms opacity fades on the overflow menu, the Home account menu and
+  the message sheet (the QML's scale-in has no Slint equivalent; the fade
+  carries the motion).
+- Live-location pill counts down (m:ss) from liveShare.expiresAt, anchored
+  to the wall clock via boot-epoch-s + animation-tick().
+- Desktop demo re-verified after the round: chat renders unchanged.
+
+## Remaining gaps, all structural or platform (nothing further portable)
+- Toolkit: rich text, GIF playback, pinch zoom, element scale animations,
+  ElideMiddle, backdrop blur (decision evidence, in the readout).
+- Platform seams: Android SAF file picking (blocks staged FILE chips and
+  the contact chip), share intents, notifications, hardware back
+  (upstream android-activity gap).
