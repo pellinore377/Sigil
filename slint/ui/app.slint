@@ -33,8 +33,11 @@ import { PinsPage } from "pages/pins.slint";
 import { MapPage } from "pages/map.slint";
 import { DocPage, DocBlock, SheetRow, SheetTab, DocPageImage } from "pages/doc.slint";
 import { AudioPage } from "pages/audio.slint";
+import { ImageViewer, ViewerItem } from "viewer.slint";
+import { AttachMenu, StickerItem } from "attach.slint";
+import { VoiceRecorder } from "voicerec.slint";
 
-export { MenuEntry, RoomRow, TimelineRow, MemberRow, SpaceRow, HierarchyRow, ThreadRow, UserRow, RoomSettingsModel, PowerRow, ReactionChip, EmojiItem, ReplyRef, CallParticipant, DeviceRow, PollOption, SpaceMembershipRow, GradPair, DocBlock, SheetRow, SheetTab, DocPageImage, Icons }
+export { ViewerItem, StickerItem, MenuEntry, RoomRow, TimelineRow, MemberRow, SpaceRow, HierarchyRow, ThreadRow, UserRow, RoomSettingsModel, PowerRow, ReactionChip, EmojiItem, ReplyRef, CallParticipant, DeviceRow, PollOption, SpaceMembershipRow, GradPair, DocBlock, SheetRow, SheetTab, DocPageImage, Icons }
 
 export component AppWindow inherits Window {
     title: "Sigil";
@@ -202,6 +205,26 @@ export component AppWindow inherits Window {
     in property <float> au-position;
     in property <string> au-toast;
 
+    // ---- overlays ----
+    in-out property <bool> viewer-open: false;
+    in property <[ViewerItem]> vw-items;
+    in-out property <int> vw-cur: -1;
+    in property <[string]> vw-forward-names;
+    in property <string> vw-toast;
+    in property <string> vw-playing-event;
+    in property <image> vw-frame;
+    in property <float> vw-play-pos;
+    in property <float> vw-play-duration;
+    in-out property <bool> attach-open: false;
+    in property <[StickerItem]> at-stickers;
+    in property <bool> at-stickers-loaded;
+    in-out property <bool> recorder-open: false;
+    in property <string> rec-state: "idle";
+    in property <float> rec-elapsed;
+    in property <float> rec-clip-duration;
+    in property <[float]> rec-levels;
+    in property <[float]> rec-clip-waveform;
+
     // ---- navigation ----
     in-out property <string> nav: "home";
     in-out property <string> settings-return: "roomsettings";
@@ -343,8 +366,8 @@ export component AppWindow inherits Window {
                 start-call(video) => { root.act("start-call", video ? "true" : "false", ""); }
                 join-call => { root.act("join-call", "", ""); }
                 nav-requested(page) => { root.go(page); }
-                open-attach => { root.act("open-attach", "", ""); }
-                open-recorder => { root.act("open-recorder", "", ""); }
+                open-attach => { root.attach-open = true; root.act("open-attach", "", ""); }
+                open-recorder => { root.recorder-open = true; root.act("open-recorder", "", ""); }
                 accept-invite => { root.act("accept-invite", "", ""); }
                 decline-invite => { root.act("decline-invite", "", ""); }
                 paginate => { root.act("paginate", "", ""); }
@@ -583,5 +606,56 @@ export component AppWindow inherits Window {
                 search-edited(q) => { root.act("forward-search", q, ""); }
                 picked(id) => { root.act("forward-picked", id, ""); }
             } }
+        if root.attach-open : AttachMenu {
+            width: 100%; height: 100%;
+            stickers: root.at-stickers; stickers-loaded: root.at-stickers-loaded;
+            pick-files => { root.act("pick-attach-files", "", ""); }
+            open-location(mode) => { root.act("attach-location", mode, ""); }
+            insert-emoji(e) => { root.act("composer-insert", e, ""); }
+            create-poll(q, opts, closed2) => {
+                root.act("create-poll", q, (closed2 ? "1" : "0")
+                    + "\u{1f}" + opts[0] + "\u{1f}" + opts[1] + "\u{1f}" + opts[2]
+                    + "\u{1f}" + opts[3] + "\u{1f}" + opts[4] + "\u{1f}" + opts[5]
+                    + "\u{1f}" + opts[6] + "\u{1f}" + opts[7]);
+            }
+            send-sticker(i) => { root.act("send-sticker", "" + i, ""); }
+            load-stickers => { root.act("load-stickers", "", ""); }
+            load-emoji => { root.act("emoji-search", "", ""); }
+            close-requested => { root.attach-open = false; }
+        }
+        if root.recorder-open : VoiceRecorder {
+            width: 100%; height: 100%;
+            state: root.rec-state;
+            elapsed: root.rec-elapsed;
+            clip-duration: root.rec-clip-duration;
+            levels: root.rec-levels;
+            clip-waveform: root.rec-clip-waveform;
+            record => { root.act("voice-record", "", ""); }
+            stop => { root.act("voice-stop", "", ""); }
+            restart => { root.act("voice-restart", "", ""); }
+            attach => { root.act("voice-attach", "", ""); }
+            cancelled => { root.act("voice-cancel", "", ""); root.recorder-open = false; }
+        }
+        if root.viewer-open : ImageViewer {
+            width: 100%; height: 100%;
+            items: root.vw-items;
+            cur <=> root.vw-cur;
+            forward-names: root.vw-forward-names;
+            toast: root.vw-toast;
+            playing-event: root.vw-playing-event;
+            video-frame: root.vw-frame;
+            play-pos: root.vw-play-pos;
+            play-duration: root.vw-play-duration;
+            closed => { root.viewer-open = false; root.act("viewer-closed", "", ""); }
+            page-changed(i) => { root.act("viewer-page", "" + i, ""); }
+            download-requested => { root.act("viewer-download", "", ""); }
+            delete-requested => { root.act("viewer-delete", "", ""); }
+            share-requested => { root.act("viewer-share", "", ""); }
+            forward-to(i) => { root.act("viewer-forward", "" + i, ""); }
+            react(e) => { root.act("viewer-react", e, ""); }
+            toggle-playback => { root.act("viewer-playback", "", ""); }
+            seek-requested(sec) => { root.act("viewer-seek", "" + sec, ""); }
+            scrub-state(on, pos) => { root.act("viewer-scrub", on ? "true" : "false", "" + pos); }
+        }
     }
 }

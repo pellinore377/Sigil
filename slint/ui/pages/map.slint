@@ -1,33 +1,461 @@
-// MapPage — port of the QML page of the same name. STUB: a fork replaces
-// this file wholesale; add properties/callbacks here and list the app.slint +
-// bridge wiring you need in your WIRING file.
+// Full-page view of a shared location — MapPage.qml — and the attachment
+// sheet's three-mode LocationPicker. THE KNOWN TOOLKIT GAP LIVES HERE:
+// Slint has no map widget (QML gets MapLibre through QtLocation), so both
+// surfaces render the real location data and logic on a static card and say
+// so, instead of drawing tiles. The QML's map-plumbing (style probing, layer
+// masks, gesture insets) has no equivalent to port until Slint can host a
+// map renderer or the engine rasterises tiles.
 
 import { Theme } from "../style.slint";
 import { Icons } from "../icons.slint";
-import { IconLabel, ActionButton, Avatar, SButton, TextWell } from "../components.slint";
-import { SettingsHeader, SettingsGroup, SettingsRow, OverflowMenu, ChoiceSheet, Spinner, MenuEntry, ChoiceEntry } from "../furniture.slint";
-import { RoomRow, TimelineRow, MemberRow, SpaceRow, HierarchyRow, ThreadRow, UserRow, RoomSettingsModel, PowerRow, ReactionChip, EmojiItem } from "../model.slint";
+import { IconLabel, ActionButton, Avatar } from "../components.slint";
 
 export component MapPage inherits Rectangle {
     in property <color> fg: Theme.menu-text;
+    in property <color> accent: Theme.accent;
     callback closed;
+    callback open-osm(string);   // platform::open_url with the map link
+    callback stop-live;          // location.stopLive
+
+    // The message being viewed, digested by the bridge (MapPage.qml's locals).
+    in property <string> who;              // "You" or the sender
+    in property <bool> own;
+    in property <bool> live;               // running live share
+    in property <bool> ended;              // live share whose window passed
+    in property <bool> stoppable;          // ours AND still publishing
+    in property <bool> openable;
+    in property <string> status-text;      // "Sharing until 3:00 PM" / "Shared 2:41 PM"
+    in property <string> remaining-label;  // "1h 05m" / "3:41", ticked by the bridge
+    in property <float> lat;
+    in property <float> lon;
+    in property <string> description;
+    in property <bool> self-marker;        // m.self / live: face, not a pin
+    in property <image> sender-avatar;
+    in property <string> sender-initials;
+    in property <color> sender-tint: Theme.accent;
+    in-out property <string> toast;
+
+    property <color> chip: Theme.background.with-alpha(0.85);
+
     background: transparent;
+
+    toast-clear := Timer {
+        interval: 2200ms;
+        running: root.toast != "";
+        triggered => { root.toast = ""; self.running = false; }
+    }
+
     VerticalLayout {
-        SettingsHeader {
-            title: "Map";
-            fg: root.fg;
-            back => { root.closed(); }
+        // Header (52px, MapPage.qml's own — not the settings header).
+        header := Rectangle {
+            height: 52px;
+            HorizontalLayout {
+                padding-left: 6px; padding-right: 12px;
+                spacing: 8px;
+                Rectangle {
+                    width: 44px;
+                    ActionButton {
+                        y: (52px - self.height) / 2;
+                        width: 44px; height: 44px;
+                        icon: Icons.back;
+                        filled: false;
+                        foreground: root.fg;
+                        clicked => { root.closed(); }
+                    }
+                }
+                Text {
+                    text: "Location";
+                    color: root.fg;
+                    font-family: Theme.font-ui;
+                    font-size: Theme.subtitle;
+                    font-weight: 700;
+                    vertical-alignment: center;
+                    overflow: elide;
+                    horizontal-stretch: 1;
+                }
+            }
         }
-        Rectangle {
+
+        // The "map" area: rounded top, the marker and coordinates as a card.
+        map-area := Rectangle {
             vertical-stretch: 1;
+            background: root.fg.with-alpha(0.08);
+            border-top-left-radius: 24px;
+            border-top-right-radius: 24px;
+            clip: true;
+
+            place-col := VerticalLayout {
+                y: (map-area.height - sheet.height - self.preferred-height) / 2;
+                width: 100%;
+                spacing: 10px;
+                // The marker: your face on a self/live share, a pin otherwise.
+                if root.self-marker : HorizontalLayout {
+                    alignment: center;
+                    Rectangle {
+                        width: 72px; height: 72px;
+                        Avatar {
+                            size: 64px;
+                            x: 4px; y: 4px;
+                            source: root.sender-avatar;
+                            initials: root.sender-initials;
+                            tint: root.sender-tint;
+                            opacity: root.ended ? 0.55 : 1.0;
+                        }
+                        // A live ring in place of the QML marker ripple.
+                        if root.live : Rectangle {
+                            width: 72px; height: 72px;
+                            border-radius: 36px;
+                            background: transparent;
+                            border-width: 2px;
+                            border-color: root.accent.with-alpha(0.4 + 0.3 * abs(sin(360deg * (animation-tick() / 1600ms))));
+                        }
+                    }
+                }
+                if !root.self-marker : IconLabel {
+                    text: Icons.pinDrop;
+                    filled: true;
+                    color: root.accent.with-alpha(0.85);
+                    font-size: 46px;
+                    horizontal-alignment: center;
+                }
+                if root.description != "" : Text {
+                    x: 24px;
+                    width: map-area.width - 48px;
+                    text: root.description;
+                    color: root.fg;
+                    font-family: Theme.font-ui;
+                    font-size: Theme.body;
+                    horizontal-alignment: center;
+                    wrap: word-wrap;
+                }
+                Text {
+                    text: round(root.lat * 100000) / 100000 + ", " + round(root.lon * 100000) / 100000;
+                    color: root.fg.with-alpha(0.6);
+                    font-family: Theme.font-mono;
+                    font-size: Theme.body-small;
+                    horizontal-alignment: center;
+                }
+                Text {
+                    x: 24px;
+                    width: map-area.width - 48px;
+                    text: "Sigil on Slint cannot draw maps yet — open the point in your browser.";
+                    color: root.fg.with-alpha(0.45);
+                    font-family: Theme.font-ui;
+                    font-size: Theme.caption;
+                    horizontal-alignment: center;
+                    wrap: word-wrap;
+                }
+            }
+
+            // Time remaining, top left: the same chip the bubble carries.
+            if root.live || root.ended : countdown := Rectangle {
+                x: 12px; y: 12px;
+                width: chip-row.preferred-width + 22px;
+                height: 28px;
+                border-radius: 14px;
+                background: root.chip;
+                chip-row := HorizontalLayout {
+                    padding-left: 11px; padding-right: 11px;
+                    spacing: 6px;
+                    Rectangle {
+                        y: (28px - 7px) / 2;
+                        width: 7px; height: 7px; border-radius: 3.5px;
+                        background: root.live ? #e8646a : #ececec.with-alpha(0.5);
+                        opacity: root.live ? 0.65 + 0.35 * sin(360deg * (animation-tick() / 1600ms)) : 1.0;
+                    }
+                    Text {
+                        text: root.live ? root.remaining-label : "Live location ended";
+                        color: #ececec;
+                        font-family: Theme.font-ui;
+                        font-size: Theme.caption;
+                        font-weight: 700;
+                        vertical-alignment: center;
+                    }
+                }
+            }
+
+            // Bottom sheet: who is on the map and the one action.
+            sheet := Rectangle {
+                y: map-area.height - self.height;
+                width: 100%;
+                height: sheet-col.preferred-height + 32px;
+                border-top-left-radius: 24px;
+                border-top-right-radius: 24px;
+                background: Theme.popup-background;
+                TouchArea { }   // the sheet floats over the card; swallow taps
+                sheet-col := VerticalLayout {
+                    x: 14px; y: 14px;
+                    width: sheet.width - 28px;
+                    spacing: 10px;
+                    Text {
+                        text: "On the map";
+                        color: root.fg;
+                        font-family: Theme.font-ui;
+                        font-size: Theme.body;
+                        font-weight: 700;
+                    }
+                    person-row := Rectangle {
+                        height: 60px;
+                        border-radius: 18px;
+                        background: root.fg.with-alpha(0.10);
+                        HorizontalLayout {
+                            padding-left: 11px; padding-right: 10px;
+                            spacing: 11px;
+                            Rectangle {
+                                width: 38px;
+                                Avatar {
+                                    y: (60px - self.height) / 2;
+                                    size: 38px;
+                                    source: root.sender-avatar;
+                                    initials: root.sender-initials;
+                                    tint: root.sender-tint;
+                                    opacity: root.ended ? 0.55 : 1.0;
+                                }
+                            }
+                            VerticalLayout {
+                                alignment: center;
+                                spacing: 2px;
+                                horizontal-stretch: 1;
+                                Text {
+                                    text: root.who;
+                                    color: root.fg;
+                                    font-family: Theme.font-ui;
+                                    font-size: Theme.body;
+                                    font-weight: 700;
+                                    overflow: elide;
+                                }
+                                HorizontalLayout {
+                                    spacing: 5px;
+                                    IconLabel {
+                                        text: Icons.recentre;
+                                        filled: true;
+                                        color: root.fg.with-alpha(0.5);
+                                        font-size: Theme.caption;
+                                        vertical-alignment: center;
+                                    }
+                                    Text {
+                                        text: root.status-text;
+                                        color: root.fg.with-alpha(0.6);
+                                        font-family: Theme.font-ui;
+                                        font-size: Theme.caption;
+                                        vertical-alignment: center;
+                                        overflow: elide;
+                                        horizontal-stretch: 1;
+                                    }
+                                }
+                            }
+                            // One action: Stop while broadcasting, Open otherwise.
+                            if root.stoppable || root.openable : action := Rectangle {
+                                y: (60px - 34px) / 2;
+                                width: action-label.preferred-width + 26px;
+                                height: 34px;
+                                border-radius: 17px;
+                                background: root.stoppable ? root.fg.with-alpha(0.90) : root.accent.with-alpha(0.90);
+                                action-label := Text {
+                                    text: root.stoppable ? "Stop" : "Open";
+                                    color: #141414;
+                                    font-family: Theme.font-ui;
+                                    font-size: Theme.body-small;
+                                    font-weight: 700;
+                                    horizontal-alignment: center; vertical-alignment: center;
+                                    width: 100%; height: 100%;
+                                }
+                                TouchArea {
+                                    clicked => {
+                                        if (root.stoppable) {
+                                            root.stop-live();
+                                            root.toast = "Stopped sharing";
+                                        } else {
+                                            root.open-osm("https://www.openstreetmap.org/?mlat=" + root.lat
+                                                + "&mlon=" + root.lon + "#map=16/" + root.lat + "/" + root.lon);
+                                            root.toast = "Opened in your browser";
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            if root.toast != "" : toast-chip := Rectangle {
+                x: (map-area.width - self.width) / 2;
+                y: sheet.y - 28px - 12px;
+                width: toast-text.preferred-width + 22px;
+                height: 28px;
+                border-radius: 14px;
+                background: Theme.background.with-alpha(0.85);
+                toast-text := Text {
+                    text: root.toast;
+                    color: #ececec;
+                    font-family: Theme.font-ui;
+                    font-size: Theme.caption;
+                    horizontal-alignment: center; vertical-alignment: center;
+                    width: 100%; height: 100%;
+                }
+            }
+        }
+    }
+}
+
+// The attachment sheet's three location pages: one picker in three modes.
+//   "current" — your position, avatar marker, share once
+//   "live"    — your position plus how long to keep sharing it
+//   "pin"     — in QML, tap the map to drop a point. WITHOUT A MAP there is
+//               nothing to tap: pin mode explains itself and stays disabled
+//               unless the bridge supplies coordinates some other way.
+export component LocationPicker inherits Rectangle {
+    in property <color> fg: Theme.menu-text;
+    in property <color> accent: Theme.accent;
+    in property <string> mode: "pin";          // current | live | pin
+    in property <bool> have-fix;
+    in property <float> fix-lat;
+    in property <float> fix-lon;
+    in property <string> position-error;
+    in property <image> my-avatar;
+    in property <string> my-initials;
+    in property <color> my-tint: Theme.accent;
+    /// Pin mode only, bridge-supplied (no tappable map to mark with).
+    in property <bool> marked;
+    in property <float> mark-lat;
+    in property <float> mark-lon;
+    callback back-requested;
+    callback share-requested(float, float, float);  // lat, lon, durationMs (0 = one-off)
+    callback retry-position;                        // position.refresh
+
+    property <bool> pin-mode: root.mode == "pin";
+    property <bool> live-mode: root.mode == "live";
+    property <bool> can-share: root.pin-mode ? root.marked : root.have-fix;
+    property <int> duration-index: 0;
+    property <[string]> duration-labels: ["Share for 15m", "Share for 1h", "Share for 8h"];
+    property <[float]> duration-ms: [900000, 3600000, 28800000];
+    in-out property <bool> duration-open: false;
+
+    background: transparent;
+
+    VerticalLayout {
+        padding: 16px;
+        spacing: 14px;
+
+        // The would-be map: fix state on a rounded card.
+        map-box := Rectangle {
+            vertical-stretch: 1;
+            border-radius: 14px;
+            background: root.fg.with-alpha(0.10);
+            clip: true;
+            VerticalLayout {
+                y: (map-box.height - self.preferred-height) / 2;
+                width: 100%;
+                spacing: 8px;
+                if !root.pin-mode && root.have-fix : HorizontalLayout {
+                    alignment: center;
+                    Avatar {
+                        size: 56px;
+                        source: root.my-avatar;
+                        initials: root.my-initials;
+                        tint: root.my-tint;
+                    }
+                }
+                if root.pin-mode || !root.have-fix : IconLabel {
+                    text: Icons.location;
+                    filled: true;
+                    color: root.accent.with-alpha(0.8);
+                    font-size: 36px;
+                    horizontal-alignment: center;
+                }
+                Text {
+                    x: 20px;
+                    width: map-box.width - 40px;
+                    text: root.pin-mode
+                        ? "Dropping a pin needs a map to tap, and Sigil on Slint cannot draw one yet. Share your current position instead."
+                        : (root.have-fix
+                            ? round(root.fix-lat * 100000) / 100000 + ", " + round(root.fix-lon * 100000) / 100000
+                            : (root.position-error != "" ? "Location unavailable — tap to retry" : "Finding your location…"));
+                    color: root.fg.with-alpha(root.have-fix && !root.pin-mode ? 0.8 : 0.6);
+                    font-family: root.have-fix && !root.pin-mode ? Theme.font-mono : Theme.font-ui;
+                    font-size: Theme.caption;
+                    horizontal-alignment: center;
+                    wrap: word-wrap;
+                }
+                if !root.pin-mode && !root.have-fix && root.position-error != "" : HorizontalLayout {
+                    alignment: center;
+                    retry := Rectangle {
+                        width: retry-label.preferred-width + 24px;
+                        height: 30px;
+                        border-radius: 15px;
+                        background: root.fg.with-alpha(retry-t.pressed ? 0.16 : 0.10);
+                        retry-label := Text {
+                            text: "Retry";
+                            color: root.fg;
+                            font-family: Theme.font-ui;
+                            font-size: Theme.body-small;
+                            horizontal-alignment: center; vertical-alignment: center;
+                            width: 100%; height: 100%;
+                        }
+                        retry-t := TouchArea { clicked => { root.retry-position(); } }
+                    }
+                }
+            }
+            // Back chip, top left of the card (the QML's floating chrome).
+            back-chip := Rectangle {
+                x: 8px; y: 8px;
+                width: 30px; height: 30px;
+                border-radius: 15px;
+                background: Theme.background.with-alpha(0.85);
+                IconLabel {
+                    text: Icons.back;
+                    color: root.fg;
+                    font-size: Theme.icon-size;
+                    width: 100%; height: 100%;
+                }
+                TouchArea { clicked => { root.back-requested(); } }
+            }
+        }
+
+        // Duration, live mode only — a flat radio run, since the dropdown's
+        // popup would fight the sheet (ui-conventions: sheets over dropdowns).
+        if root.live-mode : VerticalLayout {
+            spacing: 4px;
+            for label[i] in root.duration-labels : dur-row := Rectangle {
+                height: 34px;
+                border-radius: 9px;
+                background: i == root.duration-index ? root.accent.with-alpha(0.25)
+                          : dur-t.pressed || dur-t.has-hover ? root.fg.with-alpha(0.08) : Theme.popup-background;
+                Text {
+                    x: 12px;
+                    text: label;
+                    color: root.fg;
+                    font-family: Theme.font-ui;
+                    font-size: Theme.body-small;
+                    vertical-alignment: center;
+                    height: 100%;
+                }
+                dur-t := TouchArea { clicked => { root.duration-index = i; } }
+            }
+        }
+
+        share-btn := Rectangle {
+            height: 44px;
+            border-radius: 22px;
+            background: root.can-share ? root.accent.with-alpha(0.92) : Theme.background.with-alpha(0.85);
+            opacity: root.can-share ? 1 : 0.6;
             Text {
-                text: "Map — not ported yet";
-                color: root.fg.with-alpha(0.5);
+                text: "Share location";
+                color: root.can-share ? #141414 : root.fg.with-alpha(0.7);
                 font-family: Theme.font-ui;
                 font-size: Theme.body;
-                horizontal-alignment: center;
-                vertical-alignment: center;
+                font-weight: 700;
+                horizontal-alignment: center; vertical-alignment: center;
                 width: 100%; height: 100%;
+            }
+            TouchArea {
+                enabled: root.can-share;
+                clicked => {
+                    root.share-requested(
+                        root.pin-mode ? root.mark-lat : root.fix-lat,
+                        root.pin-mode ? root.mark-lon : root.fix-lon,
+                        root.live-mode ? root.duration-ms[root.duration-index] : 0);
+                }
             }
         }
     }

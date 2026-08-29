@@ -406,6 +406,7 @@ pub fn apply_media_ready(ui: &mut UiState, win: &AppWindow, v: &Value) {
 pub fn on_act(ui: &mut UiState, win: &AppWindow, action: &str, a: &str, b2: &str) {
     let req = ui.req.clone();
     let open_room = room_of_key(&ui.open_room);
+    let action_is_doc = action == "doc-download";
     match action {
         "send-reply" => req.fire("message.reply", json!({"roomId": ui.open_room, "eventId": a, "body": b2, "markdown": true})),
         "send-edit" => req.fire("message.edit", json!({"roomId": ui.open_room, "eventId": a, "body": b2, "markdown": true})),
@@ -626,12 +627,146 @@ pub fn on_act(ui: &mut UiState, win: &AppWindow, action: &str, a: &str, b2: &str
         }
         "unpin" => req.fire("message.unpin", json!({"roomId": open_room, "eventId": a})),
 
-        "open-attach" | "open-recorder" | "viewer-open" | "open-doc" | "open-audio-page"
-        | "open-map" | "theme-apply" | "theme-accent" | "theme-wallpaper" | "theme-reset"
-        | "theme-pick" | "theme-accept-custom" | "doc-download" | "doc-page" | "doc-sheet"
-        | "audio-toggle" | "audio-seek" | "audio-download" => {
-            tracing::info!("act {action}({a},{b2}): overlay/media wiring lands in the media pass");
+        // ---- viewer ----
+        "viewer-open" => viewer_open(ui, win, a),
+        "viewer-closed" => {
+            if ui.audio_playing { req.fire("video.stop", json!({})); }
         }
+        "viewer-page" => {
+            let i: usize = a.parse().unwrap_or(0);
+            if let Some(item) = ui.viewer_items.get(i).cloned() {
+                let ev = s(&item, "eventId");
+                if item["media"]["path"].as_str().unwrap_or("").is_empty() && !ev.is_empty() {
+                    req.fire("media.get", json!({"roomId": open_room, "eventId": ev}));
+                }
+            }
+        }
+        "viewer-download" | "viewer-delete" | "viewer-react" | "viewer-forward" | "viewer-share" => {
+            viewer_misc(ui, win, action, a);
+        }
+        "viewer-playback" => {
+            let i = win.get_vw_cur().max(0) as usize;
+            if let Some(item) = ui.viewer_items.get(i) {
+                let ev = s(item, "eventId").to_string();
+                if win.get_vw_playing_event() == ev.as_str() {
+                    req.fire("video.stop", json!({}));
+                    win.set_vw_playing_event("".into());
+                } else {
+                    req.fire("video.play", json!({"roomId": open_room, "eventId": ev, "audio": true}));
+                    win.set_vw_playing_event(ev.as_str().into());
+                }
+            }
+        }
+        "viewer-seek" => req.fire("video.seek", json!({"seconds": a.parse::<f64>().unwrap_or(0.0)})),
+        "viewer-scrub" => {}
+
+        // ---- doc / audio pages ----
+        "open-doc" => doc_open(ui, win, a),
+        "doc-download" | "audio-download" => {
+            let (rid, ev) = if action_is_doc { ui.doc_ctx.clone() } else { ui.audio_ctx.clone() };
+            let dest = format!("{}/Downloads", std::env::var("HOME").unwrap_or_default());
+            call_ui(&req, "media.saveAs", json!({"roomId": rid, "eventId": ev, "dest": dest}), move |_ui, win, out| {
+                let msg = match out { Ok(v) => format!("Saved to {}", s(&v, "path")), Err((_, m)) => m };
+                if action_is_doc { win.set_dc_toast(msg.as_str().into()); } else { win.set_au_toast(msg.as_str().into()); }
+            });
+        }
+        "doc-page" => doc_page(ui, win, a, b2),
+        "doc-sheet" => doc_sheet(ui, win, a),
+        "open-audio-page" => audio_open(ui, win, a),
+        "audio-toggle" => audio_page_toggle(ui, win),
+        "audio-seek" => {
+            let (rid, ev) = ui.audio_ctx.clone();
+            req.fire("audio.play", json!({"roomId": rid, "eventId": ev, "seek": a.parse::<f64>().unwrap_or(0.0)}));
+            win.set_au_playing(true);
+        }
+
+        // ---- chat theme ----
+        "theme-accent" => { ui.theme_pending["accent"] = json!(a); push_theme(ui, win); }
+        "theme-wallpaper" => { ui.theme_pending["wallpaper"] = json!(a); push_theme(ui, win); }
+        "theme-reset" => { ui.theme_pending = json!({}); push_theme(ui, win); }
+        "theme-apply" => theme_apply(ui, win),
+        "theme-pick" => {
+            let mut hs = a.split(',');
+            let h: f32 = hs.next().unwrap_or("0").parse().unwrap_or(0.0);
+            let sat: f32 = hs.next().unwrap_or("0").parse().unwrap_or(0.0);
+            let v: f32 = b2.parse().unwrap_or(0.0);
+            let (r, g, b3) = hsv_rgb(h, sat, v);
+            win.set_ct_pick(slint::Color::from_rgb_u8(r, g, b3));
+            let (r2, g2, b4) = hsv_rgb(h, sat, 1.0);
+            win.set_ct_pick_end(slint::Color::from_rgb_u8(r2, g2, b4));
+            ui.theme_pending["_pick"] = json!(format!("#{r:02X}{g:02X}{b3:02X}"));
+        }
+        "theme-accept-custom" => {
+            let hex = ui.theme_pending["_pick"].as_str().unwrap_or("#7c9fd4").to_string();
+            ui.theme_pending["accent"] = json!(hex);
+            push_theme(ui, win);
+        }
+
+        // ---- attach ----
+        "open-attach" => {
+            if ui.stickers.is_empty() {
+                load_stickers(ui, win);
+            }
+        }
+        "pick-attach-files" => attach_files(ui),
+        "attach-location" => tracing::info!("location share ({a}): the maps gap — no picker without a map widget"),
+        "composer-insert" => tracing::info!("composer emoji insert needs a chat-page function; deferred"),
+        "create-poll" => create_poll(ui, a, b2),
+        "load-stickers" => load_stickers(ui, win),
+        "send-sticker" => send_sticker(ui, a),
+
+        // ---- voice recorder ----
+        "open-recorder" => {
+            ui.rec_levels.clear();
+            win.set_rec_state("idle".into());
+        }
+        "voice-record" => {
+            ui.recording = true;
+            ui.rec_levels.clear();
+            win.set_rec_state("recording".into());
+            win.set_rec_elapsed(0.0);
+            req.fire("voice.start", json!({}));
+            tick_recorder(ui);
+        }
+        "voice-stop" => {
+            ui.recording = false;
+            call_ui(&req, "voice.stop", json!({}), move |ui, win, out| {
+                if let Ok(v) = out {
+                    win.set_rec_clip_duration((v["duration"].as_f64().unwrap_or(0.0) / 1000.0) as f32);
+                    let wave: Vec<f64> = v["waveform"].as_array().map(|a| a.iter().filter_map(Value::as_f64).collect()).unwrap_or_default();
+                    win.set_rec_clip_waveform(ModelRc::new(VecModel::from(crate::rows::resample_wave(&wave, 60))));
+                    ui.voice_clip = v;
+                    win.set_rec_state("ready".into());
+                } else {
+                    win.set_rec_state("idle".into());
+                }
+            });
+        }
+        "voice-restart" => {
+            req.fire("voice.cancel", json!({}));
+            ui.recording = true;
+            ui.rec_levels.clear();
+            win.set_rec_state("recording".into());
+            win.set_rec_elapsed(0.0);
+            req.fire("voice.start", json!({}));
+            tick_recorder(ui);
+        }
+        "voice-attach" => {
+            let clip = std::mem::take(&mut ui.voice_clip);
+            req.fire("voice.send", json!({
+                "roomId": open_room,
+                "path": s(&clip, "path"),
+                "duration": clip["duration"].as_f64().unwrap_or(0.0),
+                "waveform": clip["waveform"].clone(),
+                "caption": "",
+            }));
+            win.set_recorder_open(false);
+        }
+        "voice-cancel" => {
+            ui.recording = false;
+            req.fire("voice.cancel", json!({}));
+        }
+        "open-map" => tracing::info!("map page carries the static card; nothing to load beyond the item"),
         other => tracing::warn!("act: unknown action {other}"),
     }
 }
@@ -962,4 +1097,386 @@ fn reread_settings_later(ui: &mut UiState) {
     // (docs/development.md); wait out the propagation.
     let req = ui.req.clone();
     after(&req, 1200, |ui, win| load_settings(ui, win));
+}
+
+// ---------------------------------------------------------------- media pass
+
+fn viewer_open(ui: &mut UiState, win: &AppWindow, event_id: &str) {
+    ui.viewer_items = ui.shadow.iter()
+        .filter(|i| matches!(s(i, "kind"), "image" | "sticker" | "video"))
+        .cloned()
+        .collect();
+    let cur = ui.viewer_items.iter().position(|i| s(i, "eventId") == event_id).unwrap_or(0);
+    let items = ui.viewer_items.clone();
+    let rows: Vec<crate::ViewerItem> = items.iter().map(|i| {
+        let media = i["media"].clone();
+        let path = media["path"].as_str().or(media["thumbnailPath"].as_str()).unwrap_or("").to_string();
+        let img = crate::bridge::avatar_pub(ui, &path);
+        crate::ViewerItem {
+            event_id: s(i, "eventId").into(),
+            kind: s(i, "kind").into(),
+            sender_name: s(i, "senderName").into(),
+            is_own: b(i, "isOwn"),
+            ts_label: crate::project::session_label(i["ts"].as_i64().unwrap_or(0)).into(),
+            have_img: img.is_some(),
+            img: img.unwrap_or_default(),
+            w: media["width"].as_i64().unwrap_or(0) as i32,
+            h: media["height"].as_i64().unwrap_or(0) as i32,
+            can_redact: b(&i["can"], "redact"),
+        }
+    }).collect();
+    let names: Vec<SharedString> = ui.rooms_json.iter()
+        .filter(|r| !b(r, "isSpace") && !b(r, "isInvite"))
+        .take(8)
+        .map(|r| SharedString::from(s(r, "name")))
+        .collect();
+    win.set_vw_items(ModelRc::new(VecModel::from(rows)));
+    win.set_vw_forward_names(ModelRc::new(VecModel::from(names)));
+    win.set_vw_cur(cur as i32);
+    win.set_viewer_open(true);
+    if let Some(item) = ui.viewer_items.get(cur) {
+        let ev = s(item, "eventId");
+        if item["media"]["path"].as_str().unwrap_or("").is_empty() && !ev.is_empty() {
+            let room = room_of_key(&ui.open_room);
+            ui.req.fire("media.get", json!({"roomId": room, "eventId": ev}));
+        }
+    }
+}
+
+fn viewer_misc(ui: &mut UiState, win: &AppWindow, action: &str, a: &str) {
+    let i = win.get_vw_cur().max(0) as usize;
+    let Some(item) = ui.viewer_items.get(i).cloned() else { return };
+    let ev = s(&item, "eventId").to_string();
+    let room = room_of_key(&ui.open_room);
+    let req = ui.req.clone();
+    match action {
+        "viewer-download" => {
+            let dest = format!("{}/Downloads", std::env::var("HOME").unwrap_or_default());
+            call_ui(&req, "media.saveAs", json!({"roomId": room, "eventId": ev, "dest": dest}), |_ui, win, out| {
+                win.set_vw_toast(match out { Ok(v) => format!("Saved to {}", s(&v, "path")), Err((_, m)) => m }.into());
+            });
+        }
+        "viewer-delete" => {
+            req.fire("message.redact", json!({"roomId": room, "eventId": ev}));
+            win.set_viewer_open(false);
+        }
+        "viewer-react" => req.fire("message.react", json!({"roomId": room, "eventId": ev, "key": a})),
+        "viewer-share" => {
+            let path = item["media"]["path"].as_str().unwrap_or("").to_string();
+            if !path.is_empty() {
+                crate::platform::copy_text(&path);
+                win.set_vw_toast("Path copied".into());
+            }
+        }
+        "viewer-forward" => {
+            let idx: usize = a.parse().unwrap_or(0);
+            let rid = ui.rooms_json.iter()
+                .filter(|r| !b(r, "isSpace") && !b(r, "isInvite"))
+                .nth(idx)
+                .map(|r| s(r, "id").to_string());
+            let path = item["media"]["path"].as_str()
+                .or(item["media"]["thumbnailPath"].as_str())
+                .unwrap_or("").to_string();
+            if let Some(rid) = rid {
+                if !path.is_empty() {
+                    req.fire("attachment.send", json!({"roomId": rid, "path": path}));
+                    win.set_vw_toast("Forwarded".into());
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+fn doc_open(ui: &mut UiState, win: &AppWindow, event_id: &str) {
+    let room = room_of_key(&ui.open_room);
+    ui.doc_ctx = (room.clone(), event_id.to_string());
+    ui.doc_pages.clear();
+    win.set_dc_status("loading".into());
+    win.set_dc_blocks(ModelRc::new(VecModel::from(Vec::new())));
+    win.set_dc_pages(ModelRc::new(VecModel::from(Vec::new())));
+    if let Some(item) = ui.shadow.iter().find(|i| s(i, "eventId") == event_id) {
+        win.set_dc_name(item["media"]["filename"].as_str().unwrap_or("Document").into());
+        win.set_dc_size(item["media"]["sizeLabel"].as_str().unwrap_or("").into());
+    }
+    call_ui(&ui.req.clone(), "doc.preview", json!({"roomId": room, "eventId": event_id}), move |ui, win, out| {
+        match out {
+            Ok(v) => {
+                win.set_dc_status("".into());
+                let kind = s(&v, "kind").to_string();
+                win.set_dc_kind(kind.as_str().into());
+                win.set_dc_subtitle(match kind.as_str() {
+                    "pdf" => format!("PDF · {} pages", v["pages"].as_i64().unwrap_or(0)),
+                    "sheet" => format!("Spreadsheet · {} sheets", v["sheets"].as_array().map(Vec::len).unwrap_or(0)),
+                    k => k.to_string(),
+                }.into());
+                let pages = v["pages"].as_i64().unwrap_or(0);
+                win.set_dc_pdf(pages > 0);
+                if pages > 0 {
+                    ui.doc_pages = vec![Value::Null; pages as usize];
+                    let blanks: Vec<crate::DocPageImage> = (0..pages).map(|_| crate::DocPageImage::default()).collect();
+                    win.set_dc_pages(ModelRc::new(VecModel::from(blanks)));
+                }
+                let blocks: Vec<crate::DocBlock> = v["blocks"].as_array().map(|a| a.iter().map(|b3| crate::DocBlock {
+                    t: s(b3, "t").into(),
+                    text: s(b3, "text").into(),
+                    title: s(b3, "title").into(),
+                    level: b3["level"].as_i64().unwrap_or(0) as i32,
+                    bullet: b(b3, "bullet"),
+                }).collect()).unwrap_or_default();
+                win.set_dc_blocks(ModelRc::new(VecModel::from(blocks)));
+                let sheets: Vec<crate::SheetTab> = v["sheets"].as_array().map(|a| a.iter().map(|t| crate::SheetTab { name: s(t, "name").into() }).collect()).unwrap_or_default();
+                win.set_dc_sheets(ModelRc::new(VecModel::from(sheets)));
+                doc_push_sheet(win, &v, 0);
+                ui.doc_preview = v;
+            }
+            Err((_, m)) => {
+                win.set_dc_status("error".into());
+                win.set_dc_error(m.as_str().into());
+            }
+        }
+    });
+}
+
+fn doc_push_sheet(win: &AppWindow, preview: &Value, index: usize) {
+    let rows_v = preview["sheetRows"].as_array().cloned().unwrap_or_default();
+    let mut cols = 1;
+    let rows: Vec<crate::SheetRow> = rows_v.iter()
+        .filter(|r| r["sheet"].as_i64().unwrap_or(0) as usize == index)
+        .map(|r| {
+            let cells: Vec<SharedString> = r["cells"].as_array().map(|a| a.iter().map(|c| SharedString::from(c.as_str().unwrap_or(""))).collect()).unwrap_or_default();
+            cols = cols.max(cells.len() as i32);
+            crate::SheetRow { cells: ModelRc::new(VecModel::from(cells)) }
+        })
+        .collect();
+    win.set_dc_cols(cols);
+    win.set_dc_rows(ModelRc::new(VecModel::from(rows)));
+}
+
+fn doc_page(ui: &mut UiState, _win: &AppWindow, index: &str, width: &str) {
+    let idx: usize = index.parse().unwrap_or(0);
+    if ui.doc_pages.get(idx).map(|p| !p.is_null()).unwrap_or(false) {
+        return;
+    }
+    let (rid, ev) = ui.doc_ctx.clone();
+    let w: f64 = width.parse().unwrap_or(800.0);
+    call_ui(&ui.req.clone(), "doc.page", json!({"roomId": rid, "eventId": ev, "index": idx, "width": w as i64}), move |ui, win, out| {
+        let Ok(v) = out else { return };
+        if let Some(slot) = ui.doc_pages.get_mut(idx) {
+            *slot = v.clone();
+        }
+        let path = s(&v, "path").to_string();
+        if let Some(img) = crate::bridge::avatar_pub(ui, &path) {
+            use slint::Model as _;
+            let pages = win.get_dc_pages();
+            if let Some(mut row) = pages.row_data(idx) {
+                row.img = img;
+                row.loaded = true;
+                pages.set_row_data(idx, row);
+            }
+        }
+    });
+}
+
+fn doc_sheet(ui: &mut UiState, win: &AppWindow, index: &str) {
+    let idx: usize = index.parse().unwrap_or(0);
+    let preview = ui.doc_preview.clone();
+    doc_push_sheet(win, &preview, idx);
+}
+
+fn audio_open(ui: &mut UiState, win: &AppWindow, event_id: &str) {
+    let room = room_of_key(&ui.open_room);
+    ui.audio_ctx = (room.clone(), event_id.to_string());
+    win.set_au_status("loading".into());
+    win.set_au_playing(false);
+    win.set_au_position(0.0);
+    if let Some(item) = ui.shadow.iter().find(|i| s(i, "eventId") == event_id) {
+        win.set_au_title(item["media"]["filename"].as_str().unwrap_or("Audio").into());
+        win.set_au_size(item["media"]["sizeLabel"].as_str().unwrap_or("").into());
+        win.set_au_duration((item["media"]["duration"].as_f64().unwrap_or(0.0) / 1000.0) as f32);
+    }
+    call_ui(&ui.req.clone(), "audio.info", json!({"roomId": room, "eventId": event_id, "size": 512}), move |ui, win, out| {
+        win.set_au_status("".into());
+        let Ok(v) = out else { return };
+        if let Some(d) = v["duration"].as_f64() {
+            if d > 0.0 { win.set_au_duration((d / 1000.0) as f32); }
+        }
+        let art = s(&v, "artPath").to_string();
+        if let Some(img) = crate::bridge::avatar_pub(ui, &art) {
+            win.set_au_art(img);
+            win.set_au_have_art(true);
+        }
+        if let Some(hex) = v["accent"].as_str() {
+            if let Ok(c) = u32::from_str_radix(hex.trim_start_matches('#'), 16) {
+                win.set_au_tone(slint::Color::from_rgb_u8((c >> 16) as u8, (c >> 8) as u8, c as u8));
+            }
+        }
+    });
+}
+
+fn audio_page_toggle(ui: &mut UiState, win: &AppWindow) {
+    let (rid, ev) = ui.audio_ctx.clone();
+    if win.get_au_playing() {
+        ui.req.fire("audio.stop", json!({}));
+        win.set_au_playing(false);
+    } else {
+        ui.req.fire("audio.play", json!({"roomId": rid, "eventId": ev, "seek": win.get_au_position() as f64}));
+        win.set_au_playing(true);
+        tick_audio(ui);
+    }
+}
+
+fn tick_audio(ui: &mut UiState) {
+    let req = ui.req.clone();
+    after(&req, 250, |ui, win| {
+        if win.get_au_playing() {
+            win.set_au_position(win.get_au_position() + 0.25);
+            if win.get_au_position() >= win.get_au_duration() && win.get_au_duration() > 0.0 {
+                win.set_au_playing(false);
+                win.set_au_position(0.0);
+                return;
+            }
+            tick_audio(ui);
+        }
+    });
+}
+
+fn tick_recorder(ui: &mut UiState) {
+    let req = ui.req.clone();
+    after(&req, 100, |ui, win| {
+        if ui.recording {
+            win.set_rec_elapsed(win.get_rec_elapsed() + 0.1);
+            tick_recorder(ui);
+        }
+    });
+}
+
+fn attach_files(ui: &mut UiState) {
+    let room = room_of_key(&ui.open_room);
+    ui.req.handle().spawn(async move {
+        if let Some(path) = crate::platform::pick_file().await {
+            let _ = slint::invoke_from_event_loop(move || {
+                with_ui(|ui| {
+                    ui.req.fire("attachment.send", json!({"roomId": room, "path": path}));
+                    if let Some(win) = ui.win.upgrade() {
+                        win.set_attach_open(false);
+                    }
+                });
+            });
+        }
+    });
+}
+
+fn create_poll(ui: &mut UiState, question: &str, packed: &str) {
+    let mut parts = packed.split('\u{1f}');
+    let closed = parts.next().unwrap_or("0") == "1";
+    let options: Vec<&str> = parts.filter(|o| !o.trim().is_empty()).collect();
+    if options.len() < 2 || question.trim().is_empty() {
+        return;
+    }
+    let room = room_of_key(&ui.open_room);
+    ui.req.fire("poll.create", json!({"roomId": room, "question": question, "options": options, "closed": closed}));
+    if let Some(win) = ui.win.upgrade() {
+        win.set_attach_open(false);
+    }
+}
+
+fn load_stickers(ui: &mut UiState, _win: &AppWindow) {
+    call_ui(&ui.req.clone(), "stickers.list", json!({}), |ui, win, out| {
+        let Ok(v) = out else { return };
+        ui.stickers = v["stickers"].as_array().cloned().unwrap_or_default();
+        let stickers = ui.stickers.clone();
+        let rows: Vec<crate::StickerItem> = stickers.iter().map(|st| crate::StickerItem {
+            path: s(st, "path").into(),
+            art: crate::bridge::avatar_pub(ui, s(st, "path")).unwrap_or_default(),
+            body: s(st, "body").into(),
+            url: s(st, "url").into(),
+            w: st["width"].as_i64().unwrap_or(0) as i32,
+            h: st["height"].as_i64().unwrap_or(0) as i32,
+        }).collect();
+        win.set_at_stickers(ModelRc::new(VecModel::from(rows)));
+        win.set_at_stickers_loaded(true);
+    });
+}
+
+fn send_sticker(ui: &mut UiState, index: &str) {
+    let idx: usize = index.parse().unwrap_or(0);
+    let Some(st) = ui.stickers.get(idx).cloned() else { return };
+    let room = room_of_key(&ui.open_room);
+    ui.req.fire("sticker.send", json!({
+        "roomId": room,
+        "url": s(&st, "url"),
+        "body": match s(&st, "body") { "" => "Sticker", b3 => b3 },
+        "width": st["width"].as_i64().unwrap_or(0),
+        "height": st["height"].as_i64().unwrap_or(0),
+    }));
+    if let Some(win) = ui.win.upgrade() {
+        win.set_attach_open(false);
+    }
+}
+
+// ---------------------------------------------------------------- theme
+
+fn themes_path() -> String {
+    format!("{}/.local/state/sigil/chat-themes.json", std::env::var("HOME").unwrap_or_default())
+}
+
+fn push_theme(ui: &mut UiState, win: &AppWindow) {
+    let accent = ui.theme_pending["accent"].as_str().unwrap_or("").to_string();
+    let wallpaper = ui.theme_pending["wallpaper"].as_str().unwrap_or("").to_string();
+    win.set_ct_accent(accent.as_str().into());
+    win.set_ct_wallpaper(wallpaper.as_str().into());
+    if let Ok(c) = u32::from_str_radix(accent.trim_start_matches('#'), 16) {
+        win.set_ct_color(slint::Color::from_rgb_u8((c >> 16) as u8, (c >> 8) as u8, c as u8));
+    }
+    win.set_ct_custom(!accent.is_empty());
+    if let Some(n) = wallpaper.strip_prefix("grad:").and_then(|n| n.parse::<i32>().ok()) {
+        win.set_ct_grad(n);
+    } else {
+        win.set_ct_grad(-1);
+        if !wallpaper.is_empty() {
+            if let Some(img) = crate::bridge::avatar_pub(ui, &wallpaper) {
+                win.set_ct_wallpaper_img(img);
+            }
+        }
+    }
+}
+
+fn theme_apply(ui: &mut UiState, win: &AppWindow) {
+    let rid = room_of_key(&ui.open_room);
+    // The same file Panel.qml writes, so both frontends share themes.
+    let path = themes_path();
+    let mut all: Value = std::fs::read_to_string(&path).ok()
+        .and_then(|t| serde_json::from_str(&t).ok())
+        .unwrap_or_else(|| json!({}));
+    let pending = ui.theme_pending.clone();
+    let empty = pending["accent"].as_str().unwrap_or("").is_empty()
+        && pending["wallpaper"].as_str().unwrap_or("").is_empty();
+    if empty {
+        if let Some(o) = all.as_object_mut() { o.remove(&rid); }
+    } else {
+        all[rid.as_str()] = json!({"accent": pending["accent"], "wallpaper": pending["wallpaper"]});
+    }
+    if let Some(dir) = std::path::Path::new(&path).parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    let _ = std::fs::write(&path, all.to_string());
+    ui.chat_themes = all;
+    win.invoke_go_back();
+}
+
+fn hsv_rgb(h: f32, s2: f32, v: f32) -> (u8, u8, u8) {
+    let h6 = (h.fract() * 6.0).max(0.0);
+    let c = v * s2;
+    let x = c * (1.0 - (h6 % 2.0 - 1.0).abs());
+    let (r, g, b3) = match h6 as u32 {
+        0 => (c, x, 0.0),
+        1 => (x, c, 0.0),
+        2 => (0.0, c, x),
+        3 => (0.0, x, c),
+        4 => (x, 0.0, c),
+        _ => (c, 0.0, x),
+    };
+    let m = v - c;
+    (((r + m) * 255.0) as u8, ((g + m) * 255.0) as u8, ((b3 + m) * 255.0) as u8)
 }

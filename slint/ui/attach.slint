@@ -143,15 +143,22 @@ export component AttachMenu inherits Rectangle {
     // from the language, so the slots are explicit; count gates visibility).
     in-out property <bool> poll-closed: false;
     in-out property <int> option-count: 2;
-    property <bool> poll-valid: q.text != ""
-        && ((o1.text != "" ? 1 : 0) + (o2.text != "" ? 1 : 0) + (o3.text != "" ? 1 : 0)
-          + (o4.text != "" ? 1 : 0) + (o5.text != "" ? 1 : 0) + (o6.text != "" ? 1 : 0)
-          + (o7.text != "" ? 1 : 0) + (o8.text != "" ? 1 : 0)) >= 2;
+    // The inputs live inside the poll page's `if`, so their ids are out of
+    // scope here; the texts ride two-way component properties instead.
+    in-out property <string> pq;
+    in-out property <string> po1; in-out property <string> po2;
+    in-out property <string> po3; in-out property <string> po4;
+    in-out property <string> po5; in-out property <string> po6;
+    in-out property <string> po7; in-out property <string> po8;
+    property <bool> poll-valid: root.pq != ""
+        && ((root.po1 != "" ? 1 : 0) + (root.po2 != "" ? 1 : 0) + (root.po3 != "" ? 1 : 0)
+          + (root.po4 != "" ? 1 : 0) + (root.po5 != "" ? 1 : 0) + (root.po6 != "" ? 1 : 0)
+          + (root.po7 != "" ? 1 : 0) + (root.po8 != "" ? 1 : 0)) >= 2;
     public function reset-poll() {
         root.poll-closed = false;
         root.option-count = 2;
-        q.text = ""; o1.text = ""; o2.text = ""; o3.text = ""; o4.text = "";
-        o5.text = ""; o6.text = ""; o7.text = ""; o8.text = "";
+        root.pq = ""; root.po1 = ""; root.po2 = ""; root.po3 = ""; root.po4 = "";
+        root.po5 = ""; root.po6 = ""; root.po7 = ""; root.po8 = "";
     }
     if root.page == "poll" : poll-box := Rectangle {
         x: 30px; y: 62px;
@@ -189,17 +196,17 @@ export component AttachMenu inherits Rectangle {
                     wrap: word-wrap;
                 }
                 Text { text: "Question"; color: root.fg; font-family: Theme.font-ui; font-size: Theme.body-small; font-weight: 700; }
-                q := TextWell { placeholder: "Ask something…"; }
+                q := TextWell { placeholder: "Ask something…"; text <=> root.pq; }
                 Rectangle { height: 4px; }
                 Text { text: "Options"; color: root.fg; font-family: Theme.font-ui; font-size: Theme.body-small; font-weight: 700; }
-                o1 := TextWell { placeholder: "Option 1"; }
-                o2 := TextWell { placeholder: "Option 2"; }
-                o3 := TextWell { placeholder: "Option 3"; visible: root.option-count >= 3; height: self.visible ? 36px : 0px; }
-                o4 := TextWell { placeholder: "Option 4"; visible: root.option-count >= 4; height: self.visible ? 36px : 0px; }
-                o5 := TextWell { placeholder: "Option 5"; visible: root.option-count >= 5; height: self.visible ? 36px : 0px; }
-                o6 := TextWell { placeholder: "Option 6"; visible: root.option-count >= 6; height: self.visible ? 36px : 0px; }
-                o7 := TextWell { placeholder: "Option 7"; visible: root.option-count >= 7; height: self.visible ? 36px : 0px; }
-                o8 := TextWell { placeholder: "Option 8"; visible: root.option-count >= 8; height: self.visible ? 36px : 0px; }
+                o1 := TextWell { placeholder: "Option 1"; text <=> root.po1; }
+                o2 := TextWell { placeholder: "Option 2"; text <=> root.po2; }
+                o3 := TextWell { placeholder: "Option 3"; text <=> root.po3; visible: root.option-count >= 3; height: self.visible ? 36px : 0px; }
+                o4 := TextWell { placeholder: "Option 4"; text <=> root.po4; visible: root.option-count >= 4; height: self.visible ? 36px : 0px; }
+                o5 := TextWell { placeholder: "Option 5"; text <=> root.po5; visible: root.option-count >= 5; height: self.visible ? 36px : 0px; }
+                o6 := TextWell { placeholder: "Option 6"; text <=> root.po6; visible: root.option-count >= 6; height: self.visible ? 36px : 0px; }
+                o7 := TextWell { placeholder: "Option 7"; text <=> root.po7; visible: root.option-count >= 7; height: self.visible ? 36px : 0px; }
+                o8 := TextWell { placeholder: "Option 8"; text <=> root.po8; visible: root.option-count >= 8; height: self.visible ? 36px : 0px; }
                 if root.option-count < 8 : add-row := Rectangle {
                     height: 30px;
                     HorizontalLayout {
@@ -239,7 +246,7 @@ export component AttachMenu inherits Rectangle {
                 TouchArea {
                     clicked => {
                         if (root.poll-valid) {
-                            root.create-poll(q.text, [o1.text, o2.text, o3.text, o4.text, o5.text, o6.text, o7.text, o8.text], root.poll-closed);
+                            root.create-poll(root.pq, [root.po1, root.po2, root.po3, root.po4, root.po5, root.po6, root.po7, root.po8], root.poll-closed);
                         }
                     }
                 }

@@ -103,6 +103,14 @@ pub struct UiState {
     pub emojis: Vec<(String, String)>,     // glyph, keywords
     pub voice_positions: HashMap<String, f64>, // eventId -> seconds (playback)
     pub chat_themes: Value,
+    pub viewer_items: Vec<Value>,          // timeline items behind the viewer pager
+    pub doc_pages: Vec<Value>,             // doc.page results by index
+    pub stickers: Vec<Value>,
+    pub voice_clip: Value,                 // voice.stop reply (path/duration/waveform)
+    pub recording: bool,
+    pub rec_levels: Vec<f32>,
+    pub theme_pending: Value,
+    pub doc_preview: Value,
 }
 
 thread_local! {
@@ -169,6 +177,14 @@ pub fn start(win: &AppWindow, rt: &tokio::runtime::Runtime, icons: IconSet) -> R
         emojis: Vec::new(),
         voice_positions: HashMap::new(),
         chat_themes: serde_json::json!({}),
+        viewer_items: Vec::new(),
+        doc_pages: Vec::new(),
+        stickers: Vec::new(),
+        voice_clip: Value::Null,
+        recording: false,
+        rec_levels: Vec::new(),
+        theme_pending: serde_json::json!({}),
+        doc_preview: Value::Null,
     }));
     UI.with(|ui| *ui.borrow_mut() = Some(state));
 
@@ -441,6 +457,14 @@ fn handle_event(ui: &mut UiState, v: &Value) {
         }
         "voice.level" => {
             ui.voice_level = v["level"].as_f64().unwrap_or(0.0) as f32;
+            if ui.recording {
+                ui.rec_levels.push(ui.voice_level);
+                if ui.rec_levels.len() > 60 {
+                    let drop = ui.rec_levels.len() - 60;
+                    ui.rec_levels.drain(..drop);
+                }
+                win.set_rec_levels(ModelRc::new(VecModel::from(ui.rec_levels.clone())));
+            }
         }
         "timeline.reset" => {
             if v["roomId"].as_str().unwrap_or("") != ui.open_room {
@@ -871,6 +895,14 @@ fn start_demo(win: &AppWindow, rt: &tokio::runtime::Runtime, icons: IconSet) -> 
         emojis: Vec::new(),
         voice_positions: HashMap::new(),
         chat_themes: serde_json::json!({}),
+        viewer_items: Vec::new(),
+        doc_pages: Vec::new(),
+        stickers: Vec::new(),
+        voice_clip: Value::Null,
+        recording: false,
+        rec_levels: Vec::new(),
+        theme_pending: serde_json::json!({}),
+        doc_preview: Value::Null,
     }));
     UI.with(|ui| *ui.borrow_mut() = Some(state));
 
