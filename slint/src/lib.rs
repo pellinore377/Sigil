@@ -53,8 +53,12 @@ fn android_main(app: slint::android::AndroidApp) {
 
     use tracing_subscriber::layer::SubscriberExt;
     use tracing_subscriber::util::SubscriberInitExt;
+    use tracing_subscriber::Layer as _;
     if let Ok(layer) = tracing_android::layer("sigil") {
-        tracing_subscriber::registry().with(layer).try_init().ok();
+        // Info and up: the dependency firehose at verbose drowned logcat, and
+        // request traces carry ids that do not belong in a system log.
+        let filter = tracing_subscriber::EnvFilter::new("info,hyper_util=warn,eyeball=warn");
+        tracing_subscriber::registry().with(layer.with_filter(filter)).try_init().ok();
     }
 
     slint::android::init(app).expect("slint android init");

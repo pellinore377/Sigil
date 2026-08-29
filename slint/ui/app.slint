@@ -1,16 +1,39 @@
-// The window: one page visible at a time, chosen by the session state the
-// engine broadcasts and the navigation the user has done. This file owns the
-// mobile chrome — safe-area insets, the virtual-keyboard inset, and the page
-// slide — so pages can assume a clean rectangle.
+// The window: Panel.qml's job. Owns the mobile chrome (safe areas, keyboard),
+// the nav state machine and the page stack; pages own their look. Back
+// unwinds exactly as Panel.goBackNow does — overlays innermost-first, then
+// pages along the path they were entered.
 
 import { Theme } from "style.slint";
 import { Icons } from "icons.slint";
 import { LoginPage } from "login.slint";
 import { RecoveryPage } from "recovery.slint";
-import { HomePage, RoomRow } from "home.slint";
-import { ChatPage, TimelineRow } from "chat.slint";
+import { HomePage } from "home.slint";
+import { ChatPage } from "chat.slint";
+import { PageHolder } from "furniture.slint";
+import { RoomRow, TimelineRow, MemberRow, SpaceRow, HierarchyRow, ThreadRow, UserRow, RoomSettingsModel, PowerRow, ReactionChip, EmojiItem, ReplyRef, CallParticipant, DeviceRow } from "model.slint";
 
-export { RoomRow, TimelineRow, Icons }
+import { StartPage } from "pages/start.slint";
+import { ForwardPage } from "pages/forward.slint";
+import { SpacePage } from "pages/space.slint";
+import { NewSpacePage } from "pages/newspace.slint";
+import { SpaceRoomsPage } from "pages/spacerooms.slint";
+import { RoomSettingsPage } from "pages/roomsettings.slint";
+import { SpaceSettingsPage } from "pages/spacesettings.slint";
+import { MembersPage } from "pages/members.slint";
+import { AddPeoplePage } from "pages/addpeople.slint";
+import { NotificationsPage } from "pages/notifications.slint";
+import { SecurityPage } from "pages/security.slint";
+import { RolesPage } from "pages/roles.slint";
+import { PermissionsPage } from "pages/permissions.slint";
+import { SearchPage } from "pages/search.slint";
+import { ChatThemePage } from "pages/chattheme.slint";
+import { ThreadsPage } from "pages/threads.slint";
+import { PinsPage } from "pages/pins.slint";
+import { MapPage } from "pages/map.slint";
+import { DocPage } from "pages/doc.slint";
+import { AudioPage } from "pages/audio.slint";
+
+export { RoomRow, TimelineRow, MemberRow, SpaceRow, HierarchyRow, ThreadRow, UserRow, RoomSettingsModel, PowerRow, ReactionChip, EmojiItem, ReplyRef, CallParticipant, DeviceRow, Icons }
 
 export component AppWindow inherits Window {
     title: "Sigil";
@@ -19,23 +42,25 @@ export component AppWindow inherits Window {
     preferred-width: 411px;
     preferred-height: 823px;
 
-    // Engine state, written by Rust
-    in property <string> session: "restoring";  // loggedOut loginPending restoring loggedIn
+    // ---- session / engine state, written by Rust ----
+    in property <string> session: "restoring";
     in property <string> login-error;
     in property <string> sync-line;
-    in property <[RoomRow]> rooms;
-    in property <bool> rooms-loaded;
-    in property <[RoomRow]> spaces;
-    in property <string> my-initials;
-    in property <image> my-avatar;
-    in property <color> my-tint: Theme.accent;
-    in property <bool> verified;
+    in property <bool> needs-recovery;
     in property <bool> recovery-busy;
     in property <string> recovery-error;
     in-out property <bool> recovery-skipped: false;
+    in-out property <bool> recovery-open: false;
+    in property <string> my-initials;
+    in property <image> my-avatar;
+    in property <color> my-tint: Theme.accent;
+    in property <string> my-name;
+    in property <string> my-user-id;
+    in property <[RoomRow]> rooms;
+    in property <bool> rooms-loaded;
+    in property <[RoomRow]> spaces;
 
-    // Open room
-    in property <bool> in-chat: false;
+    // ---- open room ----
     in property <string> room-name;
     in property <string> room-subtitle;
     in property <bool> room-encrypted;
@@ -45,33 +70,77 @@ export component AppWindow inherits Window {
     in property <[TimelineRow]> items;
     in property <string> typing-line;
 
-    // Actions, handled by Rust
+    // ---- navigation (Panel.qml's nav) ----
+    // home chat start forward space newspace spacerooms roomsettings
+    // spacesettings members addpeople notifications security roles permissions
+    // search chattheme threads thread pins map doc audio
+    in-out property <string> nav: "home";
+    in-out property <string> settings-return: "roomsettings";
+    in-out property <string> members-return: "space";
+    in-out property <string> add-return: "chat";
+    in-out property <string> space-id;
+    in-out property <string> thread-key;
+
+    // ---- actions, handled by Rust ----
     callback sign-in(string);
     callback open-again;
     callback cancel-login;
     callback recover-submit(string);
+    callback sign-out;
     callback room-clicked(string);
     callback search-edited(string);
     callback back-to-home;
     callback send-message(string);
     callback composer-edited(string);
     callback new-chat;
+    /// A page came up and wants its data; the argument is the nav value.
+    callback nav-opened(string);
 
     public function scroll-timeline-to-end() { chat.scroll-to-end(); }
     public function clear-composer() { chat.clear-composer(); }
 
-    // The keyboard reaches this far up into the window; content above it.
+    /// Navigate forward: sets nav and tells Rust to load what the page needs.
+    public function go(page: string) {
+        root.nav = page;
+        root.nav-opened(page);
+    }
+
+    // Panel.goBackNow, pages portion. Page-local overlays (menus, sheets)
+    // consume back inside their own pages before this runs.
+    public function go-back() {
+        if (root.nav == "thread") { root.go("threads"); return; }
+        if (root.nav == "threads" || root.nav == "pins") { root.nav = "chat"; return; }
+        if (root.nav == "forward" || root.nav == "search" || root.nav == "chattheme"
+            || root.nav == "roomsettings" || root.nav == "doc" || root.nav == "audio"
+            || root.nav == "map") { root.nav = "chat"; return; }
+        if (root.nav == "addpeople") { root.nav = root.add-return; return; }
+        if (root.nav == "permissions") { root.go("roles"); return; }
+        if (root.nav == "notifications" || root.nav == "security" || root.nav == "roles") {
+            root.nav = root.settings-return;
+            return;
+        }
+        if (root.nav == "members") { root.nav = root.members-return; return; }
+        if (root.nav == "spacerooms" || root.nav == "spacesettings") { root.go("space"); return; }
+        if (root.nav == "space" || root.nav == "newspace" || root.nav == "start") {
+            root.nav = "home";
+            return;
+        }
+        if (root.nav == "chat") { root.back-to-home(); root.nav = "home"; return; }
+    }
+
     property <length> kb-overlap: root.virtual-keyboard-size.height > 0px
         ? max(0px, root.height - root.virtual-keyboard-position.y) : 0px;
 
-    // Everything lives inside the safe area. The window background paints
-    // behind the status and navigation bars, which on this palette reads as
-    // the app extending edge-to-edge rather than as a hole.
+    // Grounds, from Panel.qml: pages sit on menu.background lightened 1.35.
+    property <color> page-ground: Theme.menu-background.brighter(0.35);
+
     content := Rectangle {
         x: root.safe-area-insets.left;
         y: root.safe-area-insets.top;
         width: root.width - root.safe-area-insets.left - root.safe-area-insets.right;
-        height: root.height - root.safe-area-insets.top - root.safe-area-insets.bottom;
+        // The keyboard shrinks the content area, so every page keeps its
+        // controls reachable, not just the chat composer.
+        height: root.height - root.safe-area-insets.top - max(root.safe-area-insets.bottom, root.kb-overlap);
 
         if root.session != "loggedIn" : LoginPage {
             width: 100%; height: 100%;
@@ -83,48 +152,107 @@ export component AppWindow inherits Window {
             cancel-login => { root.cancel-login(); }
         }
 
-        if root.session == "loggedIn" && !root.verified && !root.recovery-skipped : RecoveryPage {
+        if root.session == "loggedIn" && ((root.needs-recovery && !root.recovery-skipped) || root.recovery-open) : RecoveryPage {
             width: 100%; height: 100%;
             busy: root.recovery-busy;
             error: root.recovery-error;
             submit(key) => { root.recover-submit(key); }
-            skip => { root.recovery-skipped = true; }
+            skip => { root.recovery-skipped = true; root.recovery-open = false; }
         }
 
-        if root.session == "loggedIn" && (root.verified || root.recovery-skipped) && !root.in-chat : HomePage {
-            width: 100%; height: 100%;
-            rooms: root.rooms;
-            rooms-loaded: root.rooms-loaded;
-            spaces: root.spaces;
-            my-initials: root.my-initials;
-            my-avatar: root.my-avatar;
-            my-tint: root.my-tint;
-            sync-line: root.sync-line;
-            room-clicked(id) => { root.room-clicked(id); }
-            search-edited(q) => { root.search-edited(q); }
-            new-chat => { root.new-chat(); }
+            // The chat slides over Home and stays under its satellite pages.
+        chat-holder := PageHolder {
+            active: root.session == "loggedIn" && root.nav != "home" && root.nav != "start" && root.nav != "space"
+                 && root.nav != "newspace" && root.nav != "spacerooms"
+                 && root.nav != "spacesettings" && root.nav != "newspace";
+            ground: root.page-ground;
+            chat := ChatPage {
+                width: 100%; height: 100%;
+                room-name: root.room-name;
+                room-subtitle: root.room-subtitle;
+                room-encrypted: root.room-encrypted;
+                room-initials: root.room-initials;
+                room-avatar: root.room-avatar;
+                room-tint: root.room-tint;
+                items: root.items;
+                typing-line: root.typing-line;
+                back => { root.go-back(); }
+                send(text) => { root.send-message(text); }
+                composer-edited(text) => { root.composer-edited(text); }
+            }
         }
 
-        // The chat page slides in over Home — PageHolder's job in QML. It is
-        // never destroyed, so scroll state and the composer survive the slide.
-        chat := ChatPage {
-            y: 0;
+        if root.session == "loggedIn" && (!root.needs-recovery || root.recovery-skipped) && !root.recovery-open : Rectangle {
             width: 100%; height: 100%;
-            x: root.in-chat ? 0px : content.width;
-            animate x { duration: 200ms; easing: cubic-bezier(0.33, 1, 0.68, 1); }
-            visible: root.session == "loggedIn" && self.x < content.width;
-            bottom-inset: max(root.kb-overlap - root.safe-area-insets.bottom, 0px);
-            room-name: root.room-name;
-            room-subtitle: root.room-subtitle;
-            room-encrypted: root.room-encrypted;
-            room-initials: root.room-initials;
-            room-avatar: root.room-avatar;
-            room-tint: root.room-tint;
-            items: root.items;
-            typing-line: root.typing-line;
-            back => { root.back-to-home(); }
-            send(text) => { root.send-message(text); }
-            composer-edited(text) => { root.composer-edited(text); }
+
+            HomePage {
+                width: 100%; height: 100%;
+                rooms: root.rooms;
+                rooms-loaded: root.rooms-loaded;
+                spaces: root.spaces;
+                my-initials: root.my-initials;
+                my-avatar: root.my-avatar;
+                my-tint: root.my-tint;
+                my-name: root.my-name;
+                my-user-id: root.my-user-id;
+                needs-recovery: root.needs-recovery;
+                sync-line: root.sync-line;
+                room-clicked(id) => { root.room-clicked(id); root.nav = "chat"; }
+                search-edited(q) => { root.search-edited(q); }
+                new-chat => { root.go("start"); }
+                new-space => { root.go("newspace"); }
+                space-opened(id) => { root.space-id = id; root.go("space"); }
+                open-recovery => { root.recovery-open = true; }
+                sign-out => { root.sign-out(); }
+            }
+
+            // Satellites over the chat, each in its own holder (Panel z-order).
+            search-holder := PageHolder { active: root.nav == "search"; ground: root.page-ground;
+                SearchPage { width: 100%; height: 100%; closed => { root.go-back(); } } }
+            roomsettings-holder := PageHolder { active: root.nav == "roomsettings"; ground: root.page-ground;
+                RoomSettingsPage { width: 100%; height: 100%; closed => { root.go-back(); } } }
+            chattheme-holder := PageHolder { active: root.nav == "chattheme"; ground: root.page-ground;
+                ChatThemePage { width: 100%; height: 100%; closed => { root.go-back(); } } }
+            threads-holder := PageHolder { active: root.nav == "threads" || root.nav == "thread"; ground: root.page-ground;
+                ThreadsPage { width: 100%; height: 100%; closed => { root.go-back(); } } }
+            pins-holder := PageHolder { active: root.nav == "pins"; ground: root.page-ground;
+                PinsPage { width: 100%; height: 100%; closed => { root.go-back(); } } }
+            map-holder := PageHolder { active: root.nav == "map"; ground: root.page-ground;
+                MapPage { width: 100%; height: 100%; closed => { root.go-back(); } } }
+            doc-holder := PageHolder { active: root.nav == "doc"; ground: root.page-ground;
+                DocPage { width: 100%; height: 100%; closed => { root.go-back(); } } }
+            audio-holder := PageHolder { active: root.nav == "audio"; ground: root.page-ground;
+                AudioPage { width: 100%; height: 100%; closed => { root.go-back(); } } }
+
+            // Spaces stack.
+            space-holder := PageHolder { active: root.nav == "space" || root.nav == "spacerooms" || root.nav == "spacesettings"; ground: root.page-ground;
+                SpacePage { width: 100%; height: 100%; closed => { root.go-back(); } } }
+            spacerooms-holder := PageHolder { active: root.nav == "spacerooms"; ground: root.page-ground;
+                SpaceRoomsPage { width: 100%; height: 100%; closed => { root.go-back(); } } }
+            spacesettings-holder := PageHolder { active: root.nav == "spacesettings"; ground: root.page-ground;
+                SpaceSettingsPage { width: 100%; height: 100%; closed => { root.go-back(); } } }
+            newspace-holder := PageHolder { active: root.nav == "newspace"; ground: root.page-ground;
+                NewSpacePage { width: 100%; height: 100%; closed => { root.go-back(); } } }
+
+            // Settings children, shared by rooms and spaces.
+            members-holder := PageHolder { active: root.nav == "members"; ground: root.page-ground;
+                MembersPage { width: 100%; height: 100%; closed => { root.go-back(); } } }
+            addpeople-holder := PageHolder { active: root.nav == "addpeople"; ground: root.page-ground;
+                AddPeoplePage { width: 100%; height: 100%; closed => { root.go-back(); } } }
+            notifications-holder := PageHolder { active: root.nav == "notifications"; ground: root.page-ground;
+                NotificationsPage { width: 100%; height: 100%; closed => { root.go-back(); } } }
+            security-holder := PageHolder { active: root.nav == "security"; ground: root.page-ground;
+                SecurityPage { width: 100%; height: 100%; closed => { root.go-back(); } } }
+            roles-holder := PageHolder { active: root.nav == "roles" || root.nav == "permissions"; ground: root.page-ground;
+                RolesPage { width: 100%; height: 100%; closed => { root.go-back(); } } }
+            permissions-holder := PageHolder { active: root.nav == "permissions"; ground: root.page-ground;
+                PermissionsPage { width: 100%; height: 100%; closed => { root.go-back(); } } }
+
+            // Entry flows.
+            start-holder := PageHolder { active: root.nav == "start"; ground: root.page-ground;
+                StartPage { width: 100%; height: 100%; closed => { root.go-back(); } } }
+            forward-holder := PageHolder { active: root.nav == "forward"; ground: root.page-ground;
+                ForwardPage { width: 100%; height: 100%; closed => { root.go-back(); } } }
         }
     }
 }

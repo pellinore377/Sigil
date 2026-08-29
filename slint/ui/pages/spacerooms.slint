@@ -1,0 +1,34 @@
+// SpaceRoomsPage — port of the QML page of the same name. STUB: a fork replaces
+// this file wholesale; add properties/callbacks here and list the app.slint +
+// bridge wiring you need in your WIRING file.
+
+import { Theme } from "../style.slint";
+import { Icons } from "../icons.slint";
+import { IconLabel, ActionButton, Avatar, SButton, TextWell } from "../components.slint";
+import { SettingsHeader, SettingsGroup, SettingsRow, OverflowMenu, ChoiceSheet, Spinner, MenuEntry, ChoiceEntry } from "../furniture.slint";
+import { RoomRow, TimelineRow, MemberRow, SpaceRow, HierarchyRow, ThreadRow, UserRow, RoomSettingsModel, PowerRow, ReactionChip, EmojiItem } from "../model.slint";
+
+export component SpaceRoomsPage inherits Rectangle {
+    in property <color> fg: Theme.menu-text;
+    callback closed;
+    background: transparent;
+    VerticalLayout {
+        SettingsHeader {
+            title: "SpaceRooms";
+            fg: root.fg;
+            back => { root.closed(); }
+        }
+        Rectangle {
+            vertical-stretch: 1;
+            Text {
+                text: "SpaceRooms — not ported yet";
+                color: root.fg.with-alpha(0.5);
+                font-family: Theme.font-ui;
+                font-size: Theme.body;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+                width: 100%; height: 100%;
+            }
+        }
+    }
+}

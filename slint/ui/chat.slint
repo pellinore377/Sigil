@@ -9,23 +9,7 @@ import { Theme } from "style.slint";
 import { Icons } from "icons.slint";
 import { IconLabel, ActionButton, Avatar } from "components.slint";
 
-export struct TimelineRow {
-    id: string,
-    kind: string,        // text notice emote dayDivider state media unsupported
-    body: string,
-    sender: string,      // display name, shown when show-sender
-    show-sender: bool,   // group start, not own, not a DM
-    initials: string,
-    tint: color,
-    show-avatar: bool,   // group end, not own, not a DM
-    is-own: bool,
-    group-start: bool,
-    group-end: bool,
-    stamp: string,
-    edited: bool,
-    highlighted: bool,
-    media-icon: string,  // non-empty: body is a placeholder chip for kind
-}
+import { TimelineRow, ReactionChip, ReplyRef } from "model.slint";
 
 export component ChatPage inherits Rectangle {
     in property <string> room-name;
@@ -190,8 +174,8 @@ export component ChatPage inherits Rectangle {
                                         x: 10px; y: 10px;
                                         width: bubble.width - 20px;
                                         spacing: 4px;
-                                        if item.show-sender : Text {
-                                            text: item.sender;
+                                        if item.show-header : Text {
+                                            text: item.sender-name;
                                             color: item.tint;
                                             font-family: Theme.font-ui;
                                             font-size: Theme.body-small;

@@ -189,7 +189,7 @@ fn wire_callbacks(win: &AppWindow, req: Requester) {
             win.set_items(ModelRc::new(VecModel::from(Vec::<TimelineRow>::new())));
             win.set_typing_line(typing_line(ui).into());
             set_chat_header(ui, &win);
-            win.set_in_chat(true);
+            win.set_nav("chat".into());
             ui.req.fire("room.open", json!({"roomId": ui.open_room, "initialItems": 60}));
             ui.req.fire("ui.focus", json!({"roomId": ui.open_room, "visible": true}));
             ui.req.fire("room.markRead", json!({"roomId": ui.open_room}));
@@ -206,7 +206,7 @@ fn wire_callbacks(win: &AppWindow, req: Requester) {
             ui.req.fire("room.close", json!({"roomId": ui.open_room}));
             ui.open_room.clear();
             ui.shadow.clear();
-            win.set_in_chat(false);
+            win.set_nav("home".into());
         });
     });
     win.on_send_message(|text| {
@@ -262,6 +262,10 @@ fn wire_callbacks(win: &AppWindow, req: Requester) {
             });
         });
     });
+    win.on_sign_out({
+        let req = req.clone();
+        move || req.fire("logout", json!({"wipe": true}))
+    });
     win.on_new_chat(|| tracing::info!("new chat: not built yet"));
 }
 
@@ -270,8 +274,27 @@ fn handle_event(ui: &mut UiState, v: &Value) {
     match v["event"].as_str().unwrap_or("") {
         "status" => {
             let session = v["session"].as_str().unwrap_or("restoring");
+            let was_in = win.get_session() == "loggedIn";
             win.set_session(session.into());
+            if was_in && session != "loggedIn" {
+                // Signed out from under the UI: drop everything the session owned.
+                ui.rooms_json.clear();
+                ui.shadow.clear();
+                ui.typing.clear();
+                ui.avatars.clear();
+                ui.open_room.clear();
+                win.set_rooms(ModelRc::new(VecModel::from(Vec::<RoomRow>::new())));
+                win.set_spaces(ModelRc::new(VecModel::from(Vec::<RoomRow>::new())));
+                win.set_items(ModelRc::new(VecModel::from(Vec::<TimelineRow>::new())));
+                win.set_nav("home".into());
+                win.set_rooms_loaded(false);
+                win.set_recovery_skipped(false);
+                win.set_recovery_open(false);
+                win.set_my_avatar(Default::default());
+            }
             ui.my_user = v["userId"].as_str().unwrap_or("").to_string();
+            win.set_my_user_id(ui.my_user.as_str().into());
+            win.set_my_name(v["displayName"].as_str().unwrap_or("").into());
             ui.login_url = v["login"]["url"].as_str().unwrap_or("").to_string();
             win.set_my_initials(rows::initials(v["displayName"].as_str().unwrap_or(&ui.my_user)).into());
             win.set_my_tint(rows::tint_for(&ui.my_user));
@@ -291,8 +314,18 @@ fn handle_event(ui: &mut UiState, v: &Value) {
         }
         "login.finished" => win.set_login_error(SharedString::new()),
         "recovery.status" => {
-            win.set_verified(v["verified"].as_bool().unwrap_or(false));
+            tracing::info!("recovery.status: {v}");
+            // Service.qml:59 — recovery state gates the page; `verified` only
+            // covers the disabled case. OIDC logins come up verified with
+            // secret storage still locked, so verified alone hides the page.
+            let verified = v["verified"].as_bool().unwrap_or(false);
+            let recovery = v["recovery"].as_str().unwrap_or("unknown");
+            let needs = recovery == "incomplete" || (recovery == "disabled" && !verified);
+            win.set_needs_recovery(needs);
             win.set_recovery_busy(false);
+            if !needs {
+                win.set_recovery_open(false);
+            }
         }
         "rooms.list" => {
             win.set_rooms_loaded(v["loaded"].as_bool().unwrap_or(true));
@@ -448,6 +481,11 @@ pub fn rebuild_rooms(ui: &mut UiState, win: &AppWindow) {
         let unread = room["unread"].as_i64().unwrap_or(0).max(room["unreadMessages"].as_i64().unwrap_or(0)) > 0;
         let row = RoomRow {
             id: id.clone().into(),
+            is_dm,
+            is_space: room["isSpace"].as_bool().unwrap_or(false),
+            topic: room["topic"].as_str().unwrap_or("").into(),
+            member_count: room["joinedMembers"].as_i64().unwrap_or(0) as i32,
+            is_low_priority: room["isLowPriority"].as_bool().unwrap_or(false),
             name: name.clone().into(),
             initials: rows::initials(&name).into(),
             avatar: avatar(ui, room["avatarPath"].as_str().unwrap_or("")).unwrap_or_default(),
@@ -463,6 +501,7 @@ pub fn rebuild_rooms(ui: &mut UiState, win: &AppWindow) {
             has_call: room["hasActiveCall"].as_bool().unwrap_or(false),
             is_invite: room["isInvite"].as_bool().unwrap_or(false),
             is_typing: preview.typing,
+            ..Default::default()
         };
         if room["isSpace"].as_bool().unwrap_or(false) {
             spaces.push(row);
@@ -535,10 +574,12 @@ pub fn rebuild_timeline(ui: &mut UiState, win: &AppWindow) {
         let bubble = kind != "dayDivider" && kind != "state";
         rows_out.push(TimelineRow {
             id: item["id"].as_str().unwrap_or("").into(),
+            event_id: item["eventId"].as_str().unwrap_or("").into(),
             kind: kind.into(),
             body: body.into(),
-            sender: sender_name.clone().into(),
-            show_sender: bubble && group_start && !is_own && !is_dm && !sender_name.is_empty(),
+            sender: sender.clone().into(),
+            sender_name: sender_name.clone().into(),
+            show_header: bubble && group_start && !is_own && !is_dm && !sender_name.is_empty(),
             initials: rows::initials(&sender_name).into(),
             tint: rows::tint_for(&sender),
             show_avatar: bubble && group_end && !is_own && !is_dm,
@@ -549,6 +590,7 @@ pub fn rebuild_timeline(ui: &mut UiState, win: &AppWindow) {
             edited: item["isEdited"].as_bool().unwrap_or(false),
             highlighted: item["isHighlighted"].as_bool().unwrap_or(false),
             media_icon,
+            ..Default::default()
         });
     }
     win.set_items(ModelRc::new(VecModel::from(rows_out)));
@@ -626,7 +668,7 @@ fn start_demo(win: &AppWindow, rt: &tokio::runtime::Runtime, icons: IconSet) -> 
             if chat {
                 if let Some(win) = ui.win.upgrade() {
                     set_chat_header(ui, &win);
-                    win.set_in_chat(true);
+                    win.set_nav("chat".into());
                 }
             }
         });
