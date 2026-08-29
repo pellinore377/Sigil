@@ -4,7 +4,7 @@
 // /usr/share/omarchy/shell/plugins/emojis/emojis.json — see WIRING-chat.md);
 // a flat `for` over ~1800 glyphs would defeat ListView virtualisation.
 
-import { ListView } from "std-widgets.slint";
+import { TouchList } from "furniture.slint";
 import { Theme } from "style.slint";
 import { Icons } from "icons.slint";
 import { IconLabel } from "components.slint";
@@ -63,13 +63,13 @@ export component EmojiPicker inherits Rectangle {
             }
         }
 
-        grid := ListView {
+        grid := TouchList {
             vertical-stretch: 1;
             for row in root.rows : erow := Rectangle {
                 height: 44px;
                 HorizontalLayout {
                     for em in row : cell := Rectangle {
-                        width: erow.width / 8;
+                        width: grid.width / 8;
                         border-radius: 8px;
                         background: cell-t.pressed || cell-t.has-hover
                             ? root.accent.with-alpha(0.3) : transparent;

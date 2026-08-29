@@ -1,7 +1,7 @@
 // StartPage — start chat: search people, quick actions (new room / new space /
 // join by address), suggestions from existing DMs (StartChatPage.qml).
 
-import { ListView } from "std-widgets.slint";
+import { TouchList } from "../furniture.slint";
 import { Theme } from "../style.slint";
 import { Icons } from "../icons.slint";
 import { IconLabel, ActionButton, Avatar, SButton } from "../components.slint";
@@ -235,7 +235,7 @@ export component StartPage inherits Rectangle {
         }
         Rectangle { height: 4px; }
 
-        people-list := ListView {
+        people-list := TouchList {
             vertical-stretch: 1;
             for person in root.people : prow := Rectangle {
                 height: 56px;

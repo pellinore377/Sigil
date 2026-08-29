@@ -3,7 +3,7 @@
 // narrows to that role, which is what makes "Admins 1" on the roles page a
 // link — the same list, filtered (by the bridge, which owns the model).
 
-import { ListView } from "std-widgets.slint";
+import { TouchList } from "../furniture.slint";
 import { Theme } from "../style.slint";
 import { Icons } from "../icons.slint";
 import { IconLabel, ActionButton, Avatar } from "../components.slint";
@@ -88,7 +88,7 @@ export component MembersPage inherits Rectangle {
                 width: 100%; height: 100%;
             }
 
-            list := ListView {
+            list := TouchList {
                 y: 6px; height: ground.height - 6px;
                 width: 100%;
                 visible: root.members.length > 0;
@@ -111,6 +111,7 @@ export component MembersPage inherits Rectangle {
                                 source: member.avatar;
                                 initials: member.initials;
                                 tint: member.tint;
+                        status: member.presence;
                             }
                         }
                         VerticalLayout {

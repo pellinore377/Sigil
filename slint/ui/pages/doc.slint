@@ -2,10 +2,10 @@
 // previews: a sheet grid (spreadsheets), rendered Markdown-ish blocks, PDF
 // pages as images, and paragraph blocks for everything else.
 
+import { TouchList } from "../furniture.slint";
 import { Theme } from "../style.slint";
 import { Icons } from "../icons.slint";
 import { IconLabel, ActionButton } from "../components.slint";
-import { ListView } from "std-widgets.slint";
 
 export struct DocBlock { t: string, text: string, title: string, level: int, bullet: bool }
 export struct SheetRow { cells: [string] }
@@ -172,7 +172,7 @@ export component DocPage inherits Rectangle {
             }
 
             // PDF pages, requested as they scroll into view.
-            if root.status == "" && root.pdf-pages : page-list := ListView {
+            if root.status == "" && root.pdf-pages : page-list := TouchList {
                 width: 100%; height: 100%;
                 for pg[i] in root.pages : page-cell := Rectangle {
                     height: body.width * root.page-aspect + 10px;
@@ -202,7 +202,7 @@ export component DocPage inherits Rectangle {
 
             // Blocks: markdown (engine-rendered to blocks Rust-side), text,
             // slides, PDFs without a rasteriser.
-            if root.status == "" && !root.pdf-pages && root.kind != "sheet" && root.kind != "" : block-list := ListView {
+            if root.status == "" && !root.pdf-pages && root.kind != "sheet" && root.kind != "" : block-list := TouchList {
                 width: 100%; height: 100%;
                 for blk in root.blocks : blk-cell := Rectangle {
                     height: blk.t == "section" ? blk-sec.preferred-height + 18px

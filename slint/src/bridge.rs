@@ -646,6 +646,14 @@ pub fn room_row_of(ui: &mut UiState, room: &Value) -> RoomRow {
         id.clone()
     };
     let typing = ui.typing.get(&id).cloned().unwrap_or_default();
+    // A room has no presence; only the person on the other end of a DM does.
+    let presence = if is_dm {
+        let p = &ui.presence_by_user[&tint_key];
+        if p["busy"].as_bool().unwrap_or(false) { "busy".to_string() }
+        else { p["state"].as_str().unwrap_or("").to_string() }
+    } else {
+        String::new()
+    };
     let preview = rows::preview_for(room, &typing, &ui.icons);
     let (badge, badge_urgent) = rows::badge_for(room);
     let unread = room["unread"].as_i64().unwrap_or(0).max(room["unreadMessages"].as_i64().unwrap_or(0)) > 0;
@@ -671,6 +679,7 @@ pub fn room_row_of(ui: &mut UiState, room: &Value) -> RoomRow {
         has_call: room["hasActiveCall"].as_bool().unwrap_or(false),
         is_invite: room["isInvite"].as_bool().unwrap_or(false),
         is_typing: preview.typing,
+        presence: presence.into(),
     }
 }
 

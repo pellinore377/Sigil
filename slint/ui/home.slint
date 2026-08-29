@@ -3,7 +3,7 @@
 // sorts rooms (pinned, highlights, unread, recency), and re-sorting in the view
 // is how the QML side ended up owning a copy of that rule.
 
-import { ListView } from "std-widgets.slint";
+import { TouchList } from "furniture.slint";
 import { Theme } from "style.slint";
 import { Icons } from "icons.slint";
 import { IconLabel, ActionButton, Avatar } from "components.slint";
@@ -190,10 +190,10 @@ export component HomePage inherits Rectangle {
         }
 
         // Room list
-        list := ListView {
+        list := TouchList {
             vertical-stretch: 1;
             for room in (root.tab == 0 ? root.rooms : root.spaces) : rrow := Rectangle {
-                height: 72px;
+                height: 64px;
                 Rectangle {
                     x: 8px; width: rrow.width - 16px;
                     y: 4px; height: rrow.height - 8px;
@@ -205,12 +205,13 @@ export component HomePage inherits Rectangle {
                     padding-left: 16px; padding-right: 16px;
                     spacing: 12px;
                     Rectangle {
-                        width: 48px;
+                        width: 44px;
                         Avatar {
-                            size: 48px;
+                            size: 44px;
                             source: room.avatar;
                             initials: room.initials;
                             tint: room.tint;
+                            status: room.presence;
                         }
                     }
                     // name + flags | preview

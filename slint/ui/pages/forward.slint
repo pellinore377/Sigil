@@ -2,7 +2,7 @@
 // "forward" sends straight away (bridge holds the payload); "attach" hands
 // the chosen room back to stage files instead (ForwardPage.qml).
 
-import { ListView } from "std-widgets.slint";
+import { TouchList } from "../furniture.slint";
 import { Theme } from "../style.slint";
 import { Icons } from "../icons.slint";
 import { IconLabel, ActionButton, Avatar } from "../components.slint";
@@ -95,7 +95,7 @@ export component ForwardPage inherits Rectangle {
             }
         }
 
-        chats-list := ListView {
+        chats-list := TouchList {
             vertical-stretch: 1;
             for room in root.chats : frow := Rectangle {
                 height: 56px;

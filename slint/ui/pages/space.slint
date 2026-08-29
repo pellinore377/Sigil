@@ -2,11 +2,10 @@
 // `space.hierarchy`, not the room list: a space's children include rooms this
 // account has not joined, which have no rooms entry at all (SpacePage.qml).
 
-import { ListView } from "std-widgets.slint";
 import { Theme } from "../style.slint";
 import { Icons } from "../icons.slint";
 import { IconLabel, ActionButton, Avatar } from "../components.slint";
-import { OverflowMenu, MenuEntry } from "../furniture.slint";
+import { OverflowMenu, MenuEntry, TouchList } from "../furniture.slint";
 import { HierarchyRow } from "../model.slint";
 
 export component SpacePage inherits Rectangle {
@@ -205,7 +204,7 @@ export component SpacePage inherits Rectangle {
                 }
             }
 
-            if root.children.length > 0 : ListView {
+            if root.children.length > 0 : TouchList {
                 y: 6px;
                 width: 100%; height: rooms-ground.height - 6px;
                 for child in root.children : crow := Rectangle {

@@ -7,11 +7,10 @@
 // theme store; Enter always newlines on a multi-line TextInput, so sending is
 // the send button (the phone convention anyway); no frosted-glass sheet scrim.
 
-import { ListView } from "std-widgets.slint";
 import { Theme } from "style.slint";
 import { Icons } from "icons.slint";
 import { IconLabel, ActionButton, Avatar, SButton } from "components.slint";
-import { Spinner } from "furniture.slint";
+import { Spinner, TouchList } from "furniture.slint";
 import { OverflowMenu, MenuEntry } from "furniture.slint";
 import { TimelineRow, ReactionChip, ReplyRef, EmojiItem } from "model.slint";
 import { Bubble } from "bubble.slint";
@@ -78,7 +77,7 @@ export component ChatPage inherits Rectangle {
     callback mark-read;
 
     public function scroll-to-end() {
-        list.viewport-y = min(0px, list.visible-height - list.viewport-height);
+        list.viewport-y = min(0px, list.height - list.viewport-height);
     }
     public function clear-composer() {
         composer-input.text = "";
@@ -98,11 +97,11 @@ export component ChatPage inherits Rectangle {
     property <bool> quote-armed: root.reply-to != "" || root.edit-of != "";
     // ChatPage.qml convoC: menu.background darkened 1.35, 18% accent.
     property <color> convo-c: Theme.menu-background.darker(0.26).mix(root.accent, 0.82);
-    out property <length> from-end: max(0px, (list.viewport-height - list.visible-height) + list.viewport-y);
+    out property <length> from-end: max(0px, (list.viewport-height - list.height) + list.viewport-y);
     /// Put the view back at the same distance from the bottom — how scroll
     /// position survives the bridge rebuilding the model (prepends included).
     public function restore-from-end(d: length) {
-        list.viewport-y = min(0px, (list.visible-height - list.viewport-height) + d);
+        list.viewport-y = min(0px, (list.height - list.viewport-height) + d);
     }
 
     background: Theme.menu-background;
@@ -230,13 +229,13 @@ export component ChatPage inherits Rectangle {
                     }
                 }
 
-                list := ListView {
+                list := TouchList {
                     vertical-stretch: 1;
                     // Fetch older history a screen and a half early (maybePaginate).
                     changed viewport-y => {
-                        if (self.viewport-y > -1.5 * self.visible-height
+                        if (self.viewport-y > -1.5 * self.height
                             && root.pagination-state == "idle"
-                            && self.viewport-height > self.visible-height) {
+                            && self.viewport-height > self.height) {
                             root.paginate();
                         }
                         if (root.from-end < 4px) { root.mark-read(); }

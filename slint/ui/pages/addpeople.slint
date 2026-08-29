@@ -2,7 +2,7 @@
 // (start-chat style user search). The homeserver's directory only knows local
 // users and remote users who share a room here, so empty results are normal.
 
-import { ListView } from "std-widgets.slint";
+import { TouchList } from "../furniture.slint";
 import { Theme } from "../style.slint";
 import { Icons } from "../icons.slint";
 import { IconLabel, ActionButton, Avatar } from "../components.slint";
@@ -117,7 +117,7 @@ export component AddPeoplePage inherits Rectangle {
             }
         }
 
-        people := ListView {
+        people := TouchList {
             vertical-stretch: 1;
             for user in root.results : prow := Rectangle {
                 height: 56px;

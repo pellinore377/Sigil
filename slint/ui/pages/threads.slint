@@ -4,7 +4,7 @@
 // (ThreadsPage.qml). Chat-theme tones arrive pre-mixed via `accent`;
 // the full ChatPage derivation is noted in WIRING-spaces.md.
 
-import { ListView } from "std-widgets.slint";
+import { TouchList } from "../furniture.slint";
 import { Theme } from "../style.slint";
 import { Icons } from "../icons.slint";
 import { IconLabel, ActionButton, Avatar } from "../components.slint";
@@ -102,7 +102,7 @@ export component ThreadsPage inherits Rectangle {
                 }
             }
 
-            if root.threads.length > 0 : ListView {
+            if root.threads.length > 0 : TouchList {
                 y: 6px;
                 width: 100%; height: ground.height - 6px;
                 for thread in root.threads : trow := Rectangle {

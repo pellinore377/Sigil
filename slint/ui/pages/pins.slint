@@ -3,7 +3,7 @@
 // here (PinsPage.qml). Rows arrive as TimelineRow with the pins stamp format
 // ("Today · 1:58 PM") in `stamp` and the kind chip words in `media-filename`.
 
-import { ListView } from "std-widgets.slint";
+import { TouchList } from "../furniture.slint";
 import { Theme } from "../style.slint";
 import { Icons } from "../icons.slint";
 import { IconLabel, ActionButton, Avatar } from "../components.slint";
@@ -107,7 +107,7 @@ export component PinsPage inherits Rectangle {
                 }
             }
 
-            if root.items.length > 0 : ListView {
+            if root.items.length > 0 : TouchList {
                 y: 10px;
                 width: 100%; height: ground.height - 10px;
                 for item in root.items : prow := Rectangle {

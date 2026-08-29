@@ -348,3 +348,19 @@ export component PageHolder inherits Rectangle {
         @children
     }
 }
+
+
+// The touch list. std-widgets' ListView rides ScrollView, which pans with a
+// wheel and a scrollbar but NOT with a finger (proven on device — a bare
+// Flickable pans, a bare ListView does not). Every scrolling surface uses
+// this instead. It trades ListView's lazy instantiation away; the QML side
+// already ran with delegate reuse off, so the parity cost is bounded.
+export component TouchList inherits Flickable {
+    // Vertical-only: content width is the visible width, which also stops
+    // row widths feeding back into the viewport (binding loop).
+    viewport-width: self.width;
+    VerticalLayout {
+        alignment: start;
+        @children
+    }
+}
