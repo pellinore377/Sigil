@@ -86,6 +86,9 @@ pub fn with_ui(f: impl FnOnce(&mut UiState)) {
 /// Boot the engine and wire the event stream into the UI. Call once, on the
 /// UI thread, after the window exists.
 pub fn start(win: &AppWindow, rt: &tokio::runtime::Runtime, icons: IconSet) -> Requester {
+    if std::env::var_os("SIGIL_SLINT_DEMO").is_some() {
+        return start_demo(win, rt, icons);
+    }
     sigil_engine::init_crypto();
 
     let engine = Engine::new(Hub::new());
@@ -238,6 +241,27 @@ fn wire_callbacks(win: &AppWindow, req: Requester) {
             rebuild_rooms(ui, &win);
         });
     });
+    win.on_recover_submit(|key| {
+        with_ui(|ui| {
+            let Some(win) = ui.win.upgrade() else { return };
+            win.set_recovery_busy(true);
+            win.set_recovery_error(SharedString::new());
+            ui.req.call("recovery.recover", json!({"key": key.as_str()}), |reply| {
+                if let Reply::Err(e) = reply {
+                    let msg = e.message.clone();
+                    let _ = slint::invoke_from_event_loop(move || {
+                        with_ui(|ui| {
+                            if let Some(win) = ui.win.upgrade() {
+                                win.set_recovery_busy(false);
+                                win.set_recovery_error(msg.as_str().into());
+                            }
+                        });
+                    });
+                }
+                // Success arrives as a recovery.status broadcast.
+            });
+        });
+    });
     win.on_new_chat(|| tracing::info!("new chat: not built yet"));
 }
 
@@ -266,7 +290,12 @@ fn handle_event(ui: &mut UiState, v: &Value) {
             win.set_login_error(v["error"]["message"].as_str().unwrap_or("login failed").into());
         }
         "login.finished" => win.set_login_error(SharedString::new()),
+        "recovery.status" => {
+            win.set_verified(v["verified"].as_bool().unwrap_or(false));
+            win.set_recovery_busy(false);
+        }
         "rooms.list" => {
+            win.set_rooms_loaded(v["loaded"].as_bool().unwrap_or(true));
             ui.rooms_json = v["rooms"].as_array().cloned().unwrap_or_default();
             rebuild_rooms(ui, &win);
         }
@@ -523,4 +552,84 @@ pub fn rebuild_timeline(ui: &mut UiState, win: &AppWindow) {
         });
     }
     win.set_items(ModelRc::new(VecModel::from(rows_out)));
+}
+
+/// UI-iteration harness: the same UiState, models and event handlers as the
+/// real bridge, fed canned events instead of an engine. What this renders is
+/// what the pipeline renders; only the source of JSON differs.
+fn start_demo(win: &AppWindow, rt: &tokio::runtime::Runtime, icons: IconSet) -> Requester {
+    let engine = Engine::new(Hub::new());
+    let req = Requester { handle: rt.handle().clone(), engine };
+    let state = Rc::new(RefCell::new(UiState {
+        win: win.as_weak(),
+        req: req.clone(),
+        icons,
+        rooms_json: Vec::new(),
+        search: String::new(),
+        open_room: String::new(),
+        shadow: Vec::new(),
+        typing: HashMap::new(),
+        my_user: "@pell:demo.host".into(),
+        login_url: String::new(),
+        avatars: HashMap::new(),
+        typing_sent: false,
+    }));
+    UI.with(|ui| *ui.borrow_mut() = Some(state));
+
+    let now = chrono::Utc::now().timestamp_millis();
+    let hour = 3_600_000_i64;
+    let day = 24 * hour;
+    let room = |id: &str, name: &str, dm: bool, enc: bool, unread: i64, hl: i64, fav: bool, ts: i64, stamp: &str, kind: &str, sender: &str, body: &str| {
+        json!({"id": id, "name": name, "isDm": dm, "dmUserId": if dm { format!("@{}:demo.host", id.trim_start_matches('!')) } else { String::new() },
+               "isEncrypted": enc, "isFavourite": fav, "unread": unread, "highlights": hl, "joinedMembers": 7,
+               "lastActivityTs": ts, "stamp": stamp,
+               "lastMessage": {"kind": kind, "senderName": sender, "body": body}})
+    };
+    let rooms = json!({"event": "rooms.list", "loaded": true, "rooms": [
+        room("!ladyofthelake", "LadyoftheLake", true, true, 2, 0, true, now - 600_000, "14:02", "text", "LadyoftheLake", "the sword is yours, but there is a condition"),
+        room("!johnwick", "John Wick", true, true, 0, 1, true, now - 2 * hour, "12:41", "image", "John Wick", "Photo"),
+        room("!ideas", "Ideas", false, true, 0, 0, true, now - 5 * hour, "09:15", "text", "morgana", "what if the bar icon pulsed on mention"),
+        room("!uptime", "Uptime Alerts", false, false, 12, 0, false, now - day, "Yesterday", "text", "pellinore", "hi"),
+        room("!sigiltest", "Sigil Test", false, true, 0, 0, false, now - day - 3 * hour, "Yesterday", "voice", "pellinore", "Voice message"),
+        room("!godfrey", "Godfrey of Bouillon", true, true, 0, 0, false, now - 3 * day, "Mon", "text", "Godfrey", "deus vult, obviously"),
+        room("!brains", "Element X Brain Trust", false, true, 0, 0, false, now - 6 * day, "Fri", "text", "kit", "fn main() but in a chat message"),
+    ]});
+    let item = |id: &str, kind: &str, own: bool, sender: &str, name: &str, body: &str, ts: i64, edited: bool| {
+        json!({"id": id, "kind": kind, "isOwn": own, "sender": sender, "senderName": name, "body": body, "ts": ts, "isEdited": edited})
+    };
+    let timeline = json!({"event": "timeline.reset", "roomId": "!ladyofthelake", "items": [
+        json!({"id": "d0", "kind": "dayDivider", "ts": now - day}),
+        item("m1", "text", false, "@lady:demo.host", "LadyoftheLake", "so I have been thinking about the lake", now - day + 2 * hour, false),
+        item("m2", "text", false, "@lady:demo.host", "LadyoftheLake", "it is less a body of water and more a jurisdiction", now - day + 2 * hour + 60_000, false),
+        item("m3", "text", true, "@pell:demo.host", "pellinore", "strange women lying in ponds distributing swords is no basis for a system of government", now - day + 2 * hour + 150_000, true),
+        json!({"id": "s1", "kind": "membership", "stateText": "Godfrey of Bouillon joined the room", "ts": now - day + 3 * hour}),
+        json!({"id": "d1", "kind": "dayDivider", "ts": now}),
+        item("m4", "text", false, "@lady:demo.host", "LadyoftheLake", "the sword is yours, but there is a condition", now - 600_000, false),
+        item("m5", "text", true, "@pell:demo.host", "pellinore", "there is always a condition", now - 540_000, false),
+    ], "len": 8});
+    let status = json!({"event": "status", "session": "loggedIn", "userId": "@pell:demo.host",
+                        "displayName": "Pellinore", "avatarPath": "", "sync": "", "syncError": "", "login": {"url": ""}});
+    let recovery = json!({"event": "recovery.status",
+        "verified": std::env::var_os("SIGIL_SLINT_DEMO_RECOVERY").is_none()});
+
+    let events = vec![status, recovery, rooms, timeline];
+    let _ = slint::invoke_from_event_loop(move || {
+        with_ui(|ui| {
+            // Open the room before its reset arrives, as a real open would.
+            let chat = std::env::var_os("SIGIL_SLINT_DEMO_CHAT").is_some();
+            if chat {
+                ui.open_room = "!ladyofthelake".into();
+            }
+            for ev in &events {
+                handle_event(ui, ev);
+            }
+            if chat {
+                if let Some(win) = ui.win.upgrade() {
+                    set_chat_header(ui, &win);
+                    win.set_in_chat(true);
+                }
+            }
+        });
+    });
+    req
 }

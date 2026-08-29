@@ -29,7 +29,7 @@ use crate::paths;
 const DONE_PAGE: &str = r#"<!doctype html><html><head><meta charset="utf-8"><title>Omarchy Matrix</title>
 <style>body{margin:0;height:100vh;display:flex;align-items:center;justify-content:center;font-family:sans-serif;background:#1a1a1a;color:#dcdcdc}
 div{padding:2rem 3rem;border:1px solid #444;border-radius:14px;background:rgba(75,75,75,.55)}</style></head>
-<body><div><h2>Signed in</h2><p>You can close this tab and return to Omarchy.</p></div></body></html>"#;
+<body><div><h2>Signed in</h2><p>You can close this tab and return to Sigil.</p></div></body></html>"#;
 
 pub async fn build_client(homeserver: &str) -> anyhow::Result<Client> {
     let state = paths::state_dir();

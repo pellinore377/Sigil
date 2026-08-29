@@ -39,6 +39,8 @@ export component ChatPage inherits Rectangle {
     callback back;
     callback send(string);
     callback composer-edited(string);
+    /// Extra bottom padding while the virtual keyboard is up, from the window.
+    in property <length> bottom-inset: 0px;
 
     background: Theme.menu-background;
 
@@ -50,15 +52,16 @@ export component ChatPage inherits Rectangle {
     VerticalLayout {
         // Header: 52 one line, 56 two (ui-conventions: counts go in the subtitle)
         header := Rectangle {
-            height: root.room-subtitle == "" ? 52px : 56px;
+            height: root.room-subtitle == "" ? 56px : 60px;
             background: Theme.menu-background;
             HorizontalLayout {
                 padding-left: 6px; padding-right: 10px;
                 spacing: 8px;
                 Rectangle {
-                    width: 36px;
+                    width: 44px;
                     back-btn := ActionButton {
                         y: (header.height - self.height) / 2;
+                        width: 44px; height: 44px;
                         icon: Icons.back;
                         clicked => { root.back(); }
                     }
@@ -108,7 +111,8 @@ export component ChatPage inherits Rectangle {
         // Conversation ground: top corners cut away, revealing the header tone
         convo := Rectangle {
             vertical-stretch: 1;
-            background: Theme.popup-background;
+            // ChatPage.qml convoC: menu.background darkened 1.35, 18% accent.
+            background: Theme.menu-background.darker(0.26).mix(Theme.accent, 0.82);
             border-top-left-radius: 24px;
             border-top-right-radius: 24px;
             clip: true;
@@ -250,10 +254,10 @@ export component ChatPage inherits Rectangle {
 
                 // Composer
                 composer := Rectangle {
-                    height: 56px;
+                    height: 62px + root.bottom-inset;
                     HorizontalLayout {
                         padding-left: 12px; padding-right: 12px;
-                        padding-top: 8px; padding-bottom: 10px;
+                        padding-top: 8px; padding-bottom: 12px + root.bottom-inset;
                         spacing: 8px;
                         well := Rectangle {
                             horizontal-stretch: 1;
@@ -290,7 +294,7 @@ export component ChatPage inherits Rectangle {
                             }
                         }
                         send-btn := Rectangle {
-                            width: 38px; height: 38px;
+                            width: 42px; height: 42px;
                             border-radius: self.height / 2;
                             background: composer-input.text != ""
                                 ? Theme.accent.with-alpha(send-touch.pressed ? 1.0 : 0.9)

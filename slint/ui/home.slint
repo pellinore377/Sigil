@@ -34,6 +34,7 @@ export component HomePage inherits Rectangle {
     in property <image> my-avatar;
     in property <color> my-tint;
     in property <string> sync-line;   // non-empty: engine is catching up / erroring
+    in property <bool> rooms-loaded;  // first rooms.list has arrived
     in-out property <int> tab: 0;     // 0 chats, 1 spaces
     callback room-clicked(string);
     callback search-edited(string);
@@ -44,7 +45,7 @@ export component HomePage inherits Rectangle {
     VerticalLayout {
         // Header
         header := Rectangle {
-            height: 54px;
+            height: 56px;
             HorizontalLayout {
                 padding-left: 18px;
                 padding-right: 10px;
@@ -71,10 +72,10 @@ export component HomePage inherits Rectangle {
 
         // Search pill
         Rectangle {
-            height: 46px;
+            height: 52px;
             HorizontalLayout {
                 padding-left: 14px; padding-right: 14px;
-                padding-top: 2px; padding-bottom: 8px;
+                padding-top: 2px; padding-bottom: 10px;
                 pill := Rectangle {
                     border-radius: self.height / 2;
                     background: Theme.menu-text.with-alpha(0.07);
@@ -116,10 +117,10 @@ export component HomePage inherits Rectangle {
 
         // Segmented tabs
         Rectangle {
-            height: 44px;
+            height: 48px;
             seg := Rectangle {
                 width: root.width - 28px;
-                height: 34px;
+                height: 38px;
                 x: 14px;
                 y: 5px;
                 border-radius: self.height / 2;
@@ -179,24 +180,41 @@ export component HomePage inherits Rectangle {
             }
         }
 
+        // Empty states name their emptiness: "no rooms" is a fact about the
+        // account, "looking" is a fact about us (ui-conventions.md).
+        if (root.tab == 0 ? root.rooms.length : root.spaces.length) == 0 : Rectangle {
+            vertical-stretch: 1;
+            Text {
+                text: !root.rooms-loaded ? "Looking for your rooms…"
+                    : root.tab == 0 ? "No chats yet" : "No spaces yet";
+                color: Theme.menu-text.with-alpha(0.5);
+                font-family: Theme.font-ui;
+                font-size: Theme.body;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+                width: 100%; height: 100%;
+            }
+        }
+
         // Room list
         list := ListView {
             vertical-stretch: 1;
             for room in (root.tab == 0 ? root.rooms : root.spaces) : rrow := Rectangle {
-                height: 64px;
+                height: 72px;
                 Rectangle {
                     x: 8px; width: rrow.width - 16px;
                     y: 4px; height: rrow.height - 8px;
                     border-radius: 14px;
-                    background: row-touch.has-hover ? Theme.menu-text.with-alpha(0.05) : transparent;
+                    background: row-touch.pressed ? Theme.menu-text.with-alpha(0.08)
+                             : row-touch.has-hover ? Theme.menu-text.with-alpha(0.05) : transparent;
                 }
                 HorizontalLayout {
                     padding-left: 16px; padding-right: 16px;
                     spacing: 12px;
                     Rectangle {
-                        width: 44px;
+                        width: 48px;
                         Avatar {
-                            size: 44px;
+                            size: 48px;
                             source: room.avatar;
                             initials: room.initials;
                             tint: room.tint;
@@ -231,7 +249,7 @@ export component HomePage inherits Rectangle {
                                 vertical-alignment: center;
                             }
                         }
-                        HorizontalLayout {
+                        if room.preview != "" || room.preview-icon != "" : HorizontalLayout {
                             alignment: start;
                             spacing: 4px;
                             if room.preview-icon != "" : IconLabel {
@@ -257,7 +275,7 @@ export component HomePage inherits Rectangle {
                     VerticalLayout {
                         alignment: center;
                         spacing: 4px;
-                        Text {
+                        if room.stamp != "" : Text {
                             text: room.stamp;
                             color: room.unread ? Theme.accent : Theme.menu-text.with-alpha(0.45);
                             font-family: Theme.font-ui;
@@ -268,8 +286,8 @@ export component HomePage inherits Rectangle {
                             alignment: end;
                             spacing: 5px;
                             if room.badge != "" : Rectangle {
-                                width: max(19px, badge-text.preferred-width + 10px);
-                                height: 19px;
+                                width: max(21px, badge-text.preferred-width + 11px);
+                                height: 21px;
                                 border-radius: self.height / 2;
                                 background: room.badge-urgent ? Theme.urgent : Theme.accent.with-alpha(0.9);
                                 badge-text := Text {
@@ -297,10 +315,10 @@ export component HomePage inherits Rectangle {
 
     // New-chat FAB
     fab := Rectangle {
-        x: root.width - self.width - 14px;
-        y: root.height - self.height - 14px;
-        width: 48px; height: 48px;
-        border-radius: 16px;
+        x: root.width - self.width - 16px;
+        y: root.height - self.height - 16px;
+        width: 56px; height: 56px;
+        border-radius: 18px;
         background: Theme.accent.with-alpha(fab-touch.pressed ? 1.0 : 0.9);
         IconLabel {
             text: Icons.plus;

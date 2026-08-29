@@ -1,10 +1,12 @@
 // The window: one page visible at a time, chosen by the session state the
-// engine broadcasts and the navigation the user has done. Pages own their
-// look; this file owns only which page is up.
+// engine broadcasts and the navigation the user has done. This file owns the
+// mobile chrome — safe-area insets, the virtual-keyboard inset, and the page
+// slide — so pages can assume a clean rectangle.
 
 import { Theme } from "style.slint";
 import { Icons } from "icons.slint";
 import { LoginPage } from "login.slint";
+import { RecoveryPage } from "recovery.slint";
 import { HomePage, RoomRow } from "home.slint";
 import { ChatPage, TimelineRow } from "chat.slint";
 
@@ -22,10 +24,15 @@ export component AppWindow inherits Window {
     in property <string> login-error;
     in property <string> sync-line;
     in property <[RoomRow]> rooms;
+    in property <bool> rooms-loaded;
     in property <[RoomRow]> spaces;
     in property <string> my-initials;
     in property <image> my-avatar;
     in property <color> my-tint: Theme.accent;
+    in property <bool> verified;
+    in property <bool> recovery-busy;
+    in property <string> recovery-error;
+    in-out property <bool> recovery-skipped: false;
 
     // Open room
     in property <bool> in-chat: false;
@@ -42,6 +49,7 @@ export component AppWindow inherits Window {
     callback sign-in(string);
     callback open-again;
     callback cancel-login;
+    callback recover-submit(string);
     callback room-clicked(string);
     callback search-edited(string);
     callback back-to-home;
@@ -52,42 +60,71 @@ export component AppWindow inherits Window {
     public function scroll-timeline-to-end() { chat.scroll-to-end(); }
     public function clear-composer() { chat.clear-composer(); }
 
-    if root.session != "loggedIn" : LoginPage {
-        width: 100%; height: 100%;
-        pending: root.session == "loginPending";
-        restoring: root.session == "restoring";
-        error: root.login-error;
-        sign-in(hs) => { root.sign-in(hs); }
-        open-again => { root.open-again(); }
-        cancel-login => { root.cancel-login(); }
-    }
+    // The keyboard reaches this far up into the window; content above it.
+    property <length> kb-overlap: root.virtual-keyboard-size.height > 0px
+        ? max(0px, root.height - root.virtual-keyboard-position.y) : 0px;
 
-    if root.session == "loggedIn" && !root.in-chat : HomePage {
-        width: 100%; height: 100%;
-        rooms: root.rooms;
-        spaces: root.spaces;
-        my-initials: root.my-initials;
-        my-avatar: root.my-avatar;
-        my-tint: root.my-tint;
-        sync-line: root.sync-line;
-        room-clicked(id) => { root.room-clicked(id); }
-        search-edited(q) => { root.search-edited(q); }
-        new-chat => { root.new-chat(); }
-    }
+    // Everything lives inside the safe area. The window background paints
+    // behind the status and navigation bars, which on this palette reads as
+    // the app extending edge-to-edge rather than as a hole.
+    content := Rectangle {
+        x: root.safe-area-insets.left;
+        y: root.safe-area-insets.top;
+        width: root.width - root.safe-area-insets.left - root.safe-area-insets.right;
+        height: root.height - root.safe-area-insets.top - root.safe-area-insets.bottom;
 
-    chat := ChatPage {
-        width: 100%; height: 100%;
-        visible: root.session == "loggedIn" && root.in-chat;
-        room-name: root.room-name;
-        room-subtitle: root.room-subtitle;
-        room-encrypted: root.room-encrypted;
-        room-initials: root.room-initials;
-        room-avatar: root.room-avatar;
-        room-tint: root.room-tint;
-        items: root.items;
-        typing-line: root.typing-line;
-        back => { root.back-to-home(); }
-        send(text) => { root.send-message(text); }
-        composer-edited(text) => { root.composer-edited(text); }
+        if root.session != "loggedIn" : LoginPage {
+            width: 100%; height: 100%;
+            pending: root.session == "loginPending";
+            restoring: root.session == "restoring";
+            error: root.login-error;
+            sign-in(hs) => { root.sign-in(hs); }
+            open-again => { root.open-again(); }
+            cancel-login => { root.cancel-login(); }
+        }
+
+        if root.session == "loggedIn" && !root.verified && !root.recovery-skipped : RecoveryPage {
+            width: 100%; height: 100%;
+            busy: root.recovery-busy;
+            error: root.recovery-error;
+            submit(key) => { root.recover-submit(key); }
+            skip => { root.recovery-skipped = true; }
+        }
+
+        if root.session == "loggedIn" && (root.verified || root.recovery-skipped) && !root.in-chat : HomePage {
+            width: 100%; height: 100%;
+            rooms: root.rooms;
+            rooms-loaded: root.rooms-loaded;
+            spaces: root.spaces;
+            my-initials: root.my-initials;
+            my-avatar: root.my-avatar;
+            my-tint: root.my-tint;
+            sync-line: root.sync-line;
+            room-clicked(id) => { root.room-clicked(id); }
+            search-edited(q) => { root.search-edited(q); }
+            new-chat => { root.new-chat(); }
+        }
+
+        // The chat page slides in over Home — PageHolder's job in QML. It is
+        // never destroyed, so scroll state and the composer survive the slide.
+        chat := ChatPage {
+            y: 0;
+            width: 100%; height: 100%;
+            x: root.in-chat ? 0px : content.width;
+            animate x { duration: 200ms; easing: cubic-bezier(0.33, 1, 0.68, 1); }
+            visible: root.session == "loggedIn" && self.x < content.width;
+            bottom-inset: max(root.kb-overlap - root.safe-area-insets.bottom, 0px);
+            room-name: root.room-name;
+            room-subtitle: root.room-subtitle;
+            room-encrypted: root.room-encrypted;
+            room-initials: root.room-initials;
+            room-avatar: root.room-avatar;
+            room-tint: root.room-tint;
+            items: root.items;
+            typing-line: root.typing-line;
+            back => { root.back-to-home(); }
+            send(text) => { root.send-message(text); }
+            composer-edited(text) => { root.composer-edited(text); }
+        }
     }
 }

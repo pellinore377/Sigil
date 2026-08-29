@@ -64,6 +64,14 @@ two toolkits, one phone, which is the comparison this crate exists to make.
 App state lands in the app's private files dir; the engine's XDG path
 resolution is pointed there before anything else runs (`android_main`).
 
+## UI iteration without a device
+
+`SIGIL_SLINT_DEMO=1 cargo run` renders the app from canned events pushed
+through the real bridge pipeline — no engine, no login. Add
+`SIGIL_SLINT_DEMO_CHAT=1` to open the demo conversation, or
+`SIGIL_SLINT_DEMO_RECOVERY=1` to land on the recovery page. What the demo
+renders is what the pipeline renders; only the source of JSON differs.
+
 ## Known gaps
 
 - **Spaces tab** lists spaces from `rooms.list` flat; the `spaces.tree`
@@ -76,5 +84,8 @@ resolution is pointed there before anything else runs (`android_main`).
 - **No recovery-key page yet**: E2EE history stays locked until the session
   is verified from another client, or the page is built (it is small).
 - **No pagination**: the newest 60 items per room.
+- **The timeline is top-anchored**: a room with little history stacks from
+  the top instead of hugging the composer. Needs a content-height measure
+  Slint's ListView does not expose directly.
 - **Composer is single-line**; Shift+Enter and the formatting affordances
   need Slint's TextEdit story evaluated.
