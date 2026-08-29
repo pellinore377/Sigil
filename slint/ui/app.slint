@@ -300,6 +300,19 @@ export component AppWindow inherits Window {
     property <bool> in-session: root.session == "loggedIn"
         && (!root.needs-recovery || root.recovery-skipped) && !root.recovery-open;
 
+    // The Android back gesture arrives as a key. As the ancestor focus scope,
+    // unhandled Escapes bubble here; consuming them keeps the activity alive
+    // and unwinds our own navigation instead.
+    back-scope := FocusScope {
+        width: 100%; height: 100%;
+        key-pressed(event) => {
+            if (event.text == Key.Escape) {
+                root.go-back();
+                return accept;
+            }
+            reject
+        }
+
     content := Rectangle {
         x: root.safe-area-insets.left;
         y: root.safe-area-insets.top;
@@ -679,5 +692,6 @@ export component AppWindow inherits Window {
             seek-requested(sec) => { root.act("viewer-seek", "" + sec, ""); }
             scrub-state(on, pos) => { root.act("viewer-scrub", on ? "true" : "false", "" + pos); }
         }
+    }
     }
 }

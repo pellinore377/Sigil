@@ -5,11 +5,11 @@ Live findings; struck through when fixed and verified on device.
 ## Chat
 - [ ] Inter-group bubble spacing ~3x the QML 10px — bubble.slint reserves
       reaction/pin lift unconditionally? Measure and match space(10)/space(3).
-- [ ] Last message can sit behind the composer — list needs bottom padding
-      (QML keeps the newest clear of the composer).
-- [ ] Own-message sent/read mark not visible on latest own message — verify
-      owns-receipt wiring end to end.
-- [x] Root cause: ListView never pans on touch (probe-proven); TouchList everywhere. Verify on device.
+- [x] Opens at bottom; newest clear of composer (verified).
+- [x] Read tick renders on newest own message (verified on device).
+- [x] SCROLLING FIXED & VERIFIED: std ListView never pans on touch (probe);
+      TouchList (Flickable) everywhere; opens at bottom via layout-settle
+      rescroll; verified both directions on device.
 - [ ] Session day-labels: verify one renders after a >1h gap.
 
 ## Home
@@ -29,3 +29,20 @@ Live findings; struck through when fixed and verified on device.
 - [x] Sheet actions: one-time assignment replaced with a binding.
 - [x] Heart without VS16.
 - [ ] Space hero "1 member" chip clipped behind list card.
+
+## Verified on device (fix build, 29 Aug afternoon)
+- Scroll both directions; opens at bottom; session labels; reply quotes;
+  reactions; read tick; image bubbles with captions; action sheet complete
+  (reply/forward/copy/pin/thread; correct failed-send variant); red heart.
+- Frosted Glass palette matches the desktop QML panel.
+
+## Open items (next session)
+- [ ] Long-press on media bubbles (inner tap TouchAreas eat the press;
+      QML opens the menu from media too).
+- [ ] Android back: close-request path does not fire; Escape-key FocusScope
+      attempt in test. If Slint delivers neither, upstream issue + JNI key
+      interception is the remaining route.
+- [ ] Bubble inter-group spacing: measure against QML with same-density
+      fixture (earlier read may have been correct behavior).
+- [ ] Settings identity avatar image (fix landed; verify).
+- [ ] GIF playback, rich text bodies, link previews (structural, in readout).
