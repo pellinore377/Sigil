@@ -44,7 +44,7 @@ export component Bubble inherits Rectangle {
     // run edge to edge; link cards / track / code stay unported (WIRING-chat.md).
     property <bool> doc-kind: root.file-kind && !root.voice-kind && item.doc-chip != "";
     property <bool> full-bleed: root.media-kind || item.kind == "location"
-        || root.doc-kind || item.kind == "contact";
+        || root.doc-kind || item.kind == "contact" || item.kind == "audio";
     // A poll draws its own card, so the bubble contributes no padding or fill.
     property <bool> pad-free: root.full-bleed || item.kind == "poll";
     property <int> poll-sum: item.poll-vote-sum;
@@ -356,7 +356,67 @@ export component Bubble inherits Rectangle {
                         HoldArea { clicked => { if (!self.fired) { root.open-document(item); } self.fired = false; } held => { root.open-menu(); } }
                     }
 
-                    if root.file-kind && !root.voice-kind && item.doc-chip == "" : file-row := Rectangle {
+                    // Music: AudioBody's card — square cover (or bare strip) over
+                    // a 52px chrome strip tinted from the art's palette; ink is
+                    // computed in Rust by luminance.
+                    if item.kind == "audio" : audio-card := Rectangle {
+                        width: root.bubble-max;
+                        height: root.bubble-max + 52px;
+                        clip: true;
+                        art-box := Rectangle {
+                            y: 0; width: 100%;
+                            height: audio-card.width;
+                            background: item.audio-have-art ? item.audio-tone.darker(0.3) : root.fg.with-alpha(0.13);
+                            if item.audio-have-art : Image {
+                                source: item.audio-art;
+                                width: 100%; height: 100%;
+                                image-fit: cover;
+                            }
+                            if item.audio-have-art : Rectangle {
+                                width: 100%; height: 100%;
+                                background: #000000.with-alpha(0.18);
+                            }
+                            note-btn := Rectangle {
+                                x: (art-box.width - 56px) / 2;
+                                y: (art-box.height - 56px) / 2;
+                                width: 56px; height: 56px; border-radius: 28px;
+                                background: item.audio-have-art ? #000000.with-alpha(0.55) : item.audio-tone;
+                                IconLabel {
+                                    text: Icons.music; filled: false;
+                                    color: item.audio-have-art ? #ffffff : item.audio-ink;
+                                    font-size: 26px;
+                                    width: 100%; height: 100%;
+                                }
+                            }
+                            HoldArea { clicked => { if (!self.fired) { root.open-audio(item); } self.fired = false; } held => { root.open-menu(); } }
+                        }
+                        strip := Rectangle {
+                            y: audio-card.height - 52px;
+                            width: 100%; height: 52px;
+                            background: item.audio-tone;
+                            VerticalLayout {
+                                x: 12px;
+                                width: strip.width - 24px;
+                                alignment: center;
+                                spacing: 1px;
+                                Text {
+                                    text: item.media-filename != "" ? item.media-filename : item.body;
+                                    color: item.audio-ink;
+                                    font-family: Theme.font-ui; font-size: Theme.body; font-weight: 700;
+                                    overflow: elide;
+                                }
+                                if item.duration != "" : Text {
+                                    text: item.duration;
+                                    color: item.audio-ink.with-alpha(0.75);
+                                    font-family: Theme.font-ui; font-size: Theme.caption;
+                                    overflow: elide;
+                                }
+                            }
+                            HoldArea { clicked => { if (!self.fired) { root.open-audio(item); } self.fired = false; } held => { root.open-menu(); } }
+                        }
+                    }
+
+                    if item.kind == "file" && item.doc-chip == "" : file-row := Rectangle {
                         height: 42px;
                         HorizontalLayout {
                             spacing: 8px;
@@ -366,7 +426,7 @@ export component Bubble inherits Rectangle {
                                 width: 34px; height: 34px; border-radius: 17px;
                                 background: root.accent.with-alpha(0.25);
                                 IconLabel {
-                                    text: item.kind == "audio" ? Icons.music : Icons.file;
+                                    text: Icons.file;
                                     color: root.fg;
                                     width: 100%; height: 100%;
                                 }
@@ -387,10 +447,7 @@ export component Bubble inherits Rectangle {
                             }
                         }
                         TouchArea {
-                            clicked => {
-                                if (item.kind == "audio") { root.open-audio(item); }
-                                else { root.open-document(item); }
-                            }
+                            clicked => { root.open-document(item); }
                         }
                     }
 

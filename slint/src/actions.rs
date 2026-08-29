@@ -56,6 +56,18 @@ pub fn fetch_doc_thumb(req: &Requester, room_id: &str, event_id: &str, key: Stri
     });
 }
 
+/// Cover art + palette for a music message's card (AudioBody's audio.info).
+pub fn fetch_audio_info(req: &Requester, room_id: &str, event_id: &str, key: String) {
+    call_ui(req, "audio.info", json!({"roomId": room_id, "eventId": event_id, "size": 512}), move |ui, win, out| {
+        let val = match out {
+            Ok(v) => v,
+            _ => json!(false),
+        };
+        ui.audio_infos.insert(key, val);
+        rebuild_timeline(ui, win);
+    });
+}
+
 /// Public face of `after` for the bridge's layout-settle scrolls.
 pub fn after_pub(req: &Requester, ms: u64, f: impl FnOnce(&mut UiState, &AppWindow) + Send + 'static) {
     after(req, ms, f);

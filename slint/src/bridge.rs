@@ -119,6 +119,8 @@ pub struct UiState {
     pub doc_preview: Value,
     /// roomId|eventId -> doc.thumb reply (Null = asked, pending).
     pub doc_thumbs: HashMap<String, Value>,
+    /// roomId|eventId -> audio.info reply (Null = asked, pending).
+    pub audio_infos: HashMap<String, Value>,
 }
 
 thread_local! {
@@ -196,6 +198,7 @@ pub fn start(win: &AppWindow, rt: &tokio::runtime::Runtime, icons: IconSet) -> R
         theme_pending: serde_json::json!({}),
         doc_preview: Value::Null,
         doc_thumbs: HashMap::new(),
+        audio_infos: HashMap::new(),
     }));
     UI.with(|ui| *ui.borrow_mut() = Some(state));
 
@@ -902,6 +905,37 @@ pub fn rebuild_timeline(ui: &mut UiState, win: &AppWindow) {
                 _ => {}
             }
         }
+        // Music files render AudioBody's card: cover art + a strip tinted from
+        // the art's palette (audio.info hands both over).
+        let mut audio_art: Option<slint::Image> = None;
+        let mut audio_tone: Option<slint::Color> = None;
+        if kind == "audio" && !event_id.is_empty() {
+            let akey = format!("{room_id}|{event_id}");
+            match ui.audio_infos.get(&akey) {
+                None => {
+                    ui.audio_infos.insert(akey.clone(), Value::Null);
+                    let req = ui.req.clone();
+                    crate::actions::fetch_audio_info(&req, &room_id, &event_id, akey);
+                }
+                Some(v) if !v.is_null() => {
+                    let art = v["artPath"].as_str().unwrap_or("").to_string();
+                    if !art.is_empty() {
+                        audio_art = avatar(ui, &art);
+                    }
+                    if let Some(hex) = ui.audio_infos.get(&format!("{room_id}|{event_id}")).and_then(|v| v["accent"].as_str()) {
+                        if let Ok(c) = u32::from_str_radix(hex.trim_start_matches('#'), 16) {
+                            audio_tone = Some(slint::Color::from_rgb_u8((c >> 16) as u8, (c >> 8) as u8, c as u8));
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+        // White or near-black over the strip, whichever reads (AudioBody labelInk).
+        let audio_ink = audio_tone.map(|t| {
+            let lum = 0.299 * t.red() as f32 / 255.0 + 0.587 * t.green() as f32 / 255.0 + 0.114 * t.blue() as f32 / 255.0;
+            if lum > 0.62 { slint::Color::from_rgb_u8(23, 23, 23) } else { slint::Color::from_argb_u8(245, 255, 255, 255) }
+        });
         let waveform: Vec<f64> = media["waveform"].as_array().map(|a| a.iter().filter_map(Value::as_f64).collect()).unwrap_or_default();
         let duration_ms = media["duration"].as_f64().unwrap_or(0.0);
         let reply = item.get("replyTo").cloned().filter(|r| !r.is_null());
@@ -1009,6 +1043,10 @@ pub fn rebuild_timeline(ui: &mut UiState, win: &AppWindow) {
             location_label: location["description"].as_str().unwrap_or("").into(),
             location_live: live["live"].as_bool().unwrap_or(false),
             location_ended: item["kind"].as_str() == Some("liveLocation") && !live["live"].as_bool().unwrap_or(false),
+            audio_have_art: audio_art.is_some(),
+            audio_art: audio_art.unwrap_or_default(),
+            audio_tone: audio_tone.unwrap_or(slint::Color::from_rgb_u8(0xa8, 0xa8, 0xa8)),
+            audio_ink: audio_ink.unwrap_or(slint::Color::from_argb_u8(245, 255, 255, 255)),
             doc_lines: slint::ModelRc::new(VecModel::from(doc_lines)),
             doc_chip: doc_chip.into(),
             has_doc_image: doc_img.is_some(),
@@ -1080,6 +1118,7 @@ fn start_demo(win: &AppWindow, rt: &tokio::runtime::Runtime, icons: IconSet) -> 
         theme_pending: serde_json::json!({}),
         doc_preview: Value::Null,
         doc_thumbs: HashMap::new(),
+        audio_infos: HashMap::new(),
     }));
     UI.with(|ui| *ui.borrow_mut() = Some(state));
 

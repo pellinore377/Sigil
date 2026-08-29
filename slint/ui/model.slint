@@ -101,6 +101,11 @@ export struct TimelineRow {
     location-label: string,
     location-live: bool,
     location-ended: bool,
+    // audio (music) card — audio.info's art + palette
+    audio-art: image,
+    audio-have-art: bool,
+    audio-tone: color,
+    audio-ink: color,
     // read marker / receipts
     doc-lines: [DocLine],
     doc-chip: string,        // TEXT / PDF / …; non-empty draws the page card
