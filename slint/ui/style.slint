@@ -16,21 +16,24 @@ import "../../shared/fonts/MaterialSymbolsRounded.ttf";
 import "../../shared/fonts/MaterialSymbolsRounded-Filled.ttf";
 
 export global Theme {
-    // Colours. A stand-in dark palette shaped like the host tokens; a theme
-    // system later swaps these values, never the call sites.
-    out property <color> accent: #7aa2f7;
-    out property <color> background: #0f0f11;
-    out property <color> foreground: #d8dbe2;
-    out property <color> muted: #8b8f98;
-    out property <color> urgent: #f38ba8;
+    // The Frosted Glass theme, verbatim from the desktop's active Omarchy
+    // theme (colors.toml + shell.menu/popups.toml). Deliberately monochrome:
+    // that IS what 1:1 with the QML panel looks like on this machine. The
+    // desktop composites these translucently over the wallpaper; a phone has
+    // no wallpaper behind the app, so surfaces are opaque here.
+    out property <color> accent: #a8a8a8;
+    out property <color> background: #4b4b4b;
+    out property <color> foreground: #c6c6c6;
+    out property <color> muted: #8a8a8a;
+    out property <color> urgent: #a55555;
 
-    out property <color> menu-text: #d8dbe2;
-    out property <color> menu-background: #16161a;
-    out property <color> menu-border: #26262c;
+    out property <color> menu-text: #c6c6c6;
+    out property <color> menu-background: #4b4b4b;
+    out property <color> menu-border: transparent;
 
-    out property <color> popup-text: #d8dbe2;
-    out property <color> popup-background: #1b1b20;
-    out property <color> popup-border: #2a2a31;
+    out property <color> popup-text: #c6c6c6;
+    out property <color> popup-background: #4b4b4b;
+    out property <color> popup-border: #5c5c5c;
 
     // Fonts, by the family names the bundled files declare.
     out property <string> font-ui: "Roboto";

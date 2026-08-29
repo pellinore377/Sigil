@@ -42,6 +42,11 @@ fn call_ui(
     });
 }
 
+/// Public face of `after` for the bridge's layout-settle scrolls.
+pub fn after_pub(req: &Requester, ms: u64, f: impl FnOnce(&mut UiState, &AppWindow) + Send + 'static) {
+    after(req, ms, f);
+}
+
 /// Run `f` on the UI thread after `ms`.
 fn after(req: &Requester, ms: u64, f: impl FnOnce(&mut UiState, &AppWindow) + Send + 'static) {
     req.handle().spawn(async move {

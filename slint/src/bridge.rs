@@ -494,7 +494,12 @@ fn handle_event(ui: &mut UiState, v: &Value) {
             }
             ui.shadow = v["items"].as_array().cloned().unwrap_or_default();
             rebuild_timeline(ui, &win);
+            // Once now, and again after layout: at reset time the viewport
+            // height is not computed yet, so the first call clamps to the top.
             win.invoke_scroll_timeline_to_end();
+            let req = ui.req.clone();
+            crate::actions::after_pub(&req, 150, |_ui, win| win.invoke_scroll_timeline_to_end());
+            crate::actions::after_pub(&req, 450, |_ui, win| win.invoke_scroll_timeline_to_end());
         }
         "timeline.diff" => {
             if v["roomId"].as_str().unwrap_or("") != ui.open_room {
