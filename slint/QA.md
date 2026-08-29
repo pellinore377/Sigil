@@ -85,3 +85,55 @@ Live findings; struck through when fixed and verified on device.
   on-device QA blocked until then.
 - Pins page: not reached before the invalidation — first open item for the
   next signed-in session.
+
+## Parity audit sweep (29 Aug evening)
+Three source-level audits diffed every QML mobile page against its Slint
+counterpart. ~60 deviations fixed across 8 commits:
+- Bubble: press-area moved BENEATH the bodies (inner taps were dead),
+  fullBleed set widened (doc/location/contact/audio), 40px width floor,
+  +22 text padding, jump-flash ring, thread-chip latest-reply preview,
+  reaction scale, MarkStack reader faces replace the eye+count, details
+  row on received messages, PollBody ported whole (own card, pick dot,
+  percentages, hidden-results footer, retract/multi-select voting),
+  DocThumb paper/type sizes/badge, location pin-only fallback + live pill,
+  AudioBody card (cover + palette strip via audio.info).
+- Chat: convoC ÷1.35 with the accent mix gated on a set theme, composer
+  tint band + QML geometry (56/38/r19), quote bar 52/inset-5/close-inside,
+  caption composer mode (Add/Edit caption through message.editCaption),
+  jump-to-latest centred at ¾-screen, 8px list end spacers, BottomToTop
+  short-conversation alignment, composer hidden on invites, whitespace
+  send guard, attach + → cancel affordance with the 90° turn, DM presence
+  dot on the header avatar, ⋮ menu 170/34/no-border.
+- Sheet: pill clamps with its own width, VS16 heart key restored (bare
+  glyph still displayed — femtovg tofu), card height double-count fixed,
+  confirm dims instead of hiding the sheet, 150px labels, caption/thread
+  actionsFor variants, QML entry order.
+- Home: spaces hero + rounded-square space rows with counts + chevron,
+  space-filter chip, drafts ("Draft:" in red italics, banked per room),
+  scroll-to-top button, QML header/search/tabs/badge/FAB/account-menu
+  metrics, top-level-space filter, own presence dot.
+- Recorder rebuilt to VoiceRecorder.qml (inline 230px panel under the
+  composer, 7-bar idle wave, blink dot + zero-padded timer, restart-take,
+  120px record pill, attach-while-recording).
+- Attach: QML margins, centred grid with left-aligned second row, chip
+  poll fields + remove buttons + trimmed create, sticker flow packing.
+- Pages: roles exact-level guard, security dirty seeding, addpeople
+  2-char debounce + presence, members ambiguity rule, roomsettings member
+  presence + conditional spacers, threads 64px rows, pins 6-line clamp +
+  width floor, search spacing/viewport, viewer letterbox-tap close +
+  22px actions, chattheme wallpaper branch + corner radii + HSV re-seed.
+- Shared: two-letter initials, initials 0.42 with the 8px floor,
+  transparent presence pad riding 2% out, SettingsHeader 22px back
+  button (QML PanelActionButton), sublabel two-line clamp, OverflowMenu
+  QML card metrics.
+Verified visually via the desktop demo build (SIGIL_SLINT_DEMO): home
+list (two-letter initials, badges) and chat (bottom-aligned timeline,
+composer band, ground tone, sheen) render correctly.
+
+## Deliberate skips (no Slint equivalent / out of scope, commented in-file)
+- Entry/hover animations needing element scale; FrameAnimation glides.
+- Filmstrip page-peek in the viewer; live-location countdown clock.
+- Staged-attachment composer row (files/contact/voice chips) — needs the
+  Android SAF seam first; "Open as window" header button (desktop-only).
+- Slint trim() gaps: send guarded in Rust; two caption gates use
+  character-count without trimming.
