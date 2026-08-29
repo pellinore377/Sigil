@@ -264,7 +264,7 @@ export component Bubble inherits Rectangle {
                     // docThumb card. A PDF arrives drawn (imagePath) instead.
                     if root.file-kind && !root.voice-kind && item.doc-chip != "" : doc-card := Rectangle {
                         width: min(root.bubble-max - 20px, 250px);
-                        height: item.has-doc-image ? 180px : doc-col.preferred-height + 24px;
+                        height: item.has-doc-image ? 180px : 24px + item.doc-lines.length * 16px;
                         border-radius: 10px;
                         background: #f4f4f2;
                         clip: true;
