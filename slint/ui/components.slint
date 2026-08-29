@@ -178,7 +178,7 @@ export component TextWell inherits Rectangle {
 // long-press opens the message menu from anywhere on a bubble, as in QML.
 export component HoldArea inherits TouchArea {
     callback held;
-    property <bool> fired: false;
+    in-out property <bool> fired: false;
     hold-timer := Timer {
         interval: 500ms;
         running: false;
