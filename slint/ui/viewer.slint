@@ -107,6 +107,43 @@ export component ImageViewer inherits Rectangle {
         // Behind `media`, so its own handlers win over the letterbox.
         TouchArea { clicked => { root.closed(); } }
 
+        // Filmstrip: the neighbouring pictures peek in during a drag
+        // (SnapOneItem pager, 12px between pages).
+        if root.drag-dx > 0px && root.cur > 0 && !root.zoomed : prev-peek := Rectangle {
+            property <ViewerItem> pit: root.items[root.cur - 1];
+            property <length> pfw: self.pit.w > 0 && self.pit.h > 0
+                ? min(root.page-w, root.page-h * self.pit.w / self.pit.h) : root.page-w;
+            property <length> pfh: self.pit.w > 0 && self.pit.h > 0
+                ? min(root.page-h, root.page-w * self.pit.h / self.pit.w) : root.page-h;
+            x: (stage.width - self.pfw) / 2 - stage.width - 12px + root.drag-dx;
+            y: (stage.height - self.pfh) / 2;
+            width: self.pfw; height: self.pfh;
+            border-radius: 16px;
+            clip: true;
+            background: #1a1a1c;
+            if self.pit.have-img : Image {
+                source: prev-peek.pit.img;
+                width: 100%; height: 100%;
+            }
+        }
+        if root.drag-dx < 0px && root.cur < root.items.length - 1 && !root.zoomed : next-peek := Rectangle {
+            property <ViewerItem> nit: root.items[root.cur + 1];
+            property <length> nfw: self.nit.w > 0 && self.nit.h > 0
+                ? min(root.page-w, root.page-h * self.nit.w / self.nit.h) : root.page-w;
+            property <length> nfh: self.nit.w > 0 && self.nit.h > 0
+                ? min(root.page-h, root.page-w * self.nit.h / self.nit.w) : root.page-h;
+            x: (stage.width - self.nfw) / 2 + stage.width + 12px + root.drag-dx;
+            y: (stage.height - self.nfh) / 2;
+            width: self.nfw; height: self.nfh;
+            border-radius: 16px;
+            clip: true;
+            background: #1a1a1c;
+            if self.nit.have-img : Image {
+                source: next-peek.nit.img;
+                width: 100%; height: 100%;
+            }
+        }
+
         media := Rectangle {
             x: (stage.width - root.fit-w * root.zoom) / 2 + root.ox + root.drag-dx;
             y: (stage.height - root.fit-h * root.zoom) / 2 + root.oy;

@@ -64,6 +64,9 @@ export component AppWindow inherits Window {
     in property <string> my-name;
     in property <string> my-user-id;
     in property <string> my-presence;
+    // Wall-clock anchor: epoch seconds at app start, so views can derive the
+    // current time from animation-tick() (live-share countdowns).
+    in property <int> boot-epoch-s;
     in property <[RoomRow]> rooms;
     in property <bool> rooms-loaded;
     in property <[RoomRow]> spaces;
@@ -85,6 +88,9 @@ export component AppWindow inherits Window {
     in property <bool> chat-is-invite;
     in property <bool> chat-is-thread;
     in property <string> pagination-state: "idle";
+    in-out property <bool> voice-staged;
+    in property <string> voice-staged-duration;
+    in property <[float]> voice-staged-wave;
     in property <bool> in-call;
     in property <bool> call-here;
     in property <[MenuEntry]> sheet-actions;
@@ -375,6 +381,7 @@ export component AppWindow inherits Window {
                 room-name: root.room-name;
                 room-subtitle: root.room-subtitle;
                 room-presence: root.room-presence;
+                boot-epoch-s: root.boot-epoch-s;
                 room-encrypted: root.room-encrypted;
                 room-initials: root.room-initials;
                 room-avatar: root.room-avatar;
@@ -382,6 +389,9 @@ export component AppWindow inherits Window {
                 themed: root.ct-accent != "";
                 accent: root.ct-accent != "" ? root.ct-color : Theme.accent;
                 attach-open: root.attach-open;
+                voice-staged <=> root.voice-staged;
+                voice-staged-duration: root.voice-staged-duration;
+                voice-staged-wave: root.voice-staged-wave;
                 items: root.items;
                 typing-line: root.typing-line;
                 typing-avatar: root.typing-avatar;
@@ -402,6 +412,9 @@ export component AppWindow inherits Window {
                 send-reply(ev, text) => { root.act("send-reply", ev, text); }
                 send-edit(ev, text) => { root.act("send-edit", ev, text); }
                 send-caption(ev, text) => { root.act("send-caption", ev, text); }
+                send-voice(caption) => { root.act("voice-send", caption, ""); }
+                voice-discard => { root.act("voice-discard", "", ""); }
+                voice-preview(play) => { root.act("voice-preview", play ? "1" : "0", ""); }
                 composer-edited(text) => { root.composer-edited(text); }
                 start-call(video) => { root.act("start-call", video ? "true" : "false", ""); }
                 join-call => { root.act("join-call", "", ""); }

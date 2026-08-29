@@ -41,6 +41,7 @@ export component ChatPage inherits Rectangle {
     in property <color> accent: Theme.accent;
     /// DM presence for the header avatar dot (svc.presenceOf(dmUserId)).
     in property <string> room-presence;
+    in property <int> boot-epoch-s;
     /// The attach drawer is open: the + becomes a cancel affordance.
     in property <bool> attach-open: false;
     /// Extra bottom padding while the virtual keyboard is up, from the window.
@@ -52,12 +53,20 @@ export component ChatPage inherits Rectangle {
     in-out property <string> reply-body;
     in-out property <string> edit-of;
     in-out property <string> caption-of;
+    // A recorded-but-unsent voice clip staged in the composer (QML voicePath).
+    in-out property <bool> voice-staged;
+    in property <string> voice-staged-duration;
+    in property <[float]> voice-staged-wave;
+    in-out property <bool> clip-playing;
 
     callback back;
     callback send(string);
     callback send-reply(string /*event-id*/, string /*text*/);
     callback send-edit(string /*event-id*/, string /*text*/);
     callback send-caption(string /*event-id*/, string /*text*/);
+    callback send-voice(string /*caption*/);
+    callback voice-discard;
+    callback voice-preview(bool /*play*/);
     callback composer-edited(string);
     callback start-call(bool /*video*/);
     callback join-call;
@@ -89,6 +98,7 @@ export component ChatPage inherits Rectangle {
         composer-input.text = "";
         root.reply-to = ""; root.reply-name = ""; root.reply-body = ""; root.edit-of = "";
         root.caption-of = "";
+        root.voice-staged = false; root.clip-playing = false;
     }
     public function arm-reply(event-id: string, sender: string, body: string) {
         root.reply-to = event-id; root.reply-name = sender; root.reply-body = body;
@@ -127,8 +137,9 @@ export component ChatPage inherits Rectangle {
     property <color> convo-c: root.themed
         ? Theme.menu-background.darker(0.35).mix(root.accent, 0.82)
         : Theme.menu-background.darker(0.35);
+    // A staged voice clip outranks the quote for the extra band (QML: 60 vs 52).
     property <length> composer-h: root.is-invite ? 0px
-        : 56px + (root.quote-armed ? 52px : 0px) + root.bottom-inset;
+        : 56px + (root.voice-staged ? 60px : root.quote-armed ? 52px : 0px) + root.bottom-inset;
     out property <length> from-end: max(0px, (list.viewport-height - list.height) + list.viewport-y);
     /// Put the view back at the same distance from the bottom — how scroll
     /// position survives the bridge rebuilding the model (prepends included).
@@ -288,6 +299,7 @@ export component ChatPage inherits Rectangle {
                     Rectangle { height: 8px; }
                     for item in root.items : Bubble {
                         item: item;
+                        boot-epoch-s: root.boot-epoch-s;
                         fg: root.fg;
                         accent: root.accent;
                         dm: root.is-dm;
@@ -362,7 +374,74 @@ export component ChatPage inherits Rectangle {
                                 // Reply/edit quote lives INSIDE the input surface: a
                                 // 52px block whose card is inset 5px, close button
                                 // inside the card at the right (ChatPage.qml:1630).
-                                if root.quote-armed : quote := Rectangle {
+                                // Voice clip chip: a light card inset in the pill.
+                                if root.voice-staged : clip-chip-band := Rectangle {
+                                    height: 60px;
+                                    clip-chip := Rectangle {
+                                        x: 6px; y: 6px;
+                                        width: clip-chip-band.width - 12px;
+                                        height: 48px;
+                                        border-radius: 14px;
+                                        property <color> ink: #17181a;
+                                        background: root.accent.brighter(0.35);
+                                        clip-play := Rectangle {
+                                            x: 7px; y: (48px - 32px) / 2;
+                                            width: 32px; height: 32px; border-radius: 16px;
+                                            background: #ffffff.with-alpha(0.9);
+                                            IconLabel {
+                                                text: root.clip-playing ? Icons.pause : Icons.play;
+                                                color: #1a1a1a;
+                                                width: 100%; height: 100%;
+                                            }
+                                            TouchArea { clicked => {
+                                                root.clip-playing = !root.clip-playing;
+                                                root.voice-preview(root.clip-playing);
+                                            } }
+                                        }
+                                        clip-wave := Rectangle {
+                                            x: 49px; y: (48px - 26px) / 2;
+                                            width: clip-dur.x - self.x - 8px;
+                                            height: 26px;
+                                            clip: true;
+                                            HorizontalLayout {
+                                                alignment: start;
+                                                spacing: 2px;
+                                                for amp in root.voice-staged-wave : Rectangle {
+                                                    y: (26px - self.height) / 2;
+                                                    width: 3px;
+                                                    height: max(4px, 22px * min(1.0, amp));
+                                                    border-radius: 1.5px;
+                                                    background: clip-chip.ink.with-alpha(0.4);
+                                                }
+                                            }
+                                        }
+                                        clip-dur := Text {
+                                            x: clip-close.x - self.preferred-width - 8px;
+                                            height: 100%;
+                                            text: root.voice-staged-duration;
+                                            color: clip-chip.ink.with-alpha(0.85);
+                                            font-family: Theme.font-ui; font-size: Theme.caption;
+                                            vertical-alignment: center;
+                                        }
+                                        clip-close := Rectangle {
+                                            x: clip-chip.width - 26px - 8px;
+                                            y: (48px - 26px) / 2;
+                                            width: 26px; height: 26px; border-radius: 13px;
+                                            background: clip-chip.ink.with-alpha(0.12);
+                                            IconLabel {
+                                                text: Icons.close; color: clip-chip.ink;
+                                                font-size: Theme.body-small;
+                                                width: 100%; height: 100%;
+                                            }
+                                            TouchArea { clicked => {
+                                                root.clip-playing = false;
+                                                root.voice-staged = false;
+                                                root.voice-discard();
+                                            } }
+                                        }
+                                    }
+                                }
+                                if root.quote-armed && !root.voice-staged : quote := Rectangle {
                                     height: 52px;
                                     quote-box := Rectangle {
                                         x: 5px; y: 5px;
@@ -440,7 +519,7 @@ export component ChatPage inherits Rectangle {
                                             edited => { root.composer-edited(self.text); }
                                         }
                                         if composer-input.text == "" : Text {
-                                            text: "Message";
+                                            text: root.voice-staged ? "Add text" : "Message";
                                             color: root.fg.with-alpha(0.45);
                                             font-family: Theme.font-ui; font-size: Theme.body;
                                             vertical-alignment: center;
@@ -452,7 +531,7 @@ export component ChatPage inherits Rectangle {
                         }
                         // Empty composer → voice button; otherwise send. 38×38 r19.
                         send-btn := Rectangle {
-                            property <bool> send-mode: composer-input.text != "";
+                            property <bool> send-mode: composer-input.text != "" || root.voice-staged;
                             y: composer.height - self.height - 9px - root.bottom-inset;
                             width: 38px; height: 38px; border-radius: 19px;
                             background: root.accent.with-alpha(send-t.pressed ? 1.0 : 0.9);
@@ -465,7 +544,8 @@ export component ChatPage inherits Rectangle {
                             send-t := TouchArea {
                                 clicked => {
                                     if (!send-btn.send-mode) { root.open-recorder(); return; }
-                                    if (root.caption-of != "") { root.send-caption(root.caption-of, composer-input.text); }
+                                    if (root.voice-staged) { root.send-voice(composer-input.text); }
+                                    else if (root.caption-of != "") { root.send-caption(root.caption-of, composer-input.text); }
                                     else if (root.edit-of != "") { root.send-edit(root.edit-of, composer-input.text); }
                                     else if (root.reply-to != "") { root.send-reply(root.reply-to, composer-input.text); }
                                     else { root.send(composer-input.text); }

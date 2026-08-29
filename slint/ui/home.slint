@@ -503,7 +503,12 @@ export component HomePage inherits Rectangle {
 
     // Account menu: page-level scrim (a scrim inside a control cluster makes
     // every control need two taps — ui-conventions.md), card below the header.
-    if root.account-open : Rectangle {
+    // 120ms fade like the QML (its scale-in has no Slint equivalent).
+    account-layer := Rectangle {
+        property <float> show: root.account-open ? 1.0 : 0.0;
+        animate show { duration: 120ms; }
+        visible: self.show > 0.01;
+        opacity: self.show;
         width: 100%; height: 100%;
         background: Theme.background.with-alpha(0.35);
         TouchArea { clicked => { root.account-open = false; } }

@@ -224,7 +224,12 @@ export component OverflowMenu inherits Rectangle {
     in property <length> top-inset: 50px;
     in property <color> fg: Theme.menu-text;
     callback picked(string);
-    visible: root.open;
+    // 120ms fade in and out (the QML also scales from the top-right corner;
+    // Slint elements have no scale, the fade carries the motion).
+    property <float> show: root.open ? 1.0 : 0.0;
+    animate show { duration: 120ms; }
+    visible: self.show > 0.01;
+    opacity: self.show;
     TouchArea { clicked => { root.open = false; } }
     // ChatPage.qml menu card: 170 wide at y 50, rows 34/r9, popups @0.98, no border.
     card := Rectangle {

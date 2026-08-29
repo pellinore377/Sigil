@@ -101,6 +101,7 @@ export struct TimelineRow {
     location-label: string,
     location-live: bool,
     location-ended: bool,
+    location-expires-s: int,   // epoch seconds the live share ends; 0 = none
     // audio (music) card — audio.info's art + palette
     audio-art: image,
     audio-have-art: bool,

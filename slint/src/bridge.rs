@@ -146,6 +146,8 @@ pub fn start(win: &AppWindow, rt: &tokio::runtime::Runtime, icons: IconSet) -> R
     let engine = Engine::new(Hub::new());
     let req = Requester { handle: rt.handle().clone(), engine: engine.clone() };
 
+    // Anchors animation-tick() to the wall clock for the live-share countdown.
+    win.set_boot_epoch_s(chrono::Utc::now().timestamp() as i32);
     let state = Rc::new(RefCell::new(UiState {
         win: win.as_weak(),
         req: req.clone(),
@@ -1042,6 +1044,7 @@ pub fn rebuild_timeline(ui: &mut UiState, win: &AppWindow) {
             contact_id: contact["userId"].as_str().unwrap_or("").into(),
             location_label: location["description"].as_str().unwrap_or("").into(),
             location_live: live["live"].as_bool().unwrap_or(false),
+            location_expires_s: (live["expiresAt"].as_f64().unwrap_or(0.0) / 1000.0) as i32,
             location_ended: item["kind"].as_str() == Some("liveLocation") && !live["live"].as_bool().unwrap_or(false),
             audio_have_art: audio_art.is_some(),
             audio_art: audio_art.unwrap_or_default(),
@@ -1066,6 +1069,7 @@ pub fn rebuild_timeline(ui: &mut UiState, win: &AppWindow) {
 fn start_demo(win: &AppWindow, rt: &tokio::runtime::Runtime, icons: IconSet) -> Requester {
     let engine = Engine::new(Hub::new());
     let req = Requester { handle: rt.handle().clone(), engine };
+    win.set_boot_epoch_s(chrono::Utc::now().timestamp() as i32);
     let state = Rc::new(RefCell::new(UiState {
         win: win.as_weak(),
         req: req.clone(),

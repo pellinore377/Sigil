@@ -859,16 +859,38 @@ pub fn on_act(ui: &mut UiState, win: &AppWindow, action: &str, a: &str, b2: &str
             req.fire("voice.start", json!({}));
             tick_recorder(ui);
         }
+        // Attach STAGES the clip in the composer (ChatPage.voicePath) — the
+        // send button posts it, with the typed text as its caption.
         "voice-attach" => {
+            let secs = ui.voice_clip["duration"].as_f64().unwrap_or(0.0) / 1000.0;
+            let wave: Vec<f64> = ui.voice_clip["waveform"].as_array()
+                .map(|a| a.iter().filter_map(Value::as_f64).collect()).unwrap_or_default();
+            win.set_voice_staged_duration(format!("{:02}:{:02}", (secs as u64) / 60, (secs as u64) % 60).into());
+            win.set_voice_staged_wave(ModelRc::new(VecModel::from(crate::rows::resample_wave(&wave, 40))));
+            win.set_voice_staged(true);
+            win.set_recorder_open(false);
+        }
+        "voice-send" => {
             let clip = std::mem::take(&mut ui.voice_clip);
             req.fire("voice.send", json!({
                 "roomId": open_room,
                 "path": s(&clip, "path"),
                 "duration": clip["duration"].as_f64().unwrap_or(0.0),
                 "waveform": clip["waveform"].clone(),
-                "caption": "",
+                "caption": a,
             }));
-            win.set_recorder_open(false);
+            win.invoke_clear_composer();
+        }
+        "voice-discard" => {
+            ui.voice_clip = Value::Null;
+            req.fire("audio.stop", json!({}));
+        }
+        "voice-preview" => {
+            if a == "1" {
+                req.fire("audio.playFile", json!({"path": s(&ui.voice_clip, "path")}));
+            } else {
+                req.fire("audio.stop", json!({}));
+            }
         }
         "voice-cancel" => {
             ui.recording = false;

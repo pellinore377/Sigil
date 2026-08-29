@@ -51,6 +51,9 @@ export component Bubble inherits Rectangle {
     property <string> votes-word: item.poll-total == 1 ? "1 vote" : "\{item.poll-total} votes";
     /// Jump landing: a brief accent ring on the message you asked for.
     in property <bool> jump-flash: false;
+    /// Epoch seconds at app start (window's boot-epoch-s) for the live countdown.
+    in property <int> boot-epoch-s: 0;
+    property <int> live-remaining: max(0, item.location-expires-s - root.boot-epoch-s - floor(animation-tick() / 1s));
     property <bool> caption-visible: root.media-kind && item.body != "" && item.body != item.media-filename;
     // Opaque pre-blends over the popup surface — the QML mix() math verbatim.
     property <color> bubble-fill: item.is-own ? root.accent.mix(Theme.popup-background, 0.42)
@@ -600,7 +603,12 @@ export component Bubble inherits Rectangle {
                                     background: #e88b90;
                                 }
                                 Text {
-                                    text: item.location-ended ? "Live location ended" : "Live";
+                                    // LocationBody's pill: a live countdown while
+                                    // sharing, the ended notice afterwards.
+                                    text: item.location-ended ? "Live location ended"
+                                        : item.location-expires-s > 0 && root.boot-epoch-s > 0
+                                        ? floor(root.live-remaining / 60) + ":" + (mod(root.live-remaining, 60) < 10 ? "0" : "") + mod(root.live-remaining, 60)
+                                        : "Live";
                                     color: #ffffff;
                                     font-family: Theme.font-ui; font-size: Theme.caption;
                                     vertical-alignment: center;

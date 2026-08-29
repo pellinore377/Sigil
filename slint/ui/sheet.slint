@@ -62,7 +62,12 @@ export component MessageSheet inherits Rectangle {
     // 7 cells at 36 + 6×6 spacing + 20 = 292px, static so the clamp needs no id.
     property <length> pill-row-probe: 7 * 36px + 6 * 6px + 20px;
 
-    visible: root.open;
+    // 130ms fade on open/close (the QML also scales the pill and menu in;
+    // Slint elements have no scale, the fade carries the motion).
+    property <float> show: root.open ? 1.0 : 0.0;
+    animate show { duration: 130ms; }
+    visible: self.show > 0.01;
+    opacity: self.show;
     background: transparent;
 
     // Dim scrim (the QML blurs; we dim deeper to compensate).
