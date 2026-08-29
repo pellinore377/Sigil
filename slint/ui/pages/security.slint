@@ -1,33 +1,152 @@
-// SecurityPage — port of the QML page of the same name. STUB: a fork replaces
-// this file wholesale; add properties/callbacks here and list the app.slint +
-// bridge wiring you need in your WIRING file.
+// SecurityPage — mobile/SecurityPage.qml. Who can join, whether messages are
+// encrypted, and how much history a new member sees. Writes are deferred to
+// Save rather than applied per tap — each is a state event others see land,
+// and undo cannot take back a room opened to the world.
 
 import { Theme } from "../style.slint";
 import { Icons } from "../icons.slint";
-import { IconLabel, ActionButton, Avatar, SButton, TextWell } from "../components.slint";
-import { SettingsHeader, SettingsGroup, SettingsRow, OverflowMenu, ChoiceSheet, Spinner, MenuEntry, ChoiceEntry } from "../furniture.slint";
-import { RoomRow, TimelineRow, MemberRow, SpaceRow, HierarchyRow, ThreadRow, UserRow, RoomSettingsModel, PowerRow, ReactionChip, EmojiItem } from "../model.slint";
+import { SettingsHeader, SettingsGroup, SettingsRow } from "../furniture.slint";
+import { RoomSettingsModel } from "../model.slint";
 
 export component SecurityPage inherits Rectangle {
     in property <color> fg: Theme.menu-text;
+    in property <RoomSettingsModel> model;
+    /// Restricted join needs a parent space to name; empty id = not offered.
+    in property <string> parent-space-id;
+    in property <string> parent-space-name;
+    in property <bool> can-set-join-rule;
+    in property <bool> can-set-history;
+    in property <bool> can-set-encryption;
+    in property <bool> busy;
+    in property <string> error;
+    // Pending edits; the bridge seeds these from the model when the page opens.
+    in-out property <string> join-rule-edit;
+    in-out property <string> history-edit;
+    in-out property <bool> want-encrypted;
     callback closed;
+    callback save(string, string, bool);   // joinRule, historyVisibility, encrypted
+
+    property <bool> dirty: root.join-rule-edit != root.model.join-rule
+        || root.history-edit != root.model.history-visibility
+        || (root.want-encrypted && !root.model.encrypted);
     background: transparent;
-    VerticalLayout {
-        SettingsHeader {
-            title: "Security";
-            fg: root.fg;
-            back => { root.closed(); }
-        }
-        Rectangle {
-            vertical-stretch: 1;
-            Text {
-                text: "Security — not ported yet";
-                color: root.fg.with-alpha(0.5);
-                font-family: Theme.font-ui;
-                font-size: Theme.body;
-                horizontal-alignment: center;
-                vertical-alignment: center;
-                width: 100%; height: 100%;
+
+    fl := Flickable {
+        width: 100%; height: 100%;
+        viewport-height: content.preferred-height + 24px;
+        content := VerticalLayout {
+            width: fl.width;
+            alignment: start;
+
+            SettingsHeader {
+                fg: root.fg;
+                title: "Security & privacy";
+                action: root.busy ? "Saving…" : "Save";
+                action-enabled: root.dirty && !root.busy;
+                back => { root.closed(); }
+                actioned => { root.save(root.join-rule-edit, root.history-edit, root.want-encrypted); }
+            }
+
+            SettingsGroup {
+                fg: root.fg;
+                title: "Access";
+                divided: false;
+                SettingsRow {
+                    fg: root.fg;
+                    icon: Icons.globe; label: "Anyone"; sublabel: "Anyone can join.";
+                    trailing: "radio"; on: root.join-rule-edit == "public";
+                    enabled: root.can-set-join-rule;
+                    clicked => { root.join-rule-edit = "public"; }
+                }
+                // Only offered when the room sits in a space; the server rejects it otherwise.
+                if root.parent-space-id != "" : SettingsRow {
+                    fg: root.fg;
+                    icon: Icons.space;
+                    label: "Space members";
+                    sublabel: "Anyone in " + (root.parent-space-name != "" ? root.parent-space-name : "the space") + " can join.";
+                    trailing: "radio"; on: root.join-rule-edit == "restricted";
+                    enabled: root.can-set-join-rule;
+                    clicked => { root.join-rule-edit = "restricted"; }
+                }
+                SettingsRow {
+                    fg: root.fg;
+                    icon: Icons.lock; label: "Invite only"; sublabel: "Only invited people can join.";
+                    trailing: "radio"; on: root.join-rule-edit == "invite";
+                    enabled: root.can-set-join-rule;
+                    clicked => { root.join-rule-edit = "invite"; }
+                }
+            }
+
+            // A space carries no messages, so encrypting one only hides the tree.
+            if !root.model.is-space : SettingsGroup {
+                fg: root.fg;
+                title: "Encryption";
+                SettingsRow {
+                    fg: root.fg;
+                    label: "Enable end-to-end encryption";
+                    sublabel: "Once enabled, encryption cannot be disabled.";
+                    trailing: "toggle";
+                    on: root.want-encrypted;
+                    // One-way in the spec: it cannot be turned back off, so the control locks.
+                    enabled: !root.model.encrypted && root.can-set-encryption;
+                    clicked => { root.want-encrypted = !root.want-encrypted; }
+                }
+            }
+
+            SettingsGroup {
+                fg: root.fg;
+                title: "Who can read history";
+                Rectangle {
+                    height: history-note.preferred-height + 8px;
+                    history-note := Text {
+                        x: 22px; width: fl.width - 44px;
+                        wrap: word-wrap;
+                        text: "Changes won't affect past messages, only new ones.";
+                        color: root.fg.with-alpha(0.55);
+                        font-family: Theme.font-ui; font-size: Theme.body-small;
+                    }
+                }
+                // Only meaningful when anyone can join.
+                if root.join-rule-edit == "public" : SettingsRow {
+                    fg: root.fg;
+                    label: "Anyone"; sublabel: "Including people who never joined.";
+                    trailing: "radio"; on: root.history-edit == "world_readable";
+                    enabled: root.can-set-history;
+                    clicked => { root.history-edit = "world_readable"; }
+                }
+                SettingsRow {
+                    fg: root.fg;
+                    label: "Members since they were invited";
+                    trailing: "radio"; on: root.history-edit == "invited";
+                    enabled: root.can-set-history;
+                    clicked => { root.history-edit = "invited"; }
+                }
+                SettingsRow {
+                    fg: root.fg;
+                    label: "Members since they joined";
+                    trailing: "radio"; on: root.history-edit == "joined";
+                    enabled: root.can-set-history;
+                    clicked => { root.history-edit = "joined"; }
+                }
+                SettingsRow {
+                    fg: root.fg;
+                    label: "Members (full history)";
+                    trailing: "radio"; on: root.history-edit == "shared";
+                    enabled: root.can-set-history;
+                    clicked => { root.history-edit = "shared"; }
+                }
+            }
+
+            Rectangle { height: 10px; }
+            if root.error != "" || !root.can-set-join-rule : Rectangle {
+                height: err.preferred-height;
+                err := Text {
+                    x: 22px; width: fl.width - 44px;
+                    text: root.error != "" ? root.error : "You do not have permission to change these.";
+                    color: root.error != "" ? Theme.urgent : root.fg.with-alpha(0.5);
+                    wrap: word-wrap;
+                    font-family: Theme.font-ui; font-size: Theme.body-small;
+                }
             }
         }
     }

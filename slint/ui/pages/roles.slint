@@ -1,34 +1,263 @@
-// RolesPage — port of the QML page of the same name. STUB: a fork replaces
-// this file wholesale; add properties/callbacks here and list the app.slint +
-// bridge wiring you need in your WIRING file.
+// RolesPage — mobile/RolesPage.qml. Who holds power here, and the bar for
+// each capability. Matrix has no roles, only integers; the three names are
+// the shared client convention — 100 admin, 50 moderator, else member.
 
 import { Theme } from "../style.slint";
 import { Icons } from "../icons.slint";
-import { IconLabel, ActionButton, Avatar, SButton, TextWell } from "../components.slint";
-import { SettingsHeader, SettingsGroup, SettingsRow, OverflowMenu, ChoiceSheet, Spinner, MenuEntry, ChoiceEntry } from "../furniture.slint";
-import { RoomRow, TimelineRow, MemberRow, SpaceRow, HierarchyRow, ThreadRow, UserRow, RoomSettingsModel, PowerRow, ReactionChip, EmojiItem } from "../model.slint";
+import { SettingsHeader, SettingsGroup, SettingsRow, ChoiceSheet } from "../furniture.slint";
 
 export component RolesPage inherits Rectangle {
     in property <color> fg: Theme.menu-text;
+    in property <int> admins;
+    in property <int> moderators;
+    in property <int> my-level;
+    in property <bool> can-set-power-levels;
+    in property <bool> busy;
+    in-out property <string> note;
     callback closed;
+    callback open-permissions;
+    callback open-role(int);        // show the people at this level
+    callback set-my-role(int);
+    callback reset-permissions;
+
+    property <bool> demote-open;
+    property <int> demote-level;
+    property <bool> confirm-reset-open;
     background: transparent;
+
+    function role-name(l: int) -> string {
+        return l >= 100 ? "Admin" : (l >= 50 ? "Moderator" : "Member");
+    }
+
     VerticalLayout {
-        SettingsHeader {
-            title: "Roles";
+        alignment: start;
+        SettingsHeader { fg: root.fg; title: "Roles & permissions"; back => { root.closed(); } }
+
+        SettingsGroup {
             fg: root.fg;
-            back => { root.closed(); }
-        }
-        Rectangle {
-            vertical-stretch: 1;
-            Text {
-                text: "Roles — not ported yet";
-                color: root.fg.with-alpha(0.5);
-                font-family: Theme.font-ui;
-                font-size: Theme.body;
-                horizontal-alignment: center;
-                vertical-alignment: center;
-                width: 100%; height: 100%;
+            title: "Roles";
+            divided: false;
+            SettingsRow {
+                fg: root.fg;
+                icon: Icons.shield; label: "Admins";
+                trailing: "count"; value: root.admins;
+                clicked => { root.open-role(100); }
+            }
+            SettingsRow {
+                fg: root.fg;
+                icon: Icons.moderator; label: "Moderators";
+                trailing: "count"; value: root.moderators;
+                clicked => { root.open-role(50); }
+            }
+            SettingsRow {
+                fg: root.fg;
+                icon: Icons.edit; label: "Change my role";
+                // Only ever downward: Matrix will not let anyone raise themselves.
+                enabled: root.my-level > 0 && !root.busy;
+                clicked => { role-pick.open = true; }
             }
         }
+
+        SettingsGroup {
+            fg: root.fg;
+            SettingsRow {
+                fg: root.fg;
+                icon: Icons.settings; label: "Permissions";
+                trailing: "chevron";
+                clicked => { root.open-permissions(); }
+            }
+        }
+
+        SettingsGroup {
+            fg: root.fg;
+            SettingsRow {
+                fg: root.fg;
+                icon: Icons.trash; label: "Reset permissions"; danger: true;
+                enabled: root.can-set-power-levels && !root.busy;
+                clicked => { root.confirm-reset-open = true; }
+            }
+        }
+    }
+
+    role-pick := ChoiceSheet {
+        width: 100%; height: 100%;
+        fg: root.fg;
+        title: "Change my role";
+        value: root.my-level >= 100 ? "100" : (root.my-level >= 50 ? "50" : "0");
+        model: root.my-level >= 100 ? [
+            { t: "Admin", v: "100", sub: "Can do everything, including changing roles." },
+            { t: "Moderator", v: "50", sub: "Can remove people and messages." },
+            { t: "Member", v: "0", sub: "Can send messages." },
+        ] : root.my-level >= 50 ? [
+            { t: "Moderator", v: "50", sub: "Can remove people and messages." },
+            { t: "Member", v: "0", sub: "Can send messages." },
+        ] : [
+            { t: "Member", v: "0", sub: "Can send messages." },
+        ];
+        chose(v) => {
+            if (v == "100" && root.my-level >= 100) { return; }
+            if (v == "50" && root.my-level >= 50 && root.my-level < 100) { return; }
+            if (v == "0" && root.my-level < 50) { return; }
+            root.demote-level = v == "100" ? 100 : (v == "50" ? 50 : 0);
+            root.demote-open = true;
+        }
+    }
+
+    // Demoting yourself is one-way when you are the only admin, so it asks.
+    if root.demote-open : Rectangle {
+        width: 100%; height: 100%;
+        Rectangle {
+            width: 100%; height: 100%;
+            background: #000000.with-alpha(0.5);
+            TouchArea { clicked => { root.demote-open = false; } }
+        }
+        demote-card := Rectangle {
+            x: (root.width - self.width) / 2;
+            y: (root.height - self.height) / 2;
+            width: min(root.width - 60px, 320px);
+            height: demote-col.preferred-height + 32px;
+            border-radius: 18px;
+            background: Theme.popup-background;
+            demote-col := VerticalLayout {
+                x: 18px; y: 16px;
+                width: demote-card.width - 36px;
+                spacing: 10px;
+                Text {
+                    text: "Become " + root.role-name(root.demote-level) + "?";
+                    color: root.fg; wrap: word-wrap;
+                    font-family: Theme.font-ui; font-size: Theme.subtitle; font-weight: 700;
+                }
+                Text {
+                    text: root.admins <= 1 && root.my-level >= 100
+                        ? "You are the only admin. Nobody will be able to give this back to you."
+                        : "Another admin will have to give this back to you.";
+                    color: root.fg.with-alpha(0.6); wrap: word-wrap;
+                    font-family: Theme.font-ui; font-size: Theme.body-small;
+                }
+                HorizontalLayout {
+                    alignment: end;
+                    spacing: 8px;
+                    cancel-btn := Rectangle {
+                        width: cancel-text.preferred-width + 26px; height: 34px;
+                        border-radius: 17px;
+                        background: cancel-touch.pressed || cancel-touch.has-hover
+                            ? root.fg.with-alpha(0.12) : root.fg.with-alpha(0.07);
+                        cancel-text := Text {
+                            text: "Cancel"; color: root.fg;
+                            font-family: Theme.font-ui; font-size: Theme.body-small;
+                            horizontal-alignment: center; vertical-alignment: center;
+                            width: 100%; height: 100%;
+                        }
+                        cancel-touch := TouchArea { clicked => { root.demote-open = false; } }
+                    }
+                    go-btn := Rectangle {
+                        width: go-text.preferred-width + 26px; height: 34px;
+                        border-radius: 17px;
+                        background: go-touch.pressed || go-touch.has-hover
+                            ? Theme.urgent.brighter(0.1) : Theme.urgent;
+                        go-text := Text {
+                            text: "Change"; color: Theme.background;
+                            font-family: Theme.font-ui; font-size: Theme.body-small;
+                            font-weight: 700;
+                            horizontal-alignment: center; vertical-alignment: center;
+                            width: 100%; height: 100%;
+                        }
+                        go-touch := TouchArea {
+                            clicked => { root.demote-open = false; root.set-my-role(root.demote-level); }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Reset restores the Matrix defaults (50 for state, 0 to speak). The
+    // bridge sends the keys one at a time, as the Permissions grid does.
+    if root.confirm-reset-open : Rectangle {
+        width: 100%; height: 100%;
+        Rectangle {
+            width: 100%; height: 100%;
+            background: #000000.with-alpha(0.5);
+            TouchArea { clicked => { root.confirm-reset-open = false; } }
+        }
+        reset-card := Rectangle {
+            x: (root.width - self.width) / 2;
+            y: (root.height - self.height) / 2;
+            width: min(root.width - 60px, 320px);
+            height: reset-col.preferred-height + 32px;
+            border-radius: 18px;
+            background: Theme.popup-background;
+            reset-col := VerticalLayout {
+                x: 18px; y: 16px;
+                width: reset-card.width - 36px;
+                spacing: 10px;
+                Text {
+                    text: "Reset permissions?";
+                    color: root.fg; wrap: word-wrap;
+                    font-family: Theme.font-ui; font-size: Theme.subtitle; font-weight: 700;
+                }
+                Text {
+                    text: "Every capability goes back to the default level. Who holds which role stays as it is.";
+                    color: root.fg.with-alpha(0.6); wrap: word-wrap;
+                    font-family: Theme.font-ui; font-size: Theme.body-small;
+                }
+                HorizontalLayout {
+                    alignment: end;
+                    spacing: 8px;
+                    rcancel-btn := Rectangle {
+                        width: rcancel-text.preferred-width + 26px; height: 34px;
+                        border-radius: 17px;
+                        background: rcancel-touch.pressed || rcancel-touch.has-hover
+                            ? root.fg.with-alpha(0.12) : root.fg.with-alpha(0.07);
+                        rcancel-text := Text {
+                            text: "Cancel"; color: root.fg;
+                            font-family: Theme.font-ui; font-size: Theme.body-small;
+                            horizontal-alignment: center; vertical-alignment: center;
+                            width: 100%; height: 100%;
+                        }
+                        rcancel-touch := TouchArea { clicked => { root.confirm-reset-open = false; } }
+                    }
+                    rgo-btn := Rectangle {
+                        width: rgo-text.preferred-width + 26px; height: 34px;
+                        border-radius: 17px;
+                        background: rgo-touch.pressed || rgo-touch.has-hover
+                            ? Theme.urgent.brighter(0.1) : Theme.urgent;
+                        rgo-text := Text {
+                            text: "Reset"; color: Theme.background;
+                            font-family: Theme.font-ui; font-size: Theme.body-small;
+                            font-weight: 700;
+                            horizontal-alignment: center; vertical-alignment: center;
+                            width: 100%; height: 100%;
+                        }
+                        rgo-touch := TouchArea {
+                            clicked => { root.confirm-reset-open = false; root.reset-permissions(); }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    note-pill := Rectangle {
+        x: (root.width - self.width) / 2;
+        y: root.height - self.height - 20px;
+        width: note-text.preferred-width + 28px;
+        height: 34px;
+        border-radius: 17px;
+        background: Theme.popup-background;
+        opacity: root.note != "" ? 1 : 0;
+        visible: self.opacity > 0.01;
+        animate opacity { duration: 150ms; }
+        note-text := Text {
+            text: root.note; color: root.fg;
+            font-family: Theme.font-ui; font-size: Theme.body-small;
+            horizontal-alignment: center; vertical-alignment: center;
+            width: 100%; height: 100%;
+        }
+    }
+    note-timer := Timer {
+        interval: 2600ms;
+        running: root.note != "";
+        triggered => { root.note = ""; }
     }
 }

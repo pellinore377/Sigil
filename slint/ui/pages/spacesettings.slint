@@ -1,33 +1,203 @@
-// SpaceSettingsPage — port of the QML page of the same name. STUB: a fork replaces
-// this file wholesale; add properties/callbacks here and list the app.slint +
-// bridge wiring you need in your WIRING file.
+// SpaceSettingsPage — mobile/SpaceSettingsPage.qml. A space's settings: its
+// identity, and the four pages a room shares with it. Name, topic and picture
+// are edited in place; Save appears once something differs.
 
 import { Theme } from "../style.slint";
 import { Icons } from "../icons.slint";
-import { IconLabel, ActionButton, Avatar, SButton, TextWell } from "../components.slint";
-import { SettingsHeader, SettingsGroup, SettingsRow, OverflowMenu, ChoiceSheet, Spinner, MenuEntry, ChoiceEntry } from "../furniture.slint";
-import { RoomRow, TimelineRow, MemberRow, SpaceRow, HierarchyRow, ThreadRow, UserRow, RoomSettingsModel, PowerRow, ReactionChip, EmojiItem } from "../model.slint";
+import { IconLabel, Avatar } from "../components.slint";
+import { SettingsHeader, SettingsGroup, SettingsRow } from "../furniture.slint";
+import { RoomSettingsModel } from "../model.slint";
 
 export component SpaceSettingsPage inherits Rectangle {
     in property <color> fg: Theme.menu-text;
+    in property <RoomSettingsModel> model;
+    in property <bool> can-edit-info;    // model.can-edit-info split by the bridge if finer caps land
+    in property <bool> busy;
+    in property <string> error;
+    /// Set by the shell once the file chooser returns; "" = unchanged.
+    in property <string> new-avatar-path;
+    in property <image> new-avatar;
+    // Seeded by the bridge from the settings read when the page opens.
+    in-out property <string> name-text;
+    in-out property <string> topic-text;
     callback closed;
+    callback pick-avatar;
+    callback save(string, string);       // name, topic; avatar rides bridge state
+    callback open-notifications;
+    callback open-security;
+    callback open-roles;
+    callback open-members;
+
+    property <bool> dirty: root.name-text != root.model.name
+        || root.topic-text != root.model.topic
+        || root.new-avatar-path != "";
     background: transparent;
-    VerticalLayout {
-        SettingsHeader {
-            title: "SpaceSettings";
-            fg: root.fg;
-            back => { root.closed(); }
-        }
-        Rectangle {
-            vertical-stretch: 1;
-            Text {
-                text: "SpaceSettings — not ported yet";
-                color: root.fg.with-alpha(0.5);
-                font-family: Theme.font-ui;
-                font-size: Theme.body;
-                horizontal-alignment: center;
-                vertical-alignment: center;
-                width: 100%; height: 100%;
+
+    fl := Flickable {
+        width: 100%; height: 100%;
+        viewport-height: content.preferred-height + 24px;
+        content := VerticalLayout {
+            width: fl.width;
+            alignment: start;
+
+            SettingsHeader {
+                fg: root.fg;
+                title: "Space settings";
+                action: root.busy ? "Saving…" : "Save";
+                action-enabled: root.dirty && !root.busy;
+                back => { root.closed(); }
+                actioned => { root.save(root.name-text, root.topic-text); }
+            }
+
+            Rectangle { height: 14px; }
+
+            face-holder := Rectangle {
+                height: 80px;
+                face := Avatar {
+                    x: (face-holder.width - self.width) / 2;
+                    y: (face-holder.height - self.height) / 2;
+                    size: 76px;
+                    source: root.new-avatar-path != "" ? root.new-avatar : root.model.avatar;
+                    initials: root.model.initials;
+                    tint: root.model.tint;
+                }
+                if root.can-edit-info : Rectangle {
+                    x: face.x + face.width - 26px;
+                    y: face.y + face.height - 26px;
+                    width: 28px; height: 28px; border-radius: 14px;
+                    background: Theme.accent;
+                    IconLabel {
+                        text: Icons.camera;
+                        color: Theme.background;
+                        font-size: Theme.body-small;
+                        width: 100%; height: 100%;
+                    }
+                }
+                TouchArea {
+                    enabled: root.can-edit-info;
+                    clicked => { root.pick-avatar(); }
+                }
+            }
+
+            Rectangle { height: 10px; }
+
+            // Identity
+            VerticalLayout {
+                spacing: 6px;
+                Rectangle {
+                    height: name-label.preferred-height;
+                    name-label := Text {
+                        x: 22px;
+                        text: "Name"; color: root.fg.with-alpha(0.55);
+                        font-family: Theme.font-ui; font-size: Theme.caption; font-weight: 700;
+                    }
+                }
+                name-well := Rectangle {
+                    x: 22px; width: fl.width - 44px; height: 44px;
+                    border-radius: 10px;
+                    border-width: 1px;
+                    border-color: name-input.has-focus ? Theme.accent.with-alpha(0.8) : root.fg.with-alpha(0.2);
+                    HorizontalLayout {
+                        padding-left: 12px; padding-right: 12px;
+                        Rectangle {
+                            clip: true;
+                            name-input := TextInput {
+                                enabled: root.can-edit-info;
+                                color: root.can-edit-info ? root.fg : root.fg.with-alpha(0.5);
+                                font-family: Theme.font-ui; font-size: Theme.body;
+                                vertical-alignment: center;
+                                width: 100%; height: 100%;
+                                single-line: true;
+                                text <=> root.name-text;
+                            }
+                        }
+                    }
+                }
+                Rectangle { height: 6px; }
+                Rectangle {
+                    height: topic-label.preferred-height;
+                    topic-label := Text {
+                        x: 22px;
+                        text: "Topic"; color: root.fg.with-alpha(0.55);
+                        font-family: Theme.font-ui; font-size: Theme.caption; font-weight: 700;
+                    }
+                }
+                topic-well := Rectangle {
+                    x: 22px; width: fl.width - 44px; height: 64px;
+                    border-radius: 10px;
+                    border-width: 1px;
+                    border-color: topic-input.has-focus ? Theme.accent.with-alpha(0.8) : root.fg.with-alpha(0.2);
+                    Rectangle {
+                        x: 12px; y: 12px;
+                        width: topic-well.width - 24px; height: topic-well.height - 24px;
+                        clip: true;
+                        topic-input := TextInput {
+                            enabled: root.can-edit-info;
+                            color: root.can-edit-info ? root.fg : root.fg.with-alpha(0.5);
+                            font-family: Theme.font-ui; font-size: Theme.body;
+                            width: 100%; height: 100%;
+                            wrap: word-wrap;
+                            single-line: false;
+                            text <=> root.topic-text;
+                        }
+                        if topic-input.text == "" : Text {
+                            text: "What is this space about?";
+                            color: root.fg.with-alpha(0.4);
+                            font-family: Theme.font-ui; font-size: Theme.body;
+                        }
+                    }
+                }
+                Rectangle { height: 14px; }
+            }
+
+            SettingsGroup {
+                fg: root.fg;
+                SettingsRow {
+                    fg: root.fg;
+                    icon: Icons.person; label: "People";
+                    trailing: "count"; value: root.model.member-count;
+                    clicked => { root.open-members(); }
+                }
+                SettingsRow {
+                    fg: root.fg;
+                    icon: Icons.shield; label: "Roles & permissions";
+                    trailing: "chevron";
+                    clicked => { root.open-roles(); }
+                }
+            }
+
+            SettingsGroup {
+                fg: root.fg;
+                SettingsRow {
+                    fg: root.fg;
+                    icon: Icons.bell; label: "Notifications";
+                    trailing: "value";
+                    // Blank until the read lands: a default caption asserts facts it lacks.
+                    value: root.model.room-id == "" ? ""
+                         : root.model.notification-mode == "all" ? "All messages"
+                         : root.model.notification-mode == "mentions" ? "Mentions only"
+                         : root.model.notification-mode == "mute" ? "Muted" : "Default";
+                    clicked => { root.open-notifications(); }
+                }
+                SettingsRow {
+                    fg: root.fg;
+                    icon: Icons.lock; label: "Security & privacy";
+                    trailing: "value";
+                    value: root.model.room-id == "" ? ""
+                         : root.model.join-rule == "public" ? "Public"
+                         : root.model.join-rule == "restricted" ? "Space members" : "Invite only";
+                    clicked => { root.open-security(); }
+                }
+            }
+
+            Rectangle { height: 10px; }
+            if root.error != "" : Rectangle {
+                height: err.preferred-height;
+                err := Text {
+                    x: 22px; width: fl.width - 44px;
+                    text: root.error; color: Theme.urgent; wrap: word-wrap;
+                    font-family: Theme.font-ui; font-size: Theme.body-small;
+                }
             }
         }
     }
