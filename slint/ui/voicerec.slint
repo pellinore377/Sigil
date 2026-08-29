@@ -1,6 +1,7 @@
-// Voice recorder — the QML voice panel: a compact drawer that rises above
-// the composer, not a full-screen page. Three states: idle (tap to record),
-// recording (live level bars + elapsed), ready (clip waveform + duration).
+// Voice recorder — VoiceRecorder.qml verbatim: an inline 230px panel under
+// the composer. Three states: idle (static 7-bar wave + caption), recording
+// (blinking dot + zero-padded timer over a live 48px level band), ready (the
+// clip's waveform + duration). Controls: side pills + a 120px centre pill.
 
 import { Theme } from "style.slint";
 import { Icons } from "icons.slint";
@@ -21,154 +22,162 @@ export component VoiceRecorder inherits Rectangle {
     callback attach;
     callback cancelled;
 
-    // Scrim: tap-away cancels, like every sheet.
-    background: Theme.background.with-alpha(0.35);
-    TouchArea { clicked => { root.cancelled(); } }
+    // The card ink: the QML flips to dark on light theme tints; Frosted Glass
+    // stays dark, so fg stands in until chat themes reach the recorder.
+    property <color> ink: root.fg;
+    property <color> pill-c: Theme.background.with-alpha(0.85);
+    property <float> shown: root.state == "recording" ? root.elapsed : root.clip-duration;
+    property <string> timer-text:
+        (floor(root.shown / 60) < 10 ? "0" : "") + floor(root.shown / 60)
+        + ":" + (mod(floor(root.shown), 60) < 10 ? "0" : "") + mod(floor(root.shown), 60);
 
-    drawer := Rectangle {
-        x: 10px;
-        width: root.width - 20px;
-        y: root.height - self.height - 76px;   // riding above the composer
-        height: 220px;
-        border-radius: 22px;
-        background: Theme.popup-background;
-        border-width: 1px;
-        border-color: Theme.popup-border;
-        TouchArea { }  // the drawer itself swallows taps
+    height: 230px;
+    background: Theme.menu-background;
+    TouchArea { }  // the panel swallows taps
 
-        VerticalLayout {
-            padding: 14px;
-            spacing: 10px;
+    VerticalLayout {
+        padding: 10px;
+        spacing: 10px;
 
-            // Stage
-            stage := Rectangle {
-                vertical-stretch: 1;
-                border-radius: 14px;
-                background: root.fg.with-alpha(0.05);
+        // Stage card
+        stage := Rectangle {
+            vertical-stretch: 1;
+            border-radius: 18px;
+            background: root.fg.with-alpha(0.07);
 
-                if root.state == "idle" : VerticalLayout {
+            // idle: static waveform glyph + caption
+            if root.state == "idle" : VerticalLayout {
+                alignment: center;
+                spacing: 10px;
+                idle-wave := HorizontalLayout {
                     alignment: center;
-                    spacing: 8px;
-                    IconLabel {
-                        text: Icons.voiceMemo;
-                        filled: false;
-                        color: root.fg.with-alpha(0.8);
-                        font-size: 30px;
-                        horizontal-alignment: center;
-                    }
-                    Text {
-                        text: "Tap to record your voice";
-                        color: root.fg.with-alpha(0.65);
-                        font-family: Theme.font-ui;
-                        font-size: Theme.body-small;
-                        horizontal-alignment: center;
+                    spacing: 4px;
+                    for lvl in [0.35, 0.6, 0.85, 1.0, 0.8, 0.5, 0.3] : Rectangle {
+                        y: (46px - self.height) / 2;
+                        width: 5px;
+                        height: 46px * lvl;
+                        border-radius: 2.5px;
+                        background: root.ink.with-alpha(0.55);
                     }
                 }
-
-                if root.state == "recording" : HorizontalLayout {
-                    padding-left: 16px; padding-right: 16px;
-                    spacing: 12px;
-                    rec-dot := Rectangle {
-                        y: (stage.height - 12px) / 2;
-                        width: 12px; height: 12px; border-radius: 6px;
-                        background: Theme.urgent;
-                        opacity: 0.35 + 0.65 * abs(sin(360deg * (animation-tick() / 1.2s)));
-                    }
-                    bars := Rectangle {
-                        horizontal-stretch: 1;
-                        for level[i] in root.levels : Rectangle {
-                            property <length> slot: bars.width / 60;
-                            x: i * self.slot;
-                            width: max(2px, self.slot - 2px);
-                            height: max(3px, min(1.0, level) * (stage.height - 24px));
-                            y: (stage.height - self.height) / 2;
-                            border-radius: 1.5px;
-                            background: root.fg.with-alpha(0.9);
-                        }
-                    }
-                    Text {
-                        text: floor(root.elapsed / 60) + ":" + (mod(floor(root.elapsed), 60) < 10 ? "0" : "") + mod(floor(root.elapsed), 60);
-                        color: root.fg.with-alpha(0.8);
-                        font-family: Theme.font-mono;
-                        font-size: Theme.body;
-                        vertical-alignment: center;
-                    }
-                }
-
-                if root.state == "ready" : HorizontalLayout {
-                    padding-left: 16px; padding-right: 16px;
-                    spacing: 12px;
-                    wave := Rectangle {
-                        horizontal-stretch: 1;
-                        for level[i] in root.clip-waveform : Rectangle {
-                            property <length> slot: wave.width / 60;
-                            x: i * self.slot;
-                            width: max(2px, self.slot - 2px);
-                            height: max(3px, min(1.0, level) * (stage.height - 24px));
-                            y: (stage.height - self.height) / 2;
-                            border-radius: 1.5px;
-                            background: root.accent;
-                        }
-                    }
-                    Text {
-                        text: floor(root.clip-duration / 60) + ":" + (mod(floor(root.clip-duration), 60) < 10 ? "0" : "") + mod(floor(root.clip-duration), 60);
-                        color: root.fg.with-alpha(0.8);
-                        font-family: Theme.font-mono;
-                        font-size: Theme.body;
-                        vertical-alignment: center;
-                    }
+                Text {
+                    text: "Tap to record your voice";
+                    color: root.ink.with-alpha(0.8);
+                    font-family: Theme.font-ui;
+                    font-size: Theme.body;
+                    horizontal-alignment: center;
                 }
             }
 
-            // Cancel · record/stop · Attach
-            HorizontalLayout {
-                spacing: 10px;
-                cancel-b := Rectangle {
-                    horizontal-stretch: 1;
-                    height: 46px;
-                    border-radius: 23px;
-                    background: cancel-t.pressed ? root.fg.with-alpha(0.12) : root.fg.with-alpha(0.06);
-                    HorizontalLayout {
-                        alignment: center;
-                        spacing: 6px;
-                        IconLabel { text: Icons.close; color: root.fg; font-size: Theme.body; vertical-alignment: center; }
-                        Text { text: root.state == "ready" ? "Restart" : "Cancel"; color: root.fg; font-family: Theme.font-ui; font-size: Theme.body; vertical-alignment: center; }
+            // recording / ready: dot + timer stacked above the level band
+            if root.state != "idle" : VerticalLayout {
+                alignment: center;
+                spacing: 14px;
+                HorizontalLayout {
+                    alignment: center;
+                    spacing: 7px;
+                    if root.state == "recording" : rec-dot := Rectangle {
+                        y: (timer-line.preferred-height - 9px) / 2;
+                        width: 9px; height: 9px; border-radius: 4.5px;
+                        background: #e88b90;
+                        // 700ms down, 700ms up — the QML blink.
+                        opacity: 0.25 + 0.75 * abs(sin(360deg * (animation-tick() / 1.4s)));
                     }
-                    cancel-t := TouchArea { clicked => {
-                        if (root.state == "ready") { root.restart(); } else { root.cancelled(); }
-                    } }
+                    timer-line := Text {
+                        text: root.timer-text;
+                        color: root.ink;
+                        font-family: Theme.font-ui;
+                        font-size: Theme.title;
+                        vertical-alignment: center;
+                    }
                 }
-                mic-b := Rectangle {
-                    width: 84px;
-                    height: 46px;
-                    border-radius: 23px;
-                    background: root.state == "recording" ? Theme.urgent
-                              : mic-t.pressed ? root.fg.with-alpha(0.35) : root.fg.with-alpha(0.22);
+                band := Rectangle {
+                    height: 48px;
+                    bars := HorizontalLayout {
+                        alignment: center;
+                        spacing: 2px;
+                        for level in (root.state == "recording" ? root.levels : root.clip-waveform) : Rectangle {
+                            y: (48px - self.height) / 2;
+                            width: 3px;
+                            height: max(3px, 44px * min(1.0, level));
+                            border-radius: 1.5px;
+                            background: root.ink.with-alpha(0.8);
+                        }
+                    }
+                }
+            }
+        }
+
+        // Controls: Restart/Cancel · record/stop · Attach
+        controls := HorizontalLayout {
+            height: 46px;
+            spacing: 8px;
+            cancel-b := Rectangle {
+                horizontal-stretch: 1;
+                border-radius: 23px;
+                background: root.pill-c;
+                HorizontalLayout {
+                    alignment: center;
+                    spacing: 6px;
                     IconLabel {
-                        text: root.state == "recording" ? Icons.stop : Icons.micOn;
-                        color: root.state == "recording" ? Theme.background : root.fg;
-                        width: 100%; height: 100%;
+                        text: root.state == "recording" ? Icons.refresh : Icons.close;
+                        filled: false;
+                        color: root.fg; vertical-alignment: center;
                     }
-                    mic-t := TouchArea { clicked => {
-                        if (root.state == "recording") { root.stop(); }
-                        else if (root.state == "idle") { root.record(); }
-                    } }
+                    Text {
+                        text: root.state == "recording" ? "Restart" : "Cancel";
+                        color: root.fg;
+                        font-family: Theme.font-ui; font-size: Theme.body;
+                        vertical-alignment: center;
+                    }
                 }
-                attach-b := Rectangle {
-                    horizontal-stretch: 1;
-                    height: 46px;
-                    border-radius: 23px;
-                    opacity: root.state == "ready" ? 1.0 : 0.4;
-                    background: attach-t.pressed && root.state == "ready" ? root.accent.with-alpha(0.5) : root.accent.with-alpha(0.3);
-                    HorizontalLayout {
-                        alignment: center;
-                        spacing: 6px;
-                        IconLabel { text: Icons.check; color: root.fg; font-size: Theme.body; vertical-alignment: center; }
-                        Text { text: "Attach"; color: root.fg; font-family: Theme.font-ui; font-size: Theme.body; vertical-alignment: center; }
+                cancel-t := TouchArea { clicked => {
+                    if (root.state == "recording") { root.restart(); }
+                    else { root.cancelled(); }
+                } }
+            }
+            mic-b := Rectangle {
+                width: 120px;
+                border-radius: 23px;
+                background: root.state == "recording" ? Theme.urgent.brighter(0.25) : root.accent.brighter(0.3);
+                IconLabel {
+                    text: root.state == "recording" ? Icons.stop : Icons.record;
+                    color: Theme.background;
+                    font-size: 22px;
+                    width: 100%; height: 100%;
+                }
+                mic-t := TouchArea { clicked => {
+                    if (root.state == "recording") { root.stop(); }
+                    else if (root.state == "ready") { root.restart(); }
+                    else { root.record(); }
+                } }
+            }
+            attach-b := Rectangle {
+                horizontal-stretch: 1;
+                border-radius: 23px;
+                opacity: root.state == "idle" ? 0.6 : 1;
+                background: root.state == "idle" ? root.pill-c : root.accent.brighter(0.3);
+                HorizontalLayout {
+                    alignment: center;
+                    spacing: 6px;
+                    IconLabel {
+                        text: Icons.check; filled: false;
+                        color: root.state == "idle" ? root.fg : #1a1a1a;
+                        vertical-alignment: center;
                     }
-                    attach-t := TouchArea {
-                        enabled: root.state == "ready";
-                        clicked => { root.attach(); }
+                    Text {
+                        text: "Attach";
+                        color: root.state == "idle" ? root.fg : #1a1a1a;
+                        font-family: Theme.font-ui; font-size: Theme.body;
+                        vertical-alignment: center;
+                    }
+                }
+                attach-t := TouchArea {
+                    enabled: root.state != "idle";
+                    // Attaching mid-recording stops the take first (QML attach()).
+                    clicked => {
+                        if (root.state == "recording") { root.stop(); }
+                        else { root.attach(); }
                     }
                 }
             }

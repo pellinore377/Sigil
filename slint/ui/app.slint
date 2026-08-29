@@ -673,8 +673,11 @@ export component AppWindow inherits Window {
                 close-requested => { root.attach-open = false; }
             }
         }
+        // Inline panel flush with the bottom edge, the composer above it —
+        // the QML mounts it under the composer, not floating over the chat.
         if root.recorder-open : VoiceRecorder {
-            width: 100%; height: 100%;
+            x: 0; width: 100%;
+            y: content.height - self.height;
             state: root.rec-state;
             elapsed: root.rec-elapsed;
             clip-duration: root.rec-clip-duration;
