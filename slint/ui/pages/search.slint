@@ -3,7 +3,6 @@
 // runs in the bridge; rows arrive as TimelineRow projections — text results
 // carry sender-name + body, images carry thumb, links carry the url in body.
 
-import { ListView } from "std-widgets.slint";
 import { Theme } from "../style.slint";
 import { Icons } from "../icons.slint";
 import { IconLabel, ActionButton, Avatar } from "../components.slint";
@@ -78,122 +77,124 @@ export component SearchPage inherits Rectangle {
             }
         }
 
-        content := ListView {
-            vertical-stretch: 1;
+        content := Flickable {
+            content-l := VerticalLayout {
+                vertical-stretch: 1;
 
-            // Text results while typing.
-            for r in (root.searching ? root.results : []) : rrow := Rectangle {
-                height: 52px;
-                Rectangle {
-                    x: 10px; width: rrow.width - 20px;
-                    y: 4px; height: rrow.height - 8px;
-                    border-radius: 12px;
-                    background: rrow-t.pressed || rrow-t.has-hover ? root.fg.with-alpha(0.05) : transparent;
-                }
-                VerticalLayout {
-                    x: 18px;
-                    width: rrow.width - 36px;
-                    alignment: center;
-                    Text {
-                        text: r.is-own ? "You" : r.sender-name;
-                        color: root.fg.with-alpha(0.6);
-                        font-family: Theme.font-ui;
-                        font-size: Theme.caption;
-                        font-weight: 700;
-                        overflow: elide;
+                // Text results while typing.
+                for r in (root.searching ? root.results : []) : rrow := Rectangle {
+                    height: 52px;
+                    Rectangle {
+                        x: 10px; width: rrow.width - 20px;
+                        y: 4px; height: rrow.height - 8px;
+                        border-radius: 12px;
+                        background: rrow-t.pressed || rrow-t.has-hover ? root.fg.with-alpha(0.05) : transparent;
                     }
-                    Text {
-                        text: r.body;
-                        color: root.fg;
-                        font-family: Theme.font-ui;
-                        font-size: Theme.body-small;
-                        overflow: elide;
+                    VerticalLayout {
+                        x: 18px;
+                        width: rrow.width - 36px;
+                        alignment: center;
+                        Text {
+                            text: r.is-own ? "You" : r.sender-name;
+                            color: root.fg.with-alpha(0.6);
+                            font-family: Theme.font-ui;
+                            font-size: Theme.caption;
+                            font-weight: 700;
+                            overflow: elide;
+                        }
+                        Text {
+                            text: r.body;
+                            color: root.fg;
+                            font-family: Theme.font-ui;
+                            font-size: Theme.body-small;
+                            overflow: elide;
+                        }
                     }
+                    rrow-t := TouchArea { clicked => { root.jump-to(r.event-id); } }
                 }
-                rrow-t := TouchArea { clicked => { root.jump-to(r.event-id); } }
-            }
-            if root.searching && root.results.length == 0 : Rectangle {
-                height: 60px;
-                Text {
-                    text: "No matches";
-                    color: root.fg.with-alpha(0.5);
-                    font-family: Theme.font-ui;
-                    font-size: Theme.body;
-                    horizontal-alignment: center;
-                    vertical-alignment: center;
-                    width: 100%; height: 100%;
-                }
-            }
-
-            // Idle: images grid (3-up rows via flow of fixed cells).
-            if !root.searching && root.images.length > 0 : Text {
-                text: "Images";
-                color: root.fg;
-                font-family: Theme.font-ui;
-                font-size: Theme.subtitle;
-                font-weight: 700;
-                x: 16px;
-                height: 36px;
-                vertical-alignment: center;
-            }
-            if !root.searching : img-flow := Rectangle {
-                height: root.images.length == 0 ? 0px
-                    : (floor((root.images.length - 1) / 4) + 1) * 90px;
-                for img[i] in root.images : cell := Rectangle {
-                    x: 14px + mod(i, 4) * 90px;
-                    y: floor(i / 4) * 90px;
-                    width: 84px; height: 84px;
-                    border-radius: 10px;
-                    clip: true;
-                    background: root.fg.with-alpha(0.08);
-                    if img.thumb.width > 0 : Image {
-                        source: img.thumb;
-                        image-fit: cover;
-                        width: 100%; height: 100%;
-                    }
-                    TouchArea { clicked => { root.open-image(img.event-id); } }
-                }
-            }
-
-            // Idle: links.
-            if !root.searching && root.links.length > 0 : Text {
-                text: "Links";
-                color: root.fg;
-                font-family: Theme.font-ui;
-                font-size: Theme.subtitle;
-                font-weight: 700;
-                x: 16px;
-                height: 38px;
-                vertical-alignment: center;
-            }
-            for l in (root.searching ? [] : root.links) : lrow := Rectangle {
-                height: 56px;
-                Rectangle {
-                    x: 14px; width: lrow.width - 28px;
-                    y: 4px; height: lrow.height - 8px;
-                    border-radius: 14px;
-                    background: root.fg.with-alpha(0.06);
-                }
-                VerticalLayout {
-                    x: 24px;
-                    width: lrow.width - 48px;
-                    alignment: center;
+                if root.searching && root.results.length == 0 : Rectangle {
+                    height: 60px;
                     Text {
-                        text: l.body;   // the url
-                        color: root.fg;
-                        font-family: Theme.font-ui;
-                        font-size: Theme.body-small;
-                        overflow: elide;
-                    }
-                    Text {
-                        text: l.is-own ? "You" : l.sender-name;
+                        text: "No matches";
                         color: root.fg.with-alpha(0.5);
                         font-family: Theme.font-ui;
-                        font-size: Theme.caption;
-                        overflow: elide;
+                        font-size: Theme.body;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                        width: 100%; height: 100%;
                     }
                 }
-                TouchArea { clicked => { root.open-link(l.body); } }
+
+                // Idle: images grid (3-up rows via flow of fixed cells).
+                if !root.searching && root.images.length > 0 : Text {
+                    text: "Images";
+                    color: root.fg;
+                    font-family: Theme.font-ui;
+                    font-size: Theme.subtitle;
+                    font-weight: 700;
+                    x: 16px;
+                    height: 36px;
+                    vertical-alignment: center;
+                }
+                if !root.searching : img-flow := Rectangle {
+                    height: root.images.length == 0 ? 0px
+                        : (floor((root.images.length - 1) / 4) + 1) * 90px;
+                    for img[i] in root.images : cell := Rectangle {
+                        x: 14px + mod(i, 4) * 90px;
+                        y: floor(i / 4) * 90px;
+                        width: 84px; height: 84px;
+                        border-radius: 10px;
+                        clip: true;
+                        background: root.fg.with-alpha(0.08);
+                        if img.thumb.width > 0 : Image {
+                            source: img.thumb;
+                            image-fit: cover;
+                            width: 100%; height: 100%;
+                        }
+                        TouchArea { clicked => { root.open-image(img.event-id); } }
+                    }
+                }
+
+                // Idle: links.
+                if !root.searching && root.links.length > 0 : Text {
+                    text: "Links";
+                    color: root.fg;
+                    font-family: Theme.font-ui;
+                    font-size: Theme.subtitle;
+                    font-weight: 700;
+                    x: 16px;
+                    height: 38px;
+                    vertical-alignment: center;
+                }
+                for l in (root.searching ? [] : root.links) : lrow := Rectangle {
+                    height: 56px;
+                    Rectangle {
+                        x: 14px; width: lrow.width - 28px;
+                        y: 4px; height: lrow.height - 8px;
+                        border-radius: 14px;
+                        background: root.fg.with-alpha(0.06);
+                    }
+                    VerticalLayout {
+                        x: 24px;
+                        width: lrow.width - 48px;
+                        alignment: center;
+                        Text {
+                            text: l.body;   // the url
+                            color: root.fg;
+                            font-family: Theme.font-ui;
+                            font-size: Theme.body-small;
+                            overflow: elide;
+                        }
+                        Text {
+                            text: l.is-own ? "You" : l.sender-name;
+                            color: root.fg.with-alpha(0.5);
+                            font-family: Theme.font-ui;
+                            font-size: Theme.caption;
+                            overflow: elide;
+                        }
+                    }
+                    TouchArea { clicked => { root.open-link(l.body); } }
+                }
             }
         }
     }

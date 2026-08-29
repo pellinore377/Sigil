@@ -4,7 +4,7 @@
 
 import { Theme } from "../style.slint";
 import { Icons } from "../icons.slint";
-import { SettingsHeader, SettingsGroup, SettingsRow, ChoiceSheet } from "../furniture.slint";
+import { SettingsHeader, SettingsGroup, SettingsRow, ChoiceSheet, ChoiceEntry } from "../furniture.slint";
 
 export component RolesPage inherits Rectangle {
     in property <color> fg: Theme.menu-text;
@@ -84,16 +84,20 @@ export component RolesPage inherits Rectangle {
         fg: root.fg;
         title: "Change my role";
         value: root.my-level >= 100 ? "100" : (root.my-level >= 50 ? "50" : "0");
-        model: root.my-level >= 100 ? [
+        property <[ChoiceEntry]> admin-choices: [
             { t: "Admin", v: "100", sub: "Can do everything, including changing roles." },
             { t: "Moderator", v: "50", sub: "Can remove people and messages." },
             { t: "Member", v: "0", sub: "Can send messages." },
-        ] : root.my-level >= 50 ? [
+        ];
+        property <[ChoiceEntry]> mod-choices: [
             { t: "Moderator", v: "50", sub: "Can remove people and messages." },
             { t: "Member", v: "0", sub: "Can send messages." },
-        ] : [
+        ];
+        property <[ChoiceEntry]> member-choices: [
             { t: "Member", v: "0", sub: "Can send messages." },
         ];
+        model: root.my-level >= 100 ? self.admin-choices
+             : root.my-level >= 50 ? self.mod-choices : self.member-choices;
         chose(v) => {
             if (v == "100" && root.my-level >= 100) { return; }
             if (v == "50" && root.my-level >= 50 && root.my-level < 100) { return; }

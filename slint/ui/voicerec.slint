@@ -1,0 +1,185 @@
+// Voice recorder under the composer — mobile/VoiceRecorder.qml.
+// idle -> recording -> ready (review/attach). The engine owns the recording
+// (voice.start/stop/cancel); this draws state and levels.
+
+import { Theme } from "style.slint";
+import { Icons } from "icons.slint";
+import { IconLabel } from "components.slint";
+
+export component VoiceRecorder inherits Rectangle {
+    in property <color> fg: Theme.menu-text;
+    in property <color> accent: Theme.accent;
+    in property <color> surface: Theme.menu-text.with-alpha(0.07);
+    in property <color> chip: Theme.background.with-alpha(0.85);
+
+    // idle | recording | ready — driven by Rust around voice.start/stop.
+    in-out property <string> state: "idle";
+    in property <float> elapsed: 0;          // seconds, ticked by Rust
+    in property <float> clip-duration: 0;
+    in property <[float]> levels;            // rolling last 60 while recording
+    in property <[float]> clip-waveform;     // from voice.stop's reply
+
+    callback record;         // -> voice.start
+    callback stop;           // -> voice.stop
+    callback restart;        // -> voice.cancel then voice.start
+    callback attach;         // -> attached(path,...) resolved Rust-side
+    callback cancelled;      // -> voice.cancel if recording, close drawer
+
+    height: 230px;
+
+    // A chat theme hands us light tints the greys vanish against (VoiceRecorder.qml).
+    property <float> card-lum: (0.299 * root.surface.red / 255 + 0.587 * root.surface.green / 255 + 0.114 * root.surface.blue / 255) * root.surface.alpha / 255;
+    property <color> ink: root.card-lum > 0.30 ? #17131b : root.fg;
+
+    function fmt(t: float) -> string {
+        return (floor(t / 60) < 10 ? "0" : "") + floor(t / 60) + ":" + (mod(floor(t), 60) < 10 ? "0" : "") + mod(floor(t), 60);
+    }
+
+    VerticalLayout {
+        padding: 10px;
+        spacing: 10px;
+
+        // Stage card
+        stage := Rectangle {
+            vertical-stretch: 1;
+            border-radius: 18px;
+            background: root.surface;
+
+            if root.state == "idle" : VerticalLayout {
+                alignment: center;
+                spacing: 10px;
+                HorizontalLayout {
+                    alignment: center;
+                    spacing: 4px;
+                    for h in [0.35, 0.6, 0.85, 1.0, 0.8, 0.5, 0.3] : Rectangle {
+                        y: (46px - self.height) / 2;
+                        width: 5px;
+                        height: 46px * h;
+                        border-radius: 2.5px;
+                        background: root.ink.with-alpha(0.55);
+                    }
+                }
+                Text {
+                    text: "Tap to record your voice";
+                    color: root.ink.with-alpha(0.8);
+                    font-family: Theme.font-ui;
+                    font-size: Theme.body;
+                    horizontal-alignment: center;
+                }
+            }
+
+            if root.state != "idle" : VerticalLayout {
+                alignment: center;
+                spacing: 14px;
+                HorizontalLayout {
+                    alignment: center;
+                    spacing: 7px;
+                    if root.state == "recording" : dot := Rectangle {
+                        y: (root.height - self.height) / 2;
+                        width: 9px; height: 9px; border-radius: 4.5px;
+                        background: #e88b90;
+                        opacity: 0.25 + 0.75 * abs(sin(360deg * (animation-tick() / 1400ms)));
+                    }
+                    Text {
+                        text: root.fmt(root.state == "recording" ? root.elapsed : root.clip-duration);
+                        color: root.ink;
+                        font-family: Theme.font-ui;
+                        font-size: Theme.title;
+                    }
+                }
+                bars := Rectangle {
+                    height: 48px;
+                    HorizontalLayout {
+                        alignment: center;
+                        spacing: 2px;
+                        for lvl in (root.state == "recording" ? root.levels : root.clip-waveform) : Rectangle {
+                            y: (48px - self.height) / 2;
+                            width: 3px;
+                            height: max(3px, 44px * min(1.0, lvl));
+                            border-radius: 1.5px;
+                            background: root.ink.with-alpha(0.8);
+                        }
+                    }
+                }
+            }
+        }
+
+        // Controls: three pills under the card
+        controls := HorizontalLayout {
+            height: 46px;
+            spacing: 8px;
+            left-pill := Rectangle {
+                horizontal-stretch: 1;
+                border-radius: 23px;
+                background: lp-t.pressed ? root.chip.brighter(0.2) : root.chip;
+                HorizontalLayout {
+                    alignment: center;
+                    spacing: 6px;
+                    IconLabel {
+                        text: root.state == "recording" ? Icons.refresh : Icons.close;
+                        filled: false;
+                        color: root.fg;
+                        vertical-alignment: center;
+                    }
+                    Text {
+                        text: root.state == "recording" ? "Restart" : "Cancel";
+                        color: root.fg;
+                        font-family: Theme.font-ui;
+                        font-size: Theme.body;
+                        vertical-alignment: center;
+                    }
+                }
+                lp-t := TouchArea {
+                    clicked => {
+                        if (root.state == "recording") { root.restart(); }
+                        else { root.cancelled(); }
+                    }
+                }
+            }
+            mid-pill := Rectangle {
+                width: 120px;
+                border-radius: 23px;
+                background: root.state == "recording" ? Theme.urgent.brighter(0.25) : root.accent.brighter(0.3);
+                IconLabel {
+                    text: root.state == "recording" ? Icons.stop : Icons.record;
+                    color: Theme.background;
+                    font-size: 22px;
+                    width: 100%; height: 100%;
+                }
+                TouchArea {
+                    clicked => {
+                        if (root.state == "recording") { root.stop(); }
+                        else { root.record(); }
+                    }
+                }
+            }
+            right-pill := Rectangle {
+                horizontal-stretch: 1;
+                border-radius: 23px;
+                background: root.state == "idle" ? root.chip : root.accent.brighter(0.3);
+                opacity: root.state == "idle" ? 0.6 : 1;
+                HorizontalLayout {
+                    alignment: center;
+                    spacing: 6px;
+                    IconLabel {
+                        text: Icons.check;
+                        filled: false;
+                        color: root.state == "idle" ? root.fg : #1a1a1a;
+                        vertical-alignment: center;
+                    }
+                    Text {
+                        text: "Attach";
+                        color: root.state == "idle" ? root.fg : #1a1a1a;
+                        font-family: Theme.font-ui;
+                        font-size: Theme.body;
+                        vertical-alignment: center;
+                    }
+                }
+                TouchArea {
+                    enabled: root.state != "idle";
+                    clicked => { root.attach(); }
+                }
+            }
+        }
+    }
+}
