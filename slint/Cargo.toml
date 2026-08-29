@@ -62,3 +62,8 @@ theme = "@android:style/Theme.DeviceDefault.NoActionBar"
 opt-level = 3
 lto = "thin"
 strip = "debuginfo"
+
+# Dev signing: the adb debug keystore. A real release key comes with real releases.
+[package.metadata.android.signing.release]
+path = "/home/pellinore/.android/debug.keystore"
+keystore_password = "android"

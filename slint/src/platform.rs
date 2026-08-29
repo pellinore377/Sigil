@@ -43,6 +43,16 @@ fn open_url_android(url: &str) -> anyhow::Result<()> {
         "(Ljava/lang/String;Landroid/net/Uri;)V",
         &[JValue::Object(&action), JValue::Object(&uri)],
     )?;
-    env.call_method(&activity, "startActivity", "(Landroid/content/Intent;)V", &[JValue::Object(&intent)])?;
+    // ndk-context hands us the *application* context, not the Activity, and
+    // startActivity from there demands FLAG_ACTIVITY_NEW_TASK (0x10000000).
+    // Without it Android throws, and an uncaught Java exception on a Rust
+    // thread kills the whole process — which read as "the button crashes".
+    env.call_method(&intent, "setFlags", "(I)Landroid/content/Intent;", &[JValue::Int(0x1000_0000)])?;
+    let result = env.call_method(&activity, "startActivity", "(Landroid/content/Intent;)V", &[JValue::Object(&intent)]);
+    if env.exception_check().unwrap_or(false) {
+        env.exception_describe().ok();
+        env.exception_clear().ok(); // a pending exception at detach is fatal
+    }
+    result?;
     Ok(())
 }
