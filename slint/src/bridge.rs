@@ -981,8 +981,10 @@ pub fn rebuild_timeline(ui: &mut UiState, win: &AppWindow) {
         // @markdown interpolates runtime strings as PLAIN text by design.
         let rich_body: Option<slint::StyledText> = if matches!(kind, "text" | "notice" | "emote")
             && item["parts"].as_array().map(|a| a.is_empty()).unwrap_or(true) {
-            item["html"].as_str().filter(|h| !h.is_empty())
-                .and_then(|h| slint::StyledText::from_markdown(&rows::html_to_markdown(h)).ok())
+            // SigilText colour effects outrank plain markup for the body.
+            rows::effects_markdown(&body, &item["effects"])
+                .or_else(|| item["html"].as_str().filter(|h| !h.is_empty()).map(rows::html_to_markdown))
+                .and_then(|md| slint::StyledText::from_markdown(&md).ok())
         } else {
             None
         };
@@ -1317,7 +1319,15 @@ fn start_demo(win: &AppWindow, rt: &tokio::runtime::Runtime, icons: IconSet) -> 
                "body": "Live location", "ts": now - 90_000, "eventId": "$f3",
                "location": {"geoUri": "geo:48.8583736,2.2944813"},
                "liveShare": {"live": true, "expiresAt": now + 83_000}}),
-    ], "len": 15});
+        json!({"id": "f9", "kind": "text", "isOwn": false, "sender": "@lady:demo.host", "senderName": "LadyoftheLake",
+               "body": "solid red, a gradient, and a rainbow", "ts": now - 10_000, "eventId": "$f9",
+               "effects": [
+                   {"start": 0, "end": 9, "color": {"type": "solid", "rgb": {"dark": "#e06c75", "light": "#a03030"}}},
+                   {"start": 11, "end": 21, "color": {"type": "gradient", "stops": [
+                       {"dark": "#61afef", "light": "#2060a0"}, {"dark": "#c678dd", "light": "#803090"}]}},
+                   {"start": 27, "end": 36, "color": {"type": "rainbow"}}
+               ]}),
+    ], "len": 16});
     let status = json!({"event": "status", "session": "loggedIn", "userId": "@pell:demo.host",
                         "displayName": "Pellinore", "avatarPath": "", "sync": "", "syncError": "", "login": {"url": ""}});
     let recovery = json!({"event": "recovery.status",

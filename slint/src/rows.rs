@@ -363,3 +363,100 @@ fn push_md_escaped(out: &mut String, text: &str, in_code: bool) {
         out.push(ch);
     }
 }
+
+/// SigilText static colours: effect spans (char offsets, engine-resolved dark
+/// hex) → markdown with `<font color>` runs for StyledText. Geometry
+/// animations stay out (they need the glyph-run project); colour is 1:1.
+pub fn effects_markdown(body: &str, effects: &Value) -> Option<String> {
+    let list = effects.as_array()?;
+    if list.is_empty() { return None; }
+    let chars: Vec<char> = body.chars().collect();
+    // Per-character colour, later effects painting over earlier ones.
+    let mut colors: Vec<Option<String>> = vec![None; chars.len()];
+    let mut any = false;
+    for e in list {
+        let start = e["start"].as_u64().unwrap_or(0) as usize;
+        let end = (e["end"].as_u64().unwrap_or(0) as usize).min(chars.len());
+        if start >= end { continue; }
+        let c = &e["color"];
+        match c["type"].as_str() {
+            Some("solid") => {
+                let hex = c["rgb"]["dark"].as_str().unwrap_or("");
+                if hex.is_empty() { continue; }
+                for slot in &mut colors[start..end] { *slot = Some(hex.to_string()); }
+                any = true;
+            }
+            Some("gradient") => {
+                let stops: Vec<(u8, u8, u8)> = c["stops"].as_array().map(|a| a.iter()
+                    .filter_map(|s| s["dark"].as_str().and_then(parse_hex))
+                    .collect()).unwrap_or_default();
+                if stops.len() < 2 { continue; }
+                let n = (end - start).max(1) as f32;
+                for (k, slot) in colors[start..end].iter_mut().enumerate() {
+                    let t = k as f32 / (n - 1.0).max(1.0) * (stops.len() - 1) as f32;
+                    let i = (t as usize).min(stops.len() - 2);
+                    let f = t - i as f32;
+                    let (a, b) = (stops[i], stops[i + 1]);
+                    *slot = Some(format!("#{:02x}{:02x}{:02x}",
+                        (a.0 as f32 + (b.0 as f32 - a.0 as f32) * f) as u8,
+                        (a.1 as f32 + (b.1 as f32 - a.1 as f32) * f) as u8,
+                        (a.2 as f32 + (b.2 as f32 - a.2 as f32) * f) as u8));
+                }
+                any = true;
+            }
+            Some("rainbow") => {
+                let n = (end - start).max(1) as f32;
+                for (k, slot) in colors[start..end].iter_mut().enumerate() {
+                    let (r, g, b) = hue_rgb(k as f32 / n);
+                    *slot = Some(format!("#{r:02x}{g:02x}{b:02x}"));
+                }
+                any = true;
+            }
+            _ => {}
+        }
+    }
+    if !any { return None; }
+    // Emit runs: consecutive characters sharing a colour share one font tag.
+    let mut out = String::with_capacity(body.len() * 2);
+    let mut i = 0;
+    while i < chars.len() {
+        let color = colors[i].clone();
+        let mut j = i;
+        while j < chars.len() && colors[j] == color { j += 1; }
+        let run: String = chars[i..j].iter().collect();
+        match color {
+            Some(hex) => {
+                out.push_str(&format!("<font color=\"{hex}\">"));
+                push_md_escaped(&mut out, &run, false);
+                out.push_str("</font>");
+            }
+            None => push_md_escaped(&mut out, &run, false),
+        }
+        i = j;
+    }
+    Some(out)
+}
+
+fn parse_hex(hex: &str) -> Option<(u8, u8, u8)> {
+    let h = hex.trim_start_matches('#');
+    if h.len() < 6 { return None; }
+    Some((
+        u8::from_str_radix(&h[0..2], 16).ok()?,
+        u8::from_str_radix(&h[2..4], 16).ok()?,
+        u8::from_str_radix(&h[4..6], 16).ok()?,
+    ))
+}
+
+fn hue_rgb(t: f32) -> (u8, u8, u8) {
+    let h = (t.fract() * 6.0).abs();
+    let x = (1.0 - (h % 2.0 - 1.0).abs()) * 255.0;
+    let (r, g, b) = match h as u32 {
+        0 => (255.0, x, 0.0),
+        1 => (x, 255.0, 0.0),
+        2 => (0.0, 255.0, x),
+        3 => (0.0, x, 255.0),
+        4 => (x, 0.0, 255.0),
+        _ => (255.0, 0.0, x),
+    };
+    (r as u8, g as u8, b as u8)
+}
