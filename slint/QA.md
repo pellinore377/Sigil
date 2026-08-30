@@ -267,3 +267,14 @@ the live-pill countdown (cut off in the landscape demo window).
 - First on-device pass after sign-in: pinch feel, a GIF, rich text and
   SigilText colours, a location message (live map), poll voting, the
   voice record→stage→caption→send flow.
+
+## Tenth round: per-glyph motion
+- Short animated runs (≤48 chars, single line) lay out one Text per
+  character in a self-measuring row; each glyph drives x/y/rotation/
+  scale/opacity from animation-tick with the engine's motion numbers
+  (wave 1300ms ±1.8px, shake 240ms ±0.8px, pulse ×1.18 @1s, glow 1600ms,
+  barrel 360°@1.2s, flip static-180° with the run reversed; 90ms
+  stagger). Colours compose. Demo-verified across two frames.
+- Longer bodies fall back to coloured StyledText; sparkle/glitch/
+  typewriter/blur (particle/overlay class) remain for the glyph-run
+  engine project, now a much smaller one.
