@@ -664,16 +664,21 @@ export component AppWindow inherits Window {
                 search-edited(q) => { root.act("forward-search", q, ""); }
                 picked(id) => { root.act("forward-picked", id, ""); }
             } }
-        if root.attach-open : att-wrap := Rectangle {
+        att-wrap := Rectangle {
+            // Slides up from the bottom edge like the QML drawer; the scrim
+            // fades with it. (`open ||` prevents the hidden-element deadlock.)
+            property <float> show: root.attach-open ? 1.0 : 0.0;
+            animate show { duration: 200ms; easing: cubic-bezier(0.33, 1, 0.68, 1); }
+            visible: root.attach-open || self.show > 0.01;
             width: 100%; height: 100%;
-            background: Theme.background.with-alpha(0.35);
+            background: Theme.background.with-alpha(0.35 * self.show);
             TouchArea { clicked => { root.attach-open = false; } }
             att := AttachMenu {
                 x: 0;
                 width: att-wrap.width;
                 // A drawer riding above the composer; its own height binding
                 // (per page) stays in charge.
-                y: att-wrap.height - self.height - 66px;
+                y: att-wrap.height - (self.height + 66px) * att-wrap.show;
                 stickers: root.at-stickers; stickers-loaded: root.at-stickers-loaded;
                 pick-files => { root.act("pick-attach-files", "", ""); }
                 open-location(mode) => { root.act("attach-location", mode, ""); }
@@ -692,9 +697,13 @@ export component AppWindow inherits Window {
         }
         // Inline panel flush with the bottom edge, the composer above it —
         // the QML mounts it under the composer, not floating over the chat.
-        if root.recorder-open : VoiceRecorder {
+        // Slides in from below the edge.
+        rec-panel := VoiceRecorder {
+            property <float> show: root.recorder-open ? 1.0 : 0.0;
+            animate show { duration: 200ms; easing: cubic-bezier(0.33, 1, 0.68, 1); }
+            visible: root.recorder-open || self.show > 0.01;
             x: 0; width: 100%;
-            y: content.height - self.height;
+            y: content.height - self.height * self.show;
             state: root.rec-state;
             elapsed: root.rec-elapsed;
             clip-duration: root.rec-clip-duration;

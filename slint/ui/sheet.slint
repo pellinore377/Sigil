@@ -65,7 +65,7 @@ export component MessageSheet inherits Rectangle {
     // 130ms fade on open/close; pill and menu also scale in like the QML.
     property <float> show: root.open ? 1.0 : 0.0;
     animate show { duration: 130ms; easing: cubic-bezier(0.33, 1, 0.68, 1); }
-    visible: self.show > 0.01;
+    visible: root.open || self.show > 0.01;
     opacity: self.show;
     background: transparent;
 

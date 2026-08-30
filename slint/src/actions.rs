@@ -481,20 +481,24 @@ pub fn apply_media_ready(ui: &mut UiState, win: &AppWindow, v: &Value) {
         });
         return;
     }
-    let room = s(v, "roomId").to_string();
-    if room != room_of_key(&ui.open_room) {
+    // The event carries mxc + path only — no roomId/eventId — and `thumbnail`
+    // is a "WxH" string, not a bool. Patch every open-room item on that mxc.
+    let mxc = s(v, "mxc").to_string();
+    let path = s(v, "path").to_string();
+    let thumb = v["thumbnail"].as_str().map(|t| !t.is_empty()).unwrap_or(false);
+    if mxc.is_empty() || path.is_empty() {
         return;
     }
-    let event_id = s(v, "eventId").to_string();
-    let path = s(v, "path").to_string();
-    let thumb = b(v, "thumbnail");
+    let mut touched = false;
     for item in ui.shadow.iter_mut() {
-        if item["eventId"].as_str() == Some(event_id.as_str()) && !item["media"].is_null() {
+        if item["media"]["mxc"].as_str() == Some(mxc.as_str()) {
             item["media"][if thumb { "thumbnailPath" } else { "path" }] = json!(path);
-            break;
+            touched = true;
         }
     }
-    rebuild_timeline(ui, win);
+    if touched {
+        rebuild_timeline(ui, win);
+    }
 }
 
 // ---------------------------------------------------------------- act()

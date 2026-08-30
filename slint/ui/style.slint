@@ -41,18 +41,17 @@ export global Theme {
     out property <string> font-icon: "Material Symbols Rounded";
     out property <string> font-icon-filled: "Material Symbols Rounded Filled";
 
-    // Type scale — Style.font.* in QML.
-    // Sized for a phone held in a hand, not a desktop panel: one step up
-    // from the QML shell's scale across the board.
-    out property <length> caption: 12px;
-    out property <length> body-small: 13px;
-    out property <length> body: 15px;
-    out property <length> subtitle: 16px;
-    out property <length> title: 17px;
-    out property <length> heading: 20px;
+    // Type scale — Style.font.* in QML, VERBATIM. (An early "one step up
+    // for phones" deviation lived here and made everything read oversized.)
+    out property <length> caption: 10px;
+    out property <length> body-small: 11px;
+    out property <length> body: 12px;
+    out property <length> subtitle: 13px;
+    out property <length> title: 14px;
+    out property <length> heading: 16px;
     out property <length> display: 24px;
-    out property <length> icon-size: 18px;
-    out property <length> icon-large: 22px;
+    out property <length> icon-size: 14px;
+    out property <length> icon-large: 18px;
 
     // Spacing steps — Style.spacing.* in QML.
     out property <length> sp-sm: 6px;

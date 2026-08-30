@@ -93,6 +93,7 @@ export component ChatPage inherits Rectangle {
     callback mark-read;
 
     public function scroll-to-end() {
+        list.stick = true;
         list.viewport-y = min(0px, list.height - list.viewport-height);
     }
     public function clear-composer() {
@@ -287,8 +288,17 @@ export component ChatPage inherits Rectangle {
                     vertical-stretch: 1;
                     // BottomToTop: short conversations hang from the composer.
                     content-alignment: end;
+                    // Media/doc/map cards inflate row heights asynchronously;
+                    // while the user is at the bottom, stay at the bottom.
+                    property <bool> stick: true;
+                    changed viewport-height => {
+                        if (self.stick) {
+                            self.viewport-y = min(0px, self.height - self.viewport-height);
+                        }
+                    }
                     // Fetch older history a screen and a half early (maybePaginate).
                     changed viewport-y => {
+                        list.stick = root.from-end < 12px;
                         if (self.viewport-y > -1.5 * self.height
                             && root.pagination-state == "idle"
                             && self.viewport-height > self.height) {
