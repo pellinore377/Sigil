@@ -171,3 +171,15 @@ composer band, ground tone, sheen) render correctly.
   Card data via link.preview, cached per url.
 - Bubble contentW now pinned to bubbleMax for card kinds (QML:381) —
   wrapped text reports a tiny preferred width in Slint.
+
+## Fixture verification (29 Aug, desktop demo)
+The demo timeline now seeds every bubble kind (poll, voice, live location,
+contact, audio, receipts/reactions/thread, failed reply, code parts) —
+`SIGIL_SLINT_DEMO=1 SIGIL_SLINT_DEMO_CHAT=1` renders them without a login.
+Verified: PollBody card (pick dots, leading bar, `2  67%` tallies,
+"3 votes"), voice row (white disc, wave, 0:07), MarkStack reader faces,
+thread chip with latest-body preview, failed-send mark on a reply, code
+card with lang tag, audio strip. Fixed en route: the contact card wore
+the SENDER's initials/tint instead of the contact's.
+Still to eyeball on a signed-in phone: reaction chips (❤ next to 👍),
+the live-pill countdown (cut off in the landscape demo window).
