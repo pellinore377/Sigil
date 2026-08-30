@@ -1327,7 +1327,10 @@ fn start_demo(win: &AppWindow, rt: &tokio::runtime::Runtime, icons: IconSet) -> 
                        {"dark": "#61afef", "light": "#2060a0"}, {"dark": "#c678dd", "light": "#803090"}]}},
                    {"start": 27, "end": 36, "color": {"type": "rainbow"}}
                ]}),
-    ], "len": 16});
+        json!({"id": "fA", "kind": "text", "isOwn": false, "sender": "@lady:demo.host", "senderName": "LadyoftheLake",
+               "body": "Terms\nfirst\nsecond", "ts": now - 5_000, "eventId": "$fA",
+               "html": "<h2>Terms</h2><ul><li>keep the <b>sword</b> dry</li><li>return it <i>eventually</i></li></ul><blockquote>the lake remembers</blockquote>"}),
+    ], "len": 17});
     let status = json!({"event": "status", "session": "loggedIn", "userId": "@pell:demo.host",
                         "displayName": "Pellinore", "avatarPath": "", "sync": "", "syncError": "", "login": {"url": ""}});
     let recovery = json!({"event": "recovery.status",

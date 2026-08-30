@@ -331,6 +331,14 @@ pub fn html_to_markdown(html: &str) -> String {
             ("code", c) => { in_code = !c; out.push('`'); }
             ("br", _) => out.push_str("  \n"),
             ("p", true) => out.push_str("\n\n"),
+            // from_markdown rejects headings/blockquotes; downgrade to what it
+            // accepts: bold paragraphs and italic quote lines.
+            ("h1" | "h2" | "h3" | "h4" | "h5" | "h6", false) => out.push_str("\n\n**"),
+            ("h1" | "h2" | "h3" | "h4" | "h5" | "h6", true) => out.push_str("**\n\n"),
+            ("blockquote", false) => out.push_str("\n\n*❯ "),
+            ("blockquote", true) => out.push_str("*\n\n"),
+            ("ul" | "ol", true) => out.push_str("\n"),
+            ("li", false) => out.push_str("\n• "),
             ("a", false) => {
                 // <a href="X">text</a> → [text](X)
                 let href = lower.find("href=\"")
