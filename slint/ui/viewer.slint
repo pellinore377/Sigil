@@ -26,6 +26,8 @@ export struct ViewerItem {
     w: int,
     h: int,
     can-redact: bool,
+    gif-frames: [image], // >1: animate (frames from media.gifFrames)
+    gif-delays: [int],
 }
 
 export component ImageViewer inherits Rectangle {
@@ -145,16 +147,32 @@ export component ImageViewer inherits Rectangle {
         }
 
         media := Rectangle {
+            property <int> gif-frame: 0;
             x: (stage.width - root.fit-w * root.zoom) / 2 + root.ox + root.drag-dx;
             y: (stage.height - root.fit-h * root.zoom) / 2 + root.oy;
             width: root.fit-w * root.zoom;
             height: root.fit-h * root.zoom;
             border-radius: 16px;
             clip: true;
-            if root.it.have-img && !root.playing : Image {
+            if root.it.have-img && !root.playing && root.it.gif-frames.length <= 1 : Image {
                 source: root.it.img;
                 width: 100%; height: 100%;
                 image-fit: fill;
+            }
+            // Animated GIF: the same engine frame strip the bubble cycles.
+            if root.it.gif-frames.length > 1 && !root.playing : Image {
+                source: root.it.gif-frames[min(media.gif-frame, root.it.gif-frames.length - 1)];
+                width: 100%; height: 100%;
+                image-fit: fill;
+            }
+            gif-clock := Timer {
+                interval: root.it.gif-frames.length > 1
+                    ? max(20, root.it.gif-delays[min(media.gif-frame, root.it.gif-delays.length - 1)]) * 1ms
+                    : 1000ms;
+                running: root.it.gif-frames.length > 1 && !root.playing;
+                triggered => {
+                    media.gif-frame = mod(media.gif-frame + 1, root.it.gif-frames.length);
+                }
             }
             if root.playing : Image {
                 source: root.video-frame;

@@ -1278,11 +1278,27 @@ fn viewer_open(ui: &mut UiState, win: &AppWindow, event_id: &str) {
         .collect();
     let cur = ui.viewer_items.iter().position(|i| s(i, "eventId") == event_id).unwrap_or(0);
     let items = ui.viewer_items.clone();
+    let room_id = room_of_key(&ui.open_room);
     let rows: Vec<crate::ViewerItem> = items.iter().map(|i| {
         let media = i["media"].clone();
         let path = media["path"].as_str().or(media["thumbnailPath"].as_str()).unwrap_or("").to_string();
         let img = crate::bridge::avatar_pub(ui, &path);
+        // GIFs animate here too, from the frame strip the bubble cached.
+        let mut gif_imgs: Vec<slint::Image> = Vec::new();
+        let mut gif_delays: Vec<i32> = Vec::new();
+        if let Some(v) = ui.gif_frames.get(&format!("{room_id}|{}", s(i, "eventId"))).cloned() {
+            if v.is_object() {
+                let paths: Vec<String> = v["frames"].as_array().map(|a| a.iter().filter_map(Value::as_str).map(str::to_string).collect()).unwrap_or_default();
+                for p in &paths {
+                    if let Some(fimg) = crate::bridge::avatar_pub(ui, p) { gif_imgs.push(fimg); }
+                }
+                gif_delays = v["delays"].as_array().map(|a| a.iter().filter_map(Value::as_i64).map(|d| d as i32).collect()).unwrap_or_default();
+                if gif_imgs.len() != gif_delays.len() { gif_imgs.clear(); gif_delays.clear(); }
+            }
+        }
         crate::ViewerItem {
+            gif_frames: ModelRc::new(VecModel::from(gif_imgs)),
+            gif_delays: ModelRc::new(VecModel::from(gif_delays)),
             event_id: s(i, "eventId").into(),
             kind: s(i, "kind").into(),
             sender_name: s(i, "senderName").into(),
