@@ -158,3 +158,16 @@ composer band, ground tone, sheen) render correctly.
 - Platform seams: Android SAF file picking (blocks staged FILE chips and
   the contact chip), share intents, notifications, hardware back
   (upstream android-activity gap).
+
+## Third round (29 Aug): the last portable bubble features
+- Fenced-code messages render as parts: text runs + a #242428 code ground
+  with mono text and the language tag (the engine's `parts`; highlight
+  colours flattened — they need rich text). Demo-verified: full-bleed
+  card, entities decoded, grouped corners.
+- Link preview cards: og image (aspect-fit, 340px cap, play disc for
+  video), title/description two-line clamps, favicon-letter + domain row
+  over the page-accent ground; a body that IS the link renders the card
+  alone (cardOnly). Tap opens the browser; long-press opens the sheet.
+  Card data via link.preview, cached per url.
+- Bubble contentW now pinned to bubbleMax for card kinds (QML:381) —
+  wrapped text reports a tiny preferred width in Slint.
