@@ -210,3 +210,16 @@ the live-pill countdown (cut off in the landscape demo window).
 - The structural remainder is now exactly: rich text in flow (the
   engine glyph-run project, the readout's top follow-up) and backdrop
   blur. Platform seams unchanged (Java glue / upstream).
+
+## Sixth round: rich text falls
+- StyledText EXISTS in 1.17 (CommonMark, link-color, link-clicked). The
+  route that works: the engine's sanitized HTML subset → markdown
+  (rows::html_to_markdown, with literal-character escaping) →
+  slint::StyledText::from_markdown in the BRIDGE → a styled-text model
+  field. (The language-side @markdown interpolates runtime strings as
+  plain text by design — two dead ends documented on the way.)
+- Demo-verified on femtovg: bold renders bold, inline code renders mono,
+  links render underlined and tappable (link-clicked → open-link).
+- The structural remainder for message bodies is now ONLY SigilText's
+  per-character animation effects + headings/tables (from_markdown
+  rejects those; the converter never emits them). Blur and maps stand.
