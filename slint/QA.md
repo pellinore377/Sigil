@@ -198,3 +198,4 @@ the live-pill countdown (cut off in the landscape demo window).
   needs the signed-in session. Viewer still shows the still frame.
 - Structural list now: rich text, pinch (single-pointer input, upstream),
   backdrop blur, ElideMiddle. That is the complete remainder.
+- GIFs animate in the image viewer as well (same frame strip).
