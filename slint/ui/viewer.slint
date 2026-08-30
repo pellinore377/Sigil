@@ -2,10 +2,9 @@
 // every image in the room, zoom, video playback, quick reactions.
 //
 // Gesture notes for the integrator (also in WIRING-media.md):
-// - Slint's TouchArea is single-pointer: PINCH CANNOT BE EXPRESSED. Zoom
-//   rides double-tap, ctrl+wheel/wheel-when-zoomed, and two on-screen buttons
-//   (the touch fallback the portability rules require when a gesture is
-//   missing). Same zoomAbout() numbers as QML, so behaviour matches per input.
+// - Pinch zoom rides ScaleRotateGestureHandler (two-finger); double-tap,
+//   ctrl+wheel/wheel-when-zoomed and the on-screen buttons remain as the
+//   fallbacks. Same zoomAbout() numbers as QML, so behaviour matches per input.
 // - Pan-while-zoomed uses moved-deltas — inherently passive, per portability.
 // - The QML blurred-backdrop scrim needs a backdrop shader Slint lacks; a
 //   solid near-black stands in.
@@ -193,6 +192,18 @@ export component ImageViewer inherits Rectangle {
         // Swipe / pan / tap / double-tap / wheel — one surface, mode by state.
         property <length> last-x: 0;
         property <length> last-y: 0;
+        // Pinch zoom — ScaleRotateGestureHandler (two-finger; single-finger
+        // input still lands on the TouchArea below). Same zoom-about maths.
+        pinch := ScaleRotateGestureHandler {
+            width: 100%; height: 100%;
+            property <float> start-zoom: 1.0;
+            started => { self.start-zoom = root.zoom; }
+            updated => {
+                root.zoom-about(self.start-zoom * self.scale,
+                    self.center.x - stage.width / 2,
+                    self.center.y - stage.height / 2);
+            }
+        }
         gesture := TouchArea {
             clicked => {
                 if (root.is-video) { root.toggle-playback(); }

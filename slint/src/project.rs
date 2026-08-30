@@ -218,7 +218,18 @@ pub fn collect_search(items: &[Value], query: &str, mk: impl Fn(&Value) -> Timel
         if out.links.len() < 10 {
             if let Some(url) = s(item, "body").split_whitespace().find(|w| w.starts_with("http://") || w.starts_with("https://")) {
                 let mut row = mk(item);
-                row.body = url.into();
+                // ElideMiddle, approximated: Slint only right-elides, so a long
+                // URL keeps its host AND its tail here (~52 chars fits the row
+                // at phone width in the caption size).
+                row.link_url = url.into();
+                let chars: Vec<char> = url.chars().collect();
+                row.body = if chars.len() > 52 {
+                    let head: String = chars[..30].iter().collect();
+                    let tail: String = chars[chars.len() - 19..].iter().collect();
+                    format!("{head}…{tail}").into()
+                } else {
+                    url.into()
+                };
                 out.links.push(row);
             }
         }

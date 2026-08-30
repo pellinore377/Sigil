@@ -199,7 +199,8 @@ export component SearchPage inherits Rectangle {
                             overflow: elide;
                         }
                     }
-                    TouchArea { clicked => { root.open-link(l.body); } }
+                    // The body may be middle-elided; the tap uses the full url.
+                    TouchArea { clicked => { root.open-link(l.link-url != "" ? l.link-url : l.body); } }
                 }
             }
         }
