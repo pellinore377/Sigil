@@ -223,3 +223,15 @@ the live-pill countdown (cut off in the landscape demo window).
 - The structural remainder for message bodies is now ONLY SigilText's
   per-character animation effects + headings/tables (from_markdown
   rejects those; the converter never emits them). Blur and maps stand.
+
+## Seventh round: the map gap closes
+- New engine op `location.map {geoUri,width,height,zoom?}`: slippy-map
+  maths, OSM raster tiles fetched with a proper User-Agent, stitched and
+  cropped to the card, cached by coords+geometry. The bubble's location
+  card now shows the actual map with a pin on a light disc; the flat
+  pin card remains the offline/pending fallback. Demo-verified against
+  live tiles (Eiffel Tower fixture: Champ de Mars renders).
+- Remaining structural: SigilText per-character effects, backdrop blur,
+  markdown headings/tables in bodies, and in-card map interactivity
+  (pan/zoom needs MapLibre-class rendering; the static composite covers
+  the card and could back MapPage later).
