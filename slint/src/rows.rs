@@ -453,8 +453,9 @@ fn effect_char_colors(chars: &[char], effects: &Value) -> Option<(Vec<Option<Str
 /// Per-character rows for an animated short run (per-glyph motion): each char
 /// carries its colour and its span's animation. Flip runs come out reversed
 /// (the spec's reverseRun). None when the body is long or nothing animates.
-pub fn effect_fx_chars(body: &str, effects: &Value) -> Option<Vec<(String, Option<String>, String, i32)>> {
-    const ANIMS: &[&str] = &["wave", "shake", "pulse", "glow", "barrel", "flip"];
+/// `fresh` gates the one-shot reveal: an old message arrives fully typed.
+pub fn effect_fx_chars(body: &str, effects: &Value, fresh: bool) -> Option<Vec<(String, Option<String>, String, i32)>> {
+    const ANIMS: &[&str] = &["wave", "shake", "pulse", "glow", "barrel", "flip", "typewriter"];
     let chars: Vec<char> = body.chars().collect();
     if chars.is_empty() || chars.len() > 48 || body.contains('\n') { return None; }
     let list = effects.as_array()?;
@@ -463,6 +464,7 @@ pub fn effect_fx_chars(body: &str, effects: &Value) -> Option<Vec<(String, Optio
     for e in list {
         let Some(a) = e["animation"].as_str() else { continue };
         if !ANIMS.contains(&a) { continue; }
+        if a == "typewriter" && !fresh { continue; }
         let start = e["start"].as_u64().unwrap_or(0) as usize;
         let end = (e["end"].as_u64().unwrap_or(0) as usize).min(chars.len());
         for slot in &mut anims[start..end.max(start)] { *slot = a; }

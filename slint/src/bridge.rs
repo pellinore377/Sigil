@@ -981,7 +981,9 @@ pub fn rebuild_timeline(ui: &mut UiState, win: &AppWindow) {
         // @markdown interpolates runtime strings as PLAIN text by design.
         // Animated short runs render per glyph; colours-only rides StyledText.
         let fx_chars: Vec<crate::FxChar> = if matches!(kind, "text" | "notice" | "emote") {
-            rows::effect_fx_chars(&body, &item["effects"]).map(|v| v.into_iter().map(|(ch, color, anim, idx)| {
+            rows::effect_fx_chars(&body, &item["effects"],
+                    chrono::Utc::now().timestamp_millis() - ts < 5_000)
+                .map(|v| v.into_iter().map(|(ch, color, anim, idx)| {
                 let parsed = color.as_deref().and_then(rows::hex_color);
                 crate::FxChar {
                     ch: ch.into(),

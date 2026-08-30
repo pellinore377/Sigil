@@ -818,6 +818,12 @@ export component Bubble inherits Rectangle {
                             width: fx-t.preferred-width;
                             height: fx-t.preferred-height + 8px;
                             property <float> tick-ms: (animation-tick() - c.idx * 90ms) / 1ms;
+                            // Typewriter: a one-shot reveal on creation, 620ms
+                            // OutCubic per character with the 90ms stagger.
+                            property <bool> revealed: c.anim != "typewriter";
+                            init => { self.revealed = true; }
+                            opacity: c.anim == "typewriter" ? (self.revealed ? 1.0 : 0.0) : 1.0;
+                            animate opacity { delay: c.idx * 90ms; duration: 620ms; easing: cubic-bezier(0.33, 1, 0.68, 1); }
                             fx-t := Text {
                                 text: c.ch;
                                 color: c.has-color ? c.color : root.fg;
