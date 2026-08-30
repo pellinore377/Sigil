@@ -199,3 +199,14 @@ the live-pill countdown (cut off in the landscape demo window).
 - Structural list now: rich text, pinch (single-pointer input, upstream),
   backdrop blur, ElideMiddle. That is the complete remainder.
 - GIFs animate in the image viewer as well (same frame strip).
+
+## Fifth round: pinch and ElideMiddle fall too
+- ScaleRotateGestureHandler EXISTS in Slint 1.17 — pinch zoom is wired in
+  the viewer (two-finger, same zoom-about maths; single-finger drag/taps
+  untouched). "No multi-touch" is off the structural list; needs a
+  touchscreen to feel, so verify on the phone after sign-in.
+- Search URL rows now middle-elide in Rust (host + tail kept, ~52-char
+  budget); the tap still opens the full url.
+- The structural remainder is now exactly: rich text in flow (the
+  engine glyph-run project, the readout's top follow-up) and backdrop
+  blur. Platform seams unchanged (Java glue / upstream).
