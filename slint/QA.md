@@ -183,3 +183,18 @@ card with lang tag, audio strip. Fixed en route: the contact card wore
 the SENDER's initials/tint instead of the contact's.
 Still to eyeball on a signed-in phone: reaction chips (❤ next to 👍),
 the live-pill countdown (cut off in the landscape demo window).
+
+## Fourth round (29 Aug evening): two "structural" gaps closed
+- transform-scale-x/-y + transform-origin EXIST in Slint 1.17 (undocumented
+  in our earlier survey) — every QML scale animation is now ported: the
+  overflow/account menus scale from the top-right, the sheet pill scales in
+  on X from 0.4 and the menu on Y, the scroll-to-top button pops with the
+  OutBack overshoot, attach tiles grow 1.05 on hover.
+- GIF playback: new engine op `media.gifFrames` decodes an animated GIF
+  into ≤64 frame PNGs (480px cap, per-frame delays, cached beside the
+  media); the bubble cycles them on a per-frame Timer — QML's
+  AnimatedImage, materialized. Decode path validated against a 3-frame
+  rig-built GIF (frames + 400ms delays correct); the on-device round-trip
+  needs the signed-in session. Viewer still shows the still frame.
+- Structural list now: rich text, pinch (single-pointer input, upstream),
+  backdrop blur, ElideMiddle. That is the complete remainder.
