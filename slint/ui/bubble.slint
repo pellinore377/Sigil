@@ -806,6 +806,34 @@ export component Bubble inherits Rectangle {
                     }
 
                     // Body text / utd / redacted
+                    // SigilText motion: a short animated run lays out one Text
+                    // per character (self-measured by the row), each driven by
+                    // the engine's motion numbers (sigiltext.motion): wave
+                    // 1300ms/±1.8px, shake 240ms/±0.8px, pulse 1000ms/×1.18,
+                    // glow 1600ms alpha, barrel 1200ms/360°, flip static 180°
+                    // with the run reversed. 90ms per-character stagger.
+                    if item.fx-chars.length > 0 : fx-row := HorizontalLayout {
+                        alignment: start;
+                        for c in item.fx-chars : fx-cell := Rectangle {
+                            width: fx-t.preferred-width;
+                            height: fx-t.preferred-height + 8px;
+                            property <float> tick-ms: (animation-tick() - c.idx * 90ms) / 1ms;
+                            fx-t := Text {
+                                text: c.ch;
+                                color: c.has-color ? c.color : root.fg;
+                                font-family: Theme.font-ui; font-size: Theme.body;
+                                x: c.anim == "shake" ? sin(360deg * (mod(fx-cell.tick-ms, 240.0) / 240.0)) * 0.8px : 0px;
+                                y: 4px + (c.anim == "wave" ? sin(360deg * (mod(fx-cell.tick-ms, 1300.0) / 1300.0)) * 1.8px : 0px);
+                                opacity: c.anim == "glow" ? 0.55 + 0.45 * sin(360deg * (mod(fx-cell.tick-ms, 1600.0) / 1600.0)) : 1.0;
+                                transform-origin: { x: self.width / 2, y: self.height / 2 };
+                                transform-rotation: c.anim == "barrel" ? 360deg * (mod(fx-cell.tick-ms, 1200.0) / 1200.0)
+                                    : c.anim == "flip" ? 180deg : 0deg;
+                                transform-scale-x: c.anim == "pulse" ? 1.0 + 0.18 * (0.5 + 0.5 * sin(360deg * (mod(fx-cell.tick-ms, 1000.0) / 1000.0))) : 1.0;
+                                transform-scale-y: c.anim == "pulse" ? 1.0 + 0.18 * (0.5 + 0.5 * sin(360deg * (mod(fx-cell.tick-ms, 1000.0) / 1000.0))) : 1.0;
+                            }
+                        }
+                    }
+
                     // Markup bodies render through StyledText: bold/italic/code
                     // and tappable links (link-clicked). Plain bodies stay Text.
                     if item.has-rich && !root.code-kind && !item.link-only : rich-text := StyledText {
@@ -818,7 +846,7 @@ export component Bubble inherits Rectangle {
                         x: root.link-card ? 11px : 0px;
                         link-clicked(l) => { root.open-url(l); }
                     }
-                    if !item.has-rich
+                    if !item.has-rich && item.fx-chars.length == 0
                         && (item.kind == "text" || item.kind == "notice" || item.kind == "emote"
                         || item.kind == "utd" || item.kind == "redacted" || item.kind == "unsupported")
                         && !root.code-kind && !item.link-only : body-text := Text {

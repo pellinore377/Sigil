@@ -38,6 +38,15 @@ export struct DocLine {
     level: int,
 }
 
+/// One character of an animated SigilText run (per-glyph motion).
+export struct FxChar {
+    ch: string,
+    color: color,
+    has-color: bool,
+    anim: string,   // "" wave shake pulse glow barrel flip
+    idx: int,
+}
+
 /// A slice of a message with fenced code: plain text runs and code runs
 /// (the engine's `parts`; highlighting markup is flattened — no rich text).
 export struct MsgPart {
@@ -54,6 +63,7 @@ export struct TimelineRow {
     body: string,
     rich-body: styled-text,  // parsed Rust-side (StyledText::from_markdown)
     has-rich: bool,          // false = plain body path
+    fx-chars: [FxChar],      // non-empty: per-character animated run
     html-ish: bool,      // body carries formatting the effects pass renders
     sender: string,
     sender-name: string,

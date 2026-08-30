@@ -376,10 +376,34 @@ fn push_md_escaped(out: &mut String, text: &str, in_code: bool) {
 /// hex) → markdown with `<font color>` runs for StyledText. Geometry
 /// animations stay out (they need the glyph-run project); colour is 1:1.
 pub fn effects_markdown(body: &str, effects: &Value) -> Option<String> {
+    let chars: Vec<char> = body.chars().collect();
+    let (colors, any) = effect_char_colors(&chars, effects)?;
+    if !any { return None; }
+    // Emit runs: consecutive characters sharing a colour share one font tag.
+    let mut out = String::with_capacity(body.len() * 2);
+    let mut i = 0;
+    while i < chars.len() {
+        let color = colors[i].clone();
+        let mut j = i;
+        while j < chars.len() && colors[j] == color { j += 1; }
+        let run: String = chars[i..j].iter().collect();
+        match color {
+            Some(hex) => {
+                out.push_str(&format!("<font color=\"{hex}\">"));
+                push_md_escaped(&mut out, &run, false);
+                out.push_str("</font>");
+            }
+            None => push_md_escaped(&mut out, &run, false),
+        }
+        i = j;
+    }
+    Some(out)
+}
+
+/// Per-character colour from effect spans, later effects painting over earlier.
+fn effect_char_colors(chars: &[char], effects: &Value) -> Option<(Vec<Option<String>>, bool)> {
     let list = effects.as_array()?;
     if list.is_empty() { return None; }
-    let chars: Vec<char> = body.chars().collect();
-    // Per-character colour, later effects painting over earlier ones.
     let mut colors: Vec<Option<String>> = vec![None; chars.len()];
     let mut any = false;
     for e in list {
@@ -423,24 +447,41 @@ pub fn effects_markdown(body: &str, effects: &Value) -> Option<String> {
             _ => {}
         }
     }
-    if !any { return None; }
-    // Emit runs: consecutive characters sharing a colour share one font tag.
-    let mut out = String::with_capacity(body.len() * 2);
+    Some((colors, any))
+}
+
+/// Per-character rows for an animated short run (per-glyph motion): each char
+/// carries its colour and its span's animation. Flip runs come out reversed
+/// (the spec's reverseRun). None when the body is long or nothing animates.
+pub fn effect_fx_chars(body: &str, effects: &Value) -> Option<Vec<(String, Option<String>, String, i32)>> {
+    const ANIMS: &[&str] = &["wave", "shake", "pulse", "glow", "barrel", "flip"];
+    let chars: Vec<char> = body.chars().collect();
+    if chars.is_empty() || chars.len() > 48 || body.contains('\n') { return None; }
+    let list = effects.as_array()?;
+    let mut anims: Vec<&str> = vec![""; chars.len()];
+    let mut animated = false;
+    for e in list {
+        let Some(a) = e["animation"].as_str() else { continue };
+        if !ANIMS.contains(&a) { continue; }
+        let start = e["start"].as_u64().unwrap_or(0) as usize;
+        let end = (e["end"].as_u64().unwrap_or(0) as usize).min(chars.len());
+        for slot in &mut anims[start..end.max(start)] { *slot = a; }
+        animated = start < end || animated;
+    }
+    if !animated { return None; }
+    let (colors, _) = effect_char_colors(&chars, effects).unwrap_or((vec![None; chars.len()], false));
+    let mut out: Vec<(String, Option<String>, String, i32)> = chars.iter().enumerate()
+        .map(|(i, c)| (c.to_string(), colors[i].clone(), anims[i].to_string(), i as i32))
+        .collect();
+    // reverseRun: a flip span reads back to front.
     let mut i = 0;
-    while i < chars.len() {
-        let color = colors[i].clone();
-        let mut j = i;
-        while j < chars.len() && colors[j] == color { j += 1; }
-        let run: String = chars[i..j].iter().collect();
-        match color {
-            Some(hex) => {
-                out.push_str(&format!("<font color=\"{hex}\">"));
-                push_md_escaped(&mut out, &run, false);
-                out.push_str("</font>");
-            }
-            None => push_md_escaped(&mut out, &run, false),
-        }
-        i = j;
+    while i < out.len() {
+        if out[i].2 == "flip" {
+            let mut j = i;
+            while j < out.len() && out[j].2 == "flip" { j += 1; }
+            out[i..j].reverse();
+            i = j;
+        } else { i += 1; }
     }
     Some(out)
 }
@@ -467,4 +508,10 @@ fn hue_rgb(t: f32) -> (u8, u8, u8) {
         _ => (255.0, 0.0, x),
     };
     (r as u8, g as u8, b as u8)
+}
+
+/// "#rrggbb" → a slint colour.
+pub fn hex_color(hex: &str) -> Option<slint::Color> {
+    let (r, g, b) = parse_hex(hex)?;
+    Some(slint::Color::from_rgb_u8(r, g, b))
 }

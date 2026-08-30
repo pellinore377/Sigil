@@ -979,6 +979,19 @@ pub fn rebuild_timeline(ui: &mut UiState, win: &AppWindow) {
             .unwrap_or(slint::Color::from_argb_u8(115, 0, 0, 0));
         // Markup renders through StyledText, parsed here — the language-side
         // @markdown interpolates runtime strings as PLAIN text by design.
+        // Animated short runs render per glyph; colours-only rides StyledText.
+        let fx_chars: Vec<crate::FxChar> = if matches!(kind, "text" | "notice" | "emote") {
+            rows::effect_fx_chars(&body, &item["effects"]).map(|v| v.into_iter().map(|(ch, color, anim, idx)| {
+                let parsed = color.as_deref().and_then(rows::hex_color);
+                crate::FxChar {
+                    ch: ch.into(),
+                    has_color: parsed.is_some(),
+                    color: parsed.unwrap_or(slint::Color::from_rgb_u8(0xc6, 0xc6, 0xc6)),
+                    anim: anim.into(),
+                    idx,
+                }
+            }).collect()).unwrap_or_default()
+        } else { Vec::new() };
         let rich_body: Option<slint::StyledText> = if matches!(kind, "text" | "notice" | "emote")
             && item["parts"].as_array().map(|a| a.is_empty()).unwrap_or(true) {
             // SigilText colour effects outrank plain markup for the body.
@@ -1088,7 +1101,8 @@ pub fn rebuild_timeline(ui: &mut UiState, win: &AppWindow) {
             // Markup renders through StyledText; code-part messages lay out
             // as parts instead, and a plain body stays on the fast Text path.
             rich_body: rich_body.clone().unwrap_or_default(),
-            has_rich: rich_body.is_some(),
+            has_rich: rich_body.is_some() && fx_chars.is_empty(),
+            fx_chars: slint::ModelRc::new(VecModel::from(fx_chars)),
             body: body.into(),
             sender: sender.clone().into(),
             sender_name: sender_name.clone().into(),
@@ -1330,7 +1344,14 @@ fn start_demo(win: &AppWindow, rt: &tokio::runtime::Runtime, icons: IconSet) -> 
         json!({"id": "fA", "kind": "text", "isOwn": false, "sender": "@lady:demo.host", "senderName": "LadyoftheLake",
                "body": "Terms\nfirst\nsecond", "ts": now - 5_000, "eventId": "$fA",
                "html": "<h2>Terms</h2><ul><li>keep the <b>sword</b> dry</li><li>return it <i>eventually</i></li></ul><blockquote>the lake remembers</blockquote>"}),
-    ], "len": 17});
+        json!({"id": "fB", "kind": "text", "isOwn": false, "sender": "@lady:demo.host", "senderName": "LadyoftheLake",
+               "body": "wave hello shake pulse!", "ts": now - 2_000, "eventId": "$fB",
+               "effects": [
+                   {"start": 0, "end": 10, "animation": "wave", "color": {"type": "solid", "rgb": {"dark": "#61afef", "light": "#2060a0"}}},
+                   {"start": 11, "end": 16, "animation": "shake", "color": {"type": "solid", "rgb": {"dark": "#e06c75", "light": "#a03030"}}},
+                   {"start": 17, "end": 23, "animation": "pulse", "color": {"type": "rainbow"}}
+               ]}),
+    ], "len": 18});
     let status = json!({"event": "status", "session": "loggedIn", "userId": "@pell:demo.host",
                         "displayName": "Pellinore", "avatarPath": "", "sync": "", "syncError": "", "login": {"url": ""}});
     let recovery = json!({"event": "recovery.status",
