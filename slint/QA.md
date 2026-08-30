@@ -278,3 +278,10 @@ the live-pill countdown (cut off in the landscape demo window).
 - Longer bodies fall back to coloured StyledText; sparkle/glitch/
   typewriter/blur (particle/overlay class) remain for the glyph-run
   engine project, now a much smaller one.
+
+## Eleventh round: typewriter
+- Typewriter joins the per-glyph set: fresh messages (<5s old at build)
+  reveal per character via a one-shot cell fade (620ms OutCubic, 90ms
+  stagger — the spec's numbers); older ones render fully typed, matching
+  the play-on-arrival semantics. Remaining effect class: sparkle/glitch/
+  text-blur (particles and split-copy overlays).
