@@ -235,3 +235,12 @@ the live-pill countdown (cut off in the landscape demo window).
   markdown headings/tables in bodies, and in-card map interactivity
   (pan/zoom needs MapLibre-class rendering; the static composite covers
   the card and could back MapPage later).
+
+## Eighth round: SigilText colours
+- Effect spans (engine-resolved dark-ground hex, char offsets) render via
+  per-run <font color> markdown into StyledText: solid, per-character
+  gradients (stop interpolation) and rainbow (hue wheel) all draw —
+  demo-verified. Colour effects outrank plain markup for the body.
+- Still out of SigilText: the per-character MOTION (shake/wave/pulse/
+  glow/typewriter/…), which needs per-glyph geometry — the glyph-run
+  engine project. Colour parity is done.
