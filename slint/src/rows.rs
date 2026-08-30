@@ -455,7 +455,7 @@ fn effect_char_colors(chars: &[char], effects: &Value) -> Option<(Vec<Option<Str
 /// (the spec's reverseRun). None when the body is long or nothing animates.
 /// `fresh` gates the one-shot reveal: an old message arrives fully typed.
 pub fn effect_fx_chars(body: &str, effects: &Value, fresh: bool) -> Option<Vec<(String, Option<String>, String, i32)>> {
-    const ANIMS: &[&str] = &["wave", "shake", "pulse", "glow", "barrel", "flip", "typewriter"];
+    const ANIMS: &[&str] = &["wave", "shake", "pulse", "glow", "barrel", "flip", "typewriter", "glitch", "sparkle", "blur"];
     let chars: Vec<char> = body.chars().collect();
     if chars.is_empty() || chars.len() > 48 || body.contains('\n') { return None; }
     let list = effects.as_array()?;

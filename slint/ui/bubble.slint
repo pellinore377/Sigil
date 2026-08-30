@@ -824,18 +824,71 @@ export component Bubble inherits Rectangle {
                             init => { self.revealed = true; }
                             opacity: c.anim == "typewriter" ? (self.revealed ? 1.0 : 0.0) : 1.0;
                             animate opacity { delay: c.idx * 90ms; duration: 620ms; easing: cubic-bezier(0.33, 1, 0.68, 1); }
+                            // Glitch: chromatic split copies behind the glyph,
+                            // active in jitter windows (spec: 530ms cycle, lead
+                            // -2px #FF2640, trail +1.5px #26F2FF, alpha 0.7,
+                            // stride-53 stagger).
+                            property <float> glitch-t: mod((animation-tick() / 1ms) + c.idx * 53.0, 530.0);
+                            property <bool> glitch-on: c.anim == "glitch" && self.glitch-t < 270.0;
+                            if c.anim == "glitch" : Text {
+                                text: c.ch;
+                                color: #FF2640;
+                                opacity: fx-cell.glitch-on ? 0.7 : 0.0;
+                                font-family: Theme.font-ui; font-size: Theme.body;
+                                x: fx-cell.glitch-on ? -2px : 0px;
+                                y: 4px;
+                            }
+                            if c.anim == "glitch" : Text {
+                                text: c.ch;
+                                color: #26F2FF;
+                                opacity: fx-cell.glitch-on ? 0.7 : 0.0;
+                                font-family: Theme.font-ui; font-size: Theme.body;
+                                x: fx-cell.glitch-on ? 1.5px : 0px;
+                                y: 4px;
+                            }
+                            // Text-blur (spoiler): ghost copies fake the radius;
+                            // a tap reveals (hover's touch equivalent).
+                            property <bool> blur-revealed: false;
+                            if c.anim == "blur" && !fx-cell.blur-revealed : Text {
+                                text: c.ch;
+                                color: (c.has-color ? c.color : root.fg).with-alpha(0.3);
+                                font-family: Theme.font-ui; font-size: Theme.body;
+                                x: -1.5px; y: 4px - 1.5px;
+                            }
+                            if c.anim == "blur" && !fx-cell.blur-revealed : Text {
+                                text: c.ch;
+                                color: (c.has-color ? c.color : root.fg).with-alpha(0.3);
+                                font-family: Theme.font-ui; font-size: Theme.body;
+                                x: 1.5px; y: 4px + 1.5px;
+                            }
                             fx-t := Text {
                                 text: c.ch;
                                 color: c.has-color ? c.color : root.fg;
                                 font-family: Theme.font-ui; font-size: Theme.body;
                                 x: c.anim == "shake" ? sin(360deg * (mod(fx-cell.tick-ms, 240.0) / 240.0)) * 0.8px : 0px;
                                 y: 4px + (c.anim == "wave" ? sin(360deg * (mod(fx-cell.tick-ms, 1300.0) / 1300.0)) * 1.8px : 0px);
-                                opacity: c.anim == "glow" ? 0.55 + 0.45 * sin(360deg * (mod(fx-cell.tick-ms, 1600.0) / 1600.0)) : 1.0;
+                                opacity: c.anim == "glow" ? 0.55 + 0.45 * sin(360deg * (mod(fx-cell.tick-ms, 1600.0) / 1600.0))
+                                    : c.anim == "blur" && !fx-cell.blur-revealed ? 0.3 : 1.0;
                                 transform-origin: { x: self.width / 2, y: self.height / 2 };
                                 transform-rotation: c.anim == "barrel" ? 360deg * (mod(fx-cell.tick-ms, 1200.0) / 1200.0)
                                     : c.anim == "flip" ? 180deg : 0deg;
                                 transform-scale-x: c.anim == "pulse" ? 1.0 + 0.18 * (0.5 + 0.5 * sin(360deg * (mod(fx-cell.tick-ms, 1000.0) / 1000.0))) : 1.0;
                                 transform-scale-y: c.anim == "pulse" ? 1.0 + 0.18 * (0.5 + 0.5 * sin(360deg * (mod(fx-cell.tick-ms, 1000.0) / 1000.0))) : 1.0;
+                            }
+                            // Sparkle: a small star orbiting each glyph, alpha
+                            // and scale on the 900ms InOutSine cycle.
+                            if c.anim == "sparkle" : Text {
+                                property <float> sp: mod(fx-cell.tick-ms, 900.0) / 900.0;
+                                text: "✦";
+                                color: (c.has-color ? c.color : root.fg);
+                                opacity: 0.05 + 0.40 * (0.5 + 0.5 * sin(360deg * self.sp));
+                                font-family: Theme.font-ui;
+                                font-size: Theme.body * (0.35 + 0.15 * (0.5 + 0.5 * sin(360deg * self.sp)));
+                                x: fx-cell.width * 0.5 + fx-cell.width * 0.4 * cos(360deg * self.sp);
+                                y: 1px + 3px * sin(360deg * self.sp);
+                            }
+                            if c.anim == "blur" : TouchArea {
+                                clicked => { fx-cell.blur-revealed = !fx-cell.blur-revealed; }
                             }
                         }
                     }

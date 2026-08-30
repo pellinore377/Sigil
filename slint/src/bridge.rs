@@ -1353,7 +1353,14 @@ fn start_demo(win: &AppWindow, rt: &tokio::runtime::Runtime, icons: IconSet) -> 
                    {"start": 11, "end": 16, "animation": "shake", "color": {"type": "solid", "rgb": {"dark": "#e06c75", "light": "#a03030"}}},
                    {"start": 17, "end": 23, "animation": "pulse", "color": {"type": "rainbow"}}
                ]}),
-    ], "len": 18});
+        json!({"id": "fC", "kind": "text", "isOwn": false, "sender": "@lady:demo.host", "senderName": "LadyoftheLake",
+               "body": "glitch sparkle secret", "ts": now - 1_000, "eventId": "$fC",
+               "effects": [
+                   {"start": 0, "end": 6, "animation": "glitch"},
+                   {"start": 7, "end": 14, "animation": "sparkle", "color": {"type": "solid", "rgb": {"dark": "#e5c07b", "light": "#906010"}}},
+                   {"start": 15, "end": 21, "animation": "blur"}
+               ]}),
+    ], "len": 19});
     let status = json!({"event": "status", "session": "loggedIn", "userId": "@pell:demo.host",
                         "displayName": "Pellinore", "avatarPath": "", "sync": "", "syncError": "", "login": {"url": ""}});
     let recovery = json!({"event": "recovery.status",
