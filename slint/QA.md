@@ -285,3 +285,16 @@ the live-pill countdown (cut off in the landscape demo window).
   stagger — the spec's numbers); older ones render fully typed, matching
   the play-on-arrival semantics. Remaining effect class: sparkle/glitch/
   text-blur (particles and split-copy overlays).
+
+## Twelfth round: the effect set completes
+- Glitch: chromatic lead/trail copies (#FF2640/-2px, #26F2FF/+1.5px,
+  alpha 0.7) flickering in the spec's jitter windows, stride-53 stagger.
+- Sparkle: a star particle orbiting each glyph on the 900ms cycle with
+  the spec's alpha/scale band.
+- Blur (spoiler): ghost-copy blur approximation, tap to reveal (hover's
+  touch equivalent).
+- With these, every SigilText colour and all ten animations are
+  represented in bubbles. Demo-verified. Approximations (ghost-blur,
+  single-particle sparkle) are noted in-file; exact parity for those two
+  still points at the glyph-run project — now the only body-render item
+  left on it.
