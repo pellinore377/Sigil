@@ -250,3 +250,20 @@ the live-pill countdown (cut off in the landscape demo window).
   "❯ " italic lines in html_to_markdown — from_markdown rejects the real
   constructs, so a message containing them no longer falls back to plain.
   Demo-verified with nested bold/italic inside list items.
+
+## End of night (29 Aug, ~10pm) — state of the branch
+- 61 commits, tree clean, shipping config, final APK installed (launches
+  to the login page; the revoked session needs the user's SSO sign-in).
+- Every structural gap with a conceivable fix is BUILT and demo-verified:
+  scroll (TouchList), GIF (media.gifFrames), scale animations
+  (transform-scale), pinch (ScaleRotateGestureHandler), rich text
+  (html→markdown→StyledText, links tappable), heading/list/quote
+  downgrades, SigilText colours (font-color spans), maps (location.map
+  OSM compositing). Evidence gallery in the readout.
+- Standing gaps, none reachable by more hours: SigilText per-glyph
+  motion (glyph-run engine project), backdrop blur (renderer), in-card
+  map pan/zoom (MapLibre-class), Android SAF/share/notifications (Java
+  build step), Android back (upstream; repro in UPSTREAM-android-back.md).
+- First on-device pass after sign-in: pinch feel, a GIF, rich text and
+  SigilText colours, a location message (live map), poll voting, the
+  voice record→stage→caption→send flow.
