@@ -854,6 +854,76 @@ pub async fn get(engine: SharedEngine, p: &serde_json::Map<String, Value>) -> Re
     }
 }
 
+/// `location.map {geoUri, width, height, zoom?}` → {path, width, height}.
+/// A static map for the location card: OSM raster tiles fetched around the
+/// point, stitched and cropped engine-side (the toolkit has no map widget).
+/// Cached by rounded coordinates + geometry; tiles carry a proper User-Agent.
+pub async fn location_map(engine: SharedEngine, p: &serde_json::Map<String, Value>) -> Reply {
+    let uri = p.get("geoUri").and_then(Value::as_str).unwrap_or("");
+    let want_w = p.get("width").and_then(Value::as_u64).unwrap_or(640).clamp(64, 1280) as u32;
+    let want_h = p.get("height").and_then(Value::as_u64).unwrap_or(400).clamp(64, 1280) as u32;
+    let zoom = p.get("zoom").and_then(Value::as_u64).unwrap_or(15).clamp(3, 19) as u32;
+    let Some((lat, lon)) = crate::timeline::items::geo_of(uri) else {
+        return Reply::err("bad_request", "geoUri has no coordinates");
+    };
+    if !crate::geo::valid_coords(lat, lon) {
+        return Reply::err("bad_request", "coordinates out of range");
+    }
+
+    let key = format!("map-{:.5}-{:.5}-{zoom}-{want_w}x{want_h}", lat, lon);
+    let out = media_dir().join(format!("{key}.png"));
+    if out.exists() {
+        return Reply::ok(json!({"path": out.to_string_lossy(), "width": want_w, "height": want_h}));
+    }
+    let _ = std::fs::create_dir_all(media_dir());
+
+    // Slippy-map maths: the fractional tile the point lands on.
+    let n = f64::from(1u32 << zoom);
+    let xf = (lon + 180.0) / 360.0 * n;
+    let lat_r = lat.to_radians();
+    let yf = (1.0 - (lat_r.tan() + 1.0 / lat_r.cos()).ln() / std::f64::consts::PI) / 2.0 * n;
+
+    // Pixel of the point in world coordinates (256px tiles).
+    let cx = xf * 256.0;
+    let cy = yf * 256.0;
+    let left = (cx - f64::from(want_w) / 2.0).floor() as i64;
+    let top = (cy - f64::from(want_h) / 2.0).floor() as i64;
+    let tx0 = left.div_euclid(256);
+    let ty0 = top.div_euclid(256);
+    let tx1 = (left + i64::from(want_w)).div_euclid(256);
+    let ty1 = (top + i64::from(want_h)).div_euclid(256);
+
+    let client = reqwest::Client::builder()
+        .user_agent(format!("Sigil/{} (Matrix client; location cards)", env!("CARGO_PKG_VERSION")))
+        .timeout(std::time::Duration::from_secs(15))
+        .build()
+        .map_err(|e| e.to_string());
+    let client = match client { Ok(c) => c, Err(e) => return Reply::err("internal", e) };
+
+    let mut canvas = image::RgbaImage::from_pixel(want_w, want_h, image::Rgba([0x4b, 0x4b, 0x4b, 0xff]));
+    for ty in ty0..=ty1 {
+        for tx in tx0..=tx1 {
+            if ty < 0 || ty >= i64::from(1u32 << zoom) { continue; }
+            let wrapped_x = tx.rem_euclid(i64::from(1u32 << zoom));
+            let url = format!("https://tile.openstreetmap.org/{zoom}/{wrapped_x}/{ty}.png");
+            let bytes = match client.get(&url).send().await {
+                Ok(r) if r.status().is_success() => match r.bytes().await { Ok(b) => b, Err(_) => continue },
+                _ => continue,
+            };
+            let Ok(tile) = image::load_from_memory(&bytes) else { continue };
+            let tile = tile.to_rgba8();
+            let ox = tx * 256 - left;
+            let oy = ty * 256 - top;
+            image::imageops::overlay(&mut canvas, &tile, ox, oy);
+        }
+    }
+    let _ = engine; // fetches are plain HTTP; nothing session-bound
+    match canvas.save_with_format(&out, image::ImageFormat::Png) {
+        Ok(()) => Reply::ok(json!({"path": out.to_string_lossy(), "width": want_w, "height": want_h})),
+        Err(e) => Reply::err("internal", e.to_string()),
+    }
+}
+
 /// `media.gifFrames {roomId, eventId}` → {frames: [paths], delays: [ms], width, height}.
 /// Decodes an animated GIF into frame PNGs a view without animated-image
 /// support can cycle. Capped at 64 frames and 480px on the long edge; the

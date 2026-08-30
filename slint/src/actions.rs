@@ -56,6 +56,19 @@ pub fn fetch_doc_thumb(req: &Requester, room_id: &str, event_id: &str, key: Stri
     });
 }
 
+/// Static map composite for a location card (location.map).
+pub fn fetch_location_map(req: &Requester, geo_uri: String) {
+    let key = geo_uri.clone();
+    call_ui(req, "location.map", json!({"geoUri": geo_uri, "width": 640, "height": 400}), move |ui, win, out| {
+        let val = match out {
+            Ok(v) if !v["path"].as_str().unwrap_or("").is_empty() => v,
+            _ => json!(false),
+        };
+        ui.location_maps.insert(key, val);
+        rebuild_timeline(ui, win);
+    });
+}
+
 /// Frame strip for an animated GIF (media.gifFrames) — Slint has no
 /// animated Image, so the bubble cycles PNG frames.
 pub fn fetch_gif_frames(req: &Requester, room_id: &str, event_id: &str, key: String) {

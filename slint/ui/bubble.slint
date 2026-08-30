@@ -613,10 +613,27 @@ export component Bubble inherits Rectangle {
                         width: root.bubble-max;
                         height: root.bubble-max * 0.625;
                         background: root.fg.with-alpha(0.10);
+                        clip: true;
+                        // An actual map when the engine composited one; the
+                        // bare pin is the offline/pending fallback.
+                        if item.location-map.width > 0 : Image {
+                            source: item.location-map;
+                            width: 100%; height: 100%;
+                            image-fit: cover;
+                        }
+                        // Legible over any map ground: a light disc under a dark pin.
+                        if item.location-map.width > 0 : pin-disc := Rectangle {
+                            x: (loc-box.width - 44px) / 2;
+                            y: (loc-box.height - 44px) / 2;
+                            width: 44px; height: 44px; border-radius: 22px;
+                            background: #ffffff.with-alpha(0.85);
+                            drop-shadow-color: #00000066;
+                            drop-shadow-blur: 6px;
+                        }
                         IconLabel {
                             text: Icons.location;
-                            color: root.accent.with-alpha(0.85);
-                            font-size: 40px;
+                            color: item.location-map.width > 0 ? #1a1a1a : root.accent.with-alpha(0.85);
+                            font-size: item.location-map.width > 0 ? 28px : 40px;
                             width: 100%; height: 100%;
                         }
                         if item.location-live || item.location-ended : live-pill := Rectangle {

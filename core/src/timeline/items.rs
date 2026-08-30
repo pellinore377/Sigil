@@ -40,6 +40,14 @@ pub async fn diff_json(engine: &SharedEngine, room: &Room, d: VectorDiff<Arc<Tim
 }
 
 /// `geo:lat,lon[;u=accuracy]`; `;u=` is an accuracy radius in metres.
+/// Public face of `parse_geo` for the map compositor.
+pub fn geo_of(uri: &str) -> Option<(f64, f64)> {
+    match parse_geo(uri) {
+        (Some(lat), Some(lon), _) => Some((lat, lon)),
+        _ => None,
+    }
+}
+
 fn parse_geo(uri: &str) -> (Option<f64>, Option<f64>, Option<f64>) {
     let raw = uri.trim_start_matches("geo:");
     let (coords, uncertainty) = match raw.split_once(';') {

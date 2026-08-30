@@ -130,6 +130,7 @@ export struct TimelineRow {
     location-live: bool,
     location-ended: bool,
     location-expires-s: int,   // epoch seconds the live share ends; 0 = none
+    location-map: image,       // engine-composited static map (location.map)
     // audio (music) card — audio.info's art + palette
     audio-art: image,
     audio-have-art: bool,

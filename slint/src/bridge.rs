@@ -125,6 +125,8 @@ pub struct UiState {
     pub link_previews: HashMap<String, Value>,
     /// roomId|eventId -> media.gifFrames reply (Null = pending; false = not animated).
     pub gif_frames: HashMap<String, Value>,
+    /// geoUri -> location.map reply (Null = pending; false = failed).
+    pub location_maps: HashMap<String, Value>,
 }
 
 thread_local! {
@@ -207,6 +209,7 @@ pub fn start(win: &AppWindow, rt: &tokio::runtime::Runtime, icons: IconSet) -> R
         audio_infos: HashMap::new(),
         link_previews: HashMap::new(),
         gif_frames: HashMap::new(),
+        location_maps: HashMap::new(),
     }));
     UI.with(|ui| *ui.borrow_mut() = Some(state));
 
@@ -1059,6 +1062,23 @@ pub fn rebuild_timeline(ui: &mut UiState, win: &AppWindow) {
         let contact = item.get("contact").cloned().unwrap_or(Value::Null);
         let location = item.get("location").cloned().unwrap_or(Value::Null);
         let live = item.get("liveShare").cloned().unwrap_or(Value::Null);
+        // The card shows an actual map: an engine-composited OSM tile crop.
+        let mut location_map: Option<slint::Image> = None;
+        if matches!(kind, "location" | "liveLocation") {
+            let geo = location["geoUri"].as_str().unwrap_or("").to_string();
+            if !geo.is_empty() {
+                match ui.location_maps.get(&geo).cloned() {
+                    None => {
+                        ui.location_maps.insert(geo.clone(), Value::Null);
+                        crate::actions::fetch_location_map(&ui.req.clone(), geo);
+                    }
+                    Some(v) if v.is_object() => {
+                        location_map = avatar(ui, v["path"].as_str().unwrap_or(""));
+                    }
+                    _ => {}
+                }
+            }
+        }
         rows_out.push(TimelineRow {
             id: item["id"].as_str().unwrap_or("").into(),
             event_id: event_id.clone().into(),
@@ -1142,6 +1162,7 @@ pub fn rebuild_timeline(ui: &mut UiState, win: &AppWindow) {
             location_label: location["description"].as_str().unwrap_or("").into(),
             location_live: live["live"].as_bool().unwrap_or(false),
             location_expires_s: (live["expiresAt"].as_f64().unwrap_or(0.0) / 1000.0) as i32,
+            location_map: location_map.unwrap_or_default(),
             location_ended: item["kind"].as_str() == Some("liveLocation") && !live["live"].as_bool().unwrap_or(false),
             audio_have_art: audio_art.is_some(),
             audio_art: audio_art.unwrap_or_default(),
@@ -1222,6 +1243,7 @@ fn start_demo(win: &AppWindow, rt: &tokio::runtime::Runtime, icons: IconSet) -> 
         audio_infos: HashMap::new(),
         link_previews: HashMap::new(),
         gif_frames: HashMap::new(),
+        location_maps: HashMap::new(),
     }));
     UI.with(|ui| *ui.borrow_mut() = Some(state));
 
@@ -1262,9 +1284,6 @@ fn start_demo(win: &AppWindow, rt: &tokio::runtime::Runtime, icons: IconSet) -> 
                ]}),
         item("m5", "text", true, "@pell:demo.host", "pellinore", "there is always a condition", now - 540_000, false),
         // ---- fixture block: every body kind the port renders ----
-        json!({"id": "f3", "kind": "location", "isOwn": false, "sender": "@lady:demo.host", "senderName": "LadyoftheLake",
-               "body": "Live location", "ts": now - 90_000, "eventId": "$f3",
-               "liveShare": {"live": true, "expiresAt": now + 83_000}}),
         json!({"id": "f4", "kind": "contact", "isOwn": false, "sender": "@lady:demo.host", "senderName": "LadyoftheLake",
                "body": "Contact", "ts": now - 60_000, "eventId": "$f4",
                "contact": {"displayName": "Godfrey of Bouillon", "userId": "@godfrey:demo.host"}}),
@@ -1294,6 +1313,10 @@ fn start_demo(win: &AppWindow, rt: &tokio::runtime::Runtime, icons: IconSet) -> 
         json!({"id": "f8", "kind": "text", "isOwn": false, "sender": "@lady:demo.host", "senderName": "LadyoftheLake",
                "body": "bold and italic and code and a link", "ts": now - 30_000, "eventId": "$f8",
                "html": "the sword is <b>bold</b>, the lake is <i>italic</i>, the terms are <code>inline code</code>, and the map is <a href=\"https://slint.dev\">a tappable link</a>"}),
+        json!({"id": "f3", "kind": "location", "isOwn": false, "sender": "@lady:demo.host", "senderName": "LadyoftheLake",
+               "body": "Live location", "ts": now - 90_000, "eventId": "$f3",
+               "location": {"geoUri": "geo:48.8583736,2.2944813"},
+               "liveShare": {"live": true, "expiresAt": now + 83_000}}),
     ], "len": 15});
     let status = json!({"event": "status", "session": "loggedIn", "userId": "@pell:demo.host",
                         "displayName": "Pellinore", "avatarPath": "", "sync": "", "syncError": "", "login": {"url": ""}});
