@@ -244,3 +244,9 @@ the live-pill countdown (cut off in the landscape demo window).
 - Still out of SigilText: the per-character MOTION (shake/wave/pulse/
   glow/typewriter/…), which needs per-glyph geometry — the glyph-run
   engine project. Colour parity is done.
+
+## Ninth round: heading/list/quote fidelity
+- h1-h6 → bold paragraphs, <ul>/<ol>/<li> → bullet lines, <blockquote> →
+  "❯ " italic lines in html_to_markdown — from_markdown rejects the real
+  constructs, so a message containing them no longer falls back to plain.
+  Demo-verified with nested bold/italic inside list items.
