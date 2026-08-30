@@ -30,6 +30,7 @@ export component Bubble inherits Rectangle {
     callback open-audio(TimelineRow);
     callback open-location(TimelineRow);
     callback open-link(TimelineRow);
+    callback open-url(string);
     callback open-thread(string);
     callback react(string, string);
     callback voice-toggled(string);
@@ -788,7 +789,20 @@ export component Bubble inherits Rectangle {
                     }
 
                     // Body text / utd / redacted
-                    if (item.kind == "text" || item.kind == "notice" || item.kind == "emote"
+                    // Markup bodies render through StyledText: bold/italic/code
+                    // and tappable links (link-clicked). Plain bodies stay Text.
+                    if item.has-rich && !root.code-kind && !item.link-only : rich-text := StyledText {
+                        text: item.rich-body;
+                        default-color: root.fg;
+                        default-font-family: Theme.font-ui;
+                        default-font-size: Theme.body;
+                        link-color: root.accent.brighter(0.3);
+                        width: min(root.bubble-max - 22px, self.preferred-width);
+                        x: root.link-card ? 11px : 0px;
+                        link-clicked(l) => { root.open-url(l); }
+                    }
+                    if !item.has-rich
+                        && (item.kind == "text" || item.kind == "notice" || item.kind == "emote"
                         || item.kind == "utd" || item.kind == "redacted" || item.kind == "unsupported")
                         && !root.code-kind && !item.link-only : body-text := Text {
                         text: item.kind == "utd" ? "🔒 Waiting for keys…"

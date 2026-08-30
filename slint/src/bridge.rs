@@ -974,6 +974,15 @@ pub fn rebuild_timeline(ui: &mut UiState, win: &AppWindow) {
             .and_then(|h| u32::from_str_radix(h.trim_start_matches('#'), 16).ok())
             .map(|c| slint::Color::from_rgb_u8((c >> 16) as u8, (c >> 8) as u8, c as u8))
             .unwrap_or(slint::Color::from_argb_u8(115, 0, 0, 0));
+        // Markup renders through StyledText, parsed here — the language-side
+        // @markdown interpolates runtime strings as PLAIN text by design.
+        let rich_body: Option<slint::StyledText> = if matches!(kind, "text" | "notice" | "emote")
+            && item["parts"].as_array().map(|a| a.is_empty()).unwrap_or(true) {
+            item["html"].as_str().filter(|h| !h.is_empty())
+                .and_then(|h| slint::StyledText::from_markdown(&rows::html_to_markdown(h)).ok())
+        } else {
+            None
+        };
         // Music files render AudioBody's card: cover art + a strip tinted from
         // the art's palette (audio.info hands both over).
         let mut audio_art: Option<slint::Image> = None;
@@ -1054,6 +1063,10 @@ pub fn rebuild_timeline(ui: &mut UiState, win: &AppWindow) {
             id: item["id"].as_str().unwrap_or("").into(),
             event_id: event_id.clone().into(),
             kind: kind.into(),
+            // Markup renders through StyledText; code-part messages lay out
+            // as parts instead, and a plain body stays on the fast Text path.
+            rich_body: rich_body.clone().unwrap_or_default(),
+            has_rich: rich_body.is_some(),
             body: body.into(),
             sender: sender.clone().into(),
             sender_name: sender_name.clone().into(),
@@ -1278,6 +1291,9 @@ fn start_demo(win: &AppWindow, rt: &tokio::runtime::Runtime, icons: IconSet) -> 
                "threadSummary": {"count": 2, "senderName": "LadyoftheLake", "body": "in the thread we discuss tides"},
                "readBy": [{"userId": "@lady:demo.host", "displayName": "LadyoftheLake", "avatarPath": ""},
                           {"userId": "@godfrey:demo.host", "displayName": "Godfrey of Bouillon", "avatarPath": ""}]}),
+        json!({"id": "f8", "kind": "text", "isOwn": false, "sender": "@lady:demo.host", "senderName": "LadyoftheLake",
+               "body": "bold and italic and code and a link", "ts": now - 30_000, "eventId": "$f8",
+               "html": "the sword is <b>bold</b>, the lake is <i>italic</i>, the terms are <code>inline code</code>, and the map is <a href=\"https://slint.dev\">a tappable link</a>"}),
     ], "len": 15});
     let status = json!({"event": "status", "session": "loggedIn", "userId": "@pell:demo.host",
                         "displayName": "Pellinore", "avatarPath": "", "sync": "", "syncError": "", "login": {"url": ""}});

@@ -318,6 +318,7 @@ export component ChatPage inherits Rectangle {
                         open-audio(it) => { root.open-audio(it); }
                         open-location(it) => { root.open-location(it); }
                         open-link(it) => { root.open-link(it.link-url); }
+                        open-url(l) => { root.open-link(l); }
                         open-thread(id) => { root.open-thread(id); }
                         react(id, key) => { root.react(id, key); }
                         voice-toggled(id) => { root.voice-toggled(id); }

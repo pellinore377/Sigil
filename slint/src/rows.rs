@@ -304,3 +304,62 @@ pub fn domain_of(url: &str) -> String {
         .trim_start_matches("www.")
         .to_string()
 }
+
+/// The engine's sanitized rich-text subset (<b> <i> <code> <a href> <br> <font>)
+/// → CommonMark for StyledText. Literal markdown characters in text runs are
+/// escaped so message text never becomes accidental markup.
+pub fn html_to_markdown(html: &str) -> String {
+    let mut out = String::with_capacity(html.len() + 16);
+    let mut rest = html;
+    let mut in_code = false;
+    while let Some(open) = rest.find('<') {
+        push_md_escaped(&mut out, &rest[..open], in_code);
+        let Some(close) = rest[open..].find('>').map(|p| open + p) else {
+            push_md_escaped(&mut out, &rest[open..], in_code);
+            return out;
+        };
+        let tag = &rest[open + 1..close];
+        rest = &rest[close + 1..];
+        let lower = tag.to_ascii_lowercase();
+        let name = lower.trim_start_matches('/');
+        let name: String = name.chars().take_while(|c| c.is_ascii_alphanumeric()).collect();
+        let closing = lower.starts_with('/');
+        match (name.as_str(), closing) {
+            ("b" | "strong", _) => out.push_str("**"),
+            ("i" | "em", _) => out.push('*'),
+            ("del" | "s" | "strike", _) => out.push_str("~~"),
+            ("code", c) => { in_code = !c; out.push('`'); }
+            ("br", _) => out.push_str("  \n"),
+            ("p", true) => out.push_str("\n\n"),
+            ("a", false) => {
+                // <a href="X">text</a> → [text](X)
+                let href = lower.find("href=\"")
+                    .map(|h| &tag[h + 6..])
+                    .and_then(|t| t.find('"').map(|e| &t[..e]))
+                    .unwrap_or("")
+                    .to_string();
+                out.push('[');
+                // find the closing </a> and emit its inner text
+                if let Some(end) = rest.to_ascii_lowercase().find("</a>") {
+                    push_md_escaped(&mut out, &rest[..end], false);
+                    rest = &rest[end + 4..];
+                }
+                out.push_str("](");
+                out.push_str(&href);
+                out.push(')');
+            }
+            _ => {} // font/span colouring and unknown tags: styling dropped, text kept
+        }
+    }
+    push_md_escaped(&mut out, rest, in_code);
+    out
+}
+
+fn push_md_escaped(out: &mut String, text: &str, in_code: bool) {
+    for ch in text.chars() {
+        if !in_code && matches!(ch, '*' | '_' | '`' | '[' | ']' | '\\' | '#' | '~') {
+            out.push('\\');
+        }
+        out.push(ch);
+    }
+}
