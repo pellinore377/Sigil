@@ -171,8 +171,15 @@ export component Bubble inherits Rectangle {
             bubble := Rectangle {
                 x: item.is-own ? brow.width - self.width : 0px;
                 y: brow.height - self.height;
-                // QML: text content is implicitWidth + 22 with a 40px floor.
-                width: min(root.bubble-max, max(40px, b-inner.preferred-width + (root.pad-free ? 0px : 22px)));
+                // QML contentW: media takes its box; doc/track/code/contact and
+                // the link card take bubbleMax outright (wrapped text reports a
+                // tiny preferred width); text is implicitWidth + 22, 40px floor.
+                property <length> content-w: root.media-kind ? root.media-w
+                    : item.kind == "location" ? root.bubble-max
+                    : root.doc-kind || item.kind == "audio" || item.kind == "contact"
+                      || root.code-kind || root.link-card || item.link-only ? root.bubble-max
+                    : b-inner.preferred-width + (root.pad-free ? 0px : 22px);
+                width: min(root.bubble-max, max(40px, self.content-w));
                 height: b-inner.preferred-height + (root.pad-free ? 0px : 20px);
                 // cardOnly: a body that IS the link renders the card alone.
                 background: item.kind == "poll" || item.link-only ? transparent : root.bubble-fill;

@@ -1208,6 +1208,12 @@ fn start_demo(win: &AppWindow, rt: &tokio::runtime::Runtime, icons: IconSet) -> 
         json!({"id": "s1", "kind": "membership", "stateText": "Godfrey of Bouillon joined the room", "ts": now - day + 3 * hour}),
         json!({"id": "d1", "kind": "dayDivider", "ts": now}),
         item("m4", "text", false, "@lady:demo.host", "LadyoftheLake", "the sword is yours, but there is a condition", now - 600_000, false),
+        json!({"id": "m4c", "kind": "text", "isOwn": false, "sender": "@lady:demo.host", "senderName": "LadyoftheLake",
+               "body": "terms:\nfn wield(sword: Sword) -> Kingdom", "ts": now - 580_000,
+               "parts": [
+                   {"t": "text", "html": "terms:"},
+                   {"t": "code", "lang": "rust", "html": "fn wield(sword: Sword) -&gt; Kingdom {\n    sword.raise()\n}"}
+               ]}),
         item("m5", "text", true, "@pell:demo.host", "pellinore", "there is always a condition", now - 540_000, false),
     ], "len": 8});
     let status = json!({"event": "status", "session": "loggedIn", "userId": "@pell:demo.host",
