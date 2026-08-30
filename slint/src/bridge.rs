@@ -123,6 +123,8 @@ pub struct UiState {
     pub audio_infos: HashMap<String, Value>,
     /// url -> link.preview reply (Null = asked, pending; false = failed).
     pub link_previews: HashMap<String, Value>,
+    /// roomId|eventId -> media.gifFrames reply (Null = pending; false = not animated).
+    pub gif_frames: HashMap<String, Value>,
 }
 
 thread_local! {
@@ -204,6 +206,7 @@ pub fn start(win: &AppWindow, rt: &tokio::runtime::Runtime, icons: IconSet) -> R
         doc_thumbs: HashMap::new(),
         audio_infos: HashMap::new(),
         link_previews: HashMap::new(),
+        gif_frames: HashMap::new(),
     }));
     UI.with(|ui| *ui.borrow_mut() = Some(state));
 
@@ -910,6 +913,31 @@ pub fn rebuild_timeline(ui: &mut UiState, win: &AppWindow) {
                 _ => {}
             }
         }
+        // An animated GIF cycles engine-decoded frames (no animated Image).
+        let mut gif_imgs: Vec<slint::Image> = Vec::new();
+        let mut gif_delays: Vec<i32> = Vec::new();
+        if kind == "image" && !event_id.is_empty() {
+            let mime = media["mime"].as_str().unwrap_or("");
+            let fname = media["filename"].as_str().unwrap_or("").to_ascii_lowercase();
+            if mime.contains("gif") || fname.ends_with(".gif") {
+                let gkey = format!("{room_id}|{event_id}");
+                match ui.gif_frames.get(&gkey).cloned() {
+                    None => {
+                        ui.gif_frames.insert(gkey.clone(), Value::Null);
+                        crate::actions::fetch_gif_frames(&ui.req.clone(), &room_id, &event_id, gkey);
+                    }
+                    Some(v) if v.is_object() => {
+                        let paths: Vec<String> = v["frames"].as_array().map(|a| a.iter().filter_map(Value::as_str).map(str::to_string).collect()).unwrap_or_default();
+                        for path in &paths {
+                            if let Some(img) = avatar(ui, path) { gif_imgs.push(img); }
+                        }
+                        gif_delays = v["delays"].as_array().map(|a| a.iter().filter_map(Value::as_i64).map(|d| d as i32).collect()).unwrap_or_default();
+                        if gif_imgs.len() != gif_delays.len() { gif_imgs.clear(); gif_delays.clear(); }
+                    }
+                    _ => {}
+                }
+            }
+        }
         // Fenced code splits the body into parts; the highlighter's markup is
         // flattened to plain text (Slint has no rich text — WIRING-chat.md).
         let parts: Vec<crate::MsgPart> = item["parts"].as_array().map(|a| a.iter().map(|p| {
@@ -1049,6 +1077,8 @@ pub fn rebuild_timeline(ui: &mut UiState, win: &AppWindow) {
             thumb_w: media["width"].as_f64().unwrap_or(0.0) as f32,
             thumb_h: media["height"].as_f64().unwrap_or(0.0) as f32,
             media_filename: media["filename"].as_str().unwrap_or("").into(),
+            gif_frames: slint::ModelRc::new(VecModel::from(gif_imgs)),
+            gif_delays: slint::ModelRc::new(VecModel::from(gif_delays)),
             media_size: media["sizeLabel"].as_str().unwrap_or("").into(),
             duration: if duration_ms > 0.0 { format!("{}:{:02}", (duration_ms as u64 / 1000) / 60, (duration_ms as u64 / 1000) % 60) } else { String::new() }.into(),
             reply: reply.as_ref().map(|r| crate::ReplyRef {
@@ -1178,6 +1208,7 @@ fn start_demo(win: &AppWindow, rt: &tokio::runtime::Runtime, icons: IconSet) -> 
         doc_thumbs: HashMap::new(),
         audio_infos: HashMap::new(),
         link_previews: HashMap::new(),
+        gif_frames: HashMap::new(),
     }));
     UI.with(|ui| *ui.borrow_mut() = Some(state));
 

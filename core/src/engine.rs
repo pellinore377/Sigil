@@ -275,6 +275,7 @@ impl Engine {
             #[cfg(not(feature = "calls"))]
             r if r.starts_with("call.") => Reply::err("unsupported", "this build has no call support"),
             "media.get" => crate::media::get(self.clone(), p).await,
+            "media.gifFrames" => crate::media::gif_frames(self.clone(), p).await,
             "media.saveAs" => crate::media::save_as(self.clone(), p).await,
             "attachment.send" => crate::media::send_attachment(self.clone(), p).await,
             "ui.focus" => {

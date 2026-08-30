@@ -76,6 +76,8 @@ export struct TimelineRow {
     thumb-w: length,
     thumb-h: length,
     media-filename: string,
+    gif-frames: [image],   // >1: cycle these instead of the still (AnimatedImage)
+    gif-delays: [int],     // per-frame ms, same length
     media-size: string,
     duration: string,
     reply: ReplyRef,

@@ -56,6 +56,19 @@ pub fn fetch_doc_thumb(req: &Requester, room_id: &str, event_id: &str, key: Stri
     });
 }
 
+/// Frame strip for an animated GIF (media.gifFrames) — Slint has no
+/// animated Image, so the bubble cycles PNG frames.
+pub fn fetch_gif_frames(req: &Requester, room_id: &str, event_id: &str, key: String) {
+    call_ui(req, "media.gifFrames", json!({"roomId": room_id, "eventId": event_id}), move |ui, win, out| {
+        let val = match out {
+            Ok(v) if v["frames"].as_array().map(|a| a.len() > 1).unwrap_or(false) => v,
+            _ => json!(false),
+        };
+        ui.gif_frames.insert(key, val);
+        rebuild_timeline(ui, win);
+    });
+}
+
 /// og: card for the first link in a message (svc.linkPreview).
 pub fn fetch_link_preview(req: &Requester, url: String) {
     let key = url.clone();

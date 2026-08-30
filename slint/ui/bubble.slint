@@ -3,9 +3,9 @@
 // ends; day chips; tiny state captions; reactions straddle the bubble's top
 // corner; the pin sits proud of it; own messages wear a mark line.
 //
-// Ported except: link-preview cards, GIF inline playback (Slint has no
-// animated image), code-part splitting (needs a parts field on TimelineRow),
-// and SigilText per-character effects — all listed in WIRING-chat.md.
+// Ported except SigilText per-character effects and rich-text bodies (no
+// rich text in Slint — WIRING-chat.md). Link cards, code parts, and GIF
+// playback (engine-decoded frames) are in.
 
 import { Theme } from "style.slint";
 import { Icons } from "icons.slint";
@@ -246,13 +246,31 @@ export component Bubble inherits Rectangle {
 
                     // Image / sticker / video poster
                     if root.media-kind : media-box := Rectangle {
+                        property <int> gif-frame: 0;
                         width: root.media-w;
                         height: root.media-h;
                         background: root.fg.with-alpha(0.08);
-                        if item.thumb.width > 0 : Image {
+                        if item.thumb.width > 0 && item.gif-frames.length <= 1 : Image {
                             source: item.thumb;
                             width: 100%; height: 100%;
                             image-fit: cover;
+                        }
+                        // Animated GIF: engine-decoded frames on a per-frame clock
+                        // (QML's AnimatedImage; Slint's Image cannot animate).
+                        if item.gif-frames.length > 1 : Image {
+                            source: item.gif-frames[min(media-box.gif-frame, item.gif-frames.length - 1)];
+                            width: 100%; height: 100%;
+                            image-fit: cover;
+                        }
+                        // A Timer cannot sit under an `if`; it idles via `running`.
+                        gif-clock := Timer {
+                            interval: item.gif-frames.length > 1
+                                ? max(20, item.gif-delays[min(media-box.gif-frame, item.gif-delays.length - 1)]) * 1ms
+                                : 1000ms;
+                            running: item.gif-frames.length > 1;
+                            triggered => {
+                                media-box.gif-frame = mod(media-box.gif-frame + 1, item.gif-frames.length);
+                            }
                         }
                         if item.thumb.width == 0 : Spinner {
                             x: (media-box.width - self.width) / 2;

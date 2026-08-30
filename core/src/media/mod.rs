@@ -854,6 +854,60 @@ pub async fn get(engine: SharedEngine, p: &serde_json::Map<String, Value>) -> Re
     }
 }
 
+/// `media.gifFrames {roomId, eventId}` → {frames: [paths], delays: [ms], width, height}.
+/// Decodes an animated GIF into frame PNGs a view without animated-image
+/// support can cycle. Capped at 64 frames and 480px on the long edge; the
+/// cache is keyed on the source file, so repeat calls cost a stat.
+pub async fn gif_frames(engine: SharedEngine, p: &serde_json::Map<String, Value>) -> Reply {
+    let room_id = p.get("roomId").and_then(Value::as_str).unwrap_or("");
+    let event_id = p.get("eventId").and_then(Value::as_str).unwrap_or("");
+    let (source, _filename, mime) = match locate(&engine, room_id, event_id).await { Ok(v) => v, Err(r) => return r };
+    let src = match fetch(&engine, source, None, mime).await { Ok(p) => p, Err(e) => return Reply::err("network", format!("{e:#}")) };
+
+    let mut h = Sha256::new();
+    h.update(src.to_string_lossy().as_bytes());
+    if let Ok(m) = std::fs::metadata(&src) { h.update(m.len().to_le_bytes()); }
+    let dir = media_dir().join(format!("gif-{:x}", h.finalize()));
+    let meta = dir.join("frames.json");
+    if let Ok(cached) = std::fs::read_to_string(&meta) {
+        if let Ok(v) = serde_json::from_str::<Value>(&cached) {
+            return Reply::ok(v);
+        }
+    }
+
+    let decoded = tokio::task::spawn_blocking(move || -> anyhow::Result<Value> {
+        use image::AnimationDecoder;
+        let file = std::io::BufReader::new(std::fs::File::open(&src)?);
+        let frames = image::codecs::gif::GifDecoder::new(file)?.into_frames();
+        std::fs::create_dir_all(&dir)?;
+        let mut paths: Vec<String> = Vec::new();
+        let mut delays: Vec<u32> = Vec::new();
+        let (mut w, mut hgt) = (0u32, 0u32);
+        for (i, frame) in frames.take(64).enumerate() {
+            let frame = frame?;
+            let (num, den) = frame.delay().numer_denom_ms();
+            let img = image::DynamicImage::ImageRgba8(frame.into_buffer());
+            let img = if img.width().max(img.height()) > 480 {
+                img.resize(480, 480, image::imageops::FilterType::Triangle)
+            } else { img };
+            (w, hgt) = (img.width(), img.height());
+            let path = dir.join(format!("{i:03}.png"));
+            img.save_with_format(&path, image::ImageFormat::Png)?;
+            paths.push(path.to_string_lossy().into_owned());
+            delays.push((num / den.max(1)).clamp(20, 1000));
+        }
+        anyhow::ensure!(paths.len() > 1, "not animated");
+        let v = json!({"frames": paths, "delays": delays, "width": w, "height": hgt});
+        std::fs::write(dir.join("frames.json"), serde_json::to_vec(&v)?)?;
+        Ok(v)
+    }).await;
+    match decoded {
+        Ok(Ok(v)) => Reply::ok(v),
+        Ok(Err(e)) => Reply::err("bad_media", format!("{e:#}")),
+        Err(e) => Reply::err("internal", e.to_string()),
+    }
+}
+
 /// `media.saveAs {roomId, eventId, dest}` — dest is a directory or a full file path.
 pub async fn save_as(engine: SharedEngine, p: &serde_json::Map<String, Value>) -> Reply {
     let room_id = p.get("roomId").and_then(Value::as_str).unwrap_or("");

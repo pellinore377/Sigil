@@ -57,6 +57,10 @@ component AttachTile inherits Rectangle {
         x: (62px - self.width) / 2;
         width: 58px; height: 40px;
         border-radius: 20px;
+        transform-origin: { x: self.width / 2, y: self.height / 2 };
+        transform-scale-x: tile-t.has-hover ? 1.05 : 1.0;
+        transform-scale-y: tile-t.has-hover ? 1.05 : 1.0;
+        animate transform-scale-x, transform-scale-y { duration: 110ms; easing: cubic-bezier(0.33, 1, 0.68, 1); }
         background: tile-t.pressed || tile-t.has-hover ? root.chip.brighter(0.2) : root.chip;
         IconLabel {
             text: root.icon;

@@ -224,10 +224,9 @@ export component OverflowMenu inherits Rectangle {
     in property <length> top-inset: 50px;
     in property <color> fg: Theme.menu-text;
     callback picked(string);
-    // 120ms fade in and out (the QML also scales from the top-right corner;
-    // Slint elements have no scale, the fade carries the motion).
+    // 120ms fade + scale-in from the top-right corner, the QML's motion.
     property <float> show: root.open ? 1.0 : 0.0;
-    animate show { duration: 120ms; }
+    animate show { duration: 120ms; easing: cubic-bezier(0.33, 1, 0.68, 1); }
     visible: self.show > 0.01;
     opacity: self.show;
     TouchArea { clicked => { root.open = false; } }
@@ -235,6 +234,9 @@ export component OverflowMenu inherits Rectangle {
     card := Rectangle {
         x: root.width - self.width - 10px;
         y: root.top-inset;
+        transform-origin: { x: self.width, y: 0px };
+        transform-scale-x: 0.92 + 0.08 * root.show;
+        transform-scale-y: 0.92 + 0.08 * root.show;
         width: 170px;
         height: col.preferred-height + 12px;
         border-radius: 14px;
