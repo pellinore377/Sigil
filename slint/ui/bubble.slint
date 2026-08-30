@@ -561,11 +561,12 @@ export component Bubble inherits Rectangle {
                         HorizontalLayout {
                             spacing: 10px;
                             alignment: start;
+                            // The CONTACT's face, not the sender's.
                             Avatar {
                                 y: 4px;
                                 size: 40px;
-                                initials: item.initials;
-                                tint: item.tint;
+                                initials: item.contact-initials;
+                                tint: item.contact-tint;
                             }
                             VerticalLayout {
                                 alignment: center;
