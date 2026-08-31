@@ -62,7 +62,8 @@ pub fn fetch_location_map(req: &Requester, geo_uri: String) {
     call_ui(req, "location.map", json!({"geoUri": geo_uri, "width": 640, "height": 400}), move |ui, win, out| {
         let val = match out {
             Ok(v) if !v["path"].as_str().unwrap_or("").is_empty() => v,
-            _ => json!(false),
+            Ok(v) => { tracing::warn!("location.map: empty reply {v}"); json!(false) }
+            Err((code, msg)) => { tracing::warn!("location.map: {code} {msg}"); json!(false) }
         };
         ui.location_maps.insert(key, val);
         rebuild_timeline(ui, win);

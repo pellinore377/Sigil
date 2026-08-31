@@ -1124,7 +1124,13 @@ pub fn rebuild_timeline(ui: &mut UiState, win: &AppWindow) {
             send_error: item["sendError"].as_str().unwrap_or("").into(),
             read_count: read_count as i32,
             media_icon,
-            thumb: avatar(ui, &thumb_path).unwrap_or_default(),
+            // Only visual kinds load a thumbnail — a file's cached path is a
+            // document, and Image::load on a .txt just prints an error.
+            thumb: if matches!(kind, "image" | "video" | "sticker") {
+                avatar(ui, &thumb_path).unwrap_or_default()
+            } else {
+                Default::default()
+            },
             thumb_w: media["width"].as_f64().unwrap_or(0.0) as f32,
             thumb_h: media["height"].as_f64().unwrap_or(0.0) as f32,
             media_filename: media["filename"].as_str().unwrap_or("").into(),
