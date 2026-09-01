@@ -1,696 +1,657 @@
 # The Sigil backend: a server that is blind
 
 **Design document. Nothing here is built yet.** This is the plan for replacing
-the Matrix homeserver with a Sigil-native backend whose server learns as close
-to nothing as the laws of physics allow: not what is said, not who is talking to
-whom, not who anyone is, not where anyone is.
+the Matrix homeserver with a Sigil-native backend that is as convenient as
+Matrix or iMessage (type a username, hit send; lose your phone, type your
+password, get everything back) while the servers learn as close to nothing as
+that convenience allows: not what is said, not who talks to whom, not how
+many devices you own, not when you are online.
 
 Scope is the backend and the engine's transport layer. The frontends do not
-change: they speak the socket protocol in `core/docs/protocol.md`, and that
-protocol says nothing about Matrix. SigilText does not change. Calls change
-last.
+change: they speak the socket protocol in `core/docs/protocol.md`, which says
+nothing about Matrix. SigilText does not change. Calls change last.
+
+The document is written twice: **Part A** is the plain-English version and is
+the one to read first. **Part B** is the engineering.
 
 ---
+
+# Part A: in plain English
+
+## A1. What we are building
+
+A messenger where your address is `@pellinore:sigil.example`, like Matrix,
+and where the server at `sigil.example` knows that you exist and what your
+name is, and **nothing else**. It does not know who you talk to, what you
+say, how many phones you have, whether you are online, or what is in your
+backups.
+
+The requirements, in order:
+
+1. **Reach anyone by username.** No QR codes required, no phone numbers.
+2. **Recover everything with a password.** New phone, type username and
+   password, all your chats come back. Nothing to write down.
+3. **Blind servers.** Even a big public server run by someone hostile learns
+   nothing about your conversations.
+4. **One program to host.** Runs on a home box with one config file.
+5. **Convenience wins ties.** Typing indicators, read receipts and link
+   previews are on by default and made as private as they can be.
+
+## A2. The mail-slot picture
+
+The server is a wall of numbered mail slots. When you and Bob first connect,
+your apps agree on a secret. From that secret both apps calculate "our slot is
+number 7,438,221". You drop letters there, Bob picks them up there, and every
+so often the apps calculate a new number and move. Nobody ever told the server
+that slot 7,438,221 means "Pellinore and Bob". The server sees slots appear,
+get used, and go quiet.
+
+The server also has a **front desk**, and this is the part that changed from
+the first draft. The front desk has a list of names: `@pellinore` lives here,
+and here is the public key to use to start a conversation with them. That
+list is the price of "reach anyone by username", and it is the only list of
+people the server keeps. The front desk hands out your public key to anyone
+who asks. It does not know what they did with it, because the conversation
+that follows happens in slots.
+
+## A3. Reaching someone
+
+You type `@bob:other.example`. Your app asks the front desk at
+`other.example` for Bob's card, uses it to set up an encrypted conversation,
+and drops the first message in Bob's **requests slot**. Bob sees "Pellinore
+would like to message you" with the first message, like Signal or Instagram.
+Accept, and it is a normal chat. Ignore, and it goes away.
+
+What `other.example` learned: somebody asked for Bob's card, and something
+landed in Bob's requests slot. Not who, not from where, not whether Bob
+accepted.
+
+## A4. The courier and the clerk
+
+Every request from your app goes in a sealed bag through a **courier** to the
+server's **clerk**. The courier sees your internet address and a sealed bag.
+The clerk opens the bag, sees a slot number, and never sees where the bag came
+from. To connect you to a slot, courier and clerk have to compare notes.
+
+The courier and the clerk are two modes of the same program. A home server
+can run both, in which case its operator sees your address and your slots but
+still never your name next to a slot, never content, never who you talk to.
+The privacy-minded choice is to run the clerk at home and use a public courier
+somewhere else, or Tor, which the app has built in.
+
+## A5. Losing your phone
+
+Your app keeps an encrypted backup of everything (your identity, contacts,
+chats, and media up to a size you choose) on your server, continuously.
+The backup is a safe that needs two things to open: your password, and a
+key. The server has the safe but never the key.
+
+The key is cut into pieces. Any two pieces make a working key. The pieces are
+held by: your own server, two other servers on the network picked
+automatically, any other device you are still signed in on, and optionally
+two friends you choose or a code you print. Nobody sees a whole key. Nobody
+sees your password: each holder does a small piece of math on a scrambled
+copy of your password and gives the result back; your new phone combines two
+results into the key. Each holder allows ten attempts and then wipes its
+piece, so guessing has to go through the holders and cannot be done in bulk.
+Each piece is stored under a random label, not your name, and so is the
+backup itself.
+
+New phone: type username, type password, wait a moment, everything is back.
+Behind the scenes: your other devices get a warning and there is a delay
+before a recovery completes, so a recovery you did not start can be
+cancelled.
+
+## A6. What a hostile public server can and cannot learn
+
+Suppose you are `@you:bigpublic.example` and the operator is hostile and
+runs both courier and clerk.
+
+They learn: your username, your public key, that your account exists, your
+internet address when you connect, that you are connected, how many people
+asked for your card, how many requests you received, and how much traffic
+the whole server carries. They hold an encrypted backup they cannot open and
+one piece of a key that is useless alone.
+
+They do not learn: anything you said, who you talk to, which slots are yours,
+how many devices you have, which groups you are in, who is in them, or
+anything about people on other servers.
+
+Use a separate courier or Tor and the first list loses "your internet
+address" and "that you are connected".
+
+---
+
+# Part B: the engineering
 
 ## Contents
 
-1. [Why](#1-why)
-2. [The mailman problem, answered](#2-the-mailman-problem-answered)
-3. [Who sees what](#3-who-sees-what)
-4. [Architecture](#4-architecture)
-5. [Building blocks](#5-building-blocks)
-   - 5.1 Identity: keys, not names
-   - 5.2 Contact cards and key packages
-   - 5.3 Conversations are MLS groups
-   - 5.4 Mailboxes: the address is a secret
-   - 5.5 Ordering, epochs, and rotation
-   - 5.6 Many devices, one user
-   - 5.7 Waking a device without knowing whose it is
-   - 5.8 Sending without an account: anonymous tokens
-   - 5.9 Media: blind blobs
-   - 5.10 Handles: a directory that cannot read its own index
-   - 5.11 Shape and time: padding, jitter, cover traffic
-   - 5.12 Post-quantum
-   - 5.13 Calls
-   - 5.14 Retention and deletion
-6. [The wire protocol](#6-the-wire-protocol)
-7. [What is still visible, and the paranoid tier](#7-what-is-still-visible-and-the-paranoid-tier)
-8. [The server: one binary](#8-the-server-one-binary)
-9. [Fitting it into the engine](#9-fitting-it-into-the-engine)
-10. [Phases](#10-phases)
-11. [Decisions taken, and the few left open](#11-decisions-taken-and-the-few-left-open)
-12. [References](#12-references)
+- B1. Threat model and what each party sees
+- B2. Architecture
+- B3. Identity, usernames and the front desk
+- B4. Conversations are MLS groups
+- B5. Slots: the address is a secret
+- B6. Ordering, epochs and rotation
+- B7. Requests from strangers
+- B8. Many devices, one user
+- B9. Waking a device
+- B10. Abuse control without identity on the message path
+- B11. Media
+- B12. Recovery and backup
+- B13. Convenience features and what they cost
+- B14. Post-quantum
+- B15. Calls
+- B16. Retention and deletion
+- B17. The wire protocol
+- B18. The server: one binary
+- B19. Fitting it into the engine
+- B20. Phases
+- B21. Decisions taken and the few left open
+- B22. References
 
----
+## B1. Threat model and what each party sees
 
-## 1. Why
+Parties: the **home server** (front desk, clerk, backup store, one recovery
+share), the **courier** (Envoy), **other servers** (holding shares, or hosting
+the people you talk to), and the **network**.
 
-Matrix's homeserver is a database of everything: who is in which room, who
-said what when, every device, every read receipt, every membership change, in
-plain text if the room is unencrypted and in rich metadata even when it is.
-Federation means that database is replicated to every other homeserver with a
-member in the room. Running it means running Synapse, Postgres, a
-matrix-authentication-service, a sliding-sync proxy, a TURN server, a LiveKit
-SFU and an identity server, and any of them can break the rest.
-
-Signal fixed the content problem with the Double Ratchet and the sender
-problem with sealed sender. It did not fix the rest: the server still knows
-your phone number, your username, your device list, your push token, when you
-are online, and, because sealed sender still needs a *recipient*, exactly who
-receives every message. iMessage is worse on every row of that list.
-
-The goal here is a backend where the server holds only **opaque blobs at
-random addresses**, where no table on it maps to a person, and where a
-subpoena for "everything about Alice" returns nothing because the server has
-no idea which of its blobs, if any, are Alice's. And it has to run as one
-process on one home machine.
-
-## 2. The mailman problem, answered
-
-> "How does the mailman get the mail to the mailbox if the mailman doesn't
-> know where the mailbox is?"
-
-The mailman does not need to know *whose* mailbox it is. He only needs to know
-*which slot*. Three tricks make the slot meaningless to him:
-
-**Trick 1: mailboxes have numbers, not names.** The server is a wall of
-numbered slots. There is no list of residents. There is no registration.
-Anyone can put an envelope in any slot if they know its number, and anyone
-who holds the slot's key can empty it.
-
-**Trick 2: the two friends pick the number using a secret only they share,
-and they pick a new number for every conversation epoch.** Alice and Bob
-agree on a secret once (the same handshake that sets up encryption). From that
-secret both can compute "our next slot is 7f3a…". Alice drops the letter there.
-Bob checks there. The number is unguessable, was never sent to anyone, and the
-next one will be unrelated. The server sees a slot get filled and emptied and
-has no way to connect it to the one before or to any other slot.
-
-**Trick 3: the courier who knows the street never sees the slot number, and
-the mailman who sees the slot number never sees the street.** Every request
-goes through a relay (the *Envoy*) that sees the sender's IP address but only
-an encrypted bag. The storage server (the *Vault*) opens the bag, sees the slot
-number and the sealed envelope, and never sees where the bag came from. To
-link a person to a slot you need both parties to collude.
-
-Everything else in this document is the engineering to make those three
-tricks hold up against a hostile operator, a hostile network, spam, phones
-that sleep, users with five devices, and groups of five hundred.
-
-## 3. Who sees what
-
-What the *server operator* can learn about a conversation between Alice and
-Bob, by system. "Yes" means the operator learns it in the normal course of
-running the service.
+What a single honest-but-curious operator learns, compared with the
+alternatives:
 
 | The operator learns… | iMessage | Matrix | Signal | **Sigil** |
 |---|---|---|---|---|
 | message content | no | no (E2EE rooms) | no | **no** |
-| that Alice sent *something* | yes | yes | no (sealed sender) | **no** |
-| that Bob received something | yes | yes | yes | **no** — the recipient is a random slot |
-| Alice and Bob are in contact | yes | yes | yes, from recipient + timing | **no** |
-| Alice's phone number / email | yes | optional | yes | **never collected** |
-| a username | Apple ID | yes, `@alice:server` | yes, if set | **optional, and the server cannot read its own index** (5.10) |
-| the social graph | yes | yes | partially | **no** |
-| when Alice is online | yes | yes | yes | **no** — the Vault sees no connections, the Envoy sees no identities |
-| Alice's IP address | yes | yes | yes | **Envoy only**, never together with anything else |
-| how many devices Alice has | yes | yes | yes | **no** |
-| the members of a group | yes | yes | no (zkgroups) | **no** |
-| the size of a group | yes | yes | yes | approximately, per epoch, without knowing which group (5.5) |
-| a push token | yes | yes | yes | **Envoy only**, tied to a random handle |
-| that a message was read | yes | yes | ciphertext | **ciphertext**, same padding as a message |
-| who talks to whom across servers | n/a | yes, federation | n/a | **no**; there is no server-to-server traffic at all (4) |
+| that you sent something | yes | yes | no | **no** |
+| that you received something | yes | yes | yes | **no**; the recipient is a random slot |
+| you and Bob are in contact | yes | yes | yes, from timing | **no** |
+| phone number / email | yes | optional | yes | **never collected** |
+| username | Apple ID | yes | if set | **yes**, by design |
+| social graph | yes | yes | partly | **no** |
+| when you are online | yes | yes | yes | courier only; **no** with a separate courier or Tor |
+| IP address | yes | yes | yes | courier only, never beside a slot |
+| device count | yes | yes | yes | **no** |
+| group membership | yes | yes | no | **no** |
+| group size | yes | yes | yes | approximate, per epoch, unlinked to any group |
+| push token | yes | yes | yes | courier only, tied to a random handle |
+| read receipts, typing | yes | yes | ciphertext | ciphertext, same padding as messages |
+| backup contents | with iCloud | key backup only | no | **no** |
+| cross-server traffic | n/a | yes, federation | n/a | **none exists** |
 
-The honest remainder, meaning what a Vault operator *can* still see, is in
-section 7. It is: the number of slots that exist, how much traffic flows, and
-coarse timing.
+The coalition of courier and clerk can link an IP to the slots it touches
+and rebuild a social graph over time; the split, or Tor, is the defence.
+A global passive adversary correlating timing on every link is out of scope
+for the default tier and addressed by the cover-traffic tier (B13).
 
-## 4. Architecture
+## B2. Architecture
 
 ```
-                 sees IP, sees nothing else          sees slots, sees no IPs
+                 sees IP, sees sealed bags            sees slots, never an IP
                  ┌────────────────────┐              ┌────────────────────────┐
-   sigil-engine  │       ENVOY        │              │         VAULT          │
-   ─────────────►│  TLS terminator    │─────────────►│  numbered slots        │
-   (Rust daemon, │  oblivious relay   │  bags: HPKE  │  key-package shelves   │
-    holds all    │  push fan-out      │  to the      │  blob store            │
-    keys)        │  batching + jitter │  Vault's key │  token issuer          │
-                 └────────────────────┘              │  handle directory      │
-                                                     └────────────────────────┘
-        ▲                                                        ▲
-        │ optional: arti (Tor) instead of, or before, the Envoy  │
-        └────────────────────────────────────────────────────────┘
+   sigil-engine  │       ENVOY        │              │      HOME SERVER       │
+   ─────────────►│  TLS terminator    │─────────────►│  front desk (names)    │
+   (Rust daemon, │  oblivious relay   │  bags: HPKE  │  slots (clerk)         │
+    holds all    │  push fan-out      │  to the      │  key-package shelves   │
+    keys)        │  batching + jitter │  server key  │  blob store            │
+                 └────────────────────┘              │  backup store          │
+        ▲                                            │  recovery share holder │
+        │ or arti (Tor) instead of an Envoy          │  token issuer          │
+        └───────────────────────────────────────────►└────────────────────────┘
 ```
 
-Two roles, one binary (`sigil-server --role vault|envoy|both`).
+One binary, `sigil-server`, roles `home`, `envoy`, or `both`.
 
-- The **Envoy** is an Oblivious HTTP style relay (RFC 9458). The client
-  encrypts each request to the Vault's public key with HPKE (RFC 9180), and
-  the Envoy forwards the ciphertext. It terminates TLS, so it sees IPs and
-  request sizes and nothing else. It also holds push tokens and long-lived
-  wake channels, keyed by random handles it invents.
-- The **Vault** decrypts bags, stores slots and blobs, issues tokens and
-  answers directory lookups. It never accepts a direct client connection. It
-  sees slot numbers, opaque envelopes, and blind tokens.
+- **Envoy**: Oblivious HTTP style relay (RFC 9458). Clients seal each
+  request to the home server's public key with HPKE (RFC 9180); the Envoy
+  forwards ciphertext. It sees IPs and bag sizes. It holds push tokens and
+  wake channels keyed by random handles it invents.
+- **Home server**: the authoritative front desk for the names it hosts, a
+  slot store, a blob store, a backup store, a recovery share holder for its
+  own users and for users of other servers, and a token issuer. It never
+  accepts a direct client connection; everything arrives as a sealed bag.
 
-**There is no federation.** A conversation between Alice on `vault-a` and Bob
-on `vault-b` works because Alice's engine writes straight into Bob's slots on
-`vault-b`, through Alice's Envoy, and Bob's writes into hers. Vaults never
-talk to each other, never replicate, never need to trust each other. A "server
-outage" only affects the slots on that Vault, and a user may list several
-Vaults in their contact card for redundancy.
+**No federation.** `@alice:a.example` messaging `@bob:b.example` means
+Alice's engine writes into a slot on whichever server hosts that
+conversation, through Alice's Envoy. Servers never talk to each other about
+users, rooms or messages. The only server-to-server relationship is holding a
+recovery share for someone, which is a blob under a random label.
 
-**Split trust is optional but cheap.** Running `--role both` on one machine
-collapses the split and the operator sees IPs *and* slots (still no names, no
-content, no graph). The intended deployment is: run your own Vault at home,
-and point the engine at any community Envoy, or at Tor. An Envoy is
-stateless apart from wake channels and can be run by anyone; it cannot read
-anything.
+## B3. Identity, usernames and the front desk
 
-## 5. Building blocks
-
-### 5.1 Identity: keys, not names
-
-A user *is* a key pair. There is no account, no registration, no user table.
+A user is a key pair plus a name:
 
 ```
-identity  = Ed25519 signing key            (long-term, on every device)
-          + X25519 + ML-KEM-768 KEM keys   (hybrid, for key packages)
+identity  = Ed25519 signing key            (long-term; on every device)
+          + X25519 + ML-KEM-768 KEM keys   (hybrid; for key packages)
+username  = @localpart:server               (registered at the front desk)
 ```
 
-The identity key is created on the first device and shared with the user's
-other devices during linking (5.6). Its fingerprint is what a QR code carries
-and what a safety-number comparison checks. Locally, contacts get nicknames;
-the server never sees a nickname.
-
-Nothing on the server is indexed by the identity key in the clear. Wherever
-the design needs "an address only people who know Bob's key can find", it
-uses `H(IK_pub ‖ purpose)` for the address and `HKDF(IK_pub, purpose)` for an
-encryption key, so the Vault holds ciphertext at a hash and learns neither the
-key nor who is asking.
-
-### 5.2 Contact cards and key packages
-
-A **contact card** is what you hand someone so they can start a conversation:
+**The front desk** is the one table of people a server keeps:
 
 ```
-ContactCard {
-  identity_pub,                    // Ed25519
-  vaults: ["vault.example", …],    // where my slots live
-  welcome_slot_hint,               // see below
-  signature                        // by identity key
+localpart → ContactCard {
+  username, identity_pub, slot_server (where this user's conversations
+  are hosted, normally the same server), requests_slot_hint, key_package_shelf,
+  signature by identity key
 }
 ```
 
-It travels as a QR code, a `sigil:` link, or a directory record (5.10).
+Registration: the client proves possession of the identity key and claims a
+free localpart. A server may require an invite code, a proof-of-work, or
+nothing. Lookup: anyone fetches `@bob:b.example` from `b.example`'s front
+desk, through their own Envoy, so `b.example` learns "a card was fetched"
+and not by whom. Changing a username re-signs the card; the old name is held
+for 30 days and then freed.
 
-**Key packages** are the MLS equivalent of Signal's prekeys: one-time,
-signed, hybrid-KEM public keys that let someone add you to a group while you
-are offline. Each device publishes a shelf of them on its Vault:
+**What is deliberately not on the front desk**: devices, contacts, groups,
+presence, last-seen, avatars (avatars travel inside conversations), and any
+link from the name to any slot.
 
-```
-shelf address  = H("sigil/kp/v1" ‖ identity_pub)
-shelf contents = Enc_{HKDF(identity_pub, "kp")}( [KeyPackage…] )
-```
+**Key packages** are one-time hybrid-KEM public keys (MLS's prekeys) that let
+someone add you to a conversation while you are offline. Each device keeps a
+shelf on the home server at `H("sigil/kp/v1" ‖ identity_pub)`, encrypted
+under `HKDF(identity_pub, "kp")`, so only someone who already has your card
+can use them. The server sees a shelf drain and refill and can count the
+drains; clients refill in fixed batches.
 
-Anyone holding the contact card can compute the address and the key, take one
-package (the Vault removes it), and decrypt it. The Vault sees a shelf at a
-random address being drained and refilled. It can count the drains, which is
-"how many conversations were started with this person this month"; clients
-blunt that by refilling in fixed batches and occasionally draining their own.
+## B4. Conversations are MLS groups
 
-The **welcome slot** is a fixed inbox for MLS Welcome messages, derived the
-same way (`H("sigil/welcome/v1" ‖ identity_pub ‖ period)`), rotated monthly
-by the `period` counter. Writing to it costs a token (5.8), and the client can
-require an invite code inside the Welcome before it accepts a stranger.
+Every conversation, including a two-person direct message, is an MLS group
+(RFC 9420) whose members are *devices*. Your laptop, your phone and Bob's
+phone are three leaves of one tree.
 
-### 5.3 Conversations are MLS groups
+Why MLS rather than a Double Ratchet per device pair: one ciphertext per
+message however many devices are listening (fan-out leaks device counts);
+forward secrecy and post-compromise security on every commit; membership and
+key rotation are cryptographic operations the server neither sees nor
+participates in; and the **exporter** gives every member an identical secret
+per epoch, which is exactly what a secret slot address needs.
 
-Every conversation, including a two-person direct message, is an **MLS group**
-(RFC 9420) whose members are *devices*. Alice's laptop, Alice's phone and
-Bob's phone are three leaves of one tree.
+The server is MLS's "Delivery Service" in name only: it stores ciphertext in
+slots and orders it. It holds no group state and no notion that a group
+exists. Group authority (who may add, remove, rename, pin) is a signed policy
+document inside the group, enforced by clients when validating commits.
 
-Why MLS rather than a Double Ratchet per device pair:
+## B5. Slots: the address is a secret
 
-- one ciphertext per message regardless of member count (Signal's fan-out is
-  one per device, and the count of writes leaks device counts);
-- forward secrecy and post-compromise security in every commit;
-- membership, admin, and key rotation are cryptographic operations the
-  server does not participate in and cannot see;
-- the **exporter** (`MLS-Exporter(label, context, len)`) gives every member an
-  identical secret per epoch, which is exactly what trick 2 needs;
-- hybrid post-quantum cipher suites exist for it today (5.12).
-
-The server is MLS's "Delivery Service" in name only. It stores ciphertext in
-slots and orders it. It holds no group state, no membership list, and no
-notion that a group exists.
-
-Group *authority* (who may add or remove members, rename the group, pin
-messages) is a signed policy document inside the group, enforced by clients
-when validating commits. The server is not asked.
-
-### 5.4 Mailboxes: the address is a secret
-
-Each MLS epoch yields, for every member, the same three values:
+Each epoch yields, for every member, the same values:
 
 ```
-slot_seed  = MLS-Exporter("sigil/slot/v1",  group_id, 32)
-read_cap   = HKDF(slot_seed, "read")            // proves the right to read
+slot_seed  = MLS-Exporter("sigil/slot/v1", group_id, 32)
+read_cap   = HKDF(slot_seed, "read")
 write_key  = Ed25519-from-seed(HKDF(slot_seed, "write"))
-address    = H(read_cap ‖ write_pub)            // the slot number
+address    = H(read_cap ‖ write_pub)
 ```
 
-- To **write**, a member sends `(address, write_pub, envelope, signature)`.
-  The first write to an address pins `write_pub`; later writes must verify
-  against it. Nobody outside the group can forge that signature, and the
-  address itself is 256 bits of secret, so nobody can squat on it first.
-- To **read**, a member sends `(read_cap, cursor)`. The Vault checks
-  `H(read_cap ‖ write_pub) == address`, then returns envelopes after the
-  cursor. Note that a writer never presents `read_cap`, so a Vault that only
-  ever saw writes cannot read the slot either.
-- The Vault stores: address, pinned write key, a sequence of opaque
-  fixed-size envelopes, and a TTL. Nothing else.
+- **Write**: `(address, write_pub, envelope, sig)`. The first write pins
+  `write_pub`; later writes must verify against it. The address is 256 bits of
+  secret, so nobody squats on it first.
+- **Read**: `(read_cap, write_pub, cursor)`. The server checks
+  `H(read_cap ‖ write_pub) == address` and returns envelopes after the
+  cursor. A writer never presents `read_cap`, so a server that only saw
+  writes cannot read.
+- The server stores address, pinned write key, a sequence of opaque
+  fixed-size envelopes, and a TTL.
 
-The Vault therefore learns "address `7f3a…` has an authorised writer and some
-readers". It cannot connect `7f3a…` to a person, to a group, to any other
-address, or to the IP the bags came from.
+The server learns "address `7f3a…` has an authorised writer and some
+readers" and cannot connect it to a name, a group, another address, or an IP.
 
-### 5.5 Ordering, epochs, and rotation
+Which server hosts a conversation's slots: the creator's `slot_server`,
+recorded in the group's policy document. Members on other servers write to
+it through their own Envoys. A group may migrate to another host by commit.
 
-MLS commits need a total order per group; application messages do not, but
-chat wants one anyway. The slot provides it: each envelope written to an
-address receives a sequence number from the Vault, and readers fetch by
-cursor. Two members committing at once both write to the same address; the
-one that lands second is rejected by every client when it fails to validate
-against the new epoch, and its author retries. That is the standard MLS
-strategy and needs no server intelligence.
+## B6. Ordering, epochs and rotation
 
-Every commit starts a new epoch, so **every commit rotates the address**.
-Members keep reading the old address until they have caught up, then drop it;
-the Vault expires it by TTL. Clients also issue a self-update commit at least
-daily (MLS recommends this for post-compromise security), so a quiet
-conversation still moves to a fresh address every day. The Vault sees
-addresses appear, receive a burst, and go dark, with nothing tying one to the
-next.
+Each envelope written to an address receives a sequence number; readers
+fetch by cursor. Two members committing at once both write to the same
+address; the second is rejected by every client when it fails to validate
+against the new epoch, and its author retries. Standard MLS, no server
+intelligence.
 
-What this leaks: the number of distinct `read_cap` presentations on one
-address approximates the number of devices in that group for that epoch.
-The Vault cannot say *which* group, and the number resets with every
-rotation. For the sensitive case, a direct message, "this address has three
-readers" says nothing useful.
+**Every commit rotates the address.** Members keep reading the old address
+until they have caught up, then drop it; the server expires it by TTL.
+Clients issue a self-update commit at least daily, so a quiet conversation
+still moves every day.
 
-### 5.6 Many devices, one user
+Leak: the number of distinct `read_cap` presentations on one address
+approximates the device count in that group for that epoch, unlinked to any
+group and reset on every rotation.
 
-Devices are MLS leaves, so every device is a first-class member of every
-group. Linking a new device is:
+## B7. Requests from strangers
 
-1. new device shows a QR: its own device key pair;
-2. an existing device scans it, sends the identity secret and the current
-   group list over a one-shot MLS group of two;
+Each user has a **requests slot**, `H("sigil/req/v1" ‖ identity_pub ‖
+period)`, rotated monthly. To start a conversation, the sender fetches the
+card, takes a key package, builds a two-device MLS group (or adds the
+recipient to an existing one), and writes the MLS Welcome plus the first
+message to the requests slot. Writing costs a token (B10).
+
+The recipient's engine surfaces it as a request with the sender's username
+and the first message decrypted. Accept: join the group and reply; the
+conversation moves to its own rotating slots. Ignore: discard and forget.
+Block: remember the identity key locally and discard future Welcomes from it
+silently. Users can also require an invite code inside the Welcome, which
+turns the request screen off for strangers entirely.
+
+The server learns: the requests slot at a random address received N Welcomes
+this month. Not from whom, not whether any was accepted.
+
+Verification is Sigil's version of safety numbers: the card is signed by
+the identity key, the identity key fingerprint can be compared out of band,
+and a change of key for a known contact is flagged in the conversation.
+
+## B8. Many devices, one user
+
+Devices are MLS leaves. Linking a new device:
+
+1. the new device shows a QR: its own device key;
+2. an existing device scans it, sends the identity secret, the group list and
+   the local history over a one-shot MLS group of two;
 3. the existing device issues an *Add* commit in every group for the new
-   device's leaf, which also rotates every address.
+   leaf, which rotates every address.
 
-The server never learns a device was added. Contacts do not need to do
-anything; the commit is self-describing.
+The server never learns a device was added. A lost device is removed by a
+*Remove* commit from a surviving device (or, after recovery, from the new
+one), after which it cannot compute any new epoch's address.
 
-Losing a device means an existing device issues *Remove* commits, which is
-post-compromise security in action: the removed device cannot compute any
-new epoch's address.
+## B9. Waking a device
 
-### 5.7 Waking a device without knowing whose it is
+1. The engine asks its Envoy to **subscribe** to an address. The bag to the
+   server contains `address` and a `wake_handle` the Envoy chose at random.
+   The Envoy remembers `wake_handle → this device's channel` (live socket or
+   an APNs/FCM token) and forwards the bag.
+2. The server records `address → [wake_handle…]`: handles, not devices.
+3. On a write, the server emits `wake(wake_handle)` to the Envoy: constant
+   size, no address, no content.
+4. The Envoy wakes the device (a frame, or an empty push). The device fetches
+   through the Envoy.
 
-Polling every address would cost a request per conversation per interval and
-would let the Vault cluster addresses by the burst. Instead:
+The Envoy knows "device D has 213 subscriptions and was woken twice". The
+server knows "address A has three subscribers". Push tokens live only on the
+Envoy, and a device re-randomises its handles on reconnect.
 
-1. The engine asks its Envoy to **subscribe** to an address. The request is a
-   bag (encrypted to the Vault) that contains `address` and a `wake_handle`
-   the Envoy chose at random for this subscription. The Envoy remembers
-   `wake_handle → this device's channel` (a live connection, or an APNs/FCM
-   token) and forwards the bag.
-2. The Vault records `address → [wake_handle…]`. It sees handles, not devices,
-   and it cannot tell which handles share a device.
-3. On a write, the Vault emits `wake(wake_handle)` to the Envoy. No address,
-   no content, a constant-size ping.
-4. The Envoy wakes the device: a frame on the live socket, or an empty push
-   notification. The device then fetches through the Envoy as usual.
+## B10. Abuse control without identity on the message path
 
-Split knowledge, again: the Envoy knows *device D has 213 subscriptions and
-was woken twice today*. The Vault knows *address A has three subscribers*.
-Nobody knows both. Push tokens live only on the Envoy, tied to nothing but a
-handle, and a device re-randomises all its handles when it reconnects.
+Accounts exist (for names and recovery) but the message path never uses
+them. Rate limiting is **Privacy Pass** (RFC 9576–9578):
 
-Subscriptions are per address, so they are re-issued on every rotation; the
-subscribe request is one bag, cheap, and batched with the commit itself.
+- **Credential**: on registration, the client obtains a blind-issued
+  credential by proving it owns an account. Blind, so the server cannot later
+  recognise which account a credential belongs to.
+- **Daily tokens**: presenting the credential (through the Envoy) yields a
+  batch of blind-signed tokens, for example 2,000 a day. Every write, every
+  subscription, every blob chunk, every share operation spends one. Tokens
+  are single-use and unlinkable to issuance and to each other.
 
-### 5.8 Sending without an account: anonymous tokens
+Cross-server: `a.example`'s user writing to a slot on `b.example` needs
+`b.example`'s tokens. `b.example` issues a small daily batch to any holder of
+a valid credential from a server it accepts (a public allow-list, or open by
+default with proof-of-work), so a stranger can send a request but not a
+flood. The server learns "a credential from `a.example` drew tokens", never
+which account.
 
-With no accounts there is nothing to rate-limit, so a blind server would be
-an open spam relay. The answer is **Privacy Pass** (RFC 9576–9578): blind
-signatures that prove "this request is paid for" without saying by whom.
-
-Two levels:
-
-- **Membership credential**, long-lived. Obtained once, from the operator,
-  by whatever policy they like: an invite code from an existing member, a
-  proof-of-work, a payment, or nothing at all on an open Vault. Issued blind,
-  so the operator who handed out the invite cannot recognise the credential
-  later.
-- **Daily tokens**. Presenting the credential (through the Envoy, so with no
-  IP) yields a batch of blind-signed tokens, for example 2,000 per day.
-  Every write, every subscription, every blob chunk spends one. Tokens are
-  single-use and unlinkable to issuance and to each other.
-
-The Vault learns "credential C drew its tokens today" and "some token was
-spent on some slot". The two facts cannot be joined. Version 2 replaces the
-pseudonymous credential with rate-limited anonymous credentials (the
-ARC / Privacy Pass rate-limited issuance work) so that even the daily draw is
-unlinkable; the interface does not change.
-
-Reads are free but bounded by the subscription that made them possible, which
-was paid for.
-
-### 5.9 Media: blind blobs
+## B11. Media
 
 A file is encrypted client-side with a random key, cut into fixed 256 KiB
-chunks (the last one padded), and each chunk uploaded through the Envoy with
-a token. The blob id is the hash of the ciphertext. The message carries
-`(ids[], key)` inside the MLS envelope. Recipients fetch chunks through the
-Envoy in random order with jitter.
+chunks (the last padded), each uploaded through the Envoy with a token. The
+blob id is the hash of the ciphertext; the message carries `(ids[], key)`
+inside the MLS envelope. Recipients fetch chunks through the Envoy in random
+order with jitter. The server sees identical grey bricks with a TTL and
+cannot tell which bricks make a file or which slot they belong to.
+Thumbnails, blurhashes and previews are generated on the sending device.
 
-The Vault sees content-addressed ciphertext chunks of one size with a TTL.
-It cannot tell which chunks make a file, which file belongs to which slot,
-or which slot to which chunk fetch.
+## B12. Recovery and backup
 
-Thumbnails, blurhashes and previews are generated on the sending client and
-travel inside the message, which the engine already does for Matrix.
+The requirement is: username and password, nothing else, everything back.
+The threat is: the server holding the backup guesses the password forever.
+The design is **password-authenticated threshold key recovery**:
 
-### 5.10 Handles: a directory that cannot read its own index
+**The backup.** The engine keeps an encrypted append-only backup on the home
+server: identity keys, contacts, group states, message history, and media up
+to a user-set cap (default 1 GiB, most recent first). It is encrypted under
+`backup_key` and stored under label `H(backup_key, "label")`, so the server
+cannot tell which encrypted blob belongs to which user. It is uploaded as
+padded chunks through the Envoy like any other blob.
 
-Usernames are optional. Discovery by QR code or link needs no directory. For
-users who want `@pellinore` to be findable, the directory is built so that
-the server holding it cannot read it and cannot see what anyone looks up.
+**The key.** `backup_key` is derived from a **threshold OPRF** (RFC 9497
+family, t-of-n) over the password:
 
-- **Storage**: record `H(OPRF_k(handle)) → Enc_{HKDF(handle)}(ContactCard)`.
-  The key `k` is the directory's OPRF key (RFC 9497). The record is
-  encrypted under a key derived from the handle itself.
-- **Lookup**: the client *blinds* the handle, the directory evaluates the
-  OPRF on the blinded value, the client unblinds and hashes to get the
-  record address, fetches the record, and decrypts it because it knows the
-  handle. The directory never sees the handle, in either direction.
-- **Claiming**: writing a record costs a token and the record is signed by
-  the identity key. First-come, and a claimer must prove knowledge of the
-  handle it claims, so the directory cannot mint records for names it has
-  not been shown.
+```
+holders: home server, two other servers picked at random on setup,
+         each other signed-in device, [optional] two friends, [optional]
+         a printed code. Threshold t = 2 (configurable).
+setup:   client picks a random OPRF secret k, splits it into n shares
+         (Shamir), sends share_i to holder_i under label
+         L_i = H("sigil/rec/v1" ‖ username ‖ holder_i ‖ salt),
+         with the salt stored on the home server's front desk.
+recover: client blinds the password, sends it to each reachable holder,
+         each evaluates its share on the blinded value, client unblinds
+         and combines any t results into OPRF_k(password), and
+         backup_key = HKDF(OPRF_k(password) ‖ password, "backup").
+```
 
-What a single operator can do: run its own OPRF over a dictionary of likely
-handles offline and recover the cards for guessable names. That is the same
-exposure as a public phone book, and it is why handles are optional. Closing
-it is a two-party OPRF with the key split between the Envoy operator and the
-Vault operator, which is on the roadmap and changes nothing on the wire.
+Properties, plainly: no holder ever sees the password (blinded) or the key
+(a share alone is useless, and combination happens on the client). A holder
+that is broken into yields one share under a random label. To attack, an
+adversary needs t shares *and* the password; and because evaluation is
+online, each holder enforces **ten attempts per label, then wipes its
+share**, so the password cannot be brute-forced offline unless the attacker
+already holds t shares. Shares are rotated (new `k`, new shares) whenever the
+holder set changes and on a schedule.
 
-Address-book upload is not a feature and will not become one.
+**Friends** as holders: their app stores a share it cannot use; recovery
+sends them an approval prompt. They are a door, not the lock, since the
+password is still required. **Printed code** as holder: a QR that *is* a
+share, for users who want a piece nobody else holds. **Other devices** as
+holders: instant restore when one is signed in.
 
-### 5.11 Shape and time: padding, jitter, cover traffic
+**Safety net.** A recovery attempt notifies every device still in the
+user's groups (via a self-group), waits 24 hours before it completes unless
+an existing device approves, and can be cancelled from any existing device.
+Once complete, the new device issues *Remove* commits for the lost device in
+every group.
 
-Content is hidden; *shape* and *timing* are the remaining side channels.
+**What the home server holds**: an encrypted blob under a random label, one
+share under a random label, and the salt. It cannot open the blob, cannot
+use the share, and cannot guess the password without t holders cooperating.
 
-- **Padding.** Every envelope is padded to a bucket: 1 KiB, 4 KiB or 16 KiB.
-  Read receipts, typing notices, reactions, edits and text all land in the
-  1 KiB bucket and are indistinguishable. Bags to the Envoy are padded again
-  to fixed sizes so the Envoy cannot tell a fetch from a write.
-- **Jitter.** The Envoy holds each bag for a random 0–2 s and forwards in
-  shuffled batches, so "a write, then three reads" is not a visible pattern
-  at the Vault.
-- **Typing indicators** are the worst offender in every messenger: a stream of
-  precisely-timed tiny messages. They are off by default, rate-limited to one
-  per 5 s when on, and use the same envelope as everything else.
-- **Cover traffic** (the paranoid tier, section 7): the engine emits dummy
-  writes to dummy addresses and dummy reads on a Poisson schedule, Loopix
-  style, so that real activity is hidden in a constant background rate.
-  Costs tokens and battery; opt-in.
+**Password change**: re-derive, re-encrypt the backup key envelope (the
+backup itself is under a data key wrapped by `backup_key`, so only the wrap
+is rewritten), re-split. **Forgotten password**: the same as every
+zero-knowledge system, the backup is gone; but a signed-in device can reset
+the password without it, because it has the data key.
 
-### 5.12 Post-quantum
+## B13. Convenience features and what they cost
 
-Signal's PQXDH (2023) made the initial handshake quantum-safe; their SPQR
-ratchet (2025) made the ongoing ratchet quantum-safe too. Sigil sets the bar
-at "every secret that protects a message is hybrid":
+Defaults follow "convenience wins, with the most privacy that fits".
 
-- key packages and MLS commits use a **hybrid X25519 + ML-KEM-768 cipher
-  suite** (X-Wing, or the MLS hybrid suites as they finalise), so every epoch
-  is protected against harvest-now-decrypt-later;
-- bags to the Vault are HPKE with the same hybrid KEM;
-- slot addresses, read capabilities and write keys are derived symmetrically
-  from the epoch secret, so they inherit its security for free;
-- signatures stay Ed25519 for now (a quantum forger needs to act live; a
-  quantum decryptor can act in ten years), with ML-DSA available behind the
-  same trait when the ecosystem settles.
-
-### 5.13 Calls
-
-Calls stay on LiveKit for the first release, because Sigil already has a
-working end-to-end-encrypted MatrixRTC stack, and the changes are contained:
-
-- the SFrame key comes from the MLS exporter instead of Matrix key events;
-- the LiveKit room name is `MLS-Exporter("sigil/call/v1")`, so the SFU sees a
-  random room, not a group;
-- media goes through a TURN relay on the Envoy, so the SFU sees the Envoy's
-  IP, not participants'.
-
-What the SFU still learns is "N random peers were in random room X for
-12 minutes". The later step is a Sigil-native SFU inside `sigil-server`
-(`str0m` or `webrtc-rs`), which removes the last external service.
-
-### 5.14 Retention and deletion
-
-- Slots expire 30 days after their last write, or when every subscriber has
-  acknowledged, whichever is first; acknowledgement is a bag with `read_cap`
-  and a cursor.
-- Blobs expire 30 days after last fetch, extended by fetching.
-- Key package shelves are refilled by their owner and never expire.
-- A user "deleting their account" is a client-side operation: leave every
-  group (a commit, which rotates every address away from you), drain your
-  own shelves, and forget the identity key. The server had nothing to delete.
-- History lives on devices. A new device receives history from an existing
-  device during linking, encrypted device to device, not from the server.
-
-## 6. The wire protocol
-
-All client traffic is a **bag**: `HPKE-Seal(vault_pub, request)`, POSTed to
-the Envoy over TLS or sent as a QUIC stream; the Envoy forwards to the Vault,
-which returns `HPKE-Seal(client_ephemeral, response)`. Bags are padded to
-fixed sizes. Inside a bag, one of:
-
-| Request | Fields | Vault does |
+| Feature | Default | How it stays private |
 |---|---|---|
-| `slot.put` | `address, write_pub, envelope, sig, token` | pin/verify writer, append, assign seq, wake subscribers |
-| `slot.get` | `read_cap, write_pub, after_seq, limit` | verify address, return envelopes |
-| `slot.ack` | `read_cap, write_pub, seq` | mark read for retention |
-| `slot.subscribe` | `address, wake_handle, token` | remember handle for wake |
-| `kp.put` | `shelf, blob, sig, token` | replace shelf contents |
-| `kp.take` | `shelf` | pop one package |
-| `welcome.put` | `address, envelope, token` | append to welcome inbox |
-| `blob.put` | `chunk, token` | store by hash |
-| `blob.get` | `id` | return chunk |
-| `token.issue` | `credential, blinded[]` | blind-sign the batch |
-| `dir.eval` | `blinded_handle` | OPRF evaluation |
-| `dir.put` / `dir.get` | `record_addr, record, sig, token` / `record_addr` | store / fetch |
+| typing indicators | on | an ordinary 1 KiB envelope, at most one per 5 s |
+| read receipts | on | ordinary envelope |
+| link previews | on | fetched by the *sender's* engine through the Envoy, embedded in the message; the recipient never contacts the site |
+| online status | off | would be a broadcast; offered as "share with this chat" per group |
+| contact sync | none | no phone numbers, no address book |
+| history on new device | on | from backup or from a linked device, never from a server the group is on |
 
-The Envoy additionally speaks a plain (non-bag) control channel to the
-client for wakes, and registers push tokens against wake handles. Its
-Vault-facing side receives `wake(handle)` events on a long-lived stream.
+**Shape and timing.** Envelopes are padded to 1, 4 or 16 KiB; bags to the
+Envoy are padded again to fixed sizes; the Envoy holds bags 0–2 s and
+forwards shuffled batches. The **paranoid tier** adds Poisson cover traffic
+(Loopix style) and Tor via `arti`, per user, opt-in.
 
-Nothing in the protocol carries an identity, a display name, a group id, or a
-device id. Every identifier the Vault ever sees is either a hash of a secret
-or a random number the Envoy made up.
+## B14. Post-quantum
 
-## 7. What is still visible, and the paranoid tier
+Every KEM is hybrid: key packages and MLS commits use X25519 + ML-KEM-768
+(X-Wing, or the MLS hybrid suites as they finalise); bags to the server are
+HPKE with the same hybrid KEM; slot addresses and capabilities are derived
+symmetrically and inherit it. Signatures stay Ed25519, with ML-DSA behind
+the same trait for later. This matches Signal's PQXDH plus SPQR bar.
 
-Honest accounting of what a **single honest-but-curious operator** learns:
+## B15. Calls
 
-| Vault | Envoy |
-|---|---|
-| number of live slots, per-slot writes and readers | client IPs and when they connect |
-| total traffic volume and its daily rhythm | per-device count of subscriptions and wakes |
-| key-package drain counts per shelf | bag sizes (fixed) and timing (jittered) |
-| which credential drew tokens today | push tokens |
+First release stays on LiveKit, because Sigil already has a working E2EE
+call stack: the SFrame key comes from the MLS exporter, the room name is
+`MLS-Exporter("sigil/call/v1")`, and media goes through a TURN relay on the
+Envoy so the SFU sees the Envoy's IP. Later, a native SFU inside
+`sigil-server` (`str0m`) removes the last external service.
 
-And what a **coalition of Envoy and Vault** learns: the link from an IP to
-the slots it touches, from which the social graph can be rebuilt over time.
-That is the one attack this architecture does not defeat by itself; it is
-defeated by not letting one party be both.
+## B16. Retention and deletion
 
-The **paranoid tier** in the engine's settings turns on, per user:
+Slots expire 30 days after last write or when every subscriber has
+acknowledged. Blobs expire 30 days after last fetch. Backups are kept while
+the account exists. Deleting an account: leave every group (rotating every
+address away), delete the backup and shares (the client knows the labels),
+release the name. The front desk entry is the only thing the server deletes
+by name.
 
-1. **Tor instead of an Envoy**, through `arti`, embedded in the engine. The
-   Envoy's knowledge collapses to "some Tor exit sent a bag".
-2. **Cover traffic** at a chosen rate, so the Vault sees a flat line.
-3. **Two-operator OPRF** for the directory, once implemented.
-4. **Multiple Vaults** in the contact card, with conversations spread across
-   them, so no single Vault holds all of one user's slots.
+## B17. The wire protocol
 
-A global passive adversary watching every link on the internet can still
-correlate flows by timing; that is Tor's limit too, and only mixnet-grade
-latency defeats it. Sigil makes it *possible* to trade latency for that
-protection (cover traffic plus Envoy batching) rather than pretending the
-problem is absent.
+All client traffic is a **bag**: `HPKE-Seal(server_pub, request)` via the
+Envoy over TLS or QUIC; the reply is sealed to a client ephemeral key. Bags
+are padded to fixed sizes. Inside:
 
-## 8. The server: one binary
+| Request | Fields | Server does |
+|---|---|---|
+| `name.register` | `localpart, card, sig, [invite]` | claim name |
+| `name.lookup` | `localpart` | return card |
+| `name.update` | `card, sig` | replace card |
+| `slot.put` | `address, write_pub, envelope, sig, token` | pin/verify, append, wake |
+| `slot.get` | `read_cap, write_pub, after_seq, limit` | verify, return |
+| `slot.ack` | `read_cap, write_pub, seq` | retention |
+| `slot.subscribe` | `address, wake_handle, token` | remember handle |
+| `kp.put` / `kp.take` | `shelf, blob, sig, token` / `shelf` | refill / pop one |
+| `blob.put` / `blob.get` | `chunk, token` / `id` | store / fetch |
+| `backup.put` / `backup.get` | `label, chunk, token` / `label, cursor` | store / fetch |
+| `share.put` | `label, share, policy, token` | hold a recovery share |
+| `share.eval` | `label, blinded` | OPRF-evaluate, count the attempt |
+| `share.delete` | `label, proof` | drop a share |
+| `token.credential` | `account proof, blinded` | blind-issue credential |
+| `token.issue` | `credential, blinded[]` | blind-sign the daily batch |
 
-The single hardest requirement after "blind" is "runs at home without
-breaking". So:
+The Envoy speaks a plain control channel to the client for wakes and push
+registration, and receives `wake(handle)` events from servers on a
+long-lived stream.
 
-- **One static Rust binary**, `sigil-server`, roles selected by flag or
-  config: `vault`, `envoy`, `both`. No Postgres, no Redis, no reverse proxy
-  required, no auth service, no sync proxy.
-- **Embedded storage**: `redb` (pure Rust, ACID, single file) for slots,
-  shelves, directory records and token double-spend sets; a content-addressed
-  directory of files for blob chunks. Backup is copying two paths while the
-  server runs; restore is copying them back.
-- **Transport**: HTTPS via `axum` with `rustls` and built-in ACME so a bare
-  box gets a certificate by itself, and QUIC via `quinn` for the wake stream.
-- **Config**: one TOML file, under twenty keys, all with defaults. A fresh
-  install is `sigil-server init && sigil-server run`.
-- **Resource envelope**: a slot is a few hundred bytes plus its envelopes; a
-  busy user generates tens of kilobytes a day outside media. A Raspberry Pi
-  serves a few thousand users. Token verification is one Ed25519 or RSA-blind
-  check per write, which is nothing.
-- **Nothing to moderate, nothing to migrate**: there are no schemas with
-  people in them. A version bump migrates slot formats and that is all.
-- **Observability without surveillance**: metrics are counts and latencies
-  only, and the log line format is reviewed so that no field can carry an
-  address, a handle or a token.
+Every identifier the slot, blob, backup and share paths carry is a hash of a
+secret or a random handle. Only `name.*` and `token.credential` name an
+account, and neither touches a conversation.
 
-## 9. Fitting it into the engine
+## B18. The server: one binary
 
-The engine already splits the world into "what the frontends see" (the
-socket protocol) and "how it is obtained" (`matrix-sdk` calls). The work is
-to make the second half pluggable.
+- **One static Rust binary**, `sigil-server`, roles `home`, `envoy`, `both`.
+  No Postgres, no Redis, no auth service, no sync proxy, no reverse proxy
+  required.
+- **Embedded storage**: `redb` for names, slots, shelves, shares, token
+  double-spend sets; a content-addressed directory for blobs and backup
+  chunks. Backup is copying two paths.
+- **Transport**: `axum` + `rustls` with built-in ACME; `quinn` for the wake
+  stream.
+- **Config**: one TOML file, under twenty keys. `sigil-server init && sigil-server run`.
+- **Sizing**: a Raspberry Pi serves a few thousand users outside media.
+- **Logs and metrics** carry counts and latencies only; no field can hold an
+  address, label, name or token, enforced by type.
+
+## B19. Fitting it into the engine
 
 ```
 core/src/
   transport/            NEW  trait Backend { rooms, timeline, send, media, calls, … }
-    matrix/             MOVE  the existing matrix-sdk glue behind the trait
-    sigil/              NEW  the blind backend
-      identity.rs       keys, contact cards, device linking
+    matrix/             MOVE the matrix-sdk glue behind the trait
+    sigil/              NEW
+      identity.rs       keys, usernames, contact cards, device linking
       mls.rs            openmls groups, exporter-derived secrets
       slots.rs          address derivation, put/get/ack, cursors
-      envoy.rs          bags (hpke), subscriptions, wake handling
-      tokens.rs         Privacy Pass credential + daily batches
+      envoy.rs          bags (hpke), subscriptions, wakes
+      requests.rs       the requests slot, accept/ignore/block
+      tokens.rs         Privacy Pass credential and daily batches
       blobs.rs          chunking, encryption, upload/fetch
-      directory.rs      OPRF lookup and claim
-      cover.rs          padding buckets, jitter, cover traffic
-      store.rs          local sqlite: groups, history, pending sends
-server/                 NEW  sigil-server (vault, envoy)
+      backup.rs         continuous encrypted backup
+      recovery.rs       threshold OPRF, holders, safety net
+      cover.rs          padding, jitter, cover traffic
+      store.rs          local sqlite
+server/                 NEW  sigil-server
 ```
 
-Frontends keep speaking `rooms.list`, `room.open`, `message.send` and the
-rest; the item shapes in `core/docs/protocol.md` are already backend-neutral.
-The recovery-key flow becomes device linking. `login.start{homeserver}`
-becomes `login.start{vault}` or `identity.create` for a brand-new key.
+Frontends keep speaking `rooms.list`, `room.open`, `message.send`; the item
+shapes in `core/docs/protocol.md` are backend-neutral. `login.start`
+becomes `account.create{server, localpart, password}` and
+`account.recover{username, password}`; the recovery-key flow becomes device
+linking.
 
-Crates, all pure Rust, all already maintained:
+Crates: `openmls`, `ml-kem` + `x25519-dalek` (`x-wing` as it lands), `hpke`,
+`ed25519-dalek`, `voprf` (threshold variant to be written on top of it),
+`privacypass`, `arti-client`, `redb`, `rusqlite`, `axum`, `rustls`,
+`rustls-acme`, `quinn`, later `str0m`.
 
-| Need | Crate |
-|---|---|
-| MLS | `openmls` (with `openmls_rust_crypto`) |
-| hybrid KEM | `ml-kem` (RustCrypto) + `x25519-dalek`; `x-wing` as it lands |
-| HPKE bags | `hpke` |
-| signatures | `ed25519-dalek` |
-| OPRF | `voprf` |
-| Privacy Pass | `privacypass` (Cloudflare's Rust implementation) |
-| Tor | `arti-client` |
-| storage (server) | `redb`; (client) `rusqlite`, as today |
-| HTTP / QUIC | `axum`, `rustls`, `quinn`, `rustls-acme` |
-| SFU, later | `str0m` |
+## B20. Phases
 
-## 10. Phases
+**0. Specification.** Freeze this into a wire spec with test vectors:
+address derivation, bag format, padding, token issuance, share format.
 
-Each phase ends with something that runs.
+**1. Home server.** Names, slots, shelves, blobs, tokens; `redb`; ACME. A
+command-line client exchanges padded envelopes through addresses from a
+shared secret.
 
-**Phase 0 — Specification.** Freeze this document into a wire spec with test
-vectors: address derivation, bag format, envelope padding, token issuance.
-Write the threat model as a checklist so every later change is judged against
-it.
+**2. Client core.** `transport::sigil`: identity, `openmls` on a hybrid
+suite, exporter-derived slots, requests slot, local store. Two engines hold a
+direct message by username. Omarchy frontend unchanged.
 
-**Phase 1 — The Vault.** `sigil-server --role both` with slots, shelves,
-blobs and tokens, `redb` storage, ACME. A command-line test client that
-proves two processes can exchange padded envelopes through addresses derived
-from a shared secret. No MLS yet; shared secret from a test vector.
+**3. Devices and wake.** Linking; the Envoy role with subscriptions, handles
+and push; Android receives an empty push and fetches.
 
-**Phase 2 — The client core.** `transport::sigil` with identity, `openmls`
-groups on a hybrid suite, exporter-derived slots, put/get/ack, local store.
-Two engines on one machine hold a direct message end to end. The Omarchy
-frontend works unchanged against it.
+**4. Recovery.** Continuous backup; threshold OPRF shares across home server,
+two other servers and linked devices; the 24-hour safety net; password
+change. New phone, username, password, everything back.
 
-**Phase 3 — Devices and wake.** Device linking; the Envoy as a separate role
-with subscriptions, wake handles, and push tokens; Android receives an empty
-push and fetches. Multi-device conversations rotate on link and unlink.
+**5. Groups and media.** Policy documents; add, remove, rename; blob
+chunking; retention; group migration between hosts.
 
-**Phase 4 — Groups and media.** Group policy documents; add, remove, rename
-as commits; blob chunking; the large-group path; retention.
+**6. Shape.** Padding audit, Envoy jitter, cover traffic, `arti`, the
+paranoid settings page; friends and printed code as optional holders.
 
-**Phase 5 — Discovery.** Contact cards as QR and `sigil:` links; the OPRF
-directory; the welcome inbox with invite codes.
+**7. Calls.** Exporter-keyed SFrame on LiveKit behind an Envoy TURN relay;
+then the native SFU.
 
-**Phase 6 — Shape.** Padding buckets audited, Envoy jitter, cover traffic,
-`arti` integration, the paranoid settings page.
+Matrix stays behind the trait as long as it is useful.
 
-**Phase 7 — Calls.** Exporter-keyed SFrame on LiveKit behind an Envoy TURN
-relay; then the native SFU.
+## B21. Decisions taken and the few left open
 
-Matrix support stays in the engine behind the trait for as long as it is
-useful; nothing forces a cutover date.
+Taken:
 
-## 11. Decisions taken, and the few left open
+- **Usernames are `@name:server`**, hosted by a front desk that holds the
+  name and the public key and nothing else about the person.
+- **MLS for everything, including direct messages.**
+- **Slot addresses come from the epoch secret**, never from an identifier.
+- **The message path never carries an account**; abuse control is tokens.
+- **No federation**; clients write straight to the hosting server.
+- **Recovery is username + password**, backed by a threshold OPRF over
+  holders, with online guess limits, blind labels and a 24-hour safety net.
+- **Convenience wins ties**; privacy hardening is opt-in.
+- **Hybrid post-quantum from day one.**
+- **One binary, three roles.**
 
-Taken, so they do not get re-argued:
+Open, with the recommendation:
 
-- **MLS for everything, including direct messages.** Not a per-pair Double
-  Ratchet. Reason: one ciphertext, tree-based groups, and the exporter.
-- **Slot addresses come from the epoch secret**, not from any identifier.
-  This is the whole design; if it ever needs an identifier, the design is
-  wrong.
-- **No accounts, ever.** Abuse control is tokens, not identity.
-- **No federation.** Clients write directly to the recipient's Vault.
-- **Split trust as two roles of one binary**, so home users are not forced to
-  run two machines and privacy-minded users are not forced to trust one.
-- **Handles are optional** and the directory is OPRF-blinded.
-- **Hybrid post-quantum from day one** in every KEM.
-- **History is on devices**, not the server.
+1. **Default holders on a one-server network.** Two other servers may not
+   exist. Recommendation: the home server ships with a short list of public
+   share holders (a share is a blob under a random label, so this is a low
+   trust ask), and falls back to "home server + linked device + printed code
+   offered at setup".
+2. **Large groups.** Above roughly 200 devices one address gets busy.
+   Recommendation: raise the self-update interval for large groups and
+   revisit only if real usage demands.
+3. **Deniability.** MLS messages are signed. Recommendation: accept for v1.
+4. **Open registration policy on public servers.** Recommendation: invite
+   codes by default, proof-of-work as the open alternative.
 
-Left open, with the recommendation:
+## B22. References
 
-1. **Large groups.** Above roughly 200 devices the per-epoch address gets
-   busy and commit contention rises. Recommendation: keep one address, raise
-   the self-update interval for large groups, and revisit sender keys only if
-   real usage demands it.
-2. **Deniability.** MLS messages are signed, so they are not deniable the way
-   Signal's are. Recommendation: accept for v1; MLS deniability proposals
-   exist and slot in later.
-3. **Who runs public Envoys.** Technically anyone; socially, a list of
-   community Envoys in the client is a curation job. Recommendation: ship
-   with Tor as the built-in "no trust needed" option and add a curated list
-   when there are operators to list.
-4. **Token economics on open Vaults.** A fully open Vault with free
-   credentials will be spammed. Recommendation: default to invite codes, and
-   offer proof-of-work as the open alternative.
-
-## 12. References
-
-- MLS: RFC 9420, *The Messaging Layer Security Protocol*; RFC 9750,
-  architecture.
-- HPKE: RFC 9180.
-- Oblivious HTTP: RFC 9458.
-- Privacy Pass: RFC 9576 (architecture), RFC 9577 (auth scheme), RFC 9578
-  (issuance).
-- OPRF: RFC 9497, *Oblivious Pseudorandom Functions using Prime-Order
-  Groups*.
-- ML-KEM: FIPS 203; X-Wing: *X-Wing: The Hybrid KEM You've Been Looking
-  For* (Barbosa et al., 2024).
-- Signal: *The PQXDH Key Agreement Protocol* (2023); *The Triple Ratchet /
-  SPQR* (2025); *Sealed Sender* (2018); *The Signal Private Group System and
-  Anonymous Credentials* (Chase, Perrin, Zaverucha, 2020).
-- Piotrowska et al., *The Loopix Anonymity System* (USENIX Security 2017),
-  for Poisson cover traffic and batching.
-- Apple, *iCloud Private Relay Overview*, for the two-hop split-trust model in
-  production at scale.
+- MLS: RFC 9420 (protocol), RFC 9750 (architecture).
+- HPKE: RFC 9180. Oblivious HTTP: RFC 9458.
+- Privacy Pass: RFC 9576, 9577, 9578.
+- OPRF: RFC 9497. Threshold OPRFs: Jarecki, Kiayias, Krawczyk, *Round-Optimal
+  Password-Protected Secret Sharing and T-PAKE in the Password-Only Model*
+  (2014); Signal, *Secure Value Recovery* and *SVR3* (2023–2024).
+- ML-KEM: FIPS 203. X-Wing: Barbosa et al., 2024.
+- Signal: PQXDH (2023), SPQR (2025), Sealed Sender (2018), *The Signal Private
+  Group System and Anonymous Credentials* (2020).
+- Piotrowska et al., *The Loopix Anonymity System* (2017).
+- Apple, *iCloud Private Relay Overview*; Apple, *Account Recovery Contact*.
