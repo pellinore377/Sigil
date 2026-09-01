@@ -73,6 +73,12 @@ server's **clerk**. The courier sees your internet address and a sealed bag.
 The clerk opens the bag, sees a slot number, and never sees where the bag came
 from. To connect you to a slot, courier and clerk have to compare notes.
 
+Mail comes back the same way, in reverse: when a letter lands in a slot
+you are watching, the clerk hands it to the courier under a random ticket
+number, and the courier hands it to your phone. If your phone is off, the
+courier holds the sealed letter until it is back. The clerk never sees you
+come and go.
+
 The courier and the clerk are two modes of the same program. A home server
 can run both, in which case its operator sees your address and your slots but
 still never your name next to a slot, never content, never who you talk to.
@@ -140,6 +146,35 @@ address" and "that you are connected".
 
 ---
 
+## A7. The timing problem, and what we do about it
+
+Slots hide *what* and *who*. They do not by themselves hide *when*. On a
+server with six users, an operator watching the clock can see "a letter
+went into some slot at 9:14 and a phone got woken at 9:14" and, with roles
+combined on one box, "that phone belongs to this internet address". With
+enough patience that rebuilds who talks to whom. This is the one attack that
+no clever numbering defeats, so it gets three defences, layered:
+
+1. **The clerk keeps no clocks.** Nothing on disk carries a timestamp: not a
+   slot, not an envelope, not a log line. Envelopes are numbered, not dated.
+   A seized or copied server cannot be replayed as a timeline, because the
+   timeline was never written down.
+2. **The clerk never sees your phone come and go.** Deliveries are pushed
+   from clerk to courier to phone, and the courier holds them while the
+   phone is offline. A phone reconnecting after a night off talks only to
+   the courier. The clerk sees no burst, no reconnect, no "fetch all my
+   chats".
+3. **A steady drip of fake letters.** In the paranoid setting, the courier
+   sends the clerk a fixed number of bags every second, real or dummy, and
+   the dummies are indistinguishable. The clerk sees a flat line. Turn it up
+   and the flat line hides everything; it costs bandwidth, which on a home
+   connection is cheap.
+
+With roles split across two machines, defences 1 and 2 already leave the
+clerk with nothing timely to record and the courier with nothing but your
+address. With roles on one box, defence 3 is what stops the operator
+watching the clock, and you can choose whether that operator is a concern.
+
 # Part B: the engineering
 
 ## Contents
@@ -152,7 +187,7 @@ address" and "that you are connected".
 - B6. Ordering, epochs and rotation
 - B7. Requests from strangers
 - B8. Many devices, one user
-- B9. Waking a device
+- B9. Delivery: the clerk pushes, the courier holds
 - B10. Abuse control without identity on the message path
 - B11. Media
 - B12. Recovery and backup
@@ -166,6 +201,9 @@ address" and "that you are connected".
 - B20. Phases
 - B21. Decisions taken and the few left open
 - B22. References
+- B23. Deploying with Docker
+- B24. OIDC and SSO
+- Part C. The ten problems and their fixes
 
 ## B1. Threat model and what each party sees
 
@@ -306,7 +344,13 @@ address    = H(read_cap ‖ write_pub)
   cursor. A writer never presents `read_cap`, so a server that only saw
   writes cannot read.
 - The server stores address, pinned write key, a sequence of opaque
-  fixed-size envelopes, and a TTL.
+  fixed-size envelopes, and a coarse expiry bucket. **No timestamps.**
+- **The envelope is wrapped once more.** An MLS message carries `group_id`
+  and `epoch` in the clear, which would let a server link every epoch of a
+  group across rotations. So the MLS message is sealed under
+  `env_key = MLS-Exporter("sigil/env/v1", group_id, 32)` with a fresh nonce
+  before it becomes an envelope. The server, and the Envoy, see random
+  bytes of a fixed size.
 
 The server learns "address `7f3a…` has an authorised writer and some
 readers" and cannot connect it to a name, a group, another address, or an IP.
@@ -368,21 +412,44 @@ The server never learns a device was added. A lost device is removed by a
 *Remove* commit from a surviving device (or, after recovery, from the new
 one), after which it cannot compute any new epoch's address.
 
-## B9. Waking a device
+## B9. Delivery: the clerk pushes, the courier holds
 
-1. The engine asks its Envoy to **subscribe** to an address. The bag to the
-   server contains `address` and a `wake_handle` the Envoy chose at random.
-   The Envoy remembers `wake_handle → this device's channel` (live socket or
-   an APNs/FCM token) and forwards the bag.
-2. The server records `address → [wake_handle…]`: handles, not devices.
-3. On a write, the server emits `wake(wake_handle)` to the Envoy: constant
-   size, no address, no content.
-4. The Envoy wakes the device (a frame, or an empty push). The device fetches
-   through the Envoy.
+The first draft woke the device and had it fetch. That produced two
+correlations at the server: a read shortly after every write, and a burst of
+subscriptions and fetches whenever a device reconnected, which clustered
+every address that device cared about. Both are gone in this model.
 
-The Envoy knows "device D has 213 subscriptions and was woken twice". The
-server knows "address A has three subscribers". Push tokens live only on the
-Envoy, and a device re-randomises its handles on reconnect.
+1. **Subscribe once per address, for the life of the address.** The engine
+   asks its Envoy to subscribe. The bag to the server contains `address` and
+   a `wake_handle` the Envoy chose at random. The Envoy remembers
+   `wake_handle → device`. The server records `address → [wake_handle…]`.
+   The subscription is held by the Envoy on the device's behalf and is
+   *never re-issued on reconnect*; it ends when the address rotates away or
+   the device leaves the group.
+2. **On a write, the server delivers the envelope itself** to every handle
+   on that address: `deliver(wake_handle, envelope)`, constant size, no
+   address. Nobody fetches. The server originates the traffic, so there is
+   no read-after-write for it to observe.
+3. **The Envoy queues per device.** Online: the envelope goes down the live
+   socket at once. Offline: the Envoy holds it (it is doubly encrypted and
+   carries no address) for up to 30 days and drains the queue when the
+   device returns. A reconnect is a conversation between device and Envoy;
+   the server is not involved and sees nothing.
+4. **Backfill is the exception, not the rule.** A device only reads a slot
+   by cursor (B5) when it is joining an address it did not subscribe to
+   from the start (a newly linked device, a recovery) or when the Envoy's
+   queue was lost. Backfills are spread over minutes with jitter and use the
+   same padded bags as everything else.
+5. **Push.** For a sleeping phone the Envoy sends a push through APNs or
+   FCM, or over a self-hosted UnifiedPush channel on Android, carrying only
+   "connect to me". The device connects and drains its queue. In the
+   clocked tier (B13) pushes go out on a fixed schedule instead of on
+   arrival, so Apple and Google see a heartbeat and not your rhythm.
+
+The Envoy knows "device D has 213 subscriptions and a queue of 4". The
+server knows "address A has three handles". Push tokens live only on the
+Envoy. Handles are re-randomised when a subscription is re-created, which
+happens on rotation, not on reconnect.
 
 ## B10. Abuse control without identity on the message path
 
@@ -468,31 +535,50 @@ declines.
 ### Path 2: username + password against the server's TPM
 
 When the server has a TPM 2.0 (or a USB security key, or a discrete TPM
-board on a Pi), the client stores `recovery_key` in it at signup, sealed to a
-**TPM authorisation value** derived from the password:
+board on a Pi), the client stores `recovery_key` in it at signup, sealed to
+an authorisation value derived from the password:
 
 ```
 auth = HKDF(Argon2id(password, salt), "tpm-auth")     // computed on the client
-TPM2_Create(recovery_key, authValue = auth, policy = DA-protected)
+TPM2_Create(recovery_key, authValue = auth, DA-protected)
 ```
 
-Recovery: the client computes `auth` from the typed password and sends it
-in a sealed bag; the server passes it to `TPM2_Unseal`; the chip releases
-`recovery_key` only if `auth` matches, and its **dictionary-attack lockout**
-(for example 8 failures, then a 10-minute recovery per failure, hardware
-enforced) applies to every wrong attempt regardless of what software on the
-server does. The server process never sees `recovery_key` in the clear
-beyond forwarding it once, sealed to the client's ephemeral key.
+**The server is a pipe, not a participant.** The client does not send
+`auth` to the server. It talks to the chip *through* the server, using the
+TPM's own encrypted sessions:
 
-Properties: a disk image yields no key. A stolen machine yields a lockout.
-A hostile operator can still make guesses at the chip's rate, which is the
-residual trust; the client shows that residual honestly and recommends the
-paper code on servers the user does not control. Argon2id in front means
-each guess is also slow on the client side of any brute force.
+1. The server exposes `tpm.relay`: raw TPM command bytes in, raw response
+   bytes out. It is a dumb TCTI transport.
+2. The client fetches the chip's endorsement key and its manufacturer
+   certificate, checks the chain against embedded roots (Infineon, Nuvoton,
+   STMicro, AMD, Intel; the same list Windows ships), and so knows a real
+   chip is on the other end.
+3. The client opens a **salted, encrypted HMAC session**
+   (`TPM2_StartAuthSession` with the salt sealed to the chip's key, and the
+   session's `encrypt` attribute set). Authorisation for `TPM2_Unseal` is an
+   HMAC the client computes from `auth`; the unsealed `recovery_key` comes
+   back parameter-encrypted under the session key. The server relays
+   ciphertext both ways and holds neither the password-derived value nor
+   the key at any point, in memory or otherwise.
 
-Attestation: at signup the server returns a TPM quote so the client can
-verify a real chip sealed the key rather than a file pretending to be one.
-Servers without a chip say so, and the client falls to Path 3.
+The chip's **dictionary-attack lockout** (for example 8 failures, then a
+10-minute recovery per failure) applies to every wrong HMAC, however the
+server is configured. A disk image yields no key. A stolen machine yields a
+lockout. Malware on the live server sees encrypted TPM traffic. That leaves
+a hostile operator making guesses at the chip's rate through their own
+relay, which is the residual, and the client says so and recommends the
+paper code on servers the user does not run.
+
+**One chip, one lockout.** TPM 2.0's lockout counter is per chip, not per
+user, so wrong guesses on any account slow recovery for every account on
+that server. Three defences: a per-username exponential backoff in the
+server *before* anything reaches the chip; an optional OIDC gate (B24) so
+only the account's SSO login can attempt at all; and, on public servers
+with many users, the client recommending Path 3 as well. On a home server
+with a handful of users the shared counter does not matter.
+
+Servers without a chip say so in their card, and the client falls to
+Path 3.
 
 ### Path 3: username + password + recovery code
 
@@ -534,10 +620,31 @@ Defaults follow "convenience wins, with the most privacy that fits".
 | contact sync | none | no phone numbers, no address book |
 | history on new device | on | from backup or from a linked device, never from a server the group is on |
 
-**Shape and timing.** Envelopes are padded to 1, 4 or 16 KiB; bags to the
-Envoy are padded again to fixed sizes; the Envoy holds bags 0–2 s and
-forwards shuffled batches. The **paranoid tier** adds Poisson cover traffic
-(Loopix style) and Tor via `arti`, per user, opt-in.
+**Shape.** Envelopes are padded to 1, 4 or 16 KiB; bags to the Envoy are
+padded again to fixed sizes so the Envoy cannot tell a write from a
+subscribe from a lookup.
+
+**Timing.** Three tiers, chosen per user in settings, with the first two on
+by default:
+
+| Tier | What it does | What it costs |
+|---|---|---|
+| **no clocks** (always) | the server stores no timestamps anywhere: envelopes carry sequence numbers, expiry is a day bucket, logs carry counts only, and the log format is typed so a time cannot be written by accident | nothing |
+| **push and hold** (always) | delivery is server-to-Envoy-to-device (B9); reconnects, offline catch-up and backfill never reach the server as a burst; the Envoy holds bags 0–2 s and forwards them shuffled | up to 2 s of latency |
+| **clocked** (opt-in) | the Envoy sends the server a fixed number of bags per second, real or dummy; dummies are writes to throwaway addresses paid with blind tokens the Envoy holds, so the server cannot tell them apart; the device talks to the Envoy on a fixed cadence with a dummy bag when idle, and pushes go out on a fixed schedule | about 1 KiB per bag per second per Envoy (roughly 90 MB a day at one bag a second), some battery on mobile, and delivery waits for the next tick |
+
+The clocked tier is the Loopix and Pond idea: a flat line hides everything,
+and the rate is the only knob. It is what makes a *combined* courier and
+clerk on one box unable to watch the clock. Tor via `arti` is a fourth,
+independent switch that removes the IP from the Envoy's view as well.
+
+**Slot creation timing.** Two objects are tied to a name: the requests slot
+and the key-package shelf. When a request is accepted, nothing is written:
+acceptance is local, and the first write to the conversation's own slot is
+the recipient's first reply, minutes or days later. The client also never
+creates a new address within a random 1–10 minutes of touching a
+name-bound object, so "Bob got a request, and a slot appeared" is not a
+pattern the server can read.
 
 ## B14. Post-quantum
 
@@ -583,14 +690,15 @@ are padded to fixed sizes. Inside:
 | `blob.put` / `blob.get` | `chunk, token` / `id` | store / fetch |
 | `backup.put` / `backup.get` | `label, chunk, token` / `label, cursor` | store / fetch |
 | `backup.wrap` | `username, sig, salt, wrapped_data_key` | store the wrap by name |
-| `tpm.seal` | `username, sig, recovery_key, auth` | seal into the TPM, return a quote |
-| `tpm.unseal` | `username, auth, client_pub` | unseal under DA lockout, return sealed to client |
+| `tpm.info` | | endorsement key, certificate chain, capabilities |
+| `tpm.relay` | `username, tpm_command_bytes` | relay one TPM command after per-user backoff and the optional OIDC gate |
+| `room.*` | see Part C, problem 7 | open rooms: server-readable history, pagination, search, bans |
 | `token.credential` | `account proof, blinded` | blind-issue credential |
 | `token.issue` | `credential, blinded[]` | blind-sign the daily batch |
 
-The Envoy speaks a plain control channel to the client for wakes and push
-registration, and receives `wake(handle)` events from servers on a
-long-lived stream.
+The Envoy speaks a plain control channel to the client for deliveries and
+push registration, and receives `deliver(handle, envelope)` events from
+servers on a long-lived stream, queuing them per device.
 
 Every identifier the slot, blob and backup paths carry is a hash of a
 secret or a random handle. Only `name.*`, `backup.wrap`, `tpm.*`
@@ -624,7 +732,8 @@ core/src/
       identity.rs       keys, usernames, contact cards, device linking
       mls.rs            openmls groups, exporter-derived secrets
       slots.rs          address derivation, put/get/ack, cursors
-      envoy.rs          bags (hpke), subscriptions, wakes
+      envoy.rs          bags (hpke), subscriptions, deliveries, queue drain
+      tpm_client.rs     encrypted TPM sessions over tpm.relay
       requests.rs       the requests slot, accept/ignore/block
       tokens.rs         Privacy Pass credential and daily batches
       blobs.rs          chunking, encryption, upload/fetch
@@ -704,6 +813,87 @@ Open, with the recommendation:
 4. **Open registration policy on public servers.** Recommendation: invite
    codes by default, proof-of-work as the open alternative.
 
+## B23. Deploying with Docker
+
+The server is one static binary, so the image is a few megabytes on
+`scratch` or distroless. A complete home deployment:
+
+```yaml
+services:
+  sigil:
+    image: ghcr.io/pellinore377/sigil-server:latest
+    command: run --role both --config /data/sigil.toml
+    ports:
+      - "443:443/tcp"      # HTTPS bags, control channel
+      - "443:443/udp"      # QUIC, wake stream
+      - "80:80/tcp"        # ACME HTTP-01; drop if using the DNS challenge
+    volumes:
+      - sigil-data:/data   # names, slots, blobs, backups, certs: the whole backup
+    devices:
+      - /dev/tpmrm0:/dev/tpmrm0   # recovery Path 2; omit on a chip-less box
+    restart: unless-stopped
+volumes:
+  sigil-data:
+```
+
+Notes:
+
+- **Split roles** are two services from the same image, `--role home` and
+  `--role envoy`, on the same host or different hosts. A friend's Envoy or
+  a public one needs nothing from your compose file at all.
+- **Reverse proxies** (Caddy, Traefik, nginx) are fine in front of either
+  role. Bags are sealed end to end, so a proxy terminating TLS sees nothing
+  extra. A proxy in front of the *home* role sees client IPs and must not
+  log them, unless an Envoy sits in front of it, in which case it only sees
+  the Envoy's address. Forward `X-Forwarded-For` nowhere.
+- **The TPM device** passes through with `devices:`; the container needs no
+  extra privileges. `/dev/tpmrm0` is the kernel's resource manager, which
+  multiplexes safely alongside anything else on the host using the chip.
+- **Backup** is `docker run --rm -v sigil-data:/data alpine tar c /data`.
+  Restore is the reverse. The server runs while you copy.
+- **UnifiedPush** on Android needs no extra service: the Envoy role speaks
+  the UnifiedPush server side itself.
+- **PocketID** or any other OIDC provider (B24) is one more service in the
+  same file; the server only needs its issuer URL.
+
+## B24. OIDC and SSO (PocketID and friends)
+
+The engine already signs into Matrix with OIDC and a localhost redirect, so
+the browser round-trip exists. What matters is *what* OIDC is allowed to
+control, because the design depends on the message path having no login.
+
+**OIDC gates the things that are already tied to a name:**
+
+| Operation | With OIDC configured |
+|---|---|
+| `name.register` | requires a valid ID token from the server's issuer; the server maps `sub` to "may hold a name here"; replaces invite codes |
+| `token.credential` | the daily blind-token credential is issued to a logged-in `sub`; tokens stay unlinkable afterwards |
+| `tpm.relay`, `backup.wrap` (password change) | require a fresh ID token for the same `sub` that registered the name; this is the strongest guess limiter on Path 2 |
+| admin API | operator's own `sub` or group claim |
+
+Mechanics: authorisation code flow with PKCE from the engine, redirect to
+`http://localhost:<port>/callback`, ID token presented inside a sealed bag;
+the server validates signature, issuer, audience and expiry against the
+issuer's JWKS and stores only `sub` → localpart. PocketID's passkey login
+works unchanged; so does Authentik, Keycloak, Authelia, or Google.
+
+**OIDC never touches:**
+
+- **the identity key.** It is generated on the device. No login can produce
+  or recover it, so the identity provider is never the thing a subpoena
+  goes after.
+- **slots, blobs, subscriptions, deliveries.** Those are paid with blind
+  tokens and carry no account.
+- **the backup password.** An identity provider issues assertions, not
+  secrets. The password must be something no server holds.
+
+**What the identity provider learns:** when a name was registered, when
+tokens were drawn (daily), and when a recovery or password change was
+attempted. On a self-hosted PocketID that is the operator watching
+themselves. On a third-party provider it is a new party learning a coarse
+rhythm, so SSO is per server and optional, and the client says which
+provider a server uses before the user registers.
+
 ## B22. References
 
 - MLS: RFC 9420 (protocol), RFC 9750 (architecture).
@@ -715,8 +905,95 @@ Open, with the recommendation:
 - ML-KEM: FIPS 203. X-Wing: Barbosa et al., 2024.
 - Signal: PQXDH (2023), SPQR (2025), Sealed Sender (2018), *The Signal Private
   Group System and Anonymous Credentials* (2020).
-- Piotrowska et al., *The Loopix Anonymity System* (2017).
+- Piotrowska et al., *The Loopix Anonymity System* (2017); Langley, *Pond*
+  (2012–2016), for fixed-cadence clients.
+- TPM 2.0 Library Specification, Part 1, sections 19 (sessions) and 21
+  (session-based parameter encryption); TCG *EK Credential Profile*.
+- OpenID Connect Core 1.0; RFC 7636 (PKCE).
+- UnifiedPush specification.
 - Apple, *iCloud Private Relay Overview*.
+
+# Part C: the ten problems and their fixes
+
+Each entry: the problem as found in review, the fix now in the design, and
+what remains.
+
+**1. Reconnect bursts clustered a device's addresses.** Fixed by B9: the
+server pushes deliveries, the Envoy queues them per device, subscriptions
+are held by the Envoy for the life of an address and never re-issued on
+reconnect. The server never sees a device come or go. Remaining: backfill
+after a lost Envoy queue or on a newly linked device, spread over minutes.
+
+**2. Small servers have small crowds.** Fixed in layers by A7 and B13: the
+server stores no clocks, so a seizure yields no timeline; push-and-hold
+removes every client-originated read; the clocked tier makes the
+Envoy-to-server stream a flat line of indistinguishable bags, which is the
+only known defence against an operator watching in real time. Remaining: a
+combined-role operator who declines the clocked tier can still watch
+timing, and a six-user server has six users. The design makes the trade
+explicit and puts the knob in the user's hand.
+
+**3. Name-bound objects leaked slot creation.** Fixed in B13: acceptance
+writes nothing; the first write to a new slot is the first reply, at human
+delay; and the client refuses to create any address within 1–10 random
+minutes of touching a name-bound object. Remaining: key-package drain
+counts and request counts per name, which say how many conversations
+started, not with whom.
+
+**4. One TPM lockout for everyone.** Fixed in B12 Path 2: per-username
+backoff before the chip, an optional OIDC gate so only the account's SSO
+can attempt, and the client recommending the paper code on large public
+servers. Remaining: on a public server that runs neither, a determined
+attacker can slow everyone's recovery; the operator's choice.
+
+**5. A compromised live server could watch a recovery.** Fixed in B12
+Path 2: the client runs an encrypted TPM session through the server as a
+dumb relay, with the endorsement certificate checked against manufacturer
+roots. The password-derived value and the key never exist on the server in
+the clear. Remaining: the relay can be denied, not read; and a fake chip
+would need a forged manufacturer certificate.
+
+**6. Push leaks timing to Apple and Google.** Reduced in B9 and B13: on
+Android, a self-hosted UnifiedPush channel through the Envoy bypasses
+Google entirely; on iOS, APNs is mandatory, so the clocked tier sends
+pushes on a fixed schedule. Remaining: in the instant tier on iOS, Apple
+learns "a push at 9:14", as it does for Signal.
+
+**7. Public communities did not fit.** Added as an explicit second mode,
+**open rooms**: a room the host server can read. The room has a public
+card, a server-held history with pagination and search, and server-enforced
+bans. Members post under a per-room pseudonymous key by default and may
+attach their username. Transport is still sealed bags, so outsiders and
+the Envoy see nothing; the host server is a member. This is the Matrix
+public-room experience without federation, and it is the only place the
+server reads anything. Private groups remain blind. Remaining: an open room
+is exactly as private as its host, and the client labels it so.
+
+**8. Nobody could moderate what they cannot see.** Fixed at three levels.
+Local: block lists synced across devices through the self-group; blocked
+identities' Welcomes are dropped silently. Provable reports: every MLS
+message is signed by a leaf key bound to the sender's identity, so a
+recipient can forward a message plus its signature to the sender's home
+server as proof, and that server can revoke the sender's credential (no
+more tokens) or name. Open rooms: admins ban, the server enforces.
+Remaining: private-group abuse is only ever reported by a participant, by
+design.
+
+**9. Cross-server spam.** Fixed in B10 and B7: a server issues request
+tokens per *issuing server*, with a small daily quota for servers it has
+not seen and a growing one for servers with a clean history; unknown
+servers may be asked for proof-of-work per token; a server may run an
+allow-list. Because a request costs a token from the *recipient's* server,
+a hostile server minting credentials for its own users cannot buy more
+than its quota. Remaining: quota tuning, which is operations, not design.
+
+**10. Engineering risk.** Addressed by decisions rather than code: commit
+conflicts are resolved by the slot's own sequence number (the first commit
+at an epoch by sequence wins, and every member sees the same sequence);
+group size is capped at 1,000 devices for v1; the hybrid post-quantum
+suite is behind a feature flag so the client ships on X25519 if the MLS
+suites are not final; `openmls` is in production at Wire and is the
+reference implementation for the RFC. Remaining: time.
 
 ## Appendix C. Later, if ever: recovery without a device or a code
 
