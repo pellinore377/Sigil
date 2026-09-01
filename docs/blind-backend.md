@@ -84,31 +84,40 @@ somewhere else, or Tor, which the app has built in.
 Your app keeps an encrypted backup of everything (your identity, contacts,
 chats, and media up to a size you choose) on your server, continuously. The
 backup opens with two things together: your **password** and a **recovery
-key**. The server has the backup and neither of the two. Guessing your
-password gets it nowhere without the key, and stealing the key gets it
-nowhere without your password.
+key**. Guessing your password gets nowhere without the key, and stealing the
+key gets nowhere without your password.
 
-The recovery key lives on your devices, and every device you own has a copy.
-Getting it onto a new device works the way Google, Signal and WhatsApp add a
-device:
+There are three ways back in, and the app uses whichever you have:
 
-1. On the new phone, open Sigil and pick "I already have Sigil somewhere".
-   It shows a QR code.
-2. Scan it with your laptop, or any device still signed in.
-3. Both screens show an emoji. If they match, tap it. That match proves
-   nobody slipped in between the two devices.
-4. The old device sends the recovery key and your history across, sealed.
-   The server sees a sealed bag and never learns a device was added.
+**1. Another device you are still signed in on.** This is the fast path and
+works the way Google, Signal and WhatsApp add a device. The new phone shows a
+QR code, you scan it with your laptop, both screens show an emoji, and if
+they match you tap it. That match proves nobody slipped in between the two
+devices. The laptop then sends the recovery key and your history across,
+sealed. The server sees a sealed bag and never learns a device was added.
 
-That covers "lost my phone, still have my laptop". For "lost my only device"
-there is one extra piece, set up once: at signup the app shows a **recovery
-code** to print or save in a password manager. It is the same recovery key,
-on paper. New phone, username, password, scan the paper, everything is back.
+**2. Username and password, if your server has a security chip.** Nearly
+every PC made in the last decade has a TPM: a small chip that stores a
+secret, releases it only for the right password, and locks up after a
+handful of wrong guesses. Your server keeps the recovery key inside that
+chip, not on disk. Someone who copies the disk gets an encrypted backup and
+no key. Someone who steals the whole machine gets a few guesses and then a
+growing lockout. You get your messages back with nothing but your password.
+A Raspberry Pi has no chip built in; a small add-on board or a USB security
+key does the same job.
 
-If you lose every device and never saved the code, the backup is gone for
-good, and so is the key that proves you own your username. The server cannot
-help, which is the point. On your own server you release the name and start
-fresh.
+**3. Username, password and a recovery code**, for servers with no chip, or
+for people who do not want to rely on one. At signup the app shows a code to
+print or save in a password manager. It is the recovery key, on paper.
+
+The app tells you which options you have. On your own server with a chip it
+says "you are covered". On a server without a chip it insists on the paper
+code. On a public server you do not run it recommends keeping the code even
+if the operator says they have a chip, because you would be trusting them.
+
+If you lose every device, your server has no chip, and you never saved the
+code, the backup is gone for good, and so is the key that proves you own
+your username. On your own server you release the name and start fresh.
 
 ## A6. What a hostile public server can and cannot learn
 
@@ -118,7 +127,9 @@ runs both courier and clerk.
 They learn: your username, your public key, that your account exists, your
 internet address when you connect, that you are connected, how many people
 asked for your card, how many requests you received, and how much traffic
-the whole server carries. They hold an encrypted backup they cannot open.
+the whole server carries. They hold an encrypted backup they cannot open, and, if they have a chip,
+a recovery key inside it that lets them try a few passwords before it
+locks.
 
 They do not learn: anything you said, who you talk to, which slots are yours,
 how many devices you have, which groups you are in, who is in them, or
@@ -405,9 +416,11 @@ Thumbnails, blurhashes and previews are generated on the sending device.
 
 ## B12. Recovery and backup
 
-Requirement: another device, or username + password + a saved code, and
-everything comes back. Threat: the server holding the backup guesses the
-password forever. Answer: the password alone is never enough.
+Requirement: a linked device, or username + password, and everything comes
+back. Threat: whoever holds the backup guesses the password forever. Answer:
+the password alone never opens anything; the second factor is either on a
+device the user holds, inside hardware that enforces a guess limit, or on
+paper.
 
 **The backup.** The engine keeps an encrypted append-only backup on the home
 server: identity keys, contacts, group states, message history, and media up
@@ -420,68 +433,93 @@ Envoy like any other blob. `data_key` is wrapped by `backup_key`.
 
 ```
 recovery_key = 256 random bits, generated on the first device
-backup_key   = HKDF(Argon2id(password, salt) ‖ recovery_key, "backup")
+pw_key       = Argon2id(password, salt)            // slow by design
+backup_key   = HKDF(pw_key ‖ recovery_key, "backup")
 ```
 
-The server stores the salt (on the front desk) and the wrapped `data_key`.
-It holds neither `password` nor `recovery_key`, so offline guessing needs
-the recovery key and stealing the recovery key needs the password.
+The server stores the salt and the wrapped `data_key` by username. It never
+holds `password`, and holds `recovery_key` only inside sealed hardware
+(below), never on disk.
 
 **Where the recovery key lives.** On every signed-in device, in the
 platform keystore (Keychain, Android Keystore, Secret Service on Linux,
-DPAPI on Windows), and optionally on paper.
+DPAPI on Windows). Optionally in the server's TPM. Optionally on paper.
 
-**Adding a device (the normal path).**
+### Path 1: a linked device
 
 1. The new device generates an ephemeral X25519 + ML-KEM key pair and shows
    it as a QR code with a short random nonce.
 2. An existing device scans it, runs a hybrid key agreement, and both sides
    derive `link_secret`.
 3. Both display `emoji(HKDF(link_secret, "sas"))`, seven emoji from a fixed
-   table of 64, the same short-authentication-string idea Matrix and Signal
-   use. The user confirms they match on the *existing* device, which is the
-   one an attacker does not hold.
+   table of 64, the short-authentication-string idea Matrix and Signal use.
+   The user confirms on the *existing* device, the one an attacker does not
+   hold.
 4. The existing device sends, encrypted under `link_secret`: the identity
    key, `recovery_key`, the group list with current epochs, and local
-   history. Transport is a one-shot slot at `H(link_secret, "slot")` so the
-   server sees a sealed bag at a random address.
+   history, through a one-shot slot at `H(link_secret, "slot")`.
 5. The existing device issues an *Add* commit in every group for the new
    leaf, rotating every address.
 
-The emoji step is what stops a QR code that was photographed, relayed or
-replaced from linking an attacker's device: the attacker's session derives
-a different `link_secret`, so the emoji differ, and the user declines.
+A photographed, relayed or replaced QR code produces a different
+`link_secret` on the attacker's side, so the emoji differ and the user
+declines.
 
-**The printed code.** At signup the app shows `recovery_key` as a QR and a
-28-character string, and asks the user to print it or save it to a password
-manager, with a "remind me later" that nags weekly until done. Users with
-more than one device may skip it; the app says so plainly.
+### Path 2: username + password against the server's TPM
 
-**Recovering with no device.** New device, `account.recover{username,
-password, recovery_key}`: derive `backup_key`, fetch the salt and wrapped
-`data_key` by username, unwrap, fetch the backup by label, replay it. The
-new device then holds the identity key and issues *Remove* commits for the
-lost device in every group.
+When the server has a TPM 2.0 (or a USB security key, or a discrete TPM
+board on a Pi), the client stores `recovery_key` in it at signup, sealed to a
+**TPM authorisation value** derived from the password:
 
-**Password change**: re-derive `backup_key`, rewrap `data_key`, upload the
-new wrap. The backup itself is untouched. A signed-in device can do this
-without knowing the old password because it holds `data_key`.
+```
+auth = HKDF(Argon2id(password, salt), "tpm-auth")     // computed on the client
+TPM2_Create(recovery_key, authValue = auth, policy = DA-protected)
+```
 
-**Recovery key rotation**: any signed-in device can generate a new
-`recovery_key`, rewrap, and push it to the other devices through the
-self-group; the old printed code stops working, and the app says so.
+Recovery: the client computes `auth` from the typed password and sends it
+in a sealed bag; the server passes it to `TPM2_Unseal`; the chip releases
+`recovery_key` only if `auth` matches, and its **dictionary-attack lockout**
+(for example 8 failures, then a 10-minute recovery per failure, hardware
+enforced) applies to every wrong attempt regardless of what software on the
+server does. The server process never sees `recovery_key` in the clear
+beyond forwarding it once, sealed to the client's ephemeral key.
 
-**Lost everything, no code.** The backup and the identity key are
-unrecoverable. The username is bound to the identity key, so it cannot be
-reclaimed by proof; a self-hoster releases it from the server's command
-line, and a public server may release it after a waiting period with
-operator approval. This is the same trade Signal makes and is the cost of
-a server that cannot help.
+Properties: a disk image yields no key. A stolen machine yields a lockout.
+A hostile operator can still make guesses at the chip's rate, which is the
+residual trust; the client shows that residual honestly and recommends the
+paper code on servers the user does not control. Argon2id in front means
+each guess is also slow on the client side of any brute force.
 
-**Later, if ever (appendix C):** splitting `recovery_key` across other
-servers or friends so that a user with one device and no paper still has a
-path. It is a strict addition on top of this design and changes nothing
-above.
+Attestation: at signup the server returns a TPM quote so the client can
+verify a real chip sealed the key rather than a file pretending to be one.
+Servers without a chip say so, and the client falls to Path 3.
+
+### Path 3: username + password + recovery code
+
+At signup, when Path 2 is unavailable or the user opts in anyway, the app
+shows `recovery_key` as a QR and a 28-character string to print or save to a
+password manager, with a weekly reminder until done. Recovery is
+`account.recover{username, password, recovery_key}`: derive `backup_key`,
+fetch the salt and wrapped `data_key` by username, unwrap, fetch the backup
+by label, replay it.
+
+### Common tail
+
+After any path the new device holds the identity key and issues *Remove*
+commits for the lost device in every group.
+
+**Password change**: re-derive `backup_key`, rewrap `data_key`, and, on
+Path 2, reseal the TPM object with the new `auth`. A signed-in device can do
+this without the old password because it holds `data_key`.
+
+**Recovery key rotation**: any signed-in device generates a new
+`recovery_key`, rewraps, reseals, pushes it to the other devices through the
+self-group, and tells the user any printed code is now stale.
+
+**Lost everything, no chip, no code.** The backup and the identity key are
+unrecoverable, and the username is bound to the identity key. A self-hoster
+releases it from the server's command line; a public server may release it
+after a waiting period with operator approval.
 
 ## B13. Convenience features and what they cost
 
@@ -545,6 +583,8 @@ are padded to fixed sizes. Inside:
 | `blob.put` / `blob.get` | `chunk, token` / `id` | store / fetch |
 | `backup.put` / `backup.get` | `label, chunk, token` / `label, cursor` | store / fetch |
 | `backup.wrap` | `username, sig, salt, wrapped_data_key` | store the wrap by name |
+| `tpm.seal` | `username, sig, recovery_key, auth` | seal into the TPM, return a quote |
+| `tpm.unseal` | `username, auth, client_pub` | unseal under DA lockout, return sealed to client |
 | `token.credential` | `account proof, blinded` | blind-issue credential |
 | `token.issue` | `credential, blinded[]` | blind-sign the daily batch |
 
@@ -553,8 +593,8 @@ registration, and receives `wake(handle)` events from servers on a
 long-lived stream.
 
 Every identifier the slot, blob and backup paths carry is a hash of a
-secret or a random handle. Only `name.*`, `backup.wrap` and
-`token.credential` name an account, and none touches a conversation.
+secret or a random handle. Only `name.*`, `backup.wrap`, `tpm.*`
+and `token.credential` name an account, and none touches a conversation.
 
 ## B18. The server: one binary
 
@@ -566,6 +606,9 @@ secret or a random handle. Only `name.*`, `backup.wrap` and
   chunks. Backup is copying two paths.
 - **Transport**: `axum` + `rustls` with built-in ACME; `quinn` for the wake
   stream.
+- **TPM**: `tss-esapi` against `/dev/tpmrm0`; optional, detected at start,
+  advertised in the server's card so clients know which recovery paths
+  exist.
 - **Config**: one TOML file, under twenty keys. `sigil-server init && sigil-server run`.
 - **Sizing**: a Raspberry Pi serves a few thousand users outside media.
 - **Logs and metrics** carry counts and latencies only; no field can hold an
@@ -587,7 +630,7 @@ core/src/
       blobs.rs          chunking, encryption, upload/fetch
       backup.rs         continuous encrypted backup
       linking.rs        QR + emoji device linking
-      recovery.rs       password + recovery key restore
+      recovery.rs       restore via TPM or recovery code
       cover.rs          padding, jitter, cover traffic
       store.rs          local sqlite
 server/                 NEW  sigil-server
@@ -600,7 +643,7 @@ becomes `account.create{server, localpart, password}` and
 linking.
 
 Crates: `openmls`, `ml-kem` + `x25519-dalek` (`x-wing` as it lands), `hpke`,
-`ed25519-dalek`, `argon2`,
+`ed25519-dalek`, `argon2`, `tss-esapi`,
 `privacypass`, `arti-client`, `redb`, `rusqlite`, `axum`, `rustls`,
 `rustls-acme`, `quinn`, later `str0m`.
 
@@ -620,9 +663,9 @@ direct message by username. Omarchy frontend unchanged.
 **3. Devices and wake.** Linking; the Envoy role with subscriptions, handles
 and push; Android receives an empty push and fetches.
 
-**4. Recovery.** Continuous backup; QR + emoji device linking; the printed
-recovery code; password change. New phone: scan, or username + password +
-code, everything back.
+**4. Recovery.** Continuous backup; QR + emoji device linking; TPM-sealed
+recovery key with attestation; the printed code as fallback; password
+change. New phone: scan, or username + password, everything back.
 
 **5. Groups and media.** Policy documents; add, remove, rename; blob
 chunking; retention; group migration between hosts.
@@ -645,8 +688,9 @@ Taken:
 - **Slot addresses come from the epoch secret**, never from an identifier.
 - **The message path never carries an account**; abuse control is tokens.
 - **No federation**; clients write straight to the hosting server.
-- **Recovery is a linked device, or username + password + recovery code.**
-  The server holds the backup and can open nothing.
+- **Recovery is a linked device, or username + password.** The second
+  factor is never on the server's disk: it is on a device, sealed in the
+  server's TPM behind a hardware guess limit, or on paper.
 - **Convenience wins ties**; privacy hardening is opt-in.
 - **Hybrid post-quantum from day one.**
 - **One binary, three roles.**
@@ -665,7 +709,8 @@ Open, with the recommendation:
 - MLS: RFC 9420 (protocol), RFC 9750 (architecture).
 - HPKE: RFC 9180. Oblivious HTTP: RFC 9458.
 - Privacy Pass: RFC 9576, 9577, 9578.
-- Argon2id: RFC 9106. Short authentication strings: Matrix MSC4108 and
+- Argon2id: RFC 9106. TPM 2.0 Library Specification, Part 1, "Dictionary
+  Attack Protection". Short authentication strings: Matrix MSC4108 and
   Signal's device-link flow.
 - ML-KEM: FIPS 203. X-Wing: Barbosa et al., 2024.
 - Signal: PQXDH (2023), SPQR (2025), Sealed Sender (2018), *The Signal Private
