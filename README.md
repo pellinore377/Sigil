@@ -110,6 +110,8 @@ frontend is planned last.
 Protocol reference, contribution notes and design conventions are in
 [`docs/`](docs/) and [`core/docs/protocol.md`](core/docs/protocol.md).
 Working on Sigil itself: [`docs/development.md`](docs/development.md).
+The plan for replacing the Matrix homeserver with a metadata-blind
+Sigil-native backend: [`docs/blind-backend.md`](docs/blind-backend.md).
 
 ## Licence
 
