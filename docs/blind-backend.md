@@ -583,7 +583,7 @@ Path 3.
 ### Path 3: username + password + recovery code
 
 At signup, when Path 2 is unavailable or the user opts in anyway, the app
-shows `recovery_key` as a QR and a 28-character string to print or save to a
+shows `recovery_key` as a QR and a 55-character code to print or save to a
 password manager, with a weekly reminder until done. Recovery is
 `account.recover{username, password, recovery_key}`: derive `backup_key`,
 fetch the salt and wrapped `data_key` by username, unwrap, fetch the backup
@@ -758,8 +758,11 @@ Crates: `openmls`, `ml-kem` + `x25519-dalek` (`x-wing` as it lands), `hpke`,
 
 ## B20. Phases
 
-**0. Specification.** Freeze this into a wire spec with test vectors:
-address derivation, bag format, padding, token issuance, linking.
+**0. Specification.** Done for the derivation layer: see
+[`docs/spec/sigil-protocol-v1.md`](spec/sigil-protocol-v1.md) and the
+`sigil-protocol` crate in `protocol/`, whose tests verify the vectors.
+Still to write: the bag operations and their layouts, blind tokens, the
+Envoy control channel.
 
 **1. Home server.** Names, slots, shelves, blobs, tokens; `redb`; ACME. A
 command-line client exchanges padded envelopes through addresses from a

@@ -1,0 +1,25 @@
+[package]
+name = "sigil-protocol"
+version = "0.1.0"
+edition = "2021"
+description = "Sigil Protocol v1: key derivation, slots, envelopes, bags, recovery, linking. Reference implementation and test-vector generator."
+license = "UNLICENSED"
+
+[dependencies]
+blake3 = "1"
+chacha20poly1305 = "0.10"
+ed25519-dalek = { version = "2", features = ["rand_core"] }
+x25519-dalek = { version = "2", features = ["static_secrets"] }
+ml-kem = { version = "0.2", features = ["deterministic"] }
+argon2 = "0.5"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+hex = "0.4"
+zeroize = "1"
+subtle = "2"
+
+[dev-dependencies]
+
+[[bin]]
+name = "gen-vectors"
+path = "src/bin/gen_vectors.rs"
