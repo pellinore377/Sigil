@@ -1,123 +1,15 @@
 //! The screenshot harness: every page rendered headless with the demo
 //! fixtures, one PNG each, so a phase can be checked against the QML side by
-//! side without a display. Runs the real Slint components through the
-//! software renderer on a platform that has no window system at all.
+//! side without a display.
 //!
 //!   cargo run --bin shots -- [out-dir]        (default: shots/)
-//!
-//! Animations are driven by a fake clock that jumps forward before each
-//! capture, so every slide-in and fade is captured settled, and the event
-//! loop is a queue drained by hand between frames.
 
-use slint::platform::software_renderer::{MinimalSoftwareWindow, RepaintBufferType};
-use slint::platform::{EventLoopProxy, Platform, PlatformError, WindowAdapter};
+use sigil_slint::headless::{Harness, HEIGHT, WIDTH};
 use slint::ComponentHandle;
-use slint::Rgb8Pixel;
-use std::cell::Cell;
-use std::rc::Rc;
-use std::sync::{Arc, Mutex};
-use std::time::Duration;
-
-const WIDTH: u32 = 400;
-const HEIGHT: u32 = 820;
-
-type Job = Box<dyn FnOnce() + Send>;
-
-/// Closures posted with `invoke_from_event_loop` wait here until the harness
-/// pumps them; there is no real loop.
-#[derive(Clone, Default)]
-struct Queue(Arc<Mutex<Vec<Job>>>);
-
-impl EventLoopProxy for Queue {
-    fn quit_event_loop(&self) -> Result<(), slint::EventLoopError> {
-        Ok(())
-    }
-    fn invoke_from_event_loop(&self, event: Job) -> Result<(), slint::EventLoopError> {
-        self.0.lock().unwrap().push(event);
-        Ok(())
-    }
-}
-
-struct Headless {
-    window: Rc<MinimalSoftwareWindow>,
-    clock: Rc<Cell<Duration>>,
-    queue: Queue,
-}
-
-impl Platform for Headless {
-    fn create_window_adapter(&self) -> Result<Rc<dyn WindowAdapter>, PlatformError> {
-        Ok(self.window.clone())
-    }
-    fn duration_since_start(&self) -> Duration {
-        self.clock.get()
-    }
-    fn new_event_loop_proxy(&self) -> Option<Box<dyn EventLoopProxy>> {
-        Some(Box::new(self.queue.clone()))
-    }
-}
-
-struct Harness {
-    window: Rc<MinimalSoftwareWindow>,
-    clock: Rc<Cell<Duration>>,
-    queue: Queue,
-    out: std::path::PathBuf,
-}
-
-impl Harness {
-    /// Run queued closures, advance the clock past every animation, redraw.
-    fn settle(&self) {
-        for _ in 0..4 {
-            let jobs: Vec<Job> = std::mem::take(&mut *self.queue.0.lock().unwrap());
-            for j in jobs {
-                j();
-            }
-            slint::platform::update_timers_and_animations();
-        }
-        self.clock.set(self.clock.get() + Duration::from_secs(3));
-        slint::platform::update_timers_and_animations();
-    }
-
-    fn shoot(&self, name: &str) -> anyhow::Result<()> {
-        self.settle();
-        let mut pixels = vec![Rgb8Pixel::default(); (WIDTH * HEIGHT) as usize];
-        self.window.request_redraw();
-        let drew = self.window.draw_if_needed(|renderer| {
-            renderer.render(&mut pixels, WIDTH as usize);
-        });
-        anyhow::ensure!(drew, "nothing to draw for {name}");
-        let mut bytes = Vec::with_capacity(pixels.len() * 3);
-        for p in &pixels {
-            bytes.extend_from_slice(&[p.r, p.g, p.b]);
-        }
-        let path = self.out.join(format!("{name}.png"));
-        let file = std::fs::File::create(&path)?;
-        let mut enc = png::Encoder::new(std::io::BufWriter::new(file), WIDTH, HEIGHT);
-        enc.set_color(png::ColorType::Rgb);
-        enc.set_depth(png::BitDepth::Eight);
-        enc.write_header()?.write_image_data(&bytes)?;
-        println!("{}", path.display());
-        Ok(())
-    }
-}
 
 fn main() -> anyhow::Result<()> {
-    let out = std::path::PathBuf::from(std::env::args().nth(1).unwrap_or_else(|| "shots".into()));
-    std::fs::create_dir_all(&out)?;
-    let window = MinimalSoftwareWindow::new(RepaintBufferType::NewBuffer);
-    let clock = Rc::new(Cell::new(Duration::from_secs(1)));
-    let queue = Queue::default();
-    slint::platform::set_platform(Box::new(Headless {
-        window: window.clone(),
-        clock: clock.clone(),
-        queue: queue.clone(),
-    }))
-    .map_err(|e| anyhow::anyhow!("{e}"))?;
-    let h = Harness {
-        window: window.clone(),
-        clock,
-        queue,
-        out,
-    };
+    let out = std::env::args().nth(1).unwrap_or_else(|| "shots".into());
+    let h = Harness::install(out)?;
 
     // the demo fixtures instead of a live engine, with the first room open
     std::env::set_var("SIGIL_SLINT_DEMO", "1");
@@ -133,10 +25,42 @@ fn main() -> anyhow::Result<()> {
     app.show()?;
     h.settle();
 
-    // the door, as a fresh install would show it
+    // the doors, as a fresh install walks through them
     app.set_session("loggedOut".into());
-    h.shoot("login")?;
+    app.set_door("server".into());
+    h.shoot("door-server")?;
+    app.set_door_server("sigil.example.com".into());
+    app.set_door_registration("invite".into());
+    app.set_door("choose".into());
+    h.shoot("door-choose")?;
+    app.set_door("create".into());
+    h.shoot("door-create")?;
+    app.set_door("recover".into());
+    h.shoot("door-recover")?;
+    app.set_door("link".into());
+    h.shoot("door-link")?;
+    let offer = "sigil-link:1:8b1f0c3a9e4d7f2b6a5c1e0d9f8b7a6c5d4e3f2a1b0c9d8e7f6a5b4c3d2e1f0";
+    if let Some(img) = sigil_slint::qr::image(offer) {
+        app.set_link_image(img);
+    }
+    app.set_link_offer(offer.into());
+    app.set_link_state("offer".into());
+    h.shoot("door-link-offer")?;
+    app.set_link_sas("🦁 🐢 🍕 🎸 🔑 🌙 ⚓".into());
+    app.set_link_state("sas".into());
+    h.shoot("door-link-sas")?;
+    app.set_link_state(Default::default());
     app.set_session("loggedIn".into());
+
+    // recovery: the code once, and the password page
+    app.set_recovery_code("kq7m-3xvp-9tc2-hf8r-5wbn-2jd6-8lzs-4qy9-7gxe-1vbt-6nma".into());
+    app.set_recovery_first_time(true);
+    app.set_recovery_open(true);
+    h.shoot("recovery-code")?;
+    app.set_recovery_open(false);
+    app.set_password_open(true);
+    h.shoot("backup-password")?;
+    app.set_password_open(false);
 
     // the open conversation and the pages that hang off it
     app.set_nav("chat".into());
@@ -154,6 +78,12 @@ fn main() -> anyhow::Result<()> {
     h.shoot("home")?;
     app.set_nav("start".into());
     h.shoot("start")?;
+    app.set_recovery_state("enabled".into());
+    app.set_backup_state("enabled".into());
+    app.set_shape_clocked(0);
+    app.set_app_version("0.1.0".into());
+    app.set_nav("settings".into());
+    h.shoot("settings")?;
     app.set_nav("home".into());
     h.settle();
     app.invoke_set_home_tab(1);

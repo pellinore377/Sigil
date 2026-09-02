@@ -1,0 +1,222 @@
+// App settings — the page the QML never needed because its settings lived in
+// the Omarchy shell. Built from the settings furniture (header, groups, rows)
+// so it lines up with every other settings page: account, linking the next
+// device, recovery, the privacy shape, notifications, sign out.
+
+import { Theme } from "../style.slint";
+import { Icons } from "../icons.slint";
+import { IconLabel, Avatar, SButton, TextWell } from "../components.slint";
+import { SettingsHeader, SettingsGroup, SettingsRow, ChoiceSheet, ChoiceEntry, TouchList, Spinner } from "../furniture.slint";
+
+export component SettingsPage inherits Rectangle {
+    in property <color> fg: Theme.menu-text;
+    in property <string> my-name;
+    in property <string> my-user-id;
+    in property <string> my-initials;
+    in property <image> my-avatar;
+    in property <color> my-tint;
+    in property <string> server;
+    // recovery.status
+    in property <string> recovery-state;   // enabled | disabled
+    in property <string> backup-state;     // enabled | pending | disabled
+    // shape.settings
+    in property <int> clocked-seconds;
+    in property <string> socks-proxy;
+    // notify.settings
+    in property <bool> notify-enabled;
+    in property <bool> notify-dms;
+    in property <bool> notify-mentions;
+    in property <bool> notify-calls;
+    // linking, this side being the signed-in device
+    in property <string> scan-state;       // "" | sas | joining | done | failed
+    in property <string> scan-sas;
+    in property <string> scan-error;
+    in property <bool> busy;
+    in property <string> version;
+
+    callback closed;
+    callback open-recovery-code;
+    callback open-password;
+    callback set-clocked(int);
+    callback set-proxy(string);
+    callback set-notify(string, bool);
+    callback link-scan(string);
+    callback link-confirm(bool);
+    callback sign-out;
+
+    in-out property <bool> linking-open: false;
+    in-out property <bool> proxy-open: false;
+    in-out property <bool> confirm-out: false;
+    property <[ChoiceEntry]> clock-choices: [
+        { t: "Off", v: "0", sub: "Send only when there is something to send." },
+        { t: "Every 30 seconds", v: "30", sub: "A steady cadence hides when you talk." },
+        { t: "Every 2 minutes", v: "120", sub: "" },
+        { t: "Every 10 minutes", v: "600", sub: "Lightest on battery." },
+    ];
+
+    background: Theme.menu-background;
+
+    VerticalLayout {
+        SettingsHeader { title: "Settings"; fg: root.fg; back => { root.closed(); } }
+        TouchList {
+            vertical-stretch: 1;
+            VerticalLayout {
+                // ---- account ----
+                Rectangle {
+                    height: 84px;
+                    HorizontalLayout {
+                        padding-left: 22px; padding-right: 22px;
+                        spacing: 14px;
+                        Rectangle {
+                            width: 56px;
+                            Avatar { size: 56px; source: root.my-avatar; initials: root.my-initials; tint: root.my-tint; }
+                        }
+                        VerticalLayout {
+                            alignment: center;
+                            spacing: 2px;
+                            Text { text: root.my-name; color: root.fg; font-family: Theme.font-ui; font-size: Theme.title; font-weight: 700; overflow: elide; }
+                            Text { text: root.my-user-id; color: root.fg.with-alpha(0.55); font-family: Theme.font-ui; font-size: Theme.body-small; overflow: elide; }
+                            Text { text: "on " + root.server; color: root.fg.with-alpha(0.45); font-family: Theme.font-ui; font-size: Theme.caption; overflow: elide; }
+                        }
+                    }
+                }
+
+                // ---- devices ----
+                SettingsGroup {
+                    title: "Devices"; fg: root.fg;
+                    SettingsRow {
+                        fg: root.fg; icon: Icons.link; label: "Link a device";
+                        sublabel: "Sign in a phone or computer from this one";
+                        trailing: root.linking-open ? "none" : "chevron";
+                        clicked => { root.linking-open = !root.linking-open; }
+                    }
+                    if root.linking-open : VerticalLayout {
+                        padding-left: 22px; padding-right: 22px; padding-bottom: 8px;
+                        spacing: 8px;
+                        if root.scan-state == "" || root.scan-state == "failed" : Text {
+                            text: "On the new device choose Link this device; it shows a code. Paste the code here (a camera scan comes later).";
+                            color: root.fg.with-alpha(0.6); font-family: Theme.font-ui; font-size: Theme.body-small; wrap: word-wrap;
+                        }
+                        if root.scan-state == "" || root.scan-state == "failed" : HorizontalLayout {
+                            spacing: 8px;
+                            offer-well := TextWell { placeholder: "the code from the new device"; horizontal-stretch: 1; enabled: !root.busy;
+                                accepted => { if (self.text != "") { root.link-scan(self.text); } } }
+                            SButton { text: "Check"; enabled: !root.busy && offer-well.text != ""; clicked => { root.link-scan(offer-well.text); } }
+                        }
+                        if root.scan-state == "sas" : Text {
+                            text: root.scan-sas; font-size: 28px; horizontal-alignment: center; wrap: word-wrap;
+                        }
+                        if root.scan-state == "sas" : Text {
+                            text: "Do these seven match what the new device shows? Confirming sends it your account and adds it to every conversation.";
+                            color: root.fg.with-alpha(0.7); font-family: Theme.font-ui; font-size: Theme.body-small; wrap: word-wrap;
+                        }
+                        if root.scan-state == "sas" : HorizontalLayout {
+                            alignment: center; spacing: Theme.sp-lg;
+                            SButton { text: "They match"; icon: Icons.check; enabled: !root.busy; clicked => { root.link-confirm(true); } }
+                            SButton { text: "They differ"; enabled: !root.busy; clicked => { root.link-confirm(false); } }
+                        }
+                        if root.scan-state == "joining" : HorizontalLayout {
+                            alignment: center; spacing: Theme.sp-md;
+                            Spinner { spin-color: root.fg; }
+                            Text { text: "Sending everything to the new device…"; color: root.fg.with-alpha(0.7); font-family: Theme.font-ui; font-size: Theme.body; vertical-alignment: center; }
+                        }
+                        if root.scan-state == "done" : Text {
+                            text: "Linked. The new device is signed in.";
+                            color: Theme.accent; font-family: Theme.font-ui; font-size: Theme.body;
+                        }
+                        if root.scan-error != "" : Text {
+                            text: root.scan-error; color: Theme.urgent; font-family: Theme.font-ui; font-size: Theme.body-small; wrap: word-wrap;
+                        }
+                    }
+                }
+
+                // ---- recovery ----
+                SettingsGroup {
+                    title: "Recovery"; fg: root.fg;
+                    SettingsRow {
+                        fg: root.fg; icon: Icons.lock; label: "Backup password";
+                        trailing: "value";
+                        value: root.recovery-state != "enabled" ? "Not set"
+                             : root.backup-state == "enabled" ? "Backed up"
+                             : root.backup-state == "pending" ? "Backup pending" : "Set";
+                        clicked => { root.open-password(); }
+                    }
+                    SettingsRow {
+                        fg: root.fg; icon: Icons.recoveryKey; label: "Recovery code";
+                        sublabel: root.recovery-state == "enabled" ? "Show it again to write it down" : "Set a password first";
+                        trailing: "chevron";
+                        enabled: root.recovery-state == "enabled";
+                        clicked => { root.open-recovery-code(); }
+                    }
+                }
+
+                // ---- privacy shape ----
+                SettingsGroup {
+                    title: "Privacy"; fg: root.fg;
+                    SettingsRow {
+                        fg: root.fg; icon: Icons.clock; label: "Clocked sending";
+                        sublabel: "Send to the server on a fixed beat, so when you talk stays hidden";
+                        trailing: "value";
+                        value: root.clocked-seconds == 0 ? "Off"
+                             : root.clocked-seconds == 30 ? "30 s"
+                             : root.clocked-seconds == 120 ? "2 min"
+                             : root.clocked-seconds == 600 ? "10 min" : "\{root.clocked-seconds} s";
+                        clicked => { clock-sheet.open = true; }
+                    }
+                    SettingsRow {
+                        fg: root.fg; icon: Icons.globe; label: "Tor or SOCKS proxy";
+                        sublabel: "Route everything through a proxy on this device";
+                        trailing: "value";
+                        value: root.socks-proxy == "" ? "Direct" : root.socks-proxy;
+                        clicked => { root.proxy-open = !root.proxy-open; }
+                    }
+                    if root.proxy-open : VerticalLayout {
+                        padding-left: 22px; padding-right: 22px; padding-bottom: 8px;
+                        spacing: 8px;
+                        HorizontalLayout {
+                            spacing: 8px;
+                            proxy-well := TextWell { placeholder: "127.0.0.1:9050"; text: root.socks-proxy; horizontal-stretch: 1;
+                                accepted => { root.set-proxy(self.text); root.proxy-open = false; } }
+                            SButton { text: "Save"; clicked => { root.set-proxy(proxy-well.text); root.proxy-open = false; } }
+                        }
+                        Text {
+                            text: "Empty means direct. A local Tor daemon is 127.0.0.1:9050. Applies on the next connection.";
+                            color: root.fg.with-alpha(0.55); font-family: Theme.font-ui; font-size: Theme.body-small; wrap: word-wrap;
+                        }
+                    }
+                }
+
+                // ---- notifications ----
+                SettingsGroup {
+                    title: "Notifications"; fg: root.fg;
+                    SettingsRow { fg: root.fg; icon: Icons.bell; label: "Notifications"; trailing: "toggle"; on: root.notify-enabled; clicked => { root.set-notify("enabled", !root.notify-enabled); } }
+                    SettingsRow { fg: root.fg; icon: Icons.person; label: "Direct messages"; trailing: "toggle"; on: root.notify-dms; enabled: root.notify-enabled; clicked => { root.set-notify("dms", !root.notify-dms); } }
+                    SettingsRow { fg: root.fg; icon: Icons.reply; label: "Mentions and replies"; trailing: "toggle"; on: root.notify-mentions; enabled: root.notify-enabled; clicked => { root.set-notify("mentions", !root.notify-mentions); } }
+                    SettingsRow { fg: root.fg; icon: Icons.phone; label: "Calls"; trailing: "toggle"; on: root.notify-calls; enabled: root.notify-enabled; clicked => { root.set-notify("calls", !root.notify-calls); } }
+                }
+
+                // ---- about, sign out ----
+                SettingsGroup {
+                    title: "About"; fg: root.fg;
+                    SettingsRow { fg: root.fg; icon: Icons.chat; label: "Sigil"; trailing: "value"; value: root.version; }
+                    SettingsRow {
+                        fg: root.fg; icon: Icons.logout; label: root.confirm-out ? "Tap again to sign out" : "Sign out";
+                        sublabel: root.confirm-out ? "This device forgets the account. Without a password or another device, it is gone." : "";
+                        danger: true;
+                        clicked => { if (root.confirm-out) { root.sign-out(); } else { root.confirm-out = true; } }
+                    }
+                }
+                Rectangle { height: 24px; }
+            }
+        }
+    }
+
+    clock-sheet := ChoiceSheet {
+        width: 100%; height: 100%;
+        title: "Clocked sending";
+        model: root.clock-choices;
+        value: "\{root.clocked-seconds}";
+        fg: root.fg;
+        chose(v) => { root.set-clocked(v == "30" ? 30 : v == "120" ? 120 : v == "600" ? 600 : 0); }
+    }
+}

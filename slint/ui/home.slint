@@ -22,14 +22,13 @@ export component HomePage inherits Rectangle {
     in property <color> my-tint;
     in property <string> my-name;
     in property <string> my-user-id;
-    in property <bool> needs-recovery;
     in property <string> sync-line;   // non-empty: engine is catching up / erroring
     in property <bool> rooms-loaded;  // first rooms.list has arrived
     in-out property <int> tab: 0;     // 0 chats, 1 requests
     callback room-clicked(string);
     callback search-edited(string);
     callback new-chat;
-    callback open-recovery;
+    callback open-settings;
     callback sign-out;
     // Drawn in-page, not as a popup (HomePage.qml accountOpen).
     in-out property <bool> account-open: false;
@@ -403,28 +402,28 @@ export component HomePage inherits Rectangle {
                 Rectangle { height: 4px; }
                 Rectangle { height: 1px; background: Theme.popup-text.with-alpha(0.1); }
                 Rectangle { height: 4px; }
-                // No QML counterpart: the phone holds the recovery key, so the
-                // menu is where the user asked to reach the recovery page.
-                if root.needs-recovery : mi-recover := Rectangle {
+                // Settings live in the app here; on the desktop QML they were
+                // the shell's. Same row shape as Sign out below.
+                mi-settings := Rectangle {
                     height: 30px;
                     border-radius: 8px;
-                    background: mi-recover-t.pressed || mi-recover-t.has-hover ? Theme.popup-text.with-alpha(0.1) : transparent;
+                    background: mi-settings-t.pressed || mi-settings-t.has-hover ? Theme.popup-text.with-alpha(0.1) : transparent;
                     IconLabel {
                         x: 8px;
                         y: (30px - self.preferred-height) / 2;
-                        text: Icons.recoveryKey;
+                        text: Icons.settings;
                         color: Theme.popup-text;
                         opacity: 0.85;
                     }
                     Text {
                         x: 34px;
-                        text: "Enter recovery key";
+                        text: "Settings";
                         color: Theme.popup-text;
                         font-family: Theme.font-ui; font-size: Theme.body;
                         vertical-alignment: center;
                         height: 100%;
                     }
-                    mi-recover-t := TouchArea { clicked => { root.account-open = false; root.open-recovery(); } }
+                    mi-settings-t := TouchArea { clicked => { root.account-open = false; root.open-settings(); } }
                 }
                 mi-out := Rectangle {
                     height: 30px;

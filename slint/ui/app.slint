@@ -6,8 +6,9 @@
 
 import { Theme } from "style.slint";
 import { Icons } from "icons.slint";
-import { LoginPage } from "login.slint";
-import { RecoveryPage } from "recovery.slint";
+import { DoorsPage } from "login.slint";
+import { RecoveryCodePage, BackupPasswordPage } from "recovery.slint";
+import { SettingsPage } from "pages/settings.slint";
 import { HomePage } from "home.slint";
 import { ChatPage } from "chat.slint";
 import { PageHolder, MenuEntry } from "furniture.slint";
@@ -44,13 +45,39 @@ export component AppWindow inherits Window {
 
     // ---- session / engine state ----
     in property <string> session: "restoring";
-    in property <string> login-error;
     in property <string> sync-line;
-    in property <bool> needs-recovery;
-    in property <bool> recovery-busy;
-    in property <string> recovery-error;
-    in-out property <bool> recovery-skipped: false;
+    // the doors
+    in-out property <string> door: "server";
+    in-out property <string> door-server;
+    in property <string> door-registration: "invite";
+    in property <bool> door-tpm;
+    in property <bool> door-busy;
+    in property <string> door-error;
+    in property <image> link-image;
+    in property <string> link-offer;
+    in property <string> link-sas;
+    in property <string> link-state;
+    // recovery
     in-out property <bool> recovery-open: false;
+    in property <bool> recovery-first-time;
+    in property <string> recovery-code;
+    in property <string> recovery-state: "disabled";
+    in property <string> backup-state: "disabled";
+    in-out property <bool> password-open: false;
+    in property <bool> password-busy;
+    in property <string> password-error;
+    // settings
+    in property <int> shape-clocked;
+    in property <string> shape-proxy;
+    in property <bool> notify-enabled: true;
+    in property <bool> notify-dms: true;
+    in property <bool> notify-mentions: true;
+    in property <bool> notify-calls: true;
+    in property <string> scan-state;
+    in property <string> scan-sas;
+    in property <string> scan-error;
+    in property <bool> settings-busy;
+    in property <string> app-version;
     in property <string> my-initials;
     in property <image> my-avatar;
     in property <color> my-tint: Theme.accent;
@@ -205,10 +232,19 @@ export component AppWindow inherits Window {
     in-out property <string> thread-key;
 
     // ---- action channels ----
-    callback sign-in(string);
-    callback open-again;
-    callback cancel-login;
-    callback recover-submit(string);
+    callback door-probe(string);
+    callback door-create(string, string, string);
+    callback door-recover(string, string, string);
+    callback door-link-start(string);
+    callback door-link-cancel;
+    callback recovery-copy;
+    callback recovery-done;
+    callback set-password(string);
+    callback set-clocked(int);
+    callback set-proxy(string);
+    callback set-notify(string, bool);
+    callback link-scan(string);
+    callback link-confirm(bool);
     callback sign-out;
     callback room-clicked(string);
     callback search-edited(string);
@@ -250,7 +286,7 @@ export component AppWindow inherits Window {
             return;
         }
         if (root.nav == "members") { root.nav = root.members-return; return; }
-        if (root.nav == "start") {
+        if (root.nav == "start" || root.nav == "settings") {
             root.nav = "home";
             return;
         }
@@ -261,7 +297,7 @@ export component AppWindow inherits Window {
         ? max(0px, root.height - root.virtual-keyboard-position.y) : 0px;
     property <color> page-ground: Theme.menu-background.brighter(0.35);
     property <bool> in-session: root.session == "loggedIn"
-        && (!root.needs-recovery || root.recovery-skipped) && !root.recovery-open;
+        && !root.recovery-open && !root.password-open;
 
     // The Android back gesture arrives as a key. As the ancestor focus scope,
     // unhandled Escapes bubble here; consuming them keeps the activity alive
@@ -285,44 +321,61 @@ export component AppWindow inherits Window {
         width: root.width - root.safe-area-insets.left - root.safe-area-insets.right;
         height: root.height - root.safe-area-insets.top - max(root.safe-area-insets.bottom, root.kb-overlap);
 
-        if root.session != "loggedIn" : LoginPage {
+        if root.session != "loggedIn" : doors := DoorsPage {
             width: 100%; height: 100%;
-            pending: root.session == "loginPending";
+            door <=> root.door;
+            server <=> root.door-server;
+            registration: root.door-registration;
+            tpm: root.door-tpm;
+            busy: root.door-busy;
             restoring: root.session == "restoring";
-            error: root.login-error;
-            sign-in(hs) => { root.sign-in(hs); }
-            open-again => { root.open-again(); }
-            cancel-login => { root.cancel-login(); }
+            error: root.door-error;
+            link-image: root.link-image;
+            link-offer: root.link-offer;
+            link-sas: root.link-sas;
+            link-state: root.link-state;
+            probe(server) => { root.door-probe(server); }
+            create(name, invite, pw) => { root.door-create(name, invite, pw); }
+            recover(name, pw, code) => { root.door-recover(name, pw, code); }
+            link-start(name) => { root.door-link-start(name); }
+            link-cancel => { root.door-link-cancel(); }
         }
-        if root.session == "loggedIn" && ((root.needs-recovery && !root.recovery-skipped) || root.recovery-open) : RecoveryPage {
+        if root.session == "loggedIn" && root.recovery-open : RecoveryCodePage {
             width: 100%; height: 100%;
-            busy: root.recovery-busy;
-            error: root.recovery-error;
-            submit(key) => { root.recover-submit(key); }
-            skip => { root.recovery-skipped = true; root.recovery-open = false; }
+            code: root.recovery-code;
+            first-time: root.recovery-first-time;
+            copy => { root.recovery-copy(); }
+            done => { root.recovery-open = false; root.recovery-done(); }
+        }
+        if root.session == "loggedIn" && root.password-open && !root.recovery-open : BackupPasswordPage {
+            width: 100%; height: 100%;
+            backup-state: root.backup-state;
+            has-password: root.recovery-state == "enabled";
+            busy: root.password-busy;
+            error: root.password-error;
+            set-password(pw) => { root.set-password(pw); }
+            closed => { root.password-open = false; }
         }
         if root.in-session : HomePage {
             width: 100%; height: 100%;
             rooms: root.rooms;
             requests: root.requests;
             tab <=> root.home-tab;
-            rooms-loaded: root.rooms-loaded;
             my-initials: root.my-initials;
             my-avatar: root.my-avatar;
             my-tint: root.my-tint;
             my-name: root.my-name;
             my-user-id: root.my-user-id;
-            needs-recovery: root.needs-recovery;
             sync-line: root.sync-line;
             room-clicked(id) => { root.room-clicked(id); root.nav = "chat"; }
             search-edited(q) => { root.search-edited(q); }
             new-chat => { root.go("start"); }
-            open-recovery => { root.recovery-open = true; }
+            open-settings => { root.go("settings"); }
             sign-out => { root.sign-out(); }
         }
 
         chat-holder := PageHolder {
-            active: root.in-session && root.nav != "home" && root.nav != "start";
+            active: root.in-session && root.nav != "home" && root.nav != "start" && root.nav != "settings";
             ground: root.page-ground;
             chat := ChatPage {
                 width: 100%; height: 100%;
@@ -500,6 +553,27 @@ export component AppWindow inherits Window {
                 busy: root.no-busy; error: root.no-error;
                 closed => { root.go-back(); }
                 set-mode(m) => { root.act("notif-mode", m, ""); }
+            } }
+        settings-holder := PageHolder { active: root.in-session && root.nav == "settings"; ground: root.page-ground;
+            SettingsPage {
+                width: 100%; height: 100%;
+                my-name: root.my-name; my-user-id: root.my-user-id; my-initials: root.my-initials;
+                my-avatar: root.my-avatar; my-tint: root.my-tint; server: root.door-server;
+                recovery-state: root.recovery-state; backup-state: root.backup-state;
+                clocked-seconds: root.shape-clocked; socks-proxy: root.shape-proxy;
+                notify-enabled: root.notify-enabled; notify-dms: root.notify-dms;
+                notify-mentions: root.notify-mentions; notify-calls: root.notify-calls;
+                scan-state: root.scan-state; scan-sas: root.scan-sas; scan-error: root.scan-error;
+                busy: root.settings-busy; version: root.app-version;
+                closed => { root.go-back(); }
+                open-recovery-code => { root.recovery-copy(); root.recovery-open = true; }
+                open-password => { root.password-open = true; }
+                set-clocked(n) => { root.set-clocked(n); }
+                set-proxy(p) => { root.set-proxy(p); }
+                set-notify(k, on) => { root.set-notify(k, on); }
+                link-scan(offer) => { root.link-scan(offer); }
+                link-confirm(ok) => { root.link-confirm(ok); }
+                sign-out => { root.sign-out(); }
             } }
         start-holder := PageHolder { active: root.in-session && root.nav == "start"; ground: root.page-ground;
             start-page := StartPage {

@@ -201,6 +201,7 @@ pub fn on_nav_opened(ui: &mut UiState, win: &AppWindow, page: &str) {
             load_settings(ui, win);
         }
         "members" => load_members(ui, win),
+        "settings" => crate::bridge::load_settings_page(ui),
         "threads" => load_threads(ui, win),
         "pins" => load_pins(ui, win),
         "search" => {

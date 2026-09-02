@@ -1,96 +1,65 @@
 # Sigil for Slint
 
-The cross-platform frontend: one UI, in Slint, over the same engine as every
-other frontend — built to decide whether Slint *becomes* Sigil's UI toolkit.
-Android is the proving ground because it is the platform QML cannot follow us
-to; the same crate runs on the desktop for fast iteration.
-
-**Status: the full port, on the `slint` branch.** Every QML page exists in
-Slint and is wired to the engine: login/recovery, home, full chat (replies,
-edits, reactions, media bodies, polls, voice, receipts, the action sheet,
-pagination), all settings pages, spaces and their management, threads, pins,
-search, forward, start-chat, the image viewer, documents, audio, chat themes,
-attach with polls and stickers, and the voice recorder. Calls and maps are
-wired shells: Android builds the engine without the calls feature, and Slint
-has no map renderer — both recorded as decision evidence, not surprises.
+The cross-platform frontend: one UI, in Slint, over the Sigil engine linked
+in process. This is the port described in
+[`docs/slint-port-plan.md`](../docs/slint-port-plan.md), built phase by
+phase against the QML app under `omarchy/`, on the Sigil backend and not
+Matrix.
 
 ## Architecture
 
-There is no daemon here. The engine (`../core`) is a path dependency, hosted on
-a tokio runtime inside the app:
+There is no daemon here. The engine (`../core`) is a path dependency hosted
+on a tokio runtime inside the app:
 
 ```
   ui/*.slint  ──callbacks──▶  src/bridge.rs  ──Request──▶  sigil_engine::Engine
   (view only)  ◀──models───   (UI thread)     ◀──Hub────   (tokio, in-process)
 ```
 
-The JSON protocol is byte-for-byte the socket protocol (`core/docs/protocol.md`)
-— `bridge.rs` replaces the transport, not the contract. `timeline.diff` ops
-apply to a shadow `Vec<Value>` on the UI thread, which then projects to the
-Slint model; the shadow keeps *every* item because filtering the list the
-diff indices point into is how views desynchronise (docs/ui-conventions.md).
+The JSON protocol is byte-for-byte the socket protocol
+(`core/docs/protocol.md`); `bridge.rs` replaces the transport, not the
+contract. Rust does the thinking, Slint does the drawing: everything the
+QML computed inline lives in `src/`, and the `.slint` files get flat
+structs and finished strings.
 
-Design tokens (`ui/style.slint`) mirror the qs.Commons contract from
-docs/portability.md — same names, same roles. One deliberate difference:
-there is no `Style.space()`. Slint's `px` is already a logical pixel scaled by
-the device pixel ratio, which is the entire job `Style.space()` did on
-Quickshell. A design px in QML is a `px` here, 1:1.
-
-Icons come from `ui/icons.slint`, generated from `shared/icons.json` by
-`shared/icongen` — the same table QML uses, third emitter. Fonts are the
-bundled `shared/fonts/` files, embedded at compile time via `.slint` imports.
-
-## Desktop
+## Run it
 
 ```
 cd slint && cargo run
 ```
 
-State lives in `~/.local/state/sigil-slint/` — sandboxed on purpose, so this
-is always a separate Matrix device from the daily `sigil-engine` daemon. Two
-sync loops over one crypto store corrupt sessions.
+Desktop state lives in `~/.local/state/sigil-slint/`, apart from the daily
+daemon's store. `SIGIL_SLINT_DEMO=1 cargo run` shows the fixtures instead
+of an engine.
+
+## Prove it
+
+Two binaries run the real components with no display, on a Slint platform
+that renders into a pixel buffer (`src/headless.rs`):
+
+- `cargo run --bin shots -- out/` captures every page with the demo
+  fixtures, one PNG each. This is the side-by-side sheet each phase of the
+  plan ends with.
+- `cargo run --bin drive -- out/ <server> <invite>` is the end-to-end
+  driver: the real engine against a real server, walking the doors as a
+  person would and capturing each page. `tests/e2e-doors.sh` starts a
+  server on loopback and runs it.
+
+## Where the port stands
+
+Phases 0 and 1 of the plan are done: the harness, the Matrix-only pages
+cut out, Home with a Requests tab, and the doors (server first, then
+create, restore, or link this device, with the recovery code and the
+settings page). The chat, group, media and call pages are the first
+attempt's and are reworked in their phases; their gaps are in the plan.
 
 ## Android
 
-Needs: Android SDK + NDK (`ANDROID_HOME`, usually `~/Android/Sdk`), a JDK,
+Needs: Android SDK + NDK (`ANDROID_HOME`), a JDK,
 `rustup target add aarch64-linux-android`, and `cargo install cargo-apk`.
 
 ```
 cd slint
 export ANDROID_HOME=~/Android/Sdk
-export ANDROID_NDK_ROOT=$ANDROID_HOME/ndk/27.2.12479018
-cargo apk run --lib --target aarch64-linux-android
+cargo apk run --lib
 ```
-
-That builds, signs, installs and launches `com.sigil.slint` on the connected
-device. It coexists with the Compose spike (`com.sigil.app`) — same engine,
-two toolkits, one phone, which is the comparison this crate exists to make.
-
-App state lands in the app's private files dir; the engine's XDG path
-resolution is pointed there before anything else runs (`android_main`).
-
-## UI iteration without a device
-
-`SIGIL_SLINT_DEMO=1 cargo run` renders the app from canned events pushed
-through the real bridge pipeline — no engine, no login. Add
-`SIGIL_SLINT_DEMO_CHAT=1` to open the demo conversation, or
-`SIGIL_SLINT_DEMO_RECOVERY=1` to land on the recovery page. What the demo
-renders is what the pipeline renders; only the source of JSON differs.
-
-## Known gaps
-
-- **Spaces tab** lists spaces from `rooms.list` flat; the `spaces.tree`
-  hierarchy, space filtering and the hero header are not built.
-- **Media bodies** render as icon+filename chips. Images, the viewer, voice
-  playback: later, they need `media.get` plumbing and a texture story.
-- **SigilText effects** are not drawn — the timeline shows plain `body`.
-  Solid colours/bold/etc can ride Slint's `StyledText`; the animated set
-  needs the per-character layout planned for `sigiltext_render`.
-- **No recovery-key page yet**: E2EE history stays locked until the session
-  is verified from another client, or the page is built (it is small).
-- **No pagination**: the newest 60 items per room.
-- **The timeline is top-anchored**: a room with little history stacks from
-  the top instead of hugging the composer. Needs a content-height measure
-  Slint's ListView does not expose directly.
-- **Composer is single-line**; Shift+Enter and the formatting affordances
-  need Slint's TextEdit story evaluated.

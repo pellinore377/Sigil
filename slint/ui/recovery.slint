@@ -1,18 +1,19 @@
-// Enter the recovery key (Element's "Security Key") to verify this device and
-// unlock encrypted history — components/RecoveryPage.qml.
+// Recovery, Sigil style. Two pages in the RecoveryPage.qml column layout:
+// the printed recovery code, shown once after an account is created with a
+// password and again from Settings; and the backup password, set or
+// changed. There is no key to type in — restoring happens at the doors.
 
 import { Theme } from "style.slint";
 import { Icons } from "icons.slint";
-import { IconLabel, SButton, ActionButton } from "components.slint";
+import { IconLabel, SButton, TextWell } from "components.slint";
 
-export component RecoveryPage inherits Rectangle {
-    in property <bool> busy;
-    in property <string> error;
-    callback submit(string);
-    callback skip;
+export component RecoveryCodePage inherits Rectangle {
+    in property <string> code;
+    in property <bool> first-time;
+    callback copy;
+    callback done;
 
     background: Theme.menu-background;
-    in-out property <bool> reveal: false;
 
     VerticalLayout {
         alignment: center;
@@ -27,7 +28,7 @@ export component RecoveryPage inherits Rectangle {
             horizontal-alignment: center;
         }
         Text {
-            text: "Restore encrypted history";
+            text: "Your recovery code";
             color: Theme.menu-text;
             font-family: Theme.font-ui;
             font-size: Theme.heading;
@@ -35,52 +36,100 @@ export component RecoveryPage inherits Rectangle {
             horizontal-alignment: center;
         }
         Text {
-            text: "Enter the recovery key (Security Key) from Element to verify this device and decrypt your message history. You can skip this and do it later.";
+            text: root.first-time
+                ? "Write this down and keep it somewhere safe. With your password and this code, a new device gets everything back. Sigil cannot show it to you if you lose it."
+                : "Your password and this code restore everything on a new device. Keep it somewhere safe; it is the same code as before.";
             color: Theme.menu-text.with-alpha(0.7);
             font-family: Theme.font-ui;
             font-size: Theme.body;
             horizontal-alignment: center;
             wrap: word-wrap;
         }
-        key-well := Rectangle {
-            height: 40px;
+        code-well := Rectangle {
+            height: code-text.preferred-height + 24px;
             border-radius: 10px;
             background: Theme.menu-text.with-alpha(0.06);
             border-width: 1px;
-            border-color: key-input.has-focus ? Theme.accent.with-alpha(0.6) : Theme.menu-text.with-alpha(0.12);
+            border-color: Theme.menu-text.with-alpha(0.12);
+            code-text := Text {
+                x: 12px; y: 12px;
+                width: parent.width - 24px;
+                text: root.code;
+                color: Theme.menu-text;
+                font-family: Theme.font-mono;
+                font-size: Theme.title;
+                horizontal-alignment: center;
+                wrap: char-wrap;
+            }
+        }
+        HorizontalLayout {
+            alignment: center;
+            spacing: Theme.sp-lg;
+            SButton { text: "Copy"; icon: Icons.copy; clicked => { root.copy(); } }
+            SButton { text: root.first-time ? "I wrote it down" : "Done"; clicked => { root.done(); } }
+        }
+    }
+}
+
+export component BackupPasswordPage inherits Rectangle {
+    /// disabled | pending | enabled, from recovery.status
+    in property <string> backup-state;
+    in property <bool> has-password;
+    in property <bool> busy;
+    in property <string> error;
+    callback set-password(string);
+    callback closed;
+
+    background: Theme.menu-background;
+    in-out property <bool> reveal: false;
+
+    VerticalLayout {
+        alignment: center;
+        padding-left: 40px; padding-right: 40px;
+        spacing: Theme.sp-xl;
+
+        IconLabel {
+            text: Icons.lock;
+            filled: false;
+            font-size: 40px;
+            color: Theme.menu-text;
+            horizontal-alignment: center;
+        }
+        Text {
+            text: root.has-password ? "Change your password" : "Set a backup password";
+            color: Theme.menu-text;
+            font-family: Theme.font-ui;
+            font-size: Theme.heading;
+            font-weight: 700;
+            horizontal-alignment: center;
+        }
+        Text {
+            text: root.has-password
+                ? (root.backup-state == "enabled" ? "Your backup is up to date. A new password takes effect for the next backup; the recovery code stays the same."
+                   : root.backup-state == "pending" ? "A backup is waiting to upload. A new password takes effect for it; the recovery code stays the same."
+                   : "A new password takes effect for the next backup; the recovery code stays the same.")
+                : "The password locks an encrypted copy of everything on this device, kept on your server, which cannot open it. You will be shown a recovery code to write down.";
+            color: Theme.menu-text.with-alpha(0.7);
+            font-family: Theme.font-ui;
+            font-size: Theme.body;
+            horizontal-alignment: center;
+            wrap: word-wrap;
+        }
+        VerticalLayout {
+            spacing: Theme.sp-md;
+            Text { text: "Password"; color: Theme.menu-text.with-alpha(0.6); font-family: Theme.font-ui; font-size: Theme.caption; }
+            pw1 := TextWell { placeholder: "a good password"; password: !root.reveal; enabled: !root.busy; }
+            Text { text: "Again"; color: Theme.menu-text.with-alpha(0.6); font-family: Theme.font-ui; font-size: Theme.caption; }
+            pw2 := TextWell { placeholder: "the same password"; password: !root.reveal; enabled: !root.busy;
+                accepted => { if (pw1.text != "" && pw1.text == pw2.text) { root.set-password(pw1.text); } } }
             HorizontalLayout {
-                padding-left: 10px; padding-right: 4px;
-                spacing: 4px;
-                Rectangle {
-                    clip: true;
-                    horizontal-stretch: 1;
-                    key-input := TextInput {
-                        enabled: !root.busy;
-                        color: Theme.menu-text;
-                        font-family: Theme.font-ui;
-                        font-size: Theme.body;
-                        vertical-alignment: center;
-                        height: 100%; width: 100%;
-                        single-line: true;
-                        input-type: root.reveal ? InputType.text : InputType.password;
-                        accepted => { if (self.text != "") { root.submit(self.text); } }
-                    }
-                    if key-input.text == "" : Text {
-                        text: "EsTc 1234 …";
-                        color: Theme.menu-text.with-alpha(0.4);
-                        font-family: Theme.font-ui;
-                        font-size: Theme.body;
-                        vertical-alignment: center;
-                        height: 100%;
-                    }
-                }
-                ActionButton {
-                    y: (key-well.height - self.height) / 2 - 1px;
-                    icon: root.reveal ? Icons.eye : Icons.eyeOff;
-                    filled: false;
-                    width: 32px; height: 32px;
-                    foreground: Theme.menu-text.with-alpha(0.7);
-                    clicked => { root.reveal = !root.reveal; }
+                alignment: center;
+                spacing: Theme.sp-md;
+                Text {
+                    text: root.reveal ? "Hide" : "Show";
+                    color: Theme.menu-text.with-alpha(0.55);
+                    font-family: Theme.font-ui; font-size: Theme.body-small;
+                    TouchArea { clicked => { root.reveal = !root.reveal; } }
                 }
             }
         }
@@ -88,15 +137,17 @@ export component RecoveryPage inherits Rectangle {
             alignment: center;
             spacing: Theme.sp-lg;
             SButton {
-                text: root.busy ? "Verifying…" : "Verify";
-                enabled: !root.busy && key-input.text != "";
-                clicked => { root.submit(key-input.text); }
+                text: root.busy ? "Saving…" : (root.has-password ? "Change password" : "Set password");
+                enabled: !root.busy && pw1.text != "" && pw1.text == pw2.text;
+                clicked => { root.set-password(pw1.text); }
             }
-            SButton {
-                text: "Skip for now";
-                enabled: !root.busy;
-                clicked => { root.skip(); }
-            }
+            SButton { text: "Back"; enabled: !root.busy; clicked => { root.closed(); } }
+        }
+        if pw2.text != "" && pw1.text != pw2.text : Text {
+            text: "The two passwords differ.";
+            color: Theme.urgent;
+            font-family: Theme.font-ui; font-size: Theme.body-small;
+            horizontal-alignment: center;
         }
         if root.error != "" : Text {
             text: root.error;

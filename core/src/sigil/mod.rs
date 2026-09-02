@@ -368,6 +368,23 @@ pub async fn dispatch(engine: &SharedEngine, req: &Request) -> Option<Reply> {
                 json!({"exists": has_account(), "active": engine.sigil.lock().is_some()}),
             ))
         }
+        "account.probe" => {
+            // The first screen: which doors does this server offer?
+            let server = p.get("server").and_then(Value::as_str).unwrap_or("").trim().to_string();
+            if server.is_empty() {
+                return Some(Reply::err("bad_request", "server is required"));
+            }
+            let proxy = load_shape().socks_proxy;
+            let proxy = if proxy.is_empty() { None } else { Some(proxy.as_str()) };
+            return Some(match sigil_client::account::probe(&server, proxy).await {
+                Ok(card) => Reply::ok(json!({
+                    "hostname": card.hostname,
+                    "registration": if card.flags & 0b100 != 0 { "open" } else if card.flags & 0b010 != 0 { "oidc" } else { "invite" },
+                    "tpm": card.flags & 0b001 != 0,
+                })),
+                Err(e) => Reply::err("network", format!("{e:#}")),
+            });
+        }
         "shape.settings" => {
             let mut sh = load_shape();
             let mut changed = false;

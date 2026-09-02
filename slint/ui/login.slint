@@ -1,20 +1,45 @@
-// Sign-in: homeserver + SSO in the browser, the engine finishing on its
-// localhost redirect — components/LoginPage.qml without the engine-supervision
-// states, which cannot happen when the engine is linked in-process.
+// The doors: how a fresh install becomes an account. Sigil has no "log in"
+// in the Matrix sense — keys live on the device — so the doors are: create
+// an account, restore one onto this device (password and code), or link
+// this device to one that is already signed in (QR and seven emoji). The
+// first screen asks for the server only; the next shows the doors that
+// server offers. Same column, sizes and spacing as components/LoginPage.qml.
 
 import { Theme } from "style.slint";
 import { Icons } from "icons.slint";
 import { IconLabel, SButton, TextWell } from "components.slint";
+import { Spinner } from "furniture.slint";
 
-export component LoginPage inherits Rectangle {
-    in property <bool> pending;       // loginPending: browser is open
-    in property <bool> restoring;     // session restore in flight
+export component DoorsPage inherits Rectangle {
+    /// server | choose | create | recover | link
+    in-out property <string> door: "server";
+    in-out property <string> server;
+    /// open | invite | oidc, from account.probe
+    in property <string> registration: "invite";
+    in property <bool> tpm;
+    in property <bool> busy;
+    in property <bool> restoring;
     in property <string> error;
-    callback sign-in(homeserver: string);
-    callback open-again;
-    callback cancel-login;
+    // linking, this side being the new device
+    in property <image> link-image;
+    in property <string> link-offer;
+    in property <string> link-sas;
+    /// "" | offer | sas | joining | done | failed
+    in property <string> link-state;
+
+    callback probe(server: string);
+    callback create(localpart: string, invite: string, password: string);
+    callback recover(localpart: string, password: string, code: string);
+    callback link-start(localpart: string);
+    callback link-cancel;
 
     background: Theme.menu-background;
+    in-out property <bool> reveal: false;
+
+    public function reset() {
+        root.door = "server";
+        root.reveal = false;
+    }
 
     VerticalLayout {
         alignment: center;
@@ -22,72 +47,293 @@ export component LoginPage inherits Rectangle {
         spacing: Theme.sp-xl;
 
         IconLabel {
-            text: Icons.chat;
+            text: root.door == "link" ? Icons.link : Icons.chat;
             font-size: 44px;
             color: Theme.menu-text;
             horizontal-alignment: center;
         }
         Text {
-            text: "Sign in to Sigil";
+            text: root.door == "server" ? "Welcome to Sigil"
+                : root.door == "choose" ? root.server
+                : root.door == "create" ? "Create your account"
+                : root.door == "recover" ? "Restore your account"
+                : "Link this device";
             color: Theme.menu-text;
             font-family: Theme.font-ui;
             font-size: Theme.heading;
             font-weight: 700;
             horizontal-alignment: center;
+            overflow: elide;
         }
 
-        if root.restoring : Text {
-            text: "Restoring session…";
-            color: Theme.menu-text.with-alpha(0.7);
-            font-family: Theme.font-ui;
-            font-size: Theme.body;
-            horizontal-alignment: center;
+        if root.restoring : HorizontalLayout {
+            alignment: center;
+            spacing: Theme.sp-md;
+            Spinner { spin-color: Theme.menu-text; }
+            Text {
+                text: "Restoring session…";
+                color: Theme.menu-text.with-alpha(0.7);
+                font-family: Theme.font-ui;
+                font-size: Theme.body;
+                vertical-alignment: center;
+            }
         }
 
-        if !root.restoring : VerticalLayout {
+        // ---- 1. the server ----
+        if !root.restoring && root.door == "server" : VerticalLayout {
             spacing: Theme.sp-md;
             Text {
-                text: "Homeserver";
+                text: "Server";
                 color: Theme.menu-text.with-alpha(0.6);
                 font-family: Theme.font-ui;
                 font-size: Theme.caption;
             }
-            hs := TextWell {
-                placeholder: "example.org";
-                enabled: !root.pending;
-                accepted => { if (self.text != "") { root.sign-in(self.text); } }
+            server-well := TextWell {
+                placeholder: "sigil.example.com";
+                text <=> root.server;
+                enabled: !root.busy;
+                accepted => { if (self.text != "") { root.probe(self.text); } }
             }
             HorizontalLayout {
                 alignment: center;
                 SButton {
-                    text: root.pending ? "Waiting for the browser…" : "Sign in with SSO";
-                    icon: root.pending ? "" : Icons.login;
-                    enabled: !root.pending && hs.text != "";
-                    clicked => { root.sign-in(hs.text); }
+                    text: root.busy ? "Asking the server…" : "Continue";
+                    icon: root.busy ? "" : Icons.login;
+                    enabled: !root.busy && server-well.text != "";
+                    clicked => { root.probe(server-well.text); }
                 }
             }
-            if root.pending : HorizontalLayout {
-                alignment: center;
-                spacing: Theme.sp-lg;
-                SButton { text: "Open link again"; clicked => { root.open-again(); } }
-                SButton { text: "Cancel"; clicked => { root.cancel-login(); } }
-            }
-            if root.pending : Text {
-                text: "Complete the sign-in in your browser. This screen updates automatically.";
+            Text {
+                text: "The server is the second half of your username: @you:" + (root.server == "" ? "server" : root.server);
                 color: Theme.menu-text.with-alpha(0.55);
                 font-family: Theme.font-ui;
                 font-size: Theme.body-small;
                 horizontal-alignment: center;
                 wrap: word-wrap;
             }
-            if root.error != "" : Text {
-                text: root.error;
-                color: Theme.urgent;
+        }
+
+        // ---- 2. the doors this server offers ----
+        if !root.restoring && root.door == "choose" : VerticalLayout {
+            spacing: Theme.sp-md;
+            Text {
+                text: root.registration == "open" ? "Anyone can create an account here."
+                    : root.registration == "oidc" ? "This server signs people in with its own login."
+                    : "This server creates accounts by invite code.";
+                color: Theme.menu-text.with-alpha(0.7);
+                font-family: Theme.font-ui;
+                font-size: Theme.body;
+                horizontal-alignment: center;
+                wrap: word-wrap;
+            }
+            Rectangle { height: 4px; }
+            if root.registration != "oidc" : HorizontalLayout {
+                alignment: center;
+                SButton { text: "Create account"; icon: Icons.personAdd; clicked => { root.door = "create"; } }
+            }
+            if root.registration == "oidc" : HorizontalLayout {
+                alignment: center;
+                SButton { text: "Continue with SSO"; icon: Icons.login; enabled: false; }
+            }
+            if root.registration == "oidc" : Text {
+                text: "SSO sign-in is on this server's card but not built into this app yet.";
+                color: Theme.menu-text.with-alpha(0.55);
                 font-family: Theme.font-ui;
                 font-size: Theme.body-small;
                 horizontal-alignment: center;
                 wrap: word-wrap;
             }
+            HorizontalLayout {
+                alignment: center;
+                SButton { text: "I already have an account"; icon: Icons.recoveryKey; clicked => { root.door = "recover"; } }
+            }
+            HorizontalLayout {
+                alignment: center;
+                SButton { text: "Link this device"; icon: Icons.link; clicked => { root.door = "link"; } }
+            }
+            Rectangle { height: 4px; }
+            back-link := Text {
+                text: "Use another server";
+                color: Theme.menu-text.with-alpha(0.55);
+                font-family: Theme.font-ui;
+                font-size: Theme.body-small;
+                horizontal-alignment: center;
+                TouchArea { clicked => { root.door = "server"; } }
+            }
+        }
+
+        // ---- 3a. create ----
+        if !root.restoring && root.door == "create" : VerticalLayout {
+            spacing: Theme.sp-md;
+            Text { text: "Username"; color: Theme.menu-text.with-alpha(0.6); font-family: Theme.font-ui; font-size: Theme.caption; }
+            HorizontalLayout {
+                spacing: 6px;
+                Text {
+                    text: "@";
+                    color: Theme.menu-text.with-alpha(0.6);
+                    font-family: Theme.font-ui; font-size: Theme.body;
+                    vertical-alignment: center;
+                }
+                create-name := TextWell { placeholder: "name"; enabled: !root.busy; horizontal-stretch: 1; }
+                Text {
+                    text: ":" + root.server;
+                    color: Theme.menu-text.with-alpha(0.6);
+                    font-family: Theme.font-ui; font-size: Theme.body;
+                    vertical-alignment: center;
+                    overflow: elide;
+                }
+            }
+            // always built, so the button can read it; folded away on open servers
+            invite-block := Rectangle {
+                height: root.registration == "invite" ? 36px + Theme.sp-md + 12px : 0px;
+                clip: true;
+                VerticalLayout {
+                    spacing: Theme.sp-md;
+                    Text { text: "Invite code"; color: Theme.menu-text.with-alpha(0.6); font-family: Theme.font-ui; font-size: Theme.caption; }
+                    create-invite := TextWell { placeholder: "from whoever runs the server"; enabled: !root.busy; }
+                }
+            }
+            Text { text: "Password (optional)"; color: Theme.menu-text.with-alpha(0.6); font-family: Theme.font-ui; font-size: Theme.caption; }
+            create-pw := TextWell { placeholder: "a good password"; password: !root.reveal; enabled: !root.busy; }
+            Text {
+                text: "With a password you can get everything back on a new device with the password and a printed code. Without one, only another signed-in device can bring you back.";
+                color: Theme.menu-text.with-alpha(0.55);
+                font-family: Theme.font-ui;
+                font-size: Theme.body-small;
+                horizontal-alignment: center;
+                wrap: word-wrap;
+            }
+            HorizontalLayout {
+                alignment: center;
+                spacing: Theme.sp-lg;
+                SButton {
+                    text: root.busy ? "Creating…" : "Create account";
+                    enabled: !root.busy && create-name.text != "";
+                    clicked => { root.create(create-name.text, root.registration == "invite" ? create-invite.text : "", create-pw.text); }
+                }
+                SButton { text: "Back"; enabled: !root.busy; clicked => { root.door = "choose"; } }
+            }
+        }
+
+        // ---- 3b. restore ----
+        if !root.restoring && root.door == "recover" : VerticalLayout {
+            spacing: Theme.sp-md;
+            Text { text: "Username"; color: Theme.menu-text.with-alpha(0.6); font-family: Theme.font-ui; font-size: Theme.caption; }
+            HorizontalLayout {
+                spacing: 6px;
+                Text { text: "@"; color: Theme.menu-text.with-alpha(0.6); font-family: Theme.font-ui; font-size: Theme.body; vertical-alignment: center; }
+                rec-name := TextWell { placeholder: "name"; enabled: !root.busy; horizontal-stretch: 1; }
+                Text { text: ":" + root.server; color: Theme.menu-text.with-alpha(0.6); font-family: Theme.font-ui; font-size: Theme.body; vertical-alignment: center; overflow: elide; }
+            }
+            Text { text: "Password"; color: Theme.menu-text.with-alpha(0.6); font-family: Theme.font-ui; font-size: Theme.caption; }
+            rec-pw := TextWell { placeholder: "your backup password"; password: !root.reveal; enabled: !root.busy; }
+            Text { text: "Recovery code"; color: Theme.menu-text.with-alpha(0.6); font-family: Theme.font-ui; font-size: Theme.caption; }
+            rec-code := TextWell { placeholder: "the printed code"; enabled: !root.busy; }
+            Text {
+                text: "Everything comes back: conversations, history and your identity. If you still have a signed-in device, linking is quicker: go back and choose Link this device.";
+                color: Theme.menu-text.with-alpha(0.55);
+                font-family: Theme.font-ui;
+                font-size: Theme.body-small;
+                horizontal-alignment: center;
+                wrap: word-wrap;
+            }
+            HorizontalLayout {
+                alignment: center;
+                spacing: Theme.sp-lg;
+                SButton {
+                    text: root.busy ? "Restoring…" : "Restore";
+                    enabled: !root.busy && rec-name.text != "" && rec-pw.text != "" && rec-code.text != "";
+                    clicked => { root.recover(rec-name.text, rec-pw.text, rec-code.text); }
+                }
+                SButton { text: "Back"; enabled: !root.busy; clicked => { root.door = "choose"; } }
+            }
+        }
+
+        // ---- 3c. link this device (the new device's side) ----
+        if !root.restoring && root.door == "link" : VerticalLayout {
+            spacing: Theme.sp-md;
+            if root.link-state == "" : VerticalLayout {
+                spacing: Theme.sp-md;
+                Text { text: "Username"; color: Theme.menu-text.with-alpha(0.6); font-family: Theme.font-ui; font-size: Theme.caption; }
+                HorizontalLayout {
+                    spacing: 6px;
+                    Text { text: "@"; color: Theme.menu-text.with-alpha(0.6); font-family: Theme.font-ui; font-size: Theme.body; vertical-alignment: center; }
+                    link-name := TextWell { placeholder: "name"; enabled: !root.busy; horizontal-stretch: 1;
+                        accepted => { if (self.text != "") { root.link-start(self.text); } } }
+                    Text { text: ":" + root.server; color: Theme.menu-text.with-alpha(0.6); font-family: Theme.font-ui; font-size: Theme.body; vertical-alignment: center; overflow: elide; }
+                }
+                Text {
+                    text: "On a device that is already signed in, open Settings → Link a device and scan the code this screen will show.";
+                    color: Theme.menu-text.with-alpha(0.55);
+                    font-family: Theme.font-ui; font-size: Theme.body-small;
+                    horizontal-alignment: center; wrap: word-wrap;
+                }
+                HorizontalLayout {
+                    alignment: center;
+                    spacing: Theme.sp-lg;
+                    SButton {
+                        text: root.busy ? "One moment…" : "Show the code";
+                        enabled: !root.busy && link-name.text != "";
+                        clicked => { root.link-start(link-name.text); }
+                    }
+                    SButton { text: "Back"; enabled: !root.busy; clicked => { root.door = "choose"; } }
+                }
+            }
+            // the offer as a QR code, and as text for a desktop without a camera
+            if root.link-state == "offer" : Rectangle {
+                height: 216px;
+                Rectangle {
+                    x: (parent.width - 216px) / 2;
+                    width: 216px; height: 216px;
+                    border-radius: 12px;
+                    background: #ffffff;
+                    Image { source: root.link-image; width: 200px; height: 200px; x: 8px; y: 8px; image-rendering: pixelated; }
+                }
+            }
+            if root.link-state == "offer" : Text {
+                text: root.link-offer;
+                color: Theme.menu-text.with-alpha(0.7);
+                font-family: Theme.font-mono; font-size: Theme.caption;
+                horizontal-alignment: center; wrap: char-wrap;
+            }
+            if root.link-state == "offer" : Text {
+                text: "Waiting for your other device to scan it…";
+                color: Theme.menu-text.with-alpha(0.55);
+                font-family: Theme.font-ui; font-size: Theme.body-small;
+                horizontal-alignment: center; wrap: word-wrap;
+            }
+            // the seven emoji, to compare by eye
+            if root.link-state == "sas" || root.link-state == "joining" : Text {
+                text: root.link-sas;
+                font-size: 30px;
+                horizontal-alignment: center;
+                wrap: word-wrap;
+            }
+            if root.link-state == "sas" : Text {
+                text: "Check that your other device shows the same seven, then confirm there.";
+                color: Theme.menu-text.with-alpha(0.7);
+                font-family: Theme.font-ui; font-size: Theme.body;
+                horizontal-alignment: center; wrap: word-wrap;
+            }
+            if root.link-state == "joining" : HorizontalLayout {
+                alignment: center;
+                spacing: Theme.sp-md;
+                Spinner { spin-color: Theme.menu-text; }
+                Text { text: "Joining your conversations…"; color: Theme.menu-text.with-alpha(0.7); font-family: Theme.font-ui; font-size: Theme.body; vertical-alignment: center; }
+            }
+            if root.link-state != "" && root.link-state != "done" : HorizontalLayout {
+                alignment: center;
+                SButton { text: "Cancel"; clicked => { root.link-cancel(); } }
+            }
+        }
+
+        if root.error != "" : Text {
+            text: root.error;
+            color: Theme.urgent;
+            font-family: Theme.font-ui;
+            font-size: Theme.body-small;
+            horizontal-alignment: center;
+            wrap: word-wrap;
         }
     }
 }

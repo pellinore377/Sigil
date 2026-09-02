@@ -68,7 +68,15 @@ pub struct UiState {
     pub shadow: Vec<Value>,
     pub typing: HashMap<String, Vec<Value>>,
     pub my_user: String,
-    pub login_url: String,
+    /// The server the doors were shown for; the username's second half.
+    pub door_server: String,
+    /// The Envoy the doors reach the server through: the address the user
+    /// typed, as a WebSocket URL. Normally wss://<server>/envoy; a test
+    /// server on loopback is where it differs.
+    pub door_envoy: String,
+    /// Set while an account is being created with a password: the recovery
+    /// code page opens the moment the session comes up.
+    pub show_code_on_login: bool,
     /// Avatar images by path; a cache because rooms.list re-arrives constantly.
     pub avatars: HashMap<String, slint::Image>,
     /// THE timeline model. Mutated in place: handing the ListView a fresh
@@ -161,7 +169,9 @@ pub fn start(win: &AppWindow, rt: &tokio::runtime::Runtime, icons: IconSet) -> R
         shadow: Vec::new(),
         typing: HashMap::new(),
         my_user: String::new(),
-        login_url: String::new(),
+        door_server: String::new(),
+        door_envoy: String::new(),
+        show_code_on_login: false,
         avatars: HashMap::new(),
         items_model: std::rc::Rc::new(VecModel::default()),
         typing_sent: false,
@@ -231,56 +241,6 @@ pub fn start(win: &AppWindow, rt: &tokio::runtime::Runtime, icons: IconSet) -> R
 /// UI actions → engine requests. Every handler runs on the UI thread; the
 /// Requester hops to the runtime.
 fn wire_callbacks(win: &AppWindow, req: Requester) {
-    win.on_sign_in({
-        let req = req.clone();
-        move |hs| {
-            let hs = hs.trim().to_string();
-            // Show pending before the engine says so: building the client can
-            // take seconds, and an idle-looking button collects extra taps.
-            with_ui(|ui| {
-                if let Some(win) = ui.win.upgrade() {
-                    win.set_session("loginPending".into());
-                    win.set_login_error(SharedString::new());
-                }
-            });
-            req.call(
-                "login.start",
-                json!({"homeserver": hs, "openBrowser": false}),
-                |reply| {
-                    match reply {
-                        Reply::Ok(v) => {
-                            if let Some(url) = v["url"].as_str() {
-                                crate::platform::open_url(url);
-                            }
-                        }
-                        // Request errors never arrive as login.failed events;
-                        // surface them or the button just looks dead.
-                        Reply::Err(e) => {
-                            let msg = e.message.clone();
-                            let _ = slint::invoke_from_event_loop(move || {
-                                with_ui(|ui| {
-                                    if let Some(win) = ui.win.upgrade() {
-                                        win.set_login_error(msg.as_str().into());
-                                    }
-                                });
-                            });
-                        }
-                    }
-                },
-            );
-        }
-    });
-    win.on_open_again(|| {
-        with_ui(|ui| {
-            if !ui.login_url.is_empty() {
-                crate::platform::open_url(&ui.login_url);
-            }
-        });
-    });
-    win.on_cancel_login({
-        let req = req.clone();
-        move || req.fire("login.cancel", json!({}))
-    });
     win.on_room_clicked(|id| {
         with_ui(|ui| {
             let Some(win) = ui.win.upgrade() else { return };
@@ -343,32 +303,368 @@ fn wire_callbacks(win: &AppWindow, req: Requester) {
             rebuild_rooms(ui, &win);
         });
     });
-    win.on_recover_submit(|key| {
-        with_ui(|ui| {
-            let Some(win) = ui.win.upgrade() else { return };
-            win.set_recovery_busy(true);
-            win.set_recovery_error(SharedString::new());
-            ui.req
-                .call("recovery.recover", json!({"key": key.as_str()}), |reply| {
-                    if let Reply::Err(e) = reply {
-                        let msg = e.message.clone();
-                        let _ = slint::invoke_from_event_loop(move || {
-                            with_ui(|ui| {
-                                if let Some(win) = ui.win.upgrade() {
-                                    win.set_recovery_busy(false);
-                                    win.set_recovery_error(msg.as_str().into());
-                                }
-                            });
-                        });
-                    }
-                    // Success arrives as a recovery.status broadcast.
-                });
-        });
-    });
     win.on_sign_out({
         let req = req.clone();
         move || req.fire("logout", json!({"wipe": true}))
     });
+    wire_doors(win, req.clone());
+    wire_settings(win, req);
+}
+
+/// Reply → UI thread, for handlers that want to touch the window afterwards.
+fn on_ui(f: impl FnOnce(&mut UiState, &AppWindow) + Send + 'static) {
+    let _ = slint::invoke_from_event_loop(move || {
+        with_ui(|ui| {
+            if let Some(win) = ui.win.upgrade() {
+                f(ui, &win);
+            }
+        })
+    });
+}
+
+fn door_fail(win: &AppWindow, msg: &str) {
+    win.set_door_busy(false);
+    win.set_door_error(msg.into());
+}
+
+fn door_busy(busy: bool) {
+    with_ui(|ui| {
+        if let Some(win) = ui.win.upgrade() {
+            win.set_door_busy(busy);
+            win.set_door_error(SharedString::new());
+        }
+    });
+}
+
+fn full_username(localpart: &str) -> String {
+    let server = with_ui_get(|ui| ui.door_server.clone());
+    format!(
+        "@{}:{server}",
+        localpart.trim().trim_start_matches('@').to_lowercase()
+    )
+}
+
+/// The doors: server first, then create, restore, or link.
+fn wire_doors(win: &AppWindow, req: Requester) {
+    win.on_door_probe({
+        let req = req.clone();
+        move |server| {
+            let typed = server.trim().trim_end_matches('/').to_string();
+            let base = if typed.contains("://") {
+                typed.clone()
+            } else {
+                format!("https://{typed}")
+            };
+            let envoy = format!("{}/envoy", base.replacen("http", "ws", 1));
+            let server = typed
+                .trim_start_matches("https://")
+                .trim_start_matches("http://")
+                .to_string();
+            with_ui(|ui| {
+                ui.door_server = server.clone();
+                ui.door_envoy = envoy;
+            });
+            door_busy(true);
+            req.call("account.probe", json!({"server": base}), |reply| {
+                on_ui(move |ui, win| {
+                    win.set_door_busy(false);
+                    match reply {
+                        Reply::Ok(v) => {
+                            win.set_door_registration(
+                                v["registration"].as_str().unwrap_or("invite").into(),
+                            );
+                            win.set_door_tpm(v["tpm"].as_bool().unwrap_or(false));
+                            if let Some(h) = v["hostname"].as_str() {
+                                win.set_door_server(h.into());
+                                ui.door_server = h.to_string();
+                            }
+                            win.set_door("choose".into());
+                        }
+                        Reply::Err(e) => win.set_door_error(
+                            format!("Could not reach that server: {}", e.message).into(),
+                        ),
+                    }
+                })
+            });
+        }
+    });
+    win.on_door_create({
+        let req = req.clone();
+        move |name, invite, password| {
+            let has_pw = !password.is_empty();
+            let username = full_username(&name);
+            with_ui(|ui| ui.show_code_on_login = has_pw);
+            door_busy(true);
+            let envoy = with_ui_get(|ui| ui.door_envoy.clone());
+            let mut p = json!({"username": username, "invite": invite.trim(), "envoy": envoy});
+            if has_pw {
+                p["password"] = json!(password.as_str());
+            }
+            req.call("account.create", p, |reply| {
+                on_ui(move |ui, win| {
+                    if let Reply::Err(e) = reply {
+                        ui.show_code_on_login = false;
+                        door_fail(win, &e.message);
+                    }
+                    // success arrives as a status event with session loggedIn
+                })
+            });
+        }
+    });
+    win.on_door_recover({
+        let req = req.clone();
+        move |name, password, code| {
+            let username = full_username(&name);
+            door_busy(true);
+            req.call(
+                "account.recover",
+                json!({"username": username, "password": password.as_str(), "code": code.trim(),
+                       "envoy": with_ui_get(|ui| ui.door_envoy.clone())}),
+                |reply| {
+                    on_ui(move |_ui, win| {
+                        if let Reply::Err(e) = reply {
+                            door_fail(win, &e.message);
+                        }
+                    })
+                },
+            );
+        }
+    });
+    win.on_door_link_start({
+        let req = req.clone();
+        move |name| {
+            let username = full_username(&name);
+            door_busy(true);
+            let envoy = with_ui_get(|ui| ui.door_envoy.clone());
+            req.call(
+                "link.offer",
+                json!({"username": username, "envoy": envoy}),
+                |reply| {
+                    on_ui(move |_ui, win| {
+                        win.set_door_busy(false);
+                        match reply {
+                            Reply::Ok(v) => {
+                                let offer = v["offer"].as_str().unwrap_or("").to_string();
+                                if let Some(img) = crate::qr::image(&offer) {
+                                    win.set_link_image(img);
+                                }
+                                win.set_link_offer(offer.as_str().into());
+                                win.set_link_state("offer".into());
+                            }
+                            Reply::Err(e) => door_fail(win, &e.message),
+                        }
+                    })
+                },
+            );
+        }
+    });
+    win.on_door_link_cancel(|| {
+        // The offer slot expires on its own; the new device just stops
+        // showing the code.
+        with_ui(|ui| {
+            if let Some(win) = ui.win.upgrade() {
+                win.set_link_state(SharedString::new());
+                win.set_link_offer(SharedString::new());
+                win.set_link_sas(SharedString::new());
+                win.set_door_error(SharedString::new());
+            }
+        });
+    });
+}
+
+/// Settings: recovery, the privacy shape, notifications, linking from the
+/// signed-in side.
+fn wire_settings(win: &AppWindow, req: Requester) {
+    win.on_recovery_copy(|| {
+        with_ui(|ui| {
+            if let Some(win) = ui.win.upgrade() {
+                let code = win.get_recovery_code().to_string();
+                if !code.is_empty() {
+                    crate::platform::copy_text(&code);
+                }
+            }
+        });
+    });
+    win.on_recovery_done(|| {});
+    win.on_set_password({
+        let req = req.clone();
+        move |pw| {
+            with_ui(|ui| {
+                if let Some(win) = ui.win.upgrade() {
+                    win.set_password_busy(true);
+                    win.set_password_error(SharedString::new());
+                }
+            });
+            let first = with_ui_get(|ui| {
+                ui.win
+                    .upgrade()
+                    .map(|w| w.get_recovery_state() != "enabled")
+                    .unwrap_or(true)
+            });
+            let req2 = req.clone();
+            req.call(
+                "account.setPassword",
+                json!({"password": pw.as_str()}),
+                move |reply| {
+                    match reply {
+                        Reply::Ok(_) => {
+                            // a first password means a first code: show it once
+                            req2.call("recovery.code", json!({}), move |r| {
+                                on_ui(move |_ui, win| {
+                                    win.set_password_busy(false);
+                                    win.set_password_open(false);
+                                    if let Reply::Ok(v) = r {
+                                        win.set_recovery_code(
+                                            v["code"].as_str().unwrap_or("").into(),
+                                        );
+                                        if first {
+                                            win.set_recovery_first_time(true);
+                                            win.set_recovery_open(true);
+                                        }
+                                    }
+                                })
+                            });
+                        }
+                        Reply::Err(e) => on_ui(move |_ui, win| {
+                            win.set_password_busy(false);
+                            win.set_password_error(e.message.as_str().into());
+                        }),
+                    }
+                },
+            );
+        }
+    });
+    win.on_set_clocked({
+        let req = req.clone();
+        move |n| {
+            req.call("shape.settings", json!({"clockedSeconds": n}), |reply| {
+                on_ui(move |_ui, win| {
+                    if let Reply::Ok(v) = reply {
+                        apply_shape(win, &v);
+                    }
+                })
+            });
+        }
+    });
+    win.on_set_proxy({
+        let req = req.clone();
+        move |p| {
+            req.call("shape.settings", json!({"socksProxy": p.trim()}), |reply| {
+                on_ui(move |_ui, win| {
+                    if let Reply::Ok(v) = reply {
+                        apply_shape(win, &v);
+                    }
+                })
+            });
+        }
+    });
+    win.on_set_notify({
+        let req = req.clone();
+        move |key, on| {
+            req.call("notify.settings", json!({key.as_str(): on}), |reply| {
+                on_ui(move |_ui, win| {
+                    if let Reply::Ok(v) = reply {
+                        apply_notify(win, &v);
+                    }
+                })
+            });
+        }
+    });
+    win.on_link_scan({
+        let req = req.clone();
+        move |offer| {
+            with_ui(|ui| {
+                if let Some(win) = ui.win.upgrade() {
+                    win.set_settings_busy(true);
+                    win.set_scan_error(SharedString::new());
+                }
+            });
+            req.call("link.scan", json!({"offer": offer.trim()}), |reply| {
+                on_ui(move |_ui, win| {
+                    win.set_settings_busy(false);
+                    match reply {
+                        Reply::Ok(v) => {
+                            win.set_scan_sas(v["sas"].as_str().unwrap_or("").into());
+                            win.set_scan_state("sas".into());
+                        }
+                        Reply::Err(e) => {
+                            win.set_scan_state("failed".into());
+                            win.set_scan_error(e.message.as_str().into());
+                        }
+                    }
+                })
+            });
+        }
+    });
+    win.on_link_confirm({
+        let req = req.clone();
+        move |ok| {
+            with_ui(|ui| {
+                if let Some(win) = ui.win.upgrade() {
+                    win.set_scan_state(if ok { "joining" } else { "" }.into());
+                }
+            });
+            req.call("link.confirm", json!({"ok": ok}), move |reply| {
+                on_ui(move |_ui, win| {
+                    if let Reply::Err(e) = reply {
+                        win.set_scan_state("failed".into());
+                        win.set_scan_error(e.message.as_str().into());
+                    }
+                    // the rest arrives as link.state events
+                })
+            });
+        }
+    });
+}
+
+fn with_ui_get<T: Default>(f: impl FnOnce(&mut UiState) -> T) -> T {
+    let mut out = T::default();
+    with_ui(|ui| out = f(ui));
+    out
+}
+
+pub fn apply_shape(win: &AppWindow, v: &Value) {
+    win.set_shape_clocked(v["clockedSeconds"].as_i64().unwrap_or(0) as i32);
+    win.set_shape_proxy(v["socksProxy"].as_str().unwrap_or("").into());
+}
+
+pub fn apply_notify(win: &AppWindow, v: &Value) {
+    win.set_notify_enabled(v["enabled"].as_bool().unwrap_or(true));
+    win.set_notify_dms(v["dms"].as_bool().unwrap_or(true));
+    win.set_notify_mentions(v["mentions"].as_bool().unwrap_or(true));
+    win.set_notify_calls(v["calls"].as_bool().unwrap_or(true));
+}
+
+/// Everything the settings page shows, asked for when it opens.
+pub fn load_settings_page(ui: &mut UiState) {
+    let req = ui.req.clone();
+    req.call("shape.settings", json!({}), |reply| {
+        on_ui(move |_ui, win| {
+            if let Reply::Ok(v) = reply {
+                apply_shape(win, &v);
+            }
+        })
+    });
+    req.call("notify.settings", json!({}), |reply| {
+        on_ui(move |_ui, win| {
+            if let Reply::Ok(v) = reply {
+                apply_notify(win, &v);
+            }
+        })
+    });
+    req.call("recovery.code", json!({}), |reply| {
+        on_ui(move |_ui, win| {
+            if let Reply::Ok(v) = reply {
+                win.set_recovery_code(v["code"].as_str().unwrap_or("").into());
+                win.set_recovery_first_time(false);
+            }
+        })
+    });
+    if let Some(win) = ui.win.upgrade() {
+        win.set_scan_state(SharedString::new());
+        win.set_scan_error(SharedString::new());
+        win.set_app_version(env!("CARGO_PKG_VERSION").into());
+    }
 }
 
 fn handle_event(ui: &mut UiState, v: &Value) {
@@ -390,17 +686,39 @@ fn handle_event(ui: &mut UiState, v: &Value) {
                 win.set_items(ModelRc::new(VecModel::from(Vec::<TimelineRow>::new())));
                 win.set_nav("home".into());
                 win.set_rooms_loaded(false);
-                win.set_recovery_skipped(false);
                 win.set_recovery_open(false);
+                win.set_password_open(false);
                 win.set_my_avatar(Default::default());
+                win.set_door("server".into());
+            }
+            if !was_in && session == "loggedIn" {
+                win.set_door_busy(false);
+                win.set_link_state(SharedString::new());
+                if ui.show_code_on_login {
+                    ui.show_code_on_login = false;
+                    ui.req.call("recovery.code", json!({}), |reply| {
+                        on_ui(move |_ui, win| {
+                            if let Reply::Ok(v) = reply {
+                                win.set_recovery_code(v["code"].as_str().unwrap_or("").into());
+                                win.set_recovery_first_time(true);
+                                win.set_recovery_open(true);
+                            }
+                        })
+                    });
+                }
             }
             ui.my_user = v["userId"].as_str().unwrap_or("").to_string();
             win.set_my_user_id(ui.my_user.as_str().into());
-            win.set_my_name(v["displayName"].as_str().unwrap_or("").into());
-            ui.login_url = v["login"]["url"].as_str().unwrap_or("").to_string();
-            win.set_my_initials(
-                rows::initials(v["displayName"].as_str().unwrap_or(&ui.my_user)).into(),
-            );
+            let shown = match v["displayName"].as_str() {
+                Some(d) if !d.is_empty() => d.to_string(),
+                _ => rows::localpart(&ui.my_user),
+            };
+            win.set_my_name(shown.as_str().into());
+            if let Some(server) = ui.my_user.split_once(':').map(|(_, s)| s.to_string()) {
+                ui.door_server = server.clone();
+                win.set_door_server(server.as_str().into());
+            }
+            win.set_my_initials(rows::initials(&shown).into());
             win.set_my_tint(rows::tint_for(&ui.my_user));
             if let Some(img) = avatar(ui, v["avatarPath"].as_str().unwrap_or("")) {
                 win.set_my_avatar(img);
@@ -413,27 +731,39 @@ fn handle_event(ui: &mut UiState, v: &Value) {
                 _ => SharedString::new(),
             });
         }
-        "login.failed" => {
-            win.set_login_error(
-                v["error"]["message"]
-                    .as_str()
-                    .unwrap_or("login failed")
-                    .into(),
-            );
-        }
-        "login.finished" => win.set_login_error(SharedString::new()),
         "recovery.status" => {
-            tracing::info!("recovery.status: {v}");
-            // Service.qml:59 — recovery state gates the page; `verified` only
-            // covers the disabled case. OIDC logins come up verified with
-            // secret storage still locked, so verified alone hides the page.
-            let verified = v["verified"].as_bool().unwrap_or(false);
-            let recovery = v["recovery"].as_str().unwrap_or("unknown");
-            let needs = recovery == "incomplete" || (recovery == "disabled" && !verified);
-            win.set_needs_recovery(needs);
-            win.set_recovery_busy(false);
-            if !needs {
-                win.set_recovery_open(false);
+            win.set_recovery_state(v["recovery"].as_str().unwrap_or("disabled").into());
+            win.set_backup_state(v["backup"].as_str().unwrap_or("disabled").into());
+        }
+        // The link exchange, seen from either side. The new device sits on
+        // the doors page; the signed-in device sits in Settings.
+        "link.state" => {
+            let state = v["state"].as_str().unwrap_or("");
+            if win.get_session() == "loggedIn" {
+                win.set_scan_state(state.into());
+                if state == "sas" {
+                    win.set_scan_sas(v["sas"].as_str().unwrap_or("").into());
+                }
+                if state == "failed" {
+                    win.set_scan_error(v["error"].as_str().unwrap_or("linking failed").into());
+                }
+            } else {
+                win.set_link_state(state.into());
+                match state {
+                    "offer" => {
+                        let offer = v["offer"].as_str().unwrap_or("").to_string();
+                        if let Some(img) = crate::qr::image(&offer) {
+                            win.set_link_image(img);
+                        }
+                        win.set_link_offer(offer.as_str().into());
+                    }
+                    "sas" => win.set_link_sas(v["sas"].as_str().unwrap_or("").into()),
+                    "failed" => {
+                        win.set_link_state(SharedString::new());
+                        win.set_door_error(v["error"].as_str().unwrap_or("linking failed").into());
+                    }
+                    _ => {}
+                }
             }
         }
         "rooms.list" => {
@@ -1450,7 +1780,9 @@ fn start_demo(win: &AppWindow, rt: &tokio::runtime::Runtime, icons: IconSet) -> 
         shadow: Vec::new(),
         typing: HashMap::new(),
         my_user: "@wren:sigil.test".into(),
-        login_url: String::new(),
+        door_server: String::new(),
+        door_envoy: String::new(),
+        show_code_on_login: false,
         avatars: HashMap::new(),
         items_model: std::rc::Rc::new(VecModel::default()),
         typing_sent: false,

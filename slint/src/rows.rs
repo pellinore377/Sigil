@@ -713,3 +713,12 @@ pub fn hex_color(hex: &str) -> Option<slint::Color> {
     let (r, g, b) = parse_hex(hex)?;
     Some(slint::Color::from_rgb_u8(r, g, b))
 }
+
+/// `@name:server` → `name`; anything else unchanged.
+pub fn localpart(user: &str) -> String {
+    user.trim_start_matches('@')
+        .split(':')
+        .next()
+        .unwrap_or(user)
+        .to_string()
+}

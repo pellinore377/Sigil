@@ -402,7 +402,7 @@ fixture data, plus the gap table (part 8). A phase is not done until the
 sheet exists and every difference on it is either fixed or listed as a
 decision.
 
-**Phase 0. Foundations.** Start from the `slint` branch's crate. Reconcile
+**Phase 0. Foundations.** *Done.* Start from the `slint` branch's crate. Reconcile
 `bridge.rs` with the Sigil protocol: delete Matrix state, add account,
 link, recovery, requests, shape. Tokens, icons, fonts, `PageHolder`,
 settings furniture, `OverflowMenu`, `ChoiceSheet`, `Dialogs`, `Avatar`,
@@ -411,7 +411,7 @@ screenshot harness (`slint/tests/fixtures/`), and the harness itself: a
 test that mounts each page with fixtures under the software renderer and
 writes a PNG. Files: 1.1, 1.2.
 
-**Phase 1. Doors.** Welcome, Create account, Recover, Link this device (both
+**Phase 1. Doors.** *Done; `slint/tests/e2e-doors.sh` walks the real flow against a real server.* Welcome, Create account, Recover, Link this device (both
 sides), Recovery code, Backup password, App settings with Privacy shape,
 Sign out. Files: `login.slint`, `recovery.slint`, `pages/settings.slint`.
 

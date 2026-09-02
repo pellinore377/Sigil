@@ -139,6 +139,7 @@ export component TextWell inherits Rectangle {
     in property <string> leading-icon;
     in-out property <string> text <=> input.text;
     in property <bool> enabled: true;
+    in property <bool> password: false;
     callback accepted;
     callback edited;
     height: 36px;
@@ -165,6 +166,7 @@ export component TextWell inherits Rectangle {
                 vertical-alignment: center;
                 height: 100%;
                 single-line: true;
+                input-type: root.password ? InputType.password : InputType.text;
                 accepted => { root.accepted(); }
                 edited => { root.edited(); }
             }

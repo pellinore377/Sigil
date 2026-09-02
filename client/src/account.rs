@@ -339,3 +339,28 @@ pub async fn lookup(link: &Link, username: &str) -> anyhow::Result<ContactCard> 
     }
     Ok(card)
 }
+
+/// Ask a server what it offers before there is an account or a link: its
+/// signed card, fetched straight from `https://<server>/info` (through the
+/// SOCKS proxy when one is set). This is the one request that goes to the
+/// server directly rather than through an Envoy, and it carries nothing
+/// about who is asking.
+pub async fn probe(server: &str, proxy: Option<&str>) -> anyhow::Result<sigil_protocol::wire::ServerCard> {
+    let server = server.trim().trim_end_matches('/');
+    let base = if server.contains("://") { server.to_string() } else { format!("https://{server}") };
+    let mut http = reqwest::Client::builder().timeout(std::time::Duration::from_secs(15));
+    if let Some(px) = proxy.filter(|p| !p.is_empty()) {
+        http = http.proxy(reqwest::Proxy::all(format!("socks5h://{px}"))?);
+    }
+    let bytes = http.build()?.get(format!("{base}/info")).send().await?.error_for_status()?.bytes().await?;
+    if bytes.len() < 64 {
+        anyhow::bail!("{server} did not answer with a server card");
+    }
+    let body = &bytes[..bytes.len() - 64];
+    let card = sigil_protocol::wire::ServerCard::decode(body).map_err(|e| anyhow::anyhow!("{e:?}"))?;
+    let mut msg = b"sigil v1 server card".to_vec();
+    msg.extend_from_slice(body);
+    let vk = ed25519_dalek::VerifyingKey::from_bytes(&card.signing_pub)?;
+    ed25519_dalek::Verifier::verify(&vk, &msg, &ed25519_dalek::Signature::from_slice(&bytes[bytes.len() - 64..])?)?;
+    Ok(card)
+}
