@@ -9,7 +9,9 @@ many devices you own, not when you are online.
 
 Scope is the backend and the engine's transport layer. The frontends do not
 change: they speak the socket protocol in `core/docs/protocol.md`, which says
-nothing about Matrix. SigilText does not change. Calls change last.
+nothing about Matrix. SigilText does not change. Calls change last, and
+their server moves into the same binary as everything else: the whole
+deployment is one container.
 
 The document is written twice: **Part A** is the plain-English version and is
 the one to read first. **Part B** is the engineering.
@@ -656,11 +658,19 @@ the same trait for later. This matches Signal's PQXDH plus SPQR bar.
 
 ## B15. Calls
 
-First release stays on LiveKit, because Sigil already has a working E2EE
-call stack: the SFrame key comes from the MLS exporter, the room name is
-`MLS-Exporter("sigil/call/v1")`, and media goes through a TURN relay on the
-Envoy so the SFU sees the Envoy's IP. Later, a native SFU inside
-`sigil-server` (`str0m`) removes the last external service.
+There is no external call server. `sigil-server` contains its own
+selective forwarding unit (`str0m`, a sans-IO WebRTC implementation in
+Rust) and its own relay for devices behind home routers, so calls need
+nothing beyond the one container. Sigil's engine already carries a full
+WebRTC stack for calls; what changes is the signalling, which becomes
+Sigil operations in sealed bags instead of LiveKit's protocol.
+
+Media frames are end-to-end encrypted (SFrame) with a key from the
+conversation's epoch secret, so the forwarding unit relays packets it
+cannot read. The room name is `call_room` from the epoch material, so the
+server sees a random room; media reaches it through the Envoy role, so it
+sees the Envoy's address, not participants'. What it learns is "N random
+peers were in random room X for 12 minutes".
 
 ## B16. Retention and deletion
 
@@ -707,8 +717,9 @@ and `token.credential` name an account, and none touches a conversation.
 ## B18. The server: one binary
 
 - **One static Rust binary**, `sigil-server`, roles `home`, `envoy`, `both`.
-  No Postgres, no Redis, no auth service, no sync proxy, no reverse proxy
-  required.
+  No Postgres, no Redis, no auth service, no sync proxy, no reverse proxy,
+  no TURN server, no LiveKit. One container is the entire deployment;
+  PocketID is the only optional second one, and only for SSO.
 - **Embedded storage**: `redb` for names, slots, shelves, token
   double-spend sets; a content-addressed directory for blobs and backup
   chunks. Backup is copying two paths.
@@ -785,8 +796,9 @@ chunking; retention; group migration between hosts.
 **6. Shape.** Padding audit, Envoy jitter, cover traffic, `arti`, the
 paranoid settings page.
 
-**7. Calls.** Exporter-keyed SFrame on LiveKit behind an Envoy TURN relay;
-then the native SFU.
+**7. Calls.** The forwarding unit and relay inside `sigil-server`; SFrame
+keyed from the epoch secret; Sigil signalling replaces LiveKit's. The
+largest single piece of server work, which is why it is last.
 
 Matrix stays behind the trait as long as it is useful.
 
@@ -856,6 +868,9 @@ Notes:
   Restore is the reverse. The server runs while you copy.
 - **UnifiedPush** on Android needs no extra service: the Envoy role speaks
   the UnifiedPush server side itself.
+- **Calls** need no extra service either: the forwarding unit and relay
+  are in the same binary. Open UDP 3478 and a UDP media range if you want
+  calls to avoid the TCP fallback.
 - **PocketID** or any other OIDC provider (B24) is one more service in the
   same file; the server only needs its issuer URL.
 
