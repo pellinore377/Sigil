@@ -35,3 +35,4 @@ android/local.properties
 # Cross-compiled engine and its bindings — produced by android/build-engine.sh
 android/app/src/main/jniLibs/
 android/app/src/main/java/uniffi/
+server/.env

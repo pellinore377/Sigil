@@ -8,9 +8,13 @@ services:
     build:
       context: ..
       dockerfile: server/Dockerfile
+    # Host ports come from server/.env when the defaults are taken:
+    #   SIGIL_PORT=18443        # NPM or your proxy forwards to this one
+    #   SIGIL_MEDIA_PORT=8444   # calls; forward this UDP port on the router and
+    #                           # put it in media_public in sigil.toml
     ports:
-      - "8443:8443"
-      - "8444:8444/udp"   # calls
+      - "${SIGIL_PORT:-8443}:8443"
+      - "${SIGIL_MEDIA_PORT:-8444}:8444/udp"
     volumes:
       - ./data:/data
     # devices:

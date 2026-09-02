@@ -47,6 +47,10 @@ docker compose -f server/docker-compose.yml run --rm sigil --config /data/sigil.
 docker compose -f server/docker-compose.yml up -d
 ```
 
+If port 8443 or 8444 is taken on the host, put `SIGIL_PORT=18443` or
+`SIGIL_MEDIA_PORT=18444` in `server/.env`; the container keeps its own
+ports and only the host side moves.
+
 Everything the server keeps lives in `server/data/` on the host (the
 config, the database, the admin token). Behind a reverse proxy that
 terminates TLS (Caddy, Traefik, Nginx Proxy Manager), leave `tls_cert` and
