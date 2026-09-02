@@ -257,6 +257,7 @@ async fn run() -> anyhow::Result<()> {
                         from_identity,
                         ts_ms,
                         text,
+                        ..
                     }) => {
                         println!("{seq} [{ts_ms}] {}: {text}", who(st, &conv, &from_identity));
                         true
@@ -265,7 +266,7 @@ async fn run() -> anyhow::Result<()> {
                         println!("{seq} (epoch changed)");
                         false
                     }
-                    Ok(conversation::Incoming::Other { kind }) => {
+                    Ok(conversation::Incoming::Event { kind, .. }) | Ok(conversation::Incoming::Other { kind }) => {
                         println!("{seq} (event kind {kind})");
                         false
                     }

@@ -1,9 +1,15 @@
 # Sigil
 
-A native Matrix client, built to run everywhere without feeling like a web page
+A native messenger, built to run everywhere without feeling like a web page
 wrapped in a window.
 
-A Rust daemon owns the Matrix session — encryption, sync, media, calls — and
+> **This branch (`encrypt`) is Sigil-native.** The Matrix backend has been
+> removed from the engine here; the engine speaks to a Sigil server
+> ([`server/`](server/)) through the blind protocol in
+> [`docs/blind-backend.md`](docs/blind-backend.md). The Matrix client lives
+> on `main` until the two converge.
+
+A Rust daemon owns the session — encryption, conversations, media, calls — and
 speaks a small JSON protocol over a local socket. Every user interface is a
 thin view over that protocol and talks to no network itself. That split is what
 makes the same client reasonable to ship as a Linux shell panel, a desktop
@@ -36,9 +42,8 @@ privacy.
 
 ## Requirements
 
-A Matrix homeserver with **OIDC login (MSC3861)** and **sliding sync** — Synapse
-1.114 or newer with `matrix-authentication-service`. Password login is not
-supported. Calls additionally need a LiveKit SFU advertised by the homeserver.
+A Sigil server: one container, see [`server/README.md`](server/README.md).
+Registration is by invite code from the operator.
 
 To build: `cargo` 1.93+, `clang`, `pkg-config`, `make`, and Qt 6 development
 headers. Calls want `pipewire-pulse`; screen sharing wants an
@@ -85,9 +90,9 @@ later from the avatar menu.
 ## How it works
 
 ```
-  frontend  ──JSON over a unix socket──▶  sigil-engine  ──▶  homeserver
-  (QML today;                            (Rust: matrix-sdk,      LiveKit SFU
-   native apps to come)                   E2EE, media, calls)
+  frontend  ──JSON over a unix socket──▶  sigil-engine  ──sealed bags──▶  Envoy ──▶  Sigil server
+  (QML today;                            (Rust: MLS, slots,
+   native apps to come)                   media, calls)
 ```
 
 The engine holds the sqlite crypto store, the media cache and the call stack.

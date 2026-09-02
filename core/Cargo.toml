@@ -5,7 +5,7 @@ edition = "2021"
 rust-version = "1.93"
 build = "build.rs"
 license = "LicenseRef-Proprietary"
-description = "Sigil — the Matrix client daemon: session, E2EE, media and calls behind a local JSON protocol"
+description = "Sigil — the client engine: a Sigil account, MLS conversations, media and calls behind a local JSON protocol"
 
 [lib]
 name = "sigil_engine"
@@ -22,10 +22,13 @@ name = "sigil-engine"
 path = "src/main.rs"
 
 [features]
-default = ["calls"]
-calls = ["dep:livekit", "dep:webrtc-sys", "dep:libwebrtc", "dep:nokhwa"]
+default = []
 
 [dependencies]
+sigil-client = { path = "../client" }
+sigil-protocol = { path = "../protocol" }
+hex = "0.4"
+ruma-html = "0.8"
 uniffi = { version = "0.28", features = ["cli"] }
 tokio = { version = "1", features = ["full"] }
 tokio-util = "0.7"
@@ -69,22 +72,9 @@ encoding_rs = "0.8"
 reqwest = { version = "0.13", default-features = false, features = ["rustls", "json", "http2"] }
 rustls = { version = "0.23", default-features = false, features = ["aws_lc_rs"] }
 
-matrix-sdk = { version = "0.18", features = ["e2e-encryption", "bundled-sqlite", "local-server", "markdown", "experimental-send-custom-to-device"] }
-matrix-sdk-ui = "0.18"
-matrix-sdk-base = "0.18"
-ruma = { version = "0.16", default-features = false, features = [
-  "api", "html", "compat-encrypted-stickers", "unstable-msc2448",
-  "unstable-msc3245-v1-compat", "unstable-msc2545", "unstable-msc3381",
-  "unstable-msc4075", "unstable-msc4140", "unstable-msc3401",
-  "unstable-msc3489",
-] }
 
 # MatrixRTC / LiveKit: exact-pinned as a matched set; bump all three together.
-livekit    = { version = "=0.8.3", features = ["rustls-tls-native-roots", "glib-main-loop"], optional = true }
-webrtc-sys = { version = "=0.3.42", optional = true }
-libwebrtc  = { version = "=0.3.45", features = ["glib-main-loop"], optional = true }
 
-nokhwa  = { version = "0.10", features = ["input-native", "decoding"], optional = true }
 hayro = "0.7.1"
 syntect = { version = "5.3.0", default-features = false, features = ["default-syntaxes", "default-themes", "html", "regex-fancy", "parsing"] }
 

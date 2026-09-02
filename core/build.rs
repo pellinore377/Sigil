@@ -1,11 +1,4 @@
 fn main() {
-    // webrtc-sys's desktop_capturer drags in libwebrtc's xdg-desktop-portal code,
-    // which references gio/gobject/glib symbols the prebuilt expects the host
-    // binary to supply.
-    #[cfg(feature = "calls")]
-    {
-        println!("cargo:rustc-link-lib=dylib=gio-2.0");
-        println!("cargo:rustc-link-lib=dylib=gobject-2.0");
-        println!("cargo:rustc-link-lib=dylib=glib-2.0");
-    }
+    // Nothing to link yet. The call server and its media stack arrive with
+    // Phase 7; until then the engine is pure Rust.
 }

@@ -2,7 +2,7 @@
 //! ruma's spec sanitizer runs first, and only then does the presentation pass rewrite
 //! what survives. Link colour is not baked in — the view themes it.
 
-use ruma::html::{sanitize_html, HtmlSanitizerMode, RemoveReplyFallback};
+use ruma_html::{sanitize_html, HtmlSanitizerMode, RemoveReplyFallback};
 
 /// Tags Qt's rich text renders that we are willing to emit.
 const KEEP: &[&str] = &[

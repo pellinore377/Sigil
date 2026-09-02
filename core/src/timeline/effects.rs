@@ -9,6 +9,7 @@ use serde_json::{json, Value};
 /// Colour names, mid variant first. Suffixes 1..3 set brightness; bare = the `2` variant.
 const HUES: &[&str] = &["red", "orange", "yellow", "green", "cyan", "blue", "purple", "pink", "gray"];
 
+#[cfg_attr(not(test), allow(dead_code))]
 const ANIMATIONS: &[&str] = &[
     "shake", "wave", "pulse", "glow", "typewriter",
     "sparkle", "glitch", "blur", "flip", "barrel",

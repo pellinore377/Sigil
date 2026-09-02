@@ -4,7 +4,8 @@ Transport: unix socket `$XDG_RUNTIME_DIR/sigil.sock`, UTF-8 JSON, one object per
 
 * Request `{"req":"<name>","id":N, ...params}` → reply `{"reply":N,"ok":true,"result":{…}}` or `{"reply":N,"ok":false,"error":{"code","message"}}`.
 * Pushes `{"event":"<name>", …}` go to every connected client.
-* On connect: `hello{protocol,engine,pid}`, `status`, `recovery.status`, `rooms.list` (if any), `spaces.tree` (if any), `call.state`.
+* On connect: `hello{protocol,engine,pid}`, `status`, `recovery.status`, `rooms.list` (if any), `position`.
+* `status` carries `backend: "sigil"` and `accountSaved`. On the `encrypt` branch the engine speaks only the Sigil backend (`docs/blind-backend.md`); requests marked *(later)* below answer `unsupported` until their phase lands.
 
 Error codes: `bad_request not_logged_in login_in_progress oidc_unsupported sliding_sync_unsupported unknown_room unknown_event recovery_key_invalid permission_denied network no_livekit call_busy no_call device_error internal`.
 
@@ -13,13 +14,18 @@ Error codes: `bad_request not_logged_in login_in_progress oidc_unsupported slidi
 | Request | Params | Result / effect |
 |---|---|---|
 | `ping`, `status` | | `status` object |
-| `login.start` | `homeserver`, `openBrowser` | `{url}`; later `login.finished` / `login.failed` events |
-| `login.cancel`, `login.finish{query}` | | |
-| `logout` | `wipe` | |
-| `recovery.status`, `recovery.recover{key}` | | `recovery.status` object |
+| `account.create` | `username` (`@name:server`), `invite`, `envoy?` (default `wss://<server>/envoy`) | registers the name, draws tokens, publishes key packages; `status` becomes `loggedIn`. Password and recovery arrive with Phase 4; device linking with Phase 3 |
+| `account.status` | | `{exists, active}` |
+| `logout` | `wipe` | `wipe` deletes the account, MLS store and history from this device |
+| `recovery.status`, `recovery.recover` | | `recovery.status` object; placeholders until Phase 4 |
+| `login.*` | | *(removed)* answer `unsupported` |
 | `rooms.list`, `spaces.tree` | | last snapshot |
 | `room.members{roomId}` | | `{members:[{userId,displayName,avatarPath,powerLevel,membership}]}` |
-| `room.join{roomIdOrAlias}`, `room.leave{roomId}`, `room.invite{roomId,userId}`, `room.create{name,topic,private,encrypted,invite[]}`, `dm.create{userId}`, `users.search{query,limit}` | | |
+| `dm.create{userId}` | | starts a conversation by username: takes a key package, creates the MLS group, sends the Welcome to their requests slot; `{roomId}` |
+| `room.join{roomIdOrAlias}` | | accepts a request: the `id` of a `rooms.list` entry with `isInvite`, which look like `req:…` |
+| `room.leave{roomId}` | | drops a request or forgets a conversation locally |
+| `users.search{query}` | | exact username lookup; `{results:[{userId,displayName,avatarPath}]}` |
+| `room.invite`, `room.create` | | *(later, Phase 5: groups)* |
 | `room.setFavourite{roomId,favourite}`, `room.setLowPriority{roomId,lowPriority}`, `room.setUnread{roomId,unread}`, `room.markRead{roomId}` | | |
 | `space.hierarchy{spaceId,limit?}` | | `{rooms:[{id,name,topic,avatarPath,memberCount,isSpace,worldReadable,encrypted,joined}],nextBatch}` — the server's `/hierarchy`, so it includes children this account has NOT joined |
 | `space.addRoom{spaceId,roomId}`, `space.removeRoom{spaceId,roomId}` | | `m.space.child` state on the space |
@@ -29,7 +35,9 @@ Error codes: `bad_request not_logged_in login_in_progress oidc_unsupported slidi
 | `room.setPowerLevel{roomId, userId? \| key?, level}` | | `userId` moves a person between roles; `key` is one of `invite,kick,ban,redact,eventsDefault,stateDefault,usersDefault,name,avatar,topic,liveLocation` |
 | `room.open{roomId,initialItems}` / `room.close{roomId}` | | `timeline.reset` then `timeline.diff` pushes; `room.typing` |
 | `timeline.paginate{roomId,count}` | | `{hitStart}`; `timeline.paginationState` pushes |
-| `message.send/reply/edit{roomId,eventId?,body,markdown}`, `message.react{roomId,eventId,key}`, `message.redact{roomId,eventId,reason?}` | | |
+| `message.send{roomId,body}`, `message.reply{roomId,eventId,body}` | | `body` is SigilText source; the engine composes it so every device renders the same |
+| `message.react{roomId,eventId,key}`, `readReceipt{roomId,eventId}`, `typing{roomId,typing}` | | small events in the same slot; typing is rate-limited to one per 5 s |
+| `message.edit`, `message.redact` | | *(later)* |
 | `attachment.send{roomId,path,caption?}` | | |
 | `typing{roomId,typing}`, `readReceipt{roomId,eventId}`, `ui.focus{roomId,visible}` | | |
 | `media.get{roomId,eventId,thumbnail?{width,height}}` | | `{path,filename,mime}` |

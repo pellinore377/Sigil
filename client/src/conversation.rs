@@ -183,64 +183,42 @@ pub fn load_group(provider: &SigilProvider, conv: &Conversation) -> anyhow::Resu
         .ok_or_else(|| anyhow::anyhow!("group not in store"))
 }
 
-/// Send a text event into the conversation's current slot.
-pub async fn send_text(
+/// Send any event into the conversation's current slot. Returns the slot
+/// sequence number and the address it landed in.
+pub async fn send_event(
     link: &Link,
     st: &mut State,
     provider: &SigilProvider,
     conv: &Conversation,
-    text: &str,
-) -> anyhow::Result<u64> {
+    kind: envelope::Kind,
+    reference: &[u8],
+    body: &[u8],
+) -> anyhow::Result<(u64, [u8; 32])> {
     let mut group = load_group(provider, conv)?;
     let (_, signer) = mls_credential(st);
-    let ev = envelope::Event {
-        kind: envelope::Kind::Text as u16,
-        ts_ms: now_ms(),
-        reference: vec![],
-        body: text.as_bytes().to_vec(),
-    };
-    let mls_out = group
-        .create_message(provider, &signer, &ev.encode())
-        .map_err(|e| anyhow::anyhow!("{e:?}"))?;
+    let ev = envelope::Event { kind: kind as u16, ts_ms: now_ms(), reference: reference.to_vec(), body: body.to_vec() };
+    let mls_out = group.create_message(provider, &signer, &ev.encode()).map_err(|e| anyhow::anyhow!("{e:?}"))?;
     provider.save()?;
     let ep = epoch_material(&group, provider)?;
-    let sealed = envelope::seal(
-        &ep.envelope_key,
-        &ep.address,
-        &rand::random(),
-        &mls_out.to_bytes()?,
-    )
-    .map_err(|e| anyhow::anyhow!("{e:?}"))?;
+    let sealed = envelope::seal(&ep.envelope_key, &ep.address, &rand::random(), &mls_out.to_bytes()?).map_err(|e| anyhow::anyhow!("{e:?}"))?;
     let sig = epoch::sign_put(&ep.write_key, &ep.address, &sealed);
     let token = st.take_token()?;
     let resp = link
-        .call(
-            &conv.slot_server,
-            &Request::SlotPut {
-                address: ep.address,
-                write_pub: ep.write_pub,
-                sig,
-                envelope: sealed,
-                token,
-            },
-            None,
-        )
+        .call(&conv.slot_server, &Request::SlotPut { address: ep.address, write_pub: ep.write_pub, sig, envelope: sealed, token }, None)
         .await?;
-    let Response::SlotPut { seq } = resp else {
-        anyhow::bail!("unexpected")
-    };
-    if let Some(c) = st
-        .conversations
-        .iter_mut()
-        .find(|c| c.group_id == conv.group_id)
-    {
-        c.sent.insert(
-            format!("{}:{seq}", hex::encode(ep.address)),
-            text.to_string(),
-        );
+    let Response::SlotPut { seq } = resp else { anyhow::bail!("unexpected") };
+    if let Some(c) = st.conversations.iter_mut().find(|c| c.group_id == conv.group_id) {
+        // Text is kept for readback; other kinds only need the seq to be known as ours.
+        let text = if kind == envelope::Kind::Text { String::from_utf8_lossy(body).to_string() } else { String::new() };
+        c.sent.insert(format!("{}:{seq}", hex::encode(ep.address)), text);
         st.save()?;
     }
-    Ok(seq)
+    Ok((seq, ep.address))
+}
+
+/// Send a text event into the conversation's current slot.
+pub async fn send_text(link: &Link, st: &mut State, provider: &SigilProvider, conv: &Conversation, text: &str) -> anyhow::Result<u64> {
+    Ok(send_event(link, st, provider, conv, envelope::Kind::Text, &[], text.as_bytes()).await?.0)
 }
 
 /// Text this device sent at `seq` in `address`, if any.
@@ -261,6 +239,15 @@ pub enum Incoming {
         from_identity: [u8; 32],
         ts_ms: u64,
         text: String,
+        reference: String,
+    },
+    /// A reaction, receipt, typing notice or other small event.
+    Event {
+        from_identity: [u8; 32],
+        ts_ms: u64,
+        kind: u16,
+        reference: String,
+        body: String,
     },
     Other {
         kind: u16,
@@ -295,14 +282,11 @@ pub fn receive(
         ProcessedMessageContent::ApplicationMessage(app) => {
             let ev =
                 envelope::Event::decode(&app.into_bytes()).map_err(|e| anyhow::anyhow!("{e:?}"))?;
+            let reference = String::from_utf8_lossy(&ev.reference).to_string();
             if ev.kind == envelope::Kind::Text as u16 {
-                Incoming::Text {
-                    from_identity: sender_identity,
-                    ts_ms: ev.ts_ms,
-                    text: String::from_utf8_lossy(&ev.body).to_string(),
-                }
+                Incoming::Text { from_identity: sender_identity, ts_ms: ev.ts_ms, text: String::from_utf8_lossy(&ev.body).to_string(), reference }
             } else {
-                Incoming::Other { kind: ev.kind }
+                Incoming::Event { from_identity: sender_identity, ts_ms: ev.ts_ms, kind: ev.kind, reference, body: String::from_utf8_lossy(&ev.body).to_string() }
             }
         }
         ProcessedMessageContent::StagedCommitMessage(staged) => {
