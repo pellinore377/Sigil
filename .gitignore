@@ -1,6 +1,7 @@
 # Build output
 core/target/
 protocol/target/
+server/target/
 shared/icongen/target/
 omarchy/video/*.so
 omarchy/video/.qt-version

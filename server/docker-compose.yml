@@ -1,0 +1,17 @@
+# First run:  docker compose run --rm sigil --config /data/sigil.toml init --hostname sigil.example
+# then edit data/sigil.toml (tls_cert, tls_key) and:  docker compose up -d
+# Invite codes: docker compose exec sigil sigil-server --config /data/sigil.toml invite
+services:
+  sigil:
+    build:
+      context: ..
+      dockerfile: server/Dockerfile
+    ports:
+      - "8443:8443"
+    volumes:
+      - sigil-data:/data
+    # devices:
+    #   - /dev/tpmrm0:/dev/tpmrm0   # recovery Path 2, when implemented
+    restart: unless-stopped
+volumes:
+  sigil-data:

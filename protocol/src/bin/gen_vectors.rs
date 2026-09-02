@@ -480,11 +480,7 @@ fn main() {
         ),
         (
             "deliver",
-            wire::Frame::Deliver {
-                wake_handle: a32(0x16),
-                queue_seq: 9,
-                envelope: sealed.clone(),
-            },
+            wire::Frame::Deliver { wake_handle: a32(0x16), queue_seq: 9, slot_seq: 42, envelope: sealed.clone() },
         ),
         (
             "ack",

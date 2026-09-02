@@ -30,6 +30,23 @@ two internally: the bag is sealed by the client and opened by the home role,
 so the code path and the stored state are the same as in the split
 deployment.
 
+### 1.1 HTTP surface
+
+| Route | Role | Purpose |
+|---|---|---|
+| `POST /bag` | home | one sealed bag from an Envoy; header `x-sigil-envoy` carries the Envoy's id (hex) so subscriptions route to its stream |
+| `GET /info` | home | the signed server card |
+| `GET /credential-key` | home | SPKI DER of the current credential-issuing key (moves into the server card in v1.1) |
+| `GET /stream` | home | WebSocket: the Envoy delivery stream; handshake is 32-byte Envoy id, 32-byte challenge, 64-byte Ed25519 signature, then frames |
+| `POST /admin/invite` | home | operator only, header `x-sigil-admin` from `<data_dir>/admin.token`; mints an invite code |
+| `GET /envoy?device=<hex>` | envoy | WebSocket: the client control channel (section 6) |
+| `GET /info/{server}` and `GET /info/{server}/credential-key` | envoy | the Envoy fetches a server's card on the client's behalf, so a first contact never shows the client's address to the server |
+
+In v1 a server trusts the `x-sigil-envoy` header; a rogue Envoy could
+claim another's id and receive its deliveries, which are doubly sealed. The
+v1.1 fix is to bind bags to the authenticated stream (a per-stream secret
+in the header), and it changes no client-visible layout.
+
 ## 2. Bag contents
 
 Inside every request bag is one **request**: an operation code byte followed
@@ -217,15 +234,20 @@ Frames between client and Envoy, SPE, first byte is the type. The same
 |---|---|---|---|
 | 1 `Bag` | client → Envoy | `id u32, server string, has_bind u8, [bind_handle[32]], bag bytes` | forward `bag` to `server`; if `has_bind`, first record `bind_handle → this connection` |
 | 2 `BagResponse` | Envoy → client | `id u32, response bytes` | the server's sealed reply to `Bag id` |
-| 3 `Deliver` | server → Envoy → client | `wake_handle[32], queue_seq u64, envelope bytes` | on the server stream `queue_seq` is 0; the Envoy assigns a per-handle `queue_seq` starting at 1 and stores the envelope until acked |
+| 3 `Deliver` | server → Envoy → client | `wake_handle[32], queue_seq u64, slot_seq u64, envelope bytes` | on the server stream `queue_seq` is 0; the Envoy assigns a per-handle `queue_seq` starting at 1 and stores the envelope until acked; `slot_seq` is the envelope's sequence number in its slot, which the client uses to dedupe against a backfill and as its cursor |
 | 4 `Ack` | client → Envoy | `wake_handle[32], queue_seq u64` | the Envoy drops everything up to `queue_seq` for that handle |
 | 5 `Push` | client → Envoy | `kind u8, token bytes` | how to wake this device: 0 none, 1 APNs, 2 FCM, 3 UnifiedPush endpoint URL |
 | 6 `Release` | client → Envoy | `wake_handle[32]` | forget the handle and its queue |
+| 7 `Keepalive` | server → Envoy | `nonce[32]` | every 30 s on the server stream; carries the requests-read nonce (section 3.7) |
+| 8 `Nonce` | client ↔ Envoy | `server string, nonce[32]` | client sends an all-zero nonce to ask; the Envoy replies with the last `Keepalive` nonce from that server's stream, opening the stream if none exists |
 
 ### 6.1 Envoy state
 
-Per connected device: its push registration and the set of handles bound
-on this connection. Per handle: the queue of undelivered envelopes with
+A device identifies itself to its Envoy with a 32-byte `device_id` it
+chose at random for that Envoy (sent as the `device` query parameter when
+opening the channel), so its handles and queues survive reconnects.
+
+Per device: its push registration and the set of handles bound to it. Per handle: the queue of undelivered envelopes with
 their `queue_seq`. Nothing else. An Envoy MUST NOT store the server name
 next to a handle beyond the lifetime of the `Bag` frame that bound it, and
 MUST NOT log bag contents, sizes, or server names.
@@ -242,8 +264,8 @@ after the last delivery.
 An Envoy opens one TLS connection to each server it has forwarded a
 subscribe for, identified by its own SigilKEM public key in the handshake,
 and keeps it open. The server sends `Deliver` frames on it and, every
-30 s, a `Keepalive` (type 7: `nonce[32]`) whose nonce is the requests-read
-nonce of section 3.7. If the stream drops, the server holds deliveries for
+30 s, a `Keepalive` frame whose nonce is the requests-read nonce of
+section 3.7. If the stream drops, the server holds deliveries for
 that Envoy for 24 h, then expires them; the Envoy's clients backfill.
 
 ### 6.4 Push

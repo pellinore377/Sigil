@@ -659,10 +659,13 @@ pub enum Frame {
     /// Envoy → client: the server's sealed response to `id`.
     BagResponse { id: u32, response: Vec<u8> },
     /// Envoy → client (and server → Envoy): an envelope for a handle.
-    /// `queue_seq` is per handle, assigned by the Envoy.
+    /// `queue_seq` is per handle, assigned by the Envoy (0 on the server
+    /// stream). `slot_seq` is the envelope's sequence number in its slot,
+    /// so the client can dedupe against a backfill and track a cursor.
     Deliver {
         wake_handle: [u8; 32],
         queue_seq: u64,
+        slot_seq: u64,
         envelope: Vec<u8>,
     },
     /// Client → Envoy: everything up to `queue_seq` for this handle is stored.
@@ -675,6 +678,11 @@ pub enum Frame {
     Push { kind: u8, token: Vec<u8> },
     /// Client → Envoy: forget this handle.
     Release { wake_handle: [u8; 32] },
+    /// Server → Envoy, every 30 s: liveness plus the current requests-read nonce.
+    Keepalive { nonce: [u8; 32] },
+    /// Client → Envoy with an all-zero nonce: "what is `server`'s current
+    /// nonce?"; Envoy → client with the last one seen on that server's stream.
+    Nonce { server: String, nonce: [u8; 32] },
 }
 
 impl Frame {
@@ -699,14 +707,17 @@ impl Frame {
             Deliver {
                 wake_handle,
                 queue_seq,
+                slot_seq,
                 envelope,
-            } => w.u8(3).fixed(wake_handle).u64(*queue_seq).bytes(envelope),
+            } => w.u8(3).fixed(wake_handle).u64(*queue_seq).u64(*slot_seq).bytes(envelope),
             Ack {
                 wake_handle,
                 queue_seq,
             } => w.u8(4).fixed(wake_handle).u64(*queue_seq),
             Push { kind, token } => w.u8(5).u8(*kind).bytes(token),
             Release { wake_handle } => w.u8(6).fixed(wake_handle),
+            Keepalive { nonce } => w.u8(7).fixed(nonce),
+            Nonce { server, nonce } => w.u8(8).str(server).fixed(nonce),
         }
         .finish()
     }
@@ -737,6 +748,7 @@ impl Frame {
             3 => Deliver {
                 wake_handle: r.fixed()?,
                 queue_seq: r.u64()?,
+                slot_seq: r.u64()?,
                 envelope: r.bytes()?.to_vec(),
             },
             4 => Ack {

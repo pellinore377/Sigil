@@ -775,9 +775,14 @@ Crates: `openmls`, `ml-kem` + `x25519-dalek` (`x-wing` as it lands), `hpke`,
 for the wire layer, see [`docs/spec/sigil-wire-v1.md`](spec/sigil-wire-v1.md):
 operations, frames, tokens, the MLS bindings and open rooms.
 
-**1. Home server.** Names, slots, shelves, blobs, tokens; `redb`; ACME. A
-command-line client exchanges padded envelopes through addresses from a
-shared secret.
+**1. Home server.** Done, in `server/`: names with invite codes, slots,
+the requests slot, shelves, blobs, backups, wraps, blind credentials and
+tokens, the Envoy role with queues and delivery streams, TLS from PEM, a
+Dockerfile, and `sigil-cli`, which registers, draws tokens and exchanges
+envelopes through a shared-secret slot; `tests/e2e.sh` covers the racing
+subscribe, the offline queue, a restart, a bad invite and a double spend.
+Still to come in this layer: ACME, retention sweeps, stream-bound Envoy
+authentication.
 
 **2. Client core.** `transport::sigil`: identity, `openmls` on a hybrid
 suite, exporter-derived slots, requests slot, local store. Two engines hold a
