@@ -203,7 +203,7 @@ impl Engine {
                 }
                 Reply::ok(crate::notify::settings_json())
             }
-            r if r.starts_with("call.") => Reply::err("unsupported", "calls arrive with Phase 7"),
+            r if r.starts_with("call.") => Reply::err("not_logged_in", "sign in before calling"),
             r if r.starts_with("login.") => Reply::err(
                 "unsupported",
                 "use account.create (or account.link, account.recover when they land)",

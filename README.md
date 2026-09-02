@@ -119,6 +119,8 @@ The plan for replacing the Matrix homeserver with a metadata-blind
 Sigil-native backend: [`docs/blind-backend.md`](docs/blind-backend.md). Its
 normative derivation spec is [`docs/spec/sigil-protocol-v1.md`](docs/spec/sigil-protocol-v1.md),
 implemented and vector-tested by the `sigil-protocol` crate in [`protocol/`](protocol/).
+The plan for rebuilding the whole UI in Slint on that backend, page by page:
+[`docs/slint-port-plan.md`](docs/slint-port-plan.md).
 
 ## Licence
 
