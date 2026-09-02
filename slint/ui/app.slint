@@ -1,0 +1,604 @@
+// The window: Panel.qml's job. Owns the mobile chrome (safe areas, keyboard),
+// the nav state machine and the page stack; pages own their look. Back
+// unwinds exactly as Panel.goBackNow does. Data flows down through window
+// properties; page actions flow up through `act(action, a, b)` — the single
+// channel the bridge matches on, Service.qml's function table equivalent.
+
+import { Theme } from "style.slint";
+import { Icons } from "icons.slint";
+import { LoginPage } from "login.slint";
+import { RecoveryPage } from "recovery.slint";
+import { HomePage } from "home.slint";
+import { ChatPage } from "chat.slint";
+import { PageHolder, MenuEntry } from "furniture.slint";
+import { RoomRow, TimelineRow, MemberRow, ThreadRow, UserRow, RoomSettingsModel, ReactionChip, EmojiItem, ReplyRef, CallParticipant, DeviceRow, PollOption, ReaderRow, DocLine, MsgPart, FxChar } from "model.slint";
+
+import { StartPage } from "pages/start.slint";
+import { ForwardPage } from "pages/forward.slint";
+import { RoomSettingsPage } from "pages/roomsettings.slint";
+import { MembersPage } from "pages/members.slint";
+import { AddPeoplePage } from "pages/addpeople.slint";
+import { NotificationsPage } from "pages/notifications.slint";
+import { SearchPage } from "pages/search.slint";
+import { ChatThemePage, GradPair } from "pages/chattheme.slint";
+import { ThreadsPage } from "pages/threads.slint";
+import { PinsPage } from "pages/pins.slint";
+import { MapPage } from "pages/map.slint";
+import { DocPage, DocBlock, SheetRow, SheetTab, DocPageImage } from "pages/doc.slint";
+import { AudioPage } from "pages/audio.slint";
+import { ImageViewer, ViewerItem } from "viewer.slint";
+import { AttachMenu, StickerItem } from "attach.slint";
+import { VoiceRecorder } from "voicerec.slint";
+import { CallPage, Floater } from "callpage.slint";
+import { CallPip } from "callpip.slint";
+import { CallBanner } from "callbanner.slint";
+
+export { ViewerItem, StickerItem, MenuEntry, RoomRow, TimelineRow, MemberRow, ThreadRow, UserRow, RoomSettingsModel, ReactionChip, EmojiItem, ReplyRef, CallParticipant, DeviceRow, PollOption, ReaderRow, DocLine, MsgPart, FxChar, GradPair, DocBlock, SheetRow, SheetTab, DocPageImage, Icons }
+
+export component AppWindow inherits Window {
+    title: "Sigil";
+    background: Theme.menu-background;
+    default-font-family: Theme.font-ui;
+    preferred-width: 411px;
+    preferred-height: 823px;
+
+    // ---- session / engine state ----
+    in property <string> session: "restoring";
+    in property <string> login-error;
+    in property <string> sync-line;
+    in property <bool> needs-recovery;
+    in property <bool> recovery-busy;
+    in property <string> recovery-error;
+    in-out property <bool> recovery-skipped: false;
+    in-out property <bool> recovery-open: false;
+    in property <string> my-initials;
+    in property <image> my-avatar;
+    in property <color> my-tint: Theme.accent;
+    in property <string> my-name;
+    in property <string> my-user-id;
+    // Wall-clock anchor: epoch seconds at app start, so views can derive the
+    // current time from animation-tick() (live-share countdowns).
+    in property <int> boot-epoch-s;
+    in property <[RoomRow]> rooms;
+    in property <[RoomRow]> requests;
+    in property <bool> rooms-loaded;
+
+    // ---- open room / chat ----
+    in property <string> room-name;
+    in property <string> room-subtitle;
+    in property <bool> room-encrypted;
+    in property <string> room-initials;
+    in property <image> room-avatar;
+    in property <color> room-tint: Theme.accent;
+    in property <[TimelineRow]> items;
+    in property <string> typing-line;
+    in property <image> typing-avatar;
+    in property <string> typing-initials;
+    in property <color> typing-tint: Theme.accent;
+    in property <bool> chat-is-dm;
+    in property <bool> chat-is-invite;
+    in property <bool> chat-is-thread;
+    in property <string> pagination-state: "idle";
+    in-out property <bool> voice-staged;
+    in property <string> voice-staged-duration;
+    in property <[float]> voice-staged-wave;
+    in property <bool> in-call;
+    in property <bool> call-here;
+    in property <[MenuEntry]> sheet-actions;
+    in property <[[EmojiItem]]> emoji-rows;
+    in property <[int]> emoji-cat-rows;
+
+    // ---- per-page data (prefixes match the page) ----
+
+
+
+    in property <[UserRow]> st-people;
+    in property <bool> st-busy;
+    in property <string> st-error;
+
+    in property <string> fw-mode: "forward";
+    in property <[RoomRow]> fw-chats;
+
+    in property <[TimelineRow]> se-results;
+    in property <[TimelineRow]> se-images;
+    in property <[TimelineRow]> se-links;
+    in property <bool> se-searching;
+
+    in property <[ThreadRow]> th-threads;
+    in property <bool> th-loading;
+    in property <bool> th-loaded;
+
+    in property <bool> pi-dm;
+    in property <[TimelineRow]> pi-items;
+    in property <bool> pi-loading;
+    in property <bool> pi-loaded;
+
+    in property <RoomSettingsModel> rs-model;
+    in property <[MemberRow]> rs-members;
+    in property <int> rs-pinned-count;
+    in property <string> rs-dm-user;
+
+
+    in property <string> no-mode;
+    in property <bool> no-busy;
+    in property <string> no-error;
+
+
+
+
+    in property <[MemberRow]> me-members;
+    in property <int> me-filter: -1;
+    in property <int> me-all;
+
+    in property <[UserRow]> ap-results;
+    in-out property <string> ap-note;
+
+    in property <string> ct-accent;
+    in property <string> ct-wallpaper;
+    in property <color> ct-color: Theme.accent;
+    in property <image> ct-wallpaper-img;
+    in property <[GradPair]> ct-gradients;
+    in property <bool> ct-custom;
+    in property <int> ct-grad: 0;
+    in property <color> ct-pick: #7c9fd4;
+    in property <color> ct-pick-end: #7c9fd4;
+
+    in property <string> dc-name;
+    in property <string> dc-status;
+    in property <string> dc-error;
+    in property <string> dc-size;
+    in property <string> dc-kind;
+    in property <string> dc-subtitle;
+    in property <[DocBlock]> dc-blocks;
+    in property <bool> dc-pdf;
+    in property <[DocPageImage]> dc-pages;
+    in property <float> dc-aspect: 1.294;
+    in property <[SheetTab]> dc-sheets;
+    in property <[SheetRow]> dc-rows;
+    in property <int> dc-cols: 1;
+    in property <string> dc-toast;
+
+    in property <string> au-title;
+    in property <string> au-size;
+    in property <string> au-status;
+    in property <image> au-art;
+    in property <bool> au-have-art;
+    in property <color> au-tone: Theme.accent;
+    in property <float> au-duration;
+    in property <bool> au-playing;
+    in property <float> au-position;
+    in property <string> au-toast;
+
+    // ---- overlays ----
+    in-out property <bool> viewer-open: false;
+    in property <[ViewerItem]> vw-items;
+    in-out property <int> vw-cur: -1;
+    in property <[string]> vw-forward-names;
+    in property <string> vw-toast;
+    in property <string> vw-playing-event;
+    in property <image> vw-frame;
+    in property <float> vw-play-pos;
+    in property <float> vw-play-duration;
+    in-out property <bool> attach-open: false;
+    in property <[StickerItem]> at-stickers;
+    in property <bool> at-stickers-loaded;
+    in-out property <bool> recorder-open: false;
+    // Calls: rendered from the call.state digest; live wiring is the desktop
+    // pass — Android builds the engine without the calls feature.
+    in property <string> call-state: "idle";
+    in property <string> call-room-name;
+    in property <bool> call-incoming: false;
+    in property <string> call-incoming-name;
+    in property <color> call-incoming-tint: Theme.accent;
+    in-out property <bool> call-page-open: false;
+    in property <string> rec-state: "idle";
+    in property <float> rec-elapsed;
+    in property <float> rec-clip-duration;
+    in property <[float]> rec-levels;
+    in property <[float]> rec-clip-waveform;
+
+    // ---- navigation ----
+    in-out property <string> nav: "home";
+    in-out property <string> settings-return: "roomsettings";
+    in-out property <string> members-return: "roomsettings";
+    in-out property <string> add-return: "chat";
+    in-out property <string> thread-key;
+
+    // ---- action channels ----
+    callback sign-in(string);
+    callback open-again;
+    callback cancel-login;
+    callback recover-submit(string);
+    callback sign-out;
+    callback room-clicked(string);
+    callback search-edited(string);
+    callback back-to-home;
+    callback send-message(string);
+    callback composer-edited(string);
+    callback nav-opened(string);
+    /// Everything else: one channel, Service.qml's function table.
+    callback act(string, string, string);
+
+    public function scroll-timeline-to-end() { chat.scroll-to-end(); }
+    public function restore-timeline-from-end(d: length) { chat.restore-from-end(d); }
+    out property <length> chat-from-end: chat.from-end;
+    public function clear-composer() { chat.clear-composer(); }
+    in-out property <int> home-tab: 0;
+    public function set-home-tab(t: int) { root.home-tab = t; }
+    out property <string> ct-composer-text: chat.composer-text;
+    out property <int> ct-composer-cursor: chat.composer-cursor;
+    public function chat-composer-set(t: string, cursor: int) { chat.set-composer(t, cursor); }
+
+    public function go(page: string) {
+        if (page == "addpeople") { addpeople-page.reset(); }
+        if (page == "start") { start-page.reset(); }
+        if (page == "forward") { forward-page.reset(); }
+        if (page == "search") { search-page.reset(); }
+        root.nav = page;
+        root.nav-opened(page);
+    }
+
+    public function go-back() {
+        if (root.nav == "thread") { root.go("threads"); return; }
+        if (root.nav == "threads" || root.nav == "pins") { root.nav = "chat"; return; }
+        if (root.nav == "forward" || root.nav == "search" || root.nav == "chattheme"
+            || root.nav == "roomsettings" || root.nav == "doc" || root.nav == "audio"
+            || root.nav == "map") { root.nav = "chat"; return; }
+        if (root.nav == "addpeople") { root.nav = root.add-return; return; }
+        if (root.nav == "notifications") {
+            root.nav = root.settings-return;
+            return;
+        }
+        if (root.nav == "members") { root.nav = root.members-return; return; }
+        if (root.nav == "start") {
+            root.nav = "home";
+            return;
+        }
+        if (root.nav == "chat") { root.back-to-home(); root.nav = "home"; return; }
+    }
+
+    property <length> kb-overlap: root.virtual-keyboard-size.height > 0px
+        ? max(0px, root.height - root.virtual-keyboard-position.y) : 0px;
+    property <color> page-ground: Theme.menu-background.brighter(0.35);
+    property <bool> in-session: root.session == "loggedIn"
+        && (!root.needs-recovery || root.recovery-skipped) && !root.recovery-open;
+
+    // The Android back gesture arrives as a key. As the ancestor focus scope,
+    // unhandled Escapes bubble here; consuming them keeps the activity alive
+    // and unwinds our own navigation instead.
+    back-scope := FocusScope {
+        width: 100%; height: 100%;
+        // Keys only route through the focus chain; own it from the start so
+        // the Android back key has somewhere to land.
+        init => { self.focus(); }
+        key-pressed(event) => {
+            if (event.text == Key.Escape) {
+                root.go-back();
+                return accept;
+            }
+            reject
+        }
+
+    content := Rectangle {
+        x: root.safe-area-insets.left;
+        y: root.safe-area-insets.top;
+        width: root.width - root.safe-area-insets.left - root.safe-area-insets.right;
+        height: root.height - root.safe-area-insets.top - max(root.safe-area-insets.bottom, root.kb-overlap);
+
+        if root.session != "loggedIn" : LoginPage {
+            width: 100%; height: 100%;
+            pending: root.session == "loginPending";
+            restoring: root.session == "restoring";
+            error: root.login-error;
+            sign-in(hs) => { root.sign-in(hs); }
+            open-again => { root.open-again(); }
+            cancel-login => { root.cancel-login(); }
+        }
+        if root.session == "loggedIn" && ((root.needs-recovery && !root.recovery-skipped) || root.recovery-open) : RecoveryPage {
+            width: 100%; height: 100%;
+            busy: root.recovery-busy;
+            error: root.recovery-error;
+            submit(key) => { root.recover-submit(key); }
+            skip => { root.recovery-skipped = true; root.recovery-open = false; }
+        }
+        if root.in-session : HomePage {
+            width: 100%; height: 100%;
+            rooms: root.rooms;
+            requests: root.requests;
+            tab <=> root.home-tab;
+            rooms-loaded: root.rooms-loaded;
+            my-initials: root.my-initials;
+            my-avatar: root.my-avatar;
+            my-tint: root.my-tint;
+            my-name: root.my-name;
+            my-user-id: root.my-user-id;
+            needs-recovery: root.needs-recovery;
+            sync-line: root.sync-line;
+            room-clicked(id) => { root.room-clicked(id); root.nav = "chat"; }
+            search-edited(q) => { root.search-edited(q); }
+            new-chat => { root.go("start"); }
+            open-recovery => { root.recovery-open = true; }
+            sign-out => { root.sign-out(); }
+        }
+
+        chat-holder := PageHolder {
+            active: root.in-session && root.nav != "home" && root.nav != "start";
+            ground: root.page-ground;
+            chat := ChatPage {
+                width: 100%; height: 100%;
+                room-name: root.room-name;
+                room-subtitle: root.room-subtitle;
+                boot-epoch-s: root.boot-epoch-s;
+                room-encrypted: root.room-encrypted;
+                room-initials: root.room-initials;
+                room-avatar: root.room-avatar;
+                room-tint: root.room-tint;
+                themed: root.ct-accent != "";
+                accent: root.ct-accent != "" ? root.ct-color : Theme.accent;
+                attach-open: root.attach-open;
+                voice-staged <=> root.voice-staged;
+                voice-staged-duration: root.voice-staged-duration;
+                voice-staged-wave: root.voice-staged-wave;
+                items: root.items;
+                typing-line: root.typing-line;
+                typing-avatar: root.typing-avatar;
+                typing-initials: root.typing-initials;
+                typing-tint: root.typing-tint;
+                is-dm: root.chat-is-dm;
+                is-invite: root.chat-is-invite;
+                is-thread: root.chat-is-thread;
+                pagination-state: root.pagination-state;
+                in-call: root.in-call;
+                call-here: root.call-here;
+                sheet-actions: root.sheet-actions;
+                emoji-rows: root.emoji-rows;
+                emoji-cat-rows: root.emoji-cat-rows;
+                bottom-inset: 0px;
+                back => { root.go-back(); }
+                send(text) => { root.send-message(text); }
+                send-reply(ev, text) => { root.act("send-reply", ev, text); }
+                send-edit(ev, text) => { root.act("send-edit", ev, text); }
+                send-caption(ev, text) => { root.act("send-caption", ev, text); }
+                open-link(url) => { root.act("open-link", url, ""); }
+                send-voice(caption) => { root.act("voice-send", caption, ""); }
+                voice-discard => { root.act("voice-discard", "", ""); }
+                voice-preview(play) => { root.act("voice-preview", play ? "1" : "0", ""); }
+                composer-edited(text) => { root.composer-edited(text); }
+                start-call(video) => { root.act("start-call", video ? "true" : "false", ""); }
+                join-call => { root.act("join-call", "", ""); }
+                nav-requested(page) => { root.go(page); }
+                open-attach => {
+                    // The + is a toggle: cancel affordance while the sheet is open.
+                    if (root.attach-open) { root.attach-open = false; }
+                    else { root.attach-open = true; root.act("open-attach", "", ""); }
+                }
+                open-recorder => { root.recorder-open = true; root.act("open-recorder", "", ""); }
+                accept-invite => { root.act("accept-invite", "", ""); }
+                decline-invite => { root.act("decline-invite", "", ""); }
+                paginate => { root.act("paginate", "", ""); }
+                menu-action(action, ev) => { root.act("menu-action", action, ev); }
+                react(ev, key) => { root.act("react", ev, key); }
+                open-image(item) => { root.act("viewer-open", item.event-id, ""); }
+                play-video(item) => { root.act("viewer-open", item.event-id, "video"); }
+                open-document(item) => { root.act("open-doc", item.event-id, ""); root.go("doc"); }
+                open-audio(item) => { root.act("open-audio-page", item.event-id, ""); root.go("audio"); }
+                open-location(item) => { root.act("open-map", item.event-id, ""); root.go("map"); }
+                open-thread(rootId) => { root.act("open-thread", rootId, ""); }
+                voice-toggled(ev) => { root.act("voice-toggle", ev, ""); }
+                voice-seeked(ev, frac) => { root.act("voice-seek", ev, "" + frac); }
+                vote(ev, opt) => { root.act("vote", ev, opt); }
+                emoji-search(q) => { root.act("emoji-search", q, ""); }
+                mark-read => { root.act("mark-read", "", ""); }
+            }
+        }
+
+        search-holder := PageHolder { active: root.in-session && root.nav == "search"; ground: root.page-ground;
+            search-page := SearchPage {
+                width: 100%; height: 100%;
+                results: root.se-results; images: root.se-images; links: root.se-links;
+                searching: root.se-searching;
+                closed => { root.go-back(); }
+                search-edited(q) => { root.act("room-search", q, ""); }
+                jump-to(ev) => { root.nav = "chat"; root.act("jump-to", ev, ""); }
+                open-image(ev) => { root.act("viewer-open", ev, ""); }
+                open-link(url) => { root.act("open-link", url, ""); }
+            } }
+        roomsettings-holder := PageHolder { active: root.in-session && root.nav == "roomsettings"; ground: root.page-ground;
+            RoomSettingsPage {
+                width: 100%; height: 100%;
+                model: root.rs-model; members: root.rs-members;
+                pinned-count: root.rs-pinned-count; dm-user-id: root.rs-dm-user;
+                closed => { root.go-back(); }
+                add-people => { root.add-return = "roomsettings"; root.go("addpeople"); }
+                open-notifications => { root.settings-return = "roomsettings"; root.go("notifications"); }
+                set-favourite(on) => { root.act("set-favourite", on ? "true" : "false", ""); }
+                set-low-priority(on) => { root.act("set-low-priority", on ? "true" : "false", ""); }
+                leave => { root.act("leave-room", "", ""); }
+            } }
+        chattheme-holder := PageHolder { active: root.in-session && root.nav == "chattheme"; ground: root.page-ground;
+            ChatThemePage {
+                width: 100%; height: 100%;
+                room-name: root.room-name;
+                pending-accent: root.ct-accent; pending-wallpaper: root.ct-wallpaper;
+                pend-accent: root.ct-color; wallpaper-img: root.ct-wallpaper-img;
+                gradients: root.ct-gradients; custom-sel: root.ct-custom; grad-sel: root.ct-grad;
+                pick-color: root.ct-pick; pick-strip-end: root.ct-pick-end;
+                closed => { root.go-back(); }
+                apply => { root.act("theme-apply", "", ""); }
+                set-accent(v) => { root.act("theme-accent", v, ""); }
+                set-wallpaper(v) => { root.act("theme-wallpaper", v, ""); }
+                reset-pending => { root.act("theme-reset", "", ""); }
+                choose-photo => { root.act("theme-photo", "", ""); }
+                pick-changed(h, s, v) => { root.act("theme-pick", h + "," + s, "" + v); }
+                accept-custom => { root.act("theme-accept-custom", "", ""); }
+            } }
+        threads-holder := PageHolder { active: root.in-session && (root.nav == "threads" || root.nav == "thread"); ground: root.page-ground;
+            ThreadsPage {
+                width: 100%; height: 100%;
+                room-name: root.room-name;
+                threads: root.th-threads; loading: root.th-loading; loaded: root.th-loaded;
+                closed => { root.go-back(); }
+                thread-picked(rootId) => { root.act("open-thread", rootId, ""); }
+            } }
+        pins-holder := PageHolder { active: root.in-session && root.nav == "pins"; ground: root.page-ground;
+            PinsPage {
+                width: 100%; height: 100%;
+                room-name: root.room-name; room-is-dm: root.pi-dm;
+                items: root.pi-items; loading: root.pi-loading; loaded: root.pi-loaded;
+                closed => { root.go-back(); }
+                jump-requested(ev) => { root.nav = "chat"; root.act("jump-to", ev, ""); }
+                unpin(ev) => { root.act("unpin", ev, ""); }
+            } }
+        map-holder := PageHolder { active: root.in-session && root.nav == "map"; ground: root.page-ground;
+            MapPage { width: 100%; height: 100%; closed => { root.go-back(); } } }
+        doc-holder := PageHolder { active: root.in-session && root.nav == "doc"; ground: root.page-ground;
+            DocPage {
+                width: 100%; height: 100%;
+                file-name: root.dc-name; status: root.dc-status; error: root.dc-error;
+                size-label: root.dc-size; kind: root.dc-kind; subtitle: root.dc-subtitle;
+                blocks: root.dc-blocks; pdf-pages: root.dc-pdf; pages: root.dc-pages;
+                page-aspect: root.dc-aspect; sheets: root.dc-sheets; sheet-rows: root.dc-rows;
+                sheet-cols: root.dc-cols; toast: root.dc-toast;
+                closed => { root.go-back(); }
+                download-requested => { root.act("doc-download", "", ""); }
+                page-requested(i, w) => { root.act("doc-page", "" + i, "" + (w / 1px)); }
+                sheet-picked(i) => { root.act("doc-sheet", "" + i, ""); }
+            } }
+        audio-holder := PageHolder { active: root.in-session && root.nav == "audio"; ground: root.page-ground;
+            AudioPage {
+                width: 100%; height: 100%;
+                title: root.au-title; size-label: root.au-size; status: root.au-status;
+                art: root.au-art; have-art: root.au-have-art; tone: root.au-tone;
+                duration: root.au-duration; playing: root.au-playing; position: root.au-position;
+                toast: root.au-toast;
+                closed => { root.go-back(); }
+                toggle-requested => { root.act("audio-toggle", "", ""); }
+                seek-requested(s) => { root.act("audio-seek", "" + s, ""); }
+                download-requested => { root.act("audio-download", "", ""); }
+            } }
+
+        members-holder := PageHolder { active: root.in-session && root.nav == "members"; ground: root.page-ground;
+            MembersPage {
+                width: 100%; height: 100%;
+                members: root.me-members; filter-level: root.me-filter; all-count: root.me-all;
+                closed => { root.go-back(); }
+                invite => { root.add-return = "members"; root.go("addpeople"); }
+            } }
+        addpeople-holder := PageHolder { active: root.in-session && root.nav == "addpeople"; ground: root.page-ground;
+            addpeople-page := AddPeoplePage {
+                width: 100%; height: 100%;
+                results: root.ap-results;
+                note <=> root.ap-note;
+                closed => { root.go-back(); }
+                search(q) => { root.act("dir-search", q, ""); }
+                invite-user(uid) => { root.act("invite-user", uid, ""); }
+            } }
+        notifications-holder := PageHolder { active: root.in-session && root.nav == "notifications"; ground: root.page-ground;
+            NotificationsPage {
+                width: 100%; height: 100%;
+                mode: root.no-mode; encrypted: root.rs-model.encrypted;
+                busy: root.no-busy; error: root.no-error;
+                closed => { root.go-back(); }
+                set-mode(m) => { root.act("notif-mode", m, ""); }
+            } }
+        start-holder := PageHolder { active: root.in-session && root.nav == "start"; ground: root.page-ground;
+            start-page := StartPage {
+                width: 100%; height: 100%;
+                people: root.st-people; busy: root.st-busy; error: root.st-error;
+                closed => { root.go-back(); }
+                search-edited(q) => { root.act("dir-search-start", q, ""); }
+                start-dm(uid) => { root.act("start-dm", uid, ""); }
+                submit-extra(mode, value) => { root.act("start-submit", mode, value); }
+            } }
+        forward-holder := PageHolder { active: root.in-session && root.nav == "forward"; ground: root.page-ground;
+            forward-page := ForwardPage {
+                width: 100%; height: 100%;
+                mode: root.fw-mode; chats: root.fw-chats;
+                closed => { root.go-back(); }
+                search-edited(q) => { root.act("forward-search", q, ""); }
+                picked(id) => { root.act("forward-picked", id, ""); }
+            } }
+        att-wrap := Rectangle {
+            // Slides up from the bottom edge like the QML drawer; the scrim
+            // fades with it. (`open ||` prevents the hidden-element deadlock.)
+            property <float> show: root.attach-open ? 1.0 : 0.0;
+            animate show { duration: 200ms; easing: cubic-bezier(0.33, 1, 0.68, 1); }
+            visible: root.attach-open || self.show > 0.01;
+            width: 100%; height: 100%;
+            background: Theme.background.with-alpha(0.35 * self.show);
+            TouchArea { clicked => { root.attach-open = false; } }
+            att := AttachMenu {
+                x: 0;
+                width: att-wrap.width;
+                // A drawer riding above the composer; its own height binding
+                // (per page) stays in charge.
+                y: att-wrap.height - (self.height + 66px) * att-wrap.show;
+                stickers: root.at-stickers; stickers-loaded: root.at-stickers-loaded;
+                pick-files => { root.act("pick-attach-files", "", ""); }
+                open-location(mode) => { root.act("attach-location", mode, ""); }
+                insert-emoji(e) => { root.act("composer-insert", e, ""); }
+                create-poll(q, opts, closed2) => {
+                    root.act("create-poll", q, (closed2 ? "1" : "0")
+                        + "\u{1f}" + opts[0] + "\u{1f}" + opts[1] + "\u{1f}" + opts[2]
+                        + "\u{1f}" + opts[3] + "\u{1f}" + opts[4] + "\u{1f}" + opts[5]
+                        + "\u{1f}" + opts[6] + "\u{1f}" + opts[7]);
+                }
+                send-sticker(i) => { root.act("send-sticker", "" + i, ""); }
+                load-stickers => { root.act("load-stickers", "", ""); }
+                load-emoji => { root.act("emoji-search", "", ""); }
+                close-requested => { root.attach-open = false; }
+            }
+        }
+        // Inline panel flush with the bottom edge, the composer above it —
+        // the QML mounts it under the composer, not floating over the chat.
+        // Slides in from below the edge.
+        rec-panel := VoiceRecorder {
+            property <float> show: root.recorder-open ? 1.0 : 0.0;
+            animate show { duration: 200ms; easing: cubic-bezier(0.33, 1, 0.68, 1); }
+            visible: root.recorder-open || self.show > 0.01;
+            x: 0; width: 100%;
+            y: content.height - self.height * self.show;
+            state: root.rec-state;
+            elapsed: root.rec-elapsed;
+            clip-duration: root.rec-clip-duration;
+            levels: root.rec-levels;
+            clip-waveform: root.rec-clip-waveform;
+            record => { root.act("voice-record", "", ""); }
+            stop => { root.act("voice-stop", "", ""); }
+            restart => { root.act("voice-restart", "", ""); }
+            attach => { root.act("voice-attach", "", ""); }
+            cancelled => { root.act("voice-cancel", "", ""); root.recorder-open = false; }
+        }
+        if root.call-incoming : CallBanner {
+            width: 100%;
+            caller-name: root.call-incoming-name;
+            caller-tint: root.call-incoming-tint;
+            room-name: root.call-room-name;
+            accept => { root.act("call-accept", "false", ""); }
+            accept-video => { root.act("call-accept", "true", ""); }
+            decline => { root.act("call-decline", "", ""); }
+        }
+        if root.viewer-open : ImageViewer {
+            width: 100%; height: 100%;
+            items: root.vw-items;
+            cur <=> root.vw-cur;
+            forward-names: root.vw-forward-names;
+            toast: root.vw-toast;
+            playing-event: root.vw-playing-event;
+            video-frame: root.vw-frame;
+            play-pos: root.vw-play-pos;
+            play-duration: root.vw-play-duration;
+            closed => { root.viewer-open = false; root.act("viewer-closed", "", ""); }
+            page-changed(i) => { root.act("viewer-page", "" + i, ""); }
+            download-requested => { root.act("viewer-download", "", ""); }
+            delete-requested => { root.act("viewer-delete", "", ""); }
+            share-requested => { root.act("viewer-share", "", ""); }
+            forward-to(i) => { root.act("viewer-forward", "" + i, ""); }
+            react(e) => { root.act("viewer-react", e, ""); }
+            toggle-playback => { root.act("viewer-playback", "", ""); }
+            seek-requested(sec) => { root.act("viewer-seek", "" + sec, ""); }
+            scrub-state(on, pos) => { root.act("viewer-scrub", on ? "true" : "false", "" + pos); }
+        }
+    }
+    }
+}

@@ -1,0 +1,136 @@
+// Generated from `shared/icons.json` by `shared/icongen`. Do not hand-edit.
+// Add or change an icon there, then re-run the generator.
+
+// Every icon in Sigil, by what it means here rather than what the icon set calls it.
+// Call sites say `Icons.back`, never a glyph literal. Draw them with `IconLabel`.
+// QML has no `font.families`: an element names ONE family, so an icon cannot share a
+// string with words — split it into an IconLabel plus a Text.
+// These are private-use codepoints that Nerd Fonts also claim, so the wrong family
+// silently draws a DIFFERENT icon rather than tofu.
+// Trailing comments are the canonical Material Symbols names: fonts.google.com/icons.
+export global Icons {
+
+    // navigation
+    out property <string> back:           "\u{E5C4}";  // arrow_back
+    out property <string> close:          "\u{E5CD}";  // close
+    out property <string> chevronDown:    "\u{E5CF}";  // expand_more
+    out property <string> chevronUp:      "\u{E5CE}";  // expand_less
+    out property <string> chevronRight:   "\u{E5CC}";  // chevron_right
+    out property <string> arrowDown:      "\u{E5DB}";  // arrow_downward
+    out property <string> arrowUp:        "\u{E5D8}";  // arrow_upward
+    out property <string> home:           "\u{E9B2}";  // home
+    out property <string> maximize:       "\u{E5D0}";  // fullscreen
+    out property <string> fullscreen:     "\u{E5D0}";  // fullscreen
+    out property <string> windowed:       "\u{E8AA}";  // picture_in_picture
+    out property <string> pip:            "\u{F64D}";  // pip
+    out property <string> statusRing:     "\u{EEE1}";  // circle_circle
+    out property <string> statusDot:      "\u{EF4A}";  // circle
+    out property <string> checkCircle:    "\u{E86C}";  // check_circle
+    out property <string> errorMark:      "\u{E000}";  // error
+    out property <string> collapse:       "\u{F1CF}";  // close_fullscreen
+
+    // action
+    out property <string> plus:           "\u{E145}";  // add
+    out property <string> plusCircle:     "\u{E990}";  // add_circle
+    out property <string> cancel:         "\u{E888}";  // cancel
+    out property <string> check:          "\u{E668}";  // check
+    out property <string> search:         "\u{EF7A}";  // search
+    out property <string> edit:           "\u{F097}";  // edit
+    out property <string> copy:           "\u{E14D}";  // content_copy
+    out property <string> cut:            "\u{E14E}";  // content_cut
+    out property <string> paste:          "\u{E14F}";  // content_paste
+    out property <string> selectAll:      "\u{E162}";  // select_all
+    out property <string> trash:          "\u{E92E}";  // delete
+    out property <string> reply:          "\u{E15E}";  // reply
+    out property <string> replyArrow:     "\u{E15E}";  // reply
+    out property <string> retry:          "\u{E5D5}";  // refresh
+    out property <string> forward:        "\u{E154}";  // forward
+    out property <string> share:          "\u{E80D}";  // share
+    out property <string> link:           "\u{E250}";  // link
+    out property <string> download:       "\u{F090}";  // download
+    out property <string> attach:         "\u{E226}";  // attach_file
+    out property <string> send:           "\u{E163}";  // send
+    out property <string> react:          "\u{E1D3}";  // add_reaction
+    out property <string> refresh:        "\u{E5D5}";  // refresh
+    out property <string> stop:           "\u{E047}";  // stop
+    out property <string> settings:       "\u{E8B8}";  // settings
+    out property <string> moreVertical:   "\u{E5D4}";  // more_vert
+    out property <string> moreHorizontal: "\u{E5D3}";  // more_horiz
+    out property <string> spinner:        "\u{E9D0}";  // progress_activity
+
+    // content
+    out property <string> chat:           "\u{E0C9}";  // chat
+    out property <string> thread:         "\u{E0B9}";  // comment
+    out property <string> pin:            "\u{F10D}";  // push_pin
+    out property <string> keep:           "\u{E6AA}";  // keep
+    out property <string> file:           "\u{E873}";  // description
+    out property <string> folder:         "\u{E2C7}";  // folder
+    out property <string> camera:         "\u{E412}";  // photo_camera
+    out property <string> codeBlocks:     "\u{F84D}";  // code_blocks
+    out property <string> image:          "\u{E3F4}";  // image
+    out property <string> voiceMemo:      "\u{E1B8}";  // graphic_eq
+    out property <string> music:          "\u{E405}";  // music_note
+    out property <string> audioNote:      "\u{EB82}";  // audio_file
+    out property <string> sticker:        "\u{E707}";  // sticker
+    out property <string> emoji:          "\u{EA22}";  // mood
+    out property <string> poll:           "\u{E172}";  // ballot
+    out property <string> note:           "\u{E26C}";  // notes
+    out property <string> email:          "\u{E159}";  // mail
+    out property <string> palette:        "\u{E40A}";  // palette
+    out property <string> logout:         "\u{E9BA}";  // logout
+    out property <string> space:          "\u{EA0F}";  // workspaces
+    out property <string> lowPriority:    "\u{E16D}";  // low_priority
+    out property <string> emojiMore:      "\u{E1D3}";  // add_reaction
+
+    // people
+    out property <string> people:         "\u{EA21}";  // group
+    out property <string> person:         "\u{E7FD}";  // person
+    out property <string> personAdd:      "\u{EA4D}";  // person_add
+
+    // media
+    out property <string> play:           "\u{E037}";  // play_arrow
+    out property <string> pause:          "\u{E034}";  // pause
+
+    // call
+    out property <string> phone:          "\u{E0B0}";  // call
+    out property <string> callEnd:        "\u{F0BC}";  // call_end
+    out property <string> micOn:          "\u{E31D}";  // mic
+    out property <string> record:         "\u{E029}";  // mic
+    out property <string> micOff:         "\u{E02B}";  // mic_off
+    out property <string> videoOn:        "\u{E04B}";  // videocam
+    out property <string> videoOff:       "\u{E04C}";  // videocam_off
+    out property <string> screenShare:    "\u{E0E2}";  // screen_share
+    out property <string> screenShareAlt: "\u{E0DF}";  // present_to_all
+    out property <string> speaker:        "\u{E050}";  // volume_up
+    out property <string> signalOff:      "\u{F239}";  // signal_disconnected
+
+    // location
+    out property <string> location:       "\u{F1DB}";  // place
+    out property <string> liveLocation:   "\u{F05F}";  // share_location
+    out property <string> myLocation:     "\u{E55C}";  // my_location
+    out property <string> pinDrop:        "\u{E55E}";  // pin_drop
+    out property <string> recentre:       "\u{E55C}";  // my_location
+
+    // security
+    out property <string> lock:           "\u{E897}";  // lock
+    out property <string> lockOff:        "\u{E898}";  // lock_open
+    out property <string> recoveryKey:    "\u{E73C}";  // key
+    out property <string> login:          "\u{EA77}";  // login
+    out property <string> eye:            "\u{E8F4}";  // visibility
+    out property <string> eyeOff:         "\u{E8F5}";  // visibility_off
+
+    // status
+    out property <string> clock:          "\u{EFD6}";  // schedule
+    out property <string> alert:          "\u{F083}";  // warning
+    out property <string> errorCircle:    "\u{F8B6}";  // error
+
+    // spaces and settings
+    out property <string> globe:          "\u{E80B}";  // public
+    out property <string> shield:         "\u{E9E0}";  // shield
+    out property <string> moderator:      "\u{F7AC}";  // chat_error
+    out property <string> leave:          "\u{E9BA}";  // logout
+    out property <string> hash:           "\u{E9EF}";  // tag
+    out property <string> star:           "\u{E838}";  // star
+    out property <string> bell:           "\u{E7F4}";  // notifications
+    out property <string> bellOff:        "\u{E7F6}";  // notifications_off
+}

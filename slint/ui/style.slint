@@ -1,0 +1,61 @@
+// The design-token contract from docs/portability.md, as a Slint global.
+// The QML frontend gets these from the Omarchy host (qs.Commons / qs.Ui);
+// here they are Sigil's own. Same names, same roles: a component asks for a
+// token, never a literal.
+//
+// `Style.space(n)` does not exist here on purpose: Slint's `px` is already a
+// logical pixel scaled by the platform's device pixel ratio, which is the whole
+// job Style.space did on Quickshell. A design px in QML is a `px` here, 1:1.
+
+// The bundled fonts, embedded at compile time. Nothing asks the system for a font.
+import "../../shared/fonts/Roboto-Regular.ttf";
+import "../../shared/fonts/Roboto-Medium.ttf";
+import "../../shared/fonts/Roboto-Bold.ttf";
+import "../../shared/fonts/RobotoMono-Regular.ttf";
+import "../../shared/fonts/MaterialSymbolsRounded.ttf";
+import "../../shared/fonts/MaterialSymbolsRounded-Filled.ttf";
+
+export global Theme {
+    // The Frosted Glass theme, verbatim from the desktop's active Omarchy
+    // theme (colors.toml + shell.menu/popups.toml). Deliberately monochrome:
+    // that IS what 1:1 with the QML panel looks like on this machine. The
+    // desktop composites these translucently over the wallpaper; a phone has
+    // no wallpaper behind the app, so surfaces are opaque here.
+    out property <color> accent: #a8a8a8;
+    out property <color> background: #4b4b4b;
+    out property <color> foreground: #c6c6c6;
+    out property <color> muted: #8a8a8a;
+    out property <color> urgent: #a55555;
+
+    out property <color> menu-text: #c6c6c6;
+    out property <color> menu-background: #4b4b4b;
+    out property <color> menu-border: transparent;
+
+    out property <color> popup-text: #c6c6c6;
+    out property <color> popup-background: #4b4b4b;
+    out property <color> popup-border: #5c5c5c;
+
+    // Fonts, by the family names the bundled files declare.
+    out property <string> font-ui: "Roboto";
+    out property <string> font-mono: "Roboto Mono";
+    out property <string> font-icon: "Material Symbols Rounded";
+    out property <string> font-icon-filled: "Material Symbols Rounded Filled";
+
+    // Type scale — Style.font.* in QML, VERBATIM. (An early "one step up
+    // for phones" deviation lived here and made everything read oversized.)
+    out property <length> caption: 10px;
+    out property <length> body-small: 11px;
+    out property <length> body: 12px;
+    out property <length> subtitle: 13px;
+    out property <length> title: 14px;
+    out property <length> heading: 16px;
+    out property <length> display: 24px;
+    out property <length> icon-size: 14px;
+    out property <length> icon-large: 18px;
+
+    // Spacing steps — Style.spacing.* in QML.
+    out property <length> sp-sm: 6px;
+    out property <length> sp-md: 10px;
+    out property <length> sp-lg: 14px;
+    out property <length> sp-xl: 20px;
+}

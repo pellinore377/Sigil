@@ -1,0 +1,270 @@
+// RoomSettingsPage — mobile/RoomSettingsPage.qml. Room settings: identity,
+// quick toggles, add people, members, and leave.
+
+import { Theme } from "../style.slint";
+import { Icons } from "../icons.slint";
+import { IconLabel, Avatar } from "../components.slint";
+import { SettingsHeader, SettingsGroup, SettingsRow } from "../furniture.slint";
+import { RoomSettingsModel, MemberRow } from "../model.slint";
+
+export component RoomSettingsPage inherits Rectangle {
+    in property <color> fg: Theme.menu-text;
+    in property <RoomSettingsModel> model;
+    /// Everyone in the room. Group rooms only — a DM has two people, one is you.
+    in property <[MemberRow]> members;
+    /// How many rooms are already pinned, for the five-pin cap.
+    in property <int> pinned-count;
+    in property <string> dm-user-id;
+    callback closed;
+    callback add-people;
+    callback open-notifications;
+    callback set-favourite(bool);
+    callback set-low-priority(bool);
+    callback leave;
+
+    property <string> note;
+    property <bool> confirm-leave;
+    property <bool> is-group: !root.model.is-dm;
+    background: transparent;
+
+    fl := Flickable {
+        width: 100%; height: 100%;
+        viewport-height: content.preferred-height + 20px;
+        content := VerticalLayout {
+            width: fl.width;
+            alignment: start;
+
+            header := Rectangle {
+                height: 54px;
+                HorizontalLayout {
+                    padding-left: 6px;
+                    spacing: 6px;
+                    Rectangle {
+                        width: 44px;
+                        back-btn := Rectangle {
+                            y: (54px - self.height) / 2;
+                            width: 44px; height: 44px;
+                            border-radius: 22px;
+                            background: back-touch.pressed ? root.fg.with-alpha(0.1) : transparent;
+                            IconLabel {
+                                text: Icons.back; filled: false;
+                                color: root.fg;
+                                width: 100%; height: 100%;
+                            }
+                            back-touch := TouchArea { clicked => { root.closed(); } }
+                        }
+                    }
+                    Text {
+                        text: "Settings";
+                        color: root.fg;
+                        font-family: Theme.font-ui; font-size: Theme.heading; font-weight: 700;
+                        vertical-alignment: center;
+                        horizontal-stretch: 1;
+                    }
+                }
+            }
+            Rectangle { height: 16px; }
+            face-holder := Rectangle {
+                height: 72px;
+                Avatar {
+                    x: (face-holder.width - self.width) / 2;
+                    size: 72px;
+                    source: root.model.avatar;
+                    initials: root.model.initials;
+                    tint: root.model.tint;
+                }
+            }
+            Rectangle { height: 8px; }
+            Rectangle {
+                height: name-line.preferred-height;
+                name-line := Text {
+                    width: 100%;
+                    text: root.model.name != "" ? root.model.name : root.model.room-id;
+                    color: root.fg;
+                    font-family: Theme.font-ui; font-size: Theme.title; font-weight: 700;
+                    horizontal-alignment: center;
+                    overflow: elide;
+                }
+            }
+            Rectangle {
+                height: sub-line.text != "" ? sub-line.preferred-height + 2px : 0px;
+                sub-line := Text {
+                    y: 2px; width: 100%;
+                    text: root.model.is-dm ? root.dm-user-id : root.model.member-count + " members";
+                    color: root.fg.with-alpha(0.55);
+                    font-family: Theme.font-ui; font-size: Theme.caption;
+                    horizontal-alignment: center;
+                    overflow: elide;
+                }
+            }
+            if root.model.topic != "" : Rectangle {
+                height: topic-line.preferred-height + 6px;
+                topic-line := Text {
+                    x: 30px; y: 6px; width: fl.width - 60px;
+                    text: root.model.topic;
+                    color: root.fg.with-alpha(0.6);
+                    font-family: Theme.font-ui; font-size: Theme.body-small;
+                    horizontal-alignment: center;
+                    wrap: word-wrap;
+                    overflow: elide;
+                }
+            }
+            Rectangle { height: 18px; }
+
+            // Quick rows: add people, pin, low priority.
+            SettingsRow {
+                fg: root.fg;
+                icon: Icons.plus; label: "Add people";
+                clicked => { root.add-people(); }
+            }
+            SettingsRow {
+                fg: root.fg;
+                icon: Icons.pin; label: "Pin";
+                trailing: "toggle"; on: root.model.is-favourite;
+                clicked => {
+                    // Five pins max: refuse the sixth rather than silently dropping one.
+                    if (!root.model.is-favourite && root.pinned-count >= 5) {
+                        root.note = "Five conversations are already pinned";
+                    } else {
+                        root.set-favourite(!root.model.is-favourite);
+                    }
+                }
+            }
+            SettingsRow {
+                fg: root.fg;
+                icon: Icons.lowPriority; label: "Low priority";
+                trailing: "toggle"; on: root.model.is-low-priority;
+                clicked => { root.set-low-priority(!root.model.is-low-priority); }
+            }
+
+            // Members preview.
+            if root.is-group : Rectangle { height: 16px; }
+            if root.is-group : Rectangle {
+                height: members-title.preferred-height;
+                members-title := Text {
+                    x: 22px;
+                    text: root.members.length > 0
+                        ? root.members.length + (root.members.length == 1 ? " member" : " members")
+                        : "Members";
+                    color: root.fg.with-alpha(0.55);
+                    font-family: Theme.font-ui; font-size: Theme.caption; font-weight: 700;
+                }
+            }
+            if root.is-group : Rectangle { height: 6px; }
+            if root.is-group : VerticalLayout {
+                for member in root.members : member-row := Rectangle {
+                    height: 52px;
+                    HorizontalLayout {
+                        padding-left: 24px; padding-right: 24px;
+                        spacing: 12px;
+                        Rectangle {
+                            width: 34px;
+                            Avatar {
+                                size: 34px;
+                                source: member.avatar;
+                                initials: member.initials;
+                                tint: member.tint;
+                            }
+                        }
+                        VerticalLayout {
+                            alignment: center;
+                            spacing: 1px;
+                            horizontal-stretch: 1;
+                            Text {
+                                text: member.display-name != "" ? member.display-name : member.user-id;
+                                color: root.fg;
+                                font-family: Theme.font-ui; font-size: Theme.body;
+                                overflow: elide;
+                            }
+                            if member.user-id != "" && member.display-name != member.user-id : Text {
+                                text: member.user-id;
+                                color: root.fg.with-alpha(0.5);
+                                font-family: Theme.font-ui; font-size: Theme.caption;
+                                overflow: elide;
+                            }
+                        }
+                        if member.power-level >= 50 : Text {
+                            text: member.power-level >= 100 ? "Admin" : "Mod";
+                            color: root.fg.with-alpha(0.55);
+                            font-family: Theme.font-ui; font-size: Theme.caption;
+                            vertical-alignment: center;
+                        }
+                    }
+                }
+            }
+
+            // Notifications, a local setting on this device.
+            Rectangle { height: 10px; }
+            SettingsGroup {
+                fg: root.fg;
+                SettingsRow {
+                    fg: root.fg;
+                    icon: Icons.bell; label: "Notifications";
+                    trailing: "value";
+                    // Blank until the read lands: a default caption asserts facts it lacks.
+                    value: root.model.room-id == "" ? ""
+                         : root.model.notification-mode == "all" ? "All messages"
+                         : root.model.notification-mode == "mentions" ? "Mentions only"
+                         : root.model.notification-mode == "mute" ? "Muted" : "Default";
+                    clicked => { root.open-notifications(); }
+                }
+            }
+
+            leave-btn := Rectangle {
+                x: 20px; width: fl.width - 40px; height: 44px;
+                border-radius: 14px;
+                background: root.confirm-leave ? Theme.urgent.with-alpha(0.85) : Theme.urgent.with-alpha(0.16);
+                Text {
+                    text: root.confirm-leave ? "Tap again to confirm"
+                        : (root.model.is-dm ? "Leave chat" : "Leave room");
+                    color: root.confirm-leave ? Theme.background : Theme.urgent;
+                    font-family: Theme.font-ui; font-size: Theme.body; font-weight: 700;
+                    horizontal-alignment: center; vertical-alignment: center;
+                    width: 100%; height: 100%;
+                }
+                TouchArea {
+                    clicked => {
+                        if (!root.confirm-leave) {
+                            root.confirm-leave = true;
+                        } else {
+                            root.confirm-leave = false;
+                            root.leave();
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    confirm-timer := Timer {
+        interval: 4000ms;
+        running: root.confirm-leave;
+        triggered => { root.confirm-leave = false; }
+    }
+
+    // Transient notice (pin cap, mostly).
+    note-pill := Rectangle {
+        x: (root.width - self.width) / 2;
+        y: root.height - self.height - 22px;
+        width: note-text.preferred-width + 26px;
+        height: 34px;
+        border-radius: 17px;
+        background: Theme.popup-background.with-alpha(0.98);
+        border-width: 1px;
+        border-color: root.fg.with-alpha(0.12);
+        opacity: root.note != "" ? 1 : 0;
+        visible: self.opacity > 0.01;
+        animate opacity { duration: 140ms; }
+        note-text := Text {
+            text: root.note; color: root.fg;
+            font-family: Theme.font-ui; font-size: Theme.caption;
+            horizontal-alignment: center; vertical-alignment: center;
+            width: 100%; height: 100%;
+        }
+    }
+    note-timer := Timer {
+        interval: 2600ms;
+        running: root.note != "";
+        triggered => { root.note = ""; }
+    }
+}

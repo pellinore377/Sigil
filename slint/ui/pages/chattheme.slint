@@ -1,0 +1,399 @@
+// ChatThemePage — mobile/ChatThemePage.qml. Live mini preview, Apply/Reset,
+// palettes derived from one base hue, wallpapers. The pending theme itself
+// lives Rust-side (it is JSON on disk); this renders derived colours handed
+// down and reports edits up. The QML page's custom-colour wheel needs a conic
+// gradient Slint cannot draw, so the custom picker is three sliders (hue /
+// saturation / brightness) driving the same numbers.
+//
+// The QML's two hover-only swatch selection rings are pressed+selected states
+// here — portability.md flagged them as invisible on touch.
+
+import { Theme } from "../style.slint";
+import { Icons } from "../icons.slint";
+import { IconLabel, ActionButton } from "../components.slint";
+
+export struct GradPair { top: color, bot: color }
+
+component Swatch inherits Rectangle {
+    in property <color> base;
+    in property <bool> sel;
+    in property <color> fg;
+    in property <color> lower;
+    callback clicked;
+    width: 38px; height: 38px;
+    lower-disc := Rectangle {
+        width: 100%; height: 100%; border-radius: 19px;
+        background: root.lower;
+    }
+    upper-half := Rectangle {
+        width: 100%; height: 50%;
+        clip: true;
+        Rectangle {
+            width: root.width; height: root.width; border-radius: 19px;
+            background: root.base.brighter(0.35);
+        }
+    }
+    ring := Rectangle {
+        x: -3px; y: -3px;
+        width: root.width + 6px; height: root.height + 6px;
+        border-radius: (root.width + 6px) / 2;
+        border-width: 2px;
+        // selected: full ink; pressed (the touch stand-in for hover): faint ink
+        border-color: root.sel ? root.fg
+                    : sw-t.pressed ? root.fg.with-alpha(0.45) : transparent;
+    }
+    sw-t := TouchArea { clicked => { root.clicked(); } }
+}
+
+export component ChatThemePage inherits Rectangle {
+    in property <color> fg: Theme.menu-text;
+    callback closed;
+
+    in property <string> room-name: "Chat";
+    // Pending theme, mirrored from Rust; "" accent = default.
+    in property <string> pending-accent: "";
+    in property <string> pending-wallpaper: "";
+    in property <color> pend-accent: Theme.accent;    // resolved colour of pending-accent
+    in property <image> wallpaper-img;                // when pending-wallpaper is a photo path
+    in property <[GradPair]> gradients;               // 9 pairs derived Rust-side
+    in property <bool> custom-sel: false;
+    // Custom picker state; Rust resolves hsv -> colour.
+    in-out property <float> pick-h: 0.6;
+    in-out property <float> pick-s: 0.7;
+    in-out property <float> pick-v: 0.8;
+    in property <color> pick-color: #7c9fd4;
+    in property <color> pick-strip-end: #7c9fd4;
+
+    callback apply;
+    callback set-accent(string);
+    callback set-wallpaper(string);
+    callback reset-pending;
+    callback choose-photo;
+    callback pick-changed(float, float, float);
+    callback accept-custom;
+
+    in-out property <bool> picking: false;
+
+    property <bool> themed: root.pending-accent != "";
+    // ChatThemePage.qml tintBg(): menu.background darkened 1.35, mixed toward base.
+    pure function tint-bg(base: color, amt: float) -> color {
+        return Theme.menu-background.darker(0.35).mix(base, 1.0 - amt);
+    }
+    pure function bubble-fill(base: color) -> color {
+        return base.mix(Theme.popup-background, 0.42);
+    }
+    property <color> other-fill: root.themed
+        ? root.bubble-fill(root.fg).mix(root.pend-accent, 0.82)
+        : root.bubble-fill(root.fg);
+
+    background: transparent;
+
+    flick := Flickable {
+        width: 100%; height: 100%;
+        viewport-height: body.preferred-height;
+        body := VerticalLayout {
+            width: root.width;
+            // Header
+            hdr := Rectangle {
+                height: 56px;
+                HorizontalLayout {
+                    padding-left: 6px; padding-right: 12px;
+                    spacing: 6px;
+                    Rectangle {
+                        width: 44px;
+                        ActionButton {
+                            y: (56px - self.height) / 2;
+                            width: 44px; height: 44px;
+                            icon: Icons.back; filled: false;
+                            foreground: root.fg;
+                            clicked => { root.closed(); }
+                        }
+                    }
+                    VerticalLayout {
+                        alignment: center;
+                        horizontal-stretch: 1;
+                        Text { text: "Chat theme"; color: root.fg; font-family: Theme.font-ui; font-size: Theme.heading; font-weight: 700; }
+                        Text { text: "Only you will see these changes"; color: root.fg.with-alpha(0.55); font-family: Theme.font-ui; font-size: Theme.caption; }
+                    }
+                    apply-pill := Rectangle {
+                        y: (56px - self.height) / 2;
+                        width: 74px; height: 34px; border-radius: 17px;
+                        background: root.pend-accent.brighter(0.35);
+                        Text { text: "Apply"; color: #1a1a1a; font-family: Theme.font-ui; font-size: Theme.body-small; font-weight: 700; width: 100%; height: 100%; horizontal-alignment: center; vertical-alignment: center; }
+                        TouchArea { clicked => { root.apply(); } }
+                    }
+                }
+            }
+            Rectangle { height: 6px; }
+            // Mini preview
+            preview-row := Rectangle {
+                height: 300px;
+                preview := Rectangle {
+                    x: (root.width - self.width) / 2;
+                    width: 196px; height: 296px;
+                    border-radius: 18px;
+                    clip: true;
+                    background: root.tint-bg(root.pend-accent, root.themed ? 0.18 : 0.0);
+                    if root.pending-wallpaper != "" && root.wallpaper-img.width > 0 : Image {
+                        source: root.wallpaper-img;
+                        width: 100%; height: 100%;
+                        image-fit: cover;
+                    }
+                    // Gradient ONLY for a grad:* wallpaper (grad-sel < 0 for a
+                    // photo): an undecoded photo shows the tint, not gradient 0.
+                    if root.grad-sel >= 0 && root.pending-wallpaper != "" && root.gradients.length == 9 && root.wallpaper-img.width == 0 : prev-grad := Rectangle {
+                        width: 100%; height: 100%;
+                        // Rust passes the selected gradient resolved as pair 0..8;
+                        // display uses the pending index handed down in grad-sel.
+                        background: @linear-gradient(180deg, root.gradients[root.grad-sel].top 0%, root.gradients[root.grad-sel].bot 100%);
+                    }
+                    HorizontalLayout {
+                        x: 10px; y: 10px;
+                        height: 16px;
+                        spacing: 6px;
+                        alignment: start;
+                        Rectangle { width: 16px; height: 16px; border-radius: 8px; background: root.pend-accent.brighter(0.3); }
+                        Text { text: root.room-name; color: root.fg; font-family: Theme.font-ui; font-size: 10px; font-weight: 700; vertical-alignment: center; }
+                    }
+                    mini := VerticalLayout {
+                        x: 10px;
+                        y: preview.height - self.preferred-height - 40px;
+                        width: preview.width - 20px;
+                        spacing: 5px;
+                        HorizontalLayout { alignment: end; Rectangle { width: 96px; height: 18px; border-radius: 9px; background: root.bubble-fill(root.pend-accent); } }
+                        HorizontalLayout { alignment: start; Rectangle { width: 80px; height: 18px; border-radius: 9px; background: root.other-fill; } }
+                        HorizontalLayout { alignment: start; Rectangle { width: 110px; height: 18px; border-radius: 9px; background: root.other-fill; } }
+                        HorizontalLayout { alignment: end; Rectangle { width: 72px; height: 18px; border-radius: 9px; background: root.bubble-fill(root.pend-accent); } }
+                    }
+                    mini-composer := HorizontalLayout {
+                        x: 10px;
+                        y: preview.height - 32px;
+                        width: preview.width - 20px;
+                        height: 22px;
+                        spacing: 6px;
+                        Rectangle {
+                            horizontal-stretch: 1;
+                            border-radius: 11px;
+                            background: root.fg.with-alpha(0.1);
+                            Text { x: 8px; text: "Message"; color: root.fg.with-alpha(0.4); font-family: Theme.font-ui; font-size: 9px; vertical-alignment: center; height: 100%; }
+                        }
+                        Rectangle { width: 22px; border-radius: 11px; background: root.pend-accent.darker(0.15); }
+                    }
+                }
+            }
+            Rectangle { height: 8px; }
+            HorizontalLayout {
+                alignment: center;
+                reset-pill := Rectangle {
+                    width: 150px; height: 32px; border-radius: 16px;
+                    background: rp-t.pressed ? root.fg.with-alpha(0.16) : root.fg.with-alpha(0.1);
+                    Text { text: "Reset to default"; color: root.fg; font-family: Theme.font-ui; font-size: Theme.body-small; width: 100%; height: 100%; horizontal-alignment: center; vertical-alignment: center; }
+                    rp-t := TouchArea { clicked => { root.reset-pending(); } }
+                }
+            }
+            Rectangle { height: 10px; }
+            // Tinted lower section
+            section := Rectangle {
+                height: sec-col.preferred-height + 32px;
+                border-top-left-radius: 20px;
+                border-top-right-radius: 20px;
+                border-bottom-left-radius: 22px;
+                border-bottom-right-radius: 22px;
+                background: root.tint-bg(root.pend-accent, root.themed ? 0.35 : 0.06);
+                sec-col := VerticalLayout {
+                    x: 16px; y: 16px;
+                    width: section.width - 32px;
+                    spacing: 8px;
+                    Text { text: "Colors"; color: root.fg; font-family: Theme.font-ui; font-size: Theme.subtitle; font-weight: 700; }
+                    HorizontalLayout {
+                        alignment: start;
+                        spacing: 8px;
+                        for pal in ["", "#7c9fd4", "#5cb8d6", "#b48ad6", "#9aab7e", "#e0a370", "#d98aa8"] : Swatch {
+                            base: pal == "" ? Theme.accent : root.pal-color(pal);
+                            lower: root.tint-bg(pal == "" ? Theme.accent : root.pal-color(pal), 0.4);
+                            sel: root.pending-accent == pal;
+                            fg: root.fg;
+                            clicked => { root.set-accent(pal); }
+                        }
+                        custom-swatch := Rectangle {
+                            width: 38px; height: 38px;
+                            Rectangle {
+                                width: 100%; height: 100%; border-radius: 19px;
+                                background: @linear-gradient(90deg, #d96a6a 0%, #d9c76a 25%, #6ad98c 50%, #6a9ed9 75%, #b06ad9 100%);
+                            }
+                            Text { text: "+"; color: #1a1a1a; font-family: Theme.font-ui; font-size: Theme.icon-size; font-weight: 700; width: 100%; height: 100%; horizontal-alignment: center; vertical-alignment: center; }
+                            Rectangle {
+                                x: -3px; y: -3px; width: 44px; height: 44px; border-radius: 22px;
+                                border-width: 2px;
+                                border-color: root.custom-sel ? root.fg : cs-t.pressed ? root.fg.with-alpha(0.45) : transparent;
+                            }
+                            cs-t := TouchArea { clicked => {
+                                // Re-seed the sliders from the live accent when
+                                // re-opening on the custom colour (QML:357).
+                                if (root.custom-sel) {
+                                    root.pick-h = root.pend-accent.to-hsv().hue / 360.0;
+                                    root.pick-s = root.pend-accent.to-hsv().saturation;
+                                    root.pick-v = root.pend-accent.to-hsv().value;
+                                    root.pick-changed(root.pick-h, root.pick-s, root.pick-v);
+                                }
+                                root.picking = true;
+                            } }
+                        }
+                    }
+                    Rectangle { height: 4px; }
+                    Text { text: "Wallpapers"; color: root.fg; font-family: Theme.font-ui; font-size: Theme.subtitle; font-weight: 700; }
+                    HorizontalLayout {
+                        alignment: center;
+                        photo-pill := Rectangle {
+                            width: section.width - 90px; height: 38px; border-radius: 19px;
+                            background: root.pend-accent.brighter(0.35);
+                            HorizontalLayout {
+                                alignment: center;
+                                spacing: 8px;
+                                IconLabel { text: Icons.image; filled: false; color: #1a1a1a; vertical-alignment: center; }
+                                Text { text: "Choose a photo"; color: #1a1a1a; font-family: Theme.font-ui; font-size: Theme.body; font-weight: 700; vertical-alignment: center; }
+                            }
+                            TouchArea { clicked => { root.choose-photo(); } }
+                        }
+                    }
+                    grad-grid := Rectangle {
+                        property <length> cell: (sec-col.width - 16px) / 3;
+                        height: 3 * self.cell + 16px;
+                        for gi in [0, 1, 2, 3, 4, 5, 6, 7, 8] : grad-cell := Rectangle {
+                            x: mod(gi, 3) * (grad-grid.cell + 8px);
+                            y: ((gi - mod(gi, 3)) / 3) * (grad-grid.cell + 8px);
+                            width: grad-grid.cell; height: grad-grid.cell;
+                            border-radius: 12px;
+                            background: root.gradients.length == 9
+                                ? @linear-gradient(180deg, root.gradients[gi].top 0%, root.gradients[gi].bot 100%)
+                                : Theme.menu-background;
+                            border-width: root.pending-wallpaper == "grad:" + gi ? 2px : gc-t.pressed ? 2px : 0px;
+                            border-color: root.pending-wallpaper == "grad:" + gi ? root.fg : root.fg.with-alpha(0.45);
+                            gc-t := TouchArea { clicked => { root.set-wallpaper("grad:" + gi); } }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // grad-sel: index of the pending "grad:N" wallpaper, for the preview.
+    in property <int> grad-sel: 0;
+    pure function pal-color(hex: string) -> color {
+        // The seven palette entries, resolved without a string->color parser.
+        if (hex == "#7c9fd4") { return #7c9fd4; }
+        if (hex == "#5cb8d6") { return #5cb8d6; }
+        if (hex == "#b48ad6") { return #b48ad6; }
+        if (hex == "#9aab7e") { return #9aab7e; }
+        if (hex == "#e0a370") { return #e0a370; }
+        if (hex == "#d98aa8") { return #d98aa8; }
+        return Theme.accent;
+    }
+
+    // Custom colour: bottom sheet with hue/saturation/brightness sliders.
+    picker-layer := Rectangle {
+        visible: root.picking;
+        width: 100%; height: 100%;
+        scrim := Rectangle {
+            width: 100%; height: 100%;
+            background: #000000.with-alpha(0.45);
+            TouchArea { clicked => { root.picking = false; } }
+        }
+        card := Rectangle {
+            y: root.height - self.height;
+            width: 100%;
+            height: card-col.preferred-height + 26px;
+            border-top-left-radius: 20px;
+            border-top-right-radius: 20px;
+            background: Theme.popup-background.with-alpha(0.98);
+            TouchArea { }
+            card-col := VerticalLayout {
+                x: 16px; y: 10px;
+                width: card.width - 32px;
+                spacing: 12px;
+                HorizontalLayout { alignment: center; Rectangle { width: 36px; height: 4px; border-radius: 2px; background: root.fg.with-alpha(0.25); } }
+                Text { text: "Custom color"; color: root.fg; font-family: Theme.font-ui; font-size: Theme.subtitle; font-weight: 700; horizontal-alignment: center; }
+                // Hue
+                hue-strip := Rectangle {
+                    height: 18px; border-radius: 9px;
+                    background: @linear-gradient(90deg, #ff0000 0%, #ffff00 17%, #00ff00 33%, #00ffff 50%, #0000ff 67%, #ff00ff 83%, #ff0000 100%);
+                    Rectangle {
+                        x: max(0px, min(hue-strip.width - 14px, root.pick-h * (hue-strip.width - 14px)));
+                        y: 2px; width: 14px; height: 14px; border-radius: 7px;
+                        background: root.pick-color;
+                        border-width: 2px; border-color: white;
+                    }
+                    TouchArea {
+                        pointer-event(e) => {
+                            if (self.pressed || e.kind == PointerEventKind.down) {
+                                root.pick-h = max(0.0, min(1.0, self.mouse-x / self.width));
+                                root.pick-changed(root.pick-h, root.pick-s, root.pick-v);
+                            }
+                        }
+                        moved => {
+                            root.pick-h = max(0.0, min(1.0, self.mouse-x / self.width));
+                            root.pick-changed(root.pick-h, root.pick-s, root.pick-v);
+                        }
+                    }
+                }
+                // Saturation
+                sat-strip := Rectangle {
+                    height: 18px; border-radius: 9px;
+                    background: @linear-gradient(90deg, #ffffff 0%, root.pick-strip-end 100%);
+                    Rectangle {
+                        x: max(0px, min(sat-strip.width - 14px, root.pick-s * (sat-strip.width - 14px)));
+                        y: 2px; width: 14px; height: 14px; border-radius: 7px;
+                        background: root.pick-color;
+                        border-width: 2px; border-color: white;
+                    }
+                    TouchArea {
+                        pointer-event(e) => {
+                            if (self.pressed || e.kind == PointerEventKind.down) {
+                                root.pick-s = max(0.0, min(1.0, self.mouse-x / self.width));
+                                root.pick-changed(root.pick-h, root.pick-s, root.pick-v);
+                            }
+                        }
+                        moved => {
+                            root.pick-s = max(0.0, min(1.0, self.mouse-x / self.width));
+                            root.pick-changed(root.pick-h, root.pick-s, root.pick-v);
+                        }
+                    }
+                }
+                // Brightness
+                val-strip := Rectangle {
+                    height: 18px; border-radius: 9px;
+                    background: @linear-gradient(90deg, #000000 0%, root.pick-strip-end 100%);
+                    Rectangle {
+                        x: max(0px, min(val-strip.width - 14px, root.pick-v * (val-strip.width - 14px)));
+                        y: 2px; width: 14px; height: 14px; border-radius: 7px;
+                        background: root.pick-color;
+                        border-width: 2px; border-color: white;
+                    }
+                    TouchArea {
+                        pointer-event(e) => {
+                            if (self.pressed || e.kind == PointerEventKind.down) {
+                                root.pick-v = max(0.05, min(1.0, self.mouse-x / self.width));
+                                root.pick-changed(root.pick-h, root.pick-s, root.pick-v);
+                            }
+                        }
+                        moved => {
+                            root.pick-v = max(0.05, min(1.0, self.mouse-x / self.width));
+                            root.pick-changed(root.pick-h, root.pick-s, root.pick-v);
+                        }
+                    }
+                }
+                HorizontalLayout {
+                    alignment: center;
+                    spacing: 14px;
+                    Rectangle { width: 36px; height: 36px; border-radius: 18px; background: root.pick-color; }
+                    accept-pill := Rectangle {
+                        width: 104px; height: 36px; border-radius: 18px;
+                        background: root.pick-color.brighter(0.35);
+                        Text { text: "Accept"; color: #1a1a1a; font-family: Theme.font-ui; font-size: Theme.body; font-weight: 700; width: 100%; height: 100%; horizontal-alignment: center; vertical-alignment: center; }
+                        TouchArea { clicked => { root.accept-custom(); root.picking = false; } }
+                    }
+                }
+            }
+        }
+    }
+}

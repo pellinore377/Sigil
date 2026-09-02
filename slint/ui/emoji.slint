@@ -1,0 +1,114 @@
+// The one emoji picker (components/EmojiPicker.qml): the reaction drawer and
+// the attachment sheet both host this, so they cannot drift apart. The emoji
+// data arrives pre-chunked into rows of 8 from the bridge (QML loads
+// /usr/share/omarchy/shell/plugins/emojis/emojis.json — see WIRING-chat.md);
+// a flat `for` over ~1800 glyphs would defeat ListView virtualisation.
+
+import { TouchList } from "furniture.slint";
+import { Theme } from "style.slint";
+import { Icons } from "icons.slint";
+import { IconLabel } from "components.slint";
+import { EmojiItem } from "model.slint";
+
+export component EmojiPicker inherits Rectangle {
+    in property <color> fg: Theme.menu-text;
+    in property <color> accent: Theme.accent;
+    in property <color> chip: Theme.background.with-alpha(0.85);
+    /// Rows of up to 8; filtered by the bridge when `search-edited` fires.
+    in property <[[EmojiItem]]> rows;
+    /// Category jump targets: the ROW index each category starts at.
+    in property <[string]> cat-icons: ["😀", "👋", "🐵", "🍇", "🌍", "🎃", "👓", "🏧", "🏁"];
+    in property <[int]> cat-rows;
+    callback picked(string);
+    callback search-edited(string);
+
+    background: transparent;
+
+    VerticalLayout {
+        spacing: 8px;
+
+        // Search well
+        search-well := Rectangle {
+            height: 34px;
+            border-radius: 17px;
+            background: root.chip;
+            HorizontalLayout {
+                padding-left: 12px; padding-right: 10px;
+                spacing: 8px;
+                IconLabel {
+                    text: Icons.search;
+                    color: root.fg.with-alpha(0.5);
+                    font-size: Theme.body-small;
+                    vertical-alignment: center;
+                }
+                Rectangle {
+                    clip: true;
+                    horizontal-stretch: 1;
+                    search-input := TextInput {
+                        color: root.fg;
+                        font-family: Theme.font-ui; font-size: Theme.body-small;
+                        vertical-alignment: center;
+                        height: 100%; width: 100%;
+                        single-line: true;
+                        edited => { root.search-edited(self.text); }
+                    }
+                    if search-input.text == "" : Text {
+                        text: "Search emoji";
+                        color: root.fg.with-alpha(0.45);
+                        font-family: Theme.font-ui; font-size: Theme.body-small;
+                        vertical-alignment: center;
+                        height: 100%;
+                    }
+                }
+            }
+        }
+
+        grid := TouchList {
+            vertical-stretch: 1;
+            for row in root.rows : erow := Rectangle {
+                height: 44px;
+                HorizontalLayout {
+                    for em in row : cell := Rectangle {
+                        width: grid.width / 8;
+                        border-radius: 8px;
+                        background: cell-t.pressed || cell-t.has-hover
+                            ? root.accent.with-alpha(0.3) : transparent;
+                        Text {
+                            text: em.glyph;
+                            font-size: 22px;
+                            horizontal-alignment: center;
+                            vertical-alignment: center;
+                            width: 100%; height: 100%;
+                        }
+                        cell-t := TouchArea { clicked => { root.picked(em.glyph); } }
+                    }
+                }
+            }
+        }
+
+        // Category strip: tapping jumps the grid to that section.
+        HorizontalLayout {
+            alignment: center;
+            spacing: 4px;
+            for icon[ci] in root.cat-icons : cat-cell := Rectangle {
+                width: 32px; height: 32px;
+                border-radius: 10px;
+                background: cat-t.pressed || cat-t.has-hover ? root.accent.with-alpha(0.35) : transparent;
+                Text {
+                    text: icon;
+                    font-size: 15px;
+                    opacity: 0.9;
+                    horizontal-alignment: center; vertical-alignment: center;
+                    width: 100%; height: 100%;
+                }
+                cat-t := TouchArea {
+                    clicked => {
+                        if (ci < root.cat-rows.length) {
+                            grid.viewport-y = -44px * root.cat-rows[ci];
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

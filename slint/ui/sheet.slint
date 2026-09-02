@@ -1,0 +1,311 @@
+// Message action sheet — MessageSheet.qml. The QML frosts the page behind a
+// blurred snapshot; Slint has no arbitrary-content blur, so the scrim is a
+// deep dim instead (noted in WIRING-chat.md). The pressed bubble is re-drawn
+// as a spotlight card at a computed resting place, the quick-reaction pill
+// above it and the action menu below, with a delete-confirm bottom sheet and
+// the emoji drawer sharing the same host.
+
+import { Theme } from "style.slint";
+import { Icons } from "icons.slint";
+import { IconLabel } from "components.slint";
+import { MenuEntry } from "furniture.slint";
+import { TimelineRow, EmojiItem } from "model.slint";
+import { EmojiPicker } from "emoji.slint";
+
+export component MessageSheet inherits Rectangle {
+    in property <color> fg: Theme.menu-text;
+    in property <color> accent: Theme.accent;
+    in property <color> surface: Theme.popup-background.with-alpha(0.98);
+    in property <TimelineRow> item;
+    in-out property <bool> open: false;
+    in-out property <bool> drawer-open: false;
+    in-out property <bool> confirm-open: false;
+    in property <[[EmojiItem]]> emoji-rows;
+    in property <[int]> emoji-cat-rows;
+
+    // Where the bubble was pressed, in window coordinates (menu-requested args).
+    in-out property <length> hole-x;
+    in-out property <length> hole-y;
+    in-out property <length> hole-w;
+    in-out property <length> hole-h;
+
+    callback act(string /*action*/, string /*event-id*/);
+    callback react(string /*event-id*/, string /*key*/);
+    callback emoji-search(string);
+
+    public function open-for(x: length, y: length, w: length, h: length) {
+        root.hole-x = x; root.hole-y = y; root.hole-w = w; root.hole-h = h;
+        root.drawer-open = false;
+        root.confirm-open = false;
+        root.open = true;
+    }
+
+    // openFor's analytic layout: pill above, copy, menu below, clamped to the page.
+    property <length> pill-h: 48px;
+    property <length> gap: 10px;
+    /// Built by the bridge when the sheet opens — MessageSheet.actionsFor ported
+    /// to Rust, one place instead of two (slint/src/…, see WIRING-chat.md).
+    in property <[MenuEntry]> actions;
+    property <int> action-count: root.actions.length;
+    property <length> menu-h: root.action-count * 38px + 16px;
+    property <length> content-h: root.pill-h + root.gap + root.hole-h + root.gap + root.menu-h;
+    property <length> dest-y: max(12px + root.pill-h + root.gap,
+        min(root.hole-y, root.height - root.content-h - 12px + root.pill-h + root.gap));
+    property <length> card-x: max(12px, min(
+        item.is-own ? root.hole-x + root.hole-w - 220px : root.hole-x,
+        root.width - 220px - 12px));
+    // The pill clamps with its OWN width, not the menu's (MessageSheet.qml:234).
+    property <length> pill-w: pill-row-probe;
+    property <length> pill-x: max(12px, min(
+        item.is-own ? root.hole-x + root.hole-w - root.pill-w : root.hole-x,
+        root.width - root.pill-w - 12px));
+    // 7 cells at 36 + 6×6 spacing + 20 = 292px, static so the clamp needs no id.
+    property <length> pill-row-probe: 7 * 36px + 6 * 6px + 20px;
+
+    // 130ms fade on open/close; pill and menu also scale in like the QML.
+    property <float> show: root.open ? 1.0 : 0.0;
+    animate show { duration: 130ms; easing: cubic-bezier(0.33, 1, 0.68, 1); }
+    visible: root.open || self.show > 0.01;
+    opacity: self.show;
+    background: transparent;
+
+    // Dim scrim (the QML blurs; we dim deeper to compensate).
+    scrim := Rectangle {
+        width: 100%; height: 100%;
+        background: #000000.with-alpha(0.62);
+        TouchArea {
+            clicked => {
+                if (root.drawer-open) { root.drawer-open = false; }
+                else if (root.confirm-open) { root.confirm-open = false; }
+                else { root.open = false; }
+            }
+        }
+    }
+
+    // Spotlight copy of the message.
+    copy-card := Rectangle {
+        x: root.hole-x;
+        y: root.dest-y;
+        animate y { duration: 220ms; easing: cubic-bezier(0.34, 1.3, 0.64, 1); }
+        width: root.hole-w;
+        height: root.hole-h;
+        border-radius: 16px;
+        background: root.surface.with-alpha(0.97);
+        clip: true;
+        Text {
+            x: 10px; y: 10px;
+            width: copy-card.width - 20px;
+            height: copy-card.height - 20px;
+            text: item.kind == "poll" ? item.poll-question
+                : item.kind == "location" ? (item.location-label != "" ? item.location-label : "Location")
+                : item.body;
+            color: root.fg;
+            font-family: Theme.font-ui; font-size: Theme.body;
+            wrap: word-wrap;
+            overflow: elide;
+        }
+    }
+
+    // Quick reactions pill. The QML reacts with "❤️" (U+2764 U+FE0F) — the key
+    // must match the desktop's; femtovg draws the VS16 pair as tofu, so the
+    // pill DISPLAYS the bare heart while SENDING the emoji-presentation key.
+    if !root.drawer-open : pill := Rectangle {
+        x: root.pill-x;
+        y: root.dest-y - root.gap - self.height;
+        // Scales in on X from 0.4 (MessageSheet.qml:227).
+        transform-origin: { x: self.width / 2, y: self.height / 2 };
+        transform-scale-x: 0.4 + 0.6 * root.show;
+        width: root.pill-w;
+        height: root.pill-h;
+        border-radius: root.pill-h / 2;
+        background: root.surface;
+        pill-row := HorizontalLayout {
+            spacing: 6px;
+            alignment: center;
+            for e in ["👍", "❤️", "😂", "😮", "😢", "😡"] : q-cell := Rectangle {
+                width: 36px; height: 36px; border-radius: 18px;
+                y: (root.pill-h - 36px) / 2;
+                background: q-t.pressed || q-t.has-hover ? root.accent.with-alpha(0.32) : transparent;
+                Text {
+                    text: e == "❤️" ? "❤" : e;
+                    font-size: 19px;
+                    horizontal-alignment: center; vertical-alignment: center;
+                    width: 100%; height: 100%;
+                }
+                q-t := TouchArea {
+                    clicked => { root.react(item.event-id, e); root.open = false; }
+                }
+            }
+            more-cell := Rectangle {
+                width: 36px; height: 36px; border-radius: 18px;
+                y: (root.pill-h - 36px) / 2;
+                background: more-t.pressed || more-t.has-hover ? root.accent.with-alpha(0.32) : transparent;
+                IconLabel {
+                    text: Icons.emojiMore; filled: false;
+                    color: root.fg; font-size: 19px;
+                    width: 100%; height: 100%;
+                }
+                more-t := TouchArea { clicked => { root.drawer-open = true; } }
+            }
+        }
+    }
+
+    // Action menu. Rows come from the same rules as MessageSheet.actionsFor.
+    // Stays visible behind the delete-confirm (only the emoji drawer hides it).
+    if !root.drawer-open : menu-box := Rectangle {
+        x: root.card-x;
+        y: min(root.dest-y + root.hole-h + root.gap, root.height - self.height - 12px);
+        // Scales in on Y from its top edge (MessageSheet.qml:274).
+        transform-origin: { x: self.width / 2, y: 0px };
+        transform-scale-y: 0.85 + 0.15 * root.show;
+        width: 220px;
+        // preferred-height already contains the 8px paddings (= QML's +16).
+        height: menu-col.preferred-height;
+        border-radius: 16px;
+        background: root.surface;
+        menu-col := VerticalLayout {
+            padding: 8px;
+            for entry in root.actions : a-row := Rectangle {
+                height: 38px;
+                border-radius: 10px;
+                background: a-t.pressed || a-t.has-hover ? root.fg.with-alpha(0.08) : transparent;
+                HorizontalLayout {
+                    padding-left: 10px;
+                    spacing: 12px;
+                    if entry.icon != "" : IconLabel {
+                        text: entry.icon; filled: false;
+                        color: entry.danger ? Theme.urgent : root.fg.with-alpha(0.75);
+                        vertical-alignment: center;
+                    }
+                    Text {
+                        text: entry.t;
+                        color: entry.danger ? Theme.urgent : root.fg;
+                        font-family: Theme.font-ui; font-size: Theme.body;
+                        vertical-alignment: center;
+                        overflow: elide;
+                        width: 150px;
+                    }
+                }
+                a-t := TouchArea {
+                    clicked => {
+                        if (entry.a == "redact") { root.confirm-open = true; }
+                        else { root.open = false; root.act(entry.a, item.event-id); }
+                    }
+                }
+            }
+        }
+    }
+
+    // The confirm draws its own dim over the sheet (QML: #000000 @ 0.5).
+    if root.confirm-open : Rectangle {
+        width: 100%; height: 100%;
+        background: #000000.with-alpha(0.5);
+        TouchArea { clicked => { root.confirm-open = false; } }
+    }
+
+    // Delete confirm: redactions are permanent, so it slides up and asks.
+    if root.confirm-open : confirm-sheet := Rectangle {
+        y: root.height - self.height;
+        width: 100%;
+        // preferred-height already carries the 10/16 paddings (= QML's +26).
+        height: conf-col.preferred-height;
+        border-top-left-radius: 20px;
+        border-top-right-radius: 20px;
+        background: root.surface;
+        conf-col := VerticalLayout {
+            padding: 16px;
+            padding-top: 10px;
+            spacing: 10px;
+            Rectangle {
+                height: 4px;
+                grab := Rectangle {
+                    x: (confirm-sheet.width - 32px - 36px) / 2;
+                    width: 36px; height: 4px; border-radius: 2px;
+                    background: root.fg.with-alpha(0.25);
+                }
+            }
+            Text {
+                text: "Delete message?";
+                color: root.fg;
+                font-family: Theme.font-ui; font-size: Theme.subtitle; font-weight: 700;
+                horizontal-alignment: center;
+            }
+            Text {
+                text: "This can't be undone — the message is removed for everyone.";
+                color: root.fg.with-alpha(0.6);
+                font-family: Theme.font-ui; font-size: Theme.caption;
+                horizontal-alignment: center;
+                wrap: word-wrap;
+            }
+            HorizontalLayout {
+                alignment: center;
+                spacing: 12px;
+                cancel-btn := Rectangle {
+                    width: 110px; height: 40px; border-radius: 20px;
+                    background: Theme.background;
+                    Text {
+                        text: "Cancel"; color: root.fg;
+                        font-family: Theme.font-ui; font-size: Theme.body;
+                        horizontal-alignment: center; vertical-alignment: center;
+                        width: 100%; height: 100%;
+                    }
+                    TouchArea { clicked => { root.confirm-open = false; } }
+                }
+                delete-btn := Rectangle {
+                    width: 110px; height: 40px; border-radius: 20px;
+                    background: Theme.urgent;
+                    Text {
+                        text: "Delete"; color: Theme.background;
+                        font-family: Theme.font-ui; font-size: Theme.body; font-weight: 700;
+                        horizontal-alignment: center; vertical-alignment: center;
+                        width: 100%; height: 100%;
+                    }
+                    TouchArea {
+                        clicked => {
+                            root.confirm-open = false;
+                            root.open = false;
+                            root.act("redact", item.event-id);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Emoji drawer — the same EmojiPicker the attachment sheet uses.
+    if root.drawer-open : drawer := Rectangle {
+        y: root.height - self.height;
+        width: 100%;
+        height: 360px;
+        border-top-left-radius: 20px;
+        border-top-right-radius: 20px;
+        background: root.surface;
+        TouchArea { }
+        VerticalLayout {
+            padding: 12px;
+            padding-bottom: 8px;
+            spacing: 8px;
+            Rectangle {
+                height: 4px;
+                Rectangle {
+                    x: (drawer.width - 24px - 36px) / 2;
+                    width: 36px; height: 4px; border-radius: 2px;
+                    background: root.fg.with-alpha(0.25);
+                }
+            }
+            EmojiPicker {
+                vertical-stretch: 1;
+                fg: root.fg;
+                accent: root.accent;
+                rows: root.emoji-rows;
+                cat-rows: root.emoji-cat-rows;
+                picked(e) => {
+                    root.react(item.event-id, e);
+                    root.drawer-open = false;
+                    root.open = false;
+                }
+                search-edited(q) => { root.emoji-search(q); }
+            }
+        }
+    }
+}

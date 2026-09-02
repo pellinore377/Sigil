@@ -1,0 +1,267 @@
+// Every struct that crosses the Rust↔Slint boundary, in one place so pages
+// and the bridge cannot disagree. Field meanings follow the engine item
+// schema (core/docs/protocol.md) via Service.qml's decorate().
+
+export struct ReactionChip {
+    key: string,
+    count: int,
+    mine: bool,
+    senders-text: string,
+}
+
+export struct ReplyRef {
+    event-id: string,
+    sender-name: string,
+    kind: string,
+    body: string,
+    tint: color,
+}
+
+export struct PollOption {
+    id: string,
+    text: string,
+    votes: int,
+    mine: bool,
+    winner: bool,
+}
+
+/// One reader face on an own message's mark line (BubbleDelegate's MarkStack).
+export struct ReaderRow {
+    avatar: image,
+    initials: string,
+    tint: color,
+}
+
+/// One line of a document preview card, with its heading level (0 = body).
+export struct DocLine {
+    text: string,
+    level: int,
+}
+
+/// One character of an animated SigilText run (per-glyph motion).
+export struct FxChar {
+    ch: string,
+    color: color,
+    has-color: bool,
+    anim: string,   // "" wave shake pulse glow barrel flip
+    idx: int,
+}
+
+/// A slice of a message with fenced code: plain text runs and code runs
+/// (the engine's `parts`; highlighting markup is flattened — no rich text).
+export struct MsgPart {
+    t: string,      // "text" | "code"
+    body: string,
+    lang: string,
+}
+
+export struct TimelineRow {
+    id: string,
+    event-id: string,
+    kind: string,        // text notice emote image video audio voice file sticker
+                         // poll location contact redacted utd state dayDivider unsupported
+    body: string,
+    rich-body: styled-text,  // parsed Rust-side (StyledText::from_markdown)
+    has-rich: bool,          // false = plain body path
+    fx-chars: [FxChar],      // non-empty: per-character animated run
+    html-ish: bool,      // body carries formatting the effects pass renders
+    sender: string,
+    sender-name: string,
+    initials: string,
+    tint: color,
+    avatar: image,
+    show-header: bool,   // sender name row (group start, not own, not dm)
+    show-avatar: bool,
+    is-own: bool,
+    group-start: bool,
+    group-end: bool,
+    stamp: string,
+    day-label: string,   // non-empty: draw a session divider above this row
+    edited: bool,
+    highlighted: bool,
+    send-state: string,  // sent | sending | failed
+    send-error: string,
+    read-count: int,
+    media-icon: string,
+    // media bodies
+    thumb: image,
+    thumb-w: length,
+    thumb-h: length,
+    media-filename: string,
+    gif-frames: [image],   // >1: cycle these instead of the still (AnimatedImage)
+    gif-delays: [int],     // per-frame ms, same length
+    media-size: string,
+    duration: string,
+    reply: ReplyRef,
+    has-reply: bool,
+    reactions: [ReactionChip],
+    thread-root: string,
+    thread-count: int,
+    thread-latest: string,   // latest reply body for the thread chip preview
+    parts: [MsgPart],        // non-empty: the body is laid out as parts (code)
+    // link preview card (link.preview, cached per url)
+    link-has: bool,
+    link-only: bool,         // the body IS the url: the card stands alone
+    link-title: string,
+    link-desc: string,
+    link-domain: string,
+    link-initial: string,   // first letter of the domain (Slint can't substring)
+    link-url: string,
+    link-img: image,
+    link-iw: float,
+    link-ih: float,
+    link-accent: color,
+    link-is-video: bool,
+    can-edit: bool,
+    can-reply: bool,
+    can-redact: bool,
+    can-react: bool,
+    utd: bool,
+    // voice / audio
+    waveform: [float],
+    voice-playing: bool,
+    voice-frac: float,     // playback progress 0..1
+    // poll (MSC3381)
+    poll-question: string,
+    poll-options: [PollOption],
+    poll-total: int,
+    poll-ended: bool,
+    poll-multi: bool,
+    poll-max: int,
+    poll-disclosed: bool,
+    poll-vote-sum: int,   // Σ answer votes (≥ voters when multi-select)
+    // contact card
+    contact-name: string,
+    contact-id: string,
+    contact-initials: string,
+    contact-tint: color,
+    // location
+    location-label: string,
+    location-live: bool,
+    location-ended: bool,
+    location-expires-s: int,   // epoch seconds the live share ends; 0 = none
+    location-map: image,       // engine-composited static map (location.map)
+    // audio (music) card — audio.info's art + palette
+    audio-art: image,
+    audio-have-art: bool,
+    audio-tone: color,
+    audio-ink: color,
+    // read marker / receipts
+    doc-lines: [DocLine],
+    doc-chip: string,        // TEXT / PDF / …; non-empty draws the page card
+    doc-thumb: image,        // rendered page (pdf) when the engine returns one
+    has-doc-image: bool,
+    is-read-marker: bool,
+    owns-receipt: bool,    // this own message wears the sent/read mark
+    receipt-count: int,
+    readers: [ReaderRow],  // stacked faces on the mark line
+    pinned: bool,
+}
+
+export struct RoomRow {
+    id: string,
+    name: string,
+    initials: string,
+    avatar: image,
+    tint: color,
+    preview: string,
+    preview-icon: string,
+    stamp: string,
+    badge: string,
+    badge-urgent: bool,
+    unread: bool,
+    is-favourite: bool,
+    is-low-priority: bool,
+    is-encrypted: bool,
+    has-call: bool,
+    is-invite: bool,
+    is-typing: bool,
+    is-dm: bool,
+    topic: string,
+    member-count: int,
+    draft: string,       // unsent composer text: red italic "Draft:" preview
+}
+
+export struct MemberRow {
+    user-id: string,
+    display-name: string,
+    initials: string,
+    avatar: image,
+    tint: color,
+    power-level: int,
+    role: string,        // Admin | Moderator | ""
+    membership: string,  // join | invite | ban | leave
+    is-name-ambiguous: bool,
+}
+
+export struct ThreadRow {
+    root-id: string,
+    sender-name: string,
+    initials: string,
+    tint: color,
+    avatar: image,
+    body: string,
+    reply-count: int,
+    last-ts-label: string,
+}
+
+export struct UserRow {
+    user-id: string,
+    display-name: string,
+    initials: string,
+    avatar: image,
+    tint: color,
+    saved: bool,
+}
+
+// room.settings in one struct: everything the settings pages read.
+export struct RoomSettingsModel {
+    room-id: string,
+    name: string,
+    topic: string,
+    canonical-alias: string,
+    initials: string,
+    avatar: image,
+    tint: color,
+    is-space: bool,
+    is-dm: bool,
+    join-rule: string,          // public | invite | knock | restricted
+    history-visibility: string, // world_readable | shared | invited | joined
+    encrypted: bool,
+    notification-mode: string,  // "" = account default | all | mentions | mute
+    my-power-level: int,
+    member-count: int,
+    can-edit-info: bool,
+    can-edit-permissions: bool,
+    can-invite: bool,
+    can-kick: bool,
+    can-ban: bool,
+    is-favourite: bool,
+    is-low-priority: bool,
+}
+
+
+export struct DeviceRow {
+    id: string,
+    label: string,
+    selected: bool,
+}
+
+export struct CallParticipant {
+    identity: string,
+    display-name: string,
+    initials: string,
+    tint: color,
+    avatar: image,
+    speaking: bool,
+    mic-muted: bool,
+    camera-on: bool,
+    screen-sharing: bool,
+    frame: image,        // live video frame, refreshed by the bridge
+    has-frame: bool,
+}
+
+export struct EmojiItem {
+    glyph: string,
+    name: string,
+}

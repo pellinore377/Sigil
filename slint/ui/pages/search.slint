@@ -1,0 +1,208 @@
+// SearchPage — conversation search: text results while typing; media and
+// links when idle (SearchPage.qml). The collect() pass over the open timeline
+// runs in the bridge; rows arrive as TimelineRow projections — text results
+// carry sender-name + body, images carry thumb, links carry the url in body.
+
+import { Theme } from "../style.slint";
+import { Icons } from "../icons.slint";
+import { IconLabel, ActionButton, Avatar } from "../components.slint";
+import { TimelineRow } from "../model.slint";
+
+export component SearchPage inherits Rectangle {
+    in property <color> fg: Theme.menu-text;
+    in property <[TimelineRow]> results;    // text matches for the query
+    in property <[TimelineRow]> images;     // newest images, idle view
+    in property <[TimelineRow]> links;      // newest links, idle view
+    in property <bool> searching;           // query ≥ 2 chars
+
+    callback closed;
+    callback search-edited(string);
+    callback jump-to(string);
+    callback open-image(string);            // eventId
+    callback open-link(string);             // url (in body)
+
+    public function reset() { search-input.text = ""; }
+
+    background: Theme.menu-background.brighter(0.35);
+
+    VerticalLayout {
+        // Header: back + search pill filling the rest.
+        header := Rectangle {
+            height: 54px;
+            HorizontalLayout {
+                padding-left: 6px; padding-right: 14px;
+                spacing: 4px;
+                Rectangle {
+                    width: 44px;
+                    ActionButton {
+                        y: (54px - self.height) / 2;
+                        width: 44px; height: 44px;
+                        icon: Icons.back; filled: false;
+                        foreground: root.fg;
+                        clicked => { root.closed(); }
+                    }
+                }
+                pill := Rectangle {
+                    y: (54px - 36px) / 2;
+                    height: 36px;
+                    border-radius: 18px;
+                    background: root.fg.with-alpha(0.07);
+                    border-width: 1px;
+                    border-color: search-input.has-focus ? Theme.accent.with-alpha(0.4) : transparent;
+                    horizontal-stretch: 1;
+                    HorizontalLayout {
+                        padding-left: 14px; padding-right: 12px;
+                        Rectangle {
+                            clip: true;
+                            search-input := TextInput {
+                                color: root.fg;
+                                font-family: Theme.font-ui;
+                                font-size: Theme.body;
+                                vertical-alignment: center;
+                                height: 100%; width: 100%;
+                                single-line: true;
+                                edited => { root.search-edited(self.text); }
+                            }
+                            if search-input.text == "" : Text {
+                                text: "Search conversation";
+                                color: root.fg.with-alpha(0.45);
+                                font-family: Theme.font-ui;
+                                font-size: Theme.body;
+                                vertical-alignment: center;
+                                height: 100%;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        content := Flickable {
+            vertical-stretch: 1;
+            viewport-height: content-l.preferred-height + 20px;
+            content-l := VerticalLayout {
+                width: content.width;
+                spacing: 4px;
+
+                // Text results while typing.
+                for r in (root.searching ? root.results : []) : rrow := Rectangle {
+                    height: 52px;
+                    Rectangle {
+                        x: 10px; width: rrow.width - 20px;
+                        y: 4px; height: rrow.height - 8px;
+                        border-radius: 12px;
+                        background: rrow-t.pressed || rrow-t.has-hover ? root.fg.with-alpha(0.05) : transparent;
+                    }
+                    VerticalLayout {
+                        x: 18px;
+                        width: rrow.width - 36px;
+                        alignment: center;
+                        Text {
+                            text: r.is-own ? "You" : r.sender-name;
+                            color: root.fg.with-alpha(0.6);
+                            font-family: Theme.font-ui;
+                            font-size: Theme.caption;
+                            font-weight: 700;
+                            overflow: elide;
+                        }
+                        Text {
+                            text: r.body;
+                            color: root.fg;
+                            font-family: Theme.font-ui;
+                            font-size: Theme.body-small;
+                            overflow: elide;
+                        }
+                    }
+                    rrow-t := TouchArea { clicked => { root.jump-to(r.event-id); } }
+                }
+                if root.searching && root.results.length == 0 : Rectangle {
+                    height: 60px;
+                    Text {
+                        text: "No matches";
+                        color: root.fg.with-alpha(0.5);
+                        font-family: Theme.font-ui;
+                        font-size: Theme.body;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                        width: 100%; height: 100%;
+                    }
+                }
+
+                // Idle: images grid (3-up rows via flow of fixed cells).
+                if !root.searching && root.images.length > 0 : Text {
+                    text: "Images";
+                    color: root.fg;
+                    font-family: Theme.font-ui;
+                    font-size: Theme.subtitle;
+                    font-weight: 700;
+                    x: 16px;
+                    height: 36px;
+                    vertical-alignment: center;
+                }
+                if !root.searching : img-flow := Rectangle {
+                    // SearchPage.qml: a centred Flow, columns following the width.
+                    property <int> cols: max(1, floor((self.width - 28px) / 90px));
+                    property <length> x0: (self.width - self.cols * 90px) / 2;
+                    height: root.images.length == 0 ? 0px
+                        : (floor((root.images.length - 1) / self.cols) + 1) * 90px;
+                    for img[i] in root.images : cell := Rectangle {
+                        x: img-flow.x0 + mod(i, img-flow.cols) * 90px;
+                        y: floor(i / img-flow.cols) * 90px;
+                        width: 84px; height: 84px;
+                        border-radius: 10px;
+                        clip: true;
+                        background: root.fg.with-alpha(0.08);
+                        if img.thumb.width > 0 : Image {
+                            source: img.thumb;
+                            image-fit: cover;
+                            width: 100%; height: 100%;
+                        }
+                        TouchArea { clicked => { root.open-image(img.event-id); } }
+                    }
+                }
+
+                // Idle: links.
+                if !root.searching && root.links.length > 0 : Text {
+                    text: "Links";
+                    color: root.fg;
+                    font-family: Theme.font-ui;
+                    font-size: Theme.subtitle;
+                    font-weight: 700;
+                    x: 16px;
+                    height: 38px;
+                    vertical-alignment: center;
+                }
+                for l in (root.searching ? [] : root.links) : lrow := Rectangle {
+                    height: 56px;
+                    Rectangle {
+                        x: 14px; width: lrow.width - 28px;
+                        y: 4px; height: lrow.height - 8px;
+                        border-radius: 14px;
+                        background: root.fg.with-alpha(0.06);
+                    }
+                    VerticalLayout {
+                        x: 24px;
+                        width: lrow.width - 48px;
+                        alignment: center;
+                        Text {
+                            text: l.body;   // the url
+                            color: root.fg;
+                            font-family: Theme.font-ui;
+                            font-size: Theme.body-small;
+                            overflow: elide;
+                        }
+                        Text {
+                            text: l.is-own ? "You" : l.sender-name;
+                            color: root.fg.with-alpha(0.5);
+                            font-family: Theme.font-ui;
+                            font-size: Theme.caption;
+                            overflow: elide;
+                        }
+                    }
+                    // The body may be middle-elided; the tap uses the full url.
+                    TouchArea { clicked => { root.open-link(l.link-url != "" ? l.link-url : l.body); } }
+                }
+            }
+        }
+    }
+}

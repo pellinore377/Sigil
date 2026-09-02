@@ -1,0 +1,93 @@
+// Sign-in: homeserver + SSO in the browser, the engine finishing on its
+// localhost redirect — components/LoginPage.qml without the engine-supervision
+// states, which cannot happen when the engine is linked in-process.
+
+import { Theme } from "style.slint";
+import { Icons } from "icons.slint";
+import { IconLabel, SButton, TextWell } from "components.slint";
+
+export component LoginPage inherits Rectangle {
+    in property <bool> pending;       // loginPending: browser is open
+    in property <bool> restoring;     // session restore in flight
+    in property <string> error;
+    callback sign-in(homeserver: string);
+    callback open-again;
+    callback cancel-login;
+
+    background: Theme.menu-background;
+
+    VerticalLayout {
+        alignment: center;
+        padding-left: 40px; padding-right: 40px;
+        spacing: Theme.sp-xl;
+
+        IconLabel {
+            text: Icons.chat;
+            font-size: 44px;
+            color: Theme.menu-text;
+            horizontal-alignment: center;
+        }
+        Text {
+            text: "Sign in to Sigil";
+            color: Theme.menu-text;
+            font-family: Theme.font-ui;
+            font-size: Theme.heading;
+            font-weight: 700;
+            horizontal-alignment: center;
+        }
+
+        if root.restoring : Text {
+            text: "Restoring session…";
+            color: Theme.menu-text.with-alpha(0.7);
+            font-family: Theme.font-ui;
+            font-size: Theme.body;
+            horizontal-alignment: center;
+        }
+
+        if !root.restoring : VerticalLayout {
+            spacing: Theme.sp-md;
+            Text {
+                text: "Homeserver";
+                color: Theme.menu-text.with-alpha(0.6);
+                font-family: Theme.font-ui;
+                font-size: Theme.caption;
+            }
+            hs := TextWell {
+                placeholder: "example.org";
+                enabled: !root.pending;
+                accepted => { if (self.text != "") { root.sign-in(self.text); } }
+            }
+            HorizontalLayout {
+                alignment: center;
+                SButton {
+                    text: root.pending ? "Waiting for the browser…" : "Sign in with SSO";
+                    icon: root.pending ? "" : Icons.login;
+                    enabled: !root.pending && hs.text != "";
+                    clicked => { root.sign-in(hs.text); }
+                }
+            }
+            if root.pending : HorizontalLayout {
+                alignment: center;
+                spacing: Theme.sp-lg;
+                SButton { text: "Open link again"; clicked => { root.open-again(); } }
+                SButton { text: "Cancel"; clicked => { root.cancel-login(); } }
+            }
+            if root.pending : Text {
+                text: "Complete the sign-in in your browser. This screen updates automatically.";
+                color: Theme.menu-text.with-alpha(0.55);
+                font-family: Theme.font-ui;
+                font-size: Theme.body-small;
+                horizontal-alignment: center;
+                wrap: word-wrap;
+            }
+            if root.error != "" : Text {
+                text: root.error;
+                color: Theme.urgent;
+                font-family: Theme.font-ui;
+                font-size: Theme.body-small;
+                horizontal-alignment: center;
+                wrap: word-wrap;
+            }
+        }
+    }
+}

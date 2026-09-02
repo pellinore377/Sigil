@@ -1,0 +1,137 @@
+// ForwardPage — search + chat list; pick a destination for the payload.
+// "forward" sends straight away (bridge holds the payload); "attach" hands
+// the chosen room back to stage files instead (ForwardPage.qml).
+
+import { TouchList } from "../furniture.slint";
+import { Theme } from "../style.slint";
+import { Icons } from "../icons.slint";
+import { IconLabel, ActionButton, Avatar } from "../components.slint";
+import { RoomRow } from "../model.slint";
+
+export component ForwardPage inherits Rectangle {
+    in property <color> fg: Theme.menu-text;
+    in property <string> mode: "forward";   // forward | attach
+    /// Joined, non-space, non-invite rooms, recency-sorted and search-filtered
+    /// by the bridge.
+    in property <[RoomRow]> chats;
+
+    callback closed;
+    callback search-edited(string);
+    /// The chosen destination; the bridge forwards or stages per mode.
+    callback picked(string);
+
+    public function reset() { search-input.text = ""; }
+
+    background: Theme.menu-background.brighter(0.35);
+
+    VerticalLayout {
+        header := Rectangle {
+            height: 54px;
+            HorizontalLayout {
+                padding-left: 6px;
+                spacing: 6px;
+                Rectangle {
+                    width: 44px;
+                    ActionButton {
+                        y: (54px - self.height) / 2;
+                        width: 44px; height: 44px;
+                        icon: Icons.close; filled: false;
+                        foreground: root.fg;
+                        clicked => { root.closed(); }
+                    }
+                }
+                Text {
+                    text: root.mode == "attach" ? "Send contact" : "Forward";
+                    color: root.fg;
+                    font-family: Theme.font-ui;
+                    font-size: Theme.heading;
+                    font-weight: 700;
+                    vertical-alignment: center;
+                    horizontal-stretch: 1;
+                }
+            }
+        }
+
+        Rectangle {
+            height: 46px;
+            HorizontalLayout {
+                padding-left: 14px; padding-right: 14px; padding-bottom: 8px;
+                pill := Rectangle {
+                    border-radius: self.height / 2;
+                    background: root.fg.with-alpha(0.07);
+                    border-width: 1px;
+                    border-color: search-input.has-focus ? Theme.accent.with-alpha(0.4) : transparent;
+                    HorizontalLayout {
+                        padding-left: 14px; padding-right: 12px;
+                        spacing: 8px;
+                        IconLabel {
+                            text: Icons.search;
+                            filled: false;
+                            color: root.fg.with-alpha(0.5);
+                            vertical-alignment: center;
+                        }
+                        Rectangle {
+                            clip: true;
+                            horizontal-stretch: 1;
+                            search-input := TextInput {
+                                color: root.fg;
+                                font-family: Theme.font-ui;
+                                font-size: Theme.body;
+                                vertical-alignment: center;
+                                height: 100%; width: 100%;
+                                single-line: true;
+                                edited => { root.search-edited(self.text); }
+                            }
+                            if search-input.text == "" : Text {
+                                text: "Search chats";
+                                color: root.fg.with-alpha(0.45);
+                                font-family: Theme.font-ui;
+                                font-size: Theme.body;
+                                vertical-alignment: center;
+                                height: 100%;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        chats-list := TouchList {
+            vertical-stretch: 1;
+            for room in root.chats : frow := Rectangle {
+                height: 56px;
+                Rectangle {
+                    x: 10px; width: frow.width - 20px;
+                    y: 4px; height: frow.height - 8px;
+                    border-radius: 12px;
+                    background: frow-t.pressed || frow-t.has-hover ? root.fg.with-alpha(0.05) : transparent;
+                }
+                HorizontalLayout {
+                    padding-left: 16px; padding-right: 12px;
+                    spacing: 12px;
+                    Rectangle {
+                        width: 38px;
+                        Avatar {
+                            y: (frow.height - self.height) / 2;
+                            size: 38px;
+                            source: room.avatar;
+                            initials: room.initials;
+                            tint: room.tint;
+                        }
+                    }
+                    Text {
+                        text: room.name != "" ? room.name : room.id;
+                        color: root.fg;
+                        font-family: Theme.font-ui;
+                        font-size: Theme.body;
+                        font-weight: 700;
+                        vertical-alignment: center;
+                        overflow: elide;
+                        horizontal-stretch: 1;
+                    }
+                }
+                frow-t := TouchArea { clicked => { root.picked(room.id); } }
+            }
+        }
+    }
+}

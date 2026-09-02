@@ -1,0 +1,148 @@
+// MembersPage — mobile/MembersPage.qml. The people in a room or a space,
+// optionally narrowed to one role: filter-level -1 shows everyone; 100 or 50
+// narrows to that role, which is what makes "Admins 1" on the roles page a
+// link — the same list, filtered (by the bridge, which owns the model).
+
+import { TouchList } from "../furniture.slint";
+import { Theme } from "../style.slint";
+import { Icons } from "../icons.slint";
+import { IconLabel, ActionButton, Avatar } from "../components.slint";
+import { MemberRow } from "../model.slint";
+
+export component MembersPage inherits Rectangle {
+    in property <color> fg: Theme.menu-text;
+    /// Already filtered to filter-level by the bridge.
+    in property <[MemberRow]> members;
+    /// -1 everyone; 100 admins; 50 moderators. Display only — the bridge filters.
+    in property <int> filter-level: -1;
+    /// Unfiltered count, so "Loading…" and "nobody has this role" stay distinct.
+    in property <int> all-count;
+    callback closed;
+    callback invite;
+
+    property <string> title: root.filter-level >= 100 ? "Admins"
+                           : root.filter-level >= 50 ? "Moderators" : "Members";
+    background: transparent;
+
+    VerticalLayout {
+        header := Rectangle {
+            height: 56px;
+            HorizontalLayout {
+                padding-left: 6px; padding-right: 6px;
+                spacing: 6px;
+                Rectangle {
+                    width: 44px;
+                    ActionButton {
+                        y: (56px - self.height) / 2;
+                        width: 44px; height: 44px;
+                        icon: Icons.back; filled: false;
+                        foreground: root.fg;
+                        clicked => { root.closed(); }
+                    }
+                }
+                VerticalLayout {
+                    alignment: center;
+                    horizontal-stretch: 1;
+                    Text {
+                        text: root.title;
+                        color: root.fg;
+                        font-family: Theme.font-ui; font-size: Theme.heading;
+                        font-weight: 700;
+                        overflow: elide;
+                    }
+                    // Counts go in the subtitle, worded unconditionally.
+                    Text {
+                        text: root.members.length == 1 ? "1 person" : root.members.length + " people";
+                        color: root.fg.with-alpha(0.55);
+                        font-family: Theme.font-ui; font-size: Theme.caption;
+                        overflow: elide;
+                    }
+                }
+                if root.filter-level < 0 : Rectangle {
+                    width: 44px;
+                    ActionButton {
+                        y: (56px - self.height) / 2;
+                        width: 44px; height: 44px;
+                        icon: Icons.personAdd; filled: false;
+                        foreground: root.fg;
+                        clicked => { root.invite(); }
+                    }
+                }
+            }
+        }
+
+        ground := Rectangle {
+            vertical-stretch: 1;
+            // Conversation-style ground: menu.background ÷1.35 (Slint darker(f) = ÷(1+f)).
+            background: Theme.menu-background.darker(0.35);
+            border-top-left-radius: 24px;
+            border-top-right-radius: 24px;
+            clip: true;
+
+            if root.members.length == 0 : Text {
+                text: root.all-count == 0 ? "Loading…"
+                    : "Nobody is " + (root.filter-level >= 100 ? "an admin" : "a moderator") + " here";
+                color: root.fg.with-alpha(0.6);
+                font-family: Theme.font-ui; font-size: Theme.body;
+                horizontal-alignment: center; vertical-alignment: center;
+                width: 100%; height: 100%;
+            }
+
+            list := TouchList {
+                y: 6px; height: ground.height - 6px;
+                width: 100%;
+                visible: root.members.length > 0;
+                for member in root.members : mrow := Rectangle {
+                    height: 58px;
+                    Rectangle {
+                        x: 8px; width: mrow.width - 16px;
+                        y: 4px; height: mrow.height - 8px;
+                        border-radius: 14px;
+                        background: mrow-touch.pressed || mrow-touch.has-hover
+                            ? root.fg.with-alpha(0.05) : transparent;
+                    }
+                    HorizontalLayout {
+                        padding-left: 16px; padding-right: 20px;
+                        spacing: 12px;
+                        Rectangle {
+                            width: 40px;
+                            Avatar {
+                                size: 40px;
+                                source: member.avatar;
+                                initials: member.initials;
+                                tint: member.tint;
+                            }
+                        }
+                        VerticalLayout {
+                            alignment: center;
+                            spacing: 2px;
+                            horizontal-stretch: 1;
+                            Text {
+                                text: member.display-name != "" ? member.display-name : member.user-id;
+                                color: root.fg;
+                                font-family: Theme.font-ui; font-size: Theme.body;
+                                overflow: elide;
+                            }
+                            // MembersPage.qml: the id line shows only for an
+                            // ambiguous or missing display name.
+                            if member.is-name-ambiguous || member.display-name == "" : Text {
+                                text: member.user-id;
+                                color: root.fg.with-alpha(0.5);
+                                font-family: Theme.font-ui; font-size: Theme.caption;
+                                overflow: elide;
+                            }
+                        }
+                        if member.role != "" && root.filter-level < 0 : Text {
+                            text: member.role;
+                            color: Theme.accent.with-alpha(0.9);
+                            font-family: Theme.font-ui; font-size: Theme.caption;
+                            font-weight: 700;
+                            vertical-alignment: center;
+                        }
+                    }
+                    mrow-touch := TouchArea { }
+                }
+            }
+        }
+    }
+}

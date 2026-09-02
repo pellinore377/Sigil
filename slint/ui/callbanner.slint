@@ -1,0 +1,105 @@
+// Incoming-call banner — calls/CallBanner.qml. In QML this is its own
+// Wayland overlay window; here it is a card the shell mounts at the top of
+// the content area whenever call.incoming is set.
+
+import { Theme } from "style.slint";
+import { Icons } from "icons.slint";
+import { IconLabel, Avatar } from "components.slint";
+
+export component CallBanner inherits Rectangle {
+    in property <color> fg: Theme.popup-text;
+    in property <string> caller-name;
+    in property <string> caller-initials;
+    in property <color> caller-tint: Theme.accent;
+    in property <image> caller-avatar;
+    in property <string> room-name;
+    in property <bool> video-intent;
+    callback accept;         // call.join {video:false} + open the room
+    callback accept-video;   // call.join {video:true}
+    callback decline;        // call.decline
+
+    height: 76px;
+    border-radius: 16px;
+    background: Theme.popup-background;
+    border-width: 1px;
+    border-color: Theme.popup-border;
+
+    HorizontalLayout {
+        padding-left: 14px; padding-right: 12px;
+        spacing: 12px;
+        Rectangle {
+            width: 44px;
+            Avatar {
+                y: (root.height - self.height) / 2;
+                size: 44px;
+                source: root.caller-avatar;
+                initials: root.caller-initials;
+                tint: root.caller-tint;
+            }
+        }
+        VerticalLayout {
+            alignment: center;
+            spacing: 1px;
+            horizontal-stretch: 1;
+            Text {
+                text: root.caller-name + " is calling";
+                color: root.fg;
+                font-family: Theme.font-ui;
+                font-size: Theme.title;
+                font-weight: 700;
+                overflow: elide;
+            }
+            Text {
+                text: (root.video-intent ? "Video call" : "Voice call") + " · " + root.room-name;
+                color: root.fg.with-alpha(0.6);
+                font-family: Theme.font-ui;
+                font-size: Theme.body-small;
+                overflow: elide;
+            }
+        }
+        HorizontalLayout {
+            spacing: 6px;
+            alignment: center;
+            decline-btn := Rectangle {
+                y: (root.height - self.height) / 2;
+                width: 40px; height: 40px; border-radius: 20px;
+                background: Theme.urgent.with-alpha(decline-t.pressed ? 1.0 : 0.85);
+                IconLabel {
+                    text: Icons.callEnd;
+                    color: root.fg;
+                    font-size: Theme.icon-large;
+                    width: 100%; height: 100%;
+                }
+                decline-t := TouchArea { clicked => { root.decline(); } }
+            }
+            accept-btn := Rectangle {
+                y: (root.height - self.height) / 2;
+                width: 40px; height: 40px; border-radius: 20px;
+                background: Theme.accent.with-alpha(accept-t.pressed ? 0.55 : 0.35);
+                border-width: 1px;
+                border-color: Theme.accent;
+                IconLabel {
+                    text: Icons.phone;
+                    color: root.fg;
+                    font-size: Theme.icon-large;
+                    width: 100%; height: 100%;
+                }
+                accept-t := TouchArea { clicked => { root.accept(); } }
+            }
+            video-btn := Rectangle {
+                y: (root.height - self.height) / 2;
+                width: 40px; height: 40px; border-radius: 20px;
+                background: Theme.accent.with-alpha(video-t.pressed ? 0.55 : 0.35);
+                border-width: 1px;
+                border-color: Theme.accent;
+                IconLabel {
+                    text: Icons.videoOn;
+                    color: root.fg;
+                    font-size: Theme.icon-large;
+                    width: 100%; height: 100%;
+                }
+                video-t := TouchArea { clicked => { root.accept-video(); } }
+            }
+        }
+    }
+}

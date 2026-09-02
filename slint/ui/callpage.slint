@@ -1,0 +1,661 @@
+// The in-panel call experience — CallPage.qml + omarchy/calls/* as one file:
+// voice = big avatar card with speaking rings; video = remote fills the page
+// with a draggable self-view; a screen share takes the spotlight layout.
+//
+// The page renders; the BRIDGE decides. Slint expressions cannot scan arrays,
+// so everything the QML computed by iterating (featured track, group mode,
+// tile list with self last, status/duration text) arrives as `in` properties.
+// Frames arrive as `frame` images on each participant — the bridge reads the
+// engine's shm files in-process and repaints them; the page just draws.
+
+import { Theme } from "style.slint";
+import { Icons } from "icons.slint";
+import { IconLabel, Avatar } from "components.slint";
+import { CallParticipant, DeviceRow } from "model.slint";
+
+/// One in-call reaction floating up the page (LiveKit data channel, ephemeral).
+export struct Floater {
+    fid: int,
+    emoji: string,
+    who: string,
+}
+
+// Rings expanding out of a call avatar while that participant talks.
+// DIVERGENCE: CallParticipant carries no live audio `level`, so the rings
+// pulse at a fixed amplitude while `speaking` — they no longer breathe with
+// the voice (WIRING notes the one-field model addition that restores it).
+export component SpeakingRipple inherits Rectangle {
+    in property <color> accent: Theme.accent;
+    in property <bool> speaking: false;
+    in property <length> size: 110px;
+    width: root.size * 2.1;
+    height: root.size * 2.1;
+    background: transparent;
+    property <float> phase: mod(animation-tick() / 1600ms, 1.0);
+    if root.speaking : ring0 := Rectangle {
+        property <float> p: root.phase;
+        width: root.size * (1 + self.p * 0.75);
+        height: self.width;
+        x: (root.width - self.width) / 2;
+        y: (root.height - self.height) / 2;
+        border-radius: self.width / 2;
+        background: transparent;
+        border-width: 2px;
+        border-color: root.accent.with-alpha((1 - self.p) * 0.55);
+    }
+    if root.speaking : ring1 := Rectangle {
+        property <float> p: mod(root.phase + 0.5, 1.0);
+        width: root.size * (1 + self.p * 0.75);
+        height: self.width;
+        x: (root.width - self.width) / 2;
+        y: (root.height - self.height) / 2;
+        border-radius: self.width / 2;
+        background: transparent;
+        border-width: 2px;
+        border-color: root.accent.with-alpha((1 - self.p) * 0.55);
+    }
+}
+
+// One call tile: video frame or avatar fallback, name strip, mute glyph,
+// speaking border. The bridge only sets has-frame for a LIVE track (a muted
+// camera stays published in LiveKit but must not freeze on its last frame).
+export component CallTile inherits Rectangle {
+    in property <CallParticipant> participant;
+    in property <bool> is-local: false;
+    in property <bool> fit-video: false;
+    in property <length> tile-radius: 12px;
+    in property <color> fg: Theme.menu-text;
+    in property <color> accent: Theme.accent;
+
+    border-radius: root.tile-radius;
+    background: Theme.background.with-alpha(0.55);
+    border-width: root.participant.speaking ? 2px : 1px;
+    border-color: root.participant.speaking ? root.accent : root.fg.with-alpha(0.12);
+    clip: true;
+
+    if root.participant.has-frame : Image {
+        source: root.participant.frame;
+        width: 100%; height: 100%;
+        image-fit: root.fit-video || root.participant.screen-sharing ? contain : cover;
+    }
+    if !root.participant.has-frame : SpeakingRipple {
+        x: (root.width - self.width) / 2;
+        y: (root.height - self.height) / 2;
+        size: min(root.width, root.height) * 0.32;
+        accent: root.accent;
+        speaking: root.participant.speaking;
+    }
+    if !root.participant.has-frame : Avatar {
+        x: (root.width - self.width) / 2;
+        y: (root.height - self.height) / 2;
+        size: min(root.width, root.height) * 0.32;
+        source: root.participant.avatar;
+        initials: root.participant.initials;
+        tint: root.participant.tint;
+    }
+    // Name pill, bounded by the tile with a real ellipsis.
+    name-pill := Rectangle {
+        x: 8px;
+        y: root.height - self.height - 8px;
+        width: min(name-row.preferred-width + 14px, root.width - 16px);
+        height: 22px;
+        border-radius: 11px;
+        background: Theme.background.with-alpha(0.6);
+        name-row := HorizontalLayout {
+            padding-left: 7px; padding-right: 7px;
+            spacing: 5px;
+            if root.participant.mic-muted : IconLabel {
+                text: Icons.micOff;
+                color: Theme.urgent;
+                font-size: Theme.body-small;
+                vertical-alignment: center;
+            }
+            Text {
+                text: (root.is-local ? "You" : root.participant.display-name)
+                    + (root.participant.screen-sharing && root.participant.has-frame ? " (screen)" : "");
+                color: root.fg;
+                font-family: Theme.font-ui;
+                font-size: Theme.body-small;
+                vertical-alignment: center;
+                overflow: elide;
+            }
+        }
+    }
+}
+
+// N-tile grid (cols = ceil(sqrt n)); a screen-share tile takes a spotlight.
+component CallGrid inherits Rectangle {
+    in property <[CallParticipant]> tiles;      // self LAST (bridge order)
+    in property <int> spotlight-idx: -1;        // index into tiles, -1 = none
+    in property <color> fg: Theme.menu-text;
+    in property <color> accent: Theme.accent;
+    background: transparent;
+
+    property <length> gap: 8px;
+    property <int> n: root.tiles.length - (root.spotlight-idx >= 0 ? 1 : 0);
+    property <int> cols: root.spotlight-idx >= 0 ? 1
+                       : root.n <= 1 ? 1 : ceil(sqrt(root.n));
+    property <int> rows: root.spotlight-idx >= 0 ? max(1, root.n)
+                       : root.n <= 1 ? 1 : ceil(root.n / root.cols);
+    property <length> grid-w: root.spotlight-idx >= 0 ? root.width * 0.25 : root.width;
+    property <length> grid-x: root.spotlight-idx >= 0 ? root.width - root.grid-w : 0px;
+    property <length> cell-w: (root.grid-w - root.gap * (root.cols + 1)) / root.cols;
+    property <length> cell-h: (root.height - root.gap * (root.rows + 1)) / root.rows;
+    property <length> tile-w: min(root.cell-w, root.cell-h * 16 / 9);
+    property <length> tile-h: root.tile-w * 9 / 16;
+
+    if root.spotlight-idx >= 0 : CallTile {
+        x: root.gap; y: root.gap;
+        width: root.width - root.grid-w - root.gap * 2;
+        height: root.height - root.gap * 2;
+        participant: root.tiles[root.spotlight-idx];
+        fit-video: true;
+        fg: root.fg; accent: root.accent;
+    }
+    for tile[i] in root.tiles : holder := Rectangle {
+        // The spotlight tile is drawn above; skip its slot in the flow.
+        property <int> slot: root.spotlight-idx >= 0 && i > root.spotlight-idx ? i - 1 : i;
+        property <int> c: mod(self.slot, root.cols);
+        property <int> r: floor(self.slot / root.cols);
+        property <int> row-count: min(root.cols, root.n - self.r * root.cols);
+        property <length> row-w: self.row-count * root.tile-w + (self.row-count - 1) * root.gap;
+        visible: i != root.spotlight-idx;
+        x: root.grid-x + (root.grid-w - self.row-w) / 2 + self.c * (root.tile-w + root.gap);
+        y: root.gap + (root.height - root.gap * 2 - (root.rows * root.tile-h + (root.rows - 1) * root.gap)) / 2
+           + self.r * (root.tile-h + root.gap);
+        width: root.tile-w; height: root.tile-h;
+        background: transparent;
+        CallTile {
+            width: 100%; height: 100%;
+            participant: tile;
+            is-local: i == root.tiles.length - 1;
+            fg: root.fg; accent: root.accent;
+        }
+    }
+    if root.tiles.length == 0 : Text {
+        text: "Waiting for others to join…";
+        color: root.fg.with-alpha(0.5);
+        font-family: Theme.font-ui;
+        font-size: Theme.body;
+        horizontal-alignment: center; vertical-alignment: center;
+        width: 100%; height: 100%;
+    }
+}
+
+export component CallPage inherits Rectangle {
+    in property <color> fg: Theme.menu-text;
+    in property <color> accent: Theme.accent;   // the room's chat theme colour
+
+    // ---- call.state, digested by the bridge ----
+    in property <string> state: "idle";     // idle joining connected reconnecting leaving
+    in property <string> status-text;       // "Calling…" / "Ringing…" / running duration
+    in property <string> error;
+    in property <bool> encrypted;
+    in property <bool> mic-muted;
+    in property <bool> camera-on;
+    in property <bool> screen-sharing;
+    /// Everyone with their best live frame (screen > camera), self LAST.
+    in property <[CallParticipant]> tiles;
+    in property <int> spotlight-idx: -1;
+    /// 1:1 video layout: the one remote worth featuring.
+    in property <CallParticipant> featured;
+    in property <bool> has-featured;
+    /// Self camera for the draggable PiP (1:1 mode only).
+    in property <CallParticipant> local-cam;
+    in property <bool> has-local-cam;
+    in property <bool> group-mode;
+    in property <bool> video-mode;
+    /// Voice layout fallback identity (first remote, else the room).
+    in property <string> peer-name;
+    in property <image> peer-avatar;
+    in property <string> peer-initials;
+    in property <color> peer-tint: Theme.accent;
+    in property <bool> peer-speaking;
+    // ---- devices (call.devices) ----
+    in property <[DeviceRow]> mics;
+    in property <[DeviceRow]> speakers;
+    // ---- reactions ----
+    in property <[Floater]> floaters;
+
+    in-out property <bool> react-open: false;
+    in-out property <bool> settings-open: false;
+
+    callback set-mic(bool);
+    callback set-camera(bool);
+    callback set-screenshare(bool);
+    callback hang-up;
+    callback select-device(string, string);   // kind, id
+    callback react(string);
+    callback minimize;
+
+    property <[string]> react-emoji: ["👍", "❤️", "😂", "😮", "😢", "😡"];
+
+    clip: true;
+    border-radius: 22px;
+    background: Theme.background.with-alpha(0.35);
+
+    // ---- stage (everything above the control bar) ----
+    stage := Rectangle {
+        width: 100%;
+        height: root.height - controls.height;
+        background: transparent;
+
+        if root.video-mode && !root.group-mode : CallTile {
+            x: 10px; y: 10px;
+            width: stage.width - 20px; height: stage.height - 20px;
+            tile-radius: 20px;
+            participant: root.featured;
+            fit-video: root.has-featured && root.featured.screen-sharing;
+            fg: root.fg; accent: root.accent;
+        }
+        if root.group-mode : CallGrid {
+            x: 2px; y: 2px;
+            width: stage.width - 4px; height: stage.height - 4px;
+            tiles: root.tiles;
+            spotlight-idx: root.spotlight-idx;
+            fg: root.fg; accent: root.accent;
+        }
+        // Voice-call / waiting layout.
+        if !root.video-mode && !root.group-mode : voice-col := VerticalLayout {
+            y: (stage.height - self.preferred-height) / 2;
+            width: 100%;
+            spacing: 14px;
+            Rectangle {
+                height: 110px;
+                SpeakingRipple {
+                    x: (stage.width - self.width) / 2;
+                    y: (110px - self.height) / 2;
+                    size: 110px;
+                    accent: root.accent;
+                    speaking: root.peer-speaking;
+                }
+                Avatar {
+                    x: (stage.width - self.width) / 2;
+                    y: 0;
+                    size: 110px;
+                    source: root.peer-avatar;
+                    initials: root.peer-initials;
+                    tint: root.peer-tint;
+                }
+            }
+            Text {
+                text: root.peer-name;
+                color: root.fg;
+                font-family: Theme.font-ui;
+                font-size: Theme.heading;
+                font-weight: 700;
+                horizontal-alignment: center;
+            }
+            HorizontalLayout {
+                alignment: center;
+                spacing: 6px;
+                Text {
+                    text: root.status-text;
+                    color: root.fg.with-alpha(0.6);
+                    font-family: Theme.font-ui;
+                    font-size: Theme.body;
+                }
+                if root.encrypted : IconLabel {
+                    text: Icons.lock;
+                    color: root.fg.with-alpha(0.5);
+                    font-size: Theme.body-small;
+                    vertical-alignment: center;
+                }
+            }
+        }
+
+        // Self-view PiP: draggable; snaps to the nearest corner on release.
+        // DIVERGENCE: the QML throws it with measured velocity into a damped
+        // spring; Slint has no frame callback with a delta, so this eases to
+        // the corner the release position implies.
+        pip := Rectangle {
+            visible: root.has-local-cam && !root.group-mode;
+            width: 110px; height: 150px;
+            property <length> edge: 16px;
+            property <bool> dragging: false;
+            x: stage.width - self.width - self.edge;
+            y: self.edge;
+            animate x, y { duration: 240ms; easing: cubic-bezier(0.3, 1.15, 0.6, 1); }
+            CallTile {
+                width: 100%; height: 100%;
+                tile-radius: 16px;
+                participant: root.local-cam;
+                is-local: true;
+                fg: root.fg; accent: root.accent;
+            }
+            pip-drag := TouchArea {
+                moved => {
+                    pip.dragging = true;
+                    pip.x = min(max(pip.x + self.mouse-x - self.pressed-x, 6px), stage.width - pip.width - 6px);
+                    pip.y = min(max(pip.y + self.mouse-y - self.pressed-y, 6px), stage.height - pip.height - 6px);
+                }
+                pointer-event(ev) => {
+                    if (ev.kind == PointerEventKind.up && pip.dragging) {
+                        pip.dragging = false;
+                        pip.x = pip.x + pip.width / 2 < stage.width / 2
+                            ? pip.edge : stage.width - pip.width - pip.edge;
+                        pip.y = pip.y + pip.height / 2 < stage.height / 2
+                            ? pip.edge : stage.height - pip.height - pip.edge;
+                    }
+                }
+            }
+        }
+
+        // Running-duration chip over video layouts.
+        if (root.video-mode || root.group-mode) && root.state == "connected" : time-chip := Rectangle {
+            x: (stage.width - self.width) / 2;
+            y: 16px;
+            width: time-text.preferred-width + 18px;
+            height: 24px;
+            border-radius: 12px;
+            background: Theme.background.with-alpha(0.55);
+            time-text := Text {
+                text: root.status-text;
+                color: root.fg;
+                font-family: Theme.font-ui;
+                font-size: Theme.caption;
+                horizontal-alignment: center; vertical-alignment: center;
+                width: 100%; height: 100%;
+            }
+        }
+
+        // Reactions float up the page — page-owned, the sender may have no tile.
+        // Each delegate drives itself off animation-tick from its birth tick;
+        // the bridge prunes floaters after ~2.6 s.
+        for fl in root.floaters : floater := Rectangle {
+            property <duration> t0;
+            init => { self.t0 = animation-tick(); }
+            property <float> age: min(1.0, (animation-tick() - self.t0) / 2600ms);
+            property <length> lane: stage.width * (0.22 + mod(fl.fid * 37, 100) / 100.0 * 0.56) - 26px;
+            width: 52px;
+            x: self.lane + (self.age < 0.35 ? 16px * (self.age / 0.35) : 16px - 28px * ((self.age - 0.35) / 0.65));
+            y: (stage.height - 62px) - (stage.height * 0.68) * (1 - (1 - self.age) * (1 - self.age) * (1 - self.age));
+            opacity: self.age < 0.08 ? self.age / 0.08 : (self.age > 0.7 ? (1 - self.age) / 0.3 : 1.0);
+            background: transparent;
+            VerticalLayout {
+                spacing: 1px;
+                Text {
+                    // No font-family override: the colour-emoji font must resolve.
+                    text: fl.emoji;
+                    font-size: 30px;
+                    horizontal-alignment: center;
+                }
+                if fl.who != "" : HorizontalLayout {
+                    alignment: center;
+                    Rectangle {
+                        width: min(who-text.preferred-width + 12px, 110px);
+                        height: 18px;
+                        border-radius: 9px;
+                        background: Theme.background.with-alpha(0.6);
+                        who-text := Text {
+                            text: fl.who;
+                            color: #ececec;
+                            font-family: Theme.font-ui;
+                            font-size: Theme.caption;
+                            horizontal-alignment: center; vertical-alignment: center;
+                            width: 100%; height: 100%;
+                            overflow: elide;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Minimise to the app-wide PiP; sits where a back arrow would be.
+    min-btn := Rectangle {
+        x: 14px; y: 14px;
+        width: 34px; height: 34px;
+        border-radius: 17px;
+        background: Theme.background.with-alpha(min-touch.pressed ? 0.75 : 0.55);
+        IconLabel {
+            text: Icons.pip;
+            color: root.fg;
+            width: 100%; height: 100%;
+        }
+        min-touch := TouchArea { clicked => { root.minimize(); } }
+    }
+
+    if root.error != "" : Text {
+        x: 30px;
+        y: root.height - controls.height - self.preferred-height - 10px;
+        width: root.width - 60px;
+        text: root.error;
+        color: Theme.urgent;
+        font-family: Theme.font-ui;
+        font-size: Theme.caption;
+        horizontal-alignment: center;
+        wrap: word-wrap;
+    }
+
+    // Tap-away for the reaction tray — page level, or every control needs two taps.
+    if root.react-open : TouchArea {
+        clicked => { root.react-open = false; }
+    }
+
+    // ---- controls: dark circles, inverted when off, red hangup pill ----
+    controls := Rectangle {
+        y: root.height - self.height;
+        width: 100%;
+        height: 84px;
+        background: transparent;
+
+        // Emoji tray above the controls: a short row, not the full picker.
+        if root.react-open : tray := Rectangle {
+            x: (root.width - self.width) / 2;
+            y: -self.height - 8px;   // floats above the bar
+            width: tray-row.preferred-width + 20px;
+            height: 48px;
+            border-radius: 24px;
+            background: #292b2e.with-alpha(0.92);
+            TouchArea { } // swallow taps on the pill's own padding
+            tray-row := HorizontalLayout {
+                padding-left: 10px; padding-right: 10px;
+                spacing: 6px;
+                for emoji in root.react-emoji : e-btn := Rectangle {
+                    width: 36px; height: 36px;
+                    border-radius: 18px;
+                    background: e-touch.pressed || e-touch.has-hover ? root.accent.with-alpha(0.32) : transparent;
+                    Text {
+                        text: emoji;
+                        font-size: 19px;
+                        horizontal-alignment: center; vertical-alignment: center;
+                        width: 100%; height: 100%;
+                    }
+                    e-touch := TouchArea {
+                        clicked => { root.react(emoji); root.react-open = false; }
+                    }
+                }
+            }
+        }
+
+        bar := HorizontalLayout {
+            alignment: center;
+            spacing: 12px;
+            y: (controls.height - 46px) / 2;
+            height: 46px;
+            mic-btn := Rectangle {
+                width: 46px; height: 46px; border-radius: 23px;
+                background: root.mic-muted ? #e8e8e8 : #292b2e.with-alpha(0.92);
+                IconLabel {
+                    text: root.mic-muted ? Icons.micOff : Icons.micOn;
+                    color: root.mic-muted ? #202124 : #ececec;
+                    font-size: 19px;
+                    width: 100%; height: 100%;
+                }
+                TouchArea { clicked => { root.set-mic(root.mic-muted); } }
+            }
+            cam-btn := Rectangle {
+                width: 46px; height: 46px; border-radius: 23px;
+                background: !root.camera-on ? #e8e8e8 : #292b2e.with-alpha(0.92);
+                IconLabel {
+                    text: root.camera-on ? Icons.videoOn : Icons.videoOff;
+                    color: !root.camera-on ? #202124 : #ececec;
+                    font-size: 19px;
+                    width: 100%; height: 100%;
+                }
+                TouchArea { clicked => { root.set-camera(!root.camera-on); } }
+            }
+            share-btn := Rectangle {
+                width: 46px; height: 46px; border-radius: 23px;
+                background: root.screen-sharing ? Theme.accent.with-alpha(0.85) : #292b2e.with-alpha(0.92);
+                IconLabel {
+                    text: Icons.screenShareAlt;
+                    color: #ececec;
+                    font-size: 19px;
+                    width: 100%; height: 100%;
+                }
+                TouchArea { clicked => { root.set-screenshare(!root.screen-sharing); } }
+            }
+            react-btn := Rectangle {
+                width: 46px; height: 46px; border-radius: 23px;
+                background: root.react-open ? Theme.accent.with-alpha(0.85) : #292b2e.with-alpha(0.92);
+                IconLabel {
+                    text: Icons.emoji;
+                    color: #ececec;
+                    font-size: 19px;
+                    width: 100%; height: 100%;
+                }
+                TouchArea { clicked => { root.react-open = !root.react-open; } }
+            }
+            settings-btn := Rectangle {
+                width: 46px; height: 46px; border-radius: 23px;
+                background: #292b2e.with-alpha(0.92);
+                IconLabel {
+                    text: Icons.settings;
+                    color: #ececec;
+                    font-size: 19px;
+                    width: 100%; height: 100%;
+                }
+                TouchArea { clicked => { root.settings-open = true; } }
+            }
+            hangup-btn := Rectangle {
+                width: 64px; height: 46px; border-radius: 23px;
+                background: Theme.urgent.with-alpha(0.95);
+                IconLabel {
+                    text: Icons.phone;
+                    filled: true;
+                    transform-rotation: 135deg;
+                    color: #ffffff;
+                    font-size: 20px;
+                    width: 100%; height: 100%;
+                }
+                TouchArea { clicked => { root.hang-up(); } }
+            }
+        }
+    }
+
+    // ---- settings sheet: input/output devices, slides in from the bottom ----
+    if root.settings-open : scrim := Rectangle {
+        width: 100%; height: 100%;
+        border-radius: 22px;
+        background: #000000.with-alpha(0.35);
+        TouchArea { clicked => { root.settings-open = false; } }
+    }
+    sheet := Rectangle {
+        y: root.settings-open ? root.height - self.height : root.height + 6px;
+        animate y { duration: 220ms; easing: cubic-bezier(0.33, 1, 0.68, 1); }
+        width: 100%;
+        height: sheet-col.preferred-height + 34px;
+        border-top-left-radius: 20px;
+        border-top-right-radius: 20px;
+        background: Theme.popup-background.with-alpha(0.97);
+        border-width: 1px;
+        border-color: Theme.popup-text.with-alpha(0.08);
+        sheet-col := VerticalLayout {
+            x: 16px; y: 10px;
+            width: root.width - 32px;
+            spacing: 2px;
+            HorizontalLayout {
+                alignment: center;
+                Rectangle {
+                    width: 36px; height: 4px; border-radius: 2px;
+                    background: Theme.popup-text.with-alpha(0.25);
+                }
+            }
+            Text {
+                text: "Call settings";
+                color: Theme.popup-text;
+                font-family: Theme.font-ui;
+                font-size: Theme.subtitle;
+                font-weight: 700;
+            }
+            Text {
+                text: "Microphone";
+                color: Theme.popup-text.with-alpha(0.55);
+                font-family: Theme.font-ui;
+                font-size: Theme.caption;
+                font-weight: 700;
+            }
+            for dev in root.mics : mic-row := Rectangle {
+                height: 32px;
+                border-radius: 8px;
+                background: mic-row-t.pressed || mic-row-t.has-hover ? Theme.popup-text.with-alpha(0.08) : transparent;
+                HorizontalLayout {
+                    padding-left: 6px;
+                    spacing: 8px;
+                    IconLabel {
+                        text: dev.selected ? Icons.check : " ";
+                        color: Theme.accent;
+                        font-size: Theme.body;
+                        width: 16px;
+                        vertical-alignment: center;
+                    }
+                    Text {
+                        text: dev.label;
+                        color: Theme.popup-text;
+                        font-family: Theme.font-ui;
+                        font-size: Theme.body;
+                        vertical-alignment: center;
+                        overflow: elide;
+                    }
+                }
+                mic-row-t := TouchArea { clicked => { root.select-device("mic", dev.id); } }
+            }
+            if root.mics.length == 0 : Text {
+                text: "No devices found";
+                color: Theme.popup-text.with-alpha(0.5);
+                font-family: Theme.font-ui;
+                font-size: Theme.body-small;
+            }
+            Text {
+                text: "Speaker";
+                color: Theme.popup-text.with-alpha(0.55);
+                font-family: Theme.font-ui;
+                font-size: Theme.caption;
+                font-weight: 700;
+            }
+            for dev in root.speakers : spk-row := Rectangle {
+                height: 32px;
+                border-radius: 8px;
+                background: spk-row-t.pressed || spk-row-t.has-hover ? Theme.popup-text.with-alpha(0.08) : transparent;
+                HorizontalLayout {
+                    padding-left: 6px;
+                    spacing: 8px;
+                    IconLabel {
+                        text: dev.selected ? Icons.check : " ";
+                        color: Theme.accent;
+                        font-size: Theme.body;
+                        width: 16px;
+                        vertical-alignment: center;
+                    }
+                    Text {
+                        text: dev.label;
+                        color: Theme.popup-text;
+                        font-family: Theme.font-ui;
+                        font-size: Theme.body;
+                        vertical-alignment: center;
+                        overflow: elide;
+                    }
+                }
+                spk-row-t := TouchArea { clicked => { root.select-device("speaker", dev.id); } }
+            }
+            if root.speakers.length == 0 : Text {
+                text: "No devices found";
+                color: Theme.popup-text.with-alpha(0.5);
+                font-family: Theme.font-ui;
+                font-size: Theme.body-small;
+            }
+        }
+    }
+}

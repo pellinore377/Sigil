@@ -3,6 +3,7 @@ core/target/
 protocol/target/
 server/target/
 client/target/
+slint/target/
 shared/icongen/target/
 omarchy/video/*.so
 omarchy/video/.qt-version

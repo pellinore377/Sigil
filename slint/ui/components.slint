@@ -1,0 +1,211 @@
+// Shared furniture, mirroring omarchy/components/: IconLabel, Avatar, the
+// action button, and the search pill. Each exists so pages cannot drift.
+
+import { Theme } from "style.slint";
+import { Icons } from "icons.slint";
+
+// An icon by name (`Icons.*`), never a glyph in a Text: the codepoints are
+// private-use, so the wrong family draws a different icon, not tofu.
+export component IconLabel inherits Text {
+    in property <bool> filled: true;
+    font-family: self.filled ? Theme.font-icon-filled : Theme.font-icon;
+    font-size: Theme.icon-size;
+    color: Theme.menu-text;
+    horizontal-alignment: center;
+    vertical-alignment: center;
+}
+
+// Bare size×size tap surface with a centred icon — PanelActionButton.
+// Plain centring is correct for Material Symbols; do not ink-centre them
+// (docs/ui-conventions.md, "Icons and centring").
+export component ActionButton inherits Rectangle {
+    in property <string> icon;
+    in property <bool> filled: true;
+    in property <color> foreground: Theme.menu-text;
+    in property <length> icon-size: Theme.icon-size;
+    callback clicked;
+    width: 36px; height: 36px;
+    border-radius: self.height / 2;
+    background: touch.pressed ? Theme.menu-text.with-alpha(0.10)
+              : touch.has-hover ? Theme.menu-text.with-alpha(0.06)
+              : transparent;
+    IconLabel {
+        text: root.icon;
+        filled: root.filled;
+        color: root.foreground;
+        font-size: root.icon-size;
+    }
+    touch := TouchArea { clicked => { root.clicked(); } }
+}
+
+// Avatar: image when the engine cached one, initials over a hashed tint
+// otherwise. The colour and initials are computed in Rust with the row.
+export component Avatar inherits Rectangle {
+    in property <length> size: 44px;
+    in property <image> source;
+    in property <string> initials;
+    in property <color> tint: Theme.accent;
+    /// online | away | busy | offline | "" (unknown: no dot at all)
+    in property <string> status;
+    in property <color> status-backdrop: Theme.menu-background;
+    width: self.size; height: self.size;
+    border-radius: self.size / 2;
+    background: root.source.width > 0 ? transparent : root.tint.with-alpha(0.55);
+    // The clip lives on the image wrap, not the root: the presence dot rides
+    // 2% outside the rim and must not be cut.
+    if root.source.width > 0 : Rectangle {
+        width: root.size; height: root.size;
+        border-radius: root.size / 2;
+        clip: true;
+        Image {
+            source: root.source;
+            width: root.size; height: root.size;
+            image-fit: cover;
+        }
+    }
+    if root.source.width == 0 : Text {
+        text: root.initials;
+        color: Theme.foreground;
+        font-family: Theme.font-ui;
+        font-size: max(8px, root.size * 0.42);
+        font-weight: 700;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+        width: 100%; height: 100%;
+    }
+    // Presence: a dot pinned to the lower-right rim, ring (outline) when
+    // offline — Avatar.qml's status badge. The pad is transparent there
+    // (statusBackdrop is declared but never applied) and rides 2% outside.
+    if root.status != "" : status-pad := Rectangle {
+        x: root.size - self.width + root.size * 0.02;
+        y: root.size - self.height + root.size * 0.02;
+        width: max(10px, root.size * 0.32);
+        height: self.width;
+        border-radius: self.width / 2;
+        background: transparent;
+        IconLabel {
+            text: root.status == "offline" ? Icons.statusRing : Icons.statusDot;
+            color: root.status == "online" ? #3fbf5f
+                 : root.status == "busy" ? #e2564a
+                 : root.status == "away" ? #eaa030
+                 : Theme.menu-text;
+            font-size: status-pad.width;
+            width: 100%; height: 100%;
+        }
+    }
+}
+
+// Bordered pill button — components/Button.qml's `bordered` face.
+export component SButton inherits Rectangle {
+    in property <string> text;
+    in property <string> icon;
+    in property <bool> enabled: true;
+    in property <color> foreground: Theme.menu-text;
+    callback clicked;
+    height: 36px;
+    width: row.preferred-width + 28px;
+    border-radius: self.height / 2;
+    border-width: 1px;
+    border-color: root.foreground.with-alpha(0.25);
+    background: !root.enabled ? transparent
+              : touch.pressed ? root.foreground.with-alpha(0.12)
+              : touch.has-hover ? root.foreground.with-alpha(0.07)
+              : transparent;
+    opacity: root.enabled ? 1.0 : 0.45;
+    row := HorizontalLayout {
+        alignment: center;
+        spacing: 6px;
+        padding-top: 0; padding-bottom: 0;
+        if root.icon != "" : IconLabel {
+            text: root.icon;
+            color: root.foreground;
+            font-size: Theme.icon-size;
+            vertical-alignment: center;
+        }
+        Text {
+            text: root.text;
+            color: root.foreground;
+            font-family: Theme.font-ui;
+            font-size: Theme.body;
+            vertical-alignment: center;
+        }
+    }
+    touch := TouchArea { enabled: root.enabled; clicked => { root.clicked(); } }
+}
+
+// One-line text entry in a rounded well: the search pill and the login field.
+export component TextWell inherits Rectangle {
+    in property <string> placeholder;
+    in property <string> leading-icon;
+    in-out property <string> text <=> input.text;
+    in property <bool> enabled: true;
+    callback accepted;
+    callback edited;
+    height: 36px;
+    border-radius: self.height / 2;
+    background: Theme.menu-text.with-alpha(0.07);
+    border-width: 1px;
+    border-color: input.has-focus ? Theme.accent.with-alpha(0.4) : transparent;
+    public function focus-input() { input.focus(); }
+    HorizontalLayout {
+        padding-left: 14px; padding-right: 12px;
+        spacing: 8px;
+        if root.leading-icon != "" : IconLabel {
+            text: root.leading-icon;
+            color: Theme.menu-text.with-alpha(0.5);
+            vertical-alignment: center;
+        }
+        Rectangle {
+            clip: true;
+            input := TextInput {
+                enabled: root.enabled;
+                color: Theme.menu-text;
+                font-family: Theme.font-ui;
+                font-size: Theme.body;
+                vertical-alignment: center;
+                height: 100%;
+                single-line: true;
+                accepted => { root.accepted(); }
+                edited => { root.edited(); }
+            }
+            if input.text == "" : Text {
+                text: root.placeholder;
+                color: Theme.menu-text.with-alpha(0.45);
+                font-family: Theme.font-ui;
+                font-size: Theme.body;
+                vertical-alignment: center;
+                height: 100%;
+            }
+        }
+    }
+}
+
+
+// A tap surface that also recognises a hold. Inner media areas use this so
+// long-press opens the message menu from anywhere on a bubble, as in QML.
+export component HoldArea inherits TouchArea {
+    callback held;
+    in-out property <bool> fired: false;
+    hold-timer := Timer {
+        interval: 500ms;
+        running: false;
+        triggered => {
+            self.running = false;
+            root.fired = true;
+            root.held();
+        }
+    }
+    pointer-event(ev) => {
+        if (ev.kind == PointerEventKind.down) {
+            root.fired = false;
+            hold-timer.running = true;
+        } else if (ev.kind == PointerEventKind.up || ev.kind == PointerEventKind.cancel) {
+            hold-timer.running = false;
+        }
+    }
+    moved => {
+        if (abs((self.mouse-x - self.pressed-x) / 1px) > 12 || abs((self.mouse-y - self.pressed-y) / 1px) > 12) {
+            hold-timer.running = false;
+        }
+    }
+}

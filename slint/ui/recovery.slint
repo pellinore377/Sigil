@@ -1,0 +1,110 @@
+// Enter the recovery key (Element's "Security Key") to verify this device and
+// unlock encrypted history — components/RecoveryPage.qml.
+
+import { Theme } from "style.slint";
+import { Icons } from "icons.slint";
+import { IconLabel, SButton, ActionButton } from "components.slint";
+
+export component RecoveryPage inherits Rectangle {
+    in property <bool> busy;
+    in property <string> error;
+    callback submit(string);
+    callback skip;
+
+    background: Theme.menu-background;
+    in-out property <bool> reveal: false;
+
+    VerticalLayout {
+        alignment: center;
+        padding-left: 40px; padding-right: 40px;
+        spacing: Theme.sp-xl;
+
+        IconLabel {
+            text: Icons.recoveryKey;
+            filled: false;
+            font-size: 40px;
+            color: Theme.menu-text;
+            horizontal-alignment: center;
+        }
+        Text {
+            text: "Restore encrypted history";
+            color: Theme.menu-text;
+            font-family: Theme.font-ui;
+            font-size: Theme.heading;
+            font-weight: 700;
+            horizontal-alignment: center;
+        }
+        Text {
+            text: "Enter the recovery key (Security Key) from Element to verify this device and decrypt your message history. You can skip this and do it later.";
+            color: Theme.menu-text.with-alpha(0.7);
+            font-family: Theme.font-ui;
+            font-size: Theme.body;
+            horizontal-alignment: center;
+            wrap: word-wrap;
+        }
+        key-well := Rectangle {
+            height: 40px;
+            border-radius: 10px;
+            background: Theme.menu-text.with-alpha(0.06);
+            border-width: 1px;
+            border-color: key-input.has-focus ? Theme.accent.with-alpha(0.6) : Theme.menu-text.with-alpha(0.12);
+            HorizontalLayout {
+                padding-left: 10px; padding-right: 4px;
+                spacing: 4px;
+                Rectangle {
+                    clip: true;
+                    horizontal-stretch: 1;
+                    key-input := TextInput {
+                        enabled: !root.busy;
+                        color: Theme.menu-text;
+                        font-family: Theme.font-ui;
+                        font-size: Theme.body;
+                        vertical-alignment: center;
+                        height: 100%; width: 100%;
+                        single-line: true;
+                        input-type: root.reveal ? InputType.text : InputType.password;
+                        accepted => { if (self.text != "") { root.submit(self.text); } }
+                    }
+                    if key-input.text == "" : Text {
+                        text: "EsTc 1234 …";
+                        color: Theme.menu-text.with-alpha(0.4);
+                        font-family: Theme.font-ui;
+                        font-size: Theme.body;
+                        vertical-alignment: center;
+                        height: 100%;
+                    }
+                }
+                ActionButton {
+                    y: (key-well.height - self.height) / 2 - 1px;
+                    icon: root.reveal ? Icons.eye : Icons.eyeOff;
+                    filled: false;
+                    width: 32px; height: 32px;
+                    foreground: Theme.menu-text.with-alpha(0.7);
+                    clicked => { root.reveal = !root.reveal; }
+                }
+            }
+        }
+        HorizontalLayout {
+            alignment: center;
+            spacing: Theme.sp-lg;
+            SButton {
+                text: root.busy ? "Verifying…" : "Verify";
+                enabled: !root.busy && key-input.text != "";
+                clicked => { root.submit(key-input.text); }
+            }
+            SButton {
+                text: "Skip for now";
+                enabled: !root.busy;
+                clicked => { root.skip(); }
+            }
+        }
+        if root.error != "" : Text {
+            text: root.error;
+            color: Theme.urgent;
+            font-family: Theme.font-ui;
+            font-size: Theme.body-small;
+            horizontal-alignment: center;
+            wrap: word-wrap;
+        }
+    }
+}

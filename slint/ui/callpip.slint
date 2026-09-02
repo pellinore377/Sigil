@@ -1,0 +1,123 @@
+// The call shrunk into a corner — CallPiP.qml. Tapping reveals expand and
+// end-call; dragging snaps to the nearest corner on release.
+// DIVERGENCE: the QML measures throw velocity per frame and springs with a
+// bounce; Slint has no per-frame delta callback, so release eases to the
+// corner nearest the drop point.
+
+import { Theme } from "style.slint";
+import { Icons } from "icons.slint";
+import { IconLabel } from "components.slint";
+import { CallParticipant } from "model.slint";
+import { CallTile } from "callpage.slint";
+
+export component CallPip inherits Rectangle {
+    in property <color> fg: Theme.menu-text;
+    in property <color> accent: Theme.accent;
+    /// The featured remote (screen > camera), from the bridge.
+    in property <CallParticipant> featured;
+    /// Running call duration ("3:41"), ticked by the bridge; "•" before connect.
+    in property <string> duration-label: "•";
+    callback expand-requested;
+    callback hangup-requested;
+
+    in-out property <bool> controls-on: false;
+
+    width: 132px;
+    height: 172px;
+    property <length> edge: 14px;
+    property <bool> dragging: false;
+    // Until thrown once the tile belongs bottom right (QML everThrown).
+    x: root.parent-width - self.width - self.edge;
+    y: root.parent-height - self.height - self.edge;
+    /// The host tells the pip how big its arena is (a Slint child cannot ask).
+    in property <length> parent-width: 411px;
+    in property <length> parent-height: 823px;
+    animate x, y { duration: 240ms; easing: cubic-bezier(0.3, 1.15, 0.6, 1); }
+
+    border-radius: 16px;
+    background: #141417;
+    clip: true;
+
+    CallTile {
+        width: 100%; height: 100%;
+        tile-radius: 16px;
+        participant: root.featured;
+        fg: root.fg;
+        accent: root.accent;
+    }
+
+    // Duration chip while the controls are hidden.
+    if !root.controls-on : dur-chip := Rectangle {
+        x: 6px; y: 6px;
+        width: dur-text.preferred-width + 12px;
+        height: 18px;
+        border-radius: 9px;
+        background: Theme.background.with-alpha(0.6);
+        dur-text := Text {
+            text: root.duration-label;
+            color: #ececec;
+            font-family: Theme.font-ui;
+            font-size: 9px;
+            horizontal-alignment: center; vertical-alignment: center;
+            width: 100%; height: 100%;
+        }
+    }
+
+    drag-touch := TouchArea {
+        moved => {
+            root.dragging = true;
+            root.x = min(max(root.x + self.mouse-x - self.pressed-x, root.edge),
+                         root.parent-width - root.width - root.edge);
+            root.y = min(max(root.y + self.mouse-y - self.pressed-y, root.edge),
+                         root.parent-height - root.height - root.edge);
+        }
+        pointer-event(ev) => {
+            if (ev.kind == PointerEventKind.up && root.dragging) {
+                root.dragging = false;
+                root.x = root.x + root.width / 2 < root.parent-width / 2
+                    ? root.edge : root.parent-width - root.width - root.edge;
+                root.y = root.y + root.height / 2 < root.parent-height / 2
+                    ? root.edge : root.parent-height - root.height - root.edge;
+            }
+        }
+        clicked => {
+            if (!root.dragging) {
+                root.controls-on = !root.controls-on;
+            }
+        }
+    }
+
+    // Tap-revealed controls: expand in the middle, hangup top right.
+    if root.controls-on : controls := Rectangle {
+        width: 100%; height: 100%;
+        border-radius: 16px;
+        background: Theme.background.with-alpha(0.55);
+        expand-btn := Rectangle {
+            x: (root.width - self.width) / 2;
+            y: (root.height - self.height) / 2;
+            width: 42px; height: 42px;
+            border-radius: 21px;
+            background: Theme.background.with-alpha(0.85);
+            IconLabel {
+                text: Icons.fullscreen;
+                color: #ececec;
+                width: 100%; height: 100%;
+            }
+            TouchArea { clicked => { root.expand-requested(); } }
+        }
+        end-btn := Rectangle {
+            x: root.width - self.width - 6px;
+            y: 6px;
+            width: 26px; height: 26px;
+            border-radius: 13px;
+            background: Theme.urgent.with-alpha(0.95);
+            IconLabel {
+                text: Icons.close;
+                color: #ffffff;
+                font-size: Theme.body-small;
+                width: 100%; height: 100%;
+            }
+            TouchArea { clicked => { root.hangup-requested(); } }
+        }
+    }
+}

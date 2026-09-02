@@ -1,0 +1,288 @@
+// StartPage — start chat: search people, quick actions (new room / new space /
+// join by address), suggestions from existing DMs (StartChatPage.qml).
+
+import { TouchList } from "../furniture.slint";
+import { Theme } from "../style.slint";
+import { Icons } from "../icons.slint";
+import { IconLabel, ActionButton, Avatar, SButton } from "../components.slint";
+import { UserRow } from "../model.slint";
+
+export component StartPage inherits Rectangle {
+    in property <color> fg: Theme.menu-text;
+    /// Directory results while the query is ≥ 2 chars, else DM suggestions.
+    in property <[UserRow]> people;
+    in property <bool> busy;
+    in property <string> error;
+
+    callback closed;
+    /// Debounced by the bridge; fired on every edit.
+    callback search-edited(string);
+    callback start-dm(string);
+    /// (mode, value) — mode: create | space | join.
+    callback submit-extra(string, string);
+
+    in-out property <string> mode: "";   // "" | create | space | join
+
+    public function reset() {
+        root.mode = "";
+        search-input.text = "";
+        // extra-input clears itself: it lives under `if mode != ""` and is
+        // recreated when the mode reopens.
+    }
+
+    background: Theme.menu-background.brighter(0.35);
+
+    VerticalLayout {
+        // Header
+        header := Rectangle {
+            height: 54px;
+            HorizontalLayout {
+                padding-left: 6px;
+                spacing: 6px;
+                Rectangle {
+                    width: 44px;
+                    ActionButton {
+                        y: (54px - self.height) / 2;
+                        width: 44px; height: 44px;
+                        icon: Icons.close; filled: false;
+                        foreground: root.fg;
+                        clicked => { root.closed(); }
+                    }
+                }
+                Text {
+                    text: "Start chat";
+                    color: root.fg;
+                    font-family: Theme.font-ui;
+                    font-size: Theme.heading;
+                    font-weight: 700;
+                    vertical-alignment: center;
+                    horizontal-stretch: 1;
+                }
+            }
+        }
+
+        // Search pill
+        Rectangle {
+            height: 46px;
+            HorizontalLayout {
+                padding-left: 14px; padding-right: 14px; padding-bottom: 8px;
+                pill := Rectangle {
+                    border-radius: self.height / 2;
+                    background: root.fg.with-alpha(0.07);
+                    border-width: 1px;
+                    border-color: search-input.has-focus ? Theme.accent.with-alpha(0.4) : transparent;
+                    HorizontalLayout {
+                        padding-left: 14px; padding-right: 12px;
+                        spacing: 8px;
+                        IconLabel {
+                            text: Icons.search;
+                            color: root.fg.with-alpha(0.5);
+                            vertical-alignment: center;
+                        }
+                        Rectangle {
+                            clip: true;
+                            horizontal-stretch: 1;
+                            search-input := TextInput {
+                                color: root.fg;
+                                font-family: Theme.font-ui;
+                                font-size: Theme.body;
+                                vertical-alignment: center;
+                                height: 100%; width: 100%;
+                                single-line: true;
+                                edited => { root.search-edited(self.text); }
+                            }
+                            if search-input.text == "" : Text {
+                                text: "Search for someone";
+                                color: root.fg.with-alpha(0.45);
+                                font-family: Theme.font-ui;
+                                font-size: Theme.body;
+                                vertical-alignment: center;
+                                height: 100%;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Quick actions, only while not searching.
+        if search-input.text == "" : VerticalLayout {
+            qa1 := Rectangle {
+                height: 48px;
+                Rectangle {
+                    x: 10px; width: qa1.width - 20px;
+                    y: 4px; height: qa1.height - 8px;
+                    border-radius: 12px;
+                    background: qa1-t.pressed || qa1-t.has-hover ? root.fg.with-alpha(0.05) : transparent;
+                }
+                IconLabel { x: 22px; height: 100%; text: Icons.plus; filled: false; color: root.fg.with-alpha(0.7); }
+                Text {
+                    x: 56px; height: 100%;
+                    text: "New room";
+                    color: root.fg;
+                    font-family: Theme.font-ui; font-size: Theme.body;
+                    vertical-alignment: center;
+                }
+                qa1-t := TouchArea { clicked => { root.mode = root.mode == "create" ? "" : "create"; } }
+            }
+            qa2 := Rectangle {
+                height: 48px;
+                Rectangle {
+                    x: 10px; width: qa2.width - 20px;
+                    y: 4px; height: qa2.height - 8px;
+                    border-radius: 12px;
+                    background: qa2-t.pressed || qa2-t.has-hover ? root.fg.with-alpha(0.05) : transparent;
+                }
+                IconLabel { x: 22px; height: 100%; text: Icons.space; filled: false; color: root.fg.with-alpha(0.7); }
+                Text {
+                    x: 56px; height: 100%;
+                    text: "New space";
+                    color: root.fg;
+                    font-family: Theme.font-ui; font-size: Theme.body;
+                    vertical-alignment: center;
+                }
+                qa2-t := TouchArea { clicked => { root.mode = root.mode == "space" ? "" : "space"; } }
+            }
+            qa3 := Rectangle {
+                height: 48px;
+                Rectangle {
+                    x: 10px; width: qa3.width - 20px;
+                    y: 4px; height: qa3.height - 8px;
+                    border-radius: 12px;
+                    background: qa3-t.pressed || qa3-t.has-hover ? root.fg.with-alpha(0.05) : transparent;
+                }
+                // The QML draws "#" through IconLabel — the icon font, not UI.
+                IconLabel { x: 22px; height: 100%; text: "#"; filled: false; color: root.fg.with-alpha(0.7); }
+                Text {
+                    x: 56px; height: 100%;
+                    text: "Join room by address";
+                    color: root.fg;
+                    font-family: Theme.font-ui; font-size: Theme.body;
+                    vertical-alignment: center;
+                }
+                qa3-t := TouchArea { clicked => { root.mode = root.mode == "join" ? "" : "join"; } }
+            }
+            if root.mode != "" : Rectangle {
+                height: 52px;
+                // Qt.callLater(extra.forceActiveFocus): focus rides instantiation.
+                init => { extra-input.focus(); }
+                HorizontalLayout {
+                    padding-left: 14px; padding-right: 14px;
+                    padding-top: 4px; padding-bottom: 8px;
+                    extra-well := Rectangle {
+                        border-radius: 12px;
+                        background: root.fg.with-alpha(0.06);
+                        border-width: 1px;
+                        border-color: extra-input.has-focus ? Theme.accent.with-alpha(0.4) : root.fg.with-alpha(0.1);
+                        HorizontalLayout {
+                            padding-left: 10px; padding-right: 6px;
+                            spacing: 6px;
+                            Rectangle {
+                                clip: true;
+                                horizontal-stretch: 1;
+                                extra-input := TextInput {
+                                    color: root.fg;
+                                    font-family: Theme.font-ui;
+                                    font-size: Theme.body;
+                                    vertical-alignment: center;
+                                    height: 100%; width: 100%;
+                                    single-line: true;
+                                    accepted => {
+                                        if (!root.busy) { root.submit-extra(root.mode, self.text); }
+                                    }
+                                }
+                                if extra-input.text == "" : Text {
+                                    text: root.mode == "create" ? "Room name"
+                                        : root.mode == "space" ? "Space name"
+                                        : "#room:server.tld";
+                                    color: root.fg.with-alpha(0.4);
+                                    font-family: Theme.font-ui;
+                                    font-size: Theme.body;
+                                    vertical-alignment: center;
+                                    height: 100%;
+                                }
+                            }
+                            SButton {
+                                y: (extra-well.height - self.height) / 2;
+                                // StartChatPage.qml: "Create" only in create mode —
+                                // the space quick-action submits as "Join" too.
+                                text: root.mode == "create" ? "Create" : "Join";
+                                enabled: !root.busy;
+                                clicked => { root.submit-extra(root.mode, extra-input.text); }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        if root.error != "" : Rectangle { height: 4px; }
+        if root.error != "" : Text {
+            text: root.error;
+            color: Theme.urgent;
+            font-family: Theme.font-ui;
+            font-size: Theme.caption;
+            horizontal-alignment: center;
+        }
+
+        Rectangle { height: 10px; }
+        Text {
+            // The caption flips at two characters, with the list (QML trims;
+            // Slint has no trim, so whitespace-only text still flips it).
+            text: search-input.text.character-count >= 2 ? "Results" : "Suggestions";
+            color: root.fg.with-alpha(0.55);
+            font-family: Theme.font-ui;
+            font-size: Theme.caption;
+            font-weight: 700;
+            x: 18px;
+        }
+        Rectangle { height: 4px; }
+
+        people-list := TouchList {
+            vertical-stretch: 1;
+            for person in root.people : prow := Rectangle {
+                height: 56px;
+                Rectangle {
+                    x: 10px; width: prow.width - 20px;
+                    y: 4px; height: prow.height - 8px;
+                    border-radius: 12px;
+                    background: prow-t.pressed || prow-t.has-hover ? root.fg.with-alpha(0.05) : transparent;
+                }
+                HorizontalLayout {
+                    padding-left: 16px; padding-right: 12px;
+                    spacing: 12px;
+                    Rectangle {
+                        width: 38px;
+                        Avatar {
+                            y: (prow.height - self.height) / 2;
+                            size: 38px;
+                            source: person.avatar;
+                            initials: person.initials;
+                            tint: person.tint;
+                        }
+                    }
+                    VerticalLayout {
+                        alignment: center;
+                        horizontal-stretch: 1;
+                        Text {
+                            text: person.display-name != "" ? person.display-name : person.user-id;
+                            color: root.fg;
+                            font-family: Theme.font-ui;
+                            font-size: Theme.body;
+                            font-weight: 700;
+                            overflow: elide;
+                        }
+                        Text {
+                            text: person.user-id;
+                            color: root.fg.with-alpha(0.5);
+                            font-family: Theme.font-ui;
+                            font-size: Theme.caption;
+                            overflow: elide;
+                        }
+                    }
+                }
+                prow-t := TouchArea { clicked => { root.start-dm(person.user-id); } }
+            }
+        }
+    }
+}

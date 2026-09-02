@@ -1,0 +1,390 @@
+// Attachment sheet under the composer — mobile/AttachMenu.qml. Each category
+// opens its own page inside the same panel. Location pages and the emoji grid
+// are hosted by the integrator (LocationPicker and EmojiPicker are other
+// groups' components); this emits callbacks for them.
+
+import { Theme } from "style.slint";
+import { Icons } from "icons.slint";
+import { IconLabel } from "components.slint";
+import { TextWell } from "components.slint";
+
+export struct StickerItem { path: string, art: image, body: string, url: string, w: int, h: int }
+
+// AttachMenu.qml's poll field: a 10px-radius chip well whose fill LIGHTENS on
+// focus (no border), question at body size, options at body-small.
+component PollField inherits Rectangle {
+    in property <string> placeholder;
+    in-out property <string> text <=> input.text;
+    in property <length> font-px: Theme.body-small;
+    in property <color> fg;
+    in property <color> chip;
+    height: 32px;
+    border-radius: 10px;
+    background: input.has-focus ? root.chip.brighter(0.15) : root.chip;
+    HorizontalLayout {
+        padding-left: 12px; padding-right: 12px;
+        Rectangle {
+            clip: true;
+            input := TextInput {
+                color: root.fg;
+                font-family: Theme.font-ui;
+                font-size: root.font-px;
+                vertical-alignment: center;
+                height: 100%; width: 100%;
+                single-line: true;
+            }
+            if input.text == "" : Text {
+                text: root.placeholder;
+                color: root.fg.with-alpha(0.45);
+                font-family: Theme.font-ui;
+                font-size: root.font-px;
+                vertical-alignment: center;
+                height: 100%;
+            }
+        }
+    }
+}
+
+component AttachTile inherits Rectangle {
+    in property <string> icon;
+    in property <string> label;
+    in property <float> icon-scale: 1.0;
+    in property <color> fg;
+    in property <color> chip;
+    callback clicked;
+    width: 62px; height: 72px;
+    disc := Rectangle {
+        x: (62px - self.width) / 2;
+        width: 58px; height: 40px;
+        border-radius: 20px;
+        transform-origin: { x: self.width / 2, y: self.height / 2 };
+        transform-scale-x: tile-t.has-hover ? 1.05 : 1.0;
+        transform-scale-y: tile-t.has-hover ? 1.05 : 1.0;
+        animate transform-scale-x, transform-scale-y { duration: 110ms; easing: cubic-bezier(0.33, 1, 0.68, 1); }
+        background: tile-t.pressed || tile-t.has-hover ? root.chip.brighter(0.2) : root.chip;
+        IconLabel {
+            text: root.icon;
+            filled: false;
+            color: root.fg;
+            font-size: Theme.icon-size * root.icon-scale;
+            width: 100%; height: 100%;
+        }
+    }
+    Text {
+        y: 45px;
+        width: 62px;
+        text: root.label;
+        color: root.fg.with-alpha(0.75);
+        font-family: Theme.font-ui;
+        font-size: 10px;
+        horizontal-alignment: center;
+        wrap: word-wrap;
+    }
+    tile-t := TouchArea { clicked => { root.clicked(); } }
+}
+
+export component AttachMenu inherits Rectangle {
+    in property <color> fg: Theme.menu-text;
+    in property <color> accent: Theme.accent;
+    in property <color> surface: Theme.menu-text.with-alpha(0.07);
+    in property <color> chip: Theme.background.with-alpha(0.85);
+
+    // grid | poll | stickers | emoji | note — location modes emit open-location
+    // and stay owned by the integrator's LocationPicker mount.
+    in-out property <string> page: "grid";
+    in-out property <string> note: "";
+    in property <[StickerItem]> stickers;
+    in property <bool> stickers-loaded: false;
+
+    callback pick-files;
+    callback open-location(string); // "pin" | "current" | "live"
+    callback insert-emoji(string);
+    callback create-poll(string, [string], bool); // question, options, closed
+    callback send-sticker(int);     // index into stickers
+    callback load-stickers;
+    callback load-emoji;
+    callback close-requested;
+
+    height: root.page == "poll" ? 408px
+          : (root.page == "emoji" || root.page == "stickers") ? 330px
+          : 232px;
+
+    public function reset() { root.page = "grid"; root.note = ""; }
+
+    chrome := Rectangle {
+        width: 100%; height: 100%;
+        border-radius: 18px;
+        // Opaque card first, then the QML's soft wash on top: as a floating
+        // drawer the timeline must not bleed through. (No border — QML has none.)
+        background: Theme.popup-background;
+        Rectangle {
+            width: 100%; height: 100%;
+            border-radius: 18px;
+            background: root.surface;
+        }
+    }
+
+    // Sub-page header — QML margins: 16 top, 18 sides.
+    if root.page != "grid" : header := Rectangle {
+        x: 18px; y: 16px;
+        width: root.width - 36px; height: 30px;
+        back-disc := Rectangle {
+            width: 30px; height: 30px; border-radius: 15px;
+            background: hb-t.pressed ? root.chip.brighter(0.2) : root.chip;
+            IconLabel { text: Icons.back; filled: false; color: root.fg; font-size: Theme.body; width: 100%; height: 100%; }
+            hb-t := TouchArea { clicked => { root.reset(); } }
+        }
+        Text {
+            text: root.page == "poll" ? "New poll"
+                : root.page == "stickers" ? "Stickers"
+                : root.page == "emoji" ? "Emoji" : "";
+            color: root.fg;
+            font-family: Theme.font-ui;
+            font-size: Theme.body;
+            font-weight: 700;
+            horizontal-alignment: center;
+            vertical-alignment: center;
+            width: 100%; height: 100%;
+        }
+    }
+
+    // Grid: the 5-column block is centred while its rows still fill left to
+    // right — row two is left-aligned under the block (QML Grid.centerIn).
+    if root.page == "grid" : grid-box := Rectangle {
+        width: 100%; height: 100%;
+        grid-block := VerticalLayout {
+            x: (grid-box.width - 350px) / 2;
+            y: (grid-box.height - self.preferred-height) / 2;
+            width: 350px;
+            HorizontalLayout {
+                alignment: start;
+                spacing: 10px;
+                AttachTile { icon: Icons.attach; label: "Files"; fg: root.fg; chip: root.chip; clicked => { root.pick-files(); root.close-requested(); } }
+                AttachTile { icon: Icons.emoji; label: "Emojis"; fg: root.fg; chip: root.chip; clicked => { root.load-emoji(); root.page = "emoji"; } }
+                AttachTile { icon: Icons.sticker; label: "Stickers"; fg: root.fg; chip: root.chip; clicked => { root.load-stickers(); root.page = "stickers"; } }
+                AttachTile { icon: Icons.poll; label: "Poll"; fg: root.fg; chip: root.chip; clicked => { root.reset-poll(); root.page = "poll"; } }
+                AttachTile { icon: Icons.myLocation; label: "Current\nLocation"; fg: root.fg; chip: root.chip; clicked => { root.open-location("current"); } }
+            }
+            Rectangle { height: 10px; }
+            HorizontalLayout {
+                alignment: start;
+                spacing: 10px;
+                AttachTile { icon: Icons.liveLocation; label: "Live\nLocation"; fg: root.fg; chip: root.chip; clicked => { root.open-location("live"); } }
+                AttachTile { icon: Icons.pinDrop; label: "Drop a Pin"; icon-scale: 1.3; fg: root.fg; chip: root.chip; clicked => { root.open-location("pin"); } }
+            }
+        }
+    }
+
+    // Note
+    if root.page == "note" : Text {
+        x: 40px;
+        width: root.width - 80px; height: 100%;
+        text: root.note;
+        color: root.fg.with-alpha(0.75);
+        font-family: Theme.font-ui;
+        font-size: Theme.body;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+        wrap: word-wrap;
+    }
+
+    // Poll: question + up to 8 option slots (Slint models are not mutable
+    // from the language, so the slots are explicit; count gates visibility).
+    in-out property <bool> poll-closed: false;
+    in-out property <int> option-count: 2;
+    // The inputs live inside the poll page's `if`, so their ids are out of
+    // scope here; the texts ride two-way component properties instead.
+    in-out property <string> pq;
+    in-out property <string> po1; in-out property <string> po2;
+    in-out property <string> po3; in-out property <string> po4;
+    in-out property <string> po5; in-out property <string> po6;
+    in-out property <string> po7; in-out property <string> po8;
+    property <bool> poll-valid: root.pq != ""
+        && ((root.po1 != "" ? 1 : 0) + (root.po2 != "" ? 1 : 0) + (root.po3 != "" ? 1 : 0)
+          + (root.po4 != "" ? 1 : 0) + (root.po5 != "" ? 1 : 0) + (root.po6 != "" ? 1 : 0)
+          + (root.po7 != "" ? 1 : 0) + (root.po8 != "" ? 1 : 0)) >= 2;
+    public function reset-poll() {
+        root.poll-closed = false;
+        root.option-count = 2;
+        root.pq = ""; root.po1 = ""; root.po2 = ""; root.po3 = ""; root.po4 = "";
+        root.po5 = ""; root.po6 = ""; root.po7 = ""; root.po8 = "";
+    }
+    // Removing an option shifts the later slots up (QML pollOptions.remove).
+    public function remove-option(i: int) {
+        if (i <= 3) { root.po3 = root.po4; }
+        if (i <= 4) { root.po4 = root.po5; }
+        if (i <= 5) { root.po5 = root.po6; }
+        if (i <= 6) { root.po6 = root.po7; }
+        if (i <= 7) { root.po7 = root.po8; }
+        root.po8 = "";
+        root.option-count -= 1;
+    }
+    if root.page == "poll" : poll-box := Rectangle {
+        x: 20px; y: 52px;
+        width: root.width - 40px; height: root.height - 52px - 44px - 8px;
+        clip: true;
+        poll-flick := Flickable {
+            width: 100%; height: 100%;
+            viewport-height: poll-col.preferred-height;
+            poll-col := VerticalLayout {
+                width: poll-box.width;
+                spacing: 6px;
+                Text { text: "Poll type"; color: root.fg; font-family: Theme.font-ui; font-size: Theme.body-small; font-weight: 700; }
+                HorizontalLayout {
+                    alignment: start;
+                    spacing: 6px;
+                    open-seg := Rectangle {
+                        width: 84px; height: 28px; border-radius: 14px;
+                        background: !root.poll-closed ? root.accent : root.chip;
+                        Text { text: "Open"; color: !root.poll-closed ? Theme.background : root.fg; font-family: Theme.font-ui; font-size: Theme.body-small; font-weight: !root.poll-closed ? 700 : 400; width: 100%; height: 100%; horizontal-alignment: center; vertical-alignment: center; }
+                        TouchArea { clicked => { root.poll-closed = false; } }
+                    }
+                    closed-seg := Rectangle {
+                        width: 84px; height: 28px; border-radius: 14px;
+                        background: root.poll-closed ? root.accent : root.chip;
+                        Text { text: "Closed"; color: root.poll-closed ? Theme.background : root.fg; font-family: Theme.font-ui; font-size: Theme.body-small; font-weight: root.poll-closed ? 700 : 400; width: 100%; height: 100%; horizontal-alignment: center; vertical-alignment: center; }
+                        TouchArea { clicked => { root.poll-closed = true; } }
+                    }
+                }
+                Text {
+                    text: root.poll-closed ? "Results stay hidden until you close the poll"
+                                           : "Voters see results as soon as they have voted";
+                    color: root.fg.with-alpha(0.6);
+                    font-family: Theme.font-ui;
+                    font-size: 10px;
+                    wrap: word-wrap;
+                }
+                Text { text: "Question"; color: root.fg; font-family: Theme.font-ui; font-size: Theme.body-small; font-weight: 700; }
+                q := PollField { placeholder: "Ask something…"; text <=> root.pq; height: 34px; font-px: Theme.body; fg: root.fg; chip: root.chip; }
+                Rectangle { height: 4px; }
+                Text { text: "Options"; color: root.fg; font-family: Theme.font-ui; font-size: Theme.body-small; font-weight: 700; }
+                o1 := PollField { placeholder: "Option 1"; text <=> root.po1; fg: root.fg; chip: root.chip; }
+                o2 := PollField { placeholder: "Option 2"; text <=> root.po2; fg: root.fg; chip: root.chip; }
+                // Options past the second carry a circular remove button.
+                if root.option-count >= 3 : HorizontalLayout { spacing: 6px;
+                    o3 := PollField { placeholder: "Option 3"; text <=> root.po3; fg: root.fg; chip: root.chip; horizontal-stretch: 1; }
+                    Rectangle { width: 28px; height: 28px; border-radius: 14px; background: r3.pressed ? root.chip.brighter(0.2) : root.chip;
+                        IconLabel { text: Icons.close; filled: false; color: root.fg; font-size: Theme.caption; width: 100%; height: 100%; }
+                        r3 := TouchArea { clicked => { root.remove-option(3); } } }
+                }
+                if root.option-count >= 4 : HorizontalLayout { spacing: 6px;
+                    o4 := PollField { placeholder: "Option 4"; text <=> root.po4; fg: root.fg; chip: root.chip; horizontal-stretch: 1; }
+                    Rectangle { width: 28px; height: 28px; border-radius: 14px; background: r4.pressed ? root.chip.brighter(0.2) : root.chip;
+                        IconLabel { text: Icons.close; filled: false; color: root.fg; font-size: Theme.caption; width: 100%; height: 100%; }
+                        r4 := TouchArea { clicked => { root.remove-option(4); } } }
+                }
+                if root.option-count >= 5 : HorizontalLayout { spacing: 6px;
+                    o5 := PollField { placeholder: "Option 5"; text <=> root.po5; fg: root.fg; chip: root.chip; horizontal-stretch: 1; }
+                    Rectangle { width: 28px; height: 28px; border-radius: 14px; background: r5.pressed ? root.chip.brighter(0.2) : root.chip;
+                        IconLabel { text: Icons.close; filled: false; color: root.fg; font-size: Theme.caption; width: 100%; height: 100%; }
+                        r5 := TouchArea { clicked => { root.remove-option(5); } } }
+                }
+                if root.option-count >= 6 : HorizontalLayout { spacing: 6px;
+                    o6 := PollField { placeholder: "Option 6"; text <=> root.po6; fg: root.fg; chip: root.chip; horizontal-stretch: 1; }
+                    Rectangle { width: 28px; height: 28px; border-radius: 14px; background: r6.pressed ? root.chip.brighter(0.2) : root.chip;
+                        IconLabel { text: Icons.close; filled: false; color: root.fg; font-size: Theme.caption; width: 100%; height: 100%; }
+                        r6 := TouchArea { clicked => { root.remove-option(6); } } }
+                }
+                if root.option-count >= 7 : HorizontalLayout { spacing: 6px;
+                    o7 := PollField { placeholder: "Option 7"; text <=> root.po7; fg: root.fg; chip: root.chip; horizontal-stretch: 1; }
+                    Rectangle { width: 28px; height: 28px; border-radius: 14px; background: r7.pressed ? root.chip.brighter(0.2) : root.chip;
+                        IconLabel { text: Icons.close; filled: false; color: root.fg; font-size: Theme.caption; width: 100%; height: 100%; }
+                        r7 := TouchArea { clicked => { root.remove-option(7); } } }
+                }
+                if root.option-count >= 8 : HorizontalLayout { spacing: 6px;
+                    o8 := PollField { placeholder: "Option 8"; text <=> root.po8; fg: root.fg; chip: root.chip; horizontal-stretch: 1; }
+                    Rectangle { width: 28px; height: 28px; border-radius: 14px; background: r8.pressed ? root.chip.brighter(0.2) : root.chip;
+                        IconLabel { text: Icons.close; filled: false; color: root.fg; font-size: Theme.caption; width: 100%; height: 100%; }
+                        r8 := TouchArea { clicked => { root.remove-option(8); } } }
+                }
+                if root.option-count < 8 : add-row := Rectangle {
+                    height: 30px;
+                    HorizontalLayout {
+                        alignment: start;
+                        spacing: 6px;
+                        IconLabel { text: Icons.plus; filled: false; color: root.accent; font-size: Theme.body-small; vertical-alignment: center; }
+                        Text { text: "Add option"; color: root.accent; font-family: Theme.font-ui; font-size: Theme.body-small; vertical-alignment: center; }
+                    }
+                    TouchArea { clicked => { root.option-count += 1; } }
+                }
+            }
+        }
+    }
+    if root.page == "poll" : poll-footer := Rectangle {
+        x: 20px; y: root.height - 54px;
+        width: root.width - 40px; height: 34px;
+        HorizontalLayout {
+            alignment: end;
+            spacing: 8px;
+            cancel-pill := Rectangle {
+                width: 72px; height: 30px; border-radius: 15px;
+                background: cp-t.pressed ? root.chip.brighter(0.2) : root.chip;
+                Text { text: "Cancel"; color: root.fg; font-family: Theme.font-ui; font-size: Theme.body-small; width: 100%; height: 100%; horizontal-alignment: center; vertical-alignment: center; }
+                cp-t := TouchArea { clicked => { root.reset(); } }
+            }
+            create-pill := Rectangle {
+                width: 96px; height: 30px; border-radius: 15px;
+                background: root.poll-valid ? root.accent : root.chip;
+                opacity: root.poll-valid ? 1 : 0.7;
+                Text {
+                    text: "Create poll";
+                    color: root.poll-valid ? Theme.background : root.fg.with-alpha(0.5);
+                    font-family: Theme.font-ui; font-size: Theme.body-small;
+                    font-weight: root.poll-valid ? 700 : 400;
+                    width: 100%; height: 100%; horizontal-alignment: center; vertical-alignment: center;
+                }
+                TouchArea {
+                    clicked => {
+                        if (root.poll-valid) {
+                            root.create-poll(root.pq, [root.po1, root.po2, root.po3, root.po4, root.po5, root.po6, root.po7, root.po8], root.poll-closed);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Stickers
+    if root.page == "stickers" : stickers-box := Rectangle {
+        x: 22px; y: 54px;
+        width: root.width - 44px; height: root.height - 64px - 20px;
+        clip: true;
+        // A Flow: as many 56px cells as the width takes, packed left to right.
+        property <int> cols: max(1, floor(self.width / 64px));
+        if root.stickers.length == 0 : Text {
+            text: "No sticker packs yet.\nAdd one in Element (im.ponies.user_emotes) and it shows up here.";
+            color: root.fg.with-alpha(0.6);
+            font-family: Theme.font-ui;
+            font-size: Theme.body-small;
+            wrap: word-wrap;
+            horizontal-alignment: center;
+            vertical-alignment: center;
+            width: 100%; height: 100%;
+        }
+        sticker-flick := Flickable {
+            width: 100%; height: 100%;
+            viewport-height: ((root.stickers.length + stickers-box.cols - 1) / stickers-box.cols) * 64px;
+            for st[i] in root.stickers : st-box := Rectangle {
+                x: mod(i, stickers-box.cols) * 64px;
+                y: floor(i / stickers-box.cols) * 64px;
+                width: 56px; height: 56px;
+                Image { source: st.art; width: 100%; height: 100%; image-fit: contain; }
+                Rectangle {
+                    width: 100%; height: 100%; border-radius: 8px;
+                    border-width: st-t.pressed || st-t.has-hover ? 2px : 0px;
+                    border-color: root.accent.with-alpha(0.7);
+                }
+                st-t := TouchArea { clicked => { root.send-sticker(i); } }
+            }
+        }
+    }
+
+    // Emoji page body is the integrator's EmojiPicker mount; reserve the space.
+    // (@children cannot sit under a conditional, so visibility gates it.)
+    emoji-slot := Rectangle {
+        visible: root.page == "emoji";
+        x: 20px; y: 52px;
+        width: root.width - 40px; height: root.height - 62px - 10px;
+        @children
+    }
+}

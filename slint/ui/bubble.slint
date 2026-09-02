@@ -1,0 +1,1096 @@
+// One timeline row — the port of BubbleDelegate.qml. Google-Messages shape:
+// own messages right in accent bubbles, others left with an avatar on group
+// ends; day chips; tiny state captions; reactions straddle the bubble's top
+// corner; the pin sits proud of it; own messages wear a mark line.
+//
+// Ported except SigilText per-character effects and rich-text bodies (no
+// rich text in Slint — WIRING-chat.md). Link cards, code parts, and GIF
+// playback (engine-decoded frames) are in.
+
+import { Theme } from "style.slint";
+import { Icons } from "icons.slint";
+import { IconLabel, Avatar, HoldArea } from "components.slint";
+import { Spinner } from "furniture.slint";
+import { TimelineRow, ReactionChip, PollOption } from "model.slint";
+
+export component Bubble inherits Rectangle {
+    in property <TimelineRow> item;
+    in property <color> fg: Theme.menu-text;
+    in property <color> accent: Theme.accent;
+    in property <bool> dm;
+    in property <bool> encrypted;
+    in property <color> convo-ground: Theme.menu-background;
+    in-out property <bool> details-open: false;
+
+    callback menu-requested(TimelineRow, length, length, length, length);
+    callback reply-requested(string, string, string);
+    callback open-image(TimelineRow);
+    callback play-video(TimelineRow);
+    callback open-document(TimelineRow);
+    callback open-audio(TimelineRow);
+    callback open-location(TimelineRow);
+    callback open-link(TimelineRow);
+    callback open-url(string);
+    callback open-thread(string);
+    callback react(string, string);
+    callback voice-toggled(string);
+    callback voice-seeked(string, float);
+    callback vote(string, string);
+
+    property <length> bubble-max: root.width * 0.78;
+    property <bool> is-msg: item.kind != "state" && item.kind != "dayDivider" && !item.is-read-marker;
+    property <bool> media-kind: item.kind == "image" || item.kind == "sticker" || item.kind == "video";
+    property <bool> voice-kind: item.kind == "voice";
+    property <bool> file-kind: item.kind == "file" || item.kind == "audio";
+    // BubbleDelegate fullBleed: media (location included) + doc/contact cards
+    // run edge to edge; link cards / track / code stay unported (WIRING-chat.md).
+    property <bool> doc-kind: root.file-kind && !root.voice-kind && item.doc-chip != "";
+    property <bool> code-kind: item.parts.length > 0;
+    property <bool> link-card: item.link-has && !root.media-kind && !item.link-only;
+    property <bool> full-bleed: root.media-kind || item.kind == "location"
+        || root.doc-kind || item.kind == "contact" || item.kind == "audio"
+        || root.code-kind || root.link-card || item.link-only;
+    // A poll draws its own card, so the bubble contributes no padding or fill.
+    property <bool> pad-free: root.full-bleed || item.kind == "poll";
+    property <int> poll-sum: item.poll-vote-sum;
+    property <string> votes-word: item.poll-total == 1 ? "1 vote" : "\{item.poll-total} votes";
+    /// Jump landing: a brief accent ring on the message you asked for.
+    in property <bool> jump-flash: false;
+    /// Epoch seconds at app start (window's boot-epoch-s) for the live countdown.
+    in property <int> boot-epoch-s: 0;
+    property <int> live-remaining: max(0, item.location-expires-s - root.boot-epoch-s - floor(animation-tick() / 1s));
+    property <bool> caption-visible: root.media-kind && item.body != "" && item.body != item.media-filename;
+    // Opaque pre-blends over the popup surface — the QML mix() math verbatim.
+    property <color> bubble-fill: item.is-own ? root.accent.mix(Theme.popup-background, 0.42)
+        : item.highlighted ? root.accent.mix(Theme.popup-background, 0.24)
+        : root.fg.mix(Theme.popup-background, 0.22);
+    property <length> r-big: 16px;
+    property <length> r-small: 5px;
+    property <length> r-tl: (!item.is-own && !item.group-start) ? r-small : r-big;
+    property <length> r-bl: (!item.is-own && !item.group-end) ? r-small : r-big;
+    property <length> r-tr: (item.is-own && !item.group-start) ? r-small : r-big;
+    property <length> r-br: (item.is-own && !item.group-end) ? r-small : r-big;
+    property <length> reaction-lift: item.reactions.length > 0 ? 13px : 0px;
+    // Media box size, computed once from the event's own dimensions so nothing
+    // downstream has to read bubble.width (which would loop through preferred).
+    property <float> media-iw: item.thumb-w > 0px ? item.thumb-w / 1px : 400;
+    property <float> media-ih: item.thumb-h > 0px ? item.thumb-h / 1px : 300;
+    property <float> media-s: min(1.0, min(root.bubble-max / 1px / root.media-iw, 300.0 / root.media-ih));
+    property <length> media-w: max(120px, root.media-iw * root.media-s * 1px);
+    property <length> media-h: max(80px, root.media-ih * root.media-s * 1px);
+    property <length> pin-lift: item.pinned ? 4px : 0px;
+
+    height: col.preferred-height;
+    background: transparent;
+    public function open-menu() {
+        // Row geometry: `bubble` lives inside the is-msg branch and is out of
+        // scope here; the sheet's spotlight placement only needs the vicinity.
+        root.menu-requested(item,
+            root.absolute-position.x + 14px, root.absolute-position.y,
+            root.width - 28px, root.height);
+    }
+
+    col := VerticalLayout {
+        padding-left: 14px; padding-right: 14px;
+
+        // Session stamp (GM style)
+        if item.day-label != "" : Rectangle {
+            height: 30px;
+            Text {
+                text: item.day-label;
+                color: root.fg.with-alpha(0.55);
+                font-family: Theme.font-ui; font-size: Theme.caption; font-weight: 700;
+                horizontal-alignment: center; vertical-alignment: center;
+                width: 100%; height: 100%;
+            }
+        }
+
+        // Unread divider
+        if item.is-read-marker : Rectangle {
+            height: 20px;
+            Rectangle {
+                y: 9.5px; width: 100%; height: 1px;
+                background: Theme.urgent.with-alpha(0.5);
+            }
+            unread-pill := Rectangle {
+                x: (root.width - 28px - self.width) / 2;
+                y: 2px;
+                width: unread-text.preferred-width + 14px; height: 16px;
+                border-radius: 8px;
+                background: Theme.urgent;
+                unread-text := Text {
+                    text: "Unread";
+                    color: Theme.background;
+                    font-family: Theme.font-ui; font-size: 9px; font-weight: 700;
+                    horizontal-alignment: center; vertical-alignment: center;
+                    width: 100%; height: 100%;
+                }
+            }
+        }
+
+        // State caption
+        if item.kind == "state" && item.body != "" : Rectangle {
+            height: state-text.preferred-height + 10px;
+            state-text := Text {
+                y: 10px;
+                width: 100%;
+                text: item.body;
+                color: root.fg.with-alpha(0.42);
+                font-family: Theme.font-ui; font-size: Theme.caption;
+                horizontal-alignment: center;
+                wrap: word-wrap;
+            }
+        }
+
+        // Sender header: avatar beside the name, group starts in group rooms only.
+        if root.is-msg && item.show-header && !root.dm && !item.is-own : Rectangle {
+            height: 28px;
+            HorizontalLayout {
+                alignment: start;
+                padding-bottom: 2px;
+                spacing: 7px;
+                Avatar {
+                    y: 4px;
+                    size: 20px;
+                    source: item.avatar;
+                    initials: item.initials;
+                    tint: item.tint;
+                }
+                Text {
+                    text: item.sender-name;
+                    color: root.fg.with-alpha(0.6);
+                    font-family: Theme.font-ui; font-size: Theme.caption; font-weight: 700;
+                    vertical-alignment: center;
+                }
+            }
+        }
+
+        // Bubble row
+        if root.is-msg : brow := Rectangle {
+            height: bubble.height + (item.group-start ? 10px : 3px) + max(root.reaction-lift, root.pin-lift);
+
+            bubble := Rectangle {
+                x: item.is-own ? brow.width - self.width : 0px;
+                y: brow.height - self.height;
+                // QML contentW: media takes its box; doc/track/code/contact and
+                // the link card take bubbleMax outright (wrapped text reports a
+                // tiny preferred width); text is implicitWidth + 22, 40px floor.
+                property <length> content-w: root.media-kind ? root.media-w
+                    : item.kind == "location" ? root.bubble-max
+                    : root.doc-kind || item.kind == "audio" || item.kind == "contact"
+                      || root.code-kind || root.link-card || item.link-only ? root.bubble-max
+                    : b-inner.preferred-width + (root.pad-free ? 0px : 22px);
+                width: min(root.bubble-max, max(40px, self.content-w));
+                height: b-inner.preferred-height + (root.pad-free ? 0px : 20px);
+                // cardOnly: a body that IS the link renders the card alone.
+                background: item.kind == "poll" || item.link-only ? transparent : root.bubble-fill;
+                border-width: root.jump-flash ? 2px : 0px;
+                border-color: root.jump-flash ? root.accent.with-alpha(0.9) : transparent;
+                animate border-width { duration: 220ms; easing: cubic-bezier(0.33, 1, 0.68, 1); }
+                border-top-left-radius: root.r-tl;
+                border-bottom-left-radius: root.r-bl;
+                border-top-right-radius: root.r-tr;
+                border-bottom-right-radius: root.r-br;
+                clip: true;
+
+                // Declared BEFORE the content so every inner TouchArea (media,
+                // voice, poll, file, thread chip) sits above it — QML's
+                // TapHandlers live on the bubble behind the bodies' MouseAreas.
+                // Plain text has no handler of its own and falls through here.
+                press-area := TouchArea {
+                    clicked => {
+                        if (!long-timer.fired) { root.details-open = !root.details-open; }
+                        long-timer.fired = false;
+                    }
+                    pointer-event(ev) => {
+                        if (ev.kind == PointerEventKind.down) {
+                            long-timer.fired = false;
+                            long-timer.running = true;
+                        } else if (ev.kind == PointerEventKind.up || ev.kind == PointerEventKind.cancel) {
+                            long-timer.running = false;
+                        }
+                    }
+                    moved => {
+                        if (abs((self.mouse-x - self.pressed-x) / 1px) > 12 || abs((self.mouse-y - self.pressed-y) / 1px) > 12) {
+                            long-timer.running = false;
+                        }
+                    }
+                }
+
+                b-inner := VerticalLayout {
+                    x: root.pad-free ? 0px : 11px;
+                    y: root.pad-free ? 0px : 10px;
+                    width: bubble.width - (root.pad-free ? 0px : 22px);
+                    spacing: 4px;
+
+                    // Reply quote
+                    if item.has-reply : reply-strip := Rectangle {
+                        height: 36px;
+                        border-radius: 10px;
+                        background: Theme.background.with-alpha(0.35);
+                        VerticalLayout {
+                            padding-left: 10px; padding-right: 8px;
+                            alignment: center;
+                            Text {
+                                text: item.reply.sender-name;
+                                color: root.fg.with-alpha(0.75);
+                                font-family: Theme.font-ui; font-size: 10px; font-weight: 700;
+                            }
+                            Text {
+                                text: item.reply.kind == "image" ? "📷 Photo" : item.reply.body;
+                                color: root.fg.with-alpha(0.55);
+                                font-family: Theme.font-ui; font-size: 10px;
+                                overflow: elide;
+                            }
+                        }
+                    }
+
+                    // Image / sticker / video poster
+                    if root.media-kind : media-box := Rectangle {
+                        property <int> gif-frame: 0;
+                        width: root.media-w;
+                        height: root.media-h;
+                        background: root.fg.with-alpha(0.08);
+                        if item.thumb.width > 0 && item.gif-frames.length <= 1 : Image {
+                            source: item.thumb;
+                            width: 100%; height: 100%;
+                            image-fit: cover;
+                        }
+                        // Animated GIF: engine-decoded frames on a per-frame clock
+                        // (QML's AnimatedImage; Slint's Image cannot animate).
+                        if item.gif-frames.length > 1 : Image {
+                            source: item.gif-frames[min(media-box.gif-frame, item.gif-frames.length - 1)];
+                            width: 100%; height: 100%;
+                            image-fit: cover;
+                        }
+                        // A Timer cannot sit under an `if`; it idles via `running`.
+                        gif-clock := Timer {
+                            interval: item.gif-frames.length > 1
+                                ? max(20, item.gif-delays[min(media-box.gif-frame, item.gif-delays.length - 1)]) * 1ms
+                                : 1000ms;
+                            running: item.gif-frames.length > 1;
+                            triggered => {
+                                media-box.gif-frame = mod(media-box.gif-frame + 1, item.gif-frames.length);
+                            }
+                        }
+                        if item.thumb.width == 0 : Spinner {
+                            x: (media-box.width - self.width) / 2;
+                            y: (media-box.height - self.height) / 2;
+                            spin-color: root.fg.with-alpha(0.5);
+                        }
+                        if item.kind == "video" : Rectangle {
+                            x: (media-box.width - 48px) / 2;
+                            y: (media-box.height - 48px) / 2;
+                            width: 48px; height: 48px; border-radius: 24px;
+                            background: #000000.with-alpha(0.55);
+                            IconLabel { text: Icons.play; color: #ffffff; font-size: Theme.icon-large; width: 100%; height: 100%; }
+                        }
+                        TouchArea {
+                            clicked => {
+                                if (item.kind == "video") { root.play-video(item); }
+                                else { root.open-image(item); }
+                            }
+                        }
+                    }
+
+                    // Voice note: play disc + waveform + countdown
+                    if root.voice-kind : voice-row := Rectangle {
+                        height: 40px;
+                        width: min(root.bubble-max, 260px);
+                        HorizontalLayout {
+                            spacing: 8px;
+                            vplay := Rectangle {
+                                y: (40px - 34px) / 2;
+                                width: 34px; height: 34px; border-radius: 17px;
+                                background: #f2f2f2;
+                                IconLabel {
+                                    text: item.voice-playing ? Icons.pause : Icons.play;
+                                    color: #1a1a1a;
+                                    width: 100%; height: 100%;
+                                }
+                                TouchArea { clicked => { root.voice-toggled(item.event-id); } }
+                            }
+                            vwave := Rectangle {
+                                horizontal-stretch: 1;
+                                y: (40px - 26px) / 2;
+                                height: 26px;
+                                HorizontalLayout {
+                                    spacing: 2px;
+                                    alignment: start;
+                                    for amp[i] in item.waveform : Rectangle {
+                                        y: (26px - self.height) / 2;
+                                        width: 3px;
+                                        height: max(3px, 22px * min(1.0, amp));
+                                        border-radius: 1.5px;
+                                        background: (i / max(1, item.waveform.length)) <= item.voice-frac
+                                            ? root.fg.with-alpha(0.95) : root.fg.with-alpha(0.35);
+                                    }
+                                }
+                                TouchArea {
+                                    clicked => { root.voice-seeked(item.event-id, self.pressed-x / vwave.width); }
+                                }
+                            }
+                            Text {
+                                text: item.duration;
+                                color: root.fg.with-alpha(0.8);
+                                font-family: Theme.font-ui; font-size: Theme.caption;
+                                vertical-alignment: center;
+                            }
+                        }
+                    }
+
+                    // File / music chip
+                    // Document preview: the first lines drawn as a page — QML's
+                    // docThumb card. A PDF arrives drawn (imagePath) instead.
+                    if root.doc-kind : doc-card := Rectangle {
+                        // fullBleed: the page card spans the bubble (DocThumb at bubbleMax).
+                        width: root.bubble-max;
+                        height: item.has-doc-image ? 180px : doc-col-h.preferred-height;
+                        background: #f7f5f0;
+                        clip: true;
+                        if item.has-doc-image : Image {
+                            source: item.doc-thumb;
+                            width: 100%; height: 100%;
+                            image-fit: cover;
+                        }
+                        // Always present so the card can size from it (ids inside
+                        // `if` are unreachable); invisible under a rendered page.
+                        doc-col-h := VerticalLayout {
+                            visible: !item.has-doc-image;
+                            padding: 12px;
+                            padding-bottom: 30px;   // room for the kind badge
+                            spacing: 3px;
+                            // DocThumb: headings 1-2 at bodySmall and bold; body at caption.
+                            for line in item.doc-lines : Text {
+                                text: line.text;
+                                color: #2a2a2a;
+                                font-family: Theme.font-ui;
+                                font-size: line.level >= 1 && line.level <= 2 ? Theme.body-small : Theme.caption;
+                                font-weight: line.level > 0 ? 700 : 400;
+                                overflow: elide;
+                            }
+                        }
+                        chip := Rectangle {
+                            x: 8px;
+                            y: doc-card.height - self.height - 8px;
+                            width: chip-text.preferred-width + 12px;
+                            height: 16px;
+                            border-radius: 4px;
+                            background: #000000.with-alpha(0.55);
+                            chip-text := Text {
+                                text: item.doc-chip;
+                                color: #ffffff;
+                                font-family: Theme.font-ui;
+                                font-size: 8px;
+                                font-weight: 700;
+                                horizontal-alignment: center; vertical-alignment: center;
+                                width: 100%; height: 100%;
+                            }
+                        }
+                        HoldArea { clicked => { if (!self.fired) { root.open-document(item); } self.fired = false; } held => { root.open-menu(); } }
+                    }
+
+                    // Music: AudioBody's card — square cover (or bare strip) over
+                    // a 52px chrome strip tinted from the art's palette; ink is
+                    // computed in Rust by luminance.
+                    if item.kind == "audio" : audio-card := Rectangle {
+                        width: root.bubble-max;
+                        height: root.bubble-max + 52px;
+                        clip: true;
+                        art-box := Rectangle {
+                            y: 0; width: 100%;
+                            height: audio-card.width;
+                            background: item.audio-have-art ? item.audio-tone.darker(0.3) : root.fg.with-alpha(0.13);
+                            if item.audio-have-art : Image {
+                                source: item.audio-art;
+                                width: 100%; height: 100%;
+                                image-fit: cover;
+                            }
+                            if item.audio-have-art : Rectangle {
+                                width: 100%; height: 100%;
+                                background: #000000.with-alpha(0.18);
+                            }
+                            note-btn := Rectangle {
+                                x: (art-box.width - 56px) / 2;
+                                y: (art-box.height - 56px) / 2;
+                                width: 56px; height: 56px; border-radius: 28px;
+                                background: item.audio-have-art ? #000000.with-alpha(0.55) : item.audio-tone;
+                                IconLabel {
+                                    text: Icons.music; filled: false;
+                                    color: item.audio-have-art ? #ffffff : item.audio-ink;
+                                    font-size: 26px;
+                                    width: 100%; height: 100%;
+                                }
+                            }
+                            HoldArea { clicked => { if (!self.fired) { root.open-audio(item); } self.fired = false; } held => { root.open-menu(); } }
+                        }
+                        strip := Rectangle {
+                            y: audio-card.height - 52px;
+                            width: 100%; height: 52px;
+                            background: item.audio-tone;
+                            VerticalLayout {
+                                x: 12px;
+                                width: strip.width - 24px;
+                                alignment: center;
+                                spacing: 1px;
+                                Text {
+                                    text: item.media-filename != "" ? item.media-filename : item.body;
+                                    color: item.audio-ink;
+                                    font-family: Theme.font-ui; font-size: Theme.body; font-weight: 700;
+                                    overflow: elide;
+                                }
+                                if item.duration != "" : Text {
+                                    text: item.duration;
+                                    color: item.audio-ink.with-alpha(0.75);
+                                    font-family: Theme.font-ui; font-size: Theme.caption;
+                                    overflow: elide;
+                                }
+                            }
+                            HoldArea { clicked => { if (!self.fired) { root.open-audio(item); } self.fired = false; } held => { root.open-menu(); } }
+                        }
+                    }
+
+                    if item.kind == "file" && item.doc-chip == "" : file-row := Rectangle {
+                        height: 42px;
+                        HorizontalLayout {
+                            spacing: 8px;
+                            alignment: start;
+                            Rectangle {
+                                y: (42px - 34px) / 2;
+                                width: 34px; height: 34px; border-radius: 17px;
+                                background: root.accent.with-alpha(0.25);
+                                IconLabel {
+                                    text: Icons.file;
+                                    color: root.fg;
+                                    width: 100%; height: 100%;
+                                }
+                            }
+                            VerticalLayout {
+                                alignment: center;
+                                Text {
+                                    text: item.media-filename != "" ? item.media-filename : item.body;
+                                    color: root.fg;
+                                    font-family: Theme.font-ui; font-size: Theme.body-small;
+                                    overflow: elide;
+                                }
+                                if item.media-size != "" : Text {
+                                    text: item.media-size;
+                                    color: root.fg.with-alpha(0.5);
+                                    font-family: Theme.font-ui; font-size: Theme.caption;
+                                }
+                            }
+                        }
+                        TouchArea {
+                            clicked => { root.open-document(item); }
+                        }
+                    }
+
+                    // Poll (MSC3381) — PollBody.qml. The poll wears its own card
+                    // (the bubble behind it is transparent); counts only exist
+                    // once disclosed or ended; the pick dot marks your answer.
+                    if item.kind == "poll" : poll-card := Rectangle {
+                        property <bool> show-counts: item.poll-ended || item.poll-disclosed;
+                        property <bool> can-vote: !item.poll-ended;
+                        property <int> total-votes: root.poll-sum;
+                        width: min(root.bubble-max, 252px);
+                        height: poll-col.preferred-height + 24px;
+                        border-radius: 16px;
+                        background: Theme.background.with-alpha(0.55);
+                        poll-col := VerticalLayout {
+                            x: 12px; y: 12px;
+                            width: poll-card.width - 24px;
+                            spacing: 7px;
+                            Text {
+                                text: item.poll-question;
+                                color: root.fg;
+                                font-family: Theme.font-ui; font-size: Theme.body; font-weight: 700;
+                                wrap: word-wrap;
+                            }
+                            for opt in item.poll-options : opt-row := Rectangle {
+                                property <float> share: poll-card.show-counts && poll-card.total-votes > 0
+                                    ? opt.votes / poll-card.total-votes : 0.0;
+                                property <bool> leading: poll-card.show-counts && opt.winner;
+                                property <bool> dot-visible: poll-card.can-vote || opt.mine;
+                                height: 34px;
+                                border-radius: 11px;
+                                background: #000000.with-alpha(opt-touch.has-hover && poll-card.can-vote ? 0.30 : 0.22);
+                                clip: true;
+                                Rectangle {
+                                    x: 0; width: opt-row.width * max(0.0, min(1.0, opt-row.share));
+                                    height: 100%;
+                                    border-radius: 11px;
+                                    background: root.accent.with-alpha(opt-row.leading ? 0.55 : 0.28);
+                                    animate width { duration: 320ms; easing: cubic-bezier(0.33, 1, 0.68, 1); }
+                                }
+                                // Your pick as a filled dot; empty ring while open.
+                                if opt-row.dot-visible : pick-dot := Rectangle {
+                                    x: 10px; y: (34px - 15px) / 2;
+                                    width: 15px; height: 15px; border-radius: 7.5px;
+                                    background: opt.mine ? root.accent : transparent;
+                                    border-width: opt.mine ? 0px : 2px;
+                                    border-color: root.fg.with-alpha(0.4);
+                                    if opt.mine : IconLabel {
+                                        text: Icons.check;
+                                        color: Theme.background;
+                                        font-size: 9px;
+                                        width: 100%; height: 100%;
+                                    }
+                                }
+                                Text {
+                                    x: opt-row.dot-visible ? 33px : 12px;
+                                    width: tally.x - self.x - 8px;
+                                    height: 100%;
+                                    text: opt.text;
+                                    color: root.fg;
+                                    font-family: Theme.font-ui; font-size: Theme.body-small;
+                                    vertical-alignment: center;
+                                    overflow: elide;
+                                }
+                                tally := Text {
+                                    x: opt-row.width - self.preferred-width - 11px;
+                                    height: 100%;
+                                    visible: poll-card.show-counts;
+                                    text: poll-card.total-votes <= 0 ? "0"
+                                        : "\{opt.votes}  \{round(opt-row.share * 100)}%";
+                                    color: root.fg.with-alpha(0.7);
+                                    font-family: Theme.font-ui; font-size: 10px;
+                                    font-weight: opt-row.leading ? 700 : 400;
+                                    vertical-alignment: center;
+                                }
+                                opt-touch := TouchArea {
+                                    enabled: poll-card.can-vote;
+                                    clicked => { root.vote(item.event-id, opt.id); }
+                                }
+                            }
+                            Text {
+                                text: item.poll-ended ? "Final results · \{root.votes-word}"
+                                    : !item.poll-disclosed ? "Results hidden until the poll ends · \{root.votes-word}"
+                                    : item.poll-max > 1 ? "Pick up to \{item.poll-max} · \{root.votes-word}"
+                                    : root.votes-word;
+                                color: root.fg.with-alpha(0.5);
+                                font-family: Theme.font-ui; font-size: 10px;
+                                wrap: word-wrap;
+                            }
+                        }
+                    }
+
+                    // Contact card
+                    if item.kind == "contact" : contact-row := Rectangle {
+                        height: 48px;
+                        HorizontalLayout {
+                            spacing: 10px;
+                            alignment: start;
+                            // The CONTACT's face, not the sender's.
+                            Avatar {
+                                y: 4px;
+                                size: 40px;
+                                initials: item.contact-initials;
+                                tint: item.contact-tint;
+                            }
+                            VerticalLayout {
+                                alignment: center;
+                                Text {
+                                    text: item.contact-name;
+                                    color: root.fg;
+                                    font-family: Theme.font-ui; font-size: Theme.body; font-weight: 700;
+                                    overflow: elide;
+                                }
+                                Text {
+                                    text: item.contact-id;
+                                    color: root.fg.with-alpha(0.55);
+                                    font-family: Theme.font-ui; font-size: Theme.caption;
+                                    overflow: elide;
+                                }
+                            }
+                        }
+                    }
+
+                    // Location card: static placeholder — Slint has no map widget.
+                    // LocationBody's fallback is a bare 40px pin, no caption; a live
+                    // share carries a top-right pill (countdown unported — no
+                    // per-second clock in the row; state text stands in).
+                    if item.kind == "location" : loc-box := Rectangle {
+                        width: root.bubble-max;
+                        height: root.bubble-max * 0.625;
+                        background: root.fg.with-alpha(0.10);
+                        clip: true;
+                        // An actual map when the engine composited one; the
+                        // bare pin is the offline/pending fallback.
+                        if item.location-map.width > 0 : Image {
+                            source: item.location-map;
+                            width: 100%; height: 100%;
+                            image-fit: cover;
+                        }
+                        // Legible over any map ground: a light disc under a dark pin.
+                        if item.location-map.width > 0 : pin-disc := Rectangle {
+                            x: (loc-box.width - 44px) / 2;
+                            y: (loc-box.height - 44px) / 2;
+                            width: 44px; height: 44px; border-radius: 22px;
+                            background: #ffffff.with-alpha(0.85);
+                            drop-shadow-color: #00000066;
+                            drop-shadow-blur: 6px;
+                        }
+                        IconLabel {
+                            text: Icons.location;
+                            color: item.location-map.width > 0 ? #1a1a1a : root.accent.with-alpha(0.85);
+                            font-size: item.location-map.width > 0 ? 28px : 40px;
+                            width: 100%; height: 100%;
+                        }
+                        if item.location-live || item.location-ended : live-pill := Rectangle {
+                            x: loc-box.width - self.width - 8px;
+                            y: 8px;
+                            width: live-row.preferred-width + 16px;
+                            height: 22px;
+                            border-radius: 11px;
+                            background: #000000.with-alpha(0.45);
+                            live-row := HorizontalLayout {
+                                alignment: center;
+                                spacing: 5px;
+                                if !item.location-ended : Rectangle {
+                                    y: (22px - 7px) / 2;
+                                    width: 7px; height: 7px; border-radius: 3.5px;
+                                    background: #e88b90;
+                                }
+                                Text {
+                                    // LocationBody's pill: a live countdown while
+                                    // sharing, the ended notice afterwards.
+                                    text: item.location-ended ? "Live location ended"
+                                        : item.location-expires-s > 0 && root.boot-epoch-s > 0
+                                        ? floor(root.live-remaining / 60) + ":" + (mod(root.live-remaining, 60) < 10 ? "0" : "") + mod(root.live-remaining, 60)
+                                        : "Live";
+                                    color: #ffffff;
+                                    font-family: Theme.font-ui; font-size: Theme.caption;
+                                    vertical-alignment: center;
+                                }
+                            }
+                        }
+                        HoldArea { clicked => { if (!self.fired) { root.open-location(item); } self.fired = false; } held => { root.open-menu(); } }
+                    }
+
+                    // Link preview card: og image + info over the page accent
+                    // (BubbleDelegate's lp loader).
+                    if item.link-has && !root.media-kind : link-card-box := Rectangle {
+                        width: root.bubble-max;
+                        height: (item.link-img.width > 0 ? lp-img.height : 0px) + lp-info.preferred-height;
+                        background: item.link-accent;
+                        clip: true;
+                        lp-img := Rectangle {
+                            y: 0; width: 100%;
+                            height: item.link-img.width > 0
+                                ? min(340px, root.bubble-max * (item.link-ih > 0 && item.link-iw > 0 ? item.link-ih / item.link-iw : 0.52))
+                                : 0px;
+                            clip: true;
+                            if item.link-img.width > 0 : Image {
+                                source: item.link-img;
+                                width: 100%; height: 100%;
+                                image-fit: cover;
+                            }
+                            if item.link-is-video : Rectangle {
+                                x: (lp-img.width - 52px) / 2;
+                                y: (lp-img.height - 52px) / 2;
+                                width: 52px; height: 52px; border-radius: 26px;
+                                background: #000000.with-alpha(0.5);
+                                IconLabel { text: Icons.play; color: #ffffff; font-size: 24px; width: 100%; height: 100%; }
+                            }
+                        }
+                        lp-info := VerticalLayout {
+                            y: lp-img.height;
+                            width: 100%;
+                            padding: 10px;
+                            spacing: 4px;
+                            if item.link-title != "" : Rectangle {
+                                clip: true;
+                                height: min(lp-title.preferred-height, 2 * Theme.body * 1.35);
+                                lp-title := Text {
+                                    width: 100%;
+                                    text: item.link-title;
+                                    color: #ffffff;
+                                    font-family: Theme.font-ui; font-size: Theme.body; font-weight: 700;
+                                    wrap: word-wrap;
+                                    overflow: elide;
+                                }
+                            }
+                            if item.link-desc != "" : Rectangle {
+                                clip: true;
+                                height: min(lp-desc.preferred-height, 2 * Theme.body-small * 1.35);
+                                lp-desc := Text {
+                                    width: 100%;
+                                    text: item.link-desc;
+                                    color: #ffffff.with-alpha(0.8);
+                                    font-family: Theme.font-ui; font-size: Theme.body-small;
+                                    wrap: word-wrap;
+                                    overflow: elide;
+                                }
+                            }
+                            HorizontalLayout {
+                                alignment: start;
+                                spacing: 6px;
+                                padding-top: 2px;
+                                fav-sq := Rectangle {
+                                    y: (lp-domain.preferred-height - 16px) / 2;
+                                    width: 16px; height: 16px; border-radius: 4px;
+                                    background: #ffffff.with-alpha(0.9);
+                                    Text {
+                                        text: item.link-initial;
+                                        color: item.link-accent;
+                                        font-family: Theme.font-ui; font-size: 9px; font-weight: 700;
+                                        horizontal-alignment: center; vertical-alignment: center;
+                                        width: 100%; height: 100%;
+                                    }
+                                }
+                                lp-domain := Text {
+                                    text: item.link-domain;
+                                    color: #ffffff.with-alpha(0.85);
+                                    font-family: Theme.font-ui; font-size: Theme.caption;
+                                    vertical-alignment: center;
+                                }
+                            }
+                        }
+                        HoldArea {
+                            clicked => { if (!self.fired) { root.open-link(item); } self.fired = false; }
+                            held => { root.open-menu(); }
+                        }
+                    }
+
+                    // Fenced code: the body laid out as parts — text runs padded,
+                    // code runs on the highlighter's dark ground with a lang tag.
+                    // (Highlight colours need rich text; flattened for now.)
+                    if root.code-kind : parts-col := VerticalLayout {
+                        spacing: 4px;
+                        for part in item.parts : Rectangle {
+                            height: part.t == "code"
+                                ? max(34px, part-code.preferred-height + 22px)
+                                : part-text.preferred-height + 8px;
+                            background: part.t == "code" ? #242428 : transparent;
+                            part-text := Text {
+                                x: 11px; y: 4px;
+                                width: parent.width - 22px;
+                                visible: part.t != "code";
+                                text: part.body;
+                                color: root.fg;
+                                font-family: Theme.font-ui; font-size: Theme.body;
+                                wrap: word-wrap;
+                            }
+                            part-code := Text {
+                                x: 11px; y: 11px;
+                                width: parent.width - 22px;
+                                visible: part.t == "code";
+                                text: part.body;
+                                color: #d6d6d6;
+                                font-family: Theme.font-mono; font-size: Theme.body-small;
+                                wrap: word-wrap;
+                            }
+                            if part.t == "code" && part.lang != "" : Text {
+                                x: parent.width - self.preferred-width - 8px;
+                                y: 6px;
+                                text: part.lang;
+                                color: #ffffff.with-alpha(0.4);
+                                font-family: Theme.font-mono; font-size: 9px;
+                            }
+                        }
+                    }
+
+                    // Caption under full-bleed media: its own padded band, the
+                    // media's width, so text never touches the bubble edge.
+                    if root.caption-visible : caption-band := Rectangle {
+                        width: root.media-w;
+                        height: cap-text.preferred-height + 14px;
+                        cap-text := Text {
+                            x: 10px; y: 7px;
+                            width: root.media-w - 20px;
+                            text: item.body;
+                            color: root.fg;
+                            font-family: Theme.font-ui; font-size: Theme.body;
+                            wrap: word-wrap;
+                        }
+                    }
+
+                    // Body text / utd / redacted
+                    // SigilText motion: a short animated run lays out one Text
+                    // per character (self-measured by the row), each driven by
+                    // the engine's motion numbers (sigiltext.motion): wave
+                    // 1300ms/±1.8px, shake 240ms/±0.8px, pulse 1000ms/×1.18,
+                    // glow 1600ms alpha, barrel 1200ms/360°, flip static 180°
+                    // with the run reversed. 90ms per-character stagger.
+                    if item.fx-chars.length > 0 : fx-row := HorizontalLayout {
+                        alignment: start;
+                        for c in item.fx-chars : fx-cell := Rectangle {
+                            width: fx-t.preferred-width;
+                            height: fx-t.preferred-height + 8px;
+                            property <float> tick-ms: (animation-tick() - c.idx * 90ms) / 1ms;
+                            // Typewriter: a one-shot reveal on creation, 620ms
+                            // OutCubic per character with the 90ms stagger.
+                            property <bool> revealed: c.anim != "typewriter";
+                            init => { self.revealed = true; }
+                            opacity: c.anim == "typewriter" ? (self.revealed ? 1.0 : 0.0) : 1.0;
+                            animate opacity { delay: c.idx * 90ms; duration: 620ms; easing: cubic-bezier(0.33, 1, 0.68, 1); }
+                            // Glitch: chromatic split copies behind the glyph,
+                            // active in jitter windows (spec: 530ms cycle, lead
+                            // -2px #FF2640, trail +1.5px #26F2FF, alpha 0.7,
+                            // stride-53 stagger).
+                            property <float> glitch-t: mod((animation-tick() / 1ms) + c.idx * 53.0, 530.0);
+                            property <bool> glitch-on: c.anim == "glitch" && self.glitch-t < 270.0;
+                            if c.anim == "glitch" : Text {
+                                text: c.ch;
+                                color: #FF2640;
+                                opacity: fx-cell.glitch-on ? 0.7 : 0.0;
+                                font-family: Theme.font-ui; font-size: Theme.body;
+                                x: fx-cell.glitch-on ? -2px : 0px;
+                                y: 4px;
+                            }
+                            if c.anim == "glitch" : Text {
+                                text: c.ch;
+                                color: #26F2FF;
+                                opacity: fx-cell.glitch-on ? 0.7 : 0.0;
+                                font-family: Theme.font-ui; font-size: Theme.body;
+                                x: fx-cell.glitch-on ? 1.5px : 0px;
+                                y: 4px;
+                            }
+                            // Text-blur (spoiler): ghost copies fake the radius;
+                            // a tap reveals (hover's touch equivalent).
+                            property <bool> blur-revealed: false;
+                            if c.anim == "blur" && !fx-cell.blur-revealed : Text {
+                                text: c.ch;
+                                color: (c.has-color ? c.color : root.fg).with-alpha(0.3);
+                                font-family: Theme.font-ui; font-size: Theme.body;
+                                x: -1.5px; y: 4px - 1.5px;
+                            }
+                            if c.anim == "blur" && !fx-cell.blur-revealed : Text {
+                                text: c.ch;
+                                color: (c.has-color ? c.color : root.fg).with-alpha(0.3);
+                                font-family: Theme.font-ui; font-size: Theme.body;
+                                x: 1.5px; y: 4px + 1.5px;
+                            }
+                            fx-t := Text {
+                                text: c.ch;
+                                color: c.has-color ? c.color : root.fg;
+                                font-family: Theme.font-ui; font-size: Theme.body;
+                                x: c.anim == "shake" ? sin(360deg * (mod(fx-cell.tick-ms, 240.0) / 240.0)) * 0.8px : 0px;
+                                y: 4px + (c.anim == "wave" ? sin(360deg * (mod(fx-cell.tick-ms, 1300.0) / 1300.0)) * 1.8px : 0px);
+                                opacity: c.anim == "glow" ? 0.55 + 0.45 * sin(360deg * (mod(fx-cell.tick-ms, 1600.0) / 1600.0))
+                                    : c.anim == "blur" && !fx-cell.blur-revealed ? 0.3 : 1.0;
+                                transform-origin: { x: self.width / 2, y: self.height / 2 };
+                                transform-rotation: c.anim == "barrel" ? 360deg * (mod(fx-cell.tick-ms, 1200.0) / 1200.0)
+                                    : c.anim == "flip" ? 180deg : 0deg;
+                                transform-scale-x: c.anim == "pulse" ? 1.0 + 0.18 * (0.5 + 0.5 * sin(360deg * (mod(fx-cell.tick-ms, 1000.0) / 1000.0))) : 1.0;
+                                transform-scale-y: c.anim == "pulse" ? 1.0 + 0.18 * (0.5 + 0.5 * sin(360deg * (mod(fx-cell.tick-ms, 1000.0) / 1000.0))) : 1.0;
+                            }
+                            // Sparkle: a small star orbiting each glyph, alpha
+                            // and scale on the 900ms InOutSine cycle.
+                            if c.anim == "sparkle" : Text {
+                                property <float> sp: mod(fx-cell.tick-ms, 900.0) / 900.0;
+                                text: "✦";
+                                color: (c.has-color ? c.color : root.fg);
+                                opacity: 0.05 + 0.40 * (0.5 + 0.5 * sin(360deg * self.sp));
+                                font-family: Theme.font-ui;
+                                font-size: Theme.body * (0.35 + 0.15 * (0.5 + 0.5 * sin(360deg * self.sp)));
+                                x: fx-cell.width * 0.5 + fx-cell.width * 0.4 * cos(360deg * self.sp);
+                                y: 1px + 3px * sin(360deg * self.sp);
+                            }
+                            if c.anim == "blur" : TouchArea {
+                                clicked => { fx-cell.blur-revealed = !fx-cell.blur-revealed; }
+                            }
+                        }
+                    }
+
+                    // Markup bodies render through StyledText: bold/italic/code
+                    // and tappable links (link-clicked). Plain bodies stay Text.
+                    if item.has-rich && !root.code-kind && !item.link-only : rich-text := StyledText {
+                        text: item.rich-body;
+                        default-color: root.fg;
+                        default-font-family: Theme.font-ui;
+                        default-font-size: Theme.body;
+                        link-color: root.accent.brighter(0.3);
+                        width: min(root.bubble-max - 22px, self.preferred-width);
+                        x: root.link-card ? 11px : 0px;
+                        link-clicked(l) => { root.open-url(l); }
+                    }
+                    if !item.has-rich && item.fx-chars.length == 0
+                        && (item.kind == "text" || item.kind == "notice" || item.kind == "emote"
+                        || item.kind == "utd" || item.kind == "redacted" || item.kind == "unsupported")
+                        && !root.code-kind && !item.link-only : body-text := Text {
+                        text: item.kind == "utd" ? "🔒 Waiting for keys…"
+                            : item.kind == "redacted" ? "Message deleted"
+                            : item.kind == "unsupported" ? "Unsupported message"
+                            : item.body;
+                        color: item.kind == "utd" || item.kind == "redacted"
+                            ? root.fg.with-alpha(0.55) : root.fg;
+                        font-family: Theme.font-ui; font-size: Theme.body;
+                        font-italic: item.kind == "emote" || item.kind == "redacted";
+                        wrap: word-wrap;
+                        // Under a link card the bubble is pad-free: pad here.
+                        x: root.link-card ? 11px : 0px;
+                        width: min(root.bubble-max - 22px, self.preferred-width);
+                    }
+                    if root.link-card && item.body != "" : Rectangle { height: 6px; }
+
+                    // Thread summary chip
+                    if item.thread-count > 0 : thread-chip := Rectangle {
+                        height: 34px;
+                        border-radius: 10px;
+                        background: Theme.background.with-alpha(0.35);
+                        HorizontalLayout {
+                            padding-left: 9px; padding-right: 9px;
+                            spacing: 6px;
+                            IconLabel {
+                                text: Icons.thread; filled: false;
+                                color: root.fg.with-alpha(0.75);
+                                font-size: Theme.caption;
+                                vertical-alignment: center;
+                            }
+                            Text {
+                                text: item.thread-count == 1 ? "1 reply" : "\{item.thread-count} replies";
+                                color: root.fg.with-alpha(0.75);
+                                font-family: Theme.font-ui; font-size: Theme.caption; font-weight: 700;
+                                vertical-alignment: center;
+                            }
+                            // Latest reply, one line, between the count and the chevron.
+                            if item.thread-latest != "" : Text {
+                                text: item.thread-latest;
+                                color: root.fg.with-alpha(0.55);
+                                font-family: Theme.font-ui; font-size: Theme.caption;
+                                vertical-alignment: center;
+                                overflow: elide;
+                                horizontal-stretch: 1;
+                            }
+                            if item.thread-latest == "" : Rectangle { horizontal-stretch: 1; }
+                            IconLabel {
+                                text: Icons.chevronRight;
+                                color: root.fg.with-alpha(0.5);
+                                font-size: Theme.caption;
+                                vertical-alignment: center;
+                            }
+                        }
+                        TouchArea { clicked => { root.open-thread(item.event-id); } }
+                    }
+                }
+
+                long-timer := Timer {
+                    property <bool> fired: false;
+                    interval: 500ms;
+                    running: false;
+                    triggered => {
+                        self.running = false;
+                        self.fired = true;
+                        root.menu-requested(item,
+                            bubble.absolute-position.x, bubble.absolute-position.y,
+                            bubble.width, bubble.height);
+                    }
+                }
+            }
+
+            // Reactions straddle the bubble's inner top corner.
+            if item.reactions.length > 0 : reaction-row := HorizontalLayout {
+                x: item.is-own ? bubble.x - 9px
+                              : bubble.x + bubble.width + 9px - self.preferred-width;
+                y: bubble.y - self.preferred-height / 2;
+                spacing: 2px;
+                for chip in item.reactions : r-chip := HorizontalLayout {
+                    spacing: 1px;
+                    Text {
+                        // femtovg draws U+2764+VS16 as tofu; display the bare
+                        // heart, the reaction key itself stays untouched.
+                        text: chip.key == "❤️" ? "❤" : chip.key;
+                        color: root.fg;
+                        // QML scales non-mine chips to 0.92.
+                        font-size: chip.mine ? 20px : 18.4px;
+                    }
+                    if chip.count > 1 : Text {
+                        text: "\{chip.count}";
+                        color: chip.mine ? root.accent : root.fg.with-alpha(0.65);
+                        font-family: Theme.font-ui; font-size: 11px;
+                        font-weight: chip.mine ? 700 : 400;
+                        vertical-alignment: center;
+                    }
+                    TouchArea { clicked => { root.react(item.event-id, chip.key); } }
+                }
+            }
+
+            // Pin marker, proud of the corner away from the sender's side.
+            if item.pinned : pin-mark := Rectangle {
+                x: item.is-own ? bubble.x + bubble.width - 22px : bubble.x + 2px;
+                y: bubble.y - 4px;
+                width: 20px; height: 20px; border-radius: 10px;
+                background: root.accent;
+                border-width: 1.5px;
+                border-color: Theme.popup-background;
+                IconLabel {
+                    text: Icons.pin;
+                    color: Theme.background;
+                    font-size: Theme.caption;
+                    transform-rotation: item.is-own ? 35deg : -35deg;
+                    width: 100%; height: 100%;
+                }
+            }
+        }
+
+        // Details / mark line — BubbleDelegate's detailRow. The mark leads
+        // (sending dot, failure, tick, or the stacked reader faces); tapping
+        // the bubble grows "· timestamp lock" beside it. Non-own messages get
+        // the row too, left-anchored with the mark hidden.
+        if root.is-msg && ((item.is-own && (item.owns-receipt || item.send-state != "sent")) || root.details-open) : detail-row := Rectangle {
+            property <length> mark-dot: 13px;
+            property <bool> show-faces: item.is-own && item.send-state == "sent" && item.readers.length > 0;
+            height: self.mark-dot + 4px;
+            HorizontalLayout {
+                alignment: item.is-own ? end : start;
+                spacing: 5px;
+                padding-right: 2px;
+                padding-left: 2px;
+                // The mark: dot / error / tick / MarkStack faces (own only).
+                if item.is-own && item.send-state == "sending" : IconLabel {
+                    text: Icons.statusDot; color: root.fg.with-alpha(0.55);
+                    font-size: 13px; vertical-alignment: center;
+                }
+                if item.is-own && item.send-state == "failed" : IconLabel {
+                    text: Icons.errorMark; color: Theme.urgent;
+                    font-size: 13px; vertical-alignment: center;
+                }
+                if item.is-own && item.send-state == "sent" && item.readers.length == 0 : IconLabel {
+                    text: Icons.checkCircle; color: root.accent;
+                    font-size: 13px; vertical-alignment: center;
+                }
+                if detail-row.show-faces : faces := Rectangle {
+                    width: detail-row.mark-dot + max(0, item.readers.length - 1) * detail-row.mark-dot * 0.68;
+                    height: detail-row.mark-dot;
+                    for reader[i] in item.readers : Rectangle {
+                        x: faces.width - detail-row.mark-dot - i * detail-row.mark-dot * 0.68;
+                        width: detail-row.mark-dot; height: detail-row.mark-dot;
+                        // Faces overlap; each needs something solid behind it.
+                        Rectangle {
+                            x: -1px; y: -1px;
+                            width: detail-row.mark-dot + 2px; height: self.width;
+                            border-radius: self.width / 2;
+                            background: root.convo-ground;
+                        }
+                        Avatar {
+                            size: detail-row.mark-dot;
+                            source: reader.avatar;
+                            initials: reader.initials;
+                            tint: reader.tint;
+                        }
+                    }
+                }
+                if root.details-open && item.is-own : Text {
+                    text: "·";
+                    color: root.fg.with-alpha(0.5);
+                    font-family: Theme.font-ui; font-size: 10px;
+                    vertical-alignment: center;
+                }
+                if root.details-open : Text {
+                    text: item.edited ? "\{item.stamp} · Edited" : item.stamp;
+                    color: item.send-state == "failed" ? Theme.urgent : root.fg.with-alpha(0.5);
+                    font-family: Theme.font-ui; font-size: 10px;
+                    vertical-alignment: center;
+                }
+                if root.details-open : IconLabel {
+                    text: root.encrypted ? Icons.lock : Icons.lockOff;
+                    filled: false;
+                    color: item.send-state == "failed" ? Theme.urgent : root.fg.with-alpha(0.5);
+                    font-size: 10px;
+                    vertical-alignment: center;
+                }
+            }
+        }
+    }
+}
