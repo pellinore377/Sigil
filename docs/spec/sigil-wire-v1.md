@@ -338,20 +338,6 @@ Sigil v1 uses MLS (RFC 9420) for every conversation, with these bindings:
   which rotates the address (protocol spec 6).
 - **Welcome** delivery is section 4.
 
-## 8. Open rooms
-
-An open room is a slot the host server can read: its `read_cap`,
-`write_pub` and `write_secret` are published in a **room card** the server
-serves at `name.lookup` of the room's localpart (rooms share the namespace,
-prefixed `#`). Members write ordinary envelopes sealed under a
-`envelope_key` that is also in the card; the server, holding it, indexes
-events for search and serves history to newcomers with `slot.get`. Members
-sign events with a per-room pseudonymous Ed25519 key by default and MAY
-include their contact card in a kind-7 event to attach a username. Bans are
-the server refusing `slot.put` from a listed pseudonymous key, on the
-instruction of an admin listed in the card. Everything else in this document
-applies unchanged; the only difference is who holds the keys.
-
 ## 10. Device linking events
 
 The link exchange (protocol spec section 10) is a sequence of events of

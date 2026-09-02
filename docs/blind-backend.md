@@ -705,7 +705,6 @@ are padded to fixed sizes. Inside:
 | `backup.wrap` | `username, sig, salt, wrapped_data_key` | store the wrap by name |
 | `tpm.info` | | endorsement key, certificate chain, capabilities |
 | `tpm.relay` | `username, tpm_command_bytes` | relay one TPM command after per-user backoff and the optional OIDC gate |
-| `room.*` | see Part C, problem 7 | open rooms: server-readable history, pagination, search, bans |
 | `token.credential` | `account proof, blinded` | blind-issue credential |
 | `token.issue` | `credential, blinded[]` | blind-sign the daily batch |
 
@@ -776,7 +775,7 @@ Crates: `openmls`, `ml-kem` + `x25519-dalek` (`x-wing` as it lands), `hpke`,
 [`docs/spec/sigil-protocol-v1.md`](spec/sigil-protocol-v1.md) and the
 `sigil-protocol` crate in `protocol/`, whose tests verify the vectors; and
 for the wire layer, see [`docs/spec/sigil-wire-v1.md`](spec/sigil-wire-v1.md):
-operations, frames, tokens, the MLS bindings and open rooms.
+operations, frames, tokens and the MLS bindings.
 
 **1. Home server.** Done, in `server/`: names with invite codes, slots,
 the requests slot, shelves, blobs, backups, wraps, blind credentials and
@@ -835,8 +834,7 @@ Media: a file is encrypted under its own key, cut into 256 KiB chunks
 stored as blobs, and described by a manifest in the message; receivers
 download and decrypt in the background and the item gains a local path
 (`attachment.send`, `media.get`, `sendfile` in the CLI). A fourth bag
-size, 260 KiB, exists for chunks. Open rooms are not built; the design
-stands in Part C, problem 7.
+size, 260 KiB, exists for chunks.
 
 **6. Shape.** Done: every bag and envelope is padded to a fixed bucket
 (the audit added the 260 KiB bucket for media and backup chunks); the
@@ -1038,15 +1036,11 @@ Google entirely; on iOS, APNs is mandatory, so the clocked tier sends
 pushes on a fixed schedule. Remaining: in the instant tier on iOS, Apple
 learns "a push at 9:14", as it does for Signal.
 
-**7. Public communities did not fit.** Added as an explicit second mode,
-**open rooms**: a room the host server can read. The room has a public
-card, a server-held history with pagination and search, and server-enforced
-bans. Members post under a per-room pseudonymous key by default and may
-attach their username. Transport is still sealed bags, so outsiders and
-the Envoy see nothing; the host server is a member. This is the Matrix
-public-room experience without federation, and it is the only place the
-server reads anything. Private groups remain blind. Remaining: an open room
-is exactly as private as its host, and the client labels it so.
+**7. Public communities did not fit.** Decided: they stay out. Sigil has
+no public rooms and no mode in which a server can read a conversation.
+Every conversation is invite only and blind to its host. A community that
+wants a wide channel makes a large invite-only group, whose server still
+reads nothing. Remaining: nothing; this is the design, not a gap.
 
 **8. Nobody could moderate what they cannot see.** Fixed at three levels.
 Local: block lists synced across devices through the self-group; blocked
@@ -1054,7 +1048,7 @@ identities' Welcomes are dropped silently. Provable reports: every MLS
 message is signed by a leaf key bound to the sender's identity, so a
 recipient can forward a message plus its signature to the sender's home
 server as proof, and that server can revoke the sender's credential (no
-more tokens) or name. Open rooms: admins ban, the server enforces.
+more tokens) or name.
 Remaining: private-group abuse is only ever reported by a participant, by
 design.
 

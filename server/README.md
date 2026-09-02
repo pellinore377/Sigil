@@ -14,7 +14,7 @@ delivery streams (in-process when both roles run in one process, WebSocket
 otherwise), UnifiedPush wake-ups for offline devices, an expiry sweep, TLS
 from PEM files, raw TPM relay for recovery Path 2, cover traffic, and the
 call forwarding unit on one UDP port. Not yet: ACME, OIDC, APNs and FCM,
-open rooms, the client-side TPM session, a relay for UDP-blocked calls.
+the client-side TPM session, a relay for UDP-blocked calls.
 
 ## Run it locally
 

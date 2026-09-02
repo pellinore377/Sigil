@@ -345,7 +345,7 @@ sas indices `[60, 6, 28, 45, 17, 37, 51]`, displayed `📌 🐸 ☕ 🚂 🍌 �
 ## 11. Not in this document
 
 The operations inside a bag, the Envoy control channel, blind tokens, the
-requests-slot envelope, the MLS bindings and open rooms are in
+requests-slot envelope and the MLS bindings are in
 [`sigil-wire-v1.md`](sigil-wire-v1.md). Nothing there changes a derivation
 defined here.
 
