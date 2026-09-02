@@ -8,7 +8,6 @@ RUN cd server && cargo build --release --locked
 
 FROM gcr.io/distroless/cc-debian12
 COPY --from=build /src/server/target/release/sigil-server /usr/local/bin/sigil-server
-COPY --from=build /src/server/target/release/sigil-cli /usr/local/bin/sigil-cli
 VOLUME ["/data"]
 EXPOSE 8443
 EXPOSE 8444/udp
