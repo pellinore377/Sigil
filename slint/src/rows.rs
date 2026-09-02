@@ -123,9 +123,16 @@ pub fn preview_for(room: &Value, typing: &[Value], icons: &IconSet) -> Preview {
         };
     }
     if b(room, "isInvite") {
+        // A Sigil request carries the stranger's first message; show it, the
+        // way the row would once the conversation exists.
+        let first = s(&room["lastMessage"], "body");
         return Preview {
             icon: Default::default(),
-            text: "Invitation — tap to respond".into(),
+            text: if first.is_empty() || first == "Invitation" {
+                "Invitation — tap to respond".into()
+            } else {
+                first.to_string()
+            },
             typing: false,
         };
     }
@@ -721,4 +728,31 @@ pub fn localpart(user: &str) -> String {
         .next()
         .unwrap_or(user)
         .to_string()
+}
+
+/// HomePage.qml fmtTime: HH:mm today, Yesterday, the weekday inside a week,
+/// then "d MMM".
+pub fn home_stamp(ts_ms: i64) -> String {
+    use chrono::{Local, TimeZone};
+    if ts_ms <= 0 {
+        return String::new();
+    }
+    let Some(t) = Local.timestamp_millis_opt(ts_ms).single() else {
+        return String::new();
+    };
+    let now = Local::now();
+    let days = now
+        .date_naive()
+        .signed_duration_since(t.date_naive())
+        .num_days();
+    if days == 0 {
+        return t.format("%H:%M").to_string();
+    }
+    if days == 1 {
+        return "Yesterday".to_string();
+    }
+    if days < 7 {
+        return t.format("%a").to_string();
+    }
+    t.format("%-d %b").to_string()
 }

@@ -1,5 +1,6 @@
-// StartPage — start chat: search people, quick actions (new room / new space /
-// join by address), suggestions from existing DMs (StartChatPage.qml).
+// StartPage — start chat: look someone up by username, or make a group;
+// suggestions from existing DMs (StartChatPage.qml, minus what only Matrix
+// had: spaces and joining by address).
 
 import { TouchList } from "../furniture.slint";
 import { Theme } from "../style.slint";
@@ -18,10 +19,10 @@ export component StartPage inherits Rectangle {
     /// Debounced by the bridge; fired on every edit.
     callback search-edited(string);
     callback start-dm(string);
-    /// (mode, value) — mode: create | space | join.
+    /// (mode, value) — mode: create.
     callback submit-extra(string, string);
 
-    in-out property <string> mode: "";   // "" | create | space | join
+    in-out property <string> mode: "";   // "" | create
 
     public function reset() {
         root.mode = "";
@@ -92,7 +93,7 @@ export component StartPage inherits Rectangle {
                                 edited => { root.search-edited(self.text); }
                             }
                             if search-input.text == "" : Text {
-                                text: "Search for someone";
+                                text: "Search by username";
                                 color: root.fg.with-alpha(0.45);
                                 font-family: Theme.font-ui;
                                 font-size: Theme.body;
@@ -118,49 +119,12 @@ export component StartPage inherits Rectangle {
                 IconLabel { x: 22px; height: 100%; text: Icons.plus; filled: false; color: root.fg.with-alpha(0.7); }
                 Text {
                     x: 56px; height: 100%;
-                    text: "New room";
+                    text: "New group";
                     color: root.fg;
                     font-family: Theme.font-ui; font-size: Theme.body;
                     vertical-alignment: center;
                 }
                 qa1-t := TouchArea { clicked => { root.mode = root.mode == "create" ? "" : "create"; } }
-            }
-            qa2 := Rectangle {
-                height: 48px;
-                Rectangle {
-                    x: 10px; width: qa2.width - 20px;
-                    y: 4px; height: qa2.height - 8px;
-                    border-radius: 12px;
-                    background: qa2-t.pressed || qa2-t.has-hover ? root.fg.with-alpha(0.05) : transparent;
-                }
-                IconLabel { x: 22px; height: 100%; text: Icons.space; filled: false; color: root.fg.with-alpha(0.7); }
-                Text {
-                    x: 56px; height: 100%;
-                    text: "New space";
-                    color: root.fg;
-                    font-family: Theme.font-ui; font-size: Theme.body;
-                    vertical-alignment: center;
-                }
-                qa2-t := TouchArea { clicked => { root.mode = root.mode == "space" ? "" : "space"; } }
-            }
-            qa3 := Rectangle {
-                height: 48px;
-                Rectangle {
-                    x: 10px; width: qa3.width - 20px;
-                    y: 4px; height: qa3.height - 8px;
-                    border-radius: 12px;
-                    background: qa3-t.pressed || qa3-t.has-hover ? root.fg.with-alpha(0.05) : transparent;
-                }
-                // The QML draws "#" through IconLabel — the icon font, not UI.
-                IconLabel { x: 22px; height: 100%; text: "#"; filled: false; color: root.fg.with-alpha(0.7); }
-                Text {
-                    x: 56px; height: 100%;
-                    text: "Join room by address";
-                    color: root.fg;
-                    font-family: Theme.font-ui; font-size: Theme.body;
-                    vertical-alignment: center;
-                }
-                qa3-t := TouchArea { clicked => { root.mode = root.mode == "join" ? "" : "join"; } }
             }
             if root.mode != "" : Rectangle {
                 height: 52px;
@@ -192,9 +156,7 @@ export component StartPage inherits Rectangle {
                                     }
                                 }
                                 if extra-input.text == "" : Text {
-                                    text: root.mode == "create" ? "Room name"
-                                        : root.mode == "space" ? "Space name"
-                                        : "#room:server.tld";
+                                    text: "Group name";
                                     color: root.fg.with-alpha(0.4);
                                     font-family: Theme.font-ui;
                                     font-size: Theme.body;
@@ -204,9 +166,7 @@ export component StartPage inherits Rectangle {
                             }
                             SButton {
                                 y: (extra-well.height - self.height) / 2;
-                                // StartChatPage.qml: "Create" only in create mode —
-                                // the space quick-action submits as "Join" too.
-                                text: root.mode == "create" ? "Create" : "Join";
+                                text: "Create";
                                 enabled: !root.busy;
                                 clicked => { root.submit-extra(root.mode, extra-input.text); }
                             }

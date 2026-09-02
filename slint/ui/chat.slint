@@ -248,7 +248,7 @@ export component ChatPage inherits Rectangle {
                 alignment: center;
                 spacing: 10px;
                 padding-top: 8px; padding-bottom: 8px;
-                SButton { text: "Accept invite"; clicked => { root.accept-invite(); } }
+                SButton { text: "Accept"; clicked => { root.accept-invite(); } }
                 SButton { text: "Decline"; foreground: Theme.urgent; clicked => { root.decline-invite(); } }
             }
         }

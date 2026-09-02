@@ -415,7 +415,7 @@ writes a PNG. Files: 1.1, 1.2.
 sides), Recovery code, Backup password, App settings with Privacy shape,
 Sign out. Files: `login.slint`, `recovery.slint`, `pages/settings.slint`.
 
-**Phase 2. Home.** Chats and Requests, search, sort, badges, FAB, account
+**Phase 2. Home.** *Done; `slint/tests/e2e-home.sh` has the app receive, accept and answer a request from the command-line client.* Chats and Requests, search, sort, badges, FAB, account
 menu, Start chat, New group, request page. Files: `home.slint`,
 `pages/start.slint`, `pages/request.slint`.
 

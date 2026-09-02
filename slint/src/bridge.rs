@@ -1077,7 +1077,10 @@ pub fn room_row_of(ui: &mut UiState, room: &Value) -> RoomRow {
         tint: rows::tint_for(&tint_key),
         preview: preview.text.into(),
         preview_icon: preview.icon,
-        stamp: room["stamp"].as_str().unwrap_or("").into(),
+        stamp: match room["stamp"].as_str().unwrap_or("") {
+            "" => rows::home_stamp(room["lastActivityTs"].as_i64().unwrap_or(0)).into(),
+            st => st.into(),
+        },
         badge: badge.into(),
         badge_urgent,
         unread,
@@ -1104,7 +1107,25 @@ pub fn rebuild_rooms(ui: &mut UiState, win: &AppWindow) {
     let q = ui.search.to_lowercase();
     let mut chats: Vec<RoomRow> = Vec::new();
     let mut requests: Vec<RoomRow> = Vec::new();
-    let rooms_json = std::mem::take(&mut ui.rooms_json);
+    let mut rooms_json = std::mem::take(&mut ui.rooms_json);
+    // HomePage.qml's order, re-applied here as it was there: pinned first,
+    // then highlights, then unread, then most recent activity.
+    rooms_json.sort_by(|a, b| {
+        let key = |r: &Value| {
+            let unread = r["unread"]
+                .as_i64()
+                .unwrap_or(0)
+                .max(r["unreadMessages"].as_i64().unwrap_or(0))
+                > 0;
+            (
+                !r["isFavourite"].as_bool().unwrap_or(false),
+                !(r["highlights"].as_i64().unwrap_or(0) > 0),
+                !unread,
+                -r["lastActivityTs"].as_i64().unwrap_or(0),
+            )
+        };
+        key(a).cmp(&key(b))
+    });
     for room in &rooms_json {
         let name = room["name"].as_str().unwrap_or("");
         if !q.is_empty() && !name.to_lowercase().contains(&q) {

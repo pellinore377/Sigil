@@ -1205,7 +1205,12 @@ fn forward_picked(ui: &mut UiState, win: &AppWindow, room_id: &str) {
 
 fn dir_search(ui: &mut UiState, win: &AppWindow, which: &str, q: &str) {
     let start = which == "dir-search-start";
-    let q = q.trim().to_string();
+    let mut q = q.trim().to_string();
+    // The lookup is exact, by username. A bare name means someone on our
+    // own server, which is what people type most.
+    if q.chars().count() >= 2 && !q.contains(':') && !ui.door_server.is_empty() {
+        q = format!("@{}:{}", q.trim_start_matches('@'), ui.door_server);
+    }
     if q.chars().count() < 2 {
         if start {
             rebuild_start_suggestions(ui, win);
