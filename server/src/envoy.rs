@@ -83,9 +83,25 @@ impl Envoy {
             tracing::warn!("drain failed: {e}");
         }
         let writer = tokio::spawn(async move {
-            while let Some(f) = rx.recv().await {
-                if sink.send(Message::Binary(f.encode().into())).await.is_err() {
-                    break;
+            // A ping every 25 s keeps reverse proxies (nginx defaults to a
+            // 60 s idle cut) from dropping a quiet device socket.
+            let mut tick = tokio::time::interval(Duration::from_secs(25));
+            tick.tick().await;
+            loop {
+                tokio::select! {
+                    f = rx.recv() => match f {
+                        Some(f) => {
+                            if sink.send(Message::Binary(f.encode().into())).await.is_err() {
+                                break;
+                            }
+                        }
+                        None => break,
+                    },
+                    _ = tick.tick() => {
+                        if sink.send(Message::Ping(Default::default())).await.is_err() {
+                            break;
+                        }
+                    }
                 }
             }
         });

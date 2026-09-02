@@ -44,62 +44,23 @@ impl Link {
         proxy: Option<&str>,
     ) -> anyhow::Result<Link> {
         let url = format!("{envoy_ws}?device={device_id}");
-        // Both connection kinds become one boxed frame stream and sink, so
-        // the rest of the link does not care whether a proxy is in the way.
-        let (mut sink, mut source): (WsSink, WsSource) = match proxy {
-            None => {
-                let (ws, _) = tokio_tungstenite::connect_async(&url).await?;
-                let (sk, src) = ws.split();
-                (Box::pin(sk), Box::pin(src))
-            }
-            Some(px) => {
-                let parsed = url::Url::parse(&url)?;
-                let host = parsed
-                    .host_str()
-                    .ok_or_else(|| anyhow::anyhow!("no host"))?
-                    .to_string();
-                let port = parsed.port_or_known_default().unwrap_or(443);
-                let tcp =
-                    tokio_socks::tcp::Socks5Stream::connect(px, (host.as_str(), port)).await?;
-                let (ws, _) = tokio_tungstenite::client_async_tls(url.as_str(), tcp).await?;
-                let (sk, src) = ws.split();
-                (Box::pin(sk), Box::pin(src))
-            }
-        };
-        let (tx, mut rx) = mpsc::channel::<Frame>(64);
+        let (sink, source) = dial(&url, proxy).await?;
+        let (tx, rx) = mpsc::channel::<Frame>(64);
         let (dtx, drx) = mpsc::channel::<Frame>(256);
         let waiting: Arc<Mutex<HashMap<u32, oneshot::Sender<Vec<u8>>>>> =
             Arc::new(Mutex::new(HashMap::new()));
         let nonces: Arc<Mutex<HashMap<String, oneshot::Sender<[u8; 32]>>>> =
             Arc::new(Mutex::new(HashMap::new()));
-        let (w2, n2) = (waiting.clone(), nonces.clone());
-        tokio::spawn(async move {
-            while let Some(f) = rx.recv().await {
-                if sink.send(Message::Binary(f.encode().into())).await.is_err() {
-                    break;
-                }
-            }
-        });
-        tokio::spawn(async move {
-            while let Some(Ok(Message::Binary(b))) = source.next().await {
-                match Frame::decode(&b) {
-                    Ok(Frame::BagResponse { id, response }) => {
-                        if let Some(s) = w2.lock().await.remove(&id) {
-                            let _ = s.send(response);
-                        }
-                    }
-                    Ok(Frame::Nonce { server, nonce }) => {
-                        if let Some(s) = n2.lock().await.remove(&server) {
-                            let _ = s.send(nonce);
-                        }
-                    }
-                    Ok(f @ Frame::Deliver { .. }) => {
-                        let _ = dtx.send(f).await;
-                    }
-                    _ => {}
-                }
-            }
-        });
+        tokio::spawn(run(
+            sink,
+            source,
+            rx,
+            dtx,
+            waiting.clone(),
+            nonces.clone(),
+            url,
+            proxy.map(str::to_string),
+        ));
         let envoy_http = envoy_ws
             .replacen("ws", "http", 1)
             .trim_end_matches("/envoy")
@@ -231,5 +192,95 @@ impl Link {
             anyhow::bail!("{server} has not issued a nonce yet; try again in a moment");
         }
         Ok(n)
+    }
+}
+
+/// Open the WebSocket, directly or through a SOCKS5 proxy. Both kinds become
+/// one boxed frame stream and sink, so the rest of the link does not care
+/// whether a proxy is in the way.
+async fn dial(url: &str, proxy: Option<&str>) -> anyhow::Result<(WsSink, WsSource)> {
+    Ok(match proxy {
+        None => {
+            let (ws, _) = tokio_tungstenite::connect_async(url).await?;
+            let (sk, src) = ws.split();
+            (Box::pin(sk), Box::pin(src))
+        }
+        Some(px) => {
+            let parsed = url::Url::parse(url)?;
+            let host = parsed
+                .host_str()
+                .ok_or_else(|| anyhow::anyhow!("no host"))?
+                .to_string();
+            let port = parsed.port_or_known_default().unwrap_or(443);
+            let tcp = tokio_socks::tcp::Socks5Stream::connect(px, (host.as_str(), port)).await?;
+            let (ws, _) = tokio_tungstenite::client_async_tls(url, tcp).await?;
+            let (sk, src) = ws.split();
+            (Box::pin(sk), Box::pin(src))
+        }
+    })
+}
+
+/// The link's one task: frames out, frames in, and a reconnect with backoff
+/// when the socket drops. The Envoy remembers this device's handles and
+/// queues, so nothing has to be re-subscribed; deliveries missed while away
+/// are drained on reconnect. Bags queued while away go out afterwards; a
+/// bag that was in flight when the socket died times out at its caller.
+#[allow(clippy::too_many_arguments)]
+async fn run(
+    mut sink: WsSink,
+    mut source: WsSource,
+    mut rx: mpsc::Receiver<Frame>,
+    dtx: mpsc::Sender<Frame>,
+    waiting: Arc<Mutex<HashMap<u32, oneshot::Sender<Vec<u8>>>>>,
+    nonces: Arc<Mutex<HashMap<String, oneshot::Sender<[u8; 32]>>>>,
+    url: String,
+    proxy: Option<String>,
+) {
+    let mut backoff = std::time::Duration::from_millis(1500);
+    loop {
+        loop {
+            tokio::select! {
+                f = rx.recv() => match f {
+                    Some(f) => {
+                        if sink.send(Message::Binary(f.encode().into())).await.is_err() {
+                            break;
+                        }
+                    }
+                    None => return,
+                },
+                m = source.next() => match m {
+                    Some(Ok(Message::Binary(b))) => match Frame::decode(&b) {
+                        Ok(Frame::BagResponse { id, response }) => {
+                            if let Some(s) = waiting.lock().await.remove(&id) {
+                                let _ = s.send(response);
+                            }
+                        }
+                        Ok(Frame::Nonce { server, nonce }) => {
+                            if let Some(s) = nonces.lock().await.remove(&server) {
+                                let _ = s.send(nonce);
+                            }
+                        }
+                        Ok(f @ Frame::Deliver { .. }) => {
+                            let _ = dtx.send(f).await;
+                        }
+                        _ => {}
+                    },
+                    Some(Ok(_)) => {} // ping, pong, text: nothing to do
+                    Some(Err(_)) | None => break,
+                },
+            }
+        }
+        loop {
+            tokio::time::sleep(backoff).await;
+            match dial(&url, proxy.as_deref()).await {
+                Ok((s, src)) => {
+                    sink = s;
+                    source = src;
+                    backoff = std::time::Duration::from_millis(1500);
+                    break;
+                }
+                Err(_) => backoff = (backoff * 2).min(std::time::Duration::from_secs(30)),
+            }
+        }
     }
 }

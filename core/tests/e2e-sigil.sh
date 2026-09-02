@@ -115,6 +115,11 @@ D account.recover username=@alice:sigil.test password="correct horse" code="$COD
 D status | grep -q '"userId": "@alice:sigil.test"' || fail "recovered engine not signed in"
 D rooms.list | grep -q '"name": "bob"' || fail "recovered engine has no conversation"
 python3 -c "import json; h=json.load(open('$W/d/sigil/sigil-history.json'))['$ROOM']; assert any(i['body']=='hello both' for i in h), h" || fail "recovered history missing" engine-d.log
+# A restored device is a clone of the lost one; the two are not meant to
+# run side by side (see "removing a device" in docs/blind-backend.md), so
+# the clone bows out before the conversation moves on.
+D logout wipe:=false >/dev/null 2>&1 || true
+kill "${PIDS[-1]}" 2>/dev/null || true; sleep 1
 # a group through the engine, and a file
 export GROUP; GROUP=$(A room.create name="the plan" invite:='["@bob:sigil.test"]' | python3 -c "import json,sys; print(json.load(sys.stdin)['result']['roomId'])") || fail "room.create" engine-a.log
 sleep 4
@@ -149,5 +154,13 @@ A call.poll roomId="$GROUP" callId="$CALL" peer="0000000000000000000000000000000
 A call.end roomId="$GROUP" callId="$CALL" | result || fail "call.end"
 sleep 3
 python3 -c "import json,os; h=json.load(open('$W/b/sigil/sigil-history.json'))['$GROUP']; assert h[-1]['callState']=='ended', h[-1]" || fail "bob did not see the call end"
+# the server restarts under everyone: the links reconnect on their own and
+# the Envoy drains what it queued meanwhile
+kill "${PIDS[0]}" 2>/dev/null || true; sleep 1
+$SV -c sigil.toml run >>server.log 2>&1 & PIDS+=($!)
+sleep 8
+A message.send roomId="$ROOM" body="after the server came back" | result || fail "send after server restart" engine-a.log
+sleep 6
+python3 -c "import json; h=json.load(open('$W/b/sigil/sigil-history.json'))['$ROOM']; assert h[-1]['body']=='after the server came back', h[-1]" || fail "bob missed the message after the server restart" engine-b.log server.log
 ! grep -q "ERROR" engine-a.log engine-b.log engine-c.log engine-d.log || fail "engine logged errors" engine-a.log engine-b.log engine-c.log engine-d.log
 echo "e2e-sigil ok"
