@@ -760,9 +760,9 @@ Crates: `openmls`, `ml-kem` + `x25519-dalek` (`x-wing` as it lands), `hpke`,
 
 **0. Specification.** Done for the derivation layer: see
 [`docs/spec/sigil-protocol-v1.md`](spec/sigil-protocol-v1.md) and the
-`sigil-protocol` crate in `protocol/`, whose tests verify the vectors.
-Still to write: the bag operations and their layouts, blind tokens, the
-Envoy control channel.
+`sigil-protocol` crate in `protocol/`, whose tests verify the vectors; and
+for the wire layer, see [`docs/spec/sigil-wire-v1.md`](spec/sigil-wire-v1.md):
+operations, frames, tokens, the MLS bindings and open rooms.
 
 **1. Home server.** Names, slots, shelves, blobs, tokens; `redb`; ACME. A
 command-line client exchanges padded envelopes through addresses from a

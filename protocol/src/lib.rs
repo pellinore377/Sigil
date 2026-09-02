@@ -26,6 +26,10 @@ pub mod kem;
 pub mod linking;
 pub mod names;
 pub mod recovery;
+pub mod requests;
+pub mod testrng;
+pub mod token;
+pub mod wire;
 
 /// Protocol version carried in every versioned structure.
 pub const VERSION: u8 = 1;

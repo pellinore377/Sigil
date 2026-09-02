@@ -339,15 +339,10 @@ sas indices `[60, 6, 28, 45, 17, 37, 51]`, displayed `📌 🐸 ☕ 🚂 🍌 �
 
 ## 11. Not in this document
 
-These are specified by the wire-protocol document that follows this one,
-because they need no bit-exact derivation beyond what is here:
-
-- the operations inside a bag (`slot.put`, `slot.subscribe`, `name.*`,
-  `tpm.relay`, …) and their SPE layouts;
-- blind tokens (RFC 9474 blind RSA as the v1 issuance scheme);
-- the Envoy control channel, delivery frames and queue semantics;
-- the group key schedule (MLS, RFC 9420, with the exporter label above);
-- open rooms.
+The operations inside a bag, the Envoy control channel, blind tokens, the
+requests-slot envelope, the MLS bindings and open rooms are in
+[`sigil-wire-v1.md`](sigil-wire-v1.md). Nothing there changes a derivation
+defined here.
 
 ---
 
@@ -372,7 +367,8 @@ sigil v1 tpm auth               sigil v1 recovery code
 sigil v1 link secret            sigil v1 link rendezvous
 sigil v1 link key               sigil v1 link sas
 sigil v1 link offer
-sigil v1 test                   (vectors only)
+sigil v1 requests envelope      sigil v1 token key id
+sigil v1 test                   sigil v1 test rng        (vectors only)
 ```
 
 MLS exporter label (not a KDF context): `sigil v1 epoch`.
@@ -380,7 +376,8 @@ MLS exporter label (not a KDF context): `sigil v1 epoch`.
 Signature and AEAD domain strings (not KDF contexts):
 `sigil v1 card`, `sigil v1 requests read`, `sigil v1 slot put`,
 `sigil v1 envelope`, `sigil v1 shelf`, `sigil v1 bag`,
-`sigil v1 bag response`, `sigil v1 data key wrap`.
+`sigil v1 bag response`, `sigil v1 data key wrap`, and those listed in the
+wire specification's Appendix B.
 
 ## Appendix B. Emoji table
 

@@ -217,6 +217,313 @@ fn main() {
         }),
     );
 
+    // 10. requests envelope (sealed to the recipient's identity KEM key)
+    let bob = identity::Identity::from_seed(&a32(0x12));
+    let req_address = names::requests_address(&bob.public(), 689);
+    let welcome = b"welcome bytes stand in for an MLS Welcome";
+    let req_env = requests::seal(
+        bob.kem.public(),
+        &req_address,
+        &a32(0x13),
+        &a24(0x14),
+        welcome,
+    )
+    .unwrap();
+    assert_eq!(
+        requests::open(&bob.kem, &req_address, &req_env).unwrap(),
+        welcome
+    );
+    v.insert(
+        "requests_envelope".into(),
+        json!({
+            "recipient_seed": h(&a32(0x12)),
+            "recipient_kem_pub": h(bob.kem.public()),
+            "address": h(&req_address),
+            "eseed": h(&a32(0x13)),
+            "nonce": h(&a24(0x14)),
+            "plain": h(welcome),
+            "envelope": h(&req_env),
+            "bucket_lengths": [4096, 16384],
+        }),
+    );
+
+    // 11. tokens
+    let mut rng = testrng::TestRng::new(b"token issuer");
+    let issuer = token::Issuer::generate(&mut rng);
+    let verifier = token::Verifier::from_spki(&issuer.spki).unwrap();
+    let mut crng = testrng::TestRng::new(b"token client");
+    let pending = verifier.blind(&mut crng, a32(0x15)).unwrap();
+    let blind_sig = issuer.sign(&pending.blinded).unwrap();
+    let tok = verifier.finalize(&pending, &blind_sig).unwrap();
+    verifier.verify(&tok).unwrap();
+    let tok_bytes = tok.encode();
+    assert_eq!(token::Token::decode(&tok_bytes).unwrap(), tok);
+    v.insert(
+        "token".into(),
+        json!({
+            "issuer_secret_der": h(&issuer.to_der()),
+            "issuer_spki": h(&issuer.spki),
+            "key_id": h(&issuer.key_id),
+            "nonce": h(&a32(0x15)),
+            "message": h(&token::message(&issuer.key_id, &a32(0x15))),
+            "blinding_secret": h(&pending.secret),
+            "blinded": h(&pending.blinded),
+            "blind_signature": h(&blind_sig),
+            "signature": h(&tok.signature),
+            "token": h(&tok_bytes),
+            "spend_id": h(&tok.spend_id()),
+        }),
+    );
+
+    // 12. wire: requests, responses, frames, server card
+    let sample_token = tok_bytes.clone();
+    let reqs = vec![
+        (
+            "slot.put",
+            wire::Request::SlotPut {
+                address: ep.address,
+                write_pub: ep.write_pub,
+                sig: put_sig,
+                envelope: sealed.clone(),
+                token: sample_token.clone(),
+            },
+        ),
+        (
+            "slot.get",
+            wire::Request::SlotGet {
+                read_cap: ep.read_cap,
+                write_pub: ep.write_pub,
+                after_seq: 41,
+                limit: 50,
+            },
+        ),
+        (
+            "slot.ack",
+            wire::Request::SlotAck {
+                read_cap: ep.read_cap,
+                write_pub: ep.write_pub,
+                seq: 42,
+            },
+        ),
+        (
+            "slot.subscribe",
+            wire::Request::SlotSubscribe {
+                address: ep.address,
+                wake_handle: a32(0x16),
+                proof: vec![],
+                token: sample_token.clone(),
+            },
+        ),
+        (
+            "slot.subscribe.requests",
+            wire::Request::SlotSubscribe {
+                address: req_addr,
+                wake_handle: a32(0x17),
+                proof: proof.to_vec(),
+                token: sample_token.clone(),
+            },
+        ),
+        (
+            "slot.unsubscribe",
+            wire::Request::SlotUnsubscribe {
+                address: ep.address,
+                wake_handle: a32(0x16),
+            },
+        ),
+        (
+            "shelf.take",
+            wire::Request::ShelfTake {
+                shelf: names::shelf_address(&id.public()),
+            },
+        ),
+        ("blob.get", wire::Request::BlobGet { id: a32(0x18) }),
+        (
+            "name.lookup",
+            wire::Request::NameLookup {
+                localpart: "alice".into(),
+            },
+        ),
+        (
+            "name.register",
+            wire::Request::NameRegister {
+                card: signed.clone(),
+                gate: vec![],
+                token: sample_token.clone(),
+            },
+        ),
+        (
+            "backup.get",
+            wire::Request::BackupGet {
+                label: a32(0x19),
+                index: 3,
+            },
+        ),
+        (
+            "wrap.get",
+            wire::Request::WrapGet {
+                username: "@alice:sigil.example".into(),
+            },
+        ),
+        ("tpm.info", wire::Request::TpmInfo),
+        (
+            "token.issue",
+            wire::Request::TokenIssue {
+                credential: b"cred".to_vec(),
+                blinded: vec![pending.blinded.clone()],
+            },
+        ),
+        ("server.info", wire::Request::ServerInfo),
+        (
+            "requests.put",
+            wire::Request::RequestsPut {
+                address: req_address,
+                envelope: req_env.clone(),
+                token: sample_token.clone(),
+            },
+        ),
+    ];
+    let mut wreq = serde_json::Map::new();
+    for (name, r) in &reqs {
+        let enc = r.encode();
+        assert_eq!(&wire::Request::decode(&enc).unwrap(), r);
+        wreq.insert(name.to_string(), json!(h(&enc)));
+    }
+    let resps = vec![
+        (
+            "slot.put",
+            wire::Op::SlotPut,
+            wire::Response::SlotPut { seq: 42 },
+        ),
+        (
+            "slot.get",
+            wire::Op::SlotGet,
+            wire::Response::SlotGet {
+                items: vec![wire::Stored {
+                    seq: 42,
+                    envelope: sealed.clone(),
+                }],
+                more: false,
+            },
+        ),
+        ("slot.ack", wire::Op::SlotAck, wire::Response::Empty),
+        (
+            "error.not_found",
+            wire::Op::BlobGet,
+            wire::Response::Error(wire::Status::NotFound),
+        ),
+        (
+            "error.token_spent",
+            wire::Op::SlotPut,
+            wire::Response::Error(wire::Status::TokenSpent),
+        ),
+        (
+            "blob.put",
+            wire::Op::BlobPut,
+            wire::Response::BlobPut { id: a32(0x18) },
+        ),
+        (
+            "wrap.get",
+            wire::Op::WrapGet,
+            wire::Response::WrapGet {
+                salt: [0x0b; 16],
+                wrap: wrap.clone(),
+            },
+        ),
+        (
+            "token.issue",
+            wire::Op::TokenIssue,
+            wire::Response::TokenIssue {
+                blind_sigs: vec![blind_sig.clone()],
+            },
+        ),
+    ];
+    let mut wresp = serde_json::Map::new();
+    for (name, op, r) in &resps {
+        let enc = r.encode();
+        assert_eq!(&wire::Response::decode(*op, &enc).unwrap(), r);
+        wresp.insert(name.to_string(), json!(h(&enc)));
+    }
+    let card = wire::ServerCard {
+        hostname: "sigil.example".into(),
+        kem_pub: server.public().to_vec(),
+        token_key: issuer.spki.clone(),
+        flags: 0b011,
+        signing_pub: id.public(),
+    };
+    let card_enc = card.encode();
+    assert_eq!(wire::ServerCard::decode(&card_enc).unwrap(), card);
+    let frames = vec![
+        (
+            "bag",
+            wire::Frame::Bag {
+                id: 7,
+                server: "sigil.example".into(),
+                bind_handle: Some(a32(0x16)),
+                bag: bag_bytes.clone(),
+            },
+        ),
+        (
+            "bag.nobind",
+            wire::Frame::Bag {
+                id: 8,
+                server: "sigil.example".into(),
+                bind_handle: None,
+                bag: bag_bytes.clone(),
+            },
+        ),
+        (
+            "bag.response",
+            wire::Frame::BagResponse {
+                id: 7,
+                response: resp.clone(),
+            },
+        ),
+        (
+            "deliver",
+            wire::Frame::Deliver {
+                wake_handle: a32(0x16),
+                queue_seq: 9,
+                envelope: sealed.clone(),
+            },
+        ),
+        (
+            "ack",
+            wire::Frame::Ack {
+                wake_handle: a32(0x16),
+                queue_seq: 9,
+            },
+        ),
+        (
+            "push",
+            wire::Frame::Push {
+                kind: 3,
+                token: b"https://push.example/up/abc".to_vec(),
+            },
+        ),
+        (
+            "release",
+            wire::Frame::Release {
+                wake_handle: a32(0x16),
+            },
+        ),
+    ];
+    let mut wfr = serde_json::Map::new();
+    for (name, f) in &frames {
+        let enc = f.encode();
+        assert_eq!(&wire::Frame::decode(&enc).unwrap(), f);
+        wfr.insert(name.to_string(), json!(h(&enc)));
+    }
+    v.insert(
+        "wire".into(),
+        json!({
+            "requests": wreq,
+            "responses": wresp,
+            "frames": wfr,
+            "server_card": h(&card_enc),
+            "chunk_len": wire::CHUNK_LEN,
+        }),
+    );
+
     let _ = fill(0, 0);
     println!(
         "{}",

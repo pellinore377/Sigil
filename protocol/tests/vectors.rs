@@ -291,3 +291,131 @@ fn vectors_file_is_current() {
         "run `cargo run --bin gen-vectors > vectors/v1.json`"
     );
 }
+
+#[test]
+fn requests_envelope_vectors() {
+    let v = &vectors()["requests_envelope"];
+    let bob = identity::Identity::from_seed(&a32(&v["recipient_seed"]));
+    assert_eq!(bob.kem.public()[..], hx(&v["recipient_kem_pub"])[..]);
+    let addr = a32(&v["address"]);
+    let env = requests::seal(
+        bob.kem.public(),
+        &addr,
+        &a32(&v["eseed"]),
+        &a24(&v["nonce"]),
+        &hx(&v["plain"]),
+    )
+    .unwrap();
+    assert_eq!(env, hx(&v["envelope"]));
+    assert_eq!(env.len(), 4096);
+    assert_eq!(
+        requests::open(&bob.kem, &addr, &env).unwrap(),
+        hx(&v["plain"])
+    );
+    let other = identity::Identity::from_seed(&[0x99; 32]);
+    assert_eq!(requests::open(&other.kem, &addr, &env), Err(Error::Auth));
+    let big = requests::seal(
+        bob.kem.public(),
+        &addr,
+        &a32(&v["eseed"]),
+        &a24(&v["nonce"]),
+        &vec![1u8; 3000],
+    )
+    .unwrap();
+    assert_eq!(big.len(), 16384);
+}
+
+#[test]
+fn token_vectors() {
+    let v = &vectors()["token"];
+    let issuer = token::Issuer::from_der(&hx(&v["issuer_secret_der"])).unwrap();
+    assert_eq!(issuer.spki, hx(&v["issuer_spki"]));
+    assert_eq!(issuer.key_id, a32(&v["key_id"]));
+    let verifier = token::Verifier::from_spki(&issuer.spki).unwrap();
+    let nonce = a32(&v["nonce"]);
+    assert_eq!(token::message(&issuer.key_id, &nonce), hx(&v["message"]));
+    // unblinding with the recorded blinding secret reproduces the signature
+    let pending = token::Pending {
+        nonce,
+        blinded: hx(&v["blinded"]),
+        secret: hx(&v["blinding_secret"]),
+    };
+    let blind_sig = issuer.sign(&pending.blinded).unwrap();
+    assert_eq!(
+        blind_sig,
+        hx(&v["blind_signature"]),
+        "deterministic PSS: same blinded input, same blind signature"
+    );
+    let tok = verifier.finalize(&pending, &blind_sig).unwrap();
+    assert_eq!(tok.signature, hx(&v["signature"]));
+    assert_eq!(tok.encode(), hx(&v["token"]));
+    assert_eq!(tok.spend_id(), a32(&v["spend_id"]));
+    verifier.verify(&tok).unwrap();
+    let decoded = token::Token::decode(&hx(&v["token"])).unwrap();
+    verifier.verify(&decoded).unwrap();
+    // a token for another nonce with this signature must fail
+    let mut forged = decoded.clone();
+    forged.nonce[0] ^= 1;
+    assert_eq!(verifier.verify(&forged), Err(Error::Auth));
+    // a fresh blind with a different RNG still verifies (unlinkability is by construction)
+    let mut rng = testrng::TestRng::new(b"another client");
+    let p2 = verifier.blind(&mut rng, [0x77; 32]).unwrap();
+    assert_ne!(p2.blinded, pending.blinded);
+    let t2 = verifier
+        .finalize(&p2, &issuer.sign(&p2.blinded).unwrap())
+        .unwrap();
+    verifier.verify(&t2).unwrap();
+    assert_eq!(token::Token::decode(&[0u8; 10]), Err(Error::Length));
+}
+
+#[test]
+fn wire_vectors() {
+    let v = &vectors()["wire"];
+    for (name, hexv) in v["requests"].as_object().unwrap() {
+        let bytes = hx(hexv);
+        let r = wire::Request::decode(&bytes).unwrap_or_else(|e| panic!("{name}: {e:?}"));
+        assert_eq!(r.encode(), bytes, "{name}");
+    }
+    let ops = [
+        ("slot.put", wire::Op::SlotPut),
+        ("slot.get", wire::Op::SlotGet),
+        ("slot.ack", wire::Op::SlotAck),
+        ("error.not_found", wire::Op::BlobGet),
+        ("error.token_spent", wire::Op::SlotPut),
+        ("blob.put", wire::Op::BlobPut),
+        ("wrap.get", wire::Op::WrapGet),
+        ("token.issue", wire::Op::TokenIssue),
+    ];
+    for (name, op) in ops {
+        let bytes = hx(&v["responses"][name]);
+        let r = wire::Response::decode(op, &bytes).unwrap();
+        assert_eq!(r.encode(), bytes, "{name}");
+    }
+    assert_eq!(
+        wire::Response::decode(wire::Op::BlobGet, &hx(&v["responses"]["error.not_found"])).unwrap(),
+        wire::Response::Error(wire::Status::NotFound)
+    );
+    match wire::Response::decode(wire::Op::SlotGet, &hx(&v["responses"]["slot.get"])).unwrap() {
+        wire::Response::SlotGet { items, more } => {
+            assert_eq!(items.len(), 1);
+            assert_eq!(items[0].seq, 42);
+            assert!(!more);
+        }
+        _ => panic!(),
+    }
+    for (name, hexv) in v["frames"].as_object().unwrap() {
+        let bytes = hx(hexv);
+        let f = wire::Frame::decode(&bytes).unwrap_or_else(|e| panic!("{name}: {e:?}"));
+        assert_eq!(f.encode(), bytes, "{name}");
+    }
+    let card = wire::ServerCard::decode(&hx(&v["server_card"])).unwrap();
+    assert_eq!(card.hostname, "sigil.example");
+    assert_eq!(card.flags, 3);
+    // trailing bytes and unknown ops are rejected
+    let mut trailing = hx(&v["requests"]["tpm.info"]);
+    trailing.push(0);
+    assert_eq!(wire::Request::decode(&trailing), Err(Error::Malformed));
+    assert_eq!(wire::Request::decode(&[200]), Err(Error::Malformed));
+    assert_eq!(wire::Frame::decode(&[9]), Err(Error::Malformed));
+    assert_eq!(wire::Status::from_u8(99), Err(Error::Malformed));
+}
