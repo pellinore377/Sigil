@@ -32,7 +32,3 @@ dashmap = "6"
 [[bin]]
 name = "sigil-server"
 path = "src/main.rs"
-
-[[bin]]
-name = "sigil-cli"
-path = "src/bin/cli.rs"

@@ -66,6 +66,7 @@ impl Envoy {
         socket: axum::extract::ws::WebSocket,
     ) {
         use axum::extract::ws::Message;
+        tracing::debug!("device connected");
         let (mut sink, mut source) = socket.split();
         let (tx, mut rx) = mpsc::channel::<Frame>(256);
         self.devices.insert(device, tx.clone());
@@ -82,9 +83,18 @@ impl Envoy {
         });
         while let Some(Ok(msg)) = source.next().await {
             let Message::Binary(b) = msg else { continue };
-            let Ok(frame) = Frame::decode(&b) else {
-                continue;
+            let frame = match Frame::decode(&b) {
+                Ok(f) => f,
+                Err(e) => {
+                    tracing::debug!(
+                        "undecodable frame type {} ({} bytes): {e:?}",
+                        b.first().copied().unwrap_or(0),
+                        b.len()
+                    );
+                    continue;
+                }
             };
+            tracing::debug!("frame type {}", b[0]);
             let me = self.clone();
             let tx = tx.clone();
             match frame {
@@ -122,7 +132,9 @@ impl Envoy {
                     tokio::spawn(async move {
                         let st = me.ensure_stream(&server).await;
                         let nonce = st.nonce.lock().unwrap().unwrap_or([0; 32]);
-                        let _ = tx.send(Frame::Nonce { server, nonce }).await;
+                        tracing::debug!("nonce for {server}: {}", nonce != [0; 32]);
+                        let r = tx.send(Frame::Nonce { server, nonce }).await;
+                        tracing::debug!("nonce reply sent: {}", r.is_ok());
                     });
                 }
                 _ => {}

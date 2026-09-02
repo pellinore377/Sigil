@@ -502,6 +502,9 @@ fn main() {
                 wake_handle: a32(0x16),
             },
         ),
+        ("keepalive", wire::Frame::Keepalive { nonce: a32(0x1a) }),
+        ("nonce.ask", wire::Frame::Nonce { server: "sigil.example".into(), nonce: [0; 32] }),
+        ("nonce.reply", wire::Frame::Nonce { server: "sigil.example".into(), nonce: a32(0x1a) }),
     ];
     let mut wfr = serde_json::Map::new();
     for (name, f) in &frames {

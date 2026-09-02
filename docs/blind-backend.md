@@ -784,9 +784,15 @@ subscribe, the offline queue, a restart, a bad invite and a double spend.
 Still to come in this layer: ACME, retention sweeps, stream-bound Envoy
 authentication.
 
-**2. Client core.** `transport::sigil`: identity, `openmls` on a hybrid
-suite, exporter-derived slots, requests slot, local store. Two engines hold a
-direct message by username. Omarchy frontend unchanged.
+**2. Client core.** Done as a library, in `client/`: identity and the
+device credential, registration and tokens, key packages sealed on the
+shelf, MLS groups on `openmls` with the Sigil credential binding, the
+Welcome sent through the requests slot and accepted from it, epoch
+material from the exporter, envelopes in and out, own-message readback, a
+persisted MLS store. `sigil-cli` now lives here; `tests/e2e.sh` proves two
+users hold a direct message by username over the real protocol. Still to
+come: wiring the library behind the engine's backend trait so the Omarchy
+frontend runs on it, which is Phase 2b.
 
 **3. Devices and wake.** Linking; the Envoy role with subscriptions, handles
 and push; Android receives an empty push and fetches.

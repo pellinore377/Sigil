@@ -762,6 +762,11 @@ impl Frame {
             6 => Release {
                 wake_handle: r.fixed()?,
             },
+            7 => Keepalive { nonce: r.fixed()? },
+            8 => Nonce {
+                server: r.str()?.to_string(),
+                nonce: r.fixed()?,
+            },
             _ => return Err(crate::Error::Malformed),
         };
         r.done()?;

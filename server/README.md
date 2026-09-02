@@ -23,19 +23,19 @@ target/debug/sigil-server -c sigil.toml run          # plain HTTP: local testing
 target/debug/sigil-server -c sigil.toml invite       # prints an invite code
 ```
 
-Then, with the command-line client:
+Then, with the command-line client from `client/`:
 
 ```
 sigil-cli -s alice.json init --username @alice:sigil.test --envoy ws://127.0.0.1:8443/envoy
-sigil-cli -s alice.json register --invite <code>     # name, credential, 20 tokens
-sigil-cli -s alice.json listen --epoch <64 hex>      # subscribe to a slot and print arrivals
-sigil-cli -s bob.json   send   --epoch <64 hex> "hi" # from another identity
-sigil-cli -s alice.json history --epoch <64 hex>
+sigil-cli -s alice.json register --invite <code>   # name, credential, tokens, key packages
+sigil-cli -s bob.json   requests --accept          # wait for a request and join it
+sigil-cli -s alice.json dm @bob:sigil.test "hi"    # Welcome through bob's requests slot
+sigil-cli -s alice.json send 0 "hello again"
+sigil-cli -s bob.json   listen 0                   # backfill, then live
 ```
 
-The epoch secret stands in for what the group layer will derive in
-Phase 2; two clients that share it share a slot. `tests/e2e.sh` runs the
-whole flow, including the offline queue and a server restart.
+`client/tests/e2e.sh` runs the whole flow, including the offline queue and
+a server restart.
 
 ## Docker
 
