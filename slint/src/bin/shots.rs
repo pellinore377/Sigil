@@ -65,6 +65,19 @@ fn main() -> anyhow::Result<()> {
     // the open conversation and the pages that hang off it
     app.set_nav("chat".into());
     h.shoot("chat")?;
+    // the voice recorder with a clip ready to send
+    app.set_recorder_open(true);
+    app.set_rec_state("ready".into());
+    app.set_rec_clip_duration(7.0);
+    let bars: Vec<f32> = (0..60)
+        .map(|i| 0.25 + 0.7 * ((i as f32 * 0.9).sin().abs()))
+        .collect();
+    app.set_rec_clip_waveform(slint::ModelRc::new(slint::VecModel::from(bars)));
+    h.settle();
+    h.shoot("recorder")?;
+    app.set_recorder_open(false);
+    app.set_rec_state("idle".into());
+    h.settle();
     // the long-press sheet over the newest own message, page frosted behind it
     app.invoke_debug_sheet(
         app.get_items().row_count() as i32 - 3,

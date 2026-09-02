@@ -66,7 +66,9 @@ opt-level = 3
 lto = "thin"
 strip = "debuginfo"
 
-# Dev signing: the adb debug keystore. A real release key comes with real releases.
+# Dev signing: a copy of (or symlink to) the adb debug keystore,
+# ~/.android/debug.keystore, placed next to this file; it is not committed.
+# A real release key comes with real releases (Phase 8 of the port plan).
 [package.metadata.android.signing.release]
 path = "debug.keystore"
 keystore_password = "android"

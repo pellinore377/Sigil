@@ -276,6 +276,8 @@ export component ImageViewer inherits Rectangle {
 
     // ---- top bar ----
     top-bar := Rectangle {
+        // pinned to the top: an element with no geometry centres itself in Slint
+        x: 0px; y: 0px; width: 100%;
         height: 56px;
         HorizontalLayout {
             padding-left: 8px; padding-right: 8px;

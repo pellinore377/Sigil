@@ -38,7 +38,12 @@ Error codes: `bad_request not_logged_in login_in_progress oidc_unsupported slidi
 | `room.settings{roomId}` | | `{id, name, isDm, memberCount, notificationMode, admins[], isAdmin, slotServer, epochs, can{name, invite, admins}}` |
 | `room.setSettings{roomId, name?, notificationMode?}` | | `name` renames via a policy event (admins); `notificationMode` (`all\|mentions\|mute\|default`) is kept on this device |
 | `room.setAdmins{roomId, add[], remove[]}` | | usernames; admins only; a conversation keeps at least one admin |
-| `attachment.send{roomId, path, caption?}` | | encrypts and uploads the file in chunks, sends the manifest; the item has `media.path` set locally |
+| `attachment.send{roomId, path, caption?}` | | encrypts and uploads the file in chunks, sends the manifest; the item has `media.path` set locally, and `media.sizeLabel` for the pages that show a size. Own files can be deleted like own messages |
+| `voice.send{roomId, path, duration, waveform[], caption?}` | | a voice message: the clip is sent like any file, with its length (`duration` in seconds from the recorder, kept in milliseconds) and its bars (`waveform`, 0 to 1) in the manifest, so every device draws the same bubble. The item's kind is `voice` and `media` carries `duration` (ms) and `waveform` |
+| `doc.preview{roomId, eventId}` | | reads the document behind a file event (downloading it once): `{kind, title, blocks[], sheets[], html, pages, truncated, note}` plus, for a PDF, `rasterisable`, `pageCount`, `pageW`, `pageH` |
+| `doc.thumb{roomId, eventId}` | | the bubble's preview: `{kind, title, pages, lines[{t:"p", text, level} \| {t:"row", cells[]}], imagePath}`; a PDF's first page is drawn to `imagePath` instead |
+| `doc.page{roomId, eventId, index, width}` | | one PDF page drawn at `width` pixels: `{path, width, height}`; cached under the cache directory |
+| `audio.info{roomId, eventId}` | | a track's `{artPath, accent, duration}` (ms); needs ffmpeg and ffprobe on the machine, and comes back empty without them |
 | `media.get{roomId, eventId}` | | `{path, filename, mime}`; downloads on first call. Received media downloads in the background and the item's `media.path` (and `thumbnailPath` for images) is set by a `set` diff |
 | `room.setFavourite{roomId,favourite}`, `room.setLowPriority{roomId,lowPriority}`, `room.setUnread{roomId,unread}`, `room.markRead{roomId}` | | |
 | `space.hierarchy{spaceId,limit?}` | | `{rooms:[{id,name,topic,avatarPath,memberCount,isSpace,worldReadable,encrypted,joined}],nextBatch}` — the server's `/hierarchy`, so it includes children this account has NOT joined |

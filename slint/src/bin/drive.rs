@@ -11,7 +11,9 @@
 //!   home   create an account, wait for a request from a stranger, accept
 //!          it from the Requests tab, read their message, reply.
 //!   chat   the home scenario, then a reply with a quote, a reaction, an
-//!          edit and a deletion, each checked in the timeline.
+//!          edit and a deletion, each checked in the timeline; then a
+//!          picture and the viewer, a document and its page, a track and
+//!          its page, and a voice message.
 //!   groups create a group, add someone, wait for DRIVE_SYNC to appear (the
 //!          test lets them join first), make them admin, rename, leave.
 //!
@@ -46,7 +48,7 @@ fn main() -> anyhow::Result<()> {
         sigil_slint::headless::HEIGHT,
     ));
     let icons = sigil_slint::rows::IconSet::from_window(&app);
-    sigil_slint::bridge::start(&app, &rt, icons);
+    let req = sigil_slint::bridge::start(&app, &rt, icons);
     app.show()?;
 
     // the engine reports its state on start: no account → loggedOut
@@ -59,7 +61,7 @@ fn main() -> anyhow::Result<()> {
     match scenario.as_str() {
         "doors" => doors(&h, &app, server, invite, &localpart),
         "home" => home(&h, &app, server, invite, &localpart),
-        "chat" => chat(&h, &app, server, invite, &localpart),
+        "chat" => chat(&h, &app, &req, server, invite, &localpart),
         "groups" => groups(&h, &app, server, invite, &localpart),
         other => anyhow::bail!("unknown scenario {other}"),
     }
@@ -233,6 +235,7 @@ fn home(
 fn chat(
     h: &Harness,
     app: &sigil_slint::AppWindow,
+    req: &sigil_slint::bridge::Requester,
     server: &str,
     invite: &str,
     localpart: &str,
@@ -333,6 +336,114 @@ fn chat(
     })?;
     h.shoot("live-viewer")?;
     app.set_viewer_open(false);
+
+    // 6. a document: a few lines of markdown, sent as a file. The bubble
+    //    shows its first lines; the document page shows all of it.
+    use slint::Model as _;
+    let notes = h.out.join("notes.md");
+    std::fs::write(
+        &notes,
+        "# Plans for the week\n\nMeet at the tower on Tuesday.\n\n## Bring\n\n- lanterns\n- rope\n\nDo not tell the ferryman.\n",
+    )?;
+    app.invoke_act(
+        "attach-path".into(),
+        notes.to_string_lossy().to_string().into(),
+        "".into(),
+    );
+    h.wait_until(
+        "the document to appear with its first lines",
+        Duration::from_secs(90),
+        || {
+            app.get_items()
+                .iter()
+                .any(|i| i.is_own && i.kind == "file" && i.doc_lines.row_count() > 0)
+        },
+    )?;
+    println!("document sent");
+    h.shoot("live-chat-doc")?;
+    let doc_item = app
+        .get_items()
+        .iter()
+        .find(|i| i.kind == "file")
+        .expect("the document row");
+    app.invoke_act("open-doc".into(), doc_item.event_id.clone(), "".into());
+    app.invoke_go("doc".into());
+    h.wait_until("the document page", Duration::from_secs(30), || {
+        app.get_dc_status().is_empty() && app.get_dc_blocks().row_count() > 0
+    })?;
+    anyhow::ensure!(
+        app.get_dc_name() == "notes.md",
+        "the document page shows the file's name, got {}",
+        app.get_dc_name()
+    );
+    println!("document page open");
+    h.shoot("live-doc")?;
+    app.invoke_go_back();
+
+    // 7. a track: a one-second tone as a WAV, sent, then its page opened.
+    //    Without ffmpeg on the machine the page has no length or art, which
+    //    is what it does for any track it cannot read; it still opens.
+    let tone = h.out.join("tone.wav");
+    std::fs::write(&tone, wav_tone())?;
+    app.invoke_act(
+        "attach-path".into(),
+        tone.to_string_lossy().to_string().into(),
+        "".into(),
+    );
+    h.wait_until("the track to appear", Duration::from_secs(90), || {
+        app.get_items()
+            .iter()
+            .any(|i| i.is_own && i.kind == "audio")
+    })?;
+    println!("track sent");
+    h.shoot("live-chat-audio")?;
+    let track = app
+        .get_items()
+        .iter()
+        .find(|i| i.kind == "audio")
+        .expect("the track row");
+    app.invoke_act("open-audio-page".into(), track.event_id.clone(), "".into());
+    app.invoke_go("audio".into());
+    h.wait_until("the audio page", Duration::from_secs(30), || {
+        app.get_au_status().is_empty()
+    })?;
+    anyhow::ensure!(
+        app.get_au_title() == "tone.wav",
+        "the audio page shows the file's name, got {}",
+        app.get_au_title()
+    );
+    println!("audio page open");
+    h.shoot("live-audio")?;
+    app.invoke_go_back();
+
+    // 8. a voice message. There is no microphone here, so the recorder's
+    //    own send is fired with the tone as the clip and a made-up
+    //    waveform; the bubble must draw the bars and the length.
+    let room_id = app
+        .get_rooms()
+        .row_data(0)
+        .map(|r| r.id.to_string())
+        .unwrap_or_default();
+    let wave: Vec<f64> = (0..40)
+        .map(|i| 0.2 + 0.8 * ((i as f64 * 0.7).sin().abs()))
+        .collect();
+    req.fire(
+        "voice.send",
+        serde_json::json!({
+            "roomId": room_id,
+            "path": tone.to_string_lossy(),
+            "duration": 1.0,
+            "waveform": wave,
+            "caption": "",
+        }),
+    );
+    h.wait_until("the voice message", Duration::from_secs(90), || {
+        app.get_items()
+            .iter()
+            .any(|i| i.is_own && i.kind == "voice" && i.waveform.row_count() > 0)
+    })?;
+    println!("voice message sent");
+    h.shoot("live-chat-voice")?;
     println!("drive chat ok");
     Ok(())
 }
@@ -427,4 +538,33 @@ fn groups(
     println!("left");
     println!("drive groups ok");
     Ok(())
+}
+
+/// One second of a 440 Hz tone: 8 kHz, 16-bit, mono, as a WAV file.
+fn wav_tone() -> Vec<u8> {
+    let rate: u32 = 8_000;
+    let samples: Vec<i16> = (0..rate)
+        .map(|i| {
+            let t = i as f32 / rate as f32;
+            ((t * 440.0 * std::f32::consts::TAU).sin() * 12_000.0) as i16
+        })
+        .collect();
+    let data_len = (samples.len() * 2) as u32;
+    let mut out = Vec::with_capacity(44 + data_len as usize);
+    out.extend_from_slice(b"RIFF");
+    out.extend_from_slice(&(36 + data_len).to_le_bytes());
+    out.extend_from_slice(b"WAVEfmt ");
+    out.extend_from_slice(&16u32.to_le_bytes()); // chunk size
+    out.extend_from_slice(&1u16.to_le_bytes()); // PCM
+    out.extend_from_slice(&1u16.to_le_bytes()); // mono
+    out.extend_from_slice(&rate.to_le_bytes());
+    out.extend_from_slice(&(rate * 2).to_le_bytes()); // byte rate
+    out.extend_from_slice(&2u16.to_le_bytes()); // block align
+    out.extend_from_slice(&16u16.to_le_bytes()); // bits
+    out.extend_from_slice(b"data");
+    out.extend_from_slice(&data_len.to_le_bytes());
+    for s in samples {
+        out.extend_from_slice(&s.to_le_bytes());
+    }
+    out
 }

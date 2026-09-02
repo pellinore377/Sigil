@@ -432,10 +432,23 @@ contacts, location, plus `viewer.slint`.
 Notifications, Privacy, Leave, rename, request banner. Engine: admins,
 notification mode. Files: 1.3 rows that survive.
 
-**Phase 5. Media pages.** Image viewer complete (zoom, pan, pager, react,
-delete, download), Document page and thumbs, Audio page and body, voice
-recorder. Engine: re-wire docs and audio info; frame channel for video
-playback. Files: 1.5, `DocThumb`, `AudioBody`, `VoiceRecorder`.
+**Phase 5. Media pages.** *Done for what a machine without a microphone or
+ffmpeg can show; `slint/tests/e2e-chat.sh` now also sends a Markdown
+document and a WAV track, opens the document page and the audio page, and
+sends a voice message, each seen by the command-line client.* Image viewer
+complete (zoom, pan, pager, react, delete, download), Document page and
+thumbs, Audio page and body, voice recorder. Engine: re-wire docs and audio
+info; frame channel for video playback. Files: 1.5, `DocThumb`,
+`AudioBody`, `VoiceRecorder`.
+Engine work done here: `doc.preview`, `doc.thumb`, `doc.page` and
+`audio.info` on the Sigil backend (`core/src/sigil/docs.rs`), `voice.send`
+with the clip's length and waveform carried in the file manifest, own files
+deletable, a size label on every file. The recorder itself, track length
+and cover art, and video frames all go through ffmpeg exactly as they did
+under QML, so they are exercised on a desktop with ffmpeg installed rather
+than in the headless suite; the recorder page is on the fixture sheet
+(`recorder.png`) with a clip ready to send. Gap kept: a video bubble shows
+its first frame only where ffmpeg is present.
 
 **Phase 6. More kinds.** Whichever of pins, polls, threads, stickers,
 contacts, location and link previews the decisions in part 7 keep, each as

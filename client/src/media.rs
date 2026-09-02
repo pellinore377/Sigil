@@ -25,6 +25,12 @@ pub struct Manifest {
     pub width: Option<u32>,
     #[serde(default)]
     pub height: Option<u32>,
+    /// A voice message: how long it plays, in milliseconds.
+    #[serde(default)]
+    pub duration_ms: Option<u64>,
+    /// A voice message: loudness per slice, 0 to 100, for the bubble's bars.
+    #[serde(default)]
+    pub waveform: Vec<u8>,
 }
 
 fn nonce_for(index: u32) -> [u8; 24] {
@@ -98,6 +104,8 @@ pub async fn upload(
         caption: caption.to_string(),
         width,
         height,
+        duration_ms: None,
+        waveform: Vec::new(),
     })
 }
 

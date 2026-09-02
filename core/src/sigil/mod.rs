@@ -3,6 +3,7 @@
 //! `rooms.list`, `timeline.reset` and `timeline.diff` events the engine has
 //! always emitted. Frontends do not know what is underneath, by design.
 
+mod docs;
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -490,11 +491,25 @@ pub async fn dispatch(engine: &SharedEngine, req: &Request) -> Option<Reply> {
             };
             s.room_set_admins(engine, &param(p, "roomId"), &list("add"), &list("remove")).await
         }
-        "attachment.send" => s.attachment_send(engine, p).await,
+        "attachment.send" => s.attachment_send(engine, p, None).await,
+        "voice.send" => {
+            // seconds from the recorder, milliseconds on the wire like every other duration
+            let duration = (p.get("duration").and_then(Value::as_f64).unwrap_or(0.0).max(0.0) * 1000.0).round() as u64;
+            let wave: Vec<u8> = p
+                .get("waveform")
+                .and_then(Value::as_array)
+                .map(|a| a.iter().filter_map(Value::as_f64).map(|v| (v.clamp(0.0, 1.0) * 100.0).round() as u8).collect())
+                .unwrap_or_default();
+            s.attachment_send(engine, p, Some((duration, wave))).await
+        }
         "call.start" => s.call_start(engine, &param(p, "roomId")).await,
         "call.end" => s.call_end(engine, &param(p, "roomId"), &param(p, "callId")).await,
         "call.join" | "call.poll" | "call.answer" | "call.leave" => s.call_signal(p, &req.req[5..]).await,
         "media.get" => s.media_get(&param(p, "roomId"), &param(p, "eventId")).await,
+        "doc.preview" => s.doc_preview(p).await,
+        "doc.thumb" => s.doc_thumb(p).await,
+        "doc.page" => s.doc_page(p).await,
+        "audio.info" => s.audio_info(p).await,
         "room.join" => s.accept(engine, &param(p, "roomIdOrAlias")).await,
         "room.leave" => s.leave(engine, &param(p, "roomId")).await,
         "room.members" => s.members(&param(p, "roomId")).await,
@@ -539,8 +554,6 @@ pub async fn dispatch(engine: &SharedEngine, req: &Request) -> Option<Reply> {
             || r.starts_with("contact")
             || r.starts_with("location.")
             || r.starts_with("link.")
-            || r == "voice.send"
-            || r.starts_with("doc.")
             || r.starts_with("vcard.") =>
         {
             Reply::err(
@@ -635,7 +648,9 @@ fn text_item(
 /// A media item: image, video, audio or file, with the manifest kept on the
 /// item for `media.get`.
 fn media_item(id: &str, sender: &str, ts: i64, is_own: bool, m: &sigil_client::media::Manifest, local_path: &str) -> Value {
-    let kind = if m.mime.starts_with("image/") {
+    let kind = if !m.waveform.is_empty() {
+        "voice"
+    } else if m.mime.starts_with("image/") {
         "image"
     } else if m.mime.starts_with("video/") {
         "video"
@@ -661,15 +676,18 @@ fn media_item(id: &str, sender: &str, ts: i64, is_own: bool, m: &sigil_client::m
         "sendState": "sent",
         "sendError": "",
         "readBy": [],
-        "can": {"edit": false, "reply": true, "redact": false, "react": true},
+        "can": {"edit": false, "reply": true, "redact": is_own, "react": true},
         "media": {
             "mxc": format!("sigil:{}", m.chunks.first().cloned().unwrap_or_default()),
             "encrypted": true,
             "filename": m.filename,
             "mime": m.mime,
             "size": m.size,
+            "sizeLabel": crate::timeline::fmt::bytes(m.size),
             "width": m.width,
             "height": m.height,
+            "duration": m.duration_ms.map(|d| d as f64),
+            "waveform": m.waveform.iter().map(|v| *v as f64 / 100.0).collect::<Vec<f64>>(),
             "path": local_path,
             "thumbnailPath": if kind == "image" { local_path } else { "" },
         },
@@ -1460,7 +1478,9 @@ impl SigilSession {
         }
     }
 
-    async fn attachment_send(&self, engine: &SharedEngine, p: &serde_json::Map<String, Value>) -> Reply {
+    /// A file, or with `voice` a voice message: the clip's length and
+    /// waveform travel in the manifest so every device draws the same bars.
+    async fn attachment_send(&self, engine: &SharedEngine, p: &serde_json::Map<String, Value>, voice: Option<(u64, Vec<u8>)>) -> Reply {
         self.top_up().await;
         let room_id = param(p, "roomId");
         let path = std::path::PathBuf::from(param(p, "path"));
@@ -1473,7 +1493,13 @@ impl SigilSession {
             let mut g = self.inner.lock().await;
             let (a, pr) = &mut *g;
             match sigil_client::media::upload(&self.link, a, &path, &caption).await {
-                Ok(m) => conversation::send_event(&self.link, a, pr, &conv, Kind::Media, &[], &serde_json::to_vec(&m).unwrap()).await.map(|s| (s, m)),
+                Ok(mut m) => {
+                    if let Some((duration, wave)) = voice {
+                        m.duration_ms = Some(duration);
+                        m.waveform = if wave.is_empty() { vec![50] } else { wave };
+                    }
+                    conversation::send_event(&self.link, a, pr, &conv, Kind::Media, &[], &serde_json::to_vec(&m).unwrap()).await.map(|s| (s, m))
+                }
                 Err(e) => Err(e),
             }
         };

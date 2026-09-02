@@ -984,9 +984,8 @@ pub fn on_act(ui: &mut UiState, win: &AppWindow, action: &str, a: &str, b2: &str
             ui.recording = false;
             call_ui(&req, "voice.stop", json!({}), move |ui, win, out| {
                 if let Ok(v) = out {
-                    win.set_rec_clip_duration(
-                        (v["duration"].as_f64().unwrap_or(0.0) / 1000.0) as f32,
-                    );
+                    // voice.stop reports seconds (the recorder's own clock)
+                    win.set_rec_clip_duration(v["duration"].as_f64().unwrap_or(0.0) as f32);
                     let wave: Vec<f64> = v["waveform"]
                         .as_array()
                         .map(|a| a.iter().filter_map(Value::as_f64).collect())
@@ -1013,7 +1012,7 @@ pub fn on_act(ui: &mut UiState, win: &AppWindow, action: &str, a: &str, b2: &str
         // Attach STAGES the clip in the composer (ChatPage.voicePath) — the
         // send button posts it, with the typed text as its caption.
         "voice-attach" => {
-            let secs = ui.voice_clip["duration"].as_f64().unwrap_or(0.0) / 1000.0;
+            let secs = ui.voice_clip["duration"].as_f64().unwrap_or(0.0);
             let wave: Vec<f64> = ui.voice_clip["waveform"]
                 .as_array()
                 .map(|a| a.iter().filter_map(Value::as_f64).collect())
@@ -1633,18 +1632,30 @@ fn doc_open(ui: &mut UiState, win: &AppWindow, event_id: &str) {
                 win.set_dc_status("".into());
                 let kind = s(&v, "kind").to_string();
                 win.set_dc_kind(kind.as_str().into());
+                // Only a PDF is drawn page by page; everything else comes
+                // as blocks, whatever page count the reader guessed.
+                let pages = if b(&v, "rasterisable") {
+                    v["pageCount"].as_i64().unwrap_or(0)
+                } else {
+                    0
+                };
+                // The page prefixes the kind word itself ("PDF · 2 pages").
                 win.set_dc_subtitle(
                     match kind.as_str() {
-                        "pdf" => format!("PDF · {} pages", v["pages"].as_i64().unwrap_or(0)),
-                        "sheet" => format!(
-                            "Spreadsheet · {} sheets",
-                            v["sheets"].as_array().map(Vec::len).unwrap_or(0)
-                        ),
-                        k => k.to_string(),
+                        "pdf" if pages == 1 => "1 page".to_string(),
+                        "pdf" => format!("{pages} pages"),
+                        "sheet" => {
+                            let n = v["sheets"].as_array().map(Vec::len).unwrap_or(0);
+                            if n == 1 {
+                                "1 sheet".to_string()
+                            } else {
+                                format!("{n} sheets")
+                            }
+                        }
+                        _ => String::new(),
                     }
                     .into(),
                 );
-                let pages = v["pages"].as_i64().unwrap_or(0);
                 win.set_dc_pdf(pages > 0);
                 if pages > 0 {
                     ui.doc_pages = vec![Value::Null; pages as usize];
