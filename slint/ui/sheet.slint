@@ -1,9 +1,10 @@
-// Message action sheet — MessageSheet.qml. The QML frosts the page behind a
-// blurred snapshot; Slint has no arbitrary-content blur, so the scrim is a
-// deep dim instead (noted in WIRING-chat.md). The pressed bubble is re-drawn
-// as a spotlight card at a computed resting place, the quick-reaction pill
-// above it and the action menu below, with a delete-confirm bottom sheet and
-// the emoji drawer sharing the same host.
+// Message action sheet — MessageSheet.qml. The page frosts behind a blurred
+// snapshot the bridge takes the instant before the sheet opens (frost.rs),
+// under 55 % black like the QML; the pressed bubble lifts as a crop of the
+// same picture to a computed resting place, the quick-reaction pill above
+// it and the action menu below, with a delete-confirm bottom sheet and the
+// emoji drawer sharing the same host. Without a snapshot (a renderer that
+// cannot take one) the scrim is a deeper dim and the copy is redrawn.
 
 import { Theme } from "style.slint";
 import { Icons } from "icons.slint";
@@ -22,6 +23,11 @@ export component MessageSheet inherits Rectangle {
     in-out property <bool> confirm-open: false;
     in property <[[EmojiItem]]> emoji-rows;
     in property <[int]> emoji-cat-rows;
+    /// The page as it was, blurred; empty when the renderer could not snapshot.
+    in property <image> backdrop;
+    /// The pressed bubble as it was drawn.
+    in property <image> copy-image;
+    property <bool> frosted: root.backdrop.width > 0;
 
     // Where the bubble was pressed, in window coordinates (menu-requested args).
     in-out property <length> hole-x;
@@ -69,10 +75,17 @@ export component MessageSheet inherits Rectangle {
     opacity: self.show;
     background: transparent;
 
-    // Dim scrim (the QML blurs; we dim deeper to compensate).
+    // The frost: the blurred snapshot under 55 % black (MessageSheet.qml), or
+    // a deeper dim when there is no snapshot.
+    if root.frosted : Image {
+        source: root.backdrop;
+        width: 100%; height: 100%;
+        image-fit: fill;
+        image-rendering: smooth;
+    }
     scrim := Rectangle {
         width: 100%; height: 100%;
-        background: #000000.with-alpha(0.62);
+        background: #000000.with-alpha(root.frosted ? 0.55 : 0.62);
         TouchArea {
             clicked => {
                 if (root.drawer-open) { root.drawer-open = false; }
@@ -90,9 +103,14 @@ export component MessageSheet inherits Rectangle {
         width: root.hole-w;
         height: root.hole-h;
         border-radius: 16px;
-        background: root.surface.with-alpha(0.97);
+        background: root.copy-image.width > 0 ? transparent : root.surface.with-alpha(0.97);
         clip: true;
-        Text {
+        if root.copy-image.width > 0 : Image {
+            source: root.copy-image;
+            width: 100%; height: 100%;
+            image-fit: fill;
+        }
+        if root.copy-image.width == 0 : Text {
             x: 10px; y: 10px;
             width: copy-card.width - 20px;
             height: copy-card.height - 20px;

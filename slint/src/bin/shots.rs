@@ -5,7 +5,7 @@
 //!   cargo run --bin shots -- [out-dir]        (default: shots/)
 
 use sigil_slint::headless::{Harness, HEIGHT, WIDTH};
-use slint::ComponentHandle;
+use slint::{ComponentHandle, Model};
 
 fn main() -> anyhow::Result<()> {
     let out = std::env::args().nth(1).unwrap_or_else(|| "shots".into());
@@ -65,6 +65,17 @@ fn main() -> anyhow::Result<()> {
     // the open conversation and the pages that hang off it
     app.set_nav("chat".into());
     h.shoot("chat")?;
+    // the long-press sheet over the newest own message, page frosted behind it
+    app.invoke_debug_sheet(
+        app.get_items().row_count() as i32 - 3,
+        250.0,
+        560.0,
+        130.0,
+        44.0,
+    );
+    h.shoot("chat-sheet")?;
+    app.invoke_debug_sheet_close();
+    h.settle();
     for page in ["search", "forward", "chattheme", "roomsettings"] {
         app.set_nav(page.into());
         h.shoot(page)?;

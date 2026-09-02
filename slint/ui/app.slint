@@ -112,6 +112,8 @@ export component AppWindow inherits Window {
     in property <bool> in-call;
     in property <bool> call-here;
     in property <[MenuEntry]> sheet-actions;
+    in property <image> sheet-backdrop;
+    in property <image> sheet-copy;
     in property <[[EmojiItem]]> emoji-rows;
     in property <[int]> emoji-cat-rows;
 
@@ -254,11 +256,14 @@ export component AppWindow inherits Window {
     callback nav-opened(string);
     /// Everything else: one channel, Service.qml's function table.
     callback act(string, string, string);
+    callback sheet-snapshot(length, length, length, length);
 
     public function scroll-timeline-to-end() { chat.scroll-to-end(); }
     public function restore-timeline-from-end(d: length) { chat.restore-from-end(d); }
     out property <length> chat-from-end: chat.from-end;
     public function clear-composer() { chat.clear-composer(); }
+    public function debug-sheet(index: int, x: length, y: length, w: length, h: length) { chat.sheet-open(root.items[index], x, y, w, h); }
+    public function debug-sheet-close() { chat.sheet-close(); }
     in-out property <int> home-tab: 0;
     public function set-home-tab(t: int) { root.home-tab = t; }
     out property <string> ct-composer-text: chat.composer-text;
@@ -393,6 +398,9 @@ export component AppWindow inherits Window {
                 voice-staged-duration: root.voice-staged-duration;
                 voice-staged-wave: root.voice-staged-wave;
                 items: root.items;
+                sheet-backdrop: root.sheet-backdrop;
+                sheet-copy: root.sheet-copy;
+                sheet-snapshot(x, y, w, h) => { root.sheet-snapshot(x, y, w, h); }
                 typing-line: root.typing-line;
                 typing-avatar: root.typing-avatar;
                 typing-initials: root.typing-initials;

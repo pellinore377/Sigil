@@ -419,7 +419,7 @@ Sign out. Files: `login.slint`, `recovery.slint`, `pages/settings.slint`.
 menu, Start chat, New group, request page. Files: `home.slint`,
 `pages/start.slint`, `pages/request.slint`.
 
-**Phase 3. Conversation.** The whole of `ChatPage` and `BubbleDelegate` for
+**Phase 3. Conversation.** *In progress: edit and delete are in the engine; the frosted sheet, Enter to send, and `slint/tests/e2e-chat.sh` (reply with quote, reaction, edit, delete, each seen by the command-line client) are done.* The whole of `ChatPage` and `BubbleDelegate` for
 text, image, video, file, audio and voice; composer with reply and edit
 staging; reactions; receipts with reader avatars; typing; day labels;
 grouping; pagination; jump-to-event with the flash; keyboard shortcuts;

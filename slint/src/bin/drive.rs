@@ -10,6 +10,8 @@
 //!          code, land on Home, open Settings, round-trip a setting.
 //!   home   create an account, wait for a request from a stranger, accept
 //!          it from the Requests tab, read their message, reply.
+//!   chat   the home scenario, then a reply with a quote, a reaction, an
+//!          edit and a deletion, each checked in the timeline.
 //!
 //! The account's state goes wherever XDG_STATE_HOME points; the tests use
 //! a temporary directory.
@@ -55,6 +57,7 @@ fn main() -> anyhow::Result<()> {
     match scenario.as_str() {
         "doors" => doors(&h, &app, server, invite, &localpart),
         "home" => home(&h, &app, server, invite, &localpart),
+        "chat" => chat(&h, &app, server, invite, &localpart),
         other => anyhow::bail!("unknown scenario {other}"),
     }
 }
@@ -220,5 +223,83 @@ fn home(
     )?;
     h.shoot("live-chat-replied")?;
     println!("drive ok");
+    Ok(())
+}
+
+/// Bob again, going on to everything a message can have done to it.
+fn chat(
+    h: &Harness,
+    app: &sigil_slint::AppWindow,
+    server: &str,
+    invite: &str,
+    localpart: &str,
+) -> anyhow::Result<()> {
+    home(h, app, server, invite, localpart)?;
+    let find = |needle: &str| -> Option<sigil_slint::TimelineRow> {
+        app.get_items().iter().find(|i| i.body.contains(needle))
+    };
+    let alice = find("hello from alice").expect("alice's message");
+
+    // 1. a reply with a quote
+    app.invoke_act(
+        "send-reply".into(),
+        alice.event_id.clone(),
+        "quoting you".into(),
+    );
+    h.wait_until("the reply with its quote", Duration::from_secs(60), || {
+        find("quoting you")
+            .map(|i| i.has_reply && i.reply.body.contains("hello from alice"))
+            .unwrap_or(false)
+    })?;
+    println!("replied with a quote");
+
+    // 2. a reaction on alice's message
+    app.invoke_act("react".into(), alice.event_id.clone(), "👍".into());
+    h.wait_until("the reaction to show", Duration::from_secs(60), || {
+        find("hello from alice")
+            .map(|i| i.reactions.iter().any(|r| r.key == "👍" && r.mine))
+            .unwrap_or(false)
+    })?;
+    println!("reacted");
+    h.shoot("live-chat-reacted")?;
+
+    // 3. edit our own reply
+    let mine = find("hi back from bob").expect("our message");
+    anyhow::ensure!(
+        mine.can_edit && mine.can_redact,
+        "own message should be editable and deletable"
+    );
+    anyhow::ensure!(
+        !alice.can_edit && !alice.can_redact,
+        "alice's message must not be editable here"
+    );
+    app.invoke_act(
+        "send-edit".into(),
+        mine.event_id.clone(),
+        "hi back from bob, edited".into(),
+    );
+    h.wait_until("the edit to land", Duration::from_secs(60), || {
+        find("hi back from bob, edited")
+            .map(|i| i.edited)
+            .unwrap_or(false)
+    })?;
+    println!("edited");
+    h.shoot("live-chat-edited")?;
+
+    // 4. delete the quoted reply
+    let quoted = find("quoting you").expect("the quoted reply");
+    app.invoke_act(
+        "menu-action".into(),
+        "redact".into(),
+        quoted.event_id.clone(),
+    );
+    h.wait_until("the deletion to land", Duration::from_secs(60), || {
+        app.get_items()
+            .iter()
+            .any(|i| i.event_id == quoted.event_id && i.kind == "redacted")
+    })?;
+    println!("deleted");
+    h.shoot("live-chat-deleted")?;
+    println!("drive chat ok");
     Ok(())
 }

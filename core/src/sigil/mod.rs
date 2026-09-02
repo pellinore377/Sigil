@@ -445,6 +445,8 @@ pub async fn dispatch(engine: &SharedEngine, req: &Request) -> Option<Reply> {
             )
             .await
         }
+        "message.edit" => s.send_edit(engine, &param(p, "roomId"), &param(p, "eventId"), &param(p, "body")).await,
+        "message.redact" => s.send_redact(engine, &param(p, "roomId"), &param(p, "eventId")).await,
         "message.react" => {
             s.send_small(
                 engine,
@@ -605,7 +607,7 @@ fn text_item(
         "sendState": "sent",
         "sendError": "",
         "readBy": [],
-        "can": {"edit": false, "reply": true, "redact": false, "react": true},
+        "can": {"edit": is_own, "reply": true, "redact": is_own, "react": true},
     });
     let o = obj.as_object_mut().unwrap();
     if let Some(parts) = crate::timeline::html::to_parts(&composed.html) {
@@ -1001,6 +1003,44 @@ impl SigilSession {
         Reply::ok(json!({}))
     }
 
+    /// Edit one of our own messages: a kind-3 event referencing it, the new
+    /// text as its body. Applied locally the same way it is for everyone.
+    async fn send_edit(&self, engine: &SharedEngine, room_id: &str, event_id: &str, body: &str) -> Reply {
+        if body.trim().is_empty() {
+            return Reply::err("bad_request", "empty message");
+        }
+        let Some(item) = self.item_by_id(room_id, event_id) else {
+            return Reply::err("unknown_event", "no such message");
+        };
+        if !item.get("isOwn").and_then(Value::as_bool).unwrap_or(false) {
+            return Reply::err("permission_denied", "only your own messages can be edited");
+        }
+        let r = self.send_small(engine, room_id, Kind::Edit, event_id, body).await;
+        if matches!(r, Reply::Ok(_)) {
+            let me = self.username.clone();
+            self.apply_small(engine, room_id, Kind::Edit as u16, event_id, body, &me, now_ms()).await;
+        }
+        r
+    }
+
+    /// Delete one of our own messages for everyone: a kind-4 event
+    /// referencing it. Receivers blank the item; the envelope itself stays
+    /// in the slot until it expires, unreadable to the server either way.
+    async fn send_redact(&self, engine: &SharedEngine, room_id: &str, event_id: &str) -> Reply {
+        let Some(item) = self.item_by_id(room_id, event_id) else {
+            return Reply::err("unknown_event", "no such message");
+        };
+        if !item.get("isOwn").and_then(Value::as_bool).unwrap_or(false) {
+            return Reply::err("permission_denied", "only your own messages can be deleted");
+        }
+        let r = self.send_small(engine, room_id, Kind::Redact, event_id, "").await;
+        if matches!(r, Reply::Ok(_)) {
+            let me = self.username.clone();
+            self.apply_small(engine, room_id, Kind::Redact as u16, event_id, "", &me, now_ms()).await;
+        }
+        r
+    }
+
     async fn send_small(
         &self,
         engine: &SharedEngine,
@@ -1126,6 +1166,33 @@ impl SigilSession {
                         reactions
                             .retain(|r| r.get("count").and_then(Value::as_u64).unwrap_or(0) > 0);
                         it.insert("reactions".into(), json!(reactions));
+                    } else if kind == Kind::Edit as u16 {
+                        // only the author may change their words
+                        if it.get("sender").and_then(Value::as_str) == Some(sender) {
+                            let composed = crate::timeline::effects::compose(body);
+                            it.insert("body".into(), json!(composed.body));
+                            it.insert("html".into(), json!(crate::timeline::html::to_rich_text(&composed.html)));
+                            match crate::timeline::html::to_parts(&composed.html) {
+                                Some(parts) => { it.insert("parts".into(), json!(parts)); }
+                                None => { it.remove("parts"); }
+                            }
+                            if composed.effects.is_empty() {
+                                it.remove("effects");
+                            } else {
+                                it.insert("effects".into(), json!(composed.effects));
+                            }
+                            it.insert("isEdited".into(), json!(true));
+                        }
+                    } else if kind == Kind::Redact as u16 {
+                        if it.get("sender").and_then(Value::as_str) == Some(sender) {
+                            it.insert("kind".into(), json!("redacted"));
+                            it.insert("body".into(), json!("Message deleted"));
+                            for k in ["html", "parts", "effects", "media", "replyTo"] {
+                                it.remove(k);
+                            }
+                            it.insert("reactions".into(), json!([]));
+                            it.insert("can".into(), json!({"edit": false, "reply": false, "redact": false, "react": false}));
+                        }
                     } else if kind == Kind::Receipt as u16 && sender != self.username {
                         let mut read_by: Vec<Value> = it
                             .get("readBy")

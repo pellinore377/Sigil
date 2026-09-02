@@ -49,7 +49,8 @@ Error codes: `bad_request not_logged_in login_in_progress oidc_unsupported slidi
 | `timeline.paginate{roomId,count}` | | `{hitStart}`; `timeline.paginationState` pushes |
 | `message.send{roomId,body}`, `message.reply{roomId,eventId,body}` | | `body` is SigilText source; the engine composes it so every device renders the same |
 | `message.react{roomId,eventId,key}`, `readReceipt{roomId,eventId}`, `typing{roomId,typing}` | | small events in the same slot; typing is rate-limited to one per 5 s |
-| `message.edit`, `message.redact` | | *(later)* |
+| `message.edit{roomId,eventId,body}` | | a kind-3 event referencing the message; own messages only; the item gains `isEdited` and its new body everywhere |
+| `message.redact{roomId,eventId}` | | a kind-4 event; own messages only; receivers blank the item to kind `redacted` |
 | `attachment.send{roomId,path,caption?}` | | |
 | `typing{roomId,typing}`, `readReceipt{roomId,eventId}`, `ui.focus{roomId,visible}` | | |
 | `media.get{roomId,eventId,thumbnail?{width,height}}` | | `{path,filename,mime}` |

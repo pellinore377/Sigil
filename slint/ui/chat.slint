@@ -75,6 +75,10 @@ export component ChatPage inherits Rectangle {
     callback decline-invite;
     callback paginate;
     callback menu-action(string /*action*/, string /*event-id*/);
+    /// Take the page's picture before the sheet frosts it: (x, y, w, h) of the pressed bubble.
+    callback sheet-snapshot(length, length, length, length);
+    in property <image> sheet-backdrop;
+    in property <image> sheet-copy;
     callback react(string, string);
     callback reply-arm(string, string, string); // sheet "reply" → arm composer
     callback open-image(TimelineRow);
@@ -93,6 +97,25 @@ export component ChatPage inherits Rectangle {
     public function scroll-to-end() {
         list.stick = true;
         list.viewport-y = min(0px, list.height - list.viewport-height);
+    }
+    /// Test hook: open the sheet for one row as a long-press would (the
+    /// harness cannot reach into the list's bubbles).
+    public function sheet-open(it: TimelineRow, x: length, y: length, w: length, h: length) {
+        sheet.item = it;
+        root.sheet-snapshot(x, y, w, h);
+        root.menu-action("prepare", it.event-id);
+        sheet.open-for(x, y, w, h);
+    }
+    public function sheet-close() { sheet.open = false; }
+    /// Whatever is staged goes: a voice clip, a caption, an edit, a reply, or plain text.
+    public function submit() {
+        if (composer-input.text == "" && !root.voice-staged) { return; }
+        if (root.voice-staged) { root.send-voice(composer-input.text); }
+        else if (root.caption-of != "") { root.send-caption(root.caption-of, composer-input.text); }
+        else if (root.edit-of != "") { root.send-edit(root.edit-of, composer-input.text); }
+        else if (root.reply-to != "") { root.send-reply(root.reply-to, composer-input.text); }
+        else { root.send(composer-input.text); }
+        root.clear-composer();
     }
     public function clear-composer() {
         composer-input.text = "";
@@ -217,14 +240,14 @@ export component ChatPage inherits Rectangle {
                     }
                     TouchArea { clicked => { root.join-call(); } }
                 }
-                if !root.call-here && !root.is-thread : ActionButton {
+                if !root.call-here && !root.is-thread && !root.is-invite : ActionButton {
                     y: (header.height - self.height) / 2;
                     icon: Icons.phone;
                     foreground: root.fg;
                     opacity: root.in-call ? 0.4 : 1;
                     clicked => { if (!root.in-call) { root.start-call(false); } }
                 }
-                if !root.call-here && !root.is-thread : ActionButton {
+                if !root.call-here && !root.is-thread && !root.is-invite : ActionButton {
                     y: (header.height - self.height) / 2;
                     icon: Icons.videoOn;
                     foreground: root.fg;
@@ -315,6 +338,7 @@ export component ChatPage inherits Rectangle {
                         convo-ground: root.convo-c;
                         menu-requested(it, x, y, w, h) => {
                             sheet.item = it;
+                            root.sheet-snapshot(x, y, w, h);
                             root.menu-action("prepare", it.event-id);
                             sheet.open-for(x, y, w, h);
                         }
@@ -527,6 +551,13 @@ export component ChatPage inherits Rectangle {
                                             single-line: false;
                                             wrap: word-wrap;
                                             edited => { root.composer-edited(self.text); }
+                                            key-pressed(event) => {
+                                                if (event.text == Key.Return && !event.modifiers.shift) {
+                                                    root.submit();
+                                                    return accept;
+                                                }
+                                                reject
+                                            }
                                         }
                                         if composer-input.text == "" : Text {
                                             text: root.voice-staged ? "Add text" : "Message";
@@ -554,12 +585,7 @@ export component ChatPage inherits Rectangle {
                             send-t := TouchArea {
                                 clicked => {
                                     if (!send-btn.send-mode) { root.open-recorder(); return; }
-                                    if (root.voice-staged) { root.send-voice(composer-input.text); }
-                                    else if (root.caption-of != "") { root.send-caption(root.caption-of, composer-input.text); }
-                                    else if (root.edit-of != "") { root.send-edit(root.edit-of, composer-input.text); }
-                                    else if (root.reply-to != "") { root.send-reply(root.reply-to, composer-input.text); }
-                                    else { root.send(composer-input.text); }
-                                    root.clear-composer();
+                                    root.submit();
                                 }
                             }
                         }
@@ -602,6 +628,8 @@ export component ChatPage inherits Rectangle {
     // Long-press message sheet.
     sheet := MessageSheet {
         actions: root.sheet-actions;
+        backdrop: root.sheet-backdrop;
+        copy-image: root.sheet-copy;
         width: 100%; height: 100%;
         fg: root.fg;
         accent: root.accent;

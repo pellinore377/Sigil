@@ -1233,9 +1233,9 @@ pub fn rebuild_timeline(ui: &mut UiState, win: &AppWindow) {
                     .unwrap_or_else(|| item["body"].as_str().unwrap_or("").to_string());
                 let k = match item["kind"].as_str().unwrap_or("text") {
                     k @ ("text" | "notice" | "emote" | "image" | "video" | "voice" | "audio"
-                    | "file" | "sticker" | "poll" | "contact" | "location") => k,
+                    | "file" | "sticker" | "poll" | "contact" | "location" | "redacted"
+                    | "utd" | "unsupported") => k,
                     "liveLocation" => "location",
-                    "redacted" | "utd" | "unsupported" => "notice",
                     _ => "text",
                 };
                 (k, body, media_icon)

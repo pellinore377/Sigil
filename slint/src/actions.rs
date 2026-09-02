@@ -174,6 +174,27 @@ fn after(req: &Requester, ms: u64, f: impl FnOnce(&mut UiState, &AppWindow) + Se
 }
 
 pub fn wire_extra(win: &AppWindow) {
+    win.on_sheet_snapshot(|x, y, w, h| {
+        with_ui(|ui| {
+            let Some(win) = ui.win.upgrade() else { return };
+            // The chat page is offset by the safe-area insets; the snapshot is
+            // in physical pixels of the whole window.
+            let sf = win.window().scale_factor();
+            match crate::frost::Snapshot::take(win.window()) {
+                Some(snap) => {
+                    win.set_sheet_backdrop(snap.frosted());
+                    win.set_sheet_copy(
+                        snap.crop(x * sf, y * sf, w * sf, h * sf)
+                            .unwrap_or_default(),
+                    );
+                }
+                None => {
+                    win.set_sheet_backdrop(Default::default());
+                    win.set_sheet_copy(Default::default());
+                }
+            }
+        });
+    });
     win.on_nav_opened(|page| {
         with_ui(|ui| {
             let Some(win) = ui.win.upgrade() else { return };

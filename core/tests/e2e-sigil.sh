@@ -140,6 +140,18 @@ h=json.load(open(os.environ['W']+'/b/sigil/sigil-history.json'))[os.environ['GRO
 it=[i for i in h if i['kind']=='file'][-1]
 assert it['media']['size']==200000 and it['media']['path'] and os.path.getsize(it['media']['path'])==200000, it['media']
 PY
+# edit and delete: alice changes her words, then takes one message back
+A message.send roomId="$ROOM" body="a typo hree" | result || fail "send for edit"
+sleep 3
+EID=$(python3 -c "import json; print(json.load(open('$W/a/sigil/sigil-history.json'))['$ROOM'][-1]['eventId'])")
+A message.edit roomId="$ROOM" eventId="$EID" body="a typo here, fixed" | result || fail "message.edit" engine-a.log
+sleep 4
+python3 -c "import json; h=json.load(open('$W/b/sigil/sigil-history.json'))['$ROOM']; it=[i for i in h if i['eventId']=='$EID'][0]; assert it['body']=='a typo here, fixed' and it['isEdited'], it" || fail "bob did not see the edit" engine-b.log
+if B message.edit roomId="$ROOM" eventId="$EID" body="not mine" | result; then fail "bob edited alice's message"; fi
+A message.redact roomId="$ROOM" eventId="$EID" | result || fail "message.redact" engine-a.log
+sleep 4
+python3 -c "import json; h=json.load(open('$W/b/sigil/sigil-history.json'))['$ROOM']; it=[i for i in h if i['eventId']=='$EID'][0]; assert it['kind']=='redacted', it" || fail "bob did not see the deletion" engine-b.log
+python3 -c "import json; h=json.load(open('$W/a/sigil/sigil-history.json'))['$ROOM']; it=[i for i in h if i['eventId']=='$EID'][0]; assert it['kind']=='redacted', it" || fail "alice did not apply her own deletion"
 # a call: announced in the group, seen by bob, and signalling reaches the
 # forwarding unit (the engine has no media stack, so a bad offer is refused)
 export CALL; CALL=$(A call.start roomId="$GROUP" | python3 -c "import json,sys; print(json.load(sys.stdin)['result']['callId'])") || fail "call.start" engine-a.log
