@@ -503,6 +503,20 @@ async fn run() -> anyhow::Result<()> {
                     conv.peers.join(", "),
                     hex::encode(&ep.address[..8])
                 );
+                // anything written between the catch-up and the subscription
+                let late = conversation::catch_up(&link, &mut st, &provider, &conv).await?;
+                if !late.is_empty() {
+                    got += print_caught(&st, &conv, &late);
+                    if late
+                        .iter()
+                        .any(|c| matches!(c.incoming, conversation::Incoming::Rotated))
+                    {
+                        continue 'epoch;
+                    }
+                    if count > 0 && got >= count {
+                        break;
+                    }
+                }
                 let mut rx = link.deliveries.lock().await;
                 while count == 0 || got < count {
                     let Some(f) = rx.recv().await else {

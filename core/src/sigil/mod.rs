@@ -168,7 +168,7 @@ async fn start(engine: &SharedEngine, acct: Account) -> anyhow::Result<()> {
     });
     *engine.sigil.lock() = Some(session.clone());
     engine.set_session(SessionState::LoggedIn);
-    session.subscribe_all().await;
+    session.subscribe_all(engine).await;
     session.broadcast_rooms(engine).await;
     let (e2, s2) = (engine.clone(), session.clone());
     tokio::spawn(async move { s2.delivery_loop(e2).await });
@@ -1178,7 +1178,7 @@ impl SigilSession {
             Ok(()) => {
                 let convs = self.inner.lock().await.0.conversations.clone();
                 for c in &convs {
-                    self.subscribe_conversation(c).await;
+                    self.subscribe_conversation(engine, c).await;
                 }
                 engine.hub.broadcast(json!({"event":"link.state","state":"done"}));
                 Reply::ok(json!({}))
@@ -1206,7 +1206,7 @@ impl SigilSession {
         };
         match created {
             Ok(conv) => {
-                self.subscribe_conversation(&conv).await;
+                self.subscribe_conversation(engine, &conv).await;
                 self.mark_dirty();
                 self.broadcast_rooms(engine).await;
                 Reply::ok(json!({"roomId": conv.group_id}))
@@ -1227,7 +1227,7 @@ impl SigilSession {
         match r {
             Ok(()) => {
                 if let Some(c) = self.conversation(room_id).await {
-                    self.subscribe_conversation(&c).await;
+                    self.subscribe_conversation(engine, &c).await;
                 }
                 self.mark_dirty();
                 self.broadcast_rooms(engine).await;
@@ -1448,7 +1448,7 @@ impl SigilSession {
             Ok(c) => c,
             Err(e) => return Reply::err("network", format!("{e:#}")),
         };
-        self.subscribe_conversation(&conv).await;
+        self.subscribe_conversation(engine, &conv).await;
         self.broadcast_rooms(engine).await;
         Reply::ok(json!({"roomId": conv.group_id}))
     }
@@ -1486,7 +1486,7 @@ impl SigilSession {
             )
             .await;
         }
-        self.subscribe_conversation(&conv).await;
+        self.subscribe_conversation(engine, &conv).await;
         self.broadcast_rooms(engine).await;
         Reply::ok(json!({"roomId": conv.group_id}))
     }
@@ -1534,11 +1534,11 @@ impl SigilSession {
 
     // ------------------------------------------------------------ receiving
 
-    async fn subscribe_all(&self) {
+    async fn subscribe_all(&self, engine: &SharedEngine) {
         self.top_up().await;
         let convs = self.inner.lock().await.0.conversations.clone();
         for c in &convs {
-            self.subscribe_conversation(c).await;
+            self.subscribe_conversation(engine, c).await;
         }
         let handles = {
             let mut g = self.inner.lock().await;
@@ -1562,7 +1562,11 @@ impl SigilSession {
         }
     }
 
-    async fn subscribe_conversation(&self, c: &Conversation) {
+    /// Subscribe to the conversation's current slot, then catch up once
+    /// more: an envelope written between an earlier catch-up and this
+    /// subscription would otherwise wait for the next one. Live deliveries
+    /// and the catch-up dedupe against the same cursor.
+    async fn subscribe_conversation(&self, engine: &SharedEngine, c: &Conversation) {
         self.top_up().await;
         let r = {
             let mut g = self.inner.lock().await;
@@ -1576,6 +1580,16 @@ impl SigilSession {
                     .insert(handle, Handle::Conversation(c.group_id.clone(), ep.address));
             }
             Err(e) => warn!("subscribe failed for {}: {e:#}", &c.group_id[..8]),
+        }
+        let caught = {
+            let mut g = self.inner.lock().await;
+            let (a, p) = &mut *g;
+            conversation::catch_up(&self.link, a, p, c).await
+        };
+        match caught {
+            Ok(caught) if !caught.is_empty() => Box::pin(self.ingest_caught(engine, c, caught)).await,
+            Ok(_) => {}
+            Err(e) => warn!("catch-up after subscribe failed for {}: {e:#}", &c.group_id[..8]),
         }
     }
 
@@ -1646,7 +1660,7 @@ impl SigilSession {
                                 Box::pin(self.ingest_caught(engine, &c, caught)).await;
                             }
                         }
-                        self.subscribe_conversation(&c).await;
+                        self.subscribe_conversation(engine, &c).await;
                     }
                 } else if kind == Kind::Call as u16 {
                     if let Ok(ev) = serde_json::from_str::<sigil_client::call::CallEvent>(&body) {
@@ -1671,7 +1685,7 @@ impl SigilSession {
                 if let Ok(caught) = caught {
                     Box::pin(self.ingest_caught(engine, conv, caught)).await;
                 }
-                self.subscribe_conversation(conv).await;
+                self.subscribe_conversation(engine, conv).await;
             }
             conversation::Incoming::Other { .. } => {}
         }

@@ -298,7 +298,8 @@ that Envoy for 24 h, then expires them; the Envoy's clients backfill.
 ### 6.4 Push
 
 On `Deliver` for a handle whose device is not connected, the Envoy sends a
-push containing nothing but the Envoy's hostname. In the clocked tier the
+push with an empty body: a wake-up and nothing else, so the push service
+learns only that the app was woken. In the clocked tier the
 push is sent at the next scheduled tick rather than immediately.
 
 ### 6.5 Cover traffic

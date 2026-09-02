@@ -285,15 +285,17 @@ impl Envoy {
         }
         let (kind, token) = (reg[0], reg[1..].to_vec());
         let http = self.http.clone();
-        let host = self.cfg.hostname.clone();
         tokio::spawn(async move {
             match kind {
                 3 => {
                     // UnifiedPush: POST to the endpoint URL the app registered.
+                    // The body is empty on purpose: the push is a wake-up and
+                    // nothing else, so the push service learns nothing but
+                    // that this app was woken. The app already knows its Envoy.
                     if let Ok(url) = String::from_utf8(token) {
                         let _ = http
                             .post(&url)
-                            .body(host)
+                            .body(Vec::new())
                             .timeout(Duration::from_secs(10))
                             .send()
                             .await;
