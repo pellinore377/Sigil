@@ -12,6 +12,8 @@
 //!          it from the Requests tab, read their message, reply.
 //!   chat   the home scenario, then a reply with a quote, a reaction, an
 //!          edit and a deletion, each checked in the timeline.
+//!   groups create a group, add someone, wait for DRIVE_SYNC to appear (the
+//!          test lets them join first), make them admin, rename, leave.
 //!
 //! The account's state goes wherever XDG_STATE_HOME points; the tests use
 //! a temporary directory.
@@ -58,6 +60,7 @@ fn main() -> anyhow::Result<()> {
         "doors" => doors(&h, &app, server, invite, &localpart),
         "home" => home(&h, &app, server, invite, &localpart),
         "chat" => chat(&h, &app, server, invite, &localpart),
+        "groups" => groups(&h, &app, server, invite, &localpart),
         other => anyhow::bail!("unknown scenario {other}"),
     }
 }
@@ -331,5 +334,97 @@ fn chat(
     h.shoot("live-viewer")?;
     app.set_viewer_open(false);
     println!("drive chat ok");
+    Ok(())
+}
+
+/// Bob makes a group and runs it: adds Alice, makes her an admin, renames
+/// it, and leaves. Between adding and the rest the test has Alice accept.
+fn groups(
+    h: &Harness,
+    app: &sigil_slint::AppWindow,
+    server: &str,
+    invite: &str,
+    localpart: &str,
+) -> anyhow::Result<()> {
+    enter(h, app, server, invite, localpart, "")?;
+    h.wait_until("rooms.list", Duration::from_secs(20), || {
+        app.get_rooms_loaded()
+    })?;
+
+    // 1. a group from Start chat
+    app.invoke_go("start".into());
+    app.invoke_act("start-submit".into(), "create".into(), "the plan".into());
+    h.wait_until("the group to open", Duration::from_secs(60), || {
+        app.get_nav() == "chat" && app.get_rooms().row_count() == 1
+    })?;
+    let room = app.get_rooms().row_data(0).expect("the group row");
+    println!("group {} created", room.name);
+
+    // 2. its settings, then Add people
+    app.invoke_go("roomsettings".into());
+    h.wait_until("room.settings", Duration::from_secs(20), || {
+        app.get_rs_model().room_id != ""
+    })?;
+    anyhow::ensure!(
+        app.get_rs_model().can_edit_info,
+        "the creator should be an admin"
+    );
+    h.shoot("live-group-settings")?;
+    app.invoke_act("invite-user".into(), "@alice:sigil.test".into(), "".into());
+    h.wait_until("alice to be added", Duration::from_secs(60), || {
+        app.get_ap_note().starts_with("Invited")
+    })?;
+    println!("invited alice");
+    app.invoke_act("load-members".into(), room.id.clone(), "".into());
+    h.wait_until("two members", Duration::from_secs(20), || {
+        app.get_me_members().row_count() == 2
+    })?;
+    app.invoke_go("members".into());
+    h.shoot("live-group-members")?;
+
+    // the test lets alice join before the policy changes below
+    if let Ok(marker) = std::env::var("DRIVE_SYNC") {
+        h.wait_until("the test's go-ahead", Duration::from_secs(120), || {
+            std::path::Path::new(&marker).exists()
+        })?;
+    }
+
+    // 3. admins: alice becomes one
+    app.invoke_go("admins".into());
+    h.wait_until("the admins page", Duration::from_secs(20), || {
+        app.get_ad_members().row_count() == 2 && app.get_ad_can()
+    })?;
+    anyhow::ensure!(app.get_ad_admins() == 1, "one admin to begin with");
+    h.shoot("live-group-admins")?;
+    app.invoke_act(
+        "set-admin".into(),
+        "@alice:sigil.test".into(),
+        "true".into(),
+    );
+    h.wait_until("two admins", Duration::from_secs(60), || {
+        app.get_ad_admins() == 2
+    })?;
+    println!("alice is an admin");
+
+    // 4. rename, privacy page, leave
+    app.invoke_act("rename".into(), "the better plan".into(), "".into());
+    h.wait_until("the new name", Duration::from_secs(60), || {
+        app.get_rooms()
+            .row_data(0)
+            .map(|r| r.name == "the better plan")
+            .unwrap_or(false)
+    })?;
+    println!("renamed");
+    app.invoke_go("privacy".into());
+    h.wait_until("the privacy page", Duration::from_secs(20), || {
+        app.get_pv_server() != ""
+    })?;
+    h.shoot("live-group-privacy")?;
+    app.invoke_act("leave-room".into(), "".into(), "".into());
+    h.wait_until("to have left", Duration::from_secs(60), || {
+        app.get_nav() == "home" && app.get_rooms().row_count() == 0
+    })?;
+    println!("left");
+    println!("drive groups ok");
     Ok(())
 }

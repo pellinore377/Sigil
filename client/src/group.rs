@@ -325,6 +325,47 @@ pub async fn rename(
     Ok(())
 }
 
+/// Change who the admins are. Usernames in and out; only an admin may,
+/// and the last admin stays one.
+pub async fn set_admins(
+    link: &Link,
+    st: &mut State,
+    provider: &SigilProvider,
+    conv: &Conversation,
+    add: &[String],
+    remove: &[String],
+) -> anyhow::Result<()> {
+    let my_identity = hex::encode(st.identity().public());
+    if !conv.admins.contains(&my_identity) {
+        anyhow::bail!("only an admin can change the admins");
+    }
+    let mut policy = Policy::from_conv(conv);
+    for u in add {
+        let Some(m) = policy.members.iter().find(|m| &m.username == u) else {
+            anyhow::bail!("{u} is not in the conversation");
+        };
+        if !policy.admins.contains(&m.identity) {
+            policy.admins.push(m.identity.clone());
+        }
+    }
+    for u in remove {
+        if let Some(m) = policy.members.iter().find(|m| &m.username == u) {
+            policy.admins.retain(|a| a != &m.identity);
+        }
+    }
+    if policy.admins.is_empty() {
+        anyhow::bail!("a conversation keeps at least one admin");
+    }
+    let me = st.username.clone();
+    if let Some(cc) = st.conversations.iter_mut().find(|c| c.group_id == conv.group_id) {
+        policy.apply(cc, &me);
+    }
+    st.save()?;
+    let conv2 = st.conversations.iter().find(|c| c.group_id == conv.group_id).cloned().unwrap();
+    send_event(link, st, provider, &conv2, envelope::Kind::Policy, &[], &serde_json::to_vec(&policy)?).await?;
+    Ok(())
+}
+
 /// Leave: tell the others, then forget. The lowest remaining identity
 /// removes our leaves (`on_left`).
 pub async fn leave(

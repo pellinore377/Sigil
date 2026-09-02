@@ -483,6 +483,13 @@ pub async fn dispatch(engine: &SharedEngine, req: &Request) -> Option<Reply> {
         "room.create" => s.room_create(engine, p).await,
         "room.invite" => s.room_invite(engine, &param(p, "roomId"), &param(p, "userId")).await,
         "room.setSettings" => s.room_set_settings(engine, &param(p, "roomId"), p).await,
+        "room.settings" => s.room_settings(&param(p, "roomId")).await,
+        "room.setAdmins" => {
+            let list = |k: &str| -> Vec<String> {
+                p.get(k).and_then(Value::as_array).map(|a| a.iter().filter_map(Value::as_str).map(|u| u.trim().to_lowercase()).collect()).unwrap_or_default()
+            };
+            s.room_set_admins(engine, &param(p, "roomId"), &list("add"), &list("remove")).await
+        }
         "attachment.send" => s.attachment_send(engine, p).await,
         "call.start" => s.call_start(engine, &param(p, "roomId")).await,
         "call.end" => s.call_end(engine, &param(p, "roomId"), &param(p, "callId")).await,
@@ -1321,8 +1328,55 @@ impl SigilSession {
         }
     }
 
+    /// Everything the settings pages read, in one reply: identity, who is in
+    /// it, who the admins are, and this device's notification mode for it.
+    async fn room_settings(&self, room_id: &str) -> Reply {
+        let Some(conv) = self.conversation(room_id).await else { return Reply::err("unknown_room", "unknown room") };
+        let is_dm = conv.name.is_empty() && conv.peers.len() <= 1;
+        let my_identity = hex::encode(self.identity_pub);
+        let is_admin = conv.admins.contains(&my_identity) || conv.members.is_empty();
+        let admins: Vec<String> = conv.members.iter().filter(|m| conv.admins.contains(&m.identity)).map(|m| m.username.clone()).collect();
+        let member_count = if conv.members.is_empty() { conv.peers.len() + 1 } else { conv.members.len() };
+        Reply::ok(json!({
+            "id": conv.group_id,
+            "name": if conv.name.is_empty() { self.rooms_snapshot().await["rooms"].as_array().and_then(|r| r.iter().find(|x| x["id"].as_str() == Some(conv.group_id.as_str()))).and_then(|r| r["name"].as_str()).unwrap_or("").to_string() } else { conv.name.clone() },
+            "topic": "",
+            "isDm": is_dm,
+            "isEncrypted": true,
+            "joinedMembers": member_count,
+            "memberCount": member_count,
+            "notificationMode": crate::notify::room_mode(room_id),
+            "admins": admins,
+            "isAdmin": is_admin,
+            "slotServer": conv.slot_server,
+            "epochs": conv.epochs.len().max(1),
+            "can": {"name": is_admin && !is_dm, "invite": !is_dm, "admins": is_admin && !is_dm},
+        }))
+    }
+
+    async fn room_set_admins(&self, engine: &SharedEngine, room_id: &str, add: &[String], remove: &[String]) -> Reply {
+        self.top_up().await;
+        let Some(conv) = self.conversation(room_id).await else { return Reply::err("unknown_room", "unknown room") };
+        let r = {
+            let mut g = self.inner.lock().await;
+            let (a, pr) = &mut *g;
+            sigil_client::group::set_admins(&self.link, a, pr, &conv, add, remove).await
+        };
+        match r {
+            Ok(()) => {
+                self.mark_dirty();
+                self.broadcast_rooms(engine).await;
+                Reply::ok(json!({}))
+            }
+            Err(e) => Reply::err("permission_denied", format!("{e:#}")),
+        }
+    }
+
     async fn room_set_settings(&self, engine: &SharedEngine, room_id: &str, p: &serde_json::Map<String, Value>) -> Reply {
         let Some(conv) = self.conversation(room_id).await else { return Reply::err("unknown_room", "unknown room") };
+        if let Some(mode) = p.get("notificationMode").and_then(Value::as_str) {
+            crate::notify::set_room_mode(room_id, mode);
+        }
         if let Some(name) = p.get("name").and_then(Value::as_str) {
             let r = {
                 let mut g = self.inner.lock().await;

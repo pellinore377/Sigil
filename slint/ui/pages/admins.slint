@@ -1,0 +1,70 @@
+// AdminsPage — what RolesPage.qml becomes on Sigil. A conversation has
+// admins and members, nothing finer: admins rename, add people and change
+// who the admins are. Same furniture as the roles page; one toggle per
+// person instead of levels, and the last admin cannot step down.
+
+import { Theme } from "../style.slint";
+import { Icons } from "../icons.slint";
+import { Avatar } from "../components.slint";
+import { SettingsHeader, SettingsGroup, SettingsRow, TouchList } from "../furniture.slint";
+import { MemberRow } from "../model.slint";
+
+export component AdminsPage inherits Rectangle {
+    in property <color> fg: Theme.menu-text;
+    in property <[MemberRow]> members;
+    /// Whether we may change admins (we are one).
+    in property <bool> can-change;
+    in property <int> admin-count;
+    in property <string> my-user-id;
+    in property <bool> busy;
+    in-out property <string> note;
+    callback closed;
+    callback set-admin(string, bool);
+
+    background: transparent;
+
+    VerticalLayout {
+        SettingsHeader { fg: root.fg; title: "Admins"; back => { root.closed(); } }
+        TouchList {
+            vertical-stretch: 1;
+            VerticalLayout {
+                Rectangle {
+                    height: explain.preferred-height + 16px;
+                    explain := Text {
+                        x: 22px; width: root.width - 44px;
+                        text: root.can-change
+                            ? "Admins can rename the group, add people and choose other admins. Everyone else can talk, share and leave."
+                            : "Only an admin can change who the admins are.";
+                        color: root.fg.with-alpha(0.6);
+                        font-family: Theme.font-ui; font-size: Theme.body-small;
+                        wrap: word-wrap;
+                    }
+                }
+                SettingsGroup {
+                    fg: root.fg;
+                    title: root.admin-count == 1 ? "1 admin" : "\{root.admin-count} admins";
+                    for member in root.members : SettingsRow {
+                        fg: root.fg;
+                        label: member.display-name != "" ? member.display-name : member.user-id;
+                        sublabel: member.user-id == root.my-user-id ? "You" : member.user-id;
+                        trailing: "toggle";
+                        on: member.power-level >= 100;
+                        // the last admin stays one, or nobody could change anything again
+                        enabled: root.can-change && !root.busy
+                            && !(member.power-level >= 100 && root.admin-count <= 1);
+                        clicked => { root.set-admin(member.user-id, !(member.power-level >= 100)); }
+                    }
+                }
+                if root.note != "" : Rectangle {
+                    height: note-text.preferred-height + 12px;
+                    note-text := Text {
+                        x: 22px; width: root.width - 44px;
+                        text: root.note; color: Theme.urgent;
+                        font-family: Theme.font-ui; font-size: Theme.body-small;
+                        wrap: word-wrap;
+                    }
+                }
+            }
+        }
+    }
+}

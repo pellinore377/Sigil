@@ -1,7 +1,8 @@
-// NotificationsPage — mobile/NotificationsPage.qml. Matrix has three states
-// here, not two: a room follows the account default or carries its own rule.
-// "Allow custom setting" is that distinction — off means no per-room push rule
-// exists at all, so turning it off deletes the rule rather than setting "all".
+// NotificationsPage — mobile/NotificationsPage.qml. Three states, not two:
+// a conversation follows the account default or carries its own mode.
+// "Allow custom setting" is that distinction. On Sigil the mode lives on
+// this device, and matching always happens here, since nothing on any
+// server can read a message.
 
 import { Theme } from "../style.slint";
 import { SettingsHeader, SettingsGroup, SettingsRow } from "../furniture.slint";
@@ -70,11 +71,7 @@ export component NotificationsPage inherits Rectangle {
             SettingsRow {
                 fg: root.fg;
                 label: "Mentions and replies only";
-                // Server-side push rules cannot see inside an encrypted message,
-                // so this mode is best-effort in encrypted rooms.
-                sublabel: root.encrypted
-                    ? "Encrypted messages are matched on the device, so some may not notify."
-                    : "";
+                sublabel: "Matched on this device, where the messages are read.";
                 trailing: "radio"; on: root.mode == "mentions"; enabled: !root.busy;
                 clicked => { root.set-mode("mentions"); }
             }

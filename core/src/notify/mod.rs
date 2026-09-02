@@ -9,6 +9,10 @@ pub struct Settings {
     pub dms: bool,
     pub mentions: bool,
     pub calls: bool,
+    /// Per-conversation modes, `all | mentions | mute`; absent = the account
+    /// default above. Local to this device.
+    #[serde(default)]
+    pub rooms: std::collections::BTreeMap<String, String>,
 }
 
 impl Default for Settings {
@@ -18,6 +22,7 @@ impl Default for Settings {
             dms: true,
             mentions: true,
             calls: true,
+            rooms: Default::default(),
         }
     }
 }
@@ -47,5 +52,22 @@ pub fn save_settings(s: &Settings) {
 }
 
 pub fn settings_json() -> Value {
-    serde_json::to_value(load_settings()).unwrap_or(json!({}))
+    let s = load_settings();
+    json!({"enabled": s.enabled, "dms": s.dms, "mentions": s.mentions, "calls": s.calls})
+}
+
+/// This conversation's mode, or "" when it follows the account default.
+pub fn room_mode(room_id: &str) -> String {
+    load_settings().rooms.get(room_id).cloned().unwrap_or_default()
+}
+
+/// `default` (or empty) forgets the per-conversation mode.
+pub fn set_room_mode(room_id: &str, mode: &str) {
+    let mut s = load_settings();
+    if mode.is_empty() || mode == "default" {
+        s.rooms.remove(room_id);
+    } else {
+        s.rooms.insert(room_id.to_string(), mode.to_string());
+    }
+    save_settings(&s);
 }

@@ -35,7 +35,9 @@ Error codes: `bad_request not_logged_in login_in_progress oidc_unsupported slidi
 | `users.search{query}` | | exact username lookup; `{results:[{userId,displayName,avatarPath}]}` |
 | `room.create{name, invite[]}` | | a group: creates the MLS group, sends a Welcome with the policy to each invitee's requests slot; `{roomId}` |
 | `room.invite{roomId, userId}` | | adds a member: commit, Welcome, updated policy |
-| `room.setSettings{roomId, name}` | | renames via a policy event; other fields are ignored for now |
+| `room.settings{roomId}` | | `{id, name, isDm, memberCount, notificationMode, admins[], isAdmin, slotServer, epochs, can{name, invite, admins}}` |
+| `room.setSettings{roomId, name?, notificationMode?}` | | `name` renames via a policy event (admins); `notificationMode` (`all\|mentions\|mute\|default`) is kept on this device |
+| `room.setAdmins{roomId, add[], remove[]}` | | usernames; admins only; a conversation keeps at least one admin |
 | `attachment.send{roomId, path, caption?}` | | encrypts and uploads the file in chunks, sends the manifest; the item has `media.path` set locally |
 | `media.get{roomId, eventId}` | | `{path, filename, mime}`; downloads on first call. Received media downloads in the background and the item's `media.path` (and `thumbnailPath` for images) is set by a `set` diff |
 | `room.setFavourite{roomId,favourite}`, `room.setLowPriority{roomId,lowPriority}`, `room.setUnread{roomId,unread}`, `room.markRead{roomId}` | | |

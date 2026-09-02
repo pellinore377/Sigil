@@ -114,10 +114,16 @@ pub fn settings_model(
         history_visibility: s(settings, "historyVisibility").into(),
         encrypted: b(settings, "isEncrypted") || b(room, "isEncrypted"),
         notification_mode: s(settings, "notificationMode").into(),
-        my_power_level: n(settings, "myPowerLevel") as i32,
+        my_power_level: if b(settings, "isAdmin") {
+            100
+        } else {
+            n(settings, "myPowerLevel") as i32
+        },
         member_count: n(room, "joinedMembers") as i32,
         can_edit_info: b(can, "name") || b(can, "topic"),
-        can_edit_permissions: b(can, "setPowerLevels") || b(can, "stateDefault"),
+        can_edit_permissions: b(can, "admins")
+            || b(can, "setPowerLevels")
+            || b(can, "stateDefault"),
         can_invite: b(can, "invite"),
         can_kick: b(can, "kick"),
         can_ban: b(can, "ban"),

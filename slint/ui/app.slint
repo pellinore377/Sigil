@@ -20,6 +20,8 @@ import { RoomSettingsPage } from "pages/roomsettings.slint";
 import { MembersPage } from "pages/members.slint";
 import { AddPeoplePage } from "pages/addpeople.slint";
 import { NotificationsPage } from "pages/notifications.slint";
+import { AdminsPage } from "pages/admins.slint";
+import { PrivacyPage } from "pages/privacy.slint";
 import { SearchPage } from "pages/search.slint";
 import { ChatThemePage, GradPair } from "pages/chattheme.slint";
 import { ThreadsPage } from "pages/threads.slint";
@@ -148,6 +150,13 @@ export component AppWindow inherits Window {
     in property <string> rs-dm-user;
 
 
+    in property <[MemberRow]> ad-members;
+    in property <bool> ad-can;
+    in property <int> ad-admins;
+    in property <bool> ad-busy;
+    in-out property <string> ad-note;
+    in property <string> pv-server;
+    in property <int> pv-epochs;
     in property <string> no-mode;
     in property <bool> no-busy;
     in property <string> no-error;
@@ -286,7 +295,7 @@ export component AppWindow inherits Window {
             || root.nav == "roomsettings" || root.nav == "doc" || root.nav == "audio"
             || root.nav == "map") { root.nav = "chat"; return; }
         if (root.nav == "addpeople") { root.nav = root.add-return; return; }
-        if (root.nav == "notifications") {
+        if (root.nav == "notifications" || root.nav == "admins" || root.nav == "privacy") {
             root.nav = root.settings-return;
             return;
         }
@@ -472,6 +481,9 @@ export component AppWindow inherits Window {
                 closed => { root.go-back(); }
                 add-people => { root.add-return = "roomsettings"; root.go("addpeople"); }
                 open-notifications => { root.settings-return = "roomsettings"; root.go("notifications"); }
+                open-admins => { root.settings-return = "roomsettings"; root.go("admins"); }
+                open-privacy => { root.settings-return = "roomsettings"; root.go("privacy"); }
+                rename(name) => { root.act("rename", name, ""); }
                 set-favourite(on) => { root.act("set-favourite", on ? "true" : "false", ""); }
                 set-low-priority(on) => { root.act("set-low-priority", on ? "true" : "false", ""); }
                 leave => { root.act("leave-room", "", ""); }
@@ -561,6 +573,22 @@ export component AppWindow inherits Window {
                 busy: root.no-busy; error: root.no-error;
                 closed => { root.go-back(); }
                 set-mode(m) => { root.act("notif-mode", m, ""); }
+            } }
+        admins-holder := PageHolder { active: root.in-session && root.nav == "admins"; ground: root.page-ground;
+            AdminsPage {
+                width: 100%; height: 100%;
+                members: root.ad-members; can-change: root.ad-can; admin-count: root.ad-admins;
+                my-user-id: root.my-user-id; busy: root.ad-busy;
+                note <=> root.ad-note;
+                closed => { root.go-back(); }
+                set-admin(uid, on) => { root.act("set-admin", uid, on ? "true" : "false"); }
+            } }
+        privacy-holder := PageHolder { active: root.in-session && root.nav == "privacy"; ground: root.page-ground;
+            PrivacyPage {
+                width: 100%; height: 100%;
+                is-dm: root.rs-model.is-dm; member-count: root.rs-model.member-count;
+                server: root.pv-server; epochs: root.pv-epochs;
+                closed => { root.go-back(); }
             } }
         settings-holder := PageHolder { active: root.in-session && root.nav == "settings"; ground: root.page-ground;
             SettingsPage {

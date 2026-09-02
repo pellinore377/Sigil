@@ -428,7 +428,7 @@ Emojis); forward; search; chat theme; SigilText runs and all effects; code
 blocks; GIFs. Engine: edit, delete, retry, cancel. Files: 1.4 minus polls,
 contacts, location, plus `viewer.slint`.
 
-**Phase 4. Groups.** Conversation settings, Members, Add people, Admins,
+**Phase 4. Groups.** *Done; `slint/tests/e2e-groups-app.sh` has the app make a group, add the command-line client, make it an admin, rename and leave, with every policy change heard on the other side.* Conversation settings, Members, Add people, Admins,
 Notifications, Privacy, Leave, rename, request banner. Engine: admins,
 notification mode. Files: 1.3 rows that survive.
 

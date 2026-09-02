@@ -3,7 +3,7 @@
 
 import { Theme } from "../style.slint";
 import { Icons } from "../icons.slint";
-import { IconLabel, Avatar } from "../components.slint";
+import { IconLabel, Avatar, TextWell, SButton } from "../components.slint";
 import { SettingsHeader, SettingsGroup, SettingsRow } from "../furniture.slint";
 import { RoomSettingsModel, MemberRow } from "../model.slint";
 
@@ -18,12 +18,16 @@ export component RoomSettingsPage inherits Rectangle {
     callback closed;
     callback add-people;
     callback open-notifications;
+    callback open-admins;
+    callback open-privacy;
+    callback rename(string);
     callback set-favourite(bool);
     callback set-low-priority(bool);
     callback leave;
 
     property <string> note;
     property <bool> confirm-leave;
+    in-out property <bool> renaming: false;
     property <bool> is-group: !root.model.is-dm;
     background: transparent;
 
@@ -193,7 +197,7 @@ export component RoomSettingsPage inherits Rectangle {
                 }
             }
 
-            // Notifications, a local setting on this device.
+            // Notifications (local to this device), privacy, admins, and a rename for admins.
             Rectangle { height: 10px; }
             SettingsGroup {
                 fg: root.fg;
@@ -207,6 +211,35 @@ export component RoomSettingsPage inherits Rectangle {
                          : root.model.notification-mode == "mentions" ? "Mentions only"
                          : root.model.notification-mode == "mute" ? "Muted" : "Default";
                     clicked => { root.open-notifications(); }
+                }
+                SettingsRow {
+                    fg: root.fg;
+                    icon: Icons.lock; label: "Privacy";
+                    trailing: "value";
+                    value: root.model.room-id == "" ? "" : "Encrypted";
+                    clicked => { root.open-privacy(); }
+                }
+                if root.is-group : SettingsRow {
+                    fg: root.fg;
+                    icon: Icons.shield; label: "Admins";
+                    trailing: "chevron";
+                    clicked => { root.open-admins(); }
+                }
+                if root.is-group && root.model.can-edit-info : SettingsRow {
+                    fg: root.fg;
+                    icon: Icons.edit; label: "Rename";
+                    trailing: root.renaming ? "none" : "chevron";
+                    clicked => { root.renaming = !root.renaming; }
+                }
+                if root.is-group && root.model.can-edit-info && root.renaming : Rectangle {
+                    height: 48px;
+                    HorizontalLayout {
+                        padding-left: 22px; padding-right: 22px; padding-top: 4px; padding-bottom: 8px;
+                        spacing: 8px;
+                        rename-well := TextWell { placeholder: root.model.name; horizontal-stretch: 1;
+                            accepted => { if (self.text != "") { root.rename(self.text); root.renaming = false; } } }
+                        SButton { text: "Save"; enabled: rename-well.text != ""; clicked => { root.rename(rename-well.text); root.renaming = false; } }
+                    }
                 }
             }
 

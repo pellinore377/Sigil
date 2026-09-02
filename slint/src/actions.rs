@@ -218,8 +218,13 @@ pub fn on_nav_opened(ui: &mut UiState, win: &AppWindow, page: &str) {
             load_settings(ui, win);
             load_members(ui, win);
         }
-        "notifications" => {
+        "notifications" | "privacy" => {
             load_settings(ui, win);
+        }
+        "admins" => {
+            win.set_ad_note(SharedString::new());
+            load_settings(ui, win);
+            load_members(ui, win);
         }
         "members" => load_members(ui, win),
         "settings" => crate::bridge::load_settings_page(ui),
@@ -286,6 +291,9 @@ pub fn push_settings(ui: &mut UiState, win: &AppWindow) {
         .unwrap_or_default();
     win.set_rs_model(project::settings_model(&rid, &ui.settings, &room, av));
     win.set_rs_pinned_count(ui.rooms_json.iter().filter(|r| b(r, "isFavourite")).count() as i32);
+    win.set_pv_server(s(&ui.settings, "slotServer").into());
+    win.set_pv_epochs(ui.settings["epochs"].as_i64().unwrap_or(1) as i32);
+    win.set_ad_can(b(&ui.settings, "isAdmin"));
     win.set_rs_dm_user(s(&room, "dmUserId").into());
     win.set_no_mode(
         match s(&ui.settings, "notificationMode") {
@@ -344,6 +352,9 @@ pub fn push_members(ui: &mut UiState, win: &AppWindow) {
         .map(|m| project::member_row(m))
         .collect();
     win.set_rs_members(ModelRc::new(VecModel::from(preview)));
+    let everyone: Vec<_> = ui.members.iter().map(project::member_row).collect();
+    win.set_ad_admins(everyone.iter().filter(|m| m.power_level >= 100).count() as i32);
+    win.set_ad_members(ModelRc::new(VecModel::from(everyone)));
 }
 
 fn load_threads(ui: &mut UiState, win: &AppWindow) {
@@ -698,6 +709,39 @@ pub fn on_act(ui: &mut UiState, win: &AppWindow, action: &str, a: &str, b2: &str
             "room.setLowPriority",
             json!({"roomId": ui.settings_room, "lowPriority": a == "true"}),
         ),
+        "rename" => {
+            let rid = ui.settings_room.clone();
+            call_ui(
+                &req,
+                "room.setSettings",
+                json!({"roomId": rid, "name": a.trim()}),
+                move |ui, win, out| {
+                    if let Err((_, m)) = out {
+                        win.set_ad_note(m.as_str().into());
+                    }
+                    load_settings(ui, win);
+                },
+            );
+        }
+        "set-admin" => {
+            let rid = ui.settings_room.clone();
+            let key = if b2 == "true" { "add" } else { "remove" };
+            win.set_ad_busy(true);
+            win.set_ad_note(SharedString::new());
+            call_ui(
+                &req,
+                "room.setAdmins",
+                json!({"roomId": rid, key: [a]}),
+                move |ui, win, out| {
+                    win.set_ad_busy(false);
+                    if let Err((_, m)) = out {
+                        win.set_ad_note(m.as_str().into());
+                    }
+                    load_settings(ui, win);
+                    load_members(ui, win);
+                },
+            );
+        }
         "leave-room" => {
             let rid = ui.settings_room.clone();
             call_ui(

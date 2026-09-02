@@ -1,0 +1,69 @@
+// PrivacyPage — what SecurityPage.qml becomes on Sigil. Nothing to set:
+// every conversation is encrypted end to end from its first message and
+// invite only, and the server that carries it cannot read it. This page
+// says so, and shows the facts a person can check.
+
+import { Theme } from "../style.slint";
+import { Icons } from "../icons.slint";
+import { SettingsHeader, SettingsGroup, SettingsRow, TouchList } from "../furniture.slint";
+
+export component PrivacyPage inherits Rectangle {
+    in property <color> fg: Theme.menu-text;
+    in property <bool> is-dm;
+    in property <int> member-count;
+    /// The server holding this conversation's slots.
+    in property <string> server;
+    /// How many times the keys have rotated (a new epoch per join, leave or link).
+    in property <int> epochs;
+    callback closed;
+
+    background: transparent;
+
+    VerticalLayout {
+        SettingsHeader { fg: root.fg; title: "Privacy"; back => { root.closed(); } }
+        TouchList {
+            vertical-stretch: 1;
+            VerticalLayout {
+                SettingsGroup {
+                    fg: root.fg;
+                    title: "Encryption";
+                    SettingsRow {
+                        fg: root.fg; icon: Icons.lock; filled: true;
+                        label: "End-to-end encrypted, always";
+                        sublabel: "Every message, file and call is locked on your device. There is no switch.";
+                        trailing: "check"; on: true;
+                    }
+                    SettingsRow {
+                        fg: root.fg; icon: Icons.refresh;
+                        label: "Keys rotated";
+                        sublabel: "A fresh key each time someone joins, leaves or adds a device";
+                        trailing: "value";
+                        value: root.epochs == 1 ? "once" : "\{root.epochs} times";
+                    }
+                }
+                SettingsGroup {
+                    fg: root.fg;
+                    title: "Who is in it";
+                    SettingsRow {
+                        fg: root.fg; icon: Icons.people;
+                        label: root.is-dm ? "Just the two of you" : "Invite only";
+                        sublabel: root.is-dm ? "" : "New people get in only when a member adds them";
+                        trailing: "value";
+                        value: root.member-count == 1 ? "1 person" : "\{root.member-count} people";
+                    }
+                }
+                SettingsGroup {
+                    fg: root.fg;
+                    title: "The server";
+                    SettingsRow {
+                        fg: root.fg; icon: Icons.globe;
+                        label: root.server;
+                        sublabel: "Carries the sealed envelopes. It cannot read them, does not know who is in this conversation, and keeps no timestamps.";
+                        trailing: "none";
+                    }
+                }
+                Rectangle { height: 16px; }
+            }
+        }
+    }
+}
