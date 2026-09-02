@@ -300,6 +300,36 @@ fn chat(
     })?;
     println!("deleted");
     h.shoot("live-chat-deleted")?;
+
+    // 5. a picture: one of our own captures, sent as a file, then opened
+    let pic = h.out.join("live-chat-reacted.png");
+    app.invoke_act(
+        "attach-path".into(),
+        pic.to_string_lossy().to_string().into(),
+        "".into(),
+    );
+    h.wait_until(
+        "the picture to appear with its thumbnail",
+        Duration::from_secs(90),
+        || {
+            app.get_items()
+                .iter()
+                .any(|i| i.is_own && i.kind == "image" && i.thumb.size().width > 0)
+        },
+    )?;
+    println!("picture sent");
+    h.shoot("live-chat-picture")?;
+    let pic_item = app
+        .get_items()
+        .iter()
+        .find(|i| i.kind == "image")
+        .expect("the picture row");
+    app.invoke_act("viewer-open".into(), pic_item.event_id.clone(), "".into());
+    h.wait_until("the viewer", Duration::from_secs(20), || {
+        app.get_viewer_open()
+    })?;
+    h.shoot("live-viewer")?;
+    app.set_viewer_open(false);
     println!("drive chat ok");
     Ok(())
 }

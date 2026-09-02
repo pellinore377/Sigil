@@ -32,7 +32,7 @@ $CL -s alice.json dm @bob:sigil.test "hello from alice" >/dev/null || fail "alic
 # the edit (kind 3) and the deletion (kind 4). --count counts messages only.
 timeout 200 $CL -s alice.json listen 0 --count 3 >alice.out 2>&1 || true
 wait "${PIDS[-1]}" || fail "drive" drive.out drive.err
-timeout 30 $CL -s alice.json listen 0 --count 3 >alice2.out 2>&1 || true
+timeout 60 $CL -s alice.json listen 0 --count 4 >alice2.out 2>&1 || true
 grep -q "@bob:sigil.test: hi back from bob" alice.out || fail "alice did not hear bob" alice.out drive.out
 grep -q "@bob:sigil.test: quoting you" alice.out || fail "alice did not get the quoted reply" alice.out
 # the small events land in whichever listen was running when they arrived
@@ -40,8 +40,9 @@ cat alice.out alice2.out >alice-all.out
 grep -q "(event kind 2)" alice-all.out || fail "alice did not get the reaction" alice-all.out
 grep -q "(event kind 3)" alice-all.out || fail "alice did not get the edit" alice-all.out
 grep -q "(event kind 4)" alice-all.out || fail "alice did not get the deletion" alice-all.out
+grep -q "\[file\] live-chat-reacted.png" alice-all.out || fail "alice did not get the picture" alice-all.out
 grep -q "^drive chat ok" drive.out || fail "drive did not finish" drive.out drive.err
-for p in live-chat-reacted live-chat-edited live-chat-deleted; do
+for p in live-chat-reacted live-chat-edited live-chat-deleted live-chat-picture live-viewer; do
   [ -s "$W/shots/$p.png" ] || fail "missing capture $p" drive.out
 done
 if [ -n "${KEEP_SHOTS:-}" ]; then mkdir -p "$KEEP_SHOTS"; cp "$W"/shots/*.png "$KEEP_SHOTS"/; fi

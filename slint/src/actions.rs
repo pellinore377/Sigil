@@ -684,6 +684,12 @@ pub fn on_act(ui: &mut UiState, win: &AppWindow, action: &str, a: &str, b2: &str
         "open-link" => crate::platform::open_url(a),
 
         "theme-photo" => pick_file(ui, action),
+        // A file already on disk (a drop, a share, the test driver): sent as is.
+        "attach-path" => {
+            let room = room_of_key(&ui.open_room);
+            req.fire("attachment.send", json!({"roomId": room, "path": a}));
+            win.set_attach_open(false);
+        }
         "set-favourite" => req.fire(
             "room.setFavourite",
             json!({"roomId": ui.settings_room, "favourite": a == "true"}),
