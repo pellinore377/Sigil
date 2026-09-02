@@ -12,8 +12,9 @@ wraps, blind credentials and daily tokens with double-spend detection, the
 Envoy role with per-device queues (capped at 1,000 per handle), jitter,
 delivery streams (in-process when both roles run in one process, WebSocket
 otherwise), UnifiedPush wake-ups for offline devices, an expiry sweep, TLS
-from PEM files. Not yet: ACME, TPM recovery, OIDC, APNs and FCM, open
-rooms, calls.
+from PEM files, raw TPM relay for recovery Path 2, cover traffic, and the
+call forwarding unit on one UDP port. Not yet: ACME, OIDC, APNs and FCM,
+open rooms, the client-side TPM session, a relay for UDP-blocked calls.
 
 ## Run it locally
 
@@ -60,10 +61,19 @@ tls_cert = "/data/fullchain.pem"
 tls_key = "/data/privkey.pem"
 registration = "invite"       # invite | open
 tokens_per_day = 2000
-jitter_max_ms = 2000
+jitter_max_ms = 2000          # Envoy: a bag waits up to this long before forwarding
+cover_per_minute = 0          # Envoy: dummy writes per minute per server, 0 = off
+cover_credentials = true      # Home: let Envoys draw a credential for cover traffic
+calls = true                  # Home: run the call forwarding unit
+media_udp = "0.0.0.0:8444"    # its UDP socket; publish this port too
+# media_public = "203.0.113.5:8444"   # if the container's own address is not reachable
 [servers]                     # Envoy: base-URL overrides, for testing
 # "sigil.test" = "http://127.0.0.1:8443"
 ```
+
+The forwarding unit tells participants to send media to `media_public`
+when set, otherwise to the address the host would use to reach the
+internet, on the `media_udp` port. Behind NAT or a cloud firewall, set it.
 
 ## What the store holds
 

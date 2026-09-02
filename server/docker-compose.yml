@@ -8,6 +8,7 @@ services:
       dockerfile: server/Dockerfile
     ports:
       - "8443:8443"
+      - "8444:8444/udp"   # calls
     volumes:
       - sigil-data:/data
     # devices:

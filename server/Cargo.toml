@@ -28,6 +28,7 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 bytes = "1"
 dashmap = "6"
+str0m = "0.9"
 
 [[bin]]
 name = "sigil-server"

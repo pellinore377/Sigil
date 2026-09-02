@@ -25,6 +25,19 @@ pub struct Config {
     pub servers: BTreeMap<String, String>,
     /// Envoy: seconds a bag is held before forwarding, upper bound of the jitter.
     pub jitter_max_ms: u64,
+    /// Envoy: the clocked tier. Dummy bags per minute sent to each server
+    /// this Envoy talks to, indistinguishable from real ones. 0 = off.
+    pub cover_per_minute: u32,
+    /// Home: grant authenticated Envoys a token credential for cover traffic.
+    pub cover_credentials: bool,
+    /// Home: run the call forwarding unit. Media arrives on `media_udp`.
+    pub calls: bool,
+    /// UDP address the forwarding unit binds. One port carries every call.
+    pub media_udp: String,
+    /// The address participants are told to send media to, when it differs
+    /// from `media_udp` (a public IP in front of the container). Default is
+    /// the hostname's address at the `media_udp` port.
+    pub media_public: Option<String>,
 }
 
 impl Default for Config {
@@ -40,6 +53,11 @@ impl Default for Config {
             tokens_per_day: 2000,
             servers: BTreeMap::new(),
             jitter_max_ms: 2000,
+            cover_per_minute: 0,
+            cover_credentials: true,
+            calls: true,
+            media_udp: "0.0.0.0:8444".into(),
+            media_public: None,
         }
     }
 }

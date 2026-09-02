@@ -4,9 +4,13 @@
 //! backend trait; `sigil-cli` drives it directly.
 
 pub mod account;
+pub mod backup;
+pub mod call;
 pub mod conversation;
+pub mod group;
 pub mod link;
 pub mod linking;
+pub mod media;
 pub mod provider;
 pub mod state;
 

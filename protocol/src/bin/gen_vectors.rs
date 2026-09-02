@@ -159,7 +159,7 @@ fn main() {
         "response_nonce": h(&a24(0x0a)),
         "response": h(b"pong"),
         "response_sealed": h(&resp),
-        "bucket_lengths": { "request": [2048, 8192, 32768], "response": [1024, 4096, 16384, 65536] },
+        "bucket_lengths": { "request": [2048, 8192, 32768, 266240], "response": [1024, 4096, 16384, 65536, 266240] },
     }));
 
     // 8. recovery

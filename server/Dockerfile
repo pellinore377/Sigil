@@ -11,5 +11,6 @@ COPY --from=build /src/server/target/release/sigil-server /usr/local/bin/sigil-s
 COPY --from=build /src/server/target/release/sigil-cli /usr/local/bin/sigil-cli
 VOLUME ["/data"]
 EXPOSE 8443
+EXPOSE 8444/udp
 ENTRYPOINT ["/usr/local/bin/sigil-server"]
 CMD ["--config", "/data/sigil.toml", "run"]

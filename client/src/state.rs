@@ -11,6 +11,15 @@ pub struct Conversation {
     pub group_id: String,
     /// Usernames of the other people (not devices) in it.
     pub peers: Vec<String>,
+    /// Group name; empty for a direct message.
+    #[serde(default)]
+    pub name: String,
+    /// Everyone in it, ourselves included, with the identity each signs as.
+    #[serde(default)]
+    pub members: Vec<Member>,
+    /// Identities allowed to change the policy (rename, invite, remove).
+    #[serde(default)]
+    pub admins: Vec<String>,
     /// Server hosting the slots.
     pub slot_server: String,
     /// Highest slot sequence seen per epoch address (hex → seq).
@@ -25,6 +34,13 @@ pub struct Conversation {
     /// still be opened.
     #[serde(default)]
     pub epochs: Vec<EpochRecord>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct Member {
+    pub username: String,
+    /// Hex identity public key.
+    pub identity: String,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -48,6 +64,13 @@ pub struct State {
     pub conversations: Vec<Conversation>,
     /// Pending requests: hex-encoded welcome events not yet accepted.
     pub requests: Vec<PendingRequest>,
+    /// BLAKE3 hashes (hex) of every Welcome ever seen, so a replayed request
+    /// slot never resurfaces an invite that was already accepted or listed.
+    #[serde(default)]
+    pub seen_requests: Vec<String>,
+    /// Backup and recovery keys, once a password has been set.
+    #[serde(default)]
+    pub recovery: Option<crate::backup::Recovery>,
     #[serde(skip)]
     pub path: PathBuf,
 }
@@ -58,6 +81,9 @@ pub struct PendingRequest {
     pub from_card: String,
     pub welcome: String,
     pub first_message: String,
+    /// Hex JSON of the group policy carried in the Welcome, if any.
+    #[serde(default)]
+    pub policy: String,
 }
 
 impl State {

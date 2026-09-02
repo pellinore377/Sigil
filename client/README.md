@@ -25,6 +25,15 @@ Design: [`docs/blind-backend.md`](../docs/blind-backend.md). Wire protocol:
   confirms and transfers the identity, tokens and conversations, then adds
   the new device's MLS leaf to every conversation.
 
+- `group`, `invite`, `rename`, `leave`, `sendfile`: groups with a policy
+  snapshot, and files cut into encrypted chunks stored as blobs.
+- `backup`, `code`, `set-password`, `recover`: the password-plus-code
+  recovery path; the backup uploads on demand here and automatically in
+  the engine.
+- `sigil_client::call` (library only): start or end a call in a
+  conversation and drive the forwarding unit's signalling (join, poll,
+  answer, leave). Capture and playback are the application's.
+
 State is two JSON files next to each other: the account (`<name>.json`)
 and the MLS store (`<name>.mls.json`). Both hold secrets in Phase 2; the
 engine's keystore takes them over in Phase 2b.

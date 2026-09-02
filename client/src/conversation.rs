@@ -2,16 +2,16 @@
 //! accepts Welcomes through the requests slot, derives the slot from the
 //! epoch secret, and moves events in and out.
 
-use crate::account::{check_credential, mls_credential, take_key_package, CIPHERSUITE};
+use crate::account::{check_credential, mls_credential, CIPHERSUITE};
 use crate::provider::SigilProvider;
 use crate::state::Conversation;
 use crate::{Link, State};
 use openmls::prelude::*;
-use sigil_protocol::encoding::{Reader, Writer};
+use sigil_protocol::encoding::Reader;
 use sigil_protocol::epoch::{self, EpochMaterial};
 use sigil_protocol::identity::ContactCard;
 use sigil_protocol::wire::{Frame, Request, Response};
-use sigil_protocol::{envelope, names, requests};
+use sigil_protocol::{envelope, requests};
 use tls_codec::Deserialize as _;
 
 /// Keep secrets for a few past epochs, so a message encrypted just before
@@ -87,8 +87,7 @@ fn now_ms() -> u64 {
         .as_millis() as u64
 }
 
-/// Start a direct message with `username`: take a key package, make the
-/// group, send the Welcome and first message to their requests slot.
+/// Start a direct message with `username`: a group of two with no name.
 pub async fn start_dm(
     link: &Link,
     st: &mut State,
@@ -96,70 +95,7 @@ pub async fn start_dm(
     username: &str,
     first_text: &str,
 ) -> anyhow::Result<Conversation> {
-    let card = crate::account::lookup(link, username).await?;
-    let kp = take_key_package(link, provider, &card).await?;
-    let (cred, signer) = mls_credential(st);
-    let group_id = GroupId::from_slice(&rand::random::<[u8; 32]>());
-    let mut group =
-        MlsGroup::new_with_group_id(provider, &signer, &create_config(), group_id.clone(), cred)
-            .map_err(|e| anyhow::anyhow!("{e:?}"))?;
-    let (_commit, welcome, _) = group
-        .add_members(provider, &signer, &[kp])
-        .map_err(|e| anyhow::anyhow!("{e:?}"))?;
-    group
-        .merge_pending_commit(provider)
-        .map_err(|e| anyhow::anyhow!("{e:?}"))?;
-    provider.save()?;
-
-    // The Welcome event: body = SPE(welcome bytes, our signed card, first text)
-    let welcome_bytes = welcome.to_bytes()?;
-    let body = Writer::new()
-        .bytes(&welcome_bytes)
-        .bytes(&crate::account::contact_card(st))
-        .str(first_text)
-        .finish();
-    let ev = envelope::Event {
-        kind: envelope::Kind::Welcome as u16,
-        ts_ms: now_ms(),
-        reference: vec![],
-        body,
-    };
-    let period = (std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)?
-        .as_secs()
-        / 2_592_000) as u32;
-    let address = names::requests_address(&card.identity_pub, period);
-    let sealed = requests::seal(
-        &card.kem_pub,
-        &address,
-        &rand::random(),
-        &rand::random(),
-        &ev.encode(),
-    )
-    .map_err(|e| anyhow::anyhow!("{e:?}"))?;
-    let token = st.take_token()?;
-    link.call(
-        &card.slot_server,
-        &Request::RequestsPut {
-            address,
-            envelope: sealed,
-            token,
-        },
-        None,
-    )
-    .await?;
-
-    let conv = Conversation {
-        group_id: hex::encode(group_id.as_slice()),
-        peers: vec![username.to_string()],
-        slot_server: st.server(),
-        cursors: Default::default(),
-        sent: Default::default(),
-        epochs: Vec::new(),
-    };
-    st.conversations.push(conv.clone());
-    st.save()?;
-    Ok(conv)
+    crate::group::create(link, st, provider, "", &[username.to_string()], first_text).await
 }
 
 /// Decode a delivered requests-slot envelope into a pending request.
@@ -178,12 +114,14 @@ pub fn open_request(
     let welcome = r.bytes().map_err(|e| anyhow::anyhow!("{e:?}"))?.to_vec();
     let card_bytes = r.bytes().map_err(|e| anyhow::anyhow!("{e:?}"))?.to_vec();
     let first = r.str().map_err(|e| anyhow::anyhow!("{e:?}"))?.to_string();
+    let policy = r.bytes().map(hex::encode).unwrap_or_default();
     let card = ContactCard::verify(&card_bytes).map_err(|e| anyhow::anyhow!("{e:?}"))?;
     Ok(crate::state::PendingRequest {
         from: card.username,
         from_card: hex::encode(card_bytes),
         welcome: hex::encode(welcome),
         first_message: first,
+        policy,
     })
 }
 
@@ -211,14 +149,33 @@ pub fn accept(
         .into_group(provider)
         .map_err(|e| anyhow::anyhow!("{e:?}"))?;
     provider.save()?;
-    let conv = Conversation {
+    let mut conv = Conversation {
         group_id: hex::encode(group.group_id().as_slice()),
         peers: vec![req.from.clone()],
         slot_server: card.slot_server.clone(),
-        cursors: Default::default(),
-        sent: Default::default(),
-        epochs: Vec::new(),
+        ..Default::default()
     };
+    // A direct message from before policies, or a group: the policy names
+    // everyone. Without one, it is the two of us.
+    let me = st.username.clone();
+    match hex::decode(&req.policy)
+        .ok()
+        .and_then(|b| serde_json::from_slice::<crate::group::Policy>(&b).ok())
+    {
+        Some(p) => p.apply(&mut conv, &me),
+        None => {
+            conv.members = vec![
+                crate::state::Member {
+                    username: card.username.clone(),
+                    identity: hex::encode(card.identity_pub),
+                },
+                crate::state::Member {
+                    username: me.clone(),
+                    identity: hex::encode(st.identity().public()),
+                },
+            ];
+        }
+    }
     st.conversations.push(conv.clone());
     st.requests.retain(|r| r.welcome != req.welcome);
     st.save()?;

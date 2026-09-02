@@ -14,13 +14,17 @@ Error codes: `bad_request not_logged_in login_in_progress oidc_unsupported slidi
 | Request | Params | Result / effect |
 |---|---|---|
 | `ping`, `status` | | `status` object |
-| `account.create` | `username` (`@name:server`), `invite`, `envoy?` (default `wss://<server>/envoy`) | registers the name, draws tokens, publishes key packages; `status` becomes `loggedIn`. Password and recovery arrive with Phase 4; device linking with Phase 3 |
+| `account.create` | `username` (`@name:server`), `invite`, `password?`, `envoy?` (default `wss://<server>/envoy`) | registers the name, draws tokens, publishes key packages; with a password, sets up backup and recovery; `status` becomes `loggedIn` |
+| `account.recover` | `username`, `password`, `code`, `envoy?` | fresh device: restores account, conversations and history from the encrypted backup; `{userId}` |
+| `account.setPassword` | `password` | sets or changes the backup password |
+| `recovery.code` | | `{code}`: the printed recovery code to show once and let the user save |
 | `account.status` | | `{exists, active}` |
 | `link.offer` | `username`, `envoy?` | new device: `{offer}` to show as a QR code; then `link.state` events: `offer`, `sas{sas}`, `joining{with}`, `done` (session starts) or `failed{error}` |
 | `link.scan` | `offer` | existing device: `{sas}`, also pushed as `link.state{state:"sas"}`; nothing is sent yet |
 | `link.confirm` | `ok` | existing device, after the user compared the emoji: `ok:true` transfers the account and adds the new device to every conversation; `ok:false` cancels |
 | `logout` | `wipe` | `wipe` deletes the account, MLS store and history from this device |
-| `recovery.status`, `recovery.recover` | | `recovery.status` object; placeholders until Phase 4 |
+| `recovery.status` | | `{recovery: enabled|disabled, backup: enabled|pending|disabled, verified}`; also pushed when it changes |
+| `shape.settings` | `clockedSeconds?`, `socksProxy?` | the paranoid page: read or set the clocked tier (seconds between bags whether or not there is anything to say, 0 = off) and a SOCKS5 proxy such as a local Tor daemon (`127.0.0.1:9050`, empty = direct); returns both plus `appliesOn` |
 | `login.*` | | *(removed)* answer `unsupported` |
 | `rooms.list`, `spaces.tree` | | last snapshot |
 | `room.members{roomId}` | | `{members:[{userId,displayName,avatarPath,powerLevel,membership}]}` |
@@ -28,7 +32,11 @@ Error codes: `bad_request not_logged_in login_in_progress oidc_unsupported slidi
 | `room.join{roomIdOrAlias}` | | accepts a request: the `id` of a `rooms.list` entry with `isInvite`, which look like `req:…` |
 | `room.leave{roomId}` | | drops a request or forgets a conversation locally |
 | `users.search{query}` | | exact username lookup; `{results:[{userId,displayName,avatarPath}]}` |
-| `room.invite`, `room.create` | | *(later, Phase 5: groups)* |
+| `room.create{name, invite[]}` | | a group: creates the MLS group, sends a Welcome with the policy to each invitee's requests slot; `{roomId}` |
+| `room.invite{roomId, userId}` | | adds a member: commit, Welcome, updated policy |
+| `room.setSettings{roomId, name}` | | renames via a policy event; other fields are ignored for now |
+| `attachment.send{roomId, path, caption?}` | | encrypts and uploads the file in chunks, sends the manifest; the item has `media.path` set locally |
+| `media.get{roomId, eventId}` | | `{path, filename, mime}`; downloads on first call. Received media downloads in the background and the item's `media.path` (and `thumbnailPath` for images) is set by a `set` diff |
 | `room.setFavourite{roomId,favourite}`, `room.setLowPriority{roomId,lowPriority}`, `room.setUnread{roomId,unread}`, `room.markRead{roomId}` | | |
 | `space.hierarchy{spaceId,limit?}` | | `{rooms:[{id,name,topic,avatarPath,memberCount,isSpace,worldReadable,encrypted,joined}],nextBatch}` — the server's `/hierarchy`, so it includes children this account has NOT joined |
 | `space.addRoom{spaceId,roomId}`, `space.removeRoom{spaceId,roomId}` | | `m.space.child` state on the space |
@@ -46,7 +54,13 @@ Error codes: `bad_request not_logged_in login_in_progress oidc_unsupported slidi
 | `media.get{roomId,eventId,thumbnail?{width,height}}` | | `{path,filename,mime}` |
 | `media.saveAs{roomId,eventId,dest}` | | `{path}` |
 | `notify.settings{enabled?,dms?,mentions?,calls?}` | | settings |
-| `call.devices`, `call.setDevice{kind,id_}`, `call.start/join{roomId,video}`, `call.decline{roomId}`, `call.leave`, `call.mute{muted}`, `call.camera{enabled}`, `call.screenshare{enabled}`, `call.state` | | `call.state` pushes |
+| `call.start{roomId}` | | announces a call in the conversation (kind-10 event) with a fresh random room; `{callId}` |
+| `call.end{roomId, callId}` | | announces the end |
+| `call.join{roomId, callId, offer}` | | joins the forwarding unit on the conversation's server with an SDP offer; `{answer, peer}` |
+| `call.poll{roomId, callId, peer}` | | `{offer\|null, peers}`: a renegotiation offer from the unit when another participant's track was added, and the head count |
+| `call.answer{roomId, callId, peer, answer}` | | completes a renegotiation |
+| `call.leave{roomId, callId, peer}` | | leaves the unit's room |
+| `call.state` (event) | | pushed as `{roomId, callId, state: started\|ended, sender}` when a call event arrives or is sent; the timeline also gets a `call` item. The media stack (capture, encoding, playback, the WebRTC peer) is the frontend's for now: it hands SDP in and gets SDP out |
 
 ## Timeline ops
 

@@ -18,7 +18,8 @@ sleep 1.5
 A=$($SV -c sigil.toml invite); B=$($SV -c sigil.toml invite)
 $CL -s alice.json init --username @alice:sigil.test --envoy ws://127.0.0.1:18443/envoy >/dev/null
 $CL -s bob.json   init --username @bob:sigil.test   --envoy ws://127.0.0.1:18443/envoy >/dev/null
-$CL -s alice.json register --invite "$A" >/dev/null
+$CL -s alice.json register --invite "$A" --password "correct horse" >reg.out || fail "register with password" reg.out
+CODE=$(grep -o "recovery code: .*" reg.out | cut -d' ' -f3)
 $CL -s bob.json   register --invite "$B" >/dev/null
 $CL -s bob.json lookup @alice:sigil.test | grep -q "@alice:sigil.test on sigil.test" || fail lookup
 if $CL -s alice.json register --invite nope 2>/dev/null; then fail "bad invite accepted"; fi
@@ -86,5 +87,20 @@ timeout 10 $CL -s bob.json listen 0 --count 9 >bob4.out 2>&1 &
 sleep 5
 grep -q "@bob:sigil.test: hello both devices" alice4.out && grep -q "me: from device two" alice4.out || fail "device one view" alice4.out
 grep -q "me: hello both devices" bob4.out && grep -q "@alice:sigil.test: from device two" bob4.out || fail "bob view" bob4.out
+# recovery: back up, lose the device, restore with username + password + code
+$CL -s alice.json backup | grep -q "backed up" || fail "backup"
+if $CL -s alice-r.json recover --username @alice:sigil.test --password "wrong" --code "$CODE" --envoy ws://127.0.0.1:18443/envoy 2>/dev/null; then fail "wrong password accepted"; fi
+sleep 3
+$CL -s alice-r.json recover --username @alice:sigil.test --password "correct horse" --code "$CODE" --envoy ws://127.0.0.1:18443/envoy | grep -q "restored @alice:sigil.test with 1 conversations" || fail "recover"
+timeout 10 $CL -s bob.json listen 0 --count 9 >bob5.out 2>&1 &
+sleep 1
+$CL -s alice-r.json send 0 "from the recovered phone" >/dev/null || fail "recovered send"
+sleep 4
+grep -q "@alice:sigil.test: from the recovered phone" bob5.out || fail "bob did not get the recovered phone's message" bob5.out
+$CL -s alice-r.json set-password "new pass" | grep -q "changed" || fail "set-password"
+sleep 4
+if $CL -s alice-r2.json recover --username @alice:sigil.test --password "correct horse" --code "$CODE" --envoy ws://127.0.0.1:18443/envoy 2>/dev/null; then fail "old password still accepted"; fi
+sleep 6
+$CL -s alice-r2.json recover --username @alice:sigil.test --password "new pass" --code "$CODE" --envoy ws://127.0.0.1:18443/envoy | grep -q "restored" || fail "recover with new password"
 ! grep -v 'listening on' server.log server2.log | grep -Eq '127\.0\.0\.1:[0-9]+' || fail "client address logged" server.log
 echo "e2e ok"

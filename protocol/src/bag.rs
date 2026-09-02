@@ -1,7 +1,7 @@
 //! Bags: how a client talks to a server through an Envoy. A bag is sealed
 //! to the server's SigilKEM public key, so the Envoy forwards ciphertext.
-//! Requests are padded to 2048, 8192 or 32768 bytes; responses to 1024,
-//! 4096, 16384 or 65536.
+//! Requests are padded to 2048, 8192, 32768 or 266240 bytes; responses to
+//! 1024, 4096, 16384, 65536 or 266240. The largest bucket carries a chunk.
 
 use crate::kdf::kdf;
 use crate::kem;
@@ -10,8 +10,9 @@ use chacha20poly1305::{XChaCha20Poly1305, XNonce};
 
 pub const NONCE_LEN: usize = 24;
 pub const TAG_LEN: usize = 16;
-pub const REQUEST_BUCKETS: [usize; 3] = [2048, 8192, 32768];
-pub const RESPONSE_BUCKETS: [usize; 4] = [1024, 4096, 16384, 65536];
+/// The last bucket exists for one thing: a 256 KiB media or backup chunk.
+pub const REQUEST_BUCKETS: [usize; 4] = [2048, 8192, 32768, 266240];
+pub const RESPONSE_BUCKETS: [usize; 5] = [1024, 4096, 16384, 65536, 266240];
 /// version(1) + ciphertext + nonce + tag
 const REQ_OVERHEAD: usize = 1 + kem::CIPHERTEXT_LEN + NONCE_LEN + TAG_LEN;
 const RESP_OVERHEAD: usize = NONCE_LEN + TAG_LEN;

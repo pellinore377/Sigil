@@ -131,6 +131,19 @@ pub async fn draw_tokens(link: &Link, st: &mut State, n: u16) -> anyhow::Result<
     st.save()
 }
 
+/// Keep the wallet topped up: below `min`, draw `batch` more.
+pub async fn ensure_tokens(
+    link: &Link,
+    st: &mut State,
+    min: usize,
+    batch: u16,
+) -> anyhow::Result<()> {
+    if st.tokens.len() >= min || st.credential.is_none() {
+        return Ok(());
+    }
+    draw_tokens(link, st, batch).await
+}
+
 /// The MLS credential for this device: SPE(identity_pub, device_pub, sig).
 pub fn mls_credential(st: &State) -> (CredentialWithKey, SignatureKeyPair) {
     let id = st.identity();

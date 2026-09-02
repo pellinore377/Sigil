@@ -470,3 +470,209 @@ impl Envoy {
         anyhow::bail!("closed")
     }
 }
+
+// ---------------------------------------------------------------- cover traffic
+
+impl Envoy {
+    /// The clocked tier: `per_minute` dummy writes to random addresses on
+    /// `server`, paid with tokens from a credential the server grants this
+    /// Envoy. The server cannot tell a cover write from a real one.
+    pub fn start_cover(self: &Arc<Self>, server: String, per_minute: u32) {
+        if per_minute == 0 {
+            return;
+        }
+        let me = self.clone();
+        tokio::spawn(async move {
+            let period = Duration::from_millis(60_000 / per_minute as u64);
+            let mut wallet: Vec<Vec<u8>> = Vec::new();
+            let mut credential: Option<Vec<u8>> = None;
+            loop {
+                tokio::time::sleep(period).await;
+                if wallet.is_empty() {
+                    match me.cover_tokens(&server, &mut credential).await {
+                        Ok(t) => wallet = t,
+                        Err(e) => {
+                            tracing::debug!("cover tokens from {server}: {e:#}");
+                            tokio::time::sleep(Duration::from_secs(60)).await;
+                            continue;
+                        }
+                    }
+                }
+                let Some(token) = wallet.pop() else { continue };
+                if let Err(e) = me.cover_write(&server, token).await {
+                    tracing::debug!("cover write to {server}: {e:#}");
+                }
+            }
+        });
+    }
+
+    /// A card for `server`, through our own forwarding path.
+    async fn server_card(
+        self: &Arc<Self>,
+        server: &str,
+    ) -> anyhow::Result<sigil_protocol::wire::ServerCard> {
+        let bytes = if let Some(home) = &self.local_home {
+            if home.cfg.hostname == server {
+                home.card.clone()
+            } else {
+                self.http
+                    .get(format!("{}/info", self.cfg.base_url(server)))
+                    .send()
+                    .await?
+                    .error_for_status()?
+                    .bytes()
+                    .await?
+                    .to_vec()
+            }
+        } else {
+            self.http
+                .get(format!("{}/info", self.cfg.base_url(server)))
+                .send()
+                .await?
+                .error_for_status()?
+                .bytes()
+                .await?
+                .to_vec()
+        };
+        if bytes.len() < 64 {
+            anyhow::bail!("short card");
+        }
+        sigil_protocol::wire::ServerCard::decode(&bytes[..bytes.len() - 64])
+            .map_err(|e| anyhow::anyhow!("{e:?}"))
+    }
+
+    /// Seal a request to `server`, forward it as we would a client's, open the reply.
+    async fn call(
+        self: &Arc<Self>,
+        server: &str,
+        req: &sigil_protocol::wire::Request,
+    ) -> anyhow::Result<sigil_protocol::wire::Response> {
+        let card = self.server_card(server).await?;
+        let op = sigil_protocol::wire::Op::from_u8(req.encode()[0]).unwrap();
+        let (bag, keys) = sigil_protocol::bag::seal_request(
+            &card.kem_pub,
+            &rand::random(),
+            &rand::random(),
+            &req.encode(),
+        )
+        .map_err(|e| anyhow::anyhow!("{e:?}"))?;
+        let sealed = self
+            .forward(server, &bag)
+            .await
+            .ok_or_else(|| anyhow::anyhow!("no reply"))?;
+        let plain = sigil_protocol::bag::open_response(&keys, &sealed)
+            .map_err(|e| anyhow::anyhow!("{e:?}"))?;
+        let resp = sigil_protocol::wire::Response::decode(op, &plain)
+            .map_err(|e| anyhow::anyhow!("{e:?}"))?;
+        if let sigil_protocol::wire::Response::Error(s) = resp {
+            anyhow::bail!("{server} said {s:?} to {op:?}");
+        }
+        Ok(resp)
+    }
+
+    /// Obtain (once) a credential as an Envoy, then a batch of tokens.
+    async fn cover_tokens(
+        self: &Arc<Self>,
+        server: &str,
+        credential: &mut Option<Vec<u8>>,
+    ) -> anyhow::Result<Vec<Vec<u8>>> {
+        use sigil_protocol::token;
+        let mut rng = rand::rngs::OsRng;
+        let mut adapter = crate::tokens::RngAdapter(&mut rng);
+        if credential.is_none() {
+            let spki = {
+                let url = format!("{}/credential-key", self.cfg.base_url(server));
+                match &self.local_home {
+                    Some(h) if h.cfg.hostname == server => {
+                        h.tokens.current(&h.store, "credential")?.spki.clone()
+                    }
+                    _ => self
+                        .http
+                        .get(&url)
+                        .send()
+                        .await?
+                        .error_for_status()?
+                        .bytes()
+                        .await?
+                        .to_vec(),
+                }
+            };
+            let cv = token::Verifier::from_spki(&spki).map_err(|e| anyhow::anyhow!("{e:?}"))?;
+            let pending = cv
+                .blind(&mut adapter, rand::random())
+                .map_err(|e| anyhow::anyhow!("{e:?}"))?;
+            let mut msg = b"sigil v1 credential".to_vec();
+            msg.extend_from_slice(&pending.blinded);
+            let sig = ed25519_dalek::Signer::sign(&self.signing, &msg).to_bytes();
+            let resp = self
+                .call(
+                    server,
+                    &sigil_protocol::wire::Request::TokenCredential {
+                        identity_pub: self.id,
+                        sig,
+                        gate: b"envoy".to_vec(),
+                        blinded: pending.blinded.clone(),
+                    },
+                )
+                .await?;
+            let sigil_protocol::wire::Response::TokenCredential { blind_sig } = resp else {
+                anyhow::bail!("unexpected")
+            };
+            *credential = Some(
+                cv.finalize(&pending, &blind_sig)
+                    .map_err(|e| anyhow::anyhow!("{e:?}"))?
+                    .encode(),
+            );
+        }
+        let card = self.server_card(server).await?;
+        let verifier =
+            token::Verifier::from_spki(&card.token_key).map_err(|e| anyhow::anyhow!("{e:?}"))?;
+        let pend: Vec<token::Pending> = (0..30)
+            .map(|_| verifier.blind(&mut adapter, rand::random()).unwrap())
+            .collect();
+        let resp = self
+            .call(
+                server,
+                &sigil_protocol::wire::Request::TokenIssue {
+                    credential: credential.clone().unwrap(),
+                    blinded: pend.iter().map(|p| p.blinded.clone()).collect(),
+                },
+            )
+            .await?;
+        let sigil_protocol::wire::Response::TokenIssue { blind_sigs } = resp else {
+            anyhow::bail!("unexpected")
+        };
+        let mut out = Vec::new();
+        for (p, bs) in pend.iter().zip(blind_sigs) {
+            out.push(
+                verifier
+                    .finalize(p, &bs)
+                    .map_err(|e| anyhow::anyhow!("{e:?}"))?
+                    .encode(),
+            );
+        }
+        Ok(out)
+    }
+
+    /// One dummy envelope into a slot nobody will ever read.
+    async fn cover_write(self: &Arc<Self>, server: &str, token: Vec<u8>) -> anyhow::Result<()> {
+        let ep = sigil_protocol::epoch::derive(&rand::random());
+        let plain = vec![0u8; 200 + (rand::random::<u8>() as usize) * 3];
+        let envelope =
+            sigil_protocol::envelope::seal(&ep.envelope_key, &ep.address, &rand::random(), &plain)
+                .map_err(|e| anyhow::anyhow!("{e:?}"))?;
+        let sig = sigil_protocol::epoch::sign_put(&ep.write_key, &ep.address, &envelope);
+        self.call(
+            server,
+            &sigil_protocol::wire::Request::SlotPut {
+                address: ep.address,
+                write_pub: ep.write_pub,
+                sig,
+                envelope,
+                token,
+            },
+        )
+        .await?;
+        Ok(())
+    }
+}

@@ -7,7 +7,7 @@ set -euo pipefail
 ROOT=$(cd "$(dirname "$0")/../.." && pwd)
 SV=$ROOT/server/target/debug/sigil-server
 EN=$ROOT/core/target/debug/sigil-engine
-W=$(mktemp -d); mkdir -p "$W/a" "$W/b" "$W/run"; cd "$W"
+W=$(mktemp -d); mkdir -p "$W/a" "$W/b" "$W/run"; cd "$W"; export W
 PIDS=()
 trap 'kill "${PIDS[@]}" >/dev/null 2>&1 || true; sleep 0.5; rm -rf "$W"' EXIT
 fail() { echo "FAIL: $1"; shift; for f in "$@"; do echo "--- $f"; cat "$f" 2>/dev/null | head -40; done; exit 1; }
@@ -24,7 +24,7 @@ A() { SIGIL_SOCKET=$W/run/a.sock $EN cli "$@"; }
 B() { SIGIL_SOCKET=$W/run/b.sock $EN cli "$@"; }
 start_engine a; start_engine b; sleep 2.5
 
-A account.create username=@alice:sigil.test invite="$IA" envoy=ws://127.0.0.1:18444/envoy | result || fail "alice account" engine-a.log
+A account.create username=@alice:sigil.test invite="$IA" envoy=ws://127.0.0.1:18444/envoy password="correct horse" | result || fail "alice account" engine-a.log
 B account.create username=@bob:sigil.test   invite="$IB" envoy=ws://127.0.0.1:18444/envoy | result || fail "bob account" engine-b.log
 A status | grep -q '"session": "loggedIn"' || fail "alice not logged in"
 A users.search query=bob:sigil.test | grep -q '"userId": "@bob:sigil.test"' || fail "users.search"
@@ -75,7 +75,7 @@ OFFER=$(C link.offer username=@alice:sigil.test envoy=ws://127.0.0.1:18444/envoy
 sleep 1
 SAS_A=$(A link.scan offer="$OFFER" | python3 -c "import json,sys; print(json.load(sys.stdin)['result']['sas'])")
 A link.confirm ok:=true | result || fail "link.confirm" engine-a.log
-sleep 4
+for i in $(seq 1 30); do grep -q '"state": "done"' c-events.json && break; sleep 1; done
 python3 - "$SAS_A" <<'PY' || fail "link events at the new device" c-events.json
 import json,sys
 raw=open('c-events.json').read(); dec=json.JSONDecoder(); i=0; states=[]; sas=None
@@ -102,5 +102,52 @@ python3 -c "import json; h=json.load(open('$W/b/sigil/sigil-history.json'))['$RO
 B message.send roomId="$ROOM" body="hello both" | result
 sleep 4
 for d in a c; do python3 -c "import json; h=json.load(open('$W/$d/sigil/sigil-history.json'))['$ROOM']; assert h[-1]['body']=='hello both', h[-1]" || fail "device $d missed bob's reply" engine-$d.log; done
-! grep -q "ERROR" engine-a.log engine-b.log engine-c.log || fail "engine logged errors" engine-a.log engine-b.log engine-c.log
+# recovery through the engine: the backup loop has run; a fresh engine restores
+A recovery.status | grep -q '"recovery": "enabled"' || fail "recovery not enabled"
+CODE=$(A recovery.code | python3 -c "import json,sys; print(json.load(sys.stdin)['result']['code'])")
+sleep 7   # backup loop cadence
+A recovery.status | grep -q '"backup": "enabled"' || fail "backup not uploaded" engine-a.log
+mkdir -p "$W/d"; start_engine d; sleep 2.5
+D() { SIGIL_SOCKET=$W/run/d.sock $EN cli "$@"; }
+if D account.recover username=@alice:sigil.test password=wrong code="$CODE" envoy=ws://127.0.0.1:18444/envoy | result; then fail "wrong password accepted by engine"; fi
+sleep 3
+D account.recover username=@alice:sigil.test password="correct horse" code="$CODE" envoy=ws://127.0.0.1:18444/envoy | result || fail "account.recover" engine-d.log
+D status | grep -q '"userId": "@alice:sigil.test"' || fail "recovered engine not signed in"
+D rooms.list | grep -q '"name": "bob"' || fail "recovered engine has no conversation"
+python3 -c "import json; h=json.load(open('$W/d/sigil/sigil-history.json'))['$ROOM']; assert any(i['body']=='hello both' for i in h), h" || fail "recovered history missing" engine-d.log
+# a group through the engine, and a file
+export GROUP; GROUP=$(A room.create name="the plan" invite:='["@bob:sigil.test"]' | python3 -c "import json,sys; print(json.load(sys.stdin)['result']['roomId'])") || fail "room.create" engine-a.log
+sleep 4
+GREQ=$(B rooms.list | python3 -c "import json,sys; print([r['id'] for r in json.load(sys.stdin)['result']['rooms'] if r['isInvite']][0])") || fail "bob has no group invite" engine-b.log
+B room.join roomIdOrAlias="$GREQ" | grep -q "\"roomId\": \"$GROUP\"" || fail "group join"
+sleep 3
+B rooms.list | python3 -c "import json,sys; r=[x for x in json.load(sys.stdin)['result']['rooms'] if x['id']=='$GROUP'][0]; assert r['name']=='the plan' and not r['isDm'], r" || fail "group room shape at bob"
+A room.setSettings roomId="$GROUP" name="the better plan" | result || fail "rename"
+sleep 3
+B rooms.list | grep -q '"name": "the better plan"' || fail "rename not seen by bob" engine-b.log
+B room.open roomId="$GROUP" initialItems:=60 | result
+head -c 200000 /dev/urandom >"$W/pic.bin"
+A attachment.send roomId="$GROUP" path="$W/pic.bin" caption="a file" | result || fail "attachment.send" engine-a.log
+sleep 6
+python3 - <<'PY' || fail "bob did not download the file" engine-b.log
+import json,os
+h=json.load(open(os.environ['W']+'/b/sigil/sigil-history.json'))[os.environ['GROUP']]
+it=[i for i in h if i['kind']=='file'][-1]
+assert it['media']['size']==200000 and it['media']['path'] and os.path.getsize(it['media']['path'])==200000, it['media']
+PY
+# a call: announced in the group, seen by bob, and signalling reaches the
+# forwarding unit (the engine has no media stack, so a bad offer is refused)
+export CALL; CALL=$(A call.start roomId="$GROUP" | python3 -c "import json,sys; print(json.load(sys.stdin)['result']['callId'])") || fail "call.start" engine-a.log
+sleep 4
+python3 - <<'PY' || fail "bob did not see the call" engine-b.log
+import json,os
+h=json.load(open(os.environ['W']+'/b/sigil/sigil-history.json'))[os.environ['GROUP']]
+it=h[-1]; assert it['kind']=='call' and it['callId']==os.environ['CALL'] and it['callState']=='started', it
+PY
+A call.join roomId="$GROUP" callId="$CALL" offer="not an offer" | grep -q "bad offer" || fail "call.join did not reach the forwarding unit" engine-a.log server.log
+A call.poll roomId="$GROUP" callId="$CALL" peer="00000000000000000000000000000000" | grep -q "unknown peer" || fail "call.poll"
+A call.end roomId="$GROUP" callId="$CALL" | result || fail "call.end"
+sleep 3
+python3 -c "import json,os; h=json.load(open('$W/b/sigil/sigil-history.json'))['$GROUP']; assert h[-1]['callState']=='ended', h[-1]" || fail "bob did not see the call end"
+! grep -q "ERROR" engine-a.log engine-b.log engine-c.log engine-d.log || fail "engine logged errors" engine-a.log engine-b.log engine-c.log engine-d.log
 echo "e2e-sigil ok"

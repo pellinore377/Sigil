@@ -22,7 +22,7 @@ the one to read first. **Part B** is the engineering.
 
 ## A1. What we are building
 
-A messenger where your address is `@pellinore:sigil.example`, like Matrix,
+A messenger where your address is `@alice:sigil.example`, like Matrix,
 and where the server at `sigil.example` knows that you exist and what your
 name is, and **nothing else**. It does not know who you talk to, what you
 say, how many phones you have, whether you are online, or what is in your
@@ -45,11 +45,11 @@ The server is a wall of numbered mail slots. When you and Bob first connect,
 your apps agree on a secret. From that secret both apps calculate "our slot is
 number 7,438,221". You drop letters there, Bob picks them up there, and every
 so often the apps calculate a new number and move. Nobody ever told the server
-that slot 7,438,221 means "Pellinore and Bob". The server sees slots appear,
+that slot 7,438,221 means "Alice and Bob". The server sees slots appear,
 get used, and go quiet.
 
 The server also has a **front desk**, and this is the part that changed from
-the first draft. The front desk has a list of names: `@pellinore` lives here,
+the first draft. The front desk has a list of names: `@alice` lives here,
 and here is the public key to use to start a conversation with them. That
 list is the price of "reach anyone by username", and it is the only list of
 people the server keeps. The front desk hands out your public key to anyone
@@ -60,7 +60,7 @@ that follows happens in slots.
 
 You type `@bob:other.example`. Your app asks the front desk at
 `other.example` for Bob's card, uses it to set up an encrypted conversation,
-and drops the first message in Bob's **requests slot**. Bob sees "Pellinore
+and drops the first message in Bob's **requests slot**. Bob sees "Alice
 would like to message you" with the first message, like Signal or Instagram.
 Accept, and it is a normal chat. Ignore, and it goes away.
 
@@ -665,12 +665,15 @@ nothing beyond the one container. Sigil's engine already carries a full
 WebRTC stack for calls; what changes is the signalling, which becomes
 Sigil operations in sealed bags instead of LiveKit's protocol.
 
-Media frames are end-to-end encrypted (SFrame) with a key from the
-conversation's epoch secret, so the forwarding unit relays packets it
-cannot read. The room name is `call_room` from the epoch material, so the
-server sees a random room; media reaches it through the Envoy role, so it
-sees the Envoy's address, not participants'. What it learns is "N random
-peers were in random room X for 12 minutes".
+The room name is 32 random bytes chosen by whoever starts the call and
+sent to the others inside the conversation, so the server sees a random
+room; signalling is a `call.signal` operation in a sealed bag through the
+Envoy. What it learns is "N random peers were in random room X for 12
+minutes". Media itself is SRTP between each participant and the unit; the
+next step is SFrame with a key from the conversation's epoch secret, so
+the unit relays frames it cannot decode, and a relay for networks that
+block UDP so media, too, never shows a participant's address to the home
+server.
 
 ## B16. Retention and deletion
 
@@ -811,19 +814,52 @@ deliveries and orphaned queues. Still to come: APNs and FCM delivery (the
 operator credentials and the Android and iOS clients), and removing a
 device.
 
-**4. Recovery.** Continuous backup; QR + emoji device linking; TPM-sealed
-recovery key with attestation; the printed code as fallback; password
-change. New phone: scan, or username + password, everything back.
+**4. Recovery.** Done for the password-plus-code path: a password set at
+account creation (or later) wraps a random data key; the whole client
+state (account, MLS store, history) is sealed under that key and uploaded
+under a label derived from it, automatically a few seconds after any
+change; a fresh device restores from username, password and the printed
+code (`account.recover`, `recover` in the CLI) and draws fresh tokens;
+wrong secrets are refused, and the server backs off per name; password
+change rewraps without touching the backup. The server relays raw TPM
+commands from `/dev/tpmrm0` with the same backoff and advertises the chip
+in its card; the client-side encrypted TPM session (design B12, Path 2) is
+not written yet, because there is no chip here to test it against.
 
-**5. Groups and media.** Policy documents; add, remove, rename; blob
-chunking; retention; group migration between hosts.
+**5. Groups and media.** Done: groups with a name and several members
+(`room.create`, `group` in the CLI), invites (`room.invite`), renames
+(`room.setSettings`), and leaving (`room.leave`), with a signed policy
+snapshot carried in every Welcome and sent as an event whenever it
+changes, and the lowest remaining identity committing a leaver's removal.
+Media: a file is encrypted under its own key, cut into 256 KiB chunks
+stored as blobs, and described by a manifest in the message; receivers
+download and decrypt in the background and the item gains a local path
+(`attachment.send`, `media.get`, `sendfile` in the CLI). A fourth bag
+size, 260 KiB, exists for chunks. Open rooms are not built; the design
+stands in Part C, problem 7.
 
-**6. Shape.** Padding audit, Envoy jitter, cover traffic, `arti`, the
-paranoid settings page.
+**6. Shape.** Done: every bag and envelope is padded to a fixed bucket
+(the audit added the 260 KiB bucket for media and backup chunks); the
+Envoy holds each bag for a random delay up to `jitter_max_ms`; an Envoy
+with `cover_per_minute` set writes dummy envelopes to random slots on its
+own token credential, indistinguishable from real ones; the clocked tier
+on the client sends `server.info` bags on a fixed cadence; a SOCKS5 proxy
+(Tor, when the user runs it) carries the Envoy link and the HTTP calls
+with remote name resolution; and `shape.settings` in the engine exposes
+all of it to the settings page. Tor is a plain option, off by default, and
+uses the user's own Tor daemon rather than an embedded `arti`.
 
-**7. Calls.** The forwarding unit and relay inside `sigil-server`; SFrame
-keyed from the epoch secret; Sigil signalling replaces LiveKit's. The
-largest single piece of server work, which is why it is last.
+**7. Calls.** Done for the server and the signalling: `sigil-server`
+contains a forwarding unit built on `str0m` (one UDP port, one peer per
+participant, tracks forwarded within a room and nowhere else, tested with
+in-process WebRTC participants exchanging audio); `call.signal` carries
+join, poll, answer and leave inside sealed bags; a call is announced in
+the conversation as a kind-10 event carrying a random room, and the
+engine exposes `call.start`, `call.end`, `call.join`, `call.poll`,
+`call.answer` and `call.leave` plus `call.state` pushes. Still to come:
+the client media stack itself (capture, encoding, playback and the WebRTC
+peer on the device, which the QML build had through LiveKit and the Slint
+build needs anew), SFrame on the frames, and the UDP-blocked relay.
 
 Matrix stays behind the trait as long as it is useful.
 

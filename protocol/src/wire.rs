@@ -29,6 +29,7 @@ pub enum Op {
     TokenIssue = 20,
     ServerInfo = 21,
     RequestsPut = 22,
+    CallSignal = 23,
 }
 
 impl Op {
@@ -57,6 +58,7 @@ impl Op {
             20 => TokenIssue,
             21 => ServerInfo,
             22 => RequestsPut,
+            23 => CallSignal,
             _ => return Err(crate::Error::Malformed),
         })
     }
@@ -203,6 +205,14 @@ pub enum Request {
         envelope: Vec<u8>,
         token: Vec<u8>,
     },
+    /// Call signalling to the server's forwarding unit. `room` is opaque to
+    /// the server; `body` is a JSON signalling message (wire spec 3.8);
+    /// `token` is spent on `join` and empty otherwise.
+    CallSignal {
+        room: [u8; 32],
+        body: Vec<u8>,
+        token: Vec<u8>,
+    },
 }
 
 impl Request {
@@ -344,6 +354,11 @@ impl Request {
                 .fixed(address)
                 .bytes(envelope)
                 .bytes(token),
+            CallSignal { room, body, token } => w
+                .u8(Op::CallSignal as u8)
+                .fixed(room)
+                .bytes(body)
+                .bytes(token),
         }
         .finish()
     }
@@ -451,6 +466,11 @@ impl Request {
             Op::RequestsPut => RequestsPut {
                 address: r.fixed()?,
                 envelope: r.bytes()?.to_vec(),
+                token: r.bytes()?.to_vec(),
+            },
+            Op::CallSignal => CallSignal {
+                room: r.fixed()?,
+                body: r.bytes()?.to_vec(),
                 token: r.bytes()?.to_vec(),
             },
         };
@@ -571,9 +591,12 @@ impl Response {
                 sealed: r.bytes()?.to_vec(),
             },
             Op::BlobPut => BlobPut { id: r.fixed()? },
-            Op::BlobGet | Op::NameLookup | Op::BackupGet | Op::TpmRelay | Op::ServerInfo => {
-                Bytes(r.bytes()?.to_vec())
-            }
+            Op::BlobGet
+            | Op::NameLookup
+            | Op::BackupGet
+            | Op::TpmRelay
+            | Op::ServerInfo
+            | Op::CallSignal => Bytes(r.bytes()?.to_vec()),
             Op::WrapGet => WrapGet {
                 salt: r.fixed()?,
                 wrap: r.bytes()?.to_vec(),

@@ -253,7 +253,9 @@ bag          = 0x01 ‖ ct ‖ nonce ‖ XChaCha20-Poly1305(request_key, nonce,
 ```
 
 `pad_req` pads (as in section 7) so that the whole bag is exactly 2048,
-8192 or 32768 bytes; the plaintext capacities are 887, 7031 and 31607.
+8192, 32768 or 266240 bytes; the plaintext capacities are 887, 7031, 31607
+and 265079. The largest bucket exists for one thing: a 256 KiB media or
+backup chunk with its token.
 
 **Response.**
 
@@ -263,7 +265,8 @@ response = nonce ‖ XChaCha20-Poly1305(response_key, nonce,
                ad = "sigil v1 bag response", pad_resp(plain))
 ```
 
-padded so that the response is exactly 1024, 4096, 16384 or 65536 bytes.
+padded so that the response is exactly 1024, 4096, 16384, 65536 or 266240
+bytes; the largest carries a chunk.
 
 A server MUST answer every bag with a response of a valid size, including
 errors, so that the Envoy learns nothing from the reply length beyond its

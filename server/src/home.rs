@@ -14,13 +14,42 @@ use sigil_protocol::wire::{Request, Response, ServerCard, Status, Stored, CHUNK_
 use sigil_protocol::{bag, epoch, kem, names, token};
 use std::sync::Arc;
 
+/// Per-name recovery attempt backoff: 1 s after the first attempt in an
+/// hour, doubling, capped at an hour. Lives in memory only; it is a rate
+/// limit, not a record.
+#[derive(Default)]
+pub struct Backoff {
+    until: std::collections::HashMap<String, (std::time::Instant, u64)>,
+}
+
+impl Backoff {
+    /// Returns false if the name must wait.
+    pub fn allow(&mut self, name: &str) -> bool {
+        let now = std::time::Instant::now();
+        let e = self.until.entry(name.to_string()).or_insert((now, 0));
+        if now < e.0 {
+            return false;
+        }
+        let secs = if e.1 == 0 { 1 } else { (e.1 * 2).min(3600) };
+        if now.duration_since(e.0) > std::time::Duration::from_secs(3600) {
+            *e = (now, 0);
+        }
+        e.1 = secs;
+        e.0 = now + std::time::Duration::from_secs(secs);
+        true
+    }
+}
+
 pub struct Home {
     pub cfg: Config,
+    pub backoff: std::sync::Mutex<Backoff>,
     pub store: Arc<Store>,
     pub kem: kem::SecretKey,
     pub tokens: TokenService,
     pub delivery: Delivery,
     pub card: Vec<u8>,
+    /// The call forwarding unit, when `calls` is on.
+    pub sfu: Option<Arc<crate::sfu::Sfu>>,
 }
 
 const SLOT_TTL_DAYS: u32 = 30;
@@ -35,6 +64,9 @@ impl Home {
         if cfg.registration == "open" {
             flags |= 0b100;
         }
+        if crate::tpm::available() {
+            flags |= 0b001;
+        }
         let card = ServerCard {
             hostname: cfg.hostname.clone(),
             kem_pub: kem.public().to_vec(),
@@ -46,13 +78,29 @@ impl Home {
         let mut msg = b"sigil v1 server card".to_vec();
         msg.extend_from_slice(&signed);
         signed.extend_from_slice(&ed25519_dalek::Signer::sign(&signing, &msg).to_bytes());
+        let sfu = if cfg.calls {
+            match crate::sfu::Sfu::start(&cfg.media_udp, cfg.media_public.as_deref()) {
+                Ok(s) => {
+                    tracing::info!("calls on: participants send media to {}", s.public);
+                    Some(s)
+                }
+                Err(e) => {
+                    tracing::warn!("calls disabled: forwarding unit failed to start: {e}");
+                    None
+                }
+            }
+        } else {
+            None
+        };
         Ok(Arc::new(Home {
+            backoff: std::sync::Mutex::new(Backoff::default()),
             cfg,
             store,
             kem,
             tokens,
             delivery: Delivery::new(),
             card: signed,
+            sfu,
         }))
     }
 
@@ -82,6 +130,27 @@ impl Home {
         use Request::*;
         Ok(match req {
             ServerInfo => Response::Bytes(self.card.clone()),
+
+            CallSignal { room, body, token } => {
+                let Some(sfu) = &self.sfu else {
+                    return Ok(Response::Error(Status::Unavailable));
+                };
+                if body.len() > 65536 {
+                    return Ok(Response::Error(Status::TooLarge));
+                }
+                // joining costs a token; the rest of a call is free
+                if crate::sfu::kind_of(&body).as_deref() == Some("join") {
+                    if let Err(s) = self.spend(&token)? {
+                        return Ok(Response::Error(s));
+                    }
+                }
+                match sfu.signal(room, &body).await {
+                    Ok(v) => Response::Bytes(serde_json::to_vec(&v)?),
+                    Err(e) => {
+                        Response::Bytes(serde_json::to_vec(&serde_json::json!({"error": e}))?)
+                    }
+                }
+            }
 
             SlotPut {
                 address,
@@ -131,6 +200,22 @@ impl Home {
                     w.commit()?;
                     seq
                 };
+                // a slot nobody has subscribed to (a cover write, or a stale
+                // address) is kept a day, not a month
+                if seq == 1 && self.delivery.subscribers(&self.store, &address)?.is_empty() {
+                    let w = self.store.db.begin_write()?;
+                    {
+                        let mut slots = w.open_table(SLOTS)?;
+                        let meta = slots
+                            .get(address.as_slice())?
+                            .and_then(|v| SlotMeta::decode(v.value()));
+                        if let Some(mut m) = meta {
+                            m.expiry_day = today() + 1;
+                            slots.insert(address.as_slice(), m.encode().as_slice())?;
+                        }
+                    }
+                    w.commit()?;
+                }
                 self.delivery
                     .deliver(&self.store, &address, seq, &envelope)
                     .await?;
@@ -496,6 +581,9 @@ impl Home {
             }
 
             WrapGet { username } => {
+                if !self.backoff.lock().unwrap().allow(&username) {
+                    return Ok(Response::Error(Status::RateLimited));
+                }
                 let r = self.store.db.begin_read()?;
                 match r.open_table(WRAPS)?.get(username.as_str())? {
                     Some(v) => {
@@ -509,12 +597,30 @@ impl Home {
                 }
             }
 
-            TpmInfo | TpmRelay { .. } => Response::Error(Status::Unavailable),
+            TpmInfo => match crate::tpm::info() {
+                Some((ek, chain)) => Response::TpmInfo {
+                    ek_pub: ek,
+                    cert_chain: chain,
+                },
+                None => Response::Error(Status::Unavailable),
+            },
+            TpmRelay { username, command } => {
+                if !crate::tpm::available() {
+                    return Ok(Response::Error(Status::Unavailable));
+                }
+                if !self.backoff.lock().unwrap().allow(&username) {
+                    return Ok(Response::Error(Status::RateLimited));
+                }
+                match crate::tpm::relay(&command) {
+                    Ok(resp) => Response::Bytes(resp),
+                    Err(_) => Response::Error(Status::Unavailable),
+                }
+            }
 
             TokenCredential {
                 identity_pub,
                 sig,
-                gate: _,
+                gate,
                 blinded,
             } => {
                 let mut msg = b"sigil v1 credential".to_vec();
@@ -522,7 +628,12 @@ impl Home {
                 if !verify(&identity_pub, &msg, &sig) {
                     return Ok(Response::Error(Status::Unauthorized));
                 }
-                if !self.has_card(&identity_pub)? {
+                // An Envoy with an authenticated stream may hold a credential for
+                // cover traffic: its signing key is its identity, and the bag
+                // arrived on its own stream.
+                let is_envoy =
+                    gate == b"envoy" && self.cfg.cover_credentials && identity_pub == *envoy;
+                if !is_envoy && !self.has_card(&identity_pub)? {
                     return Ok(Response::Error(Status::Unauthorized));
                 }
                 if token::SIG_LEN != blinded.len() {

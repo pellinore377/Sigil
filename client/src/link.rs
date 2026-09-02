@@ -9,6 +9,16 @@ use std::sync::Arc;
 use tokio::sync::{mpsc, oneshot, Mutex};
 use tokio_tungstenite::tungstenite::Message;
 
+type WsSink = std::pin::Pin<
+    Box<dyn futures_util::Sink<Message, Error = tokio_tungstenite::tungstenite::Error> + Send>,
+>;
+type WsSource = std::pin::Pin<
+    Box<
+        dyn futures_util::Stream<Item = Result<Message, tokio_tungstenite::tungstenite::Error>>
+            + Send,
+    >,
+>;
+
 pub struct Link {
     pub tx: mpsc::Sender<Frame>,
     waiting: Arc<Mutex<HashMap<u32, oneshot::Sender<Vec<u8>>>>>,
@@ -17,13 +27,45 @@ pub struct Link {
     next_id: std::sync::atomic::AtomicU32,
     envoy_http: String,
     cards: Mutex<HashMap<String, ServerCard>>,
+    http: reqwest::Client,
 }
 
 impl Link {
     pub async fn connect(envoy_ws: &str, device_id: &str) -> anyhow::Result<Link> {
+        Self::connect_with(envoy_ws, device_id, None).await
+    }
+
+    /// Connect, optionally through a SOCKS5 proxy (`host:port`, for example
+    /// a local Tor daemon on 127.0.0.1:9050). Every request, delivery and
+    /// card fetch then goes through it.
+    pub async fn connect_with(
+        envoy_ws: &str,
+        device_id: &str,
+        proxy: Option<&str>,
+    ) -> anyhow::Result<Link> {
         let url = format!("{envoy_ws}?device={device_id}");
-        let (ws, _) = tokio_tungstenite::connect_async(&url).await?;
-        let (mut sink, mut source) = ws.split();
+        // Both connection kinds become one boxed frame stream and sink, so
+        // the rest of the link does not care whether a proxy is in the way.
+        let (mut sink, mut source): (WsSink, WsSource) = match proxy {
+            None => {
+                let (ws, _) = tokio_tungstenite::connect_async(&url).await?;
+                let (sk, src) = ws.split();
+                (Box::pin(sk), Box::pin(src))
+            }
+            Some(px) => {
+                let parsed = url::Url::parse(&url)?;
+                let host = parsed
+                    .host_str()
+                    .ok_or_else(|| anyhow::anyhow!("no host"))?
+                    .to_string();
+                let port = parsed.port_or_known_default().unwrap_or(443);
+                let tcp =
+                    tokio_socks::tcp::Socks5Stream::connect(px, (host.as_str(), port)).await?;
+                let (ws, _) = tokio_tungstenite::client_async_tls(url.as_str(), tcp).await?;
+                let (sk, src) = ws.split();
+                (Box::pin(sk), Box::pin(src))
+            }
+        };
         let (tx, mut rx) = mpsc::channel::<Frame>(64);
         let (dtx, drx) = mpsc::channel::<Frame>(256);
         let waiting: Arc<Mutex<HashMap<u32, oneshot::Sender<Vec<u8>>>>> =
@@ -62,6 +104,10 @@ impl Link {
             .replacen("ws", "http", 1)
             .trim_end_matches("/envoy")
             .to_string();
+        let mut http = reqwest::Client::builder();
+        if let Some(px) = proxy {
+            http = http.proxy(reqwest::Proxy::all(format!("socks5h://{px}"))?);
+        }
         Ok(Link {
             tx,
             waiting,
@@ -70,6 +116,7 @@ impl Link {
             next_id: 1.into(),
             envoy_http,
             cards: Mutex::new(HashMap::new()),
+            http: http.build()?,
         })
     }
 
@@ -77,7 +124,10 @@ impl Link {
         if let Some(c) = self.cards.lock().await.get(server) {
             return Ok(c.clone());
         }
-        let bytes = reqwest::get(format!("{}/info/{server}", self.envoy_http))
+        let bytes = self
+            .http
+            .get(format!("{}/info/{server}", self.envoy_http))
+            .send()
             .await?
             .error_for_status()?
             .bytes()
@@ -103,14 +153,15 @@ impl Link {
     }
 
     pub async fn credential_key(&self, server: &str) -> anyhow::Result<Vec<u8>> {
-        Ok(
-            reqwest::get(format!("{}/info/{server}/credential-key", self.envoy_http))
-                .await?
-                .error_for_status()?
-                .bytes()
-                .await?
-                .to_vec(),
-        )
+        Ok(self
+            .http
+            .get(format!("{}/info/{server}/credential-key", self.envoy_http))
+            .send()
+            .await?
+            .error_for_status()?
+            .bytes()
+            .await?
+            .to_vec())
     }
 
     /// Seal a request into a bag, send it, open the response.
@@ -149,6 +200,20 @@ impl Link {
             anyhow::bail!("{server} said {s:?} to {op:?}");
         }
         Ok(resp)
+    }
+
+    /// The clocked tier toward the Envoy: send a bag every `period` whether or
+    /// not there is anything to say, so the Envoy sees a steady cadence. The
+    /// bag is a free `server.info` sealed to `server`; the Envoy cannot tell.
+    pub fn start_clock(self: &Arc<Self>, server: String, period: std::time::Duration) {
+        let me = self.clone();
+        tokio::spawn(async move {
+            let mut tick = tokio::time::interval(period);
+            loop {
+                tick.tick().await;
+                let _ = me.call(&server, &Request::ServerInfo, None).await;
+            }
+        });
     }
 
     /// The server's current requests-read nonce, via the Envoy.

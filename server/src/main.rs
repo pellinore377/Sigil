@@ -5,9 +5,11 @@ mod delivery;
 mod envoy;
 mod home;
 mod http;
+mod sfu;
 mod store;
 mod sweep;
 mod tokens;
+mod tpm;
 
 use clap::{Parser, Subcommand};
 use config::Config;
@@ -140,6 +142,12 @@ async fn run(cfg: Config) -> anyhow::Result<()> {
     if let (Some(e), Some(h)) = (&envoy, &home) {
         // open the in-process delivery stream to ourselves
         let _ = e.ensure_stream(&h.cfg.hostname).await;
+        e.start_cover(h.cfg.hostname.clone(), cfg.cover_per_minute);
+    }
+    if let (Some(e), None) = (&envoy, &home) {
+        for server in cfg.servers.keys() {
+            e.start_cover(server.clone(), cfg.cover_per_minute);
+        }
     }
     let app = http::router(http::App { home, envoy });
     let addr: std::net::SocketAddr = cfg.listen.parse()?;

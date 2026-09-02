@@ -30,6 +30,26 @@ enum Cmd {
     Register {
         #[arg(long, default_value = "")]
         invite: String,
+        /// Sets up backup and recovery.
+        #[arg(long)]
+        password: Option<String>,
+    },
+    /// Upload an encrypted backup of this device's state.
+    Backup,
+    /// Print the recovery code (keep it on paper).
+    Code,
+    /// Change the backup password.
+    SetPassword { password: String },
+    /// Restore on this device from username, password and recovery code.
+    Recover {
+        #[arg(long)]
+        username: String,
+        #[arg(long)]
+        password: String,
+        #[arg(long)]
+        code: String,
+        #[arg(long)]
+        envoy: String,
     },
     /// Draw more daily tokens.
     Tokens {
@@ -62,6 +82,21 @@ enum Cmd {
         #[arg(long, default_value_t = 0)]
         count: usize,
     },
+    /// Create a group with a name and members.
+    Group { name: String, users: Vec<String> },
+    /// Invite a username into conversation `n`.
+    Invite { n: usize, username: String },
+    /// Rename conversation `n`.
+    Rename { n: usize, name: String },
+    /// Leave conversation `n`.
+    Leave { n: usize },
+    /// Send a file into conversation `n`.
+    Sendfile {
+        n: usize,
+        path: PathBuf,
+        #[arg(long, default_value = "")]
+        caption: String,
+    },
     /// New device: show a link offer and wait for an existing device to scan it.
     LinkOffer {
         #[arg(long)]
@@ -91,10 +126,13 @@ fn who(st: &State, conv: &sigil_client::state::Conversation, identity: &[u8; 32]
     if *identity == st.identity().public() {
         return "me".into();
     }
-    conv.peers
-        .first()
-        .cloned()
-        .unwrap_or_else(|| hex::encode(&identity[..4]))
+    let h = hex::encode(identity);
+    conv.members
+        .iter()
+        .find(|m| m.identity == h)
+        .map(|m| m.username.clone())
+        .or_else(|| conv.peers.first().cloned())
+        .unwrap_or_else(|| h[..8].to_string())
 }
 
 async fn run() -> anyhow::Result<()> {
@@ -109,15 +147,66 @@ async fn run() -> anyhow::Result<()> {
                 sigil_protocol::identity::fingerprint_display(&fp)
             );
         }
-        Cmd::Register { invite } => {
+        Cmd::Register { invite, password } => {
             let mut st = State::load(&cli.state)?;
             let provider = SigilProvider::open(&st.mls_path())?;
             let link = Link::connect(&st.envoy, &st.device_id).await?;
             account::register(&link, &mut st, &invite).await?;
             account::publish_key_packages(&link, &mut st, &provider, 10).await?;
+            if let Some(pw) = password {
+                sigil_client::backup::enable(&link, &mut st, &pw).await?;
+                println!(
+                    "recovery code: {}",
+                    sigil_client::backup::code(&st).unwrap()
+                );
+            }
             println!(
                 "registered {}: credential, {} tokens, 10 key packages",
                 st.username,
+                st.tokens.len()
+            );
+        }
+        Cmd::Backup => {
+            let mut st = State::load(&cli.state)?;
+            let provider = SigilProvider::open(&st.mls_path())?;
+            let link = Link::connect(&st.envoy, &st.device_id).await?;
+            let n = sigil_client::backup::upload(&link, &mut st, &provider, &[]).await?;
+            println!("backed up in {n} chunk(s)");
+        }
+        Cmd::Code => {
+            let st = State::load(&cli.state)?;
+            println!(
+                "{}",
+                sigil_client::backup::code(&st)
+                    .ok_or_else(|| anyhow::anyhow!("no password set; register with --password"))?
+            );
+        }
+        Cmd::SetPassword { password } => {
+            let st = State::load(&cli.state)?;
+            let link = Link::connect(&st.envoy, &st.device_id).await?;
+            sigil_client::backup::set_password(&link, &st, &password).await?;
+            println!("password changed");
+        }
+        Cmd::Recover {
+            username,
+            password,
+            code,
+            envoy,
+        } => {
+            let key = sigil_protocol::recovery::parse_recovery_code(&code)
+                .map_err(|_| anyhow::anyhow!("that is not a valid recovery code"))?;
+            let (st, _extra) = sigil_client::backup::restore(
+                &cli.state,
+                &envoy,
+                &username.to_lowercase(),
+                &password,
+                &key,
+            )
+            .await?;
+            println!(
+                "restored {} with {} conversations and {} tokens",
+                st.username,
+                st.conversations.len(),
                 st.tokens.len()
             );
         }
@@ -221,12 +310,12 @@ async fn run() -> anyhow::Result<()> {
         Cmd::List => {
             let st = State::load(&cli.state)?;
             for (i, c) in st.conversations.iter().enumerate() {
-                println!(
-                    "#{i} {} with {} on {}",
-                    &c.group_id[..8],
-                    c.peers.join(", "),
-                    c.slot_server
-                );
+                let title = if c.name.is_empty() {
+                    format!("with {}", c.peers.join(", "))
+                } else {
+                    format!("\"{}\" ({} members)", c.name, c.members.len())
+                };
+                println!("#{i} {} {title} on {}", &c.group_id[..8], c.slot_server);
             }
             for r in &st.requests {
                 println!("pending request from {}: {}", r.from, r.first_message);
@@ -254,6 +343,82 @@ async fn run() -> anyhow::Result<()> {
             print_caught(&st, &conv, &sent.caught_up);
             println!("sent as seq {}", sent.seq);
         }
+        Cmd::Group { name, users } => {
+            let mut st = State::load(&cli.state)?;
+            let provider = SigilProvider::open(&st.mls_path())?;
+            let link = Link::connect(&st.envoy, &st.device_id).await?;
+            let conv =
+                sigil_client::group::create(&link, &mut st, &provider, &name, &users, "").await?;
+            println!(
+                "created {name} ({}) as #{}",
+                &conv.group_id[..8],
+                st.conversations.len() - 1
+            );
+        }
+        Cmd::Invite { n, username } => {
+            let mut st = State::load(&cli.state)?;
+            let provider = SigilProvider::open(&st.mls_path())?;
+            let link = Link::connect(&st.envoy, &st.device_id).await?;
+            let conv = st
+                .conversations
+                .get(n)
+                .cloned()
+                .ok_or_else(|| anyhow::anyhow!("no conversation #{n}"))?;
+            sigil_client::group::invite(&link, &mut st, &provider, &conv, &username).await?;
+            println!("invited {username}");
+        }
+        Cmd::Rename { n, name } => {
+            let mut st = State::load(&cli.state)?;
+            let provider = SigilProvider::open(&st.mls_path())?;
+            let link = Link::connect(&st.envoy, &st.device_id).await?;
+            let conv = st
+                .conversations
+                .get(n)
+                .cloned()
+                .ok_or_else(|| anyhow::anyhow!("no conversation #{n}"))?;
+            sigil_client::group::rename(&link, &mut st, &provider, &conv, &name).await?;
+            println!("renamed");
+        }
+        Cmd::Leave { n } => {
+            let mut st = State::load(&cli.state)?;
+            let provider = SigilProvider::open(&st.mls_path())?;
+            let link = Link::connect(&st.envoy, &st.device_id).await?;
+            let conv = st
+                .conversations
+                .get(n)
+                .cloned()
+                .ok_or_else(|| anyhow::anyhow!("no conversation #{n}"))?;
+            sigil_client::group::leave(&link, &mut st, &provider, &conv).await?;
+            println!("left");
+        }
+        Cmd::Sendfile { n, path, caption } => {
+            let mut st = State::load(&cli.state)?;
+            let provider = SigilProvider::open(&st.mls_path())?;
+            let link = Link::connect(&st.envoy, &st.device_id).await?;
+            let conv = st
+                .conversations
+                .get(n)
+                .cloned()
+                .ok_or_else(|| anyhow::anyhow!("no conversation #{n}"))?;
+            let m = sigil_client::media::upload(&link, &mut st, &path, &caption).await?;
+            let sent = conversation::send_event(
+                &link,
+                &mut st,
+                &provider,
+                &conv,
+                sigil_protocol::envelope::Kind::Media,
+                &[],
+                &serde_json::to_vec(&m)?,
+            )
+            .await?;
+            println!(
+                "sent {} ({} bytes, {} chunks) as seq {}",
+                m.filename,
+                m.size,
+                m.chunks.len(),
+                sent.seq
+            );
+        }
         Cmd::LinkOffer {
             username,
             envoy,
@@ -274,7 +439,60 @@ async fn run() -> anyhow::Result<()> {
             let mut got = 0;
             'epoch: loop {
                 let caught = conversation::catch_up(&link, &mut st, &provider, &conv).await?;
+                // policies and leaves first, so names resolve when printing
+                for c in &caught {
+                    if let conversation::Incoming::Event {
+                        kind,
+                        body,
+                        from_identity,
+                        ..
+                    } = &c.incoming
+                    {
+                        if *kind == sigil_protocol::envelope::Kind::Policy as u16
+                            || *kind == sigil_protocol::envelope::Kind::Membership as u16
+                        {
+                            let _ = sigil_client::group::apply_control(
+                                &link,
+                                &mut st,
+                                &provider,
+                                &conv,
+                                *kind,
+                                from_identity,
+                                body,
+                            )
+                            .await;
+                        }
+                    }
+                }
+                let conv = st
+                    .conversations
+                    .iter()
+                    .find(|c| c.group_id == conv.group_id)
+                    .cloned()
+                    .unwrap_or(conv.clone());
                 got += print_caught(&st, &conv, &caught);
+                for c in &caught {
+                    if let conversation::Incoming::Event { kind, body, .. } = &c.incoming {
+                        if *kind == sigil_protocol::envelope::Kind::Media as u16 {
+                            if let Ok(m) =
+                                serde_json::from_str::<sigil_client::media::Manifest>(body)
+                            {
+                                let dest = std::path::PathBuf::from("downloads").join(&m.filename);
+                                match sigil_client::media::download(
+                                    &link,
+                                    &conv.slot_server,
+                                    &m,
+                                    &dest,
+                                )
+                                .await
+                                {
+                                    Ok(()) => println!("{} saved {}", c.seq, dest.display()),
+                                    Err(e) => println!("{} download failed: {e}", c.seq),
+                                }
+                            }
+                        }
+                    }
+                }
                 if count > 0 && got >= count {
                     break;
                 }
@@ -339,8 +557,51 @@ async fn run() -> anyhow::Result<()> {
                             drop(rx);
                             continue 'epoch;
                         }
-                        Ok(conversation::Incoming::Event { kind, .. })
-                        | Ok(conversation::Incoming::Other { kind }) => {
+                        Ok(conversation::Incoming::Event {
+                            kind,
+                            body,
+                            from_identity,
+                            ..
+                        }) => {
+                            describe_event(&st, &conv, slot_seq, kind, &body, &from_identity);
+                            if kind == sigil_protocol::envelope::Kind::Media as u16 {
+                                if let Ok(m) =
+                                    serde_json::from_str::<sigil_client::media::Manifest>(&body)
+                                {
+                                    let dest =
+                                        std::path::PathBuf::from("downloads").join(&m.filename);
+                                    match sigil_client::media::download(
+                                        &link,
+                                        &conv.slot_server,
+                                        &m,
+                                        &dest,
+                                    )
+                                    .await
+                                    {
+                                        Ok(()) => println!("{slot_seq} saved {}", dest.display()),
+                                        Err(e) => println!("{slot_seq} download failed: {e}"),
+                                    }
+                                }
+                                got += 1;
+                            } else if kind == sigil_protocol::envelope::Kind::Policy as u16
+                                || kind == sigil_protocol::envelope::Kind::Membership as u16
+                            {
+                                let _ = sigil_client::group::apply_control(
+                                    &link,
+                                    &mut st,
+                                    &provider,
+                                    &conv,
+                                    kind,
+                                    &from_identity,
+                                    &body,
+                                )
+                                .await;
+                                // a leave we committed rotated the address
+                                drop(rx);
+                                continue 'epoch;
+                            }
+                        }
+                        Ok(conversation::Incoming::Other { kind }) => {
                             println!("{slot_seq} (event kind {kind})")
                         }
                         Err(e) => println!("{slot_seq} (cannot process: {e})"),
@@ -441,12 +702,50 @@ fn print_caught(
                 n += 1;
             }
             conversation::Incoming::Rotated => println!("{} (epoch changed)", c.seq),
-            conversation::Incoming::Event { kind, .. } | conversation::Incoming::Other { kind } => {
-                println!("{} (event kind {kind})", c.seq)
+            conversation::Incoming::Event {
+                kind,
+                body,
+                from_identity,
+                ..
+            } => {
+                describe_event(st, conv, c.seq, *kind, body, from_identity);
+                if *kind == sigil_protocol::envelope::Kind::Media as u16 {
+                    n += 1;
+                }
             }
+            conversation::Incoming::Other { kind } => println!("{} (event kind {kind})", c.seq),
         }
     }
     n
+}
+
+fn describe_event(
+    st: &State,
+    conv: &sigil_client::state::Conversation,
+    seq: u64,
+    kind: u16,
+    body: &str,
+    from_identity: &[u8; 32],
+) {
+    use sigil_protocol::envelope::Kind;
+    if kind == Kind::Media as u16 {
+        match serde_json::from_str::<sigil_client::media::Manifest>(body) {
+            Ok(m) => println!(
+                "{seq} {}: [file] {} ({} bytes, {})",
+                who(st, conv, from_identity),
+                m.filename,
+                m.size,
+                m.mime
+            ),
+            Err(_) => println!("{seq} (bad media manifest)"),
+        }
+    } else if kind == Kind::Policy as u16 {
+        println!("{seq} (policy updated by {})", who(st, conv, from_identity));
+    } else if kind == Kind::Membership as u16 {
+        println!("{seq} (membership: {body})");
+    } else {
+        println!("{seq} (event kind {kind})");
+    }
 }
 
 fn names_addr(identity_pub: &[u8; 32], period: u32) -> [u8; 32] {

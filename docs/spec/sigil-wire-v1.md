@@ -118,7 +118,7 @@ pops from it without being able to read a package.
 
 | Op | Request | Response | Server MUST |
 |---|---|---|---|
-| 8 `blob.put` | `chunk bytes, token` | `id` | require `len(chunk) == 262144` unless the client marks it final (the last chunk may be shorter, but MUST be padded by the client to a multiple of 4096); `id = H(chunk)`; store; idempotent on repeat |
+| 8 `blob.put` | `chunk bytes, token` | `id` | require `len(chunk) <= 262144` and a multiple of 4096; `id = H(chunk)`; store; idempotent on repeat |
 | 9 `blob.get` | `id` | `chunk bytes` | return or `not_found`; extend expiry to 30 days from now, day granularity |
 
 Chunks are encrypted by the client before upload with a per-file key that
@@ -153,7 +153,7 @@ clients spread on a fixed hourly schedule.
 
 | Op | Request | Response | Server MUST |
 |---|---|---|---|
-| 19 `token.credential` | `identity_pub, sig, gate bytes, blinded bytes` | `blind_sig bytes` | require a registered card for `identity_pub` on this server and `sig` = Ed25519(identity, `"sigil v1 credential" ‖ blinded`); blind-sign `blinded` with the credential key; at most once per name per key rotation |
+| 19 `token.credential` | `identity_pub, sig, gate bytes, blinded bytes` | `blind_sig bytes` | require a registered card for `identity_pub` on this server and `sig` = Ed25519(identity, `"sigil v1 credential" ‖ blinded`); blind-sign `blinded` with the credential key; at most once per name per key rotation. With `gate` = `"envoy"` and `identity_pub` the identity of an Envoy that holds an open delivery stream, a server that allows it (`cover_credentials`) grants the Envoy a credential for cover traffic (section 6.5) |
 | 20 `token.issue` | `credential bytes, count u16, (blinded bytes)×count` | `count u16, (blind_sig bytes)×count` | verify `credential` (a token under the credential key); enforce the daily quota for it (`rate_limited`); blind-sign each `blinded` (max 64 per request) with the token key |
 | 21 `server.info` | | `server_card bytes` | return the signed server card |
 
@@ -171,6 +171,33 @@ A server hands each Envoy stream a fresh 32-byte nonce in every
 `Deliver`-stream keepalive (section 6.3) and accepts a requests-read proof
 against any nonce it issued to that stream in the last 60 s. Nonces are
 never stored beyond that window.
+
+### 3.8 Calls
+
+| Op | Request | Response | Server MUST |
+|---|---|---|---|
+| 23 `call.signal` | `room[32], body bytes, token` | `reply bytes` | hand `body` (JSON, at most 64 KiB) to the forwarding unit for `room`; spend `token` when `body.kind` is `join` and ignore it otherwise; answer `unavailable` when no forwarding unit runs |
+
+`room` is opaque to the server: the participants chose it among themselves
+(section 15). `body` and `reply` are JSON:
+
+| `kind` | body | reply |
+|---|---|---|
+| `join` | `offer` (SDP) | `answer` (SDP), `peer` (16 bytes hex) |
+| `poll` | `peer` | `offer` (SDP or null): a renegotiation the unit wants, adding the tracks of the other peers; `peers`: how many are in the room |
+| `answer` | `peer`, `answer` (SDP) | `{}` |
+| `leave` | `peer` | `{}` |
+
+Any failure is `{"error": "..."}`. The unit is one `str0m` peer per
+participant on one UDP socket (`media_udp`, default port 8444), forwarding
+each participant's tracks to the others in the same room and to nobody
+else; it drops a peer that has not connected 30 s after `join` or that has
+sent nothing and not polled for 60 s. A participant that opens a data
+channel receives renegotiation offers on it and may answer there instead
+of polling. Media is SRTP between participant and unit; end-to-end
+protection of the frames themselves (SFrame under a key from the
+conversation's epoch, so the unit forwards what it cannot decode) is the
+clients' job and is not yet built.
 
 ## 4. Requests envelopes
 
@@ -274,6 +301,15 @@ On `Deliver` for a handle whose device is not connected, the Envoy sends a
 push containing nothing but the Envoy's hostname. In the clocked tier the
 push is sent at the next scheduled tick rather than immediately.
 
+### 6.5 Cover traffic
+
+An Envoy configured with `cover_per_minute` > 0 sends that many bags per
+minute to each server it holds a stream to, spread at random over the
+minute. Each is a real `slot.put` to a random address under a fresh
+write key, paid with a token drawn from the Envoy's own credential
+(section 3.6), so the server cannot tell it from a participant's write. A
+slot nobody has subscribed to expires after one day.
+
 ## 7. The group layer: MLS
 
 Sigil v1 uses MLS (RFC 9420) for every conversation, with these bindings:
@@ -344,13 +380,51 @@ are merged. A message encrypted under a stale epoch lands in a slot the
 other members have left. Cursors are per address; the `Deliver` frame's
 `slot_seq` and `slot.get`'s sequence numbers are the same numbering.
 
+## 12. Policy and membership events
+
+A conversation's **policy** is a JSON snapshot `{name, members:[{username,
+identity}], admins:[identity]}` (identities hex). It travels as the fourth
+field of a Welcome body (section 4) and as an event of kind 8 whenever it
+changes; receivers accept a kind-8 event only from an identity in the
+current `admins`, or from anyone when `admins` is empty (a fresh
+conversation). A member who leaves sends kind 7 with
+`{"action":"leave","username","identity"}` and forgets the conversation;
+every remaining member drops them from the policy, and the member with the
+lowest identity commits their removal so the epoch moves on without them.
+
+## 13. Media manifests
+
+An event of kind 9 carries JSON `{filename, mime, size, key, chunks[],
+caption, width?, height?}`. Each chunk is `XChaCha20-Poly1305(key,
+nonce = u32le(index) ‖ 0×20, ad = u32le(index), plaintext)` over up to
+262 128 bytes of the file, padded to a 4 KiB multiple, stored with
+`blob.put`; `chunks` lists the blob ids in order.
+
+## 14. Backup
+
+The backup body is SPE `version u8 = 1, account bytes (JSON), mls bytes
+(JSON), extra bytes`, sealed as `nonce[24] ‖ XChaCha20-Poly1305(data_key,
+nonce, ad = "sigil v1 backup", body)`, prefixed with `count u32le` and cut
+into `backup.put` chunks of at most 256 KiB, the last padded to a 4 KiB
+multiple. Restore fetches chunk 0 for the count, concatenates, strips the
+count, and strips trailing zero padding until the tag verifies.
+
+## 15. Calls in a conversation
+
+An event of kind 10 carries JSON `{action, room}`: `action` is `start` or
+`end`, `room` is 32 random bytes in hex chosen by whoever starts the call.
+Members join the forwarding unit on the conversation's server with that
+room (section 3.8). Because the room travels inside the conversation's
+envelopes, the server learns only that some peers met in a random room.
+
 ## 9. Not yet specified
 
 - OIDC token validation details beyond "signature, issuer, audience,
   expiry, `sub` bound to the name".
 - The UnifiedPush server side the Envoy exposes (it is the public
   UnifiedPush spec; nothing Sigil-specific).
-- Media chunk manifests inside kind-9 events.
+- SFrame on call media (which key derivation from the epoch secret, and the
+  header layout), and a relay for participants whose networks block UDP.
 - The clocked tier's exact scheduling constants.
 - APNs and FCM delivery from the Envoy (UnifiedPush is done: the Envoy POSTs the
   registered endpoint URL, at most once per 30 s while the device is away).

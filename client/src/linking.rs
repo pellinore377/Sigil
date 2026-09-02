@@ -275,9 +275,13 @@ pub async fn wait_for_link(
         tokens: t.tokens.iter().map(hex::encode).collect(),
         conversations: Vec::new(),
         requests: Vec::new(),
+        seen_requests: Vec::new(),
+        recovery: None,
         path: path.to_path_buf(),
     };
     st.save()?;
+    // the old device's wallet may be nearly empty; draw our own
+    let _ = crate::account::ensure_tokens(&link, &mut st, 20, 40).await;
     let provider = SigilProvider::open(&st.mls_path())?;
     // 3. our key package, so the existing device can add this leaf
     let (cred, signer) = mls_credential(&st);
