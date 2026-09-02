@@ -213,6 +213,17 @@ pub fn wire_extra(win: &AppWindow) {
 
 pub fn on_nav_opened(ui: &mut UiState, win: &AppWindow, page: &str) {
     match page {
+        // Back from a thread: the conversation itself is the view again.
+        "chat" => {
+            if ui.open_room.contains("|thread:") {
+                let key = ui.open_room.clone();
+                let room = room_of_key(&key);
+                ui.req.fire("room.close", json!({"roomId": key}));
+                win.set_chat_is_thread(false);
+                win.set_thread_key("".into());
+                crate::bridge::open_room(ui, win, &room);
+            }
+        }
         "roomsettings" => {
             ui.settings_room = room_of_key(&ui.open_room);
             load_settings(ui, win);
@@ -950,8 +961,84 @@ pub fn on_act(ui: &mut UiState, win: &AppWindow, action: &str, a: &str, b2: &str
             }
         }
         "pick-attach-files" => attach_files(ui),
+        // The picker: current position or a live share. "pin" has no map to
+        // tap on yet, and the picker says so.
         "attach-location" => {
-            tracing::info!("location share ({a}): the maps gap — no picker without a map widget")
+            win.set_lp_mode(a.into());
+            win.set_attach_open(false);
+            refresh_position(ui);
+            // set, not go(): a callback from inside a handler would re-enter the state
+            win.set_nav("locpick".into());
+        }
+        "position-refresh" => refresh_position(ui),
+        "location-share" => {
+            let mut it = a.split(',');
+            let lat: f64 = it
+                .next()
+                .and_then(|v| v.trim().parse().ok())
+                .unwrap_or(f64::NAN);
+            let lon: f64 = it
+                .next()
+                .and_then(|v| v.trim().parse().ok())
+                .unwrap_or(f64::NAN);
+            let ms: f64 = b2.trim().parse().unwrap_or(0.0);
+            if lat.is_finite() && lon.is_finite() {
+                let room = room_of_key(&ui.open_room);
+                if ms > 0.0 {
+                    req.fire(
+                        "location.startLive",
+                        json!({"roomId": room, "lat": lat, "lon": lon, "durationMs": ms as u64}),
+                    );
+                } else {
+                    req.fire(
+                        "location.send",
+                        json!({"roomId": room, "lat": lat, "lon": lon}),
+                    );
+                }
+            }
+            win.set_nav("chat".into());
+        }
+        "stop-live" => req.fire(
+            "location.stopLive",
+            json!({"roomId": room_of_key(&ui.open_room)}),
+        ),
+        "open-contact" => {
+            if let Some(item) = ui.shadow.iter().find(|i| s(i, "eventId") == a) {
+                let c = &item["contact"];
+                ui.contact_ctx = (s(c, "userId").to_string(), s(c, "displayName").to_string());
+                win.set_contact_open(true);
+            }
+        }
+        "contact-choice" => {
+            let (uid, name) = ui.contact_ctx.clone();
+            match a {
+                "dm" if !uid.is_empty() => start_dm(ui, &uid),
+                "save" if !uid.is_empty() => {
+                    req.fire("contacts.save", json!({"userId": uid, "displayName": name}));
+                    win.set_vw_toast("Saved".into());
+                }
+                _ => {}
+            }
+        }
+        "member-choice-open" => {
+            ui.contact_ctx = (a.to_string(), b2.to_string());
+            win.set_member_name(if b2.is_empty() { a } else { b2 }.into());
+            win.set_member_open(true);
+        }
+        "member-choice" => {
+            let (uid, name) = ui.contact_ctx.clone();
+            match a {
+                "dm" => start_dm(ui, &uid),
+                "share" => {
+                    let room = room_of_key(&ui.open_room);
+                    req.fire(
+                        "contact.send",
+                        json!({"roomId": room, "userId": uid, "displayName": name}),
+                    );
+                    win.set_nav("chat".into());
+                }
+                _ => {}
+            }
         }
         // ChatPage.qml onInsertEmoji: input.insert(input.cursorPosition, ch).
         "composer-insert" => {
@@ -1055,9 +1142,7 @@ pub fn on_act(ui: &mut UiState, win: &AppWindow, action: &str, a: &str, b2: &str
             ui.recording = false;
             req.fire("voice.cancel", json!({}));
         }
-        "open-map" => {
-            tracing::info!("map page carries the static card; nothing to load beyond the item")
-        }
+        "open-map" => open_map(ui, win, a),
         other => tracing::warn!("act: unknown action {other}"),
     }
 }
@@ -1884,6 +1969,7 @@ fn load_stickers(ui: &mut UiState, _win: &AppWindow) {
         json!({}),
         |ui, win, out| {
             let Ok(v) = out else { return };
+            win.set_at_sticker_dir(s(&v, "dir").into());
             ui.stickers = v["stickers"].as_array().cloned().unwrap_or_default();
             let stickers = ui.stickers.clone();
             let rows: Vec<crate::StickerItem> = stickers
@@ -2011,4 +2097,111 @@ fn hsv_rgb(h: f32, s2: f32, v: f32) -> (u8, u8, u8) {
         ((g + m) * 255.0) as u8,
         ((b3 + m) * 255.0) as u8,
     )
+}
+
+// ---------------------------------------------------------------- places, people
+
+/// position.get's shape onto the picker.
+pub fn apply_position(win: &AppWindow, v: &Value) {
+    let known = b(v, "known");
+    win.set_lp_have_fix(known);
+    win.set_lp_lat(v["lat"].as_f64().unwrap_or(0.0) as f32);
+    win.set_lp_lon(v["lon"].as_f64().unwrap_or(0.0) as f32);
+    win.set_lp_error(s(v, "error").into());
+}
+
+fn refresh_position(ui: &mut UiState) {
+    call_ui(
+        &ui.req.clone(),
+        "position.refresh",
+        json!({}),
+        |_ui, win, out| {
+            if let Ok(v) = out {
+                apply_position(win, &v);
+            }
+        },
+    );
+}
+
+/// The map page for a place: the card's facts, no tiles.
+fn open_map(ui: &mut UiState, win: &AppWindow, event_id: &str) {
+    let Some(item) = ui
+        .shadow
+        .iter()
+        .find(|i| s(i, "eventId") == event_id)
+        .cloned()
+    else {
+        return;
+    };
+    let loc = &item["location"];
+    let live = &item["liveShare"];
+    let is_own = b(&item, "isOwn");
+    let running = live["live"].as_bool().unwrap_or(false);
+    let ended = live["ended"].as_bool().unwrap_or(false);
+    let expires = live["expiresAt"].as_f64().unwrap_or(0.0);
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as f64)
+        .unwrap_or(0.0);
+    let sender_name = s(&item, "senderName").to_string();
+    win.set_mp_who(if is_own {
+        "You".into()
+    } else {
+        sender_name.as_str().into()
+    });
+    win.set_mp_own(is_own);
+    win.set_mp_live(running);
+    win.set_mp_ended(ended);
+    win.set_mp_stoppable(is_own && running);
+    win.set_mp_lat(loc["lat"].as_f64().unwrap_or(0.0) as f32);
+    win.set_mp_lon(loc["lon"].as_f64().unwrap_or(0.0) as f32);
+    win.set_mp_desc(s(loc, "description").into());
+    win.set_mp_self(loc["self"].as_bool().unwrap_or(true));
+    win.set_mp_initials(crate::rows::initials(&sender_name).into());
+    win.set_mp_tint(crate::rows::tint_for(s(&item, "sender")));
+    let stamp = crate::rows::bubble_stamp(item["ts"].as_i64().unwrap_or(0));
+    win.set_mp_status(
+        if running {
+            format!(
+                "Sharing until {}",
+                crate::rows::bubble_stamp(expires as i64)
+            )
+        } else if ended {
+            "Live share ended".to_string()
+        } else {
+            format!("Shared {stamp}")
+        }
+        .into(),
+    );
+    let left = ((expires - now) / 1000.0).max(0.0) as u64;
+    win.set_mp_remaining(
+        if running && left > 0 {
+            if left >= 3600 {
+                format!("{}h {:02}m", left / 3600, (left % 3600) / 60)
+            } else {
+                format!("{}:{:02}", left / 60, left % 60)
+            }
+        } else {
+            String::new()
+        }
+        .into(),
+    );
+}
+
+/// dm.create is idempotent: an existing conversation comes back.
+fn start_dm(ui: &mut UiState, user_id: &str) {
+    call_ui(
+        &ui.req.clone(),
+        "dm.create",
+        json!({"userId": user_id}),
+        |ui, win, out| {
+            if let Ok(v) = out {
+                let rid = s(&v, "roomId").to_string();
+                if !rid.is_empty() {
+                    crate::bridge::open_room(ui, win, &rid);
+                    win.set_nav("chat".into());
+                }
+            }
+        },
+    );
 }

@@ -93,6 +93,23 @@ fn main() -> anyhow::Result<()> {
         app.set_nav(page.into());
         h.shoot(page)?;
     }
+    // the location picker with a fix, and the map page for a live share
+    app.set_lp_mode("live".into());
+    app.set_lp_have_fix(true);
+    app.set_lp_lat(51.5007);
+    app.set_lp_lon(-0.1246);
+    app.set_nav("locpick".into());
+    h.shoot("locpick")?;
+    app.set_mp_who("Marlowe".into());
+    app.set_mp_live(true);
+    app.set_mp_status("Sharing until 3:00 PM".into());
+    app.set_mp_remaining("42:10".into());
+    app.set_mp_lat(51.5007);
+    app.set_mp_lon(-0.1246);
+    app.set_mp_self(true);
+    app.set_mp_initials("M".into());
+    app.set_nav("map".into());
+    h.shoot("map")?;
     app.set_nav("chat".into());
     h.settle();
 

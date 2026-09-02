@@ -19,6 +19,7 @@ export component MembersPage inherits Rectangle {
     in property <int> all-count;
     callback closed;
     callback invite;
+    callback member-clicked(string, string); // user id, display name
 
     property <string> title: root.filter-level >= 100 ? "Admins"
                            : root.filter-level >= 50 ? "Moderators" : "Members";
@@ -140,7 +141,7 @@ export component MembersPage inherits Rectangle {
                             vertical-alignment: center;
                         }
                     }
-                    mrow-touch := TouchArea { }
+                    mrow-touch := TouchArea { clicked => { root.member-clicked(member.user-id, member.display-name); } }
                 }
             }
         }

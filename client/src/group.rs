@@ -23,6 +23,10 @@ pub struct Policy {
     pub name: String,
     pub members: Vec<Member>,
     pub admins: Vec<String>,
+    /// Pinned message ids, oldest first. The one part of the policy
+    /// anyone in the conversation may change.
+    #[serde(default)]
+    pub pinned: Vec<String>,
 }
 
 impl Policy {
@@ -31,12 +35,14 @@ impl Policy {
             name: c.name.clone(),
             members: c.members.clone(),
             admins: c.admins.clone(),
+            pinned: c.pinned.clone(),
         }
     }
     pub fn apply(&self, c: &mut Conversation, me: &str) {
         c.name = self.name.clone();
         c.members = self.members.clone();
         c.admins = self.admins.clone();
+        c.pinned = self.pinned.clone();
         c.peers = self
             .members
             .iter()
@@ -189,6 +195,7 @@ pub async fn create(
         name: name.to_string(),
         members,
         admins: vec![my_identity],
+        pinned: Vec::new(),
     };
     let welcome = if kps.is_empty() {
         None
@@ -325,6 +332,44 @@ pub async fn rename(
     Ok(())
 }
 
+/// Replace the pinned message ids. Anyone in the conversation may.
+pub async fn set_pinned(
+    link: &Link,
+    st: &mut State,
+    provider: &SigilProvider,
+    conv: &Conversation,
+    pinned: Vec<String>,
+) -> anyhow::Result<()> {
+    let mut policy = Policy::from_conv(conv);
+    policy.pinned = pinned;
+    let me = st.username.clone();
+    if let Some(cc) = st
+        .conversations
+        .iter_mut()
+        .find(|c| c.group_id == conv.group_id)
+    {
+        policy.apply(cc, &me);
+    }
+    st.save()?;
+    let conv2 = st
+        .conversations
+        .iter()
+        .find(|c| c.group_id == conv.group_id)
+        .cloned()
+        .unwrap();
+    send_event(
+        link,
+        st,
+        provider,
+        &conv2,
+        envelope::Kind::Policy,
+        &[],
+        &serde_json::to_vec(&policy)?,
+    )
+    .await?;
+    Ok(())
+}
+
 /// Change who the admins are. Usernames in and out; only an admin may,
 /// and the last admin stays one.
 pub async fn set_admins(
@@ -357,12 +402,30 @@ pub async fn set_admins(
         anyhow::bail!("a conversation keeps at least one admin");
     }
     let me = st.username.clone();
-    if let Some(cc) = st.conversations.iter_mut().find(|c| c.group_id == conv.group_id) {
+    if let Some(cc) = st
+        .conversations
+        .iter_mut()
+        .find(|c| c.group_id == conv.group_id)
+    {
         policy.apply(cc, &me);
     }
     st.save()?;
-    let conv2 = st.conversations.iter().find(|c| c.group_id == conv.group_id).cloned().unwrap();
-    send_event(link, st, provider, &conv2, envelope::Kind::Policy, &[], &serde_json::to_vec(&policy)?).await?;
+    let conv2 = st
+        .conversations
+        .iter()
+        .find(|c| c.group_id == conv.group_id)
+        .cloned()
+        .unwrap();
+    send_event(
+        link,
+        st,
+        provider,
+        &conv2,
+        envelope::Kind::Policy,
+        &[],
+        &serde_json::to_vec(&policy)?,
+    )
+    .await?;
     Ok(())
 }
 
@@ -404,6 +467,12 @@ pub async fn on_left(
 ) -> anyhow::Result<bool> {
     let me_hex = hex::encode(st.identity().public());
     let me = st.username.clone();
+    let current = st
+        .conversations
+        .iter()
+        .find(|c| c.group_id == conv.group_id)
+        .cloned();
+    let conv = current.as_ref().unwrap_or(conv);
     let mut policy = Policy::from_conv(conv);
     policy.members.retain(|m| m.identity != identity_hex);
     policy.admins.retain(|a| a != identity_hex);
@@ -467,12 +536,31 @@ pub async fn apply_control(
     body: &str,
 ) -> anyhow::Result<Change> {
     let me = st.username.clone();
+    // `conv` may predate earlier events in the same batch: the state's copy
+    // is the one to judge and build on.
+    let current = st
+        .conversations
+        .iter()
+        .find(|c| c.group_id == conv.group_id)
+        .cloned();
+    let conv = current.as_ref().unwrap_or(conv);
     if kind == envelope::Kind::Policy as u16 {
         let policy: Policy = serde_json::from_str(body)?;
-        // only an admin, or the creator of a fresh conversation, may set policy
+        // only an admin, or the creator of a fresh conversation, may set
+        // policy; anyone may change the pins, and nothing else with them
         let from = hex::encode(from_identity);
         if !conv.admins.is_empty() && !conv.admins.contains(&from) {
-            anyhow::bail!("policy from a non-admin ignored");
+            let only_pins = policy.name == conv.name
+                && policy.admins == conv.admins
+                && policy.members.len() == conv.members.len()
+                && policy
+                    .members
+                    .iter()
+                    .zip(conv.members.iter())
+                    .all(|(a, b)| a.username == b.username && a.identity == b.identity);
+            if !only_pins {
+                anyhow::bail!("policy from a non-admin ignored");
+            }
         }
         if let Some(cc) = st
             .conversations

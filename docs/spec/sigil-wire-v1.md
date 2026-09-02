@@ -382,7 +382,10 @@ lowest identity commits their removal so the epoch moves on without them.
 ## 13. Media manifests
 
 An event of kind 9 carries JSON `{filename, mime, size, key, chunks[],
-caption, width?, height?}`. Each chunk is `XChaCha20-Poly1305(key,
+caption, width?, height?, duration_ms?, waveform?, sticker?, contact?}`.
+`duration_ms` and `waveform` (loudness per slice, 0 to 100) make the file a
+voice message; `sticker` an image shown on its own; `contact` a vCard.
+Receivers MUST ignore fields they do not know. Each chunk is `XChaCha20-Poly1305(key,
 nonce = u32le(index) ‖ 0×20, ad = u32le(index), plaintext)` over up to
 262 128 bytes of the file, padded to a 4 KiB multiple, stored with
 `blob.put`; `chunks` lists the blob ids in order.
@@ -439,3 +442,29 @@ KDF contexts introduced here: `sigil v1 requests envelope`,
 Signature and AEAD domains: `sigil v1 requests`, `sigil v1 token`,
 `sigil v1 shelf put`, `sigil v1 wrap put`, `sigil v1 credential`,
 `sigil v1 device`, `sigil v1 server card`.
+
+## 16. Polls, places, threads and pins
+
+All of these are events (protocol spec 7) inside the conversation's slot,
+so the server sees none of it.
+
+**Polls.** Kind 15 asks: JSON `{question, options[{id, text}], closed,
+max}`; `closed` means the numbers stay hidden until the poll ends, `max`
+how many options one person may pick. Kind 16 votes, with `reference` the
+poll's event id and body `{ids[]}`; a person's latest vote replaces their
+earlier one, and an empty list withdraws it. Kind 17 ends the poll, with
+the same `reference`; only the asker's kind 17 counts.
+
+**Places.** Kind 18 with an empty `reference` shares a place: `{lat, lon,
+description, self, until?}`. With `until` (ms since the epoch) it is a live
+share; later kind 18 events with `reference` = the share's event id carry
+`{lat, lon, until}` updates or `{end: true}`, and only the sharer's count.
+
+**Threads.** A text event (kind 1) whose `reference` is
+`thread:<root event id>` answers in a thread under that message;
+`thread:<root>|<event id>` also quotes a message inside it. Receivers keep
+thread replies out of the main timeline and count them on the root.
+
+**Pins.** The policy (section 8) gains `pinned[]`, the pinned messages'
+event ids. Anyone in the conversation may send a policy event that changes
+`pinned` and nothing else; every other change still needs an admin.

@@ -4,6 +4,7 @@
 //! always emitted. Frontends do not know what is underneath, by design.
 
 mod docs;
+mod kinds;
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -43,6 +44,8 @@ pub struct SigilSession {
     identity_pub: [u8; 32],
     /// A scanned link offer awaiting the user's emoji confirmation.
     pending_scan: Mutex<Option<sigil_client::linking::Scanned>>,
+    /// Running live-location shares: room id → the share's event id.
+    live_shares: Mutex<HashMap<String, String>>,
     /// Set when something changed since the last backup upload.
     dirty: std::sync::atomic::AtomicBool,
     /// Whether the last backup upload succeeded, for `recovery.status`.
@@ -64,6 +67,10 @@ pub struct Shape {
     /// Tor daemon at 127.0.0.1:9050; empty = direct.
     #[serde(default)]
     pub socks_proxy: String,
+    /// Fetch a card for links in messages, from this device. Off by
+    /// default: the site learns the address that fetched it.
+    #[serde(default)]
+    pub link_previews: bool,
 }
 
 pub fn load_shape() -> Shape {
@@ -161,6 +168,7 @@ async fn start(engine: &SharedEngine, acct: Account) -> anyhow::Result<()> {
         open: Mutex::new(HashSet::new()),
         history_path,
         typing_sent: Mutex::new(HashMap::new()),
+        live_shares: Mutex::new(HashMap::new()),
         username,
         identity_pub,
         pending_scan: Mutex::new(None),
@@ -361,6 +369,9 @@ fn param(p: &serde_json::Map<String, Value>, k: &str) -> String {
 
 /// First chance at every request. `None` means "not mine, carry on".
 pub async fn dispatch(engine: &SharedEngine, req: &Request) -> Option<Reply> {
+    if req.req == "link.preview" {
+        return Some(kinds::link_preview(&param(&req.params, "url")).await);
+    }
     let p = &req.params;
     match req.req.as_str() {
         "account.create" => return Some(create(engine, p).await),
@@ -397,10 +408,14 @@ pub async fn dispatch(engine: &SharedEngine, req: &Request) -> Option<Reply> {
                 sh.socks_proxy = px.trim().to_string();
                 changed = true;
             }
+            if let Some(b) = p.get("linkPreviews").and_then(Value::as_bool) {
+                sh.link_previews = b;
+                changed = true;
+            }
             if changed {
                 save_shape(&sh);
             }
-            return Some(Reply::ok(json!({"clockedSeconds": sh.clocked_seconds, "socksProxy": sh.socks_proxy, "appliesOn": "next connection"})));
+            return Some(Reply::ok(json!({"clockedSeconds": sh.clocked_seconds, "socksProxy": sh.socks_proxy, "linkPreviews": sh.link_previews, "appliesOn": "next connection"})));
         }
         "recovery.status" => {
             let active = engine.sigil.lock().clone();
@@ -432,6 +447,34 @@ pub async fn dispatch(engine: &SharedEngine, req: &Request) -> Option<Reply> {
             s.open.lock().remove(&param(p, "roomId"));
             Reply::ok(json!({}))
         }
+        "thread.open" => s.thread_open(engine, &param(p, "roomId"), &param(p, "rootId")).await,
+        "threads.list" => s.threads_list(&param(p, "roomId")),
+        "message.pin" => s.set_pin(engine, &kinds::split_key(&param(p, "roomId")).0, &param(p, "eventId"), true).await,
+        "message.unpin" => s.set_pin(engine, &kinds::split_key(&param(p, "roomId")).0, &param(p, "eventId"), false).await,
+        "pins.list" => s.pins_list(&kinds::split_key(&param(p, "roomId")).0).await,
+        "pins.items" => s.pins_items(&kinds::split_key(&param(p, "roomId")).0).await,
+        "poll.create" => s.poll_create(engine, p).await,
+        "poll.vote" => s.poll_vote(engine, p).await,
+        "poll.end" => s.poll_end(engine, p).await,
+        "stickers.list" => SigilSession::stickers_list(),
+        "sticker.send" => {
+            let mut params = p.clone();
+            params.insert("path".into(), json!(param(p, "url")));
+            params.insert("caption".into(), json!(param(p, "body")));
+            s.attachment_send(engine, &params, Extra { sticker: true, ..Default::default() }).await
+        }
+        "contact.send" => s.contact_send(engine, p).await,
+        "vcard.read" => s.vcard_read(p).await,
+        "contacts.list" => SigilSession::contacts_list(),
+        "contacts.save" => SigilSession::contacts_save(p),
+        "contacts.remove" => SigilSession::contacts_remove(p),
+        "location.send" => s.location_send(engine, p, None).await,
+        "location.startLive" => {
+            let ms = p.get("durationMs").and_then(Value::as_u64).unwrap_or(15 * 60 * 1000);
+            s.location_send(engine, p, Some(ms)).await
+        }
+        "location.stopLive" => s.location_stop_live(engine, p).await,
+        "location.map" => Reply::err("unavailable", "no map tiles: Sigil draws a pin card instead, so no tile server learns where you are looking"),
         "timeline.paginate" => s.paginate(engine, &param(p, "roomId")).await,
         "message.send" => {
             s.send_text(engine, &param(p, "roomId"), &param(p, "body"), None)
@@ -491,7 +534,7 @@ pub async fn dispatch(engine: &SharedEngine, req: &Request) -> Option<Reply> {
             };
             s.room_set_admins(engine, &param(p, "roomId"), &list("add"), &list("remove")).await
         }
-        "attachment.send" => s.attachment_send(engine, p, None).await,
+        "attachment.send" => s.attachment_send(engine, p, Extra::default()).await,
         "voice.send" => {
             // seconds from the recorder, milliseconds on the wire like every other duration
             let duration = (p.get("duration").and_then(Value::as_f64).unwrap_or(0.0).max(0.0) * 1000.0).round() as u64;
@@ -500,7 +543,7 @@ pub async fn dispatch(engine: &SharedEngine, req: &Request) -> Option<Reply> {
                 .and_then(Value::as_array)
                 .map(|a| a.iter().filter_map(Value::as_f64).map(|v| (v.clamp(0.0, 1.0) * 100.0).round() as u8).collect())
                 .unwrap_or_default();
-            s.attachment_send(engine, p, Some((duration, wave))).await
+            s.attachment_send(engine, p, Extra { voice: Some((duration, wave)), ..Default::default() }).await
         }
         "call.start" => s.call_start(engine, &param(p, "roomId")).await,
         "call.end" => s.call_end(engine, &param(p, "roomId"), &param(p, "callId")).await,
@@ -547,14 +590,7 @@ pub async fn dispatch(engine: &SharedEngine, req: &Request) -> Option<Reply> {
         r if r.starts_with("room.")
             || r.starts_with("message.")
             || r.starts_with("space.")
-            || r.starts_with("thread")
-            || r.starts_with("pins.")
-            || r.starts_with("poll.")
-            || r.starts_with("sticker")
-            || r.starts_with("contact")
-            || r.starts_with("location.")
-            || r.starts_with("link.")
-            || r.starts_with("vcard.") =>
+            || r.starts_with("link.") =>
         {
             Reply::err(
                 "unsupported",
@@ -645,10 +681,23 @@ fn text_item(
     obj
 }
 
+/// What rides on a file beyond its bytes.
+#[derive(Default)]
+pub(super) struct Extra {
+    /// A voice message's length (ms) and waveform.
+    pub voice: Option<(u64, Vec<u8>)>,
+    pub sticker: bool,
+    pub contact: bool,
+}
+
 /// A media item: image, video, audio or file, with the manifest kept on the
 /// item for `media.get`.
 fn media_item(id: &str, sender: &str, ts: i64, is_own: bool, m: &sigil_client::media::Manifest, local_path: &str) -> Value {
-    let kind = if !m.waveform.is_empty() {
+    let kind = if m.contact {
+        "contact"
+    } else if m.sticker {
+        "sticker"
+    } else if !m.waveform.is_empty() {
         "voice"
     } else if m.mime.starts_with("image/") {
         "image"
@@ -658,6 +707,16 @@ fn media_item(id: &str, sender: &str, ts: i64, is_own: bool, m: &sigil_client::m
         "audio"
     } else {
         "file"
+    };
+    let contact = if m.contact {
+        let p = std::path::Path::new(local_path);
+        if p.is_file() {
+            SigilSession::contact_summary(p, &m.caption)
+        } else {
+            json!({"displayName": m.caption, "userId": ""})
+        }
+    } else {
+        Value::Null
     };
     json!({
         "id": id,
@@ -671,6 +730,7 @@ fn media_item(id: &str, sender: &str, ts: i64, is_own: bool, m: &sigil_client::m
         "isOwn": is_own,
         "isHighlighted": false,
         "body": if m.caption.is_empty() { m.filename.clone() } else { m.caption.clone() },
+        "contact": contact,
         "isEdited": false,
         "reactions": [],
         "sendState": "sent",
@@ -689,7 +749,7 @@ fn media_item(id: &str, sender: &str, ts: i64, is_own: bool, m: &sigil_client::m
             "duration": m.duration_ms.map(|d| d as f64),
             "waveform": m.waveform.iter().map(|v| *v as f64 / 100.0).collect::<Vec<f64>>(),
             "path": local_path,
-            "thumbnailPath": if kind == "image" { local_path } else { "" },
+            "thumbnailPath": if kind == "image" || kind == "sticker" { local_path } else { "" },
         },
         "manifest": serde_json::to_value(m).unwrap_or(Value::Null),
     })
@@ -775,6 +835,7 @@ impl SigilSession {
     }
 
     async fn conversation(&self, room_id: &str) -> Option<Conversation> {
+        let (room_id, _) = kinds::split_key(room_id);
         self.inner
             .lock()
             .await
@@ -825,6 +886,9 @@ impl SigilSession {
             );
             return Reply::ok(json!({"key": room_id}));
         }
+        if let (room, Some(root)) = kinds::split_key(room_id) {
+            return self.thread_open(engine, &room, &root).await;
+        }
         if self.conversation(room_id).await.is_none() {
             return Reply::err("unknown_room", format!("unknown room {room_id}"));
         }
@@ -833,7 +897,7 @@ impl SigilSession {
             .history
             .lock()
             .get(room_id)
-            .cloned()
+            .map(|i| Self::main_items(i))
             .unwrap_or_default();
         engine.hub.broadcast(
             json!({"event":"timeline.reset","roomId":room_id,"items":items,"len":items.len()}),
@@ -962,10 +1026,12 @@ impl SigilSession {
             items.push(item.clone());
             items.len()
         };
+        let _ = len;
         self.save_history();
         self.mark_dirty();
-        if self.open.lock().contains(room_id) {
-            engine.hub.broadcast(json!({"event":"timeline.diff","roomId":room_id,"ops":[{"op":"pushBack","item":item}],"len":len}));
+        self.emit_push(engine, room_id, &item);
+        if let Some(root) = item.get("threadRoot").and_then(Value::as_str).filter(|r| !r.is_empty()) {
+            self.note_thread_reply(engine, room_id, root, &item);
         }
         self.broadcast_rooms(engine).await;
     }
@@ -993,7 +1059,9 @@ impl SigilSession {
         let Some(conv) = self.conversation(room_id).await else {
             return Reply::err("unknown_room", format!("unknown room {room_id}"));
         };
-        let reference = reply_to.clone().unwrap_or_default();
+        let (room_id, thread_root) = kinds::split_key(room_id);
+        let room_id = room_id.as_str();
+        let reference = kinds::make_reference(thread_root.as_deref(), reply_to.as_deref());
         let sent = {
             let mut g = self.inner.lock().await;
             let (a, p) = &mut *g;
@@ -1019,12 +1087,11 @@ impl SigilSession {
             .as_deref()
             .and_then(|eid| self.item_by_id(room_id, eid))
             .map(|i| reply_summary(&i));
-        self.append(
-            engine,
-            room_id,
-            text_item(&id, &self.username, now_ms(), true, body, reply_json),
-        )
-        .await;
+        let mut item = text_item(&id, &self.username, now_ms(), true, body, reply_json);
+        if let Some(root) = &thread_root {
+            item["threadRoot"] = json!(root);
+        }
+        self.append(engine, room_id, item).await;
         Reply::ok(json!({}))
     }
 
@@ -1236,11 +1303,9 @@ impl SigilSession {
                 }
             }
         }
-        if let Some((idx, item, len)) = changed {
+        if let Some((idx, _item, _len)) = changed {
             self.save_history();
-            if self.open.lock().contains(room_id) {
-                engine.hub.broadcast(json!({"event":"timeline.diff","roomId":room_id,"ops":[{"op":"set","index":idx,"item":item}],"len":len}));
-            }
+            self.emit_set(engine, room_id, idx);
         }
     }
 
@@ -1480,7 +1545,7 @@ impl SigilSession {
 
     /// A file, or with `voice` a voice message: the clip's length and
     /// waveform travel in the manifest so every device draws the same bars.
-    async fn attachment_send(&self, engine: &SharedEngine, p: &serde_json::Map<String, Value>, voice: Option<(u64, Vec<u8>)>) -> Reply {
+    async fn attachment_send(&self, engine: &SharedEngine, p: &serde_json::Map<String, Value>, extra: Extra) -> Reply {
         self.top_up().await;
         let room_id = param(p, "roomId");
         let path = std::path::PathBuf::from(param(p, "path"));
@@ -1494,10 +1559,12 @@ impl SigilSession {
             let (a, pr) = &mut *g;
             match sigil_client::media::upload(&self.link, a, &path, &caption).await {
                 Ok(mut m) => {
-                    if let Some((duration, wave)) = voice {
+                    if let Some((duration, wave)) = extra.voice {
                         m.duration_ms = Some(duration);
                         m.waveform = if wave.is_empty() { vec![50] } else { wave };
                     }
+                    m.sticker = extra.sticker;
+                    m.contact = extra.contact;
                     conversation::send_event(&self.link, a, pr, &conv, Kind::Media, &[], &serde_json::to_vec(&m).unwrap()).await.map(|s| (s, m))
                 }
                 Err(e) => Err(e),
@@ -1560,13 +1627,14 @@ impl SigilSession {
                         media.insert("thumbnailPath".into(), json!(path.to_string_lossy()));
                     }
                 }
-                Some((idx, Value::Object(it.clone()), items.len()))
-            };
-            if let Some((idx, item, len)) = updated {
-                me.save_history();
-                if me.open.lock().contains(&room_id) {
-                    e2.hub.broadcast(json!({"event":"timeline.diff","roomId":room_id,"ops":[{"op":"set","index":idx,"item":item}],"len":len}));
+                if m.contact {
+                    it.insert("contact".into(), SigilSession::contact_summary(&path, &m.caption));
                 }
+                Some(idx)
+            };
+            if let Some(idx) = updated {
+                me.save_history();
+                me.emit_set(&e2, &room_id, idx);
             }
         });
     }
@@ -1785,8 +1853,15 @@ impl SigilSession {
             conversation::Incoming::Text { from_identity, ts_ms, text, reference } => {
                 let sender = self.username_for(conv, &from_identity);
                 let is_own = from_identity == self.identity_pub;
-                let reply = if reference.is_empty() { None } else { self.item_by_id(&conv.group_id, &reference).map(|i| reply_summary(&i)) };
-                self.append(engine, &conv.group_id, text_item(&id, &sender, ts_ms as i64, is_own, &text, reply)).await;
+                let (thread_root, reply_to) = kinds::parse_reference(&reference);
+                let reply = reply_to.and_then(|r| self.item_by_id(&conv.group_id, &r)).map(|i| reply_summary(&i));
+                let mut item = text_item(&id, &sender, ts_ms as i64, is_own, &text, reply);
+                if let Some(root) = thread_root {
+                    if self.item_by_id(&conv.group_id, &root).is_some() {
+                        item["threadRoot"] = json!(root);
+                    }
+                }
+                self.append(engine, &conv.group_id, item).await;
             }
             conversation::Incoming::Event { from_identity, ts_ms, kind, reference, body } => {
                 let sender = self.username_for(conv, &from_identity);
@@ -1808,7 +1883,10 @@ impl SigilSession {
                             let item = json!({"id": id, "kind": "membership", "eventId": id, "sender": sender, "senderName": short_name(&sender), "senderAvatarPath": "", "ts": ts_ms, "isOwn": false, "isHighlighted": false, "body": text, "stateText": text, "sendState": "sent", "sendError": "", "readBy": [], "reactions": [], "can": {"edit": false, "reply": false, "redact": false, "react": false}});
                             self.append(engine, &conv.group_id, item).await;
                         }
-                        Ok(sigil_client::group::Change::Policy) => self.broadcast_rooms(engine).await,
+                        Ok(sigil_client::group::Change::Policy) => {
+                            self.broadcast_rooms(engine).await;
+                            self.broadcast_pinned(engine, &conv.group_id).await;
+                        }
                         Ok(sigil_client::group::Change::None) => {}
                         Err(e) => warn!("control event ignored: {e:#}"),
                     }
@@ -1835,6 +1913,12 @@ impl SigilSession {
                         let item = json!({"id": id, "kind": "call", "eventId": id, "sender": sender, "senderName": short_name(&sender), "senderAvatarPath": "", "ts": ts_ms, "isOwn": is_own, "isHighlighted": false, "body": text, "stateText": text, "callId": ev.room, "callState": state, "sendState": "sent", "sendError": "", "readBy": [], "reactions": [], "can": {"edit": false, "reply": false, "redact": false, "react": false}});
                         self.append(engine, &conv.group_id, item).await;
                     }
+                } else if kind == Kind::Poll as u16 || kind == Kind::Vote as u16 || kind == Kind::PollEnd as u16 {
+                    let is_own = from_identity == self.identity_pub;
+                    self.apply_poll_event(engine, &conv.group_id, &id, kind, &reference, &body, &sender, ts_ms as i64, is_own).await;
+                } else if kind == Kind::Location as u16 {
+                    let is_own = from_identity == self.identity_pub;
+                    self.apply_location_event(engine, &conv.group_id, &id, &reference, &body, &sender, ts_ms as i64, is_own).await;
                 } else {
                     self.apply_small(engine, &conv.group_id, kind, &reference, &body, &sender, ts_ms as i64).await;
                 }

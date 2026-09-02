@@ -27,6 +27,7 @@ export component Bubble inherits Rectangle {
     callback open-image(TimelineRow);
     callback play-video(TimelineRow);
     callback open-document(TimelineRow);
+    callback open-contact(TimelineRow);
     callback open-audio(TimelineRow);
     callback open-location(TimelineRow);
     callback open-link(TimelineRow);
@@ -577,6 +578,7 @@ export component Bubble inherits Rectangle {
                     // Contact card
                     if item.kind == "contact" : contact-row := Rectangle {
                         height: 48px;
+                        HoldArea { clicked => { if (!self.fired) { root.open-contact(item); } self.fired = false; } held => { root.open-menu(); } }
                         HorizontalLayout {
                             spacing: 10px;
                             alignment: start;

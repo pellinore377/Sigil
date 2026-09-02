@@ -30,8 +30,14 @@ impl Requester {
         self.handle.clone()
     }
 
+    /// Fire and forget, except that a refusal is worth a line in the log.
     pub fn fire(&self, req: &str, params: Value) {
-        self.call(req, params, |_| {});
+        let name = req.to_string();
+        self.call(req, params, move |reply| {
+            if let Reply::Err(e) = reply {
+                tracing::warn!("{name}: {} {}", e.code, e.message);
+            }
+        });
     }
 
     pub fn call(&self, req: &str, params: Value, done: impl FnOnce(Reply) + Send + 'static) {
@@ -90,6 +96,8 @@ pub struct UiState {
     /// roomId -> unsent composer text (Panel.qml drafts).
     pub drafts: HashMap<String, String>,
     pub pinned_by_room: HashMap<String, Vec<String>>,
+    /// The person a contact card or member sheet is about: (user id, name).
+    pub contact_ctx: (String, String),
     pub pagination_by_room: HashMap<String, String>,
     pub call: Value,
     pub devices: Value,
@@ -178,6 +186,7 @@ pub fn start(win: &AppWindow, rt: &tokio::runtime::Runtime, icons: IconSet) -> R
         receipts_by_room: HashMap::new(),
         drafts: HashMap::new(),
         pinned_by_room: HashMap::new(),
+        contact_ctx: Default::default(),
         pagination_by_room: HashMap::new(),
         call: Value::Null,
         devices: Value::Null,
@@ -558,6 +567,21 @@ fn wire_settings(win: &AppWindow, req: Requester) {
             });
         }
     });
+    win.on_set_previews({
+        let req = req.clone();
+        move |on| {
+            req.call("shape.settings", json!({"linkPreviews": on}), |reply| {
+                on_ui(move |ui, win| {
+                    if let Reply::Ok(v) = reply {
+                        apply_shape(win, &v);
+                        // cards asked for while previews were off are asked again
+                        ui.link_previews.clear();
+                        rebuild_timeline(ui, win);
+                    }
+                })
+            });
+        }
+    });
     win.on_set_notify({
         let req = req.clone();
         move |key, on| {
@@ -626,6 +650,7 @@ fn with_ui_get<T: Default>(f: impl FnOnce(&mut UiState) -> T) -> T {
 pub fn apply_shape(win: &AppWindow, v: &Value) {
     win.set_shape_clocked(v["clockedSeconds"].as_i64().unwrap_or(0) as i32);
     win.set_shape_proxy(v["socksProxy"].as_str().unwrap_or("").into());
+    win.set_shape_previews(v["linkPreviews"].as_bool().unwrap_or(false));
 }
 
 pub fn apply_notify(win: &AppWindow, v: &Value) {
@@ -793,6 +818,9 @@ fn handle_event(ui: &mut UiState, v: &Value) {
             if room == ui.open_room {
                 rebuild_timeline(ui, &win);
             }
+        }
+        "position" => {
+            crate::actions::apply_position(&win, &v);
         }
         "room.pinned" => {
             let room = v["roomId"].as_str().unwrap_or("").to_string();
@@ -1810,6 +1838,7 @@ fn start_demo(win: &AppWindow, rt: &tokio::runtime::Runtime, icons: IconSet) -> 
         receipts_by_room: HashMap::new(),
         drafts: HashMap::new(),
         pinned_by_room: HashMap::new(),
+        contact_ctx: Default::default(),
         pagination_by_room: HashMap::new(),
         call: Value::Null,
         devices: Value::Null,

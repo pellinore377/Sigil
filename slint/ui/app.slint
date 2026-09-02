@@ -11,7 +11,7 @@ import { RecoveryCodePage, BackupPasswordPage } from "recovery.slint";
 import { SettingsPage } from "pages/settings.slint";
 import { HomePage } from "home.slint";
 import { ChatPage } from "chat.slint";
-import { PageHolder, MenuEntry } from "furniture.slint";
+import { PageHolder, MenuEntry, ChoiceSheet } from "furniture.slint";
 import { RoomRow, TimelineRow, MemberRow, ThreadRow, UserRow, RoomSettingsModel, ReactionChip, EmojiItem, ReplyRef, CallParticipant, DeviceRow, PollOption, ReaderRow, DocLine, MsgPart, FxChar } from "model.slint";
 
 import { StartPage } from "pages/start.slint";
@@ -26,7 +26,7 @@ import { SearchPage } from "pages/search.slint";
 import { ChatThemePage, GradPair } from "pages/chattheme.slint";
 import { ThreadsPage } from "pages/threads.slint";
 import { PinsPage } from "pages/pins.slint";
-import { MapPage } from "pages/map.slint";
+import { MapPage, LocationPicker } from "pages/map.slint";
 import { DocPage, DocBlock, SheetRow, SheetTab, DocPageImage } from "pages/doc.slint";
 import { AudioPage } from "pages/audio.slint";
 import { ImageViewer, ViewerItem } from "viewer.slint";
@@ -71,6 +71,7 @@ export component AppWindow inherits Window {
     // settings
     in property <int> shape-clocked;
     in property <string> shape-proxy;
+    in property <bool> shape-previews;
     in property <bool> notify-enabled: true;
     in property <bool> notify-dms: true;
     in property <bool> notify-mentions: true;
@@ -220,6 +221,30 @@ export component AppWindow inherits Window {
     in-out property <bool> attach-open: false;
     in property <[StickerItem]> at-stickers;
     in property <bool> at-stickers-loaded;
+    in property <string> at-sticker-dir;
+    // location picker and map page, fed by the bridge
+    in-out property <string> lp-mode: "current";
+    in property <bool> lp-have-fix;
+    in property <float> lp-lat;
+    in property <float> lp-lon;
+    in property <string> lp-error;
+    in property <string> mp-who;
+    in property <bool> mp-own;
+    in property <bool> mp-live;
+    in property <bool> mp-ended;
+    in property <bool> mp-stoppable;
+    in property <string> mp-status;
+    in property <string> mp-remaining;
+    in property <float> mp-lat;
+    in property <float> mp-lon;
+    in property <string> mp-desc;
+    in property <bool> mp-self;
+    in property <string> mp-initials;
+    in property <color> mp-tint;
+    // the contact card's and a member's choice sheets
+    in-out property <bool> contact-open: false;
+    in-out property <bool> member-open: false;
+    in property <string> member-name;
     in-out property <bool> recorder-open: false;
     // Calls: rendered from the call.state digest; live wiring is the desktop
     // pass — Android builds the engine without the calls feature.
@@ -253,6 +278,7 @@ export component AppWindow inherits Window {
     callback set-password(string);
     callback set-clocked(int);
     callback set-proxy(string);
+    callback set-previews(bool);
     callback set-notify(string, bool);
     callback link-scan(string);
     callback link-confirm(bool);
@@ -290,10 +316,10 @@ export component AppWindow inherits Window {
 
     public function go-back() {
         if (root.nav == "thread") { root.go("threads"); return; }
-        if (root.nav == "threads" || root.nav == "pins") { root.nav = "chat"; return; }
+        if (root.nav == "threads" || root.nav == "pins") { root.go("chat"); return; }
         if (root.nav == "forward" || root.nav == "search" || root.nav == "chattheme"
             || root.nav == "roomsettings" || root.nav == "doc" || root.nav == "audio"
-            || root.nav == "map") { root.nav = "chat"; return; }
+            || root.nav == "map" || root.nav == "locpick") { root.go("chat"); return; }
         if (root.nav == "addpeople") { root.nav = root.add-return; return; }
         if (root.nav == "notifications" || root.nav == "admins" || root.nav == "privacy") {
             root.nav = root.settings-return;
@@ -451,6 +477,7 @@ export component AppWindow inherits Window {
                 open-image(item) => { root.act("viewer-open", item.event-id, ""); }
                 play-video(item) => { root.act("viewer-open", item.event-id, "video"); }
                 open-document(item) => { root.act("open-doc", item.event-id, ""); root.go("doc"); }
+                open-contact(item) => { root.act("open-contact", item.event-id, ""); }
                 open-audio(item) => { root.act("open-audio-page", item.event-id, ""); root.go("audio"); }
                 open-location(item) => { root.act("open-map", item.event-id, ""); root.go("map"); }
                 open-thread(rootId) => { root.act("open-thread", rootId, ""); }
@@ -505,7 +532,7 @@ export component AppWindow inherits Window {
                 pick-changed(h, s, v) => { root.act("theme-pick", h + "," + s, "" + v); }
                 accept-custom => { root.act("theme-accept-custom", "", ""); }
             } }
-        threads-holder := PageHolder { active: root.in-session && (root.nav == "threads" || root.nav == "thread"); ground: root.page-ground;
+        threads-holder := PageHolder { active: root.in-session && root.nav == "threads"; ground: root.page-ground;
             ThreadsPage {
                 width: 100%; height: 100%;
                 room-name: root.room-name;
@@ -523,7 +550,25 @@ export component AppWindow inherits Window {
                 unpin(ev) => { root.act("unpin", ev, ""); }
             } }
         map-holder := PageHolder { active: root.in-session && root.nav == "map"; ground: root.page-ground;
-            MapPage { width: 100%; height: 100%; closed => { root.go-back(); } } }
+            MapPage { width: 100%; height: 100%;
+                who: root.mp-who; own: root.mp-own; live: root.mp-live; ended: root.mp-ended;
+                stoppable: root.mp-stoppable; openable: true; status-text: root.mp-status;
+                remaining-label: root.mp-remaining; lat: root.mp-lat; lon: root.mp-lon;
+                description: root.mp-desc; self-marker: root.mp-self;
+                sender-initials: root.mp-initials; sender-tint: root.mp-tint;
+                closed => { root.go-back(); }
+                stop-live => { root.act("stop-live", "", ""); }
+                open-osm(u) => { root.act("open-link", u, ""); }
+            } }
+        locpick-holder := PageHolder { active: root.in-session && root.nav == "locpick"; ground: root.page-ground;
+            LocationPicker { width: 100%; height: 100%;
+                mode: root.lp-mode; have-fix: root.lp-have-fix; fix-lat: root.lp-lat; fix-lon: root.lp-lon;
+                position-error: root.lp-error;
+                my-avatar: root.my-avatar; my-initials: root.my-initials; my-tint: root.my-tint;
+                back-requested => { root.go-back(); }
+                share-requested(lat, lon, ms) => { root.act("location-share", "\{lat},\{lon}", "\{ms}"); }
+                retry-position => { root.act("position-refresh", "", ""); }
+            } }
         doc-holder := PageHolder { active: root.in-session && root.nav == "doc"; ground: root.page-ground;
             DocPage {
                 width: 100%; height: 100%;
@@ -556,6 +601,7 @@ export component AppWindow inherits Window {
                 members: root.me-members; filter-level: root.me-filter; all-count: root.me-all;
                 closed => { root.go-back(); }
                 invite => { root.add-return = "members"; root.go("addpeople"); }
+                member-clicked(uid, name) => { root.act("member-choice-open", uid, name); }
             } }
         addpeople-holder := PageHolder { active: root.in-session && root.nav == "addpeople"; ground: root.page-ground;
             addpeople-page := AddPeoplePage {
@@ -597,6 +643,7 @@ export component AppWindow inherits Window {
                 my-avatar: root.my-avatar; my-tint: root.my-tint; server: root.door-server;
                 recovery-state: root.recovery-state; backup-state: root.backup-state;
                 clocked-seconds: root.shape-clocked; socks-proxy: root.shape-proxy;
+                link-previews: root.shape-previews;
                 notify-enabled: root.notify-enabled; notify-dms: root.notify-dms;
                 notify-mentions: root.notify-mentions; notify-calls: root.notify-calls;
                 scan-state: root.scan-state; scan-sas: root.scan-sas; scan-error: root.scan-error;
@@ -606,6 +653,7 @@ export component AppWindow inherits Window {
                 open-password => { root.password-open = true; }
                 set-clocked(n) => { root.set-clocked(n); }
                 set-proxy(p) => { root.set-proxy(p); }
+                set-previews(on) => { root.set-previews(on); }
                 set-notify(k, on) => { root.set-notify(k, on); }
                 link-scan(offer) => { root.link-scan(offer); }
                 link-confirm(ok) => { root.link-confirm(ok); }
@@ -644,6 +692,7 @@ export component AppWindow inherits Window {
                 // (per page) stays in charge.
                 y: att-wrap.height - (self.height + 66px) * att-wrap.show;
                 stickers: root.at-stickers; stickers-loaded: root.at-stickers-loaded;
+                sticker-dir: root.at-sticker-dir;
                 pick-files => { root.act("pick-attach-files", "", ""); }
                 open-location(mode) => { root.act("attach-location", mode, ""); }
                 insert-emoji(e) => { root.act("composer-insert", e, ""); }
@@ -710,5 +759,20 @@ export component AppWindow inherits Window {
             scrub-state(on, pos) => { root.act("viewer-scrub", on ? "true" : "false", "" + pos); }
         }
     }
+    }
+
+    contact-sheet := ChoiceSheet {
+        width: 100%; height: 100%;
+        title: "Contact";
+        open <=> root.contact-open;
+        model: [{ t: "Message", v: "dm", sub: "" }, { t: "Save to contacts", v: "save", sub: "" }];
+        chose(v) => { root.contact-open = false; root.act("contact-choice", v, ""); }
+    }
+    member-sheet := ChoiceSheet {
+        width: 100%; height: 100%;
+        title: root.member-name;
+        open <=> root.member-open;
+        model: [{ t: "Message", v: "dm", sub: "" }, { t: "Share their contact here", v: "share", sub: "As a card in this conversation" }];
+        chose(v) => { root.member-open = false; root.act("member-choice", v, ""); }
     }
 }

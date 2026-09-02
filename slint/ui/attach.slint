@@ -95,6 +95,8 @@ export component AttachMenu inherits Rectangle {
     in-out property <string> note: "";
     in property <[StickerItem]> stickers;
     in property <bool> stickers-loaded: false;
+    /// Where packs live on this device (stickers.list tells us).
+    in property <string> sticker-dir;
 
     callback pick-files;
     callback open-location(string); // "pin" | "current" | "live"
@@ -352,7 +354,7 @@ export component AttachMenu inherits Rectangle {
         // A Flow: as many 56px cells as the width takes, packed left to right.
         property <int> cols: max(1, floor(self.width / 64px));
         if root.stickers.length == 0 : Text {
-            text: "No sticker packs yet.\nAdd one in Element (im.ponies.user_emotes) and it shows up here.";
+            text: "No sticker packs yet.\nPut a folder of images in " + (root.sticker-dir == "" ? "the stickers folder" : root.sticker-dir) + " and they show up here.";
             color: root.fg.with-alpha(0.6);
             font-family: Theme.font-ui;
             font-size: Theme.body-small;

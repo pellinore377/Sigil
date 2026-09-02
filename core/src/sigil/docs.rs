@@ -31,7 +31,7 @@ fn derived_path(key: &str, tag: &str, ext: &str) -> PathBuf {
 impl SigilSession {
     /// The file behind an event: its local path (downloaded once), name,
     /// mime, declared size, and a cache key.
-    async fn locate(
+    pub(super) async fn locate(
         &self,
         room_id: &str,
         event_id: &str,
@@ -231,7 +231,6 @@ fn thumb_json(prev: &crate::docs::Preview) -> Value {
                         lines.push(json!({"t": "row", "cells": cells}));
                     }
                 }
-                _ => {}
             }
         }
     }

@@ -33,6 +33,41 @@ pub enum Kind {
     Commit = 12,
     Proposal = 13,
     Link = 14,
+    /// A poll: `{question, options[{id,text}], closed, max}`.
+    Poll = 15,
+    /// A vote on a poll (reference = the poll's event id): `{ids[]}`.
+    Vote = 16,
+    /// The poll's author ends it (reference = the poll's event id).
+    PollEnd = 17,
+    /// A place: `{lat, lon, description, self, until?, end?}`.
+    Location = 18,
+}
+
+impl TryFrom<u16> for Kind {
+    type Error = ();
+    fn try_from(k: u16) -> Result<Kind, ()> {
+        Ok(match k {
+            1 => Kind::Text,
+            2 => Kind::Reaction,
+            3 => Kind::Edit,
+            4 => Kind::Redact,
+            5 => Kind::Receipt,
+            6 => Kind::Typing,
+            7 => Kind::Membership,
+            8 => Kind::Policy,
+            9 => Kind::Media,
+            10 => Kind::Call,
+            11 => Kind::Welcome,
+            12 => Kind::Commit,
+            13 => Kind::Proposal,
+            14 => Kind::Link,
+            15 => Kind::Poll,
+            16 => Kind::Vote,
+            17 => Kind::PollEnd,
+            18 => Kind::Location,
+            _ => return Err(()),
+        })
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

@@ -22,6 +22,7 @@ export component SettingsPage inherits Rectangle {
     // shape.settings
     in property <int> clocked-seconds;
     in property <string> socks-proxy;
+    in property <bool> link-previews;
     // notify.settings
     in property <bool> notify-enabled;
     in property <bool> notify-dms;
@@ -39,6 +40,7 @@ export component SettingsPage inherits Rectangle {
     callback open-password;
     callback set-clocked(int);
     callback set-proxy(string);
+    callback set-previews(bool);
     callback set-notify(string, bool);
     callback link-scan(string);
     callback link-confirm(bool);
@@ -183,6 +185,16 @@ export component SettingsPage inherits Rectangle {
                             text: "Empty means direct. A local Tor daemon is 127.0.0.1:9050. Applies on the next connection.";
                             color: root.fg.with-alpha(0.55); font-family: Theme.font-ui; font-size: Theme.body-small; wrap: word-wrap;
                         }
+                    }
+                }
+
+                SettingsGroup {
+                    title: "Links"; fg: root.fg;
+                    SettingsRow {
+                        fg: root.fg; icon: Icons.link; label: "Link previews";
+                        sublabel: "Fetch a card for links from this device. The site then sees your address, or your proxy's.";
+                        trailing: "toggle"; on: root.link-previews;
+                        clicked => { root.set-previews(!root.link-previews); }
                     }
                 }
 

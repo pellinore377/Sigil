@@ -20,6 +20,9 @@ pub struct Conversation {
     /// Identities allowed to change the policy (rename, invite, remove).
     #[serde(default)]
     pub admins: Vec<String>,
+    /// Pinned message ids, oldest first; anyone in the conversation may change them.
+    #[serde(default)]
+    pub pinned: Vec<String>,
     /// Server hosting the slots.
     pub slot_server: String,
     /// Highest slot sequence seen per epoch address (hex → seq).

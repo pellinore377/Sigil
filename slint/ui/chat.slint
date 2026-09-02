@@ -84,6 +84,7 @@ export component ChatPage inherits Rectangle {
     callback open-image(TimelineRow);
     callback play-video(TimelineRow);
     callback open-document(TimelineRow);
+    callback open-contact(TimelineRow);
     callback open-audio(TimelineRow);
     callback open-location(TimelineRow);
     callback open-link(string);
@@ -346,6 +347,7 @@ export component ChatPage inherits Rectangle {
                         open-image(it) => { root.open-image(it); }
                         play-video(it) => { root.play-video(it); }
                         open-document(it) => { root.open-document(it); }
+                        open-contact(it) => { root.open-contact(it); }
                         open-audio(it) => { root.open-audio(it); }
                         open-location(it) => { root.open-location(it); }
                         open-link(it) => { root.open-link(it.link-url); }

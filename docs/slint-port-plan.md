@@ -450,10 +450,25 @@ than in the headless suite; the recorder page is on the fixture sheet
 (`recorder.png`) with a clip ready to send. Gap kept: a video bubble shows
 its first frame only where ffmpeg is present.
 
-**Phase 6. More kinds.** Whichever of pins, polls, threads, stickers,
-contacts, location and link previews the decisions in part 7 keep, each as
-one engine change plus its bodies and pages. Files: `PollBody`,
-`ContactBody`, `LocationBody`, `PinsPage`, `ThreadsPage`, map pages.
+**Phase 6. More kinds.** *Done; `slint/tests/e2e-kinds.sh` has the app pin
+a message, ask a poll that both sides vote on and the asker ends, answer in
+a thread that the other side answers too, send a sticker from a local pack,
+share a contact card from the member sheet, share a place through the
+picker and open it on the map page, receive a place, and draw a link card
+for a page served on loopback once the switch is on.* Whichever of pins,
+polls, threads, stickers, contacts, location and link previews the
+decisions in part 7 keep, each as one engine change plus its bodies and
+pages. Files: `PollBody`, `ContactBody`, `LocationBody`, `PinsPage`,
+`ThreadsPage`, map pages.
+Engine work done here (`core/src/sigil/kinds.rs`, wire spec 16): pins as a
+policy field anyone may change; polls as kinds 15 to 17; threads as a text
+reference, with the main view hiding replies and a thread view per root;
+stickers and contacts as flagged files; places as kind 18 with live shares
+updated every half minute; link previews fetched on the device, off until
+switched on in Settings. Gaps kept, as decided: no map tiles (the pin card
+and the coordinates stand in, and `location.map` says so), and "drop a
+pin" waits for a map to tap on. A `sigil-cli event` command sends any raw
+event, which is how the tests play the other side.
 
 **Phase 7. Calls.** The media stack in the order of 5.5, then `CallPage`,
 `CallGrid`, `CallPiP`, `CallBanner`, `CallBar`, the wide layout, devices,

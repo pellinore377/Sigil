@@ -199,7 +199,8 @@ body bytes           // defined per kind by the application layer
 
 Kinds: 1 text, 2 reaction, 3 edit, 4 redact, 5 receipt, 6 typing,
 7 membership, 8 policy, 9 media, 10 call, 11 welcome, 12 commit,
-13 proposal, 14 link. Unknown kinds MUST be ignored, not rejected.
+13 proposal, 14 link, 15 poll, 16 vote, 17 poll end, 18 location (wire
+spec 16). Unknown kinds MUST be ignored, not rejected.
 
 Ordering of events in a slot is by the server-assigned sequence number,
 never by `ts_ms`.

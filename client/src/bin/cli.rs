@@ -90,6 +90,16 @@ enum Cmd {
     Rename { n: usize, name: String },
     /// Leave conversation `n`.
     Leave { n: usize },
+    /// Send a raw event of `kind` into conversation `n`, with an optional
+    /// reference (an event id) and a body: how a script votes on a poll,
+    /// shares a place, or answers in a thread.
+    Event {
+        n: usize,
+        kind: u16,
+        body: String,
+        #[arg(long, default_value = "")]
+        reference: String,
+    },
     /// Send a file into conversation `n`.
     Sendfile {
         n: usize,
@@ -390,6 +400,41 @@ async fn run() -> anyhow::Result<()> {
                 .ok_or_else(|| anyhow::anyhow!("no conversation #{n}"))?;
             sigil_client::group::leave(&link, &mut st, &provider, &conv).await?;
             println!("left");
+        }
+        Cmd::Event {
+            n,
+            kind,
+            body,
+            reference,
+        } => {
+            let mut st = State::load(&cli.state)?;
+            let provider = SigilProvider::open(&st.mls_path())?;
+            let link = Link::connect(&st.envoy, &st.device_id).await?;
+            let conv = st
+                .conversations
+                .get(n)
+                .cloned()
+                .ok_or_else(|| anyhow::anyhow!("no conversation #{n}"))?;
+            let kind = sigil_protocol::envelope::Kind::try_from(kind)
+                .map_err(|_| anyhow::anyhow!("unknown event kind {kind}"))?;
+            let sent = conversation::send_event(
+                &link,
+                &mut st,
+                &provider,
+                &conv,
+                kind,
+                reference.as_bytes(),
+                body.as_bytes(),
+            )
+            .await?;
+            let conv = st
+                .conversations
+                .iter()
+                .find(|c| c.group_id == conv.group_id)
+                .cloned()
+                .unwrap_or(conv);
+            print_caught(&st, &conv, &sent.caught_up);
+            println!("sent {}:{}", hex::encode(sent.address), sent.seq);
         }
         Cmd::Sendfile { n, path, caption } => {
             let mut st = State::load(&cli.state)?;

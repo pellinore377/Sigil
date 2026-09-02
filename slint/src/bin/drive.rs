@@ -16,6 +16,9 @@
 //!          its page, and a voice message.
 //!   groups create a group, add someone, wait for DRIVE_SYNC to appear (the
 //!          test lets them join first), make them admin, rename, leave.
+//!   kinds  the home scenario, then a pin, a poll (voted on from both
+//!          sides, then ended), a thread, a sticker, a contact card, a
+//!          place, and a link preview; the test plays the other side.
 //!
 //! The account's state goes wherever XDG_STATE_HOME points; the tests use
 //! a temporary directory.
@@ -63,6 +66,7 @@ fn main() -> anyhow::Result<()> {
         "home" => home(&h, &app, server, invite, &localpart),
         "chat" => chat(&h, &app, &req, server, invite, &localpart),
         "groups" => groups(&h, &app, server, invite, &localpart),
+        "kinds" => kinds(&h, &app, server, invite, &localpart),
         other => anyhow::bail!("unknown scenario {other}"),
     }
 }
@@ -446,6 +450,250 @@ fn chat(
     h.shoot("live-chat-voice")?;
     println!("drive chat ok");
     Ok(())
+}
+
+/// Everything beyond text and files: the test's Alice votes, answers in the
+/// thread and shares a place when the drive prints the ids she needs.
+fn kinds(
+    h: &Harness,
+    app: &sigil_slint::AppWindow,
+    server: &str,
+    invite: &str,
+    localpart: &str,
+) -> anyhow::Result<()> {
+    home(h, app, server, invite, localpart)?;
+    let find = |needle: &str| -> Option<sigil_slint::TimelineRow> {
+        app.get_items().iter().find(|i| i.body.contains(needle))
+    };
+    let alice = find("hello from alice").expect("alice's message");
+
+    // 1. pin alice's message; the pins page lists it
+    app.invoke_act("menu-action".into(), "pin".into(), alice.event_id.clone());
+    h.wait_until("the pin marker", Duration::from_secs(60), || {
+        find("hello from alice").map(|i| i.pinned).unwrap_or(false)
+    })?;
+    println!("pinned");
+    app.invoke_go("pins".into());
+    h.wait_until("the pins page", Duration::from_secs(20), || {
+        app.get_pi_loaded() && app.get_pi_items().row_count() == 1
+    })?;
+    h.shoot("live-pins")?;
+    app.invoke_go_back();
+
+    // 2. a poll: alice votes (the test), bob votes, bob ends it
+    app.invoke_act(
+        "create-poll".into(),
+        "Lunch?".into(),
+        "0\u{1f}Soup\u{1f}Bread".into(),
+    );
+    h.wait_until("the poll", Duration::from_secs(60), || {
+        app.get_items()
+            .iter()
+            .any(|i| i.kind == "poll" && i.poll_options.row_count() == 2)
+    })?;
+    let poll = app
+        .get_items()
+        .iter()
+        .find(|i| i.kind == "poll")
+        .expect("the poll row");
+    println!("poll {}", poll.event_id);
+    h.wait_until("alice's vote", Duration::from_secs(120), || {
+        app.get_items()
+            .iter()
+            .find(|i| i.kind == "poll")
+            .map(|i| {
+                i.poll_options
+                    .row_data(1)
+                    .map(|o| o.votes == 1)
+                    .unwrap_or(false)
+            })
+            .unwrap_or(false)
+    })?;
+    println!("alice voted");
+    app.invoke_act("vote".into(), poll.event_id.clone(), "0".into());
+    h.wait_until("bob's vote", Duration::from_secs(60), || {
+        app.get_items()
+            .iter()
+            .find(|i| i.kind == "poll")
+            .map(|i| {
+                i.poll_options
+                    .row_data(0)
+                    .map(|o| o.mine && o.votes == 1)
+                    .unwrap_or(false)
+            })
+            .unwrap_or(false)
+    })?;
+    h.shoot("live-poll")?;
+    app.invoke_act(
+        "menu-action".into(),
+        "endpoll".into(),
+        poll.event_id.clone(),
+    );
+    h.wait_until("the poll to end", Duration::from_secs(60), || {
+        app.get_items()
+            .iter()
+            .any(|i| i.kind == "poll" && i.poll_ended)
+    })?;
+    println!("poll ended");
+    h.shoot("live-poll-ended")?;
+
+    // 3. a thread under alice's message: bob answers in it, then alice does
+    app.invoke_act("open-thread".into(), alice.event_id.clone(), "".into());
+    h.wait_until("the thread view", Duration::from_secs(20), || {
+        app.get_nav() == "thread" && app.get_items().row_count() == 1
+    })?;
+    app.invoke_send_message("in the thread".into());
+    h.wait_until("bob's thread reply", Duration::from_secs(60), || {
+        app.get_items().row_count() == 2 && find("in the thread").is_some()
+    })?;
+    println!("thread {}", alice.event_id);
+    h.wait_until("alice's thread reply", Duration::from_secs(120), || {
+        find("alice in the thread").is_some()
+    })?;
+    h.shoot("live-thread")?;
+    app.invoke_go_back();
+    h.wait_until("back to the threads page", Duration::from_secs(20), || {
+        app.get_nav() == "threads"
+    })?;
+    h.wait_until("the threads list", Duration::from_secs(20), || {
+        app.get_th_loaded() && app.get_th_threads().row_count() == 1
+    })?;
+    anyhow::ensure!(
+        app.get_th_threads()
+            .row_data(0)
+            .map(|t| t.reply_count)
+            .unwrap_or(0)
+            == 2,
+        "the thread counts both replies"
+    );
+    h.shoot("live-threads")?;
+    app.invoke_go_back();
+    h.wait_until("the chat again", Duration::from_secs(20), || {
+        app.get_nav() == "chat"
+            && find("hello from alice")
+                .map(|i| i.thread_count == 2)
+                .unwrap_or(false)
+    })?;
+    h.shoot("live-thread-chip")?;
+
+    // 4. a sticker from a local pack
+    let packs =
+        std::path::PathBuf::from(std::env::var("XDG_STATE_HOME")?).join("sigil/stickers/smiles");
+    std::fs::create_dir_all(&packs)?;
+    std::fs::write(packs.join("smile.png"), sticker_png())?;
+    app.invoke_act("load-stickers".into(), "".into(), "".into());
+    h.wait_until("the sticker pack", Duration::from_secs(20), || {
+        app.get_at_stickers().row_count() == 1
+    })?;
+    app.invoke_act("send-sticker".into(), "0".into(), "".into());
+    h.wait_until("the sticker", Duration::from_secs(60), || {
+        app.get_items()
+            .iter()
+            .any(|i| i.is_own && i.kind == "sticker")
+    })?;
+    println!("sticker sent");
+    h.shoot("live-sticker")?;
+
+    // 5. alice's contact card, shared from the member sheet
+    app.invoke_act(
+        "member-choice-open".into(),
+        "@alice:sigil.test".into(),
+        "alice".into(),
+    );
+    h.wait_until("the member sheet", Duration::from_secs(10), || {
+        app.get_member_open()
+    })?;
+    h.shoot("live-member-sheet")?;
+    app.set_member_open(false);
+    app.invoke_act("member-choice".into(), "share".into(), "".into());
+    h.wait_until("the contact card", Duration::from_secs(60), || {
+        app.get_items()
+            .iter()
+            .any(|i| i.is_own && i.kind == "contact" && i.contact_id == "@alice:sigil.test")
+    })?;
+    println!("contact sent");
+    h.shoot("live-contact")?;
+
+    // 6. a place, through the picker, then the map page; alice sends one back
+    app.invoke_act("attach-location".into(), "current".into(), "".into());
+    h.wait_until("the picker", Duration::from_secs(20), || {
+        app.get_nav() == "locpick"
+    })?;
+    h.shoot("live-locpick")?;
+    app.invoke_act(
+        "location-share".into(),
+        "51.5007,-0.1246".into(),
+        "0".into(),
+    );
+    h.wait_until("the place", Duration::from_secs(60), || {
+        app.get_nav() == "chat"
+            && app
+                .get_items()
+                .iter()
+                .any(|i| i.is_own && i.kind == "location")
+    })?;
+    println!("location sent");
+    h.shoot("live-location")?;
+    let place = app
+        .get_items()
+        .iter()
+        .find(|i| i.is_own && i.kind == "location")
+        .expect("the place row");
+    app.invoke_act("open-map".into(), place.event_id.clone(), "".into());
+    app.invoke_go("map".into());
+    h.wait_until("the map page", Duration::from_secs(20), || {
+        app.get_nav() == "map" && app.get_mp_who() == "You"
+    })?;
+    h.shoot("live-map")?;
+    app.invoke_go_back();
+    h.wait_until("alice's place", Duration::from_secs(120), || {
+        app.get_items()
+            .iter()
+            .any(|i| !i.is_own && i.kind == "location" && i.location_label == "Paris")
+    })?;
+    println!("alice's place arrived");
+
+    // 7. a link preview, fetched by the app once the switch is on
+    app.invoke_set_previews(true);
+    h.wait_until("previews on", Duration::from_secs(20), || {
+        app.get_shape_previews()
+    })?;
+    app.invoke_send_message("see http://127.0.0.1:18450/page.html".into());
+    h.wait_until("the link card", Duration::from_secs(60), || {
+        find("page.html")
+            .map(|i| i.link_has && i.link_title == "A Sigil test page")
+            .unwrap_or(false)
+    })?;
+    println!("link previewed");
+    h.shoot("live-link")?;
+    println!("drive kinds ok");
+    Ok(())
+}
+
+/// A 48 px yellow disc with two eyes, as PNG bytes.
+fn sticker_png() -> Vec<u8> {
+    let n = 48u32;
+    let mut px = vec![0u8; (n * n * 4) as usize];
+    for y in 0..n {
+        for x in 0..n {
+            let (dx, dy) = (x as f32 - 23.5, y as f32 - 23.5);
+            let i = ((y * n + x) * 4) as usize;
+            if dx * dx + dy * dy <= 22.0 * 22.0 {
+                let eye = (dx.abs() - 8.0).abs() < 3.0 && (dy + 5.0).abs() < 3.0;
+                let (r, g, b) = if eye { (40, 40, 40) } else { (250, 205, 60) };
+                px[i..i + 4].copy_from_slice(&[r, g, b, 255]);
+            }
+        }
+    }
+    let mut out = Vec::new();
+    {
+        let mut enc = png::Encoder::new(&mut out, n, n);
+        enc.set_color(png::ColorType::Rgba);
+        enc.set_depth(png::BitDepth::Eight);
+        let mut w = enc.write_header().expect("png header");
+        w.write_image_data(&px).expect("png data");
+    }
+    out
 }
 
 /// Bob makes a group and runs it: adds Alice, makes her an admin, renames

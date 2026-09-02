@@ -31,6 +31,12 @@ pub struct Manifest {
     /// A voice message: loudness per slice, 0 to 100, for the bubble's bars.
     #[serde(default)]
     pub waveform: Vec<u8>,
+    /// A sticker: an image shown on its own, without a bubble.
+    #[serde(default)]
+    pub sticker: bool,
+    /// A shared contact: the file is a vCard.
+    #[serde(default)]
+    pub contact: bool,
 }
 
 fn nonce_for(index: u32) -> [u8; 24] {
@@ -106,6 +112,8 @@ pub async fn upload(
         height,
         duration_ms: None,
         waveform: Vec::new(),
+        sticker: false,
+        contact: false,
     })
 }
 
