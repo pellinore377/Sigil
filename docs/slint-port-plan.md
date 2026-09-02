@@ -188,6 +188,8 @@ already in the engine:
 | **Create account** | `account.create{username, invite, password?, envoy?}` | Username as `@name:server`, invite code from the server admin, optional password with the explanation "lets you recover everything with your password and a printed code". Advanced: Envoy address |
 | **Recover** | `account.recover{username, password, code}` | Username, password, the printed code. Error copy for a wrong secret and for the server's back-off |
 | **Link this device** | `link.offer` then `link.state` events | Shows a QR (the offer string) and the seven emoji when they arrive; `done` opens Home. On the **existing** device: Settings → Link a device → `link.scan{offer}` (camera on phone, paste on desktop) → seven emoji → `link.confirm{ok}` |
+| **Server first** | `account.probe{server}` (new) | The first screen asks only for the server, then reads its card: open registration, invite codes, SSO, TPM. The next screen shows just the doors that server offers |
+| **SSO** | `account.sso{server}` (new), then `account.create{gate}` | When the server gates names with OIDC: one button, "Continue with <provider>". The browser round-trip gives the engine an ID token. A first-time `sub` lands on Create account with the username prefilled and becomes an account at once; a returning `sub` on a new device lands on Restore (link, or password and code, or password alone when the server has a TPM), every path gated by that token |
 | **Recovery code** | `recovery.code` | Shown once after account creation with a password, and from Settings; "write this down" page in the `RecoveryPage` layout |
 | **Backup password** | `account.setPassword`, `recovery.status` | Set or change; shows backup state (enabled, pending, disabled) |
 
@@ -273,6 +275,7 @@ feature half of "1:1".
 | **Audio info** | cover art, accent, duration, waveform | re-wire `audio.info` |
 | **Media ready** | already delivered as a `set` diff; the QML also listened for `media.ready` | keep the diff; the bridge derives the signal |
 | **Calls, app side** | see 5.5 | `call.mute`, `call.camera`, `call.screenshare`, `call.devices`, `call.setDevice`, `call.react`, `call.decline` are **app-side** in Slint (the media stack lives in the app), so the bridge answers them itself and the engine keeps signalling only |
+| **SSO gate** | design B24: the server validates an OIDC ID token (issuer, audience, expiry, JWKS) as the registration gate and for recovery; config `registration = "oidc"`, `oidc_issuer`, `oidc_client_id`; the card already flags it | server: token validation; engine: `account.probe`, `account.sso` (PKCE, loopback redirect), `gate` on `account.create` and `account.recover` |
 | **Housekeeping** | | `engine.rs` still answers `call.*` with "calls arrive with Phase 7" when the Sigil session is absent; reword to "not signed in" |
 
 Everything here is a Sigil event inside the conversation's encrypted

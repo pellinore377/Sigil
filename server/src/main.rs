@@ -63,10 +63,19 @@ async fn main() -> anyhow::Result<()> {
             role,
             listen,
         } => {
+            // the store lives next to the config file, so one directory
+            // holds everything the server keeps
+            let data_dir = cli
+                .config
+                .parent()
+                .filter(|p| !p.as_os_str().is_empty())
+                .map(|p| p.join("data"))
+                .unwrap_or_else(|| std::path::PathBuf::from("./data"));
             let cfg = Config {
                 hostname,
                 role,
                 listen,
+                data_dir,
                 ..Default::default()
             };
             std::fs::write(&cli.config, toml::to_string_pretty(&cfg)?)?;

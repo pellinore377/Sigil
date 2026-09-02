@@ -47,8 +47,13 @@ docker compose -f server/docker-compose.yml run --rm sigil --config /data/sigil.
 docker compose -f server/docker-compose.yml up -d
 ```
 
-Set `tls_cert` and `tls_key` in `data/sigil.toml` to PEM files inside the
-volume. Until ACME lands, a certificate from any ACME client works.
+Everything the server keeps lives in `server/data/` on the host (the
+config, the database, the admin token). Behind a reverse proxy that
+terminates TLS (Caddy, Traefik, Nginx Proxy Manager), leave `tls_cert` and
+`tls_key` out and proxy `https://<hostname>` to port 8443 with WebSocket
+support; otherwise set them to PEM files inside `server/data/`. Calls need
+UDP port 8444 forwarded straight to the container and `media_public` set
+to your public address.
 
 ## Config
 
