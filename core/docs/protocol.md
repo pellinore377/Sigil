@@ -16,6 +16,9 @@ Error codes: `bad_request not_logged_in login_in_progress oidc_unsupported slidi
 | `ping`, `status` | | `status` object |
 | `account.create` | `username` (`@name:server`), `invite`, `envoy?` (default `wss://<server>/envoy`) | registers the name, draws tokens, publishes key packages; `status` becomes `loggedIn`. Password and recovery arrive with Phase 4; device linking with Phase 3 |
 | `account.status` | | `{exists, active}` |
+| `link.offer` | `username`, `envoy?` | new device: `{offer}` to show as a QR code; then `link.state` events: `offer`, `sas{sas}`, `joining{with}`, `done` (session starts) or `failed{error}` |
+| `link.scan` | `offer` | existing device: `{sas}`, also pushed as `link.state{state:"sas"}`; nothing is sent yet |
+| `link.confirm` | `ok` | existing device, after the user compared the emoji: `ok:true` transfers the account and adds the new device to every conversation; `ok:false` cancels |
 | `logout` | `wipe` | `wipe` deletes the account, MLS store and history from this device |
 | `recovery.status`, `recovery.recover` | | `recovery.status` object; placeholders until Phase 4 |
 | `login.*` | | *(removed)* answer `unsupported` |

@@ -314,25 +314,27 @@ nonce [16]
 ```
 
 ```
-offer_rendezvous = KDF("sigil v1 link offer", offer_bytes)
+offer_slot = EpochMaterial(KDF("sigil v1 link offer", offer_bytes))     // section 6 derivations
 ```
 
 The existing device scans the offer, computes
-`(ct, shared) = SigilKEM.Encapsulate(kem_pub, eseed)`, writes `ct` to the
-slot `offer_rendezvous`, and both sides derive:
+`(ct, shared) = SigilKEM.Encapsulate(kem_pub, eseed)`, and writes `ct` as
+an ordinary envelope (section 7, kind 14) into the offer slot. The new
+device has no tokens yet, so it only reads, with the offer slot's
+`read_cap`; the existing device pays for every write in the exchange.
+Both sides then derive:
 
 ```
 link_secret = KDF("sigil v1 link secret", shared ‖ nonce)
-rendezvous  = KDF("sigil v1 link rendezvous", link_secret)   // the transfer slot
-link_key    = KDF("sigil v1 link key", link_secret)          // seals the transfer
+link_slot   = EpochMaterial(KDF("sigil v1 link rendezvous", link_secret))
 sas         = KDF_n("sigil v1 link sas", link_secret, 7), each byte & 0x3f
 ```
 
 Both devices display the seven emoji `TABLE[sas[i]]` from Appendix B in
 order. The user MUST confirm the match on the *existing* device before it
-writes anything to `rendezvous`. The transfer is a sequence of envelopes
-(section 7) sealed with `link_key` in place of `envelope_key` and
-`rendezvous` in place of `address`, carrying events of kind 14.
+writes anything to the link slot. The transfer is a sequence of envelopes
+in the link slot carrying events of kind 14, whose bodies are defined in
+the wire specification (section 10 there).
 
 Vector (`linking`): new-device seed `0f`×32, nonce `10`×16, eseed `11`×32 →
 sas indices `[60, 6, 28, 45, 17, 37, 51]`, displayed `📌 🐸 ☕ 🚂 🍌 🎯 ☁️`.
@@ -365,7 +367,7 @@ sigil v1 bag request            sigil v1 bag response
 sigil v1 backup key             sigil v1 backup label
 sigil v1 tpm auth               sigil v1 recovery code
 sigil v1 link secret            sigil v1 link rendezvous
-sigil v1 link key               sigil v1 link sas
+sigil v1 link sas
 sigil v1 link offer
 sigil v1 requests envelope      sigil v1 token key id
 sigil v1 test                   sigil v1 test rng        (vectors only)

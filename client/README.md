@@ -20,6 +20,11 @@ Design: [`docs/blind-backend.md`](../docs/blind-backend.md). Wire protocol:
   backfill deduped against live delivery, own messages read back from the
   local record, commits merged and the address rotated.
 
+- `link-offer`, `link-scan`: add a device. The new device shows an offer,
+  the existing one scans it, both show seven emoji, the existing device
+  confirms and transfers the identity, tokens and conversations, then adds
+  the new device's MLS leaf to every conversation.
+
 State is two JSON files next to each other: the account (`<name>.json`)
 and the MLS store (`<name>.mls.json`). Both hold secrets in Phase 2; the
 engine's keystore takes them over in Phase 2b.

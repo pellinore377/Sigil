@@ -709,7 +709,12 @@ impl Frame {
                 queue_seq,
                 slot_seq,
                 envelope,
-            } => w.u8(3).fixed(wake_handle).u64(*queue_seq).u64(*slot_seq).bytes(envelope),
+            } => w
+                .u8(3)
+                .fixed(wake_handle)
+                .u64(*queue_seq)
+                .u64(*slot_seq)
+                .bytes(envelope),
             Ack {
                 wake_handle,
                 queue_seq,

@@ -67,5 +67,40 @@ B room.open roomId="$ROOM" initialItems:=60 | result || fail "bob room.open afte
 A message.send roomId="$ROOM" body="after restart" | result
 sleep 4
 python3 -c "import json; h=json.load(open('$W/b/sigil/sigil-history.json'))['$ROOM']; assert h[-1]['body']=='after restart', h[-1]" || fail "bob missed message after restart" engine-b.log
-! grep -q "ERROR" engine-a.log engine-b.log || fail "engine logged errors" engine-a.log engine-b.log
+# link a second device for alice: engine c shows an offer, engine a scans and confirms
+mkdir -p "$W/c"; start_engine c; sleep 2.5
+C() { SIGIL_SOCKET=$W/run/c.sock $EN cli "$@"; }
+timeout 60 env SIGIL_SOCKET=$W/run/c.sock $EN cli ping --follow >c-events.json 2>&1 &
+OFFER=$(C link.offer username=@alice:sigil.test envoy=ws://127.0.0.1:18444/envoy | python3 -c "import json,sys; print(json.load(sys.stdin)['result']['offer'])")
+sleep 1
+SAS_A=$(A link.scan offer="$OFFER" | python3 -c "import json,sys; print(json.load(sys.stdin)['result']['sas'])")
+A link.confirm ok:=true | result || fail "link.confirm" engine-a.log
+sleep 4
+python3 - "$SAS_A" <<'PY' || fail "link events at the new device" c-events.json
+import json,sys
+raw=open('c-events.json').read(); dec=json.JSONDecoder(); i=0; states=[]; sas=None
+while i<len(raw):
+    while i<len(raw) and raw[i] in ' \n\r\t': i+=1
+    if i>=len(raw): break
+    try: d,i=dec.raw_decode(raw,i)
+    except Exception: break
+    if d.get('event')=='link.state':
+        states.append(d['state'])
+        if d['state']=='sas': sas=d['sas']
+assert 'done' in states, states
+assert sas==sys.argv[1], (sas, sys.argv[1])
+PY
+C status | grep -q '"userId": "@alice:sigil.test"' || fail "linked device not signed in" engine-c.log
+C rooms.list | grep -q '"name": "bob"' || fail "linked device has no conversation" engine-c.log
+C room.open roomId="$ROOM" initialItems:=60 | result || fail "linked device room.open"
+# the linked device sends; alice's first device and bob both see it as alice
+C message.send roomId="$ROOM" body="from the second device" | result || fail "linked device send" engine-c.log
+sleep 4
+python3 -c "import json; h=json.load(open('$W/a/sigil/sigil-history.json'))['$ROOM']; it=h[-1]; assert it['body']=='from the second device' and it['isOwn'], it" || fail "first device did not see the linked device's message" engine-a.log
+python3 -c "import json; h=json.load(open('$W/b/sigil/sigil-history.json'))['$ROOM']; it=h[-1]; assert it['body']=='from the second device' and it['sender']=='@alice:sigil.test', it" || fail "bob did not see the linked device's message" engine-b.log
+# and bob's reply reaches both of alice's devices
+B message.send roomId="$ROOM" body="hello both" | result
+sleep 4
+for d in a c; do python3 -c "import json; h=json.load(open('$W/$d/sigil/sigil-history.json'))['$ROOM']; assert h[-1]['body']=='hello both', h[-1]" || fail "device $d missed bob's reply" engine-$d.log; done
+! grep -q "ERROR" engine-a.log engine-b.log engine-c.log || fail "engine logged errors" engine-a.log engine-b.log engine-c.log
 echo "e2e-sigil ok"

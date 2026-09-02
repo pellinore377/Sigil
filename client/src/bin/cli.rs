@@ -62,6 +62,21 @@ enum Cmd {
         #[arg(long, default_value_t = 0)]
         count: usize,
     },
+    /// New device: show a link offer and wait for an existing device to scan it.
+    LinkOffer {
+        #[arg(long)]
+        username: String,
+        #[arg(long)]
+        envoy: String,
+        #[arg(long)]
+        offer_file: Option<PathBuf>,
+    },
+    /// Existing device: scan an offer (the text, or @file), confirm the emoji, transfer.
+    LinkScan {
+        offer: String,
+        #[arg(long)]
+        yes: bool,
+    },
 }
 
 #[tokio::main]
@@ -226,9 +241,25 @@ async fn run() -> anyhow::Result<()> {
                 .get(n)
                 .cloned()
                 .ok_or_else(|| anyhow::anyhow!("no conversation #{n}"))?;
-            let seq = conversation::send_text(&link, &mut st, &provider, &conv, &text).await?;
-            println!("sent as seq {seq}");
+            let sent = conversation::send_event(
+                &link,
+                &mut st,
+                &provider,
+                &conv,
+                sigil_protocol::envelope::Kind::Text,
+                &[],
+                text.as_bytes(),
+            )
+            .await?;
+            print_caught(&st, &conv, &sent.caught_up);
+            println!("sent as seq {}", sent.seq);
         }
+        Cmd::LinkOffer {
+            username,
+            envoy,
+            offer_file,
+        } => link_offer(cli.state.clone(), username, envoy, offer_file).await?,
+        Cmd::LinkScan { offer, yes } => link_scan(cli.state.clone(), offer, yes).await?,
         Cmd::Listen { n, count } => {
             let mut st = State::load(&cli.state)?;
             let provider = SigilProvider::open(&st.mls_path())?;
@@ -238,77 +269,184 @@ async fn run() -> anyhow::Result<()> {
                 .get(n)
                 .cloned()
                 .ok_or_else(|| anyhow::anyhow!("no conversation #{n}"))?;
-            let (mut handle, ep) =
-                conversation::subscribe(&link, &mut st, &provider, &conv).await?;
-            eprintln!(
-                "listening on {} (slot {}…)",
-                conv.peers.join(", "),
-                hex::encode(&ep.address[..8])
-            );
-            let mut seen = std::collections::HashSet::new();
+            // Catch up (which follows rotations), then subscribe to the
+            // current address and deliver live; a commit sends us round again.
             let mut got = 0;
-            let show = |st: &State, seq: u64, env: &[u8]| -> bool {
-                if let Some(text) = conversation::own_sent(st, &conv, &ep.address, seq) {
-                    println!("{seq} me: {text}");
-                    return true;
+            'epoch: loop {
+                let caught = conversation::catch_up(&link, &mut st, &provider, &conv).await?;
+                got += print_caught(&st, &conv, &caught);
+                if count > 0 && got >= count {
+                    break;
                 }
-                match conversation::receive(&provider, &conv, env) {
-                    Ok(conversation::Incoming::Text {
-                        from_identity,
-                        ts_ms,
-                        text,
-                        ..
-                    }) => {
-                        println!("{seq} [{ts_ms}] {}: {text}", who(st, &conv, &from_identity));
-                        true
-                    }
-                    Ok(conversation::Incoming::Rotated) => {
-                        println!("{seq} (epoch changed)");
-                        false
-                    }
-                    Ok(conversation::Incoming::Event { kind, .. }) | Ok(conversation::Incoming::Other { kind }) => {
-                        println!("{seq} (event kind {kind})");
-                        false
-                    }
-                    Err(e) => {
-                        println!("{seq} (cannot process: {e})");
-                        false
-                    }
-                }
-            };
-            for (seq, env) in conversation::backfill(&link, &provider, &conv, 0).await? {
-                if seen.insert(seq) && show(&st, seq, &env) {
-                    got += 1;
-                }
-            }
-            let mut rx = link.deliveries.lock().await;
-            while count == 0 || got < count {
-                let Some(f) = rx.recv().await else { break };
-                if let Frame::Deliver {
-                    wake_handle,
-                    queue_seq,
-                    slot_seq,
-                    envelope,
-                } = f
-                {
+                let (handle, ep) =
+                    conversation::subscribe(&link, &mut st, &provider, &conv).await?;
+                eprintln!(
+                    "listening on {} (slot {}…)",
+                    conv.peers.join(", "),
+                    hex::encode(&ep.address[..8])
+                );
+                let mut rx = link.deliveries.lock().await;
+                while count == 0 || got < count {
+                    let Some(f) = rx.recv().await else {
+                        break 'epoch;
+                    };
+                    let Frame::Deliver {
+                        wake_handle,
+                        queue_seq,
+                        slot_seq,
+                        envelope,
+                    } = f
+                    else {
+                        continue;
+                    };
                     link.tx
                         .send(Frame::Ack {
                             wake_handle,
                             queue_seq,
                         })
                         .await?;
-                    if wake_handle != handle {
+                    if wake_handle != handle
+                        || slot_seq <= conversation::cursor(&st, &conv, &ep.address)
+                    {
                         continue;
                     }
-                    if seen.insert(slot_seq) && show(&st, slot_seq, &envelope) {
-                        got += 1;
+                    conversation::set_cursor(&mut st, &conv, &ep.address, slot_seq);
+                    st.save()?;
+                    if let Some((_, text)) =
+                        conversation::own_sent(&st, &conv, &ep.address, slot_seq)
+                    {
+                        if !text.is_empty() {
+                            println!("{slot_seq} me: {text}");
+                            got += 1;
+                        }
+                        continue;
                     }
-                    let _ = &mut handle;
+                    match conversation::receive(&provider, &conv, &envelope) {
+                        Ok(conversation::Incoming::Text {
+                            from_identity,
+                            ts_ms,
+                            text,
+                            ..
+                        }) => {
+                            println!(
+                                "{slot_seq} [{ts_ms}] {}: {text}",
+                                who(&st, &conv, &from_identity)
+                            );
+                            got += 1;
+                        }
+                        Ok(conversation::Incoming::Rotated) => {
+                            println!("{slot_seq} (epoch changed)");
+                            drop(rx);
+                            continue 'epoch;
+                        }
+                        Ok(conversation::Incoming::Event { kind, .. })
+                        | Ok(conversation::Incoming::Other { kind }) => {
+                            println!("{slot_seq} (event kind {kind})")
+                        }
+                        Err(e) => println!("{slot_seq} (cannot process: {e})"),
+                    }
                 }
+                break;
             }
         }
     }
     Ok(())
+}
+
+async fn link_offer(
+    state: PathBuf,
+    username: String,
+    envoy: String,
+    offer_file: Option<PathBuf>,
+) -> anyhow::Result<()> {
+    let (_, server) = sigil_protocol::names::parse_username(&username)
+        .map_err(|_| anyhow::anyhow!("bad username"))?;
+    let offer = sigil_client::linking::Offer::new();
+    println!("{}", offer.text());
+    if let Some(f) = &offer_file {
+        std::fs::write(f, offer.text())?;
+    }
+    eprintln!("scan this on a device that is signed in as {username}");
+    let (st, _extra) =
+        sigil_client::linking::wait_for_link(&state, server, &envoy, &offer, |p| match p {
+            sigil_client::linking::Progress::Sas(s) => {
+                eprintln!("emoji: {s}   (confirm on the other device)")
+            }
+            sigil_client::linking::Progress::Welcomed(w) => {
+                eprintln!("joined conversation with {w}")
+            }
+            sigil_client::linking::Progress::Done => eprintln!("linked"),
+        })
+        .await?;
+    println!(
+        "linked as {} with {} conversations and {} tokens",
+        st.username,
+        st.conversations.len(),
+        st.tokens.len()
+    );
+    Ok(())
+}
+
+async fn link_scan(state: PathBuf, offer: String, yes: bool) -> anyhow::Result<()> {
+    let offer = if let Some(f) = offer.strip_prefix('@') {
+        std::fs::read_to_string(f)?
+    } else {
+        offer
+    };
+    let mut st = State::load(&state)?;
+    let provider = SigilProvider::open(&st.mls_path())?;
+    let link = Link::connect(&st.envoy, &st.device_id).await?;
+    let scanned = sigil_client::linking::scan(&link, &mut st, &offer).await?;
+    println!("emoji: {}", scanned.sas);
+    if !yes {
+        eprint!("do they match what the new device shows? [y/N] ");
+        let mut line = String::new();
+        std::io::stdin().read_line(&mut line)?;
+        if !line.trim().eq_ignore_ascii_case("y") {
+            anyhow::bail!("not confirmed; nothing was sent");
+        }
+    }
+    sigil_client::linking::transfer(&link, &mut st, &provider, scanned, vec![], |p| match p {
+        sigil_client::linking::Progress::Welcomed(w) => {
+            eprintln!("added the new device to the conversation with {w}")
+        }
+        sigil_client::linking::Progress::Done => eprintln!("done"),
+        _ => {}
+    })
+    .await?;
+    println!("linked; {} tokens left here", st.tokens.len());
+    Ok(())
+}
+
+/// Print events processed while catching up. Returns how many were messages.
+fn print_caught(
+    st: &State,
+    conv: &sigil_client::state::Conversation,
+    caught: &[conversation::Caught],
+) -> usize {
+    let mut n = 0;
+    for c in caught {
+        match &c.incoming {
+            conversation::Incoming::Text {
+                from_identity,
+                ts_ms,
+                text,
+                ..
+            } => {
+                println!(
+                    "{} [{ts_ms}] {}: {text}",
+                    c.seq,
+                    who(st, conv, from_identity)
+                );
+                n += 1;
+            }
+            conversation::Incoming::Rotated => println!("{} (epoch changed)", c.seq),
+            conversation::Incoming::Event { kind, .. } | conversation::Incoming::Other { kind } => {
+                println!("{} (event kind {kind})", c.seq)
+            }
+        }
+    }
+    n
 }
 
 fn names_addr(identity_pub: &[u8; 32], period: u32) -> [u8; 32] {

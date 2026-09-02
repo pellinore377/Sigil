@@ -8,9 +8,15 @@ use dashmap::DashMap;
 use futures_util::{SinkExt, StreamExt};
 use redb::ReadableTable;
 use sigil_protocol::wire::Frame;
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::mpsc;
+
+/// Per handle, the Envoy keeps at most this many undelivered envelopes.
+const QUEUE_MAX_ITEMS: u64 = 1000;
+/// Minimum gap between pushes to the same offline device.
+const PUSH_INTERVAL: Duration = Duration::from_secs(30);
 
 pub struct Envoy {
     pub cfg: Config,
@@ -23,6 +29,7 @@ pub struct Envoy {
     handles: DashMap<[u8; 32], [u8; 32]>,
     streams: DashMap<String, Arc<StreamState>>,
     http: reqwest::Client,
+    last_push: std::sync::Mutex<HashMap<[u8; 32], std::time::Instant>>,
 }
 
 pub struct StreamState {
@@ -56,6 +63,7 @@ impl Envoy {
             handles,
             streams: DashMap::new(),
             http: reqwest::Client::new(),
+            last_push: std::sync::Mutex::new(HashMap::new()),
         }))
     }
 
@@ -217,20 +225,87 @@ impl Envoy {
             m.insert(meta_key.as_slice(), nv.as_slice())?;
             let mut stored = slot_seq.to_le_bytes().to_vec();
             stored.extend_from_slice(envelope);
-            w.open_table(QUEUES)?
-                .insert(key_seq(handle, next).as_slice(), stored.as_slice())?;
+            let mut q = w.open_table(QUEUES)?;
+            q.insert(key_seq(handle, next).as_slice(), stored.as_slice())?;
+            // Cap the queue: past QUEUE_MAX_ITEMS the oldest go, and the
+            // client backfills from the slot on reconnect.
+            if next > acked + QUEUE_MAX_ITEMS {
+                let lo = key_seq(handle, 0);
+                let hi = key_seq(handle, next - QUEUE_MAX_ITEMS);
+                let keys: Vec<Vec<u8>> = q
+                    .range(lo.as_slice()..=hi.as_slice())?
+                    .map(|i| i.map(|(k, _)| k.value().to_vec()))
+                    .collect::<Result<_, _>>()?;
+                for k in keys {
+                    q.remove(k.as_slice())?;
+                }
+            }
             next
         };
         w.commit()?;
-        if let Some(tx) = self.devices.get(&device) {
-            let _ = tx.try_send(Frame::Deliver {
-                wake_handle: *handle,
-                queue_seq: seq,
-                slot_seq,
-                envelope: envelope.to_vec(),
-            });
+        match self.devices.get(&device) {
+            Some(tx) => {
+                let _ = tx.try_send(Frame::Deliver {
+                    wake_handle: *handle,
+                    queue_seq: seq,
+                    slot_seq,
+                    envelope: envelope.to_vec(),
+                });
+            }
+            None => self.push(&device),
         }
         Ok(())
+    }
+
+    /// Wake an offline device through its registered push channel, at most
+    /// once per PUSH_INTERVAL while it stays away. The push carries only
+    /// this Envoy's hostname.
+    fn push(&self, device: &[u8; 32]) {
+        let now = std::time::Instant::now();
+        {
+            let mut last = self.last_push.lock().unwrap();
+            if let Some(t) = last.get(device) {
+                if now.duration_since(*t) < PUSH_INTERVAL {
+                    return;
+                }
+            }
+            last.insert(*device, now);
+        }
+        let reg = (|| -> anyhow::Result<Option<Vec<u8>>> {
+            let r = self.store.db.begin_read()?;
+            Ok(r.open_table(PUSH)?
+                .get(device.as_slice())?
+                .map(|v| v.value().to_vec()))
+        })()
+        .ok()
+        .flatten();
+        let Some(reg) = reg else { return };
+        if reg.is_empty() {
+            return;
+        }
+        let (kind, token) = (reg[0], reg[1..].to_vec());
+        let http = self.http.clone();
+        let host = self.cfg.hostname.clone();
+        tokio::spawn(async move {
+            match kind {
+                3 => {
+                    // UnifiedPush: POST to the endpoint URL the app registered.
+                    if let Ok(url) = String::from_utf8(token) {
+                        let _ = http
+                            .post(&url)
+                            .body(host)
+                            .timeout(Duration::from_secs(10))
+                            .send()
+                            .await;
+                    }
+                }
+                1 | 2 => {
+                    // APNs and FCM need operator credentials; Phase 3b.
+                    tracing::debug!("push kind {kind} not configured");
+                }
+                _ => {}
+            }
+        });
     }
 
     fn ack(&self, handle: &[u8; 32], upto: u64) -> anyhow::Result<()> {

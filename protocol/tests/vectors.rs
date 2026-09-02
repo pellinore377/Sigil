@@ -251,17 +251,18 @@ fn linking_vectors() {
     assert_eq!(enc, hx(&v["offer_encoded"]));
     let dec = linking::LinkOffer::decode(&enc).unwrap();
     assert_eq!(dec.kem_pub, offer.kem_pub);
+    assert_eq!(offer.slot().address, a32(&v["offer_slot_address"]));
     assert_eq!(
-        linking::offer_rendezvous(&offer),
-        a32(&v["offer_rendezvous"])
+        offer.slot().envelope_key,
+        a32(&v["offer_slot_envelope_key"])
     );
     let (ct, ss) = kem::encapsulate(&offer.kem_pub, &a32(&v["existing_eseed"])).unwrap();
     assert_eq!(ct, hx(&v["ciphertext"]));
     assert_eq!(new_dev.decapsulate(&ct).unwrap(), ss);
     let lm = linking::derive(&ss, &offer);
     assert_eq!(lm.link_secret, a32(&v["link_secret"]));
-    assert_eq!(lm.rendezvous, a32(&v["rendezvous"]));
-    assert_eq!(lm.link_key, a32(&v["link_key"]));
+    assert_eq!(lm.slot.address, a32(&v["link_slot_address"]));
+    assert_eq!(lm.slot.envelope_key, a32(&v["link_slot_envelope_key"]));
     let idx: Vec<u8> = v["sas_indices"]
         .as_array()
         .unwrap()

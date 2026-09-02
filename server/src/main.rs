@@ -6,6 +6,7 @@ mod envoy;
 mod home;
 mod http;
 mod store;
+mod sweep;
 mod tokens;
 
 use clap::{Parser, Subcommand};
@@ -125,6 +126,7 @@ async fn main() -> anyhow::Result<()> {
 
 async fn run(cfg: Config) -> anyhow::Result<()> {
     let store = Arc::new(store::Store::open(&cfg.data_dir)?);
+    sweep::start(store.clone());
     let home = if cfg.is_home() {
         Some(home::Home::new(cfg.clone(), store.clone())?)
     } else {

@@ -204,13 +204,14 @@ fn main() {
             "new_device_seed": h(&a32(0x0f)),
             "offer_nonce": h(&offer.nonce),
             "offer_encoded": h(&offer_enc),
-            "offer_rendezvous": h(&linking::offer_rendezvous(&offer)),
+            "offer_slot_address": h(&offer.slot().address),
+        "offer_slot_envelope_key": h(&offer.slot().envelope_key),
             "existing_eseed": h(&a32(0x11)),
             "ciphertext": h(&lct),
             "shared": h(&lss),
             "link_secret": h(&lm.link_secret),
-            "rendezvous": h(&lm.rendezvous),
-            "link_key": h(&lm.link_key),
+            "link_slot_address": h(&lm.slot.address),
+            "link_slot_envelope_key": h(&lm.slot.envelope_key),
             "sas_indices": lm.sas.to_vec(),
             "sas": linking::sas_string(&lm.sas),
             "emoji_table": emoji::TABLE.to_vec(),
@@ -480,7 +481,12 @@ fn main() {
         ),
         (
             "deliver",
-            wire::Frame::Deliver { wake_handle: a32(0x16), queue_seq: 9, slot_seq: 42, envelope: sealed.clone() },
+            wire::Frame::Deliver {
+                wake_handle: a32(0x16),
+                queue_seq: 9,
+                slot_seq: 42,
+                envelope: sealed.clone(),
+            },
         ),
         (
             "ack",
@@ -503,8 +509,20 @@ fn main() {
             },
         ),
         ("keepalive", wire::Frame::Keepalive { nonce: a32(0x1a) }),
-        ("nonce.ask", wire::Frame::Nonce { server: "sigil.example".into(), nonce: [0; 32] }),
-        ("nonce.reply", wire::Frame::Nonce { server: "sigil.example".into(), nonce: a32(0x1a) }),
+        (
+            "nonce.ask",
+            wire::Frame::Nonce {
+                server: "sigil.example".into(),
+                nonce: [0; 32],
+            },
+        ),
+        (
+            "nonce.reply",
+            wire::Frame::Nonce {
+                server: "sigil.example".into(),
+                nonce: a32(0x1a),
+            },
+        ),
     ];
     let mut wfr = serde_json::Map::new();
     for (name, f) in &frames {

@@ -316,6 +316,34 @@ the server refusing `slot.put` from a listed pseudonymous key, on the
 instruction of an admin listed in the card. Everything else in this document
 applies unchanged; the only difference is who holds the keys.
 
+## 10. Device linking events
+
+The link exchange (protocol spec section 10) is a sequence of events of
+kind 14 in the offer slot and the link slot. The body's first byte is a
+tag:
+
+| Tag | Direction | Body after the tag | Meaning |
+|---|---|---|---|
+| — | existing → new, offer slot | the 1120-byte SigilKEM ciphertext, untagged | "I scanned your offer" |
+| 1 | existing → new | `username string, envoy string, identity_seed[32], credential bytes, count u16, (token bytes)×count, conversations bytes (JSON), extra bytes` | the account: identity, credential, half the sender's tokens, the conversation list, and caller-defined `extra` (the engine sends its history) |
+| 2 | new → existing | `key_package bytes` | the new device's MLS KeyPackage, credential bound to the shared identity |
+| 3 | existing → new | `conversation bytes (JSON), welcome bytes` | one per conversation, after an Add commit for the new leaf was written to that conversation's slot |
+| 4 | existing → new | empty | done |
+
+The new device reads both slots with free `slot.get` calls until the
+Transfer gives it tokens; from then on it pays for its own writes. The
+existing device MUST NOT write tag 1 before the user has confirmed the
+emoji. Every conversation's address rotates when its Add commit lands;
+members catch up (section 11) before their next send.
+
+## 11. Catching up
+
+A client MUST process everything written to a conversation's current slot
+since its cursor before sending into it, following rotations as commits
+are merged. A message encrypted under a stale epoch lands in a slot the
+other members have left. Cursors are per address; the `Deliver` frame's
+`slot_seq` and `slot.get`'s sequence numbers are the same numbering.
+
 ## 9. Not yet specified
 
 - OIDC token validation details beyond "signature, issuer, audience,
@@ -324,6 +352,8 @@ applies unchanged; the only difference is who holds the keys.
   UnifiedPush spec; nothing Sigil-specific).
 - Media chunk manifests inside kind-9 events.
 - The clocked tier's exact scheduling constants.
+- APNs and FCM delivery from the Envoy (UnifiedPush is done: the Envoy POSTs the
+  registered endpoint URL, at most once per 30 s while the device is away).
 
 ---
 

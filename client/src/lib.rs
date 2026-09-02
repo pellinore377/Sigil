@@ -6,6 +6,7 @@
 pub mod account;
 pub mod conversation;
 pub mod link;
+pub mod linking;
 pub mod provider;
 pub mod state;
 

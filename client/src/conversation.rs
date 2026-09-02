@@ -14,16 +14,63 @@ use sigil_protocol::wire::{Frame, Request, Response};
 use sigil_protocol::{envelope, names, requests};
 use tls_codec::Deserialize as _;
 
+/// Keep secrets for a few past epochs, so a message encrypted just before
+/// a rotation can still be read after it.
+pub const PAST_EPOCHS: usize = 3;
+
 pub fn create_config() -> MlsGroupCreateConfig {
     MlsGroupCreateConfig::builder()
         .ciphersuite(CIPHERSUITE)
         .use_ratchet_tree_extension(true)
+        .max_past_epochs(PAST_EPOCHS)
         .build()
 }
 pub fn join_config() -> MlsGroupJoinConfig {
     MlsGroupJoinConfig::builder()
         .use_ratchet_tree_extension(true)
+        .max_past_epochs(PAST_EPOCHS)
         .build()
+}
+
+/// Remember the current epoch's slot material on the conversation.
+pub fn record_epoch(st: &mut State, conv: &Conversation, ep: &EpochMaterial) {
+    if let Some(c) = st
+        .conversations
+        .iter_mut()
+        .find(|c| c.group_id == conv.group_id)
+    {
+        let address = hex::encode(ep.address);
+        if c.epochs
+            .last()
+            .map(|e| e.address == address)
+            .unwrap_or(false)
+        {
+            return;
+        }
+        c.epochs.retain(|e| e.address != address);
+        c.epochs.push(crate::state::EpochRecord {
+            address,
+            envelope_key: hex::encode(ep.envelope_key),
+            read_cap: hex::encode(ep.read_cap),
+            write_pub: hex::encode(ep.write_pub),
+        });
+        while c.epochs.len() > PAST_EPOCHS + 1 {
+            c.epochs.remove(0);
+        }
+    }
+}
+
+/// The envelope key for `address`, current or recent.
+pub fn envelope_key_for(st: &State, conv: &Conversation, address: &[u8; 32]) -> Option<[u8; 32]> {
+    let a = hex::encode(address);
+    st.conversations
+        .iter()
+        .find(|c| c.group_id == conv.group_id)?
+        .epochs
+        .iter()
+        .find(|e| e.address == a)
+        .and_then(|e| hex::decode(&e.envelope_key).ok())
+        .and_then(|v| v.try_into().ok())
 }
 
 pub fn epoch_material(group: &MlsGroup, provider: &SigilProvider) -> anyhow::Result<EpochMaterial> {
@@ -108,6 +155,7 @@ pub async fn start_dm(
         slot_server: st.server(),
         cursors: Default::default(),
         sent: Default::default(),
+        epochs: Vec::new(),
     };
     st.conversations.push(conv.clone());
     st.save()?;
@@ -169,6 +217,7 @@ pub fn accept(
         slot_server: card.slot_server.clone(),
         cursors: Default::default(),
         sent: Default::default(),
+        epochs: Vec::new(),
     };
     st.conversations.push(conv.clone());
     st.requests.retain(|r| r.welcome != req.welcome);
@@ -183,8 +232,14 @@ pub fn load_group(provider: &SigilProvider, conv: &Conversation) -> anyhow::Resu
         .ok_or_else(|| anyhow::anyhow!("group not in store"))
 }
 
-/// Send any event into the conversation's current slot. Returns the slot
-/// sequence number and the address it landed in.
+pub struct Sent {
+    pub seq: u64,
+    pub address: [u8; 32],
+    /// Events processed while catching up before the send.
+    pub caught_up: Vec<Caught>,
+}
+
+/// Catch up, then send any event into the conversation's current slot.
 pub async fn send_event(
     link: &Link,
     st: &mut State,
@@ -193,44 +248,219 @@ pub async fn send_event(
     kind: envelope::Kind,
     reference: &[u8],
     body: &[u8],
-) -> anyhow::Result<(u64, [u8; 32])> {
+) -> anyhow::Result<Sent> {
+    let caught_up = catch_up(link, st, provider, conv).await?;
     let mut group = load_group(provider, conv)?;
     let (_, signer) = mls_credential(st);
-    let ev = envelope::Event { kind: kind as u16, ts_ms: now_ms(), reference: reference.to_vec(), body: body.to_vec() };
-    let mls_out = group.create_message(provider, &signer, &ev.encode()).map_err(|e| anyhow::anyhow!("{e:?}"))?;
+    let ev = envelope::Event {
+        kind: kind as u16,
+        ts_ms: now_ms(),
+        reference: reference.to_vec(),
+        body: body.to_vec(),
+    };
+    let mls_out = group
+        .create_message(provider, &signer, &ev.encode())
+        .map_err(|e| anyhow::anyhow!("{e:?}"))?;
     provider.save()?;
     let ep = epoch_material(&group, provider)?;
-    let sealed = envelope::seal(&ep.envelope_key, &ep.address, &rand::random(), &mls_out.to_bytes()?).map_err(|e| anyhow::anyhow!("{e:?}"))?;
+    record_epoch(st, conv, &ep);
+    let sealed = envelope::seal(
+        &ep.envelope_key,
+        &ep.address,
+        &rand::random(),
+        &mls_out.to_bytes()?,
+    )
+    .map_err(|e| anyhow::anyhow!("{e:?}"))?;
     let sig = epoch::sign_put(&ep.write_key, &ep.address, &sealed);
     let token = st.take_token()?;
     let resp = link
-        .call(&conv.slot_server, &Request::SlotPut { address: ep.address, write_pub: ep.write_pub, sig, envelope: sealed, token }, None)
+        .call(
+            &conv.slot_server,
+            &Request::SlotPut {
+                address: ep.address,
+                write_pub: ep.write_pub,
+                sig,
+                envelope: sealed,
+                token,
+            },
+            None,
+        )
         .await?;
-    let Response::SlotPut { seq } = resp else { anyhow::bail!("unexpected") };
-    if let Some(c) = st.conversations.iter_mut().find(|c| c.group_id == conv.group_id) {
+    let Response::SlotPut { seq } = resp else {
+        anyhow::bail!("unexpected")
+    };
+    if let Some(c) = st
+        .conversations
+        .iter_mut()
+        .find(|c| c.group_id == conv.group_id)
+    {
         // Text is kept for readback; other kinds only need the seq to be known as ours.
-        let text = if kind == envelope::Kind::Text { String::from_utf8_lossy(body).to_string() } else { String::new() };
-        c.sent.insert(format!("{}:{seq}", hex::encode(ep.address)), text);
-        st.save()?;
+        let text = if kind == envelope::Kind::Text {
+            String::from_utf8_lossy(body).to_string()
+        } else {
+            String::new()
+        };
+        c.sent.insert(
+            format!("{}:{seq}", hex::encode(ep.address)),
+            format!("{}\u{1f}{text}", ev.ts_ms),
+        );
     }
-    Ok((seq, ep.address))
+    set_cursor(st, conv, &ep.address, seq);
+    st.save()?;
+    Ok(Sent {
+        seq,
+        address: ep.address,
+        caught_up,
+    })
 }
 
 /// Send a text event into the conversation's current slot.
-pub async fn send_text(link: &Link, st: &mut State, provider: &SigilProvider, conv: &Conversation, text: &str) -> anyhow::Result<u64> {
-    Ok(send_event(link, st, provider, conv, envelope::Kind::Text, &[], text.as_bytes()).await?.0)
+pub async fn send_text(
+    link: &Link,
+    st: &mut State,
+    provider: &SigilProvider,
+    conv: &Conversation,
+    text: &str,
+) -> anyhow::Result<u64> {
+    Ok(send_event(
+        link,
+        st,
+        provider,
+        conv,
+        envelope::Kind::Text,
+        &[],
+        text.as_bytes(),
+    )
+    .await?
+    .seq)
 }
 
-/// Text this device sent at `seq` in `address`, if any.
-pub fn own_sent(st: &State, conv: &Conversation, address: &[u8; 32], seq: u64) -> Option<String> {
+/// What this device sent at `seq` in `address`, if anything: the
+/// timestamp and the text (empty for non-text events).
+pub fn own_sent(
+    st: &State,
+    conv: &Conversation,
+    address: &[u8; 32],
+    seq: u64,
+) -> Option<(u64, String)> {
+    let v = st
+        .conversations
+        .iter()
+        .find(|c| c.group_id == conv.group_id)?
+        .sent
+        .get(&format!("{}:{seq}", hex::encode(address)))?;
+    match v.split_once('\u{1f}') {
+        Some((ts, text)) => Some((ts.parse().unwrap_or(0), text.to_string())),
+        None => Some((0, v.clone())),
+    }
+}
+
+/// One event processed while catching up: which address and sequence it
+/// came from, and what it was.
+pub struct Caught {
+    pub address: [u8; 32],
+    pub seq: u64,
+    pub incoming: Incoming,
+}
+
+/// Process everything written to the conversation's slots since our
+/// cursors, following address rotations, so that we are on the latest
+/// epoch. Must run before every send: a message encrypted under a stale
+/// epoch lands in a slot the others have already left.
+pub async fn catch_up(
+    link: &Link,
+    st: &mut State,
+    provider: &SigilProvider,
+    conv: &Conversation,
+) -> anyhow::Result<Vec<Caught>> {
+    let mut out = Vec::new();
+    let me = st.identity().public();
+    'epoch: for _ in 0..64 {
+        let address = {
+            let group = load_group(provider, conv)?;
+            let ep = epoch_material(&group, provider)?;
+            record_epoch(st, conv, &ep);
+            ep.address
+        };
+        // Read the whole current slot: our own envelopes come back from the
+        // sent record whatever the cursor says, everything else is
+        // processed once, past the cursor.
+        let mut after = 0;
+        let mut rotated = false;
+        loop {
+            let items = backfill(link, provider, conv, after).await?;
+            let n = items.len();
+            for (seq, env) in items {
+                after = seq;
+                if let Some((ts_ms, text)) = own_sent(st, conv, &address, seq) {
+                    set_cursor(st, conv, &address, seq);
+                    if !text.is_empty() {
+                        out.push(Caught {
+                            address,
+                            seq,
+                            incoming: Incoming::Text {
+                                from_identity: me,
+                                ts_ms,
+                                text,
+                                reference: String::new(),
+                            },
+                        });
+                    }
+                    continue;
+                }
+                if seq <= cursor(st, conv, &address) {
+                    continue;
+                }
+                set_cursor(st, conv, &address, seq);
+                match receive(provider, conv, &env) {
+                    Ok(Incoming::Rotated) => {
+                        out.push(Caught {
+                            address,
+                            seq,
+                            incoming: Incoming::Rotated,
+                        });
+                        rotated = true;
+                        break;
+                    }
+                    Ok(inc) => out.push(Caught {
+                        address,
+                        seq,
+                        incoming: inc,
+                    }),
+                    Err(_) => {} // not for us, or already consumed
+                }
+            }
+            if rotated {
+                continue 'epoch;
+            }
+            if n < 64 {
+                break 'epoch;
+            }
+        }
+    }
+    st.save()?;
+    Ok(out)
+}
+
+pub fn cursor(st: &State, conv: &Conversation, address: &[u8; 32]) -> u64 {
     st.conversations
         .iter()
         .find(|c| c.group_id == conv.group_id)
-        .and_then(|c| {
-            c.sent
-                .get(&format!("{}:{seq}", hex::encode(address)))
-                .cloned()
-        })
+        .and_then(|c| c.cursors.get(&hex::encode(address)).copied())
+        .unwrap_or(0)
+}
+
+pub fn set_cursor(st: &mut State, conv: &Conversation, address: &[u8; 32], seq: u64) {
+    if let Some(c) = st
+        .conversations
+        .iter_mut()
+        .find(|c| c.group_id == conv.group_id)
+    {
+        let e = c.cursors.entry(hex::encode(address)).or_insert(0);
+        if seq > *e {
+            *e = seq;
+        }
+    }
 }
 
 /// What came out of an envelope.
@@ -262,10 +492,35 @@ pub fn receive(
     conv: &Conversation,
     sealed: &[u8],
 ) -> anyhow::Result<Incoming> {
-    let mut group = load_group(provider, conv)?;
+    let group = load_group(provider, conv)?;
     let ep = epoch_material(&group, provider)?;
-    let mls_bytes = envelope::open(&ep.envelope_key, &ep.address, sealed)
-        .map_err(|e| anyhow::anyhow!("{e:?}"))?;
+    receive_with(provider, conv, &ep.envelope_key, &ep.address, sealed)
+}
+
+/// Open an envelope that arrived for `address`, which may be a recent
+/// past epoch's, and process it.
+pub fn receive_at(
+    st: &State,
+    provider: &SigilProvider,
+    conv: &Conversation,
+    address: &[u8; 32],
+    sealed: &[u8],
+) -> anyhow::Result<Incoming> {
+    let key = envelope_key_for(st, conv, address)
+        .ok_or_else(|| anyhow::anyhow!("no key for that address any more"))?;
+    receive_with(provider, conv, &key, address, sealed)
+}
+
+fn receive_with(
+    provider: &SigilProvider,
+    conv: &Conversation,
+    envelope_key: &[u8; 32],
+    address: &[u8; 32],
+    sealed: &[u8],
+) -> anyhow::Result<Incoming> {
+    let mut group = load_group(provider, conv)?;
+    let mls_bytes =
+        envelope::open(envelope_key, address, sealed).map_err(|e| anyhow::anyhow!("{e:?}"))?;
     let msg = MlsMessageIn::tls_deserialize_exact(&mls_bytes)?;
     let pm = msg
         .try_into_protocol_message()
@@ -284,9 +539,20 @@ pub fn receive(
                 envelope::Event::decode(&app.into_bytes()).map_err(|e| anyhow::anyhow!("{e:?}"))?;
             let reference = String::from_utf8_lossy(&ev.reference).to_string();
             if ev.kind == envelope::Kind::Text as u16 {
-                Incoming::Text { from_identity: sender_identity, ts_ms: ev.ts_ms, text: String::from_utf8_lossy(&ev.body).to_string(), reference }
+                Incoming::Text {
+                    from_identity: sender_identity,
+                    ts_ms: ev.ts_ms,
+                    text: String::from_utf8_lossy(&ev.body).to_string(),
+                    reference,
+                }
             } else {
-                Incoming::Event { from_identity: sender_identity, ts_ms: ev.ts_ms, kind: ev.kind, reference, body: String::from_utf8_lossy(&ev.body).to_string() }
+                Incoming::Event {
+                    from_identity: sender_identity,
+                    ts_ms: ev.ts_ms,
+                    kind: ev.kind,
+                    reference,
+                    body: String::from_utf8_lossy(&ev.body).to_string(),
+                }
             }
         }
         ProcessedMessageContent::StagedCommitMessage(staged) => {
@@ -318,6 +584,8 @@ pub async fn subscribe(
 ) -> anyhow::Result<([u8; 32], EpochMaterial)> {
     let group = load_group(provider, conv)?;
     let ep = epoch_material(&group, provider)?;
+    record_epoch(st, conv, &ep);
+    st.save()?;
     let handle: [u8; 32] = rand::random();
     let token = st.take_token()?;
     link.call(

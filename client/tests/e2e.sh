@@ -43,7 +43,7 @@ $CL -s bob.json send 0 "three" >/dev/null
 sleep 0.5
 timeout 10 $CL -s alice.json listen 0 --count 3 >alice_listen.out 2>&1 &
 sleep 4
-grep -q "^1 me: one$" alice_listen.out && grep -q "^2 me: two$" alice_listen.out && grep -q "^3 .*@bob:sigil.test: three$" alice_listen.out || fail "alice readback" alice_listen.out
+grep -q "^1 .*me: one$" alice_listen.out && grep -q "^2 .*me: two$" alice_listen.out && grep -q "^3 .*@bob:sigil.test: three$" alice_listen.out || fail "alice readback" alice_listen.out
 
 # offline queue: bob subscribes, leaves, alice sends, bob returns
 timeout 8 $CL -s bob.json listen 0 --count 9 >/dev/null 2>&1 &
@@ -66,6 +66,25 @@ $SV -c sigil.toml run >server2.log 2>&1 &
 sleep 1.5
 timeout 8 $CL -s alice.json listen 0 --count 5 >alice3.out 2>&1 &
 sleep 4
-[ "$(grep -c '^[0-9]' alice3.out)" = "5" ] || fail "history after restart" alice3.out
+# the CLI keeps no history of its own: own messages replay from the sent
+# record, peers' messages show once, so "three" (already decrypted above)
+# is gone and "dup1" (not yet seen) appears.
+grep -q "^1 .*me: one$" alice3.out && grep -q "^4 .*me: four$" alice3.out && grep -q "^5 .*@bob:sigil.test: dup1$" alice3.out || fail "history after restart" alice3.out
+# link a second device for alice; both devices and bob converge
+$CL -s alice.json tokens 40 >/dev/null
+timeout 60 $CL -s alice2.json link-offer --username @alice:sigil.test --envoy ws://127.0.0.1:18443/envoy --offer-file offer.txt >alice2_link.out 2>&1 &
+sleep 2
+$CL -s alice.json link-scan @offer.txt --yes >alice_link.out 2>&1 || fail "link-scan" alice_link.out alice2_link.out
+sleep 3
+grep -q "^linked as @alice:sigil.test with 1 conversations" alice2_link.out || fail "link-offer" alice2_link.out alice_link.out
+[ "$(grep -o 'emoji: .*' alice_link.out | head -1)" = "$(grep -o 'emoji: [^ ]* [^ ]* [^ ]* [^ ]* [^ ]* [^ ]* [^ ]*' alice2_link.out | head -1)" ] || fail "emoji differ" alice_link.out alice2_link.out
+$CL -s bob.json send 0 "hello both devices" >/dev/null   # catches up on the commit first
+$CL -s alice2.json send 0 "from device two" >/dev/null
+sleep 1
+timeout 10 $CL -s alice.json listen 0 --count 9 >alice4.out 2>&1 &
+timeout 10 $CL -s bob.json listen 0 --count 9 >bob4.out 2>&1 &
+sleep 5
+grep -q "@bob:sigil.test: hello both devices" alice4.out && grep -q "me: from device two" alice4.out || fail "device one view" alice4.out
+grep -q "me: hello both devices" bob4.out && grep -q "@alice:sigil.test: from device two" bob4.out || fail "bob view" bob4.out
 ! grep -v 'listening on' server.log server2.log | grep -Eq '127\.0\.0\.1:[0-9]+' || fail "client address logged" server.log
 echo "e2e ok"

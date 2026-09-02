@@ -9,10 +9,11 @@ The Sigil home server and Envoy, one binary. Design:
 Phase 1. Implemented: names with invite-code registration, slots (put, get,
 ack, subscribe), the requests slot, key-package shelves, blobs, backups and
 wraps, blind credentials and daily tokens with double-spend detection, the
-Envoy role with per-device queues, jitter, and delivery streams (in-process
-when both roles run in one process, WebSocket otherwise), TLS from PEM
-files. Not yet: ACME, TPM recovery, OIDC, retention sweeps, open rooms,
-push, calls.
+Envoy role with per-device queues (capped at 1,000 per handle), jitter,
+delivery streams (in-process when both roles run in one process, WebSocket
+otherwise), UnifiedPush wake-ups for offline devices, an expiry sweep, TLS
+from PEM files. Not yet: ACME, TPM recovery, OIDC, APNs and FCM, open
+rooms, calls.
 
 ## Run it locally
 

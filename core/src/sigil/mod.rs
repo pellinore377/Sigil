@@ -5,7 +5,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
-use std::sync::{Arc, OnceLock, Weak};
+use std::sync::Arc;
 
 use parking_lot::Mutex;
 use serde_json::{json, Value};
@@ -21,12 +21,12 @@ use crate::engine::{SessionState, SharedEngine};
 use crate::ipc::wire::{Reply, Request};
 
 enum Handle {
-    Conversation(String),
+    /// A conversation, and the address this handle was subscribed for.
+    Conversation(String, [u8; 32]),
     Requests([u8; 32]),
 }
 
 pub struct SigilSession {
-    me: OnceLock<Weak<SigilSession>>,
     /// Account state and the MLS store, locked together: every MLS
     /// operation spends a token and records what it sent.
     inner: AsyncMutex<(Account, SigilProvider)>,
@@ -40,6 +40,8 @@ pub struct SigilSession {
     typing_sent: Mutex<HashMap<String, i64>>,
     username: String,
     identity_pub: [u8; 32],
+    /// A scanned link offer awaiting the user's emoji confirmation.
+    pending_scan: Mutex<Option<sigil_client::linking::Scanned>>,
 }
 
 fn account_path() -> PathBuf {
@@ -106,7 +108,6 @@ async fn start(engine: &SharedEngine, acct: Account) -> anyhow::Result<()> {
         s.last_error.clear();
     }
     let session = Arc::new(SigilSession {
-        me: OnceLock::new(),
         inner: AsyncMutex::new((acct, provider)),
         link,
         history: Mutex::new(history),
@@ -116,8 +117,8 @@ async fn start(engine: &SharedEngine, acct: Account) -> anyhow::Result<()> {
         typing_sent: Mutex::new(HashMap::new()),
         username,
         identity_pub,
+        pending_scan: Mutex::new(None),
     });
-    let _ = session.me.set(Arc::downgrade(&session));
     *engine.sigil.lock() = Some(session.clone());
     engine.set_session(SessionState::LoggedIn);
     session.subscribe_all().await;
@@ -200,6 +201,59 @@ async fn logout(engine: &SharedEngine, wipe: bool) -> Reply {
     Reply::ok(json!({}))
 }
 
+/// New device: show an offer, wait for an existing device, then start.
+/// Progress arrives as `link.state` events: offer, sas, joining, done, failed.
+async fn link_offer(engine: &SharedEngine, p: &serde_json::Map<String, Value>) -> Reply {
+    if has_account() {
+        return Reply::err("bad_request", "an account already exists on this device; log out first");
+    }
+    let username = p.get("username").and_then(Value::as_str).unwrap_or("").trim().to_lowercase();
+    let Ok((_, server)) = sigil_protocol::names::parse_username(&username) else {
+        return Reply::err("bad_request", "username must look like @name:server");
+    };
+    let server = server.to_string();
+    let envoy = p.get("envoy").and_then(Value::as_str).map(str::to_string).unwrap_or_else(|| format!("wss://{server}/envoy"));
+    let offer = sigil_client::linking::Offer::new();
+    let text = offer.text();
+    engine.set_session(SessionState::LoginPending);
+    engine.hub.broadcast(json!({"event":"link.state","state":"offer","offer":text,"sas":""}));
+    let e2 = engine.clone();
+    tokio::spawn(async move {
+        let path = account_path();
+        let _ = crate::paths::ensure_private_dir(path.parent().unwrap());
+        let e3 = e2.clone();
+        let result = sigil_client::linking::wait_for_link(&path, &server, &envoy, &offer, move |pr| match pr {
+            sigil_client::linking::Progress::Sas(sas) => e3.hub.broadcast(json!({"event":"link.state","state":"sas","sas":sas})),
+            sigil_client::linking::Progress::Welcomed(w) => e3.hub.broadcast(json!({"event":"link.state","state":"joining","with":w})),
+            sigil_client::linking::Progress::Done => {}
+        })
+        .await;
+        match result {
+            Ok((acct, extra)) => {
+                if !extra.is_empty() {
+                    let _ = std::fs::write(crate::paths::state_dir().join("sigil-history.json"), &extra);
+                }
+                match start(&e2, acct).await {
+                    Ok(()) => e2.hub.broadcast(json!({"event":"link.state","state":"done"})),
+                    Err(err) => {
+                        e2.set_error(format!("link failed: {err:#}"));
+                        e2.set_session(SessionState::LoggedOut);
+                        e2.hub.broadcast(json!({"event":"link.state","state":"failed","error":format!("{err:#}")}));
+                    }
+                }
+            }
+            Err(err) => {
+                let _ = std::fs::remove_file(&path);
+                let _ = std::fs::remove_file(path.with_extension("mls.json"));
+                e2.set_error(format!("link failed: {err:#}"));
+                e2.set_session(SessionState::LoggedOut);
+                e2.hub.broadcast(json!({"event":"link.state","state":"failed","error":format!("{err:#}")}));
+            }
+        }
+    });
+    Reply::ok(json!({"offer": text}))
+}
+
 // ---------------------------------------------------------------- dispatch
 
 fn param(p: &serde_json::Map<String, Value>, k: &str) -> String {
@@ -217,6 +271,7 @@ pub async fn dispatch(engine: &SharedEngine, req: &Request) -> Option<Reply> {
             ))
         }
         "recovery.status" | "recovery.recover" => return Some(Reply::ok(recovery_status_json())),
+        "link.offer" => return Some(link_offer(engine, p).await),
         "logout" => {
             return Some(
                 logout(
@@ -288,6 +343,8 @@ pub async fn dispatch(engine: &SharedEngine, req: &Request) -> Option<Reply> {
         "room.leave" => s.leave(engine, &param(p, "roomId")).await,
         "room.members" => s.members(&param(p, "roomId")).await,
         "users.search" => s.search(&param(p, "query")).await,
+        "link.scan" => s.link_scan(engine, &param(p, "offer")).await,
+        "link.confirm" => s.link_confirm(engine, p.get("ok").and_then(Value::as_bool).unwrap_or(false)).await,
         r if r.starts_with("room.")
             || r.starts_with("message.")
             || r.starts_with("space.")
@@ -455,13 +512,6 @@ fn request_room_json(r: &PendingRequest) -> Value {
 // ---------------------------------------------------------------- session
 
 impl SigilSession {
-    fn arc(&self) -> Arc<SigilSession> {
-        self.me
-            .get()
-            .and_then(Weak::upgrade)
-            .expect("session is held by the engine")
-    }
-
     fn save_history(&self) {
         let h = self.history.lock();
         if let Ok(b) = serde_json::to_vec(&*h) {
@@ -646,10 +696,12 @@ impl SigilSession {
             )
             .await
         };
-        let (seq, address) = match sent {
+        let sent = match sent {
             Ok(v) => v,
             Err(e) => return Reply::err("network", format!("{e:#}")),
         };
+        self.ingest_caught(engine, &conv, sent.caught_up).await;
+        let (seq, address) = (sent.seq, sent.address);
         let id = format!("{}:{seq}", hex::encode(address));
         let reply_json = reply_to
             .as_deref()
@@ -689,9 +741,11 @@ impl SigilSession {
             )
             .await
         };
-        if let Err(e) = sent {
-            return Reply::err("network", format!("{e:#}"));
-        }
+        let sent = match sent {
+            Ok(v) => v,
+            Err(e) => return Reply::err("network", format!("{e:#}")),
+        };
+        self.ingest_caught(engine, &conv, sent.caught_up).await;
         self.apply_small(
             engine,
             room_id,
@@ -812,6 +866,67 @@ impl SigilSession {
         }
     }
 
+    /// Existing device: scan an offer; the reply and a `link.state` event
+    /// carry the emoji the user must compare with the new device.
+    async fn link_scan(&self, engine: &SharedEngine, offer: &str) -> Reply {
+        let scanned = {
+            let mut g = self.inner.lock().await;
+            sigil_client::linking::scan(&self.link, &mut g.0, offer).await
+        };
+        match scanned {
+            Ok(sc) => {
+                let sas = sc.sas.clone();
+                *self.pending_scan.lock() = Some(sc);
+                engine.hub.broadcast(json!({"event":"link.state","state":"sas","sas":sas}));
+                Reply::ok(json!({"sas": sas}))
+            }
+            Err(e) => Reply::err("network", format!("{e:#}")),
+        }
+    }
+
+    /// The user compared the emoji. `ok` runs the transfer, which adds the
+    /// new device to every conversation and rotates every address.
+    async fn link_confirm(&self, engine: &SharedEngine, ok: bool) -> Reply {
+        let Some(sc) = self.pending_scan.lock().take() else { return Reply::err("bad_request", "nothing to confirm") };
+        if !ok {
+            engine.hub.broadcast(json!({"event":"link.state","state":"cancelled"}));
+            return Reply::ok(json!({}));
+        }
+        let extra = std::fs::read(&self.history_path).unwrap_or_default();
+        let e2 = engine.clone();
+        let result = {
+            let mut g = self.inner.lock().await;
+            let (a, p) = &mut *g;
+            sigil_client::linking::transfer(&self.link, a, p, sc, extra, move |pr| {
+                if let sigil_client::linking::Progress::Welcomed(w) = pr {
+                    e2.hub.broadcast(json!({"event":"link.state","state":"joining","with":w}));
+                }
+            })
+            .await
+        };
+        match result {
+            Ok(()) => {
+                let convs = self.inner.lock().await.0.conversations.clone();
+                for c in &convs {
+                    self.subscribe_conversation(c).await;
+                }
+                engine.hub.broadcast(json!({"event":"link.state","state":"done"}));
+                Reply::ok(json!({}))
+            }
+            Err(e) => {
+                engine.hub.broadcast(json!({"event":"link.state","state":"failed","error":format!("{e:#}")}));
+                Reply::err("network", format!("{e:#}"))
+            }
+        }
+    }
+
+    /// Apply what catch-up processed.
+    async fn ingest_caught(&self, engine: &SharedEngine, conv: &Conversation, caught: Vec<conversation::Caught>) {
+        for c in caught {
+            Box::pin(self.apply_incoming(engine, conv, &c.address, c.seq, c.incoming)).await;
+        }
+    }
+
     async fn dm_create(&self, engine: &SharedEngine, username: &str) -> Reply {
         let username = username.trim().to_lowercase();
         if sigil_protocol::names::parse_username(&username).is_err() {
@@ -902,14 +1017,13 @@ impl SigilSession {
         engine.hub.broadcast(
             json!({"event":"timeline.paginationState","roomId":room_id,"state":"paginating"}),
         );
-        let items = {
-            let g = self.inner.lock().await;
-            conversation::backfill(&self.link, &g.1, &conv, 0).await
+        let caught = {
+            let mut g = self.inner.lock().await;
+            let (a, p) = &mut *g;
+            conversation::catch_up(&self.link, a, p, &conv).await
         };
-        if let Ok(items) = items {
-            for (seq, env) in items {
-                self.ingest(engine, &conv, seq, &env).await;
-            }
+        if let Ok(caught) = caught {
+            self.ingest_caught(engine, &conv, caught).await;
         }
         engine.hub.broadcast(
             json!({"event":"timeline.paginationState","roomId":room_id,"state":"timelineStart"}),
@@ -953,83 +1067,63 @@ impl SigilSession {
             conversation::subscribe(&self.link, a, p, c).await
         };
         match r {
-            Ok((handle, _)) => {
+            Ok((handle, ep)) => {
                 self.handles
                     .lock()
-                    .insert(handle, Handle::Conversation(c.group_id.clone()));
+                    .insert(handle, Handle::Conversation(c.group_id.clone(), ep.address));
             }
             Err(e) => warn!("subscribe failed for {}: {e:#}", &c.group_id[..8]),
         }
     }
 
-    /// Process one envelope from a conversation's slot.
-    async fn ingest(&self, engine: &SharedEngine, conv: &Conversation, seq: u64, envelope: &[u8]) {
-        let (id, incoming) = {
-            let g = self.inner.lock().await;
-            let (a, p) = &*g;
-            let Ok(group) = conversation::load_group(p, conv) else {
-                return;
-            };
-            let Ok(ep) = conversation::epoch_material(&group, p) else {
-                return;
-            };
-            let id = format!("{}:{seq}", hex::encode(ep.address));
-            if conversation::own_sent(a, conv, &ep.address, seq).is_some()
-                || self.item_by_id(&conv.group_id, &id).is_some()
-            {
+    /// Process one envelope delivered live for `address`, which is the
+    /// conversation's current slot or one it recently rotated away from.
+    async fn ingest(&self, engine: &SharedEngine, conv: &Conversation, address: &[u8; 32], seq: u64, envelope: &[u8]) {
+        let incoming = {
+            let mut g = self.inner.lock().await;
+            let (a, p) = &mut *g;
+            if seq <= conversation::cursor(a, conv, address) {
+                return; // already processed by a catch-up
+            }
+            conversation::set_cursor(a, conv, address, seq);
+            let _ = a.save();
+            if conversation::own_sent(a, conv, address, seq).is_some() {
                 return;
             }
-            (id, conversation::receive(p, conv, envelope))
+            conversation::receive_at(a, p, conv, address, envelope)
         };
         match incoming {
-            Ok(conversation::Incoming::Text {
-                from_identity,
-                ts_ms,
-                text,
-                reference,
-            }) => {
+            Ok(inc) => self.apply_incoming(engine, conv, address, seq, inc).await,
+            Err(e) => warn!("cannot process envelope {seq} in {}: {e:#}", &conv.group_id[..8]),
+        }
+    }
+
+    async fn apply_incoming(&self, engine: &SharedEngine, conv: &Conversation, address: &[u8; 32], seq: u64, incoming: conversation::Incoming) {
+        let id = format!("{}:{seq}", hex::encode(address));
+        match incoming {
+            conversation::Incoming::Text { from_identity, ts_ms, text, reference } => {
                 let sender = self.username_for(conv, &from_identity);
-                let reply = if reference.is_empty() {
-                    None
-                } else {
-                    self.item_by_id(&conv.group_id, &reference)
-                        .map(|i| reply_summary(&i))
+                let is_own = from_identity == self.identity_pub;
+                let reply = if reference.is_empty() { None } else { self.item_by_id(&conv.group_id, &reference).map(|i| reply_summary(&i)) };
+                self.append(engine, &conv.group_id, text_item(&id, &sender, ts_ms as i64, is_own, &text, reply)).await;
+            }
+            conversation::Incoming::Event { from_identity, ts_ms, kind, reference, body } => {
+                let sender = self.username_for(conv, &from_identity);
+                self.apply_small(engine, &conv.group_id, kind, &reference, &body, &sender, ts_ms as i64).await;
+            }
+            conversation::Incoming::Rotated => {
+                // Catch up on the new address and follow it.
+                let caught = {
+                    let mut g = self.inner.lock().await;
+                    let (a, p) = &mut *g;
+                    conversation::catch_up(&self.link, a, p, conv).await
                 };
-                self.append(
-                    engine,
-                    &conv.group_id,
-                    text_item(&id, &sender, ts_ms as i64, false, &text, reply),
-                )
-                .await;
+                if let Ok(caught) = caught {
+                    Box::pin(self.ingest_caught(engine, conv, caught)).await;
+                }
+                self.subscribe_conversation(conv).await;
             }
-            Ok(conversation::Incoming::Event {
-                from_identity,
-                ts_ms,
-                kind,
-                reference,
-                body,
-            }) => {
-                let sender = self.username_for(conv, &from_identity);
-                self.apply_small(
-                    engine,
-                    &conv.group_id,
-                    kind,
-                    &reference,
-                    &body,
-                    &sender,
-                    ts_ms as i64,
-                )
-                .await;
-            }
-            Ok(conversation::Incoming::Rotated) => {
-                let (me, c2) = (self.arc(), conv.clone());
-                tokio::spawn(async move { me.subscribe_conversation(&c2).await });
-            }
-            Ok(conversation::Incoming::Other { .. }) => {}
-            Err(e) => warn!(
-                "cannot process envelope {seq} in {}: {e:#}",
-                &conv.group_id[..8]
-            ),
+            conversation::Incoming::Other { .. } => {}
         }
     }
 
@@ -1076,14 +1170,14 @@ impl SigilSession {
                 })
                 .await;
             let kind = match self.handles.lock().get(&wake_handle) {
-                Some(Handle::Conversation(g)) => Handle::Conversation(g.clone()),
+                Some(Handle::Conversation(g, a)) => Handle::Conversation(g.clone(), *a),
                 Some(Handle::Requests(a)) => Handle::Requests(*a),
                 None => continue,
             };
             match kind {
-                Handle::Conversation(gid) => {
+                Handle::Conversation(gid, address) => {
                     if let Some(conv) = self.conversation(&gid).await {
-                        self.ingest(&engine, &conv, slot_seq, &envelope).await;
+                        self.ingest(&engine, &conv, &address, slot_seq, &envelope).await;
                     }
                 }
                 Handle::Requests(address) => {

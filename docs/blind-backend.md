@@ -797,8 +797,19 @@ and session surviving a restart. On this branch the Matrix backend is gone
 from the engine entirely. `client/tests/e2e.sh` and `core/tests/e2e-sigil.sh`
 prove both layers end to end.
 
-**3. Devices and wake.** Linking; the Envoy role with subscriptions, handles
-and push; Android receives an empty push and fetches.
+**3. Devices and wake.** Done for linking and the Envoy: the QR-plus-emoji
+link (`client/src/linking.rs`, `link-offer` and `link-scan` in the CLI,
+`link.offer`, `link.scan` and `link.confirm` in the engine) transfers the
+identity, credential, tokens, conversations and history through two
+derived slots and adds the new device's leaf to every conversation; a
+member catches up on pending commits before every send; a conversation
+keeps its last three epochs' keys so an envelope for an address just
+rotated away can still be opened. The Envoy caps queues at 1,000 per
+handle, wakes an offline device through its UnifiedPush endpoint at most
+once per 30 s, and the server sweeps expired slots, blobs, pending
+deliveries and orphaned queues. Still to come: APNs and FCM delivery (the
+operator credentials and the Android and iOS clients), and removing a
+device.
 
 **4. Recovery.** Continuous backup; QR + emoji device linking; TPM-sealed
 recovery key with attestation; the printed code as fallback; password

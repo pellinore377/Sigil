@@ -15,10 +15,24 @@ pub struct Conversation {
     pub slot_server: String,
     /// Highest slot sequence seen per epoch address (hex → seq).
     pub cursors: std::collections::BTreeMap<String, u64>,
-    /// What this device sent, keyed `"<address hex>:<seq>"`. MLS cannot
-    /// decrypt one's own application messages, so they are kept here.
+    /// What this device sent, keyed `"<address hex>:<seq>"`, as
+    /// `"<ts_ms>\u{1f}<text>"`. MLS cannot decrypt one's own application
+    /// messages, so they are kept here.
     #[serde(default)]
     pub sent: std::collections::BTreeMap<String, String>,
+    /// The last few epochs' slot material, newest last, so an envelope
+    /// that arrives for an address we have already rotated away from can
+    /// still be opened.
+    #[serde(default)]
+    pub epochs: Vec<EpochRecord>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct EpochRecord {
+    pub address: String,
+    pub envelope_key: String,
+    pub read_cap: String,
+    pub write_pub: String,
 }
 
 #[derive(Default, Serialize, Deserialize)]
