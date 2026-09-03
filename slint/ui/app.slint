@@ -433,6 +433,18 @@ export component AppWindow inherits Window {
             reject
         }
 
+    // Under the system bars: the page's own grounds, so on the phone the
+    // insets are part of the page. Desktop insets are zero.
+    Rectangle {
+        x: 0; y: 0; width: 100%; height: root.safe-area-insets.top;
+        background: root.in-session && root.nav != "home" && root.nav != "start" && root.nav != "settings"
+            ? chat.top-ground : Theme.card-ground;
+    }
+    Rectangle {
+        x: 0; y: root.height - max(root.safe-area-insets.bottom, root.kb-overlap);
+        width: 100%; height: max(root.safe-area-insets.bottom, root.kb-overlap);
+        background: root.in-session && root.nav == "chat" ? chat.bottom-ground : Theme.card-ground;
+    }
     content := Rectangle {
         x: root.safe-area-insets.left;
         y: root.safe-area-insets.top;

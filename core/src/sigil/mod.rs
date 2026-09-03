@@ -1865,7 +1865,7 @@ impl SigilSession {
         dir.join(format!("{stem}-{}", m.filename.replace('/', "_")))
     }
 
-    async fn media_get(&self, room_id: &str, event_id: &str) -> Reply {
+    pub(crate) async fn media_get(&self, room_id: &str, event_id: &str) -> Reply {
         let Some(item) = self.item_by_id(room_id, event_id) else { return Reply::err("unknown_event", "no such event") };
         let Some(m) = item.get("manifest").and_then(|v| serde_json::from_value::<sigil_client::media::Manifest>(v.clone()).ok()) else {
             return Reply::err("bad_request", "not a media event");

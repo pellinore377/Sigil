@@ -185,7 +185,10 @@ export component ChatPage inherits Rectangle {
         sheet.item = it;
         root.sheet-snapshot(x, y, w, h);
         root.menu-action("prepare", it.event-id);
-        sheet.open-for(x, y, w, h);
+        // The press is measured in the window; the sheet lives in the page,
+        // which sits below the safe area and status strip (app.slint:437-471)
+        // — without the shift the copy takes off from beside the bubble.
+        sheet.open-for(x - root.absolute-position.x, y - root.absolute-position.y, w, h);
     }
     public function sheet-close() { sheet.open = false; }
     /// Whatever is staged goes: a voice clip, a caption, an edit, a reply, or plain text.
@@ -284,6 +287,12 @@ export component ChatPage inherits Rectangle {
     /// A chat theme accent is set for this room (the mixes below are gated on it).
     in property <bool> themed: false;
     // ChatPage.qml convoC: menu.background ÷1.35, then 18% accent ONLY when themed.
+    property <bool> phone: Theme.mode != "desktop";
+    /// What sits under the status bar and the gesture bar on the phone: the
+    /// header's own ground above, the composer's below, so the insets read
+    /// as part of the page rather than as bars.
+    out property <color> top-ground: root.themed ? root.chrome-c : Theme.card-ground;
+    out property <color> bottom-ground: root.convo-c.with-alpha(0.94).mix(Theme.card-ground, 0.94);
     property <color> convo-c: root.themed
         ? Theme.menu-background.darker(0.35).mix(root.accent, 0.82)
         : Theme.menu-background.darker(0.35);
@@ -299,6 +308,11 @@ export component ChatPage inherits Rectangle {
     property <color> chip-c: root.themed
         ? root.convo-c.with-alpha(0.92)
         : Theme.menu-background.darker(1.1).with-alpha(0.96);
+    // deepChipC (ChatPage.qml:56-60) sinks chipC's luminance to 0.19 so a
+    // pale chip still grounds the confirm's Cancel; Slint exposes no channel
+    // math, so the light palette — the one whose chip is bright (lum ≈ 0.45)
+    // — darkens by the measured ratio and the dark ones pass through.
+    property <color> deep-chip-c: Theme.mode == "light" ? root.chip-c.darker(1.4) : root.chip-c;
     // A staged voice clip outranks the quote for the extra band (QML: 60 vs 52).
     property <length> quote-h: root.voice-staged ? 60px : root.quote-armed ? 52px : 0px;
     // inputPill.height (ChatPage.qml:1384): the text's own height between 38
@@ -345,10 +359,11 @@ export component ChatPage inherits Rectangle {
         // buttons, which sit at spacing 0 with an 8px right margin.
         header := Rectangle {
             height: 52px;
-            // The themed chrome band with 22px top radii (:986-992).
+            // The themed chrome band with 22px top radii (:986-992). The
+            // phone is flat: no card corners, the band runs edge to edge.
             if root.themed : Rectangle {
                 width: 100%; height: 100%;
-                border-top-left-radius: 22px; border-top-right-radius: 22px;
+                border-top-left-radius: root.phone ? 0px : 22px; border-top-right-radius: root.phone ? 0px : 22px;
                 background: root.chrome-c;
             }
             HorizontalLayout {
@@ -475,10 +490,10 @@ export component ChatPage inherits Rectangle {
         convo := Rectangle {
             vertical-stretch: 1;
             background: root.convo-c.with-alpha(0.94);
-            border-top-left-radius: 24px;
-            border-top-right-radius: 24px;
-            border-bottom-left-radius: 22px;
-            border-bottom-right-radius: 22px;
+            border-top-left-radius: root.phone ? 0px : 24px;
+            border-top-right-radius: root.phone ? 0px : 24px;
+            border-bottom-left-radius: root.phone ? 0px : 22px;
+            border-bottom-right-radius: root.phone ? 0px : 22px;
             clip: true;
 
             // 46px highlight across the rounded top (ChatPage.qml:966).
@@ -538,8 +553,15 @@ export component ChatPage inherits Rectangle {
                             sheet.item = it;
                             root.sheet-snapshot(x, y, w, h);
                             root.menu-action("prepare", it.event-id);
-                            sheet.open-for(x, y, w, h);
+                            // Window → page coordinates, as in sheet-open.
+                            sheet.open-for(x - root.absolute-position.x, y - root.absolute-position.y, w, h);
                         }
+                        // MessageSheet.qml:205 hideSource: the pressed bubble
+                        // vanishes for the sheet's whole life, fly-home too —
+                        // the copy stands in for it. Snapshots are taken while
+                        // `shown` is still false, so the copy keeps its pixels.
+                        sheet-lit: sheet.shown && item.event-id != ""
+                            && sheet.item.event-id == item.event-id;
                         reply-requested(e, n, b) => { root.arm-reply(e, n, b); }
                         open-image(it) => { root.open-image(it); }
                         play-video(it) => { root.play-video(it); }
@@ -1128,6 +1150,12 @@ export component ChatPage inherits Rectangle {
         width: 100%; height: 100%;
         fg: root.fg;
         accent: root.accent;
+        // Panel.qml:1370-1373 — a themed room hands the sheet the chat's own
+        // surface, chip and deep chip so pill, menu, drawer and confirm sit
+        // in the room's tone; unthemed rooms keep the popup ground.
+        surface: (root.themed ? root.surface-c : Theme.popup-background).with-alpha(0.98);
+        chip: root.chip-c;
+        deep-chip: root.deep-chip-c;
         emoji-rows: root.emoji-rows;
         quick-emoji: root.quick-emoji;
         emoji-cat-rows: root.emoji-cat-rows;

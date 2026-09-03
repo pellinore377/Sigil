@@ -51,7 +51,27 @@ pub async fn video_play(engine: SharedEngine, p: &serde_json::Map<String, Value>
 
 /// `audio.play {path, seek?}` — play a local file.
 pub async fn audio_play(engine: SharedEngine, p: &serde_json::Map<String, Value>) -> Reply {
-    audio_play_file(engine, p).await
+    // The timeline names the event, not the file: the session knows where
+    // the media lives (and fetches it first when it is not here yet).
+    let has_path = p.get("path").and_then(Value::as_str).is_some_and(|s| !s.is_empty());
+    if has_path {
+        return audio_play_file(engine, p).await;
+    }
+    let (room, event) = (
+        p.get("roomId").and_then(Value::as_str).unwrap_or("").to_string(),
+        p.get("eventId").and_then(Value::as_str).unwrap_or("").to_string(),
+    );
+    let Some(session) = engine.sigil.lock().clone() else {
+        return Reply::err("bad_request", "no session");
+    };
+    let got = session.media_get(&room, &event).await;
+    let path = match got {
+        Reply::Ok(v) => v.get("path").and_then(Value::as_str).unwrap_or("").to_string(),
+        other => return other,
+    };
+    let mut q = p.clone();
+    q.insert("path".into(), json!(path));
+    audio_play_file(engine, &q).await
 }
 
 /// `voice.start` — begin recording; `voice.level` events stream while it runs.

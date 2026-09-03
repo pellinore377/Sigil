@@ -313,8 +313,6 @@ checksum = "f665ee40bc4a3c5590afb1e9677db74a508659dfd71e126420da8274909a0167"
 [[package]]
 name = "ndk-build"
 version = "0.10.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f38285f506f67137b22542584e454319b0a7a7ae86a50100a8ca665195679883"
 dependencies = [
  "dirs",
  "dunce",

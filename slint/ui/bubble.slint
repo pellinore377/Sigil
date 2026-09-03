@@ -63,6 +63,11 @@ export component Bubble inherits Rectangle {
     in property <color> theme-surface: transparent;
     /// BubbleDelegate.qml:210 — the page can suppress the unread divider.
     in property <bool> unread-divider-allowed: true;
+    /// The message sheet is spotlighting THIS row's bubble: the original
+    /// renders invisible while the copy flies (MessageSheet.qml:205
+    /// hideSource) and comes back only when the sheet clears — opacity,
+    /// not `if`, so the row keeps its height and the copy lands on it.
+    in property <bool> sheet-lit: false;
     in-out property <bool> details-open: false;
 
     callback menu-requested(TimelineRow, length, length, length, length);
@@ -259,8 +264,16 @@ export component Bubble inherits Rectangle {
             visible: root.is-msg;
 
             // BubbleDelegate.qml:315-318 — tapping the empty space beside the
-            // bubble shows the same details.
-            TouchArea { clicked => { root.details-open = !root.details-open; } }
+            // bubble shows the same details; a hold there opens the menu like
+            // one on the bubble (:1107-1111). Declared first, so the bubble,
+            // its bodies, the reactions and the reply strip all sit above it.
+            HoldArea {
+                clicked => {
+                    if (!self.fired) { root.details-open = !root.details-open; }
+                    self.fired = false;
+                }
+                held => { root.open-menu(); }
+            }
 
             // BubbleDelegate.qml:48-57 — the entry transform on the whole row.
             entry-wrap := Rectangle {
@@ -275,6 +288,10 @@ export component Bubble inherits Rectangle {
             bubble := Rectangle {
                 x: item.is-own ? brow.width - self.width : 0px;
                 y: brow.height - self.height;
+                // Invisible for the sheet's lifetime, fly-home included
+                // (MessageSheet.qml:205 hideSource); reactions and the pin
+                // stay, exactly the srcItem's subtree and no more.
+                opacity: root.sheet-lit ? 0.0 : 1.0;
                 // QML contentW: media takes its box; doc/track/code/contact and
                 // the link card take bubbleMax outright (wrapped text reports a
                 // tiny preferred width); text is implicitWidth + 22, 40px floor.
@@ -1545,11 +1562,16 @@ export component Bubble inherits Rectangle {
             opacity: self.wanted ? 1.0 : 0.0;
             animate opacity { duration: 220ms; easing: cubic-bezier(0.33, 1, 0.68, 1); }
             visible: self.opacity > 0.01;
+            // Spacing lives inside the collapsing cells, not on the layout: an
+            // invisible QML Row item takes no space (BubbleDelegate.qml:
+            // 1275-1292), but a Slint layout child keeps its slot — with the
+            // details closed the mark must sit at the bubble's right edge,
+            // rightMargin space(2) only (:1255-1256), not a ghost dot away.
             HorizontalLayout {
                 y: (detail-row.height - self.height) / 2;
                 height: detail-row.mark-dot + 4px;
                 alignment: item.is-own ? end : start;
-                spacing: 5px;
+                spacing: 0;
                 padding-right: 2px;
                 padding-left: 2px;
                 // The mark stack (:1157-1239): ring, bang, tick and faces
@@ -1619,14 +1641,23 @@ export component Bubble inherits Rectangle {
                         }
                     }
                 }
-                if item.is-own : Text {
-                    text: "·";
-                    color: root.fg.with-alpha(0.5);
-                    font-family: Theme.font-ui; font-size: 10px;
-                    vertical-alignment: center;
-                    // :1276-1281 — fades with the details, 160ms.
-                    opacity: root.details-open ? 1.0 : 0.0;
-                    animate opacity { duration: 160ms; }
+                // The "·" carries the Row's two 5px gaps (:1261) and collapses
+                // with the details so the closed row is the mark alone.
+                if item.is-own : dot-cell := Rectangle {
+                    clip: true;
+                    width: root.details-open ? dot-t.preferred-width + 10px : 0px;
+                    animate width { duration: 220ms; easing: cubic-bezier(0.33, 1, 0.68, 1); }
+                    dot-t := Text {
+                        x: 5px;
+                        height: 100%;
+                        text: "·";
+                        color: root.fg.with-alpha(0.5);
+                        font-family: Theme.font-ui; font-size: 10px;
+                        vertical-alignment: center;
+                        // :1276-1281 — fades with the details, 160ms.
+                        opacity: root.details-open ? 1.0 : 0.0;
+                        animate opacity { duration: 160ms; }
+                    }
                 }
                 // :1284-1292 — the details grow from nothing: width 220ms
                 // OutCubic (clipped), opacity 160ms.

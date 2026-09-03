@@ -95,7 +95,9 @@ export component MessageSheet inherits Rectangle {
     property <length> pill-row-probe: 7 * 36px + 6 * 6px + 20px;
 
     // ---- Phases: shown (item !== null) and closing (MessageSheet.qml:44-56).
-    property <bool> shown: false;
+    // `shown` is out: the page hides the original bubble against it, exactly
+    // the QML's hideSource window — set before the frost, cleared with it.
+    out property <bool> shown: false;
     property <bool> closing: false;
     // `up` is the QML's `item !== null && !closing`: pill, menu and frost in.
     property <bool> up: root.shown && !root.closing;
@@ -106,10 +108,11 @@ export component MessageSheet inherits Rectangle {
     property <bool> animate-copy: false;
     property <length> copy-y: root.lifted ? root.dest-y : root.hole-y;
     // Lift: 220ms OutBack overshoot 1.1 (:196). Fly home: 200ms OutBack
-    // overshoot 1.25 (:53). Placement: instant.
+    // overshoot 1.25 (:53) — Qt's 1.25 peaks near 6%, so the close curve is
+    // eased below the stock 1.56 bezier (≈10%), which snapped visibly.
     animate copy-y {
         duration: !root.animate-copy ? 0ms : root.closing ? 200ms : 220ms;
-        easing: root.closing ? cubic-bezier(0.34, 1.56, 0.64, 1) : cubic-bezier(0.34, 1.3, 0.64, 1);
+        easing: root.closing ? cubic-bezier(0.34, 1.42, 0.64, 1) : cubic-bezier(0.34, 1.3, 0.64, 1);
     }
     // Reads that force a first evaluation: a Slint animation starts from the
     // value last evaluated, so the copy is read while parked on the bubble
@@ -204,25 +207,32 @@ export component MessageSheet inherits Rectangle {
             y: root.copy-y - root.vp-top;
             width: root.hole-w;
             height: root.hole-h;
-            border-radius: 16px;
-            background: root.copy-image.width > 0 ? transparent : root.surface.with-alpha(0.97);
-            clip: true;
+            // MessageSheet.qml:197-205: the lift is the bubble's own pixels,
+            // never rounded or clipped by the sheet — a 16px clip here gouged
+            // the 5px group corners in flight. Only the redrawn fallback
+            // wears the 16px card (:203).
             if root.copy-image.width > 0 : Image {
                 source: root.copy-image;
                 width: 100%; height: 100%;
                 image-fit: fill;
             }
-            if root.copy-image.width == 0 : Text {
-                x: 10px; y: 10px;
-                width: copy-card.width - 20px;
-                height: copy-card.height - 20px;
-                text: item.kind == "poll" ? item.poll-question
-                    : item.kind == "location" ? (item.location-label != "" ? item.location-label : "Location")
-                    : item.body;
-                color: root.fg;
-                font-family: Theme.font-ui; font-size: Theme.body;
-                wrap: word-wrap;
-                overflow: elide;
+            if root.copy-image.width == 0 : Rectangle {
+                width: 100%; height: 100%;
+                border-radius: 16px;
+                background: root.surface.with-alpha(0.97);
+                clip: true;
+                Text {
+                    x: 10px; y: 10px;
+                    width: copy-card.width - 20px;
+                    height: copy-card.height - 20px;
+                    text: item.kind == "poll" ? item.poll-question
+                        : item.kind == "location" ? (item.location-label != "" ? item.location-label : "Location")
+                        : item.body;
+                    color: root.fg;
+                    font-family: Theme.font-ui; font-size: Theme.body;
+                    wrap: word-wrap;
+                    overflow: elide;
+                }
             }
         }
     }

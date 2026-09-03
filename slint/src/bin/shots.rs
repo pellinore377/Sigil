@@ -69,6 +69,25 @@ fn main() -> anyhow::Result<()> {
 
     // the open conversation and the pages that hang off it
     app.set_nav("chat".into());
+    // the location card as an OWN message wearing the sent tick, so the
+    // receipt mark's right-edge alignment shows under a full-bleed card
+    // (BubbleDelegate.qml:1255-1256: the mark line hangs off the bubble's
+    // right edge, rightMargin space(2))
+    {
+        let items = app.get_items();
+        for i in 0..items.row_count() {
+            if let Some(mut row) = items.row_data(i) {
+                if row.kind == "location" {
+                    row.is_own = true;
+                    row.owns_receipt = true;
+                    row.send_state = "sent".into();
+                    items.set_row_data(i, row);
+                    break;
+                }
+            }
+        }
+    }
+    h.settle();
     h.shoot("chat")?;
     // the voice recorder with a clip ready to send
     app.set_recorder_open(true);
@@ -83,16 +102,30 @@ fn main() -> anyhow::Result<()> {
     app.set_recorder_open(false);
     app.set_rec_state("idle".into());
     h.settle();
-    // the long-press sheet over the newest own message, page frosted behind it
-    app.invoke_debug_sheet(
-        app.get_items().row_count() as i32 - 3,
-        250.0,
-        560.0,
-        130.0,
-        44.0,
-    );
+    // the long-press sheet over a real bubble ("solid red …", whose box sits
+    // at 12,564 210×33 in this fixture), page frosted behind it
+    let pressed = {
+        let items = app.get_items();
+        (0..items.row_count())
+            .find(|&i| {
+                items
+                    .row_data(i)
+                    .map(|r| r.body.starts_with("solid red"))
+                    .unwrap_or(false)
+            })
+            .unwrap_or(items.row_count() - 3)
+    };
+    app.invoke_debug_sheet(pressed as i32, 12.0, 564.0, 210.0, 33.0);
     h.shoot("chat-sheet")?;
+    // the no-snapshot path dims instead of frosting (sheet.slint:183): the
+    // timeline shows through, so this frame proves the pressed row holds no
+    // second bubble behind the lifted copy
+    app.set_sheet_backdrop(Default::default());
+    h.shoot("chat-sheet-dim")?;
+    // after the close settles the original bubble must be back in the
+    // timeline (the sheet hid it for its lifetime — MessageSheet.qml:205)
     app.invoke_debug_sheet_close();
+    h.shoot("chat-sheet-closed")?;
     h.settle();
     for page in ["search", "forward", "chattheme", "roomsettings"] {
         app.set_nav(page.into());

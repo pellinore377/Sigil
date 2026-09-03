@@ -15,8 +15,12 @@ use slint::ComponentHandle;
 use std::sync::OnceLock;
 
 /// The multiplier over the platform's scale. 1.25 puts the QML's 12 px body
-/// text at 15 px, which is where phone body text sits.
+/// text at 15 dp; the phone takes 1.35, which lands message text on the
+/// platform messenger's 16 sp and keeps the window about 380 dp wide.
+#[cfg(not(target_os = "android"))]
 pub const UI_SCALE: f32 = 1.25;
+#[cfg(target_os = "android")]
+pub const UI_SCALE: f32 = 1.35;
 
 #[cfg(target_os = "android")]
 static ANDROID: OnceLock<slint::android::AndroidApp> = OnceLock::new();
