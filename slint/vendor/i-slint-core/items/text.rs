@@ -304,6 +304,11 @@ impl Item for StyledTextItem {
         };
         match event {
             #[cfg(feature = "shared-parley")]
+            // SIGIL PATCH: only a link claims the pointer. Accepting every
+            // press over the whole text meant a message body swallowed the
+            // hold that should open its bubble's menu and the tap that should
+            // show its details; those now fall through to the parent areas,
+            // while links still click.
             MouseEvent::Released {
                 position,
                 button: PointerEventButton::Left,
@@ -313,8 +318,10 @@ impl Item for StyledTextItem {
                 if let Some(link) = find_link(position) {
                     *cursor = super::MouseCursor::Pointer;
                     Self::FIELD_OFFSETS.link_clicked().apply_pin(self).call(&(link.into(),));
+                    InputEventResult::EventAccepted
+                } else {
+                    InputEventResult::EventIgnored
                 }
-                InputEventResult::EventAccepted
             }
             #[cfg(feature = "shared-parley")]
             MouseEvent::Moved { position, .. }
@@ -322,8 +329,10 @@ impl Item for StyledTextItem {
             | MouseEvent::Released { position, .. } => {
                 if find_link(position).is_some() {
                     *cursor = super::MouseCursor::Pointer;
+                    InputEventResult::EventAccepted
+                } else {
+                    InputEventResult::EventIgnored
                 }
-                InputEventResult::EventAccepted
             }
             _ => InputEventResult::EventIgnored,
         }

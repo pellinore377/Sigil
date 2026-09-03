@@ -657,7 +657,9 @@ export component ChatPage inherits Rectangle {
                                         for di in [0, 1, 2] : Rectangle {
                                             width: 6px;
                                             dot := Rectangle {
-                                                property <float> t: (animation-tick() / 900ms + 3.0 - di * 0.15556).mod(1.0);
+                                                // only while shown: a live animation-tick() here
+                                                // re-rendered every chat at frame rate forever
+                                                property <float> t: typing-row.active ? (animation-tick() / 900ms + 3.0 - di * 0.15556).mod(1.0) : 0.0;
                                                 property <float> lift: self.t < 0.2444
                                                     ? 1 - (1 - self.t / 0.2444) * (1 - self.t / 0.2444)
                                                     : self.t < 0.5333

@@ -121,7 +121,17 @@ export component Bubble inherits Rectangle {
     /// for rows nobody can see (an animation-tick() dependency anywhere
     /// re-renders the whole window at frame rate).
     in property <bool> on-screen: true;
-    property <duration> clock: root.on-screen ? animation-tick() : 0ms;
+    // The effects clock: 30 steps a second from a timer rather than
+    // animation-tick(), which would redraw at the display's full rate (120
+    // on this class of phone) for glyph-by-glyph text that reads the same
+    // at 30. Runs only for effect rows that are on screen.
+    property <bool> animating: root.on-screen && (item.fx-chars.length > 0 || item.location-live || item.kind == "voice");
+    property <duration> clock: 0ms;
+    fx-clock := Timer {
+        interval: 33ms;
+        running: root.animating;
+        triggered => { root.clock = animation-tick(); }
+    }
     /// Epoch seconds at app start (window's boot-epoch-s) for the live countdown.
     in property <int> boot-epoch-s: 0;
     property <int> live-remaining: max(0, item.location-expires-s - root.boot-epoch-s - floor(root.clock / 1s));

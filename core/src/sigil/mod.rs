@@ -220,10 +220,17 @@ async fn start(engine: &SharedEngine, acct: Account) -> anyhow::Result<()> {
             s3.escrow.store(c.flags & 0b1000 != 0, std::sync::atomic::Ordering::Relaxed);
         }
     });
-    session.subscribe_all(engine).await;
-    tracing::info!("session: subscribed in {:?}", t0.elapsed());
+    // The room list is local state: show it now. Subscriptions (token
+    // top-up, one slot per conversation, the requests slots) are round
+    // trips and ran to seconds on a phone; they carry on behind the list.
     session.broadcast_rooms(engine).await;
     tracing::info!("session: rooms broadcast in {:?}", t0.elapsed());
+    let (e6, s6) = (engine.clone(), session.clone());
+    tokio::spawn(async move {
+        let t = std::time::Instant::now();
+        s6.subscribe_all(&e6).await;
+        tracing::info!("session: subscribed in {:?}", t.elapsed());
+    });
     let (e2, s2) = (engine.clone(), session.clone());
     tokio::spawn(async move { s2.delivery_loop(e2).await });
     let (e4, s4) = (engine.clone(), session.clone());
@@ -2060,11 +2067,14 @@ impl SigilSession {
     // ------------------------------------------------------------ receiving
 
     async fn subscribe_all(&self, engine: &SharedEngine) {
+        let t = std::time::Instant::now();
         self.top_up().await;
+        tracing::info!("session: tokens topped up in {:?}", t.elapsed());
         let convs = self.inner.lock().await.0.conversations.clone();
         for c in &convs {
             self.subscribe_conversation(engine, c).await;
         }
+        tracing::info!("session: {} conversations subscribed in {:?}", convs.len(), t.elapsed());
         let handles = {
             let mut g = self.inner.lock().await;
             account::subscribe_requests(&self.link, &mut g.0).await
