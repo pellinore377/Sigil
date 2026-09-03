@@ -30,7 +30,7 @@ export component PrivacyPage inherits Rectangle {
                     fg: root.fg;
                     title: "Encryption";
                     SettingsRow {
-                        fg: root.fg; icon: Icons.lock; filled: true;
+                        fg: root.fg; icon: Icons.lock;   // SecurityPage.qml:115 passes no `filled`
                         label: "End-to-end encrypted, always";
                         sublabel: "Every message, file and call is locked on your device. There is no switch.";
                         trailing: "check"; on: true;

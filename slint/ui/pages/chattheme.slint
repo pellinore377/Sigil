@@ -111,7 +111,7 @@ export component ChatThemePage inherits Rectangle {
                         ActionButton {
                             y: (56px - self.height) / 2;
                             width: 22px; height: 22px;
-                            icon: Icons.back; filled: false;
+                            icon: Icons.back;
                             foreground: root.fg;
                             clicked => { root.closed(); }
                         }
@@ -267,7 +267,7 @@ export component ChatThemePage inherits Rectangle {
                             HorizontalLayout {
                                 alignment: center;
                                 spacing: 8px;
-                                IconLabel { text: Icons.image; filled: false; color: #1a1a1a; vertical-alignment: center; }
+                                IconLabel { text: Icons.image; font-size: Theme.icon-size; color: #1a1a1a; vertical-alignment: center; }
                                 Text { text: "Choose a photo"; color: #1a1a1a; font-family: Theme.font-ui; font-size: Theme.body; font-weight: 700; vertical-alignment: center; }
                             }
                             TouchArea { clicked => { root.choose-photo(); } }

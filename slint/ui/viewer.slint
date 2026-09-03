@@ -318,7 +318,7 @@ export component ImageViewer inherits Rectangle {
                 x: (media.width - 60px) / 2; y: (media.height - 60px) / 2;
                 width: 60px; height: 60px; border-radius: 30px;
                 background: #000000.with-alpha(0.55);
-                IconLabel { text: Icons.play; filled: false; color: #ffffff; font-size: 26px; width: 100%; height: 100%; }
+                IconLabel { text: Icons.play; color: #ffffff; font-size: 26px; width: 100%; height: 100%; }
             }
         }
         // ImageViewer.qml:475 — the spinner in fg@0.5 while the full image loads.
@@ -424,7 +424,7 @@ export component ImageViewer inherits Rectangle {
         close-btn := ActionButton {
             x: 8px; y: (56px - 22px) / 2;
             width: 22px; height: 22px;
-            icon: Icons.close; filled: false;
+            icon: Icons.close;
             foreground: root.fg;
             clicked => { root.close(); }
         }
@@ -446,19 +446,19 @@ export component ImageViewer inherits Rectangle {
             spacing: 2px;
             ActionButton {
                 width: 22px; height: 22px;
-                icon: Icons.download; filled: false;
+                icon: Icons.download;
                 foreground: root.fg;
                 clicked => { root.download-requested(); }
             }
             if root.it.can-redact : ActionButton {
                 width: 22px; height: 22px;
-                icon: Icons.trash; filled: false;
+                icon: Icons.trash;
                 foreground: root.fg;
                 clicked => { root.delete-requested(); }
             }
             ActionButton {
                 width: 22px; height: 22px;
-                icon: Icons.moreVertical; filled: false;
+                icon: Icons.moreVertical;
                 foreground: root.fg;
                 clicked => { root.more-open = !root.more-open; }
             }
@@ -609,7 +609,7 @@ export component ImageViewer inherits Rectangle {
             x: 6px; y: 6px; width: 148px;
             height: 30px; border-radius: 8px;
             background: fr-t.pressed || fr-t.has-hover ? root.fg.with-alpha(0.1) : transparent;
-            IconLabel { x: 10px; width: 14px; height: 100%; text: Icons.retry; filled: false; color: root.fg; opacity: 0.85; }
+            IconLabel { x: 10px; width: 14px; height: 100%; text: Icons.retry; font-size: Theme.icon-size; color: root.fg; opacity: 0.85; }
             Text { x: 36px; width: parent.width - 36px; height: 100%; text: "Forward"; color: root.fg; font-family: Theme.font-ui; font-size: Theme.body; vertical-alignment: center; }
             fr-t := TouchArea { clicked => { root.more-open = false; root.fwd-open = true; } }
         }
@@ -617,7 +617,7 @@ export component ImageViewer inherits Rectangle {
             x: 6px; y: 36px; width: 148px;
             height: 30px; border-radius: 8px;
             background: sr-t.pressed || sr-t.has-hover ? root.fg.with-alpha(0.1) : transparent;
-            IconLabel { x: 10px; width: 14px; height: 100%; text: Icons.share; filled: false; color: root.fg; opacity: 0.85; }
+            IconLabel { x: 10px; width: 14px; height: 100%; text: Icons.share; font-size: Theme.icon-size; color: root.fg; opacity: 0.85; }
             Text { x: 36px; width: parent.width - 36px; height: 100%; text: "Share"; color: root.fg; font-family: Theme.font-ui; font-size: Theme.body; vertical-alignment: center; }
             sr-t := TouchArea { clicked => { root.more-open = false; root.share-requested(); } }
         }

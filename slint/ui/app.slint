@@ -48,6 +48,9 @@ export component AppWindow inherits Window {
     /// On a desktop the card has its rounded, bordered frame (Panel.qml:483-484);
     /// on a phone the app is the screen. The bridge sets it.
     in property <bool> card-frame: false;
+    /// the window's logical size as laid out, read back by scale.rs
+    out property <length> logical-width: root.width;
+    out property <length> logical-height: root.height;
     /// the tapped thumbnail the image viewer grows out of (0 width: none)
     in-out property <length> vw-from-x;
     in-out property <length> vw-from-y;

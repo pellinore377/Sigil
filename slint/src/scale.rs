@@ -62,18 +62,40 @@ pub fn keep(win: &crate::AppWindow) {
     }
     let weak: slint::Weak<crate::AppWindow> = win.as_weak();
     let last_set = std::rc::Rc::new(std::cell::Cell::new(None::<f32>));
+    let last_size = std::rc::Rc::new(std::cell::Cell::new((0u32, 0u32)));
     let apply = {
         let weak = weak.clone();
         let last_set = last_set.clone();
+        let last_size = last_size.clone();
         move || {
             let Some(w): Option<crate::AppWindow> = weak.upgrade() else { return };
             let current = w.window().scale_factor();
             let want = platform_scale(current, last_set.get()) * multiplier();
-            if (current - want).abs() > 0.001 {
+            let phys = w.window().size();
+            let rescaled = (current - want).abs() > 0.001;
+            if rescaled {
                 w.window().dispatch_event(slint::platform::WindowEvent::ScaleFactorChanged {
                     scale_factor: want,
                 });
                 last_set.set(Some(want));
+            }
+            // A scale change alone leaves the window's logical size where
+            // the backend computed it (physical ÷ its own scale), so the
+            // page lays out for a screen bigger than the real one and runs
+            // off its right and bottom edges. The logical size follows:
+            // physical ÷ our scale, re-sent whenever the surface changes.
+            let want_w = phys.width as f32 / want;
+            let want_h = phys.height as f32 / want;
+            let laid_out = (w.get_logical_width(), w.get_logical_height());
+            let off = (laid_out.0 - want_w).abs() > 0.5 || (laid_out.1 - want_h).abs() > 0.5;
+            if phys.width > 0
+                && phys.height > 0
+                && (rescaled || off || last_size.get() != (phys.width, phys.height))
+            {
+                w.window().dispatch_event(slint::platform::WindowEvent::Resized {
+                    size: slint::LogicalSize::new(want_w, want_h),
+                });
+                last_size.set((phys.width, phys.height));
             }
         }
     };

@@ -6,25 +6,31 @@ import { Icons } from "icons.slint";
 
 // An icon by name (`Icons.*`), never a glyph in a Text: the codepoints are
 // private-use, so the wrong family draws a different icon, not tofu.
+// Defaults follow IconLabel.qml:15,17: 16px, outlined. Sites pass `filled: true`
+// and a size only where their QML twin does.
 export component IconLabel inherits Text {
-    in property <bool> filled: true;
+    in property <bool> filled: false;
     font-family: self.filled ? Theme.font-icon-filled : Theme.font-icon;
-    font-size: Theme.icon-size;
+    font-size: 16px;
     color: Theme.menu-text;
     horizontal-alignment: center;
     vertical-alignment: center;
 }
 
-// Bare size×size tap surface with a centred icon — PanelActionButton.
+// Bare size×size tap surface with a centred icon — PanelActionButton: 22×22
+// with a 14px glyph (docs/ui-conventions.md:148-150, 170-173). Every QML site
+// passes `fontFamily: Fonts.icon` (outlined) unless noted, so `filled` is off.
+// Where a page needs a bigger finger target the QML enlarges only the
+// MouseArea; do the same with a sibling TouchArea, not the button.
 // Plain centring is correct for Material Symbols; do not ink-centre them
 // (docs/ui-conventions.md, "Icons and centring").
 export component ActionButton inherits Rectangle {
     in property <string> icon;
-    in property <bool> filled: true;
+    in property <bool> filled: false;
     in property <color> foreground: Theme.menu-text;
     in property <length> icon-size: Theme.icon-size;
     callback clicked;
-    width: 36px; height: 36px;
+    width: 22px; height: 22px;
     border-radius: self.height / 2;
     background: touch.pressed ? Theme.menu-text.with-alpha(0.10)
               : touch.has-hover ? Theme.menu-text.with-alpha(0.06)
@@ -41,7 +47,7 @@ export component ActionButton inherits Rectangle {
 // Avatar: image when the engine cached one, initials over a hashed tint
 // otherwise. The colour and initials are computed in Rust with the row.
 export component Avatar inherits Rectangle {
-    in property <length> size: 44px;
+    in property <length> size: 32px;   // Avatar.qml:62
     in property <image> source;
     in property <string> initials;
     in property <color> tint: Theme.accent;
@@ -85,6 +91,7 @@ export component Avatar inherits Rectangle {
         background: transparent;
         IconLabel {
             text: root.status == "offline" ? Icons.statusRing : Icons.statusDot;
+            filled: true;   // Avatar.qml:88
             color: root.status == "online" ? #3fbf5f
                  : root.status == "busy" ? #e2564a
                  : root.status == "away" ? #eaa030
@@ -122,7 +129,6 @@ export component SButton inherits Rectangle {
         // outlined, as IconLabel.qml:17 defaults (Button.qml never sets `filled`)
         if root.icon != "" : IconLabel {
             text: root.icon;
-            filled: false;
             color: root.foreground;
             font-size: Theme.icon-size;
             vertical-alignment: center;
@@ -228,7 +234,6 @@ export component TextWell inherits Rectangle {
         y: (root.height - self.height) / 2;
         width: 22px; height: 22px;
         icon: root.reveal ? Icons.eye : Icons.eyeOff;
-        filled: false;
         foreground: Theme.menu-text.with-alpha(0.7);
         clicked => { root.reveal = !root.reveal; }
     }

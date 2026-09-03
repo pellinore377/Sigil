@@ -145,7 +145,7 @@ export component VoiceRecorder inherits Rectangle {
                     spacing: 4px;
                     IconLabel {
                         text: root.state == "recording" ? Icons.refresh : Icons.close;
-                        filled: false;
+                        font-size: Theme.icon-size;   // VoiceRecorder.qml:178
                         color: root.fg; vertical-alignment: center;
                     }
                     Text {
@@ -166,6 +166,7 @@ export component VoiceRecorder inherits Rectangle {
                 background: root.state == "recording" ? Theme.urgent.brighter(0.25) : root.accent.brighter(0.3);
                 IconLabel {
                     text: root.state == "recording" ? Icons.stop : Icons.record;
+                    filled: true;   // VoiceRecorder.qml:194
                     color: Theme.background;
                     font-size: 22px;
                     width: 100%; height: 100%;
@@ -185,7 +186,7 @@ export component VoiceRecorder inherits Rectangle {
                     alignment: center;
                     spacing: 4px;
                     IconLabel {
-                        text: Icons.check; filled: false;
+                        text: Icons.check; font-size: Theme.icon-size;   // VoiceRecorder.qml:214
                         color: root.state == "idle" ? root.fg : #1a1a1a;
                         vertical-alignment: center;
                     }

@@ -43,7 +43,7 @@ export component AddPeoplePage inherits Rectangle {
                     ActionButton {
                         y: (54px - self.height) / 2;
                         width: 22px; height: 22px;
-                        icon: Icons.back; filled: false;
+                        icon: Icons.back;
                         foreground: root.fg;
                         clicked => { root.closed(); }
                     }
@@ -74,7 +74,7 @@ export component AddPeoplePage inherits Rectangle {
                         spacing: 8px;
                         IconLabel {
                             text: Icons.search;
-                            filled: false;   // QML omits filled → outlined family
+                            font-size: Theme.icon-size;   // AddPeoplePage.qml:36 (outlined, size: Style.font.icon)
                             color: root.fg.with-alpha(0.5);
                             vertical-alignment: center;
                         }

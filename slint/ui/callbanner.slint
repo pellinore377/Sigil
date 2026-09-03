@@ -72,6 +72,7 @@ export component CallBanner inherits Rectangle {
                 background: Theme.urgent.with-alpha(0.85);
                 IconLabel {
                     text: Icons.callEnd;
+                    filled: true;   // CallBanner.qml:40
                     color: root.fg;
                     font-size: Theme.icon-large;
                     width: 100%; height: 100%;
@@ -87,6 +88,7 @@ export component CallBanner inherits Rectangle {
                 border-color: Theme.accent;
                 IconLabel {
                     text: Icons.phone;
+                    filled: true;   // CallBanner.qml:43
                     color: root.fg;
                     font-size: Theme.icon-large;
                     width: 100%; height: 100%;
@@ -101,6 +103,7 @@ export component CallBanner inherits Rectangle {
                 border-color: Theme.accent;
                 IconLabel {
                     text: Icons.videoOn;
+                    filled: true;   // CallBanner.qml:46
                     color: root.fg;
                     font-size: Theme.icon-large;
                     width: 100%; height: 100%;

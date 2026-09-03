@@ -52,7 +52,7 @@ export component ThreadsPage inherits Rectangle {
                     ActionButton {
                         y: (56px - self.height) / 2;
                         width: 22px; height: 22px;
-                        icon: Icons.back; filled: false;
+                        icon: Icons.back;
                         foreground: root.fg;
                         clicked => { root.closed(); }
                     }
@@ -96,7 +96,6 @@ export component ThreadsPage inherits Rectangle {
                 spacing: 10px;
                 IconLabel {
                     text: Icons.thread;
-                    filled: false;
                     color: root.accent.with-alpha(0.8);
                     font-size: 44px;
                     horizontal-alignment: center;

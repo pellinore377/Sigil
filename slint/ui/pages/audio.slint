@@ -58,7 +58,6 @@ export component AudioPage inherits Rectangle {
             x: 6px; y: (52px - 22px) / 2;
             width: 22px; height: 22px;
             icon: Icons.back;
-            filled: false;
             foreground: root.fg;
             clicked => { root.closed(); }
         }
@@ -107,7 +106,6 @@ export component AudioPage inherits Rectangle {
             }
             if !root.have-art && root.status != "loading" : IconLabel {
                 text: Icons.music;
-                filled: false;
                 color: #ffffff.with-alpha(0.5);
                 font-size: 72px;
                 width: 100%; height: 100%;
@@ -128,7 +126,7 @@ export component AudioPage inherits Rectangle {
             width: 38px; height: 38px; border-radius: 19px;
             // AudioPage.qml:199 — #000@0.42, no pressed state.
             background: #000000.with-alpha(0.42);
-            IconLabel { text: Icons.download; filled: false; color: #ffffff; width: 100%; height: 100%; }
+            IconLabel { text: Icons.download; font-size: Theme.icon-size; color: #ffffff; width: 100%; height: 100%; }
             dl-t := TouchArea {
                 enabled: root.can-download;
                 clicked => { root.download-requested(); }

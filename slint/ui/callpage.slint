@@ -137,6 +137,7 @@ export component CallTile inherits Rectangle {
             spacing: 5px;
             if root.participant.mic-muted : IconLabel {
                 text: Icons.micOff;
+                filled: true;   // ParticipantTile.qml:83
                 color: Theme.urgent;
                 font-size: Theme.body-small;
                 vertical-alignment: center;
@@ -160,6 +161,7 @@ export component CallTile inherits Rectangle {
         x: root.width - self.width - 8px;
         y: 8px;
         text: Icons.signalOff;
+        filled: true;   // ParticipantTile.qml:96
         color: Theme.urgent;
         font-size: Theme.icon-size;
     }
@@ -382,6 +384,7 @@ export component CallPage inherits Rectangle {
                 }
                 if root.encrypted : IconLabel {
                     text: Icons.lock;
+                    filled: true;   // CallPage.qml:209
                     color: root.fg.with-alpha(0.5);
                     font-size: Theme.body-small;
                     vertical-alignment: center;
@@ -541,6 +544,7 @@ export component CallPage inherits Rectangle {
         background: Theme.background.with-alpha(0.55);
         IconLabel {
             text: Icons.pip;
+            filled: true; font-size: Theme.icon-size;   // CallPage.qml:152
             color: root.fg;
             width: 100%; height: 100%;
         }
@@ -621,6 +625,7 @@ export component CallPage inherits Rectangle {
                 background: root.mic-muted ? #e8e8e8 : #292b2e.with-alpha(0.92);
                 IconLabel {
                     text: root.mic-muted ? Icons.micOff : Icons.micOn;
+                    filled: true;   // CallPage.qml:474
                     color: root.mic-muted ? #202124 : #ececec;
                     font-size: 19px;
                     width: 100%; height: 100%;
@@ -632,6 +637,7 @@ export component CallPage inherits Rectangle {
                 background: !root.camera-on ? #e8e8e8 : #292b2e.with-alpha(0.92);
                 IconLabel {
                     text: root.camera-on ? Icons.videoOn : Icons.videoOff;
+                    filled: true;   // CallPage.qml:474
                     color: !root.camera-on ? #202124 : #ececec;
                     font-size: 19px;
                     width: 100%; height: 100%;
@@ -643,6 +649,7 @@ export component CallPage inherits Rectangle {
                 background: root.screen-sharing ? Theme.accent.with-alpha(0.85) : #292b2e.with-alpha(0.92);
                 IconLabel {
                     text: Icons.screenShareAlt;
+                    filled: true;   // CallPage.qml:474
                     color: #ececec;
                     font-size: 19px;
                     width: 100%; height: 100%;
@@ -654,6 +661,7 @@ export component CallPage inherits Rectangle {
                 background: root.react-open ? Theme.accent.with-alpha(0.85) : #292b2e.with-alpha(0.92);
                 IconLabel {
                     text: Icons.emoji;
+                    filled: true;   // CallPage.qml:474
                     color: #ececec;
                     font-size: 19px;
                     width: 100%; height: 100%;
@@ -665,6 +673,7 @@ export component CallPage inherits Rectangle {
                 background: #292b2e.with-alpha(0.92);
                 IconLabel {
                     text: Icons.settings;
+                    filled: true;   // CallPage.qml:474
                     color: #ececec;
                     font-size: 19px;
                     width: 100%; height: 100%;
@@ -753,6 +762,7 @@ export component CallPage inherits Rectangle {
                     spacing: 8px;
                     IconLabel {
                         text: dev.selected ? Icons.check : " ";
+                        filled: true;   // CallPage.qml:542 Fonts.iconFilled
                         color: Theme.accent;
                         font-size: Theme.body;
                         width: 16px;
@@ -797,6 +807,7 @@ export component CallPage inherits Rectangle {
                     spacing: 8px;
                     IconLabel {
                         text: dev.selected ? Icons.check : " ";
+                        filled: true;   // CallPage.qml:542 Fonts.iconFilled
                         color: Theme.accent;
                         font-size: Theme.body;
                         width: 16px;

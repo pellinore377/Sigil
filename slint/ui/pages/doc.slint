@@ -71,7 +71,6 @@ export component DocPage inherits Rectangle {
             x: 6px; y: (52px - 22px) / 2;
             width: 22px; height: 22px;
             icon: Icons.back;
-            filled: false;
             foreground: root.fg;
             clicked => { root.closed(); }
         }
@@ -149,7 +148,6 @@ export component DocPage inherits Rectangle {
                 spacing: 10px;
                 IconLabel {
                     text: root.status == "error" ? Icons.errorCircle : Icons.file;
-                    filled: false;
                     color: root.status == "error" ? Theme.urgent : root.ink.with-alpha(0.7);
                     font-size: 40px;
                     horizontal-alignment: center;
@@ -307,7 +305,7 @@ export component DocPage inherits Rectangle {
                         x: 11px; y: (60px - self.height) / 2;
                         width: 38px; height: 38px; border-radius: 19px;
                         background: root.accent.with-alpha(0.25);
-                        IconLabel { text: Icons.file; filled: false; color: root.fg; width: 100%; height: 100%; }
+                        IconLabel { text: Icons.file; font-size: Theme.icon-size; color: root.fg; width: 100%; height: 100%; }
                     }
                     file-labels := VerticalLayout {
                         x: 60px;

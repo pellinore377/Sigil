@@ -441,6 +441,7 @@ export component Bubble inherits Rectangle {
                             IconLabel {
                                 text: item.voice-playing ? Icons.pause : Icons.play;
                                 color: #1a1a1a;
+                                font-size: Theme.icon-size;   // BubbleDelegate.qml:643 size: Style.font.icon
                                 width: 100%; height: 100%;
                             }
                             TouchArea { clicked => { root.voice-toggled(item.event-id); } }
@@ -616,7 +617,7 @@ export component Bubble inherits Rectangle {
                                 transform-scale-y: art-tap.pressed ? 0.92 : 1.0;
                                 animate transform-scale-x, transform-scale-y { duration: 90ms; }
                                 IconLabel {
-                                    text: Icons.music; filled: false;
+                                    text: Icons.music;   // AudioBody.qml:111 Fonts.icon (outlined)
                                     color: item.audio-have-art ? #ffffff : item.audio-ink;
                                     font-size: 26px;
                                     width: 100%; height: 100%;
@@ -670,6 +671,7 @@ export component Bubble inherits Rectangle {
                                 IconLabel {
                                     text: item.kind == "video" ? Icons.videoOn : item.kind == "file" ? Icons.file : Icons.music;
                                     color: root.fg;
+                                    font-size: Theme.icon-size;   // BubbleDelegate.qml:815 size: Style.font.icon
                                     width: 100%; height: 100%;
                                 }
                             }
@@ -746,7 +748,6 @@ export component Bubble inherits Rectangle {
                                     border-color: root.fg.with-alpha(0.4);
                                     if opt.mine : IconLabel {
                                         text: Icons.check;
-                                        filled: false;
                                         color: Theme.background;
                                         font-size: 9px;
                                         width: 100%; height: 100%;
@@ -852,7 +853,6 @@ export component Bubble inherits Rectangle {
                                         : f.kind == "email" ? Icons.email
                                         : f.kind == "address" ? Icons.location
                                         : Icons.note;
-                                    filled: false;
                                     color: root.fg.with-alpha(0.45);
                                     font-size: Theme.body-small;
                                 }
@@ -883,7 +883,7 @@ export component Bubble inherits Rectangle {
                                     width: 26px; height: 26px; border-radius: 13px;
                                     background: cp-area.has-hover ? root.fg.with-alpha(0.12) : transparent;
                                     IconLabel {
-                                        text: Icons.copy; filled: false;
+                                        text: Icons.copy;
                                         color: root.fg.with-alpha(0.6);
                                         font-size: Theme.caption;
                                         width: 100%; height: 100%;
@@ -936,6 +936,7 @@ export component Bubble inherits Rectangle {
                         // LocationBody.qml:311-318 — the offline/pending fallback pin.
                         if !loc-box.have-map : IconLabel {
                             text: Icons.location;
+                            filled: true;   // LocationBody.qml:115 Fonts.iconFilled
                             color: root.accent.with-alpha(0.85);
                             font-size: 40px;
                             width: 100%; height: 100%;
@@ -967,6 +968,7 @@ export component Bubble inherits Rectangle {
                             }
                             IconLabel {
                                 text: Icons.location;
+                                filled: true;   // MapView.qml:165
                                 color: root.accent;
                                 font-size: 48px;
                                 width: 100%; height: 100%;
@@ -1411,7 +1413,7 @@ export component Bubble inherits Rectangle {
                             padding-left: 9px; padding-right: 9px;
                             spacing: 6px;
                             IconLabel {
-                                text: Icons.thread; filled: false;
+                                text: Icons.thread;
                                 color: root.fg.with-alpha(0.75);
                                 font-size: Theme.caption;
                                 vertical-alignment: center;
@@ -1567,6 +1569,7 @@ export component Bubble inherits Rectangle {
                     IconLabel {
                         x: parent.width - detail-row.mark-dot; width: detail-row.mark-dot; height: 100%;
                         text: Icons.errorMark; color: Theme.urgent;
+                        filled: true;   // BubbleDelegate.qml:1175
                         font-size: 13px;
                         opacity: item.send-state == "failed" ? 1.0 : 0.0;
                         animate opacity { duration: 160ms; }
@@ -1575,6 +1578,7 @@ export component Bubble inherits Rectangle {
                     tick := IconLabel {
                         x: parent.width - detail-row.mark-dot; width: detail-row.mark-dot; height: 100%;
                         text: Icons.checkCircle; color: root.accent;
+                        filled: true;   // BubbleDelegate.qml:1188
                         font-size: 13px;
                         opacity: item.send-state == "sent" && item.readers.length == 0 ? 1.0 : 0.0;
                         animate opacity { duration: 200ms; }
@@ -1644,7 +1648,6 @@ export component Bubble inherits Rectangle {
                         }
                         IconLabel {
                             text: root.encrypted ? Icons.lock : Icons.lockOff;
-                            filled: false;
                             color: item.send-state == "failed" ? Theme.urgent : root.fg.with-alpha(0.5);
                             font-size: 10px;
                             vertical-alignment: center;

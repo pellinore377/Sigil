@@ -29,7 +29,6 @@ export component SettingsHeader inherits Rectangle {
                 y: (56px - self.height) / 2;
                 width: 22px; height: 22px;
                 icon: Icons.back;
-                filled: false;
                 foreground: root.fg;
                 clicked => { root.back(); }
             }
@@ -128,6 +127,7 @@ export component SettingsRow inherits Rectangle {
         text: root.icon;
         filled: root.filled;
         color: root.danger ? Theme.urgent : root.ink.with-alpha(0.75);
+        font-size: Theme.icon-size;   // SettingsRow.qml:46 size: Style.font.icon
     }
     labels := VerticalLayout {
         x: root.icon != "" ? 56px : 22px;

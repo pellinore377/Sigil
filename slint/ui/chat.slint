@@ -340,6 +340,7 @@ export component ChatPage inherits Rectangle {
                         x: 0; y: (52px - 22px) / 2;
                         width: 22px; height: 22px;
                         icon: Icons.back;
+                        filled: true;   // ChatPage.qml:993 Fonts.iconFilled
                         foreground: root.fg;
                         clicked => { root.back(); }
                     }
@@ -391,7 +392,7 @@ export component ChatPage inherits Rectangle {
                         join-row := HorizontalLayout {
                             alignment: center;
                             spacing: 5px;
-                            IconLabel { text: Icons.phone; color: #141414; font-size: Theme.caption; vertical-alignment: center; }
+                            IconLabel { text: Icons.phone; filled: true; color: #141414; font-size: Theme.caption; vertical-alignment: center; }
                             Text { text: "Join"; color: #141414; font-family: Theme.font-ui; font-size: Theme.caption; font-weight: 700; vertical-alignment: center; }
                         }
                         TouchArea { clicked => { root.join-call(); } }
@@ -403,6 +404,7 @@ export component ChatPage inherits Rectangle {
                         x: 0; y: (52px - 22px) / 2;
                         width: 22px; height: 22px;
                         icon: Icons.phone;
+                        filled: true;   // ChatPage.qml:1039 Fonts.iconFilled
                         foreground: root.fg;
                         opacity: root.in-call ? 0.4 : 1;
                     }
@@ -414,6 +416,7 @@ export component ChatPage inherits Rectangle {
                         x: 0; y: (52px - 22px) / 2;
                         width: 22px; height: 22px;
                         icon: Icons.videoOn;
+                        filled: true;   // ChatPage.qml:1041 Fonts.iconFilled
                         foreground: root.fg;
                         opacity: root.in-call ? 0.4 : 1;
                     }
@@ -425,6 +428,7 @@ export component ChatPage inherits Rectangle {
                         x: 0; y: (52px - 22px) / 2;
                         width: 22px; height: 22px;
                         icon: Icons.moreVertical;
+                        filled: true;   // ChatPage.qml:1048 Fonts.iconFilled
                         foreground: root.fg;
                     }
                     TouchArea { clicked => { root.menu-open = true; } }
@@ -649,7 +653,7 @@ export component ChatPage inherits Rectangle {
                                     background: #ffffff.with-alpha(0.9);
                                     IconLabel {
                                         text: root.clip-playing ? Icons.pause : Icons.play;
-                                        filled: false;
+                                        font-size: Theme.icon-size;   // ChatPage.qml:1559 size: Style.font.icon
                                         color: #1a1a1a;
                                         width: 100%; height: 100%;
                                     }
@@ -699,7 +703,7 @@ export component ChatPage inherits Rectangle {
                                     width: 26px; height: 26px; border-radius: 13px;
                                     background: clip-chip.ink.with-alpha(0.12);
                                     IconLabel {
-                                        text: Icons.close; filled: false; color: clip-chip.ink;
+                                        text: Icons.close; color: clip-chip.ink;
                                         font-size: Theme.body-small;
                                         width: 100%; height: 100%;
                                     }
@@ -749,7 +753,7 @@ export component ChatPage inherits Rectangle {
                                     width: 26px; height: 26px; border-radius: 13px;
                                     background: qc-t.has-hover ? root.fg.with-alpha(0.12) : transparent;
                                     IconLabel {
-                                        text: Icons.close; filled: false; color: root.fg;
+                                        text: Icons.close; color: root.fg;
                                         font-size: Theme.body-small;
                                         width: 100%; height: 100%;
                                     }
@@ -850,6 +854,7 @@ export component ChatPage inherits Rectangle {
                         send-glyph := IconLabel {
                             x: 0; y: 0; width: 38px; height: 38px;
                             text: Icons.send;
+                            filled: true;   // ChatPage.qml:1768 Fonts.iconFilled
                             color: Theme.background;
                             font-size: Theme.icon-large;
                             opacity: send-btn.send-mode ? 1 : 0;
@@ -866,6 +871,7 @@ export component ChatPage inherits Rectangle {
                         voice-glyph := IconLabel {
                             x: 0; y: 0; width: 38px; height: 38px;
                             text: Icons.voiceMemo;
+                            filled: true;   // ChatPage.qml:1779 Fonts.iconFilled
                             color: Theme.background;
                             font-size: Theme.icon-large;
                             opacity: send-btn.send-mode ? 0 : 1;
@@ -977,7 +983,6 @@ export component ChatPage inherits Rectangle {
         IconLabel {
             x: 0; y: 0; width: 38px; height: 38px;
             text: Icons.arrowDown;
-            filled: false;
             color: root.fg;
             font-size: Theme.icon-size;
         }

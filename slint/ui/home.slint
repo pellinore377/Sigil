@@ -85,6 +85,7 @@ export component HomePage inherits Rectangle {
                         spacing: 8px;
                         IconLabel {
                             text: Icons.search;
+                            filled: true; font-size: Theme.icon-size;   // HomePage.qml:105
                             color: Theme.menu-text.with-alpha(0.5);
                             vertical-alignment: center;
                         }
@@ -245,12 +246,14 @@ export component HomePage inherits Rectangle {
                             }
                             if room.is-encrypted : IconLabel {
                                 text: Icons.lock;
+                                filled: true;   // HomePage.qml:209
                                 font-size: Theme.caption;
                                 color: Theme.menu-text.with-alpha(0.35);
                                 vertical-alignment: center;
                             }
                             if room.has-call : IconLabel {
                                 text: Icons.phone;
+                                filled: true;   // HomePage.qml:210
                                 font-size: Theme.caption;
                                 color: Theme.accent;
                                 vertical-alignment: center;
@@ -273,6 +276,7 @@ export component HomePage inherits Rectangle {
                                 padding-right: 4px;
                                 IconLabel {
                                     text: room.preview-icon;
+                                    filled: true;   // HomePage.qml:244 Fonts.iconFilled
                                     font-size: Theme.body-small;
                                     color: room.has-call ? Theme.accent
                                          : Theme.menu-text.with-alpha(room.unread ? 0.8 : 0.55);
@@ -323,6 +327,7 @@ export component HomePage inherits Rectangle {
                             }
                             if room.is-favourite : IconLabel {
                                 text: Icons.pin;
+                                filled: true;   // HomePage.qml:302 Fonts.iconFilled
                                 font-size: Theme.caption;
                                 color: Theme.menu-text.with-alpha(0.55);
                             }
@@ -344,6 +349,7 @@ export component HomePage inherits Rectangle {
         background: Theme.accent.with-alpha(0.9);   // HomePage.qml:186: constant, no pressed face
         IconLabel {
             text: Icons.plus;
+            filled: true;   // HomePage.qml:187
             color: Theme.background;
             font-size: Theme.icon-large;
             width: 100%; height: 100%;
@@ -400,6 +406,7 @@ export component HomePage inherits Rectangle {
         background: Theme.popup-background;
         IconLabel {
             text: Icons.arrowUp;
+            filled: true; font-size: Theme.icon-size;   // HomePage.qml:470
             color: Theme.menu-text;
             width: 100%; height: 100%;
         }
@@ -463,6 +470,7 @@ export component HomePage inherits Rectangle {
                         x: 8px;
                         y: (30px - self.preferred-height) / 2;
                         text: Icons.settings;
+                        filled: true; font-size: Theme.icon-size;   // no QML twin; same row as HomePage.qml:437
                         color: Theme.popup-text;
                         opacity: 0.85;
                     }
@@ -484,6 +492,7 @@ export component HomePage inherits Rectangle {
                         x: 8px;
                         y: (30px - self.preferred-height) / 2;
                         text: Icons.logout;
+                        filled: true; font-size: Theme.icon-size;   // HomePage.qml:437
                         color: Theme.urgent;
                         opacity: 0.85;
                     }

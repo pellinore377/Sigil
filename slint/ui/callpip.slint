@@ -159,6 +159,7 @@ export component CallPip inherits Rectangle {
             background: Theme.background.with-alpha(0.85);
             IconLabel {
                 text: Icons.fullscreen;
+                filled: true; font-size: Theme.icon-size;   // CallPiP.qml:191
                 color: #ececec;
                 width: 100%; height: 100%;
             }
@@ -172,6 +173,7 @@ export component CallPip inherits Rectangle {
             background: Theme.urgent.with-alpha(0.95);
             IconLabel {
                 text: Icons.close;
+                filled: true;   // CallPiP.qml:199
                 color: #ffffff;
                 font-size: Theme.body-small;
                 width: 100%; height: 100%;

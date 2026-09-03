@@ -96,7 +96,6 @@ component AttachTile inherits Rectangle {
         background: tile-t.has-hover ? root.chip.brighter(0.2) : root.chip;
         IconLabel {
             text: root.icon;
-            filled: false;
             color: root.fg;
             font-size: Theme.icon-size * root.icon-scale;
             width: 100%; height: 100%;
@@ -168,7 +167,7 @@ export component AttachMenu inherits Rectangle {
         back-disc := Rectangle {
             width: 30px; height: 30px; border-radius: 15px;
             background: hb-t.has-hover ? root.chip.brighter(0.2) : root.chip;
-            IconLabel { text: Icons.back; filled: false; color: root.fg; font-size: Theme.body; width: 100%; height: 100%; }
+            IconLabel { text: Icons.back; color: root.fg; font-size: Theme.body; width: 100%; height: 100%; }
             hb-t := TouchArea { clicked => { root.reset(); } }
         }
         Text {
@@ -315,7 +314,7 @@ export component AttachMenu inherits Rectangle {
                     HorizontalLayout {
                         alignment: start;
                         spacing: 6px;
-                        IconLabel { text: Icons.plus; filled: false; color: root.accent; font-size: Theme.body-small; vertical-alignment: center; }
+                        IconLabel { text: Icons.plus; color: root.accent; font-size: Theme.body-small; vertical-alignment: center; }
                         Rectangle {
                             width: add-label.preferred-width;
                             add-label := Text { text: "Add option"; color: root.accent; font-family: Theme.font-ui; font-size: Theme.body-small; vertical-alignment: center; height: 100%; }
