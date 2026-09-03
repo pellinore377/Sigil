@@ -7,6 +7,8 @@ export struct ReactionChip {
     count: int,
     mine: bool,
     senders-text: string,
+    img: image,      // the emoji as a picture (emoji.render), when the device has a colour font
+    has-img: bool,
 }
 
 export struct ReplyRef {
@@ -43,8 +45,21 @@ export struct FxChar {
     ch: string,
     color: color,
     has-color: bool,
-    anim: string,   // "" wave shake pulse glow barrel flip
+    anim: string,   // "" wave shake pulse glow barrel flip typewriter glitch sparkle blur
     idx: int,
+    // laid out in Rust (fx.rs): absolute within the message's box
+    x: length,
+    y: length,
+    w: length,
+    size: length,
+    bold: bool,
+    italic: bool,
+    underline: bool,
+    strike: bool,
+    mono: bool,
+    mark: bool,
+    mark-color: color,
+    spoiler: bool,
 }
 
 /// A slice of a message with fenced code: plain text runs and code runs
@@ -63,7 +78,11 @@ export struct TimelineRow {
     body: string,
     rich-body: styled-text,  // parsed Rust-side (StyledText::from_markdown)
     has-rich: bool,          // false = plain body path
-    fx-chars: [FxChar],      // non-empty: per-character animated run
+    fx-chars: [FxChar],      // non-empty: the body drawn glyph by glyph
+    fx-w: length,            // the glyph box
+    fx-h: length,
+    fx-spoiler: bool,        // some glyphs are covered until tapped
+    is-new: bool,            // just arrived: plays the entry animation once
     html-ish: bool,      // body carries formatting the effects pass renders
     sender: string,
     sender-name: string,
@@ -264,4 +283,6 @@ export struct CallParticipant {
 export struct EmojiItem {
     glyph: string,
     name: string,
+    img: image,
+    has-img: bool,
 }

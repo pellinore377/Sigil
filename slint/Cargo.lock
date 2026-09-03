@@ -6799,6 +6799,7 @@ dependencies = [
  "tracing",
  "tracing-appender",
  "tracing-subscriber",
+ "ttf-parser",
  "uniffi",
  "url",
  "uuid",
@@ -6845,6 +6846,7 @@ dependencies = [
  "tracing",
  "tracing-android",
  "tracing-subscriber",
+ "ttf-parser",
 ]
 
 [[package]]

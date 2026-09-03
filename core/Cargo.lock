@@ -3884,6 +3884,7 @@ dependencies = [
  "tracing",
  "tracing-appender",
  "tracing-subscriber",
+ "ttf-parser",
  "uniffi",
  "url",
  "uuid",

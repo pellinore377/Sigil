@@ -53,6 +53,7 @@ memmap2 = "0.9"
 mime = "0.3"
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 mime_guess = "2"
+ttf-parser = "0.25"
 # tiff/bmp/ico join the set so the engine can normalise them itself; AVIF,
 # HEIC and JPEG XL go through ffmpeg instead of pulling in more C libraries.
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp", "gif", "tiff", "bmp", "ico"] }

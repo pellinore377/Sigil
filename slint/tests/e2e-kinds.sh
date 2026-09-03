@@ -51,7 +51,7 @@ $CL -s alice.json event 0 1 "alice in the thread" --reference "thread:$ROOT_ID" 
 waitline "^location sent" drive.out 240 || fail "no location" drive.out drive.err
 $CL -s alice.json event 0 18 '{"lat":48.8566,"lon":2.3522,"description":"Paris"}' >alice3.out 2>&1 || fail "alice place" alice3.out
 wait "$DRIVE_PID" || fail "drive" drive.out drive.err
-timeout 60 $CL -s alice.json listen 0 --count 1 >alice4.out 2>&1 || true
+timeout 25 $CL -s alice.json listen 0 --count 50 >alice4.out 2>&1 || true
 cat alice1.out alice2.out alice3.out alice4.out >alice-all.out
 
 grep -q "^drive kinds ok" drive.out || fail "drive did not finish" drive.out drive.err

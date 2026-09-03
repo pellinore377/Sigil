@@ -133,6 +133,16 @@ pub struct UiState {
     pub audio_infos: HashMap<String, Value>,
     /// url -> link.preview reply (Null = asked, pending; false = failed).
     pub link_previews: HashMap<String, Value>,
+    /// glyph -> emoji.render reply (Null = asked, false = none).
+    pub emoji_imgs: HashMap<String, Value>,
+    /// A re-render is already scheduled for arriving emoji pictures.
+    pub emoji_refresh_pending: bool,
+    /// The picker's last query, to re-run it when pictures arrive.
+    pub emoji_query: Option<String>,
+    /// Ids appended live since the last reset, still to play their entry.
+    pub entry_pending: std::collections::HashSet<String>,
+    /// When the current timeline was reset; entries animate only after it settled.
+    pub reset_at: Option<std::time::Instant>,
     /// roomId|eventId -> media.gifFrames reply (Null = pending; false = not animated).
     pub gif_frames: HashMap<String, Value>,
     /// geoUri -> location.map reply (Null = pending; false = failed).
@@ -218,6 +228,11 @@ pub fn start(win: &AppWindow, rt: &tokio::runtime::Runtime, icons: IconSet) -> R
         doc_thumbs: HashMap::new(),
         audio_infos: HashMap::new(),
         link_previews: HashMap::new(),
+        emoji_imgs: HashMap::new(),
+        emoji_refresh_pending: false,
+        emoji_query: None,
+        entry_pending: Default::default(),
+        reset_at: None,
         gif_frames: HashMap::new(),
         location_maps: HashMap::new(),
     }));
@@ -244,6 +259,10 @@ pub fn start(win: &AppWindow, rt: &tokio::runtime::Runtime, icons: IconSet) -> R
     }
     wire_callbacks(win, req.clone());
     crate::actions::wire_extra(win);
+    // the sheet's quick reactions as pictures, once the engine is up
+    crate::actions::after_pub(&req, 400, |ui, win| {
+        crate::actions::refresh_emoji_views(ui, win)
+    });
     req
 }
 
@@ -893,6 +912,8 @@ fn handle_event(ui: &mut UiState, v: &Value) {
                 return;
             }
             ui.shadow = v["items"].as_array().cloned().unwrap_or_default();
+            ui.reset_at = Some(std::time::Instant::now());
+            ui.entry_pending.clear();
             rebuild_timeline(ui, &win);
             // Once now, and again after layout: at reset time the viewport
             // height is not computed yet, so the first call clamps to the top.
@@ -906,7 +927,18 @@ fn handle_event(ui: &mut UiState, v: &Value) {
                 return;
             }
             let mut grew_tail = false;
+            // ChatPage.claimEntry: a message appended once the view has settled
+            // plays its entry animation, once.
+            let settled = ui
+                .reset_at
+                .map(|t| t.elapsed() > std::time::Duration::from_millis(600))
+                .unwrap_or(false);
             for op in v["ops"].as_array().map(|a| a.as_slice()).unwrap_or(&[]) {
+                if settled && op["op"].as_str() == Some("pushBack") {
+                    if let Some(id) = op["item"]["id"].as_str() {
+                        ui.entry_pending.insert(id.to_string());
+                    }
+                }
                 grew_tail |= apply_diff(&mut ui.shadow, op);
             }
             // QML's atYEnd rule: stick to the bottom only when the reader is
@@ -1482,30 +1514,64 @@ pub fn rebuild_timeline(ui: &mut UiState, win: &AppWindow) {
         // Markup renders through StyledText, parsed here — the language-side
         // @markdown interpolates runtime strings as PLAIN text by design.
         // Animated short runs render per glyph; colours-only rides StyledText.
-        let fx_chars: Vec<crate::FxChar> = if matches!(kind, "text" | "notice" | "emote") {
-            rows::effect_fx_chars(
-                &body,
-                &item["effects"],
-                chrono::Utc::now().timestamp_millis() - ts < 5_000,
-            )
-            .map(|v| {
-                v.into_iter()
-                    .map(|(ch, color, anim, idx)| {
-                        let parsed = color.as_deref().and_then(rows::hex_color);
-                        crate::FxChar {
-                            ch: ch.into(),
-                            has_color: parsed.is_some(),
-                            color: parsed.unwrap_or(slint::Color::from_rgb_u8(0xc6, 0xc6, 0xc6)),
-                            anim: anim.into(),
-                            idx,
-                        }
-                    })
-                    .collect()
-            })
-            .unwrap_or_default()
-        } else {
-            Vec::new()
-        };
+        // SigilText: a body with effects is laid out glyph by glyph in Rust
+        // (fx.rs), wrapped to the bubble's width, and drawn one Text per glyph.
+        let (fx_chars, fx_w, fx_h, fx_spoiler): (Vec<crate::FxChar>, f32, f32, bool) =
+            if matches!(kind, "text" | "notice" | "emote") {
+                let tl_w = win.get_timeline_w() as f32;
+                let tl_w = if tl_w > 0.0 {
+                    tl_w
+                } else {
+                    crate::headless::WIDTH as f32
+                };
+                let max_w = tl_w * 0.78 - 22.0;
+                match crate::fx::layout(
+                    &body,
+                    &item["effects"],
+                    chrono::Utc::now().timestamp_millis() - ts < 5_000,
+                    12.0,
+                    max_w,
+                ) {
+                    Some(lay) => (
+                        lay.glyphs
+                            .into_iter()
+                            .map(|g| {
+                                let parsed = g.color.as_deref().and_then(rows::hex_color);
+                                crate::FxChar {
+                                    ch: g.ch.into(),
+                                    has_color: parsed.is_some(),
+                                    color: parsed
+                                        .unwrap_or(slint::Color::from_rgb_u8(0xc6, 0xc6, 0xc6)),
+                                    anim: g.anim.into(),
+                                    idx: g.idx,
+                                    x: g.x,
+                                    y: g.y,
+                                    w: g.w,
+                                    size: g.size,
+                                    bold: g.bold,
+                                    italic: g.italic,
+                                    underline: g.underline,
+                                    strike: g.strike,
+                                    mono: g.mono,
+                                    mark: g.mark,
+                                    mark_color: g
+                                        .mark_color
+                                        .as_deref()
+                                        .and_then(rows::hex_color)
+                                        .unwrap_or(slint::Color::from_rgb_u8(0xe8, 0xc8, 0x40)),
+                                    spoiler: g.spoiler,
+                                }
+                            })
+                            .collect(),
+                        lay.width,
+                        lay.height,
+                        lay.has_spoiler,
+                    ),
+                    None => (Vec::new(), 0.0, 0.0, false),
+                }
+            } else {
+                (Vec::new(), 0.0, 0.0, false)
+            };
         let rich_body: Option<slint::StyledText> = if matches!(kind, "text" | "notice" | "emote")
             && item["parts"]
                 .as_array()
@@ -1584,11 +1650,14 @@ pub fn rebuild_timeline(ui: &mut UiState, win: &AppWindow) {
                             .as_array()
                             .map(|s2| s2.iter().filter_map(Value::as_str).collect())
                             .unwrap_or_default();
+                        let img = emoji_image(ui, r["key"].as_str().unwrap_or(""));
                         crate::ReactionChip {
                             key: r["key"].as_str().unwrap_or("").into(),
                             count: r["count"].as_i64().unwrap_or(senders.len() as i64) as i32,
                             mine: senders.contains(&my_user.as_str()),
                             senders_text: senders.join(", ").into(),
+                            has_img: img.is_some(),
+                            img: img.unwrap_or_default(),
                         }
                     })
                     .collect()
@@ -1679,6 +1748,10 @@ pub fn rebuild_timeline(ui: &mut UiState, win: &AppWindow) {
             rich_body: rich_body.clone().unwrap_or_default(),
             has_rich: rich_body.is_some() && fx_chars.is_empty(),
             fx_chars: slint::ModelRc::new(VecModel::from(fx_chars)),
+            fx_w,
+            fx_h,
+            fx_spoiler,
+            is_new: ui.entry_pending.contains(item["id"].as_str().unwrap_or("")),
             body: body.into(),
             sender: sender.clone().into(),
             sender_name: sender_name.clone().into(),
@@ -1810,6 +1883,8 @@ pub fn rebuild_timeline(ui: &mut UiState, win: &AppWindow) {
     }
     ui.items_model.set_vec(rows_out);
     win.set_items(ModelRc::from(ui.items_model.clone()));
+    // an entry plays once: the next rebuild sees these as settled
+    ui.entry_pending.clear();
 }
 
 fn start_demo(win: &AppWindow, rt: &tokio::runtime::Runtime, icons: IconSet) -> Requester {
@@ -1870,6 +1945,11 @@ fn start_demo(win: &AppWindow, rt: &tokio::runtime::Runtime, icons: IconSet) -> 
         doc_thumbs: HashMap::new(),
         audio_infos: HashMap::new(),
         link_previews: HashMap::new(),
+        emoji_imgs: HashMap::new(),
+        emoji_refresh_pending: false,
+        emoji_query: None,
+        entry_pending: Default::default(),
+        reset_at: None,
         gif_frames: HashMap::new(),
         location_maps: HashMap::new(),
     }));
@@ -2028,4 +2108,46 @@ fn start_demo(win: &AppWindow, rt: &tokio::runtime::Runtime, icons: IconSet) -> 
     wire_callbacks(win, req.clone());
     crate::actions::wire_extra(win);
     req
+}
+
+/// An emoji as a picture, from the engine's colour font, asked for once;
+/// None while it is pending or when the device has no such font (the text
+/// glyph stands in). Replies re-render whatever shows emoji.
+pub fn emoji_image(ui: &mut UiState, glyph: &str) -> Option<slint::Image> {
+    if glyph.is_empty() {
+        return None;
+    }
+    match ui.emoji_imgs.get(glyph) {
+        Some(v) if v.is_object() => {
+            let path = v["path"].as_str().unwrap_or("").to_string();
+            avatar_pub(ui, &path)
+        }
+        Some(_) => None,
+        None => {
+            ui.emoji_imgs.insert(glyph.to_string(), Value::Null);
+            let key = glyph.to_string();
+            let req = ui.req.clone();
+            req.call("emoji.render", json!({"text": glyph}), move |reply| {
+                on_ui(move |ui, win| {
+                    let val = match reply {
+                        Reply::Ok(v) if !v["path"].as_str().unwrap_or("").is_empty() => v,
+                        _ => json!(false),
+                    };
+                    ui.emoji_imgs.insert(key, val);
+                    let _ = win;
+                    // pictures arrive in a burst: one re-render for the lot
+                    if !ui.emoji_refresh_pending {
+                        ui.emoji_refresh_pending = true;
+                        let req = ui.req.clone();
+                        crate::actions::after_pub(&req, 120, |ui, win| {
+                            ui.emoji_refresh_pending = false;
+                            rebuild_timeline(ui, win);
+                            crate::actions::refresh_emoji_views(ui, win);
+                        });
+                    }
+                });
+            });
+            None
+        }
+    }
 }

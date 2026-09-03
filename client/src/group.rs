@@ -148,7 +148,8 @@ async fn commit(
                 format!("{}\u{1f}", now_ms()),
             );
         }
-        conversation::set_cursor(st, conv, &ep.address, seq);
+        // the cursor stays put, as in send_event: nothing written before
+        // this commit may be skipped
     }
     group
         .merge_pending_commit(provider)
@@ -474,6 +475,9 @@ pub async fn on_left(
         .cloned();
     let conv = current.as_ref().unwrap_or(conv);
     let mut policy = Policy::from_conv(conv);
+    if std::env::var_os("SIGIL_DEBUG_SKIPS").is_some() {
+        eprintln!("on_left: policy from current name={:?}", policy.name);
+    }
     policy.members.retain(|m| m.identity != identity_hex);
     policy.admins.retain(|a| a != identity_hex);
     if let Some(cc) = st
@@ -545,7 +549,26 @@ pub async fn apply_control(
         .cloned();
     let conv = current.as_ref().unwrap_or(conv);
     if kind == envelope::Kind::Policy as u16 {
-        let policy: Policy = serde_json::from_str(body)?;
+        let policy: Policy = match serde_json::from_str(body) {
+            Ok(p) => p,
+            Err(e) => {
+                if std::env::var_os("SIGIL_DEBUG_SKIPS").is_some() {
+                    eprintln!("policy unreadable: {e}: {body}");
+                }
+                return Err(e.into());
+            }
+        };
+        if std::env::var_os("SIGIL_DEBUG_SKIPS").is_some() {
+            eprintln!(
+                "policy from {}: name={:?} admins={:?} pinned={:?}; current name={:?} admins={:?}",
+                &hex::encode(from_identity)[..8],
+                policy.name,
+                policy.admins,
+                policy.pinned,
+                conv.name,
+                conv.admins
+            );
+        }
         // only an admin, or the creator of a fresh conversation, may set
         // policy; anyone may change the pins, and nothing else with them
         let from = hex::encode(from_identity);

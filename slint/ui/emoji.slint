@@ -73,7 +73,12 @@ export component EmojiPicker inherits Rectangle {
                         border-radius: 8px;
                         background: cell-t.pressed || cell-t.has-hover
                             ? root.accent.with-alpha(0.3) : transparent;
-                        Text {
+                        if em.has-img : Image {
+                            source: em.img;
+                            x: (cell.width - 26px) / 2; y: 9px; width: 26px; height: 26px;
+                            image-fit: contain;
+                        }
+                        if !em.has-img : Text {
                             text: em.glyph;
                             font-size: 22px;
                             horizontal-alignment: center;

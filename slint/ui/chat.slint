@@ -36,6 +36,7 @@ export component ChatPage inherits Rectangle {
     in property <bool> call-here;        // live call in THIS room: Join chip
     in property <[MenuEntry]> sheet-actions;
     in property <[[EmojiItem]]> emoji-rows;
+    in property <[EmojiItem]> quick-emoji;
     in property <[int]> emoji-cat-rows;
     in property <color> fg: Theme.menu-text;
     in property <color> accent: Theme.accent;
@@ -165,6 +166,8 @@ export component ChatPage inherits Rectangle {
     property <length> composer-h: root.is-invite ? 0px
         : 56px + (root.voice-staged ? 60px : root.quote-armed ? 52px : 0px) + root.bottom-inset;
     out property <length> from-end: max(0px, (list.viewport-height - list.height) + list.viewport-y);
+    /// The timeline's width, so Rust can wrap effect text to the bubble.
+    out property <length> timeline-w: list.width;
     /// Put the view back at the same distance from the bottom — how scroll
     /// position survives the bridge rebuilding the model (prepends included).
     public function restore-from-end(d: length) {
@@ -636,6 +639,7 @@ export component ChatPage inherits Rectangle {
         fg: root.fg;
         accent: root.accent;
         emoji-rows: root.emoji-rows;
+        quick-emoji: root.quick-emoji;
         emoji-cat-rows: root.emoji-cat-rows;
         act(action, event-id) => {
             if (action == "reply") {

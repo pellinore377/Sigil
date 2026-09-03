@@ -80,6 +80,11 @@ export component Bubble inherits Rectangle {
     property <length> media-w: max(120px, root.media-iw * root.media-s * 1px);
     property <length> media-h: max(80px, root.media-ih * root.media-s * 1px);
     property <length> pin-lift: item.pinned ? 4px : 0px;
+    // Entry: theirs slides in from their side, ours rises out of the composer
+    // (BubbleDelegate.playEntry). Plays once, on the row that just arrived.
+    property <float> entry: item.is-new ? 0.0 : 1.0;
+    animate entry { duration: 320ms; easing: cubic-bezier(0.34, 1.4, 0.64, 1); }
+    init => { root.entry = 1.0; }
 
     height: col.preferred-height;
     background: transparent;
@@ -171,8 +176,12 @@ export component Bubble inherits Rectangle {
             height: bubble.height + (item.group-start ? 10px : 3px) + max(root.reaction-lift, root.pin-lift);
 
             bubble := Rectangle {
-                x: item.is-own ? brow.width - self.width : 0px;
-                y: brow.height - self.height;
+                x: (item.is-own ? brow.width - self.width : 0px) + (item.is-own ? 0px : -28px * (1 - root.entry));
+                y: brow.height - self.height + (item.is-own ? 54px : 4px) * (1 - root.entry);
+                opacity: min(1.0, 0.1 + root.entry);
+                transform-origin: { x: item.is-own ? self.width : 0px, y: self.height };
+                transform-scale-x: (item.is-own ? 0.84 : 0.9) + (item.is-own ? 0.16 : 0.1) * root.entry;
+                transform-scale-y: (item.is-own ? 0.84 : 0.9) + (item.is-own ? 0.16 : 0.1) * root.entry;
                 // QML contentW: media takes its box; doc/track/code/contact and
                 // the link card take bubbleMax outright (wrapped text reports a
                 // tiny preferred width); text is implicitWidth + 22, 40px floor.
@@ -222,6 +231,9 @@ export component Bubble inherits Rectangle {
                     x: root.pad-free ? 0px : 11px;
                     y: root.pad-free ? 0px : 10px;
                     width: bubble.width - (root.pad-free ? 0px : 22px);
+                    // Its own height: left to the bubble's, the layout would
+                    // spread its children into the padding.
+                    height: self.preferred-height;
                     spacing: 4px;
 
                     // Reply quote
@@ -814,84 +826,123 @@ export component Bubble inherits Rectangle {
                     // 1300ms/±1.8px, shake 240ms/±0.8px, pulse 1000ms/×1.18,
                     // glow 1600ms alpha, barrel 1200ms/360°, flip static 180°
                     // with the run reversed. 90ms per-character stagger.
-                    if item.fx-chars.length > 0 : fx-row := HorizontalLayout {
-                        alignment: start;
+                    // SigilText: the body laid out glyph by glyph in Rust (fx.rs),
+                    // each cell at its measured place, so runs wrap at words and
+                    // never squash. Motion follows the engine's numbers
+                    // (sigiltext.motion): wave 1300ms/±1.8px, shake 240ms/±0.8px,
+                    // pulse 1000ms/×1.18, glow 1600ms alpha, barrel 1200ms/360°,
+                    // flip static 180° with the run reversed, 90ms stagger.
+                    if item.fx-chars.length > 0 : fx-box := Rectangle {
+                        width: item.fx-w;
+                        height: item.fx-h;
+                        // Spoilers: covered until the message is tapped, all at once.
+                        property <bool> revealed: false;
                         for c in item.fx-chars : fx-cell := Rectangle {
-                            width: fx-t.preferred-width;
-                            height: fx-t.preferred-height + 8px;
+                            x: c.x;
+                            y: c.y;
+                            width: c.w;
+                            height: c.size * 1.3;
                             property <float> tick-ms: (animation-tick() - c.idx * 90ms) / 1ms;
+                            property <color> ink: c.has-color && !c.mark ? c.color : root.fg;
+                            property <bool> covered: c.spoiler && !fx-box.revealed;
                             // Typewriter: a one-shot reveal on creation, 620ms
                             // OutCubic per character with the 90ms stagger.
-                            property <bool> revealed: c.anim != "typewriter";
-                            init => { self.revealed = true; }
-                            opacity: c.anim == "typewriter" ? (self.revealed ? 1.0 : 0.0) : 1.0;
+                            property <bool> typed: c.anim != "typewriter";
+                            init => { self.typed = true; }
+                            opacity: c.anim == "typewriter" ? (self.typed ? 1.0 : 0.0) : 1.0;
                             animate opacity { delay: c.idx * 90ms; duration: 620ms; easing: cubic-bezier(0.33, 1, 0.68, 1); }
-                            // Glitch: chromatic split copies behind the glyph,
-                            // active in jitter windows (spec: 530ms cycle, lead
-                            // -2px #FF2640, trail +1.5px #26F2FF, alpha 0.7,
-                            // stride-53 stagger).
+                            // `mark` is its own band behind the run.
+                            if c.mark : Rectangle {
+                                y: 1px; width: 100%; height: parent.height - 2px;
+                                background: c.mark-color.with-alpha(0.32);
+                            }
+                            // Glitch: chromatic copies behind the glyph in jitter
+                            // windows (530ms cycle, lead -2px, trail +1.5px, alpha 0.7).
                             property <float> glitch-t: mod((animation-tick() / 1ms) + c.idx * 53.0, 530.0);
                             property <bool> glitch-on: c.anim == "glitch" && self.glitch-t < 270.0;
                             if c.anim == "glitch" : Text {
-                                text: c.ch;
-                                color: #FF2640;
+                                text: c.ch; color: #FF2640;
                                 opacity: fx-cell.glitch-on ? 0.7 : 0.0;
-                                font-family: Theme.font-ui; font-size: Theme.body;
-                                x: fx-cell.glitch-on ? -2px : 0px;
-                                y: 4px;
+                                font-family: c.mono ? Theme.font-mono : Theme.font-ui; font-size: c.size;
+                                font-weight: c.bold ? 800 : 400; font-italic: c.italic;
+                                x: fx-cell.glitch-on ? -2px : 0px; height: 100%; vertical-alignment: center;
                             }
                             if c.anim == "glitch" : Text {
-                                text: c.ch;
-                                color: #26F2FF;
+                                text: c.ch; color: #26F2FF;
                                 opacity: fx-cell.glitch-on ? 0.7 : 0.0;
-                                font-family: Theme.font-ui; font-size: Theme.body;
-                                x: fx-cell.glitch-on ? 1.5px : 0px;
-                                y: 4px;
+                                font-family: c.mono ? Theme.font-mono : Theme.font-ui; font-size: c.size;
+                                font-weight: c.bold ? 800 : 400; font-italic: c.italic;
+                                x: fx-cell.glitch-on ? 1.5px : 0px; height: 100%; vertical-alignment: center;
                             }
-                            // Text-blur (spoiler): ghost copies fake the radius;
-                            // a tap reveals (hover's touch equivalent).
-                            property <bool> blur-revealed: false;
-                            if c.anim == "blur" && !fx-cell.blur-revealed : Text {
-                                text: c.ch;
-                                color: (c.has-color ? c.color : root.fg).with-alpha(0.3);
-                                font-family: Theme.font-ui; font-size: Theme.body;
-                                x: -1.5px; y: 4px - 1.5px;
+                            // Glow: a soft copy breathing behind the glyph.
+                            if c.anim == "glow" : Text {
+                                property <float> gp: 0.5 + 0.5 * sin(360deg * (mod(fx-cell.tick-ms, 1600.0) / 1600.0));
+                                text: c.ch; color: fx-cell.ink;
+                                opacity: 0.05 + 0.40 * self.gp;
+                                font-family: c.mono ? Theme.font-mono : Theme.font-ui; font-size: c.size;
+                                font-weight: c.bold ? 800 : 400; font-italic: c.italic;
+                                width: 100%; height: 100%; vertical-alignment: center; horizontal-alignment: center;
+                                transform-origin: { x: self.width / 2, y: self.height / 2 };
+                                transform-scale-x: 1.1 + 0.4 * self.gp;
+                                transform-scale-y: 1.1 + 0.4 * self.gp;
                             }
-                            if c.anim == "blur" && !fx-cell.blur-revealed : Text {
-                                text: c.ch;
-                                color: (c.has-color ? c.color : root.fg).with-alpha(0.3);
-                                font-family: Theme.font-ui; font-size: Theme.body;
-                                x: 1.5px; y: 4px + 1.5px;
+                            // Text-blur: ghost copies fake the radius; a tap reveals.
+                            if c.anim == "blur" && !fx-box.revealed : Text {
+                                text: c.ch; color: fx-cell.ink.with-alpha(0.3);
+                                font-family: c.mono ? Theme.font-mono : Theme.font-ui; font-size: c.size;
+                                x: -1.5px; y: -1.5px; height: 100%; vertical-alignment: center;
+                            }
+                            if c.anim == "blur" && !fx-box.revealed : Text {
+                                text: c.ch; color: fx-cell.ink.with-alpha(0.3);
+                                font-family: c.mono ? Theme.font-mono : Theme.font-ui; font-size: c.size;
+                                x: 1.5px; y: 1.5px; height: 100%; vertical-alignment: center;
                             }
                             fx-t := Text {
                                 text: c.ch;
-                                color: c.has-color ? c.color : root.fg;
-                                font-family: Theme.font-ui; font-size: Theme.body;
+                                color: fx-cell.ink;
+                                font-family: c.mono ? Theme.font-mono : Theme.font-ui;
+                                font-size: c.size;
+                                font-weight: c.bold ? 800 : 400;
+                                font-italic: c.italic;
+                                width: 100%; height: 100%;
+                                vertical-alignment: center;
                                 x: c.anim == "shake" ? sin(360deg * (mod(fx-cell.tick-ms, 240.0) / 240.0)) * 0.8px : 0px;
-                                y: 4px + (c.anim == "wave" ? sin(360deg * (mod(fx-cell.tick-ms, 1300.0) / 1300.0)) * 1.8px : 0px);
-                                opacity: c.anim == "glow" ? 0.55 + 0.45 * sin(360deg * (mod(fx-cell.tick-ms, 1600.0) / 1600.0))
-                                    : c.anim == "blur" && !fx-cell.blur-revealed ? 0.3 : 1.0;
+                                y: c.anim == "wave" ? sin(360deg * (mod(fx-cell.tick-ms, 1300.0) / 1300.0)) * 1.8px : 0px;
+                                opacity: c.anim == "blur" && !fx-box.revealed ? 0.3 : (fx-cell.covered ? 0.0 : 1.0);
                                 transform-origin: { x: self.width / 2, y: self.height / 2 };
                                 transform-rotation: c.anim == "barrel" ? 360deg * (mod(fx-cell.tick-ms, 1200.0) / 1200.0)
                                     : c.anim == "flip" ? 180deg : 0deg;
                                 transform-scale-x: c.anim == "pulse" ? 1.0 + 0.18 * (0.5 + 0.5 * sin(360deg * (mod(fx-cell.tick-ms, 1000.0) / 1000.0))) : 1.0;
                                 transform-scale-y: c.anim == "pulse" ? 1.0 + 0.18 * (0.5 + 0.5 * sin(360deg * (mod(fx-cell.tick-ms, 1000.0) / 1000.0))) : 1.0;
                             }
-                            // Sparkle: a small star orbiting each glyph, alpha
-                            // and scale on the 900ms InOutSine cycle.
+                            if c.underline && !fx-cell.covered : Rectangle {
+                                y: c.size * 1.15; height: 1px; width: 100%;
+                                background: fx-cell.ink;
+                            }
+                            if c.strike && !fx-cell.covered : Rectangle {
+                                y: c.size * 0.72; height: 1px; width: 100%;
+                                background: fx-cell.ink;
+                            }
+                            // Sparkle: a small star orbiting each glyph.
                             if c.anim == "sparkle" : Text {
                                 property <float> sp: mod(fx-cell.tick-ms, 900.0) / 900.0;
                                 text: "✦";
-                                color: (c.has-color ? c.color : root.fg);
+                                color: fx-cell.ink;
                                 opacity: 0.05 + 0.40 * (0.5 + 0.5 * sin(360deg * self.sp));
                                 font-family: Theme.font-ui;
-                                font-size: Theme.body * (0.35 + 0.15 * (0.5 + 0.5 * sin(360deg * self.sp)));
+                                font-size: c.size * (0.35 + 0.15 * (0.5 + 0.5 * sin(360deg * self.sp)));
                                 x: fx-cell.width * 0.5 + fx-cell.width * 0.4 * cos(360deg * self.sp);
                                 y: 1px + 3px * sin(360deg * self.sp);
                             }
-                            if c.anim == "blur" : TouchArea {
-                                clicked => { fx-cell.blur-revealed = !fx-cell.blur-revealed; }
+                            // The spoiler cover, breathing until tapped.
+                            if fx-cell.covered : Rectangle {
+                                y: 1px; width: 100%; height: parent.height - 2px;
+                                border-radius: 2px;
+                                background: root.fg.with-alpha(0.72 + 0.28 * (0.5 + 0.5 * sin(360deg * (mod(fx-cell.tick-ms, 1040.0) / 1040.0))));
                             }
+                        }
+                        if item.fx-spoiler || item.fx-chars.length > 0 : TouchArea {
+                            clicked => { fx-box.revealed = true; }
                         }
                     }
 
@@ -989,7 +1040,16 @@ export component Bubble inherits Rectangle {
                 spacing: 2px;
                 for chip in item.reactions : r-chip := HorizontalLayout {
                     spacing: 1px;
-                    Text {
+                    // The emoji as a picture from the colour font when the
+                    // device has one; the renderer draws text from outlines
+                    // and would show a grey fallback glyph otherwise.
+                    if chip.has-img : Image {
+                        source: chip.img;
+                        width: chip.mine ? 20px : 18.4px;
+                        height: self.width;
+                        image-fit: contain;
+                    }
+                    if !chip.has-img : Text {
                         // femtovg draws U+2764+VS16 as tofu; display the bare
                         // heart, the reaction key itself stays untouched.
                         text: chip.key == "❤️" ? "❤" : chip.key;

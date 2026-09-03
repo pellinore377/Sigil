@@ -239,6 +239,41 @@ impl SigilSession {
         }
     }
 
+    /// Drop one history item and tell the views.
+    pub(super) fn remove_item(&self, engine: &SharedEngine, room_id: &str, event_id: &str) -> bool {
+        let removed = {
+            let mut h = self.history.lock();
+            let Some(items) = h.get_mut(room_id) else { return false };
+            let Some(idx) = items.iter().position(|i| i.get("eventId").and_then(Value::as_str) == Some(event_id)) else {
+                return false;
+            };
+            let main = Self::main_index(items, idx);
+            let root = thread_root_of(&items[idx]).map(str::to_string);
+            let thread_pos = root.as_ref().and_then(|r| {
+                Self::thread_items(items, r).iter().position(|i| i.get("eventId").and_then(Value::as_str) == Some(event_id))
+            });
+            items.remove(idx);
+            let main_len = Self::main_len(items);
+            let thread_len = root.as_ref().map(|r| Self::thread_items(items, r).len()).unwrap_or(0);
+            (main, root, thread_pos, main_len, thread_len)
+        };
+        self.save_history();
+        let (main, root, thread_pos, main_len, thread_len) = removed;
+        let open = self.open.lock();
+        if let Some(i) = main {
+            if open.contains(room_id) {
+                engine.hub.broadcast(json!({"event":"timeline.diff","roomId":room_id,"ops":[{"op":"remove","index":i}],"len":main_len}));
+            }
+        }
+        if let (Some(root), Some(ti)) = (root, thread_pos) {
+            let key = thread_key(room_id, &root);
+            if open.contains(&key) {
+                engine.hub.broadcast(json!({"event":"timeline.diff","roomId":key,"ops":[{"op":"remove","index":ti}],"len":thread_len}));
+            }
+        }
+        true
+    }
+
     /// Change one history item in place and tell the views.
     pub(super) fn update_item(
         &self,

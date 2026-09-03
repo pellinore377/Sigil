@@ -434,6 +434,7 @@ async fn run() -> anyhow::Result<()> {
                 .cloned()
                 .unwrap_or(conv);
             print_caught(&st, &conv, &sent.caught_up);
+            st.save()?;
             println!("sent {}:{}", hex::encode(sent.address), sent.seq);
         }
         Cmd::Sendfile { n, path, caption } => {
@@ -551,6 +552,32 @@ async fn run() -> anyhow::Result<()> {
                 // anything written between the catch-up and the subscription
                 let late = conversation::catch_up(&link, &mut st, &provider, &conv).await?;
                 if !late.is_empty() {
+                    // control events count here too, or a rename in this
+                    // window is printed and forgotten
+                    for c in &late {
+                        if let conversation::Incoming::Event {
+                            kind,
+                            body,
+                            from_identity,
+                            ..
+                        } = &c.incoming
+                        {
+                            if *kind == sigil_protocol::envelope::Kind::Policy as u16
+                                || *kind == sigil_protocol::envelope::Kind::Membership as u16
+                            {
+                                let _ = sigil_client::group::apply_control(
+                                    &link,
+                                    &mut st,
+                                    &provider,
+                                    &conv,
+                                    *kind,
+                                    from_identity,
+                                    body,
+                                )
+                                .await;
+                            }
+                        }
+                    }
                     got += print_caught(&st, &conv, &late);
                     if late
                         .iter()

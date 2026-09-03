@@ -322,9 +322,9 @@ fn chat(
         "the picture to appear with its thumbnail",
         Duration::from_secs(90),
         || {
-            app.get_items()
-                .iter()
-                .any(|i| i.is_own && i.kind == "image" && i.thumb.size().width > 0)
+            app.get_items().iter().any(|i| {
+                i.is_own && i.kind == "image" && i.thumb.size().width > 0 && i.send_state == "sent"
+            })
         },
     )?;
     println!("picture sent");
@@ -358,9 +358,12 @@ fn chat(
         "the document to appear with its first lines",
         Duration::from_secs(90),
         || {
-            app.get_items()
-                .iter()
-                .any(|i| i.is_own && i.kind == "file" && i.doc_lines.row_count() > 0)
+            app.get_items().iter().any(|i| {
+                i.is_own
+                    && i.kind == "file"
+                    && i.doc_lines.row_count() > 0
+                    && i.send_state == "sent"
+            })
         },
     )?;
     println!("document sent");
@@ -397,7 +400,7 @@ fn chat(
     h.wait_until("the track to appear", Duration::from_secs(90), || {
         app.get_items()
             .iter()
-            .any(|i| i.is_own && i.kind == "audio")
+            .any(|i| i.is_own && i.kind == "audio" && i.send_state == "sent")
     })?;
     println!("track sent");
     h.shoot("live-chat-audio")?;
@@ -442,12 +445,50 @@ fn chat(
         }),
     );
     h.wait_until("the voice message", Duration::from_secs(90), || {
-        app.get_items()
-            .iter()
-            .any(|i| i.is_own && i.kind == "voice" && i.waveform.row_count() > 0)
+        app.get_items().iter().any(|i| {
+            i.is_own && i.kind == "voice" && i.waveform.row_count() > 0 && i.send_state == "sent"
+        })
     })?;
     println!("voice message sent");
     h.shoot("live-chat-voice")?;
+
+    // 9. offline: the test takes the server down when asked (DRIVE_SYNC
+    //    names a directory; "down" and "up" appear there). A message sent
+    //    meanwhile shows as failed, and goes out on retry once it is back.
+    if let Ok(dir) = std::env::var("DRIVE_SYNC") {
+        let dir = std::path::PathBuf::from(dir);
+        println!("server down please");
+        h.wait_until(
+            "the server to be taken down",
+            Duration::from_secs(60),
+            || dir.join("down").exists(),
+        )?;
+        app.invoke_send_message("sent while offline".into());
+        h.wait_until("the message to fail", Duration::from_secs(120), || {
+            find("sent while offline")
+                .map(|i| i.send_state == "failed")
+                .unwrap_or(false)
+        })?;
+        println!("message failed as expected");
+        h.shoot("live-chat-failed")?;
+        println!("server up please");
+        h.wait_until("the server to come back", Duration::from_secs(60), || {
+            dir.join("up").exists()
+        })?;
+        let failed = find("sent while offline").expect("the failed row");
+        app.invoke_act(
+            "menu-action".into(),
+            "retry".into(),
+            failed.event_id.clone(),
+        );
+        h.wait_until("the retry to go out", Duration::from_secs(120), || {
+            find("sent while offline")
+                .map(|i| i.send_state == "sent" && !i.event_id.starts_with("local:"))
+                .unwrap_or(false)
+        })?;
+        println!("retried and sent");
+        h.shoot("live-chat-retried")?;
+    }
     println!("drive chat ok");
     Ok(())
 }
@@ -544,7 +585,10 @@ fn kinds(
     })?;
     app.invoke_send_message("in the thread".into());
     h.wait_until("bob's thread reply", Duration::from_secs(60), || {
-        app.get_items().row_count() == 2 && find("in the thread").is_some()
+        app.get_items().row_count() == 2
+            && find("in the thread")
+                .map(|i| i.send_state == "sent")
+                .unwrap_or(false)
     })?;
     println!("thread {}", alice.event_id);
     h.wait_until("alice's thread reply", Duration::from_secs(120), || {
@@ -589,7 +633,7 @@ fn kinds(
     h.wait_until("the sticker", Duration::from_secs(60), || {
         app.get_items()
             .iter()
-            .any(|i| i.is_own && i.kind == "sticker")
+            .any(|i| i.is_own && i.kind == "sticker" && i.send_state == "sent")
     })?;
     println!("sticker sent");
     h.shoot("live-sticker")?;
@@ -661,10 +705,15 @@ fn kinds(
     app.invoke_send_message("see http://127.0.0.1:18450/page.html".into());
     h.wait_until("the link card", Duration::from_secs(60), || {
         find("page.html")
-            .map(|i| i.link_has && i.link_title == "A Sigil test page")
+            .map(|i| i.link_has && i.link_title == "A Sigil test page" && i.send_state == "sent")
             .unwrap_or(false)
     })?;
-    println!("link previewed");
+    println!(
+        "link previewed as {}",
+        find("page.html")
+            .map(|i| i.event_id.to_string())
+            .unwrap_or_default()
+    );
     h.shoot("live-link")?;
     println!("drive kinds ok");
     Ok(())

@@ -971,6 +971,11 @@ pub fn on_act(ui: &mut UiState, win: &AppWindow, action: &str, a: &str, b2: &str
             win.set_nav("locpick".into());
         }
         "position-refresh" => refresh_position(ui),
+        "resized" => {
+            after(&req, 120, |ui, win| {
+                crate::bridge::rebuild_timeline(ui, win)
+            });
+        }
         "location-share" => {
             let mut it = a.split(',');
             let lat: f64 = it
@@ -1199,11 +1204,11 @@ fn menu_action(ui: &mut UiState, win: &AppWindow, action: &str, event_id: &str) 
                 let request = if action == "retry" {
                     "message.retry"
                 } else {
-                    "message.cancelSend"
+                    "message.cancel"
                 };
                 req.fire(
                     request,
-                    json!({"roomId": key, "id": s(item, "id"), "txnId": s(item, "txnId")}),
+                    json!({"roomId": key, "eventId": s(item, "eventId"), "id": s(item, "id"), "txnId": s(item, "txnId")}),
                 );
             }
         }
@@ -1455,6 +1460,7 @@ fn voice_seek(ui: &mut UiState, win: &AppWindow, event_id: &str, frac: f64) {
 }
 
 fn push_emoji(ui: &mut UiState, win: &AppWindow, query: &str) {
+    ui.emoji_query = Some(query.to_string());
     if ui.emojis.is_empty() {
         if let Ok(text) =
             std::fs::read_to_string("/usr/share/omarchy/shell/plugins/emojis/emojis.json")
@@ -1471,18 +1477,24 @@ fn push_emoji(ui: &mut UiState, win: &AppWindow, query: &str) {
         }
     }
     let q = query.to_lowercase();
-    let filtered: Vec<_> = ui
+    let filtered: Vec<(String, String)> = ui
         .emojis
         .iter()
         .filter(|(_, k)| q.is_empty() || k.contains(&q))
+        .cloned()
         .collect();
     let mut rows: Vec<ModelRc<crate::EmojiItem>> = Vec::new();
     for chunk in filtered.chunks(8) {
         let row: Vec<crate::EmojiItem> = chunk
             .iter()
-            .map(|(g, k)| crate::EmojiItem {
-                glyph: g.as_str().into(),
-                name: k.as_str().into(),
+            .map(|(g, k)| {
+                let img = crate::bridge::emoji_image(ui, g);
+                crate::EmojiItem {
+                    glyph: g.as_str().into(),
+                    name: k.as_str().into(),
+                    has_img: img.is_some(),
+                    img: img.unwrap_or_default(),
+                }
             })
             .collect();
         rows.push(ModelRc::new(VecModel::from(row)));
@@ -2204,4 +2216,25 @@ fn start_dm(ui: &mut UiState, user_id: &str) {
             }
         },
     );
+}
+
+/// The sheet's quick reactions and the open picker, again, once an emoji
+/// picture has arrived.
+pub fn refresh_emoji_views(ui: &mut UiState, win: &AppWindow) {
+    let quick: Vec<crate::EmojiItem> = ["👍", "❤️", "😂", "😮", "😢", "😡"]
+        .iter()
+        .map(|g| {
+            let img = crate::bridge::emoji_image(ui, g);
+            crate::EmojiItem {
+                glyph: (*g).into(),
+                name: "".into(),
+                has_img: img.is_some(),
+                img: img.unwrap_or_default(),
+            }
+        })
+        .collect();
+    win.set_quick_emoji(ModelRc::new(VecModel::from(quick)));
+    if let Some(q) = ui.emoji_query.clone() {
+        push_emoji(ui, win, &q);
+    }
 }

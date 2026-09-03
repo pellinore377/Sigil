@@ -101,6 +101,9 @@ export component AppWindow inherits Window {
     in property <image> room-avatar;
     in property <color> room-tint: Theme.accent;
     in property <[TimelineRow]> items;
+    out property <length> timeline-w: chat.timeline-w;
+    /// A resize changes how wide a bubble may be; rows are laid out in Rust.
+    changed width => { root.act("resized", "", ""); }
     in property <string> typing-line;
     in property <image> typing-avatar;
     in property <string> typing-initials;
@@ -118,6 +121,8 @@ export component AppWindow inherits Window {
     in property <image> sheet-backdrop;
     in property <image> sheet-copy;
     in property <[[EmojiItem]]> emoji-rows;
+    /// The sheet's six quick reactions, as pictures when the device has a colour font.
+    in property <[EmojiItem]> quick-emoji;
     in property <[int]> emoji-cat-rows;
 
     // ---- per-page data (prefixes match the page) ----
@@ -449,6 +454,7 @@ export component AppWindow inherits Window {
                 sheet-actions: root.sheet-actions;
                 emoji-rows: root.emoji-rows;
                 emoji-cat-rows: root.emoji-cat-rows;
+                quick-emoji: root.quick-emoji;
                 bottom-inset: 0px;
                 back => { root.go-back(); }
                 send(text) => { root.send-message(text); }

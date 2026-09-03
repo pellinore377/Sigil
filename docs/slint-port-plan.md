@@ -419,7 +419,28 @@ Sign out. Files: `login.slint`, `recovery.slint`, `pages/settings.slint`.
 menu, Start chat, New group, request page. Files: `home.slint`,
 `pages/start.slint`, `pages/request.slint`.
 
-**Phase 3. Conversation.** *In progress: edit and delete are in the engine; the frosted sheet, Enter to send, and `slint/tests/e2e-chat.sh` (reply with quote, reaction, edit, delete, each seen by the command-line client) are done.* The whole of `ChatPage` and `BubbleDelegate` for
+**Phase 3. Conversation.** *Done. Edit and delete are in the engine; the
+frosted sheet, Enter to send, and `slint/tests/e2e-chat.sh` (reply with
+quote, reaction, edit, delete, a picture, a document, a track, a voice
+message, and a message that fails while the server is down and goes out on
+retry, each seen by the command-line client). The bubble audit of
+2026-09-02 found the port structurally faithful and fixed what showed:
+SigilText is now laid out glyph by glyph in Rust with the bundled fonts
+(`slint/src/fx.rs`), so effect runs wrap at words and never squash, and
+every span modifier draws (bold, italic, underline, strike, mono, size,
+mark, spoiler with tap to reveal, and the ten motions); the bubble's inner
+layout no longer spreads into the padding; new rows play the QML entry
+animation (theirs slide in, ours rise from the composer); own messages
+show at once as sending, then sent or failed with retry and cancel; and
+emoji in reactions, the sheet's quick pill and the picker are pictures cut
+from the device's colour emoji font (`emoji.render`), since the renderer
+draws text from outlines. The suites also caught a client bug: after a put
+the read cursor jumped to the sent message's number and skipped anything
+the other side had written in between; it now stays where the catch-up
+left it. Still open, by nature of the renderer: emoji
+inside message text stay outline fallbacks on desktop until the app is
+built with the Skia renderer; Android already uses Skia.* The whole of
+`ChatPage` and `BubbleDelegate` for
 text, image, video, file, audio and voice; composer with reply and edit
 staging; reactions; receipts with reader avatars; typing; day labels;
 grouping; pagination; jump-to-event with the flash; keyboard shortcuts;

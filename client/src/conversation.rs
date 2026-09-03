@@ -262,7 +262,10 @@ pub async fn send_event(
             format!("{}\u{1f}{text}", ev.ts_ms),
         );
     }
-    set_cursor(st, conv, &ep.address, seq);
+    // The cursor stays where the catch-up left it: anything the other side
+    // wrote between that read and this put sits below our seq, and moving
+    // the cursor past it would drop it. The next catch-up recognises our
+    // own envelope from the sent record and moves on.
     st.save()?;
     Ok(Sent {
         seq,
@@ -384,7 +387,12 @@ pub async fn catch_up(
                         seq,
                         incoming: inc,
                     }),
-                    Err(_) => {} // not for us, or already consumed
+                    // not for us, or already consumed; say why when asked
+                    Err(e) => {
+                        if std::env::var_os("SIGIL_DEBUG_SKIPS").is_some() {
+                            eprintln!("skipped {}:{seq}: {e:#}", hex::encode(&address[..4]));
+                        }
+                    }
                 }
             }
             if rotated {

@@ -45,6 +45,14 @@ impl SigilSession {
         else {
             return Err(Reply::err("bad_request", "not a file"));
         };
+        // Our own file, or one already fetched: no download, and a key of its own
+        // while the upload is still in flight and the manifest has no chunks.
+        if let Some(local) = item["media"]["path"].as_str().map(PathBuf::from).filter(|p| p.is_file()) {
+            let key = m.chunks.first().cloned().unwrap_or_else(|| {
+                hex::encode(sigil_protocol::kdf::hash(format!("{}:{}", local.display(), m.size).as_bytes()))
+            });
+            return Ok((local, m.filename.clone(), m.mime.clone(), m.size, key));
+        }
         let path = Self::media_path(&m);
         if !path.is_file() {
             let server = self

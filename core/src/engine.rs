@@ -167,6 +167,7 @@ impl Engine {
                 crate::geo::refresh(self);
                 Reply::ok(crate::geo::position_json(self))
             }
+            "emoji.render" => crate::media::emoji::render(p),
             "map.config" => Reply::ok(crate::maps::config_json(self)),
             "map.setStyle" => {
                 match crate::maps::set_style(self, &Self::str_param(p, "url")).await {

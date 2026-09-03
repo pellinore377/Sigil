@@ -544,7 +544,10 @@ pub fn effects_markdown(body: &str, effects: &Value) -> Option<String> {
 }
 
 /// Per-character colour from effect spans, later effects painting over earlier.
-fn effect_char_colors(chars: &[char], effects: &Value) -> Option<(Vec<Option<String>>, bool)> {
+pub(crate) fn effect_char_colors(
+    chars: &[char],
+    effects: &Value,
+) -> Option<(Vec<Option<String>>, bool)> {
     let list = effects.as_array()?;
     if list.is_empty() {
         return None;

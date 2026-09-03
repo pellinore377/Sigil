@@ -5,6 +5,7 @@
 use std::path::PathBuf;
 
 pub mod audio;
+pub mod emoji;
 pub mod av;
 pub mod images;
 pub mod player;

@@ -64,6 +64,8 @@ Error codes: `bad_request not_logged_in login_in_progress oidc_unsupported slidi
 | `timeline.paginate{roomId,count}` | | `{hitStart}`; `timeline.paginationState` pushes |
 | `message.send{roomId,body}`, `message.reply{roomId,eventId,body}` | | `body` is SigilText source; the engine composes it so every device renders the same |
 | `message.react{roomId,eventId,key}`, `readReceipt{roomId,eventId}`, `typing{roomId,typing}` | | small events in the same slot; typing is rate-limited to one per 5 s |
+| `message.send`, `message.reply`, `attachment.send` | | the item appears at once with `sendState: "sending"` and a `local:…` id, then is `set` to `sent` with its real id, or to `failed` with `sendError`. A failed item keeps `src` (the text as typed) or `media.path`, so `message.retry{roomId, eventId}` sends it again and `message.cancel{roomId, eventId}` drops it (a `remove` diff) |
+| `emoji.render{text}` | | `{path, width, height}`: the emoji as a PNG cut from the device's colour emoji font (Noto Color Emoji, or `SIGIL_EMOJI_FONT`), made once per emoji; `unavailable` without such a font. Renderers that draw text from outlines have no colour emoji, so pictures stand in for reactions and the picker |
 | `message.edit{roomId,eventId,body}` | | a kind-3 event referencing the message; own messages only; the item gains `isEdited` and its new body everywhere |
 | `message.redact{roomId,eventId}` | | a kind-4 event; own messages only; receivers blank the item to kind `redacted` |
 | `attachment.send{roomId,path,caption?}` | | |

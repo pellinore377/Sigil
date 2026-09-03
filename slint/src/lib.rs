@@ -7,6 +7,7 @@ slint::include_modules!();
 pub mod actions;
 pub mod bridge;
 pub mod frost;
+pub mod fx;
 pub mod headless;
 pub mod platform;
 pub mod project;

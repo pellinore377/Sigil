@@ -449,6 +449,8 @@ pub async fn dispatch(engine: &SharedEngine, req: &Request) -> Option<Reply> {
         }
         "thread.open" => s.thread_open(engine, &param(p, "roomId"), &param(p, "rootId")).await,
         "threads.list" => s.threads_list(&param(p, "roomId")),
+        "message.retry" => s.message_retry(engine, &param(p, "roomId"), &param(p, "eventId")).await,
+        "message.cancel" => s.message_cancel(engine, &param(p, "roomId"), &param(p, "eventId")).await,
         "message.pin" => s.set_pin(engine, &kinds::split_key(&param(p, "roomId")).0, &param(p, "eventId"), true).await,
         "message.unpin" => s.set_pin(engine, &kinds::split_key(&param(p, "roomId")).0, &param(p, "eventId"), false).await,
         "pins.list" => s.pins_list(&kinds::split_key(&param(p, "roomId")).0).await,
@@ -1045,6 +1047,9 @@ impl SigilSession {
             .cloned()
     }
 
+    /// A text message. The item appears at once as "sending" (the local
+    /// echo), then turns "sent" with its real id or "failed" with the reason;
+    /// a failed one can be retried or cancelled (`message.retry`, `.cancel`).
     async fn send_text(
         &self,
         engine: &SharedEngine,
@@ -1052,16 +1057,39 @@ impl SigilSession {
         body: &str,
         reply_to: Option<String>,
     ) -> Reply {
-        self.top_up().await;
         if body.trim().is_empty() {
             return Reply::err("bad_request", "empty message");
         }
+        if self.conversation(room_id).await.is_none() {
+            return Reply::err("unknown_room", format!("unknown room {room_id}"));
+        }
+        let (room_id, thread_root) = kinds::split_key(room_id);
+        let reply_json = reply_to
+            .as_deref()
+            .and_then(|eid| self.item_by_id(&room_id, eid))
+            .map(|i| reply_summary(&i));
+        let local_id = format!("local:{}", uuid::Uuid::new_v4().simple());
+        let mut item = text_item(&local_id, &self.username, now_ms(), true, body, reply_json);
+        item["sendState"] = json!("sending");
+        item["src"] = json!(body);
+        if let Some(root) = &thread_root {
+            item["threadRoot"] = json!(root);
+        }
+        self.append(engine, &room_id, item).await;
+        let reference = kinds::make_reference(thread_root.as_deref(), reply_to.as_deref());
+        self.deliver_text(engine, &room_id, &local_id, body, &reference).await
+    }
+
+    /// Send the text behind a local item and settle its state.
+    async fn deliver_text(&self, engine: &SharedEngine, room_id: &str, local_id: &str, body: &str, reference: &str) -> Reply {
+        self.top_up().await;
         let Some(conv) = self.conversation(room_id).await else {
             return Reply::err("unknown_room", format!("unknown room {room_id}"));
         };
-        let (room_id, thread_root) = kinds::split_key(room_id);
-        let room_id = room_id.as_str();
-        let reference = kinds::make_reference(thread_root.as_deref(), reply_to.as_deref());
+        self.update_item(engine, room_id, local_id, |it| {
+            it.insert("sendState".into(), json!("sending"));
+            it.insert("sendError".into(), json!(""));
+        });
         let sent = {
             let mut g = self.inner.lock().await;
             let (a, p) = &mut *g;
@@ -1076,22 +1104,65 @@ impl SigilSession {
             )
             .await
         };
-        let sent = match sent {
-            Ok(v) => v,
-            Err(e) => return Reply::err("network", format!("{e:#}")),
-        };
-        self.ingest_caught(engine, &conv, sent.caught_up).await;
-        let (seq, address) = (sent.seq, sent.address);
-        let id = format!("{}:{seq}", hex::encode(address));
-        let reply_json = reply_to
-            .as_deref()
-            .and_then(|eid| self.item_by_id(room_id, eid))
-            .map(|i| reply_summary(&i));
-        let mut item = text_item(&id, &self.username, now_ms(), true, body, reply_json);
-        if let Some(root) = &thread_root {
-            item["threadRoot"] = json!(root);
+        match sent {
+            Ok(sent) => {
+                self.ingest_caught(engine, &conv, sent.caught_up).await;
+                let id = format!("{}:{}", hex::encode(sent.address), sent.seq);
+                self.update_item(engine, room_id, local_id, |it| {
+                    it.insert("id".into(), json!(id));
+                    it.insert("eventId".into(), json!(id));
+                    it.insert("sendState".into(), json!("sent"));
+                    it.insert("sendError".into(), json!(""));
+                    it.insert("ts".into(), json!(now_ms()));
+                });
+                self.save_history();
+                Reply::ok(json!({"eventId": id}))
+            }
+            Err(e) => {
+                let msg = format!("{e:#}");
+                self.update_item(engine, room_id, local_id, |it| {
+                    it.insert("sendState".into(), json!("failed"));
+                    it.insert("sendError".into(), json!(msg));
+                });
+                Reply::err("network", format!("{e:#}"))
+            }
         }
-        self.append(engine, room_id, item).await;
+    }
+
+    /// Try a failed message again: text goes out as it was typed, a file is
+    /// uploaded again from its local path.
+    async fn message_retry(&self, engine: &SharedEngine, room_id: &str, event_id: &str) -> Reply {
+        let (room_id, _) = kinds::split_key(room_id);
+        let Some(item) = self.item_by_id(&room_id, event_id) else {
+            return Reply::err("unknown_event", "no such message");
+        };
+        if item["sendState"].as_str() != Some("failed") {
+            return Reply::err("bad_request", "only a failed message can be retried");
+        }
+        let thread_root = item["threadRoot"].as_str().filter(|r| !r.is_empty()).map(str::to_string);
+        if let Some(path) = item["media"]["path"].as_str().filter(|p| !p.is_empty()) {
+            let path = path.to_string();
+            let caption = item["body"].as_str().unwrap_or("").to_string();
+            let caption = if caption == item["media"]["filename"].as_str().unwrap_or("") { String::new() } else { caption };
+            return self.deliver_file(engine, &room_id, event_id, std::path::PathBuf::from(path), &caption, Extra::default()).await;
+        }
+        let body = item["src"].as_str().unwrap_or_else(|| item["body"].as_str().unwrap_or("")).to_string();
+        let reply_to = item["replyTo"]["eventId"].as_str().filter(|r| !r.is_empty()).map(str::to_string);
+        let reference = kinds::make_reference(thread_root.as_deref(), reply_to.as_deref());
+        self.deliver_text(engine, &room_id, event_id, &body, &reference).await
+    }
+
+    /// Forget a message that never went out.
+    async fn message_cancel(&self, engine: &SharedEngine, room_id: &str, event_id: &str) -> Reply {
+        let (room_id, _) = kinds::split_key(room_id);
+        let Some(item) = self.item_by_id(&room_id, event_id) else {
+            return Reply::err("unknown_event", "no such message");
+        };
+        if item["sendState"].as_str() == Some("sent") {
+            return Reply::err("bad_request", "that message was sent");
+        }
+        self.remove_item(engine, &room_id, event_id);
+        self.broadcast_rooms(engine).await;
         Reply::ok(json!({}))
     }
 
@@ -1545,19 +1616,69 @@ impl SigilSession {
 
     /// A file, or with `voice` a voice message: the clip's length and
     /// waveform travel in the manifest so every device draws the same bars.
+    /// Like text, the item shows at once and settles to sent or failed.
     async fn attachment_send(&self, engine: &SharedEngine, p: &serde_json::Map<String, Value>, extra: Extra) -> Reply {
-        self.top_up().await;
         let room_id = param(p, "roomId");
         let path = std::path::PathBuf::from(param(p, "path"));
         let caption = param(p, "caption");
-        let Some(conv) = self.conversation(&room_id).await else { return Reply::err("unknown_room", "unknown room") };
+        if self.conversation(&room_id).await.is_none() {
+            return Reply::err("unknown_room", "unknown room");
+        }
         if !path.is_file() {
             return Reply::err("bad_request", "file not found");
         }
+        let (room_id, _) = kinds::split_key(&room_id);
+        let local_id = format!("local:{}", uuid::Uuid::new_v4().simple());
+        let filename = path.file_name().map(|f| f.to_string_lossy().to_string()).unwrap_or_else(|| "file".into());
+        let mime = mime_guess::from_path(&path).first_or_octet_stream().to_string();
+        let (width, height) = if mime.starts_with("image/") {
+            image::image_dimensions(&path).ok().map(|(w, h)| (Some(w), Some(h))).unwrap_or((None, None))
+        } else {
+            (None, None)
+        };
+        let placeholder = sigil_client::media::Manifest {
+            filename,
+            mime,
+            size: std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0),
+            key: String::new(),
+            chunks: Vec::new(),
+            caption: caption.clone(),
+            width,
+            height,
+            duration_ms: extra.voice.as_ref().map(|(d, _)| *d),
+            waveform: extra.voice.as_ref().map(|(_, w)| if w.is_empty() { vec![50] } else { w.clone() }).unwrap_or_default(),
+            sticker: extra.sticker,
+            contact: extra.contact,
+        };
+        let mut item = media_item(&local_id, &self.username, now_ms(), true, &placeholder, &path.to_string_lossy());
+        item["sendState"] = json!("sending");
+        self.append(engine, &room_id, item).await;
+        self.deliver_file(engine, &room_id, &local_id, path, &caption, extra).await
+    }
+
+    /// Upload and send the file behind a local item and settle its state.
+    async fn deliver_file(&self, engine: &SharedEngine, room_id: &str, local_id: &str, path: std::path::PathBuf, caption: &str, extra: Extra) -> Reply {
+        self.top_up().await;
+        let Some(conv) = self.conversation(room_id).await else { return Reply::err("unknown_room", "unknown room") };
+        // a retry needs the flags it was sent with; the item remembers them
+        let extra = match self.item_by_id(room_id, local_id) {
+            Some(it) if extra.voice.is_none() && !extra.sticker && !extra.contact => Extra {
+                voice: it["media"]["duration"].as_f64().filter(|_| !it["media"]["waveform"].as_array().map(|a| a.is_empty()).unwrap_or(true)).map(|d| {
+                    (d as u64, it["media"]["waveform"].as_array().map(|a| a.iter().filter_map(Value::as_f64).map(|v| (v * 100.0).round() as u8).collect()).unwrap_or_default())
+                }),
+                sticker: it["kind"].as_str() == Some("sticker"),
+                contact: it["kind"].as_str() == Some("contact"),
+            },
+            _ => extra,
+        };
+        self.update_item(engine, room_id, local_id, |it| {
+            it.insert("sendState".into(), json!("sending"));
+            it.insert("sendError".into(), json!(""));
+        });
         let r = {
             let mut g = self.inner.lock().await;
             let (a, pr) = &mut *g;
-            match sigil_client::media::upload(&self.link, a, &path, &caption).await {
+            match sigil_client::media::upload(&self.link, a, &path, caption).await {
                 Ok(mut m) => {
                     if let Some((duration, wave)) = extra.voice {
                         m.duration_ms = Some(duration);
@@ -1574,10 +1695,28 @@ impl SigilSession {
             Ok((sent, m)) => {
                 self.ingest_caught(engine, &conv, sent.caught_up).await;
                 let id = format!("{}:{}", hex::encode(sent.address), sent.seq);
-                self.append(engine, &room_id, media_item(&id, &self.username, now_ms(), true, &m, &path.to_string_lossy())).await;
-                Reply::ok(json!({}))
+                let fresh = media_item(&id, &self.username, now_ms(), true, &m, &path.to_string_lossy());
+                self.update_item(engine, room_id, local_id, |it| {
+                    if let Some(f) = fresh.as_object() {
+                        for (k, v) in f {
+                            it.insert(k.clone(), v.clone());
+                        }
+                    }
+                    it.insert("sendState".into(), json!("sent"));
+                    it.insert("sendError".into(), json!(""));
+                });
+                self.save_history();
+                self.broadcast_rooms(engine).await;
+                Reply::ok(json!({"eventId": id}))
             }
-            Err(e) => Reply::err("network", format!("{e:#}")),
+            Err(e) => {
+                let msg = format!("{e:#}");
+                self.update_item(engine, room_id, local_id, |it| {
+                    it.insert("sendState".into(), json!("failed"));
+                    it.insert("sendError".into(), json!(msg));
+                });
+                Reply::err("network", format!("{e:#}"))
+            }
         }
     }
 
