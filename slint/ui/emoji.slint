@@ -24,8 +24,31 @@ export component EmojiPicker inherits Rectangle {
 
     background: transparent;
 
+    // EmojiPicker.qml:89-99 curCat: the row under the top edge (+10), and
+    // the last category starting at or before it. -1 while searching; the
+    // categories are ordered, so the index is a count of those passed.
+    property <float> cur-row: floor((-grid.viewport-y + 10px) / 44px);
+    property <bool> searching: search-input.text != "";
+    property <int> cur-cat: root.searching || root.cat-rows.length == 0 ? -1
+        : (root.cat-rows.length > 1 && root.cat-rows[1] <= root.cur-row ? 1 : 0)
+        + (root.cat-rows.length > 2 && root.cat-rows[2] <= root.cur-row ? 1 : 0)
+        + (root.cat-rows.length > 3 && root.cat-rows[3] <= root.cur-row ? 1 : 0)
+        + (root.cat-rows.length > 4 && root.cat-rows[4] <= root.cur-row ? 1 : 0)
+        + (root.cat-rows.length > 5 && root.cat-rows[5] <= root.cur-row ? 1 : 0)
+        + (root.cat-rows.length > 6 && root.cat-rows[6] <= root.cur-row ? 1 : 0)
+        + (root.cat-rows.length > 7 && root.cat-rows[7] <= root.cur-row ? 1 : 0)
+        + (root.cat-rows.length > 8 && root.cat-rows[8] <= root.cur-row ? 1 : 0);
+
+    /// EmojiPicker.qml:37 reset(): the attachment sheet clears the search on close.
+    public function reset() {
+        if (search-input.text != "") { search-input.text = ""; root.search-edited(""); }
+    }
+
+    // EmojiPicker.qml:45-48: a Column of search / grid / strip at spacing 8;
+    // the grid is parent − 86 (:70), so 4px of slack sit under the strip.
     VerticalLayout {
         spacing: 8px;
+        alignment: start;
 
         // Search well
         search-well := Rectangle {
@@ -64,15 +87,21 @@ export component EmojiPicker inherits Rectangle {
         }
 
         grid := TouchList {
-            vertical-stretch: 1;
+            height: max(0px, root.height - 86px);
             for row in root.rows : erow := Rectangle {
                 height: 44px;
                 HorizontalLayout {
                     for em in row : cell := Rectangle {
                         width: grid.width / 8;
-                        border-radius: 8px;
-                        background: cell-t.pressed || cell-t.has-hover
-                            ? root.accent.with-alpha(0.3) : transparent;
+                        // EmojiPicker.qml:80: the highlight is inset 2 with
+                        // radius 8 — 40×40 inside the 44 cell.
+                        Rectangle {
+                            x: 2px; y: 2px;
+                            width: cell.width - 4px; height: cell.height - 4px;
+                            border-radius: 8px;
+                            background: cell-t.pressed || cell-t.has-hover
+                                ? root.accent.with-alpha(0.3) : transparent;
+                        }
                         if em.has-img : Image {
                             source: em.img;
                             x: (cell.width - 26px) / 2; y: 9px; width: 26px; height: 26px;
@@ -98,7 +127,10 @@ export component EmojiPicker inherits Rectangle {
             for icon[ci] in root.cat-icons : cat-cell := Rectangle {
                 width: 32px; height: 32px;
                 border-radius: 10px;
-                background: cat-t.pressed || cat-t.has-hover ? root.accent.with-alpha(0.35) : transparent;
+                // EmojiPicker.qml:106-108: the shown category sits on the
+                // accent; hover is the softer tint.
+                background: root.cur-cat == ci ? root.accent
+                    : cat-t.pressed || cat-t.has-hover ? root.accent.with-alpha(0.35) : transparent;
                 Text {
                     text: icon;
                     font-size: 15px;
@@ -107,7 +139,9 @@ export component EmojiPicker inherits Rectangle {
                     width: 100%; height: 100%;
                 }
                 cat-t := TouchArea {
+                    // EmojiPicker.qml:110: the search clears before the jump.
                     clicked => {
+                        root.reset();
                         if (ci < root.cat-rows.length) {
                             grid.viewport-y = -44px * root.cat-rows[ci];
                         }

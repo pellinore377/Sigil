@@ -71,9 +71,104 @@ async fn put_wrap(link: &Link, st: &State, password: &str) -> anyhow::Result<()>
     Ok(())
 }
 
-/// Change the password: only the wrap changes.
+/// Change the password: the wrap changes, and so does the escrow where
+/// the server keeps one.
 pub async fn set_password(link: &Link, st: &State, password: &str) -> anyhow::Result<()> {
-    put_wrap(link, st, password).await
+    put_wrap(link, st, password).await?;
+    escrow_put(link, st, password).await?;
+    Ok(())
+}
+
+/// The escrow's own key: the password key, domain-separated so the escrow
+/// and the wrap never share one.
+fn escrow_key(password: &str, salt: &[u8; 16]) -> [u8; 32] {
+    sigil_protocol::kdf::kdf("sigil v1 escrow", &pw_key(password, salt))
+}
+
+/// Recovery escrow (wire spec 3.5a): the recovery key sealed under the
+/// password and stored by name, so a lost device can be replaced with
+/// the password and the sign-in alone; nothing to print. `salt ‖ wrap`
+/// is what the server keeps. Ok(false) when the server does not offer it.
+pub async fn escrow_put(link: &Link, st: &State, password: &str) -> anyhow::Result<bool> {
+    let r = st
+        .recovery
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("recovery not set up"))?;
+    let salt: [u8; 16] = hex::decode(&r.salt)?.try_into().unwrap();
+    let recovery_key: [u8; 32] = hex::decode(&r.recovery_key)?.try_into().unwrap();
+    let mut escrow = salt.to_vec();
+    escrow.extend_from_slice(&recovery::wrap_data_key(
+        &escrow_key(password, &salt),
+        &rand::random(),
+        &recovery_key,
+    ));
+    let mut msg = b"sigil v1 escrow put".to_vec();
+    msg.extend_from_slice(&escrow);
+    let sig = ed25519_dalek::Signer::sign(&st.identity().signing, &msg).to_bytes();
+    let (_, server) = sigil_protocol::names::parse_username(&st.username)
+        .map_err(|_| anyhow::anyhow!("bad username"))?;
+    use sigil_protocol::wire::Status;
+    match link
+        .call(
+            server,
+            &Request::EscrowPut {
+                username: st.username.clone(),
+                escrow,
+                sig,
+            },
+            None,
+        )
+        .await
+    {
+        Ok(_) => Ok(true),
+        Err(e) => match e.downcast_ref::<crate::link::ServerRefused>() {
+            Some(r) if r.status == Status::Unavailable => Ok(false),
+            _ => Err(e),
+        },
+    }
+}
+
+/// The recovery key back from the escrow, with the password (and the
+/// sign-in token as `gate` where the server gates by OIDC).
+pub async fn escrow_get(
+    link: &Link,
+    username: &str,
+    password: &str,
+    gate: &[u8],
+) -> anyhow::Result<[u8; 32]> {
+    let (_, server) = sigil_protocol::names::parse_username(username)
+        .map_err(|_| anyhow::anyhow!("bad username"))?;
+    use sigil_protocol::wire::Status;
+    let resp = link
+        .call(
+            server,
+            &Request::EscrowGet {
+                username: username.to_string(),
+                gate: gate.to_vec(),
+            },
+            None,
+        )
+        .await;
+    let escrow = match resp {
+        Ok(Response::Bytes(b)) => b,
+        Ok(_) => anyhow::bail!("unexpected"),
+        Err(e) => {
+            let status = e.downcast_ref::<crate::link::ServerRefused>().map(|r| r.status);
+            match status {
+                Some(Status::Unavailable) => anyhow::bail!("this server keeps no recovery escrow; the printed code is needed"),
+                Some(Status::Unauthorized) => anyhow::bail!("that sign-in does not hold this name"),
+                Some(Status::RateLimited) => anyhow::bail!("too many tries; wait a while"),
+                Some(Status::NotFound) => anyhow::bail!("no backup password was set for this account"),
+                _ => return Err(e),
+            }
+        }
+    };
+    if escrow.len() < 16 {
+        anyhow::bail!("malformed escrow");
+    }
+    let salt: [u8; 16] = escrow[..16].try_into().unwrap();
+    recovery::unwrap_data_key(&escrow_key(password, &salt), &escrow[16..])
+        .map_err(|_| anyhow::anyhow!("wrong password"))
 }
 
 /// The printed recovery code.

@@ -37,6 +37,9 @@ services:
       # http://127.0.0.1:44713/callback and http://127.0.0.1:*/callback)
       SIGIL_OIDC_ISSUER: https://id.example.com
       SIGIL_OIDC_CLIENT_ID: sigil
+      # how a lost phone is replaced: escrow = password + sign-in (default
+      # with oidc, nothing to print); code = the printed recovery code
+      SIGIL_RECOVERY: escrow
       # calls: where phones send audio, your public IP or a DNS-only name
       # (not behind Cloudflare's proxy) with the UDP port published below.
       # Leave it out and the server guesses its own card's address, which in

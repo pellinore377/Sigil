@@ -26,6 +26,7 @@ pub fn router(app: App) -> Router {
     Router::new()
         .route("/info", get(info))
         .route("/oidc", get(oidc_info))
+        .route("/oidc/whoami", post(oidc_whoami))
         .route("/.well-known/sigil", get(well_known))
         .route("/bag", post(bag))
         .route("/stream", get(stream))
@@ -44,6 +45,39 @@ async fn info(State(app): State<App>) -> impl IntoResponse {
     match &app.home {
         Some(h) => (StatusCode::OK, h.card.clone()),
         None => (StatusCode::NOT_FOUND, Vec::new()),
+    }
+}
+
+/// After a sign-in: does this login already hold a name here? The app
+/// uses it to offer "welcome back" instead of "pick a name". Body is JSON
+/// `{"id_token": …}`; the answer is `{"localpart": …}` or 404. Nothing is
+/// stored or logged.
+async fn oidc_whoami(State(app): State<App>, body: String) -> impl IntoResponse {
+    let json = |s: StatusCode, v: serde_json::Value| (s, [("content-type", "application/json")], v.to_string());
+    let Some(home) = &app.home else {
+        return json(StatusCode::NOT_FOUND, serde_json::json!({}));
+    };
+    let Some(o) = &home.oidc else {
+        return json(StatusCode::NOT_FOUND, serde_json::json!({}));
+    };
+    let token = serde_json::from_str::<serde_json::Value>(&body)
+        .ok()
+        .and_then(|v| v.get("id_token").and_then(|t| t.as_str()).map(str::to_string))
+        .unwrap_or_default();
+    let Ok(claims) = o.verify(token.trim()).await else {
+        return json(StatusCode::UNAUTHORIZED, serde_json::json!({}));
+    };
+    let held = (|| -> anyhow::Result<Option<String>> {
+        let r = home.store.db.begin_read()?;
+        Ok(r.open_table(crate::store::OIDC_SUBS)?
+            .get(claims.sub.as_str())?
+            .map(|v| v.value().to_string()))
+    })()
+    .ok()
+    .flatten();
+    match held {
+        Some(local) => json(StatusCode::OK, serde_json::json!({"localpart": local})),
+        None => json(StatusCode::NOT_FOUND, serde_json::json!({})),
     }
 }
 

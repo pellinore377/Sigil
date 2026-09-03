@@ -86,7 +86,6 @@ pub struct UiState {
     pub door_oidc_client: String,
     /// Set while an account is being created with a password: the recovery
     /// code page opens the moment the session comes up.
-    pub show_code_on_login: bool,
     /// Avatar images by path; a cache because rooms.list re-arrives constantly.
     pub avatars: HashMap<String, slint::Image>,
     /// THE timeline model. Mutated in place: handing the ListView a fresh
@@ -197,7 +196,6 @@ pub fn start(win: &AppWindow, rt: &tokio::runtime::Runtime, icons: IconSet) -> R
         door_envoy: String::new(),
         door_oidc_issuer: String::new(),
         door_oidc_client: String::new(),
-        show_code_on_login: false,
         avatars: HashMap::new(),
         items_model: std::rc::Rc::new(VecModel::default()),
         typing_sent: false,
@@ -359,6 +357,20 @@ pub fn on_ui(f: impl FnOnce(&mut UiState, &AppWindow) + Send + 'static) {
     });
 }
 
+/// Fetch the recovery code and open its page (once, after creating an
+/// account whose password the server did not escrow; again from Settings).
+fn show_recovery_code(ui: &mut UiState, first_time: bool) {
+    ui.req.call("recovery.code", json!({}), move |reply| {
+        on_ui(move |_ui, win| {
+            if let Reply::Ok(v) = reply {
+                win.set_recovery_code(v["code"].as_str().unwrap_or("").into());
+                win.set_recovery_first_time(first_time);
+                win.set_recovery_open(true);
+            }
+        })
+    });
+}
+
 fn door_fail(win: &AppWindow, msg: &str) {
     win.set_door_busy(false);
     win.set_door_error(msg.into());
@@ -379,6 +391,20 @@ fn full_username(localpart: &str) -> String {
         "@{}:{server}",
         localpart.trim().trim_start_matches('@').to_lowercase()
     )
+}
+
+/// A name of nothing but spaces (the .slint guards cannot trim) fails the
+/// door before anything leaves the device.
+fn name_empty(localpart: &str) -> bool {
+    let empty = localpart.trim().trim_start_matches('@').is_empty();
+    if empty {
+        with_ui(|ui| {
+            if let Some(win) = ui.win.upgrade() {
+                door_fail(&win, "Type a username first.");
+            }
+        });
+    }
+    empty
 }
 
 /// The doors: server first, then create, restore, or link.
@@ -420,6 +446,7 @@ fn wire_doors(win: &AppWindow, req: Requester) {
                             ui.door_oidc_client =
                                 v["oidc"]["clientId"].as_str().unwrap_or("").to_string();
                             win.set_door_tpm(v["tpm"].as_bool().unwrap_or(false));
+                            win.set_door_recovery(v["recovery"].as_str().unwrap_or("code").into());
                             if let Some(h) = v["hostname"].as_str() {
                                 win.set_door_server(h.into());
                                 ui.door_server = h.to_string();
@@ -428,7 +455,25 @@ fn wire_doors(win: &AppWindow, req: Requester) {
                             if let Some(e) = v["envoy"].as_str() {
                                 ui.door_envoy = e.to_string();
                             }
-                            win.set_door("choose".into());
+                            // With a sign-in the browser opens at once; the
+                            // sign-in decides whether a name is to be chosen
+                            // or one is held. Other servers show their doors.
+                            if v["registration"].as_str() == Some("oidc") {
+                                win.set_door("signin".into());
+                                // from the event loop, once this borrow of
+                                // the UI state is released
+                                let w = win.as_weak();
+                                slint::Timer::single_shot(
+                                    std::time::Duration::ZERO,
+                                    move || {
+                                        if let Some(w) = w.upgrade() {
+                                            w.invoke_door_oidc_start();
+                                        }
+                                    },
+                                );
+                            } else {
+                                win.set_door("choose".into());
+                            }
                         }
                         Reply::Err(e) => win.set_door_error(
                             format!("Could not reach that server: {}", e.message).into(),
@@ -441,22 +486,28 @@ fn wire_doors(win: &AppWindow, req: Requester) {
     win.on_door_create({
         let req = req.clone();
         move |name, invite, password| {
+            if name_empty(&name) {
+                return;
+            }
             let has_pw = !password.is_empty();
             let username = full_username(&name);
-            with_ui(|ui| ui.show_code_on_login = has_pw);
             door_busy(true);
             let envoy = with_ui_get(|ui| ui.door_envoy.clone());
             let mut p = json!({"username": username, "invite": invite.trim(), "envoy": envoy});
             if has_pw {
                 p["password"] = json!(password.as_str());
             }
-            req.call("account.create", p, |reply| {
-                on_ui(move |ui, win| {
-                    if let Reply::Err(e) = reply {
-                        ui.show_code_on_login = false;
-                        door_fail(win, &e.message);
+            req.call("account.create", p, move |reply| {
+                on_ui(move |ui, win| match reply {
+                    Reply::Err(e) => door_fail(win, &e.message),
+                    // The session itself arrives as a status event. A
+                    // password the server escrowed needs no printed code;
+                    // otherwise the code is shown once, now.
+                    Reply::Ok(v) => {
+                        if has_pw && !v["escrowed"].as_bool().unwrap_or(false) {
+                            show_recovery_code(ui, true);
+                        }
                     }
-                    // success arrives as a status event with session loggedIn
                 })
             });
         }
@@ -497,6 +548,9 @@ fn wire_doors(win: &AppWindow, req: Requester) {
     win.on_door_recover({
         let req = req.clone();
         move |name, password, code| {
+            if name_empty(&name) {
+                return;
+            }
             let username = full_username(&name);
             door_busy(true);
             req.call(
@@ -516,6 +570,9 @@ fn wire_doors(win: &AppWindow, req: Requester) {
     win.on_door_link_start({
         let req = req.clone();
         move |name| {
+            if name_empty(&name) {
+                return;
+            }
             let username = full_username(&name);
             door_busy(true);
             let envoy = with_ui_get(|ui| ui.door_envoy.clone());
@@ -793,18 +850,6 @@ fn handle_event(ui: &mut UiState, v: &Value) {
             if !was_in && session == "loggedIn" {
                 win.set_door_busy(false);
                 win.set_link_state(SharedString::new());
-                if ui.show_code_on_login {
-                    ui.show_code_on_login = false;
-                    ui.req.call("recovery.code", json!({}), |reply| {
-                        on_ui(move |_ui, win| {
-                            if let Reply::Ok(v) = reply {
-                                win.set_recovery_code(v["code"].as_str().unwrap_or("").into());
-                                win.set_recovery_first_time(true);
-                                win.set_recovery_open(true);
-                            }
-                        })
-                    });
-                }
             }
             ui.my_user = v["userId"].as_str().unwrap_or("").to_string();
             win.set_my_user_id(ui.my_user.as_str().into());
@@ -833,6 +878,7 @@ fn handle_event(ui: &mut UiState, v: &Value) {
         "recovery.status" => {
             win.set_recovery_state(v["recovery"].as_str().unwrap_or("disabled").into());
             win.set_backup_state(v["backup"].as_str().unwrap_or("disabled").into());
+            win.set_recovery_escrow(v["escrow"].as_bool().unwrap_or(false));
         }
         // The link exchange, seen from either side. The new device sits on
         // the doors page; the signed-in device sits in Settings.
@@ -841,7 +887,16 @@ fn handle_event(ui: &mut UiState, v: &Value) {
             let state = v["state"].as_str().unwrap_or("");
             win.set_door_oidc_state(state.into());
             match state {
-                "done" => win.set_door_oidc_user(v["name"].as_str().unwrap_or("").into()),
+                "done" => {
+                    let held = v["held"].as_str().unwrap_or("");
+                    let name = v["name"].as_str().unwrap_or("");
+                    win.set_door_oidc_user(if held.is_empty() { name } else { held }.into());
+                    // only from the waiting screen: someone who walked on to
+                    // linking keeps their place
+                    if win.get_door() == "signin" {
+                        win.set_door(if held.is_empty() { "name" } else { "welcome" }.into());
+                    }
+                }
                 "failed" => {
                     win.set_door_error(v["error"].as_str().unwrap_or("the sign-in failed").into())
                 }
@@ -1925,6 +1980,10 @@ pub fn rebuild_timeline(ui: &mut UiState, win: &AppWindow) {
             readers: slint::ModelRc::new(VecModel::from(readers)),
             pinned: pinned_ids.iter().any(|p| p == &event_id),
             html_ish: false,
+            // New bubble.slint fields (contact card, doc grid, captions,
+            // countdown, spoiler memory, fresh readers) keep their defaults
+            // until filled — see scratchpad/audit/bubbles-handoff.md.
+            ..Default::default()
         });
     }
     ui.items_model.set_vec(rows_out);
@@ -1954,7 +2013,6 @@ fn start_demo(win: &AppWindow, rt: &tokio::runtime::Runtime, icons: IconSet) -> 
         door_envoy: String::new(),
         door_oidc_issuer: String::new(),
         door_oidc_client: String::new(),
-        show_code_on_login: false,
         avatars: HashMap::new(),
         items_model: std::rc::Rc::new(VecModel::default()),
         typing_sent: false,

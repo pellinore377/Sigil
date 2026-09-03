@@ -129,8 +129,11 @@ pub async fn start(
         .await;
         match outcome {
             Ok(Ok((id_token, name_hint))) => {
+                // does this login already hold a name here? then it is a
+                // return, not a first visit
+                let held = whoami(&client, &server, &id_token, proxy.as_deref()).await;
                 *PENDING.lock().unwrap() = Some(Pending { server, id_token });
-                hub.broadcast(json!({"event": "oidc.state", "state": "done", "name": name_hint}));
+                hub.broadcast(json!({"event": "oidc.state", "state": "done", "name": name_hint, "held": held}));
             }
             Ok(Err(e)) => {
                 hub.broadcast(json!({"event": "oidc.state", "state": "failed", "error": format!("{e:#}")}));
@@ -216,6 +219,28 @@ async fn finish(
         .and_then(|c| c["preferred_username"].as_str().map(str::to_string))
         .unwrap_or_default();
     Ok((id_token, hint))
+}
+
+/// The localpart this login holds on `server`, if any (`/oidc/whoami`).
+async fn whoami(client: &reqwest::Client, server: &str, id_token: &str, proxy: Option<&str>) -> String {
+    let Ok(base) = sigil_client::account::resolve(server, proxy).await else {
+        return String::new();
+    };
+    let r = client
+        .post(format!("{}/oidc/whoami", base.trim_end_matches('/')))
+        .header("content-type", "application/json")
+        .body(json!({"id_token": id_token}).to_string())
+        .send()
+        .await;
+    match r {
+        Ok(r) if r.status().is_success() => r
+            .json::<Value>()
+            .await
+            .ok()
+            .and_then(|v| v["localpart"].as_str().map(str::to_string))
+            .unwrap_or_default(),
+        _ => String::new(),
+    }
 }
 
 async fn page(sock: &mut tokio::net::TcpStream, title: &str, body: &str) {

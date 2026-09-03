@@ -19,6 +19,7 @@ export component SettingsPage inherits Rectangle {
     // recovery.status
     in property <string> recovery-state;   // enabled | disabled
     in property <string> backup-state;     // enabled | pending | disabled
+    in property <bool> recovery-escrow;    // the server keeps the key under the password
     // shape.settings
     in property <int> clocked-seconds;
     in property <string> socks-proxy;
@@ -136,14 +137,16 @@ export component SettingsPage inherits Rectangle {
                 SettingsGroup {
                     title: "Recovery"; fg: root.fg;
                     SettingsRow {
-                        fg: root.fg; icon: Icons.lock; label: "Backup password";
+                        fg: root.fg; icon: Icons.lock; label: "Recovery password";
+                        sublabel: root.recovery-escrow ? "Brings everything back on a new device" : "";
                         trailing: "value";
                         value: root.recovery-state != "enabled" ? "Not set"
                              : root.backup-state == "enabled" ? "Backed up"
                              : root.backup-state == "pending" ? "Backup pending" : "Set";
                         clicked => { root.open-password(); }
                     }
-                    SettingsRow {
+                    // the printed code is for servers that keep no escrow
+                    if !root.recovery-escrow : SettingsRow {
                         fg: root.fg; icon: Icons.recoveryKey; label: "Recovery code";
                         sublabel: root.recovery-state == "enabled" ? "Show it again to write it down" : "Set a password first";
                         trailing: "chevron";

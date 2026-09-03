@@ -31,14 +31,19 @@ export component ForwardPage inherits Rectangle {
                 padding-left: 6px;
                 spacing: 6px;
                 Rectangle {
-                    width: 44px;
+                    // PanelActionButton is 22×22 at leftMargin 6, vertically
+                    // centred (ForwardPage.qml:341); the title then lands at
+                    // x 34 (:342). The tap surface spans the header height for
+                    // fingers, as SettingsHeader does.
+                    width: 22px;
                     ActionButton {
                         y: (54px - self.height) / 2;
-                        width: 44px; height: 44px;
+                        width: 22px; height: 22px;
                         icon: Icons.close; filled: false;
                         foreground: root.fg;
                         clicked => { root.closed(); }
                     }
+                    TouchArea { clicked => { root.closed(); } }
                 }
                 Text {
                     text: root.mode == "attach" ? "Send contact" : "Forward";
@@ -104,7 +109,8 @@ export component ForwardPage inherits Rectangle {
                     x: 10px; width: frow.width - 20px;
                     y: 4px; height: frow.height - 8px;
                     border-radius: 12px;
-                    background: frow-t.pressed || frow-t.has-hover ? root.fg.with-alpha(0.05) : transparent;
+                    // ForwardPage.qml:375: hover only, no pressed face.
+                    background: frow-t.has-hover ? root.fg.with-alpha(0.05) : transparent;
                 }
                 HorizontalLayout {
                     padding-left: 16px; padding-right: 12px;

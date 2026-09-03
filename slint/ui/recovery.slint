@@ -7,6 +7,15 @@ import { Theme } from "style.slint";
 import { Icons } from "icons.slint";
 import { IconLabel, SButton, TextWell } from "components.slint";
 
+// The urgent line at the foot of a group (RecoveryPage.qml:62-67).
+component ErrorText inherits Text {
+    color: Theme.urgent;
+    font-family: Theme.font-ui;
+    font-size: Theme.body-small;
+    horizontal-alignment: center;
+    wrap: word-wrap;
+}
+
 export component RecoveryCodePage inherits Rectangle {
     in property <string> code;
     in property <bool> first-time;
@@ -17,7 +26,9 @@ export component RecoveryCodePage inherits Rectangle {
 
     VerticalLayout {
         alignment: center;
-        padding-left: 40px; padding-right: 40px;
+        // RecoveryPage.qml:17-18: a centred column min(parent.width - 80, 480) wide
+        x: (root.width - self.width) / 2;
+        width: min(root.width - 80px, 480px);
         spacing: Theme.sp-xl;
 
         IconLabel {
@@ -62,11 +73,12 @@ export component RecoveryCodePage inherits Rectangle {
                 wrap: char-wrap;
             }
         }
+        // RecoveryPage.qml:56-61: the primary bordered, the secondary plain
         HorizontalLayout {
             alignment: center;
             spacing: Theme.sp-lg;
             SButton { text: "Copy"; icon: Icons.copy; clicked => { root.copy(); } }
-            SButton { text: root.first-time ? "I wrote it down" : "Done"; clicked => { root.done(); } }
+            SButton { text: root.first-time ? "I wrote it down" : "Done"; bordered: false; clicked => { root.done(); } }
         }
     }
 }
@@ -85,7 +97,9 @@ export component BackupPasswordPage inherits Rectangle {
 
     VerticalLayout {
         alignment: center;
-        padding-left: 40px; padding-right: 40px;
+        // RecoveryPage.qml:17-18: a centred column min(parent.width - 80, 480) wide
+        x: (root.width - self.width) / 2;
+        width: min(root.width - 80px, 480px);
         spacing: Theme.sp-xl;
 
         IconLabel {
@@ -117,45 +131,46 @@ export component BackupPasswordPage inherits Rectangle {
         }
         VerticalLayout {
             spacing: Theme.sp-md;
+            // RecoveryPage.qml:75 focusInput(): the first field takes focus on entry
+            init => { pw1.focus-input(); }
             Text { text: "Password"; color: Theme.menu-text.with-alpha(0.6); font-family: Theme.font-ui; font-size: Theme.caption; }
-            pw1 := TextWell { placeholder: "a good password"; password: !root.reveal; enabled: !root.busy; }
+            // the eye inside each field (RecoveryPage.qml:47-54) instead of a link
+            pw1 := TextWell {
+                placeholder: "a good password";
+                password: !root.reveal;
+                reveal-toggle: true;
+                reveal <=> root.reveal;
+                enabled: !root.busy;
+                // Enter walks on to the second field
+                accepted => { pw2.focus-input(); }
+            }
             Text { text: "Again"; color: Theme.menu-text.with-alpha(0.6); font-family: Theme.font-ui; font-size: Theme.caption; }
-            pw2 := TextWell { placeholder: "the same password"; password: !root.reveal; enabled: !root.busy;
-                accepted => { if (pw1.text != "" && pw1.text == pw2.text) { root.set-password(pw1.text); } } }
+            pw2 := TextWell {
+                placeholder: "the same password";
+                password: !root.reveal;
+                reveal-toggle: true;
+                reveal <=> root.reveal;
+                enabled: !root.busy;
+                // the terminal field submits (RecoveryPage.qml:45)
+                accepted => { if (save-btn.enabled) { save-btn.clicked(); } }
+            }
+        }
+        // RecoveryPage.qml:56-67: the button row at the column's xl step, the
+        // errors md under it (LoginPage.qml:100-105)
+        VerticalLayout {
+            spacing: Theme.sp-md;
             HorizontalLayout {
                 alignment: center;
-                spacing: Theme.sp-md;
-                Text {
-                    text: root.reveal ? "Hide" : "Show";
-                    color: Theme.menu-text.with-alpha(0.55);
-                    font-family: Theme.font-ui; font-size: Theme.body-small;
-                    TouchArea { clicked => { root.reveal = !root.reveal; } }
+                spacing: Theme.sp-lg;
+                save-btn := SButton {
+                    text: root.busy ? "Saving…" : (root.has-password ? "Change password" : "Set password");
+                    enabled: !root.busy && pw1.text != "" && pw1.text == pw2.text;
+                    clicked => { root.set-password(pw1.text); }
                 }
+                SButton { text: "Back"; bordered: false; enabled: !root.busy; clicked => { root.closed(); } }
             }
-        }
-        HorizontalLayout {
-            alignment: center;
-            spacing: Theme.sp-lg;
-            SButton {
-                text: root.busy ? "Saving…" : (root.has-password ? "Change password" : "Set password");
-                enabled: !root.busy && pw1.text != "" && pw1.text == pw2.text;
-                clicked => { root.set-password(pw1.text); }
-            }
-            SButton { text: "Back"; enabled: !root.busy; clicked => { root.closed(); } }
-        }
-        if pw2.text != "" && pw1.text != pw2.text : Text {
-            text: "The two passwords differ.";
-            color: Theme.urgent;
-            font-family: Theme.font-ui; font-size: Theme.body-small;
-            horizontal-alignment: center;
-        }
-        if root.error != "" : Text {
-            text: root.error;
-            color: Theme.urgent;
-            font-family: Theme.font-ui;
-            font-size: Theme.body-small;
-            horizontal-alignment: center;
-            wrap: word-wrap;
+            if pw2.text != "" && pw1.text != pw2.text : ErrorText { text: "The two passwords differ."; }
+            if root.error != "" : ErrorText { text: root.error; }
         }
     }
 }

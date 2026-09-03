@@ -4,8 +4,7 @@
 // is how the QML side ended up owning a copy of that rule.
 //
 // Not ported: the "Open as window" PanelActionButton (a desktop-panel
-// affordance with no Android meaning) and the FrameAnimation glide on the
-// scroll-to-top button (the tap jumps instead).
+// affordance with no Android meaning).
 
 import { TouchList } from "furniture.slint";
 import { Theme } from "style.slint";
@@ -55,7 +54,11 @@ export component HomePage inherits Rectangle {
                 }
                 Rectangle {
                     width: 36px;
+                    // HomePage.qml:87-90: a 36×36 tap box with the avatar
+                    // centred in it (anchors.centerIn).
                     Avatar {
+                        x: (36px - self.size) / 2;
+                        y: (parent.height - self.size) / 2;
                         size: 28px;
                         source: root.my-avatar;
                         initials: root.my-initials;
@@ -195,6 +198,11 @@ export component HomePage inherits Rectangle {
         // Room list; a request is a row like any other, its badge says "!"
         list := TouchList {
             vertical-stretch: 1;
+            // HomePage.qml:174 onMovementStarted: any move the glide did not
+            // write itself is the finger, and ends the glide.
+            changed viewport-y => {
+                if (root.returning && self.viewport-y != root.glide-wrote) { root.returning = false; }
+            }
 
             for room in (root.chats-mode ? root.rooms : root.requests) : rrow := Rectangle {
                 height: 64px;
@@ -202,16 +210,23 @@ export component HomePage inherits Rectangle {
                     x: 8px; width: rrow.width - 16px;
                     y: 4px; height: rrow.height - 8px;
                     border-radius: 14px;
-                    background: row-touch.pressed ? Theme.menu-text.with-alpha(0.08)
-                             : row-touch.has-hover ? Theme.menu-text.with-alpha(0.05) : transparent;
+                    // HomePage.qml:199: hover only, fg@0.05; no pressed face.
+                    background: row-touch.has-hover ? Theme.menu-text.with-alpha(0.05) : transparent;
                 }
 
                 HorizontalLayout {
+                    // HomePage.qml:200-205,272: avatar at leftMargin 16, the
+                    // text column 12 after it and ending 8 before the meta
+                    // column, which sits at rightMargin 16. The two gaps
+                    // differ, so they are paddings on the text column, not
+                    // one layout spacing.
                     padding-left: 16px; padding-right: 16px;
-                    spacing: 12px;
+                    spacing: 0;
                     Rectangle {
                         width: 44px;
                         Avatar {
+                            // anchors.verticalCenter (HomePage.qml:200)
+                            y: (rrow.height - self.height) / 2;
                             size: 44px;
                             source: room.avatar;
                             initials: room.initials;
@@ -222,17 +237,21 @@ export component HomePage inherits Rectangle {
                     VerticalLayout {
                         alignment: center;
                         spacing: 2px;
+                        padding-left: 12px; padding-right: 8px;
                         horizontal-stretch: 1;
                         HorizontalLayout {
                             alignment: start;
                             spacing: 5px;
-                            padding-right: 8px;
                             name-text := Text {
                                 text: room.name;
                                 color: Theme.menu-text;
                                 font-family: Theme.font-ui;
                                 font-size: Theme.subtitle;
-                                font-weight: room.unread ? 700 : 400;
+                                // HomePage.qml:208: bold on unread OR
+                                // highlights. The bridge folds only the unread
+                                // counts into `unread`; an urgent badge on a
+                                // non-invite row is exactly "highlights > 0".
+                                font-weight: room.unread || (room.badge-urgent && !room.is-invite) ? 700 : 400;
                                 overflow: elide;
                             }
                             if room.is-encrypted : IconLabel {
@@ -251,20 +270,25 @@ export component HomePage inherits Rectangle {
                         // Preview: an unsent message is marked with a red "Draft:".
                         preview-line := HorizontalLayout {
                             alignment: start;
-                            spacing: 4px;
-                            padding-right: 8px;
+                            spacing: 4px;   // HomePage.qml:213
                             if room.draft != "" : Text {
                                 text: "Draft:";
                                 color: Theme.urgent;
                                 font-family: Theme.font-ui; font-size: Theme.body-small;
                                 font-italic: true;
                             }
-                            if room.draft == "" && room.preview-icon != "" : IconLabel {
-                                text: room.preview-icon;
-                                font-size: Theme.body-small;
-                                color: room.has-call ? Theme.accent
-                                     : Theme.menu-text.with-alpha(room.unread ? 0.8 : 0.55);
-                                vertical-alignment: center;
+                            // HomePage.qml:245: the mark carries rightPadding 4
+                            // on top of the row spacing, so mark→text is 8
+                            // while Draft:→text stays 4.
+                            if room.draft == "" && room.preview-icon != "" : HorizontalLayout {
+                                padding-right: 4px;
+                                IconLabel {
+                                    text: room.preview-icon;
+                                    font-size: Theme.body-small;
+                                    color: room.has-call ? Theme.accent
+                                         : Theme.menu-text.with-alpha(room.unread ? 0.8 : 0.55);
+                                    vertical-alignment: center;
+                                }
                             }
                             preview-text := Text {
                                 text: room.draft != "" ? room.draft : room.preview;
@@ -328,7 +352,7 @@ export component HomePage inherits Rectangle {
         y: root.height - self.height - 14px;
         width: 48px; height: 48px;
         border-radius: 16px;
-        background: Theme.accent.with-alpha(fab-touch.pressed ? 1.0 : 0.9);
+        background: Theme.accent.with-alpha(0.9);   // HomePage.qml:186: constant, no pressed face
         IconLabel {
             text: Icons.plus;
             color: Theme.background;
@@ -338,44 +362,82 @@ export component HomePage inherits Rectangle {
         fab-touch := TouchArea { clicked => { root.new-chat(); } }
     }
 
-    // Scroll-to-top: bottom-centred once the list has run 3/4 of a screen.
-    // Pops in with the QML's OutBack overshoot.
+    // The glide back to the top — HomePage.qml:444-453. The QML FrameAnimation
+    // is a per-frame exponential decay (k = 1 - 0.0001^dt: 63% of the way in
+    // ~0.11 s, 95% in ~0.33 s); ease-out-expo over 300ms traces that curve.
+    // The viewport is driven from a helper because a binding on viewport-y
+    // would be dropped by the first finger flick. `glide-t` is reset with a
+    // 0ms duration (an instant set) before the 300ms run so every tap starts
+    // from wherever the list is now.
+    property <bool> returning: false;
+    property <length> glide-from;
+    property <length> glide-wrote;
+    property <float> glide-t: 1.0;
+    animate glide-t { duration: root.returning ? 300ms : 0ms; easing: ease-out-expo; }
+    changed glide-t => {
+        if (root.returning) {
+            root.glide-wrote = root.glide-from * (1.0 - root.glide-t);
+            list.viewport-y = root.glide-wrote;
+            if (root.glide-t >= 1.0) { root.returning = false; }
+        }
+    }
+    function return-to-top() {
+        root.returning = false;
+        root.glide-t = 0.0;
+        root.glide-from = list.viewport-y;
+        root.glide-wrote = list.viewport-y;
+        root.returning = true;
+        root.glide-t = 1.0;
+    }
+
+    // Scroll-to-top: bottom-centred once the list has run 3/4 of a screen
+    // (HomePage.qml:455-472). Two curves, as in the QML: scale pops with
+    // OutBack overshoot 2.2 over 220ms (:468), opacity fades linearly over
+    // 140ms (:469); shown while scale > 0.01 (:459).
     top-layer := Rectangle {
-        property <float> shown: list.viewport-y < -(list.height * 0.75) ? 1.0 : 0.0;
-        animate shown { duration: 220ms; easing: cubic-bezier(0.34, 1.8, 0.64, 1); }
-        visible: self.shown > 0.01;
+        property <bool> shown: list.viewport-y < -(list.height * 0.75);
+        property <float> pop: self.shown ? 1.0 : 0.0;
+        property <float> fade: self.shown ? 1.0 : 0.0;
+        // OutBack with overshoot 2.2, from the engine's easing table
+        animate pop { duration: 220ms; easing: cubic-bezier(0.34, 1.8, 0.64, 1); }
+        animate fade { duration: 140ms; }
+        visible: self.pop > 0.01;
         x: (root.width - self.width) / 2;
         y: root.height - self.height - 18px;
         width: 38px; height: 38px; border-radius: 19px;
-        opacity: min(1.0, self.shown);
-        transform-scale-x: max(0.01, self.shown);
-        transform-scale-y: max(0.01, self.shown);
+        opacity: self.fade;
+        transform-scale-x: max(0.01, self.pop);
+        transform-scale-y: max(0.01, self.pop);
         background: Theme.popup-background;
         IconLabel {
             text: Icons.arrowUp;
             color: Theme.menu-text;
             width: 100%; height: 100%;
         }
-        TouchArea { clicked => { list.viewport-y = 0; } }
+        TouchArea { clicked => { root.return-to-top(); } }
     }
 
-    // Account menu: page-level scrim (a scrim inside a control cluster makes
-    // every control need two taps — ui-conventions.md), card below the header.
-    // 120ms fade like the QML (its scale-in has no Slint equivalent).
+    // Account menu: a page-level tap-away layer with NO scrim (HomePage.qml:
+    // 396-401 is a bare MouseArea) and the card below the header. Two curves,
+    // as in the QML: opacity fades over 120ms linear (:419); scale grows
+    // 0.94→1 over 140ms OutCubic about the top-right corner (:408-409, :420).
     account-layer := Rectangle {
         property <float> show: root.account-open ? 1.0 : 0.0;
+        property <float> grow: root.account-open ? 1.0 : 0.0;
         animate show { duration: 120ms; }
+        // OutCubic, from the engine's easing table
+        animate grow { duration: 140ms; easing: cubic-bezier(0.33, 1, 0.68, 1); }
         visible: root.account-open || self.show > 0.01;
         opacity: self.show;
         width: 100%; height: 100%;
-        background: Theme.background.with-alpha(0.35);
+        background: transparent;
         TouchArea { clicked => { root.account-open = false; } }
         menu-card := Rectangle {
             x: root.width - self.width - 12px;
             y: 48px;
             transform-origin: { x: self.width, y: 0px };
-            transform-scale-x: 0.94 + 0.06 * account-layer.show;
-            transform-scale-y: 0.94 + 0.06 * account-layer.show;
+            transform-scale-x: 0.94 + 0.06 * account-layer.grow;
+            transform-scale-y: 0.94 + 0.06 * account-layer.grow;
             width: 230px;
             height: card-col.preferred-height + 20px;
             border-radius: 14px;

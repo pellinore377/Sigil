@@ -56,6 +56,8 @@ export component AppWindow inherits Window {
     in property <string> door-oidc-state;
     in property <string> door-oidc-user;
     in property <bool> door-tpm;
+    /// escrow | code, from account.probe
+    in property <string> door-recovery: "code";
     in property <bool> door-busy;
     in property <string> door-error;
     in property <image> link-image;
@@ -68,6 +70,8 @@ export component AppWindow inherits Window {
     in property <string> recovery-code;
     in property <string> recovery-state: "disabled";
     in property <string> backup-state: "disabled";
+    /// the server keeps a password-locked copy of the recovery key
+    in property <bool> recovery-escrow;
     in-out property <bool> password-open: false;
     in property <bool> password-busy;
     in property <string> password-error;
@@ -390,7 +394,7 @@ export component AppWindow inherits Window {
             oidc-name: root.door-oidc-name;
             oidc-state: root.door-oidc-state;
             oidc-user: root.door-oidc-user;
-            tpm: root.door-tpm;
+            recovery: root.door-recovery;
             busy: root.door-busy;
             restoring: root.session == "restoring";
             error: root.door-error;
@@ -453,7 +457,22 @@ export component AppWindow inherits Window {
                 room-tint: root.room-tint;
                 themed: root.ct-accent != "";
                 accent: root.ct-accent != "" ? root.ct-color : Theme.accent;
-                attach-open: root.attach-open;
+                // The two inline composer panels live inside the page now
+                // (ChatPage.qml:1795-1847); these are the window's names the
+                // bridge, drive and shots read and set.
+                attach-open <=> root.attach-open;
+                recorder-open <=> root.recorder-open;
+                visible-to-user: root.in-session && (root.nav == "chat" || root.nav == "thread");
+                rec-state: root.rec-state;
+                rec-elapsed: root.rec-elapsed;
+                rec-clip-duration: root.rec-clip-duration;
+                rec-levels: root.rec-levels;
+                rec-clip-waveform: root.rec-clip-waveform;
+                stickers: root.at-stickers;
+                stickers-loaded: root.at-stickers-loaded;
+                sticker-dir: root.at-sticker-dir;
+                // toast / ac-items / ac-index / clip-frac: window properties
+                // still to come (scratchpad audit/chat-handoff.md A6, F10, F12).
                 voice-staged <=> root.voice-staged;
                 voice-staged-duration: root.voice-staged-duration;
                 voice-staged-wave: root.voice-staged-wave;
@@ -489,12 +508,29 @@ export component AppWindow inherits Window {
                 start-call(video) => { root.act("start-call", video ? "true" : "false", ""); }
                 join-call => { root.act("join-call", "", ""); }
                 nav-requested(page) => { root.go(page); }
-                open-attach => {
-                    // The + is a toggle: cancel affordance while the sheet is open.
-                    if (root.attach-open) { root.attach-open = false; }
-                    else { root.attach-open = true; root.act("open-attach", "", ""); }
+                // The page toggles the panels itself (mutual exclusion, reset on
+                // open); these fire only when one has just opened.
+                open-attach => { root.act("open-attach", "", ""); }
+                open-recorder => { root.act("open-recorder", "", ""); }
+                pick-attach-files => { root.act("pick-attach-files", "", ""); }
+                attach-location(mode) => { root.act("attach-location", mode, ""); }
+                insert-emoji(e) => { root.act("composer-insert", e, ""); }
+                create-poll(q, opts, closed2) => {
+                    root.act("create-poll", q, (closed2 ? "1" : "0")
+                        + "\u{1f}" + opts[0] + "\u{1f}" + opts[1] + "\u{1f}" + opts[2]
+                        + "\u{1f}" + opts[3] + "\u{1f}" + opts[4] + "\u{1f}" + opts[5]
+                        + "\u{1f}" + opts[6] + "\u{1f}" + opts[7]);
                 }
-                open-recorder => { root.recorder-open = true; root.act("open-recorder", "", ""); }
+                send-sticker(i) => { root.act("send-sticker", "" + i, ""); }
+                load-stickers => { root.act("load-stickers", "", ""); }
+                load-emoji => { root.act("emoji-search", "", ""); }
+                rec-record => { root.act("voice-record", "", ""); }
+                rec-stop => { root.act("voice-stop", "", ""); }
+                rec-restart => { root.act("voice-restart", "", ""); }
+                rec-attach => { root.act("voice-attach", "", ""); }
+                rec-cancel => { root.act("voice-cancel", "", ""); }
+                clip-seek(frac) => { root.act("voice-preview-seek", "" + frac, ""); }
+                ac-picked(i) => { root.act("autocomplete-pick", "" + i, ""); }
                 accept-invite => { root.act("accept-invite", "", ""); }
                 decline-invite => { root.act("decline-invite", "", ""); }
                 paginate => { root.act("paginate", "", ""); }
@@ -668,6 +704,7 @@ export component AppWindow inherits Window {
                 my-name: root.my-name; my-user-id: root.my-user-id; my-initials: root.my-initials;
                 my-avatar: root.my-avatar; my-tint: root.my-tint; server: root.door-server;
                 recovery-state: root.recovery-state; backup-state: root.backup-state;
+                recovery-escrow: root.recovery-escrow;
                 clocked-seconds: root.shape-clocked; socks-proxy: root.shape-proxy;
                 link-previews: root.shape-previews;
                 notify-enabled: root.notify-enabled; notify-dms: root.notify-dms;
@@ -702,58 +739,6 @@ export component AppWindow inherits Window {
                 search-edited(q) => { root.act("forward-search", q, ""); }
                 picked(id) => { root.act("forward-picked", id, ""); }
             } }
-        att-wrap := Rectangle {
-            // Slides up from the bottom edge like the QML drawer; the scrim
-            // fades with it. (`open ||` prevents the hidden-element deadlock.)
-            property <float> show: root.attach-open ? 1.0 : 0.0;
-            animate show { duration: 200ms; easing: cubic-bezier(0.33, 1, 0.68, 1); }
-            visible: root.attach-open || self.show > 0.01;
-            width: 100%; height: 100%;
-            background: Theme.background.with-alpha(0.35 * self.show);
-            TouchArea { clicked => { root.attach-open = false; } }
-            att := AttachMenu {
-                x: 0;
-                width: att-wrap.width;
-                // A drawer riding above the composer; its own height binding
-                // (per page) stays in charge.
-                y: att-wrap.height - (self.height + 66px) * att-wrap.show;
-                stickers: root.at-stickers; stickers-loaded: root.at-stickers-loaded;
-                sticker-dir: root.at-sticker-dir;
-                pick-files => { root.act("pick-attach-files", "", ""); }
-                open-location(mode) => { root.act("attach-location", mode, ""); }
-                insert-emoji(e) => { root.act("composer-insert", e, ""); }
-                create-poll(q, opts, closed2) => {
-                    root.act("create-poll", q, (closed2 ? "1" : "0")
-                        + "\u{1f}" + opts[0] + "\u{1f}" + opts[1] + "\u{1f}" + opts[2]
-                        + "\u{1f}" + opts[3] + "\u{1f}" + opts[4] + "\u{1f}" + opts[5]
-                        + "\u{1f}" + opts[6] + "\u{1f}" + opts[7]);
-                }
-                send-sticker(i) => { root.act("send-sticker", "" + i, ""); }
-                load-stickers => { root.act("load-stickers", "", ""); }
-                load-emoji => { root.act("emoji-search", "", ""); }
-                close-requested => { root.attach-open = false; }
-            }
-        }
-        // Inline panel flush with the bottom edge, the composer above it —
-        // the QML mounts it under the composer, not floating over the chat.
-        // Slides in from below the edge.
-        rec-panel := VoiceRecorder {
-            property <float> show: root.recorder-open ? 1.0 : 0.0;
-            animate show { duration: 200ms; easing: cubic-bezier(0.33, 1, 0.68, 1); }
-            visible: root.recorder-open || self.show > 0.01;
-            x: 0; width: 100%;
-            y: content.height - self.height * self.show;
-            state: root.rec-state;
-            elapsed: root.rec-elapsed;
-            clip-duration: root.rec-clip-duration;
-            levels: root.rec-levels;
-            clip-waveform: root.rec-clip-waveform;
-            record => { root.act("voice-record", "", ""); }
-            stop => { root.act("voice-stop", "", ""); }
-            restart => { root.act("voice-restart", "", ""); }
-            attach => { root.act("voice-attach", "", ""); }
-            cancelled => { root.act("voice-cancel", "", ""); root.recorder-open = false; }
-        }
         // The call page over everything while it is open; the pill while
         // the call runs behind the conversation.
         if root.in-call && root.call-page-open : CallPage {

@@ -6,6 +6,7 @@ use crate::store::{
     key2, key_seq, today, SlotMeta, Store, ACKS, BACKUPS, BLOBS, BLOB_EXPIRY, ENVELOPES, INVITES,
     NAMES, OIDC_SUBS, REQ_OWNER, SHELVES, SLOTS, WRAPS,
 };
+use crate::store::ESCROW;
 use crate::tokens::TokenService;
 use ed25519_dalek::{Signature, Verifier as _, VerifyingKey};
 use redb::ReadableTable;
@@ -68,6 +69,9 @@ impl Home {
         }
         if cfg.registration == "oidc" {
             flags |= 0b010;
+        }
+        if cfg.recovery_mode() == "escrow" {
+            flags |= 0b1000;
         }
         if crate::tpm::available() {
             flags |= 0b001;
@@ -619,6 +623,71 @@ impl Home {
                     .insert(username.as_str(), v.as_slice())?;
                 w.commit()?;
                 Response::Empty
+            }
+
+            EscrowPut {
+                username,
+                escrow,
+                sig,
+            } => {
+                if self.cfg.recovery_mode() != "escrow" {
+                    return Ok(Response::Error(Status::Unavailable));
+                }
+                let Some(identity_pub) = self.identity_for(&username)? else {
+                    return Ok(Response::Error(Status::NotFound));
+                };
+                let mut msg = b"sigil v1 escrow put".to_vec();
+                msg.extend_from_slice(&escrow);
+                if !verify(&identity_pub, &msg, &sig) {
+                    return Ok(Response::Error(Status::Unauthorized));
+                }
+                let w = self.store.db.begin_write()?;
+                w.open_table(ESCROW)?
+                    .insert(username.as_str(), escrow.as_slice())?;
+                w.commit()?;
+                Response::Empty
+            }
+
+            // The escrow leaves only for the login that holds the name (when
+            // the gate is on) and never faster than the per-name backoff, so
+            // a password can only be guessed at the pace the server allows.
+            EscrowGet { username, gate } => {
+                if self.cfg.recovery_mode() != "escrow" {
+                    return Ok(Response::Error(Status::Unavailable));
+                }
+                // Under the gate a try costs a fresh sign-in as the holder,
+                // which is the limit; the restore's wrap.get still pays the
+                // backoff. Without the gate the backoff is all there is.
+                if self.cfg.registration != "oidc"
+                    && !self.backoff.lock().unwrap().allow(&username)
+                {
+                    return Ok(Response::Error(Status::RateLimited));
+                }
+                if self.cfg.registration == "oidc" {
+                    let Some(o) = &self.oidc else {
+                        return Ok(Response::Error(Status::Unavailable));
+                    };
+                    let token_str = String::from_utf8_lossy(&gate).to_string();
+                    let Ok(claims) = o.verify(token_str.trim()).await else {
+                        return Ok(Response::Error(Status::Unauthorized));
+                    };
+                    let Ok((local, _)) = names::parse_username(&username) else {
+                        return Ok(Response::Error(Status::Malformed));
+                    };
+                    let r = self.store.db.begin_read()?;
+                    let held = r
+                        .open_table(OIDC_SUBS)?
+                        .get(claims.sub.as_str())?
+                        .map(|v| v.value().to_string());
+                    if held.as_deref() != Some(local) {
+                        return Ok(Response::Error(Status::Unauthorized));
+                    }
+                }
+                let r = self.store.db.begin_read()?;
+                match r.open_table(ESCROW)?.get(username.as_str())? {
+                    Some(v) => Response::Bytes(v.value().to_vec()),
+                    None => Response::Error(Status::NotFound),
+                }
             }
 
             WrapGet { username } => {

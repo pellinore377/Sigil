@@ -33,43 +33,52 @@ export component SearchPage inherits Rectangle {
                 padding-left: 6px; padding-right: 14px;
                 spacing: 4px;
                 Rectangle {
-                    width: 44px;
+                    // PanelActionButton is 22×22 at leftMargin 6, vertically
+                    // centred (SearchPage.qml:205). The tap surface spans the
+                    // header height for fingers, as SettingsHeader does.
+                    width: 22px;
                     ActionButton {
                         y: (54px - self.height) / 2;
-                        width: 44px; height: 44px;
+                        width: 22px; height: 22px;
                         icon: Icons.back; filled: false;
                         foreground: root.fg;
                         clicked => { root.closed(); }
                     }
+                    TouchArea { clicked => { root.closed(); } }
                 }
-                pill := Rectangle {
-                    y: (54px - 36px) / 2;
-                    height: 36px;
-                    border-radius: 18px;
-                    background: root.fg.with-alpha(0.07);
-                    border-width: 1px;
-                    border-color: search-input.has-focus ? Theme.accent.with-alpha(0.4) : transparent;
+                // SearchPage.qml:206-208: the pill runs from 4 after the button
+                // (x 32) to rightMargin 14, 36 high, radius 18, centred in 54.
+                Rectangle {
                     horizontal-stretch: 1;
-                    HorizontalLayout {
-                        padding-left: 14px; padding-right: 12px;
-                        Rectangle {
-                            clip: true;
-                            search-input := TextInput {
-                                color: root.fg;
-                                font-family: Theme.font-ui;
-                                font-size: Theme.body;
-                                vertical-alignment: center;
-                                height: 100%; width: 100%;
-                                single-line: true;
-                                edited => { root.search-edited(self.text); }
-                            }
-                            if search-input.text == "" : Text {
-                                text: "Search conversation";
-                                color: root.fg.with-alpha(0.45);
-                                font-family: Theme.font-ui;
-                                font-size: Theme.body;
-                                vertical-alignment: center;
-                                height: 100%;
+                    pill := Rectangle {
+                        y: (54px - self.height) / 2;
+                        width: 100%;
+                        height: 36px;
+                        border-radius: 18px;
+                        background: root.fg.with-alpha(0.07);
+                        border-width: 1px;
+                        border-color: search-input.has-focus ? Theme.accent.with-alpha(0.4) : transparent;
+                        HorizontalLayout {
+                            padding-left: 14px; padding-right: 12px;
+                            Rectangle {
+                                clip: true;
+                                search-input := TextInput {
+                                    color: root.fg;
+                                    font-family: Theme.font-ui;
+                                    font-size: Theme.body;
+                                    vertical-alignment: center;
+                                    height: 100%; width: 100%;
+                                    single-line: true;
+                                    edited => { root.search-edited(self.text); }
+                                }
+                                if search-input.text == "" : Text {
+                                    text: "Search conversation";
+                                    color: root.fg.with-alpha(0.45);
+                                    font-family: Theme.font-ui;
+                                    font-size: Theme.body;
+                                    vertical-alignment: center;
+                                    height: 100%;
+                                }
                             }
                         }
                     }
@@ -91,7 +100,8 @@ export component SearchPage inherits Rectangle {
                         x: 10px; width: rrow.width - 20px;
                         y: 4px; height: rrow.height - 8px;
                         border-radius: 12px;
-                        background: rrow-t.pressed || rrow-t.has-hover ? root.fg.with-alpha(0.05) : transparent;
+                        // SearchPage.qml:240: hover only, no pressed face.
+                        background: rrow-t.has-hover ? root.fg.with-alpha(0.05) : transparent;
                     }
                     VerticalLayout {
                         x: 18px;
@@ -115,38 +125,42 @@ export component SearchPage inherits Rectangle {
                     }
                     rrow-t := TouchArea { clicked => { root.jump-to(r.event-id); } }
                 }
-                if root.searching && root.results.length == 0 : Rectangle {
-                    height: 60px;
+                // SearchPage.qml:249: topPadding 20 over a natural-height
+                // line, centred across the page.
+                if root.searching && root.results.length == 0 : VerticalLayout {
+                    padding-top: 20px;
                     Text {
                         text: "No matches";
                         color: root.fg.with-alpha(0.5);
                         font-family: Theme.font-ui;
                         font-size: Theme.body;
                         horizontal-alignment: center;
-                        vertical-alignment: center;
-                        width: 100%; height: 100%;
                     }
                 }
 
-                // Idle: images grid (3-up rows via flow of fixed cells).
-                if !root.searching && root.images.length > 0 : Text {
-                    text: "Images";
-                    color: root.fg;
-                    font-family: Theme.font-ui;
-                    font-size: Theme.subtitle;
-                    font-weight: 700;
-                    x: 16px;
-                    height: 36px;
-                    vertical-alignment: center;
+                // Idle: images grid (a Flow of fixed cells).
+                // SearchPage.qml:251: leftPadding 16, topPadding 8, natural height.
+                if !root.searching && root.images.length > 0 : VerticalLayout {
+                    padding-left: 16px; padding-top: 8px;
+                    Text {
+                        text: "Images";
+                        color: root.fg;
+                        font-family: Theme.font-ui;
+                        font-size: Theme.subtitle;
+                        font-weight: 700;
+                    }
                 }
                 if !root.searching : img-flow := Rectangle {
-                    // SearchPage.qml: a centred Flow, columns following the width.
-                    property <int> cols: max(1, floor((self.width - 28px) / 90px));
-                    property <length> x0: (self.width - self.cols * 90px) / 2;
-                    height: root.images.length == 0 ? 0px
-                        : (floor((root.images.length - 1) / self.cols) + 1) * 90px;
+                    // SearchPage.qml:252-261: a Flow 28 narrower than the page,
+                    // horizontally centred (so at x 14), 84px cells with 6px
+                    // spacing laid from its left edge: cols = floor((w-28+6)/90),
+                    // rows*90 - 6 high (no spacing after the last row).
+                    property <int> cols: max(1, floor((self.width - 28px + 6px) / 90px));
+                    property <int> rows: root.images.length == 0 ? 0
+                        : floor((root.images.length - 1) / self.cols) + 1;
+                    height: self.rows == 0 ? 0px : self.rows * 90px - 6px;
                     for img[i] in root.images : cell := Rectangle {
-                        x: img-flow.x0 + mod(i, img-flow.cols) * 90px;
+                        x: 14px + mod(i, img-flow.cols) * 90px;
                         y: floor(i / img-flow.cols) * 90px;
                         width: 84px; height: 84px;
                         border-radius: 10px;
@@ -162,15 +176,16 @@ export component SearchPage inherits Rectangle {
                 }
 
                 // Idle: links.
-                if !root.searching && root.links.length > 0 : Text {
-                    text: "Links";
-                    color: root.fg;
-                    font-family: Theme.font-ui;
-                    font-size: Theme.subtitle;
-                    font-weight: 700;
-                    x: 16px;
-                    height: 38px;
-                    vertical-alignment: center;
+                // SearchPage.qml:270: leftPadding 16, topPadding 10, natural height.
+                if !root.searching && root.links.length > 0 : VerticalLayout {
+                    padding-left: 16px; padding-top: 10px;
+                    Text {
+                        text: "Links";
+                        color: root.fg;
+                        font-family: Theme.font-ui;
+                        font-size: Theme.subtitle;
+                        font-weight: 700;
+                    }
                 }
                 for l in (root.searching ? [] : root.links) : lrow := Rectangle {
                     height: 56px;
@@ -185,6 +200,10 @@ export component SearchPage inherits Rectangle {
                         width: lrow.width - 48px;
                         alignment: center;
                         Text {
+                            // SearchPage.qml:279 elides the url in the MIDDLE;
+                            // Slint only elides the end, so the bridge pre-
+                            // truncates `body` (project.rs collect_search:
+                            // 30 + … + 19 past 52 chars); link-url is the full url.
                             text: l.body;   // the url
                             color: root.fg;
                             font-family: Theme.font-ui;

@@ -1,7 +1,9 @@
 // Conversation page — ChatPage.qml: back header with call buttons, bubble
 // timeline, pill composer with the reply/edit quote inside the input surface,
 // typing indicator, pagination spinner, jump-to-latest button, header menu,
-// invite banner, and the long-press message sheet as an overlay.
+// invite banner, the long-press message sheet as an overlay, and the two
+// inline composer panels (attachment sheet, voice recorder) that take their
+// room from the timeline, not from the composer.
 //
 // Divergences (all in WIRING-chat.md): chat themes/wallpaper wait for the
 // theme store; Enter always newlines on a multi-line TextInput, so sending is
@@ -12,9 +14,12 @@ import { Icons } from "icons.slint";
 import { IconLabel, ActionButton, Avatar, SButton } from "components.slint";
 import { Spinner, TouchList } from "furniture.slint";
 import { OverflowMenu, MenuEntry } from "furniture.slint";
-import { TimelineRow, ReactionChip, ReplyRef, EmojiItem } from "model.slint";
+import { TimelineRow, ReactionChip, ReplyRef, EmojiItem, UserRow } from "model.slint";
 import { Bubble } from "bubble.slint";
 import { MessageSheet } from "sheet.slint";
+import { AttachMenu, StickerItem } from "attach.slint";
+import { VoiceRecorder } from "voicerec.slint";
+import { EmojiPicker } from "emoji.slint";
 
 export component ChatPage inherits Rectangle {
     in property <string> room-name;
@@ -41,10 +46,32 @@ export component ChatPage inherits Rectangle {
     in property <color> fg: Theme.menu-text;
     in property <color> accent: Theme.accent;
     in property <int> boot-epoch-s;
-    /// The attach drawer is open: the + becomes a cancel affordance.
-    in property <bool> attach-open: false;
+    /// The attach sheet is open under the composer: the + becomes a cancel affordance.
+    in-out property <bool> attach-open: false;
+    /// The voice recorder is open under the composer.
+    in-out property <bool> recorder-open: false;
+    /// This page is the one on screen (ChatPage.qml visibleToUser): leaving
+    /// closes the attach sheet and gates read-marking.
+    in property <bool> visible-to-user: true;
     /// Extra bottom padding while the virtual keyboard is up, from the window.
     in property <length> bottom-inset: 0px;
+
+    // The recorder's feed (VoiceRecorder.qml's own state, ticked by Rust).
+    in property <string> rec-state: "idle";      // idle | recording | ready
+    in property <float> rec-elapsed;
+    in property <float> rec-clip-duration;
+    in property <[float]> rec-levels;
+    in property <[float]> rec-clip-waveform;
+    // The attach sheet's feed.
+    in property <[StickerItem]> stickers;
+    in property <bool> stickers-loaded;
+    in property <string> sticker-dir;
+    // Composer furniture the bridge fills: the @/# autocomplete rows (label =
+    // display-name, sub = user-id) and the toast (ChatPage.qml note()); the
+    // page clears the toast itself after 2600ms.
+    in property <[UserRow]> ac-items;
+    in-out property <int> ac-index: 0;
+    in-out property <string> toast;
 
     // Composer staging (page-local, exactly like ChatPage.qml's).
     in-out property <string> reply-to;
@@ -57,6 +84,11 @@ export component ChatPage inherits Rectangle {
     in property <string> voice-staged-duration;
     in property <[float]> voice-staged-wave;
     in-out property <bool> clip-playing;
+    /// Preview progress 0..1 (QML clipFrac): bars up to it draw solid.
+    in property <float> clip-frac: 0;
+    /// How many bars the clip chip's wave has room for (QML floor(width / 5)),
+    /// so the bridge can resample the waveform to fit.
+    out property <int> clip-wave-bars: max(8, floor(clip-wave.width / 5px));
 
     callback back;
     callback send(string);
@@ -66,11 +98,15 @@ export component ChatPage inherits Rectangle {
     callback send-voice(string /*caption*/);
     callback voice-discard;
     callback voice-preview(bool /*play*/);
+    /// Tap on the staged clip's wave: play from this fraction of the clip.
+    callback clip-seek(float);
     callback composer-edited(string);
     callback start-call(bool /*video*/);
     callback join-call;
     callback nav-requested(string);   // search threads pins chattheme roomsettings
+    /// The attach sheet just opened (the toggle closed it otherwise).
     callback open-attach;
+    /// The recorder just opened.
     callback open-recorder;
     callback accept-invite;
     callback decline-invite;
@@ -95,9 +131,28 @@ export component ChatPage inherits Rectangle {
     callback vote(string, string);
     callback emoji-search(string);
     callback mark-read;
+    // The attach sheet's actions, forwarded to the window's act() channel.
+    callback pick-attach-files;
+    callback attach-location(string);   // pin | current | live
+    callback insert-emoji(string);
+    callback create-poll(string, [string], bool);
+    callback send-sticker(int);
+    callback load-stickers;
+    callback load-emoji;
+    // The recorder's.
+    callback rec-record;
+    callback rec-stop;
+    callback rec-restart;
+    callback rec-attach;
+    callback rec-cancel;
+    /// An autocomplete row was tapped.
+    callback ac-picked(int);
 
     public function scroll-to-end() {
         list.stick = true;
+        list.viewport-y = min(0px, list.height - list.viewport-height);
+    }
+    function pin-list() {
         list.viewport-y = min(0px, list.height - list.viewport-height);
     }
     /// Test hook: open the sheet for one row as a long-press would (the
@@ -154,17 +209,80 @@ export component ChatPage inherits Rectangle {
         composer-input.focus();
     }
 
+    // ---- the two composer sheets (ChatPage.qml:806-807, :1683, :1785) ----
+    // Only one is open at a time, whichever route opened it; the attach sheet
+    // resets to its grid on open; the recorder resets through open-recorder
+    // (the bridge owns its state). Leaving the page closes the attach sheet;
+    // a room change closes both (:2002, :2009).
+    public function toggle-attach() {
+        root.attach-open = !root.attach-open;
+        if (root.attach-open) { root.recorder-open = false; att.reset(); root.open-attach(); }
+    }
+    public function toggle-recorder() {
+        root.recorder-open = !root.recorder-open;
+        if (root.recorder-open) { root.attach-open = false; root.open-recorder(); }
+    }
+    changed attach-open => { if (self.attach-open) { self.recorder-open = false; } }
+    changed recorder-open => { if (self.recorder-open) { self.attach-open = false; } }
+    changed visible-to-user => {
+        if (!self.visible-to-user) { self.attach-open = false; }
+        else { root.maybe-mark-read(); }
+    }
+    changed room-name => { self.attach-open = false; self.recorder-open = false; }
+    changed is-thread => { self.attach-open = false; self.recorder-open = false; }
+
+    // Read-marking: 800ms after settling at the bottom, only while on screen
+    // (ChatPage.qml:1985-1986 readTimer/maybeMarkRead).
+    read-timer := Timer {
+        interval: 800ms;
+        running: false;
+        triggered => { self.running = false; root.mark-read(); }
+    }
+    function maybe-mark-read() {
+        if (root.visible-to-user && root.from-end < 4px) {
+            read-timer.running = true;
+            read-timer.restart();
+        }
+    }
+
+    // The toast clears itself 2600ms after it was set (ChatPage.qml:839).
+    toast-timer := Timer {
+        interval: 2600ms;
+        running: false;
+        triggered => { self.running = false; root.toast = ""; }
+    }
+    changed toast => { if (self.toast != "") { toast-timer.running = true; toast-timer.restart(); } }
+
     property <bool> menu-open: false;
     property <bool> quote-armed: root.reply-to != "" || root.edit-of != "" || root.caption-of != "";
-    /// A chat theme accent is set for this room (the mix below is gated on it).
+    /// A chat theme accent is set for this room (the mixes below are gated on it).
     in property <bool> themed: false;
     // ChatPage.qml convoC: menu.background ÷1.35, then 18% accent ONLY when themed.
     property <color> convo-c: root.themed
         ? Theme.menu-background.darker(0.35).mix(root.accent, 0.82)
         : Theme.menu-background.darker(0.35);
+    // surfaceC: ONE literal surface for themed chrome (mix of lighter(menu, 1.35)
+    // and the accent at 0.35); chromeC is the header band (ChatPage.qml:47-49).
+    property <color> surface-c: root.themed
+        ? Theme.menu-background.brighter(0.35).mix(root.accent, 0.65)
+        : Theme.popup-background;
+    property <color> chrome-c: root.themed ? root.surface-c : Theme.menu-background.brighter(0.35);
+    // themedSend: the send disc, the recorder's accent (ChatPage.qml:45).
+    property <color> send-c: root.themed ? root.accent.darker(0.15) : root.accent.with-alpha(0.9);
+    // chipC / deepChipC (:51-59): the attach sheet's and recorder's control fill.
+    property <color> chip-c: root.themed
+        ? root.convo-c.with-alpha(0.92)
+        : Theme.menu-background.darker(1.1).with-alpha(0.96);
     // A staged voice clip outranks the quote for the extra band (QML: 60 vs 52).
-    property <length> composer-h: root.is-invite ? 0px
-        : 56px + (root.voice-staged ? 60px : root.quote-armed ? 52px : 0px) + root.bottom-inset;
+    property <length> quote-h: root.voice-staged ? 60px : root.quote-armed ? 52px : 0px;
+    // inputPill.height (ChatPage.qml:1384): the text's own height between 38
+    // and 110 (the QML TextArea's 3px paddings included), plus the quote band.
+    property <length> well-h: min(110px, max(38px, composer-input.preferred-height + 6px)) + root.quote-h;
+    // composerBox = pill + 18 (:1222): 8 above, 10 below.
+    property <length> composer-h: root.is-invite ? 0px : root.well-h + 18px + root.bottom-inset;
+    /// Where the composer stack starts, measured from the page bottom: the
+    /// composer plus whichever inline panel is open (:1869-1884).
+    property <length> panel-top: root.height - root.composer-h - att-frame.height - rec-frame.height;
     out property <length> from-end: max(0px, (list.viewport-height - list.height) + list.viewport-y);
     /// The timeline's width, so Rust can wrap effect text to the bubble.
     out property <length> timeline-w: list.width;
@@ -174,140 +292,174 @@ export component ChatPage inherits Rectangle {
         list.viewport-y = min(0px, (list.height - list.viewport-height) + d);
     }
 
+    // Jump-to-latest eases toward the *current* end, re-evaluated every tick
+    // (the list grows as rows inflate): ~88% of the gap closed every 0.25s
+    // (ChatPage.qml:1853-1866), i.e. 13.7% per 16ms tick.
+    property <bool> jumping: false;
+    jump-tick := Timer {
+        interval: 16ms;
+        running: root.jumping;
+        triggered => {
+            if (!root.jumping) { return; }
+            if (abs((min(0px, list.height - list.viewport-height) - list.viewport-y) / 1px) < 0.5) {
+                root.jumping = false;
+                root.scroll-to-end();
+                return;
+            }
+            list.viewport-y += (min(0px, list.height - list.viewport-height) - list.viewport-y) * 0.137;
+        }
+    }
+    public function jump-to-latest() { root.jumping = true; }
+
     background: Theme.menu-background;
 
     VerticalLayout {
-        // Header
+        // Header (ChatPage.qml:993-1049): 22px PanelActionButtons; back at 6,
+        // avatar 4 after it, title 10 after that and 4 before the trailing
+        // buttons, which sit at spacing 0 with an 8px right margin.
         header := Rectangle {
             height: 52px;
+            // The themed chrome band with 22px top radii (:986-992).
+            if root.themed : Rectangle {
+                width: 100%; height: 100%;
+                border-top-left-radius: 22px; border-top-right-radius: 22px;
+                background: root.chrome-c;
+            }
             HorizontalLayout {
                 padding-left: 6px; padding-right: 8px;
-                spacing: 4px;
+                spacing: 0;
                 Rectangle {
-                    width: 40px;
+                    width: 22px;
                     ActionButton {
-                        y: (header.height - self.height) / 2;
-                        width: 40px; height: 40px;
+                        x: 0; y: (52px - 22px) / 2;
+                        width: 22px; height: 22px;
                         icon: Icons.back;
                         foreground: root.fg;
                         clicked => { root.back(); }
                     }
+                    // The tap surface spans the header height for fingers.
+                    TouchArea { clicked => { root.back(); } }
                 }
+                Rectangle { width: 4px; }
                 Rectangle {
                     width: 32px;
                     Avatar {
+                        x: 0; y: (52px - 32px) / 2;
                         size: 32px;
                         source: root.room-avatar;
                         initials: root.room-initials;
                         tint: root.room-tint;
+                        status-backdrop: root.chrome-c;
                     }
                 }
+                Rectangle { width: 10px; }
                 VerticalLayout {
                     alignment: center;
                     horizontal-stretch: 1;
-                    padding-left: 6px;   // 10px avatar↔title gap with the 4px spacing
-                    HorizontalLayout {
-                        alignment: start;
-                        spacing: 5px;
-                        Text {
-                            text: root.is-thread ? "Thread" : root.room-name;
-                            color: root.fg;
-                            font-family: Theme.font-ui; font-size: Theme.subtitle; font-weight: 700;
-                            overflow: elide;
-                        }
-                        if root.room-encrypted : IconLabel {
-                            text: Icons.lock;
-                            font-size: Theme.caption;
-                            color: root.fg.with-alpha(0.35);
-                            vertical-alignment: center;
-                        }
+                    Text {
+                        text: root.is-thread ? "Thread" : root.room-name;
+                        color: root.fg;
+                        font-family: Theme.font-ui; font-size: Theme.subtitle; font-weight: 700;
+                        overflow: elide;
                     }
                     if root.room-subtitle != "" || root.typing-line != "" : Text {
                         text: root.typing-line != "" ? root.typing-line
                             : root.is-thread ? root.room-name : root.room-subtitle;
-                        color: root.typing-line != "" ? root.accent : root.fg.with-alpha(0.5);
+                        // The typing line takes the GLOBAL accent (:1013), not the room's.
+                        color: root.typing-line != "" ? Theme.accent : root.fg.with-alpha(0.5);
                         font-family: Theme.font-ui; font-size: Theme.caption;
                         overflow: elide;
                     }
                 }
+                Rectangle { width: 4px; }
                 // A live call in this room replaces the start-a-call buttons.
-                if root.call-here && !root.is-thread : join-chip := Rectangle {
-                    y: (header.height - 28px) / 2;
+                if root.call-here && !root.is-thread : Rectangle {
+                    // A cell: the layout owns its children's y, so the chip
+                    // centres itself inside this instead.
                     width: join-row.preferred-width + 22px;
-                    height: 28px; border-radius: 14px;
-                    background: root.accent.with-alpha(0.9);
-                    join-row := HorizontalLayout {
-                        alignment: center;
-                        spacing: 5px;
-                        IconLabel { text: Icons.phone; color: #141414; font-size: Theme.caption; vertical-alignment: center; }
-                        Text { text: "Join"; color: #141414; font-family: Theme.font-ui; font-size: Theme.caption; font-weight: 700; vertical-alignment: center; }
+                    join-chip := Rectangle {
+                        x: 0; y: (52px - 28px) / 2;
+                        width: join-row.preferred-width + 22px;
+                        height: 28px; border-radius: 14px;
+                        background: root.accent.with-alpha(0.9);
+                        join-row := HorizontalLayout {
+                            alignment: center;
+                            spacing: 5px;
+                            IconLabel { text: Icons.phone; color: #141414; font-size: Theme.caption; vertical-alignment: center; }
+                            Text { text: "Join"; color: #141414; font-family: Theme.font-ui; font-size: Theme.caption; font-weight: 700; vertical-alignment: center; }
+                        }
+                        TouchArea { clicked => { root.join-call(); } }
                     }
-                    TouchArea { clicked => { root.join-call(); } }
                 }
-                if !root.call-here && !root.is-thread && !root.is-invite : ActionButton {
-                    y: (header.height - self.height) / 2;
-                    icon: Icons.phone;
-                    foreground: root.fg;
-                    opacity: root.in-call ? 0.4 : 1;
-                    clicked => { if (!root.in-call) { root.start-call(false); } }
+                if !root.call-here && !root.is-thread && !root.is-invite : Rectangle {
+                    width: 22px;
+                    ActionButton {
+                        x: 0; y: (52px - 22px) / 2;
+                        width: 22px; height: 22px;
+                        icon: Icons.phone;
+                        foreground: root.fg;
+                        opacity: root.in-call ? 0.4 : 1;
+                    }
+                    TouchArea { clicked => { if (!root.in-call) { root.start-call(false); } } }
                 }
-                if !root.call-here && !root.is-thread && !root.is-invite : ActionButton {
-                    y: (header.height - self.height) / 2;
-                    icon: Icons.videoOn;
-                    foreground: root.fg;
-                    opacity: root.in-call ? 0.4 : 1;
-                    clicked => { if (!root.in-call) { root.start-call(true); } }
+                if !root.call-here && !root.is-thread && !root.is-invite : Rectangle {
+                    width: 22px;
+                    ActionButton {
+                        x: 0; y: (52px - 22px) / 2;
+                        width: 22px; height: 22px;
+                        icon: Icons.videoOn;
+                        foreground: root.fg;
+                        opacity: root.in-call ? 0.4 : 1;
+                    }
+                    TouchArea { clicked => { if (!root.in-call) { root.start-call(true); } } }
                 }
-                if !root.is-thread : ActionButton {
-                    y: (header.height - self.height) / 2;
-                    icon: Icons.moreVertical;
-                    foreground: root.fg;
-                    clicked => { root.menu-open = true; }
+                if !root.is-thread : Rectangle {
+                    width: 22px;
+                    ActionButton {
+                        x: 0; y: (52px - 22px) / 2;
+                        width: 22px; height: 22px;
+                        icon: Icons.moreVertical;
+                        foreground: root.fg;
+                    }
+                    TouchArea { clicked => { root.menu-open = true; } }
                 }
             }
         }
 
-        // Invite banner
+        // Invite banner (:1061-1062): "Accept invite" bordered, "Decline" a
+        // bare urgent label; centred at spacing 10 in a 52px accent@0.1 band.
         if root.is-invite : invite-bar := Rectangle {
             height: 52px;
-            background: root.accent.with-alpha(0.1);
+            background: Theme.accent.with-alpha(0.1);
             HorizontalLayout {
                 alignment: center;
                 spacing: 10px;
-                padding-top: 8px; padding-bottom: 8px;
-                SButton { text: "Accept"; clicked => { root.accept-invite(); } }
-                SButton { text: "Decline"; foreground: Theme.urgent; clicked => { root.decline-invite(); } }
+                padding-top: 8px; padding-bottom: 8px;   // 36px buttons centred in 52
+                SButton { text: "Accept invite"; foreground: root.fg; bordered: true; clicked => { root.accept-invite(); } }
+                SButton { text: "Decline"; foreground: Theme.urgent; bordered: false; clicked => { root.decline-invite(); } }
             }
         }
 
-        // Conversation ground: rounded top corners revealing the header tone.
+        // Conversation ground: rounded top corners revealing the header tone,
+        // 22px bottom corners unconditionally (:923).
         convo := Rectangle {
             vertical-stretch: 1;
             background: root.convo-c.with-alpha(0.94);
             border-top-left-radius: 24px;
             border-top-right-radius: 24px;
+            border-bottom-left-radius: 22px;
+            border-bottom-right-radius: 22px;
             clip: true;
 
             // 46px highlight across the rounded top (ChatPage.qml:966).
             top-sheen := Rectangle {
-                y: 0; width: 100%; height: 46px;
+                x: 0; y: 0; width: 100%; height: 46px;
                 background: @linear-gradient(180deg,
                     Theme.menu-background.brighter(0.35).with-alpha(0.3) 0%,
                     transparent 100%);
             }
 
             VerticalLayout {
-                // Pagination spinner rides the top of the list.
-                if root.pagination-state == "paginating" : Rectangle {
-                    height: 34px;
-                    Spinner {
-                        x: (convo.width - self.width) / 2;
-                        y: (34px - self.height) / 2;
-                        spin-color: root.fg.with-alpha(0.5);
-                        size: Theme.body;
-                    }
-                }
-
                 list := TouchList {
                     vertical-stretch: 1;
                     // BottomToTop: short conversations hang from the composer.
@@ -316,9 +468,12 @@ export component ChatPage inherits Rectangle {
                     // while the user is at the bottom, stay at the bottom.
                     property <bool> stick: true;
                     changed viewport-height => {
-                        if (self.stick) {
-                            self.viewport-y = min(0px, self.height - self.viewport-height);
-                        }
+                        if (self.stick) { root.pin-list(); }
+                    }
+                    // The panels below take their room from the list: keep
+                    // the bottom pinned as it shrinks or grows.
+                    changed height => {
+                        if (self.stick) { root.pin-list(); }
                     }
                     // Fetch older history a screen and a half early (maybePaginate).
                     changed viewport-y => {
@@ -328,10 +483,19 @@ export component ChatPage inherits Rectangle {
                             && self.viewport-height > self.height) {
                             root.paginate();
                         }
-                        if (root.from-end < 4px) { root.mark-read(); }
+                        if (root.from-end < 4px) { root.maybe-mark-read(); }
                     }
-                    // ListView header/footer: 8px breathing room at both ends.
-                    Rectangle { height: 8px; }
+                    // ListView footer (the oldest end): 8px of breathing room,
+                    // or the 34px pagination spinner in its place (:1198-1201).
+                    footer := Rectangle {
+                        height: root.pagination-state == "paginating" ? 34px : 8px;
+                        if root.pagination-state == "paginating" : Spinner {
+                            x: (footer.width - self.width) / 2;
+                            y: (34px - self.height) / 2;
+                            spin-color: root.fg.with-alpha(0.5);
+                            size: Theme.body;
+                        }
+                    }
                     for item in root.items : Bubble {
                         item: item;
                         boot-epoch-s: root.boot-epoch-s;
@@ -364,261 +528,534 @@ export component ChatPage inherits Rectangle {
                     Rectangle { height: 8px; }
                 }
 
-                // Typing indicator: avatar then three dots bouncing in sequence.
-                if root.typing-line != "" : typing-row := Rectangle {
-                    height: 38px;
-                    HorizontalLayout {
-                        alignment: start;
-                        padding-left: 14px;
-                        spacing: 7px;
-                        Avatar {
-                            y: (38px - 22px) / 2;
-                            size: 22px;
-                            source: root.typing-avatar;
-                            initials: root.typing-initials;
-                            tint: root.typing-tint;
+                // Typing indicator (TypingIndicator.qml): folds 0↔38 over 180ms
+                // OutCubic while fading over 160ms; always instantiated so the
+                // fold can play. The last typer stays for the fade-out.
+                typing-row := Rectangle {
+                    property <bool> active: root.typing-line != "";
+                    height: self.active ? 38px : 0px;
+                    animate height { duration: 180ms; easing: cubic-bezier(0.33, 1, 0.68, 1); }
+                    opacity: self.active ? 1 : 0;
+                    animate opacity { duration: 160ms; }
+                    clip: true;
+                    changed height => { if (list.stick) { root.pin-list(); } }
+                    property <image> shown-avatar;
+                    property <string> shown-initials;
+                    property <color> shown-tint: Theme.accent;
+                    function remember() {
+                        if (root.typing-line != "") {
+                            self.shown-avatar = root.typing-avatar;
+                            self.shown-initials = root.typing-initials;
+                            self.shown-tint = root.typing-tint;
                         }
+                    }
+                    changed active => { self.remember(); }
+                    init => { self.remember(); }
+                    typing-body := Rectangle {
+                        x: 0; y: (typing-row.height - 38px) / 2;
+                        width: 100%; height: 38px;
                         HorizontalLayout {
-                            spacing: 5px;
-                            for di in [0, 1, 2] : dot := Rectangle {
-                                property <duration> cycle: 840ms;
-                                property <float> t: ((animation-tick() + di * 140ms) / self.cycle).mod(1.0);
-                                width: 6px; height: 6px; border-radius: 3px;
-                                background: root.fg.with-alpha(0.55);
-                                y: 19px - 3px - (self.t < 0.26 ? 4px * (self.t / 0.26)
-                                    : self.t < 0.57 ? 4px * (1 - (self.t - 0.26) / 0.31) : 0px);
+                            alignment: start;
+                            padding-left: 14px;
+                            spacing: 7px;
+                            Rectangle {
+                                width: 22px;
+                                Avatar {
+                                    x: 0; y: (38px - 22px) / 2;
+                                    size: 22px;
+                                    source: typing-row.shown-avatar;
+                                    initials: typing-row.shown-initials;
+                                    tint: typing-row.shown-tint;
+                                }
+                            }
+                            // The dots' 30px container is dots.width + 6 (:42):
+                            // 3px each side, so avatar→first dot is 10px.
+                            Rectangle {
+                                width: 3 * 6px + 2 * 5px + 6px;
+                                dots := Rectangle {
+                                    x: 0; y: (38px - 30px) / 2;
+                                    width: 100%; height: 30px;
+                                    HorizontalLayout {
+                                        padding-left: 3px; padding-right: 3px;
+                                        spacing: 5px;
+                                        // 900ms cycle: pause i×140, 220 up (OutQuad),
+                                        // 260 down (InQuad), rest (TypingIndicator.qml:58-65).
+                                        for di in [0, 1, 2] : Rectangle {
+                                            width: 6px;
+                                            dot := Rectangle {
+                                                property <float> t: (animation-tick() / 900ms + 3.0 - di * 0.15556).mod(1.0);
+                                                property <float> lift: self.t < 0.2444
+                                                    ? 1 - (1 - self.t / 0.2444) * (1 - self.t / 0.2444)
+                                                    : self.t < 0.5333
+                                                        ? 1 - ((self.t - 0.2444) / 0.2889) * ((self.t - 0.2444) / 0.2889)
+                                                        : 0;
+                                                x: 0; y: (30px - 6px) / 2 - 4px * self.lift;
+                                                width: 6px; height: 6px; border-radius: 3px;
+                                                background: root.fg.with-alpha(0.55);
+                                            }
+                                        }
+                                    }
+                                }
                             }
                         }
                     }
                 }
 
                 // Composer — its own tinted band over the convo ground, hidden
-                // entirely on an invite (ChatPage.qml:1223).
+                // entirely on an invite (ChatPage.qml:1223). Row margins 10
+                // left/right, 10 below, 8 above (:1366-1370).
                 composer := Rectangle {
                     height: root.composer-h;
                     visible: !root.is-invite;
                     background: root.convo-c.with-alpha(0.55);
-                    border-bottom-left-radius: 22px;
-                    border-bottom-right-radius: 22px;
-                    HorizontalLayout {
-                        padding-left: 12px; padding-right: 12px;
-                        padding-top: 9px; padding-bottom: 9px + root.bottom-inset;
-                        spacing: 8px;
-                        // inputPill: fill only, no focus border, radius 19.
-                        well := Rectangle {
-                            horizontal-stretch: 1;
-                            border-radius: 19px;
-                            background: root.fg.with-alpha(0.07);
-                            VerticalLayout {
-                                // Reply/edit quote lives INSIDE the input surface: a
-                                // 52px block whose card is inset 5px, close button
-                                // inside the card at the right (ChatPage.qml:1630).
-                                // Voice clip chip: a light card inset in the pill.
-                                if root.voice-staged : clip-chip-band := Rectangle {
-                                    height: 60px;
-                                    clip-chip := Rectangle {
-                                        x: 6px; y: 6px;
-                                        width: clip-chip-band.width - 12px;
-                                        height: 48px;
-                                        border-radius: 14px;
-                                        property <color> ink: #17181a;
-                                        background: root.accent.brighter(0.35);
-                                        clip-play := Rectangle {
-                                            x: 7px; y: (48px - 32px) / 2;
-                                            width: 32px; height: 32px; border-radius: 16px;
-                                            background: #ffffff.with-alpha(0.9);
-                                            IconLabel {
-                                                text: root.clip-playing ? Icons.pause : Icons.play;
-                                                color: #1a1a1a;
-                                                width: 100%; height: 100%;
+                    // inputPill: fill only, no focus border, radius 19; parent
+                    // minus the send disc and the 8px spacing.
+                    well := Rectangle {
+                        x: 10px; y: 8px;
+                        width: composer.width - 20px - 38px - 8px;
+                        height: root.well-h;
+                        border-radius: 19px;
+                        background: root.themed ? root.surface-c : root.fg.with-alpha(0.07);
+
+                        // Voice clip chip: a light card inset in the pill. Always
+                        // instantiated (visibility-gated) so the wave's width is
+                        // readable for clip-wave-bars.
+                        clip-chip-band := Rectangle {
+                            visible: root.voice-staged;
+                            x: 0; y: 0;
+                            width: well.width; height: 60px;
+                            clip-chip := Rectangle {
+                                x: 6px; y: 6px;
+                                width: clip-chip-band.width - 12px;
+                                height: 48px;
+                                border-radius: 14px;
+                                property <color> ink: #17181a;
+                                background: root.accent.brighter(0.35);
+                                clip-play := Rectangle {
+                                    x: 7px; y: (48px - 32px) / 2;
+                                    width: 32px; height: 32px; border-radius: 16px;
+                                    background: #ffffff.with-alpha(0.9);
+                                    IconLabel {
+                                        text: root.clip-playing ? Icons.pause : Icons.play;
+                                        filled: false;
+                                        color: #1a1a1a;
+                                        width: 100%; height: 100%;
+                                    }
+                                    TouchArea { clicked => {
+                                        root.clip-playing = !root.clip-playing;
+                                        root.voice-preview(root.clip-playing);
+                                    } }
+                                }
+                                clip-wave := Rectangle {
+                                    x: 49px; y: (48px - 26px) / 2;
+                                    width: clip-dur.x - self.x - 8px;
+                                    height: 26px;
+                                    clip: true;
+                                    HorizontalLayout {
+                                        alignment: start;
+                                        spacing: 2px;
+                                        for amp[i] in root.voice-staged-wave : Rectangle {
+                                            width: 3px;
+                                            Rectangle {
+                                                x: 0; y: (26px - self.height) / 2;
+                                                width: 3px;
+                                                height: max(4px, round(22 * min(1.0, amp)) * 1px);
+                                                border-radius: 1.5px;
+                                                // Played bars are solid, the rest 0.4 (:1594-1595).
+                                                background: (i * 1.0) / max(1, root.voice-staged-wave.length) <= root.clip-frac
+                                                    ? clip-chip.ink.with-alpha(0.95) : clip-chip.ink.with-alpha(0.4);
                                             }
-                                            TouchArea { clicked => {
-                                                root.clip-playing = !root.clip-playing;
-                                                root.voice-preview(root.clip-playing);
-                                            } }
                                         }
-                                        clip-wave := Rectangle {
-                                            x: 49px; y: (48px - 26px) / 2;
-                                            width: clip-dur.x - self.x - 8px;
-                                            height: 26px;
-                                            clip: true;
-                                            HorizontalLayout {
-                                                alignment: start;
-                                                spacing: 2px;
-                                                for amp in root.voice-staged-wave : Rectangle {
-                                                    y: (26px - self.height) / 2;
-                                                    width: 3px;
-                                                    height: max(4px, 22px * min(1.0, amp));
-                                                    border-radius: 1.5px;
-                                                    background: clip-chip.ink.with-alpha(0.4);
-                                                }
-                                            }
-                                        }
-                                        clip-dur := Text {
-                                            x: clip-close.x - self.preferred-width - 8px;
-                                            height: 100%;
-                                            text: root.voice-staged-duration;
-                                            color: clip-chip.ink.with-alpha(0.85);
-                                            font-family: Theme.font-ui; font-size: Theme.caption;
-                                            vertical-alignment: center;
-                                        }
-                                        clip-close := Rectangle {
-                                            x: clip-chip.width - 26px - 8px;
-                                            y: (48px - 26px) / 2;
-                                            width: 26px; height: 26px; border-radius: 13px;
-                                            background: clip-chip.ink.with-alpha(0.12);
-                                            IconLabel {
-                                                text: Icons.close; color: clip-chip.ink;
-                                                font-size: Theme.body-small;
-                                                width: 100%; height: 100%;
-                                            }
-                                            TouchArea { clicked => {
-                                                root.clip-playing = false;
-                                                root.voice-staged = false;
-                                                root.voice-discard();
-                                            } }
-                                        }
+                                    }
+                                    // A tap seeks by x fraction and plays from there (:1600-1610).
+                                    wave-t := TouchArea { clicked => {
+                                        root.clip-playing = true;
+                                        root.clip-seek(max(0.0, min(1.0, self.mouse-x / clip-wave.width)));
+                                    } }
+                                }
+                                clip-dur := Text {
+                                    x: clip-close.x - self.preferred-width - 8px;
+                                    height: 100%;
+                                    text: root.voice-staged-duration;
+                                    color: clip-chip.ink.with-alpha(0.85);
+                                    font-family: Theme.font-ui; font-size: Theme.caption;
+                                    vertical-alignment: center;
+                                }
+                                clip-close := Rectangle {
+                                    x: clip-chip.width - 26px - 8px;
+                                    y: (48px - 26px) / 2;
+                                    width: 26px; height: 26px; border-radius: 13px;
+                                    background: clip-chip.ink.with-alpha(0.12);
+                                    IconLabel {
+                                        text: Icons.close; filled: false; color: clip-chip.ink;
+                                        font-size: Theme.body-small;
+                                        width: 100%; height: 100%;
+                                    }
+                                    TouchArea { clicked => {
+                                        root.clip-playing = false;
+                                        root.voice-staged = false;
+                                        root.voice-discard();
+                                    } }
+                                }
+                            }
+                        }
+                        // Reply/edit quote lives INSIDE the input surface: a 52px
+                        // block whose card is inset 5px, close button inside the
+                        // card at the right (ChatPage.qml:1630).
+                        if root.quote-armed && !root.voice-staged : quote := Rectangle {
+                            x: 0; y: 0;
+                            width: well.width; height: 52px;
+                            quote-box := Rectangle {
+                                x: 5px; y: 5px;
+                                width: quote.width - 10px;
+                                height: 43px;
+                                border-radius: 15px;
+                                background: root.convo-c.with-alpha(0.92);
+                                VerticalLayout {
+                                    // Text ends 6px before the 26px close at 8 (:1641,:1649).
+                                    padding-left: 12px; padding-right: 40px;
+                                    alignment: center;
+                                    spacing: 1px;
+                                    Text {
+                                        text: root.caption-of != ""
+                                            ? (root.reply-body != "" ? "Edit caption" : "Add caption")
+                                            : root.edit-of != "" ? "Edit message" : root.reply-name;
+                                        color: root.fg;
+                                        font-family: Theme.font-ui; font-size: Theme.body-small; font-weight: 700;
+                                        overflow: elide;
+                                    }
+                                    if root.reply-body != "" : Text {
+                                        text: root.reply-body;
+                                        color: root.fg.with-alpha(0.6);
+                                        font-family: Theme.font-ui; font-size: Theme.caption;
+                                        overflow: elide;
                                     }
                                 }
-                                if root.quote-armed && !root.voice-staged : quote := Rectangle {
-                                    height: 52px;
-                                    quote-box := Rectangle {
-                                        x: 5px; y: 5px;
-                                        width: quote.width - 10px;
-                                        height: 43px;
-                                        border-radius: 15px;
-                                        background: root.convo-c.with-alpha(0.92);
-                                        VerticalLayout {
-                                            padding-left: 12px; padding-right: 42px;
-                                            alignment: center;
-                                            spacing: 1px;
-                                            Text {
-                                                text: root.caption-of != ""
-                                                    ? (root.reply-body != "" ? "Edit caption" : "Add caption")
-                                                    : root.edit-of != "" ? "Edit message" : root.reply-name;
-                                                color: root.fg;
-                                                font-family: Theme.font-ui; font-size: Theme.body-small; font-weight: 700;
-                                                overflow: elide;
-                                            }
-                                            if root.reply-body != "" : Text {
-                                                text: root.reply-body;
-                                                color: root.fg.with-alpha(0.6);
-                                                font-family: Theme.font-ui; font-size: Theme.caption;
-                                                overflow: elide;
-                                            }
-                                        }
-                                        quote-close := Rectangle {
-                                            x: quote-box.width - self.width - 8px;
-                                            y: (43px - 26px) / 2;
-                                            width: 26px; height: 26px; border-radius: 13px;
-                                            background: qc-t.pressed || qc-t.has-hover ? root.fg.with-alpha(0.12) : transparent;
-                                            IconLabel {
-                                                text: Icons.close; color: root.fg;
-                                                font-size: Theme.body-small;
-                                                width: 100%; height: 100%;
-                                            }
-                                            qc-t := TouchArea {
-                                                clicked => {
-                                                    root.reply-to = ""; root.edit-of = ""; root.caption-of = "";
-                                                    root.reply-name = ""; root.reply-body = "";
-                                                    composer-input.text = "";
-                                                }
-                                            }
-                                        }
+                                quote-close := Rectangle {
+                                    x: quote-box.width - self.width - 8px;
+                                    y: (43px - 26px) / 2;
+                                    width: 26px; height: 26px; border-radius: 13px;
+                                    background: qc-t.has-hover ? root.fg.with-alpha(0.12) : transparent;
+                                    IconLabel {
+                                        text: Icons.close; filled: false; color: root.fg;
+                                        font-size: Theme.body-small;
+                                        width: 100%; height: 100%;
                                     }
-                                }
-                                HorizontalLayout {
-                                    padding-left: 6px; padding-right: 12px;
-                                    spacing: 2px;
-                                    // The attach toggle becomes the cancel affordance
-                                    // while the sheet is open: glyph swap + 90° turn.
-                                    attach-btn := Rectangle {
-                                        width: 34px;
-                                        IconLabel {
-                                            text: root.attach-open ? Icons.cancel : Icons.plusCircle;
-                                            filled: root.attach-open;
-                                            transform-rotation: root.attach-open ? 90deg : 0deg;
-                                            animate transform-rotation { duration: 180ms; easing: ease-in-out; }
-                                            color: at-t.pressed || at-t.has-hover ? #c6c6c6 : #c6c6c6.with-alpha(0.85);
-                                            font-size: Theme.icon-large;
-                                            width: 100%; height: 100%;
-                                        }
-                                        at-t := TouchArea { clicked => { root.open-attach(); } }
-                                    }
-                                    Rectangle {
-                                        clip: true;
-                                        horizontal-stretch: 1;
-                                        composer-input := TextInput {
-                                            color: root.fg;
-                                            font-family: Theme.font-ui; font-size: Theme.body;
-                                            vertical-alignment: center;
-                                            height: 100%; width: 100%;
-                                            single-line: false;
-                                            wrap: word-wrap;
-                                            edited => { root.composer-edited(self.text); }
-                                            key-pressed(event) => {
-                                                if (event.text == Key.Return && !event.modifiers.shift) {
-                                                    root.submit();
-                                                    return accept;
-                                                }
-                                                reject
-                                            }
-                                        }
-                                        if composer-input.text == "" : Text {
-                                            text: root.voice-staged ? "Add text" : "Message";
-                                            color: root.fg.with-alpha(0.45);
-                                            font-family: Theme.font-ui; font-size: Theme.body;
-                                            vertical-alignment: center;
-                                            height: 100%;
+                                    qc-t := TouchArea {
+                                        clicked => {
+                                            root.reply-to = ""; root.edit-of = ""; root.caption-of = "";
+                                            root.reply-name = ""; root.reply-body = "";
+                                            composer-input.text = "";
                                         }
                                     }
                                 }
                             }
                         }
-                        // Empty composer → voice button; otherwise send. 38×38 r19.
-                        send-btn := Rectangle {
-                            property <bool> send-mode: composer-input.text != "" || root.voice-staged;
-                            y: composer.height - self.height - 9px - root.bottom-inset;
-                            width: 38px; height: 38px; border-radius: 19px;
-                            background: root.accent.with-alpha(send-t.pressed ? 1.0 : 0.9);
+                        // The attach toggle: 30×30 at the pill's left 6, 4 above
+                        // its bottom (:1656-1661); the cancel affordance while the
+                        // sheet is open — glyph swap + 90° turn, colour on hover/on.
+                        attach-btn := Rectangle {
+                            x: 6px; y: well.height - 30px - 4px;
+                            width: 30px; height: 30px;
                             IconLabel {
-                                text: send-btn.send-mode ? Icons.send : Icons.voiceMemo;
-                                color: Theme.background;
+                                x: 0; y: 0; width: 30px; height: 30px;
+                                text: root.attach-open ? Icons.cancel : Icons.plusCircle;
+                                filled: root.attach-open;
+                                transform-origin: { x: 15px, y: 15px };
+                                transform-rotation: root.attach-open ? 90deg : 0deg;
+                                animate transform-rotation { duration: 180ms; easing: cubic-bezier(0.33, 1, 0.68, 1); }
+                                color: at-t.has-hover || root.attach-open ? #c6c6c6 : #c6c6c6.with-alpha(0.85);
+                                animate color { duration: 140ms; }
                                 font-size: Theme.icon-large;
-                                width: 100%; height: 100%;
                             }
-                            send-t := TouchArea {
-                                clicked => {
-                                    if (!send-btn.send-mode) { root.open-recorder(); return; }
-                                    root.submit();
+                            at-t := TouchArea { clicked => { root.toggle-attach(); } }
+                        }
+                        // The text: left inset 38 (6 + 30 + 2), right 10 (:1690-1691),
+                        // below the quote band; grows with the text and scrolls
+                        // past the 110px cap (:1688-1694).
+                        input-box := Rectangle {
+                            x: 38px; y: root.quote-h;
+                            width: well.width - 48px;
+                            height: well.height - root.quote-h;
+                            clip: true;
+                            input-flick := Flickable {
+                                x: 0; y: 0;
+                                width: input-box.width; height: input-box.height;
+                                viewport-width: self.width;
+                                viewport-height: max(self.height, composer-input.preferred-height + 6px);
+                                // Shrinking text must not leave the view past its end.
+                                changed viewport-height => {
+                                    self.viewport-y = max(min(0px, self.height - self.viewport-height), min(0px, self.viewport-y));
+                                }
+                                composer-input := TextInput {
+                                    x: 0; y: 3px;
+                                    width: input-flick.width;
+                                    height: input-flick.viewport-height - 6px;
+                                    color: root.fg;
+                                    font-family: Theme.font-ui; font-size: Theme.body;
+                                    vertical-alignment: center;
+                                    single-line: false;
+                                    wrap: word-wrap;
+                                    edited => { root.composer-edited(self.text); }
+                                    // Keep the caret in view once the text scrolls.
+                                    cursor-position-changed(p) => {
+                                        if (p.y + 3px + 18px > -input-flick.viewport-y + input-flick.height) {
+                                            input-flick.viewport-y = -(p.y + 3px + 18px - input-flick.height);
+                                        } else if (p.y + 3px < -input-flick.viewport-y) {
+                                            input-flick.viewport-y = -(p.y + 3px);
+                                        }
+                                    }
+                                    key-pressed(event) => {
+                                        if (event.text == Key.Return && !event.modifiers.shift) {
+                                            root.submit();
+                                            return accept;
+                                        }
+                                        reject
+                                    }
                                 }
                             }
+                            if composer-input.text == "" : Text {
+                                x: 0; y: 0;
+                                height: input-box.height;
+                                text: root.voice-staged ? "Add text" : "Message";
+                                color: root.fg.with-alpha(0.45);
+                                font-family: Theme.font-ui; font-size: Theme.body;
+                                vertical-alignment: center;
+                            }
                         }
+                    }
+                    // Empty composer → voice button; otherwise send. 38×38 r19,
+                    // 10 above the band's bottom (:1752). The two glyphs cross-
+                    // fade (130ms) while scaling 0.55→1 with an OutBack overshoot
+                    // (180ms); send also turns in from -35° (:1757-1780).
+                    send-btn := Rectangle {
+                        property <bool> send-mode: composer-input.text != "" || root.voice-staged;
+                        x: composer.width - 10px - 38px;
+                        y: composer.height - 38px - 10px - root.bottom-inset;
+                        width: 38px; height: 38px; border-radius: 19px;
+                        background: root.send-c;
+                        animate background { duration: 120ms; }
+                        send-glyph := IconLabel {
+                            x: 0; y: 0; width: 38px; height: 38px;
+                            text: Icons.send;
+                            color: Theme.background;
+                            font-size: Theme.icon-large;
+                            opacity: send-btn.send-mode ? 1 : 0;
+                            animate opacity { duration: 130ms; }
+                            visible: send-btn.send-mode || self.opacity > 0.01;
+                            transform-origin: { x: 19px, y: 19px };
+                            // Qt OutBack overshoot 2.0 ≈ Slint's ease-out-back (1.56).
+                            transform-scale-x: send-btn.send-mode ? 1 : 0.55;
+                            transform-scale-y: send-btn.send-mode ? 1 : 0.55;
+                            animate transform-scale-x, transform-scale-y { duration: 180ms; easing: ease-out-back; }
+                            transform-rotation: send-btn.send-mode ? 0deg : -35deg;
+                            animate transform-rotation { duration: 180ms; easing: cubic-bezier(0.33, 1, 0.68, 1); }
+                        }
+                        voice-glyph := IconLabel {
+                            x: 0; y: 0; width: 38px; height: 38px;
+                            text: Icons.voiceMemo;
+                            color: Theme.background;
+                            font-size: Theme.icon-large;
+                            opacity: send-btn.send-mode ? 0 : 1;
+                            animate opacity { duration: 130ms; }
+                            visible: !send-btn.send-mode || self.opacity > 0.01;
+                            transform-origin: { x: 19px, y: 19px };
+                            transform-scale-x: send-btn.send-mode ? 0.55 : 1;
+                            transform-scale-y: send-btn.send-mode ? 0.55 : 1;
+                            animate transform-scale-x, transform-scale-y { duration: 180ms; easing: ease-out-back; }
+                        }
+                        send-t := TouchArea {
+                            clicked => {
+                                if (!send-btn.send-mode) { root.toggle-recorder(); return; }
+                                root.submit();
+                            }
+                        }
+                    }
+                }
+
+                // The attachment sheet, inline under the composer (:1795-1820).
+                // The FRAME's height animates as a wipe (220ms OutCubic) while
+                // the sheet keeps its natural size pinned to the frame's top;
+                // the list re-pins to the bottom as the frame moves.
+                att-frame := Rectangle {
+                    height: root.is-invite ? 0px : root.attach-open ? att.height : 0px;
+                    animate height { duration: 220ms; easing: cubic-bezier(0.33, 1, 0.68, 1); }
+                    clip: true;
+                    changed height => { if (list.stick || root.attach-open) { root.pin-list(); } }
+                    att := AttachMenu {
+                        x: 0; y: 0;
+                        width: att-frame.width;
+                        fg: root.fg;
+                        // The theme accent proper, not the darker send variant.
+                        accent: root.accent;
+                        surface: root.themed ? root.surface-c : root.fg.with-alpha(0.07);
+                        chip: root.chip-c;
+                        stickers: root.stickers;
+                        stickers-loaded: root.stickers-loaded;
+                        sticker-dir: root.sticker-dir;
+                        pick-files => { root.pick-attach-files(); }
+                        open-location(mode) => { root.attach-location(mode); }
+                        insert-emoji(e) => { root.insert-emoji(e); }
+                        create-poll(q, opts, closed) => { root.create-poll(q, opts, closed); }
+                        send-sticker(i) => { root.send-sticker(i); }
+                        load-stickers => { root.load-stickers(); }
+                        load-emoji => { root.load-emoji(); }
+                        close-requested => { root.attach-open = false; }
+                        // The emoji page body: the one shared picker (AttachMenu.qml:398).
+                        EmojiPicker {
+                            width: 100%; height: 100%;
+                            fg: root.fg;
+                            accent: root.accent;
+                            chip: root.chip-c;
+                            rows: root.emoji-rows;
+                            cat-rows: root.emoji-cat-rows;
+                            picked(e) => { root.insert-emoji(e); }
+                            search-edited(q) => { root.emoji-search(q); }
+                        }
+                    }
+                }
+
+                // The voice recorder, likewise (:1822-1847).
+                rec-frame := Rectangle {
+                    height: root.is-invite ? 0px : root.recorder-open ? rec.height : 0px;
+                    animate height { duration: 220ms; easing: cubic-bezier(0.33, 1, 0.68, 1); }
+                    clip: true;
+                    changed height => { if (list.stick || root.recorder-open) { root.pin-list(); } }
+                    rec := VoiceRecorder {
+                        x: 0; y: 0;
+                        width: rec-frame.width;
+                        fg: root.fg;
+                        accent: root.send-c;
+                        surface: root.themed ? root.surface-c : root.fg.with-alpha(0.07);
+                        chip: root.chip-c;
+                        state: root.rec-state;
+                        elapsed: root.rec-elapsed;
+                        clip-duration: root.rec-clip-duration;
+                        levels: root.rec-levels;
+                        clip-waveform: root.rec-clip-waveform;
+                        record => { root.rec-record(); }
+                        stop => { root.rec-stop(); }
+                        restart => { root.rec-restart(); }
+                        attach => { root.rec-attach(); }
+                        cancelled => { root.rec-cancel(); root.recorder-open = false; }
                     }
                 }
             }
         }
     }
 
-    // Jump-to-latest: bottom-centred once the gap below exceeds ¾ of a screen.
-    if root.from-end > list.height * 0.75 : jump-btn := Rectangle {
-        x: (root.width - self.width) / 2;
-        y: root.height - self.height - root.composer-h - 18px;
+    // Jump-to-latest (:1869-1884): bottom-centred 10 above the composer stack
+    // once the gap below exceeds ¾ of a screen; springs in (220ms OutBack)
+    // while fading (140ms).
+    jump-btn := Rectangle {
+        property <bool> shown: root.items.length > 0 && root.from-end > list.height * 0.75;
+        property <float> s: self.shown ? 1.0 : 0.0;
+        // Qt OutBack overshoot 2.2 ≈ Slint's ease-out-back.
+        animate s { duration: 220ms; easing: ease-out-back; }
+        opacity: self.shown ? 1 : 0;
+        animate opacity { duration: 140ms; }
+        visible: self.shown || self.s > 0.01;
+        x: (root.width - 38px) / 2;
+        y: root.panel-top - 10px - 38px;
         width: 38px; height: 38px; border-radius: 19px;
-        background: Theme.popup-background;
+        transform-origin: { x: 19px, y: 19px };
+        transform-scale-x: self.s;
+        transform-scale-y: self.s;
+        background: root.themed ? root.surface-c : Theme.popup-background;
         IconLabel {
+            x: 0; y: 0; width: 38px; height: 38px;
             text: Icons.arrowDown;
+            filled: false;
             color: root.fg;
-            width: 100%; height: 100%;
+            font-size: Theme.icon-size;
         }
-        TouchArea { clicked => { root.scroll-to-end(); } }
+        TouchArea { clicked => { root.jump-to-latest(); } }
     }
 
-    // Header ⋮ menu
+    // The @/# autocomplete (:1252-1356): flush with the composer's top, full
+    // width, top corners 20; an opaque convo ground with two white top
+    // gradients (0.07/30px, 0.05/28px); 38px rows r11 with a 24px avatar at 8.
+    ac-popup := Rectangle {
+        visible: root.ac-items.length > 0;
+        x: 0; width: root.width;
+        height: root.ac-items.length * 38px + 12px;
+        y: root.panel-top - self.height;
+        border-top-left-radius: 20px; border-top-right-radius: 20px;
+        clip: true;
+        background: root.convo-c.with-alpha(1.0);
+        Rectangle {
+            x: 0; y: 0; width: 100%; height: 30px;
+            background: @linear-gradient(180deg, #ffffff.with-alpha(0.07) 0%, transparent 100%);
+        }
+        Rectangle {
+            x: 0; y: 0; width: 100%; height: 28px;
+            background: @linear-gradient(180deg, #ffffff.with-alpha(0.05) 0%, transparent 100%);
+        }
+        VerticalLayout {
+            padding: 6px;
+            for it[i] in root.ac-items : ac-row := Rectangle {
+                height: 38px;
+                border-radius: 11px;
+                background: i == root.ac-index ? root.fg.with-alpha(0.13) : transparent;
+                Avatar {
+                    x: 8px; y: (38px - 24px) / 2;
+                    size: 24px;
+                    source: it.avatar;
+                    initials: it.initials;
+                    tint: it.tint;
+                }
+                VerticalLayout {
+                    x: 8px + 24px + 8px;
+                    width: ac-row.width - 48px;
+                    alignment: center;
+                    Text {
+                        text: it.display-name;
+                        color: root.fg;
+                        font-family: Theme.font-ui; font-size: Theme.body-small;
+                        overflow: elide;
+                    }
+                    if it.user-id != "" && it.user-id != it.display-name : Text {
+                        text: it.user-id;
+                        color: root.fg.with-alpha(0.5);
+                        font-family: Theme.font-ui; font-size: Theme.caption;
+                        overflow: elide;
+                    }
+                }
+                TouchArea { clicked => { root.ac-picked(i); } }
+            }
+        }
+    }
+
+    // The toast pill (:1225-1249): 34 tall, rgba(0,0,0,0.82), caption #f2f2f2,
+    // 10 above the composer, fading over 180ms OutCubic.
+    toast-pill := Rectangle {
+        property <bool> shown: root.toast != "";
+        opacity: self.shown ? 1 : 0;
+        animate opacity { duration: 180ms; easing: cubic-bezier(0.33, 1, 0.68, 1); }
+        visible: self.shown || self.opacity > 0.01;
+        width: min(composer.width - 40px, toast-text.preferred-width + 28px);
+        height: 34px; border-radius: 17px;
+        x: (root.width - self.width) / 2;
+        y: root.panel-top - 10px - 34px;
+        background: #000000.with-alpha(0.82);
+        toast-text := Text {
+            x: 12px; y: 0;
+            width: parent.width - 24px; height: 100%;
+            text: root.toast;
+            color: #f2f2f2;
+            font-family: Theme.font-ui; font-size: Theme.caption;
+            horizontal-alignment: center; vertical-alignment: center;
+            overflow: elide;
+        }
+    }
+
+    // Header ⋮ menu — 170 wide at y 50 (ChatPage.qml:891-892).
     chat-menu := OverflowMenu {
         width: 100%; height: 100%;
         open <=> root.menu-open;
         top-inset: 50px;
+        card-width: 170px;
+        surface: (root.themed ? root.surface-c : Theme.popup-background).with-alpha(0.98);
         fg: root.fg;
         model: [
             { t: "Search", a: "search", icon: Icons.search, danger: false },

@@ -14,6 +14,7 @@ pub mod platform;
 pub mod project;
 pub mod qr;
 pub mod rows;
+pub mod scale;
 
 pub fn run_app() -> anyhow::Result<()> {
     // The engine's own daemon runs 16 MB stacks; matrix-sdk wants the room.
@@ -25,6 +26,7 @@ pub fn run_app() -> anyhow::Result<()> {
     let win = AppWindow::new()?;
     let icons = rows::IconSet::from_window(&win);
     bridge::start(&win, &rt, icons);
+    scale::keep(&win);
     // Android delivers the back gesture as a close request; unwind our nav
     // first and only let the OS have it from the home screen.
     #[cfg(target_os = "android")]
@@ -84,6 +86,7 @@ fn android_main(app: slint::android::AndroidApp) {
             .ok();
     }
 
+    scale::remember_android(app.clone());
     slint::android::init(app).expect("slint android init");
     run_app().expect("sigil-slint");
 }

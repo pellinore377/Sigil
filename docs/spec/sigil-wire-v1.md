@@ -134,6 +134,15 @@ travels inside the message (kind 9). The server sees only `id` and size.
 
 A server MUST NOT log which localpart was looked up.
 
+### 3.5a Recovery escrow
+
+| Op | Request | Response | Server MUST |
+|---|---|---|---|
+| 24 `escrow.put` | `username string, escrow bytes, sig` | empty | with `recovery = escrow` only (`unavailable` otherwise): verify `sig` by the name's identity key over `"sigil v1 escrow put" ‖ escrow`; store `escrow` by username, overwriting |
+| 25 `escrow.get` | `username string, gate bytes` | `escrow bytes` | with `recovery = escrow` only; apply the per-name backoff (`rate_limited`); when registration is gated by OIDC, require `gate` to be a valid ID token whose `sub` holds this localpart (`unauthorized`); return the escrow or `not_found` |
+
+`escrow` is `salt(16) ‖ AEAD(kdf("sigil v1 escrow", pw_key), recovery_key)` with the same `pw_key` derivation as the wrap (protocol spec 6). The server learns nothing from it: opening it needs the password. Card flag bit 3 announces the escrow; a client that sees it need not show the recovery code, and restores with username, password and the sign-in. A server without the OIDC gate can still offer escrow; then the backoff is the only limit on guessing and the operator accepts that.
+
 ### 3.4a Where a server answers (discovery)
 
 A server name (the `server` half of a username) is reached at

@@ -30,6 +30,8 @@ pub enum Op {
     ServerInfo = 21,
     RequestsPut = 22,
     CallSignal = 23,
+    EscrowPut = 24,
+    EscrowGet = 25,
 }
 
 impl Op {
@@ -59,6 +61,8 @@ impl Op {
             21 => ServerInfo,
             22 => RequestsPut,
             23 => CallSignal,
+            24 => EscrowPut,
+            25 => EscrowGet,
             _ => return Err(crate::Error::Malformed),
         })
     }
@@ -204,6 +208,22 @@ pub enum Request {
         address: [u8; 32],
         envelope: Vec<u8>,
         token: Vec<u8>,
+    },
+    /// Recovery escrow (wire spec 3.5a): the recovery key sealed under the
+    /// password's key, stored by name so a lost device can be replaced with
+    /// the password and the sign-in alone. `sig` is the identity key over
+    /// `"sigil v1 escrow put" ‖ escrow`.
+    EscrowPut {
+        username: String,
+        escrow: Vec<u8>,
+        sig: [u8; 64],
+    },
+    /// Fetch the escrow. `gate` is an ID token from the server's provider
+    /// when the server gates registration by OIDC (it must belong to the
+    /// login that holds the name); the per-name backoff applies.
+    EscrowGet {
+        username: String,
+        gate: Vec<u8>,
     },
     /// Call signalling to the server's forwarding unit. `room` is opaque to
     /// the server; `body` is a JSON signalling message (wire spec 3.8);
@@ -354,6 +374,19 @@ impl Request {
                 .fixed(address)
                 .bytes(envelope)
                 .bytes(token),
+            EscrowPut {
+                username,
+                escrow,
+                sig,
+            } => w
+                .u8(Op::EscrowPut as u8)
+                .str(username)
+                .bytes(escrow)
+                .fixed(sig),
+            EscrowGet { username, gate } => w
+                .u8(Op::EscrowGet as u8)
+                .str(username)
+                .bytes(gate),
             CallSignal { room, body, token } => w
                 .u8(Op::CallSignal as u8)
                 .fixed(room)
@@ -467,6 +500,15 @@ impl Request {
                 address: r.fixed()?,
                 envelope: r.bytes()?.to_vec(),
                 token: r.bytes()?.to_vec(),
+            },
+            Op::EscrowPut => EscrowPut {
+                username: r.str()?.to_string(),
+                escrow: r.bytes()?.to_vec(),
+                sig: r.fixed()?,
+            },
+            Op::EscrowGet => EscrowGet {
+                username: r.str()?.to_string(),
+                gate: r.bytes()?.to_vec(),
             },
             Op::CallSignal => CallSignal {
                 room: r.fixed()?,
@@ -586,7 +628,8 @@ impl Response {
             | Op::NameUpdate
             | Op::BackupPut
             | Op::WrapPut
-            | Op::RequestsPut => Empty,
+            | Op::RequestsPut
+            | Op::EscrowPut => Empty,
             Op::ShelfTake => ShelfTake {
                 sealed: r.bytes()?.to_vec(),
             },
@@ -596,7 +639,8 @@ impl Response {
             | Op::BackupGet
             | Op::TpmRelay
             | Op::ServerInfo
-            | Op::CallSignal => Bytes(r.bytes()?.to_vec()),
+            | Op::CallSignal
+            | Op::EscrowGet => Bytes(r.bytes()?.to_vec()),
             Op::WrapGet => WrapGet {
                 salt: r.fixed()?,
                 wrap: r.bytes()?.to_vec(),
@@ -629,7 +673,9 @@ pub struct ServerCard {
     pub kem_pub: Vec<u8>,
     /// SPKI DER of the current token issuing key.
     pub token_key: Vec<u8>,
-    /// Bit 0: TPM recovery. Bit 1: OIDC gate on registration. Bit 2: open registration.
+    /// Bit 0: TPM recovery. Bit 1: OIDC gate on registration. Bit 2: open
+    /// registration. Bit 3: recovery escrow offered (password and sign-in
+    /// bring an account back; no printed code).
     pub flags: u8,
     /// Ed25519 public key the server signs cards and receipts with.
     pub signing_pub: [u8; 32],

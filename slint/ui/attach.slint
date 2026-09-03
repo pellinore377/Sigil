@@ -1,28 +1,30 @@
 // Attachment sheet under the composer — mobile/AttachMenu.qml. Each category
-// opens its own page inside the same panel. Location pages and the emoji grid
-// are hosted by the integrator (LocationPicker and EmojiPicker are other
-// groups' components); this emits callbacks for them.
+// opens its own page inside the same panel. Location pages are hosted by the
+// integrator (LocationPicker is another group's component); this emits
+// open-location for them. The emoji page body is whatever the host puts in
+// @children (ChatPage mounts the shared EmojiPicker there).
 
 import { Theme } from "style.slint";
 import { Icons } from "icons.slint";
 import { IconLabel } from "components.slint";
-import { TextWell } from "components.slint";
 
 export struct StickerItem { path: string, art: image, body: string, url: string, w: int, h: int }
 
 // AttachMenu.qml's poll field: a 10px-radius chip well whose fill LIGHTENS on
-// focus (no border), question at body size, options at body-small.
+// focus (no border), question at body size, options at body-small. Insets are
+// 12 left and 10 right for options, 12/12 for the question (:264, :234).
 component PollField inherits Rectangle {
     in property <string> placeholder;
     in-out property <string> text <=> input.text;
     in property <length> font-px: Theme.body-small;
+    in property <length> pad-right: 10px;
     in property <color> fg;
     in property <color> chip;
     height: 32px;
     border-radius: 10px;
     background: input.has-focus ? root.chip.brighter(0.15) : root.chip;
     HorizontalLayout {
-        padding-left: 12px; padding-right: 12px;
+        padding-left: 12px; padding-right: root.pad-right;
         Rectangle {
             clip: true;
             input := TextInput {
@@ -35,13 +37,40 @@ component PollField inherits Rectangle {
             }
             if input.text == "" : Text {
                 text: root.placeholder;
-                color: root.fg.with-alpha(0.45);
+                color: root.fg.with-alpha(0.55);
                 font-family: Theme.font-ui;
                 font-size: root.font-px;
                 vertical-alignment: center;
                 height: 100%;
             }
         }
+    }
+}
+
+// A poll option row: the field, and the "×" remove disc that every row shows
+// once there are more than two options (AttachMenu.qml:259, :283). With the
+// disc the field is `parent - 40` wide (34 + 6 spacing), and the disc's 28px
+// end 6px short of the right edge — exactly the QML Row.
+component PollOptionRow inherits Rectangle {
+    in property <string> placeholder;
+    in-out property <string> text;
+    in property <bool> removable;
+    in property <color> fg;
+    in property <color> chip;
+    callback remove;
+    height: 32px;
+    field := PollField {
+        x: 0; y: 0;
+        width: root.removable ? root.width - 40px : root.width;
+        placeholder: root.placeholder; text <=> root.text; fg: root.fg; chip: root.chip;
+    }
+    if root.removable : Rectangle {
+        x: root.width - 40px + 6px; y: 2px;
+        width: 28px; height: 28px; border-radius: 14px;
+        background: rm-t.has-hover ? root.chip.brighter(0.2) : root.chip;
+        // A literal multiplication sign in the UI face at body size (:283).
+        Text { text: "\u{00d7}"; color: root.fg; font-family: Theme.font-ui; font-size: Theme.body; width: 100%; height: 100%; horizontal-alignment: center; vertical-alignment: center; }
+        rm-t := TouchArea { clicked => { root.remove(); } }
     }
 }
 
@@ -54,14 +83,17 @@ component AttachTile inherits Rectangle {
     callback clicked;
     width: 62px; height: 72px;
     disc := Rectangle {
-        x: (62px - self.width) / 2;
+        // Top of the tile (QML anchors only horizontalCenter): a sized child
+        // outside a layout is otherwise centred by default in Slint.
+        x: (62px - self.width) / 2; y: 0;
         width: 58px; height: 40px;
         border-radius: 20px;
         transform-origin: { x: self.width / 2, y: self.height / 2 };
         transform-scale-x: tile-t.has-hover ? 1.05 : 1.0;
         transform-scale-y: tile-t.has-hover ? 1.05 : 1.0;
         animate transform-scale-x, transform-scale-y { duration: 110ms; easing: cubic-bezier(0.33, 1, 0.68, 1); }
-        background: tile-t.pressed || tile-t.has-hover ? root.chip.brighter(0.2) : root.chip;
+        // Lightens on hover only (AttachMenu.qml:121); a press changes nothing.
+        background: tile-t.has-hover ? root.chip.brighter(0.2) : root.chip;
         IconLabel {
             text: root.icon;
             filled: false;
@@ -87,10 +119,14 @@ export component AttachMenu inherits Rectangle {
     in property <color> fg: Theme.menu-text;
     in property <color> accent: Theme.accent;
     in property <color> surface: Theme.menu-text.with-alpha(0.07);
-    in property <color> chip: Theme.background.with-alpha(0.85);
+    // ChatPage.qml chipC (unthemed): alpha(darker(menu.background, 2.1), 0.96)
+    // ≈ rgba(36,36,36,0.96). Slint's darker(f) divides V by 1+f, so 1.1.
+    in property <color> chip: Theme.menu-background.darker(1.1).with-alpha(0.96);
 
-    // grid | poll | stickers | emoji | note — location modes emit open-location
-    // and stay owned by the integrator's LocationPicker mount.
+    // grid | poll | stickers | emoji | note | pin | current | live — the
+    // location modes emit open-location and stay owned by the integrator's
+    // LocationPicker page, so the page never actually rests on them here; the
+    // height branch and header suppression are kept for parity (:28-31, :75-78).
     in-out property <string> page: "grid";
     in-out property <string> note: "";
     in property <[StickerItem]> stickers;
@@ -107,32 +143,31 @@ export component AttachMenu inherits Rectangle {
     callback load-emoji;
     callback close-requested;
 
+    property <bool> location-page: root.page == "pin" || root.page == "current" || root.page == "live";
     height: root.page == "poll" ? 408px
+          : root.location-page ? 430px
           : (root.page == "emoji" || root.page == "stickers") ? 330px
           : 232px;
 
     public function reset() { root.page = "grid"; root.note = ""; }
 
+    // Chrome: ONE translucent wash inset 10 all round, radius 18, over the
+    // conversation ground (AttachMenu.qml:67-73). No opaque card, no border.
     chrome := Rectangle {
-        width: 100%; height: 100%;
+        x: 10px; y: 10px;
+        width: root.width - 20px; height: root.height - 20px;
         border-radius: 18px;
-        // Opaque card first, then the QML's soft wash on top: as a floating
-        // drawer the timeline must not bleed through. (No border — QML has none.)
-        background: Theme.popup-background;
-        Rectangle {
-            width: 100%; height: 100%;
-            border-radius: 18px;
-            background: root.surface;
-        }
+        background: root.surface;
     }
 
-    // Sub-page header — QML margins: 16 top, 18 sides.
-    if root.page != "grid" : header := Rectangle {
+    // Sub-page header — QML margins: 16 top, 18 sides; hidden on the grid and
+    // on the location pages (:75-78).
+    if root.page != "grid" && !root.location-page : header := Rectangle {
         x: 18px; y: 16px;
         width: root.width - 36px; height: 30px;
         back-disc := Rectangle {
             width: 30px; height: 30px; border-radius: 15px;
-            background: hb-t.pressed ? root.chip.brighter(0.2) : root.chip;
+            background: hb-t.has-hover ? root.chip.brighter(0.2) : root.chip;
             IconLabel { text: Icons.back; filled: false; color: root.fg; font-size: Theme.body; width: 100%; height: 100%; }
             hb-t := TouchArea { clicked => { root.reset(); } }
         }
@@ -201,6 +236,8 @@ export component AttachMenu inherits Rectangle {
     in-out property <string> po3; in-out property <string> po4;
     in-out property <string> po5; in-out property <string> po6;
     in-out property <string> po7; in-out property <string> po8;
+    // Whitespace-only entries count here; the QML trims (:170-175) — the
+    // bridge trims before creating (chat-handoff.md B15).
     property <bool> poll-valid: root.pq != ""
         && ((root.po1 != "" ? 1 : 0) + (root.po2 != "" ? 1 : 0) + (root.po3 != "" ? 1 : 0)
           + (root.po4 != "" ? 1 : 0) + (root.po5 != "" ? 1 : 0) + (root.po6 != "" ? 1 : 0)
@@ -211,8 +248,11 @@ export component AttachMenu inherits Rectangle {
         root.pq = ""; root.po1 = ""; root.po2 = ""; root.po3 = ""; root.po4 = "";
         root.po5 = ""; root.po6 = ""; root.po7 = ""; root.po8 = "";
     }
-    // Removing an option shifts the later slots up (QML pollOptions.remove).
+    // Removing an option shifts the later slots up (QML pollOptions.remove);
+    // any row can go once there are more than two.
     public function remove-option(i: int) {
+        if (i <= 1) { root.po1 = root.po2; }
+        if (i <= 2) { root.po2 = root.po3; }
         if (i <= 3) { root.po3 = root.po4; }
         if (i <= 4) { root.po4 = root.po5; }
         if (i <= 5) { root.po5 = root.po6; }
@@ -223,7 +263,8 @@ export component AttachMenu inherits Rectangle {
     }
     if root.page == "poll" : poll-box := Rectangle {
         x: 20px; y: 52px;
-        width: root.width - 40px; height: root.height - 52px - 44px - 8px;
+        // Margins 20, top 52; the footer is 34 with an 8px gap above it (:180-186, :305-308).
+        width: root.width - 40px; height: root.height - 52px - 20px - 34px - 8px;
         clip: true;
         poll-flick := Flickable {
             width: 100%; height: 100%;
@@ -256,58 +297,38 @@ export component AttachMenu inherits Rectangle {
                     font-size: 10px;
                     wrap: word-wrap;
                 }
+                Rectangle { height: 4px; }   // the description's bottomPadding (:222)
                 Text { text: "Question"; color: root.fg; font-family: Theme.font-ui; font-size: Theme.body-small; font-weight: 700; }
-                q := PollField { placeholder: "Ask something…"; text <=> root.pq; height: 34px; font-px: Theme.body; fg: root.fg; chip: root.chip; }
+                q := PollField { placeholder: "Ask something…"; text <=> root.pq; height: 34px; font-px: Theme.body; pad-right: 12px; fg: root.fg; chip: root.chip; }
                 Rectangle { height: 4px; }
                 Text { text: "Options"; color: root.fg; font-family: Theme.font-ui; font-size: Theme.body-small; font-weight: 700; }
-                o1 := PollField { placeholder: "Option 1"; text <=> root.po1; fg: root.fg; chip: root.chip; }
-                o2 := PollField { placeholder: "Option 2"; text <=> root.po2; fg: root.fg; chip: root.chip; }
-                // Options past the second carry a circular remove button.
-                if root.option-count >= 3 : HorizontalLayout { spacing: 6px;
-                    o3 := PollField { placeholder: "Option 3"; text <=> root.po3; fg: root.fg; chip: root.chip; horizontal-stretch: 1; }
-                    Rectangle { width: 28px; height: 28px; border-radius: 14px; background: r3.pressed ? root.chip.brighter(0.2) : root.chip;
-                        IconLabel { text: Icons.close; filled: false; color: root.fg; font-size: Theme.caption; width: 100%; height: 100%; }
-                        r3 := TouchArea { clicked => { root.remove-option(3); } } }
-                }
-                if root.option-count >= 4 : HorizontalLayout { spacing: 6px;
-                    o4 := PollField { placeholder: "Option 4"; text <=> root.po4; fg: root.fg; chip: root.chip; horizontal-stretch: 1; }
-                    Rectangle { width: 28px; height: 28px; border-radius: 14px; background: r4.pressed ? root.chip.brighter(0.2) : root.chip;
-                        IconLabel { text: Icons.close; filled: false; color: root.fg; font-size: Theme.caption; width: 100%; height: 100%; }
-                        r4 := TouchArea { clicked => { root.remove-option(4); } } }
-                }
-                if root.option-count >= 5 : HorizontalLayout { spacing: 6px;
-                    o5 := PollField { placeholder: "Option 5"; text <=> root.po5; fg: root.fg; chip: root.chip; horizontal-stretch: 1; }
-                    Rectangle { width: 28px; height: 28px; border-radius: 14px; background: r5.pressed ? root.chip.brighter(0.2) : root.chip;
-                        IconLabel { text: Icons.close; filled: false; color: root.fg; font-size: Theme.caption; width: 100%; height: 100%; }
-                        r5 := TouchArea { clicked => { root.remove-option(5); } } }
-                }
-                if root.option-count >= 6 : HorizontalLayout { spacing: 6px;
-                    o6 := PollField { placeholder: "Option 6"; text <=> root.po6; fg: root.fg; chip: root.chip; horizontal-stretch: 1; }
-                    Rectangle { width: 28px; height: 28px; border-radius: 14px; background: r6.pressed ? root.chip.brighter(0.2) : root.chip;
-                        IconLabel { text: Icons.close; filled: false; color: root.fg; font-size: Theme.caption; width: 100%; height: 100%; }
-                        r6 := TouchArea { clicked => { root.remove-option(6); } } }
-                }
-                if root.option-count >= 7 : HorizontalLayout { spacing: 6px;
-                    o7 := PollField { placeholder: "Option 7"; text <=> root.po7; fg: root.fg; chip: root.chip; horizontal-stretch: 1; }
-                    Rectangle { width: 28px; height: 28px; border-radius: 14px; background: r7.pressed ? root.chip.brighter(0.2) : root.chip;
-                        IconLabel { text: Icons.close; filled: false; color: root.fg; font-size: Theme.caption; width: 100%; height: 100%; }
-                        r7 := TouchArea { clicked => { root.remove-option(7); } } }
-                }
-                if root.option-count >= 8 : HorizontalLayout { spacing: 6px;
-                    o8 := PollField { placeholder: "Option 8"; text <=> root.po8; fg: root.fg; chip: root.chip; horizontal-stretch: 1; }
-                    Rectangle { width: 28px; height: 28px; border-radius: 14px; background: r8.pressed ? root.chip.brighter(0.2) : root.chip;
-                        IconLabel { text: Icons.close; filled: false; color: root.fg; font-size: Theme.caption; width: 100%; height: 100%; }
-                        r8 := TouchArea { clicked => { root.remove-option(8); } } }
-                }
+                PollOptionRow { placeholder: "Option 1"; text <=> root.po1; removable: root.option-count > 2; fg: root.fg; chip: root.chip; remove => { root.remove-option(1); } }
+                PollOptionRow { placeholder: "Option 2"; text <=> root.po2; removable: root.option-count > 2; fg: root.fg; chip: root.chip; remove => { root.remove-option(2); } }
+                if root.option-count >= 3 : PollOptionRow { placeholder: "Option 3"; text <=> root.po3; removable: true; fg: root.fg; chip: root.chip; remove => { root.remove-option(3); } }
+                if root.option-count >= 4 : PollOptionRow { placeholder: "Option 4"; text <=> root.po4; removable: true; fg: root.fg; chip: root.chip; remove => { root.remove-option(4); } }
+                if root.option-count >= 5 : PollOptionRow { placeholder: "Option 5"; text <=> root.po5; removable: true; fg: root.fg; chip: root.chip; remove => { root.remove-option(5); } }
+                if root.option-count >= 6 : PollOptionRow { placeholder: "Option 6"; text <=> root.po6; removable: true; fg: root.fg; chip: root.chip; remove => { root.remove-option(6); } }
+                if root.option-count >= 7 : PollOptionRow { placeholder: "Option 7"; text <=> root.po7; removable: true; fg: root.fg; chip: root.chip; remove => { root.remove-option(7); } }
+                if root.option-count >= 8 : PollOptionRow { placeholder: "Option 8"; text <=> root.po8; removable: true; fg: root.fg; chip: root.chip; remove => { root.remove-option(8); } }
                 if root.option-count < 8 : add-row := Rectangle {
                     height: 30px;
                     HorizontalLayout {
                         alignment: start;
                         spacing: 6px;
                         IconLabel { text: Icons.plus; filled: false; color: root.accent; font-size: Theme.body-small; vertical-alignment: center; }
-                        Text { text: "Add option"; color: root.accent; font-family: Theme.font-ui; font-size: Theme.body-small; vertical-alignment: center; }
+                        Rectangle {
+                            width: add-label.preferred-width;
+                            add-label := Text { text: "Add option"; color: root.accent; font-family: Theme.font-ui; font-size: Theme.body-small; vertical-alignment: center; height: 100%; }
+                            // QML underlines the label on hover (:297); Slint Text has
+                            // no underline, so a 1px rule stands in for it.
+                            Rectangle {
+                                y: (30px + add-label.preferred-height) / 2 - 1px;
+                                width: 100%; height: 1px;
+                                background: add-t.has-hover ? root.accent : transparent;
+                            }
+                        }
                     }
-                    TouchArea { clicked => { root.option-count += 1; } }
+                    add-t := TouchArea { clicked => { root.option-count += 1; } }
                 }
             }
         }
@@ -320,7 +341,7 @@ export component AttachMenu inherits Rectangle {
             spacing: 8px;
             cancel-pill := Rectangle {
                 width: 72px; height: 30px; border-radius: 15px;
-                background: cp-t.pressed ? root.chip.brighter(0.2) : root.chip;
+                background: cp-t.has-hover ? root.chip.brighter(0.2) : root.chip;
                 Text { text: "Cancel"; color: root.fg; font-family: Theme.font-ui; font-size: Theme.body-small; width: 100%; height: 100%; horizontal-alignment: center; vertical-alignment: center; }
                 cp-t := TouchArea { clicked => { root.reset(); } }
             }
@@ -346,13 +367,15 @@ export component AttachMenu inherits Rectangle {
         }
     }
 
-    // Stickers
+    // Stickers — margins 22, top 54 (:379-383).
     if root.page == "stickers" : stickers-box := Rectangle {
         x: 22px; y: 54px;
-        width: root.width - 44px; height: root.height - 64px - 20px;
+        width: root.width - 44px; height: root.height - 76px;
         clip: true;
         // A Flow: as many 56px cells as the width takes, packed left to right.
         property <int> cols: max(1, floor(self.width / 64px));
+        // The port has no Element packs, so the copy names the folder instead
+        // of AttachMenu.qml:390's im.ponies.user_emotes wording (recorded).
         if root.stickers.length == 0 : Text {
             text: "No sticker packs yet.\nPut a folder of images in " + (root.sticker-dir == "" ? "the stickers folder" : root.sticker-dir) + " and they show up here.";
             color: root.fg.with-alpha(0.6);
@@ -373,7 +396,7 @@ export component AttachMenu inherits Rectangle {
                 Image { source: st.art; width: 100%; height: 100%; image-fit: contain; }
                 Rectangle {
                     width: 100%; height: 100%; border-radius: 8px;
-                    border-width: st-t.pressed || st-t.has-hover ? 2px : 0px;
+                    border-width: st-t.has-hover ? 2px : 0px;
                     border-color: root.accent.with-alpha(0.7);
                 }
                 st-t := TouchArea { clicked => { root.send-sticker(i); } }
@@ -381,12 +404,13 @@ export component AttachMenu inherits Rectangle {
         }
     }
 
-    // Emoji page body is the integrator's EmojiPicker mount; reserve the space.
-    // (@children cannot sit under a conditional, so visibility gates it.)
+    // Emoji page body is the host's EmojiPicker mount; reserve the space
+    // (margins 20, top 52 — :392-396). (@children cannot sit under a
+    // conditional, so visibility gates it.)
     emoji-slot := Rectangle {
         visible: root.page == "emoji";
         x: 20px; y: 52px;
-        width: root.width - 40px; height: root.height - 62px - 10px;
+        width: root.width - 40px; height: root.height - 72px;
         @children
     }
 }

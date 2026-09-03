@@ -51,6 +51,9 @@ pub struct SigilSession {
     dirty: std::sync::atomic::AtomicBool,
     /// Whether the last backup upload succeeded, for `recovery.status`.
     backed_up: std::sync::atomic::AtomicBool,
+    /// Whether the server keeps a password-locked copy of the recovery key
+    /// (its card's escrow flag), for `recovery.status`.
+    escrow: bool,
 }
 
 fn account_path() -> PathBuf {
@@ -142,6 +145,7 @@ pub async fn restore(engine: &SharedEngine) -> bool {
 async fn start(engine: &SharedEngine, acct: Account) -> anyhow::Result<()> {
     let provider = SigilProvider::open(&acct.mls_path())?;
     let link = Arc::new(connect(&acct.envoy, &acct.device_id).await?);
+    let escrow = link.server_card(&acct.server()).await.map(|c| c.flags & 0b1000 != 0).unwrap_or(false);
     {
         let sh = load_shape();
         if sh.clocked_seconds > 0 {
@@ -183,6 +187,7 @@ async fn start(engine: &SharedEngine, acct: Account) -> anyhow::Result<()> {
         pending_scan: Mutex::new(None),
         dirty: std::sync::atomic::AtomicBool::new(false),
         backed_up: std::sync::atomic::AtomicBool::new(false),
+        escrow,
     });
     *engine.sigil.lock() = Some(session.clone());
     engine.set_session(SessionState::LoggedIn);
@@ -242,13 +247,19 @@ async fn create(engine: &SharedEngine, p: &serde_json::Map<String, Value>) -> Re
         account::publish_key_packages(&link, &mut acct, &provider, 10).await?;
         if !password.is_empty() {
             sigil_client::backup::enable(&link, &mut acct, &password).await?;
+            // where the server keeps an escrow, the printed code is not needed
+            let escrowed = sigil_client::backup::escrow_put(&link, &acct, &password).await?;
+            engine.state.lock().recovery_escrowed = escrowed;
         }
         drop(link);
         start(engine, acct).await
     }
     .await;
     match result {
-        Ok(()) => Reply::ok(json!({"userId": username})),
+        Ok(()) => {
+            let escrowed = engine.state.lock().recovery_escrowed;
+            Reply::ok(json!({"userId": username, "escrowed": escrowed}))
+        }
         Err(e) => {
             let _ = std::fs::remove_file(&path);
             let _ = std::fs::remove_file(path.with_extension("mls.json"));
@@ -357,12 +368,30 @@ async fn recover(engine: &SharedEngine, p: &serde_json::Map<String, Value>) -> R
             Err(e) => return Reply::err("network", format!("{e:#}")),
         },
     };
-    let Ok(key) = sigil_protocol::recovery::parse_recovery_code(&code) else {
-        return Reply::err("bad_request", "that is not a valid recovery code");
-    };
     engine.set_session(SessionState::Restoring);
     let path = account_path();
     let _ = crate::paths::ensure_private_dir(path.parent().unwrap());
+    // With a code: the classic path. Without: the server's escrow, opened
+    // with the password, handed out only to the sign-in that holds the name.
+    let key: anyhow::Result<[u8; 32]> = if !code.trim().is_empty() {
+        sigil_protocol::recovery::parse_recovery_code(&code)
+            .map_err(|_| anyhow::anyhow!("that is not a valid recovery code"))
+    } else {
+        async {
+            let gate = oidc::take(server).unwrap_or_default();
+            let device_id = hex::encode(rand::random::<[u8; 32]>());
+            let link = connect(&envoy, &device_id).await?;
+            sigil_client::backup::escrow_get(&link, &username, &password, gate.as_bytes()).await
+        }
+        .await
+    };
+    let key = match key {
+        Ok(k) => k,
+        Err(e) => {
+            engine.set_session(SessionState::LoggedOut);
+            return Reply::err("bad_request", format!("{e:#}"));
+        }
+    };
     match sigil_client::backup::restore(&path, &envoy, &username, &password, &key).await {
         Ok((acct, extra)) => {
             if !extra.is_empty() {
@@ -424,6 +453,8 @@ pub async fn dispatch(engine: &SharedEngine, req: &Request) -> Option<Reply> {
                         "hostname": card.hostname,
                         "registration": registration,
                         "tpm": card.flags & 0b001 != 0,
+                        // escrow: the password and the sign-in bring an account back, no printed code
+                        "recovery": if card.flags & 0b1000 != 0 { "escrow" } else { "code" },
                         // where the name resolved to: the app connects here
                         "base": base,
                         "envoy": base.replacen("http", "ws", 1) + "/envoy",
@@ -1028,6 +1059,7 @@ impl SigilSession {
             "event": "recovery.status",
             "recovery": if enabled { "enabled" } else { "disabled" },
             "backup": if !enabled { "disabled" } else if self.backed_up.load(std::sync::atomic::Ordering::Relaxed) { "enabled" } else { "pending" },
+            "escrow": self.escrow,
             "verified": true,
         })
     }

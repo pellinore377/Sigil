@@ -23,6 +23,11 @@ pub struct Config {
     /// client id registered there for Sigil. Both are needed for `oidc`.
     pub oidc_issuer: Option<String>,
     pub oidc_client_id: Option<String>,
+    /// How a lost device is replaced: `code` (the printed recovery code)
+    /// or `escrow` (the recovery key kept here sealed under the password,
+    /// handed out to the login that holds the name). Empty picks `escrow`
+    /// when registration is `oidc`, else `code`.
+    pub recovery: String,
     /// Where this server actually answers when that is not `hostname`
     /// (`sigil.example.com` for names `@…:example.com`). Served at
     /// `/.well-known/sigil`, which the bare domain must forward here.
@@ -61,6 +66,7 @@ impl Default for Config {
             registration: "invite".into(),
             oidc_issuer: None,
             oidc_client_id: None,
+            recovery: String::new(),
             advertise: None,
             tokens_per_day: 2000,
             servers: BTreeMap::new(),
@@ -106,6 +112,9 @@ impl Config {
         if let Some(v) = opt("SIGIL_OIDC_CLIENT_ID") {
             self.oidc_client_id = Some(v).filter(|v| !v.is_empty());
         }
+        if let Some(v) = opt("SIGIL_RECOVERY") {
+            self.recovery = v;
+        }
         if let Some(v) = opt("SIGIL_ADVERTISE") {
             self.advertise = Some(v).filter(|v| !v.is_empty());
         }
@@ -135,8 +144,25 @@ impl Config {
         }
     }
 
+    /// `escrow` or `code`, the empty setting resolved.
+    pub fn recovery_mode(&self) -> &str {
+        match self.recovery.trim() {
+            "" => {
+                if self.registration == "oidc" {
+                    "escrow"
+                } else {
+                    "code"
+                }
+            }
+            other => other,
+        }
+    }
+
     /// Where the gate is misconfigured, say so before anyone registers.
     pub fn check(&self) -> anyhow::Result<()> {
+        if !matches!(self.recovery_mode(), "escrow" | "code") {
+            anyhow::bail!("recovery = \"{}\" is not one of escrow, code", self.recovery);
+        }
         match self.registration.as_str() {
             "invite" | "open" => Ok(()),
             "oidc" => {

@@ -40,14 +40,18 @@ enum Cmd {
     Code,
     /// Change the backup password.
     SetPassword { password: String },
-    /// Restore on this device from username, password and recovery code.
+    /// Restore on this device from username and password, with the printed
+    /// recovery code or, where the server keeps an escrow, the sign-in
+    /// token as --gate instead.
     Recover {
         #[arg(long)]
         username: String,
         #[arg(long)]
         password: String,
-        #[arg(long)]
+        #[arg(long, default_value = "")]
         code: String,
+        #[arg(long, default_value = "")]
+        gate: String,
         #[arg(long)]
         envoy: String,
     },
@@ -165,10 +169,14 @@ async fn run() -> anyhow::Result<()> {
             account::publish_key_packages(&link, &mut st, &provider, 10).await?;
             if let Some(pw) = password {
                 sigil_client::backup::enable(&link, &mut st, &pw).await?;
-                println!(
-                    "recovery code: {}",
-                    sigil_client::backup::code(&st).unwrap()
-                );
+                if sigil_client::backup::escrow_put(&link, &st, &pw).await? {
+                    println!("recovery escrowed: the password and the sign-in bring this account back");
+                } else {
+                    println!(
+                        "recovery code: {}",
+                        sigil_client::backup::code(&st).unwrap()
+                    );
+                }
             }
             println!(
                 "registered {}: credential, {} tokens, 10 key packages",
@@ -201,10 +209,19 @@ async fn run() -> anyhow::Result<()> {
             username,
             password,
             code,
+            gate,
             envoy,
         } => {
-            let key = sigil_protocol::recovery::parse_recovery_code(&code)
-                .map_err(|_| anyhow::anyhow!("that is not a valid recovery code"))?;
+            let username = username.to_lowercase();
+            let key = if !code.is_empty() {
+                sigil_protocol::recovery::parse_recovery_code(&code)
+                    .map_err(|_| anyhow::anyhow!("that is not a valid recovery code"))?
+            } else {
+                let device_id = hex::encode(rand::random::<[u8; 32]>());
+                let link = Link::connect(&envoy, &device_id).await?;
+                sigil_client::backup::escrow_get(&link, &username, &password, gate.as_bytes())
+                    .await?
+            };
             let (st, _extra) = sigil_client::backup::restore(
                 &cli.state,
                 &envoy,

@@ -28,7 +28,8 @@ for u in alice bob; do $CL -s $u.json init --username @$u:sigil.test --envoy $EN
 
 # 1. a real token registers
 TOK_ALICE=$($ISSUER --listen 127.0.0.1:18472 --client-id sigil-test --mint alice)
-$CL -s alice.json register --invite "$TOK_ALICE" >alice.reg 2>&1 || fail "alice with a good token" alice.reg server.log
+$CL -s alice.json register --invite "$TOK_ALICE" --password "first pass" >alice.reg 2>&1 || fail "alice with a good token" alice.reg server.log
+grep -q "recovery escrowed" alice.reg || fail "no escrow under oidc" alice.reg
 
 # 2. wrong audience, forged signature, garbage: all refused
 TOK_OTHER=$($ISSUER --listen 127.0.0.1:18472 --client-id someone-else --mint bob)
@@ -55,7 +56,22 @@ $CL -s alice.json send 0 "hello through the gate" >/dev/null || fail "send" serv
 wait $BOB || true
 grep -q "hello through the gate" bob.listen || fail "bob did not hear alice" bob.listen server.log
 
-# 5. the issuer saw logins and nothing else; the server logged no address or name
+# 5. recovery without a code: alice sets a password, backs up, and a fresh
+#    device gets everything back with the password and her sign-in; the
+#    wrong password, someone else's sign-in and no sign-in are refused
+$CL -s alice.json set-password "correct horse" >alice.pw 2>&1 || fail "set password" alice.pw server.log
+$CL -s alice.json backup >alice.bak 2>&1 || fail "backup" alice.bak server.log
+TOK_ALICE2=$($ISSUER --listen 127.0.0.1:18472 --client-id sigil-test --mint alice)
+! $CL -s alice-new.json recover --username @alice:sigil.test --password "wrong" --gate "$TOK_ALICE2" --envoy $ENVOY >rec.wrongpw 2>&1 || fail "wrong password restored" rec.wrongpw
+grep -q "wrong password" rec.wrongpw || fail "wrong password message" rec.wrongpw
+! $CL -s alice-new.json recover --username @alice:sigil.test --password "correct horse" --gate "$TOK_BOB" --envoy $ENVOY >rec.bobgate 2>&1 || fail "bob's sign-in opened alice's escrow" rec.bobgate
+! $CL -s alice-new.json recover --username @alice:sigil.test --password "correct horse" --envoy $ENVOY >rec.nogate 2>&1 || fail "no sign-in opened the escrow" rec.nogate
+$CL -s alice-new.json recover --username @alice:sigil.test --password "correct horse" --gate "$TOK_ALICE2" --envoy $ENVOY >rec.ok 2>&1 || fail "restore with password and sign-in" rec.ok server.log
+$CL -s alice-new.json list >alice-new.list 2>&1 || fail "restored device lists" alice-new.list
+grep -q "bob" alice-new.list || fail "restored device lacks the conversation" alice-new.list
+
+# 6. the issuer saw logins and nothing else; the server logged no address or name
 ! grep -Eq 'alice|bob|sigil.test' issuer.log || fail "the issuer learned a name" issuer.log
+! grep -Eq 'correct horse|escrow' server.log || fail "server log carries recovery detail" server.log
 ! grep -v 'listening on\|media to\|registration through' server.log | grep -Eq '127\.0\.0\.1:[0-9]+|alice|bob' || fail "server log carries client detail" server.log
 echo "e2e-oidc ok"

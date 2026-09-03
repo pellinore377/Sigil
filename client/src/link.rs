@@ -158,7 +158,12 @@ impl Link {
         let plain = bag::open_response(&keys, &sealed).map_err(|e| anyhow::anyhow!("{e:?}"))?;
         let resp = Response::decode(op, &plain).map_err(|e| anyhow::anyhow!("{e:?}"))?;
         if let Response::Error(s) = resp {
-            anyhow::bail!("{server} said {s:?} to {op:?}");
+            return Err(ServerRefused {
+                server: server.to_string(),
+                status: s,
+                op,
+            }
+            .into());
         }
         Ok(resp)
     }
@@ -284,3 +289,20 @@ async fn run(
         }
     }
 }
+
+/// A server's error status, as the error a call fails with; callers that
+/// care which status it was downcast to this.
+#[derive(Debug)]
+pub struct ServerRefused {
+    pub server: String,
+    pub status: sigil_protocol::wire::Status,
+    pub op: sigil_protocol::wire::Op,
+}
+
+impl std::fmt::Display for ServerRefused {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{} said {:?} to {:?}", self.server, self.status, self.op)
+    }
+}
+
+impl std::error::Error for ServerRefused {}

@@ -6,7 +6,8 @@
 # /.well-known/sigil), and the Slint app going through the doors: type
 # the bare name, probe, "Sign in with …", the browser round-trip (curl
 # plays the browser: the issuer's login page redirects straight back to
-# the app's loopback listener), then create as @marlowe:sigil.test.
+# the app's loopback listener), name, recovery password, Home; then a
+# second device brought back with the password alone.
 # Needs server/target/debug/sigil-server, server/target/debug/examples/
 # fake-issuer and slint/target/debug/drive.
 set -euo pipefail
@@ -53,8 +54,23 @@ grep -q 'GET /.well-known/sigil' site.log || fail "the pointer was never asked f
 grep -q "signed in at the provider as marlowe" drive.out || fail "sign-in" drive.out drive.err
 grep -q "signed in as @marlowe:sigil.test" drive.out || fail "create" drive.out drive.err server.log
 grep -q "^drive oidc ok" drive.out || fail "finish" drive.out drive.err
-for p in live-door-oidc live-door-oidc-done live-home-oidc; do
+for p in live-door-oidc live-door-oidc-done live-door-password live-home-oidc live-settings-oidc; do
   [ -s "$W/shots/$p.png" ] || fail "missing capture $p" drive.out
+done
+
+# a second device, nothing on it: the same sign-in holds the name, so the
+# welcome door wants the recovery password alone (the server keeps the key
+# under it), and a wrong one is refused
+mkdir -p "$W/back/state" "$W/back/cache"
+SIGIL_TEST_HOSTS=sigil.test=http://127.0.0.1:18460 \
+SIGIL_BROWSER=$W/browser.sh XDG_STATE_HOME=$W/back/state XDG_CACHE_HOME=$W/back/cache HOME=$W/back \
+  timeout 180 "$DRIVE" "$W/shots" sigil.test "" marlowe oidc-back >back.out 2>back.err || fail "drive oidc-back" back.out back.err server.log issuer.log
+grep -q "welcome back as marlowe" back.out || fail "the welcome door" back.out back.err
+grep -q "wrong password refused" back.out || fail "a wrong password got through" back.out back.err
+grep -q "restored as @marlowe:sigil.test" back.out || fail "restore" back.out back.err server.log
+grep -q "^drive oidc-back ok" back.out || fail "finish (back)" back.out back.err
+for p in live-door-welcome live-home-oidc-back; do
+  [ -s "$W/shots/$p.png" ] || fail "missing capture $p" back.out
 done
 # the provider saw a login and nothing else; the server logged no address
 ! grep -Eq 'marlowe|sigil.test' issuer.log || fail "the issuer learned a name" issuer.log

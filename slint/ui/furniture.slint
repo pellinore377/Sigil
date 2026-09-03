@@ -45,8 +45,11 @@ export component SettingsHeader inherits Rectangle {
             overflow: elide;
             horizontal-stretch: 1;
         }
+        // SettingsHeader.qml:311-321: the action text ends 18 from the right
+        // and the title stops 10 before it — the layout's 6 plus 4 here. The
+        // tap surface grows 8 past the text on every side (:328).
         if root.action != "" : Rectangle {
-            width: action-text.preferred-width + 16px;
+            width: action-text.preferred-width + 4px;
             action-text := Text {
                 text: root.action;
                 color: root.action-enabled ? Theme.accent : root.fg.with-alpha(0.35);
@@ -54,10 +57,12 @@ export component SettingsHeader inherits Rectangle {
                 font-size: Theme.body;
                 font-weight: 700;
                 vertical-alignment: center;
-                horizontal-alignment: center;
+                horizontal-alignment: right;
                 width: 100%; height: 100%;
             }
             TouchArea {
+                x: -8px; y: -8px;
+                width: parent.width + 16px; height: parent.height + 16px;
                 enabled: root.action-enabled;
                 clicked => { root.actioned(); }
             }
@@ -151,9 +156,10 @@ export component SettingsRow inherits Rectangle {
     }
     tail := Rectangle {
         x: root.width - self.width - 20px;
+        // The chevron column is the icon size, 14 (SettingsRow.qml:255).
         width: root.trailing == "toggle" ? 38px
              : root.trailing == "radio" || root.trailing == "check" ? 20px
-             : root.trailing == "chevron" ? 18px
+             : root.trailing == "chevron" ? Theme.icon-size
              : root.trailing == "value" || root.trailing == "count" ? tail-value.preferred-width
              : 0px;
         height: root.height;
@@ -190,15 +196,19 @@ export component SettingsRow inherits Rectangle {
             border-color: root.on ? Theme.accent : root.fg.with-alpha(0.35);
             if root.on : IconLabel {
                 text: Icons.check;
+                filled: true;
                 color: Theme.background;
                 font-size: Theme.caption;
                 width: 100%; height: 100%;
             }
         }
+        // SettingsRow.qml:253-260: a filled chevron in a 14-wide column.
         if root.trailing == "chevron" : IconLabel {
             text: Icons.chevronRight;
+            filled: true;
             color: root.ink.with-alpha(0.4);
             font-size: Theme.icon-size;
+            width: Theme.icon-size;
             height: root.height;
         }
         tail-value := Text {
@@ -221,27 +231,36 @@ export component SettingsRow inherits Rectangle {
 export component OverflowMenu inherits Rectangle {
     in property <[MenuEntry]> model;
     in-out property <bool> open: false;
-    in property <length> top-inset: 50px;
+    /// Inset from the top-right corner (OverflowMenu.qml:86). ChatPage.qml:867
+    /// passes 50 for its inline copy.
+    in property <length> top-inset: 48px;
     in property <color> fg: Theme.menu-text;
+    /// OverflowMenu.qml:83; ChatPage.qml:871 passes its themed surface.
+    in property <color> surface: Theme.popup-background.with-alpha(0.98);
+    /// OverflowMenu.qml:105 is 210 wide; ChatPage.qml:868's inline copy is 170.
+    in property <length> card-width: 210px;
     callback picked(string);
-    // 120ms fade + scale-in from the top-right corner, the QML's motion.
-    property <float> show: root.open ? 1.0 : 0.0;
-    animate show { duration: 120ms; easing: cubic-bezier(0.33, 1, 0.68, 1); }
-    // `open ||` matters: a hidden element never starts its fade-in.
-    visible: root.open || self.show > 0.01;
-    opacity: self.show;
-    TouchArea { clicked => { root.open = false; } }
-    // ChatPage.qml menu card: 170 wide at y 50, rows 34/r9, popups @0.98, no border.
+    // OverflowMenu.qml:109-113: the card fades LINEARLY over 120ms while it
+    // scales 0.92→1 from the top-right on OutCubic, also 120ms.
+    property <float> fade: root.open ? 1.0 : 0.0;
+    animate fade { duration: 120ms; }
+    property <float> pop: root.open ? 1.0 : 0.0;
+    animate pop { duration: 120ms; easing: cubic-bezier(0.33, 1, 0.68, 1); }
+    // `open ||` matters: a hidden element never starts its fade-in (:91).
+    visible: root.open || self.fade > 0.01;
+    TouchArea { enabled: root.open; clicked => { root.open = false; } }
+    // OverflowMenu.qml:101-108: card 10 from the right, rows 34/r9, radius 14.
     card := Rectangle {
         x: root.width - self.width - 10px;
         y: root.top-inset;
+        opacity: root.fade;
         transform-origin: { x: self.width, y: 0px };
-        transform-scale-x: 0.92 + 0.08 * root.show;
-        transform-scale-y: 0.92 + 0.08 * root.show;
-        width: 170px;
+        transform-scale-x: 0.92 + 0.08 * root.pop;
+        transform-scale-y: 0.92 + 0.08 * root.pop;
+        width: root.card-width;
         height: col.preferred-height + 12px;
         border-radius: 14px;
-        background: Theme.popup-background.with-alpha(0.98);
+        background: root.surface;
         col := VerticalLayout {
             padding: 6px;
             for entry in root.model : mrow := Rectangle {
@@ -249,13 +268,18 @@ export component OverflowMenu inherits Rectangle {
                 border-radius: 9px;
                 background: mrow-t.pressed || mrow-t.has-hover ? root.fg.with-alpha(0.08) : transparent;
                 property <color> ink: entry.danger ? Theme.urgent : root.fg;
+                // OverflowMenu.qml:126-137: a filled 14px icon at x 12, the
+                // label pinned at x 38 and 8 short of the right edge.
                 HorizontalLayout {
                     padding-left: 12px; padding-right: 8px;
-                    spacing: 10px;
+                    spacing: 12px;
                     IconLabel {
                         text: entry.icon;
+                        filled: true;
                         color: mrow.ink;
                         opacity: 0.85;
+                        font-size: Theme.icon-size;
+                        width: Theme.icon-size;
                         vertical-alignment: center;
                     }
                     Text {
@@ -284,16 +308,26 @@ export component ChoiceSheet inherits Rectangle {
     in-out property <bool> open: false;
     in property <color> fg: Theme.menu-text;
     callback chose(string);
-    visible: root.open;
+    // ChoiceSheet.qml:20: stays visible while the slide-out plays.
+    visible: root.open || sheet.y < root.height - 0.5px;
+    // The first layout (and any resize while closed) parks the sheet below
+    // the edge instantly; only `open` slides it (the QML's Behavior never
+    // sees a size change because its anchors resolve before the first frame).
+    property <bool> settled: false;
+    property <length> rest;
+    changed height => {
+        if (!root.open) { root.settled = false; root.rest = sheet.y; }
+        root.settled = true;
+    }
     scrim := Rectangle {
         width: 100%; height: 100%;
         background: #000000.with-alpha(root.open ? 0.5 : 0.0);
         animate background { duration: 140ms; }
-        TouchArea { clicked => { root.open = false; } }
+        TouchArea { enabled: root.open; clicked => { root.open = false; } }
     }
     sheet := Rectangle {
         y: root.open ? root.height - self.height : root.height;
-        animate y { duration: 180ms; easing: cubic-bezier(0.33, 1, 0.68, 1); }
+        animate y { duration: root.settled ? 180ms : 0ms; easing: cubic-bezier(0.33, 1, 0.68, 1); }
         width: 100%;
         height: sheet-col.preferred-height + 28px;
         border-top-left-radius: 22px;
@@ -330,6 +364,49 @@ export component ChoiceSheet inherits Rectangle {
     }
 }
 
+// The floating notice a settings page shows for a moment, bottom-centred
+// over the page: fill the page with it and set `text`; it hides itself when
+// the text is empty and asks to be cleared after `hold`.
+// variant "settings": RoomSettingsPage.qml:291-304 — text+26 wide, 34 high,
+//   popups.background @0.98 with a 1px fg@0.12 rim, caption, 140ms, 22 up.
+// variant "roles": RolesPage.qml:253-264 / PermissionsPage.qml:147-158 —
+//   text+28 wide, opaque popups.background, no rim, bodySmall, 150ms, 20 up.
+export component NotePill inherits Rectangle {
+    in property <string> text;
+    in property <color> fg: Theme.menu-text;
+    in property <string> variant: "settings";
+    /// noteTimer's 2600ms (RoomSettingsPage.qml:20); `expired` asks the host to clear.
+    in property <duration> hold: 2600ms;
+    callback expired;
+    property <bool> settings-look: root.variant == "settings";
+    background: transparent;
+    pill := Rectangle {
+        x: (root.width - self.width) / 2;
+        y: root.height - self.height - (root.settings-look ? 22px : 20px);
+        width: note-text.preferred-width + (root.settings-look ? 26px : 28px);
+        height: 34px;
+        border-radius: 17px;
+        background: root.settings-look ? Theme.popup-background.with-alpha(0.98) : Theme.popup-background;
+        border-width: root.settings-look ? 1px : 0px;
+        border-color: root.fg.with-alpha(0.12);
+        opacity: root.text != "" ? 1 : 0;
+        visible: self.opacity > 0.01;
+        animate opacity { duration: root.settings-look ? 140ms : 150ms; }
+        note-text := Text {
+            text: root.text; color: root.fg;
+            font-family: Theme.font-ui;
+            font-size: root.settings-look ? Theme.caption : Theme.body-small;
+            horizontal-alignment: center; vertical-alignment: center;
+            width: 100%; height: 100%;
+        }
+    }
+    note-timer := Timer {
+        interval: root.hold;
+        running: root.text != "";
+        triggered => { self.running = false; root.expired(); }
+    }
+}
+
 // The spinner glyph, turning.
 export component Spinner inherits Rectangle {
     in property <length> size: Theme.icon-size;
@@ -351,8 +428,20 @@ export component Spinner inherits Rectangle {
 export component PageHolder inherits Rectangle {
     in property <bool> active: false;
     in property <color> ground: Theme.menu-background;
+    // PageHolder.qml:201-202: the first layout and any resize while inactive
+    // park the holder at `width` at once; only `active` slides it. The gate
+    // drops to 0ms, x is read to snap, and the gate comes back — all before
+    // the frame that would have animated it.
+    property <bool> settled: false;
+    property <length> rest;
     x: root.active ? 0px : root.width;
-    animate x { duration: 200ms; easing: cubic-bezier(0.33, 1, 0.68, 1); }
+    // PageHolder.qml:26-37 steps d×0.26 per frame with a floor: ≈200ms, a
+    // hard early decelerate and a near-linear tail.
+    animate x { duration: root.settled ? 200ms : 0ms; easing: cubic-bezier(0.25, 1, 0.35, 1); }
+    changed width => {
+        if (!root.active) { root.settled = false; root.rest = root.x; }
+        root.settled = true;
+    }
     visible: root.x < root.width - 0.5px;
     Rectangle {
         width: 100%; height: 100%;
@@ -366,6 +455,68 @@ export component PageHolder inherits Rectangle {
     }
 }
 
+// ScrollBarStyle.qml as an overlay for any Flickable: a 7-wide gutter at the
+// right edge holding a 4-wide rounded handle, kept 14 clear of the top and
+// bottom and 3 from the edge, never shorter than 14 % of the track. It shows
+// only while the content moves or the gutter is hovered/pressed, fading over
+// 220ms, and not at all when everything fits (size ≥ 0.995).
+export component ScrollBarStyle inherits Rectangle {
+    /// The visible height of the list.
+    in property <length> view-h;
+    /// The list's viewport-height.
+    in property <length> content-h;
+    /// Two-way with the list's viewport-y: dragging the handle scrolls it.
+    in-out property <length> viewport-y;
+    /// ScrollBarStyle.qml:156: shown while something else scrolls the list.
+    in property <bool> force-active: false;
+    width: 7px;
+    height: root.view-h;
+    background: transparent;
+    property <float> size: root.content-h > 0px ? min(1.0, root.view-h / root.content-h) : 1.0;
+    // ScrollBarStyle.qml:166
+    visible: root.size > 0 && root.size < 0.995;
+    // 14 top + 14 bottom padding (:159-160)
+    property <length> span: max(0px, root.height - 28px);
+    // minimumSize 0.14 (:162)
+    property <length> handle-h: max(0.14 * root.span, root.size * root.span);
+    property <length> travel: max(0px, root.content-h - root.view-h);
+    property <float> position: root.travel > 0px ? clamp(-root.viewport-y / root.travel, 0.0, 1.0) : 0.0;
+    // `active` in QQC terms: the list moved within the last moment.
+    property <bool> scrolling: false;
+    changed viewport-y => { root.scrolling = true; still.restart(); }
+    still := Timer {
+        interval: 150ms;
+        running: false;
+        triggered => { self.running = false; root.scrolling = false; }
+    }
+    property <length> drag-from;
+    handle := Rectangle {
+        x: 0px;
+        y: 14px + root.position * (root.span - root.handle-h);
+        width: 4px;
+        height: root.handle-h;
+        // Behavior on height 240ms OutCubic (:175)
+        animate height { duration: 240ms; easing: cubic-bezier(0.33, 1, 0.68, 1); }
+        border-radius: 2px;
+        // menu.text @0.45 pressed / 0.35 hovered / 0.2 (:170)
+        background: Theme.menu-text.with-alpha(track.pressed ? 0.45 : track.has-hover ? 0.35 : 0.2);
+        opacity: root.scrolling || track.has-hover || track.pressed || root.force-active ? 1 : 0;
+        animate opacity { duration: 220ms; }
+    }
+    track := TouchArea {
+        pointer-event(e) => {
+            if (e.kind == PointerEventKind.down) { root.drag-from = root.viewport-y; }
+        }
+        moved => {
+            if (self.pressed && root.span > root.handle-h) {
+                root.viewport-y = clamp(
+                    root.drag-from - (self.mouse-y - self.pressed-y) * (root.travel / (root.span - root.handle-h)),
+                    -root.travel, 0px);
+            }
+        }
+    }
+}
+
 
 // The touch list. std-widgets' ListView rides ScrollView, which pans with a
 // wheel and a scrollbar but NOT with a finger (proven on device — a bare
@@ -376,11 +527,25 @@ export component TouchList inherits Flickable {
     // ChatPage.qml's ListView is BottomToTop: content shorter than the view
     // hangs from the composer, not the header. `end` reproduces that.
     in property <LayoutAlignment> content-alignment: start;
+    /// ScrollBarStyle.qml:156 — set while something scrolls the list
+    /// without a flick (the chat's stepped wheel).
+    in property <bool> bar-force-active: false;
     // Vertical-only: content width is the visible width, which also stops
     // row widths feeding back into the viewport (binding loop).
     viewport-width: self.width;
     VerticalLayout {
         alignment: root.content-alignment;
         @children
+    }
+    // The bar rides the viewport, so it is pinned back to the visible frame.
+    // Only layout children size the viewport (the compiler's Flickable
+    // pass), so this overlay does not stretch the content.
+    bar := ScrollBarStyle {
+        x: root.width - self.width;
+        y: -root.viewport-y;
+        view-h: root.height;
+        content-h: root.viewport-height;
+        viewport-y <=> root.viewport-y;
+        force-active: root.bar-force-active;
     }
 }

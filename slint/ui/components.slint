@@ -95,17 +95,20 @@ export component Avatar inherits Rectangle {
     }
 }
 
-// Bordered pill button — components/Button.qml's `bordered` face.
+// Pill button — components/Button.qml. `bordered` is the primary face
+// (LoginPage.qml:41,84; RecoveryPage.qml:59); plain is for secondaries such as
+// Cancel, Back and "Skip for now" (LoginPage.qml:91-92; RecoveryPage.qml:60).
 export component SButton inherits Rectangle {
     in property <string> text;
     in property <string> icon;
     in property <bool> enabled: true;
+    in property <bool> bordered: true;
     in property <color> foreground: Theme.menu-text;
     callback clicked;
     height: 36px;
     width: row.preferred-width + 28px;
     border-radius: self.height / 2;
-    border-width: 1px;
+    border-width: root.bordered ? 1px : 0px;
     border-color: root.foreground.with-alpha(0.25);
     background: !root.enabled ? transparent
               : touch.pressed ? root.foreground.with-alpha(0.12)
@@ -116,8 +119,10 @@ export component SButton inherits Rectangle {
         alignment: center;
         spacing: 6px;
         padding-top: 0; padding-bottom: 0;
+        // outlined, as IconLabel.qml:17 defaults (Button.qml never sets `filled`)
         if root.icon != "" : IconLabel {
             text: root.icon;
+            filled: false;
             color: root.foreground;
             font-size: Theme.icon-size;
             vertical-alignment: center;
@@ -133,52 +138,99 @@ export component SButton inherits Rectangle {
     touch := TouchArea { enabled: root.enabled; clicked => { root.clicked(); } }
 }
 
-// One-line text entry in a rounded well: the search pill and the login field.
+// One-line text entry in a rounded well: the login and settings fields.
+// LoginPage.qml:58-77 / RecoveryPage.qml:28-55: 36 high, radius
+// Style.cornerRadius/2 (10), fill fg@0.06, a 1px border fg@0.12 at rest and
+// accent@0.6 with focus, text inset 10 each side, placeholder fg@0.4.
 export component TextWell inherits Rectangle {
     in property <string> placeholder;
     in property <string> leading-icon;
     in-out property <string> text <=> input.text;
     in property <bool> enabled: true;
     in property <bool> password: false;
+    /// the in-field eye that flips `reveal` (RecoveryPage.qml:47-54); the
+    /// page binds `password: !reveal` itself
+    in property <bool> reveal-toggle: false;
+    in-out property <bool> reveal: false;
     callback accepted;
     callback edited;
     height: 36px;
-    border-radius: self.height / 2;
-    background: Theme.menu-text.with-alpha(0.07);
+    border-radius: 10px;
+    background: Theme.menu-text.with-alpha(0.06);
     border-width: 1px;
-    border-color: input.has-focus ? Theme.accent.with-alpha(0.4) : transparent;
+    border-color: input.has-focus ? Theme.accent.with-alpha(0.6) : Theme.menu-text.with-alpha(0.12);
     public function focus-input() { input.focus(); }
     HorizontalLayout {
-        padding-left: 14px; padding-right: 12px;
+        // LoginPage.qml:65 margins 10/10; RecoveryPage.qml:35 right 36 past the eye
+        padding-left: 10px;
+        padding-right: root.reveal-toggle ? 36px : 10px;
         spacing: 8px;
         if root.leading-icon != "" : IconLabel {
             text: root.leading-icon;
             color: Theme.menu-text.with-alpha(0.5);
             vertical-alignment: center;
         }
-        Rectangle {
-            clip: true;
-            input := TextInput {
-                enabled: root.enabled;
-                color: Theme.menu-text;
-                font-family: Theme.font-ui;
-                font-size: Theme.body;
-                vertical-alignment: center;
-                height: 100%;
-                single-line: true;
-                input-type: root.password ? InputType.password : InputType.text;
-                accepted => { root.accepted(); }
-                edited => { root.edited(); }
+        // The editing menu of TextContextMenu.qml:19-26 (right-click, or a
+        // long press on touch), in the shape Slint's own LineEdit uses.
+        ContextMenuArea {
+            enabled: root.enabled;
+            Menu {
+                MenuItem {
+                    title: "Cut";
+                    enabled: root.enabled && input.text != "";
+                    activated => { input.cut(); }
+                }
+                MenuItem {
+                    title: "Copy";
+                    enabled: input.text != "";
+                    activated => { input.copy(); }
+                }
+                MenuItem {
+                    title: "Paste";
+                    enabled: root.enabled;
+                    activated => { input.paste(); }
+                }
+                MenuItem {
+                    title: "Select all";
+                    enabled: input.text != "";
+                    activated => { input.select-all(); }
+                }
             }
-            if input.text == "" : Text {
-                text: root.placeholder;
-                color: Theme.menu-text.with-alpha(0.45);
-                font-family: Theme.font-ui;
-                font-size: Theme.body;
-                vertical-alignment: center;
-                height: 100%;
+            Rectangle {
+                clip: true;
+                input := TextInput {
+                    enabled: root.enabled;
+                    color: Theme.menu-text;
+                    font-family: Theme.font-ui;
+                    font-size: Theme.body;
+                    vertical-alignment: center;
+                    height: 100%;
+                    single-line: true;
+                    input-type: root.password ? InputType.password : InputType.text;
+                    accepted => { root.accepted(); }
+                    edited => { root.edited(); }
+                }
+                if input.text == "" : Text {
+                    text: root.placeholder;
+                    color: Theme.menu-text.with-alpha(0.4);
+                    font-family: Theme.font-ui;
+                    font-size: Theme.body;
+                    vertical-alignment: center;
+                    height: 100%;
+                }
             }
         }
+    }
+    // RecoveryPage.qml:47-54: a 22×22 PanelActionButton 6 in from the right,
+    // eye when revealed, eyeOff when hidden, fg@0.7.
+    if root.reveal-toggle : ActionButton {
+        x: root.width - 6px - self.width;
+        y: (root.height - self.height) / 2;
+        width: 22px; height: 22px;
+        icon: root.reveal ? Icons.eye : Icons.eyeOff;
+        filled: false;
+        foreground: Theme.menu-text.with-alpha(0.7);
+        clicked => { root.reveal = !root.reveal; }
     }
 }
 

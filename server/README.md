@@ -59,6 +59,7 @@ to the compose file (the config, the database, the admin token).
 | `SIGIL_HOSTNAME` | `hostname` | the public name, the `:server` half of every `@name:server` |
 | `SIGIL_REGISTRATION` | `registration` | `invite`, `open` or `oidc` |
 | `SIGIL_OIDC_ISSUER`, `SIGIL_OIDC_CLIENT_ID` | `oidc_issuer`, `oidc_client_id` | the provider and the client id for `oidc` |
+| `SIGIL_RECOVERY` | `recovery` | `escrow` (password and sign-in bring an account back, nothing to print) or `code` (the printed recovery code); empty picks `escrow` with `oidc`, else `code` |
 | `SIGIL_ADVERTISE` | `advertise` | where the server answers when that is not the hostname (short usernames, below) |
 | `SIGIL_MEDIA_PUBLIC` | `media_public` | where callers send media: your public IP or name, `:8444` |
 | `SIGIL_CALLS` | `calls` | `true`/`false` |
@@ -123,9 +124,21 @@ in `SIGIL_OIDC_ISSUER`, set `SIGIL_REGISTRATION=oidc`. Any other provider
 (Authentik, Keycloak, Authelia) works the same way: a public client with
 PKCE and those two redirect URIs.
 
-The app still asks for a username after the sign-in; the provider's
-username is offered as the suggestion. Only registration is gated:
-messages, calls, backups and daily tokens carry no login, as before.
+After the sign-in the app asks for a username (the provider's username
+is the suggestion) and a recovery password, and that is all: with
+`SIGIL_RECOVERY=escrow` (the default under `oidc`) the recovery key is
+kept on the server sealed under that password and handed out only to a
+sign-in that holds the name, so a lost phone is replaced with the
+password and Pocket ID, nothing to print. Devices linked from a signed-in
+one receive the key from it. The server can open nothing: the password
+never reaches it, and a guess is limited by the per-name backoff and by
+needing the sign-in. `SIGIL_RECOVERY=code` keeps the printed code instead.
+Only registration and the escrow are gated: messages, calls, backups and
+daily tokens carry no login, as before.
+
+Manual account creation is off whenever registration is `oidc`: there
+are no invite codes to hand out, and a name can only be taken by a
+sign-in.
 
 `GET /oidc` returns `{"issuer", "client_id"}` when the gate is on (404
 otherwise); the server card's flag bit 1 says whether to ask.

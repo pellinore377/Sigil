@@ -1,27 +1,89 @@
 // The doors: how a fresh install becomes an account. Sigil has no "log in"
 // in the Matrix sense — keys live on the device — so the doors are: create
-// an account, restore one onto this device (password and code), or link
-// this device to one that is already signed in (QR and seven emoji). The
-// first screen asks for the server only; the next shows the doors that
-// server offers. Same column, sizes and spacing as components/LoginPage.qml.
+// an account, restore one onto this device, or link this device to one
+// that is already signed in (QR and seven emoji). The first screen asks
+// for the server only. On a server that signs people in at its own
+// identity provider the browser opens at once, and the sign-in decides
+// what comes next: a name to choose and a recovery password to set, or,
+// when that login already holds a name, the recovery password alone.
+// Other servers show their doors. Same column, sizes and spacing as
+// components/LoginPage.qml.
 
 import { Theme } from "style.slint";
 import { Icons } from "icons.slint";
 import { IconLabel, SButton, TextWell } from "components.slint";
 import { Spinner } from "furniture.slint";
 
+// The urgent line at the foot of a group (LoginPage.qml:100-105).
+component ErrorText inherits Text {
+    color: Theme.urgent;
+    font-family: Theme.font-ui;
+    font-size: Theme.body-small;
+    horizontal-alignment: center;
+    wrap: word-wrap;
+}
+
+// The dim caption over a field (LoginPage.qml:60-63).
+component FieldLabel inherits Text {
+    color: Theme.menu-text.with-alpha(0.6);
+    font-family: Theme.font-ui;
+    font-size: Theme.caption;
+}
+
+// The explanation under a group (LoginPage.qml:95-99).
+component Note inherits Text {
+    color: Theme.menu-text.with-alpha(0.55);
+    font-family: Theme.font-ui;
+    font-size: Theme.body-small;
+    horizontal-alignment: center;
+    wrap: word-wrap;
+}
+
+// "@ name :server", the field in the middle
+component NameRow inherits HorizontalLayout {
+    in property <string> server;
+    in-out property <string> text;
+    in property <bool> enabled: true;
+    callback accepted;
+    public function focus-input() { well.focus-input(); }
+    spacing: 6px;
+    Text {
+        text: "@";
+        color: Theme.menu-text.with-alpha(0.6);
+        font-family: Theme.font-ui; font-size: Theme.body;
+        vertical-alignment: center;
+    }
+    well := TextWell {
+        placeholder: "name";
+        text <=> root.text;
+        enabled: root.enabled;
+        horizontal-stretch: 1;
+        accepted => { root.accepted(); }
+    }
+    Text {
+        text: ":" + root.server;
+        color: Theme.menu-text.with-alpha(0.6);
+        font-family: Theme.font-ui; font-size: Theme.body;
+        vertical-alignment: center;
+        overflow: elide;
+    }
+}
+
 export component DoorsPage inherits Rectangle {
-    /// server | choose | create | recover | link
+    /// server | signin | name | password | welcome | choose | create | recover | link
     in-out property <string> door: "server";
     in-out property <string> server;
     /// open | invite | oidc, from account.probe
     in property <string> registration: "invite";
-    /// with oidc: the provider's host, how the sign-in went, and the name it suggests
+    /// escrow | code: whether the server keeps a password-locked copy of
+    /// the recovery key, or the person keeps a printed code
+    in property <string> recovery: "code";
+    /// with oidc: the provider's host, how the sign-in went, and the name
+    /// it suggests (or, at the welcome door, the name that login holds)
     in property <string> oidc-name;
     /// "" | waiting | done | failed
     in property <string> oidc-state;
     in property <string> oidc-user;
-    in property <bool> tpm;
     in property <bool> busy;
     in property <bool> restoring;
     in property <string> error;
@@ -41,25 +103,43 @@ export component DoorsPage inherits Rectangle {
 
     background: Theme.menu-background;
     in-out property <bool> reveal: false;
+    // the name chosen at the name door, carried to the password door
+    in-out property <string> chosen-name;
+    property <bool> escrow: root.recovery == "escrow";
 
     public function reset() {
         root.door = "server";
         root.reveal = false;
+        root.chosen-name = "";
     }
+    // app.slint rebuilds this page whenever the session leaves loggedIn, so
+    // its birth is the moment to start over at the server screen.
+    init => { root.reset(); }
 
     VerticalLayout {
         alignment: center;
-        padding-left: 40px; padding-right: 40px;
+        // LoginPage.qml:18-19: a centred column min(parent.width - 80, 440) wide
+        x: (root.width - self.width) / 2;
+        width: min(root.width - 80px, 440px);
         spacing: Theme.sp-xl;
 
+        // outlined, as IconLabel.qml:17 defaults (LoginPage.qml:22)
         IconLabel {
-            text: root.door == "link" ? Icons.link : Icons.chat;
+            text: root.door == "link" ? Icons.link
+                : root.door == "password" ? Icons.lock
+                : root.door == "welcome" || root.door == "recover" ? Icons.recoveryKey
+                : Icons.chat;
+            filled: false;
             font-size: 44px;
             color: Theme.menu-text;
             horizontal-alignment: center;
         }
         Text {
             text: root.door == "server" ? "Welcome to Sigil"
+                : root.door == "signin" ? "Sign in"
+                : root.door == "name" ? "Choose your username"
+                : root.door == "password" ? "Set a recovery password"
+                : root.door == "welcome" ? "Welcome back"
                 : root.door == "choose" ? root.server
                 : root.door == "create" ? "Create your account"
                 : root.door == "recover" ? "Restore your account"
@@ -72,59 +152,229 @@ export component DoorsPage inherits Rectangle {
             overflow: elide;
         }
 
+        // LoginPage.qml:107-113: a Row, so spinner and label sit at the top
         if root.restoring : HorizontalLayout {
             alignment: center;
             spacing: Theme.sp-md;
-            Spinner { spin-color: Theme.menu-text; }
+            VerticalLayout {
+                alignment: start;
+                Spinner { spin-color: Theme.menu-text; }
+            }
             Text {
                 text: "Restoring session…";
                 color: Theme.menu-text.with-alpha(0.7);
                 font-family: Theme.font-ui;
                 font-size: Theme.body;
-                vertical-alignment: center;
+                vertical-alignment: top;
             }
         }
 
         // ---- 1. the server ----
         if !root.restoring && root.door == "server" : VerticalLayout {
             spacing: Theme.sp-md;
-            Text {
-                text: "Server";
-                color: Theme.menu-text.with-alpha(0.6);
-                font-family: Theme.font-ui;
-                font-size: Theme.caption;
-            }
+            // LoginPage.qml:120 focusInput(): the field takes focus on entry
+            init => { server-well.focus-input(); }
+            FieldLabel { text: "Server"; }
             server-well := TextWell {
                 placeholder: "sigil.example.com";
                 text <=> root.server;
                 enabled: !root.busy;
-                accepted => { if (self.text != "") { root.probe(self.text); } }
+                // LoginPage.qml:75 onAccepted
+                accepted => { if (self.text != "" && !root.busy) { root.probe(self.text); } }
             }
             HorizontalLayout {
                 alignment: center;
                 SButton {
-                    text: root.busy ? "Asking the server…" : "Continue";
+                    text: root.busy ? "Asking the server…" : "Sign in";
                     icon: root.busy ? "" : Icons.login;
                     enabled: !root.busy && server-well.text != "";
                     clicked => { root.probe(server-well.text); }
                 }
             }
-            Text {
-                text: "The server is the second half of your username: @you:" + (root.server == "" ? "server" : root.server);
-                color: Theme.menu-text.with-alpha(0.55);
-                font-family: Theme.font-ui;
-                font-size: Theme.body-small;
-                horizontal-alignment: center;
-                wrap: word-wrap;
+            Note { text: "The server is the second half of your username: @you:" + (root.server == "" ? "server" : root.server); }
+            if root.error != "" : ErrorText { text: root.error; }
+        }
+
+        // ---- 2a. the sign-in at the server's provider ----
+        // The browser opened the moment the server answered; this screen
+        // waits for it to come back. No QML twin: the restoring row and
+        // the choose door's groups, at the column's steps.
+        if !root.restoring && root.door == "signin" : VerticalLayout {
+            spacing: Theme.sp-xl;
+            if root.oidc-state != "failed" : HorizontalLayout {
+                alignment: center;
+                spacing: Theme.sp-md;
+                VerticalLayout {
+                    alignment: start;
+                    Spinner { spin-color: Theme.menu-text; }
+                }
+                Text {
+                    text: "Waiting for your browser…";
+                    color: Theme.menu-text.with-alpha(0.7);
+                    font-family: Theme.font-ui;
+                    font-size: Theme.body;
+                    vertical-alignment: top;
+                }
+            }
+            Note {
+                text: root.oidc-state == "failed"
+                    ? "The sign-in did not go through. Try again, or use another server."
+                    : "Finish signing in with " + root.oidc-name + " on the page that opened, then come back here.";
+            }
+            VerticalLayout {
+                spacing: Theme.sp-md;
+                HorizontalLayout {
+                    alignment: center;
+                    SButton {
+                        text: root.oidc-state == "failed" ? "Try again" : "Open the sign-in again";
+                        icon: Icons.login;
+                        bordered: root.oidc-state == "failed";
+                        enabled: !root.busy;
+                        clicked => { root.oidc-start(); }
+                    }
+                }
+                HorizontalLayout {
+                    alignment: center;
+                    SButton { text: "Link this device instead"; bordered: false; clicked => { root.door = "link"; } }
+                }
+                HorizontalLayout {
+                    alignment: center;
+                    SButton { text: "Use another server"; bordered: false; clicked => { root.door = "server"; } }
+                }
+                if root.error != "" : ErrorText { text: root.error; }
             }
         }
 
-        // ---- 2. the doors this server offers ----
-        if !root.restoring && root.door == "choose" : VerticalLayout {
+        // ---- 2b. the name, after a sign-in that holds none yet ----
+        if !root.restoring && root.door == "name" : VerticalLayout {
             spacing: Theme.sp-md;
+            init => {
+                if (root.chosen-name == "") { root.chosen-name = root.oidc-user; }
+                name-row.focus-input();
+            }
+            FieldLabel { text: "Username"; }
+            name-row := NameRow {
+                server: root.server;
+                text <=> root.chosen-name;
+                enabled: !root.busy;
+                accepted => { if (self.text != "") { root.door = "password"; } }
+            }
+            Note { text: "This is how people find you. Your sign-in at " + root.oidc-name + " holds this one name, so choose it once."; }
+            HorizontalLayout {
+                alignment: center;
+                spacing: Theme.sp-lg;
+                SButton {
+                    text: "Continue";
+                    enabled: !root.busy && root.chosen-name != "";
+                    clicked => { root.door = "password"; }
+                }
+                SButton { text: "Back"; bordered: false; clicked => { root.door = "server"; } }
+            }
+            if root.error != "" : ErrorText { text: root.error; }
+        }
+
+        // ---- 2c. the recovery password, then the account is made ----
+        if !root.restoring && root.door == "password" : VerticalLayout {
+            spacing: Theme.sp-md;
+            init => { new-pw.focus-input(); }
+            Note {
+                text: "Signing in is " + root.oidc-name + "'s job. This password does one other thing: "
+                    + (root.escrow
+                        ? "it locks a copy of your recovery key, kept on the server, so that if you ever lose every device this password alone brings your conversations back. Nothing can read your messages with it."
+                        : "it locks your backup. Together with a code shown next, it brings your conversations back on a new device.")
+                    + " Keep it somewhere safe; it cannot be reset.";
+            }
+            FieldLabel { text: "Recovery password"; }
+            new-pw := TextWell {
+                placeholder: "a good password";
+                password: !root.reveal;
+                reveal-toggle: true;
+                reveal <=> root.reveal;
+                enabled: !root.busy;
+                accepted => { new-pw2.focus-input(); }
+            }
+            FieldLabel { text: "Again"; }
+            new-pw2 := TextWell {
+                placeholder: "the same password";
+                password: !root.reveal;
+                enabled: !root.busy;
+                // the terminal field submits, as LoginPage.qml:75 onAccepted
+                accepted => { if (go-btn.enabled) { go-btn.clicked(); } }
+            }
+            if new-pw2.text != "" && new-pw.text != new-pw2.text : ErrorText { text: "The two passwords differ."; }
+            HorizontalLayout {
+                alignment: center;
+                spacing: Theme.sp-lg;
+                go-btn := SButton {
+                    text: root.busy ? "Creating…" : "Continue";
+                    enabled: !root.busy && new-pw.text != "" && new-pw.text == new-pw2.text && root.chosen-name != "";
+                    clicked => { root.create(root.chosen-name, "", new-pw.text); }
+                }
+                SButton { text: "Back"; bordered: false; enabled: !root.busy; clicked => { root.door = "name"; } }
+            }
+            if root.error != "" : ErrorText { text: root.error; }
+        }
+
+        // ---- 2d. welcome back: the sign-in already holds a name ----
+        if !root.restoring && root.door == "welcome" : VerticalLayout {
+            spacing: Theme.sp-md;
+            init => { back-pw.focus-input(); }
+            Text {
+                text: "@" + root.oidc-user + ":" + root.server;
+                color: Theme.menu-text;
+                font-family: Theme.font-ui;
+                font-size: Theme.title;
+                font-weight: 700;
+                horizontal-alignment: center;
+                overflow: elide;
+            }
+            Note {
+                text: "Your sign-in at " + root.oidc-name + " already holds this name. "
+                    + (root.escrow
+                        ? "Your recovery password brings your conversations, history and identity to this device."
+                        : "Your recovery password and the printed code bring your conversations, history and identity to this device.")
+                    + " If you still have a signed-in device, linking is quicker.";
+            }
+            FieldLabel { text: "Recovery password"; }
+            back-pw := TextWell {
+                placeholder: "your recovery password";
+                password: !root.reveal;
+                reveal-toggle: true;
+                reveal <=> root.reveal;
+                enabled: !root.busy;
+                accepted => { if (root.escrow) { if (back-btn.enabled) { back-btn.clicked(); } } else { back-code.focus-input(); } }
+            }
+            if !root.escrow : FieldLabel { text: "Recovery code"; }
+            back-code := TextWell {
+                visible: !root.escrow;
+                placeholder: "the printed code";
+                enabled: !root.busy;
+                accepted => { if (back-btn.enabled) { back-btn.clicked(); } }
+            }
+            HorizontalLayout {
+                alignment: center;
+                spacing: Theme.sp-lg;
+                back-btn := SButton {
+                    text: root.busy ? "Restoring…" : "Restore";
+                    enabled: !root.busy && back-pw.text != "" && (root.escrow || back-code.text != "");
+                    clicked => { root.recover(root.oidc-user, back-pw.text, root.escrow ? "" : back-code.text); }
+                }
+                SButton { text: "Link this device instead"; bordered: false; enabled: !root.busy; clicked => { root.door = "link"; } }
+            }
+            HorizontalLayout {
+                alignment: center;
+                SButton { text: "Use another server"; bordered: false; enabled: !root.busy; clicked => { root.door = "server"; } }
+            }
+            if root.error != "" : ErrorText { text: root.error; }
+        }
+
+        // ---- 3. the doors a server without a sign-in offers ----
+        // No QML for this screen: the copy sits at the column's xl step, the
+        // doors are one md group of Buttons like LoginPage.qml:78-93.
+        if !root.restoring && root.door == "choose" : VerticalLayout {
+            spacing: Theme.sp-xl;
             Text {
                 text: root.registration == "open" ? "Anyone can create an account here."
-                    : root.registration == "oidc" ? "This server signs people in with its own login."
                     : "This server creates accounts by invite code.";
                 color: Theme.menu-text.with-alpha(0.7);
                 font-family: Theme.font-ui;
@@ -132,150 +382,128 @@ export component DoorsPage inherits Rectangle {
                 horizontal-alignment: center;
                 wrap: word-wrap;
             }
-            Rectangle { height: 4px; }
-            // with the OIDC gate the create door starts with the sign-in
-            HorizontalLayout {
-                alignment: center;
-                SButton {
-                    text: root.registration == "oidc" ? "Sign in and create account" : "Create account";
-                    icon: root.registration == "oidc" ? Icons.login : Icons.personAdd;
-                    clicked => { root.door = "create"; }
+            VerticalLayout {
+                spacing: Theme.sp-md;
+                HorizontalLayout {
+                    alignment: center;
+                    SButton { text: "Create account"; icon: Icons.personAdd; clicked => { root.door = "create"; } }
                 }
-            }
-            HorizontalLayout {
-                alignment: center;
-                SButton { text: "I already have an account"; icon: Icons.recoveryKey; clicked => { root.door = "recover"; } }
-            }
-            HorizontalLayout {
-                alignment: center;
-                SButton { text: "Link this device"; icon: Icons.link; clicked => { root.door = "link"; } }
-            }
-            Rectangle { height: 4px; }
-            back-link := Text {
-                text: "Use another server";
-                color: Theme.menu-text.with-alpha(0.55);
-                font-family: Theme.font-ui;
-                font-size: Theme.body-small;
-                horizontal-alignment: center;
-                TouchArea { clicked => { root.door = "server"; } }
+                HorizontalLayout {
+                    alignment: center;
+                    SButton { text: "I already have an account"; icon: Icons.recoveryKey; clicked => { root.door = "recover"; } }
+                }
+                HorizontalLayout {
+                    alignment: center;
+                    SButton { text: "Link this device"; icon: Icons.link; clicked => { root.door = "link"; } }
+                }
+                // the plain face of LoginPage.qml:91-92's secondaries
+                HorizontalLayout {
+                    alignment: center;
+                    SButton { text: "Use another server"; bordered: false; clicked => { root.door = "server"; } }
+                }
+                if root.error != "" : ErrorText { text: root.error; }
             }
         }
 
         // ---- 3a. create ----
-        if !root.restoring && root.door == "create" : VerticalLayout {
+        if !root.restoring && root.door == "create" : create-door := VerticalLayout {
             spacing: Theme.sp-md;
-            Text { text: "Username"; color: Theme.menu-text.with-alpha(0.6); font-family: Theme.font-ui; font-size: Theme.caption; }
-            HorizontalLayout {
-                spacing: 6px;
-                Text {
-                    text: "@";
-                    color: Theme.menu-text.with-alpha(0.6);
-                    font-family: Theme.font-ui; font-size: Theme.body;
-                    vertical-alignment: center;
-                }
-                // with a sign-in, the provider's name is the suggestion until typed over
-                create-name := TextWell { placeholder: "name"; text: root.registration == "oidc" ? root.oidc-user : ""; enabled: !root.busy; horizontal-stretch: 1; }
-                Text {
-                    text: ":" + root.server;
-                    color: Theme.menu-text.with-alpha(0.6);
-                    font-family: Theme.font-ui; font-size: Theme.body;
-                    vertical-alignment: center;
-                    overflow: elide;
+            // The invite field's text, held here so the Create button can read
+            // it while the field itself is folded away on open servers.
+            property <string> invite;
+            // bumped to send focus into the folded invite field (see below)
+            property <int> invite-focus: 0;
+            init => { create-name.focus-input(); }
+            FieldLabel { text: "Username"; }
+            create-name := NameRow {
+                server: root.server;
+                enabled: !root.busy;
+                // Enter walks on to the next field
+                accepted => {
+                    if (root.registration == "invite") { create-door.invite-focus += 1; }
+                    else { create-pw.focus-input(); }
                 }
             }
-            // with the OIDC gate: sign in at the provider first; the browser does it
-            if root.registration == "oidc" : VerticalLayout {
+            // only on invite servers; the text lives on create-door
+            if root.registration == "invite" : VerticalLayout {
                 spacing: Theme.sp-md;
-                Text { text: "Sign in"; color: Theme.menu-text.with-alpha(0.6); font-family: Theme.font-ui; font-size: Theme.caption; }
-                if root.oidc-state != "done" : HorizontalLayout {
-                    alignment: center;
-                    SButton {
-                        text: root.oidc-state == "waiting" ? "Waiting for your browser…" : "Sign in with " + root.oidc-name;
-                        enabled: !root.busy && root.oidc-state != "waiting";
-                        clicked => { root.oidc-start(); }
-                    }
-                }
-                if root.oidc-state == "done" : Text {
-                    text: "Signed in" + (root.oidc-user == "" ? "" : " as " + root.oidc-user);
-                    color: Theme.menu-text;
-                    font-family: Theme.font-ui; font-size: Theme.body;
-                    horizontal-alignment: center;
-                }
-                Text {
-                    text: root.oidc-state == "waiting" ? "Finish signing in on the page that opened, then come back here."
-                        : root.oidc-state == "done" ? "This server lets that login hold one name."
-                        : "This server takes sign-ins from " + root.oidc-name + " instead of invite codes.";
-                    color: Theme.menu-text.with-alpha(0.55);
-                    font-family: Theme.font-ui;
-                    font-size: Theme.body-small;
-                    horizontal-alignment: center;
-                    wrap: word-wrap;
+                FieldLabel { text: "Invite code"; }
+                create-invite := TextWell {
+                    placeholder: "from whoever runs the server";
+                    text <=> create-door.invite;
+                    enabled: !root.busy;
+                    property <int> focus-tick: create-door.invite-focus;
+                    changed focus-tick => { self.focus-input(); }
+                    accepted => { create-pw.focus-input(); }
                 }
             }
-            // always built, so the button can read it; folded away on open servers
-            invite-block := Rectangle {
-                height: root.registration == "invite" ? 36px + Theme.sp-md + 12px : 0px;
-                clip: true;
-                VerticalLayout {
-                    spacing: Theme.sp-md;
-                    Text { text: "Invite code"; color: Theme.menu-text.with-alpha(0.6); font-family: Theme.font-ui; font-size: Theme.caption; }
-                    create-invite := TextWell { placeholder: "from whoever runs the server"; enabled: !root.busy; }
-                }
+            FieldLabel { text: "Recovery password (optional)"; }
+            create-pw := TextWell {
+                placeholder: "a good password";
+                password: !root.reveal;
+                reveal-toggle: true;
+                reveal <=> root.reveal;
+                enabled: !root.busy;
+                // the terminal field submits, as LoginPage.qml:75 onAccepted
+                accepted => { if (create-btn.enabled) { create-btn.clicked(); } }
             }
-            Text { text: "Password (optional)"; color: Theme.menu-text.with-alpha(0.6); font-family: Theme.font-ui; font-size: Theme.caption; }
-            create-pw := TextWell { placeholder: "a good password"; password: !root.reveal; enabled: !root.busy; }
-            Text {
-                text: "With a password you can get everything back on a new device with the password and a printed code. Without one, only another signed-in device can bring you back.";
-                color: Theme.menu-text.with-alpha(0.55);
-                font-family: Theme.font-ui;
-                font-size: Theme.body-small;
-                horizontal-alignment: center;
-                wrap: word-wrap;
+            Note {
+                text: root.escrow
+                    ? "Not for signing in: this password locks a copy of your recovery key, kept on the server, so a new device gets everything back with the password alone. Without one, only another signed-in device can bring you back."
+                    : "Not for signing in: this password locks your backup. With it and a code shown next, a new device gets everything back. Without one, only another signed-in device can bring you back.";
             }
             HorizontalLayout {
                 alignment: center;
                 spacing: Theme.sp-lg;
-                SButton {
+                create-btn := SButton {
                     text: root.busy ? "Creating…" : "Create account";
-                    enabled: !root.busy && create-name.text != "" && (root.registration != "oidc" || root.oidc-state == "done");
-                    clicked => { root.create(create-name.text, root.registration == "invite" ? create-invite.text : "", create-pw.text); }
+                    enabled: !root.busy && create-name.text != "";
+                    clicked => { root.create(create-name.text, root.registration == "invite" ? create-door.invite : "", create-pw.text); }
                 }
-                SButton { text: "Back"; enabled: !root.busy; clicked => { root.door = "choose"; } }
+                SButton { text: "Back"; bordered: false; enabled: !root.busy; clicked => { root.door = "choose"; } }
             }
+            if root.error != "" : ErrorText { text: root.error; }
         }
 
         // ---- 3b. restore ----
         if !root.restoring && root.door == "recover" : VerticalLayout {
             spacing: Theme.sp-md;
-            Text { text: "Username"; color: Theme.menu-text.with-alpha(0.6); font-family: Theme.font-ui; font-size: Theme.caption; }
-            HorizontalLayout {
-                spacing: 6px;
-                Text { text: "@"; color: Theme.menu-text.with-alpha(0.6); font-family: Theme.font-ui; font-size: Theme.body; vertical-alignment: center; }
-                rec-name := TextWell { placeholder: "name"; enabled: !root.busy; horizontal-stretch: 1; }
-                Text { text: ":" + root.server; color: Theme.menu-text.with-alpha(0.6); font-family: Theme.font-ui; font-size: Theme.body; vertical-alignment: center; overflow: elide; }
+            init => { rec-name.focus-input(); }
+            FieldLabel { text: "Username"; }
+            rec-name := NameRow {
+                server: root.server;
+                enabled: !root.busy;
+                accepted => { rec-pw.focus-input(); }
             }
-            Text { text: "Password"; color: Theme.menu-text.with-alpha(0.6); font-family: Theme.font-ui; font-size: Theme.caption; }
-            rec-pw := TextWell { placeholder: "your backup password"; password: !root.reveal; enabled: !root.busy; }
-            Text { text: "Recovery code"; color: Theme.menu-text.with-alpha(0.6); font-family: Theme.font-ui; font-size: Theme.caption; }
-            rec-code := TextWell { placeholder: "the printed code"; enabled: !root.busy; }
-            Text {
-                text: "Everything comes back: conversations, history and your identity. If you still have a signed-in device, linking is quicker: go back and choose Link this device.";
-                color: Theme.menu-text.with-alpha(0.55);
-                font-family: Theme.font-ui;
-                font-size: Theme.body-small;
-                horizontal-alignment: center;
-                wrap: word-wrap;
+            FieldLabel { text: "Recovery password"; }
+            rec-pw := TextWell {
+                placeholder: "your recovery password";
+                password: !root.reveal;
+                reveal-toggle: true;
+                reveal <=> root.reveal;
+                enabled: !root.busy;
+                accepted => { if (root.escrow) { if (restore-btn.enabled) { restore-btn.clicked(); } } else { rec-code.focus-input(); } }
             }
+            if !root.escrow : FieldLabel { text: "Recovery code"; }
+            rec-code := TextWell {
+                visible: !root.escrow;
+                placeholder: "the printed code";
+                enabled: !root.busy;
+                // the terminal field submits (RecoveryPage.qml:45)
+                accepted => { if (restore-btn.enabled) { restore-btn.clicked(); } }
+            }
+            Note { text: "Everything comes back: conversations, history and your identity. If you still have a signed-in device, linking is quicker: go back and choose Link this device."; }
             HorizontalLayout {
                 alignment: center;
                 spacing: Theme.sp-lg;
-                SButton {
+                restore-btn := SButton {
                     text: root.busy ? "Restoring…" : "Restore";
-                    enabled: !root.busy && rec-name.text != "" && rec-pw.text != "" && rec-code.text != "";
-                    clicked => { root.recover(rec-name.text, rec-pw.text, rec-code.text); }
+                    enabled: !root.busy && rec-name.text != "" && rec-pw.text != "" && (root.escrow || rec-code.text != "");
+                    clicked => { root.recover(rec-name.text, rec-pw.text, root.escrow ? "" : rec-code.text); }
                 }
-                SButton { text: "Back"; enabled: !root.busy; clicked => { root.door = "choose"; } }
+                SButton { text: "Back"; bordered: false; enabled: !root.busy; clicked => { root.door = "choose"; } }
             }
+            if root.error != "" : ErrorText { text: root.error; }
         }
 
         // ---- 3c. link this device (the new device's side) ----
@@ -283,20 +511,16 @@ export component DoorsPage inherits Rectangle {
             spacing: Theme.sp-md;
             if root.link-state == "" : VerticalLayout {
                 spacing: Theme.sp-md;
-                Text { text: "Username"; color: Theme.menu-text.with-alpha(0.6); font-family: Theme.font-ui; font-size: Theme.caption; }
-                HorizontalLayout {
-                    spacing: 6px;
-                    Text { text: "@"; color: Theme.menu-text.with-alpha(0.6); font-family: Theme.font-ui; font-size: Theme.body; vertical-alignment: center; }
-                    link-name := TextWell { placeholder: "name"; enabled: !root.busy; horizontal-stretch: 1;
-                        accepted => { if (self.text != "") { root.link-start(self.text); } } }
-                    Text { text: ":" + root.server; color: Theme.menu-text.with-alpha(0.6); font-family: Theme.font-ui; font-size: Theme.body; vertical-alignment: center; overflow: elide; }
+                init => { link-name.focus-input(); }
+                FieldLabel { text: "Username"; }
+                // after a sign-in, the name that login holds is the suggestion
+                link-name := NameRow {
+                    server: root.server;
+                    text: root.oidc-user;
+                    enabled: !root.busy;
+                    accepted => { if (self.text != "" && !root.busy) { root.link-start(self.text); } }
                 }
-                Text {
-                    text: "On a device that is already signed in, open Settings → Link a device and scan the code this screen will show.";
-                    color: Theme.menu-text.with-alpha(0.55);
-                    font-family: Theme.font-ui; font-size: Theme.body-small;
-                    horizontal-alignment: center; wrap: word-wrap;
-                }
+                Note { text: "On a device that is already signed in, open Settings → Link a device and scan the code this screen will show."; }
                 HorizontalLayout {
                     alignment: center;
                     spacing: Theme.sp-lg;
@@ -305,12 +529,15 @@ export component DoorsPage inherits Rectangle {
                         enabled: !root.busy && link-name.text != "";
                         clicked => { root.link-start(link-name.text); }
                     }
-                    SButton { text: "Back"; enabled: !root.busy; clicked => { root.door = "choose"; } }
+                    SButton { text: "Back"; bordered: false; enabled: !root.busy;
+                        clicked => { root.door = root.registration == "oidc" ? (root.oidc-user != "" && root.oidc-state == "done" ? "welcome" : "signin") : "choose"; } }
                 }
             }
             // the offer as a QR code, and as text for a desktop without a camera
             if root.link-state == "offer" : Rectangle {
                 height: 216px;
+                // A 200px code on a white card 8px larger all round: that
+                // margin is the quiet zone a scanner needs to find the edges.
                 Rectangle {
                     x: (parent.width - 216px) / 2;
                     width: 216px; height: 216px;
@@ -319,22 +546,30 @@ export component DoorsPage inherits Rectangle {
                     Image { source: root.link-image; width: 200px; height: 200px; x: 8px; y: 8px; image-rendering: pixelated; }
                 }
             }
-            if root.link-state == "offer" : Text {
-                text: root.link-offer;
-                color: Theme.menu-text.with-alpha(0.7);
-                font-family: Theme.font-mono; font-size: Theme.caption;
-                horizontal-alignment: center; wrap: char-wrap;
+            // the offer text in the recovery code's well (recovery.slint,
+            // RecoveryCodePage): Style.cornerRadius/2, fg@0.06, 1px fg@0.12, mono at title
+            if root.link-state == "offer" : Rectangle {
+                height: offer-text.preferred-height + 24px;
+                border-radius: 10px;
+                background: Theme.menu-text.with-alpha(0.06);
+                border-width: 1px;
+                border-color: Theme.menu-text.with-alpha(0.12);
+                offer-text := Text {
+                    x: 12px; y: 12px;
+                    width: parent.width - 24px;
+                    text: root.link-offer;
+                    color: Theme.menu-text;
+                    font-family: Theme.font-mono;
+                    font-size: Theme.title;
+                    horizontal-alignment: center;
+                    wrap: char-wrap;
+                }
             }
-            if root.link-state == "offer" : Text {
-                text: "Waiting for your other device to scan it…";
-                color: Theme.menu-text.with-alpha(0.55);
-                font-family: Theme.font-ui; font-size: Theme.body-small;
-                horizontal-alignment: center; wrap: word-wrap;
-            }
-            // the seven emoji, to compare by eye
+            if root.link-state == "offer" : Note { text: "Waiting for your other device to scan it…"; }
+            // the seven emoji, to compare by eye, at the display step
             if root.link-state == "sas" || root.link-state == "joining" : Text {
                 text: root.link-sas;
-                font-size: 30px;
+                font-size: Theme.display;
                 horizontal-alignment: center;
                 wrap: word-wrap;
             }
@@ -352,17 +587,9 @@ export component DoorsPage inherits Rectangle {
             }
             if root.link-state != "" && root.link-state != "done" : HorizontalLayout {
                 alignment: center;
-                SButton { text: "Cancel"; clicked => { root.link-cancel(); } }
+                SButton { text: "Cancel"; bordered: false; clicked => { root.link-cancel(); } }
             }
-        }
-
-        if root.error != "" : Text {
-            text: root.error;
-            color: Theme.urgent;
-            font-family: Theme.font-ui;
-            font-size: Theme.body-small;
-            horizontal-alignment: center;
-            wrap: word-wrap;
+            if root.error != "" : ErrorText { text: root.error; }
         }
     }
 }

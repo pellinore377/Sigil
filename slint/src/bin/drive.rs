@@ -28,6 +28,10 @@
 //!
 //! The account's state goes wherever XDG_STATE_HOME points; the tests use
 //! a temporary directory.
+//!   oidc   a server whose registration is a sign-in at its provider:
+//!          probe, the browser round-trip, name, recovery password, Home.
+//!   oidc-back the same account on a second device: the sign-in holds the
+//!          name, the recovery password alone brings everything back.
 
 use sigil_slint::headless::Harness;
 use slint::{ComponentHandle, Model};
@@ -76,18 +80,111 @@ fn main() -> anyhow::Result<()> {
         "caller" => caller(&h, &app, server, invite, &localpart),
         "callee" => callee(&h, &app, server, invite, &localpart),
         "oidc" => oidc(&h, &app, server, &localpart),
+        "oidc-back" => oidc_back(&h, &app, server, &localpart),
         other => anyhow::bail!("unknown scenario {other}"),
     }
 }
 
 /// The doors on a server whose registration is a sign-in at its identity
-/// provider: probe, sign in (SIGIL_BROWSER fetches the login page, which
-/// the fake issuer answers by redirecting straight back), then create.
+/// provider: probe (the browser opens by itself; SIGIL_BROWSER fetches the
+/// login page, which the fake issuer answers by redirecting straight
+/// back), choose the name, set the recovery password, land on Home with
+/// no printed code in the way.
 fn oidc(
     h: &Harness,
     app: &sigil_slint::AppWindow,
     server: &str,
     localpart: &str,
+) -> anyhow::Result<()> {
+    oidc_signin(h, app, server)?;
+    anyhow::ensure!(
+        app.get_door() == "name",
+        "expected the name door, got {}",
+        app.get_door()
+    );
+    println!("signed in at the provider as {}", app.get_door_oidc_user());
+    h.shoot("live-door-oidc-done")?;
+    // the name as suggested, then the recovery password
+    app.set_door("password".into());
+    h.shoot("live-door-password")?;
+    app.invoke_door_create(localpart.into(), "".into(), "correct horse".into());
+    h.wait_until("the session to come up", Duration::from_secs(60), || {
+        app.get_session() == "loggedIn" || !app.get_door_error().is_empty()
+    })?;
+    anyhow::ensure!(
+        app.get_door_error().is_empty(),
+        "create failed: {}",
+        app.get_door_error()
+    );
+    println!("signed in as {}", app.get_my_user_id());
+    h.wait_until("rooms.list", Duration::from_secs(20), || {
+        app.get_rooms_loaded()
+    })?;
+    // the server took the escrow, so no code page stands between the
+    // doors and Home
+    anyhow::ensure!(!app.get_recovery_open(), "the recovery code page opened");
+    h.shoot("live-home-oidc")?;
+    app.invoke_go("settings".into());
+    h.wait_until("recovery.status to say escrowed", Duration::from_secs(20), || {
+        app.get_recovery_state() == "enabled" && app.get_recovery_escrow()
+    })?;
+    h.shoot("live-settings-oidc")?;
+    println!("drive oidc ok");
+    Ok(())
+}
+
+/// A second device for that account: the sign-in holds the name, so the
+/// welcome door asks for the recovery password alone.
+fn oidc_back(
+    h: &Harness,
+    app: &sigil_slint::AppWindow,
+    server: &str,
+    localpart: &str,
+) -> anyhow::Result<()> {
+    oidc_signin(h, app, server)?;
+    anyhow::ensure!(
+        app.get_door() == "welcome",
+        "expected the welcome door, got {}",
+        app.get_door()
+    );
+    anyhow::ensure!(
+        app.get_door_oidc_user() == localpart,
+        "the sign-in holds {}, not {localpart}",
+        app.get_door_oidc_user()
+    );
+    println!("welcome back as {}", app.get_door_oidc_user());
+    h.shoot("live-door-welcome")?;
+    // a wrong password is refused and the door stays
+    app.invoke_door_recover(localpart.into(), "wrong horse".into(), "".into());
+    h.wait_until("the wrong password to be refused", Duration::from_secs(60), || {
+        app.get_session() == "loggedIn" || !app.get_door_error().is_empty()
+    })?;
+    anyhow::ensure!(app.get_session() != "loggedIn", "a wrong password restored the account");
+    println!("wrong password refused: {}", app.get_door_error());
+    app.invoke_door_recover(localpart.into(), "correct horse".into(), "".into());
+    h.wait_until("the session to come back", Duration::from_secs(60), || {
+        app.get_session() == "loggedIn"
+            || (!app.get_door_error().is_empty() && !app.get_door_busy())
+    })?;
+    anyhow::ensure!(
+        app.get_session() == "loggedIn",
+        "restore failed: {}",
+        app.get_door_error()
+    );
+    println!("restored as {}", app.get_my_user_id());
+    h.wait_until("rooms.list", Duration::from_secs(20), || {
+        app.get_rooms_loaded()
+    })?;
+    h.shoot("live-home-oidc-back")?;
+    println!("drive oidc-back ok");
+    Ok(())
+}
+
+/// Type the server and wait for the sign-in the probe starts to come back.
+fn oidc_signin(
+    h: &Harness,
+    app: &sigil_slint::AppWindow,
+    server: &str,
 ) -> anyhow::Result<()> {
     // a bare name is typed as people type it; host:port is a plain-http test server
     let typed = if server.contains(':') {
@@ -97,7 +194,7 @@ fn oidc(
     };
     app.invoke_door_probe(typed.into());
     h.wait_until("the server card", Duration::from_secs(20), || {
-        app.get_door() == "choose" || !app.get_door_error().is_empty()
+        app.get_door() != "server" || !app.get_door_error().is_empty()
     })?;
     anyhow::ensure!(
         app.get_door_error().is_empty(),
@@ -113,34 +210,20 @@ fn oidc(
         app.get_door_registration() == "oidc",
         "expected the oidc gate"
     );
-    app.set_door("create".into());
+    anyhow::ensure!(
+        app.get_door() == "signin",
+        "expected the sign-in to start by itself, got the {} door",
+        app.get_door()
+    );
     h.shoot("live-door-oidc")?;
-    app.invoke_door_oidc_start();
     h.wait_until("the browser to come back", Duration::from_secs(60), || {
-        app.get_door_oidc_state() == "done" || app.get_door_oidc_state() == "failed"
+        app.get_door() != "signin" || app.get_door_oidc_state() == "failed"
     })?;
     anyhow::ensure!(
         app.get_door_oidc_state() == "done",
         "sign-in failed: {}",
         app.get_door_error()
     );
-    println!("signed in at the provider as {}", app.get_door_oidc_user());
-    h.shoot("live-door-oidc-done")?;
-    app.invoke_door_create(localpart.into(), "".into(), "".into());
-    h.wait_until("the session to come up", Duration::from_secs(60), || {
-        app.get_session() == "loggedIn" || !app.get_door_error().is_empty()
-    })?;
-    anyhow::ensure!(
-        app.get_door_error().is_empty(),
-        "create failed: {}",
-        app.get_door_error()
-    );
-    println!("signed in as {}", app.get_my_user_id());
-    h.wait_until("rooms.list", Duration::from_secs(20), || {
-        app.get_session() == "loggedIn"
-    })?;
-    h.shoot("live-home-oidc")?;
-    println!("drive oidc ok");
     Ok(())
 }
 

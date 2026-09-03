@@ -181,6 +181,10 @@ pub struct Transfer {
     pub conversations: Vec<Conversation>,
     /// Caller-defined bytes (the engine sends its history).
     pub extra: Vec<u8>,
+    /// The recovery record (salt, recovery key, data key), so the new
+    /// device can change the password and back up too; the vouching
+    /// device is where the key lives, and it hands a copy over here.
+    pub recovery: Option<crate::backup::Recovery>,
 }
 
 impl Transfer {
@@ -197,6 +201,7 @@ impl Transfer {
         }
         w.bytes(&serde_json::to_vec(&self.conversations).unwrap())
             .bytes(&self.extra)
+            .bytes(&serde_json::to_vec(&self.recovery).unwrap())
             .finish()
     }
     fn decode(b: &[u8]) -> anyhow::Result<Transfer> {
@@ -216,6 +221,7 @@ impl Transfer {
         }
         let conversations = serde_json::from_slice(r.bytes().map_err(e)?)?;
         let extra = r.bytes().map_err(e)?.to_vec();
+        let recovery = serde_json::from_slice(r.bytes().map_err(e)?).unwrap_or(None);
         Ok(Transfer {
             username,
             envoy,
@@ -224,6 +230,7 @@ impl Transfer {
             tokens,
             conversations,
             extra,
+            recovery,
         })
     }
 }
@@ -276,7 +283,7 @@ pub async fn wait_for_link(
         conversations: Vec::new(),
         requests: Vec::new(),
         seen_requests: Vec::new(),
-        recovery: None,
+        recovery: t.recovery.clone(),
         path: path.to_path_buf(),
     };
     st.save()?;
@@ -393,6 +400,7 @@ pub async fn transfer(
             })
             .collect(),
         extra,
+        recovery: st.recovery.clone(),
     };
     let mut lseq = put(link, st, &server, slot, t.encode()).await?;
     // the new device's key package

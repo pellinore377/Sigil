@@ -41,14 +41,19 @@ export component StartPage inherits Rectangle {
                 padding-left: 6px;
                 spacing: 6px;
                 Rectangle {
-                    width: 44px;
+                    // PanelActionButton is 22×22 at leftMargin 6, vertically
+                    // centred (StartChatPage.qml:61); the title then lands at
+                    // x 34 (:62). The tap surface spans the header height for
+                    // fingers, as SettingsHeader does.
+                    width: 22px;
                     ActionButton {
                         y: (54px - self.height) / 2;
-                        width: 44px; height: 44px;
+                        width: 22px; height: 22px;
                         icon: Icons.close; filled: false;
                         foreground: root.fg;
                         clicked => { root.closed(); }
                     }
+                    TouchArea { clicked => { root.closed(); } }
                 }
                 Text {
                     text: "Start chat";
@@ -138,38 +143,40 @@ export component StartPage inherits Rectangle {
                         background: root.fg.with-alpha(0.06);
                         border-width: 1px;
                         border-color: extra-input.has-focus ? Theme.accent.with-alpha(0.4) : root.fg.with-alpha(0.1);
-                        HorizontalLayout {
-                            padding-left: 10px; padding-right: 6px;
-                            spacing: 6px;
-                            Rectangle {
-                                clip: true;
-                                horizontal-stretch: 1;
-                                extra-input := TextInput {
-                                    color: root.fg;
-                                    font-family: Theme.font-ui;
-                                    font-size: Theme.body;
-                                    vertical-alignment: center;
-                                    height: 100%; width: 100%;
-                                    single-line: true;
-                                    accepted => {
-                                        if (!root.busy) { root.submit-extra(root.mode, self.text); }
-                                    }
-                                }
-                                if extra-input.text == "" : Text {
-                                    text: "Group name";
-                                    color: root.fg.with-alpha(0.4);
-                                    font-family: Theme.font-ui;
-                                    font-size: Theme.body;
-                                    vertical-alignment: center;
-                                    height: 100%;
+                        // StartChatPage.qml:110: the field runs from 10 to an
+                        // 80px right gutter; the button sits in that gutter at
+                        // rightMargin 6, vertically centred (:121).
+                        Rectangle {
+                            x: 10px;
+                            width: extra-well.width - 90px;
+                            height: 100%;
+                            clip: true;
+                            extra-input := TextInput {
+                                color: root.fg;
+                                font-family: Theme.font-ui;
+                                font-size: Theme.body;
+                                vertical-alignment: center;
+                                height: 100%; width: 100%;
+                                single-line: true;
+                                accepted => {
+                                    if (!root.busy) { root.submit-extra(root.mode, self.text); }
                                 }
                             }
-                            SButton {
-                                y: (extra-well.height - self.height) / 2;
-                                text: "Create";
-                                enabled: !root.busy;
-                                clicked => { root.submit-extra(root.mode, extra-input.text); }
+                            if extra-input.text == "" : Text {
+                                text: "Group name";
+                                color: root.fg.with-alpha(0.4);
+                                font-family: Theme.font-ui;
+                                font-size: Theme.body;
+                                vertical-alignment: center;
+                                height: 100%;
                             }
+                        }
+                        SButton {
+                            x: extra-well.width - self.width - 6px;
+                            y: (extra-well.height - self.height) / 2;
+                            text: "Create";
+                            enabled: !root.busy;
+                            clicked => { root.submit-extra(root.mode, extra-input.text); }
                         }
                     }
                 }
@@ -206,7 +213,8 @@ export component StartPage inherits Rectangle {
                     x: 10px; width: prow.width - 20px;
                     y: 4px; height: prow.height - 8px;
                     border-radius: 12px;
-                    background: prow-t.pressed || prow-t.has-hover ? root.fg.with-alpha(0.05) : transparent;
+                    // StartChatPage.qml:138: hover only, no pressed face.
+                    background: prow-t.has-hover ? root.fg.with-alpha(0.05) : transparent;
                 }
                 HorizontalLayout {
                     padding-left: 16px; padding-right: 12px;

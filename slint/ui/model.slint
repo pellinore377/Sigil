@@ -40,6 +40,21 @@ export struct DocLine {
     level: int,
 }
 
+/// One row of a spreadsheet preview (DocThumb.qml:119-158): the cells as
+/// text. Non-empty `doc-rows` draws the grid instead of the prose lines.
+export struct DocRow {
+    cells: [string],
+}
+
+/// One field row of a contact card (ContactBody.qml:115-177).
+export struct ContactField {
+    kind: string,      // phone | email | address | note (picks the icon)
+    label: string,     // "mobile", "work", "address", …
+    value: string,
+    linkable: bool,    // tel:/mailto: — value in accent, tap opens `url`
+    url: string,
+}
+
 /// One character of an animated SigilText run (per-glyph motion).
 export struct FxChar {
     ch: string,
@@ -111,6 +126,13 @@ export struct TimelineRow {
     gif-delays: [int],     // per-frame ms, same length
     media-size: string,
     duration: string,
+    duration-s: int,         // whole seconds, for the voice countdown (0 = use `duration`)
+    audio-title: string,     // track title without its extension (BubbleDelegate.qml:1408); "" = filename
+    // Link-card caption with the previewed URL removed (BubbleDelegate.qml:1445);
+    // `caption-stripped` says the bridge computed it (else the body shows verbatim).
+    caption-body: string,
+    caption-stripped: bool,
+    spoiler-revealed: bool,  // this event's spoilers were revealed earlier this session
     reply: ReplyRef,
     has-reply: bool,
     reactions: [ReactionChip],
@@ -154,12 +176,20 @@ export struct TimelineRow {
     contact-id: string,
     contact-initials: string,
     contact-tint: color,
+    // ContactBody.qml's full card: the contact's own picture, title · org
+    // subtitle, one row per phone/email/address/note, and the Save state.
+    contact-avatar: image,
+    contact-title: string,
+    contact-org: string,
+    contact-fields: [ContactField],
+    contact-saved: bool,
     // location
     location-label: string,
     location-live: bool,
     location-ended: bool,
     location-expires-s: int,   // epoch seconds the live share ends; 0 = none
     location-map: image,       // engine-composited static map (location.map)
+    location-self: bool,       // MSC3488 `m.self`: the marker is the sender's face, not a pin
     // audio (music) card — audio.info's art + palette
     audio-art: image,
     audio-have-art: bool,
@@ -170,10 +200,15 @@ export struct TimelineRow {
     doc-chip: string,        // TEXT / PDF / …; non-empty draws the page card
     doc-thumb: image,        // rendered page (pdf) when the engine returns one
     has-doc-image: bool,
+    doc-aspect: float,       // imageHeight / imageWidth of the rendered page; 0 = unknown (1.294)
+    doc-rows: [DocRow],      // spreadsheet cells; non-empty draws the grid (DocThumb.qml:119)
+    doc-pages: int,          // page count; > 1 shows "PDF · 4" on the badge
+    media-previewable: bool, // a plain file row opens only when the engine can preview it
     is-read-marker: bool,
     owns-receipt: bool,    // this own message wears the sent/read mark
     receipt-count: int,
     readers: [ReaderRow],  // stacked faces on the mark line
+    readers-fresh: int,    // the first N readers just arrived: their faces drop in
     pinned: bool,
 }
 

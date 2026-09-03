@@ -53,6 +53,8 @@ pub struct State {
     /// Last position fix, and why we have none if we have none.
     pub position: Option<crate::geo::Fix>,
     pub position_error: String,
+    /// The server holds a recovery escrow for this account: no code to show.
+    pub recovery_escrowed: bool,
 }
 
 pub struct Engine {

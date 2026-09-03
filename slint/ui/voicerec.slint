@@ -2,6 +2,8 @@
 // the composer. Three states: idle (static 7-bar wave + caption), recording
 // (blinking dot + zero-padded timer over a live 48px level band), ready (the
 // clip's waveform + duration). Controls: side pills + a 120px centre pill.
+// The root is transparent (VoiceRecorder.qml:7): the conversation ground
+// shows through around the stage card and the pills.
 
 import { Theme } from "style.slint";
 import { Icons } from "icons.slint";
@@ -9,7 +11,11 @@ import { IconLabel } from "components.slint";
 
 export component VoiceRecorder inherits Rectangle {
     in property <color> fg: Theme.menu-text;
-    in property <color> accent: Theme.accent;
+    // ChatPage.qml hands the recorder themedSend: accent@0.9 unthemed (:45, :1836).
+    in property <color> accent: Theme.accent.with-alpha(0.9);
+    in property <color> surface: Theme.menu-text.with-alpha(0.07);
+    // deepChipC ≈ rgba(36,36,36,0.96) (ChatPage.qml:56-59, :1839).
+    in property <color> chip: Theme.menu-background.darker(1.1).with-alpha(0.96);
     in property <string> state: "idle";      // idle | recording | ready
     in property <float> elapsed: 0;          // seconds, ticked by Rust
     in property <float> clip-duration: 0;
@@ -25,15 +31,14 @@ export component VoiceRecorder inherits Rectangle {
     // The card ink: the QML flips to dark on light theme tints; Frosted Glass
     // stays dark, so fg stands in until chat themes reach the recorder.
     property <color> ink: root.fg;
-    property <color> pill-c: Theme.background.with-alpha(0.85);
+    property <color> pill-c: root.chip;
     property <float> shown: root.state == "recording" ? root.elapsed : root.clip-duration;
     property <string> timer-text:
         (floor(root.shown / 60) < 10 ? "0" : "") + floor(root.shown / 60)
         + ":" + (mod(floor(root.shown), 60) < 10 ? "0" : "") + mod(floor(root.shown), 60);
 
     height: 230px;
-    background: Theme.menu-background;
-    TouchArea { }  // the panel swallows taps
+    background: transparent;
 
     VerticalLayout {
         padding: 10px;
@@ -43,21 +48,27 @@ export component VoiceRecorder inherits Rectangle {
         stage := Rectangle {
             vertical-stretch: 1;
             border-radius: 18px;
-            background: root.fg.with-alpha(0.07);
+            background: root.surface;
 
             // idle: static waveform glyph + caption
             if root.state == "idle" : VerticalLayout {
                 alignment: center;
                 spacing: 10px;
+                // A 46px band; each bar is centred in its own column so the
+                // layout cannot pin it to the top.
                 idle-wave := HorizontalLayout {
                     alignment: center;
                     spacing: 4px;
+                    height: 46px;
                     for lvl in [0.35, 0.6, 0.85, 1.0, 0.8, 0.5, 0.3] : Rectangle {
-                        y: (46px - self.height) / 2;
-                        width: 5px;
-                        height: 46px * lvl;
-                        border-radius: 2.5px;
-                        background: root.ink.with-alpha(0.55);
+                        width: 5px; height: 46px;
+                        Rectangle {
+                            x: 0; y: (46px - self.height) / 2;
+                            width: 5px;
+                            height: round(46 * lvl) * 1px;
+                            border-radius: 2.5px;
+                            background: root.ink.with-alpha(0.55);
+                        }
                     }
                 }
                 Text {
@@ -69,19 +80,27 @@ export component VoiceRecorder inherits Rectangle {
                 }
             }
 
-            // recording / ready: dot + timer stacked above the level band
+            // recording / ready: dot + timer stacked above the level band,
+            // in a column `parent - 28` wide (VoiceRecorder.qml:124).
             if root.state != "idle" : VerticalLayout {
+                x: 14px;
+                width: stage.width - 28px;
                 alignment: center;
                 spacing: 14px;
                 HorizontalLayout {
                     alignment: center;
                     spacing: 7px;
-                    if root.state == "recording" : rec-dot := Rectangle {
-                        y: (timer-line.preferred-height - 9px) / 2;
-                        width: 9px; height: 9px; border-radius: 4.5px;
-                        background: #e88b90;
-                        // 700ms down, 700ms up — the QML blink.
-                        opacity: 0.25 + 0.75 * abs(sin(360deg * (animation-tick() / 1.4s)));
+                    if root.state == "recording" : Rectangle {
+                        width: 9px;
+                        rec-dot := Rectangle {
+                            x: 0; y: (parent.height - 9px) / 2;
+                            width: 9px; height: 9px; border-radius: 4.5px;
+                            background: #e88b90;
+                            // Linear to 0.25 over 700ms, back to 1 over 700ms (:135).
+                            property <float> t: (animation-tick() / 1400ms).mod(1.0);
+                            opacity: self.t < 0.5 ? 1 - 0.75 * (self.t / 0.5)
+                                                  : 0.25 + 0.75 * ((self.t - 0.5) / 0.5);
+                        }
                     }
                     timer-line := Text {
                         text: root.timer-text;
@@ -97,18 +116,21 @@ export component VoiceRecorder inherits Rectangle {
                         alignment: center;
                         spacing: 2px;
                         for level in (root.state == "recording" ? root.levels : root.clip-waveform) : Rectangle {
-                            y: (48px - self.height) / 2;
-                            width: 3px;
-                            height: max(3px, 44px * min(1.0, level));
-                            border-radius: 1.5px;
-                            background: root.ink.with-alpha(0.8);
+                            width: 3px; height: 48px;
+                            Rectangle {
+                                x: 0; y: (48px - self.height) / 2;
+                                width: 3px;
+                                height: max(3px, 44px * min(1.0, level));
+                                border-radius: 1.5px;
+                                background: root.ink.with-alpha(0.8);
+                            }
                         }
                     }
                 }
             }
         }
 
-        // Controls: Restart/Cancel · record/stop · Attach
+        // Controls: Restart/Cancel · record/stop · Attach — sides (W-136)/2.
         controls := HorizontalLayout {
             height: 46px;
             spacing: 8px;
@@ -118,7 +140,9 @@ export component VoiceRecorder inherits Rectangle {
                 background: root.pill-c;
                 HorizontalLayout {
                     alignment: center;
-                    spacing: 6px;
+                    // QML's fitWidth icon boxes hug the glyph at spacing 6; a
+                    // Slint glyph cell is wider, so 4 lands the same gap.
+                    spacing: 4px;
                     IconLabel {
                         text: root.state == "recording" ? Icons.refresh : Icons.close;
                         filled: false;
@@ -159,7 +183,7 @@ export component VoiceRecorder inherits Rectangle {
                 background: root.state == "idle" ? root.pill-c : root.accent.brighter(0.3);
                 HorizontalLayout {
                     alignment: center;
-                    spacing: 6px;
+                    spacing: 4px;
                     IconLabel {
                         text: Icons.check; filled: false;
                         color: root.state == "idle" ? root.fg : #1a1a1a;
