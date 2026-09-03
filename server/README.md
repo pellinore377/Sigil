@@ -69,9 +69,12 @@ Behind a reverse proxy that terminates TLS (Nginx Proxy Manager, Traefik,
 Caddy), proxy `https://<hostname>` to the container's port 8443 **with
 WebSocket support** (the app's live connection is a WebSocket at
 `/envoy`); leave the TLS keys out. Calls need UDP 8444 forwarded on the
-router straight to the host and `SIGIL_MEDIA_PUBLIC` set; without it the
-server uses the address `SIGIL_HOSTNAME` resolves to, which is right when
-that is your own public IP and wrong behind Cloudflare's proxy.
+router straight to the host and `SIGIL_MEDIA_PUBLIC` set to your public
+IP or a DNS-only name (`sigil.example.com:8444`; it is resolved once at
+start-up, so restart after an address change, and a name behind
+Cloudflare's proxy resolves to Cloudflare, not to you). Without it the
+server guesses the address of its own network card, which inside a
+container is a private address nobody outside can reach.
 
 Invite codes, when registration is `invite`:
 

@@ -34,8 +34,11 @@ services:
       # http://127.0.0.1:44713/callback and http://127.0.0.1:*/callback)
       SIGIL_OIDC_ISSUER: https://id.example.com
       SIGIL_OIDC_CLIENT_ID: sigil
-      # calls: your public IP (or DNS name) and the UDP port published below
-      SIGIL_MEDIA_PUBLIC: "203.0.113.5:8444"
+      # calls: where phones send audio, your public IP or a DNS-only name
+      # (not behind Cloudflare's proxy) with the UDP port published below.
+      # Leave it out and the server guesses its own card's address, which in
+      # a container is private and unreachable.
+      SIGIL_MEDIA_PUBLIC: "sigil.example.com:8444"
       SIGIL_CALLS: "true"
       # log level: sigil_server=debug for more
       RUST_LOG: sigil_server=info
