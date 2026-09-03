@@ -133,21 +133,14 @@ export component DoorsPage inherits Rectangle {
                 wrap: word-wrap;
             }
             Rectangle { height: 4px; }
-            if root.registration != "oidc" : HorizontalLayout {
+            // with the OIDC gate the create door starts with the sign-in
+            HorizontalLayout {
                 alignment: center;
-                SButton { text: "Create account"; icon: Icons.personAdd; clicked => { root.door = "create"; } }
-            }
-            if root.registration == "oidc" : HorizontalLayout {
-                alignment: center;
-                SButton { text: "Continue with SSO"; icon: Icons.login; enabled: false; }
-            }
-            if root.registration == "oidc" : Text {
-                text: "SSO sign-in is on this server's card but not built into this app yet.";
-                color: Theme.menu-text.with-alpha(0.55);
-                font-family: Theme.font-ui;
-                font-size: Theme.body-small;
-                horizontal-alignment: center;
-                wrap: word-wrap;
+                SButton {
+                    text: root.registration == "oidc" ? "Sign in and create account" : "Create account";
+                    icon: root.registration == "oidc" ? Icons.login : Icons.personAdd;
+                    clicked => { root.door = "create"; }
+                }
             }
             HorizontalLayout {
                 alignment: center;
