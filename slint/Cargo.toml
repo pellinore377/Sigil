@@ -65,14 +65,25 @@ name = "android.permission.INTERNET"
 [[package.metadata.android.uses_permission]]
 name = "android.permission.ACCESS_NETWORK_STATE"
 
+# Calls: the microphone. Android grants it per app from Settings until the
+# app asks for it itself (Phase 8, permissions through the activity).
+[[package.metadata.android.uses_permission]]
+name = "android.permission.RECORD_AUDIO"
+
+[[package.metadata.android.uses_permission]]
+name = "android.permission.MODIFY_AUDIO_SETTINGS"
+
 [package.metadata.android.application]
 label = "Sigil"
 theme = "@android:style/Theme.DeviceDefault.NoActionBar"
 
+# Symbols too: the Android library is 98 MB with them and 69 MB without,
+# and the difference is what puts the APK under the 30 MB most channels
+# accept. Backtraces on a phone come from logcat, not from symbols anyway.
 [profile.release]
 opt-level = 3
 lto = "thin"
-strip = "debuginfo"
+strip = true
 
 # Dev signing: a copy of (or symlink to) the adb debug keystore,
 # ~/.android/debug.keystore, placed next to this file; it is not committed.
