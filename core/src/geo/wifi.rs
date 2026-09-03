@@ -68,7 +68,7 @@ async fn ask(url: &str, aps: &[AccessPoint]) -> Option<Fix> {
             "frequency": a.frequency,
         })).collect::<Vec<_>>(),
     });
-    let client = reqwest::Client::builder().timeout(Duration::from_secs(20)).build().ok()?;
+    let client = crate::net::http_builder().timeout(Duration::from_secs(20)).build().ok()?;
     let resp = client.post(url).json(&body).send().await.ok()?;
     if !resp.status().is_success() {
         warn!("geo: geolocation service answered {}", resp.status());

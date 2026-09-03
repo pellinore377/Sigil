@@ -72,6 +72,8 @@ pdf-extract = "0.12"
 encoding_rs = "0.8"
 reqwest = { version = "0.13", default-features = false, features = ["rustls", "json", "http2", "socks"] }
 rustls = { version = "0.23", default-features = false, features = ["aws_lc_rs"] }
+# Mozilla's roots for the Android build, where the platform verifier has no Java half (src/net.rs).
+webpki-roots = "1"
 
 
 # MatrixRTC / LiveKit: exact-pinned as a matched set; bump all three together.

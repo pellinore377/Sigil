@@ -7027,6 +7027,7 @@ dependencies = [
  "uniffi",
  "url",
  "uuid",
+ "webpki-roots 1.0.9",
  "zbus",
  "zip 2.4.2",
 ]

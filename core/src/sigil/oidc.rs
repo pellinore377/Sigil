@@ -42,7 +42,7 @@ pub fn clear() {
 }
 
 fn http(proxy: Option<&str>) -> anyhow::Result<reqwest::Client> {
-    let mut b = reqwest::Client::builder()
+    let mut b = crate::net::http_builder()
         .timeout(Duration::from_secs(20))
         .no_proxy();
     if let Some(px) = proxy.filter(|p| !p.is_empty()) {

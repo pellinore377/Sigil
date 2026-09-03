@@ -878,7 +878,7 @@ pub(super) async fn link_preview(url: &str) -> Reply {
     if !(url.starts_with("https://") || url.starts_with("http://")) || url.len() > 2048 {
         return Reply::err("bad_request", "only http(s) links are previewed");
     }
-    let mut builder = reqwest::Client::builder()
+    let mut builder = crate::net::http_builder()
         .user_agent("Sigil/1")
         .connect_timeout(std::time::Duration::from_secs(8))
         .timeout(std::time::Duration::from_secs(15))

@@ -47,7 +47,7 @@ fn style_from(v: &Value) -> String {
 }
 
 async fn well_known(server_name: &str, homeserver: &str) -> String {
-    let client = match reqwest::Client::builder().timeout(std::time::Duration::from_secs(8)).build() {
+    let client = match crate::net::http_builder().timeout(std::time::Duration::from_secs(8)).build() {
         Ok(c) => c,
         Err(_) => return String::new(),
     };

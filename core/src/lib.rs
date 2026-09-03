@@ -17,6 +17,7 @@ pub mod geo;
 pub mod ipc;
 pub mod maps;
 pub mod media;
+pub mod net;
 pub mod notify;
 pub mod paths;
 /// Video frames over shared memory. Used by call video and by media playback,
