@@ -48,6 +48,11 @@ export component AppWindow inherits Window {
     /// On a desktop the card has its rounded, bordered frame (Panel.qml:483-484);
     /// on a phone the app is the screen. The bridge sets it.
     in property <bool> card-frame: false;
+    /// the tapped thumbnail the image viewer grows out of (0 width: none)
+    in-out property <length> vw-from-x;
+    in-out property <length> vw-from-y;
+    in-out property <length> vw-from-w;
+    in-out property <length> vw-from-h;
 
     // ---- session / engine state ----
     in property <string> session: "restoring";
@@ -291,6 +296,26 @@ export component AppWindow inherits Window {
     in property <[DeviceRow]> call-mics;
     in property <[DeviceRow]> call-speakers;
     in property <[Floater]> call-floaters;
+    // The rest of call.state the pages read (CallPage.qml:52-104, CallPiP.qml:
+    // 182-192, CallBanner.qml:29-33). Video/camera/screen share are not built
+    // yet, so those stay at their defaults until the bridge fills them; see
+    // calls-handoff.md for what fills each.
+    in property <bool> call-encrypted: true;
+    in property <bool> call-camera-on: false;
+    in property <bool> call-screen-sharing: false;
+    in property <bool> call-video-mode: false;
+    in property <int> call-spotlight-idx: -1;
+    in property <CallParticipant> call-featured;
+    in property <bool> call-has-featured: false;
+    in property <CallParticipant> call-local-cam;
+    in property <bool> call-has-local-cam: false;
+    in property <image> call-peer-avatar;
+    /// The PiP's tile (screen > camera, else the first remote) and its m:ss.
+    in property <CallParticipant> call-pip-featured;
+    in property <string> call-pip-duration: "•";
+    in property <string> call-incoming-initials;
+    in property <image> call-incoming-avatar;
+    in property <bool> call-incoming-video: false;
     in property <string> rec-state: "idle";
     in property <float> rec-elapsed;
     in property <float> rec-clip-duration;
@@ -663,6 +688,9 @@ export component AppWindow inherits Window {
             ThreadsPage {
                 width: 100%; height: 100%;
                 room-name: root.room-name;
+                // the room's theme (ThreadsPage.qml:20-32), as ChatPage binds it
+                themed: root.ct-accent != "";
+                accent: root.ct-accent != "" ? root.ct-color : Theme.accent;
                 threads: root.th-threads; loading: root.th-loading; loaded: root.th-loaded;
                 closed => { root.go-back(); }
                 thread-picked(rootId) => { root.act("open-thread", rootId, ""); }
@@ -670,6 +698,9 @@ export component AppWindow inherits Window {
         pins-holder := PageHolder { active: root.in-session && root.nav == "pins"; ground: root.room-page-ground;
             PinsPage {
                 width: 100%; height: 100%;
+                // the room's theme (PinsPage.qml:19-41)
+                themed: root.ct-accent != "";
+                accent: root.ct-accent != "" ? root.ct-color : Theme.accent;
                 room-name: root.room-name; room-is-dm: root.pi-dm;
                 items: root.pi-items; loading: root.pi-loading; loaded: root.pi-loaded;
                 closed => { root.go-back(); }
@@ -805,55 +836,180 @@ export component AppWindow inherits Window {
                 picked(id) => { root.act("forward-picked", id, ""); }
             } }
         // The call page over everything while it is open; the pill while
-        // the call runs behind the conversation.
-        if root.in-call && root.call-page-open : CallPage {
+        // the call runs behind the conversation. Panel.qml:1161-1218: an
+        // always-present holder on its own opaque ground that slides in
+        // from the right and parks off screen while inactive. Minimising
+        // (Panel.qml:113-125, 152-160) scales it about the PiP's centre
+        // down to the tile — 230ms InOutCubic, opacity out 210ms InCubic —
+        // then parks it without sliding; expanding (Panel.qml:127-150)
+        // snaps it back onto the tile and grows it, OutCubic on the way in.
+        call-holder := Rectangle {
+            property <bool> active: root.in-call && root.call-page-open;
+            property <bool> shrinking: false;
+            property <bool> instant: false;   // Behaviors off while snapping to the tile
+            property <bool> min-out: false;   // minimise in flight: held at 0 while it scales away
+            property <bool> grow-in: false;   // expand in flight: parked at 0 before the grow
+            property <bool> snap: false;      // x moves without sliding
+            property <bool> settled: false;
+            property <length> shrink-ox: 0px;
+            property <length> shrink-oy: 0px;
+            property <float> shrink-scale: 0.2;
+            property <length> probe;          // a read that starts an animation at the gated duration
+            property <float> probe-f;
             width: 100%; height: 100%;
-            state: root.call-state;
-            status-text: root.call-status;
-            error: root.call-error;
-            encrypted: true;
-            mic-muted: root.call-mic-muted;
-            camera-on: false;
-            screen-sharing: false;
-            tiles: root.call-tiles;
-            spotlight-idx: -1;
-            has-featured: false;
-            has-local-cam: false;
-            group-mode: root.call-group-mode;
-            video-mode: false;
-            peer-name: root.call-peer-name;
-            peer-initials: root.call-peer-initials;
-            peer-tint: root.call-peer-tint;
-            peer-speaking: root.call-peer-speaking;
-            mics: root.call-mics;
-            speakers: root.call-speakers;
-            floaters: root.call-floaters;
-            set-mic(on) => { root.act("set-mic", on ? "true" : "false", ""); }
-            set-camera(on) => { }
-            set-screenshare(on) => { }
-            hang-up => { root.act("hang-up", "", ""); }
-            select-device(kind, id) => { root.act("select-device", kind, id); }
-            react(e) => { root.act("call-react", e, ""); }
-            minimize => { root.act("call-minimize", "", ""); }
+            // Panel.qml:1166-1204: 0 while active, `width` otherwise, on
+            // PageHolder's slide (d×0.26 per frame ≈ 200ms, hard early decel).
+            x: (self.active || self.min-out || self.grow-in) ? 0px : root.width;
+            animate x { duration: (self.settled && !self.snap) ? 200ms : 0ms; easing: cubic-bezier(0.25, 1, 0.35, 1); }
+            // Panel.qml:1197: a resize while inactive parks it at once.
+            changed width => {
+                if (!self.active) { self.settled = false; self.probe = self.x; }
+                self.settled = true;
+            }
+            visible: self.x < root.width - 0.5px;
+            // Panel.qml:1176-1190: scale about the PiP's centre; opacity
+            // fades late on the way out, early on the way back in.
+            transform-scale: self.shrinking ? self.shrink-scale : 1;
+            transform-origin: { x: self.shrink-ox, y: self.shrink-oy };
+            animate transform-scale { duration: self.instant ? 0ms : 230ms; easing: cubic-bezier(0.65, 0, 0.35, 1); }
+            opacity: self.shrinking ? 0 : 1;
+            animate opacity { duration: self.instant ? 0ms : 210ms; easing: self.shrinking ? cubic-bezier(0.32, 0, 0.67, 0) : cubic-bezier(0.33, 1, 0.68, 1); }
+            // Panel.qml:152-160: shrunk into the tile, so park rather than slide out.
+            shrink-done := Timer {
+                interval: 230ms;
+                running: false;
+                triggered => {
+                    self.running = false;
+                    call-holder.snap = true;
+                    call-holder.min-out = false;
+                    call-holder.probe = call-holder.x;
+                    call-holder.snap = false;
+                    call-holder.instant = true;
+                    call-holder.shrinking = false;
+                    call-holder.probe-f = call-holder.transform-scale;
+                    call-holder.probe-f = call-holder.opacity;
+                    call-holder.instant = false;
+                }
+            }
+            // Panel.qml:150: one frame after the snap, the grow runs.
+            grow-start := Timer {
+                interval: 16ms;
+                running: false;
+                triggered => {
+                    self.running = false;
+                    call-holder.instant = false;
+                    call-holder.shrinking = false;
+                    call-holder.grow-in = false;
+                }
+            }
+            // Panel.qml:1205-1210: the page ground and an input sink behind the page.
+            Rectangle {
+                width: 100%; height: 100%;
+                background: root.page-ground;
+                TouchArea { }
+            }
+            CallPage {
+                width: 100%; height: 100%;
+                shown: call-holder.active;
+                // Panel.qml:1216: the room's chat theme colour when it has one.
+                accent: root.ct-accent != "" ? root.ct-color : Theme.accent;
+                state: root.call-state;
+                status-text: root.call-status;
+                error: root.call-error;
+                encrypted: root.call-encrypted;
+                mic-muted: root.call-mic-muted;
+                camera-on: root.call-camera-on;
+                screen-sharing: root.call-screen-sharing;
+                tiles: root.call-tiles;
+                spotlight-idx: root.call-spotlight-idx;
+                featured: root.call-featured;
+                has-featured: root.call-has-featured;
+                local-cam: root.call-local-cam;
+                has-local-cam: root.call-has-local-cam;
+                group-mode: root.call-group-mode;
+                video-mode: root.call-video-mode;
+                peer-name: root.call-peer-name;
+                peer-avatar: root.call-peer-avatar;
+                peer-initials: root.call-peer-initials;
+                peer-tint: root.call-peer-tint;
+                peer-speaking: root.call-peer-speaking;
+                mics: root.call-mics;
+                speakers: root.call-speakers;
+                // CallPage.qml:25: nothing floats while the page is hidden.
+                floaters: call-holder.active ? root.call-floaters : [];
+                set-mic(on) => { root.act("set-mic", on ? "true" : "false", ""); }
+                set-camera(on) => { root.act("set-camera", on ? "true" : "false", ""); }
+                set-screenshare(on) => { root.act("set-screenshare", on ? "true" : "false", ""); }
+                // CallPage.qml:492 + Panel.qml:1218: hanging up closes the page.
+                hang-up => { root.act("hang-up", "", ""); root.call-page-open = false; }
+                select-device(kind, id) => { root.act("select-device", kind, id); }
+                react(e) => { root.act("call-react", e, ""); }
+                // Panel.qml:113-125 minimizeCall(): the origin is resolved
+                // here, at the moment the gesture starts.
+                minimize => {
+                    call-holder.shrink-ox = call-pip.x + call-pip.width / 2;
+                    call-holder.shrink-oy = call-pip.y + call-pip.height / 2;
+                    call-holder.shrink-scale = call-pip.width / max(1px, call-holder.width);
+                    call-holder.shrinking = true;
+                    call-holder.min-out = true;
+                    shrink-done.running = true;
+                    root.act("call-minimize", "", "");
+                }
+            }
         }
-        if root.in-call && !root.call-page-open : CallPip {
+        // Minimised call (Panel.qml:1380-1392): the featured remote's tile in
+        // the room's colours; its position is the PiP's own business.
+        call-pip := CallPip {
+            shown: root.in-call && !root.call-page-open;
             parent-width: root.width;
             parent-height: root.height;
-            duration-label: root.call-status;
-            expand-requested => { root.act("call-expand", "", ""); }
-            hangup-requested => { root.act("hang-up", "", ""); }
+            featured: root.call-pip-featured;
+            duration-label: root.call-pip-duration;
+            accent: root.ct-accent != "" ? root.ct-color : Theme.accent;
+            // Panel.qml:127-150 maximizeCall(): park the holder, then resolve
+            // the origin, snap onto the tile with the Behaviors off, and grow.
+            expand-requested => {
+                call-holder.instant = true;
+                call-holder.snap = true;
+                call-holder.grow-in = true;
+                call-holder.probe = call-holder.x;
+                call-holder.shrink-ox = call-pip.x + call-pip.width / 2;
+                call-holder.shrink-oy = call-pip.y + call-pip.height / 2;
+                call-holder.shrink-scale = call-pip.width / max(1px, call-holder.width);
+                call-holder.shrinking = true;
+                call-holder.probe-f = call-holder.transform-scale;
+                call-holder.probe-f = call-holder.opacity;
+                root.act("call-expand", "", "");
+                call-holder.snap = false;
+                grow-start.running = true;
+            }
+            // Panel.qml:1391: hang up and drop the minimised state.
+            hangup-requested => { root.act("hang-up", "", ""); root.call-page-open = false; }
         }
+        // CallBanner.qml:14-17: top-centred, 440 wide (or the panel minus
+        // 20), Style.gapsOut (10 in the port) below the top edge.
         if root.call-incoming : CallBanner {
-            width: 100%;
+            width: min(root.width - 20px, 440px);
+            x: (root.width - self.width) / 2;
+            y: 10px;
             caller-name: root.call-incoming-name;
+            caller-initials: root.call-incoming-initials;
+            caller-avatar: root.call-incoming-avatar;
             caller-tint: root.call-incoming-tint;
             room-name: root.call-room-name;
+            video-intent: root.call-incoming-video;
             accept => { root.act("call-accept", "false", ""); }
             accept-video => { root.act("call-accept", "true", ""); }
             decline => { root.act("call-decline", "", ""); }
         }
-        if root.viewer-open : ImageViewer {
+        // Always mounted so the open fade and the flight from the tapped
+        // thumbnail can play (ImageViewer.qml:31-53); `shown` drives it.
+        ImageViewer {
             width: 100%; height: 100%;
+            shown: root.viewer-open;
+            from-x: root.vw-from-x; from-y: root.vw-from-y;
+            from-w: root.vw-from-w; from-h: root.vw-from-h;
+            scrim-radius: root.card-frame ? 22px : 0px;
             items: root.vw-items;
             cur <=> root.vw-cur;
             forward-names: root.vw-forward-names;

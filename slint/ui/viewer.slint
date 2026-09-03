@@ -2,12 +2,13 @@
 // every image in the room, zoom, video playback, quick reactions.
 //
 // Gesture notes for the integrator (also in WIRING-media.md):
-// - Pinch zoom rides ScaleRotateGestureHandler (two-finger); double-tap,
-//   ctrl+wheel/wheel-when-zoomed and the on-screen buttons remain as the
-//   fallbacks. Same zoomAbout() numbers as QML, so behaviour matches per input.
+// - Pinch zoom rides ScaleRotateGestureHandler (two-finger); double-tap and
+//   ctrl+wheel / wheel-when-zoomed are the fallbacks, exactly the QML set
+//   (ImageViewer.qml:432-450, 484-495). There are no on-screen zoom discs.
 // - Pan-while-zoomed uses moved-deltas — inherently passive, per portability.
-// - The QML blurred-backdrop scrim needs a backdrop shader Slint lacks; a
-//   solid near-black stands in.
+// - The QML backdrop is a blurred page snapshot under #000@0.82
+//   (ImageViewer.qml:70-86); that needs a backdrop shader Slint lacks, so the
+//   plan's stand-in is the menu ground under the same veil.
 
 import { Theme } from "style.slint";
 import { Icons } from "icons.slint";
@@ -43,6 +44,19 @@ export component ImageViewer inherits Rectangle {
     in property <float> play-duration: 0;
     in property <bool> scrubbing: false;
 
+    // ImageViewer.qml:32 — `shown`. The app binds it to viewer-open once the
+    // viewer stays mounted (handoff); the default keeps an `if`-mounted viewer
+    // working, since it then opens on mount.
+    in property <bool> shown: true;
+    // ImageViewer.qml:132-136 — the tapped thumbnail, in viewer coordinates.
+    // A zero width means "no thumbnail": opened without the morph (:140-143).
+    in property <length> from-x: 0;
+    in property <length> from-y: 0;
+    in property <length> from-w: 0;
+    in property <length> from-h: 0;
+    // ImageViewer.qml:17, 66-69 — the card's radius, so the corners sit flush.
+    in property <length> scrim-radius: 0;
+
     callback closed;
     callback page-changed(int);      // fetch full image for index
     callback download-requested;
@@ -54,8 +68,70 @@ export component ImageViewer inherits Rectangle {
     callback seek-requested(float);
     callback scrub-state(bool, float);
 
-    visible: root.cur >= 0 && root.items.length > 0;
-    background: #0d0d0f;
+    // ImageViewer.qml:64-69, 83-85 — solid ground under the veil, the card's
+    // radius, clipped. `mix` keeps the given share of the receiver, so 0.18 of
+    // the menu ground is what #000@0.82 over it leaves.
+    background: Theme.menu-background.mix(#000000, 0.18);
+    border-radius: root.scrim-radius;
+    clip: true;
+
+    // ---- open / close motion (ImageViewer.qml:38-53, 132-152) ----
+    // `released` rises one frame after `shown`, as viewerGrow (:49) does: the
+    // first frame holds the snapped thumbnail-size scale at opacity 0, then
+    // opacity fades in over 190ms (:40) while the scale flies to 1 over 270ms
+    // (:46-47). Closing (:147-152) fades at full size and reports `closed`
+    // after 200ms, so an `if`-mounted viewer still gets its fade.
+    property <bool> released: false;
+    property <bool> closing: false;
+    property <bool> morphing: root.shown && !root.released && root.from-w > 1px;
+    property <length> m-ox: root.from-x + root.from-w / 2;
+    property <length> m-oy: root.from-y + root.from-h / 2;
+    property <float> m-scale: max(0.04, root.from-w / max(1px, root.width));
+    opacity: root.shown && root.released && !root.closing ? 1 : 0;
+    animate opacity { duration: 190ms; easing: cubic-bezier(0.33, 1, 0.68, 1); }
+    transform-origin: { x: root.m-ox, y: root.m-oy };
+    transform-scale-x: root.morphing ? root.m-scale : 1.0;
+    transform-scale-y: root.morphing ? root.m-scale : 1.0;
+    animate transform-scale-x, transform-scale-y { duration: root.released ? 270ms : 0ms; easing: cubic-bezier(0.33, 1, 0.68, 1); }
+    // :38 — visible while there is something to show and the fade is not done.
+    // Visible from the first (transparent) frame too: focus needs a visible item.
+    visible: root.cur >= 0 && root.items.length > 0
+        && ((root.shown && !root.closing) || root.opacity > 0.01);
+    grow := Timer {
+        interval: 16ms;
+        running: root.shown && !root.released;
+        triggered => { root.released = true; keys.focus(); }
+    }
+    changed shown => {
+        if (!root.shown) { root.released = false; root.closing = false; }
+    }
+    fade := Timer {
+        interval: 200ms;
+        running: root.closing;
+        triggered => { root.closing = false; root.closed(); }
+    }
+    function close() {
+        if (root.closing || !root.shown) { return; }
+        root.released = true;       // :149 no reverse flight: fade at full size
+        root.closing = true;
+    }
+
+    // ImageViewer.qml:55-63 — own the keyboard while open; Escape unwinds the
+    // more menu, then the forward menu, then the viewer. Not shown: let the
+    // key travel on to the app's back scope.
+    keys := FocusScope {
+        width: 100%; height: 100%;
+        init => { if (root.shown) { self.focus(); } }
+        key-pressed(event) => {
+            if (event.text == Key.Escape && root.shown && !root.closing) {
+                if (root.more-open) { root.more-open = false; }
+                else if (root.fwd-open) { root.fwd-open = false; }
+                else { root.close(); }
+                return accept;
+            }
+            reject
+        }
+    }
 
     property <ViewerItem> it: root.items[max(0, root.cur)];
     property <bool> is-video: root.it.kind == "video";
@@ -67,12 +143,18 @@ export component ImageViewer inherits Rectangle {
     property <length> oy: 0;
     property <bool> zoomed: root.zoom > 1.01;
     in-out property <length> drag-dx: 0;
+    // ImageViewer.qml:295-296, 305 — pager inset 58 above, 104 below, pages 56 narrower.
     property <length> page-w: root.width - 56px;
     property <length> page-h: root.height - 58px - 104px;
-    property <length> fit-w: root.it.w > 0 && root.it.h > 0
-        ? min(root.page-w, root.page-h * root.it.w / root.it.h) : root.page-w;
-    property <length> fit-h: root.it.w > 0 && root.it.h > 0
-        ? min(root.page-h, root.page-w * root.it.h / root.it.w) : root.page-h;
+    // ImageViewer.qml:319-321, 328-329 — 800×600 when the media carries no
+    // size; fit = round(i × min(W/iw, H/ih)), never under 1.
+    property <float> iw: root.it.w > 0 ? root.it.w : 800;
+    property <float> ih: root.it.h > 0 ? root.it.h : 600;
+    property <float> fs: min(root.page-w / 1px / root.iw, root.page-h / 1px / root.ih);
+    property <length> fit-w: max(1px, round(root.iw * root.fs) * 1px);
+    property <length> fit-h: max(1px, round(root.ih * root.fs) * 1px);
+    // ImageViewer.qml:299, 305 — one page pitch: itemW + spacing 12.
+    property <length> pitch: root.page-w + 12px;
 
     function clamp-offsets() {
         root.ox = max(-max(0px, (root.fit-w * root.zoom - root.page-w) / 2),
@@ -97,6 +179,53 @@ export component ImageViewer inherits Rectangle {
         root.page-changed(idx);
     }
 
+    // ---- page turn (ImageViewer.qml:301-308) ----
+    // SnapOneItem with highlightMoveDuration 200: a release past the threshold
+    // slides one pitch and commits; short of it, the page settles back. `shift`
+    // is what the stage draws — the live drag, or the 200ms settle.
+    property <bool> turning: false;
+    property <int> turn-dir: 0;
+    property <length> turn-target: 0;
+    property <length> shift: root.turning ? root.turn-target : root.drag-dx;
+    animate shift { duration: root.turning ? 200ms : 0ms; easing: cubic-bezier(0.33, 1, 0.68, 1); }
+    turn-clock := Timer {
+        interval: 200ms;
+        running: root.turning;
+        triggered => {
+            root.turning = false;
+            root.drag-dx = 0;
+            if (root.turn-dir != 0) { root.go(root.cur + root.turn-dir); }
+            root.turn-dir = 0;
+        }
+    }
+    function turn(dir: int) {
+        if (root.turning) { return; }
+        root.turn-dir = (dir != 0 && root.cur + dir >= 0 && root.cur + dir < root.items.length) ? dir : 0;
+        root.turn-target = -root.turn-dir * root.pitch;
+        root.turning = true;
+    }
+
+    // ImageViewer.qml:273-285 — wheelNav: accumulate to a notch (120), then one
+    // page per notch with a 160ms lockout. Slint hands a notch as 60 logical
+    // px (winit LineDelta × 60), so the delta is doubled to Qt's angleDelta.
+    property <float> wheel-acc: 0;
+    property <int> wheel-dir: 0;
+    property <bool> wheel-locked: false;
+    wheel-lock := Timer {
+        interval: 160ms;
+        running: root.wheel-locked;
+        triggered => { root.wheel-locked = false; }
+    }
+    function wheel-nav(dy: float) {
+        root.wheel-acc += dy * 2;
+        if (abs(root.wheel-acc) < 120) { return; }
+        root.wheel-dir = root.wheel-acc < 0 ? 1 : -1;
+        root.wheel-acc = 0;
+        if (root.wheel-locked) { return; }
+        root.wheel-locked = true;
+        root.turn(root.wheel-dir);
+    }
+
     // ---- stage ----
     stage := Rectangle {
         y: 58px;
@@ -104,50 +233,57 @@ export component ImageViewer inherits Rectangle {
         height: root.page-h;
         clip: true;
 
-        // Tap outside the picture closes the viewer (ImageViewer.qml:286).
-        // Behind `media`, so its own handlers win over the letterbox.
-        TouchArea { clicked => { root.closed(); } }
-
-        // Filmstrip: the neighbouring pictures peek in during a drag
-        // (SnapOneItem pager, 12px between pages).
-        if root.drag-dx > 0px && root.cur > 0 && !root.zoomed : prev-peek := Rectangle {
+        // Filmstrip: the neighbouring pictures peek in during a drag or turn
+        // (ImageViewer.qml:292-316 — one pitch apart, each with its own
+        // spinner (:475) and no slab behind it).
+        if root.shift > 0px && root.cur > 0 && !root.zoomed : prev-peek := Rectangle {
             property <ViewerItem> pit: root.items[root.cur - 1];
-            property <length> pfw: self.pit.w > 0 && self.pit.h > 0
-                ? min(root.page-w, root.page-h * self.pit.w / self.pit.h) : root.page-w;
-            property <length> pfh: self.pit.w > 0 && self.pit.h > 0
-                ? min(root.page-h, root.page-w * self.pit.h / self.pit.w) : root.page-h;
-            x: (stage.width - self.pfw) / 2 - stage.width - 12px + root.drag-dx;
+            property <float> piw: self.pit.w > 0 ? self.pit.w : 800;
+            property <float> pih: self.pit.h > 0 ? self.pit.h : 600;
+            property <float> ps: min(root.page-w / 1px / self.piw, root.page-h / 1px / self.pih);
+            property <length> pfw: max(1px, round(self.piw * self.ps) * 1px);
+            property <length> pfh: max(1px, round(self.pih * self.ps) * 1px);
+            x: (stage.width - self.pfw) / 2 - root.pitch + root.shift;
             y: (stage.height - self.pfh) / 2;
             width: self.pfw; height: self.pfh;
             border-radius: 16px;
             clip: true;
-            background: #1a1a1c;
+            background: transparent;
             if self.pit.have-img : Image {
                 source: prev-peek.pit.img;
                 width: 100%; height: 100%;
             }
+            if !self.pit.have-img && self.pit.kind != "video" : Spinner {
+                x: (prev-peek.width - self.width) / 2; y: (prev-peek.height - self.height) / 2;
+                spin-color: root.fg.with-alpha(0.5);
+            }
         }
-        if root.drag-dx < 0px && root.cur < root.items.length - 1 && !root.zoomed : next-peek := Rectangle {
+        if root.shift < 0px && root.cur < root.items.length - 1 && !root.zoomed : next-peek := Rectangle {
             property <ViewerItem> nit: root.items[root.cur + 1];
-            property <length> nfw: self.nit.w > 0 && self.nit.h > 0
-                ? min(root.page-w, root.page-h * self.nit.w / self.nit.h) : root.page-w;
-            property <length> nfh: self.nit.w > 0 && self.nit.h > 0
-                ? min(root.page-h, root.page-w * self.nit.h / self.nit.w) : root.page-h;
-            x: (stage.width - self.nfw) / 2 + stage.width + 12px + root.drag-dx;
+            property <float> niw: self.nit.w > 0 ? self.nit.w : 800;
+            property <float> nih: self.nit.h > 0 ? self.nit.h : 600;
+            property <float> ns: min(root.page-w / 1px / self.niw, root.page-h / 1px / self.nih);
+            property <length> nfw: max(1px, round(self.niw * self.ns) * 1px);
+            property <length> nfh: max(1px, round(self.nih * self.ns) * 1px);
+            x: (stage.width - self.nfw) / 2 + root.pitch + root.shift;
             y: (stage.height - self.nfh) / 2;
             width: self.nfw; height: self.nfh;
             border-radius: 16px;
             clip: true;
-            background: #1a1a1c;
+            background: transparent;
             if self.nit.have-img : Image {
                 source: next-peek.nit.img;
                 width: 100%; height: 100%;
+            }
+            if !self.nit.have-img && self.nit.kind != "video" : Spinner {
+                x: (next-peek.width - self.width) / 2; y: (next-peek.height - self.height) / 2;
+                spin-color: root.fg.with-alpha(0.5);
             }
         }
 
         media := Rectangle {
             property <int> gif-frame: 0;
-            x: (stage.width - root.fit-w * root.zoom) / 2 + root.ox + root.drag-dx;
+            x: (stage.width - root.fit-w * root.zoom) / 2 + root.ox + root.shift;
             y: (stage.height - root.fit-h * root.zoom) / 2 + root.oy;
             width: root.fit-w * root.zoom;
             height: root.fit-h * root.zoom;
@@ -185,17 +321,24 @@ export component ImageViewer inherits Rectangle {
                 IconLabel { text: Icons.play; filled: false; color: #ffffff; font-size: 26px; width: 100%; height: 100%; }
             }
         }
+        // ImageViewer.qml:475 — the spinner in fg@0.5 while the full image loads.
         if !root.it.have-img && !root.is-video : Spinner {
             x: (stage.width - self.width) / 2; y: (stage.height - self.height) / 2;
+            spin-color: root.fg.with-alpha(0.5);
         }
 
         // Swipe / pan / tap / double-tap / wheel — one surface, mode by state.
         property <length> last-x: 0;
         property <length> last-y: 0;
+        // A press that travelled is a swipe or a pan, never a tap (Slint fires
+        // `clicked` on every release; QML's MouseArea would not see a flick).
+        property <bool> dragged: false;
         // Pinch zoom — ScaleRotateGestureHandler (two-finger; single-finger
         // input still lands on the TouchArea below). Same zoom-about maths.
+        // ImageViewer.qml:434 — not for a video.
         pinch := ScaleRotateGestureHandler {
             width: 100%; height: 100%;
+            enabled: !root.is-video;
             property <float> start-zoom: 1.0;
             started => { self.start-zoom = root.zoom; }
             updated => {
@@ -205,8 +348,18 @@ export component ImageViewer inherits Rectangle {
             }
         }
         gesture := TouchArea {
+            enabled: !root.turning;
             clicked => {
-                if (root.is-video) { root.toggle-playback(); }
+                if (stage.dragged) { return; }
+                // ImageViewer.qml:429 — on the media itself a tap toggles a
+                // video and does nothing for a picture …
+                if (self.mouse-x >= media.x && self.mouse-x < media.x + media.width
+                    && self.mouse-y >= media.y && self.mouse-y < media.y + media.height) {
+                    if (root.is-video) { root.toggle-playback(); }
+                    return;
+                }
+                // … and anywhere else (the letterbox too) closes (:286-290).
+                if (!root.zoomed) { root.close(); }
             }
             double-clicked => {
                 if (root.is-video) { return; }
@@ -219,17 +372,24 @@ export component ImageViewer inherits Rectangle {
                 if (e.kind == PointerEventKind.down) {
                     stage.last-x = self.mouse-x;
                     stage.last-y = self.mouse-y;
+                    stage.dragged = false;
                     root.drag-dx = 0;
                 }
                 if (e.kind == PointerEventKind.up || e.kind == PointerEventKind.cancel) {
-                    if (!root.zoomed && abs(root.drag-dx / 1px) > stage.width / 4px) {
-                        if (root.drag-dx < 0) { root.go(root.cur + 1); }
-                        else { root.go(root.cur - 1); }
+                    if (!root.zoomed) {
+                        // ImageViewer.qml:301 — past a quarter page turns, else settle back.
+                        if (abs(root.drag-dx / 1px) > stage.width / 4px) {
+                            root.turn(root.drag-dx < 0 ? 1 : -1);
+                        } else if (root.drag-dx != 0) {
+                            root.turn(0);
+                        }
                     }
-                    root.drag-dx = 0;
                 }
             }
             moved => {
+                if (abs((self.mouse-x - self.pressed-x) / 1px) > 6 || abs((self.mouse-y - self.pressed-y) / 1px) > 6) {
+                    stage.dragged = true;
+                }
                 if (root.zoomed) {
                     root.ox += self.mouse-x - stage.last-x;
                     root.oy += self.mouse-y - stage.last-y;
@@ -240,6 +400,8 @@ export component ImageViewer inherits Rectangle {
                 stage.last-x = self.mouse-x;
                 stage.last-y = self.mouse-y;
             }
+            // ImageViewer.qml:484-495 — ctrl+wheel zooms, a plain wheel zooms
+            // too once magnified, otherwise it pages through wheelNav.
             scroll-event(e) => {
                 if (e.modifiers.control || root.zoomed) {
                     root.zoom-about(root.zoom * (e.delta-y > 0 ? 1.25 : 0.8),
@@ -247,92 +409,63 @@ export component ImageViewer inherits Rectangle {
                                     self.mouse-y - stage.height / 2);
                     return accept;
                 }
-                if (e.delta-y < 0) { root.go(root.cur + 1); }
-                else if (e.delta-y > 0) { root.go(root.cur - 1); }
+                root.wheel-nav(e.delta-y / 1px);
                 return accept;
-            }
-        }
-
-        // Zoom buttons: the touch fallback for the missing pinch gesture.
-        zoom-btns := VerticalLayout {
-            x: stage.width - 46px;
-            y: stage.height - 96px;
-            spacing: 8px;
-            zin := Rectangle {
-                width: 38px; height: 38px; border-radius: 19px;
-                background: #000000.with-alpha(zin-t.pressed ? 0.65 : 0.42);
-                Text { text: "+"; color: #ffffff; font-family: Theme.font-ui; font-size: Theme.title; width: 100%; height: 100%; horizontal-alignment: center; vertical-alignment: center; }
-                zin-t := TouchArea { clicked => { root.zoom-about(root.zoom * 1.5, 0, 0); } }
-            }
-            zout := Rectangle {
-                width: 38px; height: 38px; border-radius: 19px;
-                background: #000000.with-alpha(zout-t.pressed ? 0.65 : 0.42);
-                opacity: root.zoomed ? 1.0 : 0.4;
-                Text { text: "−"; color: #ffffff; font-family: Theme.font-ui; font-size: Theme.title; width: 100%; height: 100%; horizontal-alignment: center; vertical-alignment: center; }
-                zout-t := TouchArea { clicked => { root.zoom-about(root.zoom / 1.5, 0, 0); } }
             }
         }
     }
 
-    // ---- top bar ----
+    // ---- top bar (ImageViewer.qml:498-517) ----
     top-bar := Rectangle {
         // pinned to the top: an element with no geometry centres itself in Slint
         x: 0px; y: 0px; width: 100%;
         height: 56px;
-        HorizontalLayout {
-            padding-left: 8px; padding-right: 8px;
-            spacing: 8px;
-            Rectangle {
-                width: 44px;
-                ActionButton {
-                    y: (56px - self.height) / 2;
-                    width: 44px; height: 44px;
-                    icon: Icons.close; filled: false;
-                    foreground: root.fg;
-                    clicked => { root.closed(); }
-                }
+        // :502 — 22px PanelActionButton at leftMargin 8, vertically centred.
+        close-btn := ActionButton {
+            x: 8px; y: (56px - 22px) / 2;
+            width: 22px; height: 22px;
+            icon: Icons.close; filled: false;
+            foreground: root.fg;
+            clicked => { root.close(); }
+        }
+        // :503-507 — name and time at closeBtn.right + 8 = 38.
+        title-col := VerticalLayout {
+            x: 38px;
+            y: (56px - self.preferred-height) / 2;
+            width: right-bar.x - 38px - 8px;
+            height: self.preferred-height;
+            Text { text: root.it.is-own ? "You" : root.it.sender-name; color: root.fg; font-family: Theme.font-ui; font-size: Theme.subtitle; font-weight: 700; overflow: elide; }
+            Text { text: root.it.ts-label; color: root.fg.with-alpha(0.55); font-family: Theme.font-ui; font-size: Theme.caption; }
+        }
+        // :508-516 — three 22px PanelActionButtons at spacing 2, rightMargin 8.
+        right-bar := HorizontalLayout {
+            x: root.width - 8px - self.width;
+            y: (56px - 22px) / 2;
+            width: self.preferred-width;
+            height: 22px;
+            spacing: 2px;
+            ActionButton {
+                width: 22px; height: 22px;
+                icon: Icons.download; filled: false;
+                foreground: root.fg;
+                clicked => { root.download-requested(); }
             }
-            VerticalLayout {
-                alignment: center;
-                horizontal-stretch: 1;
-                Text { text: root.it.is-own ? "You" : root.it.sender-name; color: root.fg; font-family: Theme.font-ui; font-size: Theme.subtitle; font-weight: 700; overflow: elide; }
-                Text { text: root.it.ts-label; color: root.fg.with-alpha(0.55); font-family: Theme.font-ui; font-size: Theme.caption; }
+            if root.it.can-redact : ActionButton {
+                width: 22px; height: 22px;
+                icon: Icons.trash; filled: false;
+                foreground: root.fg;
+                clicked => { root.delete-requested(); }
             }
-            // 22px PanelActionButtons at spacing 2 (ImageViewer.qml:508).
-            Rectangle {
-                width: 24px;
-                ActionButton {
-                    y: (56px - self.height) / 2;
-                    width: 22px; height: 22px;
-                    icon: Icons.download; filled: false;
-                    foreground: root.fg;
-                    clicked => { root.download-requested(); }
-                }
-            }
-            if root.it.can-redact : Rectangle {
-                width: 24px;
-                ActionButton {
-                    y: (56px - self.height) / 2;
-                    width: 22px; height: 22px;
-                    icon: Icons.trash; filled: false;
-                    foreground: root.fg;
-                    clicked => { root.delete-requested(); }
-                }
-            }
-            Rectangle {
-                width: 24px;
-                ActionButton {
-                    y: (56px - self.height) / 2;
-                    width: 22px; height: 22px;
-                    icon: Icons.moreVertical; filled: false;
-                    foreground: root.fg;
-                    clicked => { root.more-open = !root.more-open; }
-                }
+            ActionButton {
+                width: 22px; height: 22px;
+                icon: Icons.moreVertical; filled: false;
+                foreground: root.fg;
+                clicked => { root.more-open = !root.more-open; }
             }
         }
     }
 
-    // ---- video scrubber ----
+    // ---- video scrubber (ImageViewer.qml:620-672) ----
     if root.playing-event != "" : scrub-row := Rectangle {
         x: 16px;
         y: root.height - 62px - 34px;
@@ -353,24 +486,28 @@ export component ImageViewer inherits Rectangle {
             font-family: Theme.font-ui; font-size: Theme.caption;
             vertical-alignment: center; height: 100%;
         }
+        // :639-644 — the 18px track between the labels, 10 from each.
         v-track := Rectangle {
             property <float> frac: root.play-duration > 0 ? max(0.0, min(1.0, root.play-pos / root.play-duration)) : 0;
             x: pos-label.preferred-width + 10px;
+            y: (34px - 18px) / 2;
             width: dur-label.x - self.x - 10px;
-            height: 100%;
+            height: 18px;
             Rectangle {
-                y: (34px - 4px) / 2;
+                y: (18px - 4px) / 2;
                 width: 100%; height: 4px; border-radius: 2px;
                 background: root.fg.with-alpha(0.25);
                 Rectangle { width: v-track.width * v-track.frac; height: 100%; border-radius: 2px; background: root.accent; }
             }
             Rectangle {
                 x: v-track.frac * (v-track.width - 13px);
-                y: (34px - 13px) / 2;
+                y: (18px - 13px) / 2;
                 width: 13px; height: 13px; border-radius: 6.5px;
                 background: root.accent;
             }
+            // :659-661 — the hit target is the track grown 10 above and below (38 tall).
             v-scrub := TouchArea {
+                y: -10px; height: 38px;
                 enabled: root.play-duration > 0;
                 pointer-event(e) => {
                     if (e.kind == PointerEventKind.down) {
@@ -378,6 +515,9 @@ export component ImageViewer inherits Rectangle {
                     }
                     if (e.kind == PointerEventKind.up) {
                         root.seek-requested((max(0px, min(v-track.width, self.mouse-x)) / v-track.width) * root.play-duration);
+                        root.scrub-state(false, 0);
+                    }
+                    if (e.kind == PointerEventKind.cancel) {
                         root.scrub-state(false, 0);
                     }
                 }
@@ -388,92 +528,137 @@ export component ImageViewer inherits Rectangle {
         }
     }
 
-    // ---- reactions ----
+    // ---- reactions (ImageViewer.qml:674-694) ----
     react-row := HorizontalLayout {
         x: (root.width - self.preferred-width) / 2;
         y: root.height - 54px;
+        width: self.preferred-width;
+        height: 42px;
         spacing: 10px;
         for emo in ["👍", "❤️", "😂", "😮", "😢", "😡"] : re := Rectangle {
             width: 42px; height: 42px; border-radius: 21px;
             background: re-t.pressed || re-t.has-hover ? root.accent.with-alpha(0.25) : root.fg.with-alpha(0.08);
-            Text { text: emo; font-size: 20px; width: 100%; height: 100%; horizontal-alignment: center; vertical-alignment: center; }
+            // :684-687 — emoji are ink-centred, not line-box centred: their
+            // variation selectors widen the advance past the visible glyph, so
+            // plain centring lands 5.5px left of centre (docs/ui-conventions.md
+            // "Icons and centring", measured in this row). Slint cannot measure
+            // text, so the measured nudge is applied as a constant.
+            Text {
+                x: (42px - self.preferred-width) / 2 + 5.5px;
+                y: (42px - self.preferred-height) / 2;
+                width: self.preferred-width; height: self.preferred-height;
+                text: emo; font-size: 20px;
+            }
             re-t := TouchArea { clicked => { root.react(emo); } }
         }
     }
 
-    if root.toast != "" : Text {
+    // ImageViewer.qml:101-102, 695-700 — note() holds a toast for 2500ms; its
+    // bottom sits 58 above the viewer's. `toast` is bound by the app, so the
+    // page hides it rather than clearing it (an assignment would drop the
+    // binding); the bridge blanks it first to repeat the same text.
+    property <bool> toast-live: root.toast != "";
+    changed toast => {
+        root.toast-live = root.toast != "";
+        if (root.toast-live) { toast-clock.restart(); }
+    }
+    toast-clock := Timer {
+        interval: 2500ms;
+        running: false;
+        triggered => { root.toast-live = false; self.stop(); }
+    }
+    if root.toast != "" && root.toast-live : Text {
         x: (root.width - self.preferred-width) / 2;
-        y: root.height - 58px - 24px;
+        y: root.height - 58px - self.preferred-height;
+        width: self.preferred-width; height: self.preferred-height;
         text: root.toast;
         color: root.fg.with-alpha(0.7);
         font-family: Theme.font-ui;
         font-size: Theme.caption;
     }
 
-    // ---- ⋮ menu: Forward / Share ----
+    // ---- ⋮ menu: Forward / Share (ImageViewer.qml:519-564) ----
     in-out property <bool> more-open: false;
     in-out property <bool> fwd-open: false;
-    if root.more-open || root.fwd-open : menu-scrim := Rectangle {
+    // :526, :573 — the click-away sink, live only while a card is open.
+    menu-scrim := TouchArea {
         width: 100%; height: 100%;
-        TouchArea { clicked => { root.more-open = false; root.fwd-open = false; } }
-        if root.more-open : more-card := Rectangle {
-            x: root.width - self.width - 10px;
-            y: 42px;
-            width: 160px;
-            height: 72px;
-            border-radius: 12px;
-            background: Theme.menu-background.brighter(0.4).with-alpha(0.99);
-            border-width: 1px; border-color: root.fg.with-alpha(0.12);
-            VerticalLayout {
-                padding: 6px;
-                fwd-row := Rectangle {
-                    height: 30px; border-radius: 8px;
-                    background: fr-t.pressed || fr-t.has-hover ? root.fg.with-alpha(0.1) : transparent;
-                    HorizontalLayout {
-                        padding-left: 10px; spacing: 8px;
-                        IconLabel { text: Icons.retry; filled: false; color: root.fg; opacity: 0.85; vertical-alignment: center; }
-                        Text { text: "Forward"; color: root.fg; font-family: Theme.font-ui; font-size: Theme.body; vertical-alignment: center; }
-                    }
-                    fr-t := TouchArea { clicked => { root.more-open = false; root.fwd-open = true; } }
-                }
-                share-row := Rectangle {
-                    height: 30px; border-radius: 8px;
-                    background: sr-t.pressed || sr-t.has-hover ? root.fg.with-alpha(0.1) : transparent;
-                    HorizontalLayout {
-                        padding-left: 10px; spacing: 8px;
-                        IconLabel { text: Icons.share; filled: false; color: root.fg; opacity: 0.85; vertical-alignment: center; }
-                        Text { text: "Share"; color: root.fg; font-family: Theme.font-ui; font-size: Theme.body; vertical-alignment: center; }
-                    }
-                    sr-t := TouchArea { clicked => { root.more-open = false; root.share-requested(); } }
-                }
-            }
+        visible: root.more-open || root.fwd-open;
+        clicked => { root.more-open = false; root.fwd-open = false; }
+    }
+    // Both cards stay instantiated: they fade (110ms) and grow from the top
+    // right, 0.85→1 over 140ms OutCubic (:540-544, :586-590).
+    more-card := Rectangle {
+        x: root.width - self.width - 10px;
+        y: 42px;                                    // :534 — (56 + 22) / 2 + 3
+        width: 160px;
+        height: 60px + 12px;                        // :530 — two 30px rows + 6 around
+        border-radius: 12px;
+        background: Theme.menu-background.brighter(0.4).with-alpha(0.99);
+        border-width: 1px; border-color: root.fg.with-alpha(0.12);
+        transform-origin: { x: self.width, y: 0 };
+        opacity: root.more-open ? 1 : 0;
+        transform-scale-x: root.more-open ? 1 : 0.85;
+        transform-scale-y: root.more-open ? 1 : 0.85;
+        animate opacity { duration: 110ms; }
+        animate transform-scale-x, transform-scale-y { duration: 140ms; easing: cubic-bezier(0.33, 1, 0.68, 1); }
+        visible: self.opacity > 0.01;
+        TouchArea { }                               // :545 — the card swallows its taps
+        // :546-557 — rows at 6 in, icon at 10, label at 36 absolute.
+        fwd-row := Rectangle {
+            x: 6px; y: 6px; width: 148px;
+            height: 30px; border-radius: 8px;
+            background: fr-t.pressed || fr-t.has-hover ? root.fg.with-alpha(0.1) : transparent;
+            IconLabel { x: 10px; width: 14px; height: 100%; text: Icons.retry; filled: false; color: root.fg; opacity: 0.85; }
+            Text { x: 36px; width: parent.width - 36px; height: 100%; text: "Forward"; color: root.fg; font-family: Theme.font-ui; font-size: Theme.body; vertical-alignment: center; }
+            fr-t := TouchArea { clicked => { root.more-open = false; root.fwd-open = true; } }
         }
-        if root.fwd-open : fwd-card := Rectangle {
-            x: root.width - self.width - 10px;
-            y: 42px;
-            width: 240px;
-            height: min(330px, fwd-col.preferred-height + 12px);
-            border-radius: 12px;
-            background: Theme.menu-background.brighter(0.4).with-alpha(0.99);
-            border-width: 1px; border-color: root.fg.with-alpha(0.12);
-            clip: true;
-            fwd-col := VerticalLayout {
-                padding: 6px;
-                Text { text: "Forward to"; color: root.fg.with-alpha(0.6); font-family: Theme.font-ui; font-size: Theme.caption; font-weight: 700; }
-                Rectangle { height: 4px; }
-                for name[i] in root.forward-names : fwd-item := Rectangle {
-                    height: 30px; border-radius: 8px;
-                    background: fi-t.pressed || fi-t.has-hover ? root.fg.with-alpha(0.1) : transparent;
-                    Text {
-                        x: 10px; width: 220px;
-                        text: name;
-                        color: root.fg;
-                        font-family: Theme.font-ui; font-size: Theme.body;
-                        vertical-alignment: center; height: 100%;
-                        overflow: elide;
-                    }
-                    fi-t := TouchArea { clicked => { root.fwd-open = false; root.forward-to(i); } }
+        share-row := Rectangle {
+            x: 6px; y: 36px; width: 148px;
+            height: 30px; border-radius: 8px;
+            background: sr-t.pressed || sr-t.has-hover ? root.fg.with-alpha(0.1) : transparent;
+            IconLabel { x: 10px; width: 14px; height: 100%; text: Icons.share; filled: false; color: root.fg; opacity: 0.85; }
+            Text { x: 36px; width: parent.width - 36px; height: 100%; text: "Share"; color: root.fg; font-family: Theme.font-ui; font-size: Theme.body; vertical-alignment: center; }
+            sr-t := TouchArea { clicked => { root.more-open = false; root.share-requested(); } }
+        }
+    }
+    // Forward: pick a room (ImageViewer.qml:566-616).
+    fwd-card := Rectangle {
+        x: root.width - self.width - 10px;
+        y: 42px;
+        width: 240px;
+        height: min(330px, fwd-col.preferred-height + 12px);
+        border-radius: 12px;
+        background: Theme.menu-background.brighter(0.4).with-alpha(0.99);
+        border-width: 1px; border-color: root.fg.with-alpha(0.12);
+        clip: true;
+        transform-origin: { x: self.width, y: 0 };
+        opacity: root.fwd-open ? 1 : 0;
+        transform-scale-x: root.fwd-open ? 1 : 0.85;
+        transform-scale-y: root.fwd-open ? 1 : 0.85;
+        animate opacity { duration: 110ms; }
+        animate transform-scale-x, transform-scale-y { duration: 140ms; easing: cubic-bezier(0.33, 1, 0.68, 1); }
+        visible: self.opacity > 0.01;
+        TouchArea { }                               // :591
+        fwd-col := VerticalLayout {
+            x: 6px; y: 6px;
+            width: fwd-card.width - 12px;
+            height: self.preferred-height;
+            Text { text: "Forward to"; color: root.fg.with-alpha(0.6); font-family: Theme.font-ui; font-size: Theme.caption; font-weight: 700; }
+            Rectangle { height: 4px; }
+            for name[i] in root.forward-names : fwd-item := Rectangle {
+                height: 30px; border-radius: 8px;
+                background: fi-t.pressed || fi-t.has-hover ? root.fg.with-alpha(0.1) : transparent;
+                // :603 — label at 10, width parent − 20.
+                Text {
+                    x: 10px; width: parent.width - 20px;
+                    text: name;
+                    color: root.fg;
+                    font-family: Theme.font-ui; font-size: Theme.body;
+                    vertical-alignment: center; height: 100%;
+                    overflow: elide;
                 }
+                fi-t := TouchArea { clicked => { root.fwd-open = false; root.forward-to(i); } }
             }
         }
     }

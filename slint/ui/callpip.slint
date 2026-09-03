@@ -1,8 +1,10 @@
 // The call shrunk into a corner — CallPiP.qml. Tapping reveals expand and
-// end-call; dragging snaps to the nearest corner on release.
-// DIVERGENCE: the QML measures throw velocity per frame and springs with a
-// bounce; Slint has no per-frame delta callback, so release eases to the
-// corner nearest the drop point.
+// end-call; dragging throws it corner to corner: the release velocity
+// (low-passed per move, v = v*0.55 + (dx/dt)*0.45, CallPiP.qml:239-252)
+// aims at the corner the throw is heading for (pos + v*0.14, CallPiP.qml:
+// 330-337) and a back-out curve stands in for the k=120 c=15 spring
+// (CallPiP.qml:254-275). The corner is what is kept, not a position, so a
+// resize re-parks the tile (CallPiP.qml:219-223, 236-237).
 
 import { Theme } from "style.slint";
 import { Icons } from "icons.slint";
@@ -13,26 +15,60 @@ import { CallTile } from "callpage.slint";
 export component CallPip inherits Rectangle {
     in property <color> fg: Theme.menu-text;
     in property <color> accent: Theme.accent;
-    /// The featured remote (screen > camera), from the bridge.
+    /// The featured remote (screen > camera, else the first remote), from the bridge.
     in property <CallParticipant> featured;
     /// Running call duration ("3:41"), ticked by the bridge; "•" before connect.
     in property <string> duration-label: "•";
+    /// Panel.qml:1382: the host's `visible` — drives the entry animation.
+    in property <bool> shown: true;
     callback expand-requested;
     callback hangup-requested;
 
     in-out property <bool> controls-on: false;
+    // CallPiP.qml:34, 167: the controls hide themselves after 2600ms, restarted on reveal.
+    hide-controls := Timer {
+        interval: 2600ms;
+        running: false;
+        triggered => { root.controls-on = false; self.running = false; }
+    }
 
     width: 132px;
     height: 172px;
     property <length> edge: 14px;
-    property <bool> dragging: false;
-    // Until thrown once the tile belongs bottom right (QML everThrown).
-    x: root.parent-width - self.width - self.edge;
-    y: root.parent-height - self.height - self.edge;
     /// The host tells the pip how big its arena is (a Slint child cannot ask).
     in property <length> parent-width: 411px;
     in property <length> parent-height: 823px;
-    animate x, y { duration: 240ms; easing: cubic-bezier(0.3, 1.15, 0.6, 1); }
+    // CallPiP.qml:207-208
+    property <length> max-x: max(root.edge, root.parent-width - root.width - root.edge);
+    property <length> max-y: max(root.edge, root.parent-height - root.height - root.edge);
+    // CallPiP.qml:224-227: until thrown once the tile belongs bottom right.
+    property <int> cx: 1;   // 0 = left edge, 1 = right edge
+    property <int> cy: 1;   // 0 = top edge, 1 = bottom edge
+    property <bool> dragging: false;
+    property <bool> flying: false;
+    property <length> dx;   // position while dragging
+    property <length> dy;
+    property <float> vx;    // px/s
+    property <float> vy;
+    property <duration> last-t;
+    property <length> last-x;
+    property <length> last-y;
+    x: root.dragging ? root.dx : (root.cx == 0 ? root.edge : root.max-x);
+    y: root.dragging ? root.dy : (root.cy == 0 ? root.edge : root.max-y);
+    animate x, y { duration: root.flying ? 380ms : 0ms; easing: cubic-bezier(0.34, 1.56, 0.64, 1); }
+    settle := Timer {
+        interval: 400ms;
+        running: root.flying;
+        triggered => { root.flying = false; }
+    }
+
+    // CallPiP.qml:277-280: scale 0.8→1 over 180ms OutBack, opacity 140ms;
+    // hidden at once on the way out, as `visible` is in QML.
+    visible: root.shown;
+    opacity: root.shown ? 1 : 0;
+    animate opacity { duration: 140ms; }
+    transform-scale: root.shown ? 1 : 0.8;
+    animate transform-scale { duration: 180ms; easing: ease-out-back; }
 
     border-radius: 16px;
     background: #141417;
@@ -46,7 +82,7 @@ export component CallPip inherits Rectangle {
         accent: root.accent;
     }
 
-    // Duration chip while the controls are hidden.
+    // Duration chip while the controls are hidden (CallPiP.qml:299-318).
     if !root.controls-on : dur-chip := Rectangle {
         x: 6px; y: 6px;
         width: dur-text.preferred-width + 12px;
@@ -64,34 +100,57 @@ export component CallPip inherits Rectangle {
     }
 
     drag-touch := TouchArea {
+        // CallPiP.qml:323: a hand while dragging, a pointer otherwise.
+        mouse-cursor: root.dragging ? grabbing : pointer;
         moved => {
-            root.dragging = true;
-            root.x = min(max(root.x + self.mouse-x - self.pressed-x, root.edge),
-                         root.parent-width - root.width - root.edge);
-            root.y = min(max(root.y + self.mouse-y - self.pressed-y, root.edge),
-                         root.parent-height - root.height - root.edge);
-        }
-        pointer-event(ev) => {
-            if (ev.kind == PointerEventKind.up && root.dragging) {
-                root.dragging = false;
-                root.x = root.x + root.width / 2 < root.parent-width / 2
-                    ? root.edge : root.parent-width - root.width - root.edge;
-                root.y = root.y + root.height / 2 < root.parent-height / 2
-                    ? root.edge : root.parent-height - root.height - root.edge;
+            if (root.dragging || abs(self.mouse-x - self.pressed-x) > 3px || abs(self.mouse-y - self.pressed-y) > 3px) {
+                root.dragging = true;
+                // CallPiP.qml:325-326: drag bounds edge..max.
+                root.dx = min(max(root.dx + self.mouse-x - self.pressed-x, root.edge), root.max-x);
+                root.dy = min(max(root.dy + self.mouse-y - self.pressed-y, root.edge), root.max-y);
+                // CallPiP.qml:245-251: low-passed velocity, sampled per frame.
+                if ((animation-tick() - root.last-t) / 1s > 0.001) {
+                    root.vx = root.vx * 0.55 + ((root.dx - root.last-x) / 1px / ((animation-tick() - root.last-t) / 1s)) * 0.45;
+                    root.vy = root.vy * 0.55 + ((root.dy - root.last-y) / 1px / ((animation-tick() - root.last-t) / 1s)) * 0.45;
+                    root.last-x = root.dx; root.last-y = root.dy; root.last-t = animation-tick();
+                }
             }
         }
+        pointer-event(ev) => {
+            if (ev.kind == PointerEventKind.down) {
+                // CallPiP.qml:329: a press stops a throw in flight.
+                root.flying = false;
+                root.vx = 0; root.vy = 0;
+                root.dx = root.x; root.dy = root.y;
+                root.last-x = root.x; root.last-y = root.y; root.last-t = animation-tick();
+            } else if (ev.kind == PointerEventKind.up && root.dragging) {
+                // CallPiP.qml:330-337: aim at where the throw is heading.
+                root.cx = root.dx + root.vx * 0.14 * 1px + root.width / 2 < root.parent-width / 2 ? 0 : 1;
+                root.cy = root.dy + root.vy * 0.14 * 1px + root.height / 2 < root.parent-height / 2 ? 0 : 1;
+                root.flying = true;
+                root.dragging = false;
+            } else if (ev.kind == PointerEventKind.cancel) {
+                root.dragging = false;
+            }
+        }
+        // CallPiP.qml:327-328: a press that never became a drag is a tap.
         clicked => {
             if (!root.dragging) {
                 root.controls-on = !root.controls-on;
+                if (root.controls-on) { hide-controls.stop(); hide-controls.start(); }
             }
         }
     }
 
     // Tap-revealed controls: expand in the middle, hangup top right.
-    if root.controls-on : controls := Rectangle {
+    // CallPiP.qml:340-346: fades over 140ms, alive while opacity > 0.01.
+    controls := Rectangle {
         width: 100%; height: 100%;
         border-radius: 16px;
         background: Theme.background.with-alpha(0.55);
+        visible: self.opacity > 0.01;
+        opacity: root.controls-on ? 1 : 0;
+        animate opacity { duration: 140ms; }
         expand-btn := Rectangle {
             x: (root.width - self.width) / 2;
             y: (root.height - self.height) / 2;
@@ -103,7 +162,7 @@ export component CallPip inherits Rectangle {
                 color: #ececec;
                 width: 100%; height: 100%;
             }
-            TouchArea { clicked => { root.expand-requested(); } }
+            TouchArea { mouse-cursor: pointer; clicked => { root.expand-requested(); } }
         }
         end-btn := Rectangle {
             x: root.width - self.width - 6px;
@@ -117,7 +176,7 @@ export component CallPip inherits Rectangle {
                 font-size: Theme.body-small;
                 width: 100%; height: 100%;
             }
-            TouchArea { clicked => { root.hangup-requested(); } }
+            TouchArea { mouse-cursor: pointer; clicked => { root.hangup-requested(); } }
         }
     }
 }

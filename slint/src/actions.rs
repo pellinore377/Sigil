@@ -679,7 +679,15 @@ pub fn on_act(ui: &mut UiState, win: &AppWindow, action: &str, a: &str, b2: &str
         "set-mic" => crate::call::set_mic(ui, win, a != "true"),
         "call-react" => crate::call::react(ui, win, a),
         "select-device" => crate::call::select_device(ui, win, a, b2),
-        "call-minimize" => win.set_call_page_open(false),
+        // the page clears its floaters when it hides (CallPage.qml:25)
+        "call-minimize" => {
+            win.set_call_page_open(false);
+            if let Some(s) = ui.calls.session.as_mut() {
+                s.floaters.clear();
+            }
+        }
+        // video is not built yet: the toggles have nothing to switch
+        "set-camera" | "set-screenshare" => {}
         "call-expand" => win.set_call_page_open(true),
         "accept-invite" => req.fire("room.join", json!({"roomIdOrAlias": open_room})),
         "decline-invite" => {
@@ -906,9 +914,9 @@ pub fn on_act(ui: &mut UiState, win: &AppWindow, action: &str, a: &str, b2: &str
                         Err((_, m)) => m,
                     };
                     if action_is_doc {
-                        win.set_dc_toast(msg.as_str().into());
+                        toast(win, Toast::Doc, msg.as_str().into());
                     } else {
-                        win.set_au_toast(msg.as_str().into());
+                        toast(win, Toast::Audio, msg.as_str().into());
                     }
                 },
             );
@@ -1051,7 +1059,7 @@ pub fn on_act(ui: &mut UiState, win: &AppWindow, action: &str, a: &str, b2: &str
                 "dm" if !uid.is_empty() => start_dm(ui, &uid),
                 "save" if !uid.is_empty() => {
                     req.fire("contacts.save", json!({"userId": uid, "displayName": name}));
-                    win.set_vw_toast("Saved".into());
+                    toast(win, Toast::Viewer, "Saved".into());
                 }
                 _ => {}
             }
@@ -1205,6 +1213,32 @@ pub fn load_saved_contacts(ui: &mut UiState) {
                 .unwrap_or_default();
         }
     });
+}
+
+#[derive(Clone, Copy)]
+pub enum Toast {
+    Viewer,
+    Doc,
+    Audio,
+}
+
+/// The media pages hide their toast on a timer without clearing the bound
+/// text, so the same message twice needs a blank in between.
+fn toast(win: &AppWindow, which: Toast, text: SharedString) {
+    match which {
+        Toast::Viewer => {
+            win.set_vw_toast(SharedString::new());
+            win.set_vw_toast(text);
+        }
+        Toast::Doc => {
+            win.set_dc_toast(SharedString::new());
+            win.set_dc_toast(text);
+        }
+        Toast::Audio => {
+            win.set_au_toast(SharedString::new());
+            win.set_au_toast(text);
+        }
+    }
 }
 
 fn fmt_dur(secs: f64) -> String {
@@ -1888,7 +1922,7 @@ fn viewer_misc(ui: &mut UiState, win: &AppWindow, action: &str, a: &str) {
                 "media.saveAs",
                 json!({"roomId": room, "eventId": ev, "dest": dest}),
                 |_ui, win, out| {
-                    win.set_vw_toast(
+                    toast(win, Toast::Viewer, 
                         match out {
                             Ok(v) => format!("Saved to {}", s(&v, "path")),
                             Err((_, m)) => m,
@@ -1910,7 +1944,7 @@ fn viewer_misc(ui: &mut UiState, win: &AppWindow, action: &str, a: &str) {
             let path = item["media"]["path"].as_str().unwrap_or("").to_string();
             if !path.is_empty() {
                 crate::platform::copy_text(&path);
-                win.set_vw_toast("Path copied".into());
+                toast(win, Toast::Viewer, "Path copied".into());
             }
         }
         "viewer-forward" => {
@@ -1929,7 +1963,7 @@ fn viewer_misc(ui: &mut UiState, win: &AppWindow, action: &str, a: &str) {
             if let Some(rid) = rid {
                 if !path.is_empty() {
                     req.fire("attachment.send", json!({"roomId": rid, "path": path}));
-                    win.set_vw_toast("Forwarded".into());
+                    toast(win, Toast::Viewer, "Forwarded".into());
                 }
             }
         }
@@ -1945,11 +1979,9 @@ fn doc_open(ui: &mut UiState, win: &AppWindow, event_id: &str) {
     win.set_dc_blocks(ModelRc::new(VecModel::from(Vec::new())));
     win.set_dc_pages(ModelRc::new(VecModel::from(Vec::new())));
     if let Some(item) = ui.shadow.iter().find(|i| s(i, "eventId") == event_id) {
+        // DocumentPage.qml:448 elides in the middle; the name comes pre-shortened
         win.set_dc_name(
-            item["media"]["filename"]
-                .as_str()
-                .unwrap_or("Document")
-                .into(),
+            crate::rows::elide_middle(item["media"]["filename"].as_str().unwrap_or("Document"), 34).into(),
         );
         win.set_dc_size(item["media"]["sizeLabel"].as_str().unwrap_or("").into());
     }
@@ -2098,7 +2130,8 @@ fn audio_open(ui: &mut UiState, win: &AppWindow, event_id: &str) {
     win.set_au_playing(false);
     win.set_au_position(0.0);
     if let Some(item) = ui.shadow.iter().find(|i| s(i, "eventId") == event_id) {
-        win.set_au_title(item["media"]["filename"].as_str().unwrap_or("Audio").into());
+        // AudioPage.qml:235 elides in the middle; Slint cannot, so the name comes pre-shortened
+        win.set_au_title(crate::rows::elide_middle(item["media"]["filename"].as_str().unwrap_or("Audio"), 34).into());
         win.set_au_size(item["media"]["sizeLabel"].as_str().unwrap_or("").into());
         win.set_au_duration((item["media"]["duration"].as_f64().unwrap_or(0.0) / 1000.0) as f32);
     }

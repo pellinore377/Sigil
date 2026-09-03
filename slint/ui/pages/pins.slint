@@ -225,6 +225,9 @@ export component PinsPage inherits Rectangle {
                                     x: 10px; y: 10px;
                                     width: card.width - 20px;
                                     spacing: 3px;
+                                    // a top-anchored Column: the card's 20 of
+                                    // padding must not stretch the kind chip
+                                    alignment: start;
                                     // Icon and words are separate elements: one
                                     // family per element (kind chip).
                                     if item.media-filename != "" : HorizontalLayout {

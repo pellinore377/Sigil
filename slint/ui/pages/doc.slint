@@ -47,31 +47,44 @@ export component DocPage inherits Rectangle {
 
     background: transparent;
 
+    // DocumentPage.qml:37-38 — note() holds a toast for 2600ms. `toast` is
+    // bound by the app, so the page hides it rather than clearing it (an
+    // assignment would drop the binding); the bridge blanks it first to
+    // repeat the same text.
+    property <bool> toast-live: root.toast != "";
+    changed toast => {
+        root.toast-live = root.toast != "";
+        if (root.toast-live) { toast-clock.restart(); }
+    }
+    toast-clock := Timer {
+        interval: 2600ms;
+        running: false;
+        triggered => { root.toast-live = false; self.stop(); }
+    }
+
     header := Rectangle {
+        x: 0; y: 0;       // a sized element with no position centres itself in Slint
         height: 52px;
-        HorizontalLayout {
-            padding-left: 6px; padding-right: 12px;
-            spacing: 8px;
-            Rectangle {
-                width: 44px;
-                ActionButton {
-                    y: (52px - self.height) / 2;
-                    width: 44px; height: 44px;
-                    icon: Icons.back;
-                    filled: false;
-                    foreground: root.fg;
-                    clicked => { root.closed(); }
-                }
-            }
-            Text {
-                text: "Document";
-                color: root.fg;
-                font-family: Theme.font-ui;
-                font-size: Theme.subtitle;
-                font-weight: 700;
-                vertical-alignment: center;
-                horizontal-stretch: 1;
-            }
+        width: 100%;
+        // DocumentPage.qml:90-97 — 22px PanelActionButton at leftMargin 6.
+        back-btn := ActionButton {
+            x: 6px; y: (52px - 22px) / 2;
+            width: 22px; height: 22px;
+            icon: Icons.back;
+            filled: false;
+            foreground: root.fg;
+            clicked => { root.closed(); }
+        }
+        // :98-105 — title at backBtn.right + 8 = 36, rightMargin 12.
+        Text {
+            x: 36px; width: header.width - 36px - 12px; height: 100%;
+            text: "Document";
+            color: root.fg;
+            font-family: Theme.font-ui;
+            font-size: Theme.subtitle;
+            font-weight: 700;
+            vertical-alignment: center;
+            overflow: elide;
         }
     }
 
@@ -83,14 +96,19 @@ export component DocPage inherits Rectangle {
         clip: true;
         background: root.paper;
 
-        // Sheet tabs for a workbook with more than one.
-        tabs := Rectangle {
+        // DocumentPage.qml:108-145 — sheet tabs for a workbook with more than
+        // one: a horizontal Flickable, 34 tall, 28px pills at spacing 6.
+        tabs := Flickable {
             visible: root.kind == "sheet" && root.sheets.length > 1;
             x: 16px; y: 12px;
             width: paper-box.width - 32px;
             height: self.visible ? 34px : 0px;
-            clip: true;
-            HorizontalLayout {
+            viewport-width: max(self.width, tab-row.preferred-width);
+            viewport-height: self.height;
+            tab-row := HorizontalLayout {
+                x: 0; y: 0;
+                width: max(tabs.width, self.preferred-width);
+                height: 28px;
                 alignment: start;
                 spacing: 6px;
                 for tab[i] in root.sheets : tab-pill := Rectangle {
@@ -120,9 +138,14 @@ export component DocPage inherits Rectangle {
             height: shelf.y - self.y - 10px;
             clip: true;
 
-            // Loading / error / unreadable
-            if root.status != "" : VerticalLayout {
-                alignment: center;
+            // DocumentPage.qml:189-208 — loading / error / unreadable: a
+            // centred column, parent − 40 wide, also for a document that
+            // arrived with no kind (:193).
+            if root.status != "" || root.kind == "" : VerticalLayout {
+                x: 20px;
+                width: body.width - 40px;
+                y: (body.height - self.preferred-height) / 2;
+                height: self.preferred-height;
                 spacing: 10px;
                 IconLabel {
                     text: root.status == "error" ? Icons.errorCircle : Icons.file;
@@ -152,13 +175,15 @@ export component DocPage inherits Rectangle {
                     height: 30px;
                     background: ri == 0 ? root.accent.with-alpha(0.22)
                               : mod(ri, 2) == 0 ? transparent : #00000009;
-                    for cell[ci] in row.cells : Rectangle {
+                    // DocumentPage.qml:260-270 — every column of the sheet, so
+                    // a short row still draws all its rules; missing cells read "".
+                    for ci in root.sheet-cols : Rectangle {
                         x: ci * 120px;
                         width: 120px; height: 30px;
                         Text {
                             x: 8px;
                             width: 104px; height: 100%;
-                            text: cell;
+                            text: ci < row.cells.length ? row.cells[ci] : "";
                             color: root.ink;
                             font-family: Theme.font-ui;
                             font-size: Theme.caption;
@@ -180,7 +205,8 @@ export component DocPage inherits Rectangle {
                         width: body.width;
                         height: body.width * root.page-aspect;
                         border-radius: 4px;
-                        background: root.paper.darker(0.03);
+                        // DocumentPage.qml:304 — the frame is the paper tone.
+                        background: root.paper;
                         if pg.loaded : Image {
                             source: pg.img;
                             width: 100%; height: 100%;
@@ -200,15 +226,20 @@ export component DocPage inherits Rectangle {
                 }
             }
 
-            // Blocks: markdown (engine-rendered to blocks Rust-side), text,
-            // slides, PDFs without a rasteriser.
+            // Blocks: markdown (engine-rendered to blocks Rust-side, heading
+            // levels included so the level rules apply), text, slides, PDFs
+            // without a rasteriser.
             if root.status == "" && !root.pdf-pages && root.kind != "sheet" && root.kind != "" : block-list := TouchList {
                 width: 100%; height: 100%;
                 for blk in root.blocks : blk-cell := Rectangle {
-                    height: blk.t == "section" ? blk-sec.preferred-height + 18px
-                          : blk-text.preferred-height + 2px;
+                    // DocumentPage.qml:349 — a section is one body line (14)
+                    // + 18; a paragraph is its text + 2, and a heading carries
+                    // topPadding 8 (:388).
+                    height: blk.t == "section" ? 32px
+                          : blk-text.preferred-height + (blk.level > 0 ? 8px : 0px) + 2px;
+                    // :351-357 — the rule through the row's centre.
                     if blk.t == "section" : Rectangle {
-                        y: (self.height) / 2;
+                        y: (blk-cell.height - 1px) / 2;
                         width: 100%; height: 1px;
                         background: #0000001e;
                     }
@@ -233,7 +264,9 @@ export component DocPage inherits Rectangle {
                     blk-text := Text {
                         visible: blk.t == "p";
                         x: blk.bullet ? 10px : 0px;
+                        y: blk.level > 0 ? 8px : 0px;
                         width: body.width - self.x;
+                        height: self.preferred-height;
                         text: (blk.bullet ? "•  " : "") + blk.text;
                         color: root.ink;
                         font-family: Theme.font-ui;
@@ -281,6 +314,8 @@ export component DocPage inherits Rectangle {
                         width: save-pill.x - 70px;
                         alignment: center;
                         spacing: 2px;
+                        // DocumentPage.qml:448 elides in the middle; the bridge
+                        // hands a pre-elided name (handoff), this only clips the tail.
                         Text {
                             text: root.file-name;
                             color: root.fg;
@@ -304,7 +339,8 @@ export component DocPage inherits Rectangle {
                         y: (60px - self.height) / 2;
                         width: save-label.preferred-width + 26px;
                         height: 34px; border-radius: 17px;
-                        background: root.accent.with-alpha(save-t.pressed ? 1.0 : 0.9);
+                        // DocumentPage.qml:474 — accent@0.90, no pressed state.
+                        background: root.accent.with-alpha(0.90);
                         save-label := Text {
                             text: "Download";
                             color: #141414;
@@ -321,10 +357,12 @@ export component DocPage inherits Rectangle {
             }
         }
 
-        if root.toast != "" : doc-toast := Rectangle {
+        // DocumentPage.qml:493-501 — the toast pill, 12 above the shelf, text
+        // + 22 wide and never wider than the page − 38.
+        if root.toast != "" && root.toast-live : doc-toast := Rectangle {
             x: (paper-box.width - self.width) / 2;
             y: shelf.y - 40px;
-            width: min(doc-toast-text.preferred-width + 22px, paper-box.width - 60px);
+            width: min(doc-toast-text.preferred-width + 22px, paper-box.width - 38px);
             height: 28px; border-radius: 14px;
             background: Theme.background.with-alpha(0.85);
             doc-toast-text := Text {
@@ -335,7 +373,7 @@ export component DocPage inherits Rectangle {
                 overflow: elide;
                 horizontal-alignment: center;
                 vertical-alignment: center;
-                width: 100%; height: 100%;
+                x: 11px; width: parent.width - 22px; height: 100%;
             }
         }
     }

@@ -3,12 +3,77 @@
 // Slint has no map widget (QML gets MapLibre through QtLocation), so both
 // surfaces render the real location data and logic on a static card and say
 // so, instead of drawing tiles. The QML's map-plumbing (style probing, layer
-// masks, gesture insets) has no equivalent to port until Slint can host a
-// map renderer or the engine rasterises tiles.
+// masks, gesture insets, recentre and zoom chrome) has no equivalent to port
+// until Slint can host a map renderer or the engine rasterises tiles. The
+// marker MapView.qml would place on the tiles is drawn on the card instead.
 
 import { Theme } from "../style.slint";
 import { Icons } from "../icons.slint";
 import { IconLabel, ActionButton, Avatar } from "../components.slint";
+
+// MapView.qml:172-274 — your own position: the filled `place` glyph (48px) in
+// the pin colour with the face masked into its head (the hole centres at
+// 0.4896 across, 0.4062 down, radius 0.26 of the box), and while a live share
+// runs, two staggered broadcast arcs radiating from the face. No avatar
+// leaves the plain pin (:156-169).
+component SelfPin inherits Rectangle {
+    in property <color> pin-color: Theme.accent;
+    in property <image> avatar;
+    in property <bool> ripple: false;
+    width: 48px; height: 48px;
+    background: transparent;
+    property <length> head-cx: 48px * 0.4896;
+    property <length> head-cy: 48px * 0.4062;
+    property <length> head-r: 48px * 0.26;
+
+    // MapView.qml:193-236 — each ring is two 68° arcs (−34°…34° and
+    // 146°…214°) of radius 1.7×headR, stroke 2, about the face; index i
+    // pauses i×850ms then fades 0.8→0 and grows 0.8→2.2 over 1700ms OutCubic,
+    // looping (the pause is inside the loop, as in the SequentialAnimation),
+    // scaled about the box centre (:200 transformOrigin: Item.Center). The
+    // arcs are exactly the part of the full ring inside a band of half-height
+    // r·sin 34° about the face, so they are drawn as a bordered ring clipped
+    // to that band, with the scale applied to the geometry itself: that draws
+    // in every renderer (the software renderer has neither Path nor scale).
+    for i in (root.ripple ? 2 : 0) : wave := Rectangle {
+        property <float> cycle: i * 850 + 1700;
+        property <float> u: mod(animation-tick() / 1ms, self.cycle);
+        property <float> p: self.u < i * 850 ? -1.0 : (self.u - i * 850) / 1700;
+        property <float> e: 1 - pow(1 - self.p, 3.0);
+        property <float> s: self.p < 0 ? 0.8 : 0.8 + 1.4 * self.e;
+        property <length> r: root.head-r * 1.7 * self.s;
+        property <length> cx: 24px + (root.head-cx - 24px) * self.s;
+        property <length> cy: 24px + (root.head-cy - 24px) * self.s;
+        property <length> hh: root.head-r * 1.7 * 0.5592 * self.s;   // r·sin 34°
+        x: self.cx - self.r - 2px; y: self.cy - self.hh;
+        width: self.r * 2 + 4px; height: self.hh * 2;
+        clip: true;
+        background: transparent;
+        opacity: self.p < 0 ? 0 : 0.8 * (1 - self.e);
+        Rectangle {
+            x: 2px; y: wave.hh - wave.r;
+            width: wave.r * 2; height: wave.r * 2;
+            border-radius: wave.r;
+            border-width: 2px * wave.s;
+            border-color: root.pin-color;
+            background: transparent;
+        }
+    }
+    IconLabel {
+        text: Icons.location;
+        filled: true;
+        color: root.pin-color;
+        font-size: 48px;
+        width: 48px; height: 48px;
+    }
+    if root.avatar.width > 0 : face := Rectangle {
+        x: root.head-cx - root.head-r; y: root.head-cy - root.head-r;
+        width: root.head-r * 2; height: root.head-r * 2;
+        border-radius: root.head-r;
+        clip: true;
+        Image { source: root.avatar; width: 100%; height: 100%; image-fit: cover; }
+    }
+}
 
 export component MapPage inherits Rectangle {
     in property <color> fg: Theme.menu-text;
@@ -28,7 +93,7 @@ export component MapPage inherits Rectangle {
     in property <string> remaining-label;  // "1h 05m" / "3:41", ticked by the bridge
     in property <float> lat;
     in property <float> lon;
-    in property <string> description;
+    in property <string> description;      // unused: MapPage.qml never shows loc.description
     in property <bool> self-marker;        // m.self / live: face, not a pin
     in property <image> sender-avatar;
     in property <string> sender-initials;
@@ -36,9 +101,15 @@ export component MapPage inherits Rectangle {
     in-out property <string> toast;
 
     property <color> chip: Theme.background.with-alpha(0.85);
+    // MapPage.qml:44, 47 — openable = pin || (liveKind && live && !own), where
+    // pin = !selfMarker && haveFix. The app's `openable` ANDs in (it is `true`
+    // today; the bridge may compute it instead — handoff).
+    property <bool> can-open: root.openable
+        && ((!root.self-marker && (root.lat != 0 || root.lon != 0)) || (root.live && !root.own));
 
     background: transparent;
 
+    // MapPage.qml:152-154 — note() holds a toast for 2200ms.
     toast-clear := Timer {
         interval: 2200ms;
         running: root.toast != "";
@@ -46,37 +117,33 @@ export component MapPage inherits Rectangle {
     }
 
     VerticalLayout {
-        // Header (52px, MapPage.qml's own — not the settings header).
+        // Header (52px, MapPage.qml:158-178 — its own, not the settings header).
         header := Rectangle {
             height: 52px;
-            HorizontalLayout {
-                padding-left: 6px; padding-right: 12px;
-                spacing: 8px;
-                Rectangle {
-                    width: 44px;
-                    ActionButton {
-                        y: (52px - self.height) / 2;
-                        width: 44px; height: 44px;
-                        icon: Icons.back;
-                        filled: false;
-                        foreground: root.fg;
-                        clicked => { root.closed(); }
-                    }
-                }
-                Text {
-                    text: "Location";
-                    color: root.fg;
-                    font-family: Theme.font-ui;
-                    font-size: Theme.subtitle;
-                    font-weight: 700;
-                    vertical-alignment: center;
-                    overflow: elide;
-                    horizontal-stretch: 1;
-                }
+            // :162-169 — 22px PanelActionButton at leftMargin 6.
+            back-btn := ActionButton {
+                x: 6px; y: (52px - 22px) / 2;
+                width: 22px; height: 22px;
+                icon: Icons.back;
+                filled: false;
+                foreground: root.fg;
+                clicked => { root.closed(); }
+            }
+            // :170-177 — title at backBtn.right + 8 = 36, rightMargin 12.
+            Text {
+                x: 36px; width: header.width - 36px - 12px; height: 100%;
+                text: "Location";
+                color: root.fg;
+                font-family: Theme.font-ui;
+                font-size: Theme.subtitle;
+                font-weight: 700;
+                vertical-alignment: center;
+                overflow: elide;
             }
         }
 
-        // The "map" area: rounded top, the marker and coordinates as a card.
+        // The "map" area: rounded top, fg@0.08 ground (MapPage.qml:216), the
+        // marker and one caption as a card.
         map-area := Rectangle {
             vertical-stretch: 1;
             background: root.fg.with-alpha(0.08);
@@ -84,62 +151,35 @@ export component MapPage inherits Rectangle {
             border-top-right-radius: 24px;
             clip: true;
 
+            // MapPage.qml:268-292 — the no-map column: parent − 48 wide,
+            // spacing 10, centred in the room above the sheet. The marker is
+            // MapView.qml's, since the card stands in for the tiles.
             place-col := VerticalLayout {
+                x: 24px;
+                width: map-area.width - 48px;
                 y: (map-area.height - sheet.height - self.preferred-height) / 2;
-                width: 100%;
+                height: self.preferred-height;
                 spacing: 10px;
-                // The marker: your face on a self/live share, a pin otherwise.
-                if root.self-marker : HorizontalLayout {
+                HorizontalLayout {
                     alignment: center;
-                    Rectangle {
-                        width: 72px; height: 72px;
-                        Avatar {
-                            size: 64px;
-                            x: 4px; y: 4px;
-                            source: root.sender-avatar;
-                            initials: root.sender-initials;
-                            tint: root.sender-tint;
-                            opacity: root.ended ? 0.55 : 1.0;
-                        }
-                        // A live ring in place of the QML marker ripple.
-                        if root.live : Rectangle {
-                            width: 72px; height: 72px;
-                            border-radius: 36px;
-                            background: transparent;
-                            border-width: 2px;
-                            border-color: root.accent.with-alpha(0.4 + 0.3 * abs(sin(360deg * (animation-tick() / 1600ms))));
-                        }
+                    if root.self-marker : SelfPin {
+                        pin-color: root.accent;
+                        avatar: root.sender-avatar;
+                        ripple: root.live;
+                    }
+                    // MapPage.qml:274-280 — a dropped pin: filled `place`, 46px, accent@0.85.
+                    if !root.self-marker : IconLabel {
+                        text: Icons.location;
+                        filled: true;
+                        color: root.accent.with-alpha(0.85);
+                        font-size: 46px;
+                        width: 46px; height: 46px;
                     }
                 }
-                if !root.self-marker : IconLabel {
-                    text: Icons.pinDrop;
-                    filled: true;
-                    color: root.accent.with-alpha(0.85);
-                    font-size: 46px;
-                    horizontal-alignment: center;
-                }
-                if root.description != "" : Text {
-                    x: 24px;
-                    width: map-area.width - 48px;
-                    text: root.description;
-                    color: root.fg;
-                    font-family: Theme.font-ui;
-                    font-size: Theme.body;
-                    horizontal-alignment: center;
-                    wrap: word-wrap;
-                }
+                // :281-291 — one caption, fg@0.6, wrapped and centred.
                 Text {
-                    text: round(root.lat * 100000) / 100000 + ", " + round(root.lon * 100000) / 100000;
-                    color: root.fg.with-alpha(0.6);
-                    font-family: Theme.font-mono;
-                    font-size: Theme.body-small;
-                    horizontal-alignment: center;
-                }
-                Text {
-                    x: 24px;
-                    width: map-area.width - 48px;
                     text: "Sigil on Slint cannot draw maps yet — open the point in your browser.";
-                    color: root.fg.with-alpha(0.45);
+                    color: root.fg.with-alpha(0.6);
                     font-family: Theme.font-ui;
                     font-size: Theme.caption;
                     horizontal-alignment: center;
@@ -147,7 +187,9 @@ export component MapPage inherits Rectangle {
                 }
             }
 
-            // Time remaining, top left: the same chip the bubble carries.
+            // Time remaining, top left: the same chip the bubble carries
+            // (MapPage.qml:297-349). Width is the row + 22 with the row
+            // centred — no inner padding.
             if root.live || root.ended : countdown := Rectangle {
                 x: 12px; y: 12px;
                 width: chip-row.preferred-width + 22px;
@@ -155,13 +197,19 @@ export component MapPage inherits Rectangle {
                 border-radius: 14px;
                 background: root.chip;
                 chip-row := HorizontalLayout {
-                    padding-left: 11px; padding-right: 11px;
+                    x: (countdown.width - self.preferred-width) / 2;
+                    width: self.preferred-width;
+                    height: 100%;
                     spacing: 6px;
                     Rectangle {
                         y: (28px - 7px) / 2;
                         width: 7px; height: 7px; border-radius: 3.5px;
                         background: root.live ? #e8646a : #ececec.with-alpha(0.5);
-                        opacity: root.live ? 0.65 + 0.35 * sin(360deg * (animation-tick() / 1600ms)) : 1.0;
+                        // :325-330 — live: a linear ramp 1→0.3→1, 800ms each way.
+                        property <float> ph: mod(animation-tick() / 1600ms, 1.0);
+                        opacity: root.live
+                            ? (self.ph < 0.5 ? 1 - 1.4 * self.ph : 0.3 + 1.4 * (self.ph - 0.5))
+                            : 1.0;
                     }
                     Text {
                         text: root.live ? root.remaining-label : "Live location ended";
@@ -174,7 +222,7 @@ export component MapPage inherits Rectangle {
                 }
             }
 
-            // Bottom sheet: who is on the map and the one action.
+            // Bottom sheet: who is on the map and the one action (MapPage.qml:371-487).
             sheet := Rectangle {
                 y: map-area.height - self.height;
                 width: 100%;
@@ -182,7 +230,7 @@ export component MapPage inherits Rectangle {
                 border-top-left-radius: 24px;
                 border-top-right-radius: 24px;
                 background: Theme.popup-background;
-                TouchArea { }   // the sheet floats over the card; swallow taps
+                TouchArea { }   // the sheet floats over the card; swallow taps (:382)
                 sheet-col := VerticalLayout {
                     x: 14px; y: 14px;
                     width: sheet.width - 28px;
@@ -198,78 +246,80 @@ export component MapPage inherits Rectangle {
                         height: 60px;
                         border-radius: 18px;
                         background: root.fg.with-alpha(0.10);
-                        HorizontalLayout {
-                            padding-left: 11px; padding-right: 10px;
-                            spacing: 11px;
-                            Rectangle {
-                                width: 38px;
-                                Avatar {
-                                    y: (60px - self.height) / 2;
-                                    size: 38px;
-                                    source: root.sender-avatar;
-                                    initials: root.sender-initials;
-                                    tint: root.sender-tint;
-                                    opacity: root.ended ? 0.55 : 1.0;
-                                }
+                        // :405-416 — the face at 11, draining to 0.55 over 300ms once the share ends.
+                        face := Avatar {
+                            x: 11px; y: (60px - self.height) / 2;
+                            size: 38px;
+                            source: root.sender-avatar;
+                            initials: root.sender-initials;
+                            tint: root.sender-tint;
+                            opacity: root.ended ? 0.55 : 1.0;
+                            animate opacity { duration: 300ms; }
+                        }
+                        // :418-448 — labels from face.right + 11 to action.left − 10.
+                        labels := VerticalLayout {
+                            x: 60px;
+                            width: action.x - 10px - 60px;
+                            y: (60px - self.preferred-height) / 2;
+                            height: self.preferred-height;
+                            spacing: 2px;
+                            Text {
+                                text: root.who;
+                                color: root.fg;
+                                font-family: Theme.font-ui;
+                                font-size: Theme.body;
+                                font-weight: 700;
+                                overflow: elide;
                             }
-                            VerticalLayout {
-                                alignment: center;
-                                spacing: 2px;
-                                horizontal-stretch: 1;
+                            HorizontalLayout {
+                                spacing: 5px;
+                                IconLabel {
+                                    text: Icons.recentre;
+                                    filled: true;
+                                    color: root.fg.with-alpha(0.5);
+                                    font-size: Theme.caption;
+                                    vertical-alignment: center;
+                                }
                                 Text {
-                                    text: root.who;
-                                    color: root.fg;
+                                    text: root.status-text;
+                                    color: root.fg.with-alpha(0.6);
                                     font-family: Theme.font-ui;
-                                    font-size: Theme.body;
-                                    font-weight: 700;
+                                    font-size: Theme.caption;
+                                    vertical-alignment: center;
                                     overflow: elide;
-                                }
-                                HorizontalLayout {
-                                    spacing: 5px;
-                                    IconLabel {
-                                        text: Icons.recentre;
-                                        filled: true;
-                                        color: root.fg.with-alpha(0.5);
-                                        font-size: Theme.caption;
-                                        vertical-alignment: center;
-                                    }
-                                    Text {
-                                        text: root.status-text;
-                                        color: root.fg.with-alpha(0.6);
-                                        font-family: Theme.font-ui;
-                                        font-size: Theme.caption;
-                                        vertical-alignment: center;
-                                        overflow: elide;
-                                        horizontal-stretch: 1;
-                                    }
+                                    horizontal-stretch: 1;
                                 }
                             }
-                            // One action: Stop while broadcasting, Open otherwise.
-                            if root.stoppable || root.openable : action := Rectangle {
-                                y: (60px - 34px) / 2;
-                                width: action-label.preferred-width + 26px;
-                                height: 34px;
-                                border-radius: 17px;
-                                background: root.stoppable ? root.fg.with-alpha(0.90) : root.accent.with-alpha(0.90);
-                                action-label := Text {
-                                    text: root.stoppable ? "Stop" : "Open";
-                                    color: #141414;
-                                    font-family: Theme.font-ui;
-                                    font-size: Theme.body-small;
-                                    font-weight: 700;
-                                    horizontal-alignment: center; vertical-alignment: center;
-                                    width: 100%; height: 100%;
-                                }
-                                TouchArea {
-                                    clicked => {
-                                        if (root.stoppable) {
-                                            root.stop-live();
-                                            root.toast = "Stopped sharing";
-                                        } else {
-                                            root.open-osm("https://www.openstreetmap.org/?mlat=" + root.lat
-                                                + "&mlon=" + root.lon + "#map=16/" + root.lat + "/" + root.lon);
-                                            root.toast = "Opened in your browser";
-                                        }
+                        }
+                        // :450-484 — one action: Stop while broadcasting, Open
+                        // for a destination; collapsed to nothing otherwise.
+                        action := Rectangle {
+                            visible: root.stoppable || root.can-open;
+                            x: person-row.width - self.width - (self.visible ? 10px : 0px);
+                            y: (60px - 34px) / 2;
+                            width: self.visible ? action-label.preferred-width + 26px : 0px;
+                            height: 34px;
+                            border-radius: 17px;
+                            background: root.stoppable ? root.fg.with-alpha(0.90) : root.accent.with-alpha(0.90);
+                            action-label := Text {
+                                text: root.stoppable ? "Stop" : "Open";
+                                color: #141414;
+                                font-family: Theme.font-ui;
+                                font-size: Theme.body-small;
+                                font-weight: 700;
+                                horizontal-alignment: center; vertical-alignment: center;
+                                width: 100%; height: 100%;
+                            }
+                            TouchArea {
+                                clicked => {
+                                    if (root.stoppable) {
+                                        root.stop-live();
+                                        root.toast = "Stopped sharing";
+                                    } else {
+                                        // :478-481 — `geo:` has no desktop handler; the https map link.
+                                        root.open-osm("https://www.google.com/maps/search/?api=1&query="
+                                            + root.lat + "%2C" + root.lon);
+                                        root.toast = "Opened in your browser";
                                     }
                                 }
                             }
@@ -330,114 +380,153 @@ export component LocationPicker inherits Rectangle {
     property <[string]> duration-labels: ["Share for 15m", "Share for 1h", "Share for 8h"];
     property <[float]> duration-ms: [900000, 3600000, 28800000];
     in-out property <bool> duration-open: false;
+    // LocationPicker.qml:19-22 — the chip fill, and the popup ground with its alpha forced to 1.
+    property <color> chip: Theme.background.with-alpha(0.85);
+    property <color> menu-solid: Theme.popup-background.with-alpha(1.0);
 
     background: transparent;
 
-    VerticalLayout {
-        padding: 16px;
-        spacing: 14px;
+    // LocationPicker.qml:86-103 — the map box: 16 in from the sides and top,
+    // 14 above the bottom bar, radius 14, fg@0.10 ground.
+    map-box := Rectangle {
+        x: 16px; y: 16px;
+        width: root.width - 32px;
+        height: bottom-bar.y - 14px - 16px;
+        border-radius: 14px;
+        background: root.fg.with-alpha(0.10);
+        clip: true;
 
-        // The would-be map: fix state on a rounded card.
-        map-box := Rectangle {
-            vertical-stretch: 1;
-            border-radius: 14px;
-            background: root.fg.with-alpha(0.10);
-            clip: true;
-            VerticalLayout {
-                y: (map-box.height - self.preferred-height) / 2;
-                width: 100%;
-                spacing: 8px;
-                if !root.pin-mode && root.have-fix : HorizontalLayout {
-                    alignment: center;
-                    Avatar {
-                        size: 56px;
-                        source: root.my-avatar;
-                        initials: root.my-initials;
-                        tint: root.my-tint;
-                    }
+        // LocationPicker.qml:135-150 — the no-map column, parent − 40 wide,
+        // spacing 8. The marker MapView.qml would place is drawn here instead:
+        // your face in the pin once there is a fix (:122-127), a pin once marked.
+        VerticalLayout {
+            x: 20px;
+            width: map-box.width - 40px;
+            y: (map-box.height - self.preferred-height) / 2;
+            height: self.preferred-height;
+            spacing: 8px;
+            HorizontalLayout {
+                alignment: center;
+                if !root.pin-mode && root.have-fix : SelfPin {
+                    pin-color: root.accent;
+                    avatar: root.my-avatar;
                 }
-                if root.pin-mode || !root.have-fix : IconLabel {
+                if root.pin-mode && root.marked : IconLabel {
+                    text: Icons.location;
+                    filled: true;
+                    color: root.accent;
+                    font-size: 48px;
+                    width: 48px; height: 48px;
+                }
+                // :140-141 — the no-map glyph: filled `place`, 36px, accent@0.8.
+                if (root.pin-mode && !root.marked) || (!root.pin-mode && !root.have-fix) : IconLabel {
                     text: Icons.location;
                     filled: true;
                     color: root.accent.with-alpha(0.8);
                     font-size: 36px;
-                    horizontal-alignment: center;
-                }
-                Text {
-                    x: 20px;
-                    width: map-box.width - 40px;
-                    text: root.pin-mode
-                        ? "Dropping a pin needs a map to tap, and Sigil on Slint cannot draw one yet. Share your current position instead."
-                        : (root.have-fix
-                            ? round(root.fix-lat * 100000) / 100000 + ", " + round(root.fix-lon * 100000) / 100000
-                            : (root.position-error != "" ? "Location unavailable — tap to retry" : "Finding your location…"));
-                    color: root.fg.with-alpha(root.have-fix && !root.pin-mode ? 0.8 : 0.6);
-                    font-family: root.have-fix && !root.pin-mode ? Theme.font-mono : Theme.font-ui;
-                    font-size: Theme.caption;
-                    horizontal-alignment: center;
-                    wrap: word-wrap;
-                }
-                if !root.pin-mode && !root.have-fix && root.position-error != "" : HorizontalLayout {
-                    alignment: center;
-                    retry := Rectangle {
-                        width: retry-label.preferred-width + 24px;
-                        height: 30px;
-                        border-radius: 15px;
-                        background: root.fg.with-alpha(retry-t.pressed ? 0.16 : 0.10);
-                        retry-label := Text {
-                            text: "Retry";
-                            color: root.fg;
-                            font-family: Theme.font-ui;
-                            font-size: Theme.body-small;
-                            horizontal-alignment: center; vertical-alignment: center;
-                            width: 100%; height: 100%;
-                        }
-                        retry-t := TouchArea { clicked => { root.retry-position(); } }
-                    }
+                    width: 36px; height: 36px;
                 }
             }
-            // Back chip, top left of the card (the QML's floating chrome).
-            back-chip := Rectangle {
-                x: 8px; y: 8px;
-                width: 30px; height: 30px;
-                border-radius: 15px;
-                background: Theme.background.with-alpha(0.85);
-                IconLabel {
-                    text: Icons.back;
-                    color: root.fg;
-                    font-size: Theme.icon-size;
-                    width: 100%; height: 100%;
-                }
-                TouchArea { clicked => { root.back-requested(); } }
+            // :142-149 — the caption under the glyph. Pin mode has to say why
+            // it cannot be used; the fix states speak through the hint pill.
+            if root.pin-mode : Text {
+                text: "Dropping a pin needs a map to tap, and Sigil on Slint cannot draw one yet. Share your current position instead.";
+                color: root.fg.with-alpha(0.6);
+                font-family: Theme.font-ui;
+                font-size: Theme.caption;
+                horizontal-alignment: center;
+                wrap: word-wrap;
             }
         }
 
-        // Duration, live mode only — a flat radio run, since the dropdown's
-        // popup would fight the sheet (ui-conventions: sheets over dropdowns).
-        if root.live-mode : VerticalLayout {
-            spacing: 4px;
-            for label[i] in root.duration-labels : dur-row := Rectangle {
-                height: 34px;
-                border-radius: 9px;
-                background: i == root.duration-index ? root.accent.with-alpha(0.25)
-                          : dur-t.pressed || dur-t.has-hover ? root.fg.with-alpha(0.08) : Theme.popup-background;
-                Text {
-                    x: 12px;
-                    text: label;
-                    color: root.fg;
-                    font-family: Theme.font-ui;
-                    font-size: Theme.body-small;
-                    vertical-alignment: center;
-                    height: 100%;
-                }
-                dur-t := TouchArea { clicked => { root.duration-index = i; } }
+        // LocationPicker.qml:154-161 — back chip: a 30px disc at 8/8 in the
+        // chip fill, the outlined `back` glyph at icon size.
+        back-chip := Rectangle {
+            x: 8px; y: 8px;
+            width: 30px; height: 30px;
+            border-radius: 15px;
+            background: root.chip;
+            IconLabel {
+                text: Icons.back;
+                filled: false;
+                color: root.fg;
+                font-size: Theme.icon-size;
+                width: 100%; height: 100%;
             }
+            TouchArea { clicked => { root.back-requested(); } }
+        }
+
+        // LocationPicker.qml:205-228 — the hint pill, top centre at 8: 26 tall,
+        // text + 20 wide, chip fill, caption. The copy follows the QML's cycle;
+        // with a fix it carries the coordinates, the one status line the card
+        // has in place of a marker on tiles. Tapping it retries a missing fix.
+        hint-pill := Rectangle {
+            x: (map-box.width - self.width) / 2;
+            y: 8px;
+            width: hint.preferred-width + 20px;
+            height: 26px;
+            border-radius: 13px;
+            background: root.chip;
+            hint := Text {
+                text: root.pin-mode
+                    ? (root.marked ? "Click to move the pin" : "Click to drop a pin")
+                    : (root.have-fix
+                        ? round(root.fix-lat * 100000) / 100000 + ", " + round(root.fix-lon * 100000) / 100000
+                        : (root.position-error != "" ? "Location unavailable — tap to retry" : "Finding your location…"));
+                color: root.fg;
+                font-family: Theme.font-ui;
+                font-size: Theme.caption;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+                width: 100%; height: 100%;
+            }
+            TouchArea {
+                enabled: !root.pin-mode && !root.have-fix;
+                clicked => { root.retry-position(); }
+            }
+        }
+    }
+
+    // LocationPicker.qml:231-287 — the bottom bar: 16 in and 16 up, spacing 8
+    // between the duration field and the share pill.
+    bottom-bar := VerticalLayout {
+        x: 16px;
+        width: root.width - 32px;
+        y: root.height - 16px - self.preferred-height;
+        height: self.preferred-height;
+        spacing: 8px;
+
+        // :239-261 — how long to keep sharing, live mode only: a 38px field,
+        // radius 11, popup ground; label bodySmall at 14, chevron fg@0.7 at 12.
+        if root.live-mode : duration-field := Rectangle {
+            height: 38px;
+            border-radius: 11px;
+            background: root.menu-solid;
+            Text {
+                x: 14px; height: 100%;
+                width: parent.width - 14px - 12px - 14px;
+                text: root.duration-labels[root.duration-index];
+                color: root.fg;
+                font-family: Theme.font-ui;
+                font-size: Theme.body-small;
+                vertical-alignment: center;
+                overflow: elide;
+            }
+            IconLabel {
+                x: parent.width - 12px - 14px;
+                width: 14px; height: 100%;
+                text: root.duration-open ? Icons.chevronUp : Icons.chevronDown;
+                filled: false;
+                color: root.fg.with-alpha(0.7);
+                font-size: Theme.icon-size;
+            }
+            TouchArea { clicked => { root.duration-open = !root.duration-open; } }
         }
 
         share-btn := Rectangle {
             height: 44px;
             border-radius: 22px;
-            background: root.can-share ? root.accent.with-alpha(0.92) : Theme.background.with-alpha(0.85);
+            background: root.can-share ? root.accent.with-alpha(0.92) : root.chip;
             opacity: root.can-share ? 1 : 0.6;
             Text {
                 text: "Share location";
@@ -456,6 +545,38 @@ export component LocationPicker inherits Rectangle {
                         root.pin-mode ? root.mark-lon : root.fix-lon,
                         root.live-mode ? root.duration-ms[root.duration-index] : 0);
                 }
+            }
+        }
+    }
+
+    // LocationPicker.qml:289-324 — the duration card: the bar's width, its
+    // bottom 56 above the bar's bottom, radius 12, popup ground, rows of 34
+    // at radius 9 inside a 4px margin; selected accent@0.25, hover fg@0.08.
+    if root.duration-open && root.live-mode : dur-card := Rectangle {
+        x: 16px;
+        width: root.width - 32px;
+        height: dur-col.preferred-height + 8px;
+        y: root.height - 16px - 56px - self.height;
+        border-radius: 12px;
+        background: root.menu-solid;
+        dur-col := VerticalLayout {
+            x: 4px; y: 4px;
+            width: dur-card.width - 8px;
+            height: self.preferred-height;
+            for label[i] in root.duration-labels : dur-row := Rectangle {
+                height: 34px;
+                border-radius: 9px;
+                background: i == root.duration-index ? root.accent.with-alpha(0.25)
+                          : dur-t.has-hover ? root.fg.with-alpha(0.08) : transparent;
+                Text {
+                    x: 12px; height: 100%;
+                    text: label;
+                    color: root.fg;
+                    font-family: Theme.font-ui;
+                    font-size: Theme.body-small;
+                    vertical-alignment: center;
+                }
+                dur-t := TouchArea { clicked => { root.duration-index = i; root.duration-open = false; } }
             }
         }
     }

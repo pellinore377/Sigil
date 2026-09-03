@@ -20,45 +20,60 @@ export struct Floater {
     who: string,
 }
 
-// Rings expanding out of a call avatar while that participant talks.
-// DIVERGENCE: CallParticipant carries no live audio `level`, so the rings
-// pulse at a fixed amplitude while `speaking` — they no longer breathe with
-// the voice (WIRING notes the one-field model addition that restores it).
+// Rings expanding out of a call avatar while that participant talks
+// (calls/SpeakingRipple.qml). The amplitude follows the engine's audio
+// level through `smooth`; the bridge does not report `level` yet, so the
+// rings sit at the 0.18 floor while speaking (see calls-handoff.md).
 export component SpeakingRipple inherits Rectangle {
     in property <color> accent: Theme.accent;
     in property <bool> speaking: false;
+    /// 0..1 from the engine (SpeakingRipple.qml:11).
+    in property <float> level: 0;
     in property <length> size: 110px;
     width: root.size * 2.1;
     height: root.size * 2.1;
     background: transparent;
+    // SpeakingRipple.qml:17-21: smooth eases toward max(0.18, min(1, level*3.2))
+    // while speaking and decays to 0 afterwards (frameTime*9 ≈ a 110ms time
+    // constant, ~90 % settled at 250ms) — the rings never snap off.
+    property <float> target: root.speaking ? max(0.18, min(1.0, root.level * 3.2)) : 0.0;
+    property <float> smooth: root.target;
+    animate smooth { duration: 250ms; easing: ease-out; }
+    // SpeakingRipple.qml:41: visible while smooth > 0.01.
+    property <bool> alive: root.smooth > 0.01;
+    // SpeakingRipple.qml:198-203: free-running 1600ms phase.
     property <float> phase: mod(animation-tick() / 1600ms, 1.0);
-    if root.speaking : ring0 := Rectangle {
+    // SpeakingRipple.qml:33-39: diameter, border and alpha all scale with smooth.
+    ring0 := Rectangle {
+        visible: root.alive;
         property <float> p: root.phase;
-        width: root.size * (1 + self.p * 0.75);
+        width: root.size * (1 + self.p * 1.05 * (0.35 + root.smooth));
         height: self.width;
         x: (root.width - self.width) / 2;
         y: (root.height - self.height) / 2;
         border-radius: self.width / 2;
         background: transparent;
-        border-width: 2px;
-        border-color: root.accent.with-alpha((1 - self.p) * 0.55);
+        border-width: max(1px, 2px * (0.4 + root.smooth));
+        border-color: root.accent.with-alpha((1 - self.p) * 0.55 * min(1.0, root.smooth * 1.6));
     }
-    if root.speaking : ring1 := Rectangle {
+    ring1 := Rectangle {
+        visible: root.alive;
         property <float> p: mod(root.phase + 0.5, 1.0);
-        width: root.size * (1 + self.p * 0.75);
+        width: root.size * (1 + self.p * 1.05 * (0.35 + root.smooth));
         height: self.width;
         x: (root.width - self.width) / 2;
         y: (root.height - self.height) / 2;
         border-radius: self.width / 2;
         background: transparent;
-        border-width: 2px;
-        border-color: root.accent.with-alpha((1 - self.p) * 0.55);
+        border-width: max(1px, 2px * (0.4 + root.smooth));
+        border-color: root.accent.with-alpha((1 - self.p) * 0.55 * min(1.0, root.smooth * 1.6));
     }
 }
 
-// One call tile: video frame or avatar fallback, name strip, mute glyph,
-// speaking border. The bridge only sets has-frame for a LIVE track (a muted
-// camera stays published in LiveKit but must not freeze on its last frame).
+// One call tile (calls/ParticipantTile.qml): video frame or avatar fallback,
+// name strip, mute glyph, speaking border. The bridge only sets has-frame for
+// a LIVE track (a muted camera stays published in LiveKit but must not freeze
+// on its last frame).
 export component CallTile inherits Rectangle {
     in property <CallParticipant> participant;
     in property <bool> is-local: false;
@@ -66,6 +81,9 @@ export component CallTile inherits Rectangle {
     in property <length> tile-radius: 12px;
     in property <color> fg: Theme.menu-text;
     in property <color> accent: Theme.accent;
+    /// "good" | "poor" | "lost" (ParticipantTile.qml:144). CallParticipant
+    /// carries no quality yet; the bridge fills it (calls-handoff.md).
+    in property <string> quality: "good";
 
     border-radius: root.tile-radius;
     background: Theme.background.with-alpha(0.55);
@@ -73,10 +91,23 @@ export component CallTile inherits Rectangle {
     border-color: root.participant.speaking ? root.accent : root.fg.with-alpha(0.12);
     clip: true;
 
-    if root.participant.has-frame : Image {
-        source: root.participant.frame;
-        width: 100%; height: 100%;
-        image-fit: root.fit-video || root.participant.screen-sharing ? contain : cover;
+    // ParticipantTile.qml:87-106: the frame is inset by the border width
+    // (speaking ? 2 : 1) and masked at max(1, tileRadius - 1).
+    property <length> inset: root.participant.speaking ? 2px : 1px;
+    if root.participant.has-frame : Rectangle {
+        x: root.inset; y: root.inset;
+        width: root.width - root.inset * 2;
+        height: root.height - root.inset * 2;
+        border-radius: max(1px, root.tile-radius - 1px);
+        clip: true;
+        Image {
+            width: 100%; height: 100%;
+            source: root.participant.frame;
+            image-fit: root.fit-video || root.participant.screen-sharing ? contain : cover;
+            // ParticipantTile.qml:93: your own camera preview is mirrored; a
+            // shared screen is not.
+            transform-scale-x: root.is-local && !root.participant.screen-sharing ? -1 : 1;
+        }
     }
     if !root.participant.has-frame : SpeakingRipple {
         x: (root.width - self.width) / 2;
@@ -111,8 +142,11 @@ export component CallTile inherits Rectangle {
                 vertical-alignment: center;
             }
             Text {
+                // ParticipantTile.qml:135: the suffix keys off the tile's track
+                // being a screen track (the bridge picks screen > camera, so a
+                // sharing participant's tile IS the screen), not off a live frame.
                 text: (root.is-local ? "You" : root.participant.display-name)
-                    + (root.participant.screen-sharing && root.participant.has-frame ? " (screen)" : "");
+                    + (root.participant.screen-sharing ? " (screen)" : "");
                 color: root.fg;
                 font-family: Theme.font-ui;
                 font-size: Theme.body-small;
@@ -121,9 +155,18 @@ export component CallTile inherits Rectangle {
             }
         }
     }
+    // ParticipantTile.qml:144-146: poor / lost connection glyph, top right.
+    if root.quality == "poor" || root.quality == "lost" : IconLabel {
+        x: root.width - self.width - 8px;
+        y: 8px;
+        text: Icons.signalOff;
+        color: Theme.urgent;
+        font-size: Theme.icon-size;
+    }
 }
 
-// N-tile grid (cols = ceil(sqrt n)); a screen-share tile takes a spotlight.
+// Group-call layout for the narrow panel (mobile/CallGrid.qml): portrait
+// cells, a screen share on top with the people in a thumb strip below.
 component CallGrid inherits Rectangle {
     in property <[CallParticipant]> tiles;      // self LAST (bridge order)
     in property <int> spotlight-idx: -1;        // index into tiles, -1 = none
@@ -132,47 +175,77 @@ component CallGrid inherits Rectangle {
     background: transparent;
 
     property <length> gap: 8px;
-    property <int> n: root.tiles.length - (root.spotlight-idx >= 0 ? 1 : 0);
-    property <int> cols: root.spotlight-idx >= 0 ? 1
-                       : root.n <= 1 ? 1 : ceil(sqrt(root.n));
-    property <int> rows: root.spotlight-idx >= 0 ? max(1, root.n)
-                       : root.n <= 1 ? 1 : ceil(root.n / root.cols);
-    property <length> grid-w: root.spotlight-idx >= 0 ? root.width * 0.25 : root.width;
-    property <length> grid-x: root.spotlight-idx >= 0 ? root.width - root.grid-w : 0px;
-    property <length> cell-w: (root.grid-w - root.gap * (root.cols + 1)) / root.cols;
-    property <length> cell-h: (root.height - root.gap * (root.rows + 1)) / root.rows;
-    property <length> tile-w: min(root.cell-w, root.cell-h * 16 / 9);
-    property <length> tile-h: root.tile-w * 9 / 16;
+    property <bool> sharing: root.spotlight-idx >= 0;
+    // CallGrid.qml:28-32: everyone but the share is a "person".
+    property <int> n: root.tiles.length - (root.sharing ? 1 : 0);
+    // CallGrid.qml:65-66: two columns; three across leaves faces too small.
+    property <int> cols: root.n <= 2 ? 1 : 2;
+    property <int> rows: max(1, ceil(root.n / root.cols));
+    // CallGrid.qml:69-70: with a share on top, people become one 96-high strip.
+    property <length> strip-h: root.sharing && root.n > 0 ? 96px : 0px;
+    property <length> share-h: root.sharing ? root.height - root.strip-h - root.gap : 0px;
+    // CallGrid.qml:137-140: portrait cells, clamped to 1.4 × width.
+    property <length> cell-w: max(0px, (root.width - root.gap * (root.cols + 1)) / root.cols);
+    property <length> cell-h: max(0px, min((root.height - root.gap * (root.rows + 1)) / root.rows,
+                                          root.cell-w * 1.4));
+    // CallGrid.qml:98-106: the thumb row's width, centred when it fits.
+    property <length> strip-w: root.n * 96px + (root.n + 1) * root.gap;
+    property <length> strip-x: max(0px, (root.width - root.strip-w) / 2);
 
-    if root.spotlight-idx >= 0 : CallTile {
+    // Spotlight (CallGrid.qml:73-85): full width, radius 20, never cropped.
+    if root.sharing : CallTile {
         x: root.gap; y: root.gap;
-        width: root.width - root.grid-w - root.gap * 2;
-        height: root.height - root.gap * 2;
-        participant: root.tiles[root.spotlight-idx];
+        width: root.width - root.gap * 2;
+        height: max(0px, root.share-h - root.gap);
+        tile-radius: 20px;
         fit-video: true;
+        participant: root.tiles[root.spotlight-idx];
+        is-local: root.spotlight-idx == root.tiles.length - 1;
         fg: root.fg; accent: root.accent;
     }
-    for tile[i] in root.tiles : holder := Rectangle {
-        // The spotlight tile is drawn above; skip its slot in the flow.
-        property <int> slot: root.spotlight-idx >= 0 && i > root.spotlight-idx ? i - 1 : i;
-        property <int> c: mod(self.slot, root.cols);
-        property <int> r: floor(self.slot / root.cols);
-        property <int> row-count: min(root.cols, root.n - self.r * root.cols);
-        property <length> row-w: self.row-count * root.tile-w + (self.row-count - 1) * root.gap;
-        visible: i != root.spotlight-idx;
-        x: root.grid-x + (root.grid-w - self.row-w) / 2 + self.c * (root.tile-w + root.gap);
-        y: root.gap + (root.height - root.gap * 2 - (root.rows * root.tile-h + (root.rows - 1) * root.gap)) / 2
-           + self.r * (root.tile-h + root.gap);
-        width: root.tile-w; height: root.tile-h;
-        background: transparent;
-        CallTile {
-            width: 100%; height: 100%;
+    // Thumb strip (CallGrid.qml:88-122): 96-wide tiles, radius 12, scrolls
+    // sideways when the row outgrows the page.
+    if root.sharing : Flickable {
+        x: 0; y: root.share-h + root.gap;
+        width: root.width;
+        height: max(0px, root.strip-h - root.gap);
+        viewport-width: max(root.width, root.strip-w);
+        viewport-height: self.height;
+        for tile[i] in root.tiles : CallTile {
+            property <int> slot: i > root.spotlight-idx ? i - 1 : i;
+            visible: i != root.spotlight-idx;
+            x: root.strip-x + root.gap + self.slot * (96px + root.gap);
+            y: 0;
+            width: 96px; height: parent.height;
             participant: tile;
             is-local: i == root.tiles.length - 1;
             fg: root.fg; accent: root.accent;
         }
     }
-    if root.tiles.length == 0 : Text {
+    // Grid (CallGrid.qml:125-151): last row centred when short, block
+    // centred vertically once the cells are clamped.
+    for tile[i] in root.tiles : holder := Rectangle {
+        property <int> slot: root.sharing && i > root.spotlight-idx ? i - 1 : i;
+        property <int> c: mod(self.slot, root.cols);
+        property <int> r: floor(self.slot / root.cols);
+        property <int> in-row: min(root.cols, root.n - self.r * root.cols);
+        property <length> row-w: self.in-row * root.cell-w + (self.in-row - 1) * root.gap;
+        visible: !root.sharing;
+        x: (root.width - self.row-w) / 2 + self.c * (root.cell-w + root.gap);
+        y: root.gap + max(0px, (root.height - root.gap * (root.rows + 1) - root.rows * root.cell-h) / 2)
+           + self.r * (root.cell-h + root.gap);
+        width: root.cell-w; height: root.cell-h;
+        background: transparent;
+        CallTile {
+            width: 100%; height: 100%;
+            tile-radius: 16px;
+            participant: tile;
+            is-local: i == root.tiles.length - 1;
+            fg: root.fg; accent: root.accent;
+        }
+    }
+    // CallGrid.qml:153-160: `tiles` always contains you, so this is "nobody else".
+    if !root.sharing && root.n == 0 : Text {
         text: "Waiting for others to join…";
         color: root.fg.with-alpha(0.5);
         font-family: Theme.font-ui;
@@ -211,6 +284,9 @@ export component CallPage inherits Rectangle {
     in property <string> peer-initials;
     in property <color> peer-tint: Theme.accent;
     in property <bool> peer-speaking;
+    /// Whether the host shows the page (CallPage.qml:25 `visible`): the tray
+    /// and the sheet close when it hides.
+    in property <bool> shown: true;
     // ---- devices (call.devices) ----
     in property <[DeviceRow]> mics;
     in property <[DeviceRow]> speakers;
@@ -229,6 +305,12 @@ export component CallPage inherits Rectangle {
     callback minimize;
 
     property <[string]> react-emoji: ["👍", "❤️", "😂", "😮", "😢", "😡"];
+
+    // CallPage.qml:25: leaving the page drops the tray (floaters are the
+    // bridge's list; the host stops feeding them while hidden).
+    changed shown => {
+        if (!root.shown) { root.react-open = false; root.settings-open = false; }
+    }
 
     clip: true;
     border-radius: 22px;
@@ -256,9 +338,12 @@ export component CallPage inherits Rectangle {
             fg: root.fg; accent: root.accent;
         }
         // Voice-call / waiting layout.
+        // CallPage.qml:185-210: a Column centred in the stage at its own
+        // height (unsized, the layout would stretch the status row down).
         if !root.video-mode && !root.group-mode : voice-col := VerticalLayout {
             y: (stage.height - self.preferred-height) / 2;
             width: 100%;
+            height: self.preferred-height;
             spacing: 14px;
             Rectangle {
                 height: 110px;
@@ -304,18 +389,34 @@ export component CallPage inherits Rectangle {
             }
         }
 
-        // Self-view PiP: draggable; snaps to the nearest corner on release.
-        // DIVERGENCE: the QML throws it with measured velocity into a damped
-        // spring; Slint has no frame callback with a delta, so this eases to
-        // the corner the release position implies.
+        // Self-view PiP (CallPage.qml:215-300): draggable; the release velocity
+        // (low-passed per move, v = v*0.55 + (dx/dt)*0.45) aims at the corner
+        // the throw is heading for (pos + v*0.14) and a back-out curve stands
+        // in for the k=120 c=15 spring. The corner is kept, not a position, so
+        // a resize re-parks it (Panel's park()).
         pip := Rectangle {
             visible: root.has-local-cam && !root.group-mode;
             width: 110px; height: 150px;
             property <length> edge: 16px;
             property <bool> dragging: false;
-            x: stage.width - self.width - self.edge;
-            y: self.edge;
-            animate x, y { duration: 240ms; easing: cubic-bezier(0.3, 1.15, 0.6, 1); }
+            property <bool> flying: false;
+            property <int> cx: 1;   // 0 = left edge, 1 = right edge (starts top right)
+            property <int> cy: 0;   // 0 = top edge, 1 = bottom edge
+            property <length> dx;   // position while dragging
+            property <length> dy;
+            property <float> vx;    // px/s
+            property <float> vy;
+            property <duration> last-t;
+            property <length> last-x;
+            property <length> last-y;
+            x: self.dragging ? self.dx : (self.cx == 0 ? self.edge : stage.width - self.width - self.edge);
+            y: self.dragging ? self.dy : (self.cy == 0 ? self.edge : stage.height - self.height - self.edge);
+            animate x, y { duration: pip.flying ? 380ms : 0ms; easing: cubic-bezier(0.34, 1.56, 0.64, 1); }
+            settle := Timer {
+                interval: 400ms;
+                running: pip.flying;
+                triggered => { pip.flying = false; }
+            }
             CallTile {
                 width: 100%; height: 100%;
                 tile-radius: 16px;
@@ -324,18 +425,36 @@ export component CallPage inherits Rectangle {
                 fg: root.fg; accent: root.accent;
             }
             pip-drag := TouchArea {
+                // CallPage.qml:281: open hand, closed while held.
+                mouse-cursor: self.pressed ? grabbing : grab;
                 moved => {
-                    pip.dragging = true;
-                    pip.x = min(max(pip.x + self.mouse-x - self.pressed-x, 6px), stage.width - pip.width - 6px);
-                    pip.y = min(max(pip.y + self.mouse-y - self.pressed-y, 6px), stage.height - pip.height - 6px);
+                    if (pip.dragging || abs(self.mouse-x - self.pressed-x) > 3px || abs(self.mouse-y - self.pressed-y) > 3px) {
+                        pip.dragging = true;
+                        // CallPage.qml:283-285: drag bounds 6 in from every edge.
+                        pip.dx = min(max(pip.dx + self.mouse-x - self.pressed-x, 6px), stage.width - pip.width - 6px);
+                        pip.dy = min(max(pip.dy + self.mouse-y - self.pressed-y, 6px), stage.height - pip.height - 6px);
+                        // CallPage.qml:236-249: low-passed velocity, sampled per frame.
+                        if ((animation-tick() - pip.last-t) / 1s > 0.001) {
+                            pip.vx = pip.vx * 0.55 + ((pip.dx - pip.last-x) / 1px / ((animation-tick() - pip.last-t) / 1s)) * 0.45;
+                            pip.vy = pip.vy * 0.55 + ((pip.dy - pip.last-y) / 1px / ((animation-tick() - pip.last-t) / 1s)) * 0.45;
+                            pip.last-x = pip.dx; pip.last-y = pip.dy; pip.last-t = animation-tick();
+                        }
+                    }
                 }
                 pointer-event(ev) => {
-                    if (ev.kind == PointerEventKind.up && pip.dragging) {
+                    if (ev.kind == PointerEventKind.down) {
+                        pip.flying = false;
+                        pip.vx = 0; pip.vy = 0;
+                        pip.dx = pip.x; pip.dy = pip.y;
+                        pip.last-x = pip.x; pip.last-y = pip.y; pip.last-t = animation-tick();
+                    } else if (ev.kind == PointerEventKind.up && pip.dragging) {
+                        // CallPage.qml:290-296: aim at where the throw is heading.
+                        pip.cx = pip.dx + pip.vx * 0.14 * 1px + pip.width / 2 < stage.width / 2 ? 0 : 1;
+                        pip.cy = pip.dy + pip.vy * 0.14 * 1px + pip.height / 2 < stage.height / 2 ? 0 : 1;
+                        pip.flying = true;
                         pip.dragging = false;
-                        pip.x = pip.x + pip.width / 2 < stage.width / 2
-                            ? pip.edge : stage.width - pip.width - pip.edge;
-                        pip.y = pip.y + pip.height / 2 < stage.height / 2
-                            ? pip.edge : stage.height - pip.height - pip.edge;
+                    } else if (ev.kind == PointerEventKind.cancel) {
+                        pip.dragging = false;
                     }
                 }
             }
@@ -365,14 +484,23 @@ export component CallPage inherits Rectangle {
         for fl in root.floaters : floater := Rectangle {
             property <duration> t0;
             init => { self.t0 = animation-tick(); }
-            property <float> age: min(1.0, (animation-tick() - self.t0) / 2600ms);
+            // Milliseconds alive, 0..2600 (CallPage.qml:359-370's clock).
+            property <float> ms: min(2600.0, (animation-tick() - self.t0) / 1ms);
             property <length> lane: stage.width * (0.22 + mod(fl.fid * 37, 100) / 100.0 * 0.56) - 26px;
-            width: 52px;
-            x: self.lane + (self.age < 0.35 ? 16px * (self.age / 0.35) : 16px - 28px * ((self.age - 0.35) / 0.65));
-            y: (stage.height - 62px) - (stage.height * 0.68) * (1 - (1 - self.age) * (1 - self.age) * (1 - self.age));
-            opacity: self.age < 0.08 ? self.age / 0.08 : (self.age > 0.7 ? (1 - self.age) / 0.3 : 1.0);
+            // CallPage.qml:325, 331-332: a 52×52 box with the content centred.
+            width: 52px; height: 52px;
+            // CallPage.qml:367-370: sway lane→+16 over 900ms then →-12 over 1000ms,
+            // both InOutSine, then hold.
+            x: self.ms < 900 ? self.lane + 16px * (0.5 - 0.5 * cos(180deg * (self.ms / 900)))
+                             : self.lane + 16px - 28px * (0.5 - 0.5 * cos(180deg * min(1.0, (self.ms - 900) / 1000)));
+            // CallPage.qml:329, 361: from H-62 up to 0.22·H over 2600ms OutCubic.
+            y: (stage.height - 62px) + (stage.height * 0.22 - (stage.height - 62px))
+               * (1 - (1 - self.ms / 2600) * (1 - self.ms / 2600) * (1 - self.ms / 2600));
+            // CallPage.qml:362-366: 220ms in, 1600ms hold, 780ms out.
+            opacity: self.ms < 220 ? self.ms / 220 : (self.ms > 1820 ? max(0.0, 1 - (self.ms - 1820) / 780) : 1.0);
             background: transparent;
             VerticalLayout {
+                alignment: center;
                 spacing: 1px;
                 Text {
                     // No font-family override: the colour-emoji font must resolve.
@@ -382,18 +510,20 @@ export component CallPage inherits Rectangle {
                 }
                 if fl.who != "" : HorizontalLayout {
                     alignment: center;
-                    Rectangle {
+                    who-chip := Rectangle {
                         width: min(who-text.preferred-width + 12px, 110px);
                         height: 18px;
                         border-radius: 9px;
                         background: Theme.background.with-alpha(0.6);
                         who-text := Text {
+                            x: (who-chip.width - self.width) / 2;
+                            width: min(self.preferred-width, who-chip.width - 10px);
+                            height: 100%;
                             text: fl.who;
                             color: #ececec;
                             font-family: Theme.font-ui;
                             font-size: Theme.caption;
                             horizontal-alignment: center; vertical-alignment: center;
-                            width: 100%; height: 100%;
                             overflow: elide;
                         }
                     }
@@ -402,18 +532,19 @@ export component CallPage inherits Rectangle {
         }
     }
 
-    // Minimise to the app-wide PiP; sits where a back arrow would be.
+    // Minimise to the app-wide PiP; sits where a back arrow would be
+    // (CallPage.qml:147-155: a constant background@0.55, no press tint).
     min-btn := Rectangle {
         x: 14px; y: 14px;
         width: 34px; height: 34px;
         border-radius: 17px;
-        background: Theme.background.with-alpha(min-touch.pressed ? 0.75 : 0.55);
+        background: Theme.background.with-alpha(0.55);
         IconLabel {
             text: Icons.pip;
             color: root.fg;
             width: 100%; height: 100%;
         }
-        min-touch := TouchArea { clicked => { root.minimize(); } }
+        min-touch := TouchArea { mouse-cursor: pointer; clicked => { root.minimize(); } }
     }
 
     if root.error != "" : Text {
@@ -441,13 +572,20 @@ export component CallPage inherits Rectangle {
         background: transparent;
 
         // Emoji tray above the controls: a short row, not the full picker.
-        if root.react-open : tray := Rectangle {
+        // CallPage.qml:407-419: opacity 140ms, scale 0.9→1 180ms OutBack,
+        // alive while opacity > 0.01.
+        tray := Rectangle {
             x: (root.width - self.width) / 2;
             y: -self.height - 8px;   // floats above the bar
             width: tray-row.preferred-width + 20px;
             height: 48px;
             border-radius: 24px;
             background: #292b2e.with-alpha(0.92);
+            visible: self.opacity > 0.01;
+            opacity: root.react-open ? 1 : 0;
+            animate opacity { duration: 140ms; }
+            transform-scale: root.react-open ? 1 : 0.9;
+            animate transform-scale { duration: 180ms; easing: ease-out-back; }
             TouchArea { } // swallow taps on the pill's own padding
             tray-row := HorizontalLayout {
                 padding-left: 10px; padding-right: 10px;
@@ -456,6 +594,9 @@ export component CallPage inherits Rectangle {
                     width: 36px; height: 36px;
                     border-radius: 18px;
                     background: e-touch.pressed || e-touch.has-hover ? root.accent.with-alpha(0.32) : transparent;
+                    // CallPage.qml:432-434: 1.08 on hover, 110ms OutCubic.
+                    transform-scale: e-touch.pressed || e-touch.has-hover ? 1.08 : 1;
+                    animate transform-scale { duration: 110ms; easing: cubic-bezier(0.33, 1, 0.68, 1); }
                     Text {
                         text: emoji;
                         font-size: 19px;
@@ -463,6 +604,7 @@ export component CallPage inherits Rectangle {
                         width: 100%; height: 100%;
                     }
                     e-touch := TouchArea {
+                        mouse-cursor: pointer;
                         clicked => { root.react(emoji); root.react-open = false; }
                     }
                 }
@@ -483,7 +625,7 @@ export component CallPage inherits Rectangle {
                     font-size: 19px;
                     width: 100%; height: 100%;
                 }
-                TouchArea { clicked => { root.set-mic(root.mic-muted); } }
+                TouchArea { mouse-cursor: pointer; clicked => { root.set-mic(root.mic-muted); } }
             }
             cam-btn := Rectangle {
                 width: 46px; height: 46px; border-radius: 23px;
@@ -494,7 +636,7 @@ export component CallPage inherits Rectangle {
                     font-size: 19px;
                     width: 100%; height: 100%;
                 }
-                TouchArea { clicked => { root.set-camera(!root.camera-on); } }
+                TouchArea { mouse-cursor: pointer; clicked => { root.set-camera(!root.camera-on); } }
             }
             share-btn := Rectangle {
                 width: 46px; height: 46px; border-radius: 23px;
@@ -505,7 +647,7 @@ export component CallPage inherits Rectangle {
                     font-size: 19px;
                     width: 100%; height: 100%;
                 }
-                TouchArea { clicked => { root.set-screenshare(!root.screen-sharing); } }
+                TouchArea { mouse-cursor: pointer; clicked => { root.set-screenshare(!root.screen-sharing); } }
             }
             react-btn := Rectangle {
                 width: 46px; height: 46px; border-radius: 23px;
@@ -516,7 +658,7 @@ export component CallPage inherits Rectangle {
                     font-size: 19px;
                     width: 100%; height: 100%;
                 }
-                TouchArea { clicked => { root.react-open = !root.react-open; } }
+                TouchArea { mouse-cursor: pointer; clicked => { root.react-open = !root.react-open; } }
             }
             settings-btn := Rectangle {
                 width: 46px; height: 46px; border-radius: 23px;
@@ -527,7 +669,7 @@ export component CallPage inherits Rectangle {
                     font-size: 19px;
                     width: 100%; height: 100%;
                 }
-                TouchArea { clicked => { root.settings-open = true; } }
+                TouchArea { mouse-cursor: pointer; clicked => { root.settings-open = true; } }
             }
             hangup-btn := Rectangle {
                 width: 64px; height: 46px; border-radius: 23px;
@@ -540,17 +682,22 @@ export component CallPage inherits Rectangle {
                     font-size: 20px;
                     width: 100%; height: 100%;
                 }
-                TouchArea { clicked => { root.hang-up(); } }
+                TouchArea { mouse-cursor: pointer; clicked => { root.hang-up(); } }
             }
         }
     }
 
     // ---- settings sheet: input/output devices, slides in from the bottom ----
-    if root.settings-open : scrim := Rectangle {
+    // CallPage.qml:501-507: the scrim fades 0↔0.35 over 180ms and only
+    // takes taps while the sheet is open.
+    scrim := Rectangle {
         width: 100%; height: 100%;
         border-radius: 22px;
-        background: #000000.with-alpha(0.35);
-        TouchArea { clicked => { root.settings-open = false; } }
+        background: #000000;
+        opacity: root.settings-open ? 0.35 : 0;
+        animate opacity { duration: 180ms; }
+        visible: self.opacity > 0;
+        TouchArea { enabled: root.settings-open; clicked => { root.settings-open = false; } }
     }
     sheet := Rectangle {
         y: root.settings-open ? root.height - self.height : root.height + 6px;
@@ -573,19 +720,29 @@ export component CallPage inherits Rectangle {
                     background: Theme.popup-text.with-alpha(0.25);
                 }
             }
-            Text {
-                text: "Call settings";
-                color: Theme.popup-text;
-                font-family: Theme.font-ui;
-                font-size: Theme.subtitle;
-                font-weight: 700;
+            // CallPage.qml:523: title padded 6 above, 4 below.
+            Rectangle {
+                height: sheet-title.preferred-height + 10px;
+                sheet-title := Text {
+                    y: 6px;
+                    text: "Call settings";
+                    color: Theme.popup-text;
+                    font-family: Theme.font-ui;
+                    font-size: Theme.subtitle;
+                    font-weight: 700;
+                }
             }
-            Text {
-                text: "Microphone";
-                color: Theme.popup-text.with-alpha(0.55);
-                font-family: Theme.font-ui;
-                font-size: Theme.caption;
-                font-weight: 700;
+            // CallPage.qml:533: section labels padded 8 above, 2 below.
+            Rectangle {
+                height: mic-label.preferred-height + 10px;
+                mic-label := Text {
+                    y: 8px;
+                    text: "Microphone";
+                    color: Theme.popup-text.with-alpha(0.55);
+                    font-family: Theme.font-ui;
+                    font-size: Theme.caption;
+                    font-weight: 700;
+                }
             }
             for dev in root.mics : mic-row := Rectangle {
                 height: 32px;
@@ -602,6 +759,8 @@ export component CallPage inherits Rectangle {
                         vertical-alignment: center;
                     }
                     Text {
+                        // CallPage.qml:543: the name runs to sheet.width - 70.
+                        width: root.width - 70px;
                         text: dev.label;
                         color: Theme.popup-text;
                         font-family: Theme.font-ui;
@@ -618,12 +777,16 @@ export component CallPage inherits Rectangle {
                 font-family: Theme.font-ui;
                 font-size: Theme.body-small;
             }
-            Text {
-                text: "Speaker";
-                color: Theme.popup-text.with-alpha(0.55);
-                font-family: Theme.font-ui;
-                font-size: Theme.caption;
-                font-weight: 700;
+            Rectangle {
+                height: spk-label.preferred-height + 10px;
+                spk-label := Text {
+                    y: 8px;
+                    text: "Speaker";
+                    color: Theme.popup-text.with-alpha(0.55);
+                    font-family: Theme.font-ui;
+                    font-size: Theme.caption;
+                    font-weight: 700;
+                }
             }
             for dev in root.speakers : spk-row := Rectangle {
                 height: 32px;
@@ -640,6 +803,8 @@ export component CallPage inherits Rectangle {
                         vertical-alignment: center;
                     }
                     Text {
+                        // CallPage.qml:543: the name runs to sheet.width - 70.
+                        width: root.width - 70px;
                         text: dev.label;
                         color: Theme.popup-text;
                         font-family: Theme.font-ui;

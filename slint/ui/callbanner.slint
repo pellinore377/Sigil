@@ -1,6 +1,7 @@
 // Incoming-call banner — calls/CallBanner.qml. In QML this is its own
-// Wayland overlay window; here it is a card the shell mounts at the top of
-// the content area whenever call.incoming is set.
+// Wayland overlay window (top-centred, 440 wide, 76 tall, gapsOut down);
+// here it is a card the shell mounts at the top of the content area with
+// those metrics whenever call.incoming is set.
 
 import { Theme } from "style.slint";
 import { Icons } from "icons.slint";
@@ -18,6 +19,9 @@ export component CallBanner inherits Rectangle {
     callback accept-video;   // call.join {video:true}
     callback decline;        // call.decline
 
+    // CallBanner.qml:17, 24-28: 76 tall on the popup surface. The radius is
+    // Style.cornerRadius, which the port draws at 16 on every popup surface
+    // (the sheet, the dialogs), so the same value here.
     height: 76px;
     border-radius: 16px;
     background: Theme.popup-background;
@@ -37,9 +41,10 @@ export component CallBanner inherits Rectangle {
                 tint: root.caller-tint;
             }
         }
+        // CallBanner.qml:30-34: a plain Column, no spacing between the lines.
         VerticalLayout {
             alignment: center;
-            spacing: 1px;
+            spacing: 0px;
             horizontal-stretch: 1;
             Text {
                 text: root.caller-name + " is calling";
@@ -60,22 +65,24 @@ export component CallBanner inherits Rectangle {
         HorizontalLayout {
             spacing: 6px;
             alignment: center;
+            // CallBanner.qml:39: a constant urgent@0.85, no press tint.
             decline-btn := Rectangle {
                 y: (root.height - self.height) / 2;
                 width: 40px; height: 40px; border-radius: 20px;
-                background: Theme.urgent.with-alpha(decline-t.pressed ? 1.0 : 0.85);
+                background: Theme.urgent.with-alpha(0.85);
                 IconLabel {
                     text: Icons.callEnd;
                     color: root.fg;
                     font-size: Theme.icon-large;
                     width: 100%; height: 100%;
                 }
-                decline-t := TouchArea { clicked => { root.decline(); } }
+                decline-t := TouchArea { mouse-cursor: pointer; clicked => { root.decline(); } }
             }
+            // CallBanner.qml:42, 45: a constant accent@0.35 with a 1px accent ring.
             accept-btn := Rectangle {
                 y: (root.height - self.height) / 2;
                 width: 40px; height: 40px; border-radius: 20px;
-                background: Theme.accent.with-alpha(accept-t.pressed ? 0.55 : 0.35);
+                background: Theme.accent.with-alpha(0.35);
                 border-width: 1px;
                 border-color: Theme.accent;
                 IconLabel {
@@ -84,12 +91,12 @@ export component CallBanner inherits Rectangle {
                     font-size: Theme.icon-large;
                     width: 100%; height: 100%;
                 }
-                accept-t := TouchArea { clicked => { root.accept(); } }
+                accept-t := TouchArea { mouse-cursor: pointer; clicked => { root.accept(); } }
             }
             video-btn := Rectangle {
                 y: (root.height - self.height) / 2;
                 width: 40px; height: 40px; border-radius: 20px;
-                background: Theme.accent.with-alpha(video-t.pressed ? 0.55 : 0.35);
+                background: Theme.accent.with-alpha(0.35);
                 border-width: 1px;
                 border-color: Theme.accent;
                 IconLabel {
@@ -98,7 +105,7 @@ export component CallBanner inherits Rectangle {
                     font-size: Theme.icon-large;
                     width: 100%; height: 100%;
                 }
-                video-t := TouchArea { clicked => { root.accept-video(); } }
+                video-t := TouchArea { mouse-cursor: pointer; clicked => { root.accept-video(); } }
             }
         }
     }

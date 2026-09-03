@@ -226,6 +226,10 @@ pub fn select_device(ui: &mut UiState, win: &AppWindow, kind: &str, id: &str) {
 
 fn push_floater(s: &mut Session, emoji: &str, who: &str) {
     s.floater_seq += 1;
+    // at most 12 on screen, the oldest dropped (CallPage.qml:34)
+    if s.floaters.len() >= 12 {
+        s.floaters.remove(0);
+    }
     s.floaters.push((
         s.floater_seq,
         emoji.to_string(),
@@ -560,6 +564,7 @@ pub fn apply(ui: &mut UiState, win: &AppWindow) {
         Some(inc) if !in_call => {
             win.set_call_incoming(true);
             win.set_call_incoming_name(short(&inc.sender).into());
+            win.set_call_incoming_initials(crate::rows::initials(&short(&inc.sender)).into());
             win.set_call_incoming_tint(crate::rows::tint_for(&inc.sender));
             let name = ui
                 .rooms_json
@@ -630,6 +635,13 @@ pub fn apply(ui: &mut UiState, win: &AppWindow) {
         _ => "Connecting…".to_string(),
     };
     win.set_call_status(status.into());
+    // the PiP's chip: m:ss once connected, "•" before (CallPiP.qml:309-315);
+    // its tile is the first remote until video brings a featured track
+    win.set_call_pip_duration(match s.connected_at {
+        Some(t) if remotes > 0 => mmss(t.elapsed()).into(),
+        _ => "•".into(),
+    });
+    win.set_call_pip_featured(tiles.first().filter(|_| remotes > 0).cloned().unwrap_or_default());
     win.set_call_error(s.error.as_str().into());
     win.set_call_mic_muted(s.muted);
     win.set_call_group_mode(remotes > 1);

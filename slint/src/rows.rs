@@ -767,3 +767,19 @@ pub fn strip_extension(name: &str) -> String {
         _ => name.to_string(),
     }
 }
+
+/// Keep the head and tail of a long name with "…" between, the stand-in for
+/// Text.ElideMiddle (Slint only elides at the end and cannot measure text).
+pub fn elide_middle(name: &str, max_chars: usize) -> String {
+    let chars: Vec<char> = name.chars().collect();
+    if chars.len() <= max_chars {
+        return name.to_string();
+    }
+    let tail = 12.min(max_chars / 3);
+    let head = max_chars.saturating_sub(tail + 1);
+    format!(
+        "{}…{}",
+        chars[..head].iter().collect::<String>(),
+        chars[chars.len() - tail..].iter().collect::<String>()
+    )
+}

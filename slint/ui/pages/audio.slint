@@ -35,32 +35,43 @@ export component AudioPage inherits Rectangle {
 
     background: transparent;
 
+    // AudioPage.qml:48-49 — note() holds a toast for 2600ms. `toast` is bound
+    // by the app, so the page hides it rather than clearing it (an assignment
+    // would drop the binding); the bridge blanks it first to repeat the same text.
+    property <bool> toast-live: root.toast != "";
+    changed toast => {
+        root.toast-live = root.toast != "";
+        if (root.toast-live) { toast-clock.restart(); }
+    }
+    toast-clock := Timer {
+        interval: 2600ms;
+        running: false;
+        triggered => { root.toast-live = false; self.stop(); }
+    }
+
     header := Rectangle {
+        x: 0; y: 0;       // a sized element with no position centres itself in Slint
         height: 52px;
-        HorizontalLayout {
-            padding-left: 6px; padding-right: 12px;
-            spacing: 8px;
-            Rectangle {
-                width: 44px;
-                ActionButton {
-                    y: (52px - self.height) / 2;
-                    width: 44px; height: 44px;
-                    icon: Icons.back;
-                    filled: false;
-                    foreground: root.fg;
-                    clicked => { root.closed(); }
-                }
-            }
-            Text {
-                text: "Audio";
-                color: root.fg;
-                font-family: Theme.font-ui;
-                font-size: Theme.subtitle;
-                font-weight: 700;
-                vertical-alignment: center;
-                overflow: elide;
-                horizontal-stretch: 1;
-            }
+        width: 100%;
+        // AudioPage.qml:72-79 — 22px PanelActionButton at leftMargin 6.
+        back-btn := ActionButton {
+            x: 6px; y: (52px - 22px) / 2;
+            width: 22px; height: 22px;
+            icon: Icons.back;
+            filled: false;
+            foreground: root.fg;
+            clicked => { root.closed(); }
+        }
+        // :80-87 — title at backBtn.right + 8 = 36, rightMargin 12.
+        Text {
+            x: 36px; width: header.width - 36px - 12px; height: 100%;
+            text: "Audio";
+            color: root.fg;
+            font-family: Theme.font-ui;
+            font-size: Theme.subtitle;
+            font-weight: 700;
+            vertical-alignment: center;
+            overflow: elide;
         }
     }
 
@@ -76,9 +87,16 @@ export component AudioPage inherits Rectangle {
 
         cover-stack := Rectangle {
             property <length> box: min(stage.width - 56px, 300px);
-            x: (stage.width - self.box) / 2;
-            y: max(10px, (stage.height - shelf.height - self.box) / 2);
-            width: self.box; height: self.box;
+            // AudioPage.qml:166-167 — playing breathes the art by SCALE,
+            // 1.0 / 0.97 over 400ms OutCubic about its centre; drawn as the
+            // box's size, since a rounded clip does not survive a transform in
+            // every renderer. The art only: the no-art placeholder (:170-191)
+            // does not breathe.
+            property <length> drawn: self.box * (root.playing || !root.have-art ? 1.0 : 0.97);
+            animate drawn { duration: 400ms; easing: cubic-bezier(0.33, 1, 0.68, 1); }
+            x: (stage.width - self.drawn) / 2;
+            y: max(10px, (stage.height - shelf.height - self.box) / 2) + (self.box - self.drawn) / 2;
+            width: self.drawn; height: self.drawn;
             border-radius: 18px;
             clip: true;
             background: root.have-art ? transparent : #ffffff.with-alpha(0.07);
@@ -103,14 +121,13 @@ export component AudioPage inherits Rectangle {
                 vertical-alignment: center;
                 width: 100%; height: 100%;
             }
-            // playing "breathes" the art (0.97 <-> 1.0 in QML)
-            opacity: root.playing || !root.have-art ? 1.0 : 0.97;
         }
 
         dl-disc := Rectangle {
             x: stage.width - self.width - 12px; y: 12px;
             width: 38px; height: 38px; border-radius: 19px;
-            background: #000000.with-alpha(dl-t.pressed ? 0.6 : 0.42);
+            // AudioPage.qml:199 — #000@0.42, no pressed state.
+            background: #000000.with-alpha(0.42);
             IconLabel { text: Icons.download; filled: false; color: #ffffff; width: 100%; height: 100%; }
             dl-t := TouchArea {
                 enabled: root.can-download;
@@ -131,6 +148,8 @@ export component AudioPage inherits Rectangle {
                 x: 16px; y: 14px;
                 width: shelf.width - 32px;
                 spacing: 10px;
+                // AudioPage.qml:235 elides in the middle; the bridge hands a
+                // pre-elided title (handoff), this only clips the tail.
                 Text {
                     text: root.title;
                     color: root.fg;
@@ -139,7 +158,7 @@ export component AudioPage inherits Rectangle {
                     font-weight: 700;
                     overflow: elide;
                 }
-                // Scrubber
+                // Scrubber (AudioPage.qml:242-284)
                 scrub-box := Rectangle {
                     height: 16px;
                     track := Rectangle {
@@ -155,19 +174,27 @@ export component AudioPage inherits Rectangle {
                     knob := Rectangle {
                         x: max(0px, min(track.width - self.width, track.width * root.frac - self.width / 2));
                         y: (16px - self.height) / 2;
-                        // pressed feedback replaces the QML hover scale
-                        width: scrub-t.pressed ? 17px : 13px;
-                        height: scrub-t.pressed ? 17px : 13px;
-                        border-radius: self.width / 2;
+                        width: 13px; height: 13px;
+                        border-radius: 6.5px;
                         background: root.accent;
-                        animate width, height { duration: 100ms; }
+                        // :266-267 — grows 1.3× about its centre while pressed, 100ms.
+                        transform-origin: { x: self.width / 2, y: self.height / 2 };
+                        transform-scale-x: scrub-t.pressed ? 1.3 : 1.0;
+                        transform-scale-y: scrub-t.pressed ? 1.3 : 1.0;
+                        animate transform-scale-x, transform-scale-y { duration: 100ms; }
                     }
+                    // :269-283 — the hit target is the row grown 6 on every
+                    // side (28 tall); the fraction is measured on the track.
                     scrub-t := TouchArea {
+                        x: -6px; y: -6px;
+                        width: scrub-box.width + 12px; height: 16px + 12px;
                         enabled: root.duration > 0;
-                        clicked => { root.seek-requested((self.mouse-x / self.width) * root.duration); }
+                        clicked => {
+                            root.seek-requested((max(0px, min(track.width, self.mouse-x + self.x)) / track.width) * root.duration);
+                        }
                         moved => {
                             if (self.pressed) {
-                                root.seek-requested((max(0px, min(self.width, self.mouse-x)) / self.width) * root.duration);
+                                root.seek-requested((max(0px, min(track.width, self.mouse-x + self.x)) / track.width) * root.duration);
                             }
                         }
                     }
@@ -188,7 +215,11 @@ export component AudioPage inherits Rectangle {
                         y: (48px - self.height) / 2;
                         width: 48px; height: 48px; border-radius: 24px;
                         background: root.accent;
-                        opacity: play-t.pressed ? 0.85 : 1.0;
+                        // AudioPage.qml:303-304 — pressed shrinks to 0.93 over 90ms.
+                        transform-origin: { x: self.width / 2, y: self.height / 2 };
+                        transform-scale-x: play-t.pressed ? 0.93 : 1.0;
+                        transform-scale-y: play-t.pressed ? 0.93 : 1.0;
+                        animate transform-scale-x, transform-scale-y { duration: 90ms; }
                         IconLabel {
                             text: root.playing ? Icons.pause : Icons.play;
                             color: #141414;
@@ -210,11 +241,12 @@ export component AudioPage inherits Rectangle {
             }
         }
 
-        // Toast
-        if root.toast != "" : toast-pill := Rectangle {
+        // AudioPage.qml:327-341 — the toast pill, 12 above the shelf, text +
+        // 22 wide and never wider than the page − 38.
+        if root.toast != "" && root.toast-live : toast-pill := Rectangle {
             x: (stage.width - self.width) / 2;
             y: shelf.y - 40px;
-            width: min(toast-text.preferred-width + 22px, stage.width - 60px);
+            width: min(toast-text.preferred-width + 22px, stage.width - 38px);
             height: 28px; border-radius: 14px;
             background: Theme.background.with-alpha(0.85);
             toast-text := Text {
@@ -225,7 +257,7 @@ export component AudioPage inherits Rectangle {
                 overflow: elide;
                 horizontal-alignment: center;
                 vertical-alignment: center;
-                width: 100%; height: 100%;
+                x: 11px; width: parent.width - 22px; height: 100%;
             }
         }
     }

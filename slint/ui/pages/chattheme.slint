@@ -208,10 +208,13 @@ export component ChatThemePage inherits Rectangle {
                 border-bottom-left-radius: 22px;
                 border-bottom-right-radius: 22px;
                 background: root.tint-bg(root.pend-accent, root.themed ? 0.35 : 0.06);
+                // ChatThemePage.qml:298-302: a Column hugs its content; the
+                // section's 32 of slack must not stretch the rows.
                 sec-col := VerticalLayout {
                     x: 16px; y: 16px;
                     width: section.width - 32px;
                     spacing: 8px;
+                    alignment: start;
                     Text { text: "Colors"; color: root.fg; font-family: Theme.font-ui; font-size: Theme.subtitle; font-weight: 700; }
                     HorizontalLayout {
                         alignment: start;
@@ -339,6 +342,7 @@ export component ChatThemePage inherits Rectangle {
                 x: 16px; y: 10px;
                 width: card.width - 32px;
                 spacing: 12px;
+                alignment: start;   // ChatThemePage.qml:84-89: a top-anchored Column
                 HorizontalLayout { alignment: center; Rectangle { width: 36px; height: 4px; border-radius: 2px; background: root.fg.with-alpha(0.25); } }
                 Text { text: "Custom color"; color: root.fg; font-family: Theme.font-ui; font-size: Theme.subtitle; font-weight: 700; horizontal-alignment: center; }
                 // Hue
