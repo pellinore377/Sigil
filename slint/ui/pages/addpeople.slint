@@ -31,20 +31,23 @@ export component AddPeoplePage inherits Rectangle {
     }
 
     VerticalLayout {
+        // AddPeoplePage.qml:26-28: a 54 band, PanelActionButton (22×22) at 6,
+        // the title 6 past it — x 34. The tap surface spans the band.
         header := Rectangle {
             height: 54px;
             HorizontalLayout {
                 padding-left: 6px;
                 spacing: 6px;
                 Rectangle {
-                    width: 44px;
+                    width: 22px;
                     ActionButton {
                         y: (54px - self.height) / 2;
-                        width: 44px; height: 44px;
+                        width: 22px; height: 22px;
                         icon: Icons.back; filled: false;
                         foreground: root.fg;
                         clicked => { root.closed(); }
                     }
+                    TouchArea { clicked => { root.closed(); } }
                 }
                 Text {
                     text: "Add people";
@@ -84,10 +87,15 @@ export component AddPeoplePage inherits Rectangle {
                                 vertical-alignment: center;
                                 height: 100%; width: 100%;
                                 single-line: true;
+                                // AddPeoplePage.qml:20,46: the query is trimmed
+                                // before the two-character test and the search.
+                                // Slint has no trim, so the length test here is
+                                // on the raw text and the bridge trims the query
+                                // it receives (a whitespace-padded short text
+                                // clears results one debounce later than the
+                                // QML; see settings-handoff.md).
                                 edited => {
                                     root.note = "";
-                                    // AddPeoplePage.qml: the directory query needs
-                                    // two characters; shorter text clears results.
                                     if (self.text.character-count >= 2) {
                                         debounce.running = false;
                                         debounce.running = true;
@@ -95,6 +103,14 @@ export component AddPeoplePage inherits Rectangle {
                                         debounce.running = false;
                                         root.search("");
                                     }
+                                }
+                                // AddPeoplePage.qml:47: Escape closes the page.
+                                key-pressed(event) => {
+                                    if (event.text == Key.Escape) {
+                                        root.closed();
+                                        return accept;
+                                    }
+                                    reject
                                 }
                             }
                             if search-input.text == "" : Text {
@@ -138,7 +154,9 @@ export component AddPeoplePage inherits Rectangle {
                     spacing: 12px;
                     Rectangle {
                         width: 38px;
+                        // AddPeoplePage.qml:64: the avatar is vertically centred.
                         Avatar {
+                            y: (prow.height - self.height) / 2;
                             size: 38px;
                             source: user.avatar;
                             initials: user.initials;

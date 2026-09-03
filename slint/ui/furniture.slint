@@ -45,12 +45,15 @@ export component SettingsHeader inherits Rectangle {
             overflow: elide;
             horizontal-stretch: 1;
         }
-        // SettingsHeader.qml:311-321: the action text ends 18 from the right
+        // SettingsHeader.qml:33-42: the action text ends 18 from the right
         // and the title stops 10 before it — the layout's 6 plus 4 here. The
-        // tap surface grows 8 past the text on every side (:328).
-        if root.action != "" : Rectangle {
-            width: action-text.preferred-width + 4px;
+        // slot stays reserved when the action is empty (the QML anchors the
+        // title to an invisible, zero-wide Text), so the title always ends at
+        // width-28. The tap surface grows 8 past the text on every side (:44).
+        Rectangle {
+            width: (root.action != "" ? action-text.preferred-width : 0px) + 4px;
             action-text := Text {
+                visible: root.action != "";
                 text: root.action;
                 color: root.action-enabled ? Theme.accent : root.fg.with-alpha(0.35);
                 font-family: Theme.font-ui;
@@ -63,7 +66,7 @@ export component SettingsHeader inherits Rectangle {
             TouchArea {
                 x: -8px; y: -8px;
                 width: parent.width + 16px; height: parent.height + 16px;
-                enabled: root.action-enabled;
+                enabled: root.action-enabled && root.action != "";
                 clicked => { root.actioned(); }
             }
         }
@@ -407,6 +410,81 @@ export component NotePill inherits Rectangle {
     }
 }
 
+// The two-button question a settings page asks before something one-way
+// (RolesPage.qml:132-185, both dialogs share the shape): fill the page with
+// it and set `open`. Scrim rgba(0,0,0,0.5) closes on tap; the card is
+// min(width-60, 320) wide, col+32 high, r18, popups.background; the column
+// is inset 18 with 10 spacing; title subtitle-bold, body bodySmall@0.6;
+// buttons 34 high with r=h/2, Cancel fg@0.07 (0.12 hovered), the confirm
+// urgent (lighter 1.1 hovered) with bold background-coloured text.
+export component ConfirmDialog inherits Rectangle {
+    in property <string> title;
+    in property <string> body;
+    in property <string> confirm-text: "Change";
+    in property <color> fg: Theme.menu-text;
+    in-out property <bool> open: false;
+    callback confirmed;
+    background: transparent;
+    visible: root.open;
+    scrim := Rectangle {
+        width: 100%; height: 100%;
+        background: #000000.with-alpha(0.5);
+        TouchArea { clicked => { root.open = false; } }
+    }
+    card := Rectangle {
+        x: (root.width - self.width) / 2;
+        y: (root.height - self.height) / 2;
+        width: min(root.width - 60px, 320px);
+        height: col.preferred-height + 32px;
+        border-radius: 18px;
+        background: Theme.popup-background;
+        TouchArea { }
+        col := VerticalLayout {
+            x: 18px; y: 16px;
+            width: card.width - 36px;
+            spacing: 10px;
+            Text {
+                text: root.title; color: root.fg;
+                font-family: Theme.font-ui; font-size: Theme.subtitle; font-weight: 700;
+                wrap: word-wrap;
+            }
+            Text {
+                text: root.body; color: root.fg.with-alpha(0.6);
+                font-family: Theme.font-ui; font-size: Theme.body-small;
+                wrap: word-wrap;
+            }
+            HorizontalLayout {
+                alignment: end;
+                spacing: 8px;
+                cancel := Rectangle {
+                    width: cancel-text.preferred-width + 26px; height: 34px;
+                    border-radius: 17px;
+                    background: root.fg.with-alpha(cancel-t.has-hover || cancel-t.pressed ? 0.12 : 0.07);
+                    cancel-text := Text {
+                        text: "Cancel"; color: root.fg;
+                        font-family: Theme.font-ui; font-size: Theme.body-small;
+                        horizontal-alignment: center; vertical-alignment: center;
+                        width: 100%; height: 100%;
+                    }
+                    cancel-t := TouchArea { clicked => { root.open = false; } }
+                }
+                ok := Rectangle {
+                    width: ok-text.preferred-width + 26px; height: 34px;
+                    border-radius: 17px;
+                    background: ok-t.has-hover || ok-t.pressed ? Theme.urgent.brighter(0.1) : Theme.urgent;
+                    ok-text := Text {
+                        text: root.confirm-text; color: Theme.background;
+                        font-family: Theme.font-ui; font-size: Theme.body-small; font-weight: 700;
+                        horizontal-alignment: center; vertical-alignment: center;
+                        width: 100%; height: 100%;
+                    }
+                    ok-t := TouchArea { clicked => { root.open = false; root.confirmed(); } }
+                }
+            }
+        }
+    }
+}
+
 // The spinner glyph, turning.
 export component Spinner inherits Rectangle {
     in property <length> size: Theme.icon-size;
@@ -483,7 +561,7 @@ export component ScrollBarStyle inherits Rectangle {
     property <float> position: root.travel > 0px ? clamp(-root.viewport-y / root.travel, 0.0, 1.0) : 0.0;
     // `active` in QQC terms: the list moved within the last moment.
     property <bool> scrolling: false;
-    changed viewport-y => { root.scrolling = true; still.restart(); }
+    changed viewport-y => { root.scrolling = true; still.running = true; still.restart(); }
     still := Timer {
         interval: 150ms;
         running: false;

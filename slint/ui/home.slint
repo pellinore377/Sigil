@@ -34,7 +34,7 @@ export component HomePage inherits Rectangle {
 
     property <bool> chats-mode: root.tab == 0;
 
-    background: Theme.menu-background;
+    background: Theme.card-ground;
 
     VerticalLayout {
         // Header
@@ -165,19 +165,8 @@ export component HomePage inherits Rectangle {
             }
         }
 
-        // Sync state, only while it is worth saying
-        if root.sync-line != "" : Rectangle {
-            height: 24px;
-            Text {
-                text: root.sync-line;
-                color: Theme.muted;
-                font-family: Theme.font-ui;
-                font-size: Theme.caption;
-                horizontal-alignment: center;
-                vertical-alignment: center;
-                width: 100%; height: 100%;
-            }
-        }
+        // The sync strip is the card's, above every page (app.slint status-strip,
+        // Panel.qml:491-501); `sync-line` stays bound for the bridge.
 
         // Empty states name their emptiness: "no rooms" is a fact about the
         // account, "looking" is a fact about us (ui-conventions.md).

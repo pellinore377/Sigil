@@ -27,6 +27,9 @@ pub fn run_app() -> anyhow::Result<()> {
     let icons = rows::IconSet::from_window(&win);
     bridge::start(&win, &rt, icons);
     scale::keep(&win);
+    // the desktop shows the card in its frame; a phone is the card
+    #[cfg(not(target_os = "android"))]
+    win.set_card_frame(true);
     // Android delivers the back gesture as a close request; unwind our nav
     // first and only let the OS have it from the home screen.
     #[cfg(target_os = "android")]

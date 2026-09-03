@@ -30,6 +30,9 @@ export global Theme {
     out property <color> menu-text: #c6c6c6;
     out property <color> menu-background: #4b4b4b;
     out property <color> menu-border: transparent;
+    /// The card, and every page ground: lighter(menu.background, 1.35)
+    /// (Panel.qml:33, 35). Qt's lighter(1.35) is Slint's brighter(0.35).
+    out property <color> card-ground: #4b4b4b.brighter(0.35);
 
     out property <color> popup-text: #c6c6c6;
     out property <color> popup-background: #4b4b4b;

@@ -122,6 +122,12 @@ export component ChatPage inherits Rectangle {
     callback play-video(TimelineRow);
     callback open-document(TimelineRow);
     callback open-contact(TimelineRow);
+    // the contact card's pills and rows (ContactBody.qml), and a revealed
+    // spoiler remembered for the session (RichText.qml:150-151)
+    callback contact-save(string, string, bool);
+    callback contact-share(string, string);
+    callback copy-text(string);
+    callback spoiler-revealed(string);
     callback open-audio(TimelineRow);
     callback open-location(TimelineRow);
     callback open-link(string);
@@ -515,6 +521,12 @@ export component ChatPage inherits Rectangle {
                         play-video(it) => { root.play-video(it); }
                         open-document(it) => { root.open-document(it); }
                         open-contact(it) => { root.open-contact(it); }
+                        contact-save(u, n, saved) => { root.contact-save(u, n, saved); }
+                        contact-share(u, n) => { root.contact-share(u, n); }
+                        copy-text(t) => { root.copy-text(t); }
+                        spoiler-revealed(id) => { root.spoiler-revealed(id); }
+                        // a themed room tints the bubbles too (BubbleDelegate.qml:39)
+                        theme-surface: root.themed ? root.surface-c : transparent;
                         open-audio(it) => { root.open-audio(it); }
                         open-location(it) => { root.open-location(it); }
                         open-link(it) => { root.open-link(it.link-url); }
@@ -1094,5 +1106,6 @@ export component ChatPage inherits Rectangle {
         }
         react(id, key) => { root.react(id, key); }
         emoji-search(q) => { root.emoji-search(q); }
+        load-emoji => { root.load-emoji(); }
     }
 }

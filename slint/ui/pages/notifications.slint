@@ -71,7 +71,11 @@ export component NotificationsPage inherits Rectangle {
             SettingsRow {
                 fg: root.fg;
                 label: "Mentions and replies only";
-                sublabel: "Matched on this device, where the messages are read.";
+                // NotificationsPage.qml:107-111: the caveat only for an
+                // encrypted room (always, on Sigil — the binding is kept).
+                sublabel: root.encrypted
+                    ? "Encrypted messages are matched on the device, so some may not notify."
+                    : "";
                 trailing: "radio"; on: root.mode == "mentions"; enabled: !root.busy;
                 clicked => { root.set-mode("mentions"); }
             }

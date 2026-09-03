@@ -8,7 +8,7 @@ use slint::{ComponentHandle, ModelRc, SharedString, VecModel};
 
 use crate::bridge::{rebuild_rooms, rebuild_timeline, with_ui, Requester, UiState};
 use crate::rows::{initials, tint_for};
-use crate::{project, AppWindow, TimelineRow};
+use crate::{project, AppWindow, TimelineRow, UserRow};
 
 pub fn room_of_key(key: &str) -> String {
     match key.find('|') {
@@ -576,14 +576,18 @@ pub fn on_act(ui: &mut UiState, win: &AppWindow, action: &str, a: &str, b2: &str
     let open_room = room_of_key(&ui.open_room);
     let action_is_doc = action == "doc-download";
     match action {
+        // ChatPage.qml:1754 trims; a body of nothing but spaces never leaves
+        "send-reply" if b2.trim().is_empty() => {}
         "send-reply" => req.fire(
             "message.reply",
-            json!({"roomId": ui.open_room, "eventId": a, "body": b2, "markdown": true}),
+            json!({"roomId": ui.open_room, "eventId": a, "body": b2.trim(), "markdown": true}),
         ),
+        "send-edit" if b2.trim().is_empty() => {}
         "send-edit" => req.fire(
             "message.edit",
-            json!({"roomId": ui.open_room, "eventId": a, "body": b2, "markdown": true}),
+            json!({"roomId": ui.open_room, "eventId": a, "body": b2.trim(), "markdown": true}),
         ),
+        "autocomplete-pick" => autocomplete_pick(ui, win, a.parse().unwrap_or(0)),
         "react" => req.fire(
             "message.react",
             json!({"roomId": ui.open_room, "eventId": a, "key": b2}),
@@ -608,7 +612,7 @@ pub fn on_act(ui: &mut UiState, win: &AppWindow, action: &str, a: &str, b2: &str
         "send-caption" => {
             req.fire(
                 "message.editCaption",
-                json!({"roomId": open_room, "eventId": a, "body": b2}),
+                json!({"roomId": open_room, "eventId": a, "body": b2.trim()}),
             );
             win.invoke_clear_composer();
         }
@@ -1016,6 +1020,31 @@ pub fn on_act(ui: &mut UiState, win: &AppWindow, action: &str, a: &str, b2: &str
                 win.set_contact_open(true);
             }
         }
+        // the contact card's pills (BubbleDelegate.qml:738-753)
+        "contact-save" | "contact-unsave" if !a.is_empty() => {
+            if action == "contact-save" {
+                req.fire("contacts.save", json!({"userId": a, "displayName": b2}));
+                ui.saved_contacts.insert(a.to_string());
+                win.set_chat_toast("Saved to contacts".into());
+            } else {
+                req.fire("contacts.remove", json!({"userId": a}));
+                ui.saved_contacts.remove(a);
+                win.set_chat_toast("Removed from contacts".into());
+            }
+            rebuild_timeline(ui, win);
+        }
+        // no share sheet on the desktop: the card goes to the clipboard as text
+        "contact-share" => {
+            crate::platform::copy_text(&format!("{b2} <{a}>"));
+            win.set_chat_toast("Copied".into());
+        }
+        "copy-text" => {
+            crate::platform::copy_text(a);
+            win.set_chat_toast("Copied".into());
+        }
+        "spoiler-revealed" => {
+            ui.spoilers_revealed.insert(a.to_string());
+        }
         "contact-choice" => {
             let (uid, name) = ui.contact_ctx.clone();
             match a {
@@ -1114,9 +1143,12 @@ pub fn on_act(ui: &mut UiState, win: &AppWindow, action: &str, a: &str, b2: &str
             win.set_voice_staged_duration(
                 format!("{:02}:{:02}", (secs as u64) / 60, (secs as u64) % 60).into(),
             );
+            // as many bars as the chip has room for (ChatPage.qml:1577)
+            let bars = win.get_chat_clip_wave_bars().max(8) as usize;
             win.set_voice_staged_wave(ModelRc::new(VecModel::from(crate::rows::resample_wave(
-                &wave, 40,
+                &wave, bars,
             ))));
+            clip_preview_stop(ui, win);
             win.set_voice_staged(true);
             win.set_recorder_open(false);
         }
@@ -1137,13 +1169,22 @@ pub fn on_act(ui: &mut UiState, win: &AppWindow, action: &str, a: &str, b2: &str
         "voice-discard" => {
             ui.voice_clip = Value::Null;
             req.fire("audio.stop", json!({}));
+            clip_preview_stop(ui, win);
         }
         "voice-preview" => {
             if a == "1" {
-                req.fire("audio.playFile", json!({"path": s(&ui.voice_clip, "path")}));
+                clip_preview_play(ui, win, ui.clip_pos);
             } else {
                 req.fire("audio.stop", json!({}));
+                ui.clip_timer.stop();
+                win.set_chat_clip_playing(false);
             }
+        }
+        // a tap on the wave: play from that fraction (ChatPage.qml:1600-1610)
+        "voice-preview-seek" => {
+            let secs = ui.voice_clip["duration"].as_f64().unwrap_or(0.0);
+            let frac: f64 = a.parse().unwrap_or(0.0);
+            clip_preview_play(ui, win, (frac.clamp(0.0, 1.0) * secs).min(secs));
         }
         "voice-cancel" => {
             ui.recording = false;
@@ -1152,6 +1193,196 @@ pub fn on_act(ui: &mut UiState, win: &AppWindow, action: &str, a: &str, b2: &str
         "open-map" => open_map(ui, win, a),
         other => tracing::warn!("act: unknown action {other}"),
     }
+}
+
+/// The address book's usernames, for the contact card's Save pill.
+pub fn load_saved_contacts(ui: &mut UiState) {
+    call_ui(&ui.req.clone(), "contacts.list", json!({}), |ui, _win, out| {
+        if let Ok(v) = out {
+            ui.saved_contacts = v["contacts"]
+                .as_array()
+                .map(|a| a.iter().filter_map(|c| c["userId"].as_str().map(str::to_string)).collect())
+                .unwrap_or_default();
+        }
+    });
+}
+
+fn fmt_dur(secs: f64) -> String {
+    let t = secs.max(0.0).round() as u64;
+    format!("{:02}:{:02}", t / 60, t % 60)
+}
+
+/// Play the staged clip from `from` seconds and tick the chip's progress
+/// every 100 ms (ChatPage.qml:723-729 clipTimer): the played fraction
+/// fills the bars and the duration counts down (ChatPage.qml:1615).
+fn clip_preview_play(ui: &mut UiState, win: &AppWindow, from: f64) {
+    let secs = ui.voice_clip["duration"].as_f64().unwrap_or(0.0);
+    ui.req.fire(
+        "audio.playFile",
+        json!({"path": s(&ui.voice_clip, "path"), "seek": from}),
+    );
+    ui.clip_pos = from;
+    win.set_chat_clip_frac(if secs > 0.0 { (from / secs) as f32 } else { 0.0 });
+    win.set_chat_clip_playing(true);
+    ui.clip_timer.start(
+        slint::TimerMode::Repeated,
+        std::time::Duration::from_millis(100),
+        || {
+            crate::bridge::with_ui(|ui| {
+                let Some(win) = ui.win.upgrade() else { return };
+                let secs = ui.voice_clip["duration"].as_f64().unwrap_or(0.0);
+                ui.clip_pos += 0.1;
+                if ui.clip_pos >= secs {
+                    // over: back to the start, bars dim, duration in full
+                    ui.clip_timer.stop();
+                    ui.clip_pos = 0.0;
+                    win.set_chat_clip_frac(0.0);
+                    win.set_chat_clip_playing(false);
+                    win.set_voice_staged_duration(fmt_dur(secs).into());
+                    return;
+                }
+                win.set_chat_clip_frac((ui.clip_pos / secs) as f32);
+                win.set_voice_staged_duration(fmt_dur(secs - ui.clip_pos).into());
+            });
+        },
+    );
+}
+
+fn clip_preview_stop(ui: &mut UiState, win: &AppWindow) {
+    ui.clip_timer.stop();
+    ui.clip_pos = 0.0;
+    win.set_chat_clip_frac(0.0);
+    win.set_chat_clip_playing(false);
+    let secs = ui.voice_clip["duration"].as_f64().unwrap_or(0.0);
+    win.set_voice_staged_duration(fmt_dur(secs).into());
+}
+
+/// The @ and # suggestions under the composer (ChatPage.qml:585-683
+/// updateAutocomplete / refreshAutocomplete): walk back from the cursor
+/// to the trigger at a word boundary, then match room members or joined
+/// rooms against what follows it.
+pub fn update_autocomplete(ui: &mut UiState, win: &AppWindow) {
+    let text = win.get_ct_composer_text().to_string();
+    let cursor = (win.get_ct_composer_cursor().max(0) as usize).min(text.len());
+    let head = &text[..cursor];
+    let mut token: Option<(usize, char)> = None;
+    for (i, c) in head.char_indices().rev() {
+        if c.is_whitespace() {
+            break;
+        }
+        if c == '@' || c == '#' {
+            let boundary = head[..i].chars().last().map(char::is_whitespace).unwrap_or(true);
+            if boundary {
+                token = Some((i, c));
+            }
+            break;
+        }
+    }
+    let Some((from, kind)) = token else {
+        autocomplete_clear(ui, win);
+        return;
+    };
+    let query = head[from + 1..].to_lowercase();
+    ui.ac_from = from;
+    ui.ac_kind = kind;
+    let me = ui.my_user.clone();
+    let mut rows: Vec<UserRow> = Vec::new();
+    let mut inserts = Vec::new();
+    if kind == '@' {
+        let room = room_of_key(&ui.open_room);
+        // members come lazily: the first @ in a room fetches them
+        if ui.ac_room != room {
+            ui.ac_room = room.clone();
+            ui.ac_members.clear();
+        }
+        if ui.ac_members.is_empty() && !ui.ac_fetching {
+            ui.ac_fetching = true;
+            call_ui(
+                &ui.req.clone(),
+                "room.members",
+                json!({"roomId": room}),
+                move |ui, win, out| {
+                    ui.ac_fetching = false;
+                    if let Ok(v) = out {
+                        ui.ac_members = v["members"].as_array().cloned().unwrap_or_default();
+                    }
+                    if ui.ac_kind == '@' {
+                        update_autocomplete(ui, win);
+                    }
+                },
+            );
+        }
+        for m in &ui.ac_members {
+            if rows.len() >= 6 {
+                break;
+            }
+            let uid = s(m, "userId");
+            if uid == me {
+                continue;
+            }
+            let name = match s(m, "displayName") {
+                "" => uid.to_string(),
+                d => d.to_string(),
+            };
+            if query.is_empty()
+                || name.to_lowercase().contains(&query)
+                || uid.to_lowercase().contains(&query)
+            {
+                inserts.push(name.clone());
+                rows.push(project::user_row(m, false));
+            }
+        }
+    } else {
+        let open = room_of_key(&ui.open_room);
+        for r in &ui.rooms_json {
+            if rows.len() >= 6 {
+                break;
+            }
+            let rid = s(r, "roomId");
+            // linking a room to itself is not a thing anyone means to do
+            if rid == open {
+                continue;
+            }
+            let name = s(r, "name").to_string();
+            if query.is_empty() || name.to_lowercase().contains(&query) {
+                inserts.push(name.clone());
+                rows.push(UserRow {
+                    user_id: rid.into(),
+                    display_name: name.clone().into(),
+                    initials: crate::rows::initials(&name).into(),
+                    tint: crate::rows::tint_for(rid),
+                    ..Default::default()
+                });
+            }
+        }
+    }
+    ui.ac_inserts = inserts;
+    win.set_chat_ac_items(ModelRc::new(VecModel::from(rows)));
+    win.set_chat_ac_index(0);
+}
+
+fn autocomplete_clear(ui: &mut UiState, win: &AppWindow) {
+    ui.ac_kind = ' ';
+    if !ui.ac_inserts.is_empty() {
+        ui.ac_inserts.clear();
+        win.set_chat_ac_items(ModelRc::new(VecModel::from(Vec::<UserRow>::new())));
+    }
+}
+
+/// A suggestion taken (ChatPage.qml:685-704 acceptAutocomplete): the token
+/// from the trigger to the cursor becomes "@name " or "#room ".
+fn autocomplete_pick(ui: &mut UiState, win: &AppWindow, idx: usize) {
+    if ui.ac_inserts.is_empty() || ui.ac_kind == ' ' {
+        return;
+    }
+    let insert = &ui.ac_inserts[idx.min(ui.ac_inserts.len() - 1)];
+    let text = win.get_ct_composer_text().to_string();
+    let cursor = (win.get_ct_composer_cursor().max(0) as usize).min(text.len());
+    let from = ui.ac_from.min(cursor);
+    let piece = format!("{}{insert} ", ui.ac_kind);
+    let new_text = format!("{}{piece}{}", &text[..from], &text[cursor..]);
+    win.invoke_chat_composer_set(new_text.into(), (from + piece.len()) as i32);
+    autocomplete_clear(ui, win);
 }
 
 fn menu_action(ui: &mut UiState, win: &AppWindow, action: &str, event_id: &str) {

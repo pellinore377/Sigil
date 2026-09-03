@@ -702,7 +702,8 @@ impl SigilSession {
         let first = cards.first();
         let name = first.map(|c| c.name.clone()).filter(|n| !n.is_empty()).unwrap_or_else(|| fallback_name.to_string());
         let user_id = first.map(|c| c.matrix_id.clone()).unwrap_or_default();
-        json!({"displayName": name, "userId": user_id, "cards": cards.len()})
+        json!({"displayName": name, "userId": user_id, "cards": cards.len(),
+               "card": first.map(|c| c.to_json()).unwrap_or(Value::Null)})
     }
 
     pub(super) fn contacts_list() -> Reply {

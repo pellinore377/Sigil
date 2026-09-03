@@ -759,3 +759,11 @@ pub fn home_stamp(ts_ms: i64) -> String {
     }
     t.format("%-d %b").to_string()
 }
+
+/// A filename without its extension (BubbleDelegate.qml:1408-1412).
+pub fn strip_extension(name: &str) -> String {
+    match name.rfind('.') {
+        Some(i) if i > 0 => name[..i].to_string(),
+        _ => name.to_string(),
+    }
+}

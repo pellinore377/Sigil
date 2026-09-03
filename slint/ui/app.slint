@@ -40,10 +40,14 @@ export { ViewerItem, StickerItem, MenuEntry, RoomRow, TimelineRow, MemberRow, Th
 
 export component AppWindow inherits Window {
     title: "Sigil";
-    background: Theme.menu-background;
+    background: Theme.card-ground;
     default-font-family: Theme.font-ui;
-    preferred-width: 411px;
-    preferred-height: 823px;
+    // the card: Style.space(400) × min(Style.space(820), available) (Panel.qml:478-479)
+    preferred-width: 400px;
+    preferred-height: 820px;
+    /// On a desktop the card has its rounded, bordered frame (Panel.qml:483-484);
+    /// on a phone the app is the screen. The bridge sets it.
+    in property <bool> card-frame: false;
 
     // ---- session / engine state ----
     in property <string> session: "restoring";
@@ -122,6 +126,15 @@ export component AppWindow inherits Window {
     in-out property <bool> voice-staged;
     in property <string> voice-staged-duration;
     in property <[float]> voice-staged-wave;
+    /// the staged clip's preview: 0..1 played, and whether it is playing
+    in property <float> chat-clip-frac;
+    in-out property <bool> chat-clip-playing;
+    /// how many bars the chip has room for; the bridge resamples to it
+    out property <int> chat-clip-wave-bars: chat.clip-wave-bars;
+    /// @ and # suggestions under the composer, and the page's note pill
+    in property <[UserRow]> chat-ac-items;
+    in-out property <int> chat-ac-index: 0;
+    in-out property <string> chat-toast;
     in property <bool> in-call;
     in property <bool> call-here;
     in property <[MenuEntry]> sheet-actions;
@@ -360,7 +373,10 @@ export component AppWindow inherits Window {
 
     property <length> kb-overlap: root.virtual-keyboard-size.height > 0px
         ? max(0px, root.height - root.virtual-keyboard-position.y) : 0px;
-    property <color> page-ground: Theme.menu-background.brighter(0.35);
+    property <color> page-ground: Theme.card-ground;
+    // Pages of a themed room carry the room's chrome (Panel.qml:38-45):
+    // base×0.65 + accent×0.35, the mix ChatPage uses for its surface.
+    property <color> room-page-ground: root.ct-accent != "" ? Theme.card-ground.mix(root.ct-color, 0.65) : Theme.card-ground;
     property <bool> in-session: root.session == "loggedIn"
         && !root.recovery-open && !root.password-open;
 
@@ -385,6 +401,39 @@ export component AppWindow inherits Window {
         y: root.safe-area-insets.top;
         width: root.width - root.safe-area-insets.left - root.safe-area-insets.right;
         height: root.height - root.safe-area-insets.top - max(root.safe-area-insets.bottom, root.kb-overlap);
+        // Panel.qml:483-485: radius 22, border max(1, 2), pages round-clipped
+        background: Theme.card-ground;
+        border-radius: root.card-frame ? 22px : 0px;
+        border-width: root.card-frame ? 2px : 0px;
+        border-color: Theme.menu-border;
+        clip: true;
+
+        // Engine / sync status strip, card-wide chrome above every page
+        // (Panel.qml:491-501): 22 tall, urgent@0.18, caption in the
+        // foreground; the pages sit below it.
+        status-strip := Rectangle {
+            property <string> msg: root.session == "loggedIn" ? root.sync-line : "";
+            y: 0;
+            width: 100%;
+            height: self.msg != "" ? 22px : 0px;
+            visible: self.msg != "";
+            background: Theme.urgent.with-alpha(0.18);
+            border-top-left-radius: root.card-frame ? 22px : 0px;
+            border-top-right-radius: root.card-frame ? 22px : 0px;
+            Text {
+                width: 100%; height: 100%;
+                text: status-strip.msg;
+                color: Theme.menu-text;
+                font-family: Theme.font-ui;
+                font-size: Theme.caption;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+            }
+        }
+        pages := Rectangle {
+        y: status-strip.height;
+        width: 100%;
+        height: content.height - status-strip.height;
 
         if root.session != "loggedIn" : doors := DoorsPage {
             width: 100%; height: 100%;
@@ -444,7 +493,12 @@ export component AppWindow inherits Window {
         }
 
         chat-holder := PageHolder {
-            active: root.in-session && root.nav != "home" && root.nav != "start" && root.nav != "settings";
+            // Panel.qml:68-70 chatUnder: the navs that keep the chat stacked
+            // underneath; anything else slides it out too.
+            active: root.in-session && (root.nav == "chat" || root.nav == "search" || root.nav == "roomsettings"
+                || root.nav == "chattheme" || root.nav == "forward" || root.nav == "map" || root.nav == "doc"
+                || root.nav == "threads" || root.nav == "thread" || root.nav == "pins"
+                || (root.nav == "addpeople" && root.add-return == "chat"));
             ground: root.page-ground;
             chat := ChatPage {
                 width: 100%; height: 100%;
@@ -476,6 +530,11 @@ export component AppWindow inherits Window {
                 voice-staged <=> root.voice-staged;
                 voice-staged-duration: root.voice-staged-duration;
                 voice-staged-wave: root.voice-staged-wave;
+                clip-frac: root.chat-clip-frac;
+                clip-playing <=> root.chat-clip-playing;
+                ac-items: root.chat-ac-items;
+                ac-index <=> root.chat-ac-index;
+                toast <=> root.chat-toast;
                 items: root.items;
                 sheet-backdrop: root.sheet-backdrop;
                 sheet-copy: root.sheet-copy;
@@ -540,6 +599,10 @@ export component AppWindow inherits Window {
                 play-video(item) => { root.act("viewer-open", item.event-id, "video"); }
                 open-document(item) => { root.act("open-doc", item.event-id, ""); root.go("doc"); }
                 open-contact(item) => { root.act("open-contact", item.event-id, ""); }
+                contact-save(u, n, saved) => { root.act(saved ? "contact-unsave" : "contact-save", u, n); }
+                contact-share(u, n) => { root.act("contact-share", u, n); }
+                copy-text(t) => { root.act("copy-text", t, ""); }
+                spoiler-revealed(id) => { root.act("spoiler-revealed", id, ""); }
                 open-audio(item) => { root.act("open-audio-page", item.event-id, ""); root.go("audio"); }
                 open-location(item) => { root.act("open-map", item.event-id, ""); root.go("map"); }
                 open-thread(rootId) => { root.act("open-thread", rootId, ""); }
@@ -562,7 +625,8 @@ export component AppWindow inherits Window {
                 open-image(ev) => { root.act("viewer-open", ev, ""); }
                 open-link(url) => { root.act("open-link", url, ""); }
             } }
-        roomsettings-holder := PageHolder { active: root.in-session && root.nav == "roomsettings"; ground: root.page-ground;
+        // stays under Add people opened from it (Panel.qml:733)
+        roomsettings-holder := PageHolder { active: root.in-session && (root.nav == "roomsettings" || (root.nav == "addpeople" && root.add-return == "roomsettings")); ground: root.page-ground;
             RoomSettingsPage {
                 width: 100%; height: 100%;
                 model: root.rs-model; members: root.rs-members;
@@ -594,7 +658,8 @@ export component AppWindow inherits Window {
                 pick-changed(h, s, v) => { root.act("theme-pick", h + "," + s, "" + v); }
                 accept-custom => { root.act("theme-accept-custom", "", ""); }
             } }
-        threads-holder := PageHolder { active: root.in-session && root.nav == "threads"; ground: root.page-ground;
+        // stays under an open thread (Panel.qml:1023); the room's ground (Panel.qml:1045)
+        threads-holder := PageHolder { active: root.in-session && (root.nav == "threads" || root.nav == "thread"); ground: root.room-page-ground;
             ThreadsPage {
                 width: 100%; height: 100%;
                 room-name: root.room-name;
@@ -602,7 +667,7 @@ export component AppWindow inherits Window {
                 closed => { root.go-back(); }
                 thread-picked(rootId) => { root.act("open-thread", rootId, ""); }
             } }
-        pins-holder := PageHolder { active: root.in-session && root.nav == "pins"; ground: root.page-ground;
+        pins-holder := PageHolder { active: root.in-session && root.nav == "pins"; ground: root.room-page-ground;
             PinsPage {
                 width: 100%; height: 100%;
                 room-name: root.room-name; room-is-dm: root.pi-dm;
@@ -807,6 +872,7 @@ export component AppWindow inherits Window {
             toggle-playback => { root.act("viewer-playback", "", ""); }
             seek-requested(sec) => { root.act("viewer-seek", "" + sec, ""); }
             scrub-state(on, pos) => { root.act("viewer-scrub", on ? "true" : "false", "" + pos); }
+        }
         }
     }
     }

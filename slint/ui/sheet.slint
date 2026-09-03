@@ -61,6 +61,8 @@ export component MessageSheet inherits Rectangle {
     callback act(string /*action*/, string /*event-id*/);
     callback react(string /*event-id*/, string /*key*/);
     callback emoji-search(string);
+    /// MessageSheet.loadEmojis: the drawer picker fills itself when opened.
+    callback load-emoji;
 
     public function open-for(x: length, y: length, w: length, h: length) {
         root.hole-x = x; root.hole-y = y; root.hole-w = w; root.hole-h = h;
@@ -271,7 +273,7 @@ export component MessageSheet inherits Rectangle {
                     color: root.fg; font-size: 19px;
                     width: 100%; height: 100%;
                 }
-                more-t := TouchArea { clicked => { root.drawer-open = true; } }
+                more-t := TouchArea { clicked => { root.load-emoji(); root.drawer-open = true; } }
             }
         }
     }

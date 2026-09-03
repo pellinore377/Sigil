@@ -127,6 +127,18 @@ pub struct UiState {
     pub stickers: Vec<Value>,
     pub voice_clip: Value, // voice.stop reply (path/duration/waveform)
     pub recording: bool,
+    /// The staged clip's preview: seconds played, ticked every 100 ms.
+    pub clip_pos: f64,
+    pub clip_timer: slint::Timer,
+    /// Autocomplete under the composer: the room whose members are held,
+    /// the members, the token's start (byte), its kind (@ or #) and what
+    /// each suggestion inserts.
+    pub ac_room: String,
+    pub ac_members: Vec<Value>,
+    pub ac_fetching: bool,
+    pub ac_from: usize,
+    pub ac_kind: char,
+    pub ac_inserts: Vec<String>,
     pub rec_levels: Vec<f32>,
     pub theme_pending: Value,
     pub doc_preview: Value,
@@ -146,6 +158,12 @@ pub struct UiState {
     pub emoji_query: Option<String>,
     /// Ids appended live since the last reset, still to play their entry.
     pub entry_pending: std::collections::HashSet<String>,
+    /// Usernames in the address book, so a card's Save pill reads "Saved".
+    pub saved_contacts: std::collections::HashSet<String>,
+    /// Spoilers revealed this session, by event id (RichText.qml:150-151).
+    pub spoilers_revealed: std::collections::HashSet<String>,
+    /// Reader ids last drawn per event, so a new face can drop in.
+    pub readers_seen: HashMap<String, Vec<String>>,
     /// When the current timeline was reset; entries animate only after it settled.
     pub reset_at: Option<std::time::Instant>,
     /// roomId|eventId -> media.gifFrames reply (Null = pending; false = not animated).
@@ -228,6 +246,14 @@ pub fn start(win: &AppWindow, rt: &tokio::runtime::Runtime, icons: IconSet) -> R
         stickers: Vec::new(),
         voice_clip: Value::Null,
         recording: false,
+        clip_pos: 0.0,
+        clip_timer: slint::Timer::default(),
+        ac_room: String::new(),
+        ac_members: Vec::new(),
+        ac_fetching: false,
+        ac_from: 0,
+        ac_kind: ' ',
+        ac_inserts: Vec::new(),
         rec_levels: Vec::new(),
         theme_pending: serde_json::json!({}),
         doc_preview: Value::Null,
@@ -239,6 +265,9 @@ pub fn start(win: &AppWindow, rt: &tokio::runtime::Runtime, icons: IconSet) -> R
         emoji_refresh_pending: false,
         emoji_query: None,
         entry_pending: Default::default(),
+        saved_contacts: Default::default(),
+        spoilers_revealed: Default::default(),
+        readers_seen: HashMap::new(),
         reset_at: None,
         gif_frames: HashMap::new(),
         location_maps: HashMap::new(),
@@ -328,6 +357,9 @@ fn wire_callbacks(win: &AppWindow, req: Requester) {
                 ui.typing_sent = now;
                 ui.req
                     .fire("typing", json!({"roomId": ui.open_room, "typing": now}));
+            }
+            if let Some(win) = ui.win.upgrade() {
+                crate::actions::update_autocomplete(ui, &win);
             }
         });
     });
@@ -850,6 +882,7 @@ fn handle_event(ui: &mut UiState, v: &Value) {
             if !was_in && session == "loggedIn" {
                 win.set_door_busy(false);
                 win.set_link_state(SharedString::new());
+                crate::actions::load_saved_contacts(ui);
             }
             ui.my_user = v["userId"].as_str().unwrap_or("").to_string();
             win.set_my_user_id(ui.my_user.as_str().into());
@@ -1449,6 +1482,9 @@ pub fn rebuild_timeline(ui: &mut UiState, win: &AppWindow) {
         let mut doc_lines: Vec<crate::DocLine> = Vec::new();
         let mut doc_chip = String::new();
         let mut doc_img: Option<slint::Image> = None;
+        let mut doc_pages = 0i32;
+        let mut doc_aspect = 0f32;
+        let mut doc_rows: Vec<crate::DocRow> = Vec::new();
         if kind == "file" && !event_id.is_empty() {
             match ui.doc_thumbs.get(&doc_key) {
                 None => {
@@ -1458,6 +1494,29 @@ pub fn rebuild_timeline(ui: &mut UiState, win: &AppWindow) {
                     crate::actions::fetch_doc_thumb(&req, &room_id, &event_id, key2);
                 }
                 Some(v) if !v.is_null() => {
+                    doc_pages = v["pages"].as_i64().unwrap_or(0) as i32;
+                    let (iw, ih) = (v["imageWidth"].as_f64().unwrap_or(0.0), v["imageHeight"].as_f64().unwrap_or(0.0));
+                    if iw > 0.0 && ih > 0.0 {
+                        doc_aspect = (ih / iw) as f32;
+                    }
+                    // a sheet's rows verbatim (first row the header): the card draws a grid
+                    doc_rows = v["lines"]
+                        .as_array()
+                        .map(|a| {
+                            a.iter()
+                                .filter(|l| l["t"].as_str() == Some("row"))
+                                .take(6)
+                                .map(|l| crate::DocRow {
+                                    cells: slint::ModelRc::new(VecModel::from(
+                                        l["cells"]
+                                            .as_array()
+                                            .map(|c| c.iter().filter_map(Value::as_str).map(slint::SharedString::from).collect::<Vec<_>>())
+                                            .unwrap_or_default(),
+                                    )),
+                                })
+                                .collect()
+                        })
+                        .unwrap_or_default();
                     // Lines arrive structured: {"t":"p","text"} or {"t":"row","cells"}.
                     doc_lines = v["lines"]
                         .as_array()
@@ -1736,10 +1795,19 @@ pub fn rebuild_timeline(ui: &mut UiState, win: &AppWindow) {
                 slint::Color::from_argb_u8(245, 255, 255, 255)
             }
         });
-        let waveform: Vec<f64> = media["waveform"]
+        let mut waveform: Vec<f64> = media["waveform"]
             .as_array()
             .map(|a| a.iter().filter_map(Value::as_f64).collect())
             .unwrap_or_default();
+        // A voice note without a waveform gets the flat one (BubbleDelegate.qml:20);
+        // a track without one stays a music card (only voice, or audio with
+        // a waveform, draws the bar row).
+        if kind == "voice" && waveform.is_empty() {
+            waveform = vec![0.3; 36];
+        }
+        if kind != "voice" && kind != "audio" {
+            waveform.clear();
+        }
         let duration_ms = media["duration"].as_f64().unwrap_or(0.0);
         let reply = item.get("replyTo").cloned().filter(|r| !r.is_null());
         let reactions: Vec<crate::ReactionChip> = item["reactions"]
@@ -1775,6 +1843,7 @@ pub fn rebuild_timeline(ui: &mut UiState, win: &AppWindow) {
         // The mark line draws reader faces, not a count (MarkStack). Only the
         // own message that wears the receipt needs them (readers = ownsReceipt ? … : []).
         let mut readers: Vec<crate::ReaderRow> = Vec::new();
+        let mut reader_ids: Vec<String> = Vec::new();
         if let Some(rb) = item["readBy"]
             .as_array()
             .filter(|_| is_own && !event_id.is_empty() && event_id == receipt_owner)
@@ -1789,7 +1858,25 @@ pub fn rebuild_timeline(ui: &mut UiState, win: &AppWindow) {
                     initials: rows::initials(rname).into(),
                     tint: rows::tint_for(r["userId"].as_str().unwrap_or("")),
                 });
+                reader_ids.push(r["userId"].as_str().unwrap_or("").to_string());
             }
+        }
+        // Faces new since the last rebuild drop in (BubbleDelegate.qml:1218-1235):
+        // they go first, and the row says how many.
+        let mut readers_fresh = 0;
+        if !reader_ids.is_empty() {
+            let seen = ui.readers_seen.get(&event_id).cloned().unwrap_or_default();
+            if !seen.is_empty() {
+                let mut fresh = Vec::new();
+                let mut old = Vec::new();
+                for (row, id) in readers.into_iter().zip(reader_ids.iter()) {
+                    if seen.contains(id) { old.push(row) } else { fresh.push(row) }
+                }
+                readers_fresh = fresh.len() as i32;
+                fresh.extend(old);
+                readers = fresh;
+            }
+            ui.readers_seen.insert(event_id.clone(), reader_ids.clone());
         }
         let poll = item.get("poll").cloned().unwrap_or(Value::Null);
         // The engine speaks MSC3381: `answers`, `voters`, `maxSelections`.
@@ -1821,6 +1908,50 @@ pub fn rebuild_timeline(ui: &mut UiState, win: &AppWindow) {
             })
             .unwrap_or_default();
         let contact = item.get("contact").cloned().unwrap_or(Value::Null);
+        // The card's rows (ContactBody.qml:116-126): phones and emails tap
+        // open, address and note are plain.
+        let card = contact["card"].clone();
+        let mut contact_fields: Vec<crate::ContactField> = Vec::new();
+        for (list, kind, scheme) in [("phones", "phone", "tel:"), ("emails", "email", "mailto:")] {
+            for t in card[list].as_array().map(Vec::as_slice).unwrap_or(&[]) {
+                let value = t["value"].as_str().unwrap_or("").to_string();
+                if value.is_empty() {
+                    continue;
+                }
+                contact_fields.push(crate::ContactField {
+                    kind: kind.into(),
+                    label: match t["kind"].as_str().unwrap_or("") {
+                        "" => kind.into(),
+                        k => k.to_lowercase().into(),
+                    },
+                    url: format!("{scheme}{value}").into(),
+                    value: value.into(),
+                    linkable: true,
+                });
+            }
+        }
+        for (key, kind) in [("address", "address"), ("note", "note")] {
+            if let Some(v) = card[key].as_str().filter(|v| !v.trim().is_empty()) {
+                contact_fields.push(crate::ContactField {
+                    kind: kind.into(),
+                    label: kind.into(),
+                    value: v.trim().into(),
+                    linkable: false,
+                    url: Default::default(),
+                });
+            }
+        }
+        // A link card's caption is the body without the URL (BubbleDelegate.qml:1430-1452).
+        let (caption_body, caption_stripped) = if link_has && !link_only {
+            let stripped = body
+                .replace(&link_url, " ")
+                .split_whitespace()
+                .collect::<Vec<_>>()
+                .join(" ");
+            (stripped, true)
+        } else {
+            (String::new(), false)
+        };
         let location = item.get("location").cloned().unwrap_or(Value::Null);
         let live = item.get("liveShare").cloned().unwrap_or(Value::Null);
         // The card shows an actual map: an engine-composited OSM tile crop.
@@ -1886,11 +2017,9 @@ pub fn rebuild_timeline(ui: &mut UiState, win: &AppWindow) {
             gif_delays: slint::ModelRc::new(VecModel::from(gif_delays)),
             media_size: media["sizeLabel"].as_str().unwrap_or("").into(),
             duration: if duration_ms > 0.0 {
-                format!(
-                    "{}:{:02}",
-                    (duration_ms as u64 / 1000) / 60,
-                    (duration_ms as u64 / 1000) % 60
-                )
+                // voice rows read MM:SS (BubbleDelegate.qml:685-689); tracks M:SS
+                let (m, sec) = ((duration_ms as u64 / 1000) / 60, (duration_ms as u64 / 1000) % 60);
+                if kind == "voice" { format!("{m:02}:{sec:02}") } else { format!("{m}:{sec:02}") }
             } else {
                 String::new()
             }
@@ -1933,7 +2062,8 @@ pub fn rebuild_timeline(ui: &mut UiState, win: &AppWindow) {
             can_redact: item["can"]["redact"].as_bool().unwrap_or(false),
             can_react: item["can"]["react"].as_bool().unwrap_or(false),
             utd: item["kind"].as_str() == Some("utd"),
-            waveform: slint::ModelRc::new(VecModel::from(rows::resample_wave(&waveform, 28))),
+            // max(8, floor(vwave.width / 5)) bars: ~36 in the 260px row (BubbleDelegate.qml:652)
+            waveform: slint::ModelRc::new(VecModel::from(rows::resample_wave(&waveform, 36))),
             voice_playing: ui.audio_playing && ui.audio_ctx.1 == event_id,
             voice_frac: if duration_ms > 0.0 {
                 (ui.voice_positions.get(&event_id).copied().unwrap_or(0.0) * 1000.0 / duration_ms)
@@ -1980,9 +2110,21 @@ pub fn rebuild_timeline(ui: &mut UiState, win: &AppWindow) {
             readers: slint::ModelRc::new(VecModel::from(readers)),
             pinned: pinned_ids.iter().any(|p| p == &event_id),
             html_ish: false,
-            // New bubble.slint fields (contact card, doc grid, captions,
-            // countdown, spoiler memory, fresh readers) keep their defaults
-            // until filled — see scratchpad/audit/bubbles-handoff.md.
+            contact_title: card["title"].as_str().unwrap_or("").into(),
+            contact_org: card["org"].as_str().unwrap_or("").into(),
+            contact_fields: slint::ModelRc::new(VecModel::from(contact_fields)),
+            contact_saved: ui.saved_contacts.contains(contact["userId"].as_str().unwrap_or("")),
+            doc_aspect,
+            doc_rows: slint::ModelRc::new(VecModel::from(doc_rows)),
+            doc_pages,
+            media_previewable: media["previewable"].as_bool().unwrap_or(false),
+            duration_s: (duration_ms / 1000.0).round() as i32,
+            audio_title: rows::strip_extension(media["filename"].as_str().unwrap_or("")).into(),
+            caption_body: caption_body.into(),
+            caption_stripped,
+            spoiler_revealed: ui.spoilers_revealed.contains(&event_id),
+            readers_fresh,
+            location_self: location["asset"].as_str() == Some("m.self"),
             ..Default::default()
         });
     }
@@ -2045,6 +2187,14 @@ fn start_demo(win: &AppWindow, rt: &tokio::runtime::Runtime, icons: IconSet) -> 
         stickers: Vec::new(),
         voice_clip: Value::Null,
         recording: false,
+        clip_pos: 0.0,
+        clip_timer: slint::Timer::default(),
+        ac_room: String::new(),
+        ac_members: Vec::new(),
+        ac_fetching: false,
+        ac_from: 0,
+        ac_kind: ' ',
+        ac_inserts: Vec::new(),
         rec_levels: Vec::new(),
         theme_pending: serde_json::json!({}),
         doc_preview: Value::Null,
@@ -2056,6 +2206,9 @@ fn start_demo(win: &AppWindow, rt: &tokio::runtime::Runtime, icons: IconSet) -> 
         emoji_refresh_pending: false,
         emoji_query: None,
         entry_pending: Default::default(),
+        saved_contacts: Default::default(),
+        spoilers_revealed: Default::default(),
+        readers_seen: HashMap::new(),
         reset_at: None,
         gif_frames: HashMap::new(),
         location_maps: HashMap::new(),

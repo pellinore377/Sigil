@@ -15,6 +15,8 @@ export component PrivacyPage inherits Rectangle {
     in property <string> server;
     /// How many times the keys have rotated (a new epoch per join, leave or link).
     in property <int> epochs;
+    /// SecurityPage.qml:184-192's trailing line; empty until something fails.
+    in property <string> error;
     callback closed;
 
     background: transparent;
@@ -62,7 +64,19 @@ export component PrivacyPage inherits Rectangle {
                         trailing: "none";
                     }
                 }
-                Rectangle { height: 16px; }
+                // SecurityPage.qml:183-192: a 10 spacer, then the error line
+                // at x22 / width-44 in bodySmall, urgent; the Flickable keeps
+                // 24 below the column (:73).
+                Rectangle { height: 10px; }
+                if root.error != "" : Rectangle {
+                    height: err.preferred-height;
+                    err := Text {
+                        x: 22px; width: root.width - 44px;
+                        text: root.error; color: Theme.urgent; wrap: word-wrap;
+                        font-family: Theme.font-ui; font-size: Theme.body-small;
+                    }
+                }
+                Rectangle { height: 24px; }
             }
         }
     }

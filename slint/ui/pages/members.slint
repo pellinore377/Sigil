@@ -26,21 +26,26 @@ export component MembersPage inherits Rectangle {
     background: transparent;
 
     VerticalLayout {
+        // MembersPage.qml:46-80: PanelActionButton (22×22) at 6, the title
+        // column 6 past it (x 34) and 8 short of the invite button, which
+        // sits 6 from the right and keeps its place when hidden (:75).
         header := Rectangle {
             height: 56px;
             HorizontalLayout {
                 padding-left: 6px; padding-right: 6px;
-                spacing: 6px;
+                spacing: 0px;
                 Rectangle {
-                    width: 44px;
+                    width: 22px;
                     ActionButton {
                         y: (56px - self.height) / 2;
-                        width: 44px; height: 44px;
+                        width: 22px; height: 22px;
                         icon: Icons.back; filled: false;
                         foreground: root.fg;
                         clicked => { root.closed(); }
                     }
+                    TouchArea { clicked => { root.closed(); } }
                 }
+                Rectangle { width: 6px; }
                 VerticalLayout {
                     alignment: center;
                     horizontal-stretch: 1;
@@ -59,15 +64,17 @@ export component MembersPage inherits Rectangle {
                         overflow: elide;
                     }
                 }
-                if root.filter-level < 0 : Rectangle {
-                    width: 44px;
-                    ActionButton {
+                Rectangle { width: 8px; }
+                Rectangle {
+                    width: 22px;
+                    if root.filter-level < 0 : ActionButton {
                         y: (56px - self.height) / 2;
-                        width: 44px; height: 44px;
+                        width: 22px; height: 22px;
                         icon: Icons.personAdd; filled: false;
                         foreground: root.fg;
                         clicked => { root.invite(); }
                     }
+                    if root.filter-level < 0 : TouchArea { clicked => { root.invite(); } }
                 }
             }
         }
@@ -102,18 +109,25 @@ export component MembersPage inherits Rectangle {
                         background: mrow-touch.pressed || mrow-touch.has-hover
                             ? root.fg.with-alpha(0.05) : transparent;
                     }
+                    // MembersPage.qml:124-162: avatar 40 at 16, centred; text
+                    // 12 past it and 10 short of the role, which sits 20 from
+                    // the right. The role Text keeps its width when hidden
+                    // (the text is set regardless of `visible`), so a
+                    // filtered list still reserves the slot.
                     HorizontalLayout {
                         padding-left: 16px; padding-right: 20px;
-                        spacing: 12px;
+                        spacing: 0px;
                         Rectangle {
                             width: 40px;
                             Avatar {
+                                y: (mrow.height - self.height) / 2;
                                 size: 40px;
                                 source: member.avatar;
                                 initials: member.initials;
                                 tint: member.tint;
                             }
                         }
+                        Rectangle { width: 12px; }
                         VerticalLayout {
                             alignment: center;
                             spacing: 2px;
@@ -133,7 +147,10 @@ export component MembersPage inherits Rectangle {
                                 overflow: elide;
                             }
                         }
-                        if member.role != "" && root.filter-level < 0 : Text {
+                        Rectangle { width: 10px; }
+                        Text {
+                            visible: member.role != "" && root.filter-level < 0;
+                            width: self.preferred-width;
                             text: member.role;
                             color: Theme.accent.with-alpha(0.9);
                             font-family: Theme.font-ui; font-size: Theme.caption;

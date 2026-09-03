@@ -17,29 +17,46 @@ export component ThreadsPage inherits Rectangle {
     in property <[ThreadRow]> threads;
     in property <bool> loading;
     in property <bool> loaded;
+    /// A chat theme accent is set for this room (ThreadsPage.qml:21).
+    in property <bool> themed: false;
 
     callback closed;
     callback thread-picked(string);
 
-    background: Theme.menu-background.brighter(0.35);
+    // ThreadsPage.qml:20-32, exactly as ChatPage mixes them: surfaceC is
+    // lighter(menu.bg, 1.35) with 35 % accent when themed; chromeC is that
+    // surface, else lighter(menu.bg, 1.35); convoC is darker(menu.bg, 1.35)
+    // with 18 % accent only when themed.
+    property <color> surface-c: root.themed
+        ? Theme.menu-background.brighter(0.35).mix(root.accent, 0.65)
+        : Theme.popup-background;
+    property <color> chrome-c: root.themed ? root.surface-c : Theme.menu-background.brighter(0.35);
+    property <color> convo-c: root.themed
+        ? Theme.menu-background.darker(0.35).mix(root.accent, 0.82)
+        : Theme.menu-background.darker(0.35);
+
+    background: root.chrome-c;
 
     VerticalLayout {
         // Header: title + unconditional subtitle (a subtitle that appears only
         // once the count lands makes the title jump on load).
+        // ThreadsPage.qml:80-91: PanelActionButton (22×22) at 6, the title
+        // column 6 past it (x 34) and 14 short of the right edge.
         header := Rectangle {
             height: 56px;
             HorizontalLayout {
                 padding-left: 6px; padding-right: 14px;
                 spacing: 6px;
                 Rectangle {
-                    width: 44px;
+                    width: 22px;
                     ActionButton {
                         y: (56px - self.height) / 2;
-                        width: 44px; height: 44px;
+                        width: 22px; height: 22px;
                         icon: Icons.back; filled: false;
                         foreground: root.fg;
                         clicked => { root.closed(); }
                     }
+                    TouchArea { clicked => { root.closed(); } }
                 }
                 VerticalLayout {
                     alignment: center;
@@ -67,7 +84,7 @@ export component ThreadsPage inherits Rectangle {
 
         ground := Rectangle {
             vertical-stretch: 1;
-            background: Theme.menu-background.darker(0.35).mix(root.accent, 0.82);
+            background: root.convo-c;
             border-top-left-radius: 24px;
             border-top-right-radius: 24px;
             clip: true;
@@ -114,9 +131,12 @@ export component ThreadsPage inherits Rectangle {
                         background: trow-t.pressed || trow-t.has-hover
                             ? root.fg.with-alpha(0.05) : transparent;
                     }
+                    // ThreadsPage.qml:176-229: avatar 44 at 16, centred; text
+                    // 12 past it and 10 short of the stamp, which sits 16
+                    // from the right.
                     HorizontalLayout {
                         padding-left: 16px; padding-right: 16px;
-                        spacing: 12px;
+                        spacing: 0px;
                         Rectangle {
                             width: 44px;
                             Avatar {
@@ -127,6 +147,7 @@ export component ThreadsPage inherits Rectangle {
                                 tint: thread.tint;
                             }
                         }
+                        Rectangle { width: 12px; }
                         VerticalLayout {
                             alignment: center;
                             spacing: 2px;
@@ -161,6 +182,7 @@ export component ThreadsPage inherits Rectangle {
                                 }
                             }
                         }
+                        Rectangle { width: 10px; }
                         Text {
                             text: thread.last-ts-label;
                             color: root.fg.with-alpha(0.45);

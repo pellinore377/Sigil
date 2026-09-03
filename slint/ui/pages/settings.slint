@@ -65,14 +65,15 @@ export component SettingsPage inherits Rectangle {
             vertical-stretch: 1;
             VerticalLayout {
                 // ---- account ----
-                Rectangle {
+                account-row := Rectangle {
                     height: 84px;
                     HorizontalLayout {
                         padding-left: 22px; padding-right: 22px;
                         spacing: 14px;
                         Rectangle {
                             width: 56px;
-                            Avatar { size: 56px; source: root.my-avatar; initials: root.my-initials; tint: root.my-tint; }
+                            // Centred in the band, as every row avatar is (MembersPage.qml:127).
+                            Avatar { y: (account-row.height - self.height) / 2; size: 56px; source: root.my-avatar; initials: root.my-initials; tint: root.my-tint; }
                         }
                         VerticalLayout {
                             alignment: center;
@@ -106,8 +107,12 @@ export component SettingsPage inherits Rectangle {
                                 accepted => { if (self.text != "") { root.link-scan(self.text); } } }
                             SButton { text: "Check"; enabled: !root.busy && offer-well.text != ""; clicked => { root.link-scan(offer-well.text); } }
                         }
+                        // The seven emoji in the code face: mono at display size,
+                        // the same block the doors show (login.slint's SAS step).
                         if root.scan-state == "sas" : Text {
-                            text: root.scan-sas; font-size: 28px; horizontal-alignment: center; wrap: word-wrap;
+                            text: root.scan-sas; color: root.fg;
+                            font-family: Theme.font-mono; font-size: Theme.display;
+                            horizontal-alignment: center; wrap: word-wrap;
                         }
                         if root.scan-state == "sas" : Text {
                             text: "Do these seven match what the new device shows? Confirming sends it your account and adds it to every conversation.";

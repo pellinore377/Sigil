@@ -6,7 +6,7 @@
 import { Theme } from "../style.slint";
 import { Icons } from "../icons.slint";
 import { Avatar } from "../components.slint";
-import { SettingsHeader, SettingsGroup, SettingsRow, TouchList } from "../furniture.slint";
+import { SettingsHeader, SettingsGroup, SettingsRow, TouchList, NotePill } from "../furniture.slint";
 import { MemberRow } from "../model.slint";
 
 export component AdminsPage inherits Rectangle {
@@ -55,16 +55,16 @@ export component AdminsPage inherits Rectangle {
                         clicked => { root.set-admin(member.user-id, !(member.power-level >= 100)); }
                     }
                 }
-                if root.note != "" : Rectangle {
-                    height: note-text.preferred-height + 12px;
-                    note-text := Text {
-                        x: 22px; width: root.width - 44px;
-                        text: root.note; color: Theme.urgent;
-                        font-family: Theme.font-ui; font-size: Theme.body-small;
-                        wrap: word-wrap;
-                    }
-                }
             }
         }
+    }
+
+    // RolesPage.qml:254-264: a failed change is a floating pill at the
+    // bottom (bodySmall, opaque, 150ms, 20 up), cleared after 2600ms (:22).
+    NotePill {
+        width: 100%; height: 100%;
+        text: root.note; fg: root.fg;
+        variant: "roles";
+        expired => { root.note = ""; }
     }
 }

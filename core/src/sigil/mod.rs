@@ -842,6 +842,7 @@ fn media_item(id: &str, sender: &str, ts: i64, is_own: bool, m: &sigil_client::m
             "mime": m.mime,
             "size": m.size,
             "sizeLabel": crate::timeline::fmt::bytes(m.size),
+            "previewable": crate::docs::previewable(&m.filename, Some(&m.mime)),
             "width": m.width,
             "height": m.height,
             "duration": m.duration_ms.map(|d| d as f64),
