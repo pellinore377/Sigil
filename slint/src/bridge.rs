@@ -422,6 +422,10 @@ fn wire_doors(win: &AppWindow, req: Requester) {
                                 win.set_door_server(h.into());
                                 ui.door_server = h.to_string();
                             }
+                            // the name may point elsewhere (a pointer on the bare domain)
+                            if let Some(e) = v["envoy"].as_str() {
+                                ui.door_envoy = e.to_string();
+                            }
                             win.set_door("choose".into());
                         }
                         Reply::Err(e) => win.set_door_error(

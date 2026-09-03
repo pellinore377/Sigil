@@ -134,6 +134,17 @@ travels inside the message (kind 9). The server sees only `id` and size.
 
 A server MUST NOT log which localpart was looked up.
 
+### 3.4a Where a server answers (discovery)
+
+A server name (the `server` half of a username) is reached at
+`https://<name>` unless `GET https://<name>/.well-known/sigil` returns
+`200` with JSON `{"server": "host[:port]"}`, in which case the base URL is
+`https://host[:port]`. Clients and Envoys MUST try the pointer first and
+MAY cache it for up to an hour. A server SHOULD serve its own pointer at
+that path (from its `advertise` setting, else its hostname) so the bare
+domain can forward the one path. The pointer moves the address only:
+the card's `hostname` and every username stay the name.
+
 ### 3.5 Backup and recovery
 
 | Op | Request | Response | Server MUST |

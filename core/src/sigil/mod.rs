@@ -74,10 +74,12 @@ pub struct Shape {
     pub link_previews: bool,
 }
 
-/// The probe takes a host or a full URL (a test server); either way, a base URL.
-fn base_url(server: &str) -> String {
-    let s = server.trim().trim_end_matches('/');
-    if s.contains("://") { s.to_string() } else { format!("https://{s}") }
+/// The Envoy for a server name when the caller gave none: the name
+/// resolved through its pointer, if it has one.
+async fn default_envoy(server: &str) -> anyhow::Result<String> {
+    let proxy = load_shape().socks_proxy;
+    let proxy = if proxy.is_empty() { None } else { Some(proxy) };
+    sigil_client::account::envoy_for(server, proxy.as_deref()).await
 }
 
 pub fn load_shape() -> Shape {
@@ -215,11 +217,13 @@ async fn create(engine: &SharedEngine, p: &serde_json::Map<String, Value>) -> Re
             invite = token;
         }
     }
-    let envoy = p
-        .get("envoy")
-        .and_then(Value::as_str)
-        .map(str::to_string)
-        .unwrap_or_else(|| format!("wss://{server}/envoy"));
+    let envoy = match p.get("envoy").and_then(Value::as_str) {
+        Some(e) => e.to_string(),
+        None => match default_envoy(server).await {
+            Ok(e) => e,
+            Err(e) => return Reply::err("network", format!("{e:#}")),
+        },
+    };
     if has_account() {
         return Reply::err(
             "bad_request",
@@ -287,7 +291,13 @@ async fn link_offer(engine: &SharedEngine, p: &serde_json::Map<String, Value>) -
         return Reply::err("bad_request", "username must look like @name:server");
     };
     let server = server.to_string();
-    let envoy = p.get("envoy").and_then(Value::as_str).map(str::to_string).unwrap_or_else(|| format!("wss://{server}/envoy"));
+    let envoy = match p.get("envoy").and_then(Value::as_str) {
+        Some(e) => e.to_string(),
+        None => match default_envoy(&server).await {
+            Ok(e) => e,
+            Err(e) => return Reply::err("network", format!("{e:#}")),
+        },
+    };
     let offer = sigil_client::linking::Offer::new();
     let text = offer.text();
     engine.set_session(SessionState::LoginPending);
@@ -340,7 +350,13 @@ async fn recover(engine: &SharedEngine, p: &serde_json::Map<String, Value>) -> R
     let Ok((_, server)) = sigil_protocol::names::parse_username(&username) else {
         return Reply::err("bad_request", "username must look like @name:server");
     };
-    let envoy = p.get("envoy").and_then(Value::as_str).map(str::to_string).unwrap_or_else(|| format!("wss://{server}/envoy"));
+    let envoy = match p.get("envoy").and_then(Value::as_str) {
+        Some(e) => e.to_string(),
+        None => match default_envoy(server).await {
+            Ok(e) => e,
+            Err(e) => return Reply::err("network", format!("{e:#}")),
+        },
+    };
     let Ok(key) = sigil_protocol::recovery::parse_recovery_code(&code) else {
         return Reply::err("bad_request", "that is not a valid recovery code");
     };
@@ -402,16 +418,19 @@ pub async fn dispatch(engine: &SharedEngine, req: &Request) -> Option<Reply> {
             let proxy = load_shape().socks_proxy;
             let proxy = if proxy.is_empty() { None } else { Some(proxy.as_str()) };
             return Some(match sigil_client::account::probe(&server, proxy).await {
-                Ok(card) => {
+                Ok((card, base)) => {
                     let registration = if card.flags & 0b100 != 0 { "open" } else if card.flags & 0b010 != 0 { "oidc" } else { "invite" };
                     let mut out = json!({
                         "hostname": card.hostname,
                         "registration": registration,
                         "tpm": card.flags & 0b001 != 0,
+                        // where the name resolved to: the app connects here
+                        "base": base,
+                        "envoy": base.replacen("http", "ws", 1) + "/envoy",
                     });
                     if registration == "oidc" {
                         // where to sign in; the card's flag is the promise, /oidc the address
-                        match oidc::server_info(&base_url(&server), proxy).await {
+                        match oidc::server_info(&base, proxy).await {
                             Ok(Some(info)) => {
                                 let issuer = info["issuer"].as_str().unwrap_or("").to_string();
                                 let host = url::Url::parse(&issuer).ok().and_then(|u| u.host_str().map(str::to_string)).unwrap_or_else(|| issuer.clone());

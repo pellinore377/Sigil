@@ -89,7 +89,13 @@ fn oidc(
     server: &str,
     localpart: &str,
 ) -> anyhow::Result<()> {
-    app.invoke_door_probe(format!("http://{server}").into());
+    // a bare name is typed as people type it; host:port is a plain-http test server
+    let typed = if server.contains(':') {
+        format!("http://{server}")
+    } else {
+        server.to_string()
+    };
+    app.invoke_door_probe(typed.into());
     h.wait_until("the server card", Duration::from_secs(20), || {
         app.get_door() == "choose" || !app.get_door_error().is_empty()
     })?;

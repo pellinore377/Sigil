@@ -26,6 +26,7 @@ pub fn router(app: App) -> Router {
     Router::new()
         .route("/info", get(info))
         .route("/oidc", get(oidc_info))
+        .route("/.well-known/sigil", get(well_known))
         .route("/bag", post(bag))
         .route("/stream", get(stream))
         .route("/envoy", get(envoy_ws))
@@ -44,6 +45,29 @@ async fn info(State(app): State<App>) -> impl IntoResponse {
         Some(h) => (StatusCode::OK, h.card.clone()),
         None => (StatusCode::NOT_FOUND, Vec::new()),
     }
+}
+
+/// The pointer (wire spec 3.9): where this server answers for its name.
+/// The bare domain forwards this one path here, and `@name:example.com`
+/// can live at `sigil.example.com`.
+async fn well_known(State(app): State<App>) -> impl IntoResponse {
+    let cfg = match (&app.home, &app.envoy) {
+        (Some(h), _) => &h.cfg,
+        (None, Some(e)) => &e.cfg,
+        _ => {
+            return (
+                StatusCode::NOT_FOUND,
+                [("content-type", "application/json")],
+                String::new(),
+            )
+        }
+    };
+    let at = cfg.advertise.clone().unwrap_or_else(|| cfg.hostname.clone());
+    (
+        StatusCode::OK,
+        [("content-type", "application/json")],
+        serde_json::json!({"server": at}).to_string(),
+    )
 }
 
 /// With the OIDC gate on: where to sign in and as which client, so the app
@@ -78,7 +102,7 @@ async fn info_via_envoy(
             return (StatusCode::OK, home.card.clone());
         }
     }
-    let url = format!("{}/info", envoy.cfg.base_url(&server));
+    let url = format!("{}/info", envoy.base_url(&server).await);
     match reqwest::get(&url).await {
         Ok(r) if r.status().is_success() => (
             StatusCode::OK,
@@ -113,7 +137,7 @@ async fn credential_key_via_envoy(
             };
         }
     }
-    let url = format!("{}/credential-key", envoy.cfg.base_url(&server));
+    let url = format!("{}/credential-key", envoy.base_url(&server).await);
     match reqwest::get(&url).await {
         Ok(r) if r.status().is_success() => (
             StatusCode::OK,

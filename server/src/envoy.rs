@@ -30,6 +30,8 @@ pub struct Envoy {
     streams: DashMap<String, Arc<StreamState>>,
     http: reqwest::Client,
     last_push: std::sync::Mutex<HashMap<[u8; 32], std::time::Instant>>,
+    /// Server name → base URL, from its pointer, for an hour.
+    bases: DashMap<String, (std::time::Instant, String)>,
 }
 
 pub struct StreamState {
@@ -37,6 +39,45 @@ pub struct StreamState {
 }
 
 impl Envoy {
+    /// Where a server answers for its name: a `[servers]` override, else
+    /// its pointer at `https://<name>/.well-known/sigil` (cached an hour),
+    /// else `https://<name>` (wire spec 3.9).
+    pub async fn base_url(&self, server: &str) -> String {
+        if let Some(b) = self.cfg.servers.get(server) {
+            return b.clone();
+        }
+        if let Some(hit) = self.bases.get(server) {
+            if hit.0.elapsed() < std::time::Duration::from_secs(3600) {
+                return hit.1.clone();
+            }
+        }
+        let plain = format!("https://{server}");
+        let base = match self
+            .http
+            .get(format!("{plain}/.well-known/sigil"))
+            .timeout(std::time::Duration::from_secs(5))
+            .send()
+            .await
+        {
+            Ok(r) if r.status().is_success() => r
+                .json::<serde_json::Value>()
+                .await
+                .ok()
+                .and_then(|v| {
+                    v.get("server")
+                        .and_then(|s| s.as_str())
+                        .map(|s| s.trim().to_string())
+                })
+                .filter(|s| !s.is_empty() && !s.contains('/'))
+                .map(|at| format!("https://{at}"))
+                .unwrap_or(plain),
+            _ => plain,
+        };
+        self.bases
+            .insert(server.to_string(), (std::time::Instant::now(), base.clone()));
+        base
+    }
+
     pub fn new(
         cfg: Config,
         store: Arc<Store>,
@@ -64,6 +105,7 @@ impl Envoy {
             streams: DashMap::new(),
             http: reqwest::Client::new(),
             last_push: std::sync::Mutex::new(HashMap::new()),
+            bases: DashMap::new(),
         }))
     }
 
@@ -390,7 +432,7 @@ impl Envoy {
             }
         }
         let _ = self.ensure_stream(server).await;
-        let url = format!("{}/bag", self.cfg.base_url(server));
+        let url = format!("{}/bag", self.base_url(server).await);
         let resp = self
             .http
             .post(&url)
@@ -453,7 +495,7 @@ impl Envoy {
                 }
             }
         }
-        let base = self.cfg.base_url(server);
+        let base = self.base_url(server).await;
         let ws_url = base.replacen("http", "ws", 1) + "/stream";
         let (ws, _) = tokio_tungstenite::connect_async(&ws_url).await?;
         let (mut sink, mut source) = ws.split();
@@ -534,7 +576,7 @@ impl Envoy {
                 home.card.clone()
             } else {
                 self.http
-                    .get(format!("{}/info", self.cfg.base_url(server)))
+                    .get(format!("{}/info", self.base_url(server).await))
                     .send()
                     .await?
                     .error_for_status()?
@@ -544,7 +586,7 @@ impl Envoy {
             }
         } else {
             self.http
-                .get(format!("{}/info", self.cfg.base_url(server)))
+                .get(format!("{}/info", self.base_url(server).await))
                 .send()
                 .await?
                 .error_for_status()?
@@ -599,7 +641,7 @@ impl Envoy {
         let mut adapter = crate::tokens::RngAdapter(&mut rng);
         if credential.is_none() {
             let spki = {
-                let url = format!("{}/credential-key", self.cfg.base_url(server));
+                let url = format!("{}/credential-key", self.base_url(server).await);
                 match &self.local_home {
                     Some(h) if h.cfg.hostname == server => {
                         h.tokens.current(&h.store, "credential")?.spki.clone()

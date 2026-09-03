@@ -23,6 +23,10 @@ pub struct Config {
     /// client id registered there for Sigil. Both are needed for `oidc`.
     pub oidc_issuer: Option<String>,
     pub oidc_client_id: Option<String>,
+    /// Where this server actually answers when that is not `hostname`
+    /// (`sigil.example.com` for names `@…:example.com`). Served at
+    /// `/.well-known/sigil`, which the bare domain must forward here.
+    pub advertise: Option<String>,
     /// Daily tokens per credential.
     pub tokens_per_day: u32,
     /// Hostname → base URL overrides for the Envoy role, for testing
@@ -57,6 +61,7 @@ impl Default for Config {
             registration: "invite".into(),
             oidc_issuer: None,
             oidc_client_id: None,
+            advertise: None,
             tokens_per_day: 2000,
             servers: BTreeMap::new(),
             jitter_max_ms: 2000,
@@ -100,6 +105,9 @@ impl Config {
         }
         if let Some(v) = opt("SIGIL_OIDC_CLIENT_ID") {
             self.oidc_client_id = Some(v).filter(|v| !v.is_empty());
+        }
+        if let Some(v) = opt("SIGIL_ADVERTISE") {
+            self.advertise = Some(v).filter(|v| !v.is_empty());
         }
         if let Some(v) = opt("SIGIL_TLS_CERT") {
             self.tls_cert = Some(v).filter(|v| !v.is_empty()).map(PathBuf::from);
@@ -145,12 +153,6 @@ impl Config {
     }
     pub fn is_envoy(&self) -> bool {
         self.role == "envoy" || self.role == "both"
-    }
-    pub fn base_url(&self, server: &str) -> String {
-        self.servers
-            .get(server)
-            .cloned()
-            .unwrap_or_else(|| format!("https://{server}"))
     }
 }
 

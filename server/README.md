@@ -59,6 +59,7 @@ to the compose file (the config, the database, the admin token).
 | `SIGIL_HOSTNAME` | `hostname` | the public name, the `:server` half of every `@name:server` |
 | `SIGIL_REGISTRATION` | `registration` | `invite`, `open` or `oidc` |
 | `SIGIL_OIDC_ISSUER`, `SIGIL_OIDC_CLIENT_ID` | `oidc_issuer`, `oidc_client_id` | the provider and the client id for `oidc` |
+| `SIGIL_ADVERTISE` | `advertise` | where the server answers when that is not the hostname (short usernames, below) |
 | `SIGIL_MEDIA_PUBLIC` | `media_public` | where callers send media: your public IP or name, `:8444` |
 | `SIGIL_CALLS` | `calls` | `true`/`false` |
 | `SIGIL_LISTEN`, `SIGIL_ROLE`, `SIGIL_MEDIA_UDP` | `listen`, `role`, `media_udp` | rarely needed in a container |
@@ -81,6 +82,24 @@ Invite codes, when registration is `invite`:
 ```
 docker compose exec sigil sigil-server --config /data/sigil.toml invite
 ```
+
+## Short usernames: the pointer on the bare domain
+
+Usernames end in `SIGIL_HOSTNAME`. To have `@name:example.com` while the
+server answers at `sigil.example.com`, set `SIGIL_HOSTNAME=example.com`
+and `SIGIL_ADVERTISE=sigil.example.com`, and make the bare domain answer
+`https://example.com/.well-known/sigil` with
+
+```json
+{"server": "sigil.example.com"}
+```
+
+either by forwarding that one path from the bare domain to the Sigil
+container in your reverse proxy (the server serves it, from
+`SIGIL_ADVERTISE`), or by placing that file on whatever website lives at
+the bare domain. Apps and other servers look there first and then talk
+to `sigil.example.com`; without a pointer, the name is the address.
+People type `example.com` on the app's first screen.
 
 ## Signing in with Pocket ID (the OIDC gate)
 

@@ -23,13 +23,11 @@ struct Discovery {
     jwks_uri: String,
 }
 
-/// What we keep from a verified token: who, and the name they go by at
-/// the provider (a suggestion for the localpart, nothing more).
+/// What we keep from a verified token: who. The name they go by at the
+/// provider is the app's business (a suggestion), not the server's.
 #[derive(Debug, Clone, Deserialize)]
 pub struct Claims {
     pub sub: String,
-    #[serde(default)]
-    pub preferred_username: Option<String>,
 }
 
 impl Oidc {

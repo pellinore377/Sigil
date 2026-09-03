@@ -340,27 +340,80 @@ pub async fn lookup(link: &Link, username: &str) -> anyhow::Result<ContactCard> 
     Ok(card)
 }
 
-/// Ask a server what it offers before there is an account or a link: its
-/// signed card, fetched straight from `https://<server>/info` (through the
-/// SOCKS proxy when one is set). This is the one request that goes to the
-/// server directly rather than through an Envoy, and it carries nothing
-/// about who is asking.
-pub async fn probe(
-    server: &str,
-    proxy: Option<&str>,
-) -> anyhow::Result<sigil_protocol::wire::ServerCard> {
-    let server = server.trim().trim_end_matches('/');
-    let base = if server.contains("://") {
-        server.to_string()
-    } else {
-        format!("https://{server}")
-    };
-    let mut http = reqwest::Client::builder().timeout(std::time::Duration::from_secs(15));
+fn http_client(proxy: Option<&str>, secs: u64) -> anyhow::Result<reqwest::Client> {
+    let mut http = reqwest::Client::builder().timeout(std::time::Duration::from_secs(secs));
     if let Some(px) = proxy.filter(|p| !p.is_empty()) {
         http = http.proxy(reqwest::Proxy::all(format!("socks5h://{px}"))?);
     }
-    let bytes = http
-        .build()?
+    Ok(http.build()?)
+}
+
+/// `https://` everywhere but loopback, which is plain HTTP (tests).
+pub fn scheme_for(host: &str) -> &'static str {
+    let h = host.split(':').next().unwrap_or(host);
+    if h == "localhost" || h.starts_with("127.") || h == "[::1]" {
+        "http"
+    } else {
+        "https"
+    }
+}
+
+/// The name people use (`sigil.example`) does not have to be where the
+/// server answers: `https://<name>/.well-known/sigil` may say
+/// `{"server": "host[:port]"}` and the base URL moves there. Without a
+/// pointer the name is the address. A name with a scheme is taken as is
+/// (a test server). The lookup goes through the proxy when one is set.
+///
+/// `SIGIL_TEST_HOSTS` (`name=http://127.0.0.1:port,…`) tells the lookup
+/// where a test name's pointer lives, since tests have no DNS.
+pub async fn resolve(server: &str, proxy: Option<&str>) -> anyhow::Result<String> {
+    let server = server.trim().trim_end_matches('/');
+    if server.contains("://") {
+        return Ok(server.to_string());
+    }
+    let plain = format!("{}://{server}", scheme_for(server));
+    let lookup = std::env::var("SIGIL_TEST_HOSTS")
+        .ok()
+        .and_then(|v| {
+            v.split(',')
+                .filter_map(|e| e.split_once('='))
+                .find(|(n, _)| n.trim() == server)
+                .map(|(_, u)| u.trim().to_string())
+        })
+        .unwrap_or_else(|| plain.clone());
+    let pointer = async {
+        let r = http_client(proxy, 5)?
+            .get(format!("{lookup}/.well-known/sigil"))
+            .send()
+            .await?;
+        if !r.status().is_success() {
+            return Ok::<Option<String>, anyhow::Error>(None);
+        }
+        let v: serde_json::Value = serde_json::from_slice(&r.bytes().await?)?;
+        Ok(v.get("server")
+            .and_then(|s| s.as_str())
+            .map(|s| s.trim().trim_end_matches('/').to_string())
+            .filter(|s| !s.is_empty() && !s.contains('/')))
+    };
+    match pointer.await {
+        Ok(Some(at)) => Ok(format!("{}://{at}", scheme_for(&at))),
+        _ => Ok(plain),
+    }
+}
+
+/// Ask a server what it offers before there is an account or a link: its
+/// signed card, fetched straight from `<base>/info` (through the SOCKS
+/// proxy when one is set), where the base comes from [`resolve`]. This is
+/// the one request that goes to the server directly rather than through
+/// an Envoy, and it carries nothing about who is asking. Returns the card
+/// and the base URL the name resolved to.
+pub async fn probe(
+    server: &str,
+    proxy: Option<&str>,
+) -> anyhow::Result<(sigil_protocol::wire::ServerCard, String)> {
+    let server = server.trim().trim_end_matches('/');
+    let base = resolve(server, proxy).await?;
+    let bytes = http_client(proxy, 15)?
         .get(format!("{base}/info"))
         .send()
         .await?
@@ -381,5 +434,11 @@ pub async fn probe(
         &msg,
         &ed25519_dalek::Signature::from_slice(&bytes[bytes.len() - 64..])?,
     )?;
-    Ok(card)
+    Ok((card, base))
+}
+
+/// The Envoy address for a server name: its base, as a WebSocket, `/envoy`.
+pub async fn envoy_for(server: &str, proxy: Option<&str>) -> anyhow::Result<String> {
+    let base = resolve(server, proxy).await?;
+    Ok(base.replacen("http", "ws", 1) + "/envoy")
 }
