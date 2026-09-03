@@ -103,7 +103,8 @@ fn main() -> anyhow::Result<()> {
     app.set_rec_state("idle".into());
     h.settle();
     // the long-press sheet over a real bubble ("solid red …", whose box sits
-    // at 12,564 210×33 in this fixture), page frosted behind it
+    // at 14,546 207×36 in this fixture), the page frosted behind it with the
+    // pressed row holding no second bubble under the lifted copy
     let pressed = {
         let items = app.get_items();
         (0..items.row_count())
@@ -115,11 +116,11 @@ fn main() -> anyhow::Result<()> {
             })
             .unwrap_or(items.row_count() - 3)
     };
-    app.invoke_debug_sheet(pressed as i32, 12.0, 564.0, 210.0, 33.0);
+    app.invoke_debug_sheet(pressed as i32, 14.0, 546.0, 207.0, 36.0);
     h.shoot("chat-sheet")?;
-    // the no-snapshot path dims instead of frosting (sheet.slint:183): the
-    // timeline shows through, so this frame proves the pressed row holds no
-    // second bubble behind the lifted copy
+    // the no-picture path (a renderer that cannot snapshot) dims the live
+    // page instead of frosting it: the timeline shows through, so this frame
+    // proves the pressed row holds no second bubble behind the lifted copy
     app.set_sheet_backdrop(Default::default());
     h.shoot("chat-sheet-dim")?;
     // after the close settles the original bubble must be back in the
@@ -181,5 +182,43 @@ fn main() -> anyhow::Result<()> {
     h.settle();
     app.invoke_set_home_tab(1);
     h.shoot("requests")?;
+
+    // the phone's search from home: the chip grid, a chip's rooms, a query's
+    // message hits (no engine here, so the rows are set by hand)
+    if std::env::var_os("SIGIL_THEME_MODE").is_some() {
+        app.set_se_global(true);
+        app.set_nav("search".into());
+        h.settle();
+        h.shoot("search-home")?;
+        let all = app.get_all_rooms();
+        let rows: Vec<_> = (0..all.row_count()).filter_map(|i| all.row_data(i)).collect();
+        let unread: Vec<_> = rows.iter().filter(|r| r.unread && !r.is_invite).cloned().collect();
+        app.set_se_kind("unread".into());
+        app.set_se_rooms(slint::ModelRc::new(slint::VecModel::from(unread)));
+        h.settle();
+        h.shoot("search-unread")?;
+        let marlowe = rows.iter().find(|r| r.name == "Marlowe").cloned().unwrap_or_default();
+        let hit = |ev: &str, body: &str, stamp: &str| sigil_slint::SearchHit {
+            room_id: "!marlowe".into(),
+            event_id: ev.into(),
+            room_name: marlowe.name.clone(),
+            initials: marlowe.initials.clone(),
+            avatar: marlowe.avatar.clone(),
+            tint: marlowe.tint,
+            body: body.into(),
+            icon: Default::default(),
+            stamp: stamp.into(),
+        };
+        app.set_se_kind(Default::default());
+        app.set_se_rooms(slint::ModelRc::new(slint::VecModel::from(Vec::new())));
+        app.set_se_hits(slint::ModelRc::new(slint::VecModel::from(vec![
+            hit("$m5", "there is always a condition", "14:03"),
+            hit("$m4", "the sword is yours, but there is a condition", "14:02"),
+            hit("$f7", "the sword is yours, but there is a condition", "13:58"),
+        ])));
+        app.invoke_debug_search_query("condition".into());
+        h.settle();
+        h.shoot("search-query")?;
+    }
     Ok(())
 }

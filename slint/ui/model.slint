@@ -236,6 +236,19 @@ export struct RoomRow {
     draft: string,       // unsent composer text: red italic "Draft:" preview
 }
 
+/// One message hit on the phone's search page (engine search.global).
+export struct SearchHit {
+    room-id: string,
+    event-id: string,
+    room-name: string,
+    initials: string,
+    avatar: image,
+    tint: color,
+    body: string,        // the matching snippet
+    icon: string,        // the kind's glyph, "" for text
+    stamp: string,
+}
+
 export struct MemberRow {
     user-id: string,
     display-name: string,

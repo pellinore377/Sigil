@@ -13,9 +13,161 @@ import { IconLabel, ActionButton, Avatar } from "components.slint";
 
 import { RoomRow } from "model.slint";
 
+// One conversation row in the platform messenger's shape (all dp): 78 tall,
+// a 51 avatar at 16, the text column at 83, the time and mark right-aligned
+// 24 in. Home and the phone's search share it; a request wears an outlined
+// "Request" pill where the unread count would sit.
+export component ChatRow inherits Rectangle {
+    in property <string> name;
+    in property <image> avatar;
+    in property <string> initials;
+    in property <color> tint;
+    in property <string> preview;
+    in property <string> preview-icon;
+    in property <string> stamp;
+    in property <string> badge;
+    in property <bool> badge-urgent;
+    in property <bool> unread;
+    in property <bool> is-favourite;
+    in property <bool> is-invite;
+    in property <bool> is-typing;
+    in property <bool> has-call;
+    in property <string> draft;
+    in property <color> accent-container;
+    callback clicked;
+
+    height: 78px;
+    background: touch.pressed ? Theme.menu-text.with-alpha(0.08) : transparent;
+    property <bool> loud: root.unread || (root.badge-urgent && !root.is-invite);
+    property <bool> request: root.is-invite;
+    property <string> line: root.draft != "" ? root.draft
+        // rows.rs words a message-less request for the desktop card
+        : root.request && root.preview == "Invitation — tap to respond" ? "Wants to chat"
+        : root.preview;
+
+    Avatar {
+        x: 16px; y: (78px - self.size) / 2;
+        size: 51px;
+        source: root.avatar;
+        initials: root.initials;
+        tint: root.tint;
+    }
+
+    VerticalLayout {
+        x: 83px;
+        width: meta.x - 12px - 83px;
+        alignment: center;
+        spacing: 2px;
+        Text {
+            text: root.name;
+            color: Theme.menu-text;
+            font-family: Theme.font-ui;
+            font-size: 16px;
+            font-weight: root.loud ? 700 : 400;
+            overflow: elide;
+        }
+        HorizontalLayout {
+            alignment: start;
+            spacing: 4px;
+            if root.draft != "" : Text {
+                text: "Draft:";
+                color: Theme.urgent;
+                font-family: Theme.font-ui; font-size: 14px;
+                font-italic: true;
+            }
+            if root.draft == "" && !root.request && root.preview-icon != "" : IconLabel {
+                text: root.preview-icon;
+                filled: true;
+                font-size: 15px;
+                color: root.has-call ? Theme.accent : root.loud ? Theme.menu-text : Theme.muted;
+                vertical-alignment: center;
+            }
+            Text {
+                text: root.line;
+                color: root.request || root.is-typing || root.has-call ? Theme.accent
+                     : root.loud ? Theme.menu-text : Theme.muted;
+                font-family: Theme.font-ui;
+                font-size: 14px;
+                font-italic: root.draft != "";
+                overflow: elide;
+                horizontal-stretch: 1;
+            }
+        }
+    }
+
+    // Time in the row's top third, the mark under it; the column is as wide
+    // as its widest line and ends 24 before the row's edge.
+    meta := Rectangle {
+        x: root.width - 24px - self.width;
+        width: max(stamp.preferred-width,
+                   root.request ? pill.width : root.badge != "" ? badge.width
+                   : root.is-favourite ? 14px : 0px);
+        stamp := Text {
+            x: meta.width - self.width;
+            y: 19px; height: 16px;
+            text: root.stamp;
+            color: root.loud ? Theme.menu-text : Theme.muted;
+            font-family: Theme.font-ui;
+            font-size: 12px;
+            vertical-alignment: center;
+        }
+        badge := Rectangle {
+            visible: !root.request && root.badge != "";
+            x: meta.width - self.width;
+            y: 41px;
+            width: max(20px, badge-text.preferred-width + 12px);
+            height: 20px;
+            border-radius: 10px;
+            background: root.badge-urgent ? Theme.urgent : root.accent-container;
+            badge-text := Text {
+                text: root.badge;
+                color: root.badge-urgent ? #ffffff : Theme.menu-text;
+                font-family: Theme.font-ui;
+                font-size: 12px;
+                font-weight: 700;
+                horizontal-alignment: center; vertical-alignment: center;
+                width: 100%; height: 100%;
+            }
+        }
+        IconLabel {
+            visible: !root.request && root.badge == "" && root.is-favourite;
+            x: meta.width - self.width;
+            y: 41px; height: 20px;
+            text: Icons.pin;
+            filled: true;
+            font-size: 14px;
+            color: Theme.muted;
+            vertical-alignment: center;
+        }
+        pill := Rectangle {
+            visible: root.request;
+            x: meta.width - self.width;
+            y: 41px;
+            width: pill-text.preferred-width + 12px;
+            height: 20px;
+            border-radius: 10px;
+            border-width: 1px;
+            border-color: Theme.popup-border;
+            pill-text := Text {
+                text: "Request";
+                color: Theme.menu-text;
+                font-family: Theme.font-ui;
+                font-size: 12px;
+                horizontal-alignment: center; vertical-alignment: center;
+                width: 100%; height: 100%;
+            }
+        }
+    }
+
+    touch := TouchArea { clicked => { root.clicked(); } }
+}
+
 export component HomePage inherits Rectangle {
     in property <[RoomRow]> rooms;
     in property <[RoomRow]> requests;
+    // The phone's one list: chats and requests together, by time (bridge
+    // rebuild_rooms); the desktop keeps its two tabs.
+    in property <[RoomRow]> all-rooms;
     in property <string> my-initials;
     in property <image> my-avatar;
     in property <color> my-tint;
@@ -23,9 +175,10 @@ export component HomePage inherits Rectangle {
     in property <string> my-user-id;
     in property <string> sync-line;   // non-empty: engine is catching up / erroring
     in property <bool> rooms-loaded;  // first rooms.list has arrived
-    in-out property <int> tab: 0;     // 0 chats, 1 requests
+    in-out property <int> tab: 0;     // 0 chats, 1 requests (desktop only)
     callback room-clicked(string);
     callback search-edited(string);
+    callback open-search;             // the phone's search page
     callback new-chat;
     callback open-settings;
     callback sign-out;
@@ -428,292 +581,83 @@ export component HomePage inherits Rectangle {
         property <color> accent-container: Theme.mode == "dark"
             ? Theme.accent.mix(Theme.background, 0.42)
             : Theme.accent.mix(Theme.background, 0.22);
-        property <bool> search-open: false;
-        property <string> search-text;
-        property <length> bar-top: 40px;   // above the page's own top inset
-        property <length> bar-height: 56px;   // menu-card's y follows this
 
         VerticalLayout {
-            // App bar: flat on the window ground.
+            // App bar, flat on the window ground: 60 tall, the title at 16,
+            // the search glyph's centre 88 and the avatar's 32 from the right.
             Rectangle {
-                height: phone-tree.bar-top + phone-tree.bar-height;
-                HorizontalLayout {
-                    y: phone-tree.bar-top;
-                    height: phone-tree.bar-height;
-                    padding-left: 24px; padding-right: 20px;
-                    spacing: 16px;
-                    Text {
-                        text: "Sigil";
-                        color: Theme.menu-text;
-                        font-family: Theme.font-ui;
-                        font-size: 22px;
-                        font-weight: 500;
-                        vertical-alignment: center;
-                        horizontal-stretch: 1;
-                    }
-                    Rectangle {
-                        width: 40px;
-                        border-radius: 20px;
-                        background: search-btn.pressed ? Theme.menu-text.with-alpha(0.10)
-                                  : search-btn.has-hover ? Theme.menu-text.with-alpha(0.06) : transparent;
-                        IconLabel {
-                            text: phone-tree.search-open ? Icons.close : Icons.search;
-                            font-size: 24px;
-                            color: Theme.menu-text;
-                            width: 100%; height: 100%;
-                        }
-                        search-btn := TouchArea {
-                            clicked => {
-                                phone-tree.search-open = !phone-tree.search-open;
-                                if (!phone-tree.search-open && phone-tree.search-text != "") {
-                                    phone-tree.search-text = "";
-                                    root.search-edited("");
-                                }
-                            }
-                        }
-                    }
-                    Rectangle {
-                        width: 36px;
-                        ring := Rectangle {
-                            x: 0px; y: (parent.height - self.height) / 2;
-                            width: 36px; height: 36px;
-                            border-radius: 18px;
-                            border-width: 1px;
-                            border-color: Theme.menu-text.with-alpha(0.35);
-                            Avatar {
-                                x: 2px; y: 2px;
-                                size: 32px;
-                                source: root.my-avatar;
-                                initials: root.my-initials;
-                                tint: root.my-tint;
-                            }
-                        }
-                        TouchArea { clicked => { root.account-open = !root.account-open; } }
-                    }
+                height: 60px;
+                Text {
+                    x: 16px;
+                    height: 100%;
+                    text: "Sigil";
+                    color: Theme.menu-text;
+                    font-family: Theme.font-ui;
+                    font-size: 22px;
+                    font-weight: 500;
+                    vertical-alignment: center;
                 }
-            }
-
-            // Search: a field that drops in under the bar when the icon asks.
-            if phone-tree.search-open : Rectangle {
-                height: 64px;
                 Rectangle {
-                    x: 16px; width: parent.width - 32px;
-                    y: 4px; height: 48px;
+                    x: parent.width - 88px - 24px; y: 6px;
+                    width: 48px; height: 48px;
                     border-radius: 24px;
-                    background: Theme.bubble-other;
-                    HorizontalLayout {
-                        padding-left: 16px; padding-right: 16px;
-                        spacing: 12px;
-                        IconLabel {
-                            text: Icons.search;
-                            font-size: 22px;
-                            color: Theme.muted;
-                            vertical-alignment: center;
-                        }
-                        Rectangle {
-                            clip: true;
-                            horizontal-stretch: 1;
-                            phone-search := TextInput {
-                                text <=> phone-tree.search-text;
-                                color: Theme.menu-text;
-                                font-family: Theme.font-ui;
-                                font-size: 16px;
-                                vertical-alignment: center;
-                                height: 100%; width: 100%;
-                                single-line: true;
-                                edited => { root.search-edited(self.text); }
-                            }
-                            if phone-search.text == "" : Text {
-                                text: root.tab == 0 ? "Search chats" : "Search requests";
-                                color: Theme.muted;
-                                font-family: Theme.font-ui;
-                                font-size: 16px;
-                                vertical-alignment: center;
-                                height: 100%;
-                            }
-                        }
+                    background: search-btn.pressed ? Theme.menu-text.with-alpha(0.10)
+                              : search-btn.has-hover ? Theme.menu-text.with-alpha(0.06) : transparent;
+                    IconLabel {
+                        text: Icons.search;
+                        font-size: 24px;
+                        color: Theme.menu-text;
+                        width: 100%; height: 100%;
                     }
+                    search-btn := TouchArea { clicked => { root.open-search(); } }
+                }
+                Rectangle {
+                    x: parent.width - 32px - 24px; y: 6px;
+                    width: 48px; height: 48px;
+                    Avatar {
+                        x: 8px; y: 8px;
+                        size: 32px;
+                        source: root.my-avatar;
+                        initials: root.my-initials;
+                        tint: root.my-tint;
+                    }
+                    TouchArea { clicked => { root.account-open = !root.account-open; } }
                 }
             }
 
-            // The sheet: one step lighter than the window, rounded at the top.
+            // The sheet: one step lighter than the window, rounded at the top,
+            // straight under the bar and down to the page bottom.
             sheet := Rectangle {
                 vertical-stretch: 1;
                 background: Theme.card-ground;
                 border-top-left-radius: 28px;
                 border-top-right-radius: 28px;
                 clip: true;
-                VerticalLayout {
-                    // Assist chips: Chats | Requests (n)
-                    Rectangle {
-                        height: 56px;
-                        HorizontalLayout {
-                            y: 16px; height: 32px;
-                            padding-left: 16px;
-                            spacing: 8px;
-                            alignment: start;
-                            for chip[i] in [
-                                "Chats",
-                                root.requests.length > 0 ? "Requests (\{root.requests.length})" : "Requests",
-                            ] : Rectangle {
-                                property <bool> on: root.tab == i;
-                                width: chip-text.preferred-width + 32px;
-                                border-radius: 16px;
-                                border-width: self.on ? 0px : 1px;
-                                border-color: Theme.popup-border;
-                                background: self.on ? phone-tree.accent-container
-                                          : chip-touch.pressed ? Theme.menu-text.with-alpha(0.08) : transparent;
-                                chip-text := Text {
-                                    text: chip;
-                                    color: Theme.menu-text;
-                                    font-family: Theme.font-ui;
-                                    font-size: 14px;
-                                    font-weight: 500;
-                                    horizontal-alignment: center; vertical-alignment: center;
-                                    width: 100%; height: 100%;
-                                }
-                                chip-touch := TouchArea { clicked => { root.tab = i; } }
-                            }
-                        }
+
+                if root.all-rooms.length == 0 : Text {
+                    text: !root.rooms-loaded ? "Looking for your chats…" : "No chats yet";
+                    color: Theme.muted;
+                    font-family: Theme.font-ui;
+                    font-size: 16px;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                    width: 100%; height: 100%;
+                }
+
+                phone-list := TouchList {
+                    width: 100%; height: 100%;
+                    Rectangle { height: 8px; }
+                    for room in root.all-rooms : ChatRow {
+                        name: room.name; avatar: room.avatar; initials: room.initials; tint: room.tint;
+                        preview: room.preview; preview-icon: room.preview-icon; stamp: room.stamp;
+                        badge: room.badge; badge-urgent: room.badge-urgent; unread: room.unread;
+                        is-favourite: room.is-favourite; is-invite: room.is-invite;
+                        is-typing: room.is-typing; has-call: room.has-call; draft: room.draft;
+                        accent-container: phone-tree.accent-container;
+                        clicked => { root.room-clicked(room.id); }
                     }
-
-                    if (root.chats-mode ? root.rooms.length : root.requests.length) == 0 : Rectangle {
-                        vertical-stretch: 1;
-                        Text {
-                            text: !root.rooms-loaded ? "Looking for your chats…"
-                                : root.chats-mode ? "No chats yet" : "No requests";
-                            color: Theme.muted;
-                            font-family: Theme.font-ui;
-                            font-size: 16px;
-                            horizontal-alignment: center;
-                            vertical-alignment: center;
-                            width: 100%; height: 100%;
-                        }
-                    }
-
-                    phone-list := TouchList {
-                        vertical-stretch: 1;
-                        for room in (root.chats-mode ? root.rooms : root.requests) : prow := Rectangle {
-                            height: 72px;
-                            background: prow-touch.pressed ? Theme.menu-text.with-alpha(0.08)
-                                      : prow-touch.has-hover ? Theme.menu-text.with-alpha(0.04) : transparent;
-                            property <bool> loud: room.unread || (room.badge-urgent && !room.is-invite);
-
-                            Avatar {
-                                x: 24px; y: (prow.height - self.height) / 2;
-                                size: 44px;
-                                source: room.avatar;
-                                initials: room.initials;
-                                tint: room.tint;
-                            }
-
-                            // Title | preview, from x=88 to the meta column.
-                            VerticalLayout {
-                                x: 88px;
-                                width: prow.width - 88px - meta.width - 16px - 24px;
-                                alignment: center;
-                                spacing: 2px;
-                                HorizontalLayout {
-                                    alignment: start;
-                                    spacing: 6px;
-                                    Text {
-                                        text: room.name;
-                                        color: Theme.menu-text;
-                                        font-family: Theme.font-ui;
-                                        font-size: 16px;
-                                        font-weight: prow.loud ? 700 : 400;
-                                        overflow: elide;
-                                    }
-                                    if room.is-encrypted : IconLabel {
-                                        text: Icons.lock;
-                                        filled: true;
-                                        font-size: 13px;
-                                        color: Theme.muted.with-alpha(0.7);
-                                        vertical-alignment: center;
-                                    }
-                                    if room.has-call : IconLabel {
-                                        text: Icons.phone;
-                                        filled: true;
-                                        font-size: 13px;
-                                        color: Theme.accent;
-                                        vertical-alignment: center;
-                                    }
-                                }
-                                HorizontalLayout {
-                                    alignment: start;
-                                    spacing: 4px;
-                                    if room.draft != "" : Text {
-                                        text: "Draft:";
-                                        color: Theme.urgent;
-                                        font-family: Theme.font-ui; font-size: 14px;
-                                        font-italic: true;
-                                    }
-                                    if room.draft == "" && room.preview-icon != "" : IconLabel {
-                                        text: room.preview-icon;
-                                        filled: true;
-                                        font-size: 15px;
-                                        color: room.has-call ? Theme.accent
-                                             : prow.loud ? Theme.menu-text : Theme.muted;
-                                        vertical-alignment: center;
-                                    }
-                                    Text {
-                                        text: room.draft != "" ? room.draft : room.preview;
-                                        color: room.is-typing || room.has-call ? Theme.accent
-                                             : prow.loud ? Theme.menu-text : Theme.muted;
-                                        font-family: Theme.font-ui;
-                                        font-size: 14px;
-                                        font-italic: room.draft != "";
-                                        overflow: elide;
-                                        horizontal-stretch: 1;
-                                    }
-                                }
-                            }
-
-                            // Time over pin / unread count, 24 in from the right.
-                            meta := VerticalLayout {
-                                x: prow.width - self.width - 24px;
-                                width: max(self.preferred-width, 20px);
-                                alignment: center;
-                                spacing: 4px;
-                                if room.stamp != "" : Text {
-                                    text: room.stamp;
-                                    color: prow.loud ? Theme.menu-text : Theme.muted;
-                                    font-family: Theme.font-ui;
-                                    font-size: 12px;
-                                    horizontal-alignment: right;
-                                }
-                                HorizontalLayout {
-                                    alignment: end;
-                                    spacing: 4px;
-                                    if room.badge != "" : Rectangle {
-                                        width: max(20px, pbadge.preferred-width + 12px);
-                                        height: 20px;
-                                        border-radius: 10px;
-                                        background: room.badge-urgent ? Theme.urgent : phone-tree.accent-container;
-                                        pbadge := Text {
-                                            text: room.badge;
-                                            color: room.badge-urgent ? #ffffff : Theme.menu-text;
-                                            font-family: Theme.font-ui;
-                                            font-size: 12px;
-                                            font-weight: 700;
-                                            horizontal-alignment: center; vertical-alignment: center;
-                                            width: 100%; height: 100%;
-                                        }
-                                    }
-                                    if room.badge == "" && room.is-favourite : IconLabel {
-                                        text: Icons.pin;
-                                        filled: true;
-                                        font-size: 14px;
-                                        color: Theme.muted;
-                                        vertical-alignment: center;
-                                        height: 20px;
-                                    }
-                                }
-                            }
-
-                            prow-touch := TouchArea { clicked => { root.room-clicked(room.id); } }
-                        }
-                    }
+                    // room for the FAB past the last row
+                    Rectangle { height: 96px; }
                 }
             }
         }
@@ -724,7 +668,7 @@ export component HomePage inherits Rectangle {
             y: root.height - self.height - 24px;
             width: fab-row.preferred-width;
             height: 56px;
-            border-radius: 24px;
+            border-radius: 28px;
             background: phone-fab-touch.pressed ? phone-tree.accent-container.brighter(0.15)
                       : phone-tree.accent-container;
             drop-shadow-color: #00000055;
@@ -769,8 +713,8 @@ export component HomePage inherits Rectangle {
         TouchArea { clicked => { root.account-open = false; } }
         menu-card := Rectangle {
             // under the bar's avatar on either layout
-            x: root.width - self.width - (root.phone ? 20px : 12px);
-            y: root.phone ? 92px : 48px;
+            x: root.width - self.width - (root.phone ? 16px : 12px);
+            y: root.phone ? 52px : 48px;
             transform-origin: { x: self.width, y: 0px };
             transform-scale-x: 0.94 + 0.06 * account-layer.grow;
             transform-scale-y: 0.94 + 0.06 * account-layer.grow;

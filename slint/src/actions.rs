@@ -206,22 +206,33 @@ pub fn wire_extra(win: &AppWindow) {
     win.on_sheet_snapshot(|x, y, w, h| {
         with_ui(|ui| {
             let Some(win) = ui.win.upgrade() else { return };
-            // The chat page is offset by the safe-area insets; the snapshot is
-            // in physical pixels of the whole window.
-            let sf = win.window().scale_factor();
-            match crate::frost::Snapshot::take(win.window()) {
-                Some(snap) => {
-                    win.set_sheet_backdrop(snap.frosted());
-                    win.set_sheet_copy(
-                        snap.crop(x * sf, y * sf, w * sf, h * sf)
-                            .unwrap_or_default(),
-                    );
-                }
-                None => {
-                    win.set_sheet_backdrop(Default::default());
-                    win.set_sheet_copy(Default::default());
-                }
-            }
+            // The pressed bubble's own pixels, cut from a picture of the whole
+            // window taken now — before the sheet hides the original. (x, y,
+            // w, h) are logical, from the window's origin; the picture is in
+            // whatever pixels the renderer hands back, so it is scaled by the
+            // picture's own size over the window's logical size rather than
+            // by a scale factor the two need not agree on. The cut is rounded
+            // to whole pixels on both edges so it is never resampled against
+            // the rect the sheet draws it in.
+            let logical = win.window().size().to_logical(win.window().scale_factor());
+            let copy = crate::frost::Snapshot::take(win.window()).and_then(|snap| {
+                let sx = snap.buf.width() as f32 / logical.width.max(1.0);
+                let sy = snap.buf.height() as f32 / logical.height.max(1.0);
+                let (x0, y0) = ((x * sx).round(), (y * sy).round());
+                let (x1, y1) = (((x + w) * sx).round(), ((y + h) * sy).round());
+                snap.crop(x0, y0, x1 - x0, y1 - y0)
+            });
+            win.set_sheet_copy(copy.unwrap_or_default());
+        });
+    });
+    win.on_sheet_frost(|| {
+        with_ui(|ui| {
+            let Some(win) = ui.win.upgrade() else { return };
+            // The whole window, blurred, for the sheet's frost — taken after
+            // the page hid the pressed bubble and before the sheet draws, so
+            // the blur holds the page with a hole where the bubble stood.
+            let frost = crate::frost::Snapshot::take(win.window()).map(|snap| snap.frosted());
+            win.set_sheet_backdrop(frost.unwrap_or_default());
         });
     });
     win.on_nav_opened(|page| {
@@ -281,7 +292,12 @@ pub fn on_nav_opened(ui: &mut UiState, win: &AppWindow, page: &str) {
         "pins" => load_pins(ui, win),
         "search" => {
             ui.search_query.clear();
-            rebuild_search(ui, win);
+            if phone(win) {
+                win.set_se_kind(SharedString::new());
+                global_search(ui, win);
+            } else {
+                rebuild_search(ui, win);
+            }
         }
         "forward" => {
             ui.forward_query.clear();
@@ -504,6 +520,75 @@ fn rebuild_search(ui: &mut UiState, win: &AppWindow) {
     win.set_se_results(ModelRc::new(VecModel::from(out.results)));
     win.set_se_images(ModelRc::new(VecModel::from(images)));
     win.set_se_links(ModelRc::new(VecModel::from(out.links)));
+}
+
+fn phone(win: &AppWindow) -> bool {
+    win.global::<crate::Theme>().get_mode() != "desktop"
+}
+
+/// The phone's search: the engine matches the query and chip over every
+/// room (or the open one, from a chat); rooms and messages come back as rows.
+fn global_search(ui: &mut UiState, win: &AppWindow) {
+    let q = ui.search_query.trim().to_string();
+    let kind = win.get_se_kind().to_string();
+    ui.search_epoch += 1;
+    let epoch = ui.search_epoch;
+    if q.is_empty() && kind.is_empty() {
+        win.set_se_rooms(ModelRc::new(VecModel::from(Vec::new())));
+        win.set_se_hits(ModelRc::new(VecModel::from(Vec::new())));
+        return;
+    }
+    let scope = if win.get_se_global() { String::new() } else { room_of_key(&ui.open_room) };
+    call_ui(
+        &ui.req.clone(),
+        "search.global",
+        json!({"query": q, "kind": kind, "roomId": scope}),
+        move |ui, win, out| {
+            if ui.search_epoch != epoch {
+                return; // superseded
+            }
+            let v = out.unwrap_or_else(|_| json!({}));
+            let rooms: Vec<_> = v["rooms"]
+                .as_array()
+                .map(|a| a.iter().map(|r| crate::bridge::room_row_of(ui, r)).collect())
+                .unwrap_or_default();
+            let hits: Vec<_> = v["messages"]
+                .as_array()
+                .map(|a| a.iter().map(|m| hit_row(ui, m)).collect())
+                .unwrap_or_default();
+            win.set_se_rooms(ModelRc::new(VecModel::from(rooms)));
+            win.set_se_hits(ModelRc::new(VecModel::from(hits)));
+        },
+    );
+}
+
+fn hit_row(ui: &mut UiState, m: &Value) -> crate::SearchHit {
+    let rid = s(m, "roomId").to_string();
+    let name = s(m, "roomName").to_string();
+    let room = ui.rooms_json.iter().find(|r| s(r, "id") == rid).cloned().unwrap_or(Value::Null);
+    let tint_key = match s(&room, "dmUserId") {
+        "" => rid.clone(),
+        u => u.to_string(),
+    };
+    let icon = match s(m, "kind") {
+        "image" => ui.icons.camera.clone(),
+        "video" => ui.icons.video_on.clone(),
+        "audio" | "voice" => ui.icons.mic_on.clone(),
+        "file" => ui.icons.attach.clone(),
+        "location" | "liveLocation" => ui.icons.location.clone(),
+        _ => Default::default(),
+    };
+    crate::SearchHit {
+        room_id: rid.into(),
+        event_id: s(m, "eventId").into(),
+        room_name: name.clone().into(),
+        initials: initials(&name).into(),
+        avatar: crate::bridge::avatar_pub(ui, s(&room, "avatarPath")).unwrap_or_default(),
+        tint: tint_for(&tint_key),
+        body: s(m, "body").into(),
+        icon,
+        stamp: crate::rows::home_stamp(m["ts"].as_i64().unwrap_or(0)).into(),
+    }
 }
 
 fn rebuild_forward(ui: &mut UiState, win: &AppWindow) {
@@ -893,7 +978,23 @@ pub fn on_act(ui: &mut UiState, win: &AppWindow, action: &str, a: &str, b2: &str
         "forward-picked" => forward_picked(ui, win, a),
         "room-search" => {
             ui.search_query = a.to_string();
-            rebuild_search(ui, win);
+            if phone(win) {
+                global_search(ui, win);
+            } else {
+                rebuild_search(ui, win);
+            }
+        }
+        "search-kind" => {
+            win.set_se_kind(a.into());
+            global_search(ui, win);
+        }
+        // A message hit: its room, then the timeline's end (as jump-to does).
+        "open-hit" => {
+            if open_room != a {
+                crate::bridge::open_room(ui, win, a);
+            }
+            win.set_nav("chat".into());
+            after(&req, 500, |_ui, win| win.invoke_scroll_timeline_to_end());
         }
         "unpin" => req.fire("message.unpin", json!({"roomId": open_room, "eventId": a})),
 

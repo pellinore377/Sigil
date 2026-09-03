@@ -711,6 +711,9 @@ export component CallPage inherits Rectangle {
     sheet := Rectangle {
         y: root.settings-open ? root.height - self.height : root.height + 6px;
         animate y { duration: 220ms; easing: cubic-bezier(0.33, 1, 0.68, 1); }
+        // Parked below the page it must not show in the gesture zone (the
+        // phone's window does not clip the page).
+        visible: self.y < root.height - 0.5px;
         width: 100%;
         height: sheet-col.preferred-height + 34px;
         border-top-left-radius: 20px;

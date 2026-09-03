@@ -116,9 +116,15 @@ export component Bubble inherits Rectangle {
     property <string> votes-word: item.poll-total == 1 ? "1 vote" : "\{item.poll-total} votes";
     /// Jump landing: a brief accent ring on the message you asked for.
     in property <bool> jump-flash: false;
+    /// Set by the list from its viewport: off-screen rows stop their
+    /// clocks, so SigilText, ripples and countdowns never cost a frame
+    /// for rows nobody can see (an animation-tick() dependency anywhere
+    /// re-renders the whole window at frame rate).
+    in property <bool> on-screen: true;
+    property <duration> clock: root.on-screen ? animation-tick() : 0ms;
     /// Epoch seconds at app start (window's boot-epoch-s) for the live countdown.
     in property <int> boot-epoch-s: 0;
-    property <int> live-remaining: max(0, item.location-expires-s - root.boot-epoch-s - floor(animation-tick() / 1s));
+    property <int> live-remaining: max(0, item.location-expires-s - root.boot-epoch-s - floor(root.clock / 1s));
     // BubbleDelegate.qml:1445-1449 — the link card's caption is the body
     // with the URL taken out; verbatim until the bridge has stripped it.
     property <string> link-caption: item.caption-stripped ? item.caption-body : item.body;
@@ -178,9 +184,14 @@ export component Bubble inherits Rectangle {
     background: transparent;
     // BubbleDelegate.qml:1106-1110 — the menu spotlights the bubble itself,
     // not the row: `bubble` is in scope now that the row is unconditional.
+    // The position is read off `anchor`, a plain child filling the bubble,
+    // NOT off `bubble`: Slint 1.17 lowers an element's `opacity` into a
+    // wrapper item that takes its x/y, yet `absolute-position` is built
+    // before that as parent + own x/y — so the bubble (hidden by opacity for
+    // the sheet) reports its x/y twice. The anchor has neither, and is exact.
     public function open-menu() {
         root.menu-requested(item,
-            bubble.absolute-position.x, bubble.absolute-position.y,
+            anchor.absolute-position.x, anchor.absolute-position.y,
             bubble.width, bubble.height);
     }
 
@@ -314,6 +325,9 @@ export component Bubble inherits Rectangle {
                 border-top-right-radius: root.r-tr;
                 border-bottom-right-radius: root.r-br;
                 clip: true;
+
+                // Where the bubble really is on screen (open-menu above).
+                anchor := Rectangle { x: 0; y: 0; width: 100%; height: 100%; }
 
                 // Declared BEFORE the content so every inner TouchArea (media,
                 // voice, poll, file, thread chip) sits above it — QML's
@@ -970,7 +984,7 @@ export component Bubble inherits Rectangle {
                             if loc-box.self-loc && item.location-live : Rectangle {
                                 for ri in [0, 1] : Rectangle {
                                     property <float> pause: ri * 850;
-                                    property <float> t: mod(animation-tick() / 1ms, 1700 + self.pause);
+                                    property <float> t: mod(root.clock / 1ms, 1700 + self.pause);
                                     property <float> p: max(0.0, self.t - self.pause) / 1700;
                                     property <float> e: 1 - pow(1 - self.p, 3);
                                     x: 48px * 0.4896 - 21px; y: 48px * 0.4062 - 21px;
@@ -1029,7 +1043,7 @@ export component Bubble inherits Rectangle {
                                     background: item.location-live ? #e8646a : #ececec.with-alpha(0.5);
                                     // :350-355 — pulses 1↔0.3, 800ms each way.
                                     opacity: item.location-live
-                                        ? 0.65 + 0.35 * cos(360deg * (mod(animation-tick() / 1ms, 1600.0) / 1600.0))
+                                        ? 0.65 + 0.35 * cos(360deg * (mod(root.clock / 1ms, 1600.0) / 1600.0))
                                         : 1.0;
                                 }
                                 Text {
@@ -1250,8 +1264,8 @@ export component Bubble inherits Rectangle {
                             y: c.y;
                             width: c.w;
                             height: c.size * 1.3;
-                            property <float> tick-ms: (animation-tick() - c.idx * 90ms) / 1ms;
-                            property <float> raw-ms: animation-tick() / 1ms;
+                            property <float> tick-ms: (root.clock - c.idx * 90ms) / 1ms;
+                            property <float> raw-ms: root.clock / 1ms;
                             property <color> ink: c.has-color && !c.mark ? c.color : root.fg;
                             // RichText.qml:161-165 revealAt: 1 when fully readable.
                             property <float> shown: c.spoiler
@@ -1260,7 +1274,7 @@ export component Bubble inherits Rectangle {
                             // RichText.qml:175-181, 252-257 — typewriter: 45ms per
                             // glyph, on or off, no fade.
                             property <bool> typed: c.anim != "typewriter"
-                                || (animation-tick() - fx-box.t0) > c.idx * 45ms;
+                                || (root.clock - fx-box.t0) > c.idx * 45ms;
                             // RichText.qml:285-291 — barrel: 1600ms InOutQuad.
                             property <float> bp: mod(self.raw-ms, 1600.0) / 1600.0;
                             property <float> bq: self.bp < 0.5 ? 2 * self.bp * self.bp
@@ -1273,7 +1287,7 @@ export component Bubble inherits Rectangle {
                             }
                             // Glitch: chromatic copies behind the glyph in jitter
                             // windows (530ms cycle, lead -2px, trail +1.5px, alpha 0.7).
-                            property <float> glitch-t: mod((animation-tick() / 1ms) + c.idx * 53.0, 530.0);
+                            property <float> glitch-t: mod((root.clock / 1ms) + c.idx * 53.0, 530.0);
                             property <bool> glitch-on: c.anim == "glitch" && self.glitch-t < 270.0;
                             if c.anim == "glitch" : Text {
                                 text: c.ch; color: #FF2640;

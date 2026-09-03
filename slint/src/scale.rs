@@ -20,7 +20,7 @@ use std::sync::OnceLock;
 #[cfg(not(target_os = "android"))]
 pub const UI_SCALE: f32 = 1.25;
 #[cfg(target_os = "android")]
-pub const UI_SCALE: f32 = 1.35;
+pub const UI_SCALE: f32 = 1.0;
 
 #[cfg(target_os = "android")]
 static ANDROID: OnceLock<slint::android::AndroidApp> = OnceLock::new();

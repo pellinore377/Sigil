@@ -125,10 +125,17 @@ export component ChatPage inherits Rectangle {
     callback decline-invite;
     callback paginate;
     callback menu-action(string /*action*/, string /*event-id*/);
-    /// Take the page's picture before the sheet frosts it: (x, y, w, h) of the pressed bubble.
+    /// Take the pressed bubble's picture before the sheet hides it: (x, y, w, h)
+    /// of the bubble, logical lengths from the window's origin (absolute-position).
     callback sheet-snapshot(length, length, length, length);
+    /// Take the window's picture for the sheet's frost — the bubble is hidden by now.
+    callback sheet-frost;
     in property <image> sheet-backdrop;
     in property <image> sheet-copy;
+    /// The window's zones above and below this page (status bar and sync
+    /// strip; gesture bar or keyboard) that the sheet's frost must cover too.
+    in property <length> bleed-top: 0px;
+    in property <length> bleed-bottom: 0px;
     callback react(string, string);
     callback reply-arm(string, string, string); // sheet "reply" → arm composer
     callback open-image(TimelineRow);
@@ -183,12 +190,14 @@ export component ChatPage inherits Rectangle {
     /// harness cannot reach into the list's bubbles).
     public function sheet-open(it: TimelineRow, x: length, y: length, w: length, h: length) {
         sheet.item = it;
+        // The bubble's picture first, while the original is still drawn …
         root.sheet-snapshot(x, y, w, h);
         root.menu-action("prepare", it.event-id);
-        // The press is measured in the window; the sheet lives in the page,
-        // which sits below the safe area and status strip (app.slint:437-471)
-        // — without the shift the copy takes off from beside the bubble.
-        sheet.open-for(x - root.absolute-position.x, y - root.absolute-position.y, w, h);
+        // … then the sheet, in window coordinates: it subtracts its own
+        // absolute-position (safe area, status strip, holder — app.slint:443-492)
+        // so the copy takes off exactly on the bubble, and hides the original
+        // before taking the frost's picture (sheet-frost).
+        sheet.open-for(x, y, w, h);
     }
     public function sheet-close() { sheet.open = false; }
     /// Whatever is staged goes: a voice clip, a caption, an edit, a reply, or plain text.
@@ -292,7 +301,7 @@ export component ChatPage inherits Rectangle {
     /// header's own ground above, the composer's below, so the insets read
     /// as part of the page rather than as bars.
     out property <color> top-ground: root.themed ? root.chrome-c : Theme.card-ground;
-    out property <color> bottom-ground: root.convo-c.with-alpha(0.94).mix(Theme.card-ground, 0.94);
+    out property <color> bottom-ground: root.phone ? root.convo-c : root.convo-c.with-alpha(0.94).mix(Theme.card-ground, 0.94);
     property <color> convo-c: root.themed
         ? Theme.menu-background.darker(0.35).mix(root.accent, 0.82)
         : Theme.menu-background.darker(0.35);
@@ -490,8 +499,11 @@ export component ChatPage inherits Rectangle {
         convo := Rectangle {
             vertical-stretch: 1;
             background: root.convo-c.with-alpha(0.94);
-            border-top-left-radius: root.phone ? 0px : 24px;
-            border-top-right-radius: root.phone ? 0px : 24px;
+            // The phone keeps the platform messenger's sheet: rounded where it
+            // meets the header, square at the bottom, the composer and the
+            // gesture zone on the same ground.
+            border-top-left-radius: root.phone ? 28px : 24px;
+            border-top-right-radius: root.phone ? 28px : 24px;
             border-bottom-left-radius: root.phone ? 0px : 22px;
             border-bottom-right-radius: root.phone ? 0px : 22px;
             clip: true;
@@ -543,6 +555,9 @@ export component ChatPage inherits Rectangle {
                     }
                     for item in root.items : Bubble {
                         item: item;
+                        // a screen's height of slack either side keeps entries smooth
+                        on-screen: self.y + self.height > -list.viewport-y - list.height
+                            && self.y < -list.viewport-y + 2 * list.height;
                         boot-epoch-s: root.boot-epoch-s;
                         fg: root.fg;
                         accent: root.accent;
@@ -553,14 +568,15 @@ export component ChatPage inherits Rectangle {
                             sheet.item = it;
                             root.sheet-snapshot(x, y, w, h);
                             root.menu-action("prepare", it.event-id);
-                            // Window → page coordinates, as in sheet-open.
-                            sheet.open-for(x - root.absolute-position.x, y - root.absolute-position.y, w, h);
+                            // Window coordinates; the sheet converts (sheet-open).
+                            sheet.open-for(x, y, w, h);
                         }
                         // MessageSheet.qml:205 hideSource: the pressed bubble
                         // vanishes for the sheet's whole life, fly-home too —
-                        // the copy stands in for it. Snapshots are taken while
-                        // `shown` is still false, so the copy keeps its pixels.
-                        sheet-lit: sheet.shown && item.event-id != ""
+                        // the copy stands in for it. `hide-source` rises after
+                        // the bubble's own picture and before the frost's, so
+                        // the copy keeps its pixels and the frost has none.
+                        sheet-lit: sheet.hide-source && item.event-id != ""
                             && sheet.item.event-id == item.event-id;
                         reply-requested(e, n, b) => { root.arm-reply(e, n, b); }
                         open-image(it) => { root.open-image(it); }
@@ -665,7 +681,7 @@ export component ChatPage inherits Rectangle {
                 composer := Rectangle {
                     height: root.composer-h;
                     visible: !root.is-invite;
-                    background: root.convo-c.with-alpha(0.55);
+                    background: root.phone ? transparent : root.convo-c.with-alpha(0.55);
                     // inputPill: fill only, no focus border, radius 19; parent
                     // minus the send disc and the 8px spacing.
                     well := Rectangle {
@@ -1148,6 +1164,13 @@ export component ChatPage inherits Rectangle {
         backdrop: root.sheet-backdrop;
         copy-image: root.sheet-copy;
         width: 100%; height: 100%;
+        // The frost reaches the window's zones around the page.
+        bleed-top: root.bleed-top;
+        bleed-bottom: root.bleed-bottom;
+        frost-snapshot => { root.sheet-frost(); }
+        // The frost mask and the bottom sheets follow the page's corners: the
+        // desktop card's 22, square on the phone (convo above).
+        card-radius: root.phone ? 0px : 22px;
         fg: root.fg;
         accent: root.accent;
         // Panel.qml:1370-1373 — a themed room hands the sheet the chat's own

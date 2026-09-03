@@ -67,15 +67,19 @@ export global Theme {
 
     // Type scale — Style.font.* in QML, VERBATIM. (An early "one step up
     // for phones" deviation lived here and made everything read oversized.)
-    out property <length> caption: 10px;
-    out property <length> body-small: 11px;
-    out property <length> body: 12px;
-    out property <length> subtitle: 13px;
-    out property <length> title: 14px;
-    out property <length> heading: 16px;
-    out property <length> display: 24px;
-    out property <length> icon-size: 14px;
-    out property <length> icon-large: 18px;
+    // On the phone the window is 1:1 with the platform's dp, so these are
+    // the platform messenger's sp values (body 16, list title 16, page
+    // title 22) rather than the desktop card's.
+    property <bool> phone: mode != "desktop";
+    out property <length> caption: phone ? 12px : 10px;
+    out property <length> body-small: phone ? 14px : 11px;
+    out property <length> body: phone ? 16px : 12px;
+    out property <length> subtitle: phone ? 16px : 13px;
+    out property <length> title: phone ? 17px : 14px;
+    out property <length> heading: phone ? 22px : 16px;
+    out property <length> display: phone ? 28px : 24px;
+    out property <length> icon-size: phone ? 20px : 14px;
+    out property <length> icon-large: phone ? 24px : 18px;
 
     // Spacing steps — Style.spacing.* in QML.
     out property <length> sp-sm: 6px;

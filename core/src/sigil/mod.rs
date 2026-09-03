@@ -52,8 +52,8 @@ pub struct SigilSession {
     /// Whether the last backup upload succeeded, for `recovery.status`.
     backed_up: std::sync::atomic::AtomicBool,
     /// Whether the server keeps a password-locked copy of the recovery key
-    /// (its card's escrow flag), for `recovery.status`.
-    escrow: bool,
+    /// (its card's escrow flag), for `recovery.status`; learned after start.
+    escrow: std::sync::atomic::AtomicBool,
 }
 
 fn account_path() -> PathBuf {
@@ -156,10 +156,15 @@ pub async fn restore(engine: &SharedEngine) -> bool {
     true
 }
 
+fn session_server(username: &str) -> String {
+    username.split_once(':').map(|(_, s)| s.to_string()).unwrap_or_default()
+}
+
 async fn start(engine: &SharedEngine, acct: Account) -> anyhow::Result<()> {
     let provider = SigilProvider::open(&acct.mls_path())?;
+    let t0 = std::time::Instant::now();
     let link = Arc::new(connect(&acct.envoy, &acct.device_id).await?);
-    let escrow = link.server_card(&acct.server()).await.map(|c| c.flags & 0b1000 != 0).unwrap_or(false);
+    tracing::info!("session: connected in {:?}", t0.elapsed());
     {
         let sh = load_shape();
         if sh.clocked_seconds > 0 {
@@ -203,12 +208,22 @@ async fn start(engine: &SharedEngine, acct: Account) -> anyhow::Result<()> {
         pending_scan: Mutex::new(None),
         dirty: std::sync::atomic::AtomicBool::new(false),
         backed_up: std::sync::atomic::AtomicBool::new(false),
-        escrow,
+        escrow: std::sync::atomic::AtomicBool::new(false),
     });
     *engine.sigil.lock() = Some(session.clone());
     engine.set_session(SessionState::LoggedIn);
+    // The card's escrow flag is only read by recovery.status: off the
+    // critical path, so the room list is not held behind a round trip.
+    let (s3, server3) = (session.clone(), session_server(&session.username));
+    tokio::spawn(async move {
+        if let Ok(c) = s3.link.server_card(&server3).await {
+            s3.escrow.store(c.flags & 0b1000 != 0, std::sync::atomic::Ordering::Relaxed);
+        }
+    });
     session.subscribe_all(engine).await;
+    tracing::info!("session: subscribed in {:?}", t0.elapsed());
     session.broadcast_rooms(engine).await;
+    tracing::info!("session: rooms broadcast in {:?}", t0.elapsed());
     let (e2, s2) = (engine.clone(), session.clone());
     tokio::spawn(async move { s2.delivery_loop(e2).await });
     let (e4, s4) = (engine.clone(), session.clone());
@@ -675,6 +690,7 @@ pub async fn dispatch(engine: &SharedEngine, req: &Request) -> Option<Reply> {
         "room.leave" => s.leave(engine, &param(p, "roomId")).await,
         "room.members" => s.members(&param(p, "roomId")).await,
         "users.search" => s.search(&param(p, "query")).await,
+        "search.global" => s.search_global(p).await,
         "link.scan" => s.link_scan(engine, &param(p, "offer")).await,
         "recovery.code" => match sigil_client::backup::code(&s.inner.lock().await.0) {
             Some(code) => Reply::ok(json!({"code": code})),
@@ -1080,7 +1096,7 @@ impl SigilSession {
             "event": "recovery.status",
             "recovery": if enabled { "enabled" } else { "disabled" },
             "backup": if !enabled { "disabled" } else if self.backed_up.load(std::sync::atomic::Ordering::Relaxed) { "enabled" } else { "pending" },
-            "escrow": self.escrow,
+            "escrow": self.escrow.load(std::sync::atomic::Ordering::Relaxed),
             "verified": true,
         })
     }

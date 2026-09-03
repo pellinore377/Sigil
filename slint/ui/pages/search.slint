@@ -2,11 +2,17 @@
 // links when idle (SearchPage.qml). The collect() pass over the open timeline
 // runs in the bridge; rows arrive as TimelineRow projections — text results
 // carry sender-name + body, images carry thumb, links carry the url in body.
+//
+// On the phone it is the platform messenger's search instead: one pill at
+// the top, a grid of filter chips while the query is empty, then rows across
+// every room (engine search.global) — or one room when opened from a chat.
 
 import { Theme } from "../style.slint";
 import { Icons } from "../icons.slint";
 import { IconLabel, ActionButton, Avatar } from "../components.slint";
-import { TimelineRow } from "../model.slint";
+import { TouchList } from "../furniture.slint";
+import { ChatRow } from "../home.slint";
+import { TimelineRow, RoomRow, SearchHit } from "../model.slint";
 
 export component SearchPage inherits Rectangle {
     in property <color> fg: Theme.menu-text;
@@ -14,17 +20,30 @@ export component SearchPage inherits Rectangle {
     in property <[TimelineRow]> images;     // newest images, idle view
     in property <[TimelineRow]> links;      // newest links, idle view
     in property <bool> searching;           // query ≥ 2 chars
+    // the phone's page
+    in property <[RoomRow]> rooms;          // room hits
+    in property <[SearchHit]> hits;         // message hits
+    in-out property <string> kind;          // the chip filter, "" for none
+    in property <bool> global;              // opened from home: every room
+    in property <bool> shown;               // the current page: the field takes focus
+    in-out property <string> query;
 
     callback closed;
     callback search-edited(string);
     callback jump-to(string);
     callback open-image(string);            // eventId
     callback open-link(string);             // url (in body)
+    callback kind-picked(string);           // a chip, or "" when cleared
+    callback open-room(string);             // a room hit
+    callback open-hit(string, string);      // roomId, eventId
 
-    public function reset() { search-input.text = ""; }
+    public function reset() { root.query = ""; root.kind = ""; }
 
-    background: Theme.menu-background.brighter(0.35);
+    property <bool> phone: Theme.mode != "desktop";
+    background: root.phone ? Theme.background : Theme.menu-background.brighter(0.35);
 
+    if !root.phone : Rectangle {
+    width: 100%; height: 100%;
     VerticalLayout {
         // Header: back + search pill filling the rest.
         header := Rectangle {
@@ -63,6 +82,7 @@ export component SearchPage inherits Rectangle {
                             Rectangle {
                                 clip: true;
                                 search-input := TextInput {
+                                    text <=> root.query;
                                     color: root.fg;
                                     font-family: Theme.font-ui;
                                     font-size: Theme.body;
@@ -220,6 +240,187 @@ export component SearchPage inherits Rectangle {
                     }
                     // The body may be middle-elided; the tap uses the full url.
                     TouchArea { clicked => { root.open-link(l.link-url != "" ? l.link-url : l.body); } }
+                }
+            }
+        }
+    }
+    }   // desktop
+
+    pure function kind-label(k: string) -> string {
+        if (k == "unread") { return "Unread"; }
+        if (k == "known") { return "Known"; }
+        if (k == "unknown") { return "Unknown"; }
+        if (k == "starred") { return "Starred"; }
+        if (k == "images") { return "Images"; }
+        if (k == "videos") { return "Videos"; }
+        if (k == "places") { return "Places"; }
+        if (k == "links") { return "Links"; }
+        return "";
+    }
+
+    if root.phone : phone-tree := Rectangle {
+        width: 100%; height: 100%;
+        property <color> accent-container: Theme.mode == "dark"
+            ? Theme.accent.mix(Theme.background, 0.42)
+            : Theme.accent.mix(Theme.background, 0.22);
+        property <bool> idle: root.query == "" && root.kind == "";
+        property <bool> on: root.shown;
+        changed on => { if (self.on) { phone-input.focus(); } }
+
+        VerticalLayout {
+            // The pill: 16 in, 8 down, 52 tall; the back arrow's 24 glyph at
+            // x 24 inside it, the field from 64.
+            Rectangle {
+                height: 60px;
+                ppill := Rectangle {
+                    x: 16px; y: 8px;
+                    width: parent.width - 32px; height: 52px;
+                    border-radius: 26px;
+                    background: Theme.bubble-other;
+                    Rectangle {
+                        x: 12px; y: 2px; width: 48px; height: 48px;
+                        border-radius: 24px;
+                        background: back-t.pressed ? Theme.menu-text.with-alpha(0.10) : transparent;
+                        IconLabel {
+                            text: Icons.back;
+                            font-size: 24px;
+                            color: Theme.menu-text;
+                            width: 100%; height: 100%;
+                        }
+                        // With a chip in force the arrow first returns to the grid.
+                        back-t := TouchArea {
+                            clicked => {
+                                if (root.kind != "") { root.kind = ""; root.kind-picked(""); }
+                                else { root.closed(); }
+                            }
+                        }
+                    }
+                    Rectangle {
+                        x: 64px; width: ppill.width - 64px - (root.query != "" ? 60px : 16px);
+                        height: 100%;
+                        clip: true;
+                        phone-input := TextInput {
+                            text <=> root.query;
+                            color: Theme.menu-text;
+                            font-family: Theme.font-ui;
+                            font-size: 16px;
+                            vertical-alignment: center;
+                            height: 100%; width: 100%;
+                            single-line: true;
+                            edited => { root.search-edited(self.text); }
+                        }
+                        if root.query == "" : Text {
+                            text: root.kind != "" ? root.kind-label(root.kind)
+                                : root.global ? "Search messages" : "Search conversation";
+                            color: Theme.muted;
+                            font-family: Theme.font-ui;
+                            font-size: 16px;
+                            vertical-alignment: center;
+                            height: 100%;
+                        }
+                    }
+                    if root.query != "" : Rectangle {
+                        x: ppill.width - 12px - 48px; y: 2px; width: 48px; height: 48px;
+                        border-radius: 24px;
+                        background: clear-t.pressed ? Theme.menu-text.with-alpha(0.10) : transparent;
+                        IconLabel {
+                            text: Icons.close;
+                            font-size: 24px;
+                            color: Theme.menu-text;
+                            width: 100%; height: 100%;
+                        }
+                        clear-t := TouchArea {
+                            clicked => { root.query = ""; root.search-edited(""); phone-input.focus(); }
+                        }
+                    }
+                }
+            }
+
+            // Filter chips, two to a row: 16 margins, 8 gaps, 60 tall.
+            if phone-tree.idle : grid := Rectangle {
+                height: 16px + 4 * 60px + 3 * 8px;
+                property <length> cw: (self.width - 32px - 8px) / 2;
+                for chip[i] in [
+                    { label: "Unread",  kind: "unread",  icon: Icons.email },
+                    { label: "Known",   kind: "known",   icon: Icons.person },
+                    { label: "Unknown", kind: "unknown", icon: Icons.personAdd },
+                    { label: "Starred", kind: "starred", icon: Icons.star },
+                    { label: "Images",  kind: "images",  icon: Icons.image },
+                    { label: "Videos",  kind: "videos",  icon: Icons.videoOn },
+                    { label: "Places",  kind: "places",  icon: Icons.location },
+                    { label: "Links",   kind: "links",   icon: Icons.link },
+                ] : Rectangle {
+                    x: 16px + mod(i, 2) * (grid.cw + 8px);
+                    y: 16px + floor(i / 2) * 68px;
+                    width: grid.cw; height: 60px;
+                    border-radius: 16px;
+                    background: chip-t.pressed ? Theme.bubble-other.brighter(0.15) : Theme.bubble-other;
+                    IconLabel {
+                        x: 24px;
+                        text: chip.icon;
+                        font-size: 24px;
+                        color: Theme.menu-text;
+                        vertical-alignment: center;
+                        height: 100%;
+                    }
+                    Text {
+                        x: 72px;
+                        text: chip.label;
+                        color: Theme.menu-text;
+                        font-family: Theme.font-ui;
+                        font-size: 16px;
+                        vertical-alignment: center;
+                        height: 100%;
+                    }
+                    chip-t := TouchArea { clicked => { root.kind = chip.kind; root.kind-picked(chip.kind); } }
+                }
+            }
+            if phone-tree.idle : Rectangle { }
+
+            // Hits: rooms, then messages, in the home row's shape.
+            if !phone-tree.idle : TouchList {
+                vertical-stretch: 1;
+                if root.rooms.length > 0 : Text {
+                    text: "Chats";
+                    color: Theme.muted;
+                    font-family: Theme.font-ui;
+                    font-size: 14px;
+                    font-weight: 500;
+                    x: 16px; height: 36px;
+                    vertical-alignment: center;
+                }
+                for r in root.rooms : ChatRow {
+                    name: r.name; avatar: r.avatar; initials: r.initials; tint: r.tint;
+                    preview: r.preview; preview-icon: r.preview-icon; stamp: r.stamp;
+                    badge: r.badge; badge-urgent: r.badge-urgent; unread: r.unread;
+                    is-favourite: r.is-favourite; is-invite: r.is-invite;
+                    is-typing: r.is-typing; has-call: r.has-call; draft: r.draft;
+                    accent-container: phone-tree.accent-container;
+                    clicked => { root.open-room(r.id); }
+                }
+                if root.hits.length > 0 : Text {
+                    text: "Messages";
+                    color: Theme.muted;
+                    font-family: Theme.font-ui;
+                    font-size: 14px;
+                    font-weight: 500;
+                    x: 16px; height: 36px;
+                    vertical-alignment: center;
+                }
+                for h in root.hits : ChatRow {
+                    name: h.room-name; avatar: h.avatar; initials: h.initials; tint: h.tint;
+                    preview: h.body; preview-icon: h.icon; stamp: h.stamp;
+                    accent-container: phone-tree.accent-container;
+                    clicked => { root.open-hit(h.room-id, h.event-id); }
+                }
+                if root.rooms.length == 0 && root.hits.length == 0 : Text {
+                    text: "No matches";
+                    color: Theme.muted;
+                    font-family: Theme.font-ui;
+                    font-size: 16px;
+                    horizontal-alignment: center;
+                    height: 72px;
+                    vertical-alignment: center;
                 }
             }
         }

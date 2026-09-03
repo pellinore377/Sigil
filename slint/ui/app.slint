@@ -12,7 +12,7 @@ import { SettingsPage } from "pages/settings.slint";
 import { HomePage } from "home.slint";
 import { ChatPage } from "chat.slint";
 import { PageHolder, MenuEntry, ChoiceSheet } from "furniture.slint";
-import { RoomRow, TimelineRow, MemberRow, ThreadRow, UserRow, RoomSettingsModel, ReactionChip, EmojiItem, ReplyRef, CallParticipant, DeviceRow, PollOption, ReaderRow, DocLine, MsgPart, FxChar } from "model.slint";
+import { RoomRow, SearchHit, TimelineRow, MemberRow, ThreadRow, UserRow, RoomSettingsModel, ReactionChip, EmojiItem, ReplyRef, CallParticipant, DeviceRow, PollOption, ReaderRow, DocLine, MsgPart, FxChar } from "model.slint";
 
 import { StartPage } from "pages/start.slint";
 import { ForwardPage } from "pages/forward.slint";
@@ -168,6 +168,12 @@ export component AppWindow inherits Window {
     in property <[TimelineRow]> se-images;
     in property <[TimelineRow]> se-links;
     in property <bool> se-searching;
+    // the phone's search (engine search.global)
+    in property <[RoomRow]> se-rooms;
+    in property <[SearchHit]> se-hits;
+    in-out property <string> se-kind;
+    in-out property <bool> se-global;     // opened from home: every room
+    in property <[RoomRow]> all-rooms;    // the phone home's one list
 
     in property <[ThreadRow]> th-threads;
     in property <bool> th-loading;
@@ -367,6 +373,7 @@ export component AppWindow inherits Window {
     /// Everything else: one channel, Service.qml's function table.
     callback act(string, string, string);
     callback sheet-snapshot(length, length, length, length);
+    callback sheet-frost;
 
     public function scroll-timeline-to-end() { chat.scroll-to-end(); }
     public function restore-timeline-from-end(d: length) { chat.restore-from-end(d); }
@@ -376,6 +383,7 @@ export component AppWindow inherits Window {
     public function debug-sheet-close() { chat.sheet-close(); }
     in-out property <int> home-tab: 0;
     public function set-home-tab(t: int) { root.home-tab = t; }
+    public function debug-search-query(q: string) { search-page.query = q; }
     out property <string> ct-composer-text: chat.composer-text;
     out property <int> ct-composer-cursor: chat.composer-cursor;
     public function chat-composer-set(t: string, cursor: int, take-focus: bool) { chat.set-composer(t, cursor, take-focus); }
@@ -384,7 +392,7 @@ export component AppWindow inherits Window {
         if (page == "addpeople") { addpeople-page.reset(); }
         if (page == "start") { start-page.reset(); }
         if (page == "forward") { forward-page.reset(); }
-        if (page == "search") { search-page.reset(); }
+        if (page == "search") { search-page.reset(); root.se-global = root.nav == "home"; }
         root.nav = page;
         root.nav-opened(page);
     }
@@ -392,6 +400,7 @@ export component AppWindow inherits Window {
     public function go-back() {
         if (root.nav == "thread") { root.go("threads"); return; }
         if (root.nav == "threads" || root.nav == "pins") { root.go("chat"); return; }
+        if (root.nav == "search" && root.se-global) { root.nav = "home"; return; }
         if (root.nav == "forward" || root.nav == "search" || root.nav == "chattheme"
             || root.nav == "roomsettings" || root.nav == "doc" || root.nav == "audio"
             || root.nav == "map") { root.go("chat"); return; }
@@ -455,7 +464,10 @@ export component AppWindow inherits Window {
         border-radius: root.card-frame ? 22px : 0px;
         border-width: root.card-frame ? 2px : 0px;
         border-color: Theme.menu-border;
-        clip: true;
+        // The card clips to its rounded frame; the phone does not, so a
+        // page's overlay (the message sheet's frost) can bleed into the
+        // inset zones above and below and cover the whole screen.
+        clip: root.card-frame;
 
         // Engine / sync status strip, card-wide chrome above every page
         // (Panel.qml:491-501): 22 tall, urgent@0.18, caption in the
@@ -527,6 +539,7 @@ export component AppWindow inherits Window {
             width: 100%; height: 100%;
             rooms: root.rooms;
             requests: root.requests;
+            all-rooms: root.all-rooms;
             tab <=> root.home-tab;
             my-initials: root.my-initials;
             my-avatar: root.my-avatar;
@@ -536,6 +549,7 @@ export component AppWindow inherits Window {
             sync-line: root.sync-line;
             room-clicked(id) => { root.room-clicked(id); root.nav = "chat"; }
             search-edited(q) => { root.search-edited(q); }
+            open-search => { root.go("search"); }
             new-chat => { root.go("start"); }
             open-settings => { root.go("settings"); }
             sign-out => { root.sign-out(); }
@@ -544,7 +558,7 @@ export component AppWindow inherits Window {
         chat-holder := PageHolder {
             // Panel.qml:68-70 chatUnder: the navs that keep the chat stacked
             // underneath; anything else slides it out too.
-            active: root.in-session && (root.nav == "chat" || root.nav == "search" || root.nav == "roomsettings"
+            active: root.in-session && (root.nav == "chat" || (root.nav == "search" && !root.se-global) || root.nav == "roomsettings"
                 || root.nav == "chattheme" || root.nav == "forward" || root.nav == "map" || root.nav == "doc"
                 || root.nav == "threads" || root.nav == "thread" || root.nav == "pins"
                 || (root.nav == "addpeople" && root.add-return == "chat"));
@@ -599,6 +613,11 @@ export component AppWindow inherits Window {
                 sheet-backdrop: root.sheet-backdrop;
                 sheet-copy: root.sheet-copy;
                 sheet-snapshot(x, y, w, h) => { root.sheet-snapshot(x, y, w, h); }
+                sheet-frost => { root.sheet-frost(); }
+                // Everything the window paints around the page: the sheet's
+                // frost covers it too (the snapshot is of the whole window).
+                bleed-top: root.safe-area-insets.top + status-strip.height;
+                bleed-bottom: max(root.safe-area-insets.bottom, root.kb-overlap);
                 typing-line: root.typing-line;
                 typing-avatar: root.typing-avatar;
                 typing-initials: root.typing-initials;
@@ -684,6 +703,13 @@ export component AppWindow inherits Window {
                 width: 100%; height: 100%;
                 results: root.se-results; images: root.se-images; links: root.se-links;
                 searching: root.se-searching;
+                rooms: root.se-rooms; hits: root.se-hits;
+                kind <=> root.se-kind;
+                global: root.se-global;
+                shown: root.nav == "search";
+                kind-picked(k) => { root.act("search-kind", k, ""); }
+                open-room(id) => { root.room-clicked(id); root.nav = "chat"; }
+                open-hit(rid, ev) => { root.act("open-hit", rid, ev); }
                 closed => { root.go-back(); }
                 search-edited(q) => { root.act("room-search", q, ""); }
                 jump-to(ev) => { root.nav = "chat"; root.act("jump-to", ev, ""); }

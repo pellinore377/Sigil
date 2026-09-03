@@ -111,6 +111,7 @@ pub struct UiState {
     pub settings_room: String, // roomId the settings pages serve
     pub settings: Value,       // last room.settings reply
     pub search_query: String,
+    pub search_epoch: u64,
     pub forward_query: String,
     pub forward_item: Value, // staged message for forward
     pub start_query_epoch: u64,
@@ -267,6 +268,7 @@ pub fn start(win: &AppWindow, rt: &tokio::runtime::Runtime, icons: IconSet) -> R
         settings_room: String::new(),
         settings: Value::Null,
         search_query: String::new(),
+        search_epoch: 0,
         forward_query: String::new(),
         forward_item: Value::Null,
         start_query_epoch: 0,
@@ -1381,9 +1383,17 @@ pub fn rebuild_rooms(ui: &mut UiState, win: &AppWindow) {
             chats.push(row);
         }
     }
+    // The phone's one list: pinned first, then by time, requests among the rest.
+    let mut all: Vec<&Value> = rooms_json
+        .iter()
+        .filter(|r| q.is_empty() || r["name"].as_str().unwrap_or("").to_lowercase().contains(&q))
+        .collect();
+    all.sort_by_key(|r| (!r["isFavourite"].as_bool().unwrap_or(false), -r["lastActivityTs"].as_i64().unwrap_or(0)));
+    let all: Vec<RoomRow> = all.into_iter().map(|r| room_row_of(ui, r)).collect();
     ui.rooms_json = rooms_json;
     win.set_rooms(ModelRc::new(VecModel::from(chats)));
     win.set_requests(ModelRc::new(VecModel::from(requests)));
+    win.set_all_rooms(ModelRc::new(VecModel::from(all)));
     if !ui.open_room.is_empty() {
         set_chat_header(ui, win);
     }
@@ -2218,6 +2228,7 @@ fn start_demo(win: &AppWindow, rt: &tokio::runtime::Runtime, icons: IconSet) -> 
         settings_room: String::new(),
         settings: Value::Null,
         search_query: String::new(),
+        search_epoch: 0,
         forward_query: String::new(),
         forward_item: Value::Null,
         start_query_epoch: 0,

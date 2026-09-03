@@ -598,6 +598,93 @@ impl SigilSession {
         Reply::ok(json!({"threads": threads}))
     }
 
+    /// The home search: `query` over every room's name and history, `kind`
+    /// narrowing to unread/known/unknown/starred rooms or to images/videos/
+    /// places/links messages, `roomId` scoping the messages to one room.
+    /// Reply: {rooms: [room rows], messages: [{roomId, roomName, eventId,
+    /// body, ts, kind, sender, senderName, isOwn}]}.
+    pub(super) async fn search_global(&self, p: &serde_json::Map<String, Value>) -> Reply {
+        let q = param(p, "query").trim().to_lowercase();
+        let kind = param(p, "kind");
+        let scope = split_key(&param(p, "roomId")).0;
+        if q.is_empty() && kind.is_empty() {
+            return Reply::ok(json!({"rooms": [], "messages": []}));
+        }
+        let (convs, reqs) = {
+            let g = self.inner.lock().await;
+            (g.0.conversations.clone(), g.0.requests.clone())
+        };
+        let contacts: std::collections::HashSet<String> = load_contacts()
+            .iter()
+            .filter_map(|c| c["userId"].as_str().map(str::to_lowercase))
+            .collect();
+        let h = self.history.lock();
+        let mut rooms: Vec<Value> = convs
+            .iter()
+            .map(|c| super::room_json(c, h.get(&c.group_id).map(Vec::as_slice).unwrap_or(&[])))
+            .chain(reqs.iter().map(super::request_room_json))
+            .filter(|r| q.is_empty() || r["name"].as_str().unwrap_or("").to_lowercase().contains(&q))
+            .filter(|r| {
+                let peer = r["dmUserId"].as_str().unwrap_or("").to_lowercase();
+                let known = r["isDm"].as_bool().unwrap_or(false) && contacts.contains(&peer);
+                match kind.as_str() {
+                    "" => true,
+                    "unread" => r["unread"].as_i64().unwrap_or(0) > 0,
+                    "known" => known,
+                    "unknown" => !known,
+                    "starred" => r["isFavourite"].as_bool().unwrap_or(false),
+                    _ => false,
+                }
+            })
+            .collect();
+        rooms.sort_by_key(|r| -r["lastActivityTs"].as_i64().unwrap_or(0));
+        fn item_kind(it: &Value) -> &str {
+            it["kind"].as_str().unwrap_or("")
+        }
+        let has_link = |it: &Value| {
+            it["body"].as_str().unwrap_or("").split_whitespace().any(|w| w.starts_with("http://") || w.starts_with("https://"))
+        };
+        let wanted = |it: &Value| match kind.as_str() {
+            "" => item_kind(it) != "image",
+            "images" => item_kind(it) == "image",
+            "videos" => item_kind(it) == "video",
+            "places" => matches!(item_kind(it), "location" | "liveLocation"),
+            "links" => has_link(it),
+            _ => false,
+        };
+        let mut messages: Vec<Value> = Vec::new();
+        for c in &convs {
+            if !scope.is_empty() && c.group_id != scope {
+                continue;
+            }
+            let Some(items) = h.get(&c.group_id) else { continue };
+            let name = super::room_json(c, items)["name"].clone();
+            for it in items.iter().rev() {
+                if !wanted(it) || item_kind(it) == "dayDivider" {
+                    continue;
+                }
+                let body = it["body"].as_str().unwrap_or("");
+                if !q.is_empty() && !body.to_lowercase().contains(&q) {
+                    continue;
+                }
+                messages.push(json!({
+                    "roomId": c.group_id,
+                    "roomName": name,
+                    "eventId": it["eventId"],
+                    "body": body,
+                    "ts": it["ts"],
+                    "kind": item_kind(it),
+                    "sender": it["sender"],
+                    "senderName": it["senderName"],
+                    "isOwn": it["isOwn"].as_bool().unwrap_or(false),
+                }));
+            }
+        }
+        messages.sort_by_key(|m| std::cmp::Reverse(m["ts"].as_i64().unwrap_or(0)));
+        messages.truncate(80);
+        Reply::ok(json!({"rooms": rooms, "messages": messages}))
+    }
+
     /// A reply landed in a thread: the root's chip counts it.
     pub(super) fn note_thread_reply(&self, engine: &SharedEngine, room_id: &str, root: &str, reply: &Value) {
         let (body, sender, ts) = (
