@@ -16,6 +16,12 @@
 //!          its page, and a voice message.
 //!   groups create a group, add someone, wait for DRIVE_SYNC to appear (the
 //!          test lets them join first), make them admin, rename, leave.
+//!   caller create an account, start a conversation with @alice, and once
+//!          she answers start a voice call: hear her, react, mute, minimise,
+//!          hang up. Runs against a second drive playing `callee`.
+//!   callee create an account, accept the stranger's conversation, answer,
+//!          take the incoming call, hear the caller, see the reaction, and
+//!          see the call end.
 //!   kinds  the home scenario, then a pin, a poll (voted on from both
 //!          sides, then ended), a thread, a sticker, a contact card, a
 //!          place, and a link preview; the test plays the other side.
@@ -67,6 +73,8 @@ fn main() -> anyhow::Result<()> {
         "chat" => chat(&h, &app, &req, server, invite, &localpart),
         "groups" => groups(&h, &app, server, invite, &localpart),
         "kinds" => kinds(&h, &app, server, invite, &localpart),
+        "caller" => caller(&h, &app, server, invite, &localpart),
+        "callee" => callee(&h, &app, server, invite, &localpart),
         other => anyhow::bail!("unknown scenario {other}"),
     }
 }
@@ -222,12 +230,12 @@ fn home(
     // 4. reply
     app.invoke_send_message("hi back from bob".into());
     h.wait_until(
-        "the reply to show as our own",
+        "the reply to show as our own and sent",
         Duration::from_secs(60),
         || {
             app.get_items()
                 .iter()
-                .any(|i| i.is_own && i.body.contains("hi back from bob"))
+                .any(|i| i.is_own && i.body.contains("hi back from bob") && i.send_state == "sent")
         },
     )?;
     h.shoot("live-chat-replied")?;
@@ -490,6 +498,172 @@ fn chat(
         h.shoot("live-chat-retried")?;
     }
     println!("drive chat ok");
+    Ok(())
+}
+
+/// Bob calls Alice, who is another instance of this app (`callee`).
+fn caller(
+    h: &Harness,
+    app: &sigil_slint::AppWindow,
+    server: &str,
+    invite: &str,
+    localpart: &str,
+) -> anyhow::Result<()> {
+    enter(h, app, server, invite, localpart, "")?;
+    h.wait_until("rooms.list", Duration::from_secs(20), || {
+        app.get_rooms_loaded()
+    })?;
+    app.invoke_act("start-dm".into(), "@alice:sigil.test".into(), "".into());
+    h.wait_until("the conversation", Duration::from_secs(60), || {
+        app.get_nav() == "chat"
+    })?;
+    app.invoke_send_message("call me".into());
+    h.wait_until("alice's answer", Duration::from_secs(180), || {
+        app.get_items()
+            .iter()
+            .any(|i| !i.is_own && i.body.contains("ready"))
+    })?;
+    println!("alice is ready");
+    app.invoke_act("start-call".into(), "false".into(), "".into());
+    h.wait_until(
+        "the call to connect and alice to be heard",
+        Duration::from_secs(120),
+        || {
+            app.get_call_state() == "connected"
+                && app.get_call_tiles().row_count() == 2
+                && app
+                    .get_call_tiles()
+                    .row_data(0)
+                    .map(|t| t.speaking && t.display_name == "alice")
+                    .unwrap_or(false)
+                && app
+                    .get_call_tiles()
+                    .row_data(1)
+                    .map(|t| t.speaking)
+                    .unwrap_or(false)
+        },
+    )?;
+    println!("in the call, both heard");
+    h.shoot("live-call")?;
+    // alice says so in the conversation once she hears us; only then
+    // the things she has to see: the reaction, the mute, the end
+    h.wait_until("alice to have heard us", Duration::from_secs(120), || {
+        app.get_items()
+            .iter()
+            .any(|i| !i.is_own && i.body.contains("heard you"))
+    })?;
+    app.invoke_act("call-react".into(), "👍".into(), "".into());
+    h.wait_until("the reaction to float", Duration::from_secs(10), || {
+        app.get_call_floaters().row_count() > 0
+    })?;
+    h.shoot("live-call-react")?;
+    app.invoke_act("set-mic".into(), "false".into(), "".into());
+    h.wait_until("the mute", Duration::from_secs(10), || {
+        app.get_call_mic_muted()
+    })?;
+    h.shoot("live-call-muted")?;
+    app.invoke_act("call-minimize".into(), "".into(), "".into());
+    h.wait_until("the pill", Duration::from_secs(10), || {
+        !app.get_call_page_open()
+    })?;
+    h.shoot("live-call-pip")?;
+    // long enough for the other side to see the mute and the reaction
+    h.wait_until("a moment", Duration::from_secs(5), || false)
+        .ok();
+    app.invoke_act("hang-up".into(), "".into(), "".into());
+    h.wait_until("the call to end", Duration::from_secs(20), || {
+        !app.get_in_call()
+    })?;
+    println!("hung up");
+    // alice says goodbye once her side ends: the end announcement got there
+    h.wait_until("alice's goodbye", Duration::from_secs(60), || {
+        app.get_items()
+            .iter()
+            .any(|i| !i.is_own && i.body.contains("bye"))
+    })?;
+    println!("drive caller ok");
+    Ok(())
+}
+
+/// Alice, called by Bob (`caller`).
+fn callee(
+    h: &Harness,
+    app: &sigil_slint::AppWindow,
+    server: &str,
+    invite: &str,
+    localpart: &str,
+) -> anyhow::Result<()> {
+    enter(h, app, server, invite, localpart, "")?;
+    h.wait_until("rooms.list", Duration::from_secs(20), || {
+        app.get_rooms_loaded()
+    })?;
+    h.wait_until("bob's request", Duration::from_secs(180), || {
+        app.get_requests().row_count() > 0
+    })?;
+    let req = app.get_requests().row_data(0).expect("a request row");
+    app.invoke_room_clicked(req.id.clone());
+    h.wait_until("the request page", Duration::from_secs(20), || {
+        app.get_nav() == "chat" && app.get_chat_is_invite()
+    })?;
+    app.invoke_act("accept-invite".into(), "".into(), "".into());
+    h.wait_until("the conversation", Duration::from_secs(60), || {
+        app.get_requests().row_count() == 0 && app.get_rooms().row_count() == 1
+    })?;
+    let room = app.get_rooms().row_data(0).expect("the conversation row");
+    app.invoke_room_clicked(room.id.clone());
+    h.wait_until("bob's message", Duration::from_secs(60), || {
+        app.get_nav() == "chat" && app.get_items().iter().any(|i| i.body.contains("call me"))
+    })?;
+    app.invoke_send_message("ready".into());
+    h.wait_until("the incoming call", Duration::from_secs(180), || {
+        app.get_call_incoming()
+    })?;
+    println!("incoming call from {}", app.get_call_incoming_name());
+    h.shoot("live-call-incoming")?;
+    app.invoke_act("call-accept".into(), "false".into(), "".into());
+    let mut polls = 0u32;
+    h.wait_until(
+        "the call to connect and bob to be heard",
+        Duration::from_secs(120),
+        || {
+            polls += 1;
+            if polls % 40 == 0 {
+                println!("callee: {}", dump_call(app));
+            }
+            app.get_call_state() == "connected"
+                && app.get_call_tiles().row_count() == 2
+                && app
+                    .get_call_tiles()
+                    .row_data(0)
+                    .map(|t| t.speaking && t.display_name == "bob")
+                    .unwrap_or(false)
+        },
+    )?;
+    println!("in the call, bob heard");
+    h.shoot("live-call-callee")?;
+    app.invoke_send_message("heard you".into());
+    h.wait_until("bob's reaction", Duration::from_secs(60), || {
+        app.get_call_floaters().row_count() > 0
+    })?;
+    h.shoot("live-call-callee-react")?;
+    h.wait_until("bob's mute", Duration::from_secs(60), || {
+        app.get_call_tiles()
+            .row_data(0)
+            .map(|t| t.mic_muted)
+            .unwrap_or(false)
+    })?;
+    h.shoot("live-call-callee-muted")?;
+    h.wait_until("the call to end", Duration::from_secs(120), || {
+        !app.get_in_call()
+    })?;
+    println!("call ended");
+    app.invoke_send_message("bye".into());
+    h.wait_until("the goodbye to go", Duration::from_secs(60), || {
+        app.get_items()
+            .iter()
+            .any(|i| i.is_own && i.body == "bye" && i.send_state == "sent")
+    })?;
+    println!("drive callee ok");
     Ok(())
 }
 
@@ -864,4 +1038,27 @@ fn wav_tone() -> Vec<u8> {
         out.extend_from_slice(&s.to_le_bytes());
     }
     out
+}
+
+/// The call as the page sees it, one line, for the logs.
+fn dump_call(app: &sigil_slint::AppWindow) -> String {
+    let tiles: Vec<String> = app
+        .get_call_tiles()
+        .iter()
+        .map(|t| {
+            format!(
+                "{}:{}{}",
+                t.display_name,
+                if t.speaking { "speaking" } else { "quiet" },
+                if t.mic_muted { ",muted" } else { "" }
+            )
+        })
+        .collect();
+    format!(
+        "state={} status={} tiles=[{}] err={}",
+        app.get_call_state(),
+        app.get_call_status(),
+        tiles.join(" "),
+        app.get_call_error()
+    )
 }

@@ -491,10 +491,27 @@ and the coordinates stand in, and `location.map` says so), and "drop a
 pin" waits for a map to tap on. A `sigil-cli event` command sends any raw
 event, which is how the tests play the other side.
 
-**Phase 7. Calls.** The media stack in the order of 5.5, then `CallPage`,
-`CallGrid`, `CallPiP`, `CallBanner`, `CallBar`, the wide layout, devices,
-reactions. Voice calls ship at step 1; the pages are complete from the
-start because `call.state` has its final shape from the start.
+**Phase 7. Calls.** *Voice calls done; `slint/tests/e2e-call.sh` runs two
+copies of the app on one server: Bob calls Alice, both hear each other (a
+test tone stands in for the microphone), a reaction and a mute cross, he
+hangs up and her side ends.* The media stack in the order of 5.5, then
+`CallPage`, `CallGrid`, `CallPiP`, `CallBanner`, `CallBar`, the wide
+layout, devices, reactions. Voice calls ship at step 1; the pages are
+complete from the start because `call.state` has its final shape from the
+start.
+Done here: step 1 (`str0m` peer, `cpal` sound, Opus, levels and speaking,
+devices), step 5 (reactions, and the hello and mute that name and describe
+participants, as texts on the unit's data channel that it relays to the
+room and never to the conversation), and step 6 (every frame sealed under
+the conversation's epoch key before it leaves the device, wire spec 17, so
+the unit forwards what it cannot decode; a new epoch's key is fetched on
+demand). The call page, the pill, the banner, the device sheet and the
+floating reactions are wired; the engine gained `call.key`; the unit
+gained the channel relay and two fixes the two-app test found (its own
+outgoing media counted as tracks, and an answer on the channel read as a
+new offer, both of which bred tracks without end). Still to come, in the
+order of 5.5: video receive (2), the camera (3), screen share (4); the
+pages already carry the frame properties for them.
 
 **Phase 8. Platforms.** Android activity, file pickers (SAF, portal),
 system notifications from the engine's `notify` event, the omarchy toggle

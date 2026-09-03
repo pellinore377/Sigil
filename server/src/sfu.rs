@@ -319,6 +319,7 @@ fn propagate(propagated: &Propagated, peers: &mut [Peer]) {
         match propagated {
             Propagated::TrackOpen(_, track_in) => peer.handle_track_open(track_in.clone()),
             Propagated::MediaData(_, data) => peer.handle_media_data_out(origin, data),
+            Propagated::Channel(_, text) => peer.handle_channel_relay(text),
             Propagated::KeyframeRequest(_, req, target, mid_in) => {
                 if *target == peer.id {
                     peer.handle_keyframe_request(*req, *mid_in);
@@ -415,6 +416,8 @@ enum Propagated {
     MediaData(PeerId, MediaData),
     /// (from, request, track origin, origin's mid)
     KeyframeRequest(PeerId, KeyframeRequest, PeerId, Mid),
+    /// A text from one participant for the others in the room.
+    Channel(PeerId, String),
 }
 
 impl Propagated {
@@ -422,6 +425,7 @@ impl Propagated {
         match self {
             Propagated::TrackOpen(c, _)
             | Propagated::MediaData(c, _)
+            | Propagated::Channel(c, _)
             | Propagated::KeyframeRequest(c, _, _, _) => Some(*c),
             _ => None,
         }
@@ -502,7 +506,17 @@ impl Peer {
                     }
                     Propagated::Noop
                 }
-                Event::MediaAdded(m) => self.handle_media_added(m.mid, m.kind),
+                // Only media the participant sends is a track for the others;
+                // the ones we add to send them are not, or every renegotiation
+                // would breed tracks for everyone.
+                Event::MediaAdded(m) => {
+                    let ours = self.tracks_out.iter().any(|t| t.mid() == Some(m.mid));
+                    if ours || !matches!(m.direction, Direction::RecvOnly | Direction::SendRecv) {
+                        Propagated::Noop
+                    } else {
+                        self.handle_media_added(m.mid, m.kind)
+                    }
+                }
                 Event::MediaData(data) => self.handle_media_data_in(data),
                 Event::KeyframeRequest(req) => self.handle_incoming_keyframe_req(req),
                 Event::ChannelOpen(cid, _) => {
@@ -516,6 +530,12 @@ impl Peer {
     }
 
     fn handle_media_added(&mut self, mid: Mid, kind: MediaKind) -> Propagated {
+        tracing::debug!(
+            "unit: peer {} sends {:?} on {}",
+            hex::encode(&self.id[..4]),
+            kind,
+            mid
+        );
         let track_in = TrackInEntry {
             id: Arc::new(TrackIn {
                 origin: self.id,
@@ -612,15 +632,33 @@ impl Peer {
         true
     }
 
+    /// SDP on the channel is for the unit; anything else (a hello, a
+    /// reaction) goes to everyone else in the room, marked with its origin.
     fn handle_channel_data(&mut self, d: ChannelData) -> Propagated {
         if let Ok(text) = std::str::from_utf8(&d.data) {
-            if let Ok(offer) = SdpOffer::from_sdp_string(text) {
+            // An offer and an answer read the same; what tells them apart
+            // is whether we are waiting for an answer.
+            if text.starts_with('{') {
+                if text.len() <= 4096 {
+                    self.last_seen = Instant::now();
+                    let wrapped = json!({"from": hex::encode(self.id), "data": text}).to_string();
+                    return Propagated::Channel(self.id, wrapped);
+                }
+            } else if self.pending.is_some() {
+                if let Ok(answer) = SdpAnswer::from_sdp_string(text) {
+                    let _ = self.handle_answer(answer);
+                }
+            } else if let Ok(offer) = SdpOffer::from_sdp_string(text) {
                 self.handle_offer(offer);
-            } else if let Ok(answer) = SdpAnswer::from_sdp_string(text) {
-                let _ = self.handle_answer(answer);
             }
         }
         Propagated::Noop
+    }
+
+    fn handle_channel_relay(&mut self, text: &str) {
+        if let Some(mut channel) = self.cid.and_then(|id| self.rtc.channel(id)) {
+            let _ = channel.write(false, text.as_bytes());
+        }
     }
 
     fn handle_offer(&mut self, offer: SdpOffer) {

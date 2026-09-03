@@ -176,7 +176,7 @@ never stored beyond that window.
 
 | Op | Request | Response | Server MUST |
 |---|---|---|---|
-| 23 `call.signal` | `room[32], body bytes, token` | `reply bytes` | hand `body` (JSON, at most 64 KiB) to the forwarding unit for `room`; spend `token` when `body.kind` is `join` and ignore it otherwise; answer `unavailable` when no forwarding unit runs |
+| 23 `call.signal` | `room[32], body bytes, token` | `reply bytes` | hand `body` (JSON, at most 64 KiB) to the forwarding unit for `room`; spend `token` when `body.kind` is `join` and ignore it otherwise; answer `unavailable` when no forwarding unit runs. A participant that opened a data channel gets the unit's renegotiation offers on it and answers there; any other text it writes on the channel (a JSON object) the unit relays to the room's other participants as `{"from": <peer id hex>, "data": <text>}`, which is how participants introduce themselves, mute, and react without the conversation seeing it |
 
 `room` is opaque to the server: the participants chose it among themselves
 (section 15). `body` and `reply` are JSON:
@@ -468,3 +468,20 @@ thread replies out of the main timeline and count them on the root.
 **Pins.** The policy (section 8) gains `pinned[]`, the pinned messages'
 event ids. Anyone in the conversation may send a policy event that changes
 `pinned` and nothing else; every other change still needs an admin.
+
+## 17. Call frames
+
+Every media frame a participant sends is sealed before it reaches the
+forwarding unit, so the unit relays bytes it cannot decode. The key is
+`KDF("sigil v1 call media", envelope_key)` of the conversation's current
+epoch (protocol spec 6); every member derives it, nobody else can.
+
+```
+frame  = kid u8 ‖ counter u32be ‖ XChaCha20-Poly1305(key, nonce, ad = kid ‖ counter, payload)
+nonce  = kid ‖ sender peer id (16 bytes, the unit's) ‖ counter ‖ 0×3
+```
+
+`kid` is the low byte of the MLS epoch the key came from, so a receiver
+holding an older key knows to fetch the new one; `counter` starts at zero
+per sender and per key. A frame under an unknown `kid` is dropped, never
+guessed at.

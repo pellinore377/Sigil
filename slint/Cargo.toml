@@ -29,6 +29,13 @@ png = "0.18"
 # The link offer as a QR code, drawn into a Slint image; no image crate needed.
 qrcode = { version = "0.14", default-features = false }
 ttf-parser = "0.25"
+# the call media stack: the WebRTC peer, sound in and out, the codec
+str0m = "0.9"
+cpal = "0.15"
+opus = "0.3"
+chacha20poly1305 = "0.10"
+hex = "0.4"
+rand = "0.9"
 
 [target.'cfg(target_os = "android")'.dependencies]
 slint = { version = "1.17", features = ["backend-android-activity-06"] }

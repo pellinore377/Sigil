@@ -259,6 +259,18 @@ export component AppWindow inherits Window {
     in property <string> call-incoming-name;
     in property <color> call-incoming-tint: Theme.accent;
     in-out property <bool> call-page-open: false;
+    in property <string> call-status;
+    in property <string> call-error;
+    in property <bool> call-mic-muted;
+    in property <[CallParticipant]> call-tiles;
+    in property <bool> call-group-mode;
+    in property <string> call-peer-name;
+    in property <string> call-peer-initials;
+    in property <color> call-peer-tint: Theme.accent;
+    in property <bool> call-peer-speaking;
+    in property <[DeviceRow]> call-mics;
+    in property <[DeviceRow]> call-speakers;
+    in property <[Floater]> call-floaters;
     in property <string> rec-state: "idle";
     in property <float> rec-elapsed;
     in property <float> rec-clip-duration;
@@ -733,6 +745,45 @@ export component AppWindow inherits Window {
             restart => { root.act("voice-restart", "", ""); }
             attach => { root.act("voice-attach", "", ""); }
             cancelled => { root.act("voice-cancel", "", ""); root.recorder-open = false; }
+        }
+        // The call page over everything while it is open; the pill while
+        // the call runs behind the conversation.
+        if root.in-call && root.call-page-open : CallPage {
+            width: 100%; height: 100%;
+            state: root.call-state;
+            status-text: root.call-status;
+            error: root.call-error;
+            encrypted: true;
+            mic-muted: root.call-mic-muted;
+            camera-on: false;
+            screen-sharing: false;
+            tiles: root.call-tiles;
+            spotlight-idx: -1;
+            has-featured: false;
+            has-local-cam: false;
+            group-mode: root.call-group-mode;
+            video-mode: false;
+            peer-name: root.call-peer-name;
+            peer-initials: root.call-peer-initials;
+            peer-tint: root.call-peer-tint;
+            peer-speaking: root.call-peer-speaking;
+            mics: root.call-mics;
+            speakers: root.call-speakers;
+            floaters: root.call-floaters;
+            set-mic(on) => { root.act("set-mic", on ? "true" : "false", ""); }
+            set-camera(on) => { }
+            set-screenshare(on) => { }
+            hang-up => { root.act("hang-up", "", ""); }
+            select-device(kind, id) => { root.act("select-device", kind, id); }
+            react(e) => { root.act("call-react", e, ""); }
+            minimize => { root.act("call-minimize", "", ""); }
+        }
+        if root.in-call && !root.call-page-open : CallPip {
+            parent-width: root.width;
+            parent-height: root.height;
+            duration-label: root.call-status;
+            expand-requested => { root.act("call-expand", "", ""); }
+            hangup-requested => { root.act("hang-up", "", ""); }
         }
         if root.call-incoming : CallBanner {
             width: 100%;

@@ -12,6 +12,7 @@ use std::sync::Arc;
 use serde_json::{json, Map, Value};
 use sigil_engine::engine::Engine;
 use sigil_engine::ipc::hub::Hub;
+pub use sigil_engine::ipc::wire::Reply as EngineReply;
 use sigil_engine::ipc::wire::{Reply, Request};
 
 use crate::rows::{self, IconSet};
@@ -135,6 +136,8 @@ pub struct UiState {
     pub link_previews: HashMap<String, Value>,
     /// glyph -> emoji.render reply (Null = asked, false = none).
     pub emoji_imgs: HashMap<String, Value>,
+    /// The call in progress, the incoming one, and every call announced.
+    pub calls: crate::call::Calls,
     /// A re-render is already scheduled for arriving emoji pictures.
     pub emoji_refresh_pending: bool,
     /// The picker's last query, to re-run it when pictures arrive.
@@ -229,6 +232,7 @@ pub fn start(win: &AppWindow, rt: &tokio::runtime::Runtime, icons: IconSet) -> R
         audio_infos: HashMap::new(),
         link_previews: HashMap::new(),
         emoji_imgs: HashMap::new(),
+        calls: Default::default(),
         emoji_refresh_pending: false,
         emoji_query: None,
         entry_pending: Default::default(),
@@ -340,7 +344,7 @@ fn wire_callbacks(win: &AppWindow, req: Requester) {
 }
 
 /// Reply → UI thread, for handlers that want to touch the window afterwards.
-fn on_ui(f: impl FnOnce(&mut UiState, &AppWindow) + Send + 'static) {
+pub fn on_ui(f: impl FnOnce(&mut UiState, &AppWindow) + Send + 'static) {
     let _ = slint::invoke_from_event_loop(move || {
         with_ui(|ui| {
             if let Some(win) = ui.win.upgrade() {
@@ -870,28 +874,7 @@ fn handle_event(ui: &mut UiState, v: &Value) {
         }
         "call.state" => {
             ui.call = v.clone();
-            win.set_call_state(v["state"].as_str().unwrap_or("idle").into());
-            let incoming = &v["incoming"];
-            let has_incoming = !incoming.is_null();
-            win.set_call_incoming(has_incoming);
-            if has_incoming {
-                let caller = incoming["senderName"]
-                    .as_str()
-                    .or(incoming["sender"].as_str())
-                    .unwrap_or("Incoming call");
-                win.set_call_incoming_name(caller.into());
-                win.set_call_incoming_tint(rows::tint_for(
-                    incoming["sender"].as_str().unwrap_or(caller),
-                ));
-                let room = incoming["roomId"].as_str().unwrap_or("");
-                let name = ui
-                    .rooms_json
-                    .iter()
-                    .find(|r| r["id"].as_str() == Some(room))
-                    .and_then(|r| r["name"].as_str())
-                    .unwrap_or("");
-                win.set_call_room_name(name.into());
-            }
+            crate::call::on_engine_call_state(ui, &win, &v);
         }
         "call.devices" => {
             ui.devices = v.clone();
@@ -1946,6 +1929,7 @@ fn start_demo(win: &AppWindow, rt: &tokio::runtime::Runtime, icons: IconSet) -> 
         audio_infos: HashMap::new(),
         link_previews: HashMap::new(),
         emoji_imgs: HashMap::new(),
+        calls: Default::default(),
         emoji_refresh_pending: false,
         emoji_query: None,
         entry_pending: Default::default(),

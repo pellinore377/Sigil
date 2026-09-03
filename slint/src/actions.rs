@@ -652,29 +652,31 @@ pub fn on_act(ui: &mut UiState, win: &AppWindow, action: &str, a: &str, b2: &str
                 );
             }
         }
-        "start-call" => req.fire(
-            "call.start",
-            json!({"roomId": open_room, "video": a == "true"}),
-        ),
-        "join-call" => req.fire("call.join", json!({"roomId": open_room, "video": false})),
+        // ---- calls: the media stack lives in crate::call ----
+        "start-call" => {
+            let room = room_of_key(&ui.open_room);
+            crate::call::start(ui, win, &room);
+        }
+        "join-call" => {
+            let room = room_of_key(&ui.open_room);
+            if let Some(call_id) = ui.calls.active.get(&room).cloned() {
+                crate::call::join(ui, win, &room, &call_id, false);
+            }
+        }
         "call-accept" => {
-            let room = ui.call["incoming"]["roomId"]
-                .as_str()
-                .unwrap_or("")
-                .to_string();
-            if !room.is_empty() {
-                req.fire("call.join", json!({"roomId": room, "video": a == "true"}));
+            if let Some(inc) = ui.calls.incoming.take() {
+                crate::call::join(ui, win, &inc.room_id, &inc.call_id, false);
+                crate::bridge::open_room(ui, win, &inc.room_id);
+                win.set_nav("chat".into());
             }
         }
-        "call-decline" => {
-            let room = ui.call["incoming"]["roomId"]
-                .as_str()
-                .unwrap_or("")
-                .to_string();
-            if !room.is_empty() {
-                req.fire("call.decline", json!({"roomId": room}));
-            }
-        }
+        "call-decline" => crate::call::decline(ui, win),
+        "hang-up" => crate::call::hangup(ui, win),
+        "set-mic" => crate::call::set_mic(ui, win, a != "true"),
+        "call-react" => crate::call::react(ui, win, a),
+        "select-device" => crate::call::select_device(ui, win, a, b2),
+        "call-minimize" => win.set_call_page_open(false),
+        "call-expand" => win.set_call_page_open(true),
         "accept-invite" => req.fire("room.join", json!({"roomIdOrAlias": open_room})),
         "decline-invite" => {
             req.fire("room.leave", json!({"roomId": open_room}));

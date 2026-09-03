@@ -550,6 +550,7 @@ pub async fn dispatch(engine: &SharedEngine, req: &Request) -> Option<Reply> {
         "call.start" => s.call_start(engine, &param(p, "roomId")).await,
         "call.end" => s.call_end(engine, &param(p, "roomId"), &param(p, "callId")).await,
         "call.join" | "call.poll" | "call.answer" | "call.leave" => s.call_signal(p, &req.req[5..]).await,
+        "call.key" => s.call_key(&param(p, "roomId")).await,
         "media.get" => s.media_get(&param(p, "roomId"), &param(p, "eventId")).await,
         "doc.preview" => s.doc_preview(p).await,
         "doc.thumb" => s.doc_thumb(p).await,
@@ -1585,6 +1586,26 @@ impl SigilSession {
             }
             Err(e) => Reply::err("network", format!("{e:#}")),
         }
+    }
+
+    /// The media key for this conversation's current epoch (hex) with the
+    /// epoch number; call frames are sealed under it before they leave.
+    async fn call_key(&self, room_id: &str) -> Reply {
+        let Some(conv) = self.conversation(room_id).await else {
+            return Reply::err("unknown_room", "unknown room");
+        };
+        let g = self.inner.lock().await;
+        let (_, pr) = &*g;
+        let group = match conversation::load_group(pr, &conv) {
+            Ok(g) => g,
+            Err(e) => return Reply::err("internal", format!("{e:#}")),
+        };
+        let ep = match conversation::epoch_material(&group, pr) {
+            Ok(e) => e,
+            Err(e) => return Reply::err("internal", format!("{e:#}")),
+        };
+        let key = sigil_protocol::kdf::kdf("sigil v1 call media", &ep.envelope_key);
+        Reply::ok(json!({"key": hex::encode(key), "epoch": group.epoch().as_u64()}))
     }
 
     /// One signalling message to the forwarding unit: `join{offer}`,

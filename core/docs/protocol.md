@@ -79,7 +79,8 @@ Error codes: `bad_request not_logged_in login_in_progress oidc_unsupported slidi
 | `call.poll{roomId, callId, peer}` | | `{offer\|null, peers}`: a renegotiation offer from the unit when another participant's track was added, and the head count |
 | `call.answer{roomId, callId, peer, answer}` | | completes a renegotiation |
 | `call.leave{roomId, callId, peer}` | | leaves the unit's room |
-| `call.state` (event) | | pushed as `{roomId, callId, state: started\|ended, sender}` when a call event arrives or is sent; the timeline also gets a `call` item. The media stack (capture, encoding, playback, the WebRTC peer) is the frontend's for now: it hands SDP in and gets SDP out |
+| `call.key{roomId}` | | `{key, epoch}`: the key call frames are sealed under, derived from the conversation's current MLS epoch (`kdf("sigil v1 call media", envelope_key)`), and the epoch number whose low byte names it in each frame. The app asks again when a frame arrives under a key id it lacks |
+| `call.state` (event) | | pushed as `{roomId, callId, state: started\|ended, sender}` when a call event arrives or is sent; the timeline also gets a `call` item. The media stack (capture, encoding, playback, the WebRTC peer, the frame cipher) is the app's (`slint/src/call/`): it hands SDP in and gets SDP out, and keeps the QML `call` shape locally |
 
 ## Timeline ops
 
