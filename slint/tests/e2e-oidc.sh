@@ -24,7 +24,7 @@ $ISSUER --listen 127.0.0.1:18471 --client-id sigil-test --user marlowe >issuer.l
 
 # the bare domain's website: nothing but the pointer to where Sigil lives
 mkdir -p site/.well-known && echo '{"server": "127.0.0.1:18452"}' > site/.well-known/sigil
-(cd site && python3 -m http.server 18460 --bind 127.0.0.1 >../site.log 2>&1) & PIDS+=($!)
+python3 -m http.server 18460 --bind 127.0.0.1 --directory site >site.log 2>&1 & PIDS+=($!)
 
 # the server is configured the way a container would be: from the environment;
 # its name is the bare domain, its address the port the pointer names

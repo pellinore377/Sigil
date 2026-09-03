@@ -402,7 +402,9 @@ fn wire_doors(win: &AppWindow, req: Requester) {
                 ui.door_envoy = envoy;
             });
             door_busy(true);
-            req.call("account.probe", json!({"server": base}), |reply| {
+            // the name as typed: the engine resolves it (a pointer on the bare
+            // domain may move it); a typed scheme is a test server, taken as is
+            req.call("account.probe", json!({"server": typed}), |reply| {
                 on_ui(move |ui, win| {
                     win.set_door_busy(false);
                     match reply {
