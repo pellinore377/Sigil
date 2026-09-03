@@ -176,6 +176,20 @@ thread_local! {
     static UI: RefCell<Option<Rc<RefCell<UiState>>>> = const { RefCell::new(None) };
 }
 
+/// Invoke a window function on the next event-loop turn, once the current
+/// `with_ui` borrow is released. A window callback fired synchronously from
+/// inside `with_ui` (go-back, go, oidc-start — anything wired to `act` or
+/// `nav-opened`) re-enters the UI state and panics with "RefCell already
+/// borrowed"; this is the safe way to fire one from action handlers.
+pub fn invoke_later(win: &AppWindow, f: impl FnOnce(&AppWindow) + 'static) {
+    let w = win.as_weak();
+    slint::Timer::single_shot(std::time::Duration::ZERO, move || {
+        if let Some(w) = w.upgrade() {
+            f(&w);
+        }
+    });
+}
+
 pub fn with_ui(f: impl FnOnce(&mut UiState)) {
     UI.with(|ui| {
         if let Some(state) = ui.borrow().as_ref() {

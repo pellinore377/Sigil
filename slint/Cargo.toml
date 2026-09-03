@@ -91,3 +91,9 @@ strip = true
 [package.metadata.android.signing.release]
 path = "debug.keystore"
 keystore_password = "android"
+
+# The runtime with our fix for long-press inside Flickables on touch
+# (vendor/i-slint-core carries a SIGIL PATCH in input.rs; the report to
+# send upstream is UPSTREAM-flickable-longpress.md).
+[patch.crates-io]
+i-slint-core = { path = "vendor/i-slint-core" }

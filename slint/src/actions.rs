@@ -1442,7 +1442,7 @@ fn menu_action(ui: &mut UiState, win: &AppWindow, action: &str, event_id: &str) 
                 .cloned()
                 .unwrap_or(Value::Null);
             win.set_fw_mode("forward".into());
-            win.invoke_go("forward".into());
+            crate::bridge::invoke_later(win, |w| w.invoke_go("forward".into()));
         }
         "pin" => {
             let pinned = ui
@@ -1729,17 +1729,18 @@ fn voice_seek(ui: &mut UiState, win: &AppWindow, event_id: &str, frac: f64) {
 fn push_emoji(ui: &mut UiState, win: &AppWindow, query: &str) {
     ui.emoji_query = Some(query.to_string());
     if ui.emojis.is_empty() {
-        if let Ok(text) =
-            std::fs::read_to_string("/usr/share/omarchy/shell/plugins/emojis/emojis.json")
-        {
-            if let Ok(v) = serde_json::from_str::<Value>(&text) {
-                if let Some(arr) = v.as_array() {
-                    ui.emojis = arr
-                        .iter()
-                        .map(|e| (s(e, "e").to_string(), s(e, "k").to_string()))
-                        .filter(|(g, _)| !g.is_empty())
-                        .collect();
-                }
+        // The desktop shell's list when it is there; the bundled copy of the
+        // same shape (assets/emojis.json, generated from the Unicode data)
+        // everywhere else — a phone has no shell to read from.
+        let text = std::fs::read_to_string("/usr/share/omarchy/shell/plugins/emojis/emojis.json")
+            .unwrap_or_else(|_| include_str!("../assets/emojis.json").to_string());
+        if let Ok(v) = serde_json::from_str::<Value>(&text) {
+            if let Some(arr) = v.as_array() {
+                ui.emojis = arr
+                    .iter()
+                    .map(|e| (s(e, "e").to_string(), s(e, "k").to_string()))
+                    .filter(|(g, _)| !g.is_empty())
+                    .collect();
             }
         }
     }
@@ -2354,7 +2355,7 @@ fn theme_apply(ui: &mut UiState, win: &AppWindow) {
     }
     let _ = std::fs::write(&path, all.to_string());
     ui.chat_themes = all;
-    win.invoke_go_back();
+    crate::bridge::invoke_later(win, |w| w.invoke_go_back());
 }
 
 fn hsv_rgb(h: f32, s2: f32, v: f32) -> (u8, u8, u8) {
