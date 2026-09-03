@@ -85,6 +85,20 @@ async fn default_envoy(server: &str) -> anyhow::Result<String> {
     sigil_client::account::envoy_for(server, proxy.as_deref()).await
 }
 
+/// The Envoy's base URL as http(s) — the inverse of account.probe's envoy
+/// derivation — so `.well-known` lookups have a host to ask.
+fn envoy_base_url(envoy: &str) -> String {
+    let base = envoy.trim().trim_end_matches('/');
+    let base = base.strip_suffix("/envoy").unwrap_or(base);
+    if let Some(rest) = base.strip_prefix("wss://") {
+        format!("https://{rest}")
+    } else if let Some(rest) = base.strip_prefix("ws://") {
+        format!("http://{rest}")
+    } else {
+        base.to_string()
+    }
+}
+
 pub fn load_shape() -> Shape {
     std::fs::read(crate::notify::settings_path())
         .ok()
@@ -163,7 +177,9 @@ async fn start(engine: &SharedEngine, acct: Account) -> anyhow::Result<()> {
         .map_err(|_| anyhow::anyhow!("bad username"))?;
     {
         let mut s = engine.state.lock();
-        s.homeserver = server.to_string();
+        // Matrix-era names: the account's server, and where it resolved to.
+        // maps::refresh reads both for its .well-known lookups.
+        s.homeserver = envoy_base_url(&acct.envoy);
         s.server_name = server.to_string();
         s.user_id = username.clone();
         s.device_id = acct.device_id[..8].to_string();
@@ -197,6 +213,10 @@ async fn start(engine: &SharedEngine, acct: Account) -> anyhow::Result<()> {
     tokio::spawn(async move { s2.delivery_loop(e2).await });
     let (e4, s4) = (engine.clone(), session.clone());
     tokio::spawn(async move { s4.backup_loop(e4).await });
+    // Maps light up if settings.json carries mapStyleUrl or the server
+    // publishes m.tile_server; the probe only ever asks the account's server.
+    let e5 = engine.clone();
+    tokio::spawn(async move { crate::maps::refresh(&e5).await });
     info!("sigil session active as {}", session.username);
     Ok(())
 }
@@ -571,7 +591,7 @@ pub async fn dispatch(engine: &SharedEngine, req: &Request) -> Option<Reply> {
             s.location_send(engine, p, Some(ms)).await
         }
         "location.stopLive" => s.location_stop_live(engine, p).await,
-        "location.map" => Reply::err("unavailable", "no map tiles: Sigil draws a pin card instead, so no tile server learns where you are looking"),
+        "location.map" => crate::maps::location_map(engine, p).await,
         "timeline.paginate" => s.paginate(engine, &param(p, "roomId")).await,
         "message.send" => {
             s.send_text(engine, &param(p, "roomId"), &param(p, "body"), None)

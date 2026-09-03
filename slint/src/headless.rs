@@ -87,6 +87,11 @@ impl Harness {
         slint::platform::update_timers_and_animations();
     }
 
+    /// Move the mock clock forward (timers fire on the next pump).
+    pub fn advance(&self, d: Duration) {
+        self.clock.set(self.clock.get() + d);
+    }
+
     /// Pump a few rounds, then jump the clock past every animation.
     pub fn settle(&self) {
         for _ in 0..4 {

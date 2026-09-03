@@ -3368,8 +3368,6 @@ dependencies = [
 [[package]]
 name = "i-slint-backend-android-activity"
 version = "1.17.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9805bcdcbeea6626a0054347ee55d2424e0d5574b563472719d3fc7a11852242"
 dependencies = [
  "android-activity 0.5.2",
  "android-activity 0.6.1",
@@ -7016,6 +7014,7 @@ dependencies = [
  "sigil-protocol",
  "syntect",
  "thiserror 2.0.20",
+ "tiny-skia 0.12.0",
  "tokio",
  "tokio-util",
  "tracing",
@@ -7060,6 +7059,7 @@ dependencies = [
  "chrono",
  "cpal",
  "hex",
+ "i-slint-backend-android-activity",
  "jni 0.21.1",
  "ndk-context",
  "opus",

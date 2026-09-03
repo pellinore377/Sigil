@@ -97,6 +97,35 @@ pub fn fetch_location_map(req: &Requester, geo_uri: String) {
     );
 }
 
+/// The map page's composite: the page's card at 2× (~400×520 logical), at
+/// the page's current zoom. A stale reply (the page moved on to another
+/// point or zoom) is dropped.
+fn fetch_map_page(ui: &mut UiState) {
+    if ui.map_geo.is_empty() {
+        return;
+    }
+    let (geo, zoom) = (ui.map_geo.clone(), ui.map_zoom);
+    call_ui(
+        &ui.req.clone(),
+        "location.map",
+        json!({"geoUri": geo.clone(), "width": 800, "height": 1040, "zoom": zoom}),
+        move |ui, win, out| {
+            if ui.map_geo != geo || ui.map_zoom != zoom {
+                return;
+            }
+            match out {
+                Ok(v) => {
+                    if let Some(img) = crate::bridge::avatar_pub(ui, v["path"].as_str().unwrap_or("")) {
+                        win.set_mp_map(img);
+                    }
+                }
+                // No style configured: the page keeps its pin card.
+                Err((code, msg)) => tracing::debug!("location.map (page): {code} {msg}"),
+            }
+        },
+    );
+}
+
 /// Frame strip for an animated GIF (media.gifFrames) — Slint has no
 /// animated Image, so the bubble cycles PNG frames.
 pub fn fetch_gif_frames(req: &Requester, room_id: &str, event_id: &str, key: String) {
@@ -239,6 +268,15 @@ pub fn on_nav_opened(ui: &mut UiState, win: &AppWindow, page: &str) {
         }
         "members" => load_members(ui, win),
         "settings" => crate::bridge::load_settings_page(ui),
+        // The page edits a copy seeded from the room's saved theme, exactly
+        // what ChatThemePage.qml starts `pending` as; without the seed an
+        // immediate Apply would wipe the theme, and the gradient grid (drawn
+        // from the pending accent) would start empty.
+        "chattheme" => {
+            let rid = room_of_key(&ui.open_room);
+            ui.theme_pending = ui.chat_themes.get(rid.as_str()).cloned().unwrap_or_else(|| json!({}));
+            push_theme(ui, win);
+        }
         "threads" => load_threads(ui, win),
         "pins" => load_pins(ui, win),
         "search" => {
@@ -657,6 +695,12 @@ pub fn on_act(ui: &mut UiState, win: &AppWindow, action: &str, a: &str, b2: &str
             }
         }
         // ---- calls: the media stack lives in crate::call ----
+        // A call needs the same runtime mic grant as the recorder; ask and
+        // bail — the person taps again once the dialog is answered.
+        #[cfg(target_os = "android")]
+        "start-call" | "join-call" | "call-accept" if !crate::platform::has_mic_permission() => {
+            crate::platform::request_mic_permission();
+        }
         "start-call" => {
             let room = room_of_key(&ui.open_room);
             crate::call::start(ui, win, &room);
@@ -975,14 +1019,60 @@ pub fn on_act(ui: &mut UiState, win: &AppWindow, action: &str, a: &str, b2: &str
             }
         }
         "pick-attach-files" => attach_files(ui),
-        // The picker: current position or a live share. "pin" has no map to
-        // tap on yet, and the picker says so.
+        // A location tile: reset the picker and turn the sheet's page to the
+        // mode, in place (AttachMenu.qml:53-55 activate + locPicker.reset).
         "attach-location" => {
-            win.set_lp_mode(a.into());
-            win.set_attach_open(false);
+            ui.lp_mark = None;
+            ui.lp_zoom = 16;
+            ui.lp_epoch += 1;
+            win.set_lp_marked(false);
+            win.set_lp_unavailable(false);
+            win.set_lp_map(Default::default());
+            win.set_attach_open(true);
+            win.set_at_page(a.into());
             refresh_position(ui);
-            // set, not go(): a callback from inside a handler would re-enter the state
-            win.set_nav("locpick".into());
+            request_lp_map(ui, win);
+        }
+        // A tap on the picker's map (pin mode): box pixels → lat/lon around
+        // the crop centre, then a re-crop centred on the new pin.
+        "lp-tap" => {
+            if win.get_at_page() == "pin" {
+                let mut it = a.split(',');
+                let x: f64 = it.next().and_then(|v| v.trim().parse().ok()).unwrap_or(-1.0);
+                let y: f64 = it.next().and_then(|v| v.trim().parse().ok()).unwrap_or(-1.0);
+                if let Some(view) = ui.lp_view {
+                    if x >= 0.0 && y >= 0.0 {
+                        let (lat, lon) = lp_tap_latlon(&view, x, y);
+                        ui.lp_mark = Some((lat, lon));
+                        win.set_lp_marked(true);
+                        win.set_lp_mark_lat(lat as f32);
+                        win.set_lp_mark_lon(lon as f32);
+                        request_lp_map_debounced(ui);
+                    }
+                }
+            }
+        }
+        // The picker's +/- chips (LocationPicker.qml:180-203).
+        "lp-zoom" => {
+            let z = (ui.lp_zoom + if a == "in" { 1 } else { -1 }).clamp(3, 19);
+            if z != ui.lp_zoom {
+                ui.lp_zoom = z;
+                request_lp_map_debounced(ui);
+            }
+        }
+        // The recentre chip: back to the device fix (a marked pin follows it
+        // — the crop is always centred on the marker).
+        "lp-recentre" => {
+            refresh_position(ui);
+            if let Some((lat, lon)) = ui.lp_fix {
+                if ui.lp_mark.is_some() {
+                    ui.lp_mark = Some((lat, lon));
+                    win.set_lp_mark_lat(lat as f32);
+                    win.set_lp_mark_lon(lon as f32);
+                }
+                ui.lp_epoch += 1;
+                request_lp_map(ui, win);
+            }
         }
         "position-refresh" => refresh_position(ui),
         "resized" => {
@@ -990,6 +1080,8 @@ pub fn on_act(ui: &mut UiState, win: &AppWindow, action: &str, a: &str, b2: &str
                 crate::bridge::rebuild_timeline(ui, win)
             });
         }
+        // a = "lat,lon[,mode]" (mode pin|current|live — a dropped pin is not
+        // m.self, AttachMenu.qml:374), b = durationMs.
         "location-share" => {
             let mut it = a.split(',');
             let lat: f64 = it
@@ -1000,6 +1092,7 @@ pub fn on_act(ui: &mut UiState, win: &AppWindow, action: &str, a: &str, b2: &str
                 .next()
                 .and_then(|v| v.trim().parse().ok())
                 .unwrap_or(f64::NAN);
+            let mode = it.next().unwrap_or("").trim().to_string();
             let ms: f64 = b2.trim().parse().unwrap_or(0.0);
             if lat.is_finite() && lon.is_finite() {
                 let room = room_of_key(&ui.open_room);
@@ -1011,11 +1104,13 @@ pub fn on_act(ui: &mut UiState, win: &AppWindow, action: &str, a: &str, b2: &str
                 } else {
                     req.fire(
                         "location.send",
-                        json!({"roomId": room, "lat": lat, "lon": lon}),
+                        json!({"roomId": room, "lat": lat, "lon": lon, "self": mode != "pin"}),
                     );
                 }
             }
-            win.set_nav("chat".into());
+            // The sheet closes over the conversation (root.closeRequested()).
+            win.set_attach_open(false);
+            win.set_at_page("grid".into());
         }
         "stop-live" => req.fire(
             "location.stopLive",
@@ -1092,7 +1187,7 @@ pub fn on_act(ui: &mut UiState, win: &AppWindow, action: &str, a: &str, b2: &str
                 cur -= 1;
             }
             let spliced = format!("{}{}{}", &text[..cur], a, &text[cur..]);
-            win.invoke_chat_composer_set(spliced.into(), (cur + a.len()) as i32);
+            win.invoke_chat_composer_set(spliced.into(), (cur + a.len()) as i32, true);
         }
         "create-poll" => create_poll(ui, a, b2),
         "load-stickers" => load_stickers(ui, win),
@@ -1104,6 +1199,14 @@ pub fn on_act(ui: &mut UiState, win: &AppWindow, action: &str, a: &str, b2: &str
             win.set_rec_state("idle".into());
         }
         "voice-record" => {
+            // Android grants the mic at runtime; ask and stay idle — the
+            // person taps record again once the dialog is answered.
+            #[cfg(target_os = "android")]
+            if !crate::platform::has_mic_permission() {
+                crate::platform::request_mic_permission();
+                win.set_rec_state("idle".into());
+                return;
+            }
             ui.recording = true;
             ui.rec_levels.clear();
             win.set_rec_state("recording".into());
@@ -1199,6 +1302,14 @@ pub fn on_act(ui: &mut UiState, win: &AppWindow, action: &str, a: &str, b2: &str
             req.fire("voice.cancel", json!({}));
         }
         "open-map" => open_map(ui, win, a),
+        // the page's +/- chips: a new composite at zoom ±1
+        "map-zoom" => {
+            let z = (ui.map_zoom + if a == "in" { 1 } else { -1 }).clamp(3, 19);
+            if z != ui.map_zoom {
+                ui.map_zoom = z;
+                fetch_map_page(ui);
+            }
+        }
         other => tracing::warn!("act: unknown action {other}"),
     }
 }
@@ -1415,7 +1526,7 @@ fn autocomplete_pick(ui: &mut UiState, win: &AppWindow, idx: usize) {
     let from = ui.ac_from.min(cursor);
     let piece = format!("{}{insert} ", ui.ac_kind);
     let new_text = format!("{}{piece}{}", &text[..from], &text[cursor..]);
-    win.invoke_chat_composer_set(new_text.into(), (from + piece.len()) as i32);
+    win.invoke_chat_composer_set(new_text.into(), (from + piece.len()) as i32, true);
     autocomplete_clear(ui, win);
 }
 
@@ -2291,6 +2402,14 @@ fn send_sticker(ui: &mut UiState, index: &str) {
 
 // ---------------------------------------------------------------- theme
 
+/// The saved themes, read once at start; theme_apply keeps it current.
+pub fn load_themes() -> Value {
+    std::fs::read_to_string(themes_path())
+        .ok()
+        .and_then(|t| serde_json::from_str(&t).ok())
+        .unwrap_or_else(|| json!({}))
+}
+
 fn themes_path() -> String {
     format!(
         "{}/.local/state/sigil/chat-themes.json",
@@ -2298,15 +2417,70 @@ fn themes_path() -> String {
     )
 }
 
+/// The nine wallpaper gradients: 3 hue shifts x 3 depths from the pending
+/// accent (ChatThemePage.qml:34-45 gradPair). A grey accent has no hue; the
+/// QML's hslHue < 0 falls back to 0.6 and so does this.
+fn theme_gradients(accent: &str) -> Vec<crate::GradPair> {
+    let c = u32::from_str_radix(accent.trim_start_matches('#'), 16).unwrap_or(0x00a8a8a8);
+    let (r, g, b) = (
+        ((c >> 16) & 0xff) as f32 / 255.0,
+        ((c >> 8) & 0xff) as f32 / 255.0,
+        (c & 0xff) as f32 / 255.0,
+    );
+    let (mx, mn) = (r.max(g).max(b), r.min(g).min(b));
+    let l = (mx + mn) / 2.0;
+    let d = mx - mn;
+    let s2 = if d == 0.0 { 0.0 } else { d / (1.0 - (2.0 * l - 1.0).abs()) };
+    let h = if d == 0.0 {
+        0.6
+    } else if mx == r {
+        (((g - b) / d).rem_euclid(6.0)) / 6.0
+    } else if mx == g {
+        ((b - r) / d + 2.0) / 6.0
+    } else {
+        ((r - g) / d + 4.0) / 6.0
+    };
+    let hsl = |h: f32, s2: f32, l: f32| {
+        let c = (1.0 - (2.0 * l - 1.0).abs()) * s2;
+        let x = c * (1.0 - ((h * 6.0) % 2.0 - 1.0).abs());
+        let m = l - c / 2.0;
+        let (r, g, b) = match (h * 6.0) as u32 {
+            0 => (c, x, 0.0),
+            1 => (x, c, 0.0),
+            2 => (0.0, c, x),
+            3 => (0.0, x, c),
+            4 => (x, 0.0, c),
+            _ => (c, 0.0, x),
+        };
+        slint::Color::from_rgb_u8(
+            ((r + m) * 255.0).round() as u8,
+            ((g + m) * 255.0).round() as u8,
+            ((b + m) * 255.0).round() as u8,
+        )
+    };
+    (0..9)
+        .map(|i| {
+            let hh = (h + [-0.04, 0.0, 0.04][i % 3] + 1.0) % 1.0;
+            let row = i / 3;
+            let sat = s2.max(0.5);
+            let l2 = l.clamp(0.25, 0.55);
+            let top = [l2 * 1.15, l2 * 0.85, l2 * 0.6][row].min(0.62);
+            let bot = [l2 * 0.45, l2 * 0.3, l2 * 0.18][row];
+            crate::GradPair { top: hsl(hh, sat, top), bot: hsl(hh, sat, bot) }
+        })
+        .collect()
+}
+
 fn push_theme(ui: &mut UiState, win: &AppWindow) {
-    let accent = ui.theme_pending["accent"]
-        .as_str()
-        .unwrap_or("")
-        .to_string();
-    let wallpaper = ui.theme_pending["wallpaper"]
-        .as_str()
-        .unwrap_or("")
-        .to_string();
+    let t = ui.theme_pending.clone();
+    set_theme_props(ui, win, &t);
+}
+
+/// Everything the chrome derives from a theme record {accent, wallpaper}:
+/// used for the editor's pending copy and for a room's saved theme on open.
+pub fn set_theme_props(ui: &mut UiState, win: &AppWindow, t: &Value) {
+    let accent = t["accent"].as_str().unwrap_or("").to_string();
+    let wallpaper = t["wallpaper"].as_str().unwrap_or("").to_string();
     win.set_ct_accent(accent.as_str().into());
     win.set_ct_wallpaper(wallpaper.as_str().into());
     if let Ok(c) = u32::from_str_radix(accent.trim_start_matches('#'), 16) {
@@ -2317,6 +2491,7 @@ fn push_theme(ui: &mut UiState, win: &AppWindow) {
         ));
     }
     win.set_ct_custom(!accent.is_empty());
+    win.set_ct_gradients(ModelRc::new(VecModel::from(theme_gradients(if accent.is_empty() { "#a8a8a8" } else { &accent }))));
     if let Some(n) = wallpaper
         .strip_prefix("grad:")
         .and_then(|n| n.parse::<i32>().ok())
@@ -2380,13 +2555,32 @@ fn hsv_rgb(h: f32, s2: f32, v: f32) -> (u8, u8, u8) {
 
 // ---------------------------------------------------------------- places, people
 
-/// position.get's shape onto the picker.
-pub fn apply_position(win: &AppWindow, v: &Value) {
+/// position.get's shape onto the picker. A fresh fix re-crops the picker's
+/// map when its page is showing (LocationPicker.qml:118-120 — the view
+/// follows the fix unless a pin holds the centre).
+pub fn apply_position(ui: &mut UiState, win: &AppWindow, v: &Value) {
     let known = b(v, "known");
     win.set_lp_have_fix(known);
     win.set_lp_lat(v["lat"].as_f64().unwrap_or(0.0) as f32);
     win.set_lp_lon(v["lon"].as_f64().unwrap_or(0.0) as f32);
     win.set_lp_error(s(v, "error").into());
+    let fix = if known {
+        Some((
+            v["lat"].as_f64().unwrap_or(0.0),
+            v["lon"].as_f64().unwrap_or(0.0),
+        ))
+    } else {
+        None
+    };
+    let moved = fix != ui.lp_fix;
+    ui.lp_fix = fix;
+    if moved
+        && ui.lp_mark.is_none()
+        && win.get_attach_open()
+        && matches!(win.get_at_page().as_str(), "pin" | "current" | "live")
+    {
+        request_lp_map_debounced(ui);
+    }
 }
 
 fn refresh_position(ui: &mut UiState) {
@@ -2394,12 +2588,107 @@ fn refresh_position(ui: &mut UiState) {
         &ui.req.clone(),
         "position.refresh",
         json!({}),
-        |_ui, win, out| {
+        |ui, win, out| {
             if let Ok(v) = out {
-                apply_position(win, &v);
+                apply_position(ui, win, &v);
             }
         },
     );
+}
+
+// The picker's imagery: the engine's crop is in Web-Mercator world pixels —
+// at zoom z the world is TILE_PX·2^z across (core/src/maps/composite.rs
+// world_px, 512px tiles) — and the request is exactly 2× the map box, so one
+// logical box pixel is two world pixels.
+const LP_TILE_PX: f64 = 512.0;
+
+fn lp_world(zoom: i64) -> f64 {
+    LP_TILE_PX * f64::powi(2.0, zoom as i32)
+}
+
+fn lat_to_world_y(lat: f64, zoom: i64) -> f64 {
+    let lr = lat.to_radians();
+    (1.0 - ((lr.tan() + 1.0 / lr.cos()).ln()) / std::f64::consts::PI) / 2.0 * lp_world(zoom)
+}
+
+fn world_y_to_lat(y: f64, zoom: i64) -> f64 {
+    // the inverse: lat = atan(sinh(π·(1 − 2y/world)))
+    (std::f64::consts::PI * (1.0 - 2.0 * y / lp_world(zoom)))
+        .sinh()
+        .atan()
+        .to_degrees()
+}
+
+/// A tap at (x, y) logical px in the picker's map box → the point under it.
+fn lp_tap_latlon(view: &crate::bridge::LpView, x: f64, y: f64) -> (f64, f64) {
+    let dx = (x - view.box_w / 2.0) * 2.0;
+    let dy = (y - view.box_h / 2.0) * 2.0;
+    let lon = view.lon + dx / lp_world(view.zoom) * 360.0;
+    let lat = world_y_to_lat(lat_to_world_y(view.lat, view.zoom) + dy, view.zoom);
+    (
+        lat.clamp(-85.05, 85.05),
+        (lon + 180.0).rem_euclid(360.0) - 180.0,
+    )
+}
+
+/// The picker's crop: centred on the pin, else the fix, else mid-US at z4
+/// (LocationPicker.qml:45-46, :118-120), at 2× the map box. The box height
+/// is the attach.slint constant per mode — keep them in step.
+fn request_lp_map(ui: &mut UiState, win: &AppWindow) {
+    let (lat, lon, zoom) = match (ui.lp_mark, ui.lp_fix) {
+        (Some((la, lo)), _) => (la, lo, ui.lp_zoom),
+        (None, Some((la, lo))) => (la, lo, ui.lp_zoom),
+        (None, None) => (39.5, -98.35, 4),
+    };
+    let box_w = (win.get_logical_width() as f64 - 32.0).max(64.0);
+    let box_h = if win.get_at_page() == "live" { 294.0 } else { 340.0 };
+    ui.lp_view = Some(crate::bridge::LpView {
+        lat,
+        lon,
+        zoom,
+        box_w,
+        box_h,
+    });
+    let epoch = ui.lp_epoch;
+    call_ui(
+        &ui.req.clone(),
+        "location.map",
+        json!({"geoUri": format!("geo:{lat:.6},{lon:.6}"),
+               "width": (box_w * 2.0) as u64, "height": (box_h * 2.0) as u64, "zoom": zoom}),
+        move |ui, win, out| {
+            if ui.lp_epoch != epoch {
+                return; // the picker moved on
+            }
+            match out {
+                Ok(v) => {
+                    if let Some(img) =
+                        crate::bridge::avatar_pub(ui, v["path"].as_str().unwrap_or(""))
+                    {
+                        win.set_lp_map(img);
+                        win.set_lp_unavailable(false);
+                    }
+                }
+                Err((code, msg)) => {
+                    // No style configured: the pin card stays, and says so.
+                    if code == "unavailable" {
+                        win.set_lp_unavailable(true);
+                    }
+                    tracing::debug!("location.map (picker): {code} {msg}");
+                }
+            }
+        },
+    );
+}
+
+/// Re-crop 150ms after the last tap or zoom, dropping superseded requests.
+fn request_lp_map_debounced(ui: &mut UiState) {
+    ui.lp_epoch += 1;
+    let epoch = ui.lp_epoch;
+    after(&ui.req.clone(), 150, move |ui, win| {
+        if ui.lp_epoch == epoch {
+            request_lp_map(ui, win);
+        }
+    });
 }
 
 /// The map page for a place: the card's facts, no tiles.
@@ -2465,6 +2754,12 @@ fn open_map(ui: &mut UiState, win: &AppWindow, event_id: &str) {
         }
         .into(),
     );
+    // The page's imagery: a fresh composite at its own size; the card's
+    // 640×400 stays for the bubble. Clear the last point's picture first.
+    win.set_mp_map(Default::default());
+    ui.map_geo = s(loc, "geoUri").to_string();
+    ui.map_zoom = 15;
+    fetch_map_page(ui);
 }
 
 /// dm.create is idempotent: an existing conversation comes back.
@@ -2503,5 +2798,73 @@ pub fn refresh_emoji_views(ui: &mut UiState, win: &AppWindow) {
     win.set_quick_emoji(ModelRc::new(VecModel::from(quick)));
     if let Some(q) = ui.emoji_query.clone() {
         push_emoji(ui, win, &q);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::bridge::LpView;
+
+    fn view(lat: f64, lon: f64, zoom: i64) -> LpView {
+        LpView {
+            lat,
+            lon,
+            zoom,
+            box_w: 368.0,
+            box_h: 340.0,
+        }
+    }
+
+    #[test]
+    fn mercator_y_round_trips() {
+        for &lat in &[-72.3, -33.9, 0.0, 37.7749, 51.5007, 84.9] {
+            for &z in &[3i64, 10, 16, 19] {
+                let back = world_y_to_lat(lat_to_world_y(lat, z), z);
+                assert!((back - lat).abs() < 1e-9, "lat {lat} z {z} came back {back}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_centre_tap_lands_on_the_centre() {
+        let v = view(51.5007, -0.1246, 16);
+        let (lat, lon) = lp_tap_latlon(&v, v.box_w / 2.0, v.box_h / 2.0);
+        assert!((lat - 51.5007).abs() < 1e-9);
+        assert!((lon - -0.1246).abs() < 1e-9);
+    }
+
+    #[test]
+    fn taps_move_the_pin_the_right_way() {
+        let v = view(51.5007, -0.1246, 16);
+        // 10 logical px right = 20 world px = 20/(512·2^16)·360 degrees east.
+        let (_, lon) = lp_tap_latlon(&v, v.box_w / 2.0 + 10.0, v.box_h / 2.0);
+        let dlon = 20.0 / (512.0 * 65536.0) * 360.0;
+        assert!((lon - (-0.1246 + dlon)).abs() < 1e-12);
+        // Below the centre is south; above is north.
+        let (south, _) = lp_tap_latlon(&v, v.box_w / 2.0, v.box_h / 2.0 + 40.0);
+        let (north, _) = lp_tap_latlon(&v, v.box_w / 2.0, v.box_h / 2.0 - 40.0);
+        assert!(south < 51.5007 && 51.5007 < north);
+    }
+
+    #[test]
+    fn a_tap_round_trips_through_a_recentred_crop() {
+        // Drop a pin off-centre, recentre the crop on it, and the same box
+        // point relative to the new centre names the same place.
+        let v = view(37.7749, -122.4194, 15);
+        let (lat, lon) = lp_tap_latlon(&v, 300.0, 80.0);
+        let v2 = view(lat, lon, 15);
+        let (lat2, lon2) = lp_tap_latlon(&v2, v2.box_w / 2.0, v2.box_h / 2.0);
+        assert!((lat2 - lat).abs() < 1e-9 && (lon2 - lon).abs() < 1e-9);
+    }
+
+    #[test]
+    fn longitude_wraps_and_latitude_clamps() {
+        let v = view(0.0, 179.9, 3); // a tiny world: taps reach far
+        let (_, lon) = lp_tap_latlon(&v, v.box_w / 2.0 + 100.0, v.box_h / 2.0);
+        assert!((-180.0..=180.0).contains(&lon) && lon < 0.0, "wrapped east: {lon}");
+        let v = view(84.0, 0.0, 3);
+        let (lat, _) = lp_tap_latlon(&v, v.box_w / 2.0, 0.0);
+        assert!(lat <= 85.05);
     }
 }

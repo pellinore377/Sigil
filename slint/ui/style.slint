@@ -16,27 +16,48 @@ import "../../shared/fonts/MaterialSymbolsRounded.ttf";
 import "../../shared/fonts/MaterialSymbolsRounded-Filled.ttf";
 
 export global Theme {
-    // The Frosted Glass theme, verbatim from the desktop's active Omarchy
-    // theme (colors.toml + shell.menu/popups.toml). Deliberately monochrome:
-    // that IS what 1:1 with the QML panel looks like on this machine. The
-    // desktop composites these translucently over the wallpaper; a phone has
-    // no wallpaper behind the app, so surfaces are opaque here.
-    out property <color> accent: #a8a8a8;
-    out property <color> background: #4b4b4b;
-    out property <color> foreground: #c6c6c6;
-    out property <color> muted: #8a8a8a;
-    out property <color> urgent: #a55555;
+    // Three palettes behind one set of tokens.
+    //
+    // "desktop" is the Frosted Glass theme, verbatim from the desktop's
+    // active Omarchy theme (colors.toml + shell.menu/popups.toml) —
+    // deliberately monochrome, composited over the wallpaper, exactly what
+    // 1:1 with the QML panel looks like on that machine.
+    //
+    // "dark" and "light" are the phone: a phone has no wallpaper behind the
+    // app, and a messenger there should ground itself the way the platform's
+    // own one does — a near-black (or paper-white) neutral, the colour spent
+    // only on your own bubbles and small accents, sized and lit by the
+    // system. The bridge picks the mode from the device and feeds the
+    // system's Material accent.
+    in-out property <string> mode: "desktop";
+    in-out property <color> system-accent: #a8a8a8;
+    property <bool> dark: mode == "dark";
+    property <bool> light: mode == "light";
 
-    out property <color> menu-text: #c6c6c6;
-    out property <color> menu-background: #4b4b4b;
+    out property <color> accent: dark || light ? system-accent : #a8a8a8;
+    out property <color> background: dark ? #101014 : light ? #fdf8fd : #4b4b4b;
+    out property <color> foreground: dark ? #e5e1e6 : light ? #1b1b1f : #c6c6c6;
+    out property <color> muted: dark ? #96939b : light ? #757379 : #8a8a8a;
+    out property <color> urgent: dark || light ? #de5b4f : #a55555;
+
+    out property <color> menu-text: dark ? #e5e1e6 : light ? #1b1b1f : #c6c6c6;
+    out property <color> menu-background: dark ? #101014 : light ? #fdf8fd : #4b4b4b;
     out property <color> menu-border: transparent;
     /// The card, and every page ground: lighter(menu.background, 1.35)
     /// (Panel.qml:33, 35). Qt's lighter(1.35) is Slint's brighter(0.35).
-    out property <color> card-ground: #4b4b4b.brighter(0.35);
+    /// The phone's ground barely lifts off the window, like the platform's
+    /// own elevated surfaces.
+    out property <color> card-ground: dark ? #17171b : light ? #f4f0f4 : #4b4b4b.brighter(0.35);
 
-    out property <color> popup-text: #c6c6c6;
-    out property <color> popup-background: #4b4b4b;
-    out property <color> popup-border: #5c5c5c;
+    /// A stranger's bubble: QML mixes 22% of the foreground into the popup
+    /// ground, which reads right over the desktop's grey but washes out on
+    /// the phone's near-black; there the platform's own neutral container
+    /// stands in.
+    out property <color> bubble-other: dark ? #2b2d31 : light ? #e9e7ec
+        : #c6c6c6.mix(#4b4b4b, 0.22);
+    out property <color> popup-text: dark ? #e5e1e6 : light ? #1b1b1f : #c6c6c6;
+    out property <color> popup-background: dark ? #232227 : light ? #ffffff : #4b4b4b;
+    out property <color> popup-border: dark ? #38363d : light ? #dcd9de : #5c5c5c;
 
     // Fonts, by the family names the bundled files declare.
     out property <string> font-ui: "Roboto";

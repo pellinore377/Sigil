@@ -44,7 +44,7 @@ export component PinsPage inherits Rectangle {
     pure function bubble-fill(own: bool) -> color {
         return own ? root.accent.mix(Theme.popup-background, 0.42)
              : root.themed ? root.surface-c
-             : root.fg.mix(Theme.popup-background, 0.22);
+             : Theme.bubble-other;
     }
 
     VerticalLayout {

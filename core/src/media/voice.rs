@@ -1,17 +1,28 @@
 //! Voice messages: record with ffmpeg via PipeWire's Pulse layer, stream `voice.level`, send as MSC3245.
+//! On Android the same entry points ride voice_android (AAudio/AMediaCodec);
+//! the reply shapes match, so nothing above this module differs by platform.
 
+#[cfg(not(target_os = "android"))]
 use std::io::{BufRead, BufReader};
 use std::path::PathBuf;
+#[cfg(not(target_os = "android"))]
 use std::process::{Child, Command, Stdio};
+#[cfg(not(target_os = "android"))]
 use std::sync::atomic::{AtomicBool, Ordering};
+#[cfg(not(target_os = "android"))]
 use std::sync::Arc;
 
+#[cfg(not(target_os = "android"))]
 use anyhow::Context;
+#[cfg(not(target_os = "android"))]
 use serde_json::json;
-use tracing::{info, warn};
+use tracing::info;
+#[cfg(not(target_os = "android"))]
+use tracing::warn;
 
 use crate::engine::SharedEngine;
 
+#[cfg(not(target_os = "android"))]
 pub struct Recording {
     child: Child,
     stop: Arc<AtomicBool>,
@@ -19,6 +30,7 @@ pub struct Recording {
     pub started: std::time::Instant,
 }
 
+#[cfg(not(target_os = "android"))]
 impl Recording {
     fn finish(mut self) -> PathBuf {
         self.stop.store(true, Ordering::Relaxed);
@@ -29,14 +41,19 @@ impl Recording {
     }
 }
 
-/// Start recording; pushes `voice.level` events ~10x/second while it runs.
-pub fn start(engine: &SharedEngine) -> anyhow::Result<Recording> {
+// Unique per take, so a new recording cannot overwrite the clip still in the composer.
+fn take_path(ext: &str) -> PathBuf {
     let dir = crate::paths::cache_dir().join("voice");
     std::fs::create_dir_all(&dir).ok();
-    // Unique per take, so a new recording cannot overwrite the clip still in the composer.
     let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_millis()).unwrap_or(0);
-    let path = dir.join(format!("rec-{stamp}.ogg"));
+    dir.join(format!("rec-{stamp}.{ext}"))
+}
+
+/// Start recording; pushes `voice.level` events ~10x/second while it runs.
+#[cfg(not(target_os = "android"))]
+pub fn start(engine: &SharedEngine) -> anyhow::Result<Recording> {
+    let path = take_path("ogg");
 
     // ebur128's momentary loudness goes to stderr: ffmpeg block-buffers stdout.
     let mut child = Command::new("ffmpeg")
@@ -82,6 +99,7 @@ pub fn start(engine: &SharedEngine) -> anyhow::Result<Recording> {
     Ok(Recording { child, stop, path, started: std::time::Instant::now() })
 }
 
+#[cfg(not(target_os = "android"))]
 fn duration_secs(path: &std::path::Path) -> f64 {
     let out = Command::new("ffprobe")
         .args(["-v", "error", "-show_entries", "format=duration", "-of", "default=nw=1:nk=1"])
@@ -94,6 +112,7 @@ fn duration_secs(path: &std::path::Path) -> f64 {
 }
 
 /// `buckets` RMS amplitudes in 0..1, decoded straight from the file.
+#[cfg(not(target_os = "android"))]
 pub fn waveform(path: &std::path::Path, buckets: usize) -> Vec<f32> {
     let out = Command::new("ffmpeg")
         .args(["-hide_banner", "-loglevel", "error", "-i"])
@@ -105,6 +124,12 @@ pub fn waveform(path: &std::path::Path, buckets: usize) -> Vec<f32> {
         .chunks_exact(2)
         .map(|c| i16::from_le_bytes([c[0], c[1]]))
         .collect();
+    wave_buckets(&samples, buckets)
+}
+
+/// The bucket shape both platforms share: per-chunk RMS, peak-normalised so
+/// quiet recordings still show a readable shape.
+fn wave_buckets(samples: &[i16], buckets: usize) -> Vec<f32> {
     if samples.is_empty() || buckets == 0 { return vec![]; }
     let per = (samples.len() / buckets).max(1);
     let mut out_v: Vec<f32> = samples
@@ -121,6 +146,7 @@ pub fn waveform(path: &std::path::Path, buckets: usize) -> Vec<f32> {
     out_v
 }
 
+#[cfg(not(target_os = "android"))]
 pub fn stop(rec: Recording) -> (PathBuf, f64, Vec<f32>) {
     let path = rec.finish();
     let secs = duration_secs(&path);
@@ -129,18 +155,21 @@ pub fn stop(rec: Recording) -> (PathBuf, f64, Vec<f32>) {
     (path, secs, wave)
 }
 
+#[cfg(not(target_os = "android"))]
 pub fn cancel(rec: Recording) {
     let path = rec.finish();
     let _ = std::fs::remove_file(&path);
 }
 
 /// Simple audio playback (voice notes): ffplay from an offset.
+#[cfg(not(target_os = "android"))]
 pub struct AudioPlayback {
     child: Child,
     pub event_id: String,
     pub start_at: f64,
 }
 
+#[cfg(not(target_os = "android"))]
 impl AudioPlayback {
     pub fn stop(&mut self) {
         let _ = self.child.kill();
@@ -148,6 +177,7 @@ impl AudioPlayback {
     }
 }
 
+#[cfg(not(target_os = "android"))]
 pub fn play(file: &std::path::Path, event_id: &str, seek: f64) -> anyhow::Result<AudioPlayback> {
     let child = Command::new("ffplay")
         .args(["-hide_banner", "-loglevel", "error", "-nodisp", "-autoexit", "-ss", &format!("{seek:.3}")])
@@ -158,4 +188,55 @@ pub fn play(file: &std::path::Path, event_id: &str, seek: f64) -> anyhow::Result
         .context("ffplay")?;
     if false { warn!("unreachable"); }
     Ok(AudioPlayback { child, event_id: event_id.to_string(), start_at: seek })
+}
+
+// ---- Android: the same four entry points over voice_android --------------
+// AAudio records straight PCM, so duration and waveform come from the
+// captured samples rather than a probe of the file.
+
+#[cfg(target_os = "android")]
+pub struct Recording {
+    rec: super::voice_android::Recorder,
+    pub started: std::time::Instant,
+}
+
+#[cfg(target_os = "android")]
+pub fn start(engine: &SharedEngine) -> anyhow::Result<Recording> {
+    let rec = super::voice_android::start(engine, take_path("wav"))?;
+    Ok(Recording { rec, started: std::time::Instant::now() })
+}
+
+#[cfg(target_os = "android")]
+pub fn stop(rec: Recording) -> (PathBuf, f64, Vec<f32>) {
+    let (path, samples) = rec.rec.finish();
+    let secs = samples.len() as f64 / super::voice_android::SAMPLE_RATE as f64;
+    let wave = wave_buckets(&samples, 60);
+    info!("voice: recorded {:.1}s -> {}", secs, path.display());
+    (path, secs, wave)
+}
+
+#[cfg(target_os = "android")]
+pub fn cancel(rec: Recording) {
+    let (path, _) = rec.rec.finish();
+    let _ = std::fs::remove_file(&path);
+}
+
+#[cfg(target_os = "android")]
+pub struct AudioPlayback {
+    inner: super::voice_android::Playback,
+    pub event_id: String,
+    pub start_at: f64,
+}
+
+#[cfg(target_os = "android")]
+impl AudioPlayback {
+    pub fn stop(&mut self) {
+        self.inner.stop();
+    }
+}
+
+#[cfg(target_os = "android")]
+pub fn play(file: &std::path::Path, event_id: &str, seek: f64) -> anyhow::Result<AudioPlayback> {
+    let inner = super::voice_android::play(file, seek)?;
+    Ok(AudioPlayback { inner, event_id: event_id.to_string(), start_at: seek })
 }

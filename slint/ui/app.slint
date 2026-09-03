@@ -26,7 +26,7 @@ import { SearchPage } from "pages/search.slint";
 import { ChatThemePage, GradPair } from "pages/chattheme.slint";
 import { ThreadsPage } from "pages/threads.slint";
 import { PinsPage } from "pages/pins.slint";
-import { MapPage, LocationPicker } from "pages/map.slint";
+import { MapPage } from "pages/map.slint";
 import { DocPage, DocBlock, SheetRow, SheetTab, DocPageImage } from "pages/doc.slint";
 import { AudioPage } from "pages/audio.slint";
 import { ImageViewer, ViewerItem } from "viewer.slint";
@@ -36,7 +36,7 @@ import { CallPage, Floater } from "callpage.slint";
 import { CallPip } from "callpip.slint";
 import { CallBanner } from "callbanner.slint";
 
-export { ViewerItem, StickerItem, MenuEntry, RoomRow, TimelineRow, MemberRow, ThreadRow, UserRow, RoomSettingsModel, ReactionChip, EmojiItem, ReplyRef, CallParticipant, DeviceRow, PollOption, ReaderRow, DocLine, MsgPart, FxChar, GradPair, DocBlock, SheetRow, SheetTab, DocPageImage, Icons }
+export { ViewerItem, StickerItem, MenuEntry, RoomRow, TimelineRow, MemberRow, ThreadRow, UserRow, RoomSettingsModel, ReactionChip, EmojiItem, ReplyRef, CallParticipant, DeviceRow, PollOption, ReaderRow, DocLine, MsgPart, FxChar, GradPair, DocBlock, SheetRow, SheetTab, DocPageImage, Icons, Theme }
 
 export component AppWindow inherits Window {
     title: "Sigil";
@@ -255,12 +255,20 @@ export component AppWindow inherits Window {
     in property <[StickerItem]> at-stickers;
     in property <bool> at-stickers-loaded;
     in property <string> at-sticker-dir;
-    // location picker and map page, fed by the bridge
-    in-out property <string> lp-mode: "current";
+    // The attach sheet's page ("grid" | "poll" | … | "pin" | "current" |
+    // "live"), two-way through ChatPage so the bridge can open a location
+    // mode in place (AttachMenu.qml:53-55).
+    in-out property <string> at-page: "grid";
+    // location picker (inside the attach sheet) and map page, fed by the bridge
     in property <bool> lp-have-fix;
     in property <float> lp-lat;
     in property <float> lp-lon;
     in property <string> lp-error;
+    in property <image> lp-map;
+    in property <bool> lp-unavailable;
+    in property <bool> lp-marked;
+    in property <float> lp-mark-lat;
+    in property <float> lp-mark-lon;
     in property <string> mp-who;
     in property <bool> mp-own;
     in property <bool> mp-live;
@@ -274,6 +282,7 @@ export component AppWindow inherits Window {
     in property <bool> mp-self;
     in property <string> mp-initials;
     in property <color> mp-tint;
+    in property <image> mp-map;
     // the contact card's and a member's choice sheets
     in-out property <bool> contact-open: false;
     in-out property <bool> member-open: false;
@@ -369,7 +378,7 @@ export component AppWindow inherits Window {
     public function set-home-tab(t: int) { root.home-tab = t; }
     out property <string> ct-composer-text: chat.composer-text;
     out property <int> ct-composer-cursor: chat.composer-cursor;
-    public function chat-composer-set(t: string, cursor: int) { chat.set-composer(t, cursor); }
+    public function chat-composer-set(t: string, cursor: int, take-focus: bool) { chat.set-composer(t, cursor, take-focus); }
 
     public function go(page: string) {
         if (page == "addpeople") { addpeople-page.reset(); }
@@ -385,7 +394,7 @@ export component AppWindow inherits Window {
         if (root.nav == "threads" || root.nav == "pins") { root.go("chat"); return; }
         if (root.nav == "forward" || root.nav == "search" || root.nav == "chattheme"
             || root.nav == "roomsettings" || root.nav == "doc" || root.nav == "audio"
-            || root.nav == "map" || root.nav == "locpick") { root.go("chat"); return; }
+            || root.nav == "map") { root.go("chat"); return; }
         if (root.nav == "addpeople") { root.nav = root.add-return; return; }
         if (root.nav == "notifications" || root.nav == "admins" || root.nav == "privacy") {
             root.nav = root.settings-return;
@@ -553,6 +562,17 @@ export component AppWindow inherits Window {
                 stickers: root.at-stickers;
                 stickers-loaded: root.at-stickers-loaded;
                 sticker-dir: root.at-sticker-dir;
+                at-page <=> root.at-page;
+                lp-map: root.lp-map;
+                lp-unavailable: root.lp-unavailable;
+                lp-have-fix: root.lp-have-fix;
+                lp-lat: root.lp-lat;
+                lp-lon: root.lp-lon;
+                lp-error: root.lp-error;
+                lp-marked: root.lp-marked;
+                lp-mark-lat: root.lp-mark-lat;
+                lp-mark-lon: root.lp-mark-lon;
+                my-avatar: root.my-avatar;
                 // toast / ac-items / ac-index / clip-frac: window properties
                 // still to come (scratchpad audit/chat-handoff.md A6, F10, F12).
                 voice-staged <=> root.voice-staged;
@@ -601,6 +621,11 @@ export component AppWindow inherits Window {
                 open-recorder => { root.act("open-recorder", "", ""); }
                 pick-attach-files => { root.act("pick-attach-files", "", ""); }
                 attach-location(mode) => { root.act("attach-location", mode, ""); }
+                attach-loc-tap(x, y) => { root.act("lp-tap", (x / 1px) + "," + (y / 1px), ""); }
+                attach-loc-zoom(d) => { root.act("lp-zoom", d > 0 ? "in" : "out", ""); }
+                attach-loc-recentre => { root.act("lp-recentre", "", ""); }
+                attach-loc-retry => { root.act("position-refresh", "", ""); }
+                attach-loc-share(la, lo, ms, mode) => { root.act("location-share", "\{la},\{lo},\{mode}", "\{ms}"); }
                 insert-emoji(e) => { root.act("composer-insert", e, ""); }
                 create-poll(q, opts, closed2) => {
                     root.act("create-poll", q, (closed2 ? "1" : "0")
@@ -717,18 +742,11 @@ export component AppWindow inherits Window {
                 remaining-label: root.mp-remaining; lat: root.mp-lat; lon: root.mp-lon;
                 description: root.mp-desc; self-marker: root.mp-self;
                 sender-initials: root.mp-initials; sender-tint: root.mp-tint;
+                map-image: root.mp-map;
                 closed => { root.go-back(); }
                 stop-live => { root.act("stop-live", "", ""); }
                 open-osm(u) => { root.act("open-link", u, ""); }
-            } }
-        locpick-holder := PageHolder { active: root.in-session && root.nav == "locpick"; ground: root.page-ground;
-            LocationPicker { width: 100%; height: 100%;
-                mode: root.lp-mode; have-fix: root.lp-have-fix; fix-lat: root.lp-lat; fix-lon: root.lp-lon;
-                position-error: root.lp-error;
-                my-avatar: root.my-avatar; my-initials: root.my-initials; my-tint: root.my-tint;
-                back-requested => { root.go-back(); }
-                share-requested(lat, lon, ms) => { root.act("location-share", "\{lat},\{lon}", "\{ms}"); }
-                retry-position => { root.act("position-refresh", "", ""); }
+                zoom-requested(d) => { root.act("map-zoom", d > 0 ? "in" : "out", ""); }
             } }
         doc-holder := PageHolder { active: root.in-session && root.nav == "doc"; ground: root.page-ground;
             DocPage {

@@ -1,0 +1,11 @@
+/home/pellinore/Work/sigil/slint/vendor/i-slint-core/target/debug/deps/tinyvec-225ebf7789bf5342.d: /home/pellinore/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tinyvec-1.13.0/src/lib.rs /home/pellinore/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tinyvec-1.13.0/src/array.rs /home/pellinore/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tinyvec-1.13.0/src/array/const_generic_impl.rs /home/pellinore/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tinyvec-1.13.0/src/arrayvec.rs /home/pellinore/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tinyvec-1.13.0/src/arrayvec_drain.rs /home/pellinore/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tinyvec-1.13.0/src/slicevec.rs /home/pellinore/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tinyvec-1.13.0/src/tinyvec.rs
+
+/home/pellinore/Work/sigil/slint/vendor/i-slint-core/target/debug/deps/libtinyvec-225ebf7789bf5342.rmeta: /home/pellinore/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tinyvec-1.13.0/src/lib.rs /home/pellinore/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tinyvec-1.13.0/src/array.rs /home/pellinore/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tinyvec-1.13.0/src/array/const_generic_impl.rs /home/pellinore/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tinyvec-1.13.0/src/arrayvec.rs /home/pellinore/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tinyvec-1.13.0/src/arrayvec_drain.rs /home/pellinore/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tinyvec-1.13.0/src/slicevec.rs /home/pellinore/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tinyvec-1.13.0/src/tinyvec.rs
+
+/home/pellinore/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tinyvec-1.13.0/src/lib.rs:
+/home/pellinore/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tinyvec-1.13.0/src/array.rs:
+/home/pellinore/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tinyvec-1.13.0/src/array/const_generic_impl.rs:
+/home/pellinore/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tinyvec-1.13.0/src/arrayvec.rs:
+/home/pellinore/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tinyvec-1.13.0/src/arrayvec_drain.rs:
+/home/pellinore/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tinyvec-1.13.0/src/slicevec.rs:
+/home/pellinore/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tinyvec-1.13.0/src/tinyvec.rs:

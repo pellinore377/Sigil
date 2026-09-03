@@ -681,6 +681,9 @@ impl FlickableData {
         flick_rc: &ItemRc,
     ) -> InputEventFilterResult {
         let mut inner = self.inner.borrow_mut();
+        if crate::input::sigil_trace() {
+            std::eprintln!("[flick] filter {event:?}");
+        }
         match event {
             MouseEvent::Pressed { position, button: PointerEventButton::Left, .. } => {
                 inner.velocity_rb = VelocityRingBuffer::default();

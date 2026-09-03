@@ -38,6 +38,8 @@ hex = "0.4"
 rand = "0.9"
 
 [target.'cfg(target_os = "android")'.dependencies]
+i-slint-backend-android-activity = "=1.17.1"
+
 slint = { version = "1.17", features = ["backend-android-activity-06"] }
 # android-activity needs exactly one activity flavour chosen by the final crate.
 android-activity = { version = "0.6", features = ["native-activity"] }
@@ -75,6 +77,9 @@ name = "android.permission.MODIFY_AUDIO_SETTINGS"
 
 [package.metadata.android.application]
 label = "Sigil"
+# The identity keys must never ride a cloud backup: a reinstall on this
+# package restored the whole account from Google's backup unasked.
+allow_backup = false
 theme = "@android:style/Theme.DeviceDefault.NoActionBar"
 
 # Symbols too: the Android library is 98 MB with them and 69 MB without,
@@ -97,3 +102,4 @@ keystore_password = "android"
 # send upstream is UPSTREAM-flickable-longpress.md).
 [patch.crates-io]
 i-slint-core = { path = "vendor/i-slint-core" }
+i-slint-backend-android-activity = { path = "vendor/i-slint-backend-android-activity" }

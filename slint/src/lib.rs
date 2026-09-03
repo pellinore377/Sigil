@@ -26,6 +26,10 @@ pub fn run_app() -> anyhow::Result<()> {
     let win = AppWindow::new()?;
     let icons = rows::IconSet::from_window(&win);
     bridge::start(&win, &rt, icons);
+    // For the phone-shaped desktop check: force the phone palette.
+    if let Ok(m) = std::env::var("SIGIL_THEME_MODE") {
+        win.global::<Theme>().set_mode(m.as_str().into());
+    }
     scale::keep(&win);
     // the desktop shows the card in its frame; a phone is the card
     #[cfg(not(target_os = "android"))]

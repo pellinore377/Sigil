@@ -171,6 +171,7 @@ impl Engine {
             }
             "emoji.render" => crate::media::emoji::render(p),
             "map.config" => Reply::ok(crate::maps::config_json(self)),
+            "map.tile" => crate::maps::map_tile(self, p).await,
             "map.setStyle" => {
                 match crate::maps::set_style(self, &Self::str_param(p, "url")).await {
                     Ok(()) => Reply::ok(crate::maps::config_json(self)),

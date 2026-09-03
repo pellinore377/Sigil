@@ -992,6 +992,9 @@ impl WindowInner {
         phase: TouchPhase,
     ) -> Option<MouseDispatchResult> {
         let events = self.touch_state.borrow_mut().process(id, position, phase);
+        if crate::input::sigil_trace() {
+            std::eprintln!("[touch] id={id} {phase:?} at {position:?} -> {} events", events.clone().into_iter().count());
+        }
         let mut aggregate: Option<MouseDispatchResult> = None;
         for event in events.into_iter() {
             if let Some(r) = self.process_mouse_input(event) {

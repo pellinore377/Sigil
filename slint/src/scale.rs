@@ -26,15 +26,32 @@ pub fn remember_android(app: slint::android::AndroidApp) {
     let _ = ANDROID.set(app);
 }
 
+/// The app handle for anyone else needing the VM or the Activity (platform.rs).
+#[cfg(target_os = "android")]
+pub fn android() -> Option<&'static slint::android::AndroidApp> {
+    ANDROID.get()
+}
+
 fn multiplier() -> f32 {
     static M: OnceLock<f32> = OnceLock::new();
-    *M.get_or_init(|| {
+    let base = *M.get_or_init(|| {
         std::env::var("SIGIL_UI_SCALE")
             .ok()
             .and_then(|v| v.trim().parse::<f32>().ok())
             .filter(|v| *v > 0.25 && *v < 4.0)
             .unwrap_or(UI_SCALE)
-    })
+    });
+    // The phone's own text-size setting scales the whole surface, the way
+    // the platform's apps grow with it.
+    #[cfg(target_os = "android")]
+    {
+        return base
+            * i_slint_backend_android_activity::system_font_scale()
+                .unwrap_or(1.0)
+                .clamp(0.5, 2.5);
+    }
+    #[allow(unreachable_code)]
+    base
 }
 
 /// The scale the platform would use on its own.
@@ -55,11 +72,11 @@ fn platform_scale(current: f32, last_set: Option<f32>) -> f32 {
     }
 }
 
-/// Keep the window at platform × multiplier for its whole life.
+/// Keep the window at platform × multiplier for its whole life, and keep
+/// the theme following the device: dark or light with the system, the
+/// system's Material accent, matching system-bar glyphs.
 pub fn keep(win: &crate::AppWindow) {
-    if (multiplier() - 1.0).abs() < 0.001 {
-        return;
-    }
+    follow_device(win);
     let weak: slint::Weak<crate::AppWindow> = win.as_weak();
     let last_set = std::rc::Rc::new(std::cell::Cell::new(None::<f32>));
     let last_size = std::rc::Rc::new(std::cell::Cell::new((0u32, 0u32)));
@@ -100,12 +117,44 @@ pub fn keep(win: &crate::AppWindow) {
         }
     };
     apply();
+    let weak2 = win.as_weak();
     let timer = slint::Timer::default();
     timer.start(
         slint::TimerMode::Repeated,
         std::time::Duration::from_millis(120),
-        apply,
+        move || {
+            apply();
+            if let Some(w) = weak2.upgrade() {
+                follow_device(&w);
+            }
+        },
     );
     // the timer lives as long as the window
     std::mem::forget(timer);
+}
+
+/// The phone decides the palette: dark or light with the system setting,
+/// the accent from Material's dynamic colour. Called at start and from the
+/// keeper's tick, so flipping the system theme restyles the app live.
+fn follow_device(win: &crate::AppWindow) {
+    #[cfg(target_os = "android")]
+    {
+        let theme = win.global::<crate::Theme>();
+        let mode = if i_slint_backend_android_activity::night_mode().unwrap_or(true) {
+            "dark"
+        } else {
+            "light"
+        };
+        if theme.get_mode() != mode {
+            theme.set_mode(mode.into());
+            i_slint_backend_android_activity::set_dark_system_bars(mode == "dark");
+        }
+        if let Some(accent) = i_slint_backend_android_activity::system_accent_color() {
+            if theme.get_system_accent() != accent {
+                theme.set_system_accent(accent);
+            }
+        }
+    }
+    #[cfg(not(target_os = "android"))]
+    let _ = win;
 }

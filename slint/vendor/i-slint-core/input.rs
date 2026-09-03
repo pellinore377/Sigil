@@ -1523,6 +1523,9 @@ pub fn process_mouse_input(
             || Option::zip(result.item_stack.last(), mouse_input_state.item_stack.last())
                 .is_none_or(|(a, b)| a.0 != b.0))
     {
+        if crate::input::sigil_trace() {
+            std::eprintln!("[input] keep delayed across {:?}", mouse_event);
+        }
         // Keep the delayed event but transfer the just-attempted dispatch's cursor.
         mouse_input_state.cursor = result.cursor;
         return MouseInputResult { state: mouse_input_state, accepted };
@@ -1556,6 +1559,9 @@ pub(crate) fn process_delayed_event(
         Some(e) => e.1,
         None => return mouse_input_state,
     };
+    if crate::input::sigil_trace() {
+        std::eprintln!("[input] delayed press forwarded: {event:?}");
+    }
 
     let top_item = match mouse_input_state.top_item() {
         Some(i) => i,
@@ -1638,6 +1644,9 @@ fn send_mouse_event_to_item(
                     }
                 },
             );
+            if crate::input::sigil_trace() {
+                std::eprintln!("[input] press parked for delayed forwarding");
+            }
             result.delayed = Some((timer, event_for_children));
             result
                 .item_stack
@@ -1807,6 +1816,23 @@ impl TextCursorBlinker {
 }
 
 /// A single active touch point.
+/// Temporary diagnostic gate: SIGIL_INPUT_TRACE in the environment, or the
+/// marker file (settable from adb) on a device.
+pub(crate) fn sigil_trace() -> bool {
+    use core::sync::atomic::{AtomicU8, Ordering};
+    static ON: AtomicU8 = AtomicU8::new(0);
+    match ON.load(Ordering::Relaxed) {
+        0 => {
+            let on = std::env::var_os("SIGIL_INPUT_TRACE").is_some()
+                || std::path::Path::new("/data/local/tmp/sigil-input-trace").exists();
+            ON.store(if on { 2 } else { 1 }, Ordering::Relaxed);
+            on
+        }
+        2 => true,
+        _ => false,
+    }
+}
+
 #[derive(Clone, Copy, Default)]
 struct TouchPoint {
     id: i32,

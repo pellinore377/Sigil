@@ -170,6 +170,29 @@ pub struct UiState {
     pub gif_frames: HashMap<String, Value>,
     /// geoUri -> location.map reply (Null = pending; false = failed).
     pub location_maps: HashMap<String, Value>,
+    /// The map page's point and the zoom its composite is drawn at.
+    pub map_geo: String,
+    pub map_zoom: i64,
+    /// The attach sheet's picker: the device fix and the dropped pin (f64 —
+    /// the window's f32 mirrors are display-only), the crop zoom, a counter
+    /// that debounces and invalidates location.map requests, and the crop
+    /// the last request was asked for (what tap coordinates resolve against).
+    pub lp_fix: Option<(f64, f64)>,
+    pub lp_mark: Option<(f64, f64)>,
+    pub lp_zoom: i64,
+    pub lp_epoch: u64,
+    pub lp_view: Option<LpView>,
+}
+
+/// One location.map crop as the picker requested it: centre, zoom, and the
+/// map box's logical size (the request is exactly 2× that).
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub struct LpView {
+    pub lat: f64,
+    pub lon: f64,
+    pub zoom: i64,
+    pub box_w: f64,
+    pub box_h: f64,
 }
 
 thread_local! {
@@ -254,7 +277,7 @@ pub fn start(win: &AppWindow, rt: &tokio::runtime::Runtime, icons: IconSet) -> R
         sheet_item: Value::Null,
         emojis: Vec::new(),
         voice_positions: HashMap::new(),
-        chat_themes: serde_json::json!({}),
+        chat_themes: crate::actions::load_themes(),
         viewer_items: Vec::new(),
         doc_pages: Vec::new(),
         stickers: Vec::new(),
@@ -285,6 +308,13 @@ pub fn start(win: &AppWindow, rt: &tokio::runtime::Runtime, icons: IconSet) -> R
         reset_at: None,
         gif_frames: HashMap::new(),
         location_maps: HashMap::new(),
+        map_geo: String::new(),
+        map_zoom: 15,
+        lp_fix: None,
+        lp_mark: None,
+        lp_zoom: 16,
+        lp_epoch: 0,
+        lp_view: None,
     }));
     UI.with(|ui| *ui.borrow_mut() = Some(state));
 
@@ -1008,7 +1038,7 @@ fn handle_event(ui: &mut UiState, v: &Value) {
             }
         }
         "position" => {
-            crate::actions::apply_position(&win, &v);
+            crate::actions::apply_position(ui, &win, &v);
         }
         "room.pinned" => {
             let room = v["roomId"].as_str().unwrap_or("").to_string();
@@ -1226,6 +1256,9 @@ pub fn open_room(ui: &mut UiState, win: &AppWindow, id: &str) {
     win.set_chat_is_thread(false);
     win.set_pagination_state("idle".into());
     set_chat_header(ui, win);
+    // The room's saved look, before the page shows (Panel.qml chatThemes).
+    let theme = ui.chat_themes[crate::actions::room_of_key(id).as_str()].clone();
+    crate::actions::set_theme_props(ui, win, &theme);
     win.set_nav("chat".into());
     ui.req.fire(
         "room.open",
@@ -1245,7 +1278,7 @@ pub fn open_room(ui: &mut UiState, win: &AppWindow, id: &str) {
     // Restore this room's unsent draft into the composer.
     let draft = ui.drafts.get(&rid).cloned().unwrap_or_default();
     let cursor = draft.len() as i32;
-    win.invoke_chat_composer_set(draft.into(), cursor);
+    win.invoke_chat_composer_set(draft.into(), cursor, false);
 }
 
 /// Point the chat surface at a different view key (a thread) without the
@@ -2195,7 +2228,7 @@ fn start_demo(win: &AppWindow, rt: &tokio::runtime::Runtime, icons: IconSet) -> 
         sheet_item: Value::Null,
         emojis: Vec::new(),
         voice_positions: HashMap::new(),
-        chat_themes: serde_json::json!({}),
+        chat_themes: crate::actions::load_themes(),
         viewer_items: Vec::new(),
         doc_pages: Vec::new(),
         stickers: Vec::new(),
@@ -2226,6 +2259,13 @@ fn start_demo(win: &AppWindow, rt: &tokio::runtime::Runtime, icons: IconSet) -> 
         reset_at: None,
         gif_frames: HashMap::new(),
         location_maps: HashMap::new(),
+        map_geo: String::new(),
+        map_zoom: 15,
+        lp_fix: None,
+        lp_mark: None,
+        lp_zoom: 16,
+        lp_epoch: 0,
+        lp_view: None,
     }));
     UI.with(|ui| *ui.borrow_mut() = Some(state));
 

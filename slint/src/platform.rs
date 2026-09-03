@@ -135,6 +135,83 @@ fn copy_text_android(text: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// The microphone on Android 6+ is a runtime grant; the manifest entry only
+/// declares it. Both calls go through the Activity that android-activity
+/// parked in scale.rs — ndk-context only carries the application context,
+/// which cannot show the permission dialog.
+#[cfg(target_os = "android")]
+pub fn has_mic_permission() -> bool {
+    match mic_permission_android() {
+        Ok(granted) => granted,
+        Err(e) => {
+            tracing::warn!("mic permission check: {e:#}");
+            false
+        }
+    }
+}
+
+#[cfg(target_os = "android")]
+pub fn request_mic_permission() {
+    if let Err(e) = request_mic_permission_android() {
+        tracing::warn!("mic permission request: {e:#}");
+    }
+}
+
+#[cfg(target_os = "android")]
+const RECORD_AUDIO: &str = "android.permission.RECORD_AUDIO";
+/// The requestPermissions code; the result comes back as a lifecycle event we
+/// do not consume — the person taps record again once granted.
+#[cfg(target_os = "android")]
+const MIC_REQUEST_CODE: i32 = 7001;
+
+/// checkSelfPermission(RECORD_AUDIO) == PERMISSION_GRANTED (0).
+#[cfg(target_os = "android")]
+fn mic_permission_android() -> anyhow::Result<bool> {
+    use jni::objects::{JObject, JValue};
+    let app = crate::scale::android().ok_or_else(|| anyhow::anyhow!("no Android app handle"))?;
+    let vm = unsafe { jni::JavaVM::from_raw(app.vm_as_ptr().cast()) }?;
+    let mut env = vm.attach_current_thread()?;
+    let activity = unsafe { JObject::from_raw(app.activity_as_ptr().cast()) };
+
+    let perm = env.new_string(RECORD_AUDIO)?;
+    let result = env.call_method(
+        &activity,
+        "checkSelfPermission",
+        "(Ljava/lang/String;)I",
+        &[JValue::Object(&perm)],
+    );
+    if env.exception_check().unwrap_or(false) {
+        env.exception_describe().ok();
+        env.exception_clear().ok(); // a pending exception at detach is fatal
+    }
+    Ok(result?.i()? == 0)
+}
+
+/// requestPermissions(new String[]{RECORD_AUDIO}, code) — shows the dialog.
+#[cfg(target_os = "android")]
+fn request_mic_permission_android() -> anyhow::Result<()> {
+    use jni::objects::{JObject, JValue};
+    let app = crate::scale::android().ok_or_else(|| anyhow::anyhow!("no Android app handle"))?;
+    let vm = unsafe { jni::JavaVM::from_raw(app.vm_as_ptr().cast()) }?;
+    let mut env = vm.attach_current_thread()?;
+    let activity = unsafe { JObject::from_raw(app.activity_as_ptr().cast()) };
+
+    let perm = env.new_string(RECORD_AUDIO)?;
+    let perms = env.new_object_array(1, "java/lang/String", &perm)?;
+    let result = env.call_method(
+        &activity,
+        "requestPermissions",
+        "([Ljava/lang/String;I)V",
+        &[JValue::Object(perms.as_ref()), JValue::Int(MIC_REQUEST_CODE)],
+    );
+    if env.exception_check().unwrap_or(false) {
+        env.exception_describe().ok();
+        env.exception_clear().ok(); // a pending exception at detach is fatal
+    }
+    result?;
+    Ok(())
+}
+
 /// Pick one file. Desktop: omarchy-file-select. Android: needs a SAF intent
 /// round-trip NativeActivity cannot do without extra glue — returns None.
 pub async fn pick_file() -> Option<String> {

@@ -134,7 +134,7 @@ export component Bubble inherits Rectangle {
     property <color> bubble-fill: item.is-own ? root.accent.mix(Theme.popup-background, 0.42)
         : item.highlighted ? (root.themed ? root.theme-surface.mix(root.accent, 0.78)
                                           : root.accent.mix(Theme.popup-background, 0.24))
-        : (root.themed ? root.theme-surface : root.fg.mix(Theme.popup-background, 0.22));
+        : (root.themed ? root.theme-surface : Theme.bubble-other);
     property <length> r-big: 16px;
     property <length> r-small: 5px;
     // BubbleDelegate.qml:862 — a link-only card wears its own 14px corners.

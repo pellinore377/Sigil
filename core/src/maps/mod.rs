@@ -2,6 +2,13 @@
 //! in `settings.json` first, then the homeserver's MSC3488 `m.tile_server.map_style_url`
 //! from `.well-known/matrix/client`. With neither, nothing is requested from anyone.
 
+mod composite;
+mod mvt;
+mod render;
+mod style;
+
+pub use composite::{location_map, map_tile};
+
 use serde_json::{json, Value};
 use tracing::{debug, info};
 
@@ -21,7 +28,9 @@ fn sane(url: &str) -> bool {
     (u.starts_with("https://") || u.starts_with("http://")) && u.len() < 2048
 }
 
-/// `.well-known` lookup order: the server-name domain, then the homeserver's own host.
+/// `.well-known` lookup order: the server-name domain, then the homeserver's
+/// own host, then the server's sigil pointer file (it may carry the same
+/// `m.tile_server` key; absence is silence, not an error).
 fn well_known_urls(server_name: &str, homeserver: &str) -> Vec<String> {
     let mut out = Vec::new();
     let name = server_name.trim().trim_end_matches('/');
@@ -32,6 +41,9 @@ fn well_known_urls(server_name: &str, homeserver: &str) -> Vec<String> {
     if !hs.is_empty() {
         let url = format!("{hs}/.well-known/matrix/client");
         if !out.contains(&url) { out.push(url) }
+    }
+    if !name.is_empty() {
+        out.push(format!("https://{name}/.well-known/sigil"));
     }
     out
 }
@@ -122,14 +134,16 @@ mod tests {
     }
 
     #[test]
-    fn one_url_when_both_are_the_same_host() {
+    fn the_sigil_pointer_is_asked_last() {
         let urls = well_known_urls("example.org", "https://example.org");
-        assert_eq!(urls.len(), 1);
+        assert_eq!(urls.len(), 2);
+        assert_eq!(urls.last().unwrap(), "https://example.org/.well-known/sigil");
     }
 
     #[test]
     fn missing_pieces_do_not_produce_nonsense_urls() {
         assert!(well_known_urls("", "").is_empty());
+        // no server name means no sigil pointer either
         assert_eq!(well_known_urls("", "https://hs.example").len(), 1);
     }
 

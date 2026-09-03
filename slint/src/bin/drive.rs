@@ -983,7 +983,7 @@ fn kinds(
     // 6. a place, through the picker, then the map page; alice sends one back
     app.invoke_act("attach-location".into(), "current".into(), "".into());
     h.wait_until("the picker", Duration::from_secs(20), || {
-        app.get_nav() == "locpick"
+        app.get_attach_open() && app.get_at_page() == "current"
     })?;
     h.shoot("live-locpick")?;
     app.invoke_act(

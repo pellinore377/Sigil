@@ -1,11 +1,10 @@
-// Full-page view of a shared location — MapPage.qml — and the attachment
-// sheet's three-mode LocationPicker. THE KNOWN TOOLKIT GAP LIVES HERE:
-// Slint has no map widget (QML gets MapLibre through QtLocation), so both
-// surfaces render the real location data and logic on a static card and say
-// so, instead of drawing tiles. The QML's map-plumbing (style probing, layer
-// masks, gesture insets, recentre and zoom chrome) has no equivalent to port
-// until Slint can host a map renderer or the engine rasterises tiles. The
-// marker MapView.qml would place on the tiles is drawn on the card instead.
+// Full-page view of a shared location — MapPage.qml. Slint has no map
+// widget (QML gets MapLibre through QtLocation), so the engine rasterises
+// the tiles instead: MapPage shows a location.map composite centred on the
+// point, with the marker drawn on top and +/- chips that re-request at
+// zoom ±1. Without a configured style the pin card remains, and says so.
+// The attachment sheet's LocationPicker lives in attach.slint now, on the
+// same imagery; it borrows SelfPin from here.
 
 import { Theme } from "../style.slint";
 import { Icons } from "../icons.slint";
@@ -16,7 +15,7 @@ import { IconLabel, ActionButton, Avatar } from "../components.slint";
 // 0.4896 across, 0.4062 down, radius 0.26 of the box), and while a live share
 // runs, two staggered broadcast arcs radiating from the face. No avatar
 // leaves the plain pin (:156-169).
-component SelfPin inherits Rectangle {
+export component SelfPin inherits Rectangle {
     in property <color> pin-color: Theme.accent;
     in property <image> avatar;
     in property <bool> ripple: false;
@@ -99,6 +98,10 @@ export component MapPage inherits Rectangle {
     in property <string> sender-initials;
     in property <color> sender-tint: Theme.accent;
     in-out property <string> toast;
+    // The engine's composite, centred on the point; empty until location.map lands.
+    in property <image> map-image;
+    callback zoom-requested(int);          // +1 / −1; the bridge clamps 3..19
+    property <bool> has-map: root.map-image.width > 0;
 
     property <color> chip: Theme.background.with-alpha(0.85);
     // MapPage.qml:44, 47 — openable = pin || (liveKind && live && !own), where
@@ -150,13 +153,23 @@ export component MapPage inherits Rectangle {
             border-top-right-radius: 24px;
             clip: true;
 
+            // The rendered composite; its centre is the shared point.
+            if root.has-map : Image {
+                width: 100%; height: 100%;
+                source: root.map-image;
+                image-fit: cover;
+            }
+
             // MapPage.qml:268-292 — the no-map column: parent − 48 wide,
             // spacing 10, centred in the room above the sheet. The marker is
-            // MapView.qml's, since the card stands in for the tiles.
+            // MapView.qml's, since the card stands in for the tiles. With a
+            // map the caption goes and the marker's tip sits on the point.
             place-col := VerticalLayout {
                 x: 24px;
                 width: map-area.width - 48px;
-                y: (map-area.height - sheet.height - self.preferred-height) / 2;
+                y: root.has-map
+                    ? map-area.height / 2 - self.preferred-height
+                    : (map-area.height - sheet.height - self.preferred-height) / 2;
                 height: self.preferred-height;
                 spacing: 10px;
                 HorizontalLayout {
@@ -176,7 +189,7 @@ export component MapPage inherits Rectangle {
                     }
                 }
                 // :281-291 — one caption, fg@0.6, wrapped and centred.
-                Text {
+                if !root.has-map : Text {
                     text: "Sigil on Slint cannot draw maps yet — open the point in your browser.";
                     color: root.fg.with-alpha(0.6);
                     font-family: Theme.font-ui;
@@ -218,6 +231,38 @@ export component MapPage inherits Rectangle {
                         font-weight: 700;
                         vertical-alignment: center;
                     }
+                }
+            }
+
+            // Zoom the composite in or out; the bridge re-requests at ±1.
+            if root.has-map : zoom-chips := VerticalLayout {
+                x: map-area.width - 34px - 12px;
+                y: 12px;
+                width: 34px;
+                spacing: 8px;
+                Rectangle {
+                    width: 34px; height: 34px; border-radius: 17px;
+                    background: root.chip;
+                    Text {
+                        text: "+"; color: #ececec;
+                        font-family: Theme.font-ui;
+                        font-size: Theme.subtitle; font-weight: 700;
+                        horizontal-alignment: center; vertical-alignment: center;
+                        width: 100%; height: 100%;
+                    }
+                    TouchArea { clicked => { root.zoom-requested(1); } }
+                }
+                Rectangle {
+                    width: 34px; height: 34px; border-radius: 17px;
+                    background: root.chip;
+                    Text {
+                        text: "−"; color: #ececec;
+                        font-family: Theme.font-ui;
+                        font-size: Theme.subtitle; font-weight: 700;
+                        horizontal-alignment: center; vertical-alignment: center;
+                        width: 100%; height: 100%;
+                    }
+                    TouchArea { clicked => { root.zoom-requested(-1); } }
                 }
             }
 
@@ -347,234 +392,3 @@ export component MapPage inherits Rectangle {
     }
 }
 
-// The attachment sheet's three location pages: one picker in three modes.
-//   "current" — your position, avatar marker, share once
-//   "live"    — your position plus how long to keep sharing it
-//   "pin"     — in QML, tap the map to drop a point. WITHOUT A MAP there is
-//               nothing to tap: pin mode explains itself and stays disabled
-//               unless the bridge supplies coordinates some other way.
-export component LocationPicker inherits Rectangle {
-    in property <color> fg: Theme.menu-text;
-    in property <color> accent: Theme.accent;
-    in property <string> mode: "pin";          // current | live | pin
-    in property <bool> have-fix;
-    in property <float> fix-lat;
-    in property <float> fix-lon;
-    in property <string> position-error;
-    in property <image> my-avatar;
-    in property <string> my-initials;
-    in property <color> my-tint: Theme.accent;
-    /// Pin mode only, bridge-supplied (no tappable map to mark with).
-    in property <bool> marked;
-    in property <float> mark-lat;
-    in property <float> mark-lon;
-    callback back-requested;
-    callback share-requested(float, float, float);  // lat, lon, durationMs (0 = one-off)
-    callback retry-position;                        // position.refresh
-
-    property <bool> pin-mode: root.mode == "pin";
-    property <bool> live-mode: root.mode == "live";
-    property <bool> can-share: root.pin-mode ? root.marked : root.have-fix;
-    property <int> duration-index: 0;
-    property <[string]> duration-labels: ["Share for 15m", "Share for 1h", "Share for 8h"];
-    property <[float]> duration-ms: [900000, 3600000, 28800000];
-    in-out property <bool> duration-open: false;
-    // LocationPicker.qml:19-22 — the chip fill, and the popup ground with its alpha forced to 1.
-    property <color> chip: Theme.background.with-alpha(0.85);
-    property <color> menu-solid: Theme.popup-background.with-alpha(1.0);
-
-    background: transparent;
-
-    // LocationPicker.qml:86-103 — the map box: 16 in from the sides and top,
-    // 14 above the bottom bar, radius 14, fg@0.10 ground.
-    map-box := Rectangle {
-        x: 16px; y: 16px;
-        width: root.width - 32px;
-        height: bottom-bar.y - 14px - 16px;
-        border-radius: 14px;
-        background: root.fg.with-alpha(0.10);
-        clip: true;
-
-        // LocationPicker.qml:135-150 — the no-map column, parent − 40 wide,
-        // spacing 8. The marker MapView.qml would place is drawn here instead:
-        // your face in the pin once there is a fix (:122-127), a pin once marked.
-        VerticalLayout {
-            x: 20px;
-            width: map-box.width - 40px;
-            y: (map-box.height - self.preferred-height) / 2;
-            height: self.preferred-height;
-            spacing: 8px;
-            HorizontalLayout {
-                alignment: center;
-                if !root.pin-mode && root.have-fix : SelfPin {
-                    pin-color: root.accent;
-                    avatar: root.my-avatar;
-                }
-                if root.pin-mode && root.marked : IconLabel {
-                    text: Icons.location;
-                    filled: true;
-                    color: root.accent;
-                    font-size: 48px;
-                    width: 48px; height: 48px;
-                }
-                // :140-141 — the no-map glyph: filled `place`, 36px, accent@0.8.
-                if (root.pin-mode && !root.marked) || (!root.pin-mode && !root.have-fix) : IconLabel {
-                    text: Icons.location;
-                    filled: true;
-                    color: root.accent.with-alpha(0.8);
-                    font-size: 36px;
-                    width: 36px; height: 36px;
-                }
-            }
-            // :142-149 — the caption under the glyph. Pin mode has to say why
-            // it cannot be used; the fix states speak through the hint pill.
-            if root.pin-mode : Text {
-                text: "Dropping a pin needs a map to tap, and Sigil on Slint cannot draw one yet. Share your current position instead.";
-                color: root.fg.with-alpha(0.6);
-                font-family: Theme.font-ui;
-                font-size: Theme.caption;
-                horizontal-alignment: center;
-                wrap: word-wrap;
-            }
-        }
-
-        // LocationPicker.qml:154-161 — back chip: a 30px disc at 8/8 in the
-        // chip fill, the outlined `back` glyph at icon size.
-        back-chip := Rectangle {
-            x: 8px; y: 8px;
-            width: 30px; height: 30px;
-            border-radius: 15px;
-            background: root.chip;
-            IconLabel {
-                text: Icons.back;
-                color: root.fg;
-                font-size: Theme.icon-size;
-                width: 100%; height: 100%;
-            }
-            TouchArea { clicked => { root.back-requested(); } }
-        }
-
-        // LocationPicker.qml:205-228 — the hint pill, top centre at 8: 26 tall,
-        // text + 20 wide, chip fill, caption. The copy follows the QML's cycle;
-        // with a fix it carries the coordinates, the one status line the card
-        // has in place of a marker on tiles. Tapping it retries a missing fix.
-        hint-pill := Rectangle {
-            x: (map-box.width - self.width) / 2;
-            y: 8px;
-            width: hint.preferred-width + 20px;
-            height: 26px;
-            border-radius: 13px;
-            background: root.chip;
-            hint := Text {
-                text: root.pin-mode
-                    ? (root.marked ? "Click to move the pin" : "Click to drop a pin")
-                    : (root.have-fix
-                        ? round(root.fix-lat * 100000) / 100000 + ", " + round(root.fix-lon * 100000) / 100000
-                        : (root.position-error != "" ? "Location unavailable — tap to retry" : "Finding your location…"));
-                color: root.fg;
-                font-family: Theme.font-ui;
-                font-size: Theme.caption;
-                horizontal-alignment: center;
-                vertical-alignment: center;
-                width: 100%; height: 100%;
-            }
-            TouchArea {
-                enabled: !root.pin-mode && !root.have-fix;
-                clicked => { root.retry-position(); }
-            }
-        }
-    }
-
-    // LocationPicker.qml:231-287 — the bottom bar: 16 in and 16 up, spacing 8
-    // between the duration field and the share pill.
-    bottom-bar := VerticalLayout {
-        x: 16px;
-        width: root.width - 32px;
-        y: root.height - 16px - self.preferred-height;
-        height: self.preferred-height;
-        spacing: 8px;
-
-        // :239-261 — how long to keep sharing, live mode only: a 38px field,
-        // radius 11, popup ground; label bodySmall at 14, chevron fg@0.7 at 12.
-        if root.live-mode : duration-field := Rectangle {
-            height: 38px;
-            border-radius: 11px;
-            background: root.menu-solid;
-            Text {
-                x: 14px; height: 100%;
-                width: parent.width - 14px - 12px - 14px;
-                text: root.duration-labels[root.duration-index];
-                color: root.fg;
-                font-family: Theme.font-ui;
-                font-size: Theme.body-small;
-                vertical-alignment: center;
-                overflow: elide;
-            }
-            IconLabel {
-                x: parent.width - 12px - 14px;
-                width: 14px; height: 100%;
-                text: root.duration-open ? Icons.chevronUp : Icons.chevronDown;
-                color: root.fg.with-alpha(0.7);
-                font-size: Theme.icon-size;
-            }
-            TouchArea { clicked => { root.duration-open = !root.duration-open; } }
-        }
-
-        share-btn := Rectangle {
-            height: 44px;
-            border-radius: 22px;
-            background: root.can-share ? root.accent.with-alpha(0.92) : root.chip;
-            opacity: root.can-share ? 1 : 0.6;
-            Text {
-                text: "Share location";
-                color: root.can-share ? #141414 : root.fg.with-alpha(0.7);
-                font-family: Theme.font-ui;
-                font-size: Theme.body;
-                font-weight: 700;
-                horizontal-alignment: center; vertical-alignment: center;
-                width: 100%; height: 100%;
-            }
-            TouchArea {
-                enabled: root.can-share;
-                clicked => {
-                    root.share-requested(
-                        root.pin-mode ? root.mark-lat : root.fix-lat,
-                        root.pin-mode ? root.mark-lon : root.fix-lon,
-                        root.live-mode ? root.duration-ms[root.duration-index] : 0);
-                }
-            }
-        }
-    }
-
-    // LocationPicker.qml:289-324 — the duration card: the bar's width, its
-    // bottom 56 above the bar's bottom, radius 12, popup ground, rows of 34
-    // at radius 9 inside a 4px margin; selected accent@0.25, hover fg@0.08.
-    if root.duration-open && root.live-mode : dur-card := Rectangle {
-        x: 16px;
-        width: root.width - 32px;
-        height: dur-col.preferred-height + 8px;
-        y: root.height - 16px - 56px - self.height;
-        border-radius: 12px;
-        background: root.menu-solid;
-        dur-col := VerticalLayout {
-            x: 4px; y: 4px;
-            width: dur-card.width - 8px;
-            height: self.preferred-height;
-            for label[i] in root.duration-labels : dur-row := Rectangle {
-                height: 34px;
-                border-radius: 9px;
-                background: i == root.duration-index ? root.accent.with-alpha(0.25)
-                          : dur-t.has-hover ? root.fg.with-alpha(0.08) : transparent;
-                Text {
-                    x: 12px; height: 100%;
-                    text: label;
-                    color: root.fg;
-                    font-family: Theme.font-ui;
-                    font-size: Theme.body-small;
-                    vertical-alignment: center;
-                }
-                dur-t := TouchArea { clicked => { root.duration-index = i; root.duration-open = false; } }
-            }
-        }
-    }
-}

@@ -1,0 +1,3 @@
+cargo:rustc-env=HOST_PLATFORM=x86_64-unknown-linux-gnu
+cargo:rustc-env=TARGET_PLATFORM=x86_64-unknown-linux-gnu
+cargo:rerun-if-changed-env=TARGET

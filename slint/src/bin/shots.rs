@@ -18,6 +18,11 @@ fn main() -> anyhow::Result<()> {
         .enable_all()
         .build()?;
     let app = sigil_slint::AppWindow::new()?;
+    // preview the phone palettes: SIGIL_THEME_MODE=dark|light
+    if let Ok(m) = std::env::var("SIGIL_THEME_MODE") {
+        app.global::<sigil_slint::Theme>().set_mode(m.as_str().into());
+        app.global::<sigil_slint::Theme>().set_system_accent(slint::Color::from_rgb_u8(0xE8, 0x91, 0x4E));
+    }
     app.window()
         .set_size(slint::PhysicalSize::new(WIDTH, HEIGHT));
     let icons = sigil_slint::rows::IconSet::from_window(&app);
@@ -93,13 +98,27 @@ fn main() -> anyhow::Result<()> {
         app.set_nav(page.into());
         h.shoot(page)?;
     }
-    // the location picker with a fix, and the map page for a live share
-    app.set_lp_mode("live".into());
+    // the attach sheet's location pages: a dropped pin, then a live share
+    // with its duration field (no engine, so the no-imagery ground stands in)
+    app.set_nav("chat".into());
+    h.settle();
+    app.set_attach_open(true);
     app.set_lp_have_fix(true);
     app.set_lp_lat(51.5007);
     app.set_lp_lon(-0.1246);
-    app.set_nav("locpick".into());
-    h.shoot("locpick")?;
+    app.set_lp_marked(true);
+    app.set_lp_mark_lat(51.5007);
+    app.set_lp_mark_lon(-0.1246);
+    app.set_at_page("pin".into());
+    h.settle();
+    h.shoot("attach-pin")?;
+    app.set_at_page("live".into());
+    h.settle();
+    h.shoot("attach-live")?;
+    app.set_at_page("grid".into());
+    app.set_attach_open(false);
+    h.settle();
+    // the map page for a live share
     app.set_mp_who("Marlowe".into());
     app.set_mp_live(true);
     app.set_mp_status("Sharing until 3:00 PM".into());

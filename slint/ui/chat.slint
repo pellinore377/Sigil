@@ -66,6 +66,19 @@ export component ChatPage inherits Rectangle {
     in property <[StickerItem]> stickers;
     in property <bool> stickers-loaded;
     in property <string> sticker-dir;
+    /// The sheet's page, exposed so the bridge can open a location mode.
+    in-out property <string> at-page: "grid";
+    // The location picker's feed (attach.slint LocationPages).
+    in property <image> lp-map;
+    in property <bool> lp-unavailable;
+    in property <bool> lp-have-fix;
+    in property <float> lp-lat;
+    in property <float> lp-lon;
+    in property <string> lp-error;
+    in property <bool> lp-marked;
+    in property <float> lp-mark-lat;
+    in property <float> lp-mark-lon;
+    in property <image> my-avatar;
     // Composer furniture the bridge fills: the @/# autocomplete rows (label =
     // display-name, sub = user-id) and the toast (ChatPage.qml note()); the
     // page clears the toast itself after 2600ms.
@@ -140,6 +153,11 @@ export component ChatPage inherits Rectangle {
     // The attach sheet's actions, forwarded to the window's act() channel.
     callback pick-attach-files;
     callback attach-location(string);   // pin | current | live
+    callback attach-loc-tap(length, length);  // map tap in the picker's box
+    callback attach-loc-zoom(int);
+    callback attach-loc-recentre;
+    callback attach-loc-retry;
+    callback attach-loc-share(float, float, float, string); // lat, lon, ms, mode
     callback insert-emoji(string);
     callback create-poll(string, [string], bool);
     callback send-sticker(int);
@@ -209,10 +227,12 @@ export component ChatPage inherits Rectangle {
     // no string slicing, so the splice happens in Rust against these.
     out property <string> composer-text <=> composer-input.text;
     out property <int> composer-cursor <=> composer-input.cursor-position-byte-offset;
-    public function set-composer(t: string, cursor: int) {
+    // `take-focus` false restores a draft on room open — pulling focus there
+    // would raise the phone's keyboard the moment a room opens.
+    public function set-composer(t: string, cursor: int, take-focus: bool) {
         composer-input.text = t;
         composer-input.set-selection-offsets(cursor, cursor);
-        composer-input.focus();
+        if (take-focus) { composer-input.focus(); }
     }
 
     // ---- the two composer sheets (ChatPage.qml:806-807, :1683, :1785) ----
@@ -911,8 +931,24 @@ export component ChatPage inherits Rectangle {
                         stickers: root.stickers;
                         stickers-loaded: root.stickers-loaded;
                         sticker-dir: root.sticker-dir;
+                        page <=> root.at-page;
+                        lp-map: root.lp-map;
+                        lp-unavailable: root.lp-unavailable;
+                        lp-have-fix: root.lp-have-fix;
+                        lp-lat: root.lp-lat;
+                        lp-lon: root.lp-lon;
+                        lp-error: root.lp-error;
+                        lp-marked: root.lp-marked;
+                        lp-mark-lat: root.lp-mark-lat;
+                        lp-mark-lon: root.lp-mark-lon;
+                        my-avatar: root.my-avatar;
                         pick-files => { root.pick-attach-files(); }
                         open-location(mode) => { root.attach-location(mode); }
+                        loc-tap(x, y) => { root.attach-loc-tap(x, y); }
+                        loc-zoom(d) => { root.attach-loc-zoom(d); }
+                        loc-recentre => { root.attach-loc-recentre(); }
+                        loc-retry => { root.attach-loc-retry(); }
+                        share-location(la, lo, ms, mode) => { root.attach-loc-share(la, lo, ms, mode); }
                         insert-emoji(e) => { root.insert-emoji(e); }
                         create-poll(q, opts, closed) => { root.create-poll(q, opts, closed); }
                         send-sticker(i) => { root.send-sticker(i); }
