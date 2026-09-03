@@ -16,6 +16,11 @@ export component DoorsPage inherits Rectangle {
     in-out property <string> server;
     /// open | invite | oidc, from account.probe
     in property <string> registration: "invite";
+    /// with oidc: the provider's host, how the sign-in went, and the name it suggests
+    in property <string> oidc-name;
+    /// "" | waiting | done | failed
+    in property <string> oidc-state;
+    in property <string> oidc-user;
     in property <bool> tpm;
     in property <bool> busy;
     in property <bool> restoring;
@@ -29,6 +34,7 @@ export component DoorsPage inherits Rectangle {
 
     callback probe(server: string);
     callback create(localpart: string, invite: string, password: string);
+    callback oidc-start;
     callback recover(localpart: string, password: string, code: string);
     callback link-start(localpart: string);
     callback link-cancel;
@@ -174,13 +180,43 @@ export component DoorsPage inherits Rectangle {
                     font-family: Theme.font-ui; font-size: Theme.body;
                     vertical-alignment: center;
                 }
-                create-name := TextWell { placeholder: "name"; enabled: !root.busy; horizontal-stretch: 1; }
+                // with a sign-in, the provider's name is the suggestion until typed over
+                create-name := TextWell { placeholder: "name"; text: root.registration == "oidc" ? root.oidc-user : ""; enabled: !root.busy; horizontal-stretch: 1; }
                 Text {
                     text: ":" + root.server;
                     color: Theme.menu-text.with-alpha(0.6);
                     font-family: Theme.font-ui; font-size: Theme.body;
                     vertical-alignment: center;
                     overflow: elide;
+                }
+            }
+            // with the OIDC gate: sign in at the provider first; the browser does it
+            if root.registration == "oidc" : VerticalLayout {
+                spacing: Theme.sp-md;
+                Text { text: "Sign in"; color: Theme.menu-text.with-alpha(0.6); font-family: Theme.font-ui; font-size: Theme.caption; }
+                if root.oidc-state != "done" : HorizontalLayout {
+                    alignment: center;
+                    SButton {
+                        text: root.oidc-state == "waiting" ? "Waiting for your browser…" : "Sign in with " + root.oidc-name;
+                        enabled: !root.busy && root.oidc-state != "waiting";
+                        clicked => { root.oidc-start(); }
+                    }
+                }
+                if root.oidc-state == "done" : Text {
+                    text: "Signed in" + (root.oidc-user == "" ? "" : " as " + root.oidc-user);
+                    color: Theme.menu-text;
+                    font-family: Theme.font-ui; font-size: Theme.body;
+                    horizontal-alignment: center;
+                }
+                Text {
+                    text: root.oidc-state == "waiting" ? "Finish signing in on the page that opened, then come back here."
+                        : root.oidc-state == "done" ? "This server lets that login hold one name."
+                        : "This server takes sign-ins from " + root.oidc-name + " instead of invite codes.";
+                    color: Theme.menu-text.with-alpha(0.55);
+                    font-family: Theme.font-ui;
+                    font-size: Theme.body-small;
+                    horizontal-alignment: center;
+                    wrap: word-wrap;
                 }
             }
             // always built, so the button can read it; folded away on open servers
@@ -208,7 +244,7 @@ export component DoorsPage inherits Rectangle {
                 spacing: Theme.sp-lg;
                 SButton {
                     text: root.busy ? "Creating…" : "Create account";
-                    enabled: !root.busy && create-name.text != "";
+                    enabled: !root.busy && create-name.text != "" && (root.registration != "oidc" || root.oidc-state == "done");
                     clicked => { root.create(create-name.text, root.registration == "invite" ? create-invite.text : "", create-pw.text); }
                 }
                 SButton { text: "Back"; enabled: !root.busy; clicked => { root.door = "choose"; } }

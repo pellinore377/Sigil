@@ -25,6 +25,7 @@ pub struct App {
 pub fn router(app: App) -> Router {
     Router::new()
         .route("/info", get(info))
+        .route("/oidc", get(oidc_info))
         .route("/bag", post(bag))
         .route("/stream", get(stream))
         .route("/envoy", get(envoy_ws))
@@ -42,6 +43,24 @@ async fn info(State(app): State<App>) -> impl IntoResponse {
     match &app.home {
         Some(h) => (StatusCode::OK, h.card.clone()),
         None => (StatusCode::NOT_FOUND, Vec::new()),
+    }
+}
+
+/// With the OIDC gate on: where to sign in and as which client, so the app
+/// can start the browser flow. Plain JSON; the card's flag bit says
+/// whether to ask.
+async fn oidc_info(State(app): State<App>) -> impl IntoResponse {
+    match app.home.as_ref().and_then(|h| h.oidc.as_ref()) {
+        Some(o) => (
+            StatusCode::OK,
+            [("content-type", "application/json")],
+            o.info_json(),
+        ),
+        None => (
+            StatusCode::NOT_FOUND,
+            [("content-type", "application/json")],
+            String::new(),
+        ),
     }
 }
 

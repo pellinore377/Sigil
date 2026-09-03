@@ -19,7 +19,8 @@ Error codes: `bad_request not_logged_in login_in_progress oidc_unsupported slidi
 | `account.setPassword` | `password` | sets or changes the backup password |
 | `recovery.code` | | `{code}`: the printed recovery code to show once and let the user save |
 | `account.status` | | `{exists, active}` |
-| `account.probe` | `server` (host, or a full URL for a test server) | asks the server for its card, straight from `/info`: `{hostname, registration: open\|invite\|oidc, tpm}`; the first screen decides which doors to show from this |
+| `account.probe` | `server` (host, or a full URL for a test server) | asks the server for its card, straight from `/info`: `{hostname, registration: open\|invite\|oidc, tpm}`; with `oidc`, also `oidc: {issuer, clientId, name}` from the server's `/oidc`; the first screen decides which doors to show from this |
+| `account.oidcStart` | `server` (hostname), `issuer`, `clientId` | starts the sign-in at the server's identity provider: PKCE, a loopback listener for the redirect; returns `{url}` for the app to open in the browser. Ends in an `oidc.state` event: `done` with `name` (the provider's username, a suggestion) or `failed` with `error`. The ID token stays in memory and `account.create` with an empty `invite` presents it as the gate |
 | `link.offer` | `username`, `envoy?` | new device: `{offer}` to show as a QR code; then `link.state` events: `offer`, `sas{sas}`, `joining{with}`, `done` (session starts) or `failed{error}` |
 | `link.scan` | `offer` | existing device: `{sas}`, also pushed as `link.state{state:"sas"}`; nothing is sent yet |
 | `link.confirm` | `ok` | existing device, after the user compared the emoji: `ok:true` transfers the account and adds the new device to every conversation; `ok:false` cancels |

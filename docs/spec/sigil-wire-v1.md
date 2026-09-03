@@ -128,7 +128,7 @@ travels inside the message (kind 9). The server sees only `id` and size.
 
 | Op | Request | Response | Server MUST |
 |---|---|---|---|
-| 10 `name.register` | `card bytes, gate bytes, token` | empty | verify the card (protocol spec 4) and that its `server` is this server; apply the registration policy to `gate` (invite code, OIDC ID token, proof-of-work, or nothing); claim the localpart (`name_taken`); store the card |
+| 10 `name.register` | `card bytes, gate bytes, token` | empty | verify the card (protocol spec 4) and that its `server` is this server; apply the registration policy to `gate` (invite code, OIDC ID token, proof-of-work, or nothing); claim the localpart (`name_taken`); store the card. With the OIDC gate (card flag bit 1): `gate` is the ID token as UTF-8; the server MUST check signature against the issuer's JWKS, `iss`, `aud` (its client id) and `exp`, MUST allow one localpart per `sub` (`unauthorized` for a second), and MUST store nothing from the token but `sub` → localpart. `GET /oidc` on the server returns `{"issuer","client_id"}` as JSON so a client can start the flow |
 | 11 `name.lookup` | `localpart string` | `card bytes` | return the current signed card or `not_found` |
 | 12 `name.update` | `card bytes` | empty | require the same `identity_pub` as the stored card and a newer card (cards carry no counter, so "newer" is: the request arrived later; last write wins) |
 

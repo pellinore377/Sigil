@@ -52,6 +52,9 @@ export component AppWindow inherits Window {
     in-out property <string> door: "server";
     in-out property <string> door-server;
     in property <string> door-registration: "invite";
+    in property <string> door-oidc-name;
+    in property <string> door-oidc-state;
+    in property <string> door-oidc-user;
     in property <bool> door-tpm;
     in property <bool> door-busy;
     in property <string> door-error;
@@ -287,6 +290,7 @@ export component AppWindow inherits Window {
     // ---- action channels ----
     callback door-probe(string);
     callback door-create(string, string, string);
+    callback door-oidc-start;
     callback door-recover(string, string, string);
     callback door-link-start(string);
     callback door-link-cancel;
@@ -383,6 +387,9 @@ export component AppWindow inherits Window {
             door <=> root.door;
             server <=> root.door-server;
             registration: root.door-registration;
+            oidc-name: root.door-oidc-name;
+            oidc-state: root.door-oidc-state;
+            oidc-user: root.door-oidc-user;
             tpm: root.door-tpm;
             busy: root.door-busy;
             restoring: root.session == "restoring";
@@ -393,6 +400,7 @@ export component AppWindow inherits Window {
             link-state: root.link-state;
             probe(server) => { root.door-probe(server); }
             create(name, invite, pw) => { root.door-create(name, invite, pw); }
+            oidc-start => { root.door-oidc-start(); }
             recover(name, pw, code) => { root.door-recover(name, pw, code); }
             link-start(name) => { root.door-link-start(name); }
             link-cancel => { root.door-link-cancel(); }

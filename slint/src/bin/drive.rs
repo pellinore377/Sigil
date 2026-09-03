@@ -75,8 +75,67 @@ fn main() -> anyhow::Result<()> {
         "kinds" => kinds(&h, &app, server, invite, &localpart),
         "caller" => caller(&h, &app, server, invite, &localpart),
         "callee" => callee(&h, &app, server, invite, &localpart),
+        "oidc" => oidc(&h, &app, server, &localpart),
         other => anyhow::bail!("unknown scenario {other}"),
     }
+}
+
+/// The doors on a server whose registration is a sign-in at its identity
+/// provider: probe, sign in (SIGIL_BROWSER fetches the login page, which
+/// the fake issuer answers by redirecting straight back), then create.
+fn oidc(
+    h: &Harness,
+    app: &sigil_slint::AppWindow,
+    server: &str,
+    localpart: &str,
+) -> anyhow::Result<()> {
+    app.invoke_door_probe(format!("http://{server}").into());
+    h.wait_until("the server card", Duration::from_secs(20), || {
+        app.get_door() == "choose" || !app.get_door_error().is_empty()
+    })?;
+    anyhow::ensure!(
+        app.get_door_error().is_empty(),
+        "probe failed: {}",
+        app.get_door_error()
+    );
+    println!(
+        "server offers registration={} via {}",
+        app.get_door_registration(),
+        app.get_door_oidc_name()
+    );
+    anyhow::ensure!(
+        app.get_door_registration() == "oidc",
+        "expected the oidc gate"
+    );
+    app.set_door("create".into());
+    h.shoot("live-door-oidc")?;
+    app.invoke_door_oidc_start();
+    h.wait_until("the browser to come back", Duration::from_secs(60), || {
+        app.get_door_oidc_state() == "done" || app.get_door_oidc_state() == "failed"
+    })?;
+    anyhow::ensure!(
+        app.get_door_oidc_state() == "done",
+        "sign-in failed: {}",
+        app.get_door_error()
+    );
+    println!("signed in at the provider as {}", app.get_door_oidc_user());
+    h.shoot("live-door-oidc-done")?;
+    app.invoke_door_create(localpart.into(), "".into(), "".into());
+    h.wait_until("the session to come up", Duration::from_secs(60), || {
+        app.get_session() == "loggedIn" || !app.get_door_error().is_empty()
+    })?;
+    anyhow::ensure!(
+        app.get_door_error().is_empty(),
+        "create failed: {}",
+        app.get_door_error()
+    );
+    println!("signed in as {}", app.get_my_user_id());
+    h.wait_until("rooms.list", Duration::from_secs(20), || {
+        app.get_session() == "loggedIn"
+    })?;
+    h.shoot("live-home-oidc")?;
+    println!("drive oidc ok");
+    Ok(())
 }
 
 /// Through the doors to Home, with a password.

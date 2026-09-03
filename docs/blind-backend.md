@@ -954,6 +954,12 @@ the server validates signature, issuer, audience and expiry against the
 issuer's JWKS and stores only `sub` → localpart. PocketID's passkey login
 works unchanged; so does Authentik, Keycloak, Authelia, or Google.
 
+*Implemented (server `oidc.rs`, engine `sigil/oidc.rs`): `registration = "oidc"`,
+`GET /oidc`, the code flow with PKCE from the engine to a loopback redirect,
+the ID token as `name.register`'s gate, one name per `sub`. Not yet: the
+gate on `tpm.relay` and `backup.wrap`, and daily credentials tied to a
+login (they are tied to the registered card instead).*
+
 **OIDC never touches:**
 
 - **the identity key.** It is generated on the device. No login can produce

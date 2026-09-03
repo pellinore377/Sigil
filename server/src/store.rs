@@ -23,6 +23,8 @@ pub const CREDS: TableDefinition<&[u8], ()> = TableDefinition::new("creds");
 pub const KEYS: TableDefinition<&[u8], &[u8]> = TableDefinition::new("keys");
 pub const PENDING: TableDefinition<&[u8], &[u8]> = TableDefinition::new("pending");
 pub const INVITES: TableDefinition<&str, ()> = TableDefinition::new("invites");
+/// OIDC gate: which login (`sub`) holds which localpart.
+pub const OIDC_SUBS: TableDefinition<&str, &str> = TableDefinition::new("oidc_subs");
 pub const META: TableDefinition<&str, &[u8]> = TableDefinition::new("meta");
 // Envoy role
 pub const HANDLES: TableDefinition<&[u8], &[u8]> = TableDefinition::new("handles");
@@ -99,6 +101,7 @@ impl Store {
         w.open_table(SPENT)?;
         w.open_table(CREDS)?;
         w.open_table(INVITES)?;
+        w.open_table(OIDC_SUBS)?;
         w.open_table(META)?;
         w.commit()?;
         Ok(Store { db })

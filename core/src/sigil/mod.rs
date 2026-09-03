@@ -5,6 +5,7 @@
 
 mod docs;
 mod kinds;
+mod oidc;
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -71,6 +72,12 @@ pub struct Shape {
     /// default: the site learns the address that fetched it.
     #[serde(default)]
     pub link_previews: bool,
+}
+
+/// The probe takes a host or a full URL (a test server); either way, a base URL.
+fn base_url(server: &str) -> String {
+    let s = server.trim().trim_end_matches('/');
+    if s.contains("://") { s.to_string() } else { format!("https://{s}") }
 }
 
 pub fn load_shape() -> Shape {
@@ -194,7 +201,7 @@ async fn create(engine: &SharedEngine, p: &serde_json::Map<String, Value>) -> Re
         .unwrap_or("")
         .trim()
         .to_lowercase();
-    let invite = p
+    let mut invite = p
         .get("invite")
         .and_then(Value::as_str)
         .unwrap_or("")
@@ -202,6 +209,12 @@ async fn create(engine: &SharedEngine, p: &serde_json::Map<String, Value>) -> Re
     let Ok((_, server)) = sigil_protocol::names::parse_username(&username) else {
         return Reply::err("bad_request", "username must look like @name:server");
     };
+    // a finished sign-in stands in for the invite code
+    if invite.is_empty() {
+        if let Some(token) = oidc::take(&server) {
+            invite = token;
+        }
+    }
     let envoy = p
         .get("envoy")
         .and_then(Value::as_str)
@@ -389,11 +402,43 @@ pub async fn dispatch(engine: &SharedEngine, req: &Request) -> Option<Reply> {
             let proxy = load_shape().socks_proxy;
             let proxy = if proxy.is_empty() { None } else { Some(proxy.as_str()) };
             return Some(match sigil_client::account::probe(&server, proxy).await {
-                Ok(card) => Reply::ok(json!({
-                    "hostname": card.hostname,
-                    "registration": if card.flags & 0b100 != 0 { "open" } else if card.flags & 0b010 != 0 { "oidc" } else { "invite" },
-                    "tpm": card.flags & 0b001 != 0,
-                })),
+                Ok(card) => {
+                    let registration = if card.flags & 0b100 != 0 { "open" } else if card.flags & 0b010 != 0 { "oidc" } else { "invite" };
+                    let mut out = json!({
+                        "hostname": card.hostname,
+                        "registration": registration,
+                        "tpm": card.flags & 0b001 != 0,
+                    });
+                    if registration == "oidc" {
+                        // where to sign in; the card's flag is the promise, /oidc the address
+                        match oidc::server_info(&base_url(&server), proxy).await {
+                            Ok(Some(info)) => {
+                                let issuer = info["issuer"].as_str().unwrap_or("").to_string();
+                                let host = url::Url::parse(&issuer).ok().and_then(|u| u.host_str().map(str::to_string)).unwrap_or_else(|| issuer.clone());
+                                out["oidc"] = json!({"issuer": issuer, "clientId": info["client_id"], "name": host});
+                            }
+                            Ok(None) => return Some(Reply::err("network", "the server gates registration by sign-in but publishes no provider")),
+                            Err(e) => return Some(Reply::err("network", format!("{e:#}"))),
+                        }
+                    }
+                    Reply::ok(out)
+                }
+                Err(e) => Reply::err("network", format!("{e:#}")),
+            });
+        }
+        "account.oidcStart" => {
+            // Sign in at the server's provider; the browser does the rest and
+            // an oidc.state event says how it went.
+            let server = p.get("server").and_then(Value::as_str).unwrap_or("").trim().to_string();
+            let issuer = p.get("issuer").and_then(Value::as_str).unwrap_or("").trim().to_string();
+            let client_id = p.get("clientId").and_then(Value::as_str).unwrap_or("").trim().to_string();
+            if server.is_empty() || issuer.is_empty() || client_id.is_empty() {
+                return Some(Reply::err("bad_request", "server, issuer and clientId are required"));
+            }
+            let proxy = load_shape().socks_proxy;
+            let proxy = if proxy.is_empty() { None } else { Some(proxy) };
+            return Some(match oidc::start(engine.hub.clone(), server, issuer, client_id, proxy).await {
+                Ok(url) => Reply::ok(json!({"url": url})),
                 Err(e) => Reply::err("network", format!("{e:#}")),
             });
         }

@@ -5,6 +5,7 @@ mod delivery;
 mod envoy;
 mod home;
 mod http;
+mod oidc;
 mod sfu;
 mod store;
 mod sweep;
@@ -62,34 +63,7 @@ async fn main() -> anyhow::Result<()> {
             hostname,
             role,
             listen,
-        } => {
-            // the store lives next to the config file, so one directory
-            // holds everything the server keeps
-            let data_dir = cli
-                .config
-                .parent()
-                .filter(|p| !p.as_os_str().is_empty())
-                .map(|p| p.join("data"))
-                .unwrap_or_else(|| std::path::PathBuf::from("./data"));
-            let cfg = Config {
-                hostname,
-                role,
-                listen,
-                data_dir,
-                ..Default::default()
-            };
-            std::fs::write(&cli.config, toml::to_string_pretty(&cfg)?)?;
-            store::Store::open(&cfg.data_dir)?;
-            let token_path = cfg.data_dir.join("admin.token");
-            if !token_path.exists() {
-                std::fs::write(&token_path, hex::encode(rand::random::<[u8; 16]>()))?;
-            }
-            println!(
-                "wrote {} and created {}",
-                cli.config.display(),
-                cfg.data_dir.display()
-            );
-        }
+        } => init(&cli.config, hostname, role, listen)?,
         Cmd::Invite => {
             let cfg = Config::load(&cli.config)?;
             // Ask the running server over loopback; fall back to the database
@@ -130,8 +104,60 @@ async fn main() -> anyhow::Result<()> {
             let home = home::Home::new(cfg, st)?;
             println!("{}", hex::encode(&home.card));
         }
-        Cmd::Run => run(Config::load(&cli.config)?).await?,
+        Cmd::Run => {
+            // A container starts with no config file: with SIGIL_HOSTNAME
+            // set, write one from the environment and carry on, so a
+            // compose file is the whole setup.
+            if !cli.config.exists() {
+                match std::env::var("SIGIL_HOSTNAME") {
+                    Ok(h) if !h.trim().is_empty() => init(
+                        &cli.config,
+                        h.trim().to_string(),
+                        "both".into(),
+                        "0.0.0.0:8443".into(),
+                    )?,
+                    _ => anyhow::bail!(
+                        "{} does not exist: run `init --hostname …` first, or set SIGIL_HOSTNAME",
+                        cli.config.display()
+                    ),
+                }
+            }
+            let cfg = Config::load(&cli.config)?;
+            cfg.check()?;
+            run(cfg).await?
+        }
     }
+    Ok(())
+}
+
+/// Write a config and create the data directory next to it, so one
+/// directory holds everything the server keeps. `SIGIL_*` variables in the
+/// environment are folded into the file that is written.
+fn init(config: &PathBuf, hostname: String, role: String, listen: String) -> anyhow::Result<()> {
+    let data_dir = config
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .map(|p| p.join("data"))
+        .unwrap_or_else(|| std::path::PathBuf::from("./data"));
+    let mut cfg = Config {
+        hostname,
+        role,
+        listen,
+        data_dir,
+        ..Default::default()
+    };
+    cfg.apply_env();
+    std::fs::write(config, toml::to_string_pretty(&cfg)?)?;
+    store::Store::open(&cfg.data_dir)?;
+    let token_path = cfg.data_dir.join("admin.token");
+    if !token_path.exists() {
+        std::fs::write(&token_path, hex::encode(rand::random::<[u8; 16]>()))?;
+    }
+    println!(
+        "wrote {} and created {}",
+        config.display(),
+        cfg.data_dir.display()
+    );
     Ok(())
 }
 

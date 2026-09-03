@@ -6,8 +6,10 @@
 /// reach on-device on every platform we ship to.
 #[cfg(not(target_os = "android"))]
 pub fn open_url(url: &str) {
-    if let Err(e) = std::process::Command::new("xdg-open").arg(url).spawn() {
-        tracing::warn!("xdg-open: {e}");
+    // SIGIL_BROWSER names another opener (the tests use curl, headless).
+    let opener = std::env::var("SIGIL_BROWSER").unwrap_or_else(|_| "xdg-open".into());
+    if let Err(e) = std::process::Command::new(&opener).arg(url).spawn() {
+        tracing::warn!("{opener}: {e}");
     }
 }
 

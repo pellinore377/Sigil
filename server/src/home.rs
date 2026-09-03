@@ -4,7 +4,7 @@ use crate::config::Config;
 use crate::delivery::Delivery;
 use crate::store::{
     key2, key_seq, today, SlotMeta, Store, ACKS, BACKUPS, BLOBS, BLOB_EXPIRY, ENVELOPES, INVITES,
-    NAMES, REQ_OWNER, SHELVES, SLOTS, WRAPS,
+    NAMES, OIDC_SUBS, REQ_OWNER, SHELVES, SLOTS, WRAPS,
 };
 use crate::tokens::TokenService;
 use ed25519_dalek::{Signature, Verifier as _, VerifyingKey};
@@ -50,6 +50,8 @@ pub struct Home {
     pub card: Vec<u8>,
     /// The call forwarding unit, when `calls` is on.
     pub sfu: Option<Arc<crate::sfu::Sfu>>,
+    /// The OIDC gate, when `registration = "oidc"`.
+    pub oidc: Option<crate::oidc::Oidc>,
 }
 
 const SLOT_TTL_DAYS: u32 = 30;
@@ -63,6 +65,9 @@ impl Home {
         let mut flags = 0u8;
         if cfg.registration == "open" {
             flags |= 0b100;
+        }
+        if cfg.registration == "oidc" {
+            flags |= 0b010;
         }
         if crate::tpm::available() {
             flags |= 0b001;
@@ -92,6 +97,13 @@ impl Home {
         } else {
             None
         };
+        let oidc = match (&cfg.oidc_issuer, &cfg.oidc_client_id) {
+            (Some(i), Some(c)) if cfg.registration == "oidc" => {
+                tracing::info!("registration through {i}");
+                Some(crate::oidc::Oidc::new(i, c))
+            }
+            _ => None,
+        };
         Ok(Arc::new(Home {
             backoff: std::sync::Mutex::new(Backoff::default()),
             cfg,
@@ -101,6 +113,7 @@ impl Home {
             delivery: Delivery::new(),
             card: signed,
             sfu,
+            oidc,
         }))
     }
 
@@ -463,6 +476,30 @@ impl Home {
                     return Ok(Response::Error(Status::Unauthorized));
                 }
                 let local = local.to_string();
+                // The OIDC gate: the token must verify, and one login holds
+                // one name here. The mapping is the only trace the login
+                // leaves, and it never meets a conversation.
+                let mut oidc_sub = None;
+                if self.cfg.registration == "oidc" {
+                    let Some(o) = &self.oidc else {
+                        return Ok(Response::Error(Status::Unavailable));
+                    };
+                    let token_str = String::from_utf8_lossy(&gate).to_string();
+                    let claims = match o.verify(token_str.trim()).await {
+                        Ok(c) => c,
+                        Err(e) => {
+                            tracing::debug!("oidc: token refused: {e}");
+                            return Ok(Response::Error(Status::Unauthorized));
+                        }
+                    };
+                    let r = self.store.db.begin_read()?;
+                    if let Some(held) = r.open_table(OIDC_SUBS)?.get(claims.sub.as_str())? {
+                        if held.value() != local {
+                            return Ok(Response::Error(Status::Unauthorized));
+                        }
+                    }
+                    oidc_sub = Some(claims.sub);
+                }
                 if self.cfg.registration == "invite" {
                     let code = String::from_utf8_lossy(&gate).to_string();
                     let w = self.store.db.begin_write()?;
@@ -487,6 +524,10 @@ impl Home {
                         return Ok(Response::Error(Status::NameTaken));
                     }
                     t.insert(local.as_str(), card.as_slice())?;
+                    if let Some(sub) = &oidc_sub {
+                        w.open_table(OIDC_SUBS)?
+                            .insert(sub.as_str(), local.as_str())?;
+                    }
                 }
                 w.commit()?;
                 Response::Empty

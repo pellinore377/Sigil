@@ -517,6 +517,18 @@ pages already carry the frame properties for them.
 system notifications from the engine's `notify` event, the omarchy toggle
 plugin, desktop tray for the call pill, packaging.
 
+*Started early, ahead of video: a first test APK (arm64, cargo-apk against
+NDK 27, `slint/Cargo.toml` carries the manifest) installed and ran on the
+owner's phone; the release profile strips symbols to keep it under 30 MB.
+The server ships as a Dockge stack (`server/docker-compose.yml`, image
+from `.github/workflows/server-image.yml`, configured from `SIGIL_*`
+variables) and registration can be gated by Pocket ID or any OIDC
+provider: the doors gained a "Sign in with …" step (`login.slint`,
+engine `account.oidcStart`, server `oidc.rs`), tested in
+`slint/tests/e2e-oidc.sh` and `client/tests/e2e-oidc.sh` against a fake
+issuer. Still to do here: the app asking for microphone and camera
+permissions itself, an icon, notifications, pickers.*
+
 Rough size, measured against the QML line counts and what the first attempt
 took: phases 0 to 2 are small, 3 is the largest UI phase, 6 depends on the
 decisions, 7 is the largest engineering phase because of the media stack.

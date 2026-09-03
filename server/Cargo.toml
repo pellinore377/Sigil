@@ -12,7 +12,7 @@ axum = { version = "0.8", features = ["ws"] }
 axum-server = { version = "0.7", features = ["tls-rustls"] }
 tokio-tungstenite = { version = "0.26", features = ["rustls-tls-webpki-roots"] }
 futures-util = "0.3"
-reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
 redb = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -29,7 +29,15 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 bytes = "1"
 dashmap = "6"
 str0m = "0.9"
+# ID tokens from the OIDC gate, checked against the issuer's published keys.
+jsonwebtoken = "9"
 
 [[bin]]
 name = "sigil-server"
 path = "src/main.rs"
+
+# the fake issuer example
+[dev-dependencies]
+sha2 = "0.10"
+url = "2"
+base64 = "0.22"

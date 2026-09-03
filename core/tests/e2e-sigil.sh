@@ -15,7 +15,9 @@ result() { python3 -c "import json,sys; d=json.load(sys.stdin); sys.exit(0 if d.
 
 $SV -c sigil.toml init --hostname sigil.test --listen 127.0.0.1:18444 >/dev/null
 $SV -c sigil.toml run >server.log 2>&1 & PIDS+=($!)
-sleep 1.5
+# wait for the server rather than guess: under load `invite` would otherwise
+# fall back to opening the database the server is opening
+for i in $(seq 1 60); do grep -q 'listening on http' server.log 2>/dev/null && break; sleep 0.5; done
 IA=$($SV -c sigil.toml invite); IB=$($SV -c sigil.toml invite)
 start_engine() { # name
   XDG_STATE_HOME=$W/$1 XDG_CACHE_HOME=$W/$1/cache SIGIL_SOCKET=$W/run/$1.sock $EN daemon --log-level info >>engine-$1.log 2>&1 & PIDS+=($!)

@@ -1,22 +1,48 @@
-# First run:  docker compose run --rm sigil --config /data/sigil.toml init --hostname sigil.example
-# then edit ./data/sigil.toml (tls_cert and tls_key, or leave them out behind a
-# reverse proxy that terminates TLS) and:  docker compose up -d
-# Invite codes: docker compose run --rm sigil --config /data/sigil.toml invite
-# Everything the server keeps lives in ./data next to this file.
+# Sigil server: one container, one data folder. Made for Dockge (paste this
+# as a stack) and for plain `docker compose up -d`.
+#
+# On the first start the server writes ./data/sigil.toml from the SIGIL_*
+# variables below; on every later start those variables win over the file,
+# so changing one here and restarting is enough. Everything the server
+# keeps lives in ./data next to this file.
+#
+# Behind your reverse proxy (Nginx Proxy Manager, Traefik, Caddy, …):
+# forward https://<SIGIL_HOSTNAME> to this container on port 8443 with
+# WebSocket support turned on, and leave TLS to the proxy. Calls need the
+# UDP port below reachable from the internet (router forward) and
+# SIGIL_MEDIA_PUBLIC set to your public address.
+#
+# Invite codes, when registration is "invite":
+#   docker compose exec sigil sigil-server --config /data/sigil.toml invite
 services:
   sigil:
-    build:
-      context: ..
-      dockerfile: server/Dockerfile
-    # Host ports come from server/.env when the defaults are taken:
-    #   SIGIL_PORT=18443        # NPM or your proxy forwards to this one
-    #   SIGIL_MEDIA_PORT=8444   # calls; forward this UDP port on the router and
-    #                           # put it in media_public in sigil.toml
+    image: ghcr.io/pellinore377/sigil-server:encrypt
+    # To build on the server instead of pulling the image, replace the line
+    # above with:
+    # build:
+    #   context: https://github.com/pellinore377/Sigil.git#encrypt
+    #   dockerfile: server/Dockerfile
+    container_name: sigil
+    restart: unless-stopped
+    environment:
+      # the public name of this server: the ":server" half of every @name:server
+      SIGIL_HOSTNAME: sigil.example.com
+      # invite | open | oidc
+      SIGIL_REGISTRATION: oidc
+      # with oidc: your Pocket ID (or other OIDC provider) and the client id
+      # you created there for Sigil (a public client, PKCE, callback
+      # http://127.0.0.1:44713/callback and http://127.0.0.1:*/callback)
+      SIGIL_OIDC_ISSUER: https://id.example.com
+      SIGIL_OIDC_CLIENT_ID: sigil
+      # calls: your public IP (or DNS name) and the UDP port published below
+      SIGIL_MEDIA_PUBLIC: "203.0.113.5:8444"
+      SIGIL_CALLS: "true"
+      # log level: sigil_server=debug for more
+      RUST_LOG: sigil_server=info
     ports:
-      - "${SIGIL_PORT:-8443}:8443"
-      - "${SIGIL_MEDIA_PORT:-8444}:8444/udp"
+      # the proxy talks to this one (plain HTTP inside your network)
+      - "8443:8443"
+      # calls; forward this UDP port on the router
+      - "8444:8444/udp"
     volumes:
       - ./data:/data
-    # devices:
-    #   - /dev/tpmrm0:/dev/tpmrm0   # recovery Path 2, when implemented
-    restart: unless-stopped

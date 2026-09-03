@@ -81,6 +81,9 @@ pub struct UiState {
     /// typed, as a WebSocket URL. Normally wss://<server>/envoy; a test
     /// server on loopback is where it differs.
     pub door_envoy: String,
+    /// the server's identity provider, when registration is gated by one
+    pub door_oidc_issuer: String,
+    pub door_oidc_client: String,
     /// Set while an account is being created with a password: the recovery
     /// code page opens the moment the session comes up.
     pub show_code_on_login: bool,
@@ -192,6 +195,8 @@ pub fn start(win: &AppWindow, rt: &tokio::runtime::Runtime, icons: IconSet) -> R
         my_user: String::new(),
         door_server: String::new(),
         door_envoy: String::new(),
+        door_oidc_issuer: String::new(),
+        door_oidc_client: String::new(),
         show_code_on_login: false,
         avatars: HashMap::new(),
         items_model: std::rc::Rc::new(VecModel::default()),
@@ -405,6 +410,13 @@ fn wire_doors(win: &AppWindow, req: Requester) {
                             win.set_door_registration(
                                 v["registration"].as_str().unwrap_or("invite").into(),
                             );
+                            win.set_door_oidc_name(v["oidc"]["name"].as_str().unwrap_or("").into());
+                            win.set_door_oidc_state(SharedString::new());
+                            win.set_door_oidc_user(SharedString::new());
+                            ui.door_oidc_issuer =
+                                v["oidc"]["issuer"].as_str().unwrap_or("").to_string();
+                            ui.door_oidc_client =
+                                v["oidc"]["clientId"].as_str().unwrap_or("").to_string();
                             win.set_door_tpm(v["tpm"].as_bool().unwrap_or(false));
                             if let Some(h) = v["hostname"].as_str() {
                                 win.set_door_server(h.into());
@@ -441,6 +453,39 @@ fn wire_doors(win: &AppWindow, req: Requester) {
                     // success arrives as a status event with session loggedIn
                 })
             });
+        }
+    });
+    win.on_door_oidc_start({
+        let req = req.clone();
+        move || {
+            let (server, issuer, client) = with_ui_get(|ui| {
+                (
+                    ui.door_server.clone(),
+                    ui.door_oidc_issuer.clone(),
+                    ui.door_oidc_client.clone(),
+                )
+            });
+            on_ui(|_, win| {
+                win.set_door_error(SharedString::new());
+                win.set_door_oidc_state("waiting".into());
+            });
+            req.call(
+                "account.oidcStart",
+                json!({"server": server, "issuer": issuer, "clientId": client}),
+                |reply| {
+                    on_ui(move |_ui, win| match reply {
+                        Reply::Ok(v) => {
+                            if let Some(url) = v["url"].as_str() {
+                                crate::platform::open_url(url);
+                            }
+                        }
+                        Reply::Err(e) => {
+                            win.set_door_oidc_state("failed".into());
+                            win.set_door_error(e.message.into());
+                        }
+                    })
+                },
+            );
         }
     });
     win.on_door_recover({
@@ -785,6 +830,18 @@ fn handle_event(ui: &mut UiState, v: &Value) {
         }
         // The link exchange, seen from either side. The new device sits on
         // the doors page; the signed-in device sits in Settings.
+        // The sign-in at the server's provider, started from the create door.
+        "oidc.state" => {
+            let state = v["state"].as_str().unwrap_or("");
+            win.set_door_oidc_state(state.into());
+            match state {
+                "done" => win.set_door_oidc_user(v["name"].as_str().unwrap_or("").into()),
+                "failed" => {
+                    win.set_door_error(v["error"].as_str().unwrap_or("the sign-in failed").into())
+                }
+                _ => {}
+            }
+        }
         "link.state" => {
             let state = v["state"].as_str().unwrap_or("");
             if win.get_session() == "loggedIn" {
@@ -1889,6 +1946,8 @@ fn start_demo(win: &AppWindow, rt: &tokio::runtime::Runtime, icons: IconSet) -> 
         my_user: "@wren:sigil.test".into(),
         door_server: String::new(),
         door_envoy: String::new(),
+        door_oidc_issuer: String::new(),
+        door_oidc_client: String::new(),
         show_code_on_login: false,
         avatars: HashMap::new(),
         items_model: std::rc::Rc::new(VecModel::default()),
