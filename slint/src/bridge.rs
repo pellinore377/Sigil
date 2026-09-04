@@ -1758,6 +1758,7 @@ pub fn rebuild_timeline(ui: &mut UiState, win: &AppWindow) {
                             .map(|g| {
                                 let parsed = g.color.as_deref().and_then(rows::hex_color);
                                 crate::FxChar {
+                                    emoji: g.ch.chars().any(|c| c as u32 >= 0x1F000 || (0x2600..=0x27BF).contains(&(c as u32))),
                                     ch: g.ch.into(),
                                     has_color: parsed.is_some(),
                                     color: parsed
@@ -1874,6 +1875,7 @@ pub fn rebuild_timeline(ui: &mut UiState, win: &AppWindow) {
         let fx_run = !fx_chars.is_empty()
             && fx_chars.iter().all(|c| {
                 c.anim == "glow"
+                    && !c.emoji
                     && !c.mark
                     && !c.spoiler
                     && !c.underline

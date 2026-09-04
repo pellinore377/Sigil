@@ -100,7 +100,7 @@ export component Bubble inherits Rectangle {
     /// RichText.qml:169 — the spoilers of this event were revealed; remember it.
     callback spoiler-revealed(string);
 
-    property <length> bubble-max: root.width * 0.78;
+    property <length> bubble-max: root.width * (Theme.mode != "desktop" ? 0.75 : 0.78);
     property <bool> is-msg: item.kind != "state" && item.kind != "dayDivider" && !item.is-read-marker;
     property <bool> media-kind: item.kind == "image" || item.kind == "sticker" || item.kind == "video";
     // BubbleDelegate.qml:628 — an audio file that carries a waveform draws
@@ -158,8 +158,13 @@ export component Bubble inherits Rectangle {
         : item.highlighted ? (root.themed ? root.theme-surface.mix(root.accent, 0.78)
                                           : root.accent.mix(Theme.popup-background, 0.24))
         : (root.themed ? root.theme-surface : Theme.bubble-other);
-    property <length> r-big: 16px;
-    property <length> r-small: 5px;
+    // The phone takes the platform messenger's bubble: 20dp corners (4 on the
+    // grouped side), 16/12dp padding, three quarters of the width at most.
+    property <bool> phone: Theme.mode != "desktop";
+    property <length> inset-x: root.phone ? 16px : 10px;
+    property <length> inset-y: root.phone ? 12px : 10px;
+    property <length> r-big: root.phone ? 20px : 16px;
+    property <length> r-small: root.phone ? 4px : 5px;
     // BubbleDelegate.qml:862 — a link-only card wears its own 14px corners.
     property <length> r-tl: item.link-only ? 14px : (!item.is-own && !item.group-start) ? r-small : r-big;
     property <length> r-bl: item.link-only ? 14px : (!item.is-own && !item.group-end) ? r-small : r-big;
@@ -334,7 +339,7 @@ export component Bubble inherits Rectangle {
                       || root.code-kind || root.link-card || item.link-only ? root.bubble-max
                     : b-inner.preferred-width + (root.pad-free ? 0px : 22px);
                 width: min(root.bubble-max, max(40px, self.content-w));
-                height: b-inner.preferred-height + (root.pad-free ? 0px : 20px);
+                height: b-inner.preferred-height + (root.pad-free ? 0px : 2 * root.inset-y);
                 // cardOnly: a body that IS the link renders the card alone; a
                 // caption-less video is its poster (BubbleDelegate.qml:410-411).
                 background: item.kind == "poll" || item.link-only
@@ -1350,7 +1355,7 @@ export component Bubble inherits Rectangle {
                             // Glow: a soft copy breathing behind the glyph —
                             // RichText.qml:299-310: 1800ms cycle, scale 1.1↔1.5,
                             // opacity 0.05↔0.45.
-                            if c.anim == "glow" && !Theme.dbg-no-fx-copies && !item.fx-run : Text {
+                            if c.anim == "glow" && !Theme.dbg-no-fx-copies && !item.fx-run && !c.emoji : Text {
                                 property <float> gp: 0.5 - 0.5 * cos(360deg * (mod(fx-cell.raw-ms, 1800.0) / 1800.0));
                                 // alpha in the colour, not `opacity`: an opacity on a
                                 // Text is an offscreen layer per glyph per frame

@@ -66,6 +66,10 @@ bind_java_type! {
             name = "hide_keyboard",
             sig = (),
         },
+        fn haptic_long_press {
+            name = "haptic_long_press",
+            sig = () -> (),
+        },
         fn set_dark_system_bars {
             name = "set_dark_system_bars",
             sig = (jboolean) -> (),
@@ -447,6 +451,10 @@ impl JavaHelper {
 
             Ok(())
         })
+    }
+
+    pub fn haptic_long_press(&self) -> Result<(), jni::errors::Error> {
+        self.with_jni_env(|env, helper| helper.haptic_long_press(env))
     }
 
     pub fn set_dark_system_bars(&self, dark: bool) -> Result<(), jni::errors::Error> {

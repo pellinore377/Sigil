@@ -400,6 +400,11 @@ export component AppWindow inherits Window {
     }
 
     public function go-back() {
+        // Anything layered over the page goes first: the viewer, the
+        // message sheet, the composer panels.
+        if (root.viewer-open) { root.viewer-open = false; return; }
+        if (chat.sheet-shown) { chat.sheet-close(); return; }
+        if (root.attach-open || root.recorder-open) { root.attach-open = false; root.recorder-open = false; return; }
         if (root.nav == "thread") { root.go("threads"); return; }
         if (root.nav == "threads" || root.nav == "pins") { root.go("chat"); return; }
         if (root.nav == "search" && root.se-global) { root.nav = "home"; return; }
@@ -436,8 +441,11 @@ export component AppWindow inherits Window {
         // Keys only route through the focus chain; own it from the start so
         // the Android back key has somewhere to land.
         init => { self.focus(); }
-        key-pressed(event) => {
-            if (event.text == Key.Escape) {
+        // Captured before the focused field sees it: a composer with focus
+        // must not swallow the back key (the activity would finish).
+        capture-key-pressed(event) => {
+            // Escape on a keyboard; the phone's back gesture arrives as Key.Back
+            if (event.text == Key.Escape || event.text == Key.Back) {
                 root.go-back();
                 return accept;
             }

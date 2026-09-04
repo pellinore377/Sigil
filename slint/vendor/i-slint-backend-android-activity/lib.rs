@@ -202,6 +202,12 @@ pub fn system_accent_color() -> Option<i_slint_core::Color> {
     a.java_helper.accent_color().ok().filter(|c| c.alpha() > 0)
 }
 
+pub fn haptic_long_press() {
+    if let Some(a) = CURRENT_WINDOW.with_borrow(|x| x.upgrade()) {
+        let _ = a.java_helper.haptic_long_press();
+    }
+}
+
 pub fn set_dark_system_bars(dark: bool) {
     if let Some(a) = CURRENT_WINDOW.with_borrow(|x| x.upgrade()) {
         let _ = a.java_helper.set_dark_system_bars(dark);

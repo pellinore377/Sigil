@@ -241,6 +241,9 @@ pub fn sheet_prewarm(ui: &mut UiState, win: &AppWindow, id: &str, r: &SheetRect)
 /// the frost from the prewarm, or from this same picture if the press
 /// arrived without one (the test hook, a hold that fired at once).
 pub fn sheet_snapshot(ui: &mut UiState, win: &AppWindow, id: &str, r: &SheetRect) {
+    // the platform's long-press buzz, the moment the hold fires
+    #[cfg(target_os = "android")]
+    i_slint_backend_android_activity::haptic_long_press();
     let snap = crate::frost::Snapshot::take(win.window());
     let copy = snap.as_ref().and_then(|snap| snap.crop(sheet_px(win, snap, r)));
     win.set_sheet_copy(copy.unwrap_or_default());

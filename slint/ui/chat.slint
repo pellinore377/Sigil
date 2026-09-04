@@ -245,6 +245,7 @@ export component ChatPage inherits Rectangle {
         sheet.open-for(r);
     }
     public function sheet-close() { sheet.open = false; }
+    out property <bool> sheet-shown: sheet.shown;
     /// Whatever is staged goes: a voice clip, a caption, an edit, a reply, or plain text.
     public function submit() {
         if (composer-input.text == "" && !root.voice-staged) { return; }
@@ -363,7 +364,7 @@ export component ChatPage inherits Rectangle {
     // With a panel open the page bottom is the panel, so the gesture zone
     // follows it.
     out property <color> bottom-ground: root.phone
-        ? (root.attach-open || root.recorder-open ? (root.themed ? root.surface-c : Theme.card-ground) : root.convo-c)
+        ? (root.attach-open ? (root.themed ? root.surface-c : Theme.card-ground) : root.convo-c)
         : root.convo-c.with-alpha(0.94).mix(Theme.card-ground, 0.94);
     // ChatPage.qml:20-32 convoC: darker(menu, 1.35), tinted 18% by the
     // accent when themed. The phone's light palette is near white and
@@ -403,7 +404,7 @@ export component ChatPage inherits Rectangle {
     property <length> disc: root.phone ? 54px : 38px;
     property <length> attach-box: root.phone ? 48px : 30px;
     // composerBox = pill + 18 (:1222): 8 above, 10 below.
-    property <length> composer-h: root.is-invite ? 0px : root.well-h + (root.phone ? 20px : 18px) + root.bottom-inset;
+    property <length> composer-h: root.is-invite ? 0px : root.well-h + (root.phone ? 16px : 18px) + root.bottom-inset;
     /// Where the composer stack starts, measured from the page bottom: the
     /// composer plus whichever inline panel is open (:1869-1884).
     property <length> panel-top: root.height - root.composer-h - att-frame.height - rec-frame.height;
@@ -1122,8 +1123,8 @@ export component ChatPage inherits Rectangle {
                     // (180ms); send also turns in from -35° (:1757-1780).
                     send-btn := Rectangle {
                         property <bool> send-mode: composer-input.text != "" || root.voice-staged;
-                        x: composer.width - (root.phone ? 16px : 10px) - root.disc;
-                        y: composer.height - root.disc - (root.phone ? 12px : 10px) - root.bottom-inset;
+                        x: composer.width - (root.phone ? 8px : 10px) - root.disc;
+                        y: composer.height - root.disc - (root.phone ? 8px : 10px) - root.bottom-inset;
                         width: root.disc; height: root.disc; border-radius: root.disc / 2;
                         background: root.send-c;
                         animate background { duration: 120ms; }

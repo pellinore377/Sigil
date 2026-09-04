@@ -598,6 +598,16 @@ public class SlintAndroidJavaHelper {
         });
     }
 
+    // SIGIL PATCH: the platform's long-press buzz, from the input view.
+    public void haptic_long_press() {
+        mActivity.runOnUiThread(new Runnable() {
+            @Override
+            public void run() {
+                mInputView.performHapticFeedback(android.view.HapticFeedbackConstants.LONG_PRESS);
+            }
+        });
+    }
+
     public int color_scheme() {
         int nightModeFlags = mActivity.getResources().getConfiguration().uiMode & Configuration.UI_MODE_NIGHT_MASK;
         return nightModeFlags;
