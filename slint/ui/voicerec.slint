@@ -90,12 +90,21 @@ export component VoiceRecorder inherits Rectangle {
     // The card's illustration: the app ships no picture, so the waveform the
     // recorder already draws stands in for one, at the size the reference
     // gives its drawing rather than at glyph size.
-    property <length> wave-h: root.phone ? 150px : 46px;
+    /// The idle card's illustration. It is a PICTURE, not a reading, so it is
+    /// the one thing here that scales with the card: under a short keyboard
+    /// the card comes down and a 150 drawing over its caption would spill out
+    /// of the card onto the pills. (The level band below does not scale — that
+    /// one is a reading, and the reference keeps it.) 76 is the caption, the
+    /// 20 above it and the air the card wants around the block.
+    property <length> wave-h: root.phone ? clamp(root.card-h - 76px, 40px, 150px) : 46px;
     property <length> wave-w: root.phone ? 12px : 5px;
     property <length> band-h: root.phone ? 120px : 48px;
     property <length> dot: root.phone ? 12px : 9px;
-    // 8 under the card, 44 under the pills — the gesture bar's own room.
-    property <length> pad-bottom: root.phone ? 44px : 10px;
+    /// The gesture bar's height, handed in by the page: the pills stand
+    /// 28 above it, and the panel's ground runs on under it.
+    in property <length> bottom-inset: 0px;
+    // 8 under the card, 28 under the pills, then the gesture bar's own room.
+    property <length> pad-bottom: root.phone ? 28px + root.bottom-inset : 10px;
     /// The phone's three pills are EQUAL, so the width is arithmetic, not a
     /// stretch factor: a box layout hands each child its preferred width first
     /// and only then splits what is left by stretch, and "Cancel" and "Attach"
@@ -105,8 +114,39 @@ export component VoiceRecorder inherits Rectangle {
     /// 166 too.)
     property <length> pill-w: (root.width - 16px - 16px) / 3;
 
-    // 8 + 300 + 8 + 56 + 44 on the phone.
-    height: root.phone ? 416px : 230px;
+    /// The height the page wants this panel to be: the remembered keyboard's,
+    /// so switching between the keyboard and this panel never moves the
+    /// composer above it (chat.slint's `kb-h`). Zero means "your natural size"
+    /// — the desktop, and any host that does not measure a keyboard.
+    in property <length> avail: 0px;
+    /// What the card cannot go below: the recording state's own block, which
+    /// is the tallest thing that has to fit in it — the 28pt timer's line
+    /// (~36), the 22 under it and the 120 level band, with a little air. The
+    /// band and the pills keep their sizes whatever happens; the card is what
+    /// gives, and this is where it stops giving.
+    property <length> card-min: root.phone ? 184px : 90px;
+    /// What the card actually gets: the panel less everything fixed above and
+    /// below it. Taken from the panel's own height rather than from the card's
+    /// laid-out height — a size read back out of the layout and fed to a child
+    /// of that layout is a loop.
+    property <length> card-h: max(0px, root.height - (root.phone
+        ? 8px + 8px + 56px + root.pad-bottom
+        : 10px + 10px + 46px + root.pad-bottom));
+    /// The floor under what the page asks for: 8 above the card, a card that
+    /// can still hold the take, 8, the 56 pill row, and the 28 plus the
+    /// gesture bar under it. A keyboard shorter than this — no phone's is —
+    /// simply leaves the panel standing a little taller than the keyboard.
+    out property <length> min-h: root.phone
+        ? 8px + root.card-min + 8px + 56px + root.pad-bottom
+        // The desktop has no keyboard to match and nothing asks it to give.
+        : root.natural-h;
+    // The natural size, when nothing is asked for: 8 + 300 + 8 + 56 + 28 on
+    // the phone, plus the gesture bar.
+    property <length> natural-h: root.phone ? 400px + root.bottom-inset : 230px;
+    // The card is the only thing in the column with a stretch, so shortening
+    // the panel shortens the card and nothing else: the pills and the band
+    // keep their sizes, as the reference's do.
+    height: root.avail > 0px ? max(root.min-h, root.avail) : root.natural-h;
     background: transparent;
 
     VerticalLayout {

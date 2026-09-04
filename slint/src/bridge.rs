@@ -124,8 +124,6 @@ pub struct UiState {
     pub audio_ctx: (String, String),
     pub audio_playing: bool,
     pub sheet_item: Value,             // message the action sheet targets
-    /// The sheet's frost, taken while a press lasted, for the event it was on.
-    pub sheet_prewarm: Option<(String, slint::Image)>,
     pub emojis: Vec<(String, String)>, // glyph, keywords
     pub voice_positions: HashMap<String, f64>, // eventId -> seconds (playback)
     /// One shared 50 ms poll for the whole chat page: it asks the engine
@@ -238,6 +236,61 @@ pub fn with_ui(f: impl FnOnce(&mut UiState)) {
     });
 }
 
+/// How tall this device's keyboard was, the last time one stood up.
+///
+/// The conversation's panels — the attachment sheet and the voice recorder —
+/// open at exactly the keyboard's height, so that switching between the
+/// keyboard and a panel never moves the composer above them (the reference
+/// does the same). A keyboard is the user's own choice of size, so the number
+/// has to be learnt from the device; and the first panel of a session is
+/// usually opened before any keyboard has been up, so it has to survive the
+/// launch as well.
+///
+/// It lives as one integer beside the other device-local settings, in the
+/// `settings.json` the engine keeps under the state directory — the same file
+/// and the same bare-key shape `mapStyleUrl` uses (core/src/maps). That
+/// directory follows `XDG_STATE_HOME`, so the harnesses that point it at a
+/// temporary directory get the default and write nothing of the developer's.
+///
+/// 400 is what the sheets stood at before any of this: a device with nothing
+/// stored opens its first panel exactly where it always did.
+pub const KB_HEIGHT_DEFAULT: i32 = 400;
+
+fn kb_height_load() -> i32 {
+    std::fs::read(sigil_engine::notify::settings_path())
+        .ok()
+        .and_then(|d| serde_json::from_slice::<Value>(&d).ok())
+        .and_then(|v| v.get("keyboardHeightPx").and_then(Value::as_i64))
+        // A stored number outside anything a keyboard can be (a window that
+        // was never laid out, a hand-edited file) is no better than none.
+        .filter(|px| (96..=2000).contains(px))
+        .map(|px| px as i32)
+        .unwrap_or(KB_HEIGHT_DEFAULT)
+}
+
+fn kb_height_save(px: i32) {
+    if !(96..=2000).contains(&px) {
+        return;
+    }
+    let path = sigil_engine::notify::settings_path();
+    let mut v: Value = std::fs::read(&path)
+        .ok()
+        .and_then(|d| serde_json::from_slice(&d).ok())
+        .unwrap_or_else(|| json!({}));
+    v["keyboardHeightPx"] = json!(px);
+    if let Some(dir) = path.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    let _ = std::fs::write(&path, serde_json::to_vec_pretty(&v).unwrap_or_default());
+}
+
+/// Seed the window with the remembered keyboard height and keep it stored.
+/// Both boot paths (real and demo) call it: the panels are the same panels.
+fn wire_kb_height(win: &AppWindow) {
+    win.set_kb_height_px(kb_height_load());
+    win.on_kb_height_seen(kb_height_save);
+}
+
 /// Boot the engine and wire the event stream into the UI. Call once, on the
 /// UI thread, after the window exists.
 pub fn start(win: &AppWindow, rt: &tokio::runtime::Runtime, icons: IconSet) -> Requester {
@@ -254,6 +307,7 @@ pub fn start(win: &AppWindow, rt: &tokio::runtime::Runtime, icons: IconSet) -> R
 
     // Anchors animation-tick() to the wall clock for the live-share countdown.
     win.set_boot_epoch_s(chrono::Utc::now().timestamp() as i32);
+    wire_kb_height(win);
     let state = Rc::new(RefCell::new(UiState {
         win: win.as_weak(),
         req: req.clone(),
@@ -296,7 +350,6 @@ pub fn start(win: &AppWindow, rt: &tokio::runtime::Runtime, icons: IconSet) -> R
         audio_ctx: Default::default(),
         audio_playing: false,
         sheet_item: Value::Null,
-        sheet_prewarm: None,
         emojis: Vec::new(),
         voice_positions: HashMap::new(),
         voice_timer: slint::Timer::default(),
@@ -1344,7 +1397,10 @@ pub fn open_room(ui: &mut UiState, win: &AppWindow, id: &str) {
     win.set_nav("chat".into());
     ui.req.fire(
         "room.open",
-        json!({"roomId": ui.open_room, "initialItems": 80}),
+        // 40: two screens of messages. 80 rows built and instantiated at
+        // once was the hitch on every open; the rest paginates in as the
+        // timeline is scrolled, a screen and a half early.
+        json!({"roomId": ui.open_room, "initialItems": 40}),
     );
     ui.req.fire(
         "ui.focus",
@@ -2415,6 +2471,7 @@ fn start_demo(win: &AppWindow, rt: &tokio::runtime::Runtime, icons: IconSet) -> 
         engine,
     };
     win.set_boot_epoch_s(chrono::Utc::now().timestamp() as i32);
+    wire_kb_height(win);
     let state = Rc::new(RefCell::new(UiState {
         win: win.as_weak(),
         req: req.clone(),
@@ -2457,7 +2514,6 @@ fn start_demo(win: &AppWindow, rt: &tokio::runtime::Runtime, icons: IconSet) -> 
         audio_ctx: Default::default(),
         audio_playing: false,
         sheet_item: Value::Null,
-        sheet_prewarm: None,
         emojis: Vec::new(),
         voice_positions: HashMap::new(),
         voice_timer: slint::Timer::default(),

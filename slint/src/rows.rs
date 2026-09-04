@@ -210,6 +210,31 @@ pub fn bubble_stamp(ts_ms: i64) -> String {
     }
 }
 
+/// How long a live share has left, as the chip says it: `H:MMm` above an
+/// hour, `M:SS` below one, and nothing once it has run out.
+///
+/// This is the ONE derivation. The bubble's chip and the location page's chip
+/// are meant to be the same chip — MapPage.qml:295 says so in as many words —
+/// and they were not: the page asked the clock and the bubble reconstructed
+/// "now" as `boot-epoch-s + fx-clock`, where `fx-clock` is a 50ms accumulator
+/// that only advances while a row with effects is on screen (chat.slint:402-409).
+/// It is not elapsed time and never was: it stops whenever nothing is
+/// animating and the page is away, so `now` fell behind real time by however
+/// long that had been. The countdown was over by exactly that much, whatever
+/// the share's length — 15m showing 23m, 8h showing 8h07m, the same seven or
+/// eight minutes both times.
+pub fn live_remaining(expires_ms: i64, now_ms: i64) -> String {
+    let left = ((expires_ms - now_ms) as f64 / 1000.0).max(0.0) as u64;
+    if left == 0 {
+        return String::new();
+    }
+    if left >= 3600 {
+        format!("{}h {:02}m", left / 3600, (left % 3600) / 60)
+    } else {
+        format!("{}:{:02}", left / 60, left % 60)
+    }
+}
+
 pub fn day_divider_label(ts_ms: i64) -> String {
     use chrono::{Datelike, Local, TimeZone};
     let Some(t) = Local.timestamp_millis_opt(ts_ms).single() else {
@@ -830,4 +855,68 @@ pub fn elide_middle(name: &str, max_chars: usize) -> String {
         chars[..head].iter().collect::<String>(),
         chars[chars.len() - tail..].iter().collect::<String>()
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Fixed timestamps, no clock: the three durations the attach sheet
+    /// offers, seen seven and a half minutes after the share began — which is
+    /// the case the bubble got wrong, and it got it wrong by exactly that
+    /// seven and a half minutes.
+    #[test]
+    fn the_countdown_counts_down_from_now_not_from_when_the_app_started() {
+        let start = 1_764_000_000_000i64; // some fixed instant
+        let elapsed = 7 * 60 * 1000 + 30 * 1000; // 7m30s in
+        let now = start + elapsed;
+        // 15 minutes: 7m30s left, not 22m30s.
+        assert_eq!(live_remaining(start + 900_000, now), "7:30");
+        // 1 hour: 52m30s left, not 1h07m.
+        assert_eq!(live_remaining(start + 3_600_000, now), "52:30");
+        // 8 hours: 7h52m left, not 8h07m.
+        assert_eq!(live_remaining(start + 28_800_000, now), "7h 52m");
+    }
+
+    #[test]
+    fn an_hour_is_where_the_chip_changes_shape() {
+        let now = 0i64;
+        // Under the hour it is minutes and seconds …
+        assert_eq!(live_remaining(3_599_000, now), "59:59");
+        // … and from the hour it is hours and padded minutes.
+        assert_eq!(live_remaining(3_600_000, now), "1h 00m");
+        assert_eq!(live_remaining(3_660_000, now), "1h 01m");
+        assert_eq!(live_remaining(28_800_000, now), "8h 00m");
+    }
+
+    #[test]
+    fn seconds_are_padded_and_a_finished_share_says_nothing() {
+        let now = 0i64;
+        assert_eq!(live_remaining(65_000, now), "1:05");
+        assert_eq!(live_remaining(9_000, now), "0:09");
+        assert_eq!(live_remaining(60_000, now), "1:00");
+        // Run out, and run out a while ago: no negative clocks.
+        assert_eq!(live_remaining(0, now), "");
+        assert_eq!(live_remaining(999, now), "");
+        assert_eq!(live_remaining(-500_000, now), "");
+    }
+
+    /// The bubble draws its own chip in Slint from `expires-s − now-epoch-s`,
+    /// so the two must agree at every second, not merely look alike. Walking
+    /// a whole share second by second against the same arithmetic the Slint
+    /// expression performs is the cheapest way to know they do.
+    #[test]
+    fn the_bubbles_arithmetic_and_this_one_agree_at_every_second() {
+        let expires_ms = 8 * 3_600_000i64;
+        for now_s in (0..8 * 3600).step_by(7) {
+            let left = (expires_ms / 1000 - now_s).max(0);
+            // Exactly what bubble.slint computes from `live-remaining`.
+            let slint = if left >= 3600 {
+                format!("{}h {}{}m", left / 3600, if (left % 3600) / 60 < 10 { "0" } else { "" }, (left % 3600) / 60)
+            } else {
+                format!("{}:{}{}", left / 60, if left % 60 < 10 { "0" } else { "" }, left % 60)
+            };
+            assert_eq!(live_remaining(expires_ms, now_s * 1000), slint, "at {now_s}s");
+        }
+    }
 }

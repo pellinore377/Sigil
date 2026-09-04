@@ -8,7 +8,7 @@ use slint::{ComponentHandle, Model, ModelRc, SharedString, VecModel};
 
 use crate::bridge::{rebuild_rooms, rebuild_timeline, with_ui, Requester, UiState};
 use crate::rows::{initials, tint_for};
-use crate::{project, AppWindow, SheetRect, TimelineRow, UserRow};
+use crate::{project, AppWindow, TimelineRow, UserRow};
 
 pub fn room_of_key(key: &str) -> String {
     match key.find('|') {
@@ -204,64 +204,6 @@ fn after(req: &Requester, ms: u64, f: impl FnOnce(&mut UiState, &AppWindow) + Se
     });
 }
 
-/// A bubble's rect in the snapshot's pixels. `r` is logical, from the
-/// window's origin; the picture is in whatever pixels the renderer hands
-/// back, so it is scaled by the picture's own size over the window's logical
-/// size rather than by a scale factor the two need not agree on. The cut is
-/// rounded to whole pixels on both edges so it is never resampled against
-/// the rect the sheet draws it in.
-fn sheet_px(win: &AppWindow, snap: &crate::frost::Snapshot, r: &SheetRect) -> crate::frost::PixelRect {
-    let logical = win.window().size().to_logical(win.window().scale_factor());
-    let sx = snap.buf.width() as f32 / logical.width.max(1.0);
-    let sy = snap.buf.height() as f32 / logical.height.max(1.0);
-    let (x0, y0) = ((r.x * sx).round(), (r.y * sy).round());
-    let (x1, y1) = (((r.x + r.w) * sx).round(), ((r.y + r.h) * sy).round());
-    let s = sx.min(sy);
-    crate::frost::PixelRect {
-        x: x0,
-        y: y0,
-        w: x1 - x0,
-        h: y1 - y0,
-        radii: [r.r_tl * s, r.r_tr * s, r.r_bl * s, r.r_br * s],
-    }
-}
-
-/// A press on a bubble is lasting: take the frost now, while the finger is
-/// still and nothing moves, so the lift has every frame to itself when the
-/// hold fires. Dropped unused if the press lets go early.
-pub fn sheet_prewarm(ui: &mut UiState, win: &AppWindow, id: &str, r: &SheetRect) {
-    let frost = crate::frost::Snapshot::take(win.window()).map(|mut snap| {
-        snap.mask(sheet_px(win, &snap, r));
-        snap.frosted()
-    });
-    ui.sheet_prewarm = frost.map(|f| (id.to_string(), f));
-}
-
-/// The hold fired: the frost from the prewarm, or from a picture taken now
-/// if the press arrived without one (the test hook, a hold that fired at
-/// once). The lifted message is not a picture at all — the sheet draws the
-/// row a second time, so nothing that overlapped the bubble can reach it.
-pub fn sheet_snapshot(ui: &mut UiState, win: &AppWindow, id: &str, r: &SheetRect) {
-    // the platform's long-press buzz, the moment the hold fires
-    #[cfg(target_os = "android")]
-    i_slint_backend_android_activity::haptic_long_press();
-    let warm = match ui.sheet_prewarm.take() {
-        Some((warm_id, img)) if warm_id == id => Some(img),
-        _ => None,
-    };
-    // The hold already took and frosted the window (sheet_prewarm); a second
-    // full-window snapshot here — a re-render and a readback — landed on the
-    // very frame the lift starts, and showed as a hitch at the sheet's open.
-    // Only a cold open (no hold, or another message's hold) captures now.
-    let frost = warm.or_else(|| {
-        crate::frost::Snapshot::take(win.window()).map(|mut snap| {
-            snap.mask(sheet_px(win, &snap, r));
-            snap.frosted()
-        })
-    });
-    win.set_sheet_backdrop(frost.unwrap_or_default());
-}
-
 // ------------------------------------------------------- the location map
 
 /// Place the grid for where the view is now, and ask for what is missing.
@@ -309,9 +251,19 @@ pub fn map_place(ui: &mut UiState, win: &AppWindow) {
         });
     }
     let (px, py) = ui.mapview.pin();
-    win.set_mp_pin_x(px.into());
-    win.set_mp_pin_y(py.into());
-    win.set_mp_tiles(ModelRc::new(VecModel::from(rows)));
+    // One view, two surfaces that can be showing it (`mapview::Owner`): the
+    // location page and the attach sheet's picker. Whichever opened it gets
+    // the grid; they are never up together.
+    let model = ModelRc::new(VecModel::from(rows));
+    if ui.mapview.owner == crate::mapview::Owner::Picker {
+        win.set_lp_pin_x(px.into());
+        win.set_lp_pin_y(py.into());
+        win.set_lp_tiles(model);
+    } else {
+        win.set_mp_pin_x(px.into());
+        win.set_mp_pin_y(py.into());
+        win.set_mp_tiles(model);
+    }
     // What the view is showing a stand-in (or nothing) for goes to the head of
     // the queue, ahead of anything a gesture might want later.
     ui.mapview.want_now(&plan.missing);
@@ -344,8 +296,15 @@ fn map_pump(ui: &mut UiState) {
     // `shown` is what keeps this from firing on the way UP: the window sets
     // `nav` after it runs the open action, so the page asks for its first
     // tiles while the window still says it is showing the conversation.
-    match ui.win.upgrade() {
-        Some(w) if w.get_nav() == "map" => ui.mapview.shown = true,
+    let up = ui.win.upgrade().map(|w| match ui.mapview.owner {
+        crate::mapview::Owner::Picker => {
+            w.get_attach_open() && matches!(w.get_at_page().as_str(), "pin" | "current" | "live")
+        }
+        crate::mapview::Owner::Page => w.get_nav() == "map",
+        crate::mapview::Owner::None => false,
+    });
+    match up {
+        Some(true) => ui.mapview.shown = true,
         _ if ui.mapview.shown => {
             ui.mapview.queue.clear();
             return;
@@ -416,7 +375,46 @@ fn fetch_map_tile(ui: &mut UiState, z: u32, x: i64, y: i64) {
     );
 }
 
+/// Epoch milliseconds, now.
+fn now_ms() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0)
+}
+
+/// The wall clock, once a second, for everything that counts down.
+///
+/// A live share's chip needs to know what time it is, and the two places that
+/// draw one disagreed about how to find out: the location page asked the
+/// system clock when it opened (and then never again, so it froze), while the
+/// bubble reconstructed "now" as `boot-epoch-s + fx-clock` — and `fx-clock` is
+/// a 50ms accumulator that only advances while a row with effects is on screen
+/// (chat.slint:402-409). It is not elapsed time, it stops whenever the page is
+/// away or nothing is animating, and the countdown was over by however long it
+/// had been stopped: the same seven or eight minutes for a fifteen-minute
+/// share as for an eight-hour one.
+///
+/// So there is a clock now, and it is the only one: one integer property set
+/// once a second. Both chips read it, so they cannot drift apart, and both
+/// tick, so neither freezes.
+fn clock_tick(ui: &mut UiState, win: &AppWindow) {
+    let now = now_ms();
+    win.set_now_epoch_s((now / 1000) as i32);
+    // The page's chip is the same derivation as the bubble's (rows::live_remaining).
+    if win.get_nav() == "map" && win.get_mp_live() {
+        win.set_mp_remaining(crate::rows::live_remaining(ui.mapview.expires_ms, now).into());
+    }
+    after(&ui.req.clone(), 1000, clock_tick);
+}
+
 pub fn wire_extra(win: &AppWindow) {
+    // The one wall clock, started here and rescheduling itself for as long as
+    // the app is up. Everything that counts down reads it.
+    with_ui(|ui| {
+        let Some(w) = ui.win.upgrade() else { return };
+        clock_tick(ui, &w);
+    });
     win.on_map_viewport(|w, h| {
         with_ui(|ui| {
             let Some(win) = ui.win.upgrade() else { return };
@@ -479,18 +477,6 @@ pub fn wire_extra(win: &AppWindow) {
             // which drops whatever was still queued for the level they pinched
             // past and puts the new neighbours in its place.
             map_prefetch(ui);
-        });
-    });
-    win.on_sheet_prewarm(|id, r| {
-        with_ui(|ui| {
-            let Some(win) = ui.win.upgrade() else { return };
-            sheet_prewarm(ui, &win, id.as_str(), &r);
-        });
-    });
-    win.on_sheet_snapshot(|id, r| {
-        with_ui(|ui| {
-            let Some(win) = ui.win.upgrade() else { return };
-            sheet_snapshot(ui, &win, id.as_str(), &r);
         });
     });
     win.on_nav_opened(|page| {
@@ -1541,30 +1527,49 @@ pub fn on_act(ui: &mut UiState, win: &AppWindow, action: &str, a: &str, b2: &str
             win.set_attach_open(true);
             win.set_at_page(a.into());
             refresh_position(ui);
+            // The picker's map is the location page's map: the same view, the
+            // same pinch, the same drag, the same tiles (`mapview::Owner`).
+            // It opens a level closer in than the page does, which is what
+            // `lp_zoom` used to mean and is now the view's `open_z`.
+            win.set_lp_tiles(ModelRc::new(VecModel::from(Vec::<crate::MapTileView>::new())));
+            let (la, lo) = ui.lp_fix.unwrap_or(LP_NOWHERE);
+            let z = if ui.lp_fix.is_some() { 16 } else { 4 };
+            ui.mapview.open_for(crate::mapview::Owner::Picker, la, lo, z);
+            map_place(ui, win);
+            map_prefetch(ui);
             request_lp_map(ui, win);
         }
-        // A tap on the picker's map (pin mode): box pixels → lat/lon around
-        // the crop centre, then a re-crop centred on the new pin.
+        // A tap on the picker's map (pin mode): the point under the finger,
+        // straight off the live view. The map does not move — dropping a pin
+        // and re-framing the map are two different things, and the picker used
+        // to do the second because a still crop had no other way to show you
+        // where the pin had gone.
         "lp-tap" => {
             if win.get_at_page() == "pin" {
                 let mut it = a.split(',');
                 let x: f64 = it.next().and_then(|v| v.trim().parse().ok()).unwrap_or(-1.0);
                 let y: f64 = it.next().and_then(|v| v.trim().parse().ok()).unwrap_or(-1.0);
-                if let Some(view) = ui.lp_view {
-                    if x >= 0.0 && y >= 0.0 {
-                        let (lat, lon) = lp_tap_latlon(&view, x, y);
-                        ui.lp_mark = Some((lat, lon));
-                        win.set_lp_marked(true);
-                        win.set_lp_mark_lat(lat as f32);
-                        win.set_lp_mark_lon(lon as f32);
-                        request_lp_map_debounced(ui);
-                    }
+                if x >= 0.0 && y >= 0.0 {
+                    let (lat, lon) = ui.mapview.at(x, y);
+                    ui.lp_mark = Some((lat, lon));
+                    ui.mapview.set_point(lat, lon);
+                    win.set_lp_marked(true);
+                    win.set_lp_mark_lat(lat as f32);
+                    win.set_lp_mark_lon(lon as f32);
+                    map_place(ui, win);
                 }
             }
         }
-        // The picker's +/- chips (LocationPicker.qml:180-203).
+        // The picker's +/- chips (LocationPicker.qml:180-203): a step about the
+        // middle of the map, the page's own `zoom`.
         "lp-zoom" => {
-            let z = (ui.lp_zoom + if a == "in" { 1 } else { -1 }).clamp(3, 19);
+            let step = if a == "in" { 1 } else { -1 };
+            let (w, h) = (ui.mapview.w / 2.0, ui.mapview.h / 2.0);
+            ui.mapview.zoom(step, w, h);
+            map_place(ui, win);
+            map_prefetch(ui);
+            // The still composite follows, for a server with no single tiles.
+            let z = (ui.lp_zoom + step as i64).clamp(3, 19);
             if z != ui.lp_zoom {
                 ui.lp_zoom = z;
                 request_lp_map_debounced(ui);
@@ -1580,6 +1585,10 @@ pub fn on_act(ui: &mut UiState, win: &AppWindow, action: &str, a: &str, b2: &str
                     win.set_lp_mark_lat(lat as f32);
                     win.set_lp_mark_lon(lon as f32);
                 }
+                ui.mapview.set_point(lat, lon);
+                ui.mapview.recentre();
+                map_place(ui, win);
+                map_prefetch(ui);
                 ui.lp_epoch += 1;
                 request_lp_map(ui, win);
             }
@@ -2054,7 +2063,12 @@ fn menu_action(ui: &mut UiState, win: &AppWindow, action: &str, event_id: &str) 
     let key = ui.open_room.clone();
     let room = room_of_key(&key);
     match action {
-        "prepare" => build_sheet(ui, win, event_id),
+        "prepare" => {
+            // the platform's long-press buzz, the moment the hold fires
+            #[cfg(target_os = "android")]
+            i_slint_backend_android_activity::haptic_long_press();
+            build_sheet(ui, win, event_id)
+        }
         "copy" => {
             if let Some(item) = ui
                 .shadow
@@ -3282,7 +3296,10 @@ fn camera_up(win: &AppWindow, room: String) -> bool {
     let video = win.global::<crate::Theme>().get_cam_mode() == "video";
     let front = CAMERA_FRONT.load(std::sync::atomic::Ordering::Relaxed);
     let dir = sigil_engine::paths::cache_dir().join("picked");
-    if !crate::platform::camera_open(front, video, &dir.to_string_lossy()) {
+    // The gallery sheet's title says who the picture is going to; the overlay
+    // is a window of its own and knows nothing about rooms.
+    let to = win.get_room_name().to_string();
+    if !crate::platform::camera_open(front, video, &dir.to_string_lossy(), &to) {
         return false;
     }
     CAMERA.with(|c| {
@@ -4397,6 +4414,18 @@ pub fn apply_position(ui: &mut UiState, win: &AppWindow, v: &Value) {
         && win.get_attach_open()
         && matches!(win.get_at_page().as_str(), "pin" | "current" | "live")
     {
+        // The live grid follows the fix too, unless a pin is holding the
+        // centre — and unless the finger has taken the map somewhere, which is
+        // what `shown` and a moved view would mean. A first fix arriving on an
+        // empty picker is the case that matters: it opened over nowhere.
+        if let Some((lat, lon)) = fix {
+            ui.mapview.set_point(lat, lon);
+            if ui.mapview.owner == crate::mapview::Owner::Picker {
+                ui.mapview.open_for(crate::mapview::Owner::Picker, lat, lon, 16);
+                map_place(ui, win);
+                map_prefetch(ui);
+            }
+        }
         request_lp_map_debounced(ui);
     }
 }
@@ -4414,40 +4443,18 @@ fn refresh_position(ui: &mut UiState) {
     );
 }
 
-// The picker's imagery: the engine's crop is in Web-Mercator world pixels —
-// at zoom z the world is TILE_PX·2^z across (core/src/maps/composite.rs
-// world_px, 512px tiles) — and the request is exactly 2× the map box, so one
-// logical box pixel is two world pixels.
-const LP_TILE_PX: f64 = 512.0;
+/// Where the picker looks with no fix yet: the middle of the United States at
+/// z4, which is LocationPicker.qml's own "no idea where you are" view
+/// (:45-46) — far enough out that it is obviously not a claim about you.
+const LP_NOWHERE: (f64, f64) = (39.5, -98.35);
 
-fn lp_world(zoom: i64) -> f64 {
-    LP_TILE_PX * f64::powi(2.0, zoom as i32)
-}
-
-fn lat_to_world_y(lat: f64, zoom: i64) -> f64 {
-    let lr = lat.to_radians();
-    (1.0 - ((lr.tan() + 1.0 / lr.cos()).ln()) / std::f64::consts::PI) / 2.0 * lp_world(zoom)
-}
-
-fn world_y_to_lat(y: f64, zoom: i64) -> f64 {
-    // the inverse: lat = atan(sinh(π·(1 − 2y/world)))
-    (std::f64::consts::PI * (1.0 - 2.0 * y / lp_world(zoom)))
-        .sinh()
-        .atan()
-        .to_degrees()
-}
-
-/// A tap at (x, y) logical px in the picker's map box → the point under it.
-fn lp_tap_latlon(view: &crate::bridge::LpView, x: f64, y: f64) -> (f64, f64) {
-    let dx = (x - view.box_w / 2.0) * 2.0;
-    let dy = (y - view.box_h / 2.0) * 2.0;
-    let lon = view.lon + dx / lp_world(view.zoom) * 360.0;
-    let lat = world_y_to_lat(lat_to_world_y(view.lat, view.zoom) + dy, view.zoom);
-    (
-        lat.clamp(-85.05, 85.05),
-        (lon + 180.0).rem_euclid(360.0) - 180.0,
-    )
-}
+// The picker's own Mercator pair and its `lp_tap_latlon` used to live here:
+// a second implementation of what `mapview` already did, measuring taps
+// against the last crop the engine was asked for. That worked only while
+// nothing had moved, which was true of a still picture and is not true of a
+// map you can drag. `MapView::at` is the one that is left, and it is the
+// inverse of the `pin` that draws the marker — so a tap lands where the pin
+// appears, by construction rather than by agreement.
 
 /// The picker's crop: centred on the pin, else the fix, else mid-US at z4
 /// (LocationPicker.qml:45-46, :118-120), at 2× the map box. The box height
@@ -4456,7 +4463,7 @@ fn request_lp_map(ui: &mut UiState, win: &AppWindow) {
     let (lat, lon, zoom) = match (ui.lp_mark, ui.lp_fix) {
         (Some((la, lo)), _) => (la, lo, ui.lp_zoom),
         (None, Some((la, lo))) => (la, lo, ui.lp_zoom),
-        (None, None) => (39.5, -98.35, 4),
+        (None, None) => (LP_NOWHERE.0, LP_NOWHERE.1, 4),
     };
     let box_w = (win.get_logical_width() as f64 - 32.0).max(64.0);
     let box_h = if win.get_at_page() == "live" { 294.0 } else { 340.0 };
@@ -4562,14 +4569,13 @@ fn open_map(ui: &mut UiState, win: &AppWindow, event_id: &str) {
         }
         .into(),
     );
-    let left = ((expires - now) / 1000.0).max(0.0) as u64;
+    // The chip, and the clock that keeps it moving: `clock_tick` recomputes
+    // this every second from the same `rows::live_remaining` the bubble's own
+    // chip is built on, so the two agree and neither freezes.
+    ui.mapview.expires_ms = if running { expires as i64 } else { 0 };
     win.set_mp_remaining(
-        if running && left > 0 {
-            if left >= 3600 {
-                format!("{}h {:02}m", left / 3600, (left % 3600) / 60)
-            } else {
-                format!("{}:{:02}", left / 60, left % 60)
-            }
+        if running {
+            crate::rows::live_remaining(expires as i64, now as i64)
         } else {
             String::new()
         }
@@ -4637,67 +4643,81 @@ pub fn refresh_emoji_views(ui: &mut UiState, win: &AppWindow) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::bridge::LpView;
+    use crate::mapview::{MapView, Owner};
 
-    fn view(lat: f64, lon: f64, zoom: i64) -> LpView {
-        LpView {
-            lat,
-            lon,
-            zoom,
-            box_w: 368.0,
-            box_h: 340.0,
-        }
-    }
-
-    #[test]
-    fn mercator_y_round_trips() {
-        for &lat in &[-72.3, -33.9, 0.0, 37.7749, 51.5007, 84.9] {
-            for &z in &[3i64, 10, 16, 19] {
-                let back = world_y_to_lat(lat_to_world_y(lat, z), z);
-                assert!((back - lat).abs() < 1e-9, "lat {lat} z {z} came back {back}");
-            }
-        }
+    /// The picker's view, as `attach-location` opens it.
+    fn view(lat: f64, lon: f64, z: u32) -> MapView {
+        let mut v = MapView::default();
+        v.resize(368.0, 340.0);
+        v.open_for(Owner::Picker, lat, lon, z);
+        v
     }
 
     #[test]
     fn a_centre_tap_lands_on_the_centre() {
         let v = view(51.5007, -0.1246, 16);
-        let (lat, lon) = lp_tap_latlon(&v, v.box_w / 2.0, v.box_h / 2.0);
-        assert!((lat - 51.5007).abs() < 1e-9);
-        assert!((lon - -0.1246).abs() < 1e-9);
+        let (lat, lon) = v.at(v.w / 2.0, v.h / 2.0);
+        assert!((lat - 51.5007).abs() < 1e-9, "{lat}");
+        assert!((lon - -0.1246).abs() < 1e-9, "{lon}");
     }
 
     #[test]
     fn taps_move_the_pin_the_right_way() {
         let v = view(51.5007, -0.1246, 16);
-        // 10 logical px right = 20 world px = 20/(512·2^16)·360 degrees east.
-        let (_, lon) = lp_tap_latlon(&v, v.box_w / 2.0 + 10.0, v.box_h / 2.0);
-        let dlon = 20.0 / (512.0 * 65536.0) * 360.0;
-        assert!((lon - (-0.1246 + dlon)).abs() < 1e-12);
+        // Ten logical pixels right, at a level where a tile is 256 of them:
+        // ten 256-pixel units east across a world 256·2^16 wide.
+        let (_, lon) = v.at(v.w / 2.0 + 10.0, v.h / 2.0);
+        let dlon = 10.0 / (256.0 * 65536.0) * 360.0;
+        assert!((lon - (-0.1246 + dlon)).abs() < 1e-9, "{lon}");
         // Below the centre is south; above is north.
-        let (south, _) = lp_tap_latlon(&v, v.box_w / 2.0, v.box_h / 2.0 + 40.0);
-        let (north, _) = lp_tap_latlon(&v, v.box_w / 2.0, v.box_h / 2.0 - 40.0);
+        let (south, _) = v.at(v.w / 2.0, v.h / 2.0 + 40.0);
+        let (north, _) = v.at(v.w / 2.0, v.h / 2.0 - 40.0);
         assert!(south < 51.5007 && 51.5007 < north);
     }
 
     #[test]
-    fn a_tap_round_trips_through_a_recentred_crop() {
-        // Drop a pin off-centre, recentre the crop on it, and the same box
-        // point relative to the new centre names the same place.
+    fn a_tap_round_trips_through_a_recentred_view() {
+        // Drop a pin off-centre, put the view back on it, and the middle of
+        // the box names the same place.
         let v = view(37.7749, -122.4194, 15);
-        let (lat, lon) = lp_tap_latlon(&v, 300.0, 80.0);
+        let (lat, lon) = v.at(300.0, 80.0);
         let v2 = view(lat, lon, 15);
-        let (lat2, lon2) = lp_tap_latlon(&v2, v2.box_w / 2.0, v2.box_h / 2.0);
+        let (lat2, lon2) = v2.at(v2.w / 2.0, v2.h / 2.0);
         assert!((lat2 - lat).abs() < 1e-9 && (lon2 - lon).abs() < 1e-9);
     }
 
     #[test]
-    fn longitude_wraps_and_latitude_clamps() {
-        let v = view(0.0, 179.9, 3); // a tiny world: taps reach far
-        let (_, lon) = lp_tap_latlon(&v, v.box_w / 2.0 + 100.0, v.box_h / 2.0);
+    fn longitude_wraps_and_latitude_stays_on_the_sheet() {
+        // A tiny world, where a tap reaches a long way.
+        let v = view(0.0, 179.9, 3);
+        let (_, lon) = v.at(v.w / 2.0 + 100.0, v.h / 2.0);
         assert!((-180.0..=180.0).contains(&lon) && lon < 0.0, "wrapped east: {lon}");
+        // The far north: the view clamps to the sheet, so a tap above the top
+        // of the world is the top of the world and not a NaN.
         let v = view(84.0, 0.0, 3);
-        let (lat, _) = lp_tap_latlon(&v, v.box_w / 2.0, 0.0);
-        assert!(lat <= 85.05);
+        let (lat, _) = v.at(v.w / 2.0, -4000.0);
+        assert!(lat.is_finite() && lat <= 85.06, "{lat}");
+    }
+
+    #[test]
+    fn the_picker_and_the_page_take_turns_with_the_one_view() {
+        // Opening one hands the view over: the other's tiles stop being
+        // placed, which is what keeps the sheet's map out of the page's.
+        let mut v = view(51.5, -0.12, 16);
+        assert_eq!(v.owner, Owner::Picker);
+        assert_eq!(v.z, 16);
+        v.open(37.77, -122.41);
+        assert_eq!(v.owner, Owner::Page);
+        assert_eq!(v.z, 15);
+        // …and the gestures are the same ones, so a pinch in the sheet holds
+        // the spot between the fingers exactly as it does on the page.
+        v.open_for(Owner::Picker, 51.5, -0.12, 16);
+        let spot = |v: &MapView| v.at(120.0, 260.0);
+        let before = spot(&v);
+        v.pinch_begin();
+        v.pinch_to(1.7, 120.0, 260.0);
+        let now = spot(&v);
+        assert!((now.0 - before.0).abs() < 1e-9, "{now:?} {before:?}");
+        assert!((now.1 - before.1).abs() < 1e-9, "{now:?} {before:?}");
     }
 }

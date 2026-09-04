@@ -240,6 +240,14 @@ fn main() -> anyhow::Result<()> {
         .set_size(slint::PhysicalSize::new(WIDTH, HEIGHT));
     let icons = sigil_slint::rows::IconSet::from_window(&app);
     sigil_slint::bridge::start(&app, &rt, icons);
+    // The remembered keyboard height is a device's own, read from and written
+    // to the state directory at boot. Neither belongs in a shot: a developer
+    // who has run the phone build would have a different number in the file
+    // and different pictures out of this, and driving a fake keyboard below
+    // would write that fake back over their real one. Pinned to the default,
+    // and the store disconnected.
+    app.set_kb_height_px(sigil_slint::bridge::KB_HEIGHT_DEFAULT);
+    app.on_kb_height_seen(|_| {});
     app.show()?;
     h.settle();
 
@@ -325,43 +333,207 @@ fn main() -> anyhow::Result<()> {
     app.set_recorder_open(false);
     app.set_rec_state("idle".into());
     h.settle();
-    // the long-press sheet over a real bubble ("solid red …", whose box sits
-    // at 14,546 207×36 in this fixture), the page frosted behind it with the
-    // pressed row holding no second bubble under the lifted copy
-    let pressed = {
+
+    // ---- the foot holds still: keyboard ↔ attach ↔ recorder ----
+    //
+    // The reference (Google Messages) opens every panel under the composer at
+    // EXACTLY the height of the keyboard it replaces: measured off it, the
+    // keyboard is 782 px tall and the attachment panel is 782 px tall, and the
+    // composer band's pixels are identical between the two shots. So this is
+    // an assertion before it is a picture — the page hands `chat-panel-top`
+    // back and it must be the same number in every state.
+    //
+    // A SHORT keyboard, 290, is the case that makes both panels give: it is
+    // under the tile grid's natural 302 — 38 of handle strip, 16, two 116
+    // rows and 16 — so the grid has to scroll inside the panel, and well
+    // under the recorder's natural 400, so its card comes down from 300 to
+    // 190 while the pill row and the level band keep their sizes. The
+    // reference's own user had shrunk their keyboard, which is how the whole
+    // question came up.
+    //
+    // The phone palette for the length of it: the handle, the scrolling grid
+    // and the translucent panel ground are all phone-only, and shots run in
+    // desktop mode unless SIGIL_THEME_MODE says otherwise.
+    let shot_mode = app.global::<sigil_slint::Theme>().get_mode();
+    if shot_mode == "desktop" {
+        app.global::<sigil_slint::Theme>().set_mode("dark".into());
+    }
+    const SHORT_KB: f32 = 290.0;
+    app.set_kb_overlap(SHORT_KB);
+    h.settle();
+    let y_keyboard = app.get_chat_panel_top();
+    h.shoot("foot-keyboard")?;
+    // the attach panel opened while the keyboard is still up: it must be full
+    // height AT ONCE, standing where the keyboard stands, so that the band
+    // above it does not sink as the keyboard leaves
+    app.set_attach_open(true);
+    h.settle();
+    let y_attach_over_keyboard = app.get_chat_panel_top();
+    // ... and the keyboard goes
+    app.set_kb_overlap(0.0);
+    h.settle();
+    let y_attach = app.get_chat_panel_top();
+    // The grid at 290: the handle's strip, the 16 lead-in and the two rows
+    // with the foot of the second one under the fold, so the grid scrolls.
+    h.shoot("foot-attach-short")?;
+    // Dragging the handle up takes the panel to the whole page below the
+    // composer — the chevron turns over and every tile is there. The handle's
+    // chevron sits 24 into a 38 strip at the panel's own top edge.
+    let mid = WIDTH as f32 / 2.0;
+    let handle_y = HEIGHT as f32 - SHORT_KB + 19.0;
+    press(&app, mid, handle_y);
+    drag_to(&app, mid, handle_y - 60.0);
+    release(&app, mid, handle_y - 60.0);
+    h.settle();
+    let y_full = app.get_chat_panel_top();
+    h.shoot("foot-attach-full")?;
+    // ...and dragging it back down puts it where it was. The composer's band
+    // is all that lies between the panel's top edge and the page's own top in
+    // either state, so its height comes straight out of the collapsed y.
+    let band = HEIGHT as f32 - SHORT_KB - y_attach;
+    let handle_full_y = y_full + band + 19.0;
+    press(&app, mid, handle_full_y);
+    drag_to(&app, mid, handle_full_y + 60.0);
+    release(&app, mid, handle_full_y + 60.0);
+    h.settle();
+    anyhow::ensure!(
+        (app.get_chat_panel_top() - y_attach).abs() < 0.5,
+        "the handle dragged back down did not collapse the panel: {} vs {y_attach}",
+        app.get_chat_panel_top()
+    );
+    // Shutting the panel drops the latch with it, so the next visit is the
+    // keyboard's height again rather than the page it was left at.
+    app.set_attach_open(false);
+    h.settle();
+    // The recorder at the same 290: a card squeezed from 300 to 190 under a
+    // pill row and a level band that keep their sizes, which is the give the
+    // panel has when the keyboard is shorter than the panel's natural height.
+    app.set_kb_overlap(SHORT_KB);
+    app.set_recorder_open(true);
+    h.settle();
+    let y_recorder_over_keyboard = app.get_chat_panel_top();
+    app.set_kb_overlap(0.0);
+    h.settle();
+    let y_recorder = app.get_chat_panel_top();
+    h.shoot("foot-recorder-short")?;
+    app.set_recorder_open(false);
+    h.settle();
+
+    // The hardest leg, and the one a max() alone cannot hold: a tap on the
+    // text field, which shuts the panel AND calls the keyboard up. The panel
+    // is going before the keyboard has begun to arrive, so for the length of
+    // the handover the foot is held at the keyboard's height. Pumped rather
+    // than settled — `settle` jumps the clock three seconds, which would run
+    // the handover's own half-second give-up timer before the keyboard lands.
+    app.set_attach_open(true);
+    h.settle();
+    tap(&app, WIDTH as f32 / 2.0, y_attach + 30.0);
+    for _ in 0..4 {
+        h.pump();
+    }
+    let y_handover = app.get_chat_panel_top();
+    // If the tap missed the field the panel would still be open and the line
+    // above would hold for the wrong reason.
+    anyhow::ensure!(
+        !app.get_attach_open(),
+        "the tap on the composer did not shut the panel — the handover is untested"
+    );
+    // ...and the keyboard lands, which is what the hold was waiting for
+    app.set_kb_overlap(SHORT_KB);
+    for _ in 0..4 {
+        h.pump();
+    }
+    let y_landed = app.get_chat_panel_top();
+    app.set_kb_overlap(0.0);
+    // Opening a panel clears the composer's focus, which is the only way back
+    // out of the field from here; shutting it again leaves the page as found.
+    app.set_attach_open(true);
+    h.settle();
+    app.set_attach_open(false);
+    h.settle();
+
+    // Half a pixel of slack for the software renderer's rounding; anything
+    // more is the composer bobbing, which is the whole bug.
+    for (what, y) in [
+        ("attach over the keyboard", y_attach_over_keyboard),
+        ("attach alone", y_attach),
+        ("recorder over the keyboard", y_recorder_over_keyboard),
+        ("recorder alone", y_recorder),
+        ("the panel gone and the keyboard not yet up", y_handover),
+        ("the keyboard landed after it", y_landed),
+    ] {
+        anyhow::ensure!(
+            (y - y_keyboard).abs() < 0.5,
+            "the composer moved: {what} puts its top at {y}, the keyboard at {y_keyboard}"
+        );
+    }
+
+    // A keyboard shorter than one row of tiles and the handle above it: the
+    // panel stops at that floor and the grid scrolls inside whatever it got,
+    // with the second row below the fold — the state the reference's own shot
+    // is in (its third row peeking under the edge). The recorder cannot follow
+    // a keyboard this short — its pill row and level band are fixed and its
+    // floor is 284 — so this one is a picture only, with no claim about the
+    // composer's y, and it comes after the claims above.
+    app.set_kb_overlap(180.0);
+    app.set_attach_open(true);
+    h.settle();
+    h.shoot("foot-attach-tiny")?;
+    app.set_attach_open(false);
+    app.set_kb_overlap(0.0);
+    h.settle();
+    if shot_mode == "desktop" {
+        app.global::<sigil_slint::Theme>().set_mode("desktop".into());
+    }
+    // Put the remembered height back where the rest of the run expects it: a
+    // fake keyboard stood up here would otherwise size every panel in every
+    // later shot.
+    app.set_kb_height_px(sigil_slint::bridge::KB_HEIGHT_DEFAULT);
+    h.settle();
+
+    // the long-press sheet over a real bubble ("solid red …"), pressed the
+    // way a finger presses it: the row fires the menu with its own live
+    // rectangle, the list glides the bubble to the sheet's resting place,
+    // and the scrim's hole (the bubble's own outline) rides with it
+    let (pressed, pressed_id, first_id) = {
         let items = app.get_items();
-        (0..items.row_count())
+        let i = (0..items.row_count())
             .find(|&i| {
                 items
                     .row_data(i)
                     .map(|r| r.body.starts_with("solid red"))
                     .unwrap_or(false)
             })
-            .unwrap_or(items.row_count() - 3)
+            .unwrap_or(items.row_count() - 3);
+        let id = items.row_data(i).map(|r| r.event_id.to_string()).unwrap_or_default();
+        // the oldest message with an id: the one the timeline may be cutting
+        // off under the header
+        let first = (0..items.row_count())
+            .filter_map(|i| items.row_data(i))
+            .find(|r| !r.event_id.is_empty() && r.kind != "state" && r.kind != "dayDivider")
+            .map(|r| r.event_id.to_string())
+            .unwrap_or_default();
+        (i, id, first)
     };
-    app.invoke_debug_sheet(pressed as i32, 14.0, 546.0, 207.0, 36.0);
+    app.invoke_debug_sheet_id(pressed_id.clone().into());
+    h.settle();
     h.shoot("chat-sheet")?;
-    // the no-picture path (a renderer that cannot snapshot) dims the live
-    // page instead of frosting it: the timeline shows through, so this frame
-    // proves the pressed row holds no second bubble behind the lifted copy
-    app.set_sheet_backdrop(Default::default());
-    h.shoot("chat-sheet-dim")?;
     app.invoke_debug_sheet_close();
     h.settle();
-    // the same message pressed where the timeline was cutting it off: a rect
-    // that starts above the convo's top edge, under the header. The copy is
-    // drawn from the row rather than cropped out of the window, so it must
-    // still lift whole, with no header in it and nothing missing.
-    app.invoke_debug_sheet(pressed as i32, 14.0, 30.0, 207.0, 36.0);
+    // a message at the far end of the timeline: the list opens padding at
+    // that end and glides it down into the band, so the pill has its room
+    app.invoke_debug_sheet_id(first_id.into());
+    h.settle();
     h.shoot("chat-sheet-clipped")?;
     app.invoke_debug_sheet_close();
     h.settle();
-    app.invoke_debug_sheet(pressed as i32, 14.0, 546.0, 207.0, 36.0);
+    let _ = pressed;
+    app.invoke_debug_sheet_id(pressed_id.clone().into());
     h.settle();
     // the reaction drawer, reached the only way there is: the add-reaction
     // cell at the right end of the quick pill (chat-sheet.png: 293, 511)
     app.invoke_act("emoji-search".into(), "".into(), "".into());
-    tap(&app, 293.0, 511.0);
+    app.invoke_debug_sheet_drawer();
     emoji_pictures(&app, &h)?;
     h.shoot("sheet-emoji")?;
     // the drag handle. It sits 8 + 12 into a drawer that rests at
@@ -406,6 +578,18 @@ fn main() -> anyhow::Result<()> {
     app.set_at_page("pin".into());
     h.settle();
     h.shoot("attach-pin")?;
+    // Current and Live Location are YOU, so the marker wears your face — the
+    // very marker the timeline's location bubble draws, initials-on-tint where
+    // no picture has been cached. Drop a Pin above keeps the bare pin, because
+    // there is nobody to show; that difference is the whole of this pair.
+    app.set_at_page("current".into());
+    h.settle();
+    h.shoot("attach-current")?;
+    app.set_at_page("live".into());
+    h.settle();
+    h.shoot("attach-live")?;
+    app.set_at_page("pin".into());
+    h.settle();
     app.set_at_page("live".into());
     h.settle();
     h.shoot("attach-live")?;
@@ -559,6 +743,22 @@ fn main() -> anyhow::Result<()> {
     app.set_kb_overlap(0.0);
     h.settle();
     h.frame("map-footer-flat")?;
+    // The marker wearing a face, over imagery, where both of the things that
+    // were wrong with it can be measured rather than admired: the face must be
+    // OPAQUE (a flat green disc, not green mixed with whatever tile is under
+    // it) and it must be CENTRED on the pin's head. The head's own centre is
+    // not a matter of taste — the filled `place` glyph's head lobe runs from
+    // 12 to 36 of its 48px box and its counter from 20 to 28, so both are
+    // centred at exactly 24, and the pin is drawn at an advance of a whole em
+    // so nothing shifts it. `pin-x` is set to the middle of the map area, so
+    // the disc's centre must land on that column.
+    app.set_mp_avatar(solid_tile(0, 220, 0));
+    app.set_mp_pin_x(WIDTH as f32 / 2.0);
+    app.set_mp_pin_y(260.0);
+    h.settle();
+    h.frame("map-pin-face")?;
+    app.set_mp_avatar(Default::default());
+    app.set_mp_pin_x(-1000.0);
     app.set_mp_tiles(std::rc::Rc::new(slint::VecModel::from(Vec::<sigil_slint::MapTileView>::new())).into());
     point(&app, WindowEvent::ScaleFactorChanged { scale_factor: 1.0 });
     app.window().set_size(slint::PhysicalSize::new(WIDTH, HEIGHT));
@@ -1175,9 +1375,9 @@ fn main() -> anyhow::Result<()> {
     // The reaction drawer has a search field too, so it answers to the same
     // two zones. Opened the only way there is (the add-reaction cell at the
     // right end of the quick pill), then the zones stood up under it.
-    app.invoke_debug_sheet(pressed as i32, 14.0, 546.0, 207.0, 36.0);
+    app.invoke_debug_sheet_id(pressed_id.into());
     h.settle();
-    tap(&app, 293.0, 511.0);
+    app.invoke_debug_sheet_drawer();
     emoji_pictures(&app, &h)?;
     for (name, inset) in [
         ("sheet-emoji-gesture", 24.0),
@@ -1194,10 +1394,13 @@ fn main() -> anyhow::Result<()> {
     // ---- the attachment sheet's grid, and the capture flow off it ----
     // Nine tiles in two rows of five minus one — ONE camera, whose Photo or
     // Video is chosen inside the chooser below, not as a second tile — and
-    // the block flush with the sheet's 16 lead-in. It sat 37 lower than that
-    // for a while: the sheet's phone height had been raised to 396 while the
-    // grid still wanted 264, and the block, being a layout placed by hand,
-    // spread the surplus between its two rows.
+    // the block flush with the 16 lead-in under the phone's 38 handle strip
+    // (54 from the sheet's top edge to the first disc, which is what the
+    // reference measures). It sat 37 lower than its lead-in for a while: the
+    // sheet's phone height had been raised to 396 while the grid still wanted
+    // 264, and the block, being a layout placed by hand, spread the surplus
+    // between its two rows. It cannot again — the grid scrolls in its own
+    // frame now and states its own height inside it.
     app.set_nav("chat".into());
     app.set_at_page("grid".into());
     app.set_attach_open(true);

@@ -9,19 +9,51 @@ use serde_json::Value;
 use tiny_skia::{FillRule, Paint, PathBuilder, Pixmap, Stroke, Transform};
 use tracing::{debug, warn};
 
-use super::{mvt, style};
+use super::{labels, mvt, style};
 use crate::engine::SharedEngine;
 
 pub const TILE_PX: u32 = 512;
+
+/// What this renderer draws. It is half of the rendered tile's cache key, so
+/// **bump it whenever the picture a tile would come out as changes** — a new
+/// layer, different widths, labels. Old files are then simply a different key
+/// and are never read again.
+///
+/// 2: street and place names.
+const RENDER_VERSION: u32 = 2;
 
 /// Everything the renderer needs, resolved once per style refresh.
 pub struct VectorSource {
     pub template: String, // …/{z}/{x}/{y}.mvt
     pub maxzoom: u32,
     pub style: style::MapStyle,
+    /// The rendered-tile cache key: this style and this renderer.
+    ///
+    /// The old key was `v-{z}-{x}-{y}` with nothing in it about where the
+    /// cartography came from, so switching map styles kept serving the old
+    /// one for ever — the tiles were already on disk under the only name the
+    /// cache knew. Now a different style, or a different `RENDER_VERSION`, is
+    /// a different set of files.
+    pub raster_key: String,
+    /// The vector cache key: the tile TEMPLATE alone, and deliberately not
+    /// the style or the version. The vectors do not change when the drawing
+    /// does, and re-fetching a city over the network to redraw it with names
+    /// on would be minutes of waiting for something already on the disk.
+    pub vector_key: String,
 }
 
-pub fn resolve(style_doc: &Value, tilejson: &Value) -> Option<Arc<VectorSource>> {
+/// A short stable name for a string. FNV-1a — the cache wants a filename, not
+/// a promise about adversaries.
+fn short_hash(s: &str) -> String {
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    for b in s.as_bytes() {
+        h ^= u64::from(*b);
+        h = h.wrapping_mul(0x1000_0000_01b3);
+    }
+    format!("{h:012x}")
+}
+
+pub fn resolve(style_url: &str, style_doc: &Value, tilejson: &Value) -> Option<Arc<VectorSource>> {
     let template = tilejson
         .get("tiles")
         .and_then(Value::as_array)
@@ -32,24 +64,30 @@ pub fn resolve(style_doc: &Value, tilejson: &Value) -> Option<Arc<VectorSource>>
         return None;
     }
     let maxzoom = tilejson.get("maxzoom").and_then(Value::as_u64).unwrap_or(15) as u32;
-    Some(Arc::new(VectorSource { template, maxzoom, style: style::parse(style_doc) }))
+    Some(Arc::new(VectorSource {
+        raster_key: format!("r{RENDER_VERSION}{}", short_hash(style_url)),
+        vector_key: format!("v{}", short_hash(&template)),
+        template,
+        maxzoom,
+        style: style::parse(style_doc),
+    }))
 }
 
 /// Where a rendered tile PNG lands (also the map.tile reply path).
-pub fn png_path(z: u32, x: i64, y: i64) -> std::path::PathBuf {
-    cache_path(z, x, y)
+pub fn png_path(src: &VectorSource, z: u32, x: i64, y: i64) -> std::path::PathBuf {
+    cache_path(src, z, x, y)
 }
 
-fn cache_path(z: u32, x: i64, y: i64) -> std::path::PathBuf {
+fn cache_path(src: &VectorSource, z: u32, x: i64, y: i64) -> std::path::PathBuf {
     let d = crate::paths::cache_dir().join("tiles");
     let _ = crate::paths::ensure_private_dir(&d);
-    d.join(format!("v-{z}-{x}-{y}.png"))
+    d.join(format!("{}-{z}-{x}-{y}.png", src.raster_key))
 }
 
-fn mvt_cache_path(z: u32, x: i64, y: i64) -> std::path::PathBuf {
+fn mvt_cache_path(src: &VectorSource, z: u32, x: i64, y: i64) -> std::path::PathBuf {
     let d = crate::paths::cache_dir().join("tiles");
     let _ = crate::paths::ensure_private_dir(&d);
-    d.join(format!("v-{z}-{x}-{y}.mvt"))
+    d.join(format!("{}-{z}-{x}-{y}.mvt", src.vector_key))
 }
 
 /// Beside itself, then renamed into place — never written over.
@@ -84,12 +122,12 @@ fn write_atomic(path: &std::path::Path, data: &[u8]) {
 /// warm the tile and once when the view actually reaches it, and it is the
 /// difference between prefetching being free and prefetching being the thing
 /// that makes the map slow.
-pub fn have(z: u32, x: i64, y: i64) -> bool {
-    std::fs::metadata(cache_path(z, x, y)).map(|m| m.len() > 0).unwrap_or(false)
+pub fn have(src: &VectorSource, z: u32, x: i64, y: i64) -> bool {
+    std::fs::metadata(cache_path(src, z, x, y)).map(|m| m.len() > 0).unwrap_or(false)
 }
 
 async fn fetch_mvt(src: &VectorSource, z: u32, x: i64, y: i64) -> Option<Vec<u8>> {
-    let p = mvt_cache_path(z, x, y);
+    let p = mvt_cache_path(src, z, x, y);
     if let Ok(data) = std::fs::read(&p) {
         return Some(data);
     }
@@ -130,7 +168,7 @@ pub async fn tile(
     }
     let x = x.rem_euclid(n);
 
-    let cache = cache_path(z, x, y);
+    let cache = cache_path(src, z, x, y);
     if let Ok(data) = std::fs::read(&cache) {
         if let Ok(img) = image::load_from_memory(&data) {
             return Some(img.to_rgba8());
@@ -157,6 +195,12 @@ pub async fn tile(
     let bg = src.style.background;
     pixmap.fill(tiny_skia::Color::from_rgba8(bg.0, bg.1, bg.2, bg.3));
     rasterize(&mut pixmap, src, &layers, z, scale, off_x, off_y);
+    // …and then the names, over everything the cartography drew. They are a
+    // pass of their own rather than another style layer because they are not
+    // one: a name has to know where its road went, has to be told what else
+    // is already written on this tile, and has to be legible against whatever
+    // it lands on. See `labels`.
+    labels::draw(&mut pixmap, &layers, z, TILE_PX as f32, scale, off_x, off_y);
     // What a miss costs, split at the only line that matters: how much of it
     // was waiting for the network and how much was this thread drawing. The
     // drawing runs on a runtime worker, so it is also how long everything else

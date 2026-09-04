@@ -116,6 +116,9 @@ export component AppWindow inherits Window {
     // Wall-clock anchor: epoch seconds at app start, so views can derive the
     // current time from animation-tick() (live-share countdowns).
     in property <int> boot-epoch-s;
+    /// Epoch seconds, NOW — set once a second by the bridge (actions.rs
+    /// clock_tick). What every countdown reads.
+    in property <int> now-epoch-s;
     in property <[RoomRow]> rooms;
     in property <[RoomRow]> requests;
     in property <bool> rooms-loaded;
@@ -168,7 +171,6 @@ export component AppWindow inherits Window {
     in property <bool> in-call;
     in property <bool> call-here;
     in property <[MenuEntry]> sheet-actions;
-    in property <image> sheet-backdrop;
     in property <[[EmojiItem]]> emoji-rows;
     /// The sheet's six quick reactions, as pictures when the device has a colour font.
     in property <[EmojiItem]> quick-emoji;
@@ -310,6 +312,10 @@ export component AppWindow inherits Window {
     in property <bool> lp-marked;
     in property <float> lp-mark-lat;
     in property <float> lp-mark-lon;
+    /// The picker's live grid: the location page's tiles, in the sheet.
+    in property <[MapTileView]> lp-tiles;
+    in property <length> lp-pin-x: -1000px;
+    in property <length> lp-pin-y: -1000px;
     in property <string> mp-who;
     in property <bool> mp-own;
     in property <bool> mp-live;
@@ -423,14 +429,20 @@ export component AppWindow inherits Window {
     callback nav-opened(string);
     /// Everything else: one channel, Service.qml's function table.
     callback act(string, string, string);
-    callback sheet-snapshot(string, SheetRect);
-    callback sheet-prewarm(string, SheetRect);
 
     public function scroll-timeline-to-end() { chat.scroll-to-end(); }
     public function restore-timeline-from-end(d: length) { chat.restore-from-end(d); }
     out property <length> chat-from-end: chat.from-end;
+    /// The top of the composer band, measured down the page: the one number
+    /// the panels' whole arrangement exists to hold still. The screenshot
+    /// harness reads it back and asserts it across keyboard, attach sheet and
+    /// recorder — a bob there is exactly what the reference does not have.
+    out property <length> chat-panel-top: chat.panel-top;
     public function clear-composer() { chat.clear-composer(); }
     public function debug-sheet(index: int, x: length, y: length, w: length, h: length) { chat.sheet-open(root.items[index], x, y, w, h); }
+    /// The harness's long-press on a real row: its own rectangle, its own glide.
+    public function debug-sheet-id(id: string) { chat.sheet-open-id(id); }
+    public function debug-sheet-drawer() { chat.sheet-open-drawer(); }
     public function debug-sheet-close() { chat.sheet-close(); }
     in-out property <int> home-tab: 0;
     in-out property <string> home-selection;   // the room home's long press picked out
@@ -488,6 +500,35 @@ export component AppWindow inherits Window {
     /// it, nothing in the app does.
     in-out property <length> kb-overlap: root.virtual-keyboard-size.height > 0px
         ? max(0px, root.height - root.virtual-keyboard-position.y) : 0px;
+    /// How tall this user's keyboard was the last time one stood up — measured
+    /// from the window's bottom edge, so it counts the gesture bar the same way
+    /// the keyboard covers it. The conversation's panels (attach sheet, voice
+    /// recorder) open at exactly this height, so that switching between the
+    /// keyboard and a panel never moves the composer, which is what the
+    /// reference does. Seeded by Rust at launch from the stored value and
+    /// stored back whenever it changes, because the first panel of a session
+    /// is opened before any keyboard has been up. 400 is what the sheets stood
+    /// at before any of this, and is what a device with nothing stored gets.
+    in-out property <int> kb-height-px: 400;
+    callback kb-height-seen(int);
+    /// Taken when the number has STOPPED moving. Android hands the inset over
+    /// during the IME's own slide, so the raw overlap runs up through every
+    /// value between nothing and the keyboard; latching any of them would size
+    /// the panels to a frame of an animation, and store it. Every report
+    /// restarts the wait, so only the value that stands still is kept — and
+    /// the guard below means a keyboard of the same height as last time
+    /// touches neither the property nor the file.
+    kb-settle := Timer {
+        interval: 350ms;
+        running: root.kb-overlap > 96px;
+        triggered => {
+            if (root.kb-overlap > 96px && round(root.kb-overlap / 1px) != root.kb-height-px) {
+                root.kb-height-px = round(root.kb-overlap / 1px);
+                root.kb-height-seen(root.kb-height-px);
+            }
+        }
+    }
+    changed kb-overlap => { if (root.kb-overlap > 96px) { kb-settle.restart(); } }
     property <color> page-ground: Theme.card-ground;
     // Pages of a themed room carry the room's chrome (Panel.qml:38-45):
     // base×0.65 + accent×0.35, the mix ChatPage uses for its surface.
@@ -714,6 +755,7 @@ export component AppWindow inherits Window {
                 room-name: root.room-name;
                 room-subtitle: root.room-subtitle;
                 boot-epoch-s: root.boot-epoch-s;
+                now-epoch-s: root.now-epoch-s;
                 room-encrypted: root.room-encrypted;
                 room-initials: root.room-initials;
                 room-avatar: root.room-avatar;
@@ -744,6 +786,9 @@ export component AppWindow inherits Window {
                 lp-marked: root.lp-marked;
                 lp-mark-lat: root.lp-mark-lat;
                 lp-mark-lon: root.lp-mark-lon;
+                lp-tiles: root.lp-tiles;
+                lp-pin-x: root.lp-pin-x;
+                lp-pin-y: root.lp-pin-y;
                 my-avatar: root.my-avatar;
                 // toast / ac-items / ac-index / clip-frac: window properties
                 // still to come (scratchpad audit/chat-handoff.md A6, F10, F12).
@@ -757,11 +802,8 @@ export component AppWindow inherits Window {
                 ac-index <=> root.chat-ac-index;
                 toast <=> root.chat-toast;
                 items: root.items;
-                sheet-backdrop: root.sheet-backdrop;
-                sheet-snapshot(id, r) => { root.sheet-snapshot(id, r); }
-                sheet-prewarm(id, r) => { root.sheet-prewarm(id, r); }
                 // Everything the window paints around the page: the sheet's
-                // frost covers it too (the snapshot is of the whole window).
+                // scrim covers it too.
                 bleed-top: root.safe-area-insets.top + status-strip.height;
                 // The page now reaches the window's own bottom edge, so there
                 // is no strip below it for the frost to cover.
@@ -783,6 +825,10 @@ export component AppWindow inherits Window {
                 // The gesture bar (or the keyboard) is the page's own to keep
                 // clear: the composer stands that far up from the bottom.
                 bottom-inset: root.bottom-inset;
+                // And how tall the keyboard was: the page opens its panels at
+                // exactly that height, so the composer does not move when one
+                // takes the other's place.
+                kb-h: root.kb-height-px * 1px;
                 back => { root.go-back(); }
                 send(text) => { root.send-message(text); }
                 send-reply(ev, text) => { root.act("send-reply", ev, text); }
@@ -814,6 +860,15 @@ export component AppWindow inherits Window {
                 attach-loc-recentre => { root.act("lp-recentre", "", ""); }
                 attach-loc-retry => { root.act("position-refresh", "", ""); }
                 attach-loc-share(la, lo, ms, mode) => { root.act("location-share", "\{la},\{lo},\{mode}", "\{ms}"); }
+                // The picker's gestures go to the location page's own handlers,
+                // because it is the location page's own map: one MapView, and
+                // `mapview::Owner` says which surface is showing it.
+                attach-loc-viewport(w, h) => { root.map-viewport(w, h); }
+                attach-loc-panned(dx, dy) => { root.map-panned(dx, dy); }
+                attach-loc-zoom-at(s, x, y) => { root.map-zoom-at(s, x, y); }
+                attach-loc-pinch-begin => { root.map-pinch-begin(); }
+                attach-loc-pinched(f, x, y) => { root.map-pinched(f, x, y); }
+                attach-loc-pinch-end => { root.map-pinch-end(); }
                 insert-emoji(e) => { root.act("composer-insert", e, ""); }
                 // `act` has three slots and the third already packs the poll,
                 // so "voters may pick more than one" rides inside it, second

@@ -188,8 +188,33 @@ struct Grip {
     anchor: Option<(f64, f64)>,
 }
 
+/// Which surface the view is serving.
+///
+/// There are two maps in the app — the location page and the attach sheet's
+/// "drop a pin" picker — and they are never on screen together: one is a whole
+/// page and the other lives in a panel under a conversation's composer. So
+/// they take turns with one camera rather than each keeping their own, which
+/// is also what makes the picker's gestures the SAME gestures rather than a
+/// second implementation of them that feels almost right.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum Owner {
+    /// Nobody: no map is up, and a reply that arrives is for a closed page.
+    #[default]
+    None,
+    /// The full location page (`nav == "map"`).
+    Page,
+    /// The attach sheet's location picker.
+    Picker,
+}
+
 /// The page's view of the map: where it is looking and what it has drawn.
 pub struct MapView {
+    /// Whose map this is at the moment. Set by whichever surface opened it.
+    pub owner: Owner,
+    /// The level the surface opened on, and the one the recentre disc goes
+    /// back to. The page opens at 15 and the picker at 16 — a picker is for
+    /// choosing a doorway, a page is for seeing where something is.
+    pub open_z: u32,
     /// The level the tiles are fetched from: always a whole one, since that
     /// is all the renderer serves.
     pub z: u32,
@@ -207,6 +232,9 @@ pub struct MapView {
     /// magnification.
     pub cx: f64,
     pub cy: f64,
+    /// When the live share being viewed runs out, in epoch milliseconds; 0 for
+    /// a point that is not a running share. The page chip counts down to it.
+    pub expires_ms: i64,
     /// The shared point the page was opened on.
     pub lat: f64,
     pub lon: f64,
@@ -245,10 +273,13 @@ pub struct MapView {
 impl Default for MapView {
     fn default() -> Self {
         MapView {
+            owner: Owner::None,
+            open_z: 15,
             z: 15,
             scale: 1.0,
             cx: 0.0,
             cy: 0.0,
+            expires_ms: 0,
             lat: 0.0,
             lon: 0.0,
             w: 0.0,
@@ -267,8 +298,18 @@ impl Default for MapView {
 impl MapView {
     /// Open on a point: centre there, forget the last page's grid.
     pub fn open(&mut self, lat: f64, lon: f64) {
+        self.open_for(Owner::Page, lat, lon, 15);
+    }
+
+    /// Open for a named surface at a level of its own — the picker opens
+    /// closer in than the page does. Everything else about the two is the
+    /// same view, the same gestures and the same arithmetic, which is the
+    /// point of there being one of it.
+    pub fn open_for(&mut self, owner: Owner, lat: f64, lon: f64, z: u32) {
         self.epoch = self.epoch.wrapping_add(1);
-        self.z = 15;
+        self.owner = owner;
+        self.open_z = z.clamp(Z_MIN, Z_MAX);
+        self.z = self.open_z;
         self.scale = 1.0;
         self.grip = None;
         self.lat = lat;
@@ -295,7 +336,7 @@ impl MapView {
     /// Put the view back where the page opened it: the shared point, at the
     /// level the page opens on. What the recentre disc does (MapPage.qml:351-366).
     pub fn recentre(&mut self) {
-        self.z = 15;
+        self.z = self.open_z;
         self.scale = 1.0;
         self.grip = None;
         let (x, y) = px_of(self.lat, self.lon, self.z);
@@ -768,6 +809,32 @@ impl MapView {
         ((x * self.scale) as f32, ((py - oy) * self.scale) as f32)
     }
 
+    /// The point of world under `(sx, sy)` in the map area.
+    ///
+    /// The inverse of `pin`, and what a tap on the picker's map means: the
+    /// view's origin plus the offset divided back through the magnification,
+    /// off the sheet and into degrees. The picker used to do this with its own
+    /// pair of Mercator functions against the crop it had last asked the
+    /// engine for, which was right only while nothing had moved — with a map
+    /// that drags under the finger there is no "the crop" to measure against.
+    pub fn at(&self, sx: f64, sy: f64) -> (f64, f64) {
+        let (ox, oy) = self.origin();
+        let w = world(self.z);
+        let x = (ox + sx / self.scale).rem_euclid(w);
+        let y = (oy + sy / self.scale).clamp(0.0, w);
+        let lon = x / w * 360.0 - 180.0;
+        let lat = (std::f64::consts::PI * (1.0 - 2.0 * y / w)).sinh().atan().to_degrees();
+        (lat, lon)
+    }
+
+    /// Move the marker without moving the view: the picker drops its pin where
+    /// the map was tapped and the map stays exactly where it is, which is the
+    /// whole difference between dropping a pin and re-cropping around one.
+    pub fn set_point(&mut self, lat: f64, lon: f64) {
+        self.lat = lat;
+        self.lon = lon;
+    }
+
     /// The tile key the engine answers to: x wrapped into the world.
     pub fn key(&self, tx: i64, ty: i64) -> (u32, i64, i64) {
         let n = 1i64 << self.z;
@@ -1031,6 +1098,55 @@ mod tests {
         let want = v.wanted();
         // one tile of view plus a ring is three by three at most
         assert!(want.len() >= 9 && want.len() <= 16, "{}", want.len());
+    }
+
+    #[test]
+    fn a_tap_lands_on_the_place_the_marker_is_drawn_at() {
+        // `at` and `pin` are each other's inverse, whatever the view has been
+        // put through — that is what makes a tap on the picker's map drop the
+        // pin under the finger rather than near it.
+        let mut v = MapView::default();
+        v.resize(400.0, 600.0);
+        v.open_for(Owner::Picker, 51.5, -0.12, 16);
+        assert_eq!(v.z, 16);
+        v.pan(137.0, -84.0);
+        v.pinch_begin();
+        v.pinch_to(1.4, 210.0, 260.0);
+        v.pinch_end();
+        for (sx, sy) in [(200.0, 300.0), (0.0, 0.0), (399.0, 599.0), (12.0, 540.0)] {
+            let (lat, lon) = v.at(sx, sy);
+            let mut w = MapView { ..MapView::default() };
+            w.resize(400.0, 600.0);
+            w.open_for(Owner::Picker, lat, lon, 16);
+            // Put the same view back and ask where that point draws.
+            w.z = v.z;
+            w.scale = v.scale;
+            w.cx = v.cx;
+            w.cy = v.cy;
+            w.set_point(lat, lon);
+            let (px, py) = w.pin();
+            assert!((f64::from(px) - sx).abs() < 0.01, "x {px} vs {sx}");
+            assert!((f64::from(py) - sy).abs() < 0.01, "y {py} vs {sy}");
+        }
+    }
+
+    #[test]
+    fn the_recentre_disc_goes_back_to_the_level_the_surface_opened_on() {
+        // The page opens at 15 and the picker at 16; recentring must not
+        // quietly move the picker out a level, which is what a hardcoded 15
+        // did when the two surfaces started sharing this view.
+        for (owner, z) in [(Owner::Page, 15u32), (Owner::Picker, 16)] {
+            let mut v = MapView::default();
+            v.resize(400.0, 600.0);
+            v.open_for(owner, 51.5, -0.12, z);
+            v.zoom(3, 100.0, 100.0);
+            v.pan(400.0, 400.0);
+            v.recentre();
+            assert_eq!(v.z, z, "{owner:?}");
+            assert_eq!(v.owner, owner);
+            let (px, py) = v.pin();
+            assert!((f64::from(px) - 200.0).abs() < 0.5 && (f64::from(py) - 300.0).abs() < 0.5);
+        }
     }
 
     // ---------------------------------------------- the stand-in arithmetic

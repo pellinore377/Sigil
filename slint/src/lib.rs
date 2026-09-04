@@ -147,12 +147,30 @@ fn android_main(app: slint::android::AndroidApp) {
             .ok();
     }
 
+    // Slint's runtime logs through the `log` crate (its frame-time report
+    // under the `perf` flag, and its own warnings): route those to logcat
+    // under the "slint" tag, quietly except for what is asked for.
+    android_logger::init_once(
+        android_logger::Config::default()
+            .with_max_level(log::LevelFilter::Debug)
+            .with_tag("slint"),
+    );
+
     scale::remember_android(app.clone());
     // The engine's location backend needs the Activity, not the application
     // context ndk-context carries: only an Activity can show the runtime
     // permission dialog. SAFETY: both are android-activity's own pointers,
     // valid for the life of the process.
     sigil_engine::geo::android::use_activity(app.vm_as_ptr(), app.activity_as_ptr());
+    // The `perf` switch must be in the environment BEFORE the backend comes
+    // up: Slint's metrics collector reads it when the renderer is created,
+    // which happens in `init` below, not in `run_app`.
+    if std::fs::read_to_string("/data/local/tmp/sigil-flags")
+        .map(|f| f.lines().any(|l| l.trim() == "perf"))
+        .unwrap_or(false)
+    {
+        std::env::set_var("SLINT_DEBUG_PERFORMANCE", "refresh_lazy,console");
+    }
     slint::android::init(app).expect("slint android init");
     run_app().expect("sigil-slint");
 }

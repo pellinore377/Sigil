@@ -22,6 +22,16 @@ import { Beats } from "../furniture.slint";
 export component SelfPin inherits Rectangle {
     in property <color> pin-color: Theme.accent;
     in property <image> avatar;
+    /// The face's fallback, as the timeline bubble's marker has it: where the
+    /// sharer has no cached picture the bubble still shows a person, drawn as
+    /// their initials on their own hashed tint (bubble.slint:1190-1199, an
+    /// `Avatar`). Without these the pin came out bare whenever a picture was
+    /// missing — a person's live share looking like a dropped pin.
+    in property <string> initials;
+    in property <color> tint: Theme.accent;
+    /// Whether this marker stands for a PERSON at all. A dropped pin has no
+    /// sharer and wears no face; anyone's own position or live share does.
+    in property <bool> face: false;
     in property <bool> ripple: false;
     /// The location category's own glyph (Icons.myLocation / liveLocation /
     /// pinDrop), worn as a small disc on the pin's shoulder so the marker
@@ -30,7 +40,24 @@ export component SelfPin inherits Rectangle {
     in property <string> badge;
     width: 48px; height: 48px;
     background: transparent;
-    property <length> head-cx: 48px * 0.4896;
+    // Where the pin's head is inside the 48px box. Horizontally this is not a
+    // matter of taste and it was wrong: 0.4896 came across from the QML, whose
+    // font laid the glyph out differently, and it put the face half a logical
+    // pixel left of the head — which is a whole pixel of avatar hanging off the
+    // left of the pin and none off the right, since the face (r 0.26) is a
+    // shade wider than the head lobe it covers. Measured off the font this
+    // build actually ships (shared/fonts/MaterialSymbolsRounded-Filled.ttf,
+    // 960 upem): the filled `place` glyph advances a whole em, so the run is
+    // not shifted inside the box at all, and its head lobe spans 12..36 of the
+    // 48 while the counter punched in it spans 20..28 — both centred on 24.
+    // The centre is therefore exactly 0.5, and `mapview`'s
+    // `the_pins_head_sits_dead_centre_of_its_box` keeps it that way.
+    //
+    // The vertical is a different story and is left alone: `Text` centres the
+    // glyph by its LINE box (ascender 1056 + descender 96 = 1.2em, taller than
+    // the 48 it is given), so 0.4062 is an empirical number that lands the head
+    // where the eye wants it, and it does.
+    property <length> head-cx: 48px * 0.5;
     property <length> head-cy: 48px * 0.4062;
     property <length> head-r: 48px * 0.26;
 
@@ -74,12 +101,39 @@ export component SelfPin inherits Rectangle {
         font-size: 48px;
         width: 48px; height: 48px;
     }
-    if root.avatar.width > 0 : face := Rectangle {
+    // The face set into the pin's head. The disc is OPAQUE, and it has to be
+    // said: the head is a hole punched through a filled glyph, so anything the
+    // picture does not cover is the map showing through the person's face,
+    // which is what made the marker look like a ghost of itself. Nothing above
+    // it carries an opacity — a shot of this page measures 24 of 24 pixels
+    // across the disc as exactly the source colour — so the alpha was the
+    // avatar's own (a rounded or padded PNG has transparent corners, and
+    // `Avatar` would not have helped: it makes its own ground transparent the
+    // moment a source is present, components.slint:59). The pin's own colour
+    // is what belongs behind a hole in the pin.
+    if root.face || root.avatar.width > 0 : head := Rectangle {
         x: root.head-cx - root.head-r; y: root.head-cy - root.head-r;
         width: root.head-r * 2; height: root.head-r * 2;
         border-radius: root.head-r;
+        // The picture where there is one, the initials on the person's own
+        // tint where there is not — what the bubble's `Avatar` does, except
+        // that this ground is opaque either way, because the pin's head is a
+        // hole punched through a filled glyph and whatever the face does not
+        // cover is the map showing through somebody's face.
+        background: root.avatar.width > 0 ? root.pin-color : root.tint;
         clip: true;
-        Image { source: root.avatar; width: 100%; height: 100%; image-fit: cover; }
+        if root.avatar.width > 0 : Image {
+            source: root.avatar; width: 100%; height: 100%; image-fit: cover;
+        }
+        if root.avatar.width == 0 : Text {
+            text: root.initials;
+            color: Theme.foreground;
+            font-family: Theme.font-ui;
+            font-size: max(8px, root.head-r * 2 * 0.42);   // components.slint:76
+            font-weight: 700;
+            horizontal-alignment: center; vertical-alignment: center;
+            width: 100%; height: 100%;
+        }
     }
     // The category's glyph on the pin's shoulder, in the attach tile's own
     // arrangement: the icon centred on a filled disc. The disc is the dark
@@ -202,8 +256,19 @@ export component MapPage inherits Rectangle {
     /// anything else is a dropped pin (attach.slint:554-561).
     property <string> category: root.live || root.ended ? "live"
         : root.self-marker ? "current" : "pin";
-    property <string> cat-icon: root.category == "live" ? Icons.liveLocation
-        : root.category == "current" ? Icons.myLocation : Icons.pinDrop;
+    /// The glyph beside the status line, and it is the TIMELINE's.
+    ///
+    /// This used to be the category's own — share_location, my_location,
+    /// pin_drop — which meant a point wore one glyph in the conversation and a
+    /// different one the moment you opened it, and the crosshair in particular
+    /// reads as nothing like the pin the bubble shows. The location bubble
+    /// draws exactly one glyph for all three categories, the filled `place`
+    /// pin (bubble.slint:1117-1123 for the no-map card and :1179-1185 for the
+    /// marker), and says WHICH category it is the way this sheet already does:
+    /// in words, and in the rings round the marker. So this is that same pin,
+    /// at that same weight, and `category` is left to name the page's tone
+    /// rather than to pick a picture.
+    property <string> cat-icon: Icons.location;
     // The engine's composite, centred on the point; empty until location.map
     // lands. It is the still fallback: with a tile server the page draws the
     // grid below instead, which drags and zooms.
@@ -244,7 +309,15 @@ export component MapPage inherits Rectangle {
     property <bool> can-open: root.openable
         && ((!root.self-marker && (root.lat != 0 || root.lon != 0)) || (root.live && !root.own));
 
-    background: transparent;
+    // The phone's page ground is the HEADER's, so the map's rounded top
+    // corners reveal the header colour behind them and the bar reads as one
+    // band with two bites taken out of it — chat.slint's own construction
+    // (:553-555, `background: root.phone ? root.top-ground : …`), which is
+    // where `header-c` comes from in the first place. There is no mask and no
+    // corner backdrop: the ground IS the header, and the sheet on top of it
+    // carries the radii. The desktop keeps its transparent page, as it has:
+    // its holder paints `page-ground` and there is no themed band to reveal.
+    background: root.phone ? root.header-c : Colors.transparent;
 
     // MapPage.qml:152-154 — note() holds a toast for 2200ms.
     toast-clear := Timer {
@@ -375,8 +448,12 @@ export component MapPage inherits Rectangle {
             // from the page's bottom edge on an OutCubic (chat.slint:719).
             y: root.header-h + (parent.height - root.header-h) * (1 - root.map-e);
             background: root.fg.with-alpha(0.08);
-            border-top-left-radius: 24px;
-            border-top-right-radius: 24px;
+            // The conversation sheet's own radii (chat.slint:851-852): 28 on
+            // the phone, 24 on the desktop. The header ground behind shows
+            // through them, so the two pages' headers meet their bodies in
+            // exactly the same shape.
+            border-top-left-radius: root.phone ? 28px : 24px;
+            border-top-right-radius: root.phone ? 28px : 24px;
             clip: true;
             // The bridge places the grid for this box, so it has to know it.
             changed width => { root.viewport(self.width, self.height); }
@@ -500,7 +577,25 @@ export component MapPage inherits Rectangle {
             if root.tiled : SelfPin {
                 x: root.pin-x - 24px; y: root.pin-y - 48px;
                 pin-color: root.accent;
-                avatar: root.self-marker ? root.sender-avatar : root.no-face;
+                // The bubble's own rule for who wears a face: a live share (running
+
+                // or ended) or somebody's own position is a PERSON; anything else is a
+
+                // dropped point and gets the bare pin (bubble.slint:1086 `self-loc`).
+
+                // This page used to ask only `self-marker`, so a live share whose
+
+                // event did not carry `self` showed a plain pin here and a face in
+
+                // the timeline, for the same point.
+
+                face: root.category != "pin";
+
+                avatar: root.category != "pin" ? root.sender-avatar : root.no-face;
+
+                initials: root.sender-initials;
+
+                tint: root.sender-tint;
                 ripple: root.live;
             }
 
@@ -520,7 +615,25 @@ export component MapPage inherits Rectangle {
                     alignment: center;
                     SelfPin {
                         pin-color: root.accent;
-                        avatar: root.self-marker ? root.sender-avatar : root.no-face;
+                        // The bubble's own rule for who wears a face: a live share (running
+
+                        // or ended) or somebody's own position is a PERSON; anything else is a
+
+                        // dropped point and gets the bare pin (bubble.slint:1086 `self-loc`).
+
+                        // This page used to ask only `self-marker`, so a live share whose
+
+                        // event did not carry `self` showed a plain pin here and a face in
+
+                        // the timeline, for the same point.
+
+                        face: root.category != "pin";
+
+                        avatar: root.category != "pin" ? root.sender-avatar : root.no-face;
+
+                        initials: root.sender-initials;
+
+                        tint: root.sender-tint;
                         ripple: root.live;
                     }
                 }

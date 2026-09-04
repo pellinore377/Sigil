@@ -3,6 +3,7 @@
 //! from `.well-known/matrix/client`. With neither, nothing is requested from anyone.
 
 mod composite;
+mod labels;
 mod mvt;
 mod render;
 mod style;

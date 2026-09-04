@@ -143,9 +143,21 @@ export component Bubble inherits Rectangle {
     in property <duration> fx-clock: 0ms;
     property <bool> animating: root.on-screen && (item.fx-chars.length > 0 || item.location-live);
     property <duration> clock: root.animating ? root.fx-clock : 0ms;
-    /// Epoch seconds at app start (window's boot-epoch-s) for the live countdown.
+    /// Epoch seconds at app start (window's boot-epoch-s).
     in property <int> boot-epoch-s: 0;
-    property <int> live-remaining: max(0, item.location-expires-s - root.boot-epoch-s - floor(root.clock / 1s));
+    /// Epoch seconds NOW, ticked once a second by the bridge (actions.rs
+    /// `clock_tick`) — the same clock the location page's chip counts down by.
+    ///
+    /// This used to be reconstructed as `boot-epoch-s + clock`, and `clock` is
+    /// the shared effects clock: a 50ms accumulator that only advances while a
+    /// row with effects is on screen (chat.slint:402-409), and which this very
+    /// component zeroes when the row scrolls away. It is not elapsed time. So
+    /// "now" fell behind the wall clock by however long that timer had been
+    /// stopped, and every live countdown read that much too high — the same
+    /// seven or eight minutes over for a fifteen-minute share as for an
+    /// eight-hour one, which is exactly what a constant offset looks like.
+    in property <int> now-epoch-s: 0;
+    property <int> live-remaining: max(0, item.location-expires-s - root.now-epoch-s);
     // BubbleDelegate.qml:1445-1449 — the link card's caption is the body
     // with the URL taken out; verbatim until the bridge has stripped it.
     property <string> link-caption: item.caption-stripped ? item.caption-body : item.body;
@@ -1253,7 +1265,7 @@ export component Bubble inherits Rectangle {
                                 Text {
                                     // :156-172 — "Hh MMm" above an hour, else M:SS.
                                     text: !item.location-live ? "Live location ended"
-                                        : item.location-expires-s > 0 && root.boot-epoch-s > 0
+                                        : item.location-expires-s > 0 && root.now-epoch-s > 0
                                         ? (root.live-remaining >= 3600
                                             ? floor(root.live-remaining / 3600) + "h "
                                               + (floor(mod(root.live-remaining, 3600) / 60) < 10 ? "0" : "")

@@ -224,6 +224,9 @@ impl AndroidWindowAdapter {
             PollEvent::Main(MainEvent::InitWindow { .. }) => {
                 if let Some(w) = self.app.native_window() {
                     let size = PhysicalSize { width: w.width() as u32, height: w.height() as u32 };
+                    // SIGIL PATCH: ask for the display's peak rate; unvoted,
+                    // the compositor rendered us at 60 on a 120Hz panel.
+                    crate::vsync::vote_frame_rate(w.ptr().as_ptr() as *mut _, 120.0);
 
                     let scale_factor =
                         self.app.config().density().map(|dpi| dpi as f32 / 160.0).unwrap_or(1.0);

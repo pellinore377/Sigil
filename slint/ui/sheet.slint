@@ -1,33 +1,26 @@
-// Message action sheet — MessageSheet.qml. The whole screen frosts behind a
-// blurred snapshot under 55 % black, like Google Messages; the pressed
-// bubble lifts to a computed resting place, the quick-reaction pill above it
-// and the action menu below, with a delete-confirm bottom sheet and the
-// emoji drawer sharing the same host.
+// Message action sheet — the long-press menu, as Google Messages does it.
 //
-// The lifted message is the SAME component drawn again (the host hands one
-// in as this sheet's child, in copy-only mode), not a picture of the screen:
-// a crop carries whatever the window happened to have over the bubble — the
-// header above it, the composer below it — and can only ever show as much of
-// the message as the timeline was not clipping. Drawn from the row, the copy
-// is whole wherever the message was standing.
+// Nothing is copied and nothing is snapshotted. The pressed bubble is the
+// real row in the real list: the host scrolls the conversation so the
+// bubble comes to the resting place this sheet computes (pill above, menu
+// below, all of it on screen and clear of the gesture bar), and this sheet
+// dims everything else with a scrim that has a hole cut exactly at the
+// bubble's rectangle. The host hands in `shift` — how far the list has
+// scrolled since the press — so the hole, the pill and the menu ride with
+// the bubble as it glides. Earlier versions blurred a snapshot of the window
+// and flew a second copy of the bubble over it; the snapshot cost a frame,
+// the copy could never be clipped like the row it stood in for, and both
+// were the wrong shape for the problem.
 //
-// One picture remains (frost.rs): the page for the frost, taken while the
-// press was still lasting (the prewarm) with the bubble's rect painted over
-// before the blur, so it has a hole where the bubble stood and never shows
-// it twice, and the lift starts with every frame its own. Without it (a
-// renderer that cannot snapshot) the scrim is a deeper dim.
-//
-// The sheet is the page's size but its frost, tap-away and bottom sheets
+// The sheet is the page's size but its scrim, tap-away and bottom sheets
 // bleed past it by `bleed-top` / `bleed-bottom` — the phone's status-bar
-// and gesture-bar zones the window paints around the page — so the blur
+// and gesture-bar zones the window paints around the page — so the dim
 // covers the entire screen.
 //
-// Motion, as MessageSheet.qml plays it: the copy is placed on the bubble and
-// lifts to its resting place (220ms OutBack), the pill and menu scale in
-// over 160ms while fading in linearly over 130ms, the frost fades in over
-// 200ms. Closing is two phases (:48-56, :135-143): the copy flies home over
-// 200ms with a harder overshoot while the pill, menu and frost fade, and
-// only then does the sheet clear — the same frame the original comes back.
+// Motion: the list glides 220ms on an overshoot curve (the host's), the pill
+// and menu scale in over 160ms while fading in linearly over 130ms, the
+// scrim fades in over 200ms. Closing: the list glides home over 200ms while
+// the pill, menu and scrim fade, and only then does the sheet clear.
 
 import { Theme } from "style.slint";
 import { Icons } from "icons.slint";
@@ -80,22 +73,24 @@ export component MessageSheet inherits Rectangle {
     in property <[EmojiItem]> quick-emoji;
     property <[EmojiItem]> quick: root.quick-emoji.length == 6 ? root.quick-emoji : [
         { glyph: "👍" }, { glyph: "❤️" }, { glyph: "😂" }, { glyph: "😮" }, { glyph: "😢" }, { glyph: "😡" }];
-    /// The whole WINDOW as it was with the bubble hidden, blurred; empty when
-    /// the renderer could not snapshot.
-    in property <image> backdrop;
-    property <bool> frosted: root.backdrop.width > 0;
-
     // Where the bubble was pressed, in the SHEET's coordinates: open-for
     // converts from the window's.
     in-out property <length> hole-x;
     in-out property <length> hole-y;
     in-out property <length> hole-w;
     in-out property <length> hole-h;
-    // The bubble's own corners: the copy is cut to them.
-    in-out property <length> copy-r-tl;
-    in-out property <length> copy-r-tr;
-    in-out property <length> copy-r-bl;
-    in-out property <length> copy-r-br;
+    /// The bubble's own corners, each its own radius: the scrim's hole
+    /// follows them.
+    in-out property <length> hole-r-tl;
+    in-out property <length> hole-r-tr;
+    in-out property <length> hole-r-bl;
+    in-out property <length> hole-r-br;
+    /// How far the host's list has scrolled since the press (its viewport-y
+    /// now, less its viewport-y then): the bubble is at `hole-y + shift`.
+    in property <length> shift: 0px;
+    /// Where the bubble IS, this frame — the hole, the pill and the menu
+    /// are laid out around it, so they ride the glide.
+    property <length> bubble-y: root.hole-y + root.shift;
 
     callback act(string /*action*/, string /*event-id*/);
     callback react(string /*event-id*/, string /*key*/);
@@ -113,8 +108,8 @@ export component MessageSheet inherits Rectangle {
         root.hole-x = r.x - root.absolute-position.x;
         root.hole-y = r.y - root.absolute-position.y;
         root.hole-w = r.w; root.hole-h = r.h;
-        root.copy-r-tl = r.r-tl; root.copy-r-tr = r.r-tr;
-        root.copy-r-bl = r.r-bl; root.copy-r-br = r.r-br;
+        root.hole-r-tl = r.r-tl; root.hole-r-tr = r.r-tr;
+        root.hole-r-bl = r.r-bl; root.hole-r-br = r.r-br;
         root.drawer-open = false;
         root.confirm-open = false;
         root.begin-open();
@@ -132,7 +127,7 @@ export component MessageSheet inherits Rectangle {
     property <length> content-h: root.pill-h + root.gap + root.hole-h + root.gap + root.menu-h;
     // The menu stands clear of the gesture bar (or the keyboard, which the
     // hold now dismisses): the clamp keeps the whole column above the inset.
-    property <length> dest-y: max(12px + root.pill-h + root.gap,
+    out property <length> dest-y: max(12px + root.pill-h + root.gap,
         min(root.hole-y, root.height - root.bottom-inset - root.content-h - 12px + root.pill-h + root.gap));
     property <length> card-x: max(12px, min(
         item.is-own ? root.hole-x + root.hole-w - 220px : root.hole-x,
@@ -145,69 +140,38 @@ export component MessageSheet inherits Rectangle {
     // 7 cells at 36 + 6×6 spacing + 20 = 292px, static so the clamp needs no id.
     property <length> pill-row-probe: 7 * 36px + 6 * 6px + 20px;
 
-    // ---- Phases: shown (item !== null) and closing (MessageSheet.qml:44-56).
-    // `hide-source` is the QML's hideSource window, out for the page to hide
-    // the original bubble against: it rises just before the frost's picture
-    // and falls with `shown` — the copy appears on the bubble in the frame
-    // the sheet shows and the bubble returns in the frame the sheet clears.
-    out property <bool> hide-source: false;
+    // ---- Phases: shown, and closing.
     out property <bool> shown: false;
-    property <bool> closing: false;
-    // `up` is the QML's `item !== null && !closing`: pill, menu and scrim in.
+    /// The fly-home is under way: the host glides the list back on this.
+    out property <bool> closing: false;
+    // Pill, menu and scrim in: shown and not closing.
     property <bool> up: root.shown && !root.closing;
-    // The copy: at the hole, then at dest-y once `lifted` (MessageSheet.qml:44,
-    // 119-133). `animate-copy` is the QML's animateCopy gate — off while the
-    // copy is placed on the bubble so it never slides in from the last spot.
-    property <bool> lifted: false;
-    property <bool> animate-copy: false;
-    property <length> copy-y: root.lifted ? root.dest-y : root.hole-y;
-    // Lift: 220ms OutBack overshoot 1.1 (:196). Fly home: 200ms OutBack
-    // overshoot 1.25 (:53) — Qt's 1.25 peaks near 6%, so the close curve is
-    // eased below the stock 1.56 bezier (≈10%), which snapped visibly.
-    animate copy-y {
-        duration: !root.animate-copy ? 0ms : root.closing ? 200ms : 220ms;
-        easing: root.closing ? cubic-bezier(0.34, 1.42, 0.64, 1) : cubic-bezier(0.34, 1.3, 0.64, 1);
-    }
-    // Reads that force a first evaluation: a Slint animation starts from the
-    // value last evaluated, so the copy is read while parked on the bubble
-    // and the fades are read at rest before the flip that animates them.
-    property <length> copy-rest;
+    // A read that forces a first evaluation: a Slint animation starts from
+    // the value last evaluated, so the fades are read at rest before the
+    // flip that animates them.
     property <float> motion-rest;
-    // Pill and menu: scale 0.9→1 over 160ms OutCubic (the QML's :229-233,
-    // :276-280 timing, a gentler start), opacity LINEAR over 130ms (:228, :275).
+    // Pill and menu: scale 0.9→1 over 160ms OutCubic, opacity LINEAR over 130ms.
     property <float> pop: root.up ? 1.0 : 0.0;
     animate pop { duration: 160ms; easing: cubic-bezier(0.33, 1, 0.68, 1); }
     property <float> fade: root.up ? 1.0 : 0.0;
     animate fade { duration: 130ms; }
-    // Frost: 200ms OutCubic both ways (:158-159).
-    property <float> frost-a: root.up ? 1.0 : 0.0;
-    animate frost-a { duration: 200ms; easing: cubic-bezier(0.33, 1, 0.68, 1); }
+    // The scrim: 200ms OutCubic both ways. Out, so the host can dim what
+    // the scrim cannot reach (the pressed bubble's own rounded corners).
+    out property <float> dim-a: root.up ? 1.0 : 0.0;
+    animate dim-a { duration: 200ms; easing: cubic-bezier(0.33, 1, 0.68, 1); }
 
     function begin-open() {
-        // MessageSheet.qml:110: a re-open interrupts the fly-home.
+        // a re-open interrupts the fly-home
         close-timer.running = false;
         root.closing = false;
-        // :117-120 — parked on the bubble, no animation …
-        root.animate-copy = false;
-        root.lifted = false;
-        root.copy-rest = root.copy-y;
-        root.motion-rest = root.pop + root.fade + root.frost-a;
-        // The original goes, and :121-133 — the sheet shows in the same
-        // frame, its copy on the bubble, lifting to where it will rest. Both
-        // pictures are already in hand (the frost since the press began),
-        // so nothing stalls the lift.
-        root.hide-source = true;
-        root.animate-copy = true;
-        root.lifted = true;
+        root.motion-rest = root.pop + root.fade + root.dim-a;
         root.shown = true;
     }
     function begin-close() {
-        // MessageSheet.qml:135-143 close(): fly home as the frost lifts, then clear.
+        // fly home as the scrim lifts, then clear
         root.closing = true;
         root.drawer-open = false;
         root.confirm-open = false;
-        root.animate-copy = true;
-        root.lifted = false;
         close-timer.running = true;
     }
     // `open` is the public switch; the phases hang off it.
@@ -222,7 +186,6 @@ export component MessageSheet inherits Rectangle {
         triggered => {
             self.running = false;
             root.shown = false;
-            root.hide-source = false;
             root.closing = false;
         }
     }
@@ -234,28 +197,34 @@ export component MessageSheet inherits Rectangle {
     property <length> screen-y: -root.bleed-top;
     property <length> screen-h: root.height + root.bleed-top + root.bleed-bottom;
 
-    // The frost: the blurred picture of the window (bubble already hidden)
-    // under 55 % black (MessageSheet.qml:155-169), or a deeper dim when
-    // there is no picture; masked to the card's radius (:162-177) and faded
-    // as one (:158-159). It spans the screen, not just the page.
-    frost := Rectangle {
-        x: 0; y: root.screen-y;
-        width: 100%; height: root.screen-h;
-        border-radius: root.card-radius;
-        clip: true;
-        opacity: root.frost-a;
-        if root.frosted : Image {
-            source: root.backdrop;
-            width: 100%; height: 100%;
-            image-fit: fill;
-            image-rendering: smooth;
-        }
-        Rectangle {
-            width: 100%; height: 100%;
-            background: #000000.with-alpha(root.frosted ? 0.55 : 0.62);
-        }
+    // The scrim: 55 % black over the whole screen, with a hole cut in the
+    // bubble's exact outline so the real bubble shows through undimmed. A
+    // rectangle cannot have a hole, but a BORDER can: one rectangle, the
+    // bubble's rect grown by `reach` on every side, painted as nothing but
+    // a border `reach` thick in the scrim colour. Its outer edge lies past
+    // the screen; its inner edge is the hole. The renderer draws a border's
+    // inner corner at the outer radius less the border width, so each
+    // corner is given the bubble's own radius plus `reach` — the inner
+    // edge then follows the bubble's corners exactly, whatever they are
+    // (16 on a group's outer corners, 5 on its inner ones, 14 on a link
+    // card), and it rides `bubble-y` through the glide.
+    property <color> scrim: #000000.with-alpha(0.55 * root.dim-a);
+    property <length> reach: max(root.width, root.screen-h) + 64px;
+    Rectangle {
+        x: root.hole-x - root.reach;
+        y: root.bubble-y - root.reach;
+        width: root.hole-w + 2 * root.reach;
+        height: root.hole-h + 2 * root.reach;
+        background: transparent;
+        border-width: root.reach;
+        border-color: root.scrim;
+        border-top-left-radius: root.hole-r-tl + root.reach;
+        border-top-right-radius: root.hole-r-tr + root.reach;
+        border-bottom-left-radius: root.hole-r-bl + root.reach;
+        border-bottom-right-radius: root.hole-r-br + root.reach;
     }
-    // MessageSheet.qml:178-182: the tap-away sits under everything.
+    // The tap-away sits under everything else: a tap anywhere, the bubble
+    // included, puts the sheet away.
     TouchArea {
         y: root.screen-y; height: root.screen-h;
         clicked => {
@@ -265,49 +234,12 @@ export component MessageSheet inherits Rectangle {
         }
     }
 
-    // Spotlight copy of the message (:184-189). It flies wherever the lift
-    // takes it — but only within the conversation band: the host names the
-    // header's bottom edge and the composer's top edge, and the copy is cut
-    // there, so a message lifting from under the header or setting down
-    // behind the composer appears and disappears at those edges, as the
-    // real row does, instead of drawing over the header or the footer.
-    copy-clip := Rectangle {
-        x: 0;
-        y: root.band-top;
-        width: 100%;
-        height: root.band-bottom - root.band-top;
-        clip: true;
-    copy-card := Rectangle {
-        x: root.hole-x;
-        y: root.copy-y - root.band-top;
-        width: root.hole-w;
-        height: root.hole-h;
-        // MessageSheet.qml:197-205: the corners the copy carries in flight —
-        // to the bubble's own corners (each its own radius: a uniform 16px
-        // gouged the 5px group corners in flight) — frost.rs cuts the
-        // picture and this clip agrees with it.
-        border-top-left-radius: root.copy-r-tl;
-        border-top-right-radius: root.copy-r-tr;
-        border-bottom-left-radius: root.copy-r-bl;
-        border-bottom-right-radius: root.copy-r-br;
-        // The message itself, drawn again by the host (chat.slint hands in a
-        // Bubble in copy-only mode). Not a picture of the screen: a crop
-        // carries whatever the window had over the bubble — the header above
-        // it, the composer below it — and cannot show what the timeline was
-        // clipping. Drawn from the same row, the copy is always whole.
-        @children
-        // Tapping the lifted message dismisses, as tapping away does. Last,
-        // so it wins over the copy's own touch areas.
-        TouchArea { clicked => { root.open = false; } }
-    }
-    }
-
     // Quick reactions pill. The QML reacts with "❤️" (U+2764 U+FE0F) — the key
     // must match the desktop's; femtovg draws the VS16 pair as tofu, so the
     // pill DISPLAYS the bare heart while SENDING the emoji-presentation key.
     if !root.drawer-open : pill := Rectangle {
         x: root.pill-x;
-        y: root.dest-y - root.gap - self.height;
+        y: root.bubble-y - root.gap - self.height;
         // MessageSheet.qml:227-233: linear fade, X scale from 0.9 about the centre.
         opacity: root.fade;
         transform-origin: { x: self.width / 2, y: self.height / 2 };
@@ -357,7 +289,7 @@ export component MessageSheet inherits Rectangle {
     // Stays visible behind the delete-confirm (only the emoji drawer hides it).
     if !root.drawer-open : menu-box := Rectangle {
         x: root.card-x;
-        y: min(root.dest-y + root.hole-h + root.gap, root.height - self.height - 12px);
+        y: min(root.bubble-y + root.hole-h + root.gap, root.height - self.height - 12px);
         // MessageSheet.qml:274-280: linear fade, Y scale from 0.9 about the top edge.
         opacity: root.fade;
         transform-origin: { x: self.width / 2, y: 0px };

@@ -917,29 +917,70 @@ pub fn camera_live() -> bool {
     CAMERA_LIVE.load(std::sync::atomic::Ordering::Relaxed)
 }
 
+/// The icon font the overlay draws its glyphs with, as a file Java can open.
+///
+/// The Slint side embeds this very file in the binary (`ui/style.slint`
+/// imports it, and slint-build's EmbedFiles puts the bytes in the library), so
+/// the app draws Material Symbols everywhere — but a Typeface cannot be made
+/// out of a byte range inside a .so. It is written to the cache once per run
+/// and the path handed down, so the viewfinder's close, flash and flip are the
+/// SAME glyphs, from the SAME file, as every other icon in the app.
+#[cfg(target_os = "android")]
+fn symbols_font() -> Option<String> {
+    use std::io::Write as _;
+    static FONT: &[u8] = include_bytes!("../../shared/fonts/MaterialSymbolsRounded.ttf");
+    static PATH: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
+    PATH.get_or_init(|| {
+        let path = sigil_engine::paths::cache_dir().join("MaterialSymbolsRounded.ttf");
+        // Written once, and only when it is missing or the wrong length: the
+        // viewfinder can be opened many times in a session.
+        let ok = match std::fs::metadata(&path) {
+            Ok(m) if m.len() == FONT.len() as u64 => true,
+            _ => {
+                let _ = std::fs::create_dir_all(path.parent()?);
+                match std::fs::File::create(&path).and_then(|mut f| f.write_all(FONT)) {
+                    Ok(()) => true,
+                    Err(e) => {
+                        tracing::warn!("camera: the icon font would not be written: {e}");
+                        false
+                    }
+                }
+            }
+        };
+        ok.then(|| path.to_string_lossy().to_string())
+    })
+    .clone()
+}
+
 /// Put the viewfinder up, full screen, over everything. `front` picks the
-/// selfie camera, `video` the mode it opens in, and `dir` is where a tapped
-/// thumbnail in the gallery sheet is copied to — the overlay has no way of
-/// knowing the engine's cache directory, so it is handed down. Nothing
-/// happens off Android.
-pub fn camera_open(front: bool, video: bool, dir: &str) -> bool {
+/// selfie camera, `video` the mode it opens in, `dir` is where a tapped
+/// thumbnail in the gallery sheet is copied to, and `to` is the room's display
+/// name for the expanded sheet's title — the overlay knows none of those
+/// things, so they are handed down. Nothing happens off Android.
+pub fn camera_open(front: bool, video: bool, dir: &str, to: &str) -> bool {
     #[cfg(target_os = "android")]
     {
+        let font = symbols_font().unwrap_or_default();
         match camera_call(|env, class, activity| {
             use jni::objects::JValue;
             let facing = env.new_string(if front { "front" } else { "back" })?;
             let mode = env.new_string(if video { "video" } else { "photo" })?;
             let jdir = env.new_string(dir)?;
+            let jfont = env.new_string(&font)?;
+            let jto = env.new_string(to)?;
             jni_call_static(
                 env,
                 class,
                 "open",
-                "(Landroid/app/Activity;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;)V",
+                "(Landroid/app/Activity;Ljava/lang/String;Ljava/lang/String;\
+                  Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;)V",
                 &[
                     JValue::Object(activity),
                     JValue::Object(&facing),
                     JValue::Object(&mode),
                     JValue::Object(&jdir),
+                    JValue::Object(&jfont),
+                    JValue::Object(&jto),
                 ],
             )?;
             Ok(())
@@ -956,7 +997,7 @@ pub fn camera_open(front: bool, video: bool, dir: &str) -> bool {
     }
     #[allow(unreachable_code)]
     {
-        let _ = (front, video, dir);
+        let _ = (front, video, dir, to);
         false
     }
 }

@@ -1,4 +1,5 @@
-// The camera, seen by the phone: the reference shot, built as views.
+// The camera, seen by the phone: Google Messages' viewfinder, measured off it
+// and rebuilt as views.
 //
 // WHY THIS IS A WINDOW OF ITS OWN. The app is a NativeActivity: it calls
 // Window.takeSurface() and paints the activity window's surface itself,
@@ -8,54 +9,58 @@
 //   * Ordinary Android views added to the activity (addContentView) are laid
 //     out but never drawn — ViewRootImpl does not own that surface any more.
 //     So a TextView over the activity would be invisible.
-//   * A SurfaceView gets a surface of its own, so it IS drawn; that is how the
-//     old letterboxed preview worked. But its z-order is a SUBLAYER of the
-//     activity window: setZOrderMediaOverlay(true) is sublayer −1, BELOW the
-//     window the app paints, so the camera would vanish behind the app; only
-//     setZOrderOnTop(true) (sublayer +1) is above it, and then nothing the app
-//     draws can ever be on top of the picture. That is exactly the trap the
-//     first version fell into, and why the controls ended up under the box.
+//   * A SurfaceView gets a surface of its own, so it IS drawn. But its
+//     z-order is a SUBLAYER of the activity window: setZOrderMediaOverlay is
+//     sublayer −1, BELOW the window the app paints, so the camera would vanish
+//     behind the app; only setZOrderOnTop (+1) is above it, and then nothing
+//     the app draws can ever be on top of the picture.
 //
-// The way out is a second WINDOW. This overlay is added straight to the
-// WindowManager as TYPE_APPLICATION_SUB_PANEL — sublayer +2, above the
-// activity window AND above any of its SurfaceViews — with the activity's own
-// token, so it lives and dies with the activity. That window is an ordinary
-// one: its ViewRootImpl draws it, so ordinary views work again. Inside it the
-// preview is a plain SurfaceView at the DEFAULT z (sublayer −2 of THIS
-// window), which punches a transparent hole through the window's own surface;
-// every sibling added after it paints over that hole.
+// The way out is a second WINDOW, added to the WindowManager as
+// TYPE_APPLICATION_SUB_PANEL — sublayer +2, above the activity window AND
+// above any of its SurfaceViews — with the activity's own token. That window
+// is an ordinary one: its ViewRootImpl draws it, so ordinary views work again,
+// and the preview inside it is a plain SurfaceView at the DEFAULT z, which
+// punches a transparent hole through the window's surface for every sibling
+// added after it to paint over.
 //
-// THE COMPOSITION IS THE REFERENCE'S, measured off it (see the `dp` block
-// below). The one thing worth saying here, because everything else hangs off
-// it: the picture is not "most of the screen" — it is the 4:3 preview AT FULL
-// WIDTH. 1344 × 4/3 = 1792, and 1792 is exactly where the reference's picture
-// ends. So the picture box is W × W·4/3 on any phone, the controls hang off
-// its FOOT (mode 32, shutter 112, zoom 195 above it), and what is left below
-// is the gallery sheet.
+// THE COMPOSITION IS MEASURED, NOT GUESSED. Every number in the `dp` block
+// below was taken off Google Messages on this same phone with ImageMagick, at
+// 1344×2992 and density 408 (1dp = 2.55px); the px figure is in the comment
+// beside each. Two of them decide everything else:
+//
+//   * The picture is the 4:3 preview AT FULL WIDTH. 1344 × 4/3 = 1792, and
+//     1792 is exactly where the reference's picture ends. Every control hangs
+//     off that foot (mode 32, shutter 112, zoom 195 above it).
+//   * The close and the flash are centred 281px down — an ABSOLUTE 110dp from
+//     the top of the screen, NOT an inset plus a margin. Hanging them off the
+//     status-bar inset put them 66px too low.
+//
+// THE ICONS ARE THE APP'S OWN GLYPHS. Hand-drawn paths are never identical;
+// these are Material Symbols codepoints out of ui/icons.slint (close E5CD,
+// flash_off E3E6, flash_on E3E7, flip_camera_android EA37), drawn from the
+// very font the Slint side bundles. Java cannot read a font out of the Rust
+// binary, so platform.rs writes it to the app's cache once and hands the path
+// down. Each glyph is turned into a Path and scaled so its INK measures
+// exactly what the reference's does, which no choice of text size can promise.
 //
 //     overlay window (SUB_PANEL, translucent, no limits, over the cutout)
-//     └── FrameLayout ................ black ground; eats every touch
+//     └── FrameLayout ................ the ground; eats every touch
 //         ├── pictureBox ............. W × W·4/3, clips its child
-//         │   └── SurfaceView ........ the preview, fitted (a 4:3 preview in
-//         │                            a 3:4 box fills it exactly)
+//         │   └── SurfaceView ........ the preview, fitted (4:3 in 3:4 = fill)
 //         ├── FrameView .............. the picture's 28dp rounded bottom edge
-//         ├── sheet .................. the gallery, 16dp under the foot
-//         │   ├── the drag handle .... 32 × 4dp pill
-//         │   └── ScrollView ......... 3 columns of square thumbnails
+//         ├── header ................. chevron + "To …", shown when expanded
+//         ├── SheetView .............. the gallery; drags between rest and full
+//         │   ├── head ............... the handle ⇄ search field + Photos |
+//         │   │                        Collections, cross-faded on the drag
+//         │   └── ScrollView ......... 3 columns, month headers, buckets
 //         ├── TextView ............... "Starting the camera…" / the failure
 //         ├── recording pill ......... red dot + elapsed, top centre
-//         ├── IconView(CLOSE) ........ top left
-//         ├── IconView(FLASH) ........ top right
-//         ├── LinearLayout ........... the zoom pill: 0.5 / 1.0 / 2.0
-//         ├── ShutterView ............ the big white ring
+//         ├── IconView(CLOSE) / IconView(FLASH) ....... 110dp down
+//         ├── zoom pill .............. 0.5 / 1.0 / 2.0, the lit disc SLIDING
+//         ├── ShutterView ............ the ring; its disc crossfades to red
 //         ├── IconView(FLIP) ......... the flip ring beside it
-//         └── LinearLayout ........... Photo | Video
-//
-// FLAG_LAYOUT_NO_LIMITS and LAYOUT_IN_DISPLAY_CUTOUT_MODE_ALWAYS put the
-// window under the status bar and the gesture bar, as the reference does. The
-// picture runs up under the status bar; the close and the flash are inset off
-// the real top inset so neither sits under it, and the gallery's last row
-// scrolls clear of the gesture bar on the bottom one.
+//         └── mode row ............... Photo | Video, the row SLIDING so the
+//                                      chosen label comes to centre
 //
 // WHAT THIS FILE DECIDES AND WHAT IT DOES NOT. Every control here is wired
 // straight to the session — zoom, torch, flip, mode — because they are the
@@ -72,23 +77,12 @@
 //                                           TEMPLATE_STILL_CAPTURE for a shot
 //   record — [preview, MediaRecorder]       TEMPLATE_RECORD repeating
 //
-// They are two sessions rather than one three-output session because a
-// MediaRecorder surface only exists between prepare() and stop(): it has to
-// be built for each clip, with that clip's file and orientation on it, and a
-// session cannot have an output swapped under it.
-//
 // Everything here is static and called from the engine's threads: every touch
 // of a view hops to the main thread, every camera call hops to a HandlerThread
 // of ours, every MediaStore read hops to a second one, and every question the
-// bridge asks reads a volatile field. Loaded at runtime from the embedded dex
-// (build.rs, platform.rs) alongside SigilFilePicker and SigilVideo, so nothing
-// here is named in the manifest — the CAMERA and READ_MEDIA_* permissions
-// are, and platform.rs asks for them before calling open().
-//
-// EVERY MEASUREMENT BELOW WAS TAKEN OFF THE REFERENCE SHOT with ImageMagick,
-// at 1344×2992 and density 408 (1dp = 2.55px); the px figure is in the comment
-// beside each dp.
+// bridge asks reads a volatile field.
 
+import android.animation.ValueAnimator;
 import android.app.Activity;
 import android.app.Application;
 import android.content.ContentResolver;
@@ -99,11 +93,13 @@ import android.graphics.Bitmap;
 import android.graphics.Canvas;
 import android.graphics.Color;
 import android.graphics.ImageFormat;
+import android.graphics.Matrix;
 import android.graphics.Paint;
 import android.graphics.Path;
 import android.graphics.PixelFormat;
 import android.graphics.Rect;
 import android.graphics.RectF;
+import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
 import android.hardware.camera2.CameraAccessException;
 import android.hardware.camera2.CameraCaptureSession;
@@ -123,17 +119,22 @@ import android.os.Handler;
 import android.os.HandlerThread;
 import android.os.Looper;
 import android.provider.MediaStore;
+import android.util.Log;
 import android.util.Range;
 import android.util.Size;
 import android.util.TypedValue;
 import android.view.Gravity;
+import android.view.MotionEvent;
 import android.view.Surface;
 import android.view.SurfaceHolder;
 import android.view.SurfaceView;
+import android.view.VelocityTracker;
 import android.view.View;
+import android.view.ViewConfiguration;
 import android.view.ViewGroup;
 import android.view.WindowInsets;
 import android.view.WindowManager;
+import android.view.animation.DecelerateInterpolator;
 import android.webkit.MimeTypeMap;
 import android.widget.FrameLayout;
 import android.widget.ImageView;
@@ -147,9 +148,12 @@ import java.io.InputStream;
 import java.io.OutputStream;
 import java.nio.ByteBuffer;
 import java.util.ArrayList;
+import java.util.Calendar;
 import java.util.Collections;
 import java.util.Comparator;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 
 public final class SigilCamera {
     /// What state() answers. The bridge shows the first three and treats
@@ -161,47 +165,50 @@ public final class SigilCamera {
     public static final String RECORDING = "recording";
     public static final String ERROR = "error";
 
+    private static final String TAG = "sigil";
+
     // ------------------------------------------------------- the reference
     //
-    // Measured off Screenshot_20260904-000346.png. Everything is stated in dp
-    // and turned into pixels by dp() below, so the same numbers hold on any
-    // density — except the picture's own height, which is a RATIO (see
-    // pictureH) because that is what the reference actually is.
+    // Google Messages on this phone: Screenshot_20260904-130122 (viewfinder)
+    // and -130128 (the gallery dragged full). 1344×2992, density 408.
 
     /// The picture is the 4:3 preview at full width, so the box is 3:4.
     /// 1344 × 4/3 = 1792, and the reference's picture ends at exactly 1792.
     private static final float PICTURE_W_OVER_H = 3f / 4f;
+
+    /// The close and the flash: 35×35px and 49×52px of ink, both centred
+    /// 73px in from their edge and 281px DOWN THE SCREEN. Absolute, not off
+    /// the status-bar inset — hanging them off the inset put them at 347.
+    private static final float ICON_BOX = 48f;
+    private static final float ICON_CX = 28f;        // 71px from the edge
+    private static final float ICON_CY = 110f;       // 281px from the top
+    private static final float CLOSE_INK = 13.7f;    // 35px
+    private static final float FLASH_INK = 20.4f;    // 52px, the taller side
+
     /// The shutter: outer ring Ø 194px, 8px stroke, a 17-18px gap, a 143px
-    /// white disc.
+    /// disc. Ours measured 194 / 8 / 18 / 142 — within a pixel, so unchanged.
     private static final float SHUTTER_D = 76f;      // 194px
     private static final float SHUTTER_STROKE = 3.1f;// 8px
     private static final float SHUTTER_INNER = 56f;  // 143px
-    /// The flip ring: Ø 133px, 6px stroke, its glyph half the ring across.
+    /// The flip ring: Ø 133px, 6px stroke, its glyph 66px across.
     private static final float FLIP_D = 52f;         // 133px
     private static final float FLIP_STROKE = 2.35f;  // 6px
-    private static final float FLIP_GLYPH = 26f;     // 66px
-    /// The zoom pill: 341×79px, chips 48dp centre to centre, the lit one a
-    /// 82px disc.
-    private static final float PILL_H = 32f;         // 79px
+    private static final float FLIP_INK = 25.9f;     // 66px
+    /// The zoom pill: 341×79px. The chip block is what is centred on screen,
+    /// not the pill — 13px of pad on the left and none on the right, which is
+    /// what puts the chips on 548.5 / 671.5 / 794.5 with the pill at 495..835.
+    private static final float PILL_H = 31f;         // 79px
     private static final float CHIP_D = 32f;         // 82px
     private static final float CHIP_GAP = 16f;       // centres 122.75px apart
-    /// 2·6 + 3·82 + 2·41 = 340, against the 341 measured, and it puts the
-    /// three chip centres on 549 / 672 / 795 (measured 549.5 / 671.5 / 795).
-    private static final float PILL_PAD = 2.5f;      // 6px
-    /// Photo | Video: the lit label in a 180×67px pill, the other 200px to its
-    /// right, and the LIT one centred on the screen — which is what the
+    private static final float PILL_PAD_L = 5.1f;    // 13px; the right is 0
+    /// Photo | Video: two 180×67px cells 18px apart, so their centres are
+    /// 198px apart, and the LIT one is centred on screen — which is what the
     /// reference shows, not a centred row.
-    private static final float MODE_H = 26f;         // 67px
-    private static final float MODE_PAD = 17f;       // (180−94)/2 px
-    private static final float MODE_GAP = 27f;       // 68px between pill and label
-    /// The close and the flash: a 35px glyph and a 49px one, both centred
-    /// 73px in from their edge and 281px down.
-    private static final float ICON_BOX = 48f;
-    private static final float ICON_EDGE = 4f;       // → centre 28dp in (73px)
-    private static final float ICON_DROP = 34f;      // below the status inset
-    private static final float CLOSE_GLYPH = 14f;    // 35px
-    private static final float FLASH_GLYPH = 20f;    // 49×52px with the slash
-    private static final float STROKE = 2.4f;        // 6px, every drawn line
+    private static final float MODE_CELL = 70.5f;    // 180px
+    private static final float MODE_GAP = 7f;        // 18px
+    private static final float MODE_H = 26.3f;       // 67px
+    /// Every drawn line that is not a glyph.
+    private static final float STROKE = 2.4f;        // 6px
     /// Heights above the PICTURE'S FOOT: mode centre 82px, shutter centre
     /// 285px, zoom centre 498px.
     private static final float ROW_MODE = 32f;
@@ -213,33 +220,83 @@ public final class SigilCamera {
     /// 72-73px radius.
     private static final float CORNER = 28f;
 
-    /// The gallery sheet. Foot 1792 → the window's own black to 1832 → the
-    /// sheet from 1833, its handle centred at 1888.5, its grid from 1951.
+    /// The gallery sheet AT REST. Foot 1792 → ground to 1832 → sheet from
+    /// 1833, handle centred at 1888.5, grid from 1951.
     private static final float SHEET_GAP = 16f;      // 41px
     private static final float HANDLE_W = 32f;       // 82px
     private static final float HANDLE_H = 4f;        // 10px
     private static final float HANDLE_TOP = 19.8f;   // pill top; centre 21.8
     private static final float SHEET_HEAD = 46f;     // 118px, sheet top → grid
     /// The grid: three square cells edge to edge with a 3px gutter between
-    /// them and none at the sides. Cells measured 446 × 446px.
+    /// them and none at the sides. Cells measured 446 × 446px in both states.
     private static final float GUTTER = 1.2f;        // 3px
     private static final int COLUMNS = 3;
-    /// Enough to fill three screens of scrolling; more is a slideshow.
-    private static final int GALLERY_MAX = 30;
+    /// Twenty rows: enough for the month bands to have something to divide,
+    /// and few enough that the bitmaps behind them stay small. A cell is
+    /// 446px, so a full-size thumbnail is 796 KB and sixty of them would be
+    /// 48 MB of heap — they are decoded at two thirds instead, which is 21 MB
+    /// and still sharper than the grid can show.
+    private static final int GALLERY_MAX = 60;
+    private static final float THUMB_SCALE = 2f / 3f;
 
-    /// Colours, sampled off the reference. The lit chip and the lit mode pill
-    /// are the SAME flat #9F9E97 over two very different scenes, so they are
-    /// opaque, not a white at alpha; the zoom pill darkens whatever is under
-    /// it, so it is a black at about 45%.
-    private static final int ON_BG = 0xFF9F9E97;
+    /// The gallery sheet DRAGGED FULL (-130128). The panel's top is 363; the
+    /// chevron and the title ride above it on the ground, on the same 281px
+    /// line as the close and the flash.
+    private static final float EX_TOP = 142.4f;      // 363px
+    private static final float TITLE_X = 55f;        // 141px
+    private static final float TITLE_SP = 18f;       // ink 34px tall
+    private static final float SEARCH_TOP = 51.8f;   // 495 − 363 = 132px
+    private static final float SEARCH_H = 56.5f;     // 144px (495..638)
+    private static final float SEARCH_SIDE = 19.6f;  // 50px
+    private static final float SEARCH_ICON = 13.7f;  // 35px of ink
+    private static final float SEARCH_ICON_X = 45f;  // 115px from the screen
+    private static final float SEARCH_TEXT_X = 72f;  // 184px from the screen
+    private static final float SEARCH_SP = 16f;
+    private static final float CHIPS_TOP = 127.8f;   // 689 − 363 = 326px
+    private static final float CHIP2_H = 40f;        // 102px (689..790)
+    private static final float CHIP2_SIDE = 11.8f;   // 30px
+    private static final float CHIP2_GAP = 7.8f;     // 20px (662..681)
+    private static final float CHIP2_SP = 16f;
+    private static final float CHIP2_ICON = 11f;     // 28px of ink
+    private static final float GRID_TOP_EX = 198f;   // 868 − 363 = 505px
+    private static final float MONTH_H = 52f;        // 132px band
+    private static final float MONTH_X = 18f;        // 46px
+    private static final float MONTH_SP = 15f;
+    /// The head is 46dp at rest and 198dp full; the sheet's top travels from
+    /// foot+16dp to 142.4dp.
+    private static final long SNAP_MS = 260L;
+    private static final long MODE_MS = 250L;
+    private static final long FLASH_MS = 200L;
+    private static final long ZOOM_MS = 300L;
+
+    /// Colours, sampled off the reference.
+    private static final int ON_BG = 0xFF9F9E97;     // the lit chip / mode pill
     private static final int ON_FG = 0xFF20211C;
     private static final int OFF_FG = 0xFFE5E5E5;
-    private static final int SCRIM = 0x73000000;
+    private static final int SCRIM = 0x73000000;     // the zoom pill
     private static final int REC = 0xFFE0403A;
-    /// The window's own ground, the sheet's, and the handle's.
-    private static final int GROUND = 0xFF0E0E0D;
+    private static final int GROUND = 0xFF0E0E0D;    // under the picture
     private static final int SHEET_BG = 0xFF20201D;
     private static final int HANDLE_C = 0xFF585753;
+    private static final int FIELD_BG = 0xFF0E0E0D;  // the search field
+    private static final int FIELD_FG = 0xFFACABA5;
+    private static final int CHIP2_ON = 0xFFC6C8B8;
+    private static final int CHIP2_ON_FG = 0xFF262622;
+    private static final int CHIP2_OFF = 0xFF3E3D39;
+    private static final int CHIP2_OFF_FG = 0xFFE3E2DC;
+    private static final int MONTH_FG = 0xFFD2D1CB;
+    private static final int TITLE_FG = 0xFFE5E1E6;
+    private static final int CELL_BG = 0xFF2B2B28;
+
+    /// Material Symbols codepoints, the same ones ui/icons.slint names.
+    private static final String G_CLOSE     = "\uE5CD"; // close
+    private static final String G_FLASH_OFF = "\uE3E6"; // flash_off
+    private static final String G_FLASH_ON  = "\uE3E7"; // flash_on
+    private static final String G_FLIP      = "\uEA37"; // flip_camera_android
+    private static final String G_SEARCH    = "\uEF7A"; // search
+    private static final String G_CHEVRON   = "\uE5CF"; // expand_more
+    private static final String G_PHOTO     = "\uE3F4"; // image
+    private static final String G_ALBUM     = "\uE413"; // photo_library
 
     private static final float[] STOPS = { 0.5f, 1.0f, 2.0f };
 
@@ -266,18 +323,34 @@ public final class SigilCamera {
     private static IconView flashBtn;
     private static IconView flipBtn;
     private static ShutterView shutterBtn;
-    private static LinearLayout zoomPill;
+    private static FrameLayout zoomPill;
+    private static View zoomLit;
     private static TextView[] chips;
     private static LinearLayout modeRow;
     private static TextView[] modeLabels;
+    private static View cameraLayer;
+    private static SheetView sheet;
+    private static LinearLayout sheetHead;
+    private static View handleBand;
+    private static View searchBand;
     private static ScrollView galleryScroll;
     private static LinearLayout galleryRows;
+    private static View header;
+    private static View[] tabChips;
+    private static Typeface symbols;
     private static Application.ActivityLifecycleCallbacks lifecycle;
+
+    private static ValueAnimator modeAnim;
+    private static ValueAnimator zoomAnim;
+    private static ValueAnimator sheetAnim;
 
     private static CameraDevice device;
     private static CameraCaptureSession session;
     private static ImageReader jpeg;
     private static MediaRecorder recorder;
+    /// Kept alive so a zoom frame is one set() and one setRepeatingRequest
+    /// rather than a whole rebuild sixty times a second.
+    private static CaptureRequest.Builder repeating;
 
     private static String cameraId;
     private static int sensorOrientation;
@@ -290,16 +363,12 @@ public final class SigilCamera {
 
     private static float density = 2.55f;
     /// The window, in physical pixels, the system-bar insets inside it, and
-    /// the picture's foot — the line everything else is measured from.
+    /// the picture's foot — the line the controls are measured from.
     private static int winW, winH, insetTop, insetBottom, foot;
-    /// Where a tapped thumbnail is copied to; handed down by the bridge, which
-    /// is the only side that knows the engine's cache directory.
     private static String pickDir = "";
+    private static String title = "";
 
-    /// The surface exists and has been given its buffer size: the camera may
-    /// open. Set on the main thread, read on ours.
     private static volatile boolean surfaceReady;
-    /// One open per surface: surfaceChanged fires again on every resize.
     private static volatile boolean opening;
 
     private static volatile boolean front;
@@ -312,7 +381,6 @@ public final class SigilCamera {
     private static volatile String state = IDLE;
     private static volatile String lastPath = "";
     private static volatile String failure;
-    /// Where the shot or the clip in flight is going.
     private static volatile String pendingPhoto = "";
     private static volatile String pendingVideo = "";
 
@@ -322,22 +390,31 @@ public final class SigilCamera {
     private static volatile String pickedPath = "";
 
     private static long recordStart;
+    /// 0 at rest, 1 dragged full. Everything the sheet moves reads it.
+    private static float expand;
+    /// Which bucket the grid is showing, or "" for everything.
+    private static String bucket = "";
+    private static String bucketName = "";
 
     private SigilCamera() {}
 
     // ------------------------------------------------------------- opening
 
     /// Put the viewfinder up over everything. `facing` is "front" or anything
-    /// else for the back camera; `startMode` is "video" or anything else for
-    /// stills; `dir` is where a tapped gallery item is copied to. A second
-    /// call replaces the first.
+    /// else for the back camera; `startMode` is "video" or anything else;
+    /// `dir` is where a tapped gallery item is copied to; `fontPath` is the
+    /// Material Symbols file the bridge wrote out of the binary; `to` is the
+    /// room's display name for the expanded sheet's title. A second call
+    /// replaces the first.
     public static void open(final Activity activity, final String facing,
-                            final String startMode, final String dir) {
+                            final String startMode, final String dir,
+                            final String fontPath, final String to) {
         close();
         host = activity;
         front = "front".equals(facing);
         mode = "video".equals(startMode) ? "video" : "photo";
         pickDir = dir == null ? "" : dir;
+        title = to == null ? "" : to;
         state = OPENING;
         failure = null;
         lastPath = "";
@@ -352,6 +429,18 @@ public final class SigilCamera {
         shutterCount = 0;
         zoom = 1f;
         torch = false;
+        expand = 0f;
+        bucket = "";
+        bucketName = "";
+
+        symbols = null;
+        if (fontPath != null && !fontPath.isEmpty()) {
+            try {
+                symbols = Typeface.createFromFile(fontPath);
+            } catch (RuntimeException e) {
+                Log.w(TAG, "camera: the icon font would not load: " + e);
+            }
+        }
 
         density = activity.getResources().getDisplayMetrics().density;
         measureWindow(activity);
@@ -374,10 +463,7 @@ public final class SigilCamera {
     }
 
     /// The window's size and its system-bar insets, in physical pixels, and
-    /// the picture's foot off them. Read off the ACTIVITY's decor rather than
-    /// our own window, which has not been added yet — and which, being
-    /// FLAG_LAYOUT_NO_LIMITS, would answer for a frame that ignores the bars
-    /// anyway.
+    /// the picture's foot off them.
     private static void measureWindow(Activity a) {
         insetTop = 0;
         insetBottom = 0;
@@ -424,8 +510,6 @@ public final class SigilCamera {
     /// Build the whole overlay and add it as a window of its own. Main thread.
     private static void build(final Activity activity) {
         FrameLayout root = new FrameLayout(activity);
-        // Not transparent: the reference's ground under the picture and around
-        // the sheet is the window's own near-black.
         root.setBackgroundColor(GROUND);
         // The camera is modal: nothing behind it may be touched, and a tap on
         // the ground between the controls must not fall through to the app.
@@ -447,8 +531,7 @@ public final class SigilCamera {
         SurfaceView v = new SurfaceView(activity);
         // NOT setZOrderOnTop and NOT setZOrderMediaOverlay: at the default
         // sublayer the surface sits UNDER this window's own drawing, which is
-        // exactly what lets every control paint over it. The window is itself
-        // above the app's, so the picture is still on top of the app.
+        // what lets every control paint over it.
         SurfaceHolder hl = v.getHolder();
         hl.setFixedSize(previewSize.getWidth(), previewSize.getHeight());
         hl.addCallback(new SurfaceHolder.Callback() {
@@ -477,171 +560,23 @@ public final class SigilCamera {
         cornerLp.gravity = Gravity.TOP | Gravity.START;
         root.addView(frameView, cornerLp);
 
+        // ---- everything that is the CAMERA, in one layer ------------------
+        // Held together so the drag can fade the lot out as the sheet rises:
+        // the reference shows nothing but black above a sheet that is full.
+        FrameLayout cam = new FrameLayout(activity);
+        cameraLayer = cam;
+        root.addView(cam, new FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT,
+                FrameLayout.LayoutParams.MATCH_PARENT));
+        buildControls(activity, cam);
+
         // ---- the gallery sheet ---------------------------------------------
-        root.addView(buildSheet(activity), sheetParams());
+        sheet = new SheetView(activity);
+        buildSheet(activity, sheet);
+        root.addView(sheet, sheetParams());
 
-        // ---- what stands in for a picture that has not arrived ------------
-        hint = new TextView(activity);
-        hint.setTextColor(0xB3FFFFFF);
-        hint.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 15f);
-        hint.setGravity(Gravity.CENTER);
-        hint.setText("Starting the camera…");
-        FrameLayout.LayoutParams hlp = new FrameLayout.LayoutParams(
-                FrameLayout.LayoutParams.MATCH_PARENT, foot);
-        hlp.gravity = Gravity.TOP | Gravity.START;
-        hlp.leftMargin = dp(32);
-        hlp.rightMargin = dp(32);
-        root.addView(hint, hlp);
-
-        // ---- the recording pill -------------------------------------------
-        LinearLayout rec = new LinearLayout(activity);
-        rec.setOrientation(LinearLayout.HORIZONTAL);
-        rec.setGravity(Gravity.CENTER_VERTICAL);
-        rec.setBackground(pill(SCRIM, dp(14)));
-        rec.setPadding(dp(10), 0, dp(12), 0);
-        View dot = new View(activity);
-        dot.setBackground(pill(REC, dp(4)));
-        LinearLayout.LayoutParams dlp = new LinearLayout.LayoutParams(dp(8), dp(8));
-        dlp.rightMargin = dp(8);
-        rec.addView(dot, dlp);
-        recText = new TextView(activity);
-        recText.setTextColor(Color.WHITE);
-        recText.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 13f);
-        recText.setText("0:00");
-        rec.addView(recText);
-        FrameLayout.LayoutParams rlp =
-                new FrameLayout.LayoutParams(FrameLayout.LayoutParams.WRAP_CONTENT, dp(28));
-        rlp.gravity = Gravity.TOP | Gravity.CENTER_HORIZONTAL;
-        rlp.topMargin = insetTop + dp(ICON_DROP + (ICON_BOX - 28) / 2);
-        rec.setVisibility(View.GONE);
-        root.addView(rec, rlp);
-        recPill = rec;
-
-        // ---- close, top left ----------------------------------------------
-        closeBtn = new IconView(activity, IconView.CLOSE);
-        FrameLayout.LayoutParams clp =
-                new FrameLayout.LayoutParams(dp(ICON_BOX), dp(ICON_BOX));
-        clp.gravity = Gravity.TOP | Gravity.START;
-        clp.leftMargin = dp(ICON_EDGE);
-        clp.topMargin = insetTop + dp(ICON_DROP);
-        closeBtn.setOnClickListener(new View.OnClickListener() {
-            @Override
-            public void onClick(View x) {
-                // Not close() — the bridge owns the teardown, and it has a
-                // poll running that has to be told to stop first.
-                closed = true;
-            }
-        });
-        root.addView(closeBtn, clp);
-
-        // ---- flash, top right ----------------------------------------------
-        flashBtn = new IconView(activity, IconView.FLASH_OFF);
-        FrameLayout.LayoutParams flp =
-                new FrameLayout.LayoutParams(dp(ICON_BOX), dp(ICON_BOX));
-        flp.gravity = Gravity.TOP | Gravity.END;
-        flp.rightMargin = dp(ICON_EDGE);
-        flp.topMargin = insetTop + dp(ICON_DROP);
-        flashBtn.setOnClickListener(new View.OnClickListener() {
-            @Override
-            public void onClick(View x) {
-                if (!flashAvailable) return;
-                torch(!torch);
-                syncUi();
-            }
-        });
-        root.addView(flashBtn, flp);
-
-        // ---- the zoom pill ---------------------------------------------------
-        zoomPill = new LinearLayout(activity);
-        zoomPill.setOrientation(LinearLayout.HORIZONTAL);
-        zoomPill.setGravity(Gravity.CENTER_VERTICAL);
-        zoomPill.setBackground(pill(SCRIM, dp(PILL_H / 2)));
-        zoomPill.setPadding(dp(PILL_PAD), 0, dp(PILL_PAD), 0);
-        chips = new TextView[STOPS.length];
-        for (int i = 0; i < STOPS.length; i++) {
-            final float stop = STOPS[i];
-            TextView c = new TextView(activity);
-            c.setText(label(stop));
-            c.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 15f);
-            c.setGravity(Gravity.CENTER);
-            c.setOnClickListener(new View.OnClickListener() {
-                @Override
-                public void onClick(View x) {
-                    if (!reachable(stop)) return;
-                    setZoom(stop);
-                    syncUi();
-                }
-            });
-            LinearLayout.LayoutParams lp =
-                    new LinearLayout.LayoutParams(dp(CHIP_D), dp(CHIP_D));
-            if (i > 0) lp.leftMargin = dp(CHIP_GAP);
-            zoomPill.addView(c, lp);
-            chips[i] = c;
-        }
-        root.addView(zoomPill, overFoot(FrameLayout.LayoutParams.WRAP_CONTENT,
-                dp(PILL_H), ROW_ZOOM, PILL_H, 0f));
-
-        // ---- the shutter -------------------------------------------------
-        shutterBtn = new ShutterView(activity);
-        shutterBtn.setOnClickListener(new View.OnClickListener() {
-            @Override
-            public void onClick(View x) {
-                // The one control that is a request, not a command: the
-                // bridge answers it so the file lands on the staging page by
-                // the route every other attachment takes.
-                shutterCount++;
-            }
-        });
-        root.addView(shutterBtn, overFoot(dp(SHUTTER_D), dp(SHUTTER_D),
-                ROW_SHUTTER, SHUTTER_D, 0f));
-
-        // ---- the flip ring, beside it -------------------------------------
-        flipBtn = new IconView(activity, IconView.FLIP);
-        flipBtn.ring = true;
-        flipBtn.setOnClickListener(new View.OnClickListener() {
-            @Override
-            public void onClick(View x) {
-                // Not mid-clip: the recorder is bound to the camera that
-                // started it.
-                if (RECORDING.equals(state)) return;
-                flip();
-                syncUi();
-            }
-        });
-        root.addView(flipBtn, overFoot(dp(FLIP_D), dp(FLIP_D),
-                ROW_SHUTTER, FLIP_D, FLIP_OFFSET));
-
-        // ---- Photo | Video ------------------------------------------------
-        modeRow = new LinearLayout(activity);
-        modeRow.setOrientation(LinearLayout.HORIZONTAL);
-        modeRow.setGravity(Gravity.CENTER_VERTICAL);
-        String[] names = { "Photo", "Video" };
-        final String[] values = { "photo", "video" };
-        modeLabels = new TextView[2];
-        for (int i = 0; i < 2; i++) {
-            final String value = values[i];
-            TextView t = new TextView(activity);
-            t.setText(names[i]);
-            t.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 15f);
-            t.setGravity(Gravity.CENTER);
-            t.setPadding(dp(MODE_PAD), 0, dp(MODE_PAD), 0);
-            t.setOnClickListener(new View.OnClickListener() {
-                @Override
-                public void onClick(View x) {
-                    // Switching mid-clip would strand the recording.
-                    if (RECORDING.equals(state)) return;
-                    mode = value;
-                    syncUi();
-                }
-            });
-            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
-                    LinearLayout.LayoutParams.WRAP_CONTENT, dp(MODE_H));
-            if (i > 0) lp.leftMargin = dp(MODE_GAP);
-            modeRow.addView(t, lp);
-            modeLabels[i] = t;
-        }
-        root.addView(modeRow, overFoot(FrameLayout.LayoutParams.WRAP_CONTENT,
-                dp(MODE_H), ROW_MODE, MODE_H, 0f));
+        // ---- the expanded sheet's own title row ----------------------------
+        root.addView(buildHeader(activity), headerParams());
 
         // ---- the window ----------------------------------------------------
         WindowManager.LayoutParams lp = new WindowManager.LayoutParams(
@@ -654,8 +589,7 @@ public final class SigilCamera {
                 WindowManager.LayoutParams.TYPE_APPLICATION_SUB_PANEL,
                 // NOT_FOCUSABLE keeps the key stream with the activity, which
                 // is what lets the app's own Back handling close us (the
-                // bridge does it from Slint's close-requested); it implies
-                // NOT_TOUCH_MODAL, which is harmless for a full-screen window.
+                // bridge does it from Slint's close-requested).
                 WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
                         | WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN
                         | WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS
@@ -674,7 +608,6 @@ public final class SigilCamera {
         }
         overlay = root;
 
-        // The window's real size is only known once it has been laid out.
         root.addOnLayoutChangeListener(new View.OnLayoutChangeListener() {
             @Override
             public void onLayoutChange(View x, int l, int t, int r, int b,
@@ -710,8 +643,6 @@ public final class SigilCamera {
             }
         });
 
-        // The app going to the background gives the sensor back: the bridge
-        // sees `closed` on its next pass and tears the rest down.
         try {
             lifecycle = new Lifecycle(activity);
             activity.getApplication().registerActivityLifecycleCallbacks(lifecycle);
@@ -719,14 +650,214 @@ public final class SigilCamera {
         }
 
         applyPreviewBounds();
+        applyExpand(0f);
         syncUi();
         ui.post(TICK);
         loadGallery(activity, 0);
     }
 
-    /// A control standing `above` dp over the picture's foot, `h` tall, and
-    /// `offset` dp right of centre. FrameLayout centres horizontally and THEN
-    /// adds leftMargin, so the offset is the gap between the two centres.
+    /// The close, the flash, the zoom pill, the shutter, the flip and the
+    /// mode row: everything that belongs to the camera rather than the sheet.
+    private static void buildControls(final Activity activity, FrameLayout cam) {
+        // ---- what stands in for a picture that has not arrived ------------
+        hint = new TextView(activity);
+        hint.setTextColor(0xB3FFFFFF);
+        hint.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 15f);
+        hint.setGravity(Gravity.CENTER);
+        hint.setText("Starting the camera…");
+        FrameLayout.LayoutParams hlp = new FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT, foot);
+        hlp.gravity = Gravity.TOP | Gravity.START;
+        hlp.leftMargin = dp(32);
+        hlp.rightMargin = dp(32);
+        cam.addView(hint, hlp);
+
+        // ---- the recording pill -------------------------------------------
+        LinearLayout rec = new LinearLayout(activity);
+        rec.setOrientation(LinearLayout.HORIZONTAL);
+        rec.setGravity(Gravity.CENTER_VERTICAL);
+        rec.setBackground(pill(SCRIM, dp(14)));
+        rec.setPadding(dp(10), 0, dp(12), 0);
+        View dot = new View(activity);
+        dot.setBackground(pill(REC, dp(4)));
+        LinearLayout.LayoutParams dlp = new LinearLayout.LayoutParams(dp(8), dp(8));
+        dlp.rightMargin = dp(8);
+        rec.addView(dot, dlp);
+        recText = new TextView(activity);
+        recText.setTextColor(Color.WHITE);
+        recText.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 13f);
+        recText.setText("0:00");
+        rec.addView(recText);
+        FrameLayout.LayoutParams rlp =
+                new FrameLayout.LayoutParams(FrameLayout.LayoutParams.WRAP_CONTENT, dp(28));
+        rlp.gravity = Gravity.TOP | Gravity.CENTER_HORIZONTAL;
+        rlp.topMargin = dp(ICON_CY) - dp(14);
+        rec.setVisibility(View.GONE);
+        cam.addView(rec, rlp);
+        recPill = rec;
+
+        // ---- close and flash, on the 110dp line ----------------------------
+        closeBtn = new IconView(activity, G_CLOSE, CLOSE_INK);
+        closeBtn.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View x) {
+                // Not close() — the bridge owns the teardown, and it has a
+                // poll running that has to be told to stop first.
+                closed = true;
+            }
+        });
+        cam.addView(closeBtn, iconParams(true));
+
+        flashBtn = new IconView(activity, G_FLASH_OFF, FLASH_INK);
+        flashBtn.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View x) {
+                if (!flashAvailable || "video".equals(mode)) return;
+                torch(!torch);
+                syncUi();
+            }
+        });
+        cam.addView(flashBtn, iconParams(false));
+
+        // ---- the zoom pill ---------------------------------------------------
+        // The lit disc is a view of its own BEHIND the chips, so choosing a
+        // stop slides it rather than repainting three backgrounds.
+        zoomPill = new FrameLayout(activity);
+        zoomPill.setBackground(pill(SCRIM, dp(PILL_H / 2)));
+        // The lit disc is 82px in a 79px pill — 1.5px proud top and bottom,
+        // exactly as the reference has it — so the pill must not clip.
+        zoomPill.setClipChildren(false);
+        zoomPill.setClipToPadding(false);
+        zoomLit = new View(activity);
+        zoomLit.setBackground(pill(ON_BG, dp(CHIP_D / 2)));
+        FrameLayout.LayoutParams litLp =
+                new FrameLayout.LayoutParams(dp(CHIP_D), dp(CHIP_D));
+        litLp.gravity = Gravity.TOP | Gravity.START;
+        litLp.topMargin = (dp(PILL_H) - dp(CHIP_D)) / 2;
+        zoomPill.addView(zoomLit, litLp);
+        chips = new TextView[STOPS.length];
+        for (int i = 0; i < STOPS.length; i++) {
+            final float stop = STOPS[i];
+            TextView c = new TextView(activity);
+            c.setText(label(stop));
+            c.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 15f);
+            c.setGravity(Gravity.CENTER);
+            c.setOnClickListener(new View.OnClickListener() {
+                @Override
+                public void onClick(View x) {
+                    if (!reachable(stop)) return;
+                    glideZoom(stop);
+                }
+            });
+            FrameLayout.LayoutParams lp =
+                    new FrameLayout.LayoutParams(dp(CHIP_D), dp(CHIP_D));
+            lp.gravity = Gravity.TOP | Gravity.START;
+            lp.leftMargin = chipX(i);
+            lp.topMargin = (dp(PILL_H) - dp(CHIP_D)) / 2;
+            zoomPill.addView(c, lp);
+            chips[i] = c;
+        }
+        cam.addView(zoomPill, pillParams());
+
+        // ---- the shutter -------------------------------------------------
+        shutterBtn = new ShutterView(activity);
+        shutterBtn.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View x) {
+                // The one control that is a request, not a command: the
+                // bridge answers it so the file lands on the staging page by
+                // the route every other attachment takes.
+                shutterCount++;
+            }
+        });
+        cam.addView(shutterBtn, overFoot(dp(SHUTTER_D), dp(SHUTTER_D),
+                ROW_SHUTTER, SHUTTER_D, 0f));
+
+        // ---- the flip ring, beside it -------------------------------------
+        flipBtn = new IconView(activity, G_FLIP, FLIP_INK);
+        flipBtn.ring = true;
+        flipBtn.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View x) {
+                // Not mid-clip: the recorder is bound to the camera that
+                // started it.
+                if (RECORDING.equals(state)) return;
+                flip();
+                syncUi();
+            }
+        });
+        cam.addView(flipBtn, overFoot(dp(FLIP_D), dp(FLIP_D),
+                ROW_SHUTTER, FLIP_D, FLIP_OFFSET));
+
+        // ---- Photo | Video ------------------------------------------------
+        // Two cells of the SAME width 18px apart, so their centres are 198px
+        // apart whichever is lit; the row then slides so the lit one lands on
+        // the middle of the screen, which is what the reference shows.
+        modeRow = new LinearLayout(activity);
+        modeRow.setOrientation(LinearLayout.HORIZONTAL);
+        String[] names = { "Photo", "Video" };
+        final String[] values = { "photo", "video" };
+        modeLabels = new TextView[2];
+        for (int i = 0; i < 2; i++) {
+            final String value = values[i];
+            TextView t = new TextView(activity);
+            t.setText(names[i]);
+            t.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 15f);
+            t.setGravity(Gravity.CENTER);
+            t.setOnClickListener(new View.OnClickListener() {
+                @Override
+                public void onClick(View x) {
+                    // Switching mid-clip would strand the recording.
+                    if (RECORDING.equals(state)) return;
+                    if (value.equals(mode)) return;
+                    mode = value;
+                    glideMode();
+                }
+            });
+            LinearLayout.LayoutParams lp =
+                    new LinearLayout.LayoutParams(dp(MODE_CELL), dp(MODE_H));
+            if (i > 0) lp.leftMargin = dp(MODE_GAP);
+            modeRow.addView(t, lp);
+            modeLabels[i] = t;
+        }
+        FrameLayout.LayoutParams mlp = new FrameLayout.LayoutParams(
+                dp(MODE_CELL) * 2 + dp(MODE_GAP), dp(MODE_H));
+        mlp.gravity = Gravity.TOP | Gravity.CENTER_HORIZONTAL;
+        mlp.topMargin = foot - dp(ROW_MODE) - dp(MODE_H) / 2;
+        cam.addView(modeRow, mlp);
+    }
+
+    /// The close (left) or the flash (right), 71px in and centred 281px down.
+    private static FrameLayout.LayoutParams iconParams(boolean left) {
+        FrameLayout.LayoutParams lp =
+                new FrameLayout.LayoutParams(dp(ICON_BOX), dp(ICON_BOX));
+        lp.gravity = Gravity.TOP | (left ? Gravity.START : Gravity.END);
+        int edge = dp(ICON_CX) - dp(ICON_BOX) / 2;
+        if (left) lp.leftMargin = edge; else lp.rightMargin = edge;
+        lp.topMargin = dp(ICON_CY) - dp(ICON_BOX) / 2;
+        return lp;
+    }
+
+    /// The zoom pill. What is centred on the screen is the CHIP BLOCK, not the
+    /// pill: the reference pads 13px on the left of the first chip and nothing
+    /// on the right of the last, so the pill hangs 6px left of centre.
+    private static FrameLayout.LayoutParams pillParams() {
+        int block = dp(CHIP_D) * 3 + dp(CHIP_GAP) * 2;
+        FrameLayout.LayoutParams lp = new FrameLayout.LayoutParams(
+                block + dp(PILL_PAD_L), dp(PILL_H));
+        lp.gravity = Gravity.TOP | Gravity.CENTER_HORIZONTAL;
+        lp.leftMargin = -dp(PILL_PAD_L) / 2;
+        lp.topMargin = foot - dp(ROW_ZOOM) - dp(PILL_H) / 2;
+        return lp;
+    }
+
+    private static int chipX(int i) {
+        return dp(PILL_PAD_L) + i * (dp(CHIP_D) + dp(CHIP_GAP));
+    }
+
+    /// A control standing `above` dp over the picture's foot, `tall` dp high,
+    /// and `offset` dp right of centre. FrameLayout centres horizontally and
+    /// THEN adds leftMargin, so the offset is the gap between the two centres.
     private static FrameLayout.LayoutParams overFoot(int w, int h, float above,
                                                      float tall, float offset) {
         FrameLayout.LayoutParams lp = new FrameLayout.LayoutParams(w, h);
@@ -742,28 +873,18 @@ public final class SigilCamera {
         setHeight(pictureBox, foot);
         setHeight(frameView, foot);
         setHeight(hint, foot);
-        setTop(closeBtn, insetTop + dp(ICON_DROP));
-        setTop(flashBtn, insetTop + dp(ICON_DROP));
-        setTop(recPill, insetTop + dp(ICON_DROP + (ICON_BOX - 28) / 2));
-        setTop(zoomPill, foot - dp(ROW_ZOOM) - dp(PILL_H / 2));
-        setTop(shutterBtn, foot - dp(ROW_SHUTTER) - dp(SHUTTER_D / 2));
-        setTop(flipBtn, foot - dp(ROW_SHUTTER) - dp(FLIP_D / 2));
-        setTop(modeRow, foot - dp(ROW_MODE) - dp(MODE_H / 2));
-        View sheet = galleryScroll == null ? null : (View) galleryScroll.getParent();
+        setTop(recPill, dp(ICON_CY) - dp(14));
+        setTop(closeBtn, dp(ICON_CY) - dp(ICON_BOX) / 2);
+        setTop(flashBtn, dp(ICON_CY) - dp(ICON_BOX) / 2);
+        setTop(zoomPill, foot - dp(ROW_ZOOM) - dp(PILL_H) / 2);
+        setTop(shutterBtn, foot - dp(ROW_SHUTTER) - dp(SHUTTER_D) / 2);
+        setTop(flipBtn, foot - dp(ROW_SHUTTER) - dp(FLIP_D) / 2);
+        setTop(modeRow, foot - dp(ROW_MODE) - dp(MODE_H) / 2);
         if (sheet != null) sheet.setLayoutParams(sheetParams());
-        if (galleryScroll != null) {
-            galleryScroll.setPadding(0, 0, 0, insetBottom);
-        }
+        if (header != null) header.setLayoutParams(headerParams());
+        if (galleryScroll != null) galleryScroll.setPadding(0, 0, 0, insetBottom);
         applyPreviewBounds();
-    }
-
-    private static FrameLayout.LayoutParams sheetParams() {
-        int top = foot + dp(SHEET_GAP);
-        FrameLayout.LayoutParams lp = new FrameLayout.LayoutParams(
-                FrameLayout.LayoutParams.MATCH_PARENT, Math.max(1, winH - top));
-        lp.gravity = Gravity.TOP | Gravity.START;
-        lp.topMargin = top;
-        return lp;
+        applyExpand(expand);
     }
 
     private static void setTop(View v, int m) {
@@ -809,45 +930,468 @@ public final class SigilCamera {
         lp.leftMargin = (winW - w) / 2;
         lp.topMargin = (foot - h) / 2;
         v.setLayoutParams(lp);
-        // The selfie camera shows you a mirror, as every phone's does. Not
-        // every SurfaceView honours a view transform; where it does not, the
-        // picture is simply un-mirrored, which is what it was before.
+        // The selfie camera shows you a mirror, as every phone's does.
         v.setScaleX(front ? -1f : 1f);
     }
 
-    // --------------------------------------------------------- the gallery
+    // ----------------------------------------------------- the animations
 
-    /// One row of the sheet's grid.
-    private static final class Shot {
-        final Uri uri;
-        final String name;
-        final long added;
-        Bitmap thumb;
+    /// Photo ⇄ Video. The row slides so the chosen label comes to the middle
+    /// of the screen, and the shutter's disc crossfades to red over the same
+    /// curve — one animation, two things moving, as the reference does.
+    private static void glideMode() {
+        if (modeRow == null) return;
+        if (modeAnim != null) modeAnim.cancel();
+        final float from = modeRow.getTranslationX();
+        final float to = modeRest();
+        final boolean video = "video".equals(mode);
+        modeAnim = ValueAnimator.ofFloat(0f, 1f);
+        modeAnim.setDuration(MODE_MS);
+        modeAnim.setInterpolator(new DecelerateInterpolator());
+        modeAnim.addUpdateListener(new ValueAnimator.AnimatorUpdateListener() {
+            @Override
+            public void onAnimationUpdate(ValueAnimator a) {
+                float t = (Float) a.getAnimatedValue();
+                if (modeRow != null) modeRow.setTranslationX(from + (to - from) * t);
+                if (shutterBtn != null) {
+                    shutterBtn.red = video ? t : 1f - t;
+                    shutterBtn.invalidate();
+                }
+                // The flash has nothing to do with a clip, so it goes away
+                // for Video and comes back for Photo.
+                if (flashBtn != null) {
+                    flashBtn.setAlpha(video ? 1f - t : t * flashRest());
+                }
+            }
+        });
+        modeAnim.start();
+        syncModeLabels();
+    }
 
-        Shot(Uri uri, String name, long added) {
-            this.uri = uri;
-            this.name = name;
-            this.added = added;
+    /// Where the row has to sit for the lit label to be centred on screen.
+    private static float modeRest() {
+        int cell = dp(MODE_CELL);
+        int gap = dp(MODE_GAP);
+        int rowW = cell * 2 + gap;
+        // The row is centred, so the lit cell's own centre is already
+        // (rowW/2 ∓ (cell+gap)/2) off the middle; undo that.
+        float lit = "video".equals(mode) ? cell + gap + cell / 2f : cell / 2f;
+        return rowW / 2f - lit;
+    }
+
+    private static float flashRest() {
+        if ("video".equals(mode)) return 0f;
+        return flashAvailable ? 1f : 0.35f;
+    }
+
+    /// A zoom stop, reached SMOOTHLY: the ratio is animated and the repeating
+    /// request re-issued on every frame, so the viewfinder travels between
+    /// stops instead of jumping. The lit disc slides under the chips beside it.
+    private static void glideZoom(final float target) {
+        final float want = Math.max(zoomMin, Math.min(zoomMax, target));
+        if (zoomAnim != null) zoomAnim.cancel();
+        final float from = zoom;
+        final float litFrom = zoomLit == null ? 0f : zoomLit.getTranslationX();
+        final float litTo = chipX(nearestStop(target)) - chipX(0);
+        zoomAnim = ValueAnimator.ofFloat(0f, 1f);
+        zoomAnim.setDuration(ZOOM_MS);
+        zoomAnim.setInterpolator(new DecelerateInterpolator());
+        zoomAnim.addUpdateListener(new ValueAnimator.AnimatorUpdateListener() {
+            @Override
+            public void onAnimationUpdate(ValueAnimator a) {
+                float t = (Float) a.getAnimatedValue();
+                zoom = from + (want - from) * t;
+                pushZoom();
+                if (zoomLit != null) {
+                    zoomLit.setTranslationX(litFrom + (litTo - litFrom) * t);
+                }
+            }
+        });
+        zoomAnim.start();
+        zoomTarget = target;
+        syncChips();
+    }
+
+    private static volatile float zoomTarget = 1f;
+
+    private static int nearestStop(float v) {
+        int best = 0;
+        for (int i = 1; i < STOPS.length; i++) {
+            if (Math.abs(STOPS[i] - v) < Math.abs(STOPS[best] - v)) best = i;
+        }
+        return best;
+    }
+
+    /// One zoom frame: set the ratio on the request already built and hand it
+    /// back to the session. Rebuilding a request per frame would be far more
+    /// work than this, which is why `repeating` is kept alive.
+    private static void pushZoom() {
+        final Handler h = bg;
+        if (h == null) return;
+        h.post(new Runnable() {
+            @Override
+            public void run() {
+                CameraCaptureSession s = session;
+                CaptureRequest.Builder b = repeating;
+                if (s == null || b == null) return;
+                try {
+                    applyControls(b);
+                    s.setRepeatingRequest(b.build(), null, bg);
+                } catch (CameraAccessException | RuntimeException ignored) {
+                }
+            }
+        });
+    }
+
+    // --------------------------------------------------------- the controls
+
+    /// Every control's look, off the session's state. Main thread, on the
+    /// tick below and after each press. Anything that ANIMATES is driven from
+    /// its own animator instead, so this never fights one.
+    private static void syncUi() {
+        if (overlay == null) return;
+        boolean recording = RECORDING.equals(state);
+        boolean live = READY.equals(state) || CAPTURING.equals(state) || recording;
+
+        if (hint != null) {
+            if (live) {
+                hint.setVisibility(View.GONE);
+            } else {
+                hint.setVisibility(View.VISIBLE);
+                String f = failure;
+                hint.setText(ERROR.equals(state) && f != null ? f : "Starting the camera…");
+            }
+        }
+
+        if (flashBtn != null) {
+            flashBtn.glyph = torch ? G_FLASH_ON : G_FLASH_OFF;
+            if (modeAnim == null || !modeAnim.isRunning()) {
+                flashBtn.setAlpha(flashRest());
+            }
+            flashBtn.invalidate();
+        }
+        if (flipBtn != null) flipBtn.setAlpha(recording ? 0.35f : 1f);
+
+        syncChips();
+        syncModeLabels();
+        if (modeRow != null && (modeAnim == null || !modeAnim.isRunning())) {
+            modeRow.setTranslationX(modeRest());
+        }
+
+        if (shutterBtn != null) {
+            if (modeAnim == null || !modeAnim.isRunning()) {
+                shutterBtn.red = "video".equals(mode) ? 1f : 0f;
+            }
+            shutterBtn.recording = recording;
+            shutterBtn.invalidate();
+        }
+        if (recPill != null) {
+            recPill.setVisibility(recording ? View.VISIBLE : View.GONE);
+            if (recording && recText != null) {
+                long s = Math.max(0, (System.currentTimeMillis() - recordStart) / 1000);
+                recText.setText(s / 60 + ":" + (s % 60 < 10 ? "0" : "") + (s % 60));
+            }
         }
     }
 
-    /// The sheet under the picture: the reference's rounded panel, its drag
-    /// handle, and the grid.
-    private static View buildSheet(Activity activity) {
-        LinearLayout sheet = new LinearLayout(activity);
-        sheet.setOrientation(LinearLayout.VERTICAL);
+    private static void syncChips() {
+        if (chips == null) return;
+        int lit = nearestStop(zoomTarget);
+        for (int i = 0; i < chips.length; i++) {
+            boolean on = i == lit;
+            boolean can = reachable(STOPS[i]);
+            chips[i].setTextColor(on ? ON_FG : OFF_FG);
+            chips[i].setTypeface(null, on ? Typeface.BOLD : Typeface.NORMAL);
+            chips[i].setAlpha(can ? 1f : 0.35f);
+        }
+        if (zoomLit != null && (zoomAnim == null || !zoomAnim.isRunning())) {
+            zoomLit.setTranslationX(chipX(lit) - chipX(0));
+        }
+    }
+
+    private static void syncModeLabels() {
+        if (modeLabels == null) return;
+        for (int i = 0; i < modeLabels.length; i++) {
+            boolean on = (i == 0) == "photo".equals(mode);
+            modeLabels[i].setBackground(on ? pill(ON_BG, dp(MODE_H / 2)) : null);
+            modeLabels[i].setTextColor(on ? ON_FG : OFF_FG);
+            modeLabels[i].setTypeface(null, on ? Typeface.BOLD : Typeface.NORMAL);
+        }
+    }
+
+    /// The overlay's own clock: the session changes state on our camera
+    /// thread, and this is the cheapest way to let the look follow it.
+    private static final Runnable TICK = new Runnable() {
+        @Override
+        public void run() {
+            if (overlay == null || ui == null) return;
+            syncUi();
+            ui.postDelayed(this, 100);
+        }
+    };
+
+    private static boolean reachable(float stop) {
+        return stop >= zoomMin - 0.001f && stop <= zoomMax + 0.001f;
+    }
+
+    private static String label(float stop) {
+        if (stop == 0.5f) return "0.5";
+        if (stop == 1.0f) return "1.0";
+        if (stop == 2.0f) return "2.0";
+        return String.valueOf(stop);
+    }
+
+    private static GradientDrawable pill(int colour, int radius) {
+        GradientDrawable d = new GradientDrawable();
+        d.setShape(GradientDrawable.RECTANGLE);
+        d.setColor(colour);
+        d.setCornerRadius(radius);
+        return d;
+    }
+
+    // ----------------------------------------------------------- the sheet
+
+    /// The gallery panel. It lives at its FULL height and travels by
+    /// translationY between rest (its top at the picture's foot + 16dp) and
+    /// full (its top at 142.4dp, where the reference puts it), following the
+    /// finger and snapping on release.
+    private static final class SheetView extends FrameLayout {
+        private final int slop;
+        private float y0;
+        private boolean dragging;
+        private float startExpand;
+        private VelocityTracker tracker;
+
+        SheetView(Context c) {
+            super(c);
+            slop = ViewConfiguration.get(c).getScaledTouchSlop();
+            setClickable(true);
+        }
+
+        @Override
+        public boolean onInterceptTouchEvent(MotionEvent ev) {
+            switch (ev.getActionMasked()) {
+                case MotionEvent.ACTION_DOWN:
+                    y0 = ev.getY();
+                    dragging = false;
+                    return false;
+                case MotionEvent.ACTION_MOVE: {
+                    float dy = ev.getY() - y0;
+                    if (Math.abs(dy) < slop) return false;
+                    boolean up = dy < 0;
+                    // Rising: any upward drag takes the sheet with it.
+                    if (up && expand < 1f) return start(ev);
+                    // Falling: only from a grid that is already at its top,
+                    // so a scrolled grid keeps its own gesture.
+                    if (!up && expand > 0f
+                            && (galleryScroll == null || galleryScroll.getScrollY() == 0)) {
+                        return start(ev);
+                    }
+                    return false;
+                }
+                default:
+                    return false;
+            }
+        }
+
+        private boolean start(MotionEvent ev) {
+            dragging = true;
+            startExpand = expand;
+            y0 = ev.getY();
+            if (sheetAnim != null) sheetAnim.cancel();
+            tracker = VelocityTracker.obtain();
+            tracker.addMovement(ev);
+            return true;
+        }
+
+        @Override
+        public boolean onTouchEvent(MotionEvent ev) {
+            if (!dragging) {
+                if (ev.getActionMasked() == MotionEvent.ACTION_DOWN) {
+                    y0 = ev.getY();
+                    return true;
+                }
+                if (ev.getActionMasked() == MotionEvent.ACTION_MOVE
+                        && Math.abs(ev.getY() - y0) >= slop) {
+                    start(ev);
+                } else {
+                    return true;
+                }
+            }
+            if (tracker != null) tracker.addMovement(ev);
+            float travel = Math.max(1, restTop() - dp(EX_TOP));
+            switch (ev.getActionMasked()) {
+                case MotionEvent.ACTION_MOVE: {
+                    float dy = ev.getY() - y0;
+                    applyExpand(clamp(startExpand - dy / travel));
+                    return true;
+                }
+                case MotionEvent.ACTION_UP:
+                case MotionEvent.ACTION_CANCEL: {
+                    float v = 0f;
+                    if (tracker != null) {
+                        tracker.computeCurrentVelocity(1000);
+                        v = tracker.getYVelocity();
+                        tracker.recycle();
+                        tracker = null;
+                    }
+                    // A flick decides on its own; a slow drag on where it got.
+                    boolean full = Math.abs(v) > dp(600)
+                            ? v < 0
+                            : expand > 0.5f;
+                    snap(full ? 1f : 0f);
+                    dragging = false;
+                    return true;
+                }
+                default:
+                    return true;
+            }
+        }
+    }
+
+    private static float clamp(float v) {
+        return v < 0f ? 0f : (v > 1f ? 1f : v);
+    }
+
+    /// The sheet's top when it is at rest: 16dp under the picture's foot.
+    private static int restTop() {
+        return foot + dp(SHEET_GAP);
+    }
+
+    private static FrameLayout.LayoutParams sheetParams() {
+        FrameLayout.LayoutParams lp = new FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT,
+                Math.max(1, winH - dp(EX_TOP)));
+        lp.gravity = Gravity.TOP | Gravity.START;
+        lp.topMargin = dp(EX_TOP);
+        return lp;
+    }
+
+    private static FrameLayout.LayoutParams headerParams() {
+        FrameLayout.LayoutParams lp = new FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT, dp(ICON_BOX));
+        lp.gravity = Gravity.TOP | Gravity.START;
+        lp.topMargin = dp(ICON_CY) - dp(ICON_BOX) / 2;
+        return lp;
+    }
+
+    /// Everything the drag moves, from one number.
+    private static void applyExpand(float t) {
+        expand = t;
+        if (sheet == null) return;
+        float travel = restTop() - dp(EX_TOP);
+        sheet.setTranslationY(travel * (1f - t));
+        // The head grows from the handle band into the search field and the
+        // two tabs, and the two cross-fade through each other.
+        if (sheetHead != null) {
+            int h = Math.round(dp(SHEET_HEAD) + (dp(GRID_TOP_EX) - dp(SHEET_HEAD)) * t);
+            ViewGroup.LayoutParams lp = sheetHead.getLayoutParams();
+            if (lp != null && lp.height != h) {
+                lp.height = h;
+                sheetHead.setLayoutParams(lp);
+            }
+        }
+        if (handleBand != null) handleBand.setAlpha(clamp(1f - t * 2f));
+        if (searchBand != null) {
+            searchBand.setAlpha(clamp(t * 2f - 1f));
+            searchBand.setVisibility(t > 0.5f ? View.VISIBLE : View.INVISIBLE);
+        }
+        if (header != null) {
+            header.setAlpha(clamp(t * 2f - 1f));
+            header.setVisibility(t > 0.5f ? View.VISIBLE : View.INVISIBLE);
+        }
+        // The reference shows nothing but black above a sheet that is up. A
+        // SurfaceView ignores alpha, so the picture is taken away outright the
+        // moment the drag begins; the controls, being ordinary views, fade.
+        if (cameraLayer != null) cameraLayer.setAlpha(clamp(1f - t * 1.6f));
+        if (pictureBox != null) {
+            pictureBox.setVisibility(t > 0.02f ? View.INVISIBLE : View.VISIBLE);
+        }
+        if (frameView != null) frameView.setAlpha(clamp(1f - t * 4f));
+    }
+
+    private static void snap(final float to) {
+        if (sheetAnim != null) sheetAnim.cancel();
+        final float from = expand;
+        if (Math.abs(to - from) < 0.001f) {
+            applyExpand(to);
+            return;
+        }
+        sheetAnim = ValueAnimator.ofFloat(0f, 1f);
+        sheetAnim.setDuration(SNAP_MS);
+        sheetAnim.setInterpolator(new DecelerateInterpolator());
+        sheetAnim.addUpdateListener(new ValueAnimator.AnimatorUpdateListener() {
+            @Override
+            public void onAnimationUpdate(ValueAnimator a) {
+                float t = (Float) a.getAnimatedValue();
+                applyExpand(from + (to - from) * t);
+            }
+        });
+        sheetAnim.start();
+    }
+
+    /// The row that rides above the sheet when it is full: a chevron that puts
+    /// it back down, and who the picture is going to.
+    private static View buildHeader(Activity a) {
+        FrameLayout row = new FrameLayout(a);
+        IconView chev = new IconView(a, G_CHEVRON, CLOSE_INK);
+        chev.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View x) {
+                snap(0f);
+            }
+        });
+        FrameLayout.LayoutParams clp =
+                new FrameLayout.LayoutParams(dp(ICON_BOX), dp(ICON_BOX));
+        clp.gravity = Gravity.TOP | Gravity.START;
+        clp.leftMargin = dp(ICON_CX) - dp(ICON_BOX) / 2;
+        row.addView(chev, clp);
+
+        TextView t = new TextView(a);
+        // The recipient's own name, handed down at open(): nothing about who
+        // is being written to belongs in this file.
+        t.setText(title.isEmpty() ? "To" : "To " + title);
+        t.setTextColor(TITLE_FG);
+        t.setTextSize(TypedValue.COMPLEX_UNIT_DIP, TITLE_SP);
+        t.setSingleLine(true);
+        t.setEllipsize(android.text.TextUtils.TruncateAt.END);
+        t.setGravity(Gravity.CENTER_VERTICAL);
+        FrameLayout.LayoutParams tlp = new FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT, dp(ICON_BOX));
+        tlp.gravity = Gravity.TOP | Gravity.START;
+        tlp.leftMargin = dp(TITLE_X);
+        tlp.rightMargin = dp(24);
+        row.addView(t, tlp);
+        row.setVisibility(View.INVISIBLE);
+        header = row;
+        return row;
+    }
+
+    /// The sheet's own contents: the head (handle at rest, search field and
+    /// tabs when full) over the scrolling grid.
+    private static void buildSheet(Activity activity, FrameLayout sheetRoot) {
         GradientDrawable bg = new GradientDrawable();
         bg.setShape(GradientDrawable.RECTANGLE);
         bg.setColor(SHEET_BG);
         float r = dp(CORNER);
         bg.setCornerRadii(new float[] { r, r, r, r, 0, 0, 0, 0 });
-        sheet.setBackground(bg);
-        // The sheet swallows its own taps: the ground between thumbnails is
-        // not a way through to the app.
-        sheet.setClickable(true);
+        sheetRoot.setBackground(bg);
 
-        // The handle band: the pill 21.8dp down, the grid 46dp down.
+        LinearLayout column = new LinearLayout(activity);
+        column.setOrientation(LinearLayout.VERTICAL);
+        sheetRoot.addView(column, new FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT,
+                FrameLayout.LayoutParams.MATCH_PARENT));
+
+        sheetHead = new LinearLayout(activity);
         FrameLayout head = new FrameLayout(activity);
+        sheetHead.addView(head, new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.MATCH_PARENT));
+        column.addView(sheetHead, new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, dp(SHEET_HEAD)));
+
+        // The handle: 82 × 10px, its centre 21.8dp below the sheet's top.
         View handle = new View(activity);
         handle.setBackground(pill(HANDLE_C, dp(HANDLE_H / 2)));
         FrameLayout.LayoutParams hp =
@@ -855,8 +1399,88 @@ public final class SigilCamera {
         hp.gravity = Gravity.TOP | Gravity.CENTER_HORIZONTAL;
         hp.topMargin = dp(HANDLE_TOP);
         head.addView(handle, hp);
-        sheet.addView(head, new LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT, dp(SHEET_HEAD)));
+        handleBand = handle;
+
+        // The search field and the two tabs, which only exist when the sheet
+        // is full. Ours has no Google Photos behind it, so it says what it is.
+        FrameLayout band = new FrameLayout(activity);
+        head.addView(band, new FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT,
+                FrameLayout.LayoutParams.MATCH_PARENT));
+        band.setVisibility(View.INVISIBLE);
+        searchBand = band;
+
+        FrameLayout field = new FrameLayout(activity);
+        field.setBackground(pill(FIELD_BG, dp(SEARCH_H / 2)));
+        FrameLayout.LayoutParams flp = new FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT, dp(SEARCH_H));
+        flp.gravity = Gravity.TOP | Gravity.START;
+        flp.leftMargin = dp(SEARCH_SIDE);
+        flp.rightMargin = dp(SEARCH_SIDE);
+        flp.topMargin = dp(SEARCH_TOP);
+        band.addView(field, flp);
+
+        IconView mag = new IconView(activity, G_SEARCH, SEARCH_ICON);
+        mag.tint = FIELD_FG;
+        FrameLayout.LayoutParams mlp =
+                new FrameLayout.LayoutParams(dp(ICON_BOX), dp(SEARCH_H));
+        mlp.gravity = Gravity.TOP | Gravity.START;
+        mlp.leftMargin = dp(SEARCH_ICON_X - SEARCH_SIDE) - dp(ICON_BOX) / 2;
+        field.addView(mag, mlp);
+
+        TextView ph = new TextView(activity);
+        ph.setText("Search photos");
+        ph.setTextColor(FIELD_FG);
+        ph.setTextSize(TypedValue.COMPLEX_UNIT_DIP, SEARCH_SP);
+        ph.setGravity(Gravity.CENTER_VERTICAL);
+        FrameLayout.LayoutParams plp = new FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT, dp(SEARCH_H));
+        plp.gravity = Gravity.TOP | Gravity.START;
+        plp.leftMargin = dp(SEARCH_TEXT_X - SEARCH_SIDE);
+        field.addView(ph, plp);
+
+        // Photos | Collections: two equal chips 20px apart, 30px in from each
+        // edge, 102px tall.
+        tabChips = new View[2];
+        int chipW = (winW - dp(CHIP2_SIDE) * 2 - dp(CHIP2_GAP)) / 2;
+        String[] names = { "Photos", "Collections" };
+        String[] gl = { G_PHOTO, G_ALBUM };
+        for (int i = 0; i < 2; i++) {
+            final boolean photos = i == 0;
+            LinearLayout chip = new LinearLayout(activity);
+            chip.setOrientation(LinearLayout.HORIZONTAL);
+            chip.setGravity(Gravity.CENTER);
+            IconView ic = new IconView(activity, gl[i], CHIP2_ICON);
+            LinearLayout.LayoutParams ilp =
+                    new LinearLayout.LayoutParams(dp(CHIP2_ICON * 1.8f), dp(CHIP2_H));
+            ilp.rightMargin = dp(8);
+            chip.addView(ic, ilp);
+            TextView lab = new TextView(activity);
+            lab.setText(names[i]);
+            lab.setTextSize(TypedValue.COMPLEX_UNIT_DIP, CHIP2_SP);
+            lab.setGravity(Gravity.CENTER);
+            chip.addView(lab, new LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.WRAP_CONTENT, dp(CHIP2_H)));
+            chip.setOnClickListener(new View.OnClickListener() {
+                @Override
+                public void onClick(View x) {
+                    showBuckets = !photos;
+                    bucket = "";
+                    bucketName = "";
+                    syncTabs();
+                    Activity a = host;
+                    if (a != null) loadGallery(a, 0);
+                }
+            });
+            FrameLayout.LayoutParams clp =
+                    new FrameLayout.LayoutParams(chipW, dp(CHIP2_H));
+            clp.gravity = Gravity.TOP | Gravity.START;
+            clp.leftMargin = dp(CHIP2_SIDE) + i * (chipW + dp(CHIP2_GAP));
+            clp.topMargin = dp(CHIPS_TOP);
+            band.addView(chip, clp);
+            tabChips[i] = chip;
+        }
+        syncTabs();
 
         galleryScroll = new ScrollView(activity);
         galleryScroll.setVerticalScrollBarEnabled(false);
@@ -869,9 +1493,47 @@ public final class SigilCamera {
         galleryScroll.addView(galleryRows, new FrameLayout.LayoutParams(
                 FrameLayout.LayoutParams.MATCH_PARENT,
                 FrameLayout.LayoutParams.WRAP_CONTENT));
-        sheet.addView(galleryScroll, new LinearLayout.LayoutParams(
+        column.addView(galleryScroll, new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f));
-        return sheet;
+    }
+
+    private static boolean showBuckets;
+
+    private static void syncTabs() {
+        if (tabChips == null) return;
+        for (int i = 0; i < tabChips.length; i++) {
+            boolean on = (i == 0) != showBuckets;
+            tabChips[i].setBackground(pill(on ? CHIP2_ON : CHIP2_OFF, dp(CHIP2_H / 2)));
+            LinearLayout row = (LinearLayout) tabChips[i];
+            for (int j = 0; j < row.getChildCount(); j++) {
+                View c = row.getChildAt(j);
+                if (c instanceof TextView) {
+                    ((TextView) c).setTextColor(on ? CHIP2_ON_FG : CHIP2_OFF_FG);
+                } else if (c instanceof IconView) {
+                    ((IconView) c).tint = on ? CHIP2_ON_FG : CHIP2_OFF_FG;
+                    c.invalidate();
+                }
+            }
+        }
+    }
+
+    // --------------------------------------------------------- the gallery
+
+    /// One item of the grid.
+    private static final class Shot {
+        final Uri uri;
+        final String name;
+        final long added;
+        final String bucketId;
+        final String bucketLabel;
+
+        Shot(Uri uri, String name, long added, String bucketId, String bucketLabel) {
+            this.uri = uri;
+            this.name = name;
+            this.added = added;
+            this.bucketId = bucketId;
+            this.bucketLabel = bucketLabel;
+        }
     }
 
     /// Read the newest media off MediaStore and fill the grid. `attempt` is
@@ -889,7 +1551,11 @@ public final class SigilCamera {
                 h.post(new Runnable() {
                     @Override
                     public void run() {
-                        fillGallery(a, shots);
+                        if (showBuckets && bucket.isEmpty()) {
+                            fillBuckets(a, shots);
+                        } else {
+                            fillGallery(a, shots);
+                        }
                         if (shots.isEmpty() && attempt == 0 && ui != null) {
                             ui.postDelayed(new Runnable() {
                                 @Override
@@ -904,18 +1570,18 @@ public final class SigilCamera {
         });
     }
 
-    /// The newest GALLERY_MAX pictures and clips, newest first. A refused read
-    /// permission is a SecurityException from the query and an empty sheet —
-    /// never a crash.
+    /// The newest pictures and clips, newest first. A refused read permission
+    /// is a SecurityException from the query and an empty sheet — never a
+    /// crash.
     private static List<Shot> readGallery(Activity a) {
         List<Shot> out = new ArrayList<>();
         try {
             ContentResolver r = a.getContentResolver();
             collect(r, MediaStore.Images.Media.EXTERNAL_CONTENT_URI, out);
             collect(r, MediaStore.Video.Media.EXTERNAL_CONTENT_URI, out);
-        } catch (SecurityException e) {
-            return new ArrayList<>();
         } catch (RuntimeException e) {
+            // A refused read permission arrives as a SecurityException out of
+            // the query; an empty sheet is the right answer, not a crash.
             return new ArrayList<>();
         }
         Collections.sort(out, new Comparator<Shot>() {
@@ -924,9 +1590,6 @@ public final class SigilCamera {
                 return Long.compare(y.added, x.added);
             }
         });
-        while (out.size() > GALLERY_MAX) {
-            out.remove(out.size() - 1);
-        }
         return out;
     }
 
@@ -935,9 +1598,11 @@ public final class SigilCamera {
                 MediaStore.MediaColumns._ID,
                 MediaStore.MediaColumns.DISPLAY_NAME,
                 MediaStore.MediaColumns.DATE_ADDED,
+                MediaStore.MediaColumns.BUCKET_ID,
+                MediaStore.MediaColumns.BUCKET_DISPLAY_NAME,
         };
         // No LIMIT in the sort clause: it is unsupported from API 30 and the
-        // cursor is closed after GALLERY_MAX rows anyway.
+        // cursor is closed after enough rows anyway.
         Cursor c = r.query(base, proj, null, null,
                 MediaStore.MediaColumns.DATE_ADDED + " DESC");
         if (c == null) return;
@@ -945,12 +1610,17 @@ public final class SigilCamera {
             int idCol = c.getColumnIndexOrThrow(MediaStore.MediaColumns._ID);
             int nameCol = c.getColumnIndexOrThrow(MediaStore.MediaColumns.DISPLAY_NAME);
             int addedCol = c.getColumnIndexOrThrow(MediaStore.MediaColumns.DATE_ADDED);
+            int bidCol = c.getColumnIndex(MediaStore.MediaColumns.BUCKET_ID);
+            int blCol = c.getColumnIndex(MediaStore.MediaColumns.BUCKET_DISPLAY_NAME);
             int n = 0;
             while (c.moveToNext() && n < GALLERY_MAX) {
                 long id = c.getLong(idCol);
                 String name = c.getString(nameCol);
+                String bid = bidCol < 0 ? "" : c.getString(bidCol);
+                String bl = blCol < 0 ? "" : c.getString(blCol);
                 out.add(new Shot(ContentUris.withAppendedId(base, id),
-                        name == null ? "" : name, c.getLong(addedCol)));
+                        name == null ? "" : name, c.getLong(addedCol),
+                        bid == null ? "" : bid, bl == null ? "" : bl));
                 n++;
             }
         } finally {
@@ -960,27 +1630,48 @@ public final class SigilCamera {
 
     /// Lay the thumbnails out: three square cells edge to edge with a 3px
     /// gutter between them and none at the sides, exactly as the reference
-    /// does. The reference shows no clip among them, so nothing is badged.
-    private static void fillGallery(final Activity a, List<Shot> shots) {
+    /// does, with a month band before every group but the newest — which is
+    /// how the reference's "September" sits under three unlabelled rows. The
+    /// reference shows no clip among its thumbnails, so nothing is badged.
+    private static void fillGallery(final Activity a, List<Shot> all) {
         if (galleryRows == null) return;
         galleryRows.removeAllViews();
+        List<Shot> shots = new ArrayList<>();
+        for (Shot s : all) {
+            if (bucket.isEmpty() || bucket.equals(s.bucketId)) shots.add(s);
+        }
         if (shots.isEmpty()) return;
         int gutter = dp(GUTTER);
         int cell = (winW - gutter * (COLUMNS - 1)) / COLUMNS;
         LinearLayout row = null;
+        // The newest group carries no band — which is why the reference's
+        // "September" sits UNDER three unlabelled rows rather than over them.
+        String group = month(shots.get(0).added);
+        int inRow = 0;
         for (int i = 0; i < shots.size(); i++) {
-            if (i % COLUMNS == 0) {
+            final Shot shot = shots.get(i);
+            String m = month(shot.added);
+            if (!m.equals(group)) {
+                group = m;
+                row = null;
+                inRow = 0;
+                galleryRows.addView(monthBand(a, m));
+            }
+            if (inRow == 0) {
                 row = new LinearLayout(a);
                 row.setOrientation(LinearLayout.HORIZONTAL);
                 LinearLayout.LayoutParams rp = new LinearLayout.LayoutParams(
                         LinearLayout.LayoutParams.MATCH_PARENT, cell);
-                if (i > 0) rp.topMargin = gutter;
+                if (galleryRows.getChildCount() > 0
+                        && !(galleryRows.getChildAt(galleryRows.getChildCount() - 1)
+                                instanceof TextView)) {
+                    rp.topMargin = gutter;
+                }
                 galleryRows.addView(row, rp);
             }
-            final Shot shot = shots.get(i);
             ImageView cellView = new ImageView(a);
             cellView.setScaleType(ImageView.ScaleType.CENTER_CROP);
-            cellView.setBackgroundColor(0xFF2B2B28);
+            cellView.setBackgroundColor(CELL_BG);
             cellView.setOnClickListener(new View.OnClickListener() {
                 @Override
                 public void onClick(View x) {
@@ -989,9 +1680,96 @@ public final class SigilCamera {
                 }
             });
             LinearLayout.LayoutParams cp = new LinearLayout.LayoutParams(cell, cell);
-            if (i % COLUMNS != 0) cp.leftMargin = gutter;
+            if (inRow != 0) cp.leftMargin = gutter;
             row.addView(cellView, cp);
             thumbnail(a, shot, cellView, cell);
+            inRow = (inRow + 1) % COLUMNS;
+        }
+    }
+
+    /// The section header: a 132px band with the month's name 46px in.
+    private static TextView monthBand(Activity a, String name) {
+        TextView t = new TextView(a);
+        t.setText(name);
+        t.setTextColor(MONTH_FG);
+        t.setTextSize(TypedValue.COMPLEX_UNIT_DIP, MONTH_SP);
+        t.setTypeface(null, Typeface.BOLD);
+        t.setGravity(Gravity.CENTER_VERTICAL);
+        t.setPadding(dp(MONTH_X), 0, dp(MONTH_X), 0);
+        t.setLayoutParams(new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, dp(MONTH_H)));
+        return t;
+    }
+
+    private static final String[] MONTHS = {
+            "January", "February", "March", "April", "May", "June",
+            "July", "August", "September", "October", "November", "December" };
+
+    /// DATE_ADDED is in SECONDS since the epoch, not milliseconds.
+    private static String month(long addedSeconds) {
+        Calendar c = Calendar.getInstance();
+        c.setTimeInMillis(addedSeconds * 1000L);
+        int m = c.get(Calendar.MONTH);
+        int y = c.get(Calendar.YEAR);
+        String name = (m >= 0 && m < 12) ? MONTHS[m] : "";
+        return y == Calendar.getInstance().get(Calendar.YEAR) ? name : name + " " + y;
+    }
+
+    /// The Collections tab: one tile per MediaStore bucket, its newest item as
+    /// the cover, its name under it. Tapping one shows that bucket's grid.
+    private static void fillBuckets(final Activity a, List<Shot> all) {
+        if (galleryRows == null) return;
+        galleryRows.removeAllViews();
+        Map<String, Shot> covers = new LinkedHashMap<>();
+        for (Shot s : all) {
+            if (s.bucketId.isEmpty()) continue;
+            if (!covers.containsKey(s.bucketId)) covers.put(s.bucketId, s);
+        }
+        if (covers.isEmpty()) return;
+        int gutter = dp(GUTTER);
+        int cell = (winW - gutter * (COLUMNS - 1)) / COLUMNS;
+        LinearLayout row = null;
+        int i = 0;
+        for (Map.Entry<String, Shot> e : covers.entrySet()) {
+            final Shot cover = e.getValue();
+            if (i % COLUMNS == 0) {
+                row = new LinearLayout(a);
+                row.setOrientation(LinearLayout.HORIZONTAL);
+                LinearLayout.LayoutParams rp = new LinearLayout.LayoutParams(
+                        LinearLayout.LayoutParams.MATCH_PARENT,
+                        cell + dp(MONTH_H) / 2);
+                if (i > 0) rp.topMargin = gutter;
+                galleryRows.addView(row, rp);
+            }
+            LinearLayout tile = new LinearLayout(a);
+            tile.setOrientation(LinearLayout.VERTICAL);
+            ImageView art = new ImageView(a);
+            art.setScaleType(ImageView.ScaleType.CENTER_CROP);
+            art.setBackgroundColor(CELL_BG);
+            tile.addView(art, new LinearLayout.LayoutParams(cell, cell));
+            TextView lab = new TextView(a);
+            lab.setText(cover.bucketLabel);
+            lab.setTextColor(MONTH_FG);
+            lab.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 13f);
+            lab.setSingleLine(true);
+            lab.setEllipsize(android.text.TextUtils.TruncateAt.END);
+            lab.setPadding(dp(6), dp(4), dp(6), 0);
+            tile.addView(lab, new LinearLayout.LayoutParams(
+                    cell, LinearLayout.LayoutParams.WRAP_CONTENT));
+            tile.setOnClickListener(new View.OnClickListener() {
+                @Override
+                public void onClick(View x) {
+                    bucket = cover.bucketId;
+                    bucketName = cover.bucketLabel;
+                    loadGallery(a, 0);
+                }
+            });
+            LinearLayout.LayoutParams cp = new LinearLayout.LayoutParams(
+                    cell, LinearLayout.LayoutParams.WRAP_CONTENT);
+            if (i % COLUMNS != 0) cp.leftMargin = gutter;
+            row.addView(tile, cp);
+            thumbnail(a, cover, art, cell);
+            i++;
         }
     }
 
@@ -1002,10 +1780,11 @@ public final class SigilCamera {
             @Override
             public void run() {
                 Bitmap b = null;
+                int want = Math.max(96, Math.round(cell * THUMB_SCALE));
                 try {
                     if (Build.VERSION.SDK_INT >= 29) {
                         b = a.getContentResolver().loadThumbnail(
-                                shot.uri, new Size(cell, cell), null);
+                                shot.uri, new Size(want, want), null);
                     } else {
                         b = legacyThumb(a, shot);
                     }
@@ -1020,7 +1799,6 @@ public final class SigilCamera {
                     @Override
                     public void run() {
                         if (overlay == null) return;
-                        shot.thumb = done;
                         into.setImageBitmap(done);
                     }
                 });
@@ -1045,10 +1823,8 @@ public final class SigilCamera {
 
     /// A tapped thumbnail. The engine's send path wants a real file, not a
     /// content:// URI (SigilFilePicker copies for the same reason), so the
-    /// bytes are copied into the directory the bridge handed down and the
-    /// path is published for it to stage. It stages by the same call a
-    /// gallery pick does, and the staging page arriving is what closes the
-    /// viewfinder.
+    /// bytes are copied into the directory the bridge handed down and the path
+    /// is published for it to stage — by the same call a gallery pick makes.
     private static void stagePick(final Activity a, final Shot shot) {
         if (io == null || pickDir.isEmpty()) return;
         io.post(new Runnable() {
@@ -1105,121 +1881,22 @@ public final class SigilCamera {
         }
         return System.currentTimeMillis() + "-" + name;
     }
-    // -------------------------------------------------------- the controls
-
-    /// Every control's look, off the session's state. Runs on the main
-    /// thread, on the tick below and after each press.
-    private static void syncUi() {
-        if (overlay == null) return;
-        boolean recording = RECORDING.equals(state);
-        boolean live = READY.equals(state) || CAPTURING.equals(state) || recording;
-
-        if (hint != null) {
-            if (live) {
-                hint.setVisibility(View.GONE);
-            } else {
-                hint.setVisibility(View.VISIBLE);
-                String f = failure;
-                hint.setText(ERROR.equals(state) && f != null
-                        ? f
-                        : "Starting the camera…");
-            }
-        }
-
-        if (flashBtn != null) {
-            flashBtn.kind = torch ? IconView.FLASH_ON : IconView.FLASH_OFF;
-            flashBtn.setAlpha(flashAvailable ? 1f : 0.35f);
-            flashBtn.invalidate();
-        }
-        if (flipBtn != null) {
-            flipBtn.setAlpha(recording ? 0.35f : 1f);
-        }
-
-        for (int i = 0; i < chips.length; i++) {
-            boolean on = Math.abs(zoom - STOPS[i]) < 0.001f;
-            boolean can = reachable(STOPS[i]);
-            chips[i].setBackground(on ? pill(ON_BG, dp(CHIP_D / 2)) : null);
-            chips[i].setTextColor(on ? ON_FG : OFF_FG);
-            chips[i].setTypeface(null, on ? android.graphics.Typeface.BOLD
-                    : android.graphics.Typeface.NORMAL);
-            chips[i].setAlpha(can ? 1f : 0.35f);
-        }
-
-        for (int i = 0; i < modeLabels.length; i++) {
-            boolean on = (i == 0) == "photo".equals(mode);
-            modeLabels[i].setBackground(on ? pill(ON_BG, dp(MODE_H / 2)) : null);
-            modeLabels[i].setTextColor(on ? ON_FG : OFF_FG);
-            modeLabels[i].setTypeface(null, on ? android.graphics.Typeface.BOLD
-                    : android.graphics.Typeface.NORMAL);
-        }
-        // The reference centres the LIT label on the screen and lets the other
-        // sit beside it, so the row slides rather than the pill.
-        if (modeRow.getWidth() > 0) {
-            TextView lit = "photo".equals(mode) ? modeLabels[0] : modeLabels[1];
-            float want = modeRow.getWidth() / 2f
-                    - (lit.getLeft() + lit.getWidth() / 2f);
-            modeRow.setTranslationX(want);
-        }
-
-        if (shutterBtn != null) {
-            shutterBtn.video = "video".equals(mode);
-            shutterBtn.recording = recording;
-            shutterBtn.invalidate();
-        }
-        if (recPill != null) {
-            recPill.setVisibility(recording ? View.VISIBLE : View.GONE);
-            if (recording && recText != null) {
-                long s = Math.max(0, (System.currentTimeMillis() - recordStart) / 1000);
-                recText.setText(s / 60 + ":" + (s % 60 < 10 ? "0" : "") + (s % 60));
-            }
-        }
-    }
-
-    /// The overlay's own clock. The session changes state on our camera
-    /// thread; this is the cheapest way to let the look follow it without a
-    /// listener on every field.
-    private static final Runnable TICK = new Runnable() {
-        @Override
-        public void run() {
-            if (overlay == null || ui == null) return;
-            syncUi();
-            ui.postDelayed(this, 100);
-        }
-    };
-
-    private static boolean reachable(float stop) {
-        return stop >= zoomMin - 0.001f && stop <= zoomMax + 0.001f;
-    }
-
-    private static String label(float stop) {
-        if (stop == 0.5f) return "0.5";
-        if (stop == 1.0f) return "1.0";
-        if (stop == 2.0f) return "2.0";
-        return String.valueOf(stop);
-    }
-
-    private static GradientDrawable pill(int colour, int radius) {
-        GradientDrawable d = new GradientDrawable();
-        d.setShape(GradientDrawable.RECTANGLE);
-        d.setColor(colour);
-        d.setCornerRadius(radius);
-        return d;
-    }
 
     // ------------------------------------------------------------- drawing
 
-    /// The rounded bottom edge of the picture: black outside a rectangle whose
+    /// The picture's rounded bottom edge: the ground outside a rectangle whose
     /// bottom corners are 28dp round, which is the corner the reference shows
     /// where the viewfinder ends.
     private static final class FrameView extends View {
-        private final Paint black = new Paint(Paint.ANTI_ALIAS_FLAG);
+        private final Paint ground = new Paint(Paint.ANTI_ALIAS_FLAG);
         private final Path cut = new Path();
         private final Path rounded = new Path();
+        private final RectF box = new RectF();
 
         FrameView(Context c) {
             super(c);
-            black.setColor(Color.BLACK);
-            black.setStyle(Paint.Style.FILL);
+            ground.setColor(GROUND);
+            ground.setStyle(Paint.Style.FILL);
         }
 
         @Override
@@ -1228,24 +1905,26 @@ public final class SigilCamera {
             int h = getHeight();
             if (w <= 0 || h <= 0) return;
             float r = dp(CORNER);
+            box.set(0, 0, w, h);
             cut.reset();
-            cut.addRect(0, 0, w, h, Path.Direction.CW);
+            cut.addRect(box, Path.Direction.CW);
             rounded.reset();
-            rounded.addRoundRect(new RectF(0, 0, w, h),
+            rounded.addRoundRect(box,
                     new float[] { 0, 0, 0, 0, r, r, r, r }, Path.Direction.CW);
             cut.op(rounded, Path.Op.DIFFERENCE);
-            canvas.drawPath(cut, black);
+            canvas.drawPath(cut, ground);
         }
     }
 
-    /// The shutter: a white ring with a white disc inside it, and in video a
-    /// red disc that becomes a rounded square while a clip runs — the same
-    /// button ends it.
+    /// The shutter: a white ring with a disc inside it. `red` is how far along
+    /// the Photo → Video crossfade the disc is, and `recording` squares it off
+    /// — the same button ends the clip.
     private static final class ShutterView extends View {
-        boolean video;
+        float red;
         boolean recording;
         private final Paint ring = new Paint(Paint.ANTI_ALIAS_FLAG);
         private final Paint fill = new Paint(Paint.ANTI_ALIAS_FLAG);
+        private final RectF box = new RectF();
 
         ShutterView(Context c) {
             super(c);
@@ -1263,12 +1942,12 @@ public final class SigilCamera {
             ring.setStrokeWidth(stroke);
             canvas.drawCircle(cx, cy, Math.min(cx, cy) - stroke / 2f, ring);
 
-            fill.setColor(video || recording ? REC : Color.WHITE);
+            fill.setColor(mix(Color.WHITE, REC, red));
             fill.setAlpha(isPressed() ? 180 : 255);
             if (recording) {
                 float s = dp(SHUTTER_INNER * 0.62f) / 2f;
-                canvas.drawRoundRect(new RectF(cx - s, cy - s, cx + s, cy + s),
-                        dp(8), dp(8), fill);
+                box.set(cx - s, cy - s, cx + s, cy + s);
+                canvas.drawRoundRect(box, dp(8), dp(8), fill);
             } else {
                 canvas.drawCircle(cx, cy, dp(SHUTTER_INNER) / 2f, fill);
             }
@@ -1281,119 +1960,75 @@ public final class SigilCamera {
         }
     }
 
-    /// The close, the flash and the flip, drawn rather than typeset: the app's
-    /// icon font lives inside the Rust binary, where Java cannot reach it, and
-    /// these four glyphs are a few lines each.
+    private static int mix(int a, int b, float t) {
+        t = clamp(t);
+        int r = Math.round(Color.red(a) + (Color.red(b) - Color.red(a)) * t);
+        int g = Math.round(Color.green(a) + (Color.green(b) - Color.green(a)) * t);
+        int bl = Math.round(Color.blue(a) + (Color.blue(b) - Color.blue(a)) * t);
+        return Color.argb(255, r, g, bl);
+    }
+
+    /// A Material Symbols glyph, drawn from the app's OWN font — the same file
+    /// the Slint side bundles, written out of the binary by platform.rs. The
+    /// glyph is turned into a Path and scaled so its INK measures exactly the
+    /// reference's, which no choice of text size can promise: a font's advance
+    /// and its ink are not the same thing, and it was the difference between
+    /// them that made the first hand-drawn set the wrong size.
     private static final class IconView extends View {
-        static final int CLOSE = 0;
-        static final int FLASH_OFF = 1;
-        static final int FLASH_ON = 2;
-        static final int FLIP = 3;
-
-        int kind;
-        /// The flip carries a ring of its own; the other two are bare.
+        String glyph;
+        float ink;
+        /// The flip carries a ring of its own; nothing else does.
         boolean ring;
+        int tint = Color.WHITE;
 
-        private final Paint white = new Paint(Paint.ANTI_ALIAS_FLAG);
+        private final Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
         private final Paint line = new Paint(Paint.ANTI_ALIAS_FLAG);
         private final Path path = new Path();
-        private final Path tmp = new Path();
-        private final RectF box = new RectF();
+        private final Path scaled = new Path();
+        private final RectF bounds = new RectF();
+        private final Matrix matrix = new Matrix();
+        private String built = "";
 
-        IconView(Context c, int kind) {
+        IconView(Context c, String glyph, float ink) {
             super(c);
-            this.kind = kind;
+            this.glyph = glyph;
+            this.ink = ink;
             setClickable(true);
-            white.setColor(Color.WHITE);
-            white.setStyle(Paint.Style.FILL);
-            line.setColor(Color.WHITE);
+            paint.setStyle(Paint.Style.FILL);
             line.setStyle(Paint.Style.STROKE);
-            line.setStrokeCap(Paint.Cap.BUTT);
+            line.setColor(Color.WHITE);
         }
 
         @Override
         protected void onDraw(Canvas canvas) {
             float cx = getWidth() / 2f;
             float cy = getHeight() / 2f;
-            float stroke = dp(STROKE);
 
             if (ring) {
                 line.setStrokeWidth(dp(FLIP_STROKE));
+                line.setColor(tint);
                 canvas.drawCircle(cx, cy, Math.min(cx, cy) - dp(FLIP_STROKE) / 2f, line);
             }
+            if (symbols == null || glyph == null || glyph.isEmpty()) return;
 
-            switch (kind) {
-                case CLOSE: {
-                    float h = dp(CLOSE_GLYPH) / 2f;
-                    line.setStrokeWidth(stroke);
-                    canvas.drawLine(cx - h, cy - h, cx + h, cy + h, line);
-                    canvas.drawLine(cx + h, cy - h, cx - h, cy + h, line);
-                    break;
-                }
-                case FLASH_ON:
-                case FLASH_OFF: {
-                    float s = dp(FLASH_GLYPH);
-                    bolt(cx - s / 2f, cy - s / 2f, s);
-                    if (kind == FLASH_OFF) {
-                        // The slash, cut clean out of the bolt and then drawn
-                        // over the gap — the flash_off glyph's own shape.
-                        // ±10dp about the centre: the whole glyph then
-                        // measures the reference's 49 × 52 px.
-                        float d = s * 0.5f;
-                        line.setStrokeWidth(stroke * 2.4f);
-                        tmp.reset();
-                        tmp.moveTo(cx - d, cy - d);
-                        tmp.lineTo(cx + d, cy + d);
-                        Path gap = new Path();
-                        line.getFillPath(tmp, gap);
-                        path.op(gap, Path.Op.DIFFERENCE);
-                        line.setStrokeWidth(stroke);
-                        Path slash = new Path();
-                        line.getFillPath(tmp, slash);
-                        path.op(slash, Path.Op.UNION);
-                    }
-                    canvas.drawPath(path, white);
-                    break;
-                }
-                case FLIP: {
-                    // The arcs sit inside the glyph's box; the square brackets
-                    // at their ends take the rest of it out to FLIP_GLYPH.
-                    float r = dp(FLIP_GLYPH) * 0.40f;
-                    float arm = r * 0.55f;
-                    line.setStrokeWidth(stroke);
-                    box.set(cx - r, cy - r, cx + r, cy + r);
-                    // Two half-turns, each ending in the square bracket the
-                    // reference draws rather than a triangular arrow head.
-                    canvas.drawArc(box, 200, 160, false, line);
-                    canvas.drawArc(box, 20, 160, false, line);
-                    float ax = cx + (float) (r * Math.cos(Math.toRadians(200)));
-                    float ay = cy + (float) (r * Math.sin(Math.toRadians(200)));
-                    canvas.drawLine(ax, ay, ax, ay + arm, line);
-                    canvas.drawLine(ax - arm, ay + arm, ax + stroke / 2f, ay + arm, line);
-                    float bx = cx + (float) (r * Math.cos(Math.toRadians(20)));
-                    float by = cy + (float) (r * Math.sin(Math.toRadians(20)));
-                    canvas.drawLine(bx, by, bx, by - arm, line);
-                    canvas.drawLine(bx - stroke / 2f, by - arm, bx + arm, by - arm, line);
-                    break;
-                }
-                default:
-                    break;
+            if (!glyph.equals(built)) {
+                paint.setTypeface(symbols);
+                paint.setTextSize(200f);
+                path.reset();
+                paint.getTextPath(glyph, 0, glyph.length(), 0f, 0f, path);
+                built = glyph;
             }
-        }
-
-        /// Material's own flash bolt, `M7 2v11h3v9l7-12h-4l4-8z`, in a 24-unit
-        /// box scaled to `s` at (x, y).
-        private void bolt(float x, float y, float s) {
-            float u = s / 24f;
-            path.reset();
-            path.moveTo(x + 7 * u, y + 2 * u);
-            path.lineTo(x + 7 * u, y + 13 * u);
-            path.lineTo(x + 10 * u, y + 13 * u);
-            path.lineTo(x + 10 * u, y + 22 * u);
-            path.lineTo(x + 17 * u, y + 10 * u);
-            path.lineTo(x + 13 * u, y + 10 * u);
-            path.lineTo(x + 17 * u, y + 2 * u);
-            path.close();
+            path.computeBounds(bounds, true);
+            if (bounds.width() <= 0 || bounds.height() <= 0) return;
+            float s = dp(ink) / Math.max(bounds.width(), bounds.height());
+            matrix.reset();
+            matrix.setScale(s, s);
+            matrix.postTranslate(cx - (bounds.left + bounds.width() / 2f) * s,
+                    cy - (bounds.top + bounds.height() / 2f) * s);
+            scaled.reset();
+            path.transform(matrix, scaled);
+            paint.setColor(tint);
+            canvas.drawPath(scaled, paint);
         }
     }
 
@@ -1422,7 +2057,6 @@ public final class SigilCamera {
             if (a == mine) closed = true;
         }
     }
-
     // -------------------------------------------------------- the session
 
     /// Read the characteristics of the camera we are about to use and settle
@@ -1432,15 +2066,39 @@ public final class SigilCamera {
         try {
             CameraManager m = (CameraManager) activity.getSystemService(Context.CAMERA_SERVICE);
             if (m == null) return fail("this device has no camera service");
+            // THE ULTRA-WIDE STOP LIVES ON THE LOGICAL CAMERA. Taking the
+            // first id with the right facing is what made 0.5× unreachable:
+            // a phone can expose its physical lenses beside the logical one,
+            // and a physical camera's CONTROL_ZOOM_RATIO_RANGE floors at 1.0
+            // — only the logical camera's range reaches below it. So every
+            // candidate is weighed and the one that can go WIDEST wins, and
+            // each one's range goes into the log so a device that still says
+            // 1.0 can be told apart from a bug of ours.
             String chosen = null;
             String fallback = null;
+            float widest = Float.MAX_VALUE;
             for (String id : m.getCameraIdList()) {
                 CameraCharacteristics c = m.getCameraCharacteristics(id);
                 Integer f = c.get(CameraCharacteristics.LENS_FACING);
                 if (f == null) continue;
                 if (fallback == null) fallback = id;
                 boolean isFront = f == CameraMetadata.LENS_FACING_FRONT;
-                if (isFront == front) { chosen = id; break; }
+                if (isFront != front) continue;
+                float low = 1f;
+                float high = 1f;
+                if (Build.VERSION.SDK_INT >= 30) {
+                    Range<Float> r = c.get(CameraCharacteristics.CONTROL_ZOOM_RATIO_RANGE);
+                    if (r != null) { low = r.getLower(); high = r.getUpper(); }
+                }
+                Log.i(TAG, "camera: id " + id + " facing " + f
+                        + " zoom " + low + ".." + high + (logical(c) ? " logical" : ""));
+                // A logical camera always beats a physical one, and among
+                // equals the wider lens wins.
+                float score = logical(c) ? low - 100f : low;
+                if (chosen == null || score < widest) {
+                    chosen = id;
+                    widest = score;
+                }
             }
             if (chosen == null) chosen = fallback;
             if (chosen == null) return fail("this device has no camera");
@@ -1472,6 +2130,10 @@ public final class SigilCamera {
                 Float max = c.get(CameraCharacteristics.SCALER_AVAILABLE_MAX_DIGITAL_ZOOM);
                 zoomMax = max == null ? 1f : Math.max(1f, max);
             }
+            Log.i(TAG, "camera: opening " + cameraId + " zoom "
+                    + zoomMin + ".." + zoomMax
+                    + (zoomRatioSupported ? " (ratio)" : " (crop)"));
+            zoomTarget = 1f;
 
             StreamConfigurationMap map =
                     c.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP);
@@ -1536,6 +2198,19 @@ public final class SigilCamera {
 
     private static long area(Size s) {
         return (long) s.getWidth() * (long) s.getHeight();
+    }
+
+    /// Whether this id is the LOGICAL camera behind several lenses — the only
+    /// one whose zoom ratio reaches an ultra-wide.
+    private static boolean logical(CameraCharacteristics c) {
+        int[] caps = c.get(CameraCharacteristics.REQUEST_AVAILABLE_CAPABILITIES);
+        if (caps == null) return false;
+        for (int cap : caps) {
+            if (cap == CameraMetadata.REQUEST_AVAILABLE_CAPABILITIES_LOGICAL_MULTI_CAMERA) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private static void openDevice() {
@@ -1640,6 +2315,9 @@ public final class SigilCamera {
             b.set(CaptureRequest.CONTROL_AF_MODE,
                     CameraMetadata.CONTROL_AF_MODE_CONTINUOUS_PICTURE);
             applyControls(b);
+            // Kept so a zoom frame is one set() and one setRepeatingRequest
+            // rather than a whole rebuild sixty times a second.
+            repeating = b;
             s.setRepeatingRequest(b.build(), null, bg);
         } catch (CameraAccessException e) {
             fail("camera: " + e.getMessage());
@@ -2011,6 +2689,7 @@ public final class SigilCamera {
         ioThread = null;
         recorder = null;
         session = null;
+        repeating = null;
         device = null;
         jpeg = null;
         opening = false;
@@ -2051,6 +2730,7 @@ public final class SigilCamera {
         ImageReader j = jpeg;
         recorder = null;
         session = null;
+        repeating = null;
         device = null;
         jpeg = null;
         opening = false;

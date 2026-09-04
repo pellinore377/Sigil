@@ -46,13 +46,20 @@ rand = "0.9"
 [target.'cfg(target_os = "android")'.dependencies]
 i-slint-backend-android-activity = "=1.17.1"
 
-slint = { version = "1.17", features = ["backend-android-activity-06"] }
+# `log`: Slint's own messages (the `perf` frame report among them) through
+# the `log` crate, which android_logger carries to logcat; otherwise they go
+# to stderr, which the phone never shows.
+slint = { version = "1.17", features = ["backend-android-activity-06", "log"] }
 # android-activity needs exactly one activity flavour chosen by the final crate.
 android-activity = { version = "0.6", features = ["native-activity"] }
 # Opening the login URL means one JNI call; there is no xdg-open on a phone.
 jni = "0.21"
 ndk-context = "0.1"
 tracing-android = "0.2"
+# Slint's own frame-time report (the `perf` device flag) speaks the `log`
+# crate; without a backend it went nowhere on the phone.
+android_logger = "0.14"
+log = "0.4"
 
 [build-dependencies]
 slint-build = "1.17"

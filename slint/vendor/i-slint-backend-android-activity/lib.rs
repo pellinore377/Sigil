@@ -11,6 +11,7 @@
 
 mod androidwindowadapter;
 mod javahelper;
+mod vsync;
 
 #[cfg(all(not(feature = "aa-06"), feature = "aa-05"))]
 pub use android_activity_05 as android_activity;
@@ -37,6 +38,8 @@ pub struct AndroidPlatform {
     app: AndroidApp,
     window: Rc<AndroidWindowAdapter>,
     event_listener: Option<Box<dyn Fn(&PollEvent<'_>)>>,
+    /// SIGIL PATCH: the display's vsync, which paces every frame.
+    vsync: vsync::Vsync,
 }
 
 impl AndroidPlatform {
@@ -59,7 +62,8 @@ impl AndroidPlatform {
     pub fn new(app: AndroidApp) -> Self {
         let window = AndroidWindowAdapter::new(app.clone());
         CURRENT_WINDOW.set(Rc::downgrade(&window));
-        Self { app, window, event_listener: None }
+        let vsync = vsync::Vsync::start(app.create_waker());
+        Self { app, window, event_listener: None, vsync }
     }
 
     /// Instantiate a new Android backend given the [`android_activity::AndroidApp`]
@@ -101,14 +105,16 @@ impl i_slint_core::platform::Platform for AndroidPlatform {
     }
     fn run_event_loop(&self) -> Result<(), PlatformError> {
         loop {
-            let mut timeout = i_slint_core::platform::duration_until_next_timer_update();
-            if self.window.window.has_active_animations() {
-                // FIXME: we should not hardcode a value here
-                let frame_duration = Duration::from_millis(10);
-                timeout = Some(match timeout {
-                    Some(x) => x.min(frame_duration),
-                    None => frame_duration,
-                })
+            let timeout = i_slint_core::platform::duration_until_next_timer_update();
+            // SIGIL PATCH: a frame is wanted while an animation runs or a
+            // redraw is pending. The stock loop capped the poll at a fixed
+            // 10ms for animations and rendered whenever it came back, which
+            // put frames one, two or three vsyncs apart at random on a 120Hz
+            // panel. Now the vsync helper wakes the poll at the display's
+            // next frame and the render happens then — once per vsync, with
+            // the animations advanced to frame time — and never otherwise.
+            if self.window.window.has_active_animations() || self.window.pending_redraw.get() {
+                self.vsync.request();
             }
             let mut r = Ok(ControlFlow::Continue(()));
             self.app.poll_events(timeout, |e| {
@@ -121,8 +127,16 @@ impl i_slint_core::platform::Platform for AndroidPlatform {
             if r?.is_break() {
                 break;
             }
-            if self.window.pending_redraw.take() {
-                self.window.do_render()?;
+            if self.vsync.take() {
+                i_slint_core::platform::update_timers_and_animations();
+                if self.window.window.has_active_animations() {
+                    // the next frame is asked for before this one is drawn,
+                    // so the request is in ahead of the vsync it is for
+                    self.vsync.request();
+                }
+                if self.window.pending_redraw.take() || self.window.window.has_active_animations() {
+                    self.window.do_render()?;
+                }
             }
         }
         Ok(())

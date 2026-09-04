@@ -7,7 +7,8 @@
 import { Theme } from "style.slint";
 import { Icons } from "icons.slint";
 import { IconLabel } from "components.slint";
-import { SelfPin } from "pages/map.slint";
+import { TouchList } from "furniture.slint";
+import { SelfPin, MapTileView } from "pages/map.slint";
 
 export struct StickerItem { path: string, art: image, body: string, url: string, w: int, h: int }
 
@@ -177,6 +178,12 @@ component PollToggleRow inherits Rectangle {
 component AttachTile inherits Rectangle {
     in property <string> icon;
     in property <string> label;
+    /// Draw the glyph filled rather than outlined. The location tiles set it:
+    /// a place wears the FILLED Material Symbols everywhere else it appears —
+    /// the timeline bubble (bubble.slint:1119, :1181), the marker in
+    /// pages/map.slint's SelfPin, that page's status line — and an outlined
+    /// crosshair here was the same idea drawn at a different weight.
+    in property <bool> filled: false;
     in property <float> icon-scale: 1.0;
     in property <color> fg;
     in property <color> chip;
@@ -201,6 +208,7 @@ component AttachTile inherits Rectangle {
         background: tile-t.has-hover ? root.chip.brighter(0.2) : root.chip;
         IconLabel {
             text: root.icon;
+            filled: root.filled;
             color: root.fg;
             font-size: root.phone ? 24px : Theme.icon-size * root.icon-scale;
             width: 100%; height: 100%;
@@ -245,12 +253,33 @@ component LocationPages inherits Rectangle {
     in property <float> mark-lat;
     in property <float> mark-lon;
     in property <image> my-avatar;
+    /// The sharer's initials and tint, so the marker can wear a face even
+    /// where no picture has been cached — as the timeline bubble's does.
+    in property <string> my-initials;
+    in property <color> my-tint: Theme.accent;
+    /// The live grid, exactly as the location page's: single rendered tiles
+    /// the bridge places for a centre and a zoom it keeps. Empty for a server
+    /// that renders composites but not single tiles, and then `map-img` above
+    /// is the still picture that stands in.
+    in property <[MapTileView]> tiles;
+    in property <length> pin-x: -1000px;
+    in property <length> pin-y: -1000px;
+    property <bool> tiled: root.tiles.length > 0;
     callback back-requested;
     callback map-tapped(length, length);       // logical px inside the map box
     callback zoom-requested(int);              // +1 / −1; the bridge clamps 3..19
     callback recentre-requested;               // re-crop at the fix
     callback retry-position;                   // position.refresh
     callback share-requested(float, float, float, string); // lat, lon, durationMs, mode
+    /// The same six the location page raises, and they go to the same place:
+    /// the picker's map IS that map. See pages/map.slint.
+    callback viewport(length, length);
+    callback panned(length, length);
+    callback zoom-at(int, length, length);
+    callback pinch-begin();
+    callback pinched(float, length, length);
+    callback pinch-end();
+    property <bool> pinch-live: false;
 
     property <bool> pin-mode: root.mode == "pin";
     property <bool> live-mode: root.mode == "live";
@@ -287,32 +316,123 @@ component LocationPages inherits Rectangle {
         background: root.fg.with-alpha(0.10);
         clip: true;
 
-        if root.map-ready && root.map-img.width > 0 : Image {
+        // The bridge places the grid for this box, so it has to know it.
+        changed width => { root.viewport(self.width, self.height); }
+        changed height => { root.viewport(self.width, self.height); }
+        init => { root.viewport(self.width, self.height); }
+
+        // The still composite: it stands in until the grid has tiles, and
+        // stays for a server that serves composites but no single tiles.
+        if root.map-ready && !root.tiled && root.map-img.width > 0 : Image {
             width: 100%; height: 100%;
             source: root.map-img;
             image-fit: cover;
         }
 
-        // The tiles' tap handler (LocationPicker.qml:128-131 mapTapped):
-        // pin mode only; chips are declared after so they stay on top.
-        map-tap := TouchArea {
-            enabled: root.pin-mode && root.map-ready;
-            clicked => { root.map-tapped(self.pressed-x, self.pressed-y); }
+        // The live grid, drawn exactly as pages/map.slint draws it — stand-ins
+        // first, real tiles over them, each cropped to the part of its picture
+        // it is standing in for.
+        if root.tiled : Rectangle {
+            width: 100%; height: 100%;
+            for t in root.tiles : Image {
+                x: t.x; y: t.y;
+                width: t.w; height: t.h;
+                source: t.img;
+                source-clip-x: t.sx;
+                source-clip-y: t.sy;
+                source-clip-width: t.sw;
+                source-clip-height: t.sh;
+                image-fit: fill;
+            }
         }
 
-        // The marker MapView.qml would place (:117-127): the crop is centred
-        // on the point, so its tip stands at the middle of the box. Your face
-        // in the pin outside pin mode (:122-124); a plain pin once marked
-        // (markerAvatar is "" in pin mode — SelfPin without a face is one).
+        // …and the same gestures, in the same order, for the same reasons:
+        // the pinch handler declared first so it intercepts while two fingers
+        // are down, the drag below it keeping its anchor fresh meanwhile so a
+        // finger lifting does not lurch the map. This picker used to have a
+        // single `clicked` and nothing else — no drag, no pinch, no wheel —
+        // and "pan and zoom feel wrong here" was that: they were not
+        // implemented, and the +/− chips re-cropped a still picture.
+        // See pages/map.slint, which this is a copy of on purpose: one set of
+        // physics, so the two maps cannot drift apart.
+        if root.tiled : ScaleRotateGestureHandler {
+            width: 100%; height: 100%;
+            started => { root.pinch-live = true; root.pinch-begin(); }
+            updated => { root.pinched(self.scale, self.center.x, self.center.y); }
+            ended => { root.pinch-live = false; root.pinch-end(); }
+            cancelled => { root.pinch-live = false; root.pinch-end(); }
+        }
+        // The tap handler and the drag are one area: a tap that drops a pin
+        // and a drag that moves the map are the same finger, and only the
+        // TouchArea that sees the press can tell which it turned out to be.
+        // `clicked` fires only when the finger did not travel, so a drag never
+        // drops a pin.
+        map-tap := TouchArea {
+            enabled: root.map-ready;
+            property <length> last-x;
+            property <length> last-y;
+            property <bool> dragging: false;
+            pointer-event(e) => {
+                if (e.button == PointerEventButton.left && e.kind == PointerEventKind.down) {
+                    self.last-x = self.mouse-x;
+                    self.last-y = self.mouse-y;
+                    self.dragging = true;
+                }
+                if (e.kind == PointerEventKind.up || e.kind == PointerEventKind.cancel) {
+                    self.dragging = false;
+                }
+            }
+            moved => {
+                if (root.pinch-live) {
+                    self.last-x = self.mouse-x;
+                    self.last-y = self.mouse-y;
+                } else if (self.dragging && root.tiled) {
+                    root.panned(self.mouse-x - self.last-x, self.mouse-y - self.last-y);
+                    self.last-x = self.mouse-x;
+                    self.last-y = self.mouse-y;
+                }
+            }
+            clicked => {
+                if (root.pin-mode) { root.map-tapped(self.pressed-x, self.pressed-y); }
+            }
+            double-clicked => {
+                if (root.tiled) { root.zoom-at(1, self.mouse-x, self.mouse-y); }
+            }
+            scroll-event(e) => {
+                if (root.tiled && e.delta-y != 0) {
+                    root.zoom-at(e.delta-y > 0 ? 1 : -1, self.mouse-x, self.mouse-y);
+                    return accept;
+                }
+                reject
+            }
+        }
+
+        // The marker. On the still crop it stands at the middle of the box,
+        // because the crop is centred on the point; on the live grid it stands
+        // on its own point and travels with the map, as the page's does.
         if root.map-ready && !root.pin-mode && root.have-fix : self-marker := SelfPin {
-            x: map-box.width / 2 - 24px;
-            y: map-box.height / 2 - 48px;
+            x: (root.tiled ? root.pin-x : map-box.width / 2) - 24px;
+            y: (root.tiled ? root.pin-y : map-box.height / 2) - 48px;
             pin-color: root.accent;
+
+            // Current and Live Location are YOU: the marker wears your face, as
+
+            // the timeline's live-location bubble does (bubble.slint:1190-1199),
+
+            // with your initials on your tint where no picture is cached. Drop a
+
+            // Pin below keeps the bare pin — there is no sharer to show.
+
+            face: true;
+
             avatar: root.my-avatar;
+
+            initials: root.my-initials;
+            tint: root.my-tint;
         }
         if root.map-ready && root.pin-mode && root.marked : pin-marker := SelfPin {
-            x: map-box.width / 2 - 24px;
-            y: map-box.height / 2 - 48px;
+            x: (root.tiled ? root.pin-x : map-box.width / 2) - 24px;
+            y: (root.tiled ? root.pin-y : map-box.height / 2) - 48px;
             pin-color: root.accent;
         }
 
@@ -328,7 +448,21 @@ component LocationPages inherits Rectangle {
                 alignment: center;
                 if !root.pin-mode && root.have-fix : SelfPin {
                     pin-color: root.accent;
+
+                    // Current and Live Location are YOU: the marker wears your face, as
+
+                    // the timeline's live-location bubble does (bubble.slint:1190-1199),
+
+                    // with your initials on your tint where no picture is cached. Drop a
+
+                    // Pin below keeps the bare pin — there is no sharer to show.
+
+                    face: true;
+
                     avatar: root.my-avatar;
+
+                    initials: root.my-initials;
+                    tint: root.my-tint;
                 }
                 // :140-141 — the no-map glyph: filled `place`, 36px, accent@0.8.
                 if root.pin-mode || !root.have-fix : IconLabel {
@@ -390,7 +524,10 @@ component LocationPages inherits Rectangle {
             y: map-box.height - 28px * 2 - 4px - 8px;
             width: 28px;
             spacing: 4px;
-            visible: root.pin-mode && root.map-ready;
+            // The chips zoom the still crop; with a live grid the pinch, the
+            // double tap and the wheel do it, exactly as on the location page,
+            // and that page carries no chips over a live map either.
+            visible: root.map-ready && !root.tiled && root.pin-mode;
             Rectangle {
                 width: 28px; height: 28px; border-radius: 8px;
                 background: root.chip;
@@ -539,6 +676,31 @@ export component AttachMenu inherits Rectangle {
     /// The room wears a chat theme: `surface` and `chip` are then its own
     /// tones and the phone's sheet takes them instead of the neutral grounds.
     in property <bool> themed: false;
+    /// The ground the phone's sheet paints: the FOOTER band's, translucent,
+    /// with the conversation running on under it (chat.slint hands this down
+    /// as convo-paint at band-alpha). The tiles on top stay opaque — this is
+    /// the page they sit on, not their own fill.
+    in property <color> ground: Theme.card-ground;
+    /// The gesture bar's height. The sheet's ground runs on under it and the
+    /// pages that lay out from the top stand their content off it with this.
+    in property <length> bottom-inset: 0px;
+    /// The height the host's frame has settled on: the remembered keyboard's
+    /// (chat.slint's `kb-h`), or the whole page below the composer once this
+    /// sheet has been taken up. The sheet is laid out AT it rather than
+    /// cropped to it. Zero means "your own natural size" — the desktop.
+    in property <length> avail: 0px;
+    /// This sheet is the thing in front. Cleared by the host when the panel
+    /// shuts, and the expansion latch goes with it: the next visit opens at
+    /// the keyboard's height again, as the emoji picker's does.
+    in property <bool> active: true;
+    /// Taken to the full page — by the handle, or by the grid being scrolled
+    /// past its top. Read by the host (chat.slint's `panel-full`), which
+    /// answers by giving the frame everything below the composer.
+    out property <bool> full: false;
+    changed active => { if (!root.active) { root.full = false; } }
+    // Leaving the tile grid drops the latch too: the emoji page keeps its own
+    // (the picker's), and coming back must be the grid's resting height.
+    changed page => { root.full = false; }
 
     // grid | poll | stickers | emoji | note | pin | current | live — a
     // location tile emits open-location and the bridge answers by setting
@@ -561,7 +723,15 @@ export component AttachMenu inherits Rectangle {
     in property <bool> lp-marked;
     in property <float> lp-mark-lat;
     in property <float> lp-mark-lon;
+    /// The picker's live grid, and where its marker stands in it.
+    in property <[MapTileView]> lp-tiles;
+    in property <length> lp-pin-x: -1000px;
+    in property <length> lp-pin-y: -1000px;
     in property <image> my-avatar;
+    /// The sharer's initials and tint, so the marker can wear a face even
+    /// where no picture has been cached — as the timeline bubble's does.
+    in property <string> my-initials;
+    in property <color> my-tint: Theme.accent;
 
     callback pick-files;
     /// Capture and gallery, which the sheet leads with: the QML had neither,
@@ -575,6 +745,14 @@ export component AttachMenu inherits Rectangle {
     callback loc-recentre;
     callback loc-retry;                 // position.refresh
     callback share-location(float, float, float, string); // lat, lon, ms, mode
+    /// The picker's map is the location page's map: these are that page's
+    /// own six gestures, on their way to the same handlers.
+    callback loc-viewport(length, length);
+    callback loc-panned(length, length);
+    callback loc-zoom-at(int, length, length);
+    callback loc-pinch-begin();
+    callback loc-pinched(float, length, length);
+    callback loc-pinch-end();
     callback insert-emoji(string);
     callback create-poll(string, [string], bool, bool); // question, options, closed, multiple answers
     callback send-sticker(int);     // index into stickers
@@ -586,8 +764,13 @@ export component AttachMenu inherits Rectangle {
     property <bool> phone: Theme.mode != "desktop";
     // The phone's sheet: the room's own surface when themed, else the card
     // ground; its tiles the room's chip, else a stranger's bubble tone.
-    property <color> sheet-c: root.phone && !root.themed ? Theme.card-ground : root.surface;
-    property <color> tile-c: root.phone && !root.themed ? Theme.bubble-other : root.chip;
+    property <color> sheet-c: root.phone ? root.ground : root.surface;
+    // The tiles are what stays OPAQUE over the translucent sheet: a chip with
+    // the chat theme's own alpha on it would let the timeline through the
+    // discs as well as around them.
+    property <color> tile-c: root.phone
+        ? (root.themed ? root.chip.with-alpha(1.0) : Theme.bubble-other)
+        : root.chip;
     /// The poll page's wells and pills. A well is inset, so it wants to be
     /// darker than the sheet — which the chip already is over a dark ground,
     /// while over the light palette that same chip is a slab of mid grey
@@ -613,13 +796,62 @@ export component AttachMenu inherits Rectangle {
     // — a label, the 48 question, a label, THREE 54 option rows and the two
     // 52 switches, 393 measured — then the 44 footer over its 8 and the 20
     // margin. Three options is what a poll usually has; a fourth flicks.
-    height: root.page == "poll" ? (root.phone ? 520px : 408px)
+    // ---- the drag handle at the head of the phone's tile grid ----
+    //
+    // Measured off the reference (Google Messages, 1344 × 2992 at 2.55 px/dp),
+    // by fitting the transitions between its flat tones:
+    //
+    //   sheet top corner radius   69.7 px  = 27.3 dp  (the 28 the sheet has)
+    //   chevron ink               91 × 19 px = 35.7 × 7.5 dp, stroke 10.7 px
+    //                             = 4.2 dp, colour rgb(99,98,95) on the
+    //                             sheet's rgb(32,31,30) — fg at about 0.34
+    //   chevron centre            60.5 px  = 23.8 dp below the sheet's top
+    //   first row of tile discs  138.1 px  = 54.2 dp below the sheet's top
+    //   tile disc                184 × 142 px = 72.2 × 55.7 dp, r 27.8 dp —
+    //                             which is the 72 × 56 stadium the tiles here
+    //                             already are, so only the head of the sheet
+    //                             changes
+    //
+    // 38 of strip and the grid's own 16 lead-in put the discs at 54; the
+    // chevron sits at 23.8 INSIDE the strip rather than centred in it, which
+    // is where the reference has it.
+    //
+    // It is drawn rather than set as a glyph: this chevron is far flatter and
+    // heavier than Material's expand_less, which at the width measured here
+    // would be three times as deep.
+    property <length> handle-strip: 38px;
+    property <length> handle-w: 36px;
+    property <length> handle-ink: 7.5px;
+    property <length> handle-stroke: 4.2px;
+    property <length> handle-cy: 23.8px;
+
+    /// The ladder above, as heights: what each page asks for when nothing else
+    /// is asking. It is only what the phone's sheet FALLS BACK to now — the
+    /// host hands down the keyboard's height instead — and it is still the
+    /// desktop's own size, where there is no keyboard to match.
+    property <length> natural-h: root.page == "poll" ? (root.phone ? 520px : 408px)
           : root.location-page ? 430px
           : root.page == "emoji" ? 400px
           : root.page == "stickers" ? 330px
           : root.page == "camera" ? 206px
           : root.phone ? 264px
           : 232px;
+    /// The floor under the height the host asks for. The grid and the emoji
+    /// picker are keyboard stand-ins: they take the keyboard's height whatever
+    /// it is and scroll inside it, down to a floor of the handle strip, one
+    /// row of tiles and the air below (and, for the picker, its search row,
+    /// 20 of clear band, one grid row and the category bar — the same 172).
+    /// The sub-pages are forms, not stand-ins: a poll squeezed into a short
+    /// keyboard is a poll with no options in it, so they keep their own size,
+    /// and the host's cap on the page is all that trims them. The desktop has
+    /// no keyboard to match at all and gives nothing anywhere.
+    out property <length> min-h: !root.phone ? root.natural-h
+        : root.page == "grid" ? root.handle-strip + 16px + 116px + root.bottom-inset
+        : root.page == "emoji" ? 172px + root.bottom-inset
+        : root.natural-h;
+    // The reference gives every panel under the composer EXACTLY the height of
+    // the keyboard it replaces, which is what the host hands down in `avail`.
+    height: root.avail > 0px ? max(root.min-h, root.avail) : root.natural-h;
 
     public function reset() { root.page = "grid"; root.note = ""; }
 
@@ -681,34 +913,110 @@ export component AttachMenu inherits Rectangle {
     if root.page == "grid" : grid-box := Rectangle {
         width: 100%; height: 100%;
         property <length> cell: (grid-box.width - 32px) / 5;
-        grid-block := VerticalLayout {
-            x: root.phone ? 16px : (grid-box.width - 350px) / 2;
-            y: root.phone ? 16px : (grid-box.height - self.preferred-height) / 2;
-            width: root.phone ? grid-box.width - 32px : 350px;
-            height: self.preferred-height;
-            HorizontalLayout {
-                alignment: start;
-                spacing: root.phone ? 0px : 10px;
-                // The phone's camera is not a page here at all: it is a
-                // viewfinder of the phone's own, laid over the whole screen
-                // (java/SigilCamera.java). The tile asks the bridge for it on
-                // the shutter's own callback — the sheet has no other channel
-                // — and closes itself out of the way. The DESKTOP, with no
-                // camera of ours, still opens the chooser page below.
-                AttachTile { icon: Icons.camera; label: "Camera"; fg: root.fg; chip: root.tile-c; phone: root.phone; width: root.phone ? grid-box.cell : 62px; clicked => { if (root.phone) { root.pick-camera(); root.close-requested(); } else { root.page = "camera"; } } }
-                AttachTile { icon: Icons.image; label: "Gallery"; fg: root.fg; chip: root.tile-c; phone: root.phone; width: root.phone ? grid-box.cell : 62px; clicked => { root.pick-gallery(); root.close-requested(); } }
-                AttachTile { icon: Icons.attach; label: "Files"; fg: root.fg; chip: root.tile-c; phone: root.phone; width: root.phone ? grid-box.cell : 62px; clicked => { root.pick-files(); root.close-requested(); } }
-                AttachTile { icon: Icons.emoji; label: "Emojis"; fg: root.fg; chip: root.tile-c; phone: root.phone; width: root.phone ? grid-box.cell : 62px; clicked => { root.load-emoji(); root.page = "emoji"; } }
-                AttachTile { icon: Icons.sticker; label: "Stickers"; fg: root.fg; chip: root.tile-c; phone: root.phone; width: root.phone ? grid-box.cell : 62px; clicked => { root.load-stickers(); root.page = "stickers"; } }
+        // The grid SCROLLS on the phone. The panel is the keyboard's height
+        // and the keyboard is the user's own choice of size: under a shrunken
+        // one there is no room for both rows of tiles, and the reference shows
+        // what fits with the rest below the fold — which is also what makes
+        // the panel expandable, since the first scroll takes it to full page.
+        grid := TouchList {
+            x: 0; y: root.phone ? root.handle-strip : 0px;
+            width: 100%;
+            height: max(0px, grid-box.height - self.y);
+            // The same latch the emoji picker uses: the first move of the grid
+            // takes the panel up and it stays there. 6 of slack so a tap that
+            // grazes is not a scroll.
+            changed viewport-y => {
+                if (root.phone && root.active && grid.viewport-y < -6px) { root.full = true; }
             }
-            Rectangle { height: root.phone ? 0px : 10px; }
-            HorizontalLayout {
-                alignment: start;
-                spacing: root.phone ? 0px : 10px;
-                AttachTile { icon: Icons.poll; label: "Poll"; fg: root.fg; chip: root.tile-c; phone: root.phone; width: root.phone ? grid-box.cell : 62px; clicked => { root.reset-poll(); root.page = "poll"; } }
-                AttachTile { icon: Icons.myLocation; label: "Current\nLocation"; fg: root.fg; chip: root.tile-c; phone: root.phone; width: root.phone ? grid-box.cell : 62px; clicked => { root.open-location("current"); } }
-                AttachTile { icon: Icons.liveLocation; label: "Live\nLocation"; fg: root.fg; chip: root.tile-c; phone: root.phone; width: root.phone ? grid-box.cell : 62px; clicked => { root.open-location("live"); } }
-                AttachTile { icon: Icons.pinDrop; label: "Drop a Pin"; icon-scale: 1.3; fg: root.fg; chip: root.tile-c; phone: root.phone; width: root.phone ? grid-box.cell : 62px; clicked => { root.open-location("pin"); } }
+            // ONE child, sized by hand, so the block below keeps the exact
+            // placement it had before it could scroll.
+            Rectangle {
+                height: root.phone
+                    ? 16px + grid-block.preferred-height + 16px + root.bottom-inset
+                    : grid.height;
+                grid-block := VerticalLayout {
+                    x: root.phone ? 16px : (grid-box.width - 350px) / 2;
+                    y: root.phone ? 16px : (parent.height - self.preferred-height) / 2;
+                    width: root.phone ? grid-box.width - 32px : 350px;
+                    height: self.preferred-height;
+                    HorizontalLayout {
+                        alignment: start;
+                        spacing: root.phone ? 0px : 10px;
+                        // The phone's camera is not a page here at all: it is a
+                        // viewfinder of the phone's own, laid over the whole screen
+                        // (java/SigilCamera.java). The tile asks the bridge for it on
+                        // the shutter's own callback — the sheet has no other channel
+                        // — and closes itself out of the way. The DESKTOP, with no
+                        // camera of ours, still opens the chooser page below.
+                        AttachTile { icon: Icons.camera; label: "Camera"; fg: root.fg; chip: root.tile-c; phone: root.phone; width: root.phone ? grid-box.cell : 62px; clicked => { if (root.phone) { root.pick-camera(); root.close-requested(); } else { root.page = "camera"; } } }
+                        AttachTile { icon: Icons.image; label: "Gallery"; fg: root.fg; chip: root.tile-c; phone: root.phone; width: root.phone ? grid-box.cell : 62px; clicked => { root.pick-gallery(); root.close-requested(); } }
+                        AttachTile { icon: Icons.attach; label: "Files"; fg: root.fg; chip: root.tile-c; phone: root.phone; width: root.phone ? grid-box.cell : 62px; clicked => { root.pick-files(); root.close-requested(); } }
+                        AttachTile { icon: Icons.emoji; label: "Emojis"; fg: root.fg; chip: root.tile-c; phone: root.phone; width: root.phone ? grid-box.cell : 62px; clicked => { root.load-emoji(); root.page = "emoji"; } }
+                        AttachTile { icon: Icons.sticker; label: "Stickers"; fg: root.fg; chip: root.tile-c; phone: root.phone; width: root.phone ? grid-box.cell : 62px; clicked => { root.load-stickers(); root.page = "stickers"; } }
+                    }
+                    Rectangle { height: root.phone ? 0px : 10px; }
+                    HorizontalLayout {
+                        alignment: start;
+                        spacing: root.phone ? 0px : 10px;
+                        AttachTile { icon: Icons.poll; label: "Poll"; fg: root.fg; chip: root.tile-c; phone: root.phone; width: root.phone ? grid-box.cell : 62px; clicked => { root.reset-poll(); root.page = "poll"; } }
+                        AttachTile { icon: Icons.myLocation; filled: true; label: "Current\nLocation"; fg: root.fg; chip: root.tile-c; phone: root.phone; width: root.phone ? grid-box.cell : 62px; clicked => { root.open-location("current"); } }
+                        AttachTile { icon: Icons.liveLocation; filled: true; label: "Live\nLocation"; fg: root.fg; chip: root.tile-c; phone: root.phone; width: root.phone ? grid-box.cell : 62px; clicked => { root.open-location("live"); } }
+                        AttachTile { icon: Icons.pinDrop; filled: true; label: "Drop a Pin"; icon-scale: 1.3; fg: root.fg; chip: root.tile-c; phone: root.phone; width: root.phone ? grid-box.cell : 62px; clicked => { root.open-location("pin"); } }
+                    }
+                }
+            }
+        }
+
+        // The drag handle. The reference draws a chevron at the head of the
+        // sheet — pointing UP at rest ("there is more, take me up") and DOWN
+        // once the sheet has the whole page. Dragging it either way moves the
+        // sheet between those two heights and a tap toggles them; the grid
+        // being scrolled does the same thing from below.
+        //
+        // It paints no ground of its own: the sheet's shows through, so a row
+        // of tiles scrolling under the strip stays visible right up to its
+        // foot, as the reference's does.
+        if root.phone : handle := Rectangle {
+            x: 0; y: 0; width: root.width; height: root.handle-strip;
+            background: transparent;
+            // The chevron flips with the state: up while there is more sheet
+            // to be had, down once it has the page. The path is drawn in the
+            // box's own units (the viewbox matches the size, so the stroke is
+            // in the same pixels), inset by half the stroke so the ink lands
+            // inside the measured 36 × 7.5.
+            chevron := Path {
+                x: (root.width - root.handle-w) / 2;
+                y: root.handle-cy - root.handle-ink / 2;
+                width: root.handle-w; height: root.handle-ink;
+                viewbox-x: 0; viewbox-y: 0;
+                viewbox-width: root.handle-w / 1px;
+                viewbox-height: root.handle-ink / 1px;
+                commands: root.full
+                    ? "M 2.1 2.1 L 18 5.4 L 33.9 2.1"
+                    : "M 2.1 5.4 L 18 2.1 L 33.9 5.4";
+                stroke: root.fg.with-alpha(0.34);
+                stroke-width: root.handle-stroke;
+            }
+            h-t := TouchArea {
+                property <length> from;
+                property <bool> dragged;
+                pointer-event(e) => {
+                    if (e.kind == PointerEventKind.down) {
+                        self.from = self.mouse-y;
+                        self.dragged = false;
+                    }
+                }
+                // A snap, not a drag-along: the reference jumps between its two
+                // heights rather than tracking the finger, and 24 of travel is
+                // what commits. `dragged` keeps the release from also counting
+                // as the tap that would toggle it straight back.
+                moved => {
+                    if (abs((self.mouse-y - self.from) / 1px) > 24) {
+                        self.dragged = true;
+                        root.full = self.mouse-y < self.from;
+                    }
+                }
+                clicked => { if (!self.dragged) { root.full = !root.full; } }
             }
         }
     }
@@ -978,12 +1286,23 @@ export component AttachMenu inherits Rectangle {
         mark-lat: root.lp-mark-lat;
         mark-lon: root.lp-mark-lon;
         my-avatar: root.my-avatar;
+        my-initials: root.my-initials;
+        my-tint: root.my-tint;
+        tiles: root.lp-tiles;
+        pin-x: root.lp-pin-x;
+        pin-y: root.lp-pin-y;
         back-requested => { root.page = "grid"; }
         map-tapped(x, y) => { root.loc-tap(x, y); }
         zoom-requested(d) => { root.loc-zoom(d); }
         recentre-requested => { root.loc-recentre(); }
         retry-position => { root.loc-retry(); }
         share-requested(la, lo, ms, mode) => { root.share-location(la, lo, ms, mode); }
+        viewport(w, h) => { root.loc-viewport(w, h); }
+        panned(dx, dy) => { root.loc-panned(dx, dy); }
+        zoom-at(s, x, y) => { root.loc-zoom-at(s, x, y); }
+        pinch-begin => { root.loc-pinch-begin(); }
+        pinched(f, x, y) => { root.loc-pinched(f, x, y); }
+        pinch-end => { root.loc-pinch-end(); }
     }
 
     // Stickers — margins 22, top 54 (:379-383).
@@ -1023,29 +1342,11 @@ export component AttachMenu inherits Rectangle {
         }
     }
 
-    /// The height of the FRAME the host has put this sheet in (chat.slint's
-    /// att-frame). It can be taller than the sheet's own natural height: the
-    /// emoji page grows to the full page when its picker is scrolled, and
-    /// every page that does not stand its own content off the gesture bar is
-    /// given that much more room to do it in. Zero means "the same".
-    in property <length> frame-h: 0px;
-
-    // The chrome above only reaches the sheet's natural height, so the same
-    // ground is carried on down to the frame's foot — without it the
-    // conversation shows through under an expanded picker. Declared after
-    // every page but only ever covering the band BELOW them, and before the
-    // emoji slot so the picker's category bar still draws on top of it.
-    if root.frame-h > root.height : Rectangle {
-        x: root.phone ? 0px : 10px;
-        // One pixel of overlap: a seam between two fills of the same colour
-        // is a hairline of the conversation at some scales.
-        y: root.phone ? root.height - 1px : root.height - 11px;
-        width: root.phone ? root.width : root.width - 20px;
-        height: root.frame-h - self.y - (root.phone ? 0px : 10px);
-        border-bottom-left-radius: root.phone ? 0px : 18px;
-        border-bottom-right-radius: root.phone ? 0px : 18px;
-        background: root.sheet-c;
-    }
+    // (There was a strip here that carried the sheet's ground on down to the
+    // foot of a frame taller than the sheet. There is no such frame any more:
+    // the host hands the sheet the frame's own height in `avail` and the sheet
+    // IS the frame. A second fill would show, too — the ground is translucent
+    // now, and two of them over each other is not the footer's tone.)
 
     // Emoji page body is the host's EmojiPicker mount. The picker carries its
     // own 8 side padding and its category bar sits on the sheet's bottom

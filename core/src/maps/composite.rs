@@ -63,7 +63,7 @@ async fn source_for(engine: &SharedEngine) -> Result<Arc<VectorSource>, Reply> {
             .await
             .ok_or_else(|| Reply::err("network", "could not fetch the tile index"))?
     };
-    let src = render::resolve(&style_doc, &tilejson)
+    let src = render::resolve(&style_url, &style_doc, &tilejson)
         .ok_or_else(|| Reply::err("unavailable", "the tile index names no tiles"))?;
     *SOURCE.lock() = Some((style_url, src.clone()));
     Ok(src)
@@ -146,24 +146,27 @@ pub async fn map_tile(engine: &SharedEngine, p: &serde_json::Map<String, Value>)
         return Reply::err("bad_request", "y is outside the tile grid");
     }
     let x = x.rem_euclid(n);
+    // The style comes first now, even for a tile already on disk: the cache
+    // key names the style the tile was drawn from (`VectorSource::raster_key`)
+    // and there is no way to look for a file without knowing it. Resolving is
+    // a lock and a clone once the first tile has done it.
+    let src = match source_for(engine).await {
+        Ok(s) => s,
+        Err(e) => return e,
+    };
     // Already rendered: the reply is a path, and the path is already good.
     // This is the whole of a warm hit, and it is what the page's prefetching
     // leans on — asking for a tile a second time must cost a `stat` and not a
     // render. It used to call `tile` for the boolean, which read the PNG back,
     // decoded every one of its 512 squares, un-premultiplied a megabyte of it
     // and then dropped the picture on the floor and rebuilt this same path.
-    // Resolving the style is skipped with it: a cached tile does not need one.
-    if render::have(z, x, y) {
-        return Reply::ok(json!({"path": render::png_path(z, x, y).to_string_lossy()}));
+    if render::have(&src, z, x, y) {
+        return Reply::ok(json!({"path": render::png_path(&src, z, x, y).to_string_lossy()}));
     }
-    let src = match source_for(engine).await {
-        Ok(s) => s,
-        Err(e) => return e,
-    };
     if render::tile(engine, &src, z, x, y).await.is_none() {
         return Reply::err("network", "the tile could not be fetched or rendered");
     }
-    Reply::ok(json!({"path": render::png_path(z, x, y).to_string_lossy()}))
+    Reply::ok(json!({"path": render::png_path(&src, z, x, y).to_string_lossy()}))
 }
 
 #[cfg(test)]
