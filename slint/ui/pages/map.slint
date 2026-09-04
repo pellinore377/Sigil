@@ -12,6 +12,7 @@
 import { Theme } from "../style.slint";
 import { Icons } from "../icons.slint";
 import { IconLabel, ActionButton, Avatar } from "../components.slint";
+import { Beats } from "../furniture.slint";
 
 // MapView.qml:172-274 — your own position: the filled `place` glyph (48px) in
 // the pin colour with the face masked into its head (the hole centres at
@@ -155,34 +156,18 @@ export component MapPage inherits Rectangle {
     /// (head-t), then the map rises from the bottom (map-t), and only once
     /// those have landed does the footer follow it up (foot-t). Closing plays
     /// the three in reverse — the holder in app.slint waits for it (`hold`).
+    ///
+    /// The clocks come from the shared `Beats` (furniture.slint), which also
+    /// carries the reason they are elapsed time rather than a `states`
+    /// transition: a transition can only play a change the state machine
+    /// saw, and nothing draws this page while it is put away, so it used to
+    /// wake already at rest on any arrival no departure had been drawn for.
     in property <bool> phone: Theme.mode != "desktop";
     in property <bool> opened: true;
-    property <float> head-t: 1.0;
-    property <float> map-t: 1.0;
-    property <float> foot-t: 1.0;
-    states [
-        closed when root.phone && !root.opened : {
-            head-t: 0.0;
-            map-t: 0.0;
-            foot-t: 0.0;
-            // `in` is the way back to the conversation, `out` the arrival —
-            // linear clocks, with the fades and the motion taking their own
-            // windows and easings off them (chat.slint:92-107).
-            in {
-                animate foot-t { duration: 150ms; }
-                animate map-t { duration: 200ms; delay: 110ms; }
-                animate head-t { duration: 190ms; delay: 250ms; }
-            }
-            out {
-                animate head-t { duration: 220ms; }
-                animate map-t { duration: 260ms; delay: 200ms; }
-                animate foot-t { duration: 220ms; delay: 440ms; }
-            }
-        }
-    ]
-    property <float> head-e: 1 - (1 - root.head-t) * (1 - root.head-t) * (1 - root.head-t);
-    property <float> map-e: 1 - (1 - root.map-t) * (1 - root.map-t) * (1 - root.map-t);
-    property <float> foot-e: 1 - (1 - root.foot-t) * (1 - root.foot-t) * (1 - root.foot-t);
+    beats := Beats { opened: root.opened; phone: root.phone; }
+    property <float> head-t: beats.head-t;
+    property <float> map-e: beats.body-e;
+    property <float> foot-e: beats.foot-e;
     // The conversation's furniture lets go over the first 45% of the header
     // beat; the word arrives over the last 65%, so the bar is bare in between.
     property <float> shed: max(0.0, 1 - root.head-t / 0.45);

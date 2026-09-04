@@ -12,7 +12,7 @@
 // (foot-t) — the beat the conversation spends on its composer. Leaving plays
 // the three in reverse; the holder in app.slint waits for it (`hold`).
 
-import { TouchList } from "../furniture.slint";
+import { TouchList, Beats } from "../furniture.slint";
 import { Theme } from "../style.slint";
 import { Icons } from "../icons.slint";
 import { IconLabel, ActionButton, Avatar } from "../components.slint";
@@ -59,33 +59,20 @@ export component ThreadsPage inherits Rectangle {
         : root.convo-base;
 
     /// The page is the one on the stack (app.slint's threads holder).
+    ///
+    /// The clocks come from the shared `Beats` (furniture.slint), which also
+    /// carries the reason they are elapsed time rather than a `states`
+    /// transition: a transition can only play a change the state machine
+    /// saw, and nothing draws this page while it is put away, so it used to
+    /// wake already at rest on any arrival no departure had been drawn for.
     in property <bool> phone: Theme.mode != "desktop";
     in property <bool> opened: true;
-    property <float> head-t: 1.0;
-    property <float> list-t: 1.0;
-    property <float> foot-t: 1.0;
-    states [
-        closed when root.phone && !root.opened : {
-            head-t: 0.0;
-            list-t: 0.0;
-            foot-t: 0.0;
-            // `in` is the way back to the conversation, `out` the arrival —
-            // linear clocks, with the fades and the motion taking their own
-            // windows and easings off them (chat.slint:92-107).
-            in {
-                animate foot-t { duration: 150ms; }
-                animate list-t { duration: 200ms; delay: 110ms; }
-                animate head-t { duration: 190ms; delay: 250ms; }
-            }
-            out {
-                animate head-t { duration: 220ms; }
-                animate list-t { duration: 260ms; delay: 200ms; }
-                animate foot-t { duration: 220ms; delay: 440ms; }
-            }
-        }
-    ]
-    property <float> list-e: 1 - (1 - root.list-t) * (1 - root.list-t) * (1 - root.list-t);
-    property <float> foot-e: 1 - (1 - root.foot-t) * (1 - root.foot-t) * (1 - root.foot-t);
+    beats := Beats { opened: root.opened; phone: root.phone; }
+    property <float> head-t: beats.head-t;
+    property <float> list-t: beats.body-t;
+    property <float> foot-t: beats.foot-t;
+    property <float> list-e: beats.body-e;
+    property <float> foot-e: beats.foot-e;
     // The conversation's furniture lets go over the first 45% of the header
     // beat; the word arrives over the last 65%, so the bar is bare in between.
     property <float> shed: max(0.0, 1 - root.head-t / 0.45);
@@ -254,13 +241,13 @@ export component ThreadsPage inherits Rectangle {
             // conversation gives its composer. Everything inside the ground
             // rides one lift, so an empty page arrives the same way a full
             // one does.
-            // The `if` is not only thrift. A clock read from nothing but a
-            // render-time property (an opacity, a child's y) inside a box that
-            // is off screen for the first two beats is never evaluated while
-            // the state changes, so it wakes at its resting value and the beat
-            // never plays; a condition is evaluated with the item tree, whether
-            // anything is drawn or not — which is how `shed` and the
-            // understudy's `list-t` keep the first two beats honest.
+            // The `if` is thrift, and nothing more. It was once load-bearing —
+            // an attempt to keep the third beat honest by having a condition,
+            // evaluated with the item tree, read the clock that an off-screen
+            // opacity would not. Measured, it does not work: with the page
+            // never drawn while it is put away, the arrival still woke at
+            // rest. The clocks come off elapsed time now (furniture.slint's
+            // `Beats`), so the gate carries no weight and is safe to keep.
             if root.foot-t > 0 : body := Rectangle {
                 x: 0; width: 100%; height: 100%;
                 y: 24px * (1 - root.foot-e);

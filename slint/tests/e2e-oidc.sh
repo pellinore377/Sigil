@@ -17,6 +17,9 @@ SV=$ROOT/server/target/debug/sigil-server
 ISSUER=$ROOT/server/target/debug/examples/fake-issuer
 SITE=$ROOT/server/target/debug/examples/static-site
 DRIVE=$ROOT/slint/target/debug/drive
+# The driver is built from this tree rather than assumed: a stale one here
+# silently tests code that is no longer in the repo, which cost a day once.
+(cd "$ROOT/slint" && cargo build -q --bin drive)
 W=$(mktemp -d); mkdir -p "$W/state" "$W/cache" "$W/shots"; cd "$W"
 PIDS=()
 keep() { if [ -n "${KEEP_SHOTS:-}" ]; then mkdir -p "$KEEP_SHOTS"; cp "$W"/shots/*.png "$W"/*.out "$W"/*.err "$W"/*.log "$KEEP_SHOTS"/ 2>/dev/null || true; fi; }

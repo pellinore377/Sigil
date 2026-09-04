@@ -9,6 +9,97 @@ import { IconLabel, ActionButton, Avatar } from "components.slint";
 export struct MenuEntry { t: string, a: string, icon: string, danger: bool }
 export struct ChoiceEntry { t: string, v: string, sub: string }
 
+/// The three-beat arrival every page that opens out of the conversation
+/// plays: the header first, then the window, then the footer — and the same
+/// three in reverse on the way out. Drop one in the page, bind `opened` to
+/// the holder's `active`, and take the six clocks off it:
+///
+///     beats := Beats { opened: root.opened; }
+///     // motion off *-e, fades and sub-windows off *-t
+///     y: root.header-h + (root.height - root.header-h) * (1 - beats.body-e);
+///
+/// The holder must let the page play its own arrival and wait for the
+/// reverse: `slides: Theme.mode == "desktop"` and `hold: 660ms` on it.
+///
+/// WHY THIS IS A CLOCK AND NOT A `states` TRANSITION
+///
+/// A transition can only play a change the state machine actually SAW, and
+/// it sees a change only when the property is evaluated — which, for clocks
+/// read solely by things that get drawn, means only when the page is drawn.
+/// These pages are never drawn while they are put away: PageHolder carries
+/// `visible: root.x < root.width - 0.5px`. So the machine never witnesses
+/// the page close, and when the holder goes active there is no change left
+/// to play: the page wakes already at rest. Leaving looks right only
+/// because the page stays visible through the whole of it — which is also
+/// why a shots run that steps the departure first appears to pass.
+///
+/// Every "make something read the clocks eagerly" cure fails, and not for
+/// the reason it looks like. Measured, in the running app: a Timer tick
+/// inside the put-away page DOES fire, and DOES record the closed state
+/// (the clocks read 0 with the page shut) — and the very next render still
+/// came up at rest. One lazy read is not the same as having been drawn.
+/// `init` cannot stand in either: at construction the bridge has not set
+/// `Theme.mode`, so `phone` is still false and the closed state is not even
+/// reachable. Nor can an `if` condition or a zero-size sentinel — the whole
+/// subtree is what goes unevaluated.
+///
+/// So the beats run off the one thing that is true whether or not anything
+/// looked: elapsed time since `opened` last moved. `changed` fires off the
+/// event loop, so the start instant is always captured, and every clock is
+/// then a pure function of it — the arrival is identical whether the page
+/// was watched, drawn, or ignored.
+export component Beats inherits Rectangle {
+    /// The page is the one on the stack. Bind to the holder's `active`.
+    in property <bool> opened: true;
+    /// Only the phone plays the beats; the desktop card keeps the holder's
+    /// own slide, so there the page simply sits at rest.
+    in property <bool> phone: Theme.mode != "desktop";
+
+    // Arrival:   header 0–220, window 200–460, footer 440–660.
+    // Departure: footer 0–150, window 110–310, header 250–440.
+    /// Linear clocks, in beat order. Fades and sub-windows take these.
+    out property <float> head-t: !root.phone ? 1.0
+        : root.opened ? root.ramp(root.el, 0ms, 220ms)
+                      : 1.0 - root.ramp(root.el, 250ms, 190ms);
+    out property <float> body-t: !root.phone ? 1.0
+        : root.opened ? root.ramp(root.el, 200ms, 260ms)
+                      : 1.0 - root.ramp(root.el, 110ms, 200ms);
+    out property <float> foot-t: !root.phone ? 1.0
+        : root.opened ? root.ramp(root.el, 440ms, 220ms)
+                      : 1.0 - root.ramp(root.el, 0ms, 150ms);
+    /// The same three on an OutCubic. Motion takes these.
+    out property <float> head-e: 1 - (1 - root.head-t) * (1 - root.head-t) * (1 - root.head-t);
+    out property <float> body-e: 1 - (1 - root.body-t) * (1 - root.body-t) * (1 - root.body-t);
+    out property <float> foot-e: 1 - (1 - root.foot-t) * (1 - root.foot-t) * (1 - root.foot-t);
+
+    property <duration> since: -10s;
+    property <bool> playing: false;
+    changed opened => {
+        root.since = animation-tick();
+        root.playing = root.phone;
+        settle-clock.restart();
+    }
+    /// While a beat runs, `el` reads the animation tick, and THAT is what
+    /// keeps the frames coming. Once the last beat has landed the timer
+    /// drops `playing`, `el` stops reading the tick, and the page goes still
+    /// instead of repainting for ever. Both directions saturate every ramp
+    /// well before the timer fires, so nothing jumps when it does.
+    property <duration> el: root.playing ? animation-tick() - root.since : 10s;
+    settle-clock := Timer {
+        interval: 760ms;   // the longer of the two directions, plus slack
+        running: root.playing;
+        triggered => { root.playing = false; }
+    }
+    /// 0 → 1 over `dur`, starting `from` into the beat; saturated either side.
+    pure function ramp(t: duration, from: duration, dur: duration) -> float {
+        return clamp((t / 1ms - from / 1ms) / (dur / 1ms), 0.0, 1.0);
+    }
+
+    // It draws nothing; it is here only to be evaluated and to hold a timer.
+    width: 0px; height: 0px;
+    background: transparent;
+}
+
 // Back, title, at most one trailing text action. 56 high; back at 6.
 export component SettingsHeader inherits Rectangle {
     in property <string> title;

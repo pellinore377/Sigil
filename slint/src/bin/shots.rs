@@ -376,11 +376,11 @@ fn main() -> anyhow::Result<()> {
     // the phone-shaped preview and the reset pill — rises (260 from 200),
     // and only once those have landed does the panel follow it up (220 from
     // 440). Leaving plays the three in reverse.
-    // NOTE: the page plays this off its `opened` input, which the holder in
-    // app.slint has yet to bind (`opened: chattheme-holder.active`, with
-    // `slides: Theme.mode == "desktop"` and `hold: 660ms` on the holder).
-    // Until it does, `opened` sits at its default of true and these six
-    // frames are all the page at rest.
+    // NOTE: these frames walk the page IN without walking it out first, on
+    // purpose — that is the arrival a device actually performs, and it is
+    // the one a `states` transition cannot play (the page is never drawn
+    // while it is put away, so the machine never sees it close). The page
+    // drives its beats off elapsed time instead; see chattheme.slint.
     app.set_nav("chattheme".into());
     let mut was = 0u64;
     for (name, at) in [

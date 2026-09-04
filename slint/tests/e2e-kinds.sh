@@ -11,6 +11,9 @@ ROOT=$(cd "$(dirname "$0")/../.." && pwd)
 SV=$ROOT/server/target/debug/sigil-server
 CL=$ROOT/client/target/debug/sigil-cli
 DRIVE=$ROOT/slint/target/debug/drive
+# The driver is built from this tree rather than assumed: a stale one here
+# silently tests code that is no longer in the repo, which cost a day once.
+(cd "$ROOT/slint" && cargo build -q --bin drive)
 SITE=$ROOT/server/target/debug/examples/static-site
 W=$(mktemp -d); mkdir -p "$W/state" "$W/cache" "$W/shots" "$W/www"; cd "$W"
 PIDS=()

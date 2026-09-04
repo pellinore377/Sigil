@@ -20,7 +20,9 @@
 // very tones the conversation will take.
 //
 // It arrives in the same three beats the conversation and the location page
-// use — header, window, footer — and leaves in reverse; see `opened`.
+// use — header, window, footer — and leaves in reverse. They run off elapsed
+// time rather than a `states` transition, for the reason set out at `opened`:
+// a transition cannot play a change nothing was there to see.
 //
 // The QML page's custom-colour wheel needs a conic gradient Slint cannot
 // draw, so the custom picker is still three sliders (hue / saturation /
@@ -31,16 +33,9 @@
 import { Theme } from "../style.slint";
 import { Icons } from "../icons.slint";
 import { IconLabel, ActionButton } from "../components.slint";
+import { Beats } from "../furniture.slint";
 
 export struct GradPair { top: color, bot: color }
-
-// TEMP diagnostic
-export global CtDebug {
-    in-out property <int> ticks;
-    in-out property <int> changes;
-    in-out property <float> last-sum;
-    in-out property <bool> last-opened;
-}
 
 // One palette swatch. The reference draws a disc split in three: the top
 // HALF is one colour across the full width, and the bottom half is split
@@ -220,73 +215,20 @@ export component ChatThemePage inherits Rectangle {
     /// The phone opens this page out of the conversation the way the
     /// location page does: the header's title and its Apply pill arrive from
     /// the right (head-t), then the stage — preview and reset — rises from
-    /// the page bottom (stage-t), and only once those have landed does the
+    /// the page bottom (body-t), and only once those have landed does the
     /// panel follow it up (foot-t). Closing plays the three in reverse; the
     /// holder in app.slint waits for it (`hold`).
+    ///
+    /// The clocks come from the shared `Beats` (furniture.slint), which also
+    /// carries the reason they are elapsed time rather than a `states`
+    /// transition: a transition can only play a change the state machine
+    /// saw, and nothing draws this page while it is put away.
     in property <bool> phone: Theme.mode != "desktop";
     in property <bool> opened: true;
-    property <float> head-t: 1.0;
-    property <float> stage-t: 1.0;
-    property <float> foot-t: 1.0;
-    states [
-        closed when root.phone && !root.opened : {
-            head-t: 0.0;
-            stage-t: 0.0;
-            foot-t: 0.0;
-            // `in` is the way back to the conversation, `out` the arrival —
-            // linear clocks, with the fades and the motion taking their own
-            // windows and easings off them (map.slint:163-182).
-            in {
-                animate foot-t { duration: 150ms; }
-                animate stage-t { duration: 200ms; delay: 110ms; }
-                animate head-t { duration: 190ms; delay: 250ms; }
-            }
-            out {
-                animate head-t { duration: 220ms; }
-                animate stage-t { duration: 260ms; delay: 200ms; }
-                animate foot-t { duration: 220ms; delay: 440ms; }
-            }
-        }
-    ]
-    /// Somebody has to WATCH the three clocks while the page is put away.
-    ///
-    /// They are read only by things that get drawn — a child's `y`, an
-    /// `opacity` — and the page is never drawn while it is away: PageHolder
-    /// carries `visible: root.x < root.width - 0.5px`. So while the page is
-    /// closed nothing evaluates them; the state machine never records that
-    /// the page WAS closed; and when the holder goes active there is no
-    /// change left to animate, so the page wakes already at rest. Leaving
-    /// looks right only because the page stays visible through all of it.
-    ///
-    /// One timer tick is the cure — the event loop runs it whether or not a
-    /// frame is drawn. It is armed at construction, so the first arrival of
-    /// the session has a closed state to come out of, and re-armed whenever
-    /// `opened` moves, so every later one does too. An `init` handler cannot
-    /// stand in for the first tick: at construction the bridge has not set
-    /// `Theme.mode` yet, `phone` is still false, and the closed state is not
-    /// even reachable to be recorded. A reader inside the page's own tree
-    /// cannot stand in either, `if` conditions included — the whole subtree
-    /// is what goes unevaluated.
-    ///
-    /// map.slint and threads.slint run these same three beats behind the
-    /// same holder and need the same six lines, over their own clock names.
-    property <float> observed;
-    property <bool> observing: true;
-    observe := Timer {
-        interval: 16ms;
-        running: root.observing;
-        triggered => {
-            root.observed = root.head-t + root.stage-t + root.foot-t;
-            root.observing = false;
-            CtDebug.ticks += 1;
-            CtDebug.last-sum = root.observed;
-            CtDebug.last-opened = root.opened;
-        }
-    }
-    changed opened => { root.observing = true; CtDebug.changes += 1; }
-    property <float> head-e: 1 - (1 - root.head-t) * (1 - root.head-t) * (1 - root.head-t);
-    property <float> stage-e: 1 - (1 - root.stage-t) * (1 - root.stage-t) * (1 - root.stage-t);
-    property <float> foot-e: 1 - (1 - root.foot-t) * (1 - root.foot-t) * (1 - root.foot-t);
+    beats := Beats { opened: root.opened; phone: root.phone; }
+    property <float> head-t: beats.head-t;
+    property <float> stage-e: beats.body-e;
+    property <float> foot-e: beats.foot-e;
     // The words arrive over the last 65% of the header beat, so the bar is
     // bare for a moment first (map.slint's `word-t`).
     property <float> word-t: clamp((root.head-t - 0.35) / 0.65, 0.0, 1.0);
@@ -382,7 +324,7 @@ export component ChatThemePage inherits Rectangle {
                 overflow: elide;
             }
             Text {
-                text: "t" + CtDebug.ticks + " c" + CtDebug.changes + " s" + round(CtDebug.last-sum * 100) + (CtDebug.last-opened ? " OPEN" : " shut");
+                text: "Only you will see these changes";
                 color: root.fg.with-alpha(0.55);
                 font-family: Theme.font-ui;
                 font-size: Theme.caption;

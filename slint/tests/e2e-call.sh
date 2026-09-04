@@ -9,6 +9,9 @@ set -euo pipefail
 ROOT=$(cd "$(dirname "$0")/../.." && pwd)
 SV=$ROOT/server/target/debug/sigil-server
 DRIVE=$ROOT/slint/target/debug/drive
+# The driver is built from this tree rather than assumed: a stale one here
+# silently tests code that is no longer in the repo, which cost a day once.
+(cd "$ROOT/slint" && cargo build -q --bin drive)
 W=$(mktemp -d); mkdir -p "$W/a/state" "$W/a/cache" "$W/b/state" "$W/b/cache" "$W/shots"; cd "$W"
 PIDS=()
 keep_logs() { if [ -n "${KEEP_SHOTS:-}" ]; then mkdir -p "$KEEP_SHOTS"; cp "$W"/*.out "$W"/*.err "$W"/*.log "$W"/shots/*.png "$KEEP_SHOTS"/ 2>/dev/null || true; fi; }
