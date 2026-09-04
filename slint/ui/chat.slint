@@ -226,12 +226,25 @@ export component ChatPage inherits Rectangle {
     /// An autocomplete row was tapped.
     callback ac-picked(int);
 
+    /// Where the list stood the last time anything but a finger moved it.
+    ///
+    /// A drag on the conversation shuts whatever panel is open (the reference
+    /// does this), and the only thing that must not be mistaken for that drag
+    /// is the list moving itself: the pin that follows a panel opening, a row
+    /// inflating under the view, the jump-to-latest, the bridge restoring the
+    /// offset after a rebuild. Slint's `flicked` already excludes every one of
+    /// those — it fires for a finger or a wheel and not for an offset set from
+    /// code — and this is the baseline the 8 of slack is measured from, so a
+    /// pin landing mid-gesture cannot leave a stale number behind either.
+    property <length> list-vy: 0px;
     public function scroll-to-end() {
         list.stick = true;
         list.viewport-y = min(0px, list.height - list.viewport-height);
+        root.list-vy = list.viewport-y;
     }
     function pin-list() {
         list.viewport-y = min(0px, list.height - list.viewport-height);
+        root.list-vy = list.viewport-y;
     }
     /// Test hook: press one row by event id, exactly as a long-press would —
     /// the row itself fires the menu with its own live rectangle, so the
@@ -395,8 +408,16 @@ export component ChatPage inherits Rectangle {
     }
     // However a panel comes up — the toggle, or the bridge setting it — the
     // composer lets go of focus, so the keyboard goes with it.
-    changed attach-open => { if (self.attach-open) { self.recorder-open = false; composer-input.clear-focus(); } }
-    changed recorder-open => { if (self.recorder-open) { self.attach-open = false; composer-input.clear-focus(); } }
+    // The keyboard's height is banked BEFORE the focus goes (the inset is
+    // still the keyboard's at that instant): the panel opens at exactly it.
+    changed attach-open => {
+        if (self.attach-open) { root.open-kb = root.kb-inset; self.recorder-open = false; composer-input.clear-focus(); }
+        else if (!self.recorder-open) { root.open-kb = 0px; }
+    }
+    changed recorder-open => {
+        if (self.recorder-open) { root.open-kb = root.kb-inset; self.attach-open = false; composer-input.clear-focus(); }
+        else if (!self.attach-open) { root.open-kb = 0px; }
+    }
     changed visible-to-user => {
         if (!self.visible-to-user) { self.attach-open = false; }
         else { root.maybe-mark-read(); }
@@ -567,7 +588,14 @@ export component ChatPage inherits Rectangle {
     /// remembered keyboard's, which is the whole point; the desktop has no
     /// keyboard to match and its sheets keep their own sizes (zero asks for
     /// nothing, and each panel's own floor is then its natural height).
-    property <length> panel-want: root.phone ? root.kb-h : 0px;
+    /// The keyboard's height at the moment a panel was opened over it (zero
+    /// when none was up): a panel opened over the keyboard takes EXACTLY the
+    /// keyboard's height, whatever the remembered default, so the composer
+    /// does not move as the one replaces the other — a panel aiming at a
+    /// taller remembered height animated up while the keyboard slid down,
+    /// and the composer dipped between the two.
+    property <length> open-kb: 0px;
+    property <length> panel-want: !root.phone ? 0px : root.open-kb > 96px ? root.open-kb : root.kb-h;
     /// Where the attach sheet RESTS: that, floored by what the page in front
     /// cannot do without and capped by the page itself. The sheet is handed
     /// this and the full height, and answers with the one it wants — which,
@@ -673,6 +701,7 @@ export component ChatPage inherits Rectangle {
     /// position survives the bridge rebuilding the model (prepends included).
     public function restore-from-end(d: length) {
         list.viewport-y = min(0px, (list.height - list.viewport-height) + d);
+        root.list-vy = list.viewport-y;
     }
 
     // Jump-to-latest eases toward the *current* end, re-evaluated every tick
@@ -690,6 +719,7 @@ export component ChatPage inherits Rectangle {
                 return;
             }
             list.viewport-y += (min(0px, list.height - list.viewport-height) - list.viewport-y) * 0.137;
+            root.list-vy = list.viewport-y;
         }
     }
     public function jump-to-latest() { root.jumping = true; }
@@ -1039,6 +1069,25 @@ export component ChatPage inherits Rectangle {
                     if (self.stick && !sheet.shown) { root.pin-list(); }
                 }
                 init => { root.vp-h = self.height; root.vp-y = self.viewport-y; }
+                // A drag on the conversation puts the open panel away — the
+                // attachment sheet, the picker, the recorder — and the composer
+                // goes back to the bottom while the list carries on scrolling.
+                // Reaching past the panel to read is asking for the panel to be
+                // gone, and the reference answers it that way.
+                //
+                // `flicked` is what makes this safe to hang off the list at
+                // all: Slint fires it for a finger or a wheel and never for an
+                // offset written from code, so the pin that follows the panel's
+                // own opening — and the jump, and the bridge's restore — cannot
+                // trip it. `list-vy` banks every one of those anyway, and 8 of
+                // slack on top rejects the jitter of a press that barely moved.
+                flicked => {
+                    if ((root.attach-open || root.recorder-open)
+                        && abs((self.viewport-y - root.list-vy) / 1px) > 8) {
+                        root.attach-open = false;
+                        root.recorder-open = false;
+                    }
+                }
                 // Fetch older history a screen and a half early (maybePaginate).
                 changed viewport-y => {
                     root.vp-y = self.viewport-y;
@@ -1090,19 +1139,16 @@ export component ChatPage inherits Rectangle {
                     changed width => { row.known-h = 0px; }
                     /// This row's bubble is the one the sheet holds: it lifts
                     /// out of its slot by the sheet's `lift` and floats over
-                    /// its neighbours, which stay exactly where they are,
+                    /// its neighbours. NOTHING else moves — not the list, not
+                    /// the rows around it, which stay exactly where they are,
                     /// dimmed under the scrim. Rows are drawn in order, so a
                     /// bubble lifting UP (the usual case: a recent message
                     /// making room for its menu) lies over the rows above it
-                    /// by itself. Lifting DOWN happens only for a message
-                    /// pressed half under the header; the rows below would be
-                    /// drawn over it, so those alone move down with it.
+                    /// by itself.
                     property <bool> held: sheet.shown && item.event-id != "" && sheet.item.event-id == item.event-id;
                     changed held => { if (self.held) { root.held-y = self.y; } }
                     /// How far this row's bubble is carried by the sheet.
-                    property <length> carry: !sheet.shown ? 0px
-                        : self.held ? sheet.lift
-                        : (sheet.lift > 0px && self.y > root.held-y) ? sheet.lift : 0px;
+                    property <length> carry: sheet.shown && self.held ? sheet.lift : 0px;
                     // The harness's long-press: the named row fires its own
                     // menu, with its own rectangle, as a finger would.
                     property <bool> press-me: root.debug-press-id != "" && root.debug-press-id == item.event-id;
@@ -1741,6 +1787,10 @@ export component ChatPage inherits Rectangle {
             // the list re-pins to the bottom as the frame moves.
             att-frame := Rectangle {
                 x: 0; width: 100%;
+                // The footer's own ground behind the panel, at the footer's
+                // alpha, over the timeline running beneath: the sheet's
+                // opaque card stands on this, as the recorder's does.
+                background: root.convo-paint.with-alpha(root.band-alpha);
                 // The panel's foot rests on the screen's bottom edge, keyboard
                 // or no keyboard — its ground runs on under the gesture bar,
                 // and what is pinned to the bottom INSIDE it stands off by

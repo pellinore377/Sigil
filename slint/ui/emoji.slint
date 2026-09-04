@@ -207,12 +207,32 @@ export component EmojiPicker inherits Rectangle {
             // is up): the search row and the category bar keep their sizes and
             // the grid scrolls whatever is left between them.
             min-height: 0px;
-            // The first move of the grid is the whole trigger: the panel goes
-            // to full height and stays there. 6 of slack so a tap that grazes
-            // is not a scroll; a category jump, which sets the offset itself,
-            // counts as one — reaching for Flags is reaching to browse.
+            // The first move of the grid takes the panel to full height: 6 of
+            // slack so a tap that grazes is not a scroll; a category jump,
+            // which sets the offset itself, counts as one — reaching for Flags
+            // is reaching to browse.
             changed viewport-y => {
                 if (root.active && grid.viewport-y < -6px) { root.expanded = true; }
+            }
+            // ...and scrolling the grid back to its top puts the panel down
+            // again, which is what the reference does — the expansion is the
+            // browsing position, not a mode you have to leave by hand.
+            //
+            // On `flicked`, which fires only for a finger or a wheel, never for
+            // an offset set from code: a category jump to RECENTS lands at the
+            // top, and it would be a poor kind of surprise if tapping the clock
+            // shrank the picker. Expanding from a jump is fair — that is
+            // reaching to browse — collapsing from one is not.
+            //
+            // The band between 0 and -6 is the hysteresis: past -6 it expands,
+            // at exactly 0 it collapses, and in between it stays as it is, so
+            // a finger resting on the boundary cannot make it flutter. The
+            // grid's content is always far taller than the panel, so a collapse
+            // cannot clamp the offset and re-trigger itself.
+            flicked => {
+                if (root.active && root.expanded && grid.viewport-y >= 0px) {
+                    root.expanded = false;
+                }
             }
             for row in root.rows : erow := Rectangle {
                 property <bool> is-head: row.length == 1 && row[0].glyph == "";
