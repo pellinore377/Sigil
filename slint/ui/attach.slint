@@ -601,8 +601,14 @@ export component AttachMenu inherits Rectangle {
     // the two tile rows — 37 of it above the first one, under a lead-in that
     // is supposed to be 16. The block below now states its own height as
     // well, so the sheet can never push it around again.
-    // The camera chooser is a shutter over its Photo/Video selector: 46 to
-    // the body, 72 shutter, 24, the 40 selector, 24 below.
+    // The camera page on the phone is a viewfinder with its controls under
+    // it: 54 to the preview box, the box itself, then 14/36 zoom chips,
+    // 14/72 shutter row, 14/40 Photo|Video and 24 below — 214 of controls,
+    // and 600 in all, which is comfortably inside what the frame can give
+    // (the convo band less the composer) on any phone we run on. The
+    // DESKTOP camera page has no camera behind it and stays the chooser it
+    // was: a shutter over its Photo/Video selector, 46 to the body, 72
+    // shutter, 24, the 40 selector, 24 below.
     // The emoji page stands in for a keyboard, so it is the tallest of them:
     // 12 lead-in, a 40 search row, the grid, and the 48 category bar.
     // The poll page at a phone's sizes: 52 to the body, then the body itself
@@ -613,7 +619,7 @@ export component AttachMenu inherits Rectangle {
           : root.location-page ? 430px
           : root.page == "emoji" ? 400px
           : root.page == "stickers" ? 330px
-          : root.page == "camera" ? 206px
+          : root.page == "camera" ? (root.phone ? 600px : 206px)
           : root.phone ? 264px
           : 232px;
 
@@ -703,16 +709,264 @@ export component AttachMenu inherits Rectangle {
         }
     }
 
-    /// The capture chooser's mode, in the reference's own idiom: a shutter
-    /// with Photo | Video under it, the chosen one in a filled stadium.
-    in-out property <string> cam-mode: "photo";
+    // ------------------------------------------------------------- camera
+    //
+    // The reference (Google Messages) is a full-bleed live viewfinder with a
+    // close, a flash toggle, zoom chips, a big shutter, a flip button and a
+    // Photo | Video selector. All of that is here, with one difference forced
+    // by how the picture arrives: the preview is a PLATFORM VIEW laid over
+    // the app's own surface (java/SigilCamera.java), and a platform view sits
+    // above everything Slint draws — so nothing may overlap it. The controls
+    // sit BENEATH the box rather than over it, and the close is the sheet's
+    // own back disc in the header above it.
+    //
+    // The page owns the camera's state and publishes it on the Theme global
+    // (see style.slint): the box's rectangle in window coordinates, which way
+    // the camera faces, the zoom, the torch, and which shutter is showing.
+    // The bridge polls that (actions.rs camera_pass) and carries changes down
+    // to the view; it writes back what the device can do. The SHUTTER is the
+    // one thing that is a command rather than a state, and it goes out on
+    // pick-camera / pick-video — the same route the desktop chooser uses, so
+    // a shot lands on the staging page exactly as a gallery pick does.
 
-    // The camera page. The reference is a live viewfinder with zoom chips and
-    // a flip button; there is no camera surface in this app on Android, so
-    // what stands here is the same choice in the same shape — pick Photo or
-    // Video, press the shutter, and the SYSTEM camera opens for that capture.
-    // Whatever it hands back lands on the staging page, captioned there.
-    if root.page == "camera" : camera-box := Rectangle {
+    /// The zoom the chips offer. A device reports its own range; a stop it
+    /// cannot reach is shown dimmed rather than hidden, so the row does not
+    /// change shape between the front and back cameras.
+    property <[float]> cam-stops: [0.5, 1.0, 2.0];
+
+    if root.page == "camera" && root.phone : phone-camera := Rectangle {
+        width: 100%; height: 100%;
+        /// 14/36 chips + 14/72 shutter + 14/40 selector + 24.
+        property <length> controls-h: 214px;
+        property <length> row-zoom: root.height - self.controls-h + 14px;
+        property <length> row-shutter: self.row-zoom + 36px + 14px;
+        property <length> row-mode: self.row-shutter + 72px + 14px;
+        property <bool> live: Theme.cam-state == "ready" || Theme.cam-state == "capturing"
+            || Theme.cam-state == "recording";
+
+        // Entering the page is the one event the sheet has no callback for —
+        // it reaches the bridge on the shutter's channel instead, which the
+        // bridge tells apart by there being no viewfinder open yet. It is
+        // also how a page left sitting on a refused permission is retried.
+        init => {
+            Theme.cam-zoom = 1.0;
+            Theme.cam-torch = false;
+            Theme.cam-state = "";
+            root.pick-camera();
+        }
+
+        // The preview box. Black, because that is what a viewfinder that has
+        // not arrived looks like, and because the platform view is fitted
+        // INSIDE this rectangle at the camera's own shape — what is left over
+        // at the sides stays this ground rather than a stretched picture.
+        preview := Rectangle {
+            x: 12px; y: 54px;
+            width: root.width - 24px;
+            height: phone-camera.height - 54px - phone-camera.controls-h;
+            border-radius: 18px;
+            background: #000000;
+            clip: true;
+
+            // The rectangle the platform view is laid over, in WINDOW
+            // coordinates. Published on every move because the sheet slides
+            // as it opens and the keyboard can cut the frame short under it.
+            init => {
+                Theme.cam-x = self.absolute-position.x;
+                Theme.cam-y = self.absolute-position.y;
+                Theme.cam-w = self.width;
+                Theme.cam-h = self.height;
+            }
+            changed absolute-position => {
+                Theme.cam-x = self.absolute-position.x;
+                Theme.cam-y = self.absolute-position.y;
+            }
+            changed width => { Theme.cam-w = self.width; }
+            changed height => { Theme.cam-h = self.height; }
+
+            // What stands in the box until the view covers it — and what
+            // stays there when it never will (no permission, or no camera).
+            if !phone-camera.live : VerticalLayout {
+                x: 24px;
+                width: preview.width - 48px;
+                y: (preview.height - self.preferred-height) / 2;
+                height: self.preferred-height;
+                spacing: 10px;
+                HorizontalLayout {
+                    alignment: center;
+                    IconLabel {
+                        text: Theme.cam-state == "denied" ? Icons.videoOff : Icons.camera;
+                        color: #ffffff.with-alpha(0.5);
+                        font-size: 40px;
+                        width: 40px; height: 40px;
+                    }
+                }
+                Text {
+                    text: Theme.cam-state == "denied"
+                            ? "Sigil needs permission to use the camera. Tap the shutter to ask again."
+                        : Theme.cam-state == "error"
+                            ? "The camera could not be opened."
+                        : "Starting the camera…";
+                    color: #ffffff.with-alpha(0.65);
+                    font-family: Theme.font-ui;
+                    font-size: Theme.body-small;
+                    horizontal-alignment: center;
+                    wrap: word-wrap;
+                }
+            }
+
+        }
+
+        // That a clip is running has to be visible WHILE the view is up, so
+        // it cannot live over the box: it rides at the right of the header,
+        // level with the back disc, where nothing covers it.
+        if Theme.cam-recording : rec-pill := Rectangle {
+            x: root.width - 18px - self.width;
+            y: 16px;
+            width: 96px; height: 30px; border-radius: 15px;
+            background: root.fg.with-alpha(0.10);
+            Rectangle {
+                x: 12px; y: 11px;
+                width: 8px; height: 8px; border-radius: 4px;
+                background: #e0403a;
+            }
+            Text {
+                x: 28px; width: 60px; height: 100%;
+                text: "Recording";
+                color: root.fg;
+                font-family: Theme.font-ui;
+                font-size: Theme.caption;
+                vertical-alignment: center;
+            }
+        }
+
+        // Zoom chips — the reference's 0.5 / 1.0 / 2.0, the chosen one in a
+        // filled disc. A stop the device cannot reach is dimmed and dead.
+        zoom-row := HorizontalLayout {
+            x: (root.width - self.preferred-width) / 2;
+            y: phone-camera.row-zoom;
+            height: 36px;
+            spacing: 8px;
+            for stop[i] in root.cam-stops : Rectangle {
+                property <bool> reachable: stop >= Theme.cam-zoom-min - 0.001
+                    && stop <= Theme.cam-zoom-max + 0.001;
+                property <bool> on: Theme.cam-zoom == stop;
+                width: 46px; height: 36px; border-radius: 18px;
+                opacity: self.reachable ? 1.0 : 0.35;
+                background: self.on ? root.fg.with-alpha(0.9) : root.fg.with-alpha(0.10);
+                Text {
+                    text: stop == 1.0 ? "1.0" : stop == 0.5 ? "0.5" : "2.0";
+                    color: parent.on ? root.sheet-c : root.fg;
+                    font-family: Theme.font-ui;
+                    font-size: Theme.body-small;
+                    font-weight: parent.on ? 700 : 400;
+                    width: 100%; height: 100%;
+                    horizontal-alignment: center; vertical-alignment: center;
+                }
+                TouchArea {
+                    enabled: parent.reachable;
+                    clicked => { Theme.cam-zoom = stop; }
+                }
+            }
+        }
+
+        // Flash, shutter, flip — the reference's own row, with the flash
+        // brought down off the preview's top right corner because nothing
+        // may be drawn over the view.
+        flash-disc := Rectangle {
+            x: (root.width - 72px) / 2 - 72px;
+            y: phone-camera.row-shutter + 12px;
+            width: 48px; height: 48px; border-radius: 24px;
+            opacity: Theme.cam-has-flash ? 1.0 : 0.35;
+            background: Theme.cam-torch ? root.fg.with-alpha(0.9) : root.fg.with-alpha(0.10);
+            IconLabel {
+                text: Theme.cam-torch ? Icons.flashOn : Icons.flashOff;
+                color: Theme.cam-torch ? root.sheet-c : root.fg;
+                font-size: 22px;
+                width: 100%; height: 100%;
+            }
+            TouchArea {
+                enabled: Theme.cam-has-flash;
+                clicked => { Theme.cam-torch = !Theme.cam-torch; }
+            }
+        }
+        cam-shutter := Rectangle {
+            x: (root.width - 72px) / 2; y: phone-camera.row-shutter;
+            width: 72px; height: 72px; border-radius: 36px;
+            background: transparent;
+            border-width: 3px;
+            border-color: root.fg;
+            // Recording turns the disc into a red stop square, as the
+            // reference does — the same button ends the clip.
+            Rectangle {
+                x: 6px; y: 6px;
+                width: 60px; height: 60px;
+                border-radius: Theme.cam-recording ? 14px : 30px;
+                background: Theme.cam-recording ? #e0403a
+                    : cam-sh-t.pressed ? root.fg.with-alpha(0.7) : root.fg;
+                animate border-radius { duration: 140ms; easing: cubic-bezier(0.33, 1, 0.68, 1); }
+            }
+            cam-sh-t := TouchArea {
+                clicked => {
+                    if (Theme.cam-mode == "video") { root.pick-video(); } else { root.pick-camera(); }
+                }
+            }
+        }
+        flip-disc := Rectangle {
+            x: (root.width + 72px) / 2 + 24px;
+            y: phone-camera.row-shutter + 12px;
+            width: 48px; height: 48px; border-radius: 24px;
+            background: fl-t.pressed ? root.fg.with-alpha(0.22) : root.fg.with-alpha(0.10);
+            IconLabel {
+                text: Icons.flipCamera;
+                color: root.fg;
+                font-size: 22px;
+                width: 100%; height: 100%;
+            }
+            fl-t := TouchArea {
+                // Not while a clip is running: the recorder is bound to the
+                // camera that started it.
+                enabled: !Theme.cam-recording;
+                clicked => {
+                    Theme.cam-facing = Theme.cam-facing == "front" ? "back" : "front";
+                }
+            }
+        }
+
+        // Photo | Video, centred under the shutter.
+        HorizontalLayout {
+            x: (root.width - self.preferred-width) / 2;
+            y: phone-camera.row-mode;
+            height: 40px;
+            spacing: 4px;
+            for m[i] in [{ v: "photo", t: "Photo" }, { v: "video", t: "Video" }] : Rectangle {
+                property <bool> on: Theme.cam-mode == m.v;
+                width: 96px; height: 40px; border-radius: 20px;
+                background: self.on ? root.fg.with-alpha(0.9)
+                    : cam-mode-t.has-hover ? root.fg.with-alpha(0.10) : transparent;
+                Text {
+                    text: m.t;
+                    color: parent.on ? root.sheet-c : root.fg;
+                    font-family: Theme.font-ui;
+                    font-size: Theme.body;
+                    font-weight: parent.on ? 700 : 400;
+                    width: 100%; height: 100%;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                }
+                cam-mode-t := TouchArea {
+                    // Switching mid-clip would strand the recording.
+                    enabled: !Theme.cam-recording;
+                    clicked => { Theme.cam-mode = m.v; }
+                }
+            }
+        }
+    }
+
+    // The desktop has no camera of ours and no system camera app to hand the
+    // job to: the page there stays the chooser it was — pick Photo or Video,
+    // press the shutter, and platform.rs answers on whatever that machine
+    // has (nothing, today, which it says in the log).
+    if root.page == "camera" && !root.phone : camera-box := Rectangle {
         width: 100%; height: 100%;
         // The shutter: the reference's 88 ring, at this sheet's scale.
         shutter := Rectangle {
@@ -726,7 +980,7 @@ export component AttachMenu inherits Rectangle {
                 width: 60px; height: 60px; border-radius: 30px;
                 background: sh-t.pressed ? root.fg.with-alpha(0.7) : root.fg;
                 IconLabel {
-                    text: root.cam-mode == "video" ? Icons.videoOn : Icons.camera;
+                    text: Theme.cam-mode == "video" ? Icons.videoOn : Icons.camera;
                     color: root.sheet-c;
                     font-size: 26px;
                     width: 100%; height: 100%;
@@ -734,7 +988,7 @@ export component AttachMenu inherits Rectangle {
             }
             sh-t := TouchArea {
                 clicked => {
-                    if (root.cam-mode == "video") { root.pick-video(); } else { root.pick-camera(); }
+                    if (Theme.cam-mode == "video") { root.pick-video(); } else { root.pick-camera(); }
                     root.reset();
                     root.close-requested();
                 }
@@ -747,7 +1001,7 @@ export component AttachMenu inherits Rectangle {
             height: 40px;
             spacing: 4px;
             for m[i] in [{ v: "photo", t: "Photo" }, { v: "video", t: "Video" }] : Rectangle {
-                property <bool> on: root.cam-mode == m.v;
+                property <bool> on: Theme.cam-mode == m.v;
                 width: 96px; height: 40px; border-radius: 20px;
                 background: self.on ? root.fg.with-alpha(0.9)
                     : mode-t.has-hover ? root.fg.with-alpha(0.10) : transparent;
@@ -761,7 +1015,7 @@ export component AttachMenu inherits Rectangle {
                     horizontal-alignment: center;
                     vertical-alignment: center;
                 }
-                mode-t := TouchArea { clicked => { root.cam-mode = m.v; } }
+                mode-t := TouchArea { clicked => { Theme.cam-mode = m.v; } }
             }
         }
     }

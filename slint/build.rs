@@ -28,8 +28,12 @@ fn android_picker_dex() {
         return;
     }
 
-    // Both classes go in the one dex, through the one loader.
-    let srcs = ["java/SigilFilePicker.java", "java/SigilVideo.java"];
+    // Every class goes in the one dex, through the one loader.
+    let srcs = [
+        "java/SigilFilePicker.java",
+        "java/SigilVideo.java",
+        "java/SigilCamera.java",
+    ];
     let src = "java/*.java";
     for s in srcs {
         println!("cargo:rerun-if-changed={s}");
@@ -50,9 +54,11 @@ fn android_picker_dex() {
     let release = std::env::var("PROFILE").as_deref() == Ok("release");
 
     // Java 8 bytecode: what d8 and the app's min_sdk of 26 expect.
-    let javac = android_build::JavaBuild::new()
-        .file(srcs[0])
-        .file(srcs[1])
+    let mut build = android_build::JavaBuild::new();
+    for s in srcs {
+        build.file(s);
+    }
+    let javac = build
         .class_path(&android_jar)
         .classes_out_dir(&classes)
         .java_source_version(8)

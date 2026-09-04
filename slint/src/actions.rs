@@ -1410,8 +1410,23 @@ pub fn on_act(ui: &mut UiState, win: &AppWindow, action: &str, a: &str, b2: &str
         }
         "pick-attach-files" => attach_pick(ui, AttachPick::Files, false),
         "pick-attach-gallery" => attach_pick(ui, AttachPick::Gallery, false),
-        "pick-attach-camera" => attach_pick(ui, AttachPick::Photo, false),
-        "pick-attach-video" => attach_pick(ui, AttachPick::Video, false),
+        // The camera page's shutter — and, on the phone, the page's own
+        // arrival. The attach sheet reaches the window through `at-page` and
+        // these callbacks and nothing else, so the camera page has no channel
+        // of its own to say "I am open"; it fires the shutter's callback on
+        // entry as well, and the two are told apart by whether a viewfinder
+        // is already up. With none, this is the page arriving (or a refused
+        // permission being retried) and the answer is to open one.
+        "pick-attach-camera" => {
+            if !camera_shutter_handled(win) {
+                attach_pick(ui, AttachPick::Photo, false)
+            }
+        }
+        "pick-attach-video" => {
+            if !camera_shutter_handled(win) {
+                attach_pick(ui, AttachPick::Video, false)
+            }
+        }
 
         // ---- media staging ----
         // The step between picking and sending, so a caption can be written.
@@ -3081,6 +3096,221 @@ fn video_tick_android(win: &AppWindow) {
             },
         )
     });
+}
+
+// ---------------------------------------------------------------------------
+// The attach sheet's camera page: the phone's own viewfinder, over the sheet.
+//
+// The same arrangement as video playback above — a platform view laid over the
+// app's one surface at a rectangle the page hands down, followed on a timer
+// (java/SigilCamera.java, platform.rs's camera_*). What differs is where the
+// rectangle comes from: the viewer is mounted on AppWindow and publishes
+// `vw-pic-*` there, while the attach sheet is two components deep with one
+// two-way property to its name, so its box and its controls ride the Theme
+// global instead (style.slint says why).
+//
+// The page's controls are STATE, carried down by the poll below; the shutter
+// is the one command, and it goes out through `attach_pick` so a shot lands on
+// the staging page by the route every other attachment takes.
+// ---------------------------------------------------------------------------
+
+/// Whether the shutter callback was the page arriving rather than a capture.
+/// `false` means "carry on and take the shot" — which on the desktop, where
+/// there is no viewfinder to open, is always the answer.
+// The desktop path follows an Android early return; both are real code.
+#[allow(unreachable_code)]
+fn camera_shutter_handled(win: &AppWindow) -> bool {
+    #[cfg(target_os = "android")]
+    {
+        if win.get_at_page() != "camera" {
+            return false;
+        }
+        if !crate::platform::camera_live() {
+            camera_watch(win);
+            return true;
+        }
+        // A camera that is still opening has nothing to give: swallow the tap
+        // rather than let it fail its way to an error state.
+        let ready = crate::platform::camera_state()
+            .map(|s| s.state == "ready" || s.recording)
+            .unwrap_or(false);
+        return !ready;
+    }
+    let _ = win;
+    false
+}
+
+/// What the page last had pushed down to it, so a pass that changes nothing
+/// costs no JNI calls.
+#[cfg(target_os = "android")]
+#[derive(Clone)]
+struct CameraView {
+    rect: (i32, i32, i32, i32),
+    front: bool,
+    zoom: f32,
+    torch: bool,
+    /// The permission dialog is shown once per visit to the page.
+    asked: bool,
+    /// The last failure toasted: one failure, one toast.
+    said: String,
+}
+
+#[cfg(target_os = "android")]
+impl Default for CameraView {
+    fn default() -> Self {
+        Self {
+            rect: (0, 0, 0, 0),
+            front: false,
+            zoom: 1.0,
+            torch: false,
+            asked: false,
+            said: String::new(),
+        }
+    }
+}
+
+#[cfg(target_os = "android")]
+thread_local! {
+    static CAMERA: std::cell::RefCell<CameraView> =
+        std::cell::RefCell::new(CameraView::default());
+    /// Its own clock: the viewer's video and the attach sheet's camera are
+    /// never both on screen, but they are not each other's business either.
+    static CAMERA_CLOCK: slint::Timer = slint::Timer::default();
+}
+
+/// The preview box in physical pixels, off the Theme global the page publishes
+/// it on (style.slint's cam-x/y/w/h, in window coordinates).
+#[cfg(target_os = "android")]
+fn camera_rect(win: &AppWindow) -> (i32, i32, i32, i32) {
+    let t = win.global::<crate::Theme>();
+    let s = win.window().scale_factor();
+    let px = |v: f32| (v * s).round() as i32;
+    (
+        px(t.get_cam_x()),
+        px(t.get_cam_y()),
+        px(t.get_cam_w()).max(1),
+        px(t.get_cam_h()).max(1),
+    )
+}
+
+/// Start following the camera page. Idempotent: entering the page again (or
+/// tapping the shutter after a refused permission) simply restarts it.
+#[cfg(target_os = "android")]
+fn camera_watch(win: &AppWindow) {
+    CAMERA.with(|c| *c.borrow_mut() = CameraView::default());
+    let weak = win.as_weak();
+    CAMERA_CLOCK.with(|t| {
+        t.start(
+            slint::TimerMode::Repeated,
+            std::time::Duration::from_millis(50),
+            move || {
+                if let Some(win) = weak.upgrade() {
+                    camera_pass(&win);
+                }
+            },
+        )
+    });
+}
+
+/// One pass: close the camera if the page has gone, otherwise open it, keep it
+/// under the box, and carry the page's controls down.
+#[cfg(target_os = "android")]
+fn camera_pass(win: &AppWindow) {
+    let theme = win.global::<crate::Theme>();
+
+    // The page is gone — the back disc, the sheet closing behind a tile, the
+    // composer taking focus, a room change, leaving the chat page, or a
+    // capture landing on the staging page. Every one of those routes ends
+    // here, and this is the ONLY place the view is closed, so nothing can
+    // leave a camera running.
+    if !win.get_attach_open() || win.get_at_page() != "camera" {
+        CAMERA_CLOCK.with(|t| t.stop());
+        if crate::platform::camera_live() {
+            crate::platform::camera_stop_video();
+            crate::platform::camera_close();
+        }
+        theme.set_cam_state("".into());
+        theme.set_cam_recording(false);
+        return;
+    }
+
+    let rect = camera_rect(win);
+    // The sheet is still animating open and the box has no size yet.
+    if rect.2 <= 1 || rect.3 <= 1 {
+        return;
+    }
+
+    if !crate::platform::camera_live() {
+        if !crate::platform::has_camera_permission() {
+            let asked = CAMERA.with(|c| {
+                let mut c = c.borrow_mut();
+                let was = c.asked;
+                c.asked = true;
+                was
+            });
+            if !asked {
+                crate::platform::request_camera_permission();
+            }
+            theme.set_cam_state("denied".into());
+            return;
+        }
+        theme.set_cam_state("opening".into());
+        let front = theme.get_cam_facing() == "front";
+        if !crate::platform::camera_open(rect.0, rect.1, rect.2, rect.3, front) {
+            theme.set_cam_state("error".into());
+            CAMERA_CLOCK.with(|t| t.stop());
+            return;
+        }
+        CAMERA.with(|c| {
+            let mut c = c.borrow_mut();
+            c.rect = rect;
+            c.front = front;
+            c.zoom = 1.0;
+            c.torch = false;
+        });
+        return;
+    }
+
+    let mut view = CAMERA.with(|c| c.borrow().clone());
+    if rect != view.rect {
+        crate::platform::camera_move(rect.0, rect.1, rect.2, rect.3);
+        view.rect = rect;
+    }
+    let front = theme.get_cam_facing() == "front";
+    if front != view.front {
+        crate::platform::camera_flip();
+        view.front = front;
+        // The other camera has its own zoom range; the chips go back to 1.0
+        // rather than sit lit on a stop this lens cannot reach.
+        theme.set_cam_zoom(1.0);
+        view.zoom = 1.0;
+    }
+    let zoom = theme.get_cam_zoom();
+    if (zoom - view.zoom).abs() > 0.001 {
+        crate::platform::camera_zoom(zoom);
+        view.zoom = zoom;
+    }
+    let torch = theme.get_cam_torch();
+    if torch != view.torch {
+        crate::platform::camera_torch(torch);
+        view.torch = torch;
+    }
+
+    if let Some(st) = crate::platform::camera_state() {
+        theme.set_cam_zoom_min(st.zoom_min);
+        theme.set_cam_zoom_max(st.zoom_max);
+        theme.set_cam_has_flash(st.has_flash);
+        theme.set_cam_recording(st.recording);
+        theme.set_cam_state(st.state.as_str().into());
+        if let Some(f) = st.failure {
+            if f != view.said {
+                tracing::warn!("camera: {f}");
+                win.set_chat_toast(f.as_str().into());
+                view.said = f;
+            }
+        }
+    }
+    CAMERA.with(|c| *c.borrow_mut() = view);
 }
 
 fn viewer_open(ui: &mut UiState, win: &AppWindow, event_id: &str) {

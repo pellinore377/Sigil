@@ -1367,5 +1367,82 @@ fn viewer(app: &sigil_slint::AppWindow, h: &Harness, ts: i64) -> anyhow::Result<
     h.settle();
     anyhow::ensure!(!app.get_recorder_open(), "the composer took focus but the recorder stayed open");
     h.settle();
+
+    // ---- the camera page's chrome ----
+    //
+    // The picture itself is a platform view on the phone (java/SigilCamera.java)
+    // laid over the app's surface, so nothing of it can appear here: what these
+    // check is everything the page is responsible for. That it PUBLISHES its
+    // preview box on the Theme global — without that rectangle the bridge has
+    // nowhere to put the view — and that the box stands inside the window with
+    // the controls clear beneath it, never over it, because a platform view
+    // covers whatever Slint draws under it. Then the two faces of the shutter
+    // row: photo, and a clip running.
+    app.set_nav("chat".into());
+    app.set_attach_open(true);
+    app.set_at_page("camera".into());
+    // Settle first: the page clears the camera's state as it opens (its own
+    // init, which is also how the bridge is told the page has arrived), so
+    // anything seeded before this would be wiped by it.
+    h.settle();
+    let theme = app.global::<sigil_slint::Theme>();
+    // What a phone with an ultra-wide reports; the harness has no camera, so
+    // the range is seeded rather than read, and all three chips are live.
+    theme.set_cam_zoom_min(0.5);
+    theme.set_cam_zoom_max(8.0);
+    theme.set_cam_has_flash(true);
+    theme.set_cam_zoom(1.0);
+    theme.set_cam_torch(false);
+    theme.set_cam_mode("photo".into());
+    theme.set_cam_recording(false);
+    theme.set_cam_state("opening".into());
+    h.settle();
+    h.shoot("attach-camera-photo")?;
+
+    let (bx, by, bw, bh) = (
+        theme.get_cam_x(),
+        theme.get_cam_y(),
+        theme.get_cam_w(),
+        theme.get_cam_h(),
+    );
+    anyhow::ensure!(
+        bw > 0.0 && bh > 0.0,
+        "the camera page must publish its preview box: the platform view has nowhere to go without it"
+    );
+    anyhow::ensure!(
+        bx >= 0.0 && by >= 0.0 && bx + bw <= WIDTH as f32 && by + bh <= HEIGHT as f32,
+        "the preview box must stand inside the window ({bx},{by} {bw}×{bh})"
+    );
+    // The sheet is 600 tall with 214 of controls under the box; the box's own
+    // foot must leave every one of them room, or the platform view would sit
+    // on top of the shutter.
+    anyhow::ensure!(
+        by + bh + 214.0 <= HEIGHT as f32,
+        "the controls must fit beneath the preview box, not under the platform view"
+    );
+
+    // The Photo | Video selector, tapped where the page put it: the box's top
+    // is 54 into the sheet, and the mode row is 150 below the box's foot.
+    let mode_y = by + bh + 14.0 + 36.0 + 14.0 + 72.0 + 14.0 + 20.0;
+    tap(app, WIDTH as f32 / 2.0 + 50.0, mode_y);
+    h.settle();
+    anyhow::ensure!(
+        app.global::<sigil_slint::Theme>().get_cam_mode() == "video",
+        "the Video half of the selector must switch the shutter's mode"
+    );
+    // A clip running: the shutter's disc becomes a stop, flip and the selector
+    // go dead, and the only chrome that has to be seen while the view is up —
+    // the recording pill — stands beside the box, not on it.
+    let theme = app.global::<sigil_slint::Theme>();
+    theme.set_cam_state("recording".into());
+    theme.set_cam_recording(true);
+    h.settle();
+    h.shoot("attach-camera-recording")?;
+    theme.set_cam_recording(false);
+    theme.set_cam_state("".into());
+    theme.set_cam_mode("photo".into());
+    app.set_at_page("grid".into());
+    app.set_attach_open(false);
+    h.settle();
     Ok(())
 }

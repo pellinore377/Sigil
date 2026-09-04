@@ -85,6 +85,14 @@ name = "android.permission.RECORD_AUDIO"
 [[package.metadata.android.uses_permission]]
 name = "android.permission.MODIFY_AUDIO_SETTINGS"
 
+# The in-app viewfinder (java/SigilCamera.java). The old camera tile handed
+# the job to whatever camera app the phone had, which needs no permission of
+# ours; opening the sensor ourselves does. Runtime grant on targetSdk 35 —
+# platform.rs asks through the Activity, together with RECORD_AUDIO above,
+# which the same page needs the moment it records a clip.
+[[package.metadata.android.uses_permission]]
+name = "android.permission.CAMERA"
+
 # Position: the engine's own ladder starts at android.location.LocationManager
 # (core/src/geo/android.rs). Both are runtime grants on targetSdk 35 — the
 # engine asks through the Activity handed to it in android_main; the coarse

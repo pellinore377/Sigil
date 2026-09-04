@@ -159,21 +159,59 @@ pub fn request_mic_permission() {
 
 #[cfg(target_os = "android")]
 const RECORD_AUDIO: &str = "android.permission.RECORD_AUDIO";
+#[cfg(target_os = "android")]
+const CAMERA: &str = "android.permission.CAMERA";
 /// The requestPermissions code; the result comes back as a lifecycle event we
 /// do not consume — the person taps record again once granted.
 #[cfg(target_os = "android")]
 const MIC_REQUEST_CODE: i32 = 7001;
+/// The camera page's own code. Same story: nothing consumes the result, and
+/// the page's poll notices the grant on its next pass and opens the camera.
+#[cfg(target_os = "android")]
+const CAMERA_REQUEST_CODE: i32 = 7002;
 
-/// checkSelfPermission(RECORD_AUDIO) == PERMISSION_GRANTED (0).
 #[cfg(target_os = "android")]
 fn mic_permission_android() -> anyhow::Result<bool> {
+    permission_android(RECORD_AUDIO)
+}
+
+#[cfg(target_os = "android")]
+fn request_mic_permission_android() -> anyhow::Result<()> {
+    request_permissions_android(&[RECORD_AUDIO], MIC_REQUEST_CODE)
+}
+
+/// The camera is a runtime grant of the same shape as the microphone, and the
+/// page that wants it also records video — so the two are asked for together
+/// and the person sees one pair of dialogs rather than one now and one at the
+/// moment they press record.
+#[cfg(target_os = "android")]
+pub fn has_camera_permission() -> bool {
+    match permission_android(CAMERA) {
+        Ok(granted) => granted,
+        Err(e) => {
+            tracing::warn!("camera permission check: {e:#}");
+            false
+        }
+    }
+}
+
+#[cfg(target_os = "android")]
+pub fn request_camera_permission() {
+    if let Err(e) = request_permissions_android(&[CAMERA, RECORD_AUDIO], CAMERA_REQUEST_CODE) {
+        tracing::warn!("camera permission request: {e:#}");
+    }
+}
+
+/// checkSelfPermission(name) == PERMISSION_GRANTED (0).
+#[cfg(target_os = "android")]
+fn permission_android(name: &str) -> anyhow::Result<bool> {
     use jni::objects::{JObject, JValue};
     let app = crate::scale::android().ok_or_else(|| anyhow::anyhow!("no Android app handle"))?;
     let vm = unsafe { jni::JavaVM::from_raw(app.vm_as_ptr().cast()) }?;
     let mut env = vm.attach_current_thread()?;
     let activity = unsafe { JObject::from_raw(app.activity_as_ptr().cast()) };
 
-    let perm = env.new_string(RECORD_AUDIO)?;
+    let perm = env.new_string(name)?;
     let result = env.call_method(
         &activity,
         "checkSelfPermission",
@@ -187,22 +225,26 @@ fn mic_permission_android() -> anyhow::Result<bool> {
     Ok(result?.i()? == 0)
 }
 
-/// requestPermissions(new String[]{RECORD_AUDIO}, code) — shows the dialog.
+/// requestPermissions(new String[]{…}, code) — shows the dialog(s).
 #[cfg(target_os = "android")]
-fn request_mic_permission_android() -> anyhow::Result<()> {
+fn request_permissions_android(names: &[&str], code: i32) -> anyhow::Result<()> {
     use jni::objects::{JObject, JValue};
     let app = crate::scale::android().ok_or_else(|| anyhow::anyhow!("no Android app handle"))?;
     let vm = unsafe { jni::JavaVM::from_raw(app.vm_as_ptr().cast()) }?;
     let mut env = vm.attach_current_thread()?;
     let activity = unsafe { JObject::from_raw(app.activity_as_ptr().cast()) };
 
-    let perm = env.new_string(RECORD_AUDIO)?;
-    let perms = env.new_object_array(1, "java/lang/String", &perm)?;
+    let empty = env.new_string("")?;
+    let perms = env.new_object_array(names.len() as i32, "java/lang/String", &empty)?;
+    for (i, name) in names.iter().enumerate() {
+        let s = env.new_string(name)?;
+        env.set_object_array_element(&perms, i as i32, &s)?;
+    }
     let result = env.call_method(
         &activity,
         "requestPermissions",
         "([Ljava/lang/String;I)V",
-        &[JValue::Object(perms.as_ref()), JValue::Int(MIC_REQUEST_CODE)],
+        &[JValue::Object(perms.as_ref()), JValue::Int(code)],
     );
     if env.exception_check().unwrap_or(false) {
         env.exception_describe().ok();
@@ -259,9 +301,11 @@ pub async fn pick_media() -> Vec<String> {
 
 /// Take a photo, or record a video, and answer with the file.
 ///
-/// Android hands the job to whatever camera app the phone has: an app that only
-/// asks for a picture needs no camera permission of its own, and the shot lands
-/// in the phone's gallery the way any camera app's would.
+/// The attach sheet's camera page opens a viewfinder of our own (see the
+/// camera section at the foot of this file); while that is up, the shutter is
+/// this call, and it drives that session. With no viewfinder up — the tile
+/// tapped on a build or a device where the page could not open one — Android
+/// hands the job to whatever camera app the phone has, as it always did.
 pub async fn capture_media(video: bool) -> Option<String> {
     #[cfg(not(target_os = "android"))]
     {
@@ -273,10 +317,99 @@ pub async fn capture_media(video: bool) -> Option<String> {
     }
     #[cfg(target_os = "android")]
     {
+        if camera_live() {
+            return tokio::task::spawn_blocking(move || capture_in_app(video))
+                .await
+                .unwrap_or_else(|e| {
+                    tracing::warn!("capture: the task did not finish: {e}");
+                    None
+                });
+        }
         android_pick(if video { "video" } else { "photo" })
             .await
             .into_iter()
             .next()
+    }
+}
+
+/// The shutter, when the page's own viewfinder is what is on screen.
+///
+/// A still is one call and a wait for the file. A clip is two presses of the
+/// same button: the first starts it and stays here holding the wait, the
+/// second is a second call that finds a recording already running, stops it,
+/// and answers with nothing — the file goes back through the call that started
+/// it, so only one of them stages anything.
+#[cfg(target_os = "android")]
+fn capture_in_app(video: bool) -> Option<String> {
+    use std::time::{Duration, Instant, SystemTime};
+
+    let dir = sigil_engine::paths::cache_dir().join("picked");
+    if let Err(e) = std::fs::create_dir_all(&dir) {
+        tracing::warn!("capture: create {}: {e}", dir.display());
+        return None;
+    }
+    let stamp = SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .map(|d| d.as_millis())
+        .unwrap_or(0);
+    let poll = Duration::from_millis(100);
+
+    if video {
+        if camera_state().map(|s| s.recording).unwrap_or(false) {
+            camera_stop_video();
+            return None;
+        }
+        let path = dir.join(format!("clip-{stamp}.mp4"));
+        let path = path.to_string_lossy().to_string();
+        camera_start_video(&path);
+        // Rolling within a few seconds, or the session never configured.
+        let start = Instant::now();
+        loop {
+            std::thread::sleep(poll);
+            match camera_state() {
+                Some(s) if s.recording => break,
+                Some(s) if s.state == "error" => return None,
+                None => return None,
+                _ => {}
+            }
+            if start.elapsed() > Duration::from_secs(5) {
+                tracing::warn!("capture: recording never started");
+                return None;
+            }
+        }
+        // A clip runs until the shutter is pressed again, the page is left, or
+        // the phone decides otherwise; ten minutes is the outer bound.
+        let start = Instant::now();
+        loop {
+            std::thread::sleep(poll);
+            let Some(s) = camera_state() else { return None };
+            if !s.recording {
+                return (s.path == path && std::fs::metadata(&path).is_ok()).then_some(path);
+            }
+            if start.elapsed() > Duration::from_secs(600) {
+                camera_stop_video();
+            }
+        }
+    }
+
+    let path = dir.join(format!("photo-{stamp}.jpg"));
+    let path = path.to_string_lossy().to_string();
+    camera_capture(&path);
+    let start = Instant::now();
+    loop {
+        std::thread::sleep(poll);
+        let Some(s) = camera_state() else { return None };
+        if s.state == "error" {
+            tracing::warn!("capture: {}", s.failure.unwrap_or_default());
+            return None;
+        }
+        if s.path == path {
+            return Some(path);
+        }
+        if start.elapsed() > Duration::from_secs(15) {
+            tracing::warn!("capture: no photo after 15 s");
+            return None;
+        }
     }
 }
 
@@ -702,4 +835,276 @@ fn video_call<T>(
         }
     };
     f(env, &class, &activity)
+}
+
+// ---------------------------------------------------------------------------
+// The camera on the phone: the same trick as video, the other way round.
+// java/SigilCamera.java lays a SurfaceView over the app's own surface and runs
+// a Camera2 preview on it, so the attach sheet's camera page can show a live
+// viewfinder in a rectangle it hands down — the app draws through one surface
+// and could never have drawn a camera frame itself.
+//
+// The page's controls are state, not commands: it says where the box is, which
+// way the camera faces, what the zoom is and whether the torch is on, and the
+// bridge's poll (actions.rs camera_pass) carries changes down. The shutter is the one
+// command, and it comes through capture_media above, so a shot lands on the
+// staging page by the route every other attachment takes.
+// ---------------------------------------------------------------------------
+
+/// Where the phone's camera stands. `state` is one of idle / opening / ready /
+/// capturing / recording / error; `path` is the last file written.
+#[derive(Clone, Debug, Default)]
+pub struct CameraState {
+    pub state: String,
+    pub path: String,
+    pub zoom_min: f32,
+    pub zoom_max: f32,
+    pub has_flash: bool,
+    pub front: bool,
+    pub recording: bool,
+    pub failure: Option<String>,
+}
+
+/// Whether a viewfinder is up. Kept on this side rather than asked of Java:
+/// `capture_media` has to decide between our camera and the phone's camera app
+/// before it does anything, and that decision must not depend on a JNI attach.
+static CAMERA_LIVE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+pub fn camera_live() -> bool {
+    CAMERA_LIVE.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// Open a viewfinder over the app inside a rectangle in physical pixels.
+/// `front` picks the selfie camera. Nothing happens off Android.
+pub fn camera_open(x: i32, y: i32, w: i32, h: i32, front: bool) -> bool {
+    #[cfg(target_os = "android")]
+    {
+        match camera_call(|env, class, activity| {
+            use jni::objects::JValue;
+            let facing = env.new_string(if front { "front" } else { "back" })?;
+            jni_call_static(
+                env,
+                class,
+                "open",
+                "(Landroid/app/Activity;IIIILjava/lang/String;)V",
+                &[
+                    JValue::Object(activity),
+                    JValue::Int(x),
+                    JValue::Int(y),
+                    JValue::Int(w),
+                    JValue::Int(h),
+                    JValue::Object(&facing),
+                ],
+            )?;
+            Ok(())
+        }) {
+            Ok(()) => {
+                CAMERA_LIVE.store(true, std::sync::atomic::Ordering::Relaxed);
+                return true;
+            }
+            Err(e) => {
+                tracing::warn!("camera: the viewfinder did not open: {e:#}");
+                return false;
+            }
+        }
+    }
+    #[allow(unreachable_code)]
+    {
+        let _ = (x, y, w, h, front);
+        false
+    }
+}
+
+/// The page's preview box moved or resized: follow it.
+pub fn camera_move(x: i32, y: i32, w: i32, h: i32) {
+    #[cfg(target_os = "android")]
+    {
+        let _ = camera_call(|env, class, _| {
+            use jni::objects::JValue;
+            jni_call_static(
+                env,
+                class,
+                "move",
+                "(IIII)V",
+                &[JValue::Int(x), JValue::Int(y), JValue::Int(w), JValue::Int(h)],
+            )?;
+            Ok(())
+        });
+    }
+    #[cfg(not(target_os = "android"))]
+    let _ = (x, y, w, h);
+}
+
+/// Swap the facing camera, keeping the view where it is.
+pub fn camera_flip() {
+    #[cfg(target_os = "android")]
+    let _ = camera_call(|env, class, _| {
+        jni_call_static(env, class, "flip", "()V", &[])?;
+        Ok(())
+    });
+}
+
+pub fn camera_zoom(ratio: f32) {
+    #[cfg(target_os = "android")]
+    let _ = camera_call(|env, class, _| {
+        jni_call_static(
+            env,
+            class,
+            "setZoom",
+            "(F)V",
+            &[jni::objects::JValue::Float(ratio)],
+        )?;
+        Ok(())
+    });
+    #[cfg(not(target_os = "android"))]
+    let _ = ratio;
+}
+
+pub fn camera_torch(on: bool) {
+    #[cfg(target_os = "android")]
+    let _ = camera_call(|env, class, _| {
+        jni_call_static(
+            env,
+            class,
+            "torch",
+            "(Z)V",
+            &[jni::objects::JValue::Bool(on as u8)],
+        )?;
+        Ok(())
+    });
+    #[cfg(not(target_os = "android"))]
+    let _ = on;
+}
+
+/// Take one still into `path`; the file is there once `camera_state().path`
+/// is that name.
+pub fn camera_capture(path: &str) {
+    #[cfg(target_os = "android")]
+    let _ = camera_call(|env, class, _| {
+        let jpath = env.new_string(path)?;
+        jni_call_static(
+            env,
+            class,
+            "capture",
+            "(Ljava/lang/String;)V",
+            &[jni::objects::JValue::Object(&jpath)],
+        )?;
+        Ok(())
+    });
+    #[cfg(not(target_os = "android"))]
+    let _ = path;
+}
+
+pub fn camera_start_video(path: &str) {
+    #[cfg(target_os = "android")]
+    let _ = camera_call(|env, class, _| {
+        let jpath = env.new_string(path)?;
+        jni_call_static(
+            env,
+            class,
+            "startVideo",
+            "(Ljava/lang/String;)V",
+            &[jni::objects::JValue::Object(&jpath)],
+        )?;
+        Ok(())
+    });
+    #[cfg(not(target_os = "android"))]
+    let _ = path;
+}
+
+pub fn camera_stop_video() {
+    #[cfg(target_os = "android")]
+    let _ = camera_call(|env, class, _| {
+        jni_call_static(env, class, "stopVideo", "()V", &[])?;
+        Ok(())
+    });
+}
+
+/// Take the viewfinder away and give the sensor back.
+pub fn camera_close() {
+    CAMERA_LIVE.store(false, std::sync::atomic::Ordering::Relaxed);
+    #[cfg(target_os = "android")]
+    let _ = camera_call(|env, class, _| {
+        jni_call_static(env, class, "close", "()V", &[])?;
+        Ok(())
+    });
+}
+
+/// Where the camera is; `None` off Android or when it cannot be asked.
+pub fn camera_state() -> Option<CameraState> {
+    #[cfg(target_os = "android")]
+    {
+        // A frame of its own: this is asked twenty times a second while the
+        // page is up, and every answer of it makes a local reference.
+        return camera_call(|env, class, _| {
+            env.with_local_frame(8, |env| -> anyhow::Result<CameraState> {
+            let state = jni_string(env, class, "state")?.unwrap_or_default();
+            let path = jni_string(env, class, "lastPath")?.unwrap_or_default();
+            let failure = jni_string(env, class, "failure")?;
+            let zoom_min = jni_call_static(env, class, "zoomMin", "()F", &[])?.f()?;
+            let zoom_max = jni_call_static(env, class, "zoomMax", "()F", &[])?.f()?;
+            let has_flash = jni_call_static(env, class, "hasFlash", "()Z", &[])?.z()?;
+            let front = jni_call_static(env, class, "isFront", "()Z", &[])?.z()?;
+            Ok(CameraState {
+                recording: state == "recording",
+                state,
+                path,
+                zoom_min,
+                zoom_max,
+                has_flash,
+                front,
+                failure,
+            })
+            })
+        })
+        .ok();
+    }
+    #[allow(unreachable_code)]
+    None
+}
+
+/// A no-argument static returning a String, as an `Option<String>` — `null`
+/// (no failure yet, no file yet) is `None`.
+#[cfg(target_os = "android")]
+fn jni_string(
+    env: &mut jni::JNIEnv,
+    class: &'static jni::objects::GlobalRef,
+    name: &str,
+) -> anyhow::Result<Option<String>> {
+    let obj = jni_call_static(env, class, name, "()Ljava/lang/String;", &[])?.l()?;
+    if obj.is_null() {
+        return Ok(None);
+    }
+    let s: String = env.get_string(&jni::objects::JString::from(obj))?.into();
+    Ok((!s.is_empty()).then_some(s))
+}
+
+#[cfg(target_os = "android")]
+static CAMERA_CLASS: std::sync::OnceLock<jni::objects::GlobalRef> = std::sync::OnceLock::new();
+
+/// Attach, find the class once, and run `f` with it and the Activity.
+#[cfg(target_os = "android")]
+fn camera_call<T>(
+    f: impl FnOnce(
+        &mut jni::JNIEnv,
+        &'static jni::objects::GlobalRef,
+        &jni::objects::JObject,
+    ) -> anyhow::Result<T>,
+) -> anyhow::Result<T> {
+    use anyhow::Context as _;
+    let app = crate::scale::android().ok_or_else(|| anyhow::anyhow!("no Android app handle"))?;
+    // SAFETY: android-activity's own pointers, valid for the life of the process.
+    let vm = unsafe { jni::JavaVM::from_raw(app.vm_as_ptr().cast()) }?;
+    let mut guard = vm.attach_current_thread().context("attach to the JVM")?;
+    let env = &mut *guard;
+    let activity = unsafe { jni::objects::JObject::from_raw(app.activity_as_ptr().cast()) };
+    let class = match CAMERA_CLASS.get() {
+        Some(c) => c,
+        None => {
+            let global = dex_class(env, &activity, "SigilCamera")?;
+            tracing::info!("camera: SigilCamera is loaded");
+            CAMERA_CLASS.get_or_init(|| global)
+        }
+    };
+    f(env, class, &activity)
 }
