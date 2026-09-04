@@ -14,7 +14,7 @@ import { Icons } from "icons.slint";
 import { IconLabel, ActionButton, Avatar, SButton } from "components.slint";
 import { Spinner, TouchList } from "furniture.slint";
 import { OverflowMenu, MenuEntry } from "furniture.slint";
-import { TimelineRow, ReactionChip, ReplyRef, EmojiItem, UserRow, SheetRect } from "model.slint";
+import { TimelineRow, ReactionChip, ReplyRef, EmojiItem, UserRow, SheetRect , ComposerCell } from "model.slint";
 import { Bubble } from "bubble.slint";
 import { MessageSheet } from "sheet.slint";
 import { AttachMenu, StickerItem } from "attach.slint";
@@ -292,6 +292,46 @@ export component ChatPage inherits Rectangle {
     // no string slicing, so the splice happens in Rust against these.
     out property <string> composer-text <=> composer-input.text;
     out property <int> composer-cursor <=> composer-input.cursor-position-byte-offset;
+    /// The caret moved without an edit (arrow keys, a tap): the bridge
+    /// re-judges which runs the caret is inside.
+    callback composer-cursor-moved(int);
+    /// How wide the typed text may run, for the bridge's layout.
+    out property <length> composer-w: input-box.width;
+    // The live preview (composer.rs): the typed text as cells, each knowing
+    // where it sits as typed and where it settles once its run's markup has
+    // gone. While a run has settled the input draws transparent and these
+    // cells stand in for it, sliding from one place to the other on
+    // `collapse-e`; the caret is drawn here too, at its settled place.
+    in property <[ComposerCell]> cp-cells;
+    in property <bool> cp-styled: false;
+    in property <length> cp-caret-x;
+    in property <length> cp-caret-y;
+    /// … and where it sat as typed, so it slides with the text.
+    in property <length> cp-caret-fx;
+    in property <length> cp-caret-fy;
+    /// Ticks when another run settles: the collapse starts again from the
+    /// as-typed places. Driven off elapsed time (furniture.slint's Beats
+    /// explains why a state or a plain animate cannot be trusted here).
+    in property <int> cp-epoch: 0;
+    property <duration> cp-since: -10s;
+    property <bool> cp-playing: false;
+    changed cp-epoch => {
+        root.cp-since = animation-tick();
+        root.cp-playing = true;
+        cp-settle.restart();
+    }
+    property <float> collapse-t: root.cp-playing
+        ? clamp((animation-tick() - root.cp-since) / 300ms, 0.0, 1.0) : 1.0;
+    property <float> collapse-e: 1 - (1 - root.collapse-t) * (1 - root.collapse-t) * (1 - root.collapse-t);
+    cp-settle := Timer {
+        interval: 340ms;
+        running: root.cp-playing;
+        triggered => { root.cp-playing = false; }
+    }
+    // A selection shows the source whole: the platform's own handles and
+    // the input's highlight are drawn at as-typed positions.
+    property <bool> cp-selecting: composer-input.anchor-position-byte-offset != composer-input.cursor-position-byte-offset;
+    property <bool> cp-live: root.cp-styled && !root.cp-selecting && composer-input.text != "";
     // `take-focus` false restores a draft on room open — pulling focus there
     // would raise the phone's keyboard the moment a room opens.
     public function set-composer(t: string, cursor: int, take-focus: bool) {
@@ -305,16 +345,32 @@ export component ChatPage inherits Rectangle {
     // resets to its grid on open; the recorder resets through open-recorder
     // (the bridge owns its state). Leaving the page closes the attach sheet;
     // a room change closes both (:2002, :2009).
+    // A panel and the keyboard never share the bottom of the page: opening a
+    // panel puts the keyboard away (the input lets go of focus), and the
+    // input taking focus again — a tap in it — closes whichever panel is up,
+    // as the platform messenger does. The attach sheet's own emoji search is
+    // a field of its own, so its keyboard leaves the sheet in place.
     public function toggle-attach() {
         root.attach-open = !root.attach-open;
-        if (root.attach-open) { root.recorder-open = false; att.reset(); root.open-attach(); }
+        if (root.attach-open) {
+            root.recorder-open = false;
+            composer-input.clear-focus();
+            att.reset();
+            root.open-attach();
+        }
     }
     public function toggle-recorder() {
         root.recorder-open = !root.recorder-open;
-        if (root.recorder-open) { root.attach-open = false; root.open-recorder(); }
+        if (root.recorder-open) {
+            root.attach-open = false;
+            composer-input.clear-focus();
+            root.open-recorder();
+        }
     }
-    changed attach-open => { if (self.attach-open) { self.recorder-open = false; } }
-    changed recorder-open => { if (self.recorder-open) { self.attach-open = false; } }
+    // However a panel comes up — the toggle, or the bridge setting it — the
+    // composer lets go of focus, so the keyboard goes with it.
+    changed attach-open => { if (self.attach-open) { self.recorder-open = false; composer-input.clear-focus(); } }
+    changed recorder-open => { if (self.recorder-open) { self.attach-open = false; composer-input.clear-focus(); } }
     changed visible-to-user => {
         if (!self.visible-to-user) { self.attach-open = false; }
         else { root.maybe-mark-read(); }
@@ -1303,12 +1359,24 @@ export component ChatPage inherits Rectangle {
                                 x: 0; y: 3px;
                                 width: input-flick.width;
                                 height: input-flick.viewport-height - 6px;
-                                color: root.fg;
+                                // Transparent while the preview stands in for it:
+                                // the text and its caret are drawn by the cells
+                                // below, at their settled places. The selection
+                                // highlight keeps its own colour.
+                                color: root.cp-live ? transparent : root.fg;
                                 font-family: Theme.font-ui; font-size: Theme.body;
                                 vertical-alignment: center;
                                 single-line: false;
                                 wrap: word-wrap;
                                 edited => { root.composer-edited(self.text); }
+                                // The keyboard rising for the composer takes the
+                                // bottom of the page: a panel up there closes.
+                                changed has-focus => {
+                                    if (self.has-focus) {
+                                        root.attach-open = false;
+                                        root.recorder-open = false;
+                                    }
+                                }
                                 // Keep the caret in view once the text scrolls.
                                 cursor-position-changed(p) => {
                                     if (p.y + 3px + 18px > -input-flick.viewport-y + input-flick.height) {
@@ -1316,6 +1384,7 @@ export component ChatPage inherits Rectangle {
                                     } else if (p.y + 3px < -input-flick.viewport-y) {
                                         input-flick.viewport-y = -(p.y + 3px);
                                     }
+                                    root.composer-cursor-moved(self.cursor-position-byte-offset);
                                 }
                                 key-pressed(event) => {
                                     if (event.text == Key.Return && !event.modifiers.shift) {
@@ -1324,6 +1393,36 @@ export component ChatPage inherits Rectangle {
                                     }
                                     reject
                                 }
+                            }
+                        }
+                        // The live preview over the (transparent) input. Each
+                        // cell slides from where it was typed to where it
+                        // settles; a run's markup fades and shrinks into the
+                        // place its content takes; a colour comes on as the
+                        // cell lands. It scrolls with the input.
+                        if root.cp-live : cp-layer := Rectangle {
+                            x: 0; y: 3px + input-flick.viewport-y;
+                            width: input-box.width; height: input-flick.viewport-height;
+                            for c in root.cp-cells : Text {
+                                text: c.ch;
+                                x: c.from-x + (c.to-x - c.from-x) * root.collapse-e;
+                                y: c.from-y + (c.to-y - c.from-y) * root.collapse-e;
+                                color: c.gone ? root.fg.with-alpha(1 - root.collapse-e)
+                                    : c.has-color ? root.fg.mix(c.color, 1 - root.collapse-e)
+                                    : root.fg;
+                                font-family: c.mono ? Theme.font-mono : Theme.font-ui;
+                                font-size: c.gone ? Theme.body * (1 - 0.5 * root.collapse-e) : c.size;
+                                font-weight: c.bold ? 700 : 400;
+                                font-italic: c.italic;
+                            }
+                            // The caret, at its settled place, on a slow blink
+                            // while the run finishes landing.
+                            Rectangle {
+                                x: root.cp-caret-fx + (root.cp-caret-x - root.cp-caret-fx) * root.collapse-e;
+                                y: root.cp-caret-fy + (root.cp-caret-y - root.cp-caret-fy) * root.collapse-e + 2px;
+                                width: 2px; height: Theme.body * 1.15;
+                                background: root.accent;
+                                opacity: composer-input.has-focus ? 1.0 : 0.0;
                             }
                         }
                         if composer-input.text == "" : Text {
@@ -1393,9 +1492,36 @@ export component ChatPage inherits Rectangle {
             // the sheet keeps its natural size pinned to the frame's top;
             // the list re-pins to the bottom as the frame moves.
             att-frame := Rectangle {
+                // The window hands the page ONE number for the zone it must
+                // keep clear (app.slint: max(safe-area.bottom, keyboard)), and
+                // the panel has to treat the two cases oppositely — so split
+                // it back apart here. No gesture bar or home indicator is
+                // anywhere near 96 tall and no keyboard is anywhere near that
+                // short, so the threshold is never in doubt; and while the
+                // keyboard is up the gesture bar is behind it, which is why
+                // the gesture share falls to zero rather than staying.
+                property <length> gesture-inset: root.bottom-inset > 96px ? 0px : root.bottom-inset;
+                property <length> kb-inset: root.bottom-inset > 96px ? root.bottom-inset : 0px;
                 x: 0; width: 100%;
-                y: convo.height - rec-frame.height - self.height;
-                height: root.is-invite ? 0px : root.attach-open ? att.height : 0px;
+                // The panel's foot rests on the screen's bottom edge — its
+                // ground runs on under the gesture bar, and what is pinned to
+                // the bottom INSIDE it stands off by `gesture-inset`. The
+                // keyboard is different: nothing may be under it, so the whole
+                // panel lifts by its height and the composer's own reservation
+                // of the same number (composer-h) is what it lifts into.
+                y: convo.height - rec-frame.height - self.height - self.kb-inset;
+                // The panel's natural height, unless the keyboard has left less
+                // room than that between the composer and the frame's top
+                // edge: then it takes what is going, down to a floor of the
+                // search row, one grid row and the category bar, and the grid
+                // scrolls inside whatever it got. Held apart from `height` so
+                // it does NOT carry the open/close wipe: the body keeps this
+                // size while the frame animates over it, as the sheet always
+                // has, instead of squashing open and shut.
+                property <length> body-h: min(att.height,
+                    max(152px + self.gesture-inset,
+                        convo.height - root.composer-h - rec-frame.height));
+                height: root.is-invite ? 0px : root.attach-open ? self.body-h : 0px;
                 animate height { duration: 220ms; easing: cubic-bezier(0.33, 1, 0.68, 1); }
                 clip: true;
                 changed height => { if (list.stick || root.attach-open) { root.pin-list(); } }
@@ -1439,8 +1565,21 @@ export component ChatPage inherits Rectangle {
                     load-emoji => { root.load-emoji(); }
                     close-requested => { root.attach-open = false; }
                     // The emoji page body: the one shared picker (AttachMenu.qml:398).
+                    // It sizes itself to the FRAME, not to the sheet: when the
+                    // keyboard cuts the frame short the sheet keeps its natural
+                    // height and is clipped at the foot, so a picker filling the
+                    // sheet would have its category bar cut off. 12 is the
+                    // sheet's lead-in over the search row (attach.slint's
+                    // emoji-slot, which the picker arrives through).
                     EmojiPicker {
-                        width: 100%; height: 100%;
+                        // Placed, not left to the slot: an unplaced child of a
+                        // Rectangle is CENTRED in Slint, so a picker shorter
+                        // than the sheet floated down the middle of it and had
+                        // its category bar cut off by the frame.
+                        x: 0px; y: 0px;
+                        width: 100%;
+                        height: max(0px, att-frame.body-h - 12px);
+                        bottom-inset: att-frame.gesture-inset;
                         fg: root.fg;
                         accent: root.accent;
                         chip: root.chip-c;
@@ -1467,9 +1606,13 @@ export component ChatPage inherits Rectangle {
                     accent: root.send-c;
                     surface: root.themed ? root.surface-c : root.fg.with-alpha(0.07);
                     chip: root.chip-c;
-                    // Every ground inside the recorder is the conversation's
-                    // own, translucent, exactly as the composer band above it.
-                    ground: root.convo-paint.with-alpha(root.band-alpha);
+                    // The page the recorder's card and pills sit ON — the
+                    // conversation's own ground, OPAQUE. The composer band's
+                    // alpha belongs to the band, which has the timeline behind
+                    // it; the recorder has nothing behind it and derives its
+                    // card and pills from this by lifting off it, so any alpha
+                    // here would leak straight back through the card.
+                    ground: root.convo-paint.with-alpha(1.0);
                     themed: root.themed;
                     state: root.rec-state;
                     elapsed: root.rec-elapsed;
@@ -1618,6 +1761,11 @@ export component ChatPage inherits Rectangle {
         // The frost reaches the window's zones around the page.
         bleed-top: root.bleed-top;
         bleed-bottom: root.bleed-bottom;
+        // The page runs to the window's bottom edge itself, so `bleed-bottom`
+        // is zero and the sheet's own bottom edge IS the screen's: the emoji
+        // drawer needs the page's inset to stand its category bar off the
+        // gesture bar and to keep clear of the keyboard its search field puts up.
+        bottom-inset: root.bottom-inset;
         // The frost mask and the bottom sheets follow the page's corners: the
         // desktop card's 22, square on the phone (convo above).
         card-radius: root.phone ? 0px : 22px;

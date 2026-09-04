@@ -1,0 +1,322 @@
+// Media staging — the step between picking a picture and sending it, which
+// this app did not have: every route into media used to fire attachment.send
+// the moment the picker closed, so there was no moment at which a caption
+// could be written.
+//
+// The shape is the platform messenger's own staging screen, measured off it
+// at 408dpi (1dp = 2.55px, so the numbers below are its px/2.55):
+//
+//   header      64 tall, 16 in from each side, a 24 close at the left, the
+//               room's name after it as "To <name>", add-more at the right
+//   media       fills what is left above the caption row, aspect-fit and
+//               centred, 20 radius, with a 32 close disc sitting on its
+//               top-right corner and overhanging it by 8
+//   caption row 56 tall, 8 in from each side: a 56 emoji disc, the caption
+//               well between, a 56 send disc — 8 between each, 16 below
+//
+// Several picks are a strip: one item per page, dragged and snapped like the
+// viewer's pager, each carrying its own close disc.
+
+import { Theme } from "../style.slint";
+import { Icons } from "../icons.slint";
+import { IconLabel } from "../components.slint";
+import { EmojiItem } from "../model.slint";
+import { EmojiPicker } from "../emoji.slint";
+
+/// One staged file. `img` is decoded on the Rust side; a video stages as its
+/// own dark card with a play glyph, because there is no poster for an
+/// arbitrary container here.
+export struct StagedItem {
+    img: image,
+    path: string,
+    name: string,
+    video: bool,
+    /// Pixel size, so the fit can be measured before the image is drawn.
+    w: float,
+    h: float,
+}
+
+export component StagingPage inherits Rectangle {
+    /// The gesture inset below the page: its emoji picker's category bar
+    /// stands that far off the bottom edge.
+    in property <length> bottom-inset: 0px;
+    in property <string> to-name;
+    in property <[StagedItem]> items;
+    in property <[[EmojiItem]]> emoji-rows;
+    in property <[int]> emoji-cat-rows;
+    /// The page the strip is on.
+    in-out property <int> cur: 0;
+    in-out property <string> caption;
+
+    callback closed;
+    /// Drop one item; the Rust side rebuilds the model and comes back to the
+    /// conversation when the last one goes.
+    callback removed(int);
+    callback add-more;
+    /// Send everything staged, with this caption on it.
+    callback send(string);
+    callback load-emoji;
+
+    property <bool> phone: Theme.mode != "desktop";
+    property <color> fg: Theme.menu-text;
+    /// The emoji sheet over the caption row.
+    in-out property <bool> emoji-open: false;
+
+    background: Theme.card-ground;
+
+    // ---- the three bands ----
+    property <length> header-h: root.phone ? 64px : 48px;
+    property <length> row-h: root.phone ? 56px : 44px;
+    property <length> row-pad: root.phone ? 8px : 10px;
+    property <length> row-y: root.height - 16px - root.row-h;
+    /// Page dots only earn their 22 when there is more than one page.
+    property <length> dots-h: root.items.length > 1 ? 22px : 0px;
+    property <length> area-y: root.header-h;
+    property <length> area-w: root.width - 32px;
+    property <length> area-h: root.row-y - 16px - root.dots-h - root.area-y;
+
+    public function reset() { root.cur = 0; root.caption = ""; root.emoji-open = false; }
+
+    // ---- header ----
+    Rectangle {
+        x: 0; y: 0;
+        width: 100%; height: root.header-h;
+        background: transparent;
+        close-b := Rectangle {
+            x: 8px; y: (root.header-h - 40px) / 2;
+            width: 40px; height: 40px; border-radius: 20px;
+            background: cb-t.has-hover ? root.fg.with-alpha(0.10) : transparent;
+            IconLabel { text: Icons.close; color: root.fg; font-size: 24px; width: 100%; height: 100%; }
+            cb-t := TouchArea { clicked => { root.closed(); } }
+        }
+        Text {
+            x: 56px; y: 0;
+            width: root.width - 56px - 56px;
+            height: root.header-h;
+            text: root.to-name == "" ? "New message" : "To " + root.to-name;
+            color: root.fg;
+            font-family: Theme.font-ui;
+            font-size: Theme.heading;
+            vertical-alignment: center;
+            overflow: elide;
+        }
+        // The reference keeps HD and add-more here; HD is that messenger's own
+        // upload-quality switch and has nothing to answer to on this transport,
+        // so the one button is add-more, which opens the gallery again and
+        // appends to the strip.
+        add-b := Rectangle {
+            x: root.width - 8px - 40px; y: (root.header-h - 40px) / 2;
+            width: 40px; height: 40px; border-radius: 20px;
+            background: ab-t.has-hover ? root.fg.with-alpha(0.10) : transparent;
+            IconLabel { text: Icons.image; color: root.fg; font-size: 24px; width: 100%; height: 100%; }
+            ab-t := TouchArea { clicked => { root.add-more(); } }
+        }
+    }
+
+    // ---- the strip ----
+    // One page per pick, a pitch apart, dragged and snapped: the viewer's
+    // pager reduced to what a handful of local files needs (no spinners, no
+    // peek fetches — everything staged is already decoded).
+    // One page pitch. A page is centred in the window but only ever `area-w`
+    // wide, so the neighbour clears the edge at half the window plus half the
+    // page — anything less and the next picture pokes in while nothing is
+    // being dragged, which reads as a rendering fault rather than a strip.
+    property <length> pitch: (root.width + root.area-w) / 2 + 12px;
+    property <length> drag-dx: 0;
+    property <bool> turning: false;
+    property <int> turn-dir: 0;
+    property <length> turn-target: 0;
+    property <length> shift: root.turning ? root.turn-target : root.drag-dx;
+    animate shift { duration: root.turning ? 200ms : 0ms; easing: cubic-bezier(0.33, 1, 0.68, 1); }
+    turn-clock := Timer {
+        interval: 200ms;
+        running: root.turning;
+        triggered => {
+            root.turning = false;
+            root.drag-dx = 0;
+            if (root.turn-dir != 0) { root.cur += root.turn-dir; }
+            root.turn-dir = 0;
+        }
+    }
+    function turn(dir: int) {
+        if (root.turning) { return; }
+        root.turn-dir = (dir != 0 && root.cur + dir >= 0 && root.cur + dir < root.items.length) ? dir : 0;
+        root.turn-target = -root.turn-dir * root.pitch;
+        root.turning = true;
+    }
+
+    stage := Rectangle {
+        x: 0; y: root.area-y;
+        width: 100%; height: root.area-h;
+        clip: true;
+        for it[i] in root.items : Rectangle {
+            // Aspect-fit inside the area: a picture keeps its own ratio, a
+            // video card stands at 16:9.
+            property <float> ar: it.w > 0 && it.h > 0 ? it.w / it.h : (it.video ? 16 / 9 : 3 / 4);
+            property <length> fit-w: min(root.area-w, root.area-h * self.ar);
+            property <length> fit-h: min(root.area-h, root.area-w / self.ar);
+            x: (root.width - self.fit-w) / 2 + (i - root.cur) * root.pitch + root.shift;
+            y: (root.area-h - self.fit-h) / 2;
+            width: self.fit-w; height: self.fit-h;
+            visible: (i - root.cur) >= -1 && (i - root.cur) <= 1;
+            border-radius: 20px;
+            clip: true;
+            background: it.video ? #000000 : transparent;
+            if !it.video : Image {
+                source: it.img;
+                width: 100%; height: 100%;
+                image-fit: contain;
+            }
+            if it.video : Rectangle {
+                width: 100%; height: 100%;
+                background: #000000;
+                Rectangle {
+                    x: (parent.width - 72px) / 2; y: (parent.height - 72px) / 2;
+                    width: 72px; height: 72px; border-radius: 36px;
+                    background: #ffffff.with-alpha(0.22);
+                    IconLabel { text: Icons.play; color: #ffffff; font-size: 34px; width: 100%; height: 100%; }
+                }
+                Text {
+                    x: 12px; y: parent.height - 12px - self.preferred-height;
+                    width: parent.width - 24px;
+                    text: it.name;
+                    color: #ffffff.with-alpha(0.8);
+                    font-family: Theme.font-ui;
+                    font-size: Theme.body-small;
+                    overflow: elide;
+                }
+            }
+        }
+        // The drag. The close disc is declared after the stage, so it takes
+        // its own taps before this does.
+        drag-t := TouchArea {
+            enabled: root.items.length > 1;
+            pointer-event(e) => {
+                if (e.kind == PointerEventKind.up || e.kind == PointerEventKind.cancel) {
+                    if (abs(root.drag-dx / 1px) > stage.width / 4px) {
+                        root.turn(root.drag-dx < 0 ? 1 : -1);
+                    } else if (root.drag-dx != 0) {
+                        root.turn(0);
+                    }
+                }
+            }
+            moved => { root.drag-dx = self.mouse-x - self.pressed-x; }
+        }
+    }
+
+    // The item in view carries its own close disc, on its top-right corner
+    // and overhanging it by 8 the way the reference's does — which is why it
+    // is drawn out here rather than inside the clipped stage.
+    if root.items.length > 0 : close-disc := Rectangle {
+        property <StagedItem> it: root.items[root.cur];
+        property <float> ar: self.it.w > 0 && self.it.h > 0 ? self.it.w / self.it.h : (self.it.video ? 16 / 9 : 3 / 4);
+        property <length> fit-w: min(root.area-w, root.area-h * self.ar);
+        property <length> fit-h: min(root.area-h, root.area-w / self.ar);
+        x: (root.width + self.fit-w) / 2 - 24px + root.shift;
+        y: root.area-y + (root.area-h - self.fit-h) / 2 - 8px;
+        width: 32px; height: 32px; border-radius: 16px;
+        background: #000000.with-alpha(0.55);
+        border-width: 1px;
+        border-color: #ffffff.with-alpha(0.85);
+        opacity: root.turning ? 0 : 1;
+        IconLabel { text: Icons.close; color: #ffffff; font-size: 18px; width: 100%; height: 100%; }
+        TouchArea { clicked => { root.removed(root.cur); } }
+    }
+
+    // ---- page dots ----
+    if root.items.length > 1 : HorizontalLayout {
+        x: (root.width - self.preferred-width) / 2;
+        y: root.row-y - 16px - root.dots-h + 7px;
+        height: 8px;
+        spacing: 6px;
+        for it[i] in root.items : Rectangle {
+            width: 8px; height: 8px; border-radius: 4px;
+            background: i == root.cur ? root.fg : root.fg.with-alpha(0.28);
+        }
+    }
+
+    // ---- caption row ----
+    emoji-b := Rectangle {
+        x: root.row-pad; y: root.row-y;
+        width: root.row-h; height: root.row-h; border-radius: root.row-h / 2;
+        background: root.emoji-open || eb-t.has-hover ? Theme.bubble-other.brighter(0.15) : Theme.bubble-other;
+        IconLabel { text: Icons.emoji; color: root.fg; font-size: 24px; width: 100%; height: 100%; }
+        eb-t := TouchArea {
+            clicked => {
+                root.emoji-open = !root.emoji-open;
+                if (root.emoji-open) { root.load-emoji(); }
+            }
+        }
+    }
+    well := Rectangle {
+        x: root.row-pad + root.row-h + 8px;
+        y: root.row-y;
+        width: root.width - 2 * (root.row-pad + root.row-h + 8px);
+        height: root.row-h;
+        border-radius: root.row-h / 2;
+        background: Theme.bubble-other;
+        Rectangle {
+            x: 18px; y: 0;
+            width: parent.width - 36px; height: 100%;
+            clip: true;
+            cap-in := TextInput {
+                text <=> root.caption;
+                color: root.fg;
+                font-family: Theme.font-ui;
+                font-size: Theme.body;
+                vertical-alignment: center;
+                height: 100%;
+                single-line: true;
+                accepted => { root.send(root.caption); }
+            }
+            if root.caption == "" : Text {
+                text: "Write a caption";
+                color: root.fg.with-alpha(0.45);
+                font-family: Theme.font-ui;
+                font-size: Theme.body;
+                vertical-alignment: center;
+                height: 100%;
+            }
+        }
+        // The well's own lead-in, so a press left of the caret still focuses.
+        TouchArea {
+            x: 0; y: 0;
+            width: 18px; height: 100%;
+            clicked => { cap-in.focus(); }
+        }
+    }
+    send-b := Rectangle {
+        x: root.width - root.row-pad - root.row-h; y: root.row-y;
+        width: root.row-h; height: root.row-h; border-radius: root.row-h / 2;
+        background: sb-t.pressed ? Theme.accent.darker(0.15) : Theme.accent;
+        IconLabel { text: Icons.send; color: Theme.background; font-size: 24px; width: 100%; height: 100%; }
+        sb-t := TouchArea { clicked => { root.send(root.caption); } }
+    }
+
+    // ---- the emoji sheet over the caption row ----
+    if root.emoji-open : Rectangle {
+        x: 0; y: root.area-y;
+        width: 100%; height: root.row-y - root.area-y;
+        background: transparent;
+        TouchArea { clicked => { root.emoji-open = false; } }
+    }
+    if root.emoji-open : Rectangle {
+        x: 0;
+        y: max(root.area-y, root.row-y - 8px - 300px);
+        width: 100%;
+        height: root.row-y - 8px - self.y;
+        background: Theme.card-ground;
+        border-top-left-radius: 20px;
+        border-top-right-radius: 20px;
+        EmojiPicker {
+            bottom-inset: root.bottom-inset;
+            x: 0; y: 0;
+            width: 100%; height: 100%;
+            fg: root.fg;
+            rows: root.emoji-rows;
+            cat-rows: root.emoji-cat-rows;
+            back-slot: false;
+            picked(e) => { root.caption = root.caption + e; }
+        }
+    }
+}

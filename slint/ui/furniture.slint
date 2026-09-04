@@ -365,15 +365,21 @@ export component OverflowMenu inherits Rectangle {
                 // OverflowMenu.qml:126-137: a filled 14px icon at x 12, the
                 // label pinned at x 38 and 8 short of the right edge.
                 HorizontalLayout {
-                    padding-left: 12px; padding-right: 8px;
-                    spacing: 12px;
+                    // The icon box carries 3px of slack on each side, taken
+                    // back off the lead-in and the gap, so the glyph's centre
+                    // and the label's edge both stay exactly where the QML put
+                    // them (icon at 12, label at 12 + icon + 12). A Slint Text
+                    // clips to its own width, and a box exactly one em wide
+                    // shaves the outer antialiasing off a Material Symbol.
+                    padding-left: 9px; padding-right: 8px;
+                    spacing: 9px;
                     IconLabel {
                         text: entry.icon;
                         filled: true;
                         color: mrow.ink;
                         opacity: 0.85;
                         font-size: Theme.icon-size;
-                        width: Theme.icon-size;
+                        width: Theme.icon-size + 6px;
                         vertical-alignment: center;
                     }
                     Text {

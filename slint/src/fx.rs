@@ -896,3 +896,220 @@ mod tests {
         assert!(glow(&lay, &mut no_emoji).is_none());
     }
 }
+
+// ---------------------------------------------------------------------------
+// The composer's live preview.
+//
+// The composer keeps the literal source — `red::text;` is what is sent, and
+// the engine composes it — but shows a run settling into its styled content
+// the moment its `;` lands. Two layouts do it: the source laid out plainly
+// (where every typed character sits now) and the shown text laid out with
+// its effects (where each will sit once the markup has gone). A cell carries
+// both, and the composer interpolates. A run whose caret is inside it, or an
+// open run, stays as typed so it can still be edited.
+// ---------------------------------------------------------------------------
+
+/// One typed character: where it sits as typed, where it settles, how it
+/// is styled there, and whether it goes (markup, an escape's backslash).
+#[derive(Clone, Debug, Default)]
+pub struct PreviewCell {
+    pub ch: String,
+    pub from: (f32, f32),
+    pub to: (f32, f32),
+    pub size: f32,
+    pub color: Option<String>,
+    pub bold: bool,
+    pub italic: bool,
+    pub mono: bool,
+    pub gone: bool,
+}
+
+pub struct Preview {
+    pub cells: Vec<PreviewCell>,
+    /// How many runs have settled: the composer restarts its collapse when
+    /// this rises, and shows the plain input again when it is zero.
+    pub settled: usize,
+    /// Where the caret sits in the settled layout, for the composer to draw,
+    /// and where it sat as typed, so it slides with the text.
+    pub caret: (f32, f32),
+    pub caret_from: (f32, f32),
+    pub height: f32,
+}
+
+/// Plain text at the body size, laid out the way an effect run is, so the
+/// two layouts share every metric. Empty text is an empty layout.
+pub fn layout_plain(text: &str, base_px: f32, max_w: f32) -> Layout {
+    let n = text.chars().count();
+    let span = serde_json::json!([{"start": 0, "end": n}]);
+    layout(text, &span, false, base_px, max_w).unwrap_or(Layout {
+        glyphs: Vec::new(),
+        width: 1.0,
+        height: base_px * LINE,
+        has_spoiler: false,
+    })
+}
+
+/// `cursor` is the caret's character index into `src`.
+pub fn compose_preview(src: &str, cursor: usize, base_px: f32, max_w: f32) -> Preview {
+    use sigil_engine::timeline::effects::{source_map, to_json, SrcKind};
+    let map = source_map(src);
+    let chars: Vec<char> = src.chars().collect();
+    let n = chars.len();
+    // A run has settled when it is closed and the caret is not inside it.
+    // On the very end of the run — the moment the `;` was typed — it has.
+    let settled: Vec<bool> = map
+        .runs
+        .iter()
+        .map(|r| r.terminated && !(cursor > r.start && cursor < r.end))
+        .collect();
+    let mut shown = vec![true; n];
+    for (r, ok) in map.runs.iter().zip(settled.iter()) {
+        if *ok {
+            for k in r.start..r.end.min(n) {
+                if map.kinds[k] != SrcKind::Content {
+                    shown[k] = false;
+                }
+            }
+        }
+    }
+    // The shown text, and each source character's place in it.
+    let mut at = vec![usize::MAX; n];
+    let mut shown_text = String::new();
+    let mut count = 0usize;
+    for i in 0..n {
+        if shown[i] {
+            at[i] = count;
+            count += 1;
+            shown_text.push(chars[i]);
+        }
+    }
+    // The settled runs' effects, over the shown text.
+    let effects: Vec<sigil_engine::timeline::effects::TextEffect> = map
+        .runs
+        .iter()
+        .zip(settled.iter())
+        .filter(|(_, ok)| **ok)
+        .filter_map(|(r, _)| {
+            let first = (r.content_start..r.content_end).find(|&k| shown[k])?;
+            let last = (r.content_start..r.content_end).rev().find(|&k| shown[k])?;
+            let mut e = r.effect.clone();
+            e.start = at[first];
+            e.end = at[last] + 1;
+            Some(e)
+        })
+        .collect();
+    let to_layout = if effects.is_empty() {
+        layout_plain(&shown_text, base_px, max_w)
+    } else {
+        layout(&shown_text, &to_json(&effects), false, base_px, max_w)
+            .unwrap_or_else(|| layout_plain(&shown_text, base_px, max_w))
+    };
+    let from_layout = layout_plain(src, base_px, max_w);
+
+    // Where a vanished character goes: to the place of the next shown one,
+    // so `red::` slides into its `t` and a `;` into whatever follows.
+    let next_shown = |i: usize| -> Option<usize> {
+        (i..n).find(|&k| shown[k]).or_else(|| (0..i).rev().find(|&k| shown[k]))
+    };
+    let place_of = |k: usize| -> (f32, f32) {
+        to_layout.glyphs.get(at[k]).map(|g| (g.x, g.y)).unwrap_or((0.0, 0.0))
+    };
+    let mut cells = Vec::with_capacity(n);
+    for i in 0..n {
+        let from = from_layout.glyphs.get(i).map(|g| (g.x, g.y)).unwrap_or((0.0, 0.0));
+        if shown[i] {
+            let g = &to_layout.glyphs[at[i]];
+            cells.push(PreviewCell {
+                ch: chars[i].to_string(),
+                from,
+                to: (g.x, g.y),
+                size: g.size,
+                color: g.color.clone(),
+                bold: g.bold,
+                italic: g.italic,
+                mono: g.mono,
+                gone: false,
+            });
+        } else {
+            let to = next_shown(i).map(place_of).unwrap_or(from);
+            cells.push(PreviewCell {
+                ch: chars[i].to_string(),
+                from,
+                to,
+                size: base_px,
+                color: None,
+                bold: false,
+                italic: false,
+                mono: false,
+                gone: true,
+            });
+        }
+    }
+    // The caret: on its character's settled place, or past the last one.
+    let caret = if cursor < n {
+        next_shown(cursor)
+            .filter(|&k| k >= cursor)
+            .map(place_of)
+            .unwrap_or_else(|| end_of(&to_layout))
+    } else {
+        end_of(&to_layout)
+    };
+    let caret_from = if cursor < n {
+        from_layout
+            .glyphs
+            .get(cursor)
+            .map(|g| (g.x, g.y))
+            .unwrap_or_else(|| end_of(&from_layout))
+    } else {
+        end_of(&from_layout)
+    };
+    Preview {
+        cells,
+        settled: settled.iter().filter(|s| **s).count(),
+        caret,
+        caret_from,
+        height: to_layout.height,
+    }
+}
+
+fn end_of(l: &Layout) -> (f32, f32) {
+    l.glyphs.last().map(|g| (g.x + g.w, g.y)).unwrap_or((0.0, 0.0))
+}
+
+#[cfg(test)]
+mod preview_tests {
+    use super::*;
+
+    #[test]
+    fn a_settled_run_hides_its_markup_and_colours_its_content() {
+        let p = compose_preview("red::hi;", 8, 16.0, 300.0);
+        let gone: Vec<bool> = p.cells.iter().map(|c| c.gone).collect();
+        assert_eq!(gone, vec![true, true, true, true, true, false, false, true]);
+        assert!(p.cells[5].color.is_some());
+        assert_eq!(p.settled, 1);
+        // the content slides left into the head's place
+        assert!(p.cells[5].to.0 < p.cells[5].from.0);
+    }
+
+    #[test]
+    fn a_caret_inside_the_run_keeps_it_as_typed() {
+        let p = compose_preview("red::hi;", 6, 16.0, 300.0);
+        assert!(p.cells.iter().all(|c| !c.gone));
+        assert_eq!(p.settled, 0);
+    }
+
+    #[test]
+    fn an_open_run_is_not_settled() {
+        let p = compose_preview("red::hi", 7, 16.0, 300.0);
+        assert_eq!(p.settled, 0);
+        assert!(p.cells.iter().all(|c| !c.gone));
+    }
+
+    #[test]
+    fn plain_text_makes_plain_cells() {
+        let p = compose_preview("hello there", 11, 16.0, 300.0);
+        assert_eq!(p.cells.len(), 11);
+        assert!(p.cells.iter().all(|c| !c.gone && c.color.is_none()));
+        assert!(p.caret.0 > 0.0);
+    }
+}

@@ -1,16 +1,31 @@
-// Voice recorder — VoiceRecorder.qml verbatim: an inline 230px panel under
-// the composer. Three states: idle (static 7-bar wave + caption), recording
-// (blinking dot + zero-padded timer over a live 48px level band), ready (the
-// clip's waveform + duration). Controls: side pills + a 120px centre pill.
+// Voice recorder — VoiceRecorder.qml verbatim: an inline panel under the
+// composer. Three states: idle (a large waveform + caption), recording
+// (blinking dot + zero-padded timer over a live level band), ready (the clip's
+// waveform + duration). Controls: three equal pills under the card.
 // The root is transparent (VoiceRecorder.qml:7): the conversation ground
-// shows through around the stage and the pills.
+// stands behind the card and around the pills, and nothing is painted under
+// the gesture bar — the page and the window own that strip.
 //
-// The phone's is the platform messenger's: a 300dp stage (radius 28, 16 from
-// the sides, 12 under the composer) and, outside it, a 56dp row of three
-// pills — outlined Cancel and Attach, the mic on an accent container between
-// them, split 1 : 1.1 : 1. Every ground here — the stage, the side pills — is
-// the conversation's own colour at the composer band's alpha (`ground`), so
-// the panel continues the band instead of laying a card over the chat.
+// The phone's is the platform messenger's, measured off it at density 408
+// (1dp = 2.537px):
+//
+//   card      inset 8 from the sides, 300 tall, radius 24, its own OPAQUE
+//             ground a step LIGHTER than the page — an elevated surface,
+//             not a window onto the chat. Its content (illustration over
+//             caption) is centred: 52 clear above, 54 below.
+//   gap       8 between the card and the pill row
+//   pills     56 tall, fully rounded, THREE EQUAL widths (166 each on this
+//             screen) with 8 between them and 8 to the sides. Cancel and
+//             Attach are filled tonal pills on the page ground (measured
+//             #2B2A28 against a #141311 page — filled, not outlined); the
+//             mic is the accent container, the same width as the others.
+//   below     44 clear under the pills, so the gesture bar has its own room.
+//
+// An earlier pass painted every surface here with the conversation's own
+// colour at the composer band's alpha, which made the card vanish into the
+// chat and left the pills as bare outlines. `ground` is the page ground the
+// panel SITS ON now — opaque — and `panel-surface` is the step above it that
+// the card and the side pills wear.
 
 import { Theme } from "style.slint";
 import { Icons } from "icons.slint";
@@ -21,16 +36,16 @@ export component VoiceRecorder inherits Rectangle {
     // ChatPage.qml hands the recorder themedSend: accent@0.9 unthemed (:45, :1836).
     in property <color> accent: Theme.accent.with-alpha(0.9);
     in property <color> surface: Theme.menu-text.with-alpha(0.07);
-    /// The conversation's own ground, carrying the composer band's alpha:
-    /// every surface in this panel is painted with it, so the recorder reads
-    /// as the same continuous, translucent ground as the band above it
-    /// rather than as a card sitting on one (ChatPage hands this down).
-    in property <color> ground: Theme.menu-background.darker(0.35).with-alpha(0.75);
+    /// The conversation's own ground, OPAQUE: the page the panel sits on, and
+    /// the base every surface here is derived from. It must carry no alpha —
+    /// the card and the pills are lifts off it, and a translucent lift would
+    /// let the timeline through the card again (ChatPage hands this down).
+    in property <color> ground: Theme.menu-background.darker(0.35);
     // deepChipC ≈ rgba(36,36,36,0.96) (ChatPage.qml:56-59, :1839).
     in property <color> chip: Theme.menu-background.darker(1.1).with-alpha(0.96);
-    /// The room wears a chat theme. The phone's grounds no longer branch on
-    /// it — `ground` already carries the room's tone, since the conversation
-    /// ground it comes from is the themed one.
+    /// The room wears a chat theme. The grounds no longer branch on it:
+    /// `ground` already carries the room's tone, since the conversation ground
+    /// it comes from is the themed one.
     in property <bool> themed: false;
     in property <string> state: "idle";      // idle | recording | ready
     in property <float> elapsed: 0;          // seconds, ticked by Rust
@@ -49,11 +64,19 @@ export component VoiceRecorder inherits Rectangle {
     // stays dark, so fg stands in until chat themes reach the recorder.
     property <color> ink: root.fg;
     property <color> pill-c: root.chip;
-    // The phone's stage is not a card: it is the conversation ground itself,
-    // translucent, continuous with the composer band. (It used to be the
-    // card ground — a distinctly lighter slab that read as a sheet laid over
-    // the chat.) The desktop keeps its surface card.
-    property <color> sheet-c: root.phone ? root.ground : root.surface;
+    /// One step off the page ground, opaque: the card, and the two side pills.
+    /// The reference lifts its dark page #141311 to #272623 for the card and
+    /// #2B2A28 for the pills — a hair under 8% of the ink, and a difference of
+    /// four counts between them, so one tone carries both here.
+    ///
+    /// Lifting toward the ink is what "elevated" means on a dark ground; on
+    /// the light palette the conversation ground is already the *dimmer*
+    /// surface (card-ground #f4f0f4 under a #fdf8fd window), so there the card
+    /// rises toward white instead and lands clear of the page just the same.
+    property <color> panel-surface: Theme.mode == "light"
+        ? root.ground.with-alpha(1.0).mix(#ffffff, 0.25)
+        : root.ground.with-alpha(1.0).mix(Theme.menu-text, 0.90);
+    property <color> sheet-c: root.phone ? root.panel-surface : root.surface;
     // The phone's accent container: the room accent sunk into the ground.
     // The mic pill wears the platform messenger's accent tint: a light wash of
     // the accent over dark palettes, a sunk one over light.
@@ -64,41 +87,65 @@ export component VoiceRecorder inherits Rectangle {
         (floor(root.shown / 60) < 10 ? "0" : "") + floor(root.shown / 60)
         + ":" + (mod(floor(root.shown), 60) < 10 ? "0" : "") + mod(floor(root.shown), 60);
 
-    // 12 + 300 + 12 + 56 + 16 on the phone.
-    height: root.phone ? 396px : 230px;
+    // The card's illustration: the app ships no picture, so the waveform the
+    // recorder already draws stands in for one, at the size the reference
+    // gives its drawing rather than at glyph size.
+    property <length> wave-h: root.phone ? 150px : 46px;
+    property <length> wave-w: root.phone ? 12px : 5px;
+    property <length> band-h: root.phone ? 120px : 48px;
+    property <length> dot: root.phone ? 12px : 9px;
+    // 8 under the card, 44 under the pills — the gesture bar's own room.
+    property <length> pad-bottom: root.phone ? 44px : 10px;
+    /// The phone's three pills are EQUAL, so the width is arithmetic, not a
+    /// stretch factor: a box layout hands each child its preferred width first
+    /// and only then splits what is left by stretch, and "Cancel" and "Attach"
+    /// prefer far more than a bare glyph does — which is how the mic ended up
+    /// the narrowest of the three. 8 of padding a side, 8 in each of the two
+    /// gaps, the rest in thirds. (166 on a 530-wide screen; the reference's is
+    /// 166 too.)
+    property <length> pill-w: (root.width - 16px - 16px) / 3;
+
+    // 8 + 300 + 8 + 56 + 44 on the phone.
+    height: root.phone ? 416px : 230px;
     background: transparent;
 
     VerticalLayout {
         padding-left: root.phone ? 8px : 10px;
         padding-right: root.phone ? 8px : 10px;
-        padding-top: root.phone ? 12px : 10px;
-        padding-bottom: root.phone ? 16px : 10px;
-        spacing: root.phone ? 12px : 10px;
+        // The reference leaves 16 between the composer's well and the card,
+        // and the composer's own band already spends ~8 of that below the
+        // well, so 8 here lands it. (Were ChatPage ever to hand the composer
+        // a gesture inset — it binds none today — that band would grow and
+        // this would want to shrink again.)
+        padding-top: root.phone ? 8px : 10px;
+        padding-bottom: root.pad-bottom;
+        spacing: root.phone ? 8px : 10px;
 
-        // Stage card
+        // The card: opaque, a step lighter than the page it sits on.
         stage := Rectangle {
             vertical-stretch: 1;
-            border-radius: root.phone ? 28px : 18px;
+            border-radius: root.phone ? 24px : 18px;
             background: root.sheet-c;
 
-            // idle: static waveform glyph + caption
+            // idle: the standing waveform over the caption, as a block,
+            // centred in the card.
             if root.state == "idle" : VerticalLayout {
                 alignment: center;
-                spacing: root.phone ? 16px : 10px;
-                // A 46px band; each bar is centred in its own column so the
-                // layout cannot pin it to the top.
+                spacing: root.phone ? 20px : 10px;
+                // Each bar is centred in its own column so the layout cannot
+                // pin it to the top.
                 idle-wave := HorizontalLayout {
                     alignment: center;
-                    spacing: 4px;
-                    height: 46px;
+                    spacing: root.phone ? 11px : 4px;
+                    height: root.wave-h;
                     for lvl in [0.35, 0.6, 0.85, 1.0, 0.8, 0.5, 0.3] : Rectangle {
-                        width: 5px; height: 46px;
+                        width: root.wave-w; height: root.wave-h;
                         Rectangle {
-                            x: 0; y: (46px - self.height) / 2;
-                            width: 5px;
-                            height: round(46 * lvl) * 1px;
-                            border-radius: 2.5px;
-                            background: root.ink.with-alpha(0.55);
+                            x: 0; y: (root.wave-h - self.height) / 2;
+                            width: root.wave-w;
+                            height: max(root.wave-w, root.wave-h * lvl);
+                            border-radius: root.wave-w / 2;
+                            background: root.ink.with-alpha(root.phone ? 0.5 : 0.55);
                         }
                     }
                 }
@@ -112,20 +159,22 @@ export component VoiceRecorder inherits Rectangle {
             }
 
             // recording / ready: dot + timer stacked above the level band,
-            // in a column `parent - 28` wide (VoiceRecorder.qml:124).
+            // in a column `parent - 28` wide (VoiceRecorder.qml:124) — the same
+            // block, the same card, centred the same way.
             if root.state != "idle" : VerticalLayout {
                 x: 14px;
                 width: stage.width - 28px;
                 alignment: center;
-                spacing: 14px;
+                spacing: root.phone ? 22px : 14px;
                 HorizontalLayout {
                     alignment: center;
-                    spacing: 7px;
+                    spacing: root.phone ? 10px : 7px;
                     if root.recording : Rectangle {
-                        width: 9px;
+                        width: root.dot;
                         rec-dot := Rectangle {
-                            x: 0; y: (parent.height - 9px) / 2;
-                            width: 9px; height: 9px; border-radius: 4.5px;
+                            x: 0; y: (parent.height - root.dot) / 2;
+                            width: root.dot; height: root.dot;
+                            border-radius: root.dot / 2;
                             background: #e88b90;
                             // Linear to 0.25 over 700ms, back to 1 over 700ms (:135).
                             property <float> t: (animation-tick() / 1400ms).mod(1.0);
@@ -137,21 +186,21 @@ export component VoiceRecorder inherits Rectangle {
                         text: root.timer-text;
                         color: root.ink;
                         font-family: Theme.font-ui;
-                        font-size: Theme.title;
+                        font-size: root.phone ? Theme.display : Theme.title;
                         vertical-alignment: center;
                     }
                 }
                 band := Rectangle {
-                    height: 48px;
+                    height: root.band-h;
                     bars := HorizontalLayout {
                         alignment: center;
                         spacing: 2px;
                         for level in (root.recording ? root.levels : root.clip-waveform) : Rectangle {
-                            width: 3px; height: 48px;
+                            width: 3px; height: root.band-h;
                             Rectangle {
-                                x: 0; y: (48px - self.height) / 2;
+                                x: 0; y: (root.band-h - self.height) / 2;
                                 width: 3px;
-                                height: max(3px, 44px * min(1.0, level));
+                                height: max(3px, (root.band-h - 4px) * min(1.0, level));
                                 border-radius: 1.5px;
                                 background: root.ink.with-alpha(0.8);
                             }
@@ -161,20 +210,21 @@ export component VoiceRecorder inherits Rectangle {
             }
         }
 
-        // Controls: Restart/Cancel · record/stop · Attach — sides (W-136)/2.
+        // Controls: Restart/Cancel · record/stop · Attach. The phone pins all
+        // three to `pill-w` so they come out equal whatever the words inside
+        // them are; the desktop keeps its 120px centre pill between two
+        // content-sized sides.
         controls := HorizontalLayout {
             height: root.phone ? 56px : 46px;
-            spacing: root.phone ? 12px : 8px;
+            spacing: 8px;
             cancel-b := Rectangle {
+                min-width: root.phone ? root.pill-w : 0px;
+                max-width: root.phone ? root.pill-w : 100000px;
                 horizontal-stretch: 1;
                 border-radius: root.phone ? 28px : 23px;
-                background: root.phone ? root.ground : root.pill-c;
-                // The phone's side pills used to be filled neutral containers;
-                // their ground is the conversation's now, like everything else
-                // here, so the outline the design always carried does the work
-                // of telling them from it.
-                border-width: root.phone ? 1px : 0px;
-                border-color: root.accent.with-alpha(0.45);
+                // A filled tonal pill on the page ground, like the card: the
+                // reference's side pills carry no outline at all.
+                background: root.phone ? root.panel-surface : root.pill-c;
                 HorizontalLayout {
                     alignment: center;
                     // QML's fitWidth icon boxes hug the glyph at spacing 6; a
@@ -198,10 +248,10 @@ export component VoiceRecorder inherits Rectangle {
                 } }
             }
             mic-b := Rectangle {
-                // 120 on the desktop; the phone's takes 1.1 of the split.
-                min-width: root.phone ? 0px : 120px;
-                max-width: root.phone ? 10000px : 120px;
-                horizontal-stretch: root.phone ? 1.1 : 0;
+                // 120 on the desktop; the phone takes an equal third.
+                min-width: root.phone ? root.pill-w : 120px;
+                max-width: root.phone ? root.pill-w : 120px;
+                horizontal-stretch: 1;
                 border-radius: root.phone ? 28px : 23px;
                 background: root.phone
                     ? (root.recording ? Theme.urgent : root.accent-container)
@@ -220,15 +270,21 @@ export component VoiceRecorder inherits Rectangle {
                 } }
             }
             attach-b := Rectangle {
+                min-width: root.phone ? root.pill-w : 0px;
+                max-width: root.phone ? root.pill-w : 100000px;
                 horizontal-stretch: 1;
                 border-radius: root.phone ? 28px : 23px;
-                opacity: root.state == "idle" ? (root.phone ? 0.45 : 0.6) : 1;
-                background: root.phone ? root.ground
+                // Idle means nothing to attach yet. The reference dims only
+                // the LABEL for that (#292826 against Cancel's #2B2A28 is all
+                // its container gives up, while the check and the word drop to
+                // about 0.45); dimming the whole pill sank it back into the
+                // page, which is the opposite of what the row is for.
+                opacity: root.phone ? 1.0 : root.state == "idle" ? 0.6 : 1;
+                background: root.phone ? root.panel-surface
                           : root.state == "idle" ? root.pill-c : root.accent.brighter(0.3);
-                border-width: root.phone ? 1px : 0px;
-                border-color: root.accent.with-alpha(0.45);
                 HorizontalLayout {
                     alignment: center;
+                    opacity: root.phone && root.state == "idle" ? 0.45 : 1.0;
                     spacing: root.phone ? 8px : 4px;
                     IconLabel {
                         text: Icons.check; font-size: root.phone ? 20px : Theme.icon-size;   // VoiceRecorder.qml:214

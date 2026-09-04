@@ -36,6 +36,14 @@ export global Theme {
     in-out property <bool> dbg-no-convo-clip: false;
     in-out property <bool> dbg-cache-bubbles: false;
     in-out property <color> system-accent: #a8a8a8;
+    /// Not a token: the blurred picture of the window that the image viewer
+    /// lies on (ImageViewer.qml:70-86 draws a live snapshot of the page under
+    /// its veil, which Slint cannot do without one). The sheet gets the same
+    /// picture down a property of its own; the viewer is mounted straight on
+    /// AppWindow, and this is the only global the root re-exports, so it is
+    /// where Rust can reach it. Set in actions.rs (viewer_open), cleared on
+    /// viewer-closed; empty means "no snapshot", and the viewer dims instead.
+    in-out property <image> viewer-frost;
     property <bool> dark: mode == "dark";
     property <bool> light: mode == "light";
 

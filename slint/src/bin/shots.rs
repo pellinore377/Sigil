@@ -47,6 +47,53 @@ fn tap(app: &sigil_slint::AppWindow, x: f32, y: f32) {
     release(app, x, y);
 }
 
+/// The tile grid, at a magnification that falls between pixels.
+///
+/// There is no tile server in the fixtures, so the seams — the hairlines that
+/// showed between tiles on the phone — are drawn against a checkerboard of
+/// solid tiles instead: every pixel of the map should be one of the two
+/// colours, and any pixel that is neither is a join with the ground showing
+/// through it. Worth knowing when reading these: the software renderer rounds
+/// a destination rect itself and has never shown a seam either way, so what
+/// these shots can catch is a grid placed wrongly — a tile in the wrong place,
+/// a size that has gone negative — and not the phone's hairline, which comes
+/// of its own renderer rounding a position and a size apart. That one is
+/// settled in `mapview`'s tests, on the arithmetic.
+fn map_tiles(app: &sigil_slint::AppWindow, mag: f64, dpr: f64) {
+    use sigil_slint::mapview::MapView;
+    let solid = |r: u8, g: u8, b: u8| {
+        let mut buf = slint::SharedPixelBuffer::<slint::Rgb8Pixel>::new(512, 512);
+        for p in buf.make_mut_slice() {
+            *p = slint::Rgb8Pixel { r, g, b };
+        }
+        slint::Image::from_rgb8(buf)
+    };
+    let (red, blue) = (solid(255, 0, 0), solid(0, 0, 255));
+    let mut v = MapView::default();
+    v.resize(WIDTH as f64 / dpr, (HEIGHT - 60) as f64 / dpr);
+    v.open(51.5, -0.12);
+    v.scale = mag;
+    let rows: Vec<sigil_slint::MapTileView> = v
+        .wanted()
+        .into_iter()
+        .map(|(tx, ty)| {
+            let (x, y, w, h) = v.place(tx, ty, dpr);
+            sigil_slint::MapTileView {
+                x: x.into(),
+                y: y.into(),
+                w: w.into(),
+                h: h.into(),
+                img: if (tx + ty).rem_euclid(2) == 0 {
+                    red.clone()
+                } else {
+                    blue.clone()
+                },
+            }
+        })
+        .collect();
+    app.set_mp_tiles(std::rc::Rc::new(slint::VecModel::from(rows)).into());
+}
+
 /// The picker's glyph pictures are rendered one request at a time and land in
 /// bursts, so a shot of it has to wait for them or catch an empty grid.
 fn emoji_pictures(app: &sigil_slint::AppWindow, h: &Harness) -> anyhow::Result<()> {
@@ -411,6 +458,20 @@ fn main() -> anyhow::Result<()> {
     app.set_mp_own(true);
     app.set_mp_live(true);
     app.set_mp_status("Sharing until 3:00 PM".into());
+    // The grid, at magnifications that land between pixels: a checkerboard of
+    // solid tiles, so any pixel that is neither colour is a seam.
+    // Three of a phone's pixels to a logical one, as the device has, so the
+    // grid is placed the way it is placed there.
+    point(&app, WindowEvent::ScaleFactorChanged { scale_factor: 3.0 });
+    app.window().set_size(slint::PhysicalSize::new(WIDTH, HEIGHT));
+    for (mag, name) in [(0.86, "086"), (1.13, "113"), (1.68, "168")] {
+        h.settle();
+        map_tiles(&app, mag, 3.0);
+        h.frame(&format!("map-seams-{name}"))?;
+    }
+    point(&app, WindowEvent::ScaleFactorChanged { scale_factor: 1.0 });
+    app.window().set_size(slint::PhysicalSize::new(WIDTH, HEIGHT));
+    app.set_mp_tiles(std::rc::Rc::new(slint::VecModel::from(Vec::<sigil_slint::MapTileView>::new())).into());
     app.set_nav("chat".into());
     h.settle();
 
@@ -437,6 +498,40 @@ fn main() -> anyhow::Result<()> {
         step(&h, &mut was, at, name)?;
     }
     h.settle();
+    // The page is ONE scroller under its header, the way the platform
+    // messenger's is: a drag anywhere carries the preview and the reset pill
+    // up out of sight and brings the panel — its rounded top with it — up to
+    // fill the room, the gradient grid running on past the bottom edge. It is
+    // NOT the panel scrolling behind a lip that stays put, which is what it
+    // did before. Only a finger reaches this, and the body is a Flickable, so
+    // the press is parked 140ms and the drag walked, as the swipes below are.
+    // The frame is taken with the finger still down: released, the flick
+    // would carry on and the shot would catch a different offset each run.
+    {
+        let (x, from, to) = (14.0f32, 700.0f32, 440.0f32); // 260 up, in the panel's own margin
+        press(&app, x, from);
+        h.advance(std::time::Duration::from_millis(140));
+        h.pump();
+        for i in 1..=8 {
+            drag_to(&app, x, from + (to - from) * i as f32 / 8.0);
+            h.advance(std::time::Duration::from_millis(16));
+            h.pump();
+        }
+        h.frame("chattheme-scrolled")?;
+        release(&app, x, to);
+        h.settle();
+        // …and back to the top, so every frame after this one starts there.
+        press(&app, x, to);
+        h.advance(std::time::Duration::from_millis(140));
+        h.pump();
+        for i in 1..=8 {
+            drag_to(&app, x, to + (from - to) * i as f32 / 8.0);
+            h.advance(std::time::Duration::from_millis(16));
+            h.pump();
+        }
+        release(&app, x, from);
+        h.settle();
+    }
     // The page wearing a theme, so the selected swatch's squircle and ring
     // can be read against the tones the whole page has taken.
     app.set_ct_accent("#b48ad6".into());
@@ -939,5 +1034,338 @@ fn main() -> anyhow::Result<()> {
         h.frame("attach-poll-growing")?;
         h.shoot("attach-poll-filled")?;
     }
+
+    // ---- the emoji pickers against the window's own bottom zones ----
+    // A headless window has neither a gesture bar nor a keyboard, so stand one
+    // up: the page is handed max(safe-area.bottom, kb-overlap) either way, and
+    // 24 is a gesture bar's share of that while 420 is a phone keyboard's.
+    // What must hold in both shots is the same three things — the back arrow
+    // LEADS the search field, the category bar is clear of the bottom zone
+    // with the sheet's own ground still painting on down through it, and the
+    // search row, some grid and the category bar are all on screen at once.
+    app.set_at_page("emoji".into());
+    app.set_attach_open(true);
+    h.settle();
+    // The shots above left "cat" in the well: only the picker's own reset()
+    // clears that and nothing out here can call it, so type it back out. The
+    // well is 12 into a 400 sheet at the window's foot, and 40 tall.
+    tap(&app, 150.0, HEIGHT as f32 - 400.0 + 32.0);
+    for _ in 0..8 {
+        let bs: slint::SharedString = slint::platform::Key::Backspace.into();
+        point(&app, WindowEvent::KeyPressed { text: bs.clone() });
+        point(&app, WindowEvent::KeyReleased { text: bs });
+    }
+    app.invoke_act("emoji-search".into(), "".into(), "".into());
+    emoji_pictures(&app, &h)?;
+    for (name, inset) in [
+        ("attach-emoji-gesture", 24.0),
+        ("attach-emoji-keyboard", 420.0),
+    ] {
+        app.set_kb_overlap(inset);
+        h.settle();
+        h.shoot(name)?;
+    }
+    // and typing with the keyboard up, which is the state the picker used to
+    // vanish in: the results have to land in the band left over it.
+    app.set_kb_overlap(420.0);
+    h.settle();
+    for c in ["c", "a", "t"] {
+        point(&app, WindowEvent::KeyPressed { text: c.into() });
+        point(&app, WindowEvent::KeyReleased { text: c.into() });
+    }
+    emoji_pictures(&app, &h)?;
+    h.shoot("attach-emoji-keyboard-search")?;
+    app.invoke_act("emoji-search".into(), "".into(), "".into());
+    app.set_kb_overlap(0.0);
+    app.set_at_page("grid".into());
+    app.set_attach_open(false);
+    h.settle();
+
+    // The reaction drawer has a search field too, so it answers to the same
+    // two zones. Opened the only way there is (the add-reaction cell at the
+    // right end of the quick pill), then the zones stood up under it.
+    app.invoke_debug_sheet(pressed as i32, 14.0, 546.0, 207.0, 36.0);
+    h.settle();
+    tap(&app, 293.0, 511.0);
+    emoji_pictures(&app, &h)?;
+    for (name, inset) in [
+        ("sheet-emoji-gesture", 24.0),
+        ("sheet-emoji-keyboard", 420.0),
+    ] {
+        app.set_kb_overlap(inset);
+        h.settle();
+        h.shoot(name)?;
+    }
+    app.set_kb_overlap(0.0);
+    app.invoke_debug_sheet_close();
+    h.settle();
+
+    // ---- the attachment sheet's grid, and the capture flow off it ----
+    // Nine tiles in two rows of five minus one — ONE camera, whose Photo or
+    // Video is chosen inside the chooser below, not as a second tile — and
+    // the block flush with the sheet's 16 lead-in. It sat 37 lower than that
+    // for a while: the sheet's phone height had been raised to 396 while the
+    // grid still wanted 264, and the block, being a layout placed by hand,
+    // spread the surplus between its two rows.
+    app.set_nav("chat".into());
+    app.set_at_page("grid".into());
+    app.set_attach_open(true);
+    h.settle();
+    h.shoot("attach-grid-tiles")?;
+    app.set_at_page("camera".into());
+    h.settle();
+    h.shoot("attach-camera")?;
+    app.set_at_page("grid".into());
+    app.set_attach_open(false);
+    h.settle();
+
+    // ---- media staging ----
+    // What every media route now lands on: the picture over a caption field,
+    // and the send that carries the caption with it. One item, then three, so
+    // the aspect-fit, the close disc on the corner and the strip's page dots
+    // are all readable.
+    app.set_room_name("Marlowe".into());
+    let sizes = [(640u32, 480u32), (480u32, 640u32), (600u32, 600u32)];
+    let mut staged: Vec<sigil_slint::StagedItem> = Vec::new();
+    for (i, (w, ht)) in sizes.iter().enumerate() {
+        let p = h.out.join(format!("staged-{i}.png"));
+        write_png(&p, *w, *ht)?;
+        let img = slint::Image::load_from_path(&p)
+            .map_err(|_| anyhow::anyhow!("the staging fixture must load"))?;
+        staged.push(sigil_slint::StagedItem {
+            img,
+            path: p.to_string_lossy().to_string().into(),
+            name: format!("staged-{i}.png").into(),
+            video: false,
+            w: *w as f32,
+            h: *ht as f32,
+        });
+    }
+    app.set_sg_items(slint::ModelRc::new(slint::VecModel::from(vec![staged[0]
+        .clone()])));
+    app.set_sg_cur(0);
+    app.set_sg_caption("".into());
+    app.set_nav("staging".into());
+    h.settle();
+    h.shoot("staging-one")?;
+    app.set_sg_caption("The lake, this morning".into());
+    h.settle();
+    h.shoot("staging-captioned")?;
+    app.set_sg_items(slint::ModelRc::new(slint::VecModel::from(staged.clone())));
+    app.set_sg_cur(0);
+    h.settle();
+    h.shoot("staging-strip")?;
+    // The second page of the strip: a portrait shot, which the same area
+    // fits by width instead of by height.
+    app.set_sg_cur(1);
+    h.settle();
+    h.shoot("staging-strip-2")?;
+    // Taking one off leaves the rest, and the page stays.
+    app.invoke_act("staging-remove".into(), "1".into(), "".into());
+    h.settle();
+    anyhow::ensure!(
+        app.get_sg_items().row_count() == 2,
+        "the close disc takes one item off, not the pick"
+    );
+    anyhow::ensure!(
+        app.get_nav() == "staging",
+        "two items left is still a staging page"
+    );
+    // And taking the last two off is the pick abandoned.
+    app.invoke_act("staging-remove".into(), "0".into(), "".into());
+    app.invoke_act("staging-remove".into(), "0".into(), "".into());
+    h.settle();
+    anyhow::ensure!(
+        app.get_sg_items().row_count() == 0 && app.get_nav() == "chat",
+        "the last item off closes the page"
+    );
+
+    // The composer's live preview: a run settles the moment its `;` lands.
+    // The bridge lays the typed text out twice (as typed, and as it will
+    // settle) and the page slides each character between the two; stepped
+    // here at three points of the collapse, then with the caret stepped back
+    // inside the run, which unfolds it to its source again.
+    app.set_nav("chat".into());
+    h.settle();
+    let typed = "hello red::world; there";
+    app.invoke_chat_composer_set(typed.into(), 17, true);
+    app.invoke_composer_edited(typed.into());
+    h.pump();
+    h.frame("composer-live-000")?;
+    h.advance(std::time::Duration::from_millis(120));
+    h.pump();
+    h.frame("composer-live-120")?;
+    h.advance(std::time::Duration::from_millis(200));
+    h.pump();
+    h.frame("composer-live-320")?;
+    app.invoke_chat_composer_set(typed.into(), 12, true);
+    app.invoke_composer_cursor_moved(12);
+    h.settle();
+    h.shoot("composer-live-open")?;
+    app.invoke_clear_composer();
+    h.settle();
+
+    // The expanded image viewer, from a picture in the timeline: the long
+    // press that must still reach the sheet, the tap that opens the viewer
+    // over the frosted conversation, the filmstrip's sliver of the next
+    // picture, and the ⋮ menu on top of it. Last, because it seeds a
+    // timeline of its own over whatever the room was holding.
+    viewer(&app, &h, ts)?;
+    Ok(())
+}
+
+/// A test picture: 4:3, bright, with a diagonal and a border, so the aspect,
+/// the corner rounding and any cropping are all readable at a glance.
+fn write_png(path: &std::path::Path, w: u32, h: u32) -> anyhow::Result<()> {
+    let mut px = vec![0u8; (w * h * 4) as usize];
+    for y in 0..h {
+        for x in 0..w {
+            let i = ((y * w + x) * 4) as usize;
+            let edge = x < 8 || y < 8 || x + 8 >= w || y + 8 >= h;
+            let diag = ((x as i32 * h as i32 - y as i32 * w as i32).abs() as f32
+                / (w * h) as f32)
+                < 0.02;
+            let c = if edge {
+                [250, 250, 250]
+            } else if diag {
+                [230, 80, 60]
+            } else {
+                [
+                    40 + (200 * x / w) as u8,
+                    60 + (150 * y / h) as u8,
+                    160u8,
+                ]
+            };
+            px[i..i + 4].copy_from_slice(&[c[0], c[1], c[2], 255]);
+        }
+    }
+    let file = std::fs::File::create(path)?;
+    let mut enc = png::Encoder::new(std::io::BufWriter::new(file), w, h);
+    enc.set_color(png::ColorType::Rgba);
+    enc.set_depth(png::BitDepth::Eight);
+    enc.write_header()?.write_image_data(&px)?;
+    Ok(())
+}
+
+fn viewer(app: &sigil_slint::AppWindow, h: &Harness, ts: i64) -> anyhow::Result<()> {
+    app.set_attach_open(false);
+    app.set_nav("chat".into());
+    h.settle();
+    let pic = h.out.join("lake.png");
+    write_png(&pic, 640, 480)?;
+    // A second, portrait picture: the viewer pages over every picture in the
+    // room, so this is the one the filmstrip's sliver belongs to.
+    let pic2 = h.out.join("lake-tall.png");
+    write_png(&pic2, 480, 720)?;
+    // Text above the pictures so the frost behind the viewer has a
+    // conversation to blur, and they go last so the list rests on them.
+    let msg = |id: &str, body: &str, own: bool, at: i64| {
+        serde_json::json!({"id": id, "kind": "text", "isOwn": own,
+            "eventId": format!("${id}"),
+            "sender": if own { "@wren:sigil.test" } else { "@marlowe:sigil.test" },
+            "senderName": if own { "wren" } else { "Marlowe" },
+            "body": body, "ts": ts - at})
+    };
+    let seed = vec![
+        msg("v1", "so I have been thinking about the lake", false, 300_000),
+        msg("v2", "it is less a body of water and more a jurisdiction", false, 240_000),
+        msg("v3", "strange women lying in ponds is no basis for government", true, 180_000),
+        msg("v4", "here is the lake, for the record", false, 120_000),
+        serde_json::json!({"id": "v5", "kind": "image", "isOwn": false, "eventId": "$v5",
+            "sender": "@marlowe:sigil.test", "senderName": "Marlowe",
+            "body": "lake-tall.png", "ts": ts - 60_000,
+            "media": {"filename": "lake-tall.png", "mime": "image/png", "width": 480, "height": 720,
+                      "path": pic2.to_string_lossy(), "thumbnailPath": pic2.to_string_lossy()}}),
+        serde_json::json!({"id": "v6", "kind": "image", "isOwn": false, "eventId": "$v6",
+            "sender": "@marlowe:sigil.test", "senderName": "Marlowe",
+            "body": "lake.png", "ts": ts - 30_000,
+            "media": {"filename": "lake.png", "mime": "image/png", "width": 640, "height": 480,
+                      "path": pic.to_string_lossy(), "thumbnailPath": pic.to_string_lossy()}}),
+    ];
+    sigil_slint::bridge::with_ui(|ui| {
+        ui.open_room = "!marlowe".into();
+        ui.shadow = seed;
+        if let Some(win) = ui.win.upgrade() {
+            sigil_slint::bridge::rebuild_timeline(ui, &win);
+        }
+    });
+    h.settle();
+    h.shoot("viewer-bubble")?;
+
+    // The long press on the picture. The image body used to carry a plain
+    // TouchArea, which took the pointer on the way down and left the bubble's
+    // HoldArea behind it with nothing to time, so a hold on a picture opened
+    // nothing. Driven the way home-selected drives its own: press, the clock
+    // walked past the list's 100ms park and HoldArea's 500, then release.
+    // The wide picture is the last row, its 640×480 scaled to the bubble's
+    // 300 — in this fixture its box lands at 14,517 300×225.
+    let (pic_x, pic_y) = (150.0, 600.0);
+    app.set_sheet_actions(slint::ModelRc::new(slint::VecModel::from(
+        Vec::<sigil_slint::MenuEntry>::new(),
+    )));
+    press(app, pic_x, pic_y);
+    for _ in 0..4 {
+        h.advance(std::time::Duration::from_millis(200));
+        h.pump();
+    }
+    release(app, pic_x, pic_y);
+    h.shoot("viewer-image-sheet")?;
+    anyhow::ensure!(
+        app.get_sheet_actions().row_count() > 0,
+        "a long press on a picture must open the message sheet"
+    );
+    anyhow::ensure!(
+        !app.get_viewer_open(),
+        "a long press is not a tap: the viewer must stay shut"
+    );
+    app.invoke_debug_sheet_close();
+    h.settle();
+
+    // And the tap, which is the same surface: no hold, so the viewer opens.
+    tap(app, pic_x, pic_y);
+    h.settle();
+    anyhow::ensure!(
+        app.get_viewer_open(),
+        "a tap on a picture opens the viewer"
+    );
+    anyhow::ensure!(
+        app.global::<sigil_slint::Theme>().get_viewer_frost().size().width > 0,
+        "the viewer lies on a frosted picture of the page it came from"
+    );
+    anyhow::ensure!(
+        app.get_vw_items().row_count() == 2 && app.get_vw_cur() == 1,
+        "the viewer holds every picture in the room and opened on the tapped one"
+    );
+    // The filmstrip: a page is 56 narrower than the viewer and the pitch adds
+    // 12, so 16px of the picture before this one stands inside the left edge
+    // at rest. Sampled a third of the way down, clear of the top bar.
+    h.shoot("viewer-open")?;
+    // the ⋮ menu: the third 22px button in from the right edge, at 8 out and
+    // 2 apart, so its centre is 8 + 11 = 19 from the right, 28 down.
+    tap(app, WIDTH as f32 - 19.0, 28.0);
+    h.shoot("viewer-menu")?;
+    // Forward: the card is 160 wide 10 in from the right at y 42, its first
+    // row 6 inside that and 34 tall, so the row's middle is at y 65.
+    tap(app, WIDTH as f32 - 100.0, 65.0);
+    h.shoot("viewer-forward")?;
+    app.set_viewer_open(false);
+    app.invoke_act("viewer-closed".into(), "".into(), "".into());
+    h.settle();
+    // The keyboard and a panel never share the bottom of the page: the
+    // composer taking focus (the keyboard rising for it) closes whichever
+    // panel is up, and opening a panel lets the composer's focus go.
+    app.set_nav("chat".into());
+    h.settle();
+    app.set_attach_open(true);
+    h.settle();
+    app.invoke_chat_composer_set("".into(), 0, true);
+    h.settle();
+    anyhow::ensure!(!app.get_attach_open(), "the composer took focus but the attach sheet stayed open");
+    app.set_recorder_open(true);
+    h.settle();
+    app.invoke_chat_composer_set("".into(), 0, true);
+    h.settle();
+    anyhow::ensure!(!app.get_recorder_open(), "the composer took focus but the recorder stayed open");
+    h.settle();
     Ok(())
 }

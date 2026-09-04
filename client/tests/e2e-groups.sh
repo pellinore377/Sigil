@@ -2,15 +2,16 @@
 # Groups and media over the real protocol: a three-person group, a message
 # from each, an invite, a rename, a file, and a member leaving.
 set -euo pipefail
+PORT=$((20000 + RANDOM % 20000))
 ROOT=$(cd "$(dirname "$0")/../.." && pwd)
 SV=$ROOT/server/target/debug/sigil-server
 CL=$ROOT/client/target/debug/sigil-cli
 W=$(mktemp -d); cd "$W"
 trap 'pkill -x sigil-server >/dev/null 2>&1 || true; pkill -x sigil-cli >/dev/null 2>&1 || true; rm -rf "$W"' EXIT
 fail() { echo "FAIL: $1"; shift; for f in "$@"; do echo "--- $f"; cat "$f" 2>/dev/null | head -40; done; exit 1; }
-E=ws://127.0.0.1:18447/envoy
+E=ws://127.0.0.1:$PORT/envoy
 
-$SV -c sigil.toml init --hostname sigil.test --listen 127.0.0.1:18447 >/dev/null
+$SV -c sigil.toml init --hostname sigil.test --listen 127.0.0.1:$PORT >/dev/null
 $SV -c sigil.toml run >server.log 2>&1 &
 sleep 1.5
 for u in alice bob carol dave; do

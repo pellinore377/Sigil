@@ -732,7 +732,7 @@ pub async fn dispatch(engine: &SharedEngine, req: &Request) -> Option<Reply> {
         "room.join" => s.accept(engine, &param(p, "roomIdOrAlias")).await,
         "room.leave" => s.leave(engine, &param(p, "roomId")).await,
         "room.members" => s.members(&param(p, "roomId")).await,
-        "users.search" => s.search(&param(p, "query")).await,
+        "users.search" => s.search(p).await,
         "search.global" => s.search_global(p).await,
         "link.scan" => s.link_scan(engine, &param(p, "offer")).await,
         "recovery.code" => match sigil_client::backup::code(&s.inner.lock().await.0) {
@@ -791,6 +791,44 @@ fn short_name(username: &str) -> String {
         .next()
         .unwrap_or(username)
         .to_string()
+}
+
+/// The whole username a query names, if it names one: a bare `bob` or
+/// `@bob` on our own server (`me`, the account this session is signed in
+/// as), or a complete `@bob:their.server` on any server. `None` when the
+/// query is empty or is not a username at all — a fragment with a space in
+/// it, a localpart over 32 characters, a server with no dot — in which case
+/// only the local half of `search` can answer, since the front desk takes
+/// nothing but a whole localpart.
+///
+/// `q` arrives trimmed, lowercased and with any leading `@` off.
+fn exact_username(q: &str, me: &str) -> Option<String> {
+    if q.is_empty() {
+        return None;
+    }
+    let full = if q.contains(':') {
+        format!("@{q}")
+    } else {
+        format!("@{q}:{}", me.rsplit_once(':')?.1)
+    };
+    sigil_protocol::names::parse_username(&full).ok()?;
+    Some(full)
+}
+
+/// Does a person we already know answer to `q`? `q` is the typed query,
+/// trimmed, lowercased and with any leading `@` taken off (`search`).
+///
+/// Case-insensitive substring, over the whole username and the display
+/// name both: someone typing `wr`, `wren`, `@wren` or `@wren:sigil.test`
+/// all reach `@wren:sigil.test`. Substring rather than prefix because this
+/// half of the search never leaves the device — it is our own address book,
+/// and matching the middle of a name costs the server nothing. An empty
+/// query matches everyone: that is the suggestion list.
+fn known_matches(q: &str, user_id: &str, display: &str) -> bool {
+    if q.is_empty() {
+        return true;
+    }
+    user_id.to_lowercase().contains(q) || display.to_lowercase().contains(q)
 }
 
 fn period_now() -> u32 {
@@ -1214,22 +1252,100 @@ impl SigilSession {
         Reply::ok(json!({"members": members}))
     }
 
-    async fn search(&self, query: &str) -> Reply {
-        let q = query.trim().to_lowercase();
-        let q = if q.starts_with('@') {
-            q
-        } else {
-            format!("@{q}")
-        };
-        if sigil_protocol::names::parse_username(&q).is_err() {
-            return Reply::ok(json!({"results": []}));
+    /// Find someone to write to. `{query, limit?}` → `{results: [{userId,
+    /// displayName, avatarPath, known}]}`.
+    ///
+    /// **There is no server-wide directory, and there is not meant to be
+    /// one.** The front desk is a table keyed by localpart and the wire
+    /// carries exactly one way to read it, `NameLookup{localpart}`
+    /// (`protocol/src/wire.rs`): a server can answer "is @bob here, and
+    /// what is his card" and nothing else. `docs/blind-backend.md` A2 calls
+    /// that table "the only list of people the server keeps"; a query or a
+    /// listing operation would hand every account on the server to anyone
+    /// who asked, which is the one thing the front desk is careful not to
+    /// do. So the matching happens in two halves:
+    ///
+    /// * **Remote — exact, one whole username.** `bob`, `@bob` and
+    ///   `@bob:their.server` all name one person and all work. A query with
+    ///   no `:` means our own server, which is what people type most.
+    ///   Case is folded, since usernames are lowercase by definition
+    ///   (`protocol/src/names.rs`). No prefix and no substring: the front
+    ///   desk cannot answer either without becoming a directory.
+    /// * **Local — substring, case-insensitive**, over the people this
+    ///   device already knows: everyone in our conversations, the senders
+    ///   of pending requests, and saved contacts. Both the username and the
+    ///   display name are matched, so `wr` finds `@wren:sigil.test` because
+    ///   we have talked to Wren — not because the server said so.
+    ///
+    /// People we know come first (they are ours, and instant), the exact
+    /// card after, deduplicated by username, ourselves never included. An
+    /// **empty query returns the people we know and asks the server
+    /// nothing** — those are the Start page's suggestions.
+    async fn search(&self, p: &serde_json::Map<String, Value>) -> Reply {
+        let raw = param(p, "query");
+        let limit = p
+            .get("limit")
+            .and_then(Value::as_u64)
+            .unwrap_or(12)
+            .clamp(1, 100) as usize;
+        let q = raw.trim().trim_start_matches('@').to_lowercase();
+
+        let mut results: Vec<Value> = Vec::new();
+        let mut seen: HashSet<String> = HashSet::new();
+        seen.insert(self.username.clone());
+        for (user_id, display) in self.known_people().await {
+            if results.len() >= limit {
+                break;
+            }
+            if !known_matches(&q, &user_id, &display) || !seen.insert(user_id.clone()) {
+                continue;
+            }
+            results.push(
+                json!({"userId": user_id, "displayName": display, "avatarPath": "", "known": true}),
+            );
         }
-        match account::lookup(&self.link, &q).await {
-            Ok(c) => Reply::ok(
-                json!({"results": [{"userId": c.username, "displayName": short_name(&c.username), "avatarPath": ""}]}),
-            ),
-            Err(_) => Reply::ok(json!({"results": []})),
+
+        // The one thing the server can be asked: is this exact name here.
+        if let Some(username) = exact_username(&q, &self.username) {
+            if !seen.contains(&username) && results.len() < limit {
+                if let Ok(c) = account::lookup(&self.link, &username).await {
+                    results.push(
+                        json!({"userId": c.username, "displayName": short_name(&c.username), "avatarPath": "", "known": false}),
+                    );
+                }
+            }
         }
+        Reply::ok(json!({ "results": results }))
+    }
+
+    /// Everyone this device already knows, most useful first: the people in
+    /// our conversations (newest conversation first), whoever has asked to
+    /// reach us, then saved contacts. Nothing here leaves the device.
+    async fn known_people(&self) -> Vec<(String, String)> {
+        let (convs, requests) = self.conversations().await;
+        let mut out: Vec<(String, String)> = Vec::new();
+        for c in convs.iter().rev() {
+            for peer in &c.peers {
+                out.push((peer.clone(), short_name(peer)));
+            }
+            for m in &c.members {
+                out.push((m.username.clone(), short_name(&m.username)));
+            }
+        }
+        for r in &requests {
+            out.push((r.from.clone(), short_name(&r.from)));
+        }
+        for c in Self::saved_contacts() {
+            let Some(user_id) = c["userId"].as_str().filter(|u| !u.is_empty()) else {
+                continue;
+            };
+            let name = match c["displayName"].as_str().unwrap_or("") {
+                "" => short_name(user_id),
+                d => d.to_string(),
+            };
+            out.push((user_id.to_string(), name));
+        }
+        out
     }
 
     async fn recovery_status(&self) -> Value {
@@ -2508,5 +2624,63 @@ impl SigilSession {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{exact_username, known_matches};
+
+    /// The user's three ways of typing a name — `bob`, `@bob`,
+    /// `@bob:sigil.test` — all become the one whole username the front desk
+    /// can be asked about. (`search` has taken the `@` off by this point.)
+    #[test]
+    fn the_three_ways_of_typing_a_name_all_resolve() {
+        let me = "@alice:sigil.test";
+        for q in ["bob", "bob:sigil.test"] {
+            assert_eq!(
+                exact_username(q, me).as_deref(),
+                Some("@bob:sigil.test"),
+                "{q}"
+            );
+        }
+        assert_eq!(
+            exact_username("bob:other.test", me).as_deref(),
+            Some("@bob:other.test")
+        );
+    }
+
+    /// A fragment is not a username, and the front desk is not asked about
+    /// one: it answers whole names only, so the local half has to carry it.
+    #[test]
+    fn a_fragment_names_nobody() {
+        let me = "@alice:sigil.test";
+        for q in ["", "bo b", "bob:nodot", &"b".repeat(33)] {
+            assert_eq!(exact_username(q, me), None, "{q}");
+        }
+    }
+
+    /// The three ways a name gets typed all reach the same person, and so
+    /// does a fragment of it: this half of the search is our own address
+    /// book, so it matches the middle of a name too.
+    #[test]
+    fn a_known_person_answers_to_every_way_of_typing_the_name() {
+        let (uid, name) = ("@wren:sigil.test", "Wren");
+        for q in ["wren", "wren:sigil.test", "wr", "en", "sigil.test", ""] {
+            assert!(known_matches(q, uid, name), "{q} did not find {uid}");
+        }
+        for q in ["marlowe", "wren:other.test", "wrenn"] {
+            assert!(!known_matches(q, uid, name), "{q} wrongly found {uid}");
+        }
+    }
+
+    /// `search` folds case and strips the leading `@` before matching, so
+    /// what arrives here is lowercase and bare; the display name a contact
+    /// carries is whatever its owner typed, and matches either way.
+    #[test]
+    fn matching_a_display_name_ignores_case() {
+        assert!(known_matches("marl", "@m.b:sigil.test", "Marlowe Blake"));
+        assert!(known_matches("blake", "@m.b:sigil.test", "Marlowe Blake"));
+        assert!(!known_matches("marl", "@m.b:sigil.test", ""));
     }
 }

@@ -262,11 +262,14 @@ async fn handle(stream: UnixStream, login_page: bool) {
             }
             "users.search" => {
                 let q = m["query"].as_str().unwrap_or("").to_lowercase();
-                let users: Vec<Value> = USERS.iter()
-                    .filter(|(_, n)| n.to_lowercase().contains(&q))
-                    .map(|(u, n)| json!({"userId": u, "displayName": n, "avatarUrl": ""}))
+                // `results`, as the real engine answers and protocol.md
+                // says; this mock used to say `users`, which is how a
+                // frontend reading the wrong key went unnoticed.
+                let results: Vec<Value> = USERS.iter()
+                    .filter(|(u, n)| n.to_lowercase().contains(&q) || u.to_lowercase().contains(&q))
+                    .map(|(u, n)| json!({"userId": u, "displayName": n, "avatarPath": "", "known": true}))
                     .collect();
-                res = json!({"users": users});
+                res = json!({"results": results});
             }
             "login.start" => {
                 logged = true;

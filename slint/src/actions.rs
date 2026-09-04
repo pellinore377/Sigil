@@ -4,7 +4,7 @@
 //! contracts and Service.qml itself.
 
 use serde_json::{json, Value};
-use slint::{ComponentHandle, ModelRc, SharedString, VecModel};
+use slint::{ComponentHandle, Model, ModelRc, SharedString, VecModel};
 
 use crate::bridge::{rebuild_rooms, rebuild_timeline, with_ui, Requester, UiState};
 use crate::rows::{initials, tint_for};
@@ -267,19 +267,23 @@ pub fn sheet_snapshot(ui: &mut UiState, win: &AppWindow, id: &str, r: &SheetRect
 /// themselves.
 pub fn map_place(ui: &mut UiState, win: &AppWindow) {
     let wanted = ui.mapview.wanted();
-    // Mid-pinch the grid is drawn magnified, so the side comes from the view
-    // rather than from the tile.
-    let side = ui.mapview.tile_size();
+    // Mid-pinch the grid is drawn magnified, and at a magnification that is
+    // rarely a whole number of pixels. The view rounds each tile's edges onto
+    // whole *device* pixels, so it needs to know how many of those there are
+    // to a logical one; without it adjacent tiles are feathered against the
+    // ground and every join shows as a hairline.
+    let dpr = f64::from(win.window().scale_factor());
     let mut rows: Vec<crate::MapTileView> = Vec::with_capacity(wanted.len());
     let mut missing: Vec<(u32, i64, i64)> = Vec::new();
     for (tx, ty) in wanted {
         let key = ui.mapview.key(tx, ty);
-        let (x, y) = ui.mapview.place(tx, ty);
+        let (x, y, w, h) = ui.mapview.place(tx, ty, dpr);
         match ui.mapview.have.get(&key) {
             Some(img) => rows.push(crate::MapTileView {
                 x: x.into(),
                 y: y.into(),
-                size: side.into(),
+                w: w.into(),
+                h: h.into(),
                 img: img.clone(),
             }),
             None => {
@@ -332,34 +336,6 @@ fn fetch_map_tile(ui: &mut UiState, z: u32, x: i64, y: i64) {
     );
 }
 
-/// The fingers lifted somewhere between two levels. A tile map only has whole
-/// levels, so the view has to land on one; easing it there over ~160ms reads
-/// as the map settling, where jumping the last half-level reads as a glitch.
-/// Each step schedules the next, so nothing has to be kept alive for it.
-fn map_settle(epoch: u64, from: f64, to: f64, step: u32) {
-    const STEPS: u32 = 10;
-    let t = step as f64 / STEPS as f64;
-    let e = 1.0 - (1.0 - t) * (1.0 - t) * (1.0 - t);
-    let mut going = false;
-    with_ui(|ui| {
-        // The page moved on — another point, or closed — or the fingers are
-        // back down and the settle has been overtaken.
-        if ui.mapview.epoch != epoch || ui.mapview.pinching() {
-            return;
-        }
-        let Some(win) = ui.win.upgrade() else { return };
-        let (ax, ay) = (ui.mapview.w / 2.0, ui.mapview.h / 2.0);
-        ui.mapview.zoom_to(from + (to - from) * e, ax, ay);
-        map_place(ui, &win);
-        going = true;
-    });
-    if going && step < STEPS {
-        slint::Timer::single_shot(std::time::Duration::from_millis(16), move || {
-            map_settle(epoch, from, to, step + 1);
-        });
-    }
-}
-
 pub fn wire_extra(win: &AppWindow) {
     win.on_map_viewport(|w, h| {
         with_ui(|ui| {
@@ -375,10 +351,18 @@ pub fn wire_extra(win: &AppWindow) {
             map_place(ui, &win);
         });
     });
+    // A step in or out about a tapped spot — and, with no step, the recentre
+    // disc top right (MapPage.qml:351-366): the page has no callback of its
+    // own for that, and this is the one that already carries a place on the
+    // map to look at.
     win.on_map_zoom_at(|step, x, y| {
         with_ui(|ui| {
             let Some(win) = ui.win.upgrade() else { return };
-            ui.mapview.zoom(step, x as f64, y as f64);
+            if step == 0 {
+                ui.mapview.recentre();
+            } else {
+                ui.mapview.zoom(step, x as f64, y as f64);
+            }
             map_place(ui, &win);
         });
     });
@@ -392,21 +376,16 @@ pub fn wire_extra(win: &AppWindow) {
             map_place(ui, &win);
         });
     });
+    // The fingers lifted. Nothing eases anywhere: the view stays exactly
+    // where they left it and only the level the tiles are fetched from
+    // settles, so what used to be a lurch of up to half a level on every lift
+    // is now the map simply staying put while sharper imagery arrives.
     win.on_map_pinch_end(|| {
-        // The settle takes the state again for each of its steps, so it is
-        // started after this one has been let go of, not from inside it.
-        let mut ease = None;
         with_ui(|ui| {
             let Some(win) = ui.win.upgrade() else { return };
-            let from = ui.mapview.zoom_f();
-            if let Some(to) = ui.mapview.pinch_end() {
-                ease = Some((ui.mapview.epoch, from, to));
-            }
+            ui.mapview.pinch_end();
             map_place(ui, &win);
         });
-        if let Some((epoch, from, to)) = ease {
-            map_settle(epoch, from, to, 1);
-        }
     });
     win.on_sheet_prewarm(|id, r| {
         with_ui(|ui| {
@@ -490,7 +469,10 @@ pub fn on_nav_opened(ui: &mut UiState, win: &AppWindow, page: &str) {
         }
         "start" => {
             win.set_st_error(SharedString::new());
-            rebuild_start_suggestions(ui, win);
+            // The page opens on an empty field, and nothing fires
+            // `search-edited` until something is typed: ask for the
+            // suggestions here, the same way an emptied field does.
+            dir_search(ui, win, "dir-search-start", "");
         }
         "addpeople" => win.set_ap_results(ModelRc::new(VecModel::from(Vec::new()))),
         // Back on Home: bank the open room's unsent composer text so its row
@@ -788,6 +770,16 @@ fn rebuild_forward(ui: &mut UiState, win: &AppWindow) {
     win.set_fw_chats(ModelRc::new(VecModel::from(rows)));
 }
 
+/// What the Start page shows before anything is typed, from the room list
+/// this device already holds: whoever we have a direct conversation with.
+///
+/// It is deliberately not the server's list of users. The front desk knows
+/// every name it hosts, but the wire has no way to ask it for them
+/// (`docs/blind-backend.md` A2/B3, `protocol/src/wire.rs`) — a directory
+/// anyone could page through would hand out every account on the server.
+/// So suggestions are people we already know; `dir_search` then widens this
+/// with the engine's fuller list (saved contacts and everyone in our
+/// conversations, groups included) when it answers.
 fn rebuild_start_suggestions(ui: &mut UiState, win: &AppWindow) {
     let rows: Vec<_> = ui
         .rooms_json
@@ -1002,6 +994,7 @@ pub fn on_act(ui: &mut UiState, win: &AppWindow, action: &str, a: &str, b2: &str
                 json!({"roomId": open_room, "eventId": a, "body": b2.trim()}),
             );
             win.invoke_clear_composer();
+            crate::composer::reset(&win);
         }
         "vote" => {
             let poll = ui
@@ -1289,6 +1282,9 @@ pub fn on_act(ui: &mut UiState, win: &AppWindow, action: &str, a: &str, b2: &str
             // closing while a voice note played used to stop a video that was
             // not running (ImageViewer.qml:204 stops whatever the viewer owns).
             video_end(&req, win);
+            // The fade is over by the time this arrives, so the frosted
+            // picture of the page can go with it.
+            win.global::<crate::Theme>().set_viewer_frost(Default::default());
         }
         "viewer-page" => {
             // Turning the page leaves the old clip behind: QML stops playback
@@ -1412,10 +1408,17 @@ pub fn on_act(ui: &mut UiState, win: &AppWindow, action: &str, a: &str, b2: &str
                 load_stickers(ui, win);
             }
         }
-        "pick-attach-files" => attach_pick(ui, AttachPick::Files),
-        "pick-attach-gallery" => attach_pick(ui, AttachPick::Gallery),
-        "pick-attach-camera" => attach_pick(ui, AttachPick::Photo),
-        "pick-attach-video" => attach_pick(ui, AttachPick::Video),
+        "pick-attach-files" => attach_pick(ui, AttachPick::Files, false),
+        "pick-attach-gallery" => attach_pick(ui, AttachPick::Gallery, false),
+        "pick-attach-camera" => attach_pick(ui, AttachPick::Photo, false),
+        "pick-attach-video" => attach_pick(ui, AttachPick::Video, false),
+
+        // ---- media staging ----
+        // The step between picking and sending, so a caption can be written.
+        "staging-add" => attach_pick(ui, AttachPick::Gallery, true),
+        "staging-remove" => staging_remove(win, a.parse().unwrap_or(0)),
+        "staging-send" => staging_send(ui, win, a),
+        "staging-cancel" => staging_clear(win),
         // A location tile: reset the picker and turn the sheet's page to the
         // mode, in place (AttachMenu.qml:53-55 activate + locPicker.reset).
         "attach-location" => {
@@ -1675,6 +1678,7 @@ pub fn on_act(ui: &mut UiState, win: &AppWindow, action: &str, a: &str, b2: &str
                 }),
             );
             win.invoke_clear_composer();
+            crate::composer::reset(&win);
         }
         "voice-discard" => {
             ui.voice_clip = Value::Null;
@@ -2145,22 +2149,31 @@ fn forward_picked(ui: &mut UiState, win: &AppWindow, room_id: &str) {
     win.set_nav("chat".into());
 }
 
+/// `users.search`, debounced. The query goes to the engine **as typed**:
+/// `bob`, `@bob` and `@bob:sigil.test` all name the same person and the
+/// engine resolves all three (`sigil::search`), which also lets a fragment
+/// match the people we already know. Rewriting the query here — the old
+/// `@{q}:{door_server}` — turned `wr` into `@wr:sigil.test` and stopped
+/// that fragment ever matching anything.
+///
+/// Under two characters the Start page shows suggestions instead of
+/// results: the people we know, which the engine answers for an empty
+/// query. The open DMs are painted at once so the list is never blank while
+/// that round trip runs; the invite page just empties.
 fn dir_search(ui: &mut UiState, win: &AppWindow, which: &str, q: &str) {
     let start = which == "dir-search-start";
-    let mut q = q.trim().to_string();
-    // The lookup is exact, by username. A bare name means someone on our
-    // own server, which is what people type most.
-    if q.chars().count() >= 2 && !q.contains(':') && !ui.door_server.is_empty() {
-        q = format!("@{}:{}", q.trim_start_matches('@'), ui.door_server);
-    }
-    if q.chars().count() < 2 {
-        if start {
-            rebuild_start_suggestions(ui, win);
-        } else {
+    let q = q.trim().to_string();
+    let suggesting = q.chars().count() < 2;
+    if suggesting {
+        if !start {
             win.set_ap_results(ModelRc::new(VecModel::from(Vec::new())));
+            return;
         }
-        return;
+        rebuild_start_suggestions(ui, win);
     }
+    // Suggestions ask for everyone we know, not for the two letters typed
+    // so far: a one-letter query is not a name the front desk can answer.
+    let q = if suggesting { String::new() } else { q };
     let epoch = if start {
         ui.start_query_epoch += 1;
         ui.start_query_epoch
@@ -2178,7 +2191,7 @@ fn dir_search(ui: &mut UiState, win: &AppWindow, which: &str, q: &str) {
         if current != epoch {
             return; // superseded
         }
-        if start {
+        if start && !suggesting {
             win.set_st_busy(true);
         }
         call_ui(
@@ -2190,10 +2203,21 @@ fn dir_search(ui: &mut UiState, win: &AppWindow, which: &str, q: &str) {
                     win.set_st_busy(false);
                 }
                 if let Ok(v) = out {
-                    let rows: Vec<_> = v["users"]
+                    // `results` is what the engine answers (core/docs/
+                    // protocol.md). This read used to say `users`, which no
+                    // engine has ever sent: every hit was thrown away and
+                    // the page stayed empty however the name was typed.
+                    // `users` stays as a fallback for an older engine.
+                    let rows: Vec<_> = v["results"]
                         .as_array()
+                        .or_else(|| v["users"].as_array())
                         .map(|a| a.iter().map(|u| project::user_row(u, false)).collect())
                         .unwrap_or_default();
+                    // Suggestions keep the DMs already on screen rather than
+                    // blanking them if the engine has nothing to add.
+                    if suggesting && rows.is_empty() {
+                        return;
+                    }
                     let model = ModelRc::new(VecModel::from(rows));
                     if start {
                         win.set_st_people(model);
@@ -2461,33 +2485,6 @@ const EMOJI_CATS: [(&str, &str); 9] = [
     ("🏁", "FLAGS"),
 ];
 
-/// Where a colour emoji font lives, in the order `emoji.render` tries them
-/// (core/src/media/emoji.rs:12-35). The picker has to look at the SAME face
-/// the engine will cut its pictures from, and the engine's own search is
-/// private to it, so the list is mirrored here rather than guessed at.
-fn emoji_font_bytes() -> Option<Vec<u8>> {
-    const CANDIDATES: &[&str] = &[
-        "/usr/share/fonts/truetype/noto/NotoColorEmoji.ttf",
-        "/usr/share/fonts/noto/NotoColorEmoji.ttf",
-        "/usr/share/fonts/google-noto-emoji/NotoColorEmoji.ttf",
-        "/usr/share/fonts/TTF/NotoColorEmoji.ttf",
-        "/system/fonts/NotoColorEmoji.ttf",
-    ];
-    let mut tries: Vec<std::path::PathBuf> = Vec::new();
-    if let Some(p) = std::env::var_os("SIGIL_EMOJI_FONT") {
-        tries.push(p.into());
-    }
-    if let Some(home) = std::env::var_os("HOME") {
-        for rel in [
-            ".local/share/fonts/NotoColorEmoji.ttf",
-            ".fonts/NotoColorEmoji.ttf",
-        ] {
-            tries.push(std::path::PathBuf::from(&home).join(rel));
-        }
-    }
-    tries.extend(CANDIDATES.iter().map(std::path::PathBuf::from));
-    tries.iter().find(|p| p.is_file()).and_then(|p| std::fs::read(p).ok())
-}
 
 /// The list cut down to what this device can actually draw, and where each
 /// category starts in it.
@@ -2529,18 +2526,16 @@ fn keep_drawable(listed: Vec<(String, String)>) -> (Vec<(String, String)>, Vec<u
         }
         bounds
     };
-    let Some(bytes) = emoji_font_bytes() else {
-        let bounds = bounds_of(&listed, &listed);
-        return (listed, bounds);
-    };
-    let Ok(face) = ttf_parser::Face::parse(&bytes, 0) else {
-        let bounds = bounds_of(&listed, &listed);
-        return (listed, bounds);
-    };
+    // The engine answers the way it will draw: the phone's own shaper on
+    // Android (where the font is the vector edition with no bitmaps to cut,
+    // and flags live in a second font), the colour font elsewhere.
+    let glyphs: Vec<&str> = listed.iter().map(|(g, _)| g.as_str()).collect();
+    let ok = sigil_engine::media::emoji::can_draw_all(&glyphs);
     let kept: Vec<(String, String)> = listed
         .iter()
-        .filter(|(g, _)| sigil_engine::media::emoji::drawable(&face, g))
-        .cloned()
+        .zip(ok.iter())
+        .filter(|(_, ok)| **ok)
+        .map(|(e, _)| e.clone())
         .collect();
     tracing::info!(
         "emoji picker: {} of {} glyphs are drawable on this device",
@@ -2733,7 +2728,16 @@ thread_local! {
 /// Start (or restart at `seek`) the clip for `event` in the open room. `file`
 /// is the local copy when the item has one; empty is fine and the engine
 /// finds it from the event, downloading if it must.
+// The desktop path follows an Android early return; both are real code.
+#[allow(unreachable_code)]
 fn video_play(req: &Requester, win: &AppWindow, room: &str, event: &str, file: &str, seek: f64) {
+    // The phone has no decoder of ours, and its own player and view: that
+    // view is laid over the viewer's picture (java/SigilVideo.java).
+    #[cfg(target_os = "android")]
+    {
+        video_play_android(req, win, room, event, file, seek);
+        return;
+    }
     win.set_vw_playing_event(event.into());
     win.set_vw_play_pos(seek as f32);
     VIDEO.with(|v| {
@@ -2840,7 +2844,24 @@ fn video_tick(ui: &mut UiState, win: &AppWindow) {
 
 /// Tap on a clip that is already the viewer's: pause it, or take it up again
 /// where it stopped (the QML's play/pause, ImageViewer.qml:429).
+// The desktop path follows an Android early return; both are real code.
+#[allow(unreachable_code)]
 fn video_toggle(req: &Requester, win: &AppWindow, room: &str) {
+    #[cfg(target_os = "android")]
+    {
+        let _ = (req, room);
+        let paused = VIDEO.with(|v| v.borrow().paused);
+        if paused {
+            crate::platform::video_resume();
+            VIDEO.with(|v| v.borrow_mut().paused = false);
+            video_tick_android(win);
+        } else {
+            crate::platform::video_pause();
+            VIDEO.with(|v| v.borrow_mut().paused = true);
+            VIDEO_CLOCK.with(|t| t.stop());
+        }
+        return;
+    }
     let (paused, at, file) = VIDEO.with(|v| {
         let v = v.borrow();
         (v.paused, v.at, v.file.clone())
@@ -2870,6 +2891,8 @@ fn video_toggle(req: &Requester, win: &AppWindow, room: &str) {
 
 /// The scrub bar was let go. Seeking restarts the decoder at the new place —
 /// a paused clip starts playing again there, as the QML scrubber does.
+// The desktop path follows an Android early return; both are real code.
+#[allow(unreachable_code)]
 fn video_seek(req: &Requester, win: &AppWindow, room: &str, secs: f64) {
     if win.get_vw_playing_event().is_empty() {
         return;
@@ -2877,6 +2900,17 @@ fn video_seek(req: &Requester, win: &AppWindow, room: &str, secs: f64) {
     let secs = secs.max(0.0);
     win.set_vw_play_pos(secs as f32);
     VIDEO.with(|v| v.borrow_mut().at = secs);
+    #[cfg(target_os = "android")]
+    {
+        let _ = (req, room);
+        crate::platform::video_seek((secs * 1000.0) as i32);
+        if VIDEO.with(|v| v.borrow().paused) {
+            crate::platform::video_resume();
+            VIDEO.with(|v| v.borrow_mut().paused = false);
+            video_tick_android(win);
+        }
+        return;
+    }
     let (paused, file) = VIDEO.with(|v| {
         let v = v.borrow();
         (v.paused, v.file.clone())
@@ -2921,6 +2955,8 @@ fn video_end(req: &Requester, win: &AppWindow) {
 /// The view half of stopping: no request, so it can run from a poll that has
 /// just learned the engine dropped the clip on its own.
 fn video_clear(win: &AppWindow) {
+    #[cfg(target_os = "android")]
+    crate::platform::video_hide();
     VIDEO_CLOCK.with(|t| t.stop());
     crate::video::release();
     VIDEO.with(|v| *v.borrow_mut() = VideoView::default());
@@ -2930,7 +2966,137 @@ fn video_clear(win: &AppWindow) {
     win.set_vw_frame(Default::default());
 }
 
+// ---- Android: the phone's own player, over the viewer's picture ----------
+
+/// The viewer's picture rectangle in physical pixels, for the platform view.
+#[cfg(target_os = "android")]
+fn video_rect(win: &AppWindow) -> (i32, i32, i32, i32) {
+    let s = win.window().scale_factor();
+    let px = |v: f32| (v * s).round() as i32;
+    (
+        px(win.get_vw_pic_x()),
+        px(win.get_vw_pic_y()),
+        px(win.get_vw_pic_w()).max(1),
+        px(win.get_vw_pic_h()).max(1),
+    )
+}
+
+/// Play `file` in the phone's player, laid over the picture. An item with
+/// no local copy yet is fetched first and then played.
+#[cfg(target_os = "android")]
+fn video_play_android(req: &Requester, win: &AppWindow, room: &str, event: &str, file: &str, seek: f64) {
+    if file.is_empty() {
+        let (room, event) = (room.to_string(), event.to_string());
+        win.set_vw_playing_event(event.as_str().into());
+        call_ui(
+            req,
+            "media.get",
+            json!({"roomId": room, "eventId": event}),
+            move |ui, win, out| {
+                if win.get_vw_playing_event() != event.as_str() {
+                    return;
+                }
+                match out {
+                    Ok(v) => {
+                        let path = v["path"].as_str().unwrap_or("").to_string();
+                        if path.is_empty() {
+                            video_clear(win);
+                        } else {
+                            video_play_android(&ui.req.clone(), win, &room, &event, &path, seek);
+                        }
+                    }
+                    Err((_, msg)) => {
+                        video_clear(win);
+                        win.set_vw_toast(SharedString::from(msg));
+                    }
+                }
+            },
+        );
+        return;
+    }
+    let (x, y, w, h) = video_rect(win);
+    if !crate::platform::video_show(file, x, y, w, h) {
+        video_clear(win);
+        win.set_vw_toast(SharedString::from("This device cannot play video"));
+        return;
+    }
+    if seek > 0.0 {
+        crate::platform::video_seek((seek * 1000.0) as i32);
+    }
+    win.set_vw_playing_event(event.into());
+    win.set_vw_play_pos(seek as f32);
+    VIDEO.with(|v| {
+        let mut v = v.borrow_mut();
+        v.paused = false;
+        v.at = seek;
+        v.file = file.to_string();
+        v.surface.clear();
+    });
+    video_tick_android(win);
+}
+
+/// Follow the phone's player: position and length for the scrub bar, its
+/// end, and the picture rectangle, which moves under a pinch or a page turn.
+#[cfg(target_os = "android")]
+fn video_tick_android(win: &AppWindow) {
+    let weak = win.as_weak();
+    let mut last = (0i32, 0i32, 0i32, 0i32);
+    VIDEO_CLOCK.with(|t| {
+        t.start(
+            slint::TimerMode::Repeated,
+            std::time::Duration::from_millis(50),
+            move || {
+                let Some(win) = weak.upgrade() else { return };
+                if win.get_vw_playing_event().is_empty() {
+                    return;
+                }
+                let rect = video_rect(&win);
+                if rect != last {
+                    last = rect;
+                    crate::platform::video_move(rect.0, rect.1, rect.2, rect.3);
+                }
+                let Some(st) = crate::platform::video_state() else { return };
+                if let Some(f) = st.failure {
+                    tracing::warn!("video: {f}");
+                    video_clear(&win);
+                    win.set_vw_toast(SharedString::from("This video could not be played"));
+                    return;
+                }
+                if st.ended {
+                    video_clear(&win);
+                    return;
+                }
+                if st.duration_ms > 0 {
+                    win.set_vw_play_duration(st.duration_ms as f32 / 1000.0);
+                }
+                let held = VIDEO.with(|s| {
+                    let s = s.borrow();
+                    s.paused || s.scrubbing
+                });
+                if !held {
+                    let pos = st.position_ms as f64 / 1000.0;
+                    VIDEO.with(|s| s.borrow_mut().at = pos);
+                    win.set_vw_play_pos(pos as f32);
+                }
+            },
+        )
+    });
+}
+
 fn viewer_open(ui: &mut UiState, win: &AppWindow, event_id: &str) {
+    // ImageViewer.qml:70-86 — the viewer lies on a blurred, dimmed picture of
+    // the page it came from. That is a live ShaderEffectSource there; Slint
+    // cannot sample what is behind an element, so the picture is taken here
+    // the way the long-press sheet takes its own (sheet_snapshot above, both
+    // through frost.rs) — now, while nothing of the viewer is on screen yet.
+    // Taken again for a second picture opened from the first would only
+    // photograph the viewer, so it is skipped while one is already up.
+    if !win.get_viewer_open() {
+        let frost = crate::frost::Snapshot::take(win.window())
+            .map(|s| s.frosted())
+            .unwrap_or_default();
+        win.global::<crate::Theme>().set_viewer_frost(frost);
+    }
     ui.viewer_items = ui
         .shadow
         .iter()
@@ -3075,11 +3241,19 @@ fn viewer_misc(ui: &mut UiState, win: &AppWindow, action: &str, a: &str) {
         "viewer-delete" => {
             req.fire("message.redact", json!({"roomId": room, "eventId": ev}));
             win.set_viewer_open(false);
+            // Pulled down rather than closed, so nothing reports `closed`:
+            // drop the frost here or it outlives the viewer.
+            win.global::<crate::Theme>().set_viewer_frost(Default::default());
         }
-        "viewer-react" => req.fire(
-            "message.react",
-            json!({"roomId": room, "eventId": ev, "key": a}),
-        ),
+        // ImageViewer.qml:690 — the reaction is silent otherwise: the row is
+        // at the foot of the viewer and the chip it adds is behind it.
+        "viewer-react" => {
+            req.fire(
+                "message.react",
+                json!({"roomId": room, "eventId": ev, "key": a}),
+            );
+            toast(win, Toast::Viewer, format!("Reacted {a}").into());
+        }
         "viewer-share" => {
             let path = item["media"]["path"].as_str().unwrap_or("").to_string();
             if !path.is_empty() {
@@ -3089,21 +3263,25 @@ fn viewer_misc(ui: &mut UiState, win: &AppWindow, action: &str, a: &str) {
         }
         "viewer-forward" => {
             let idx: usize = a.parse().unwrap_or(0);
-            let rid = ui
+            let target = ui
                 .rooms_json
                 .iter()
                 .filter(|r| !b(r, "isSpace") && !b(r, "isInvite"))
                 .nth(idx)
-                .map(|r| s(r, "id").to_string());
+                .map(|r| (s(r, "id").to_string(), s(r, "name").to_string()));
             let path = item["media"]["path"]
                 .as_str()
                 .or(item["media"]["thumbnailPath"].as_str())
                 .unwrap_or("")
                 .to_string();
-            if let Some(rid) = rid {
+            if let Some((rid, name)) = target {
                 if !path.is_empty() {
                     req.fire("attachment.send", json!({"roomId": rid, "path": path}));
-                    toast(win, Toast::Viewer, "Forwarded".into());
+                    // ImageViewer.qml:609 names the room it went to; the card
+                    // is gone by the time the toast shows, so "Forwarded"
+                    // alone left no way to tell where.
+                    let name = if name.is_empty() { "room".to_string() } else { name };
+                    toast(win, Toast::Viewer, format!("Forwarded to {name}").into());
                 }
             }
         }
@@ -3345,8 +3523,9 @@ fn tick_recorder(ui: &mut UiState) {
     });
 }
 
-/// What an attach tile asked for. All four end the same way: real files on
-/// disk, sent to the open room in the order they were chosen.
+/// What an attach tile asked for. Media ends on the staging page, where a
+/// caption is written before anything goes; anything else is still a file on
+/// disk sent straight to the open room.
 #[derive(Clone, Copy)]
 enum AttachPick {
     /// Any file at all (AttachMenu.qml's only media route).
@@ -3359,7 +3538,77 @@ enum AttachPick {
     Video,
 }
 
-fn attach_pick(ui: &mut UiState, what: AttachPick) {
+/// The extensions that stage instead of sending. A picture or a video gets a
+/// caption written on it first — the platform messenger's own step, and the
+/// one this app was missing; every other file goes as it always did, because
+/// there is nothing to look at while you caption it.
+fn media_kind(path: &str) -> Option<bool> {
+    let ext = std::path::Path::new(path)
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    match ext.as_str() {
+        "jpg" | "jpeg" | "png" | "gif" | "webp" | "bmp" | "heic" | "heif" | "avif" | "tif"
+        | "tiff" => Some(false),
+        "mp4" | "mov" | "m4v" | "mkv" | "webm" | "3gp" | "3gpp" | "avi" => Some(true),
+        _ => None,
+    }
+}
+
+fn base_name(path: &str) -> String {
+    std::path::Path::new(path)
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("file")
+        .to_string()
+}
+
+/// Put files on the staging page. `append` is the add-more button, which
+/// keeps what is already staged and the caption written so far.
+fn stage_media(win: &AppWindow, paths: &[String], append: bool) {
+    let mut rows: Vec<crate::StagedItem> = if append {
+        win.get_sg_items().iter().collect()
+    } else {
+        Vec::new()
+    };
+    for path in paths {
+        let video = media_kind(path).unwrap_or(false);
+        // A video has no poster here — the engine's video surface decodes a
+        // stream it is already playing, not an arbitrary container — so it
+        // stages as its own dark card and the picture stays empty.
+        let img = if video {
+            slint::Image::default()
+        } else {
+            slint::Image::load_from_path(std::path::Path::new(path)).unwrap_or_default()
+        };
+        let size = img.size();
+        rows.push(crate::StagedItem {
+            img,
+            path: path.as_str().into(),
+            name: base_name(path).into(),
+            video,
+            w: size.width as f32,
+            h: size.height as f32,
+        });
+    }
+    if rows.is_empty() {
+        return;
+    }
+    let count = rows.len();
+    win.set_sg_items(ModelRc::new(VecModel::from(rows)));
+    if append {
+        // Land on what was just added.
+        win.set_sg_cur(count as i32 - 1);
+    } else {
+        win.set_sg_cur(0);
+        win.set_sg_caption(SharedString::new());
+    }
+    win.set_attach_open(false);
+    win.set_nav("staging".into());
+}
+
+fn attach_pick(ui: &mut UiState, what: AttachPick, append: bool) {
     let room = room_of_key(&ui.open_room);
     ui.req.handle().spawn(async move {
         // The picker is a whole system UI away on Android and a subprocess on
@@ -3387,21 +3636,73 @@ fn attach_pick(ui: &mut UiState, what: AttachPick) {
         }
         let _ = slint::invoke_from_event_loop(move || {
             with_ui(|ui| {
-                // One send each, in the order they were picked: the engine's
-                // attachment.send takes a single file, and the timeline shows
-                // each as its own message the way the gallery grid implies.
-                for path in &paths {
+                let Some(win) = ui.win.upgrade() else { return };
+                // Pictures and video stage; the file picker's other answers
+                // are sent as they always were, one each, in the order they
+                // were chosen.
+                let (media, plain): (Vec<String>, Vec<String>) =
+                    paths.into_iter().partition(|p| media_kind(p).is_some());
+                for path in &plain {
                     ui.req.fire(
                         "attachment.send",
                         json!({"roomId": room.clone(), "path": path}),
                     );
                 }
-                if let Some(win) = ui.win.upgrade() {
+                if media.is_empty() {
                     win.set_attach_open(false);
+                } else {
+                    stage_media(&win, &media, append);
                 }
             });
         });
     });
+}
+
+/// Everything staged goes now, in order, with the caption on the FIRST of
+/// them: `attachment.send` takes a `caption` beside the path (core's
+/// `Manifest.caption`), so it rides on the same event the picture does —
+/// the timeline shows it under the media (bubble.slint's `caption-visible`,
+/// which is "the body is not just the filename"). Repeating it under every
+/// picture of a set would read as a stutter, so the set is captioned once.
+fn staging_send(ui: &mut UiState, win: &AppWindow, caption: &str) {
+    let room = room_of_key(&ui.open_room);
+    let caption = caption.trim().to_string();
+    let items = win.get_sg_items();
+    for (i, it) in items.iter().enumerate() {
+        let mut p = json!({"roomId": room.clone(), "path": it.path.as_str()});
+        if i == 0 && !caption.is_empty() {
+            p["caption"] = json!(caption);
+        }
+        ui.req.fire("attachment.send", p);
+    }
+    staging_clear(win);
+    win.set_nav("chat".into());
+}
+
+fn staging_clear(win: &AppWindow) {
+    win.set_sg_items(ModelRc::new(VecModel::from(Vec::<crate::StagedItem>::new())));
+    win.set_sg_cur(0);
+    win.set_sg_caption(SharedString::new());
+}
+
+/// One item's close disc. The last one taken off is the whole pick abandoned,
+/// so the page goes with it.
+fn staging_remove(win: &AppWindow, idx: usize) {
+    let rows: Vec<crate::StagedItem> = win
+        .get_sg_items()
+        .iter()
+        .enumerate()
+        .filter(|(i, _)| *i != idx)
+        .map(|(_, it)| it)
+        .collect();
+    if rows.is_empty() {
+        staging_clear(win);
+        win.set_nav("chat".into());
+        return;
+    }
+    let last = rows.len() as i32 - 1;
+    win.set_sg_items(ModelRc::new(VecModel::from(rows)));
+    win.set_sg_cur(win.get_sg_cur().min(last).max(0));
 }
 
 fn create_poll(ui: &mut UiState, question: &str, packed: &str) {
@@ -3873,6 +4174,9 @@ fn open_map(ui: &mut UiState, win: &AppWindow, event_id: &str) {
     win.set_mp_self(loc["self"].as_bool().unwrap_or(true));
     win.set_mp_initials(crate::rows::initials(&sender_name).into());
     win.set_mp_tint(crate::rows::tint_for(s(&item, "sender")));
+    // The sender's face for the pin's head and the footer row (MapPage.qml:410).
+    let face = s(&item, "senderAvatarPath").to_string();
+    win.set_mp_avatar(crate::bridge::avatar_pub(ui, &face).unwrap_or_default());
     let stamp = crate::rows::bubble_stamp(item["ts"].as_i64().unwrap_or(0));
     win.set_mp_status(
         if running {

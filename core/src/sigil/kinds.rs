@@ -903,6 +903,12 @@ impl SigilSession {
         Reply::ok(json!({"contacts": load_contacts()}))
     }
 
+    /// The saved contacts as stored, for `users.search` to match on: they
+    /// are half of "people this device already knows".
+    pub(super) fn saved_contacts() -> Vec<Value> {
+        load_contacts()
+    }
+
     pub(super) fn contacts_save(p: &serde_json::Map<String, Value>) -> Reply {
         let user_id = param(p, "userId");
         if user_id.is_empty() {

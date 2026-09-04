@@ -39,13 +39,21 @@ export component EmojiPicker inherits Rectangle {
     /// Category jump targets: the ROW index each section's heading sits at,
     /// RECENTS first. The bridge always sends one per icon below.
     in property <[int]> cat-rows;
-    /// Leaves a 40 square open at the right of the search row for the host's
-    /// back button. The attachment sheet's picker is mounted through
-    /// `@children` (attach.slint's emoji-slot), which cannot set a property
-    /// on it or connect a callback — so the sheet draws and handles the
-    /// button over the gap, and the DEFAULT is the sheet's answer. The
-    /// reaction drawer, which does set its own properties, turns it off.
+    /// Leaves a 40 square open at the LEFT of the search row for the host's
+    /// back button — leading the field, where a back arrow belongs. The
+    /// attachment sheet's picker is mounted through `@children`
+    /// (attach.slint's emoji-slot), which cannot set a property on it or
+    /// connect a callback — so the sheet draws and handles the button over
+    /// the gap, and the DEFAULT is the sheet's answer. The reaction drawer,
+    /// which does set its own properties, turns it off.
     in property <bool> back-slot: true;
+    /// The window's own zone below this picker: the gesture bar, or nothing
+    /// while the keyboard is up (the host shortens the whole panel for that
+    /// instead). The category bar stands this far up from the bottom edge and
+    /// the strip is left transparent, so the host's ground — the attachment
+    /// sheet's chrome, the drawer's surface — still paints on down through it
+    /// to the screen edge.
+    in property <length> bottom-inset: 0px;
     callback picked(string);
     callback search-edited(string);
 
@@ -106,11 +114,16 @@ export component EmojiPicker inherits Rectangle {
     }
 
     VerticalLayout {
+        // The gesture bar is the host's ground to paint, not ours: we only
+        // stand off it. While the keyboard is up the host hands down 0 here
+        // and shortens the panel instead — the bar is behind the keyboard.
+        padding-bottom: root.bottom-inset;
         // Search row — the field 8 in from each side, the sub-page's back
-        // button on its right where the sheet's own header used to be.
+        // button LEADING it at the left, where a back arrow belongs.
         HorizontalLayout {
             padding-left: 8px; padding-right: 8px;
             spacing: 8px;
+            if root.back-slot : Rectangle { width: 40px; height: 40px; }
             search-well := Rectangle {
                 height: 40px;
                 border-radius: self.height / 2;
@@ -149,11 +162,14 @@ export component EmojiPicker inherits Rectangle {
                     }
                 }
             }
-            if root.back-slot : Rectangle { width: 40px; height: 40px; }
         }
 
         grid := TouchList {
             vertical-stretch: 1;
+            // The one thing that gives when the panel is short (the keyboard
+            // is up): the search row and the category bar keep their sizes and
+            // the grid scrolls whatever is left between them.
+            min-height: 0px;
             // The 50 the reference leaves over its first heading. It is part
             // of the scrolled content, not padding, so a category jump scrolls
             // it away and puts that section's caption on the top edge.

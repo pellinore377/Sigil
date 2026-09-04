@@ -302,6 +302,16 @@ for 30 days and then freed.
 presence, last-seen, avatars (avatars travel inside conversations), and any
 link from the name to any slot.
 
+**The name table cannot be listed or searched**, only asked about one whole
+localpart at a time (`name.lookup`); there is no wire operation that returns
+more than one card, and adding one would hand every account on a server to
+anyone who asked. So there is no user directory to browse. A client finds
+people two ways: it asks the front desk about a name someone typed in full,
+and it searches, on the device, the people it already knows — everyone in
+its conversations, whoever has sent a request, saved contacts. Those are
+what a "start a chat" page suggests before anything is typed; a fragment
+like `wr` can only ever match them, never a stranger.
+
 **Key packages** are one-time hybrid-KEM public keys (MLS's prekeys) that let
 someone add you to a conversation while you are offline. Each device keeps a
 shelf on the home server at `H("sigil/kp/v1" ‖ identity_pub)`, encrypted

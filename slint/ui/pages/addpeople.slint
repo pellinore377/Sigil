@@ -1,6 +1,7 @@
 // AddPeoplePage — mobile/AddPeoplePage.qml. Invite people to the current room
-// (start-chat style user search). The homeserver's directory only knows local
-// users and remote users who share a room here, so empty results are normal.
+// (start-chat style user search). The server keeps no listable directory —
+// a name resolves exactly, and everyone else here is someone you already know
+// — so an empty result for a stranger's fragment is normal.
 
 import { TouchList } from "../furniture.slint";
 import { Theme } from "../style.slint";

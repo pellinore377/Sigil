@@ -408,6 +408,7 @@ fn wire_callbacks(win: &AppWindow, req: Requester) {
                 ui.typing_sent = false;
             }
             win.invoke_clear_composer();
+            crate::composer::reset(&win);
         });
     });
     win.on_composer_edited(|text| {
@@ -422,7 +423,23 @@ fn wire_callbacks(win: &AppWindow, req: Requester) {
             }
             if let Some(win) = ui.win.upgrade() {
                 crate::actions::update_autocomplete(ui, &win);
+                let cursor = win.get_composer_cursor().max(0) as usize;
+                crate::composer::preview(ui, &win, text.as_str(), cursor);
             }
+        });
+    });
+    // The caret moved without an edit: a run it has stepped into unfolds
+    // back to its source, one it has left settles.
+    // Deferred a tick: the caret also moves when the bridge itself sets the
+    // composer (a draft restored, a completion picked), from inside a handler
+    // that already holds the UI state — and a second borrow there would panic.
+    win.on_composer_cursor_moved(|byte| {
+        slint::Timer::single_shot(std::time::Duration::ZERO, move || {
+            with_ui(|ui| {
+                let Some(win) = ui.win.upgrade() else { return };
+                let text = win.get_ct_composer_text();
+                crate::composer::preview(ui, &win, text.as_str(), byte.max(0) as usize);
+            });
         });
     });
     win.on_search_edited(|q| {

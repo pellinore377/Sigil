@@ -101,9 +101,17 @@ export component SelfPin inherits Rectangle {
 }
 
 /// One rendered tile, placed by the bridge: the map is a grid of these, not
-/// a single picture, so it can be dragged and zoomed. `size` is the tile's
-/// side in logical pixels; `x`/`y` are its top-left inside the map area.
-export struct MapTileView { x: length, y: length, size: length, img: image }
+/// a single picture, so it can be dragged and zoomed. `x`/`y` are its top-left
+/// inside the map area and `w`/`h` its drawn size, all in logical pixels.
+///
+/// The size is per tile and per axis rather than one side for the whole grid
+/// because of the seams: at a fractional magnification a tile's edges fall
+/// between device pixels, a renderer rounds the position and the side apart,
+/// and the pixel they disagree over shows the ground through the join. The
+/// bridge rounds both of a tile's edges onto whole device pixels and hands the
+/// difference over as the size — plus one pixel of overlap, so a renderer that
+/// truncates has no crack to show either. See `mapview::MapView::place`.
+export struct MapTileView { x: length, y: length, w: length, h: length, img: image }
 
 export component MapPage inherits Rectangle {
     in property <color> fg: Theme.menu-text;
@@ -126,6 +134,9 @@ export component MapPage inherits Rectangle {
     in property <string> description;      // unused: MapPage.qml never shows loc.description
     in property <bool> self-marker;        // m.self / live: face, not a pin
     in property <image> sender-avatar;
+    /// An image that is never set, so it is empty: what the marker wears in
+    /// its head for a dropped point, which is nothing (MapPage.qml:48).
+    property <image> no-face;
     in property <string> sender-initials;
     in property <color> sender-tint: Theme.accent;
     in-out property <string> toast;
@@ -210,8 +221,11 @@ export component MapPage inherits Rectangle {
     /// The fingers have spread by this much since they went down, with their
     /// midpoint here in the map area: the view magnifies about it.
     callback pinched(float, length, length);
-    /// The fingers lifted: the view eases onto the whole zoom nearest it.
+    /// The fingers lifted: the level the tiles come from settles, the zoom
+    /// stays exactly where they left it.
     callback pinch-end();
+    /// Two fingers are on the map: the drag area holds its peace (see below).
+    property <bool> pinch-live: false;
 
     property <color> chip: Theme.background.with-alpha(0.85);
     // MapPage.qml:44, 47 — openable = pin || (liveKind && live && !own), where
@@ -369,7 +383,7 @@ export component MapPage inherits Rectangle {
                 width: 100%; height: 100%;
                 for t in root.tiles : Image {
                     x: t.x; y: t.y;
-                    width: t.size; height: t.size;
+                    width: t.w; height: t.h;
                     source: t.img;
                     image-fit: fill;
                 }
@@ -384,10 +398,19 @@ export component MapPage inherits Rectangle {
             // pinch runs it intercepts, so the two never fight.
             if root.tiled : ScaleRotateGestureHandler {
                 width: 100%; height: 100%;
-                started => { root.pinch-begin(); }
+                // The drag area below is still holding the first finger when
+                // the second lands. Left to itself it pans by that finger's
+                // travel while the pinch pans by the midpoint's, so the map
+                // moves twice for one gesture — a good part of what made a
+                // pinch feel finicky. `pinch-live` says a two-finger touch has
+                // stopped being a drag; the drag area keeps its anchor fresh
+                // meanwhile, so when a finger lifts and the other slides on,
+                // panning resumes from where that finger is rather than
+                // jumping by everything the pinch covered.
+                started => { root.pinch-live = true; root.pinch-begin(); }
                 updated => { root.pinched(self.scale, self.center.x, self.center.y); }
-                ended => { root.pinch-end(); }
-                cancelled => { root.pinch-end(); }
+                ended => { root.pinch-live = false; root.pinch-end(); }
+                cancelled => { root.pinch-live = false; root.pinch-end(); }
             }
             // Declared before the marker, the chips and the sheet, so all of
             // those still take their own taps.
@@ -407,7 +430,16 @@ export component MapPage inherits Rectangle {
                     }
                 }
                 moved => {
-                    if (self.dragging) {
+                    // Under a pinch the anchor is kept up to date but nothing
+                    // is panned: the pinch is already moving the map by its
+                    // midpoint. Keeping it fresh is the point — when one
+                    // finger lifts and the other slides on, the pan carries on
+                    // from where that finger is instead of lurching by
+                    // everything the two of them covered.
+                    if (root.pinch-live) {
+                        self.last-x = self.mouse-x;
+                        self.last-y = self.mouse-y;
+                    } else if (self.dragging) {
                         root.panned(self.mouse-x - self.last-x, self.mouse-y - self.last-y);
                         self.last-x = self.mouse-x;
                         self.last-y = self.mouse-y;
@@ -415,30 +447,35 @@ export component MapPage inherits Rectangle {
                 }
                 // A double tap zooms in on what was tapped, as every map does.
                 double-clicked => { root.zoom-at(1, self.mouse-x, self.mouse-y); }
+                // …and the desktop's own gesture, the wheel, about the pointer.
+                // With this the page needs no +/− chips over the live map, and
+                // the QML has none (MapPage.qml has only the recentre disc).
+                scroll-event(e) => {
+                    if (e.delta-y != 0) {
+                        root.zoom-at(e.delta-y > 0 ? 1 : -1, self.mouse-x, self.mouse-y);
+                        return accept;
+                    }
+                    reject
+                }
             }
 
-            // MapPage.qml:268-292 — the no-map column: parent − 48 wide,
-            // spacing 10, centred in the room above the sheet. The marker is
-            // MapView.qml's, since the card stands in for the tiles. With a
-            // map the caption goes and the marker's tip sits on the point.
+            // The marker, MapPage.qml:46-48 and MapView.qml:172-274: one pin,
+            // wearing the sender's face in its head where the point is a
+            // person's own position or a live share (`markerAvatar`), and the
+            // same pin bare where it is a dropped point. It carries no badge —
+            // the category's glyph on its shoulder is a dark disc, and against
+            // pale imagery that disc is the only part of the marker with any
+            // contrast, so the whole thing reads as a black target rather than
+            // as a pin. The glyph still names the category down in the sheet,
+            // where it has a dark ground to sit on.
+            //
             // On the grid the marker stands on its own point and travels with
-            // the map; the tip of both markers is the bottom of their box.
-            if root.tiled && root.self-marker : SelfPin {
+            // the map; its tip is the bottom of its box.
+            if root.tiled : SelfPin {
                 x: root.pin-x - 24px; y: root.pin-y - 48px;
                 pin-color: root.accent;
-                avatar: root.sender-avatar;
+                avatar: root.self-marker ? root.sender-avatar : root.no-face;
                 ripple: root.live;
-                badge: root.cat-icon;
-            }
-            // A dropped pin wears the Drop a Pin tile's own glyph, in the
-            // marker's colour and size (attach.slint:561).
-            if root.tiled && !root.self-marker : IconLabel {
-                x: root.pin-x - 23px; y: root.pin-y - 46px;
-                text: root.cat-icon;
-                filled: true;
-                color: root.accent.with-alpha(0.85);
-                font-size: 46px;
-                width: 46px; height: 46px;
             }
 
             if !root.tiled : place-col := VerticalLayout {
@@ -449,22 +486,16 @@ export component MapPage inherits Rectangle {
                     : (map-area.height - sheet.height - self.preferred-height) / 2;
                 height: self.preferred-height;
                 spacing: 10px;
+                // MapPage.qml:274-280 — the same one marker as on the grid, so
+                // a point looks like itself whether or not there are tiles
+                // under it: the face in the pin for a person's own position,
+                // the bare pin for a dropped one.
                 HorizontalLayout {
                     alignment: center;
-                    if root.self-marker : SelfPin {
+                    SelfPin {
                         pin-color: root.accent;
-                        avatar: root.sender-avatar;
+                        avatar: root.self-marker ? root.sender-avatar : root.no-face;
                         ripple: root.live;
-                        badge: root.cat-icon;
-                    }
-                    // MapPage.qml:274-280 — a dropped pin: filled glyph, 46px,
-                    // accent@0.85; the glyph is the category's own.
-                    if !root.self-marker : IconLabel {
-                        text: root.cat-icon;
-                        filled: true;
-                        color: root.accent.with-alpha(0.85);
-                        font-size: 46px;
-                        width: 46px; height: 46px;
                     }
                 }
                 // :281-291 — one caption, fg@0.6, wrapped and centred.
@@ -513,8 +544,33 @@ export component MapPage inherits Rectangle {
                 }
             }
 
-            // Zoom the composite in or out; the bridge re-requests at ±1.
-            if root.has-map || root.tiled : zoom-chips := VerticalLayout {
+            // The recentre disc, top right: MapPage.qml:351-366 — a 38px disc
+            // of the same chip tone at margin 12, the `my_location` glyph in
+            // the accent, and it puts the view back on the shared point.
+            // There is no callback of its own for that, so it goes out as a
+            // zoom step of nothing about the point, which the bridge reads as
+            // "recentre" (actions.rs, on_map_zoom_at).
+            if root.tiled : recentre := Rectangle {
+                x: map-area.width - 38px - 12px;
+                y: 12px;
+                width: 38px; height: 38px; border-radius: 19px;
+                background: root.chip;
+                IconLabel {
+                    text: Icons.recentre;
+                    filled: true;
+                    color: root.accent;
+                    font-size: Theme.icon-size;
+                    width: 100%; height: 100%;
+                }
+                TouchArea { clicked => { root.zoom-at(0, root.pin-x, root.pin-y); } }
+            }
+
+            // Zoom the still composite in or out; the bridge re-requests at
+            // ±1. Only the composite: it is one picture with no gesture on it,
+            // so the chips are the only way to zoom it at all. The live grid
+            // pinches, double-taps and takes the wheel, and the QML carries no
+            // chips over a map, so it has none here either.
+            if root.has-map && !root.tiled : zoom-chips := VerticalLayout {
                 x: map-area.width - 34px - 12px;
                 y: 12px;
                 width: 34px;
@@ -557,9 +613,18 @@ export component MapPage inherits Rectangle {
                 border-top-right-radius: 24px;
                 background: root.themed ? root.surface-c : Theme.popup-background;
                 TouchArea { }   // the sheet floats over the card; swallow taps (:382)
+                // MapPage.qml:384-389 — anchored to the sheet's top, so it is
+                // exactly as tall as its contents. Saying so is not optional:
+                // a layout given a position but no height fills its parent
+                // instead, and the sheet's height is *derived* from this one's
+                // preferred height, so the column ended up 14px + whatever the
+                // gesture inset added taller than the room it was measuring.
+                // Everything under the title was pushed past the map area's
+                // clip and off the page — which is where the person's row went.
                 sheet-col := VerticalLayout {
                     x: 14px; y: 14px;
                     width: sheet.width - 28px;
+                    height: self.preferred-height;
                     spacing: 10px;
                     Text {
                         text: "On the map";

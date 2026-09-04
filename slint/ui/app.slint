@@ -12,7 +12,7 @@ import { SettingsPage } from "pages/settings.slint";
 import { HomePage } from "home.slint";
 import { ChatPage } from "chat.slint";
 import { PageHolder, MenuEntry, ChoiceSheet } from "furniture.slint";
-import { RoomRow, SearchHit, TimelineRow, MemberRow, ThreadRow, UserRow, RoomSettingsModel, ReactionChip, EmojiItem, ReplyRef, CallParticipant, DeviceRow, PollOption, ReaderRow, DocLine, MsgPart, FxChar, SheetRect } from "model.slint";
+import { RoomRow, SearchHit, TimelineRow, MemberRow, ThreadRow, UserRow, RoomSettingsModel, ReactionChip, EmojiItem, ReplyRef, CallParticipant, DeviceRow, PollOption, ReaderRow, DocLine, MsgPart, FxChar, SheetRect, ComposerCell } from "model.slint";
 
 import { StartPage } from "pages/start.slint";
 import { ForwardPage } from "pages/forward.slint";
@@ -29,6 +29,7 @@ import { PinsPage } from "pages/pins.slint";
 import { MapPage, MapTileView } from "pages/map.slint";
 import { DocPage, DocBlock, SheetRow, SheetTab, DocPageImage } from "pages/doc.slint";
 import { AudioPage } from "pages/audio.slint";
+import { StagingPage, StagedItem } from "pages/staging.slint";
 import { ImageViewer, ViewerItem } from "viewer.slint";
 import { AttachMenu, StickerItem } from "attach.slint";
 import { VoiceRecorder } from "voicerec.slint";
@@ -36,7 +37,7 @@ import { CallPage, Floater } from "callpage.slint";
 import { CallPip } from "callpip.slint";
 import { CallBanner } from "callbanner.slint";
 
-export { ViewerItem, StickerItem, MenuEntry, RoomRow, TimelineRow, MemberRow, ThreadRow, UserRow, RoomSettingsModel, ReactionChip, EmojiItem, ReplyRef, CallParticipant, DeviceRow, PollOption, ReaderRow, DocLine, MsgPart, FxChar, GradPair, DocBlock, SheetRow, SheetTab, DocPageImage, SheetRect, Icons, Theme }
+export { StagedItem, ViewerItem, StickerItem, MenuEntry, RoomRow, TimelineRow, MemberRow, ThreadRow, UserRow, RoomSettingsModel, ReactionChip, EmojiItem, ReplyRef, CallParticipant, DeviceRow, PollOption, ReaderRow, DocLine, MsgPart, FxChar, GradPair, DocBlock, SheetRow, SheetTab, DocPageImage, SheetRect, ComposerCell, Icons, Theme }
 
 export component AppWindow inherits Window {
     title: "Sigil";
@@ -149,6 +150,18 @@ export component AppWindow inherits Window {
     /// @ and # suggestions under the composer, and the page's note pill
     /// rows with running effects in the open timeline (see ChatPage.fx-count)
     in property <int> chat-fx-count;
+    /// The composer's live preview: the typed text as cells the page draws
+    /// over a transparent input while a run has settled (composer.rs).
+    in property <[ComposerCell]> cp-cells;
+    in property <bool> cp-styled;
+    in property <length> cp-caret-x;
+    in property <length> cp-caret-y;
+    in property <length> cp-caret-fx;
+    in property <length> cp-caret-fy;
+    in property <int> cp-epoch;
+    out property <int> composer-cursor: chat.composer-cursor;
+    out property <length> composer-w: chat.composer-w;
+    callback composer-cursor-moved(int);
     in property <[UserRow]> chat-ac-items;
     in-out property <int> chat-ac-index: 0;
     in-out property <string> chat-toast;
@@ -265,6 +278,12 @@ export component AppWindow inherits Window {
     in property <image> vw-frame;
     in property <float> vw-play-pos;
     in property <float> vw-play-duration;
+    // Where the viewer is drawing the current picture, for the platform player
+    // Android lays over the surface (the phone decodes nothing on this side).
+    out property <length> vw-pic-x: viewer.pic-x;
+    out property <length> vw-pic-y: viewer.pic-y;
+    out property <length> vw-pic-w: viewer.pic-w;
+    out property <length> vw-pic-h: viewer.pic-h;
     in-out property <bool> attach-open: false;
     in property <[StickerItem]> at-stickers;
     in property <bool> at-stickers-loaded;
@@ -273,6 +292,12 @@ export component AppWindow inherits Window {
     // "live"), two-way through ChatPage so the bridge can open a location
     // mode in place (AttachMenu.qml:53-55).
     in-out property <string> at-page: "grid";
+    // Media staging: what the camera, the gallery and an image or video off
+    // the file picker land on, so a caption can be written before any of it
+    // goes. The strip is what was picked, in order.
+    in property <[StagedItem]> sg-items;
+    in-out property <int> sg-cur: 0;
+    in-out property <string> sg-caption;
     // location picker (inside the attach sheet) and map page, fed by the bridge
     in property <bool> lp-have-fix;
     in property <float> lp-lat;
@@ -297,6 +322,8 @@ export component AppWindow inherits Window {
     in property <string> mp-initials;
     in property <color> mp-tint;
     in property <image> mp-map;
+    /// The sender's face, for the pin's head and the footer row.
+    in property <image> mp-avatar;
     /// The location page draws a grid of rendered tiles the bridge places,
     /// so the map can be dragged and zoomed; mp-map is the still fallback.
     in property <[MapTileView]> mp-tiles;
@@ -433,6 +460,11 @@ export component AppWindow inherits Window {
         if (root.nav == "thread") { root.go("threads"); return; }
         if (root.nav == "threads" || root.nav == "pins") { root.go("chat"); return; }
         if (root.nav == "search" && root.se-global) { root.nav = "home"; return; }
+        // Backing out of staging drops what was staged: the pick is
+        // abandoned, not queued (the bridge clears the strip). The emoji
+        // sheet over its caption row closes first, like any other overlay.
+        if (root.nav == "staging" && staging-page.emoji-open) { staging-page.emoji-open = false; return; }
+        if (root.nav == "staging") { root.act("staging-cancel", "", ""); root.go("chat"); return; }
         if (root.nav == "forward" || root.nav == "search" || root.nav == "chattheme"
             || root.nav == "roomsettings" || root.nav == "doc" || root.nav == "audio"
             || root.nav == "map") { root.go("chat"); return; }
@@ -449,7 +481,10 @@ export component AppWindow inherits Window {
         if (root.nav == "chat") { root.back-to-home(); root.nav = "home"; return; }
     }
 
-    property <length> kb-overlap: root.virtual-keyboard-size.height > 0px
+    /// in-out only so the screenshot harness can stand a gesture bar or a
+    /// keyboard up under a headless window, which has neither: shots.rs sets
+    /// it, nothing in the app does.
+    in-out property <length> kb-overlap: root.virtual-keyboard-size.height > 0px
         ? max(0px, root.height - root.virtual-keyboard-position.y) : 0px;
     property <color> page-ground: Theme.card-ground;
     // Pages of a themed room carry the room's chrome (Panel.qml:38-45):
@@ -756,6 +791,10 @@ export component AppWindow inherits Window {
                 voice-discard => { root.act("voice-discard", "", ""); }
                 voice-preview(play) => { root.act("voice-preview", play ? "1" : "0", ""); }
                 composer-edited(text) => { root.composer-edited(text); }
+                cp-cells: root.cp-cells; cp-styled: root.cp-styled;
+                cp-caret-x: root.cp-caret-x; cp-caret-y: root.cp-caret-y; cp-epoch: root.cp-epoch;
+                cp-caret-fx: root.cp-caret-fx; cp-caret-fy: root.cp-caret-fy;
+                composer-cursor-moved(b) => { root.composer-cursor-moved(b); }
                 start-call(video) => { root.act("start-call", video ? "true" : "false", ""); }
                 join-call => { root.act("join-call", "", ""); }
                 nav-requested(page) => { root.go(page); }
@@ -935,6 +974,7 @@ export component AppWindow inherits Window {
                 description: root.mp-desc; self-marker: root.mp-self;
                 sender-initials: root.mp-initials; sender-tint: root.mp-tint;
                 map-image: root.mp-map;
+                sender-avatar: root.mp-avatar;
                 tiles: root.mp-tiles;
                 pin-x: root.mp-pin-x;
                 pin-y: root.mp-pin-y;
@@ -945,6 +985,26 @@ export component AppWindow inherits Window {
                 stop-live => { root.act("stop-live", "", ""); }
                 open-osm(u) => { root.act("open-link", u, ""); }
                 zoom-requested(d) => { root.act("map-zoom", d > 0 ? "in" : "out", ""); }
+            } }
+        // Staging sits over the conversation it will send into, and it wants
+        // the whole window: the page draws its own header and its own caption
+        // row, safe areas included by the window's own insets.
+        staging-holder := PageHolder { active: root.in-session && root.nav == "staging"; ground: root.page-ground;
+            slides: Theme.mode == "desktop";
+            staging-page := StagingPage {
+                bottom-inset: root.bottom-inset;
+                width: 100%; height: 100%;
+                to-name: root.room-name;
+                items: root.sg-items;
+                cur <=> root.sg-cur;
+                caption <=> root.sg-caption;
+                emoji-rows: root.emoji-rows;
+                emoji-cat-rows: root.emoji-cat-rows;
+                closed => { root.go-back(); }
+                removed(i) => { root.act("staging-remove", "" + i, ""); }
+                add-more => { root.act("staging-add", "", ""); }
+                send(c) => { root.act("staging-send", c, ""); }
+                load-emoji => { root.act("emoji-search", "", ""); }
             } }
         doc-holder := PageHolder { active: root.in-session && root.nav == "doc"; ground: root.page-ground;
             DocPage {
@@ -1223,7 +1283,7 @@ export component AppWindow inherits Window {
         }
         // Always mounted so the open fade and the flight from the tapped
         // thumbnail can play (ImageViewer.qml:31-53); `shown` drives it.
-        ImageViewer {
+        viewer := ImageViewer {
             width: 100%; height: 100%;
             shown: root.viewer-open;
             from-x: root.vw-from-x; from-y: root.vw-from-y;

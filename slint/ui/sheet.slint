@@ -52,6 +52,20 @@ export component MessageSheet inherits Rectangle {
     /// (gesture bar or keyboard) the page. Zero on the desktop.
     in property <length> bleed-top: 0px;
     in property <length> bleed-bottom: 0px;
+    /// The zone at the bottom of the WINDOW that the page keeps clear — the
+    /// gesture bar, or the keyboard while it is up (app.slint hands the page
+    /// max() of the two). The conversation runs edge to edge under the gesture
+    /// bar, so `bleed-bottom` is zero there and this is the only channel the
+    /// emoji drawer has: without it its category bar sits under the gesture
+    /// bar, and its search field puts it under the keyboard.
+    in property <length> bottom-inset: 0px;
+    // The two cases pull opposite ways, so split the one number back apart
+    // (chat.slint's att-frame does the same, for the same reason): nothing
+    // pinned to a screen edge is near 96 tall and no keyboard is near that
+    // short. While the keyboard is up the gesture bar is behind it, so the
+    // gesture share falls to zero rather than staying.
+    property <length> gesture-inset: root.bottom-inset > 96px ? 0px : root.bottom-inset;
+    property <length> kb-inset: root.bottom-inset > 96px ? root.bottom-inset : 0px;
     in property <TimelineRow> item;
     in-out property <bool> open: false;
     in-out property <bool> drawer-open: false;
@@ -409,7 +423,10 @@ export component MessageSheet inherits Rectangle {
         conf-col := VerticalLayout {
             padding: 16px;
             padding-top: 10px;
-            padding-bottom: 16px + root.bleed-bottom;
+            // The same standing-off the drawer does: on the conversation the
+            // page runs to the screen edge itself, so the gesture bar arrives
+            // as `bottom-inset` and `bleed-bottom` is zero.
+            padding-bottom: 16px + max(root.bleed-bottom, root.gesture-inset);
             spacing: 10px;
             Rectangle {
                 height: 4px;
@@ -482,17 +499,30 @@ export component MessageSheet inherits Rectangle {
         /// Cleared before `drag` is, so the settle always gets its animation
         /// (TouchArea.pressed is still set while the release is delivered).
         property <bool> dragging: false;
-        y: (root.drawer-open ? root.screen-bottom - self.height : root.screen-bottom + 6px)
-            + self.drag;
+        /// Where the drawer's foot comes to rest. The screen's own bottom
+        /// edge — its ground runs on under the gesture bar, and the picker
+        /// stands off that from the inside — except while the keyboard is up,
+        /// when the foot is the keyboard's top edge instead.
+        property <length> rest: root.screen-bottom - root.kb-inset;
+        y: (root.drawer-open ? self.rest - self.height : self.rest + 6px) + self.drag;
         // The finger moves it 1:1; letting go settles with the same 220ms
         // OutCubic the drawer opens on.
         animate y {
             duration: self.dragging ? 0ms : 220ms;
             easing: cubic-bezier(0.33, 1, 0.68, 1);
         }
-        visible: self.y < root.screen-bottom - 0.5px;
+        visible: self.y < self.rest - 0.5px;
         width: 100%;
-        height: 400px + root.bleed-bottom;
+        /// 400 of body, plus the gesture strip its ground paints on down
+        /// through — unless the keyboard leaves less than 400 above it, and
+        /// then as much of the body as fits, floored at the search row, one
+        /// grid row and the category bar. The 24 keeps the sheet's own card
+        /// showing above the drawer instead of the drawer covering the screen.
+        height: min(400px, max(184px, root.height - root.kb-inset - 24px))
+            + root.gesture-inset;
+        // Deliberately NOT animated: `y` already is, and it is bound to this,
+        // so easing both would let the foot lag the head and the drawer would
+        // stretch and squash its way through a keyboard instead of moving.
         border-top-left-radius: 20px;
         border-top-right-radius: 20px;
         border-bottom-left-radius: root.card-radius;
@@ -501,7 +531,6 @@ export component MessageSheet inherits Rectangle {
         TouchArea { }
         VerticalLayout {
             padding-top: 8px;
-            padding-bottom: root.bleed-bottom;
             alignment: start;
             // Drag handle: a 24 grab strip with the 36x4 pill centred in it.
             // It DRAGS — the drawer follows the finger down and either
@@ -533,9 +562,12 @@ export component MessageSheet inherits Rectangle {
                 }
             }
             EmojiPicker {
-                // The rest of the drawer: 400 less the 8 above the handle,
-                // the 24 handle strip and the bottom bleed.
-                height: 400px - 32px;
+                // The rest of the drawer: whatever it came out at, less the 8
+                // above the handle and the 24 handle strip. The gesture strip
+                // is inside this, reserved by the picker itself, so the
+                // drawer's surface still paints down to the screen edge.
+                height: max(0px, drawer.height - 32px);
+                bottom-inset: root.gesture-inset;
                 fg: root.fg;
                 accent: root.accent;
                 chip: root.chip;

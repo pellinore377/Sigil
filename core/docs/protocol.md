@@ -34,7 +34,7 @@ Error codes: `bad_request not_logged_in login_in_progress oidc_unsupported slidi
 | `dm.create{userId}` | | starts a conversation by username: takes a key package, creates the MLS group, sends the Welcome to their requests slot; `{roomId}` |
 | `room.join{roomIdOrAlias}` | | accepts a request: the `id` of a `rooms.list` entry with `isInvite`, which look like `req:…` |
 | `room.leave{roomId}` | | drops a request or forgets a conversation locally |
-| `users.search{query}` | | exact username lookup; `{results:[{userId,displayName,avatarPath}]}` |
+| `users.search{query, limit?}` | | who to write to: a case-insensitive substring over the people this device knows (conversation members, pending requests, saved contacts), plus one exact front-desk lookup of the whole name the query spells — `bob`, `@bob` and `@bob:their.server` all resolve, a bare name against our own server. An empty query returns the people we know and asks the server nothing: there is no server-wide directory to list (`docs/blind-backend.md` B3). `{results:[{userId,displayName,avatarPath,known}]}`, people we know first |
 | `room.create{name, invite[]}` | | a group: creates the MLS group, sends a Welcome with the policy to each invitee's requests slot; `{roomId}` |
 | `room.invite{roomId, userId}` | | adds a member: commit, Welcome, updated policy |
 | `room.settings{roomId}` | | `{id, name, isDm, memberCount, notificationMode, admins[], isAdmin, slotServer, epochs, can{name, invite, admins}}` |

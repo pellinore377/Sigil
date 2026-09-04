@@ -594,7 +594,15 @@ export component AttachMenu inherits Rectangle {
     /// (menu-background darkened 2.1×). There the neutral container stands in.
     property <color> well-c: root.phone && !root.themed && Theme.mode == "light"
         ? Theme.bubble-other : root.chip;
-    // Phone grid: 16 top, two 112 rows, 16 below.
+    // Phone grid: 16 top, two 116 rows, 16 below — 264, and not a pixel more.
+    // It read 396 for a while, which is where the "ton of top margin" came
+    // from: `grid-block` is a layout placed by hand, so with no height of its
+    // own it fills the sheet, and the 132 of surplus was shared out between
+    // the two tile rows — 37 of it above the first one, under a lead-in that
+    // is supposed to be 16. The block below now states its own height as
+    // well, so the sheet can never push it around again.
+    // The camera chooser is a shutter over its Photo/Video selector: 46 to
+    // the body, 72 shutter, 24, the 40 selector, 24 below.
     // The emoji page stands in for a keyboard, so it is the tallest of them:
     // 12 lead-in, a 40 search row, the grid, and the 48 category bar.
     // The poll page at a phone's sizes: 52 to the body, then the body itself
@@ -605,7 +613,8 @@ export component AttachMenu inherits Rectangle {
           : root.location-page ? 430px
           : root.page == "emoji" ? 400px
           : root.page == "stickers" ? 330px
-          : root.phone ? 396px
+          : root.page == "camera" ? 206px
+          : root.phone ? 264px
           : 232px;
 
     public function reset() { root.page = "grid"; root.note = ""; }
@@ -643,6 +652,7 @@ export component AttachMenu inherits Rectangle {
         Text {
             text: root.page == "poll" ? "New poll"
                 : root.page == "stickers" ? "Stickers"
+                : root.page == "camera" ? "Camera"
                 : root.page == "emoji" ? "Emoji" : "";
             color: root.fg;
             font-family: Theme.font-ui;
@@ -657,7 +667,13 @@ export component AttachMenu inherits Rectangle {
     // Grid: the 5-column block is centred while its rows still fill left to
     // right — row two is left-aligned under the block (QML Grid.centerIn).
     // On the phone the block is 16 in from each side and starts 16 down; a
-    // cell is a fifth of it and rows run 112 with no gap between.
+    // cell is a fifth of it and rows run 116 with no gap between. The block
+    // states its own height so the sheet's surplus (if the ladder above ever
+    // grows one again) cannot centre the rows in it.
+    //
+    // Nine tiles, two rows of five minus one: ONE camera tile, which opens
+    // the chooser below — Photo or Video is picked inside the capture flow,
+    // the way the platform messenger does it, not as two tiles here.
     if root.page == "grid" : grid-box := Rectangle {
         width: 100%; height: 100%;
         property <length> cell: (grid-box.width - 32px) / 5;
@@ -665,24 +681,87 @@ export component AttachMenu inherits Rectangle {
             x: root.phone ? 16px : (grid-box.width - 350px) / 2;
             y: root.phone ? 16px : (grid-box.height - self.preferred-height) / 2;
             width: root.phone ? grid-box.width - 32px : 350px;
+            height: self.preferred-height;
             HorizontalLayout {
                 alignment: start;
                 spacing: root.phone ? 0px : 10px;
-                AttachTile { icon: Icons.camera; label: "Camera"; fg: root.fg; chip: root.tile-c; phone: root.phone; width: root.phone ? grid-box.cell : 62px; clicked => { root.pick-camera(); root.close-requested(); } }
+                AttachTile { icon: Icons.camera; label: "Camera"; fg: root.fg; chip: root.tile-c; phone: root.phone; width: root.phone ? grid-box.cell : 62px; clicked => { root.page = "camera"; } }
                 AttachTile { icon: Icons.image; label: "Gallery"; fg: root.fg; chip: root.tile-c; phone: root.phone; width: root.phone ? grid-box.cell : 62px; clicked => { root.pick-gallery(); root.close-requested(); } }
-                AttachTile { icon: Icons.videoOn; label: "Video"; fg: root.fg; chip: root.tile-c; phone: root.phone; width: root.phone ? grid-box.cell : 62px; clicked => { root.pick-video(); root.close-requested(); } }
                 AttachTile { icon: Icons.attach; label: "Files"; fg: root.fg; chip: root.tile-c; phone: root.phone; width: root.phone ? grid-box.cell : 62px; clicked => { root.pick-files(); root.close-requested(); } }
                 AttachTile { icon: Icons.emoji; label: "Emojis"; fg: root.fg; chip: root.tile-c; phone: root.phone; width: root.phone ? grid-box.cell : 62px; clicked => { root.load-emoji(); root.page = "emoji"; } }
+                AttachTile { icon: Icons.sticker; label: "Stickers"; fg: root.fg; chip: root.tile-c; phone: root.phone; width: root.phone ? grid-box.cell : 62px; clicked => { root.load-stickers(); root.page = "stickers"; } }
             }
             Rectangle { height: root.phone ? 0px : 10px; }
             HorizontalLayout {
                 alignment: start;
                 spacing: root.phone ? 0px : 10px;
-                AttachTile { icon: Icons.sticker; label: "Stickers"; fg: root.fg; chip: root.tile-c; phone: root.phone; width: root.phone ? grid-box.cell : 62px; clicked => { root.load-stickers(); root.page = "stickers"; } }
                 AttachTile { icon: Icons.poll; label: "Poll"; fg: root.fg; chip: root.tile-c; phone: root.phone; width: root.phone ? grid-box.cell : 62px; clicked => { root.reset-poll(); root.page = "poll"; } }
                 AttachTile { icon: Icons.myLocation; label: "Current\nLocation"; fg: root.fg; chip: root.tile-c; phone: root.phone; width: root.phone ? grid-box.cell : 62px; clicked => { root.open-location("current"); } }
                 AttachTile { icon: Icons.liveLocation; label: "Live\nLocation"; fg: root.fg; chip: root.tile-c; phone: root.phone; width: root.phone ? grid-box.cell : 62px; clicked => { root.open-location("live"); } }
                 AttachTile { icon: Icons.pinDrop; label: "Drop a Pin"; icon-scale: 1.3; fg: root.fg; chip: root.tile-c; phone: root.phone; width: root.phone ? grid-box.cell : 62px; clicked => { root.open-location("pin"); } }
+            }
+        }
+    }
+
+    /// The capture chooser's mode, in the reference's own idiom: a shutter
+    /// with Photo | Video under it, the chosen one in a filled stadium.
+    in-out property <string> cam-mode: "photo";
+
+    // The camera page. The reference is a live viewfinder with zoom chips and
+    // a flip button; there is no camera surface in this app on Android, so
+    // what stands here is the same choice in the same shape — pick Photo or
+    // Video, press the shutter, and the SYSTEM camera opens for that capture.
+    // Whatever it hands back lands on the staging page, captioned there.
+    if root.page == "camera" : camera-box := Rectangle {
+        width: 100%; height: 100%;
+        // The shutter: the reference's 88 ring, at this sheet's scale.
+        shutter := Rectangle {
+            x: (camera-box.width - 72px) / 2; y: 46px;
+            width: 72px; height: 72px; border-radius: 36px;
+            background: transparent;
+            border-width: 3px;
+            border-color: root.fg;
+            Rectangle {
+                x: 6px; y: 6px;
+                width: 60px; height: 60px; border-radius: 30px;
+                background: sh-t.pressed ? root.fg.with-alpha(0.7) : root.fg;
+                IconLabel {
+                    text: root.cam-mode == "video" ? Icons.videoOn : Icons.camera;
+                    color: root.sheet-c;
+                    font-size: 26px;
+                    width: 100%; height: 100%;
+                }
+            }
+            sh-t := TouchArea {
+                clicked => {
+                    if (root.cam-mode == "video") { root.pick-video(); } else { root.pick-camera(); }
+                    root.reset();
+                    root.close-requested();
+                }
+            }
+        }
+        // Photo | Video, centred under the shutter.
+        mode-row := HorizontalLayout {
+            x: (camera-box.width - self.preferred-width) / 2;
+            y: 142px;
+            height: 40px;
+            spacing: 4px;
+            for m[i] in [{ v: "photo", t: "Photo" }, { v: "video", t: "Video" }] : Rectangle {
+                property <bool> on: root.cam-mode == m.v;
+                width: 96px; height: 40px; border-radius: 20px;
+                background: self.on ? root.fg.with-alpha(0.9)
+                    : mode-t.has-hover ? root.fg.with-alpha(0.10) : transparent;
+                Text {
+                    text: m.t;
+                    color: parent.on ? root.sheet-c : root.fg;
+                    font-family: Theme.font-ui;
+                    font-size: Theme.body;
+                    font-weight: parent.on ? 700 : 400;
+                    width: 100%; height: 100%;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                }
+                mode-t := TouchArea { clicked => { root.cam-mode = m.v; } }
             }
         }
     }
@@ -922,6 +1001,13 @@ export component AttachMenu inherits Rectangle {
     // own 8 side padding and its category bar sits on the sheet's bottom
     // edge, so the slot is the whole sheet less a 12 lead-in over the search
     // row. (@children cannot sit under a conditional, so visibility gates it.)
+    //
+    // The picker sets its OWN height at the mount (chat.slint), because the
+    // sheet's frame is cut short when the keyboard leaves less room than the
+    // sheet's natural height and only the host knows by how much; the slot is
+    // the sheet's full body and does not clip, so a shorter picker simply
+    // stops higher up. Nothing is lost: the frame cuts the chrome's bottom
+    // corners, which are square on the phone.
     emoji-slot := Rectangle {
         visible: root.page == "emoji";
         x: 0px; y: 12px;
@@ -930,12 +1016,12 @@ export component AttachMenu inherits Rectangle {
     }
 
     // The back button, in the picker's search row — the gap EmojiPicker's
-    // `back-slot` leaves at the right of the field, 8 in from the sheet edge
-    // and 40 square, level with the 40 field. It lives here because the
-    // picker arrives through @children, which can neither be given a property
-    // nor have a callback connected.
+    // `back-slot` leaves at the LEFT of the field, leading it, 8 in from the
+    // sheet edge and 40 square, level with the 40 field. It lives here because
+    // the picker arrives through @children, which can neither be given a
+    // property nor have a callback connected.
     if root.page == "emoji" : emoji-back := Rectangle {
-        x: root.width - 48px; y: 12px;
+        x: 8px; y: 12px;
         width: 40px; height: 40px;
         border-radius: 20px;
         background: eb-t.pressed || eb-t.has-hover ? root.chip.brighter(0.2) : root.chip;

@@ -227,6 +227,69 @@ pub fn drawable(face: &Face, text: &str) -> bool {
     picture(face, text).is_some()
 }
 
+/// Which of these this device can draw, asked the way `render` will draw
+/// them: the phone's own shaper on Android, the engine's cut from the
+/// colour font elsewhere. One font parse (or one JVM attach) for the whole
+/// list, since the picker asks about two thousand at once. With no way to
+/// draw at all, everything is kept: text is then the intended fallback.
+pub fn can_draw_all(texts: &[&str]) -> Vec<bool> {
+    #[cfg(target_os = "android")]
+    {
+        if let Some(v) = super::emoji_android::can_draw_all(texts) {
+            return v;
+        }
+    }
+    let Some(font) = font_path() else {
+        return vec![true; texts.len()];
+    };
+    let Ok(bytes) = std::fs::read(&font) else {
+        return vec![true; texts.len()];
+    };
+    let Ok(face) = Face::parse(&bytes, 0) else {
+        return vec![true; texts.len()];
+    };
+    texts.iter().map(|t| drawable(&face, t)).collect()
+}
+
+/// The phone's own drawing of an emoji, trimmed to its ink with a small
+/// margin so every picture frames its glyph the way the font's bitmaps do
+/// (the view sizes each cell for that framing). `None` when the phone did
+/// not draw it, or is not a phone.
+#[cfg(target_os = "android")]
+fn platform_png(text: &str) -> Option<Vec<u8>> {
+    let png = super::emoji_android::render_png(text)?;
+    let img = image::load_from_memory(&png).ok()?.to_rgba8();
+    let (w, h) = img.dimensions();
+    let (mut x0, mut y0, mut x1, mut y1) = (w, h, 0u32, 0u32);
+    for (x, y, p) in img.enumerate_pixels() {
+        if p[3] > 8 {
+            x0 = x0.min(x);
+            y0 = y0.min(y);
+            x1 = x1.max(x + 1);
+            y1 = y1.max(y + 1);
+        }
+    }
+    if x1 <= x0 || y1 <= y0 {
+        return None;
+    }
+    // A square box round the ink, four percent of margin: what the font's
+    // own 128px bitmaps carry.
+    let side = (x1 - x0).max(y1 - y0);
+    let margin = (side as f32 * 0.04).ceil() as u32;
+    let box_side = side + 2 * margin;
+    let mut out = image::RgbaImage::new(box_side, box_side);
+    let ox = margin + (side - (x1 - x0)) / 2;
+    let oy = margin + (side - (y1 - y0)) / 2;
+    for y in y0..y1 {
+        for x in x0..x1 {
+            out.put_pixel(ox + x - x0, oy + y - y0, *img.get_pixel(x, y));
+        }
+    }
+    let mut buf = std::io::Cursor::new(Vec::new());
+    out.write_to(&mut buf, image::ImageFormat::Png).ok()?;
+    Some(buf.into_inner())
+}
+
 /// The cache file's name: every code point in hex, joined. A lone code point
 /// keeps the name it had, so pictures cut before this still count.
 fn cache_name(text: &str) -> String {
@@ -252,6 +315,16 @@ pub fn render(p: &serde_json::Map<String, Value>) -> crate::ipc::wire::Reply {
     let dir = crate::paths::cache_dir().join("emoji");
     let _ = std::fs::create_dir_all(&dir);
     let out = dir.join(cache_name(text));
+    // A phone draws its own: its font is the vector edition with no bitmaps
+    // to cut, and its shaper knows the flags font and every sequence.
+    #[cfg(target_os = "android")]
+    if !out.is_file() {
+        if let Some(png) = platform_png(text) {
+            if std::fs::write(&out, png).is_err() {
+                return Reply::err("internal", "could not write the picture");
+            }
+        }
+    }
     if !out.is_file() {
         let Some(font) = font_path() else {
             return Reply::err("unavailable", "no colour emoji font on this device");

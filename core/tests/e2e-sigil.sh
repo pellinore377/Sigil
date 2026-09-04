@@ -13,6 +13,9 @@ SV=$ROOT/server/target/debug/sigil-server
 SS=$ROOT/server/target/debug/examples/static-site
 EN=$ROOT/core/target/debug/sigil-engine
 JQ=$ROOT/core/target/debug/sigil-jq
+# Ports are drawn rather than fixed: two of these suites on one machine used
+# to land on the same server and the second one's first call came back 401.
+PORT=$((20000 + RANDOM % 20000)); SITE_PORT=$((PORT + 1))
 W=$(mktemp -d); mkdir -p "$W/a" "$W/b" "$W/run"; cd "$W"; export W
 PIDS=()
 trap 'kill "${PIDS[@]}" >/dev/null 2>&1 || true; sleep 0.5; rm -rf "$W"' EXIT
@@ -20,7 +23,7 @@ fail() { echo "FAIL: $1"; shift; for f in "$@"; do echo "--- $f"; cat "$f" 2>/de
 result() { $JQ --assert ok; }
 H() { local d=$1; shift; $JQ -f "$W/$d/sigil/sigil-history.json" "$@"; }   # H <engine> <sigil-jq args>: that engine's history
 
-$SV -c sigil.toml init --hostname sigil.test --listen 127.0.0.1:18444 >/dev/null
+$SV -c sigil.toml init --hostname sigil.test --listen 127.0.0.1:${PORT} >/dev/null
 $SV -c sigil.toml run >server.log 2>&1 & PIDS+=($!)
 # wait for the server rather than guess: under load `invite` would otherwise
 # fall back to opening the database the server is opening
@@ -33,15 +36,39 @@ A() { SIGIL_SOCKET=$W/run/a.sock $EN cli "$@"; }
 B() { SIGIL_SOCKET=$W/run/b.sock $EN cli "$@"; }
 start_engine a; start_engine b; sleep 2.5
 
-A account.create username=@alice:sigil.test invite="$IA" envoy=ws://127.0.0.1:18444/envoy password="correct horse" | result || fail "alice account" engine-a.log
-B account.create username=@bob:sigil.test   invite="$IB" envoy=ws://127.0.0.1:18444/envoy | result || fail "bob account" engine-b.log
+A account.create username=@alice:sigil.test invite="$IA" envoy=ws://127.0.0.1:${PORT}/envoy password="correct horse" | result || fail "alice account" engine-a.log
+B account.create username=@bob:sigil.test   invite="$IB" envoy=ws://127.0.0.1:${PORT}/envoy | result || fail "bob account" engine-b.log
 A status | grep -q '"session": "loggedIn"' || fail "alice not logged in"
-A users.search query=bob:sigil.test | grep -q '"userId": "@bob:sigil.test"' || fail "users.search"
+# Finding someone to write to. All three ways of typing a name reach the
+# same person: bare, with the @, and with the server. Alice knows nobody
+# yet, so each of these is the front desk answering about a whole name.
+for Q in bob @bob @bob:sigil.test bob:sigil.test BOB; do
+  A users.search query="$Q" | $JQ --assert 'result.results[0].userId == "@bob:sigil.test"' \
+    || fail "users.search did not find bob for '$Q'" engine-a.log
+done
+A users.search query=nobody | $JQ --assert '! result.results.length' || fail "users.search invented someone"
+A users.search query="@bob:sigil.test" | $JQ --assert '! result.results[0].known' || fail "bob is not someone alice knows yet"
+# Suggestions, before there is anyone to suggest: an empty query asks the
+# server nothing (there is no directory to list) and so comes back empty.
+A users.search query="" | $JQ --assert '! result.results.length' || fail "an empty query invented suggestions"
 ROOM=$(A dm.create userId=@bob:sigil.test | $JQ result.roomId)
 R="[\"$ROOM\"]"   # the room's list in a history file
 sleep 4
 REQ=$(B rooms.list | $JQ 'result.rooms[?isInvite].id') || fail "bob has no invite" engine-b.log
 B room.join roomIdOrAlias="$REQ" | grep -q "\"roomId\": \"$ROOM\"" || fail "room.join"
+# Now that they have a conversation, bob is someone alice knows: he is what
+# the Start page suggests with nothing typed, and a fragment of his name
+# finds him without the front desk being asked about "bo" at all.
+A users.search query="" | $JQ --assert 'result.results[?userId=="@bob:sigil.test"].known' \
+  || fail "the suggestions do not hold the person alice is talking to" engine-a.log
+A users.search query=bo | $JQ --assert 'result.results[?userId=="@bob:sigil.test"].length' \
+  || fail "a fragment did not find someone alice knows" engine-a.log
+# And it is still alice's own conversation list, not the server's users:
+# bob knows alice for the same reason, and nobody knows a name they have
+# never met.
+B users.search query="" | $JQ --assert 'result.results[?userId=="@alice:sigil.test"].length' \
+  || fail "bob's suggestions do not hold alice" engine-b.log
+A users.search query=marlowe | $JQ --assert '! result.results.length' || fail "a name nobody has appeared"
 A room.open roomId="$ROOM" initialItems:=60 | result || fail "alice room.open"
 B room.open roomId="$ROOM" initialItems:=60 | result || fail "bob room.open"
 timeout 15 env SIGIL_SOCKET=$W/run/b.sock $EN cli ping --follow >bob-events.json 2>&1 &
@@ -110,7 +137,7 @@ H b --assert "$R[-1].body == \"after restart\"" || fail "bob missed message afte
 mkdir -p "$W/c"; start_engine c; sleep 2.5
 C() { SIGIL_SOCKET=$W/run/c.sock $EN cli "$@"; }
 timeout 60 env SIGIL_SOCKET=$W/run/c.sock $EN cli ping --follow >c-events.json 2>&1 &
-OFFER=$(C link.offer username=@alice:sigil.test envoy=ws://127.0.0.1:18444/envoy | $JQ result.offer)
+OFFER=$(C link.offer username=@alice:sigil.test envoy=ws://127.0.0.1:${PORT}/envoy | $JQ result.offer)
 sleep 1
 SAS_A=$(A link.scan offer="$OFFER" | $JQ result.sas)
 A link.confirm ok:=true | result || fail "link.confirm" engine-a.log
@@ -137,9 +164,9 @@ sleep 7   # backup loop cadence
 A recovery.status | grep -q '"backup": "enabled"' || fail "backup not uploaded" engine-a.log
 mkdir -p "$W/d"; start_engine d; sleep 2.5
 D() { SIGIL_SOCKET=$W/run/d.sock $EN cli "$@"; }
-if D account.recover username=@alice:sigil.test password=wrong code="$CODE" envoy=ws://127.0.0.1:18444/envoy | result 2>/dev/null; then fail "wrong password accepted by engine"; fi
+if D account.recover username=@alice:sigil.test password=wrong code="$CODE" envoy=ws://127.0.0.1:${PORT}/envoy | result 2>/dev/null; then fail "wrong password accepted by engine"; fi
 sleep 3
-D account.recover username=@alice:sigil.test password="correct horse" code="$CODE" envoy=ws://127.0.0.1:18444/envoy | result || fail "account.recover" engine-d.log
+D account.recover username=@alice:sigil.test password="correct horse" code="$CODE" envoy=ws://127.0.0.1:${PORT}/envoy | result || fail "account.recover" engine-d.log
 D status | grep -q '"userId": "@alice:sigil.test"' || fail "recovered engine not signed in"
 D rooms.list | grep -q '"name": "bob"' || fail "recovered engine has no conversation"
 H d --assert "$R[][?body==\"hello both\"].length" || fail "recovered history missing" engine-d.log
@@ -217,11 +244,11 @@ PNG
   printf '<meta property="og:image" content="/pic.png">\n'
   printf '</head><body>the words after the head are never read</body></html>\n'
 } >"$W/www/page.html"
-$SS 127.0.0.1:18470 "$W/www" >site.log 2>&1 & PIDS+=($!)
+$SS 127.0.0.1:${SITE_PORT} "$W/www" >site.log 2>&1 & PIDS+=($!)
 UP=""
 for i in $(seq 1 30); do if grep -q "static site at" site.log 2>/dev/null; then UP=1; break; fi; sleep 0.5; done
 [ -n "$UP" ] || fail "the page server did not start" site.log
-PAGE=http://127.0.0.1:18470/page.html
+PAGE=http://127.0.0.1:${SITE_PORT}/page.html
 # off by default: the site learns the device's address, so nothing is fetched
 A link.preview url="$PAGE" | grep -q '"code": "disabled"' || fail "a card was fetched with the switch off" site.log
 ! grep -q "GET /page.html" site.log || fail "the page was fetched with the switch off" site.log

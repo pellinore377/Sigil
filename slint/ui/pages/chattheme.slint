@@ -6,14 +6,25 @@
 //
 //   header    our own bar, not theirs: the back glyph in a 48 target at 4,
 //             the title (and its one-line caveat) at 56, an Apply pill 12
-//             from the right.
-//   stage     the page body: a phone-shaped LIVE preview of the room (the
-//             window's own aspect — 256 x 572 in the reference's 527 x 1173
-//             page) over the "Reset to default" pill. It rises as one.
-//   panel     the chrome sheet along the bottom (390 of 1173 = 33% there,
-//             37.6% of the room under the header here): "Colors" over a row
-//             of eight three-part swatches, then "Wallpapers" over the
-//             photo pill and the gradient grid. It scrolls inside itself.
+//             from the right. It is the only fixed thing on the page.
+//   stage     the window under it, clipped, with chat.slint's 28 top
+//             corners. It rises as one on the body beat.
+//   body      ONE Flickable filling the stage, and everything else is in it:
+//             a phone-shaped LIVE preview of the room (the window's own
+//             aspect — 256 x 572 in the reference's 527 x 1173 page), the
+//             "Reset to default" pill, and then the panel.
+//   panel     the chrome sheet (390 of 1173 = 33% there, 37.6% of the room
+//             under the header here): "Colors" over a row of eight
+//             three-part swatches, then "Wallpapers" over the photo pill and
+//             the gradient grid. It is as tall as its own content and it is
+//             a plain child of the body — NOT a scroller of its own.
+//
+// That last point is the whole shape of the page. The reference scrolls the
+// body, not the sheet: a drag anywhere carries the preview and the pill up
+// under the header and brings the panel — rounded top and all — up with them
+// to fill the room, its grid running on past the bottom edge. A Flickable
+// inside the panel would instead hold the preview still and scroll the grid
+// behind a fixed rounded lip, which is what this page used to do.
 //
 // The page WEARS the theme it is editing: the header band and the panel are
 // chat.slint's own tones, so choosing a colour repaints the page in the
@@ -233,6 +244,11 @@ export component ChatThemePage inherits Rectangle {
     // bare for a moment first (map.slint's `word-t`).
     property <float> word-t: clamp((root.head-t - 0.35) / 0.65, 0.0, 1.0);
     property <float> word-e: 1 - (1 - root.word-t) * (1 - root.word-t) * (1 - root.word-t);
+    // The page opens at its top, never wherever the last visit was left
+    // scrolled to — a body that arrived already half way up would make
+    // nonsense of the beats. `changed` fires off the event loop, so this
+    // lands whether or not the page was drawn while it was away (`Beats`).
+    changed opened => { if (root.opened) { body.viewport-y = 0px; } }
 
     // ---- Geometry --------------------------------------------------------
     // Measured off the reference (527 x 1173 dp, the very size the headless
@@ -255,6 +271,16 @@ export component ChatThemePage inherits Rectangle {
                                                root.width * 0.52));
     property <length> preview-h: self.preview-w * root.height / max(1px, root.width);
     property <length> pv-r: self.preview-w * 0.085;   // 20 of 256 in the reference
+    /// The panel's RESTING top, in the body's own coordinates — which is the
+    /// stage room, its two gaps and the pill, i.e. exactly the strip taken
+    /// off the bottom. At scroll 0 that puts it where the reference has it.
+    property <length> panel-y: self.avail - self.panel-h;
+    /// It is then as tall as its own content, never shorter than that strip:
+    /// what it overflows by IS the page's scroll range, so scrolled to the
+    /// end its bottom lands on the stage bottom with nothing left over.
+    property <length> panel-full: max(self.panel-h, sec-col.preferred-height);
+    /// The scrolling column, at rest: the whole page under the header.
+    property <length> body-h: self.panel-y + self.panel-full;
     /// The Apply pill: 85 x 40 in the reference, 12 clear of the right edge.
     property <length> apply-w: root.phone ? 86px : 66px;
 
@@ -355,12 +381,30 @@ export component ChatThemePage inherits Rectangle {
         }
     }
 
-    // ---- 2. The stage, and 3. the panel inside it ------------------------
+    // ---- 2. The stage, and 3. the body that scrolls inside it ------------
     // The stage carries the page's own ground under chat.slint's 28 top
     // corners, so the band above it reads as a header rather than as more
     // page. On the phone it rises from the page bottom once the header has
-    // settled, taking the preview and the reset pill with it; the panel is
-    // its bottom sheet and follows it up after.
+    // settled, taking everything with it; the panel is its bottom sheet and
+    // follows it up after.
+    //
+    // WHERE THE SCROLL AND THE BEATS MEET
+    //
+    // Three offsets stack, and each owns a different box:
+    //
+    //   stage.y     the body beat. The whole window slides up from the page
+    //               bottom, Flickable and all, exactly as before.
+    //   panel.y     the footer beat, INSIDE the body: the sheet's resting
+    //               place, pushed a panel-strip down while `foot-e` runs, so
+    //               it still comes up out of the stage bottom after the rest
+    //               has landed.
+    //   viewport-y  the finger. It moves the body away from those resting
+    //               places, and moves ALL of it — preview, pill and panel
+    //               together — which is the fix.
+    //
+    // So the beats animate where things rest and the scroll displaces them
+    // from there; they never fight, because they are set on different
+    // elements and a beat is done playing long before a finger arrives.
 
     stage := Rectangle {
         x: 0;
@@ -372,151 +416,165 @@ export component ChatThemePage inherits Rectangle {
         border-top-right-radius: 28px;
         clip: true;
 
-        // The live preview: a phone-shaped picture of this room, in the
-        // pending theme. Everything inside is a fraction of its width, so
-        // it stays in proportion at any page size.
-        preview := Rectangle {
-            x: (stage.width - self.width) / 2;
-            y: root.gap-a + (root.stage-room - self.height) / 2;
-            width: root.preview-w; height: root.preview-h;
-            border-radius: root.pv-r;
-            clip: true;
-            background: root.convo-c;
-            // A hairline, so the device reads as a device even where the
-            // palette leaves its ground and the page's a shade apart.
-            border-width: 1px;
-            border-color: root.fg.with-alpha(0.10);
-            property <float> u: self.width / 256px;   // the reference’s own dp
+        body := Flickable {
+            x: 0; y: 0; width: 100%; height: 100%;
+            viewport-width: stage.width;
+            // The resting column, NOT the beat-displaced one: while the footer
+            // beat pushes the panel down past this the surplus is simply clipped,
+            // and the scroll range must not breathe in and out as it plays.
+            viewport-height: root.body-h;
 
-            if root.pending-wallpaper != "" && root.wallpaper-img.width > 0 : Image {
-                source: root.wallpaper-img;
-                width: 100%; height: 100%;
-                image-fit: cover;
-            }
-            // Gradient ONLY for a grad:* wallpaper (grad-sel < 0 for a
-            // photo): an undecoded photo shows the tint, not gradient 0.
-            if root.grad-sel >= 0 && root.pending-wallpaper != "" && root.gradients.length == 9 && root.wallpaper-img.width == 0 : prev-grad := Rectangle {
-                width: 100%; height: 100%;
-                background: @linear-gradient(180deg, root.gradients[root.grad-sel].top 0%, root.gradients[root.grad-sel].bot 100%);
-            }
-            // The room's own bar, as the conversation wears it.
-            prev-bar := Rectangle {
-                x: 0; y: 0; width: 100%; height: preview.u * 46px;
-                background: root.prev-chrome;
-                IconLabel {
-                    x: preview.u * 8px; y: (parent.height - self.height) / 2;
-                    text: Icons.back; filled: true; color: root.fg;
-                    font-size: preview.u * 14px;
-                    width: preview.u * 16px; height: preview.u * 16px;
+            // The live preview: a phone-shaped picture of this room, in the
+            // pending theme. Everything inside is a fraction of its width, so
+            // it stays in proportion at any page size.
+            preview := Rectangle {
+                x: (stage.width - self.width) / 2;
+                y: root.gap-a + (root.stage-room - self.height) / 2;
+                width: root.preview-w; height: root.preview-h;
+                border-radius: root.pv-r;
+                clip: true;
+                background: root.convo-c;
+                // A hairline, so the device reads as a device even where the
+                // palette leaves its ground and the page's a shade apart.
+                border-width: 1px;
+                border-color: root.fg.with-alpha(0.10);
+                property <float> u: self.width / 256px;   // the reference’s own dp
+
+                if root.pending-wallpaper != "" && root.wallpaper-img.width > 0 : Image {
+                    source: root.wallpaper-img;
+                    width: 100%; height: 100%;
+                    image-fit: cover;
                 }
-                Rectangle {
-                    x: preview.u * 30px; y: (parent.height - self.height) / 2;
-                    width: preview.u * 22px; height: preview.u * 22px;
-                    border-radius: self.width / 2;
-                    background: root.pend-accent.brighter(0.3);
+                // Gradient ONLY for a grad:* wallpaper (grad-sel < 0 for a
+                // photo): an undecoded photo shows the tint, not gradient 0.
+                if root.grad-sel >= 0 && root.pending-wallpaper != "" && root.gradients.length == 9 && root.wallpaper-img.width == 0 : prev-grad := Rectangle {
+                    width: 100%; height: 100%;
+                    background: @linear-gradient(180deg, root.gradients[root.grad-sel].top 0%, root.gradients[root.grad-sel].bot 100%);
                 }
-                Text {
-                    x: preview.u * 60px; y: 0; height: 100%;
-                    width: preview.width - preview.u * 100px;
-                    text: root.room-name;
-                    color: root.fg;
-                    font-family: Theme.font-ui;
-                    font-size: preview.u * 13px;
-                    font-weight: 500;
-                    vertical-alignment: center;
-                    overflow: elide;
-                }
-                for g[i] in [Icons.phone, Icons.videoOn] : IconLabel {
-                    x: preview.width - preview.u * (56px - i * 26px);
-                    y: (parent.height - self.height) / 2;
-                    text: g; filled: true; color: root.fg.with-alpha(0.85);
-                    font-size: preview.u * 13px;
-                    width: preview.u * 16px; height: preview.u * 16px;
-                }
-            }
-            // A handful of bubbles, in the theme's tones.
-            mini := VerticalLayout {
-                x: preview.u * 12px;
-                y: preview.height - self.preferred-height - preview.u * 62px;
-                width: preview.width - preview.u * 24px;
-                spacing: preview.u * 6px;
-                HorizontalLayout { alignment: end; Rectangle { width: preview.u * 118px; height: preview.u * 22px; border-radius: preview.u * 11px; background: root.own-fill; } }
-                HorizontalLayout { alignment: start; Rectangle { width: preview.u * 132px; height: preview.u * 22px; border-radius: preview.u * 11px; background: root.other-fill; } }
-                HorizontalLayout { alignment: start; Rectangle { width: preview.u * 96px; height: preview.u * 22px; border-radius: preview.u * 11px; background: root.other-fill; } }
-                HorizontalLayout { alignment: end; Rectangle { width: preview.u * 104px; height: preview.u * 22px; border-radius: preview.u * 11px; background: root.own-fill; } }
-            }
-            // The composer band and its send disc.
-            mini-composer := Rectangle {
-                x: preview.u * 12px;
-                y: preview.height - preview.u * 44px;
-                width: preview.width - preview.u * 24px;
-                height: preview.u * 30px;
-                Rectangle {
-                    x: 0; y: 0;
-                    width: parent.width - preview.u * 36px; height: 100%;
-                    border-radius: self.height / 2;
+                // The room's own bar, as the conversation wears it.
+                prev-bar := Rectangle {
+                    x: 0; y: 0; width: 100%; height: preview.u * 46px;
                     background: root.prev-chrome;
-                    Text {
-                        x: preview.u * 12px; height: 100%;
-                        text: "Message";
-                        color: root.fg.with-alpha(0.45);
-                        font-family: Theme.font-ui;
-                        font-size: preview.u * 11px;
-                        vertical-alignment: center;
-                    }
-                }
-                Rectangle {
-                    x: parent.width - preview.u * 30px; y: 0;
-                    width: preview.u * 30px; height: preview.u * 30px;
-                    border-radius: self.width / 2;
-                    background: root.pend-accent.darker(0.15);
                     IconLabel {
-                        text: Icons.send; filled: true; color: #1a1a1a;
+                        x: preview.u * 8px; y: (parent.height - self.height) / 2;
+                        text: Icons.back; filled: true; color: root.fg;
                         font-size: preview.u * 14px;
-                        width: 100%; height: 100%;
+                        width: preview.u * 16px; height: preview.u * 16px;
+                    }
+                    Rectangle {
+                        x: preview.u * 30px; y: (parent.height - self.height) / 2;
+                        width: preview.u * 22px; height: preview.u * 22px;
+                        border-radius: self.width / 2;
+                        background: root.pend-accent.brighter(0.3);
+                    }
+                    Text {
+                        x: preview.u * 60px; y: 0; height: 100%;
+                        width: preview.width - preview.u * 100px;
+                        text: root.room-name;
+                        color: root.fg;
+                        font-family: Theme.font-ui;
+                        font-size: preview.u * 13px;
+                        font-weight: 500;
+                        vertical-alignment: center;
+                        overflow: elide;
+                    }
+                    for g[i] in [Icons.phone, Icons.videoOn] : IconLabel {
+                        x: preview.width - preview.u * (56px - i * 26px);
+                        y: (parent.height - self.height) / 2;
+                        text: g; filled: true; color: root.fg.with-alpha(0.85);
+                        font-size: preview.u * 13px;
+                        width: preview.u * 16px; height: preview.u * 16px;
+                    }
+                }
+                // A handful of bubbles, in the theme's tones.
+                mini := VerticalLayout {
+                    x: preview.u * 12px;
+                    y: preview.height - self.preferred-height - preview.u * 62px;
+                    width: preview.width - preview.u * 24px;
+                    spacing: preview.u * 6px;
+                    HorizontalLayout { alignment: end; Rectangle { width: preview.u * 118px; height: preview.u * 22px; border-radius: preview.u * 11px; background: root.own-fill; } }
+                    HorizontalLayout { alignment: start; Rectangle { width: preview.u * 132px; height: preview.u * 22px; border-radius: preview.u * 11px; background: root.other-fill; } }
+                    HorizontalLayout { alignment: start; Rectangle { width: preview.u * 96px; height: preview.u * 22px; border-radius: preview.u * 11px; background: root.other-fill; } }
+                    HorizontalLayout { alignment: end; Rectangle { width: preview.u * 104px; height: preview.u * 22px; border-radius: preview.u * 11px; background: root.own-fill; } }
+                }
+                // The composer band and its send disc.
+                mini-composer := Rectangle {
+                    x: preview.u * 12px;
+                    y: preview.height - preview.u * 44px;
+                    width: preview.width - preview.u * 24px;
+                    height: preview.u * 30px;
+                    Rectangle {
+                        x: 0; y: 0;
+                        width: parent.width - preview.u * 36px; height: 100%;
+                        border-radius: self.height / 2;
+                        background: root.prev-chrome;
+                        Text {
+                            x: preview.u * 12px; height: 100%;
+                            text: "Message";
+                            color: root.fg.with-alpha(0.45);
+                            font-family: Theme.font-ui;
+                            font-size: preview.u * 11px;
+                            vertical-alignment: center;
+                        }
+                    }
+                    Rectangle {
+                        x: parent.width - preview.u * 30px; y: 0;
+                        width: preview.u * 30px; height: preview.u * 30px;
+                        border-radius: self.width / 2;
+                        background: root.pend-accent.darker(0.15);
+                        IconLabel {
+                            text: Icons.send; filled: true; color: #1a1a1a;
+                            font-size: preview.u * 14px;
+                            width: 100%; height: 100%;
+                        }
                     }
                 }
             }
-        }
 
-        // "Reset to default": ~150 x 40, centred, 14 under the preview.
-        reset-pill := Rectangle {
-            x: (stage.width - self.width) / 2;
-            y: preview.y + preview.height + root.gap-b;
-            width: reset-row.preferred-width + 36px;
-            height: root.reset-h;
-            border-radius: self.height / 2;
-            background: rp-t.pressed ? root.fg.with-alpha(0.18) : root.fg.with-alpha(0.10);
-            reset-row := HorizontalLayout {
-                x: (parent.width - self.preferred-width) / 2;
-                width: self.preferred-width; height: 100%;
-                spacing: 8px;
-                IconLabel { text: Icons.refresh; color: root.fg.with-alpha(0.85); font-size: Theme.icon-size; vertical-alignment: center; }
-                Text { text: "Reset to default"; color: root.fg; font-family: Theme.font-ui; font-size: Theme.body-small; vertical-alignment: center; }
+            // "Reset to default": ~150 x 40, centred, 14 under the preview.
+            reset-pill := Rectangle {
+                x: (stage.width - self.width) / 2;
+                y: preview.y + preview.height + root.gap-b;
+                width: reset-row.preferred-width + 36px;
+                height: root.reset-h;
+                border-radius: self.height / 2;
+                background: rp-t.pressed ? root.fg.with-alpha(0.18) : root.fg.with-alpha(0.10);
+                reset-row := HorizontalLayout {
+                    x: (parent.width - self.preferred-width) / 2;
+                    width: self.preferred-width; height: 100%;
+                    spacing: 8px;
+                    IconLabel { text: Icons.refresh; color: root.fg.with-alpha(0.85); font-size: Theme.icon-size; vertical-alignment: center; }
+                    Text { text: "Reset to default"; color: root.fg; font-family: Theme.font-ui; font-size: Theme.body-small; vertical-alignment: center; }
+                }
+                rp-t := TouchArea { clicked => { root.reset-pending(); } }
             }
-            rp-t := TouchArea { clicked => { root.reset-pending(); } }
-        }
 
-        // The panel — the last beat. It is the chrome sheet along the
-        // bottom, on the theme's own surface, its 32 top corners taken from
-        // the reference (80 physical, radius reached 89 below its top edge).
-        panel := Rectangle {
-            x: 0;
-            y: stage.height - self.height * (root.phone ? root.foot-e : 1.0);
-            width: 100%;
-            height: root.panel-h;
-            border-top-left-radius: 32px;
-            border-top-right-radius: 32px;
-            background: root.surface-c;
-            clip: true;
-            TouchArea { }   // the panel floats over the stage; swallow taps
+            // The panel — the last beat. It is the chrome sheet along the
+            // bottom, on the theme's own surface, its 32 top corners taken from
+            // the reference (80 physical, radius reached 89 below its top edge).
+            // It rides in the body: it rests a panel-strip off the bottom, is as
+            // tall as its own content, and the finger carries it (rounded lip and
+            // all) up the page. The footer beat is the one offset it keeps of its
+            // own — a strip's worth of push-down, so it still arrives from below.
+            panel := Rectangle {
+                x: 0;
+                y: root.panel-y + (root.phone ? root.panel-h * (1 - root.foot-e) : 0px);
+                width: 100%;
+                height: root.panel-full;
+                border-top-left-radius: 32px;
+                border-top-right-radius: 32px;
+                background: root.surface-c;
+                clip: true;
+                // The sheet is opaque over the page's ground: a tap on it is the
+                // sheet's, never the stage's behind it. A drag still reaches the
+                // body — the Flickable takes the gesture off the press.
+                TouchArea { }
 
-            pf := Flickable {
-                width: 100%; height: 100%;
-                viewport-height: sec-col.preferred-height;
                 sec-col := VerticalLayout {
                     x: 20px;
+                    y: 0;
                     width: panel.width - 40px;
+                    height: self.preferred-height;
                     alignment: start;
                     Rectangle { height: 22px; }
                     Text { text: "Colors"; color: root.fg; font-family: Theme.font-ui; font-size: Theme.subtitle; font-weight: 500; }

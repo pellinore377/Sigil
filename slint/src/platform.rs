@@ -399,44 +399,61 @@ fn picker_class(
     env: &mut jni::JNIEnv,
     activity: &jni::objects::JObject,
 ) -> anyhow::Result<&'static jni::objects::GlobalRef> {
-    use jni::objects::JValue;
-
     if let Some(class) = PICKER_CLASS.get() {
         return Ok(class);
     }
-
-    let parent = jni_call(env, activity, "getClassLoader", "()Ljava/lang/ClassLoader;", &[])?.l()?;
-    anyhow::ensure!(!parent.is_null(), "the activity has no class loader");
-
-    // SAFETY: new_direct_byte_buffer lends the memory to the JVM.
-    // InMemoryDexClassLoader reads the dex and never writes to it, and
-    // PICKER_DEX is 'static, so the bytes outlive every use of the buffer.
-    let dex = unsafe {
-        env.new_direct_byte_buffer(PICKER_DEX.as_ptr().cast_mut(), PICKER_DEX.len())
-    }?;
-
-    let loader = env.new_object(
-        "dalvik/system/InMemoryDexClassLoader",
-        "(Ljava/nio/ByteBuffer;Ljava/lang/ClassLoader;)V",
-        &[JValue::Object(&dex), JValue::Object(&parent)],
-    );
-    jni_check(env, "InMemoryDexClassLoader")?;
-    let loader = loader?;
-
-    let name = env.new_string("SigilFilePicker")?;
-    let class = jni_call(
-        env,
-        &loader,
-        "loadClass",
-        "(Ljava/lang/String;)Ljava/lang/Class;",
-        &[JValue::Object(&name)],
-    )?
-    .l()?;
-    anyhow::ensure!(!class.is_null(), "SigilFilePicker is not in the embedded dex");
-
-    let global = env.new_global_ref(&class)?;
+    let global = dex_class(env, activity, "SigilFilePicker")?;
     tracing::info!("file pick: SigilFilePicker is loaded");
     Ok(PICKER_CLASS.get_or_init(|| global))
+}
+
+/// The one loader over the embedded dex, made on first use and kept.
+#[cfg(target_os = "android")]
+static DEX_LOADER: std::sync::OnceLock<jni::objects::GlobalRef> = std::sync::OnceLock::new();
+
+/// A class out of the embedded dex, by name. The loader is built once, over
+/// the activity's own so the framework classes resolve through it.
+#[cfg(target_os = "android")]
+fn dex_class(
+    env: &mut jni::JNIEnv,
+    activity: &jni::objects::JObject,
+    name: &str,
+) -> anyhow::Result<jni::objects::GlobalRef> {
+    use jni::objects::JValue;
+
+    let loader = match DEX_LOADER.get() {
+        Some(l) => l.clone(),
+        None => {
+            let parent =
+                jni_call(env, activity, "getClassLoader", "()Ljava/lang/ClassLoader;", &[])?.l()?;
+            anyhow::ensure!(!parent.is_null(), "the activity has no class loader");
+            // SAFETY: new_direct_byte_buffer lends the memory to the JVM.
+            // InMemoryDexClassLoader reads the dex and never writes to it, and
+            // PICKER_DEX is 'static, so the bytes outlive every use of the buffer.
+            let dex = unsafe {
+                env.new_direct_byte_buffer(PICKER_DEX.as_ptr().cast_mut(), PICKER_DEX.len())
+            }?;
+            let loader = env.new_object(
+                "dalvik/system/InMemoryDexClassLoader",
+                "(Ljava/nio/ByteBuffer;Ljava/lang/ClassLoader;)V",
+                &[JValue::Object(&dex), JValue::Object(&parent)],
+            );
+            jni_check(env, "InMemoryDexClassLoader")?;
+            let global = env.new_global_ref(&loader?)?;
+            DEX_LOADER.get_or_init(|| global).clone()
+        }
+    };
+    let jname = env.new_string(name)?;
+    let class = jni_call(
+        env,
+        loader.as_obj(),
+        "loadClass",
+        "(Ljava/lang/String;)Ljava/lang/Class;",
+        &[JValue::Object(&jname)],
+    )?
+    .l()?;
+    anyhow::ensure!(!class.is_null(), "{name} is not in the embedded dex");
+    Ok(env.new_global_ref(&class)?)
 }
 
 /// Open the picker and wait for the answer.
@@ -521,4 +538,168 @@ fn run_pick_android(mode: &str) -> anyhow::Result<Vec<String>> {
             return Ok(Vec::new());
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// Video on the phone: the platform's own view, laid over the app's surface
+// (java/SigilVideo.java). The app has no decoder for video on Android and
+// draws through one surface, so a playing clip is that view placed exactly
+// where the viewer would have drawn the picture, and taken away with it.
+// ---------------------------------------------------------------------------
+
+/// Where the phone's player stands: milliseconds in, milliseconds long,
+/// whether it is running, whether it has run out, and any failure.
+#[derive(Clone, Debug, Default)]
+pub struct VideoState {
+    pub position_ms: i32,
+    pub duration_ms: i32,
+    pub playing: bool,
+    pub ended: bool,
+    pub failure: Option<String>,
+}
+
+/// Lay the phone's player over the app at a rectangle in physical pixels
+/// and start `path`. Nothing happens off Android.
+pub fn video_show(path: &str, x: i32, y: i32, w: i32, h: i32) -> bool {
+    #[cfg(target_os = "android")]
+    {
+        match video_call(|env, class, activity| {
+            use jni::objects::JValue;
+            let jpath = env.new_string(path)?;
+            jni_call_static(
+                env,
+                class,
+                "show",
+                "(Landroid/app/Activity;Ljava/lang/String;IIII)V",
+                &[
+                    JValue::Object(activity),
+                    JValue::Object(&jpath),
+                    JValue::Int(x),
+                    JValue::Int(y),
+                    JValue::Int(w),
+                    JValue::Int(h),
+                ],
+            )?;
+            Ok(())
+        }) {
+            Ok(()) => return true,
+            Err(e) => {
+                tracing::warn!("video: the phone's player did not open: {e:#}");
+                return false;
+            }
+        }
+    }
+    #[allow(unreachable_code)]
+    {
+        let _ = (path, x, y, w, h);
+        false
+    }
+}
+
+/// The picture moved or resized under the player: follow it.
+pub fn video_move(x: i32, y: i32, w: i32, h: i32) {
+    #[cfg(target_os = "android")]
+    {
+        let _ = video_call(|env, class, _| {
+            use jni::objects::JValue;
+            jni_call_static(
+                env,
+                class,
+                "move",
+                "(IIII)V",
+                &[JValue::Int(x), JValue::Int(y), JValue::Int(w), JValue::Int(h)],
+            )?;
+            Ok(())
+        });
+    }
+    #[cfg(not(target_os = "android"))]
+    let _ = (x, y, w, h);
+}
+
+pub fn video_pause() {
+    #[cfg(target_os = "android")]
+    let _ = video_call(|env, class, _| {
+        jni_call_static(env, class, "pause", "()V", &[])?;
+        Ok(())
+    });
+}
+
+pub fn video_resume() {
+    #[cfg(target_os = "android")]
+    let _ = video_call(|env, class, _| {
+        jni_call_static(env, class, "resume", "()V", &[])?;
+        Ok(())
+    });
+}
+
+pub fn video_seek(ms: i32) {
+    #[cfg(target_os = "android")]
+    let _ = video_call(|env, class, _| {
+        jni_call_static(env, class, "seekTo", "(I)V", &[jni::objects::JValue::Int(ms)])?;
+        Ok(())
+    });
+    #[cfg(not(target_os = "android"))]
+    let _ = ms;
+}
+
+/// Take the player away.
+pub fn video_hide() {
+    #[cfg(target_os = "android")]
+    let _ = video_call(|env, class, _| {
+        jni_call_static(env, class, "hide", "()V", &[])?;
+        Ok(())
+    });
+}
+
+/// Where the player is; `None` off Android or when it cannot be asked.
+pub fn video_state() -> Option<VideoState> {
+    #[cfg(target_os = "android")]
+    {
+        return video_call(|env, class, _| {
+            let position_ms = jni_call_static(env, class, "position", "()I", &[])?.i()?;
+            let duration_ms = jni_call_static(env, class, "duration", "()I", &[])?.i()?;
+            let playing = jni_call_static(env, class, "isPlaying", "()Z", &[])?.z()?;
+            let ended = jni_call_static(env, class, "hasEnded", "()Z", &[])?.z()?;
+            let failure = jni_call_static(env, class, "failure", "()Ljava/lang/String;", &[])?.l()?;
+            let failure = if failure.is_null() {
+                None
+            } else {
+                Some(env.get_string(&jni::objects::JString::from(failure))?.to_string_lossy().to_string())
+            };
+            Ok(VideoState { position_ms, duration_ms, playing, ended, failure })
+        })
+        .ok();
+    }
+    #[allow(unreachable_code)]
+    None
+}
+
+#[cfg(target_os = "android")]
+static VIDEO_CLASS: std::sync::OnceLock<jni::objects::GlobalRef> = std::sync::OnceLock::new();
+
+/// Attach, find the class once, and run `f` with it and the Activity.
+#[cfg(target_os = "android")]
+fn video_call<T>(
+    f: impl FnOnce(
+        &mut jni::JNIEnv,
+        &'static jni::objects::GlobalRef,
+        &jni::objects::JObject,
+    ) -> anyhow::Result<T>,
+) -> anyhow::Result<T> {
+    use anyhow::Context as _;
+    let app = crate::scale::android().ok_or_else(|| anyhow::anyhow!("no Android app handle"))?;
+    // SAFETY: android-activity's own pointers, valid for the life of the process.
+    let vm = unsafe { jni::JavaVM::from_raw(app.vm_as_ptr().cast()) }?;
+    let mut guard = vm.attach_current_thread().context("attach to the JVM")?;
+    let env = &mut *guard;
+    let activity = unsafe { jni::objects::JObject::from_raw(app.activity_as_ptr().cast()) };
+    let class = match VIDEO_CLASS.get() {
+        Some(c) => c,
+        None => {
+            let global = dex_class(env, &activity, "SigilVideo")?;
+            tracing::info!("video: SigilVideo is loaded");
+            VIDEO_CLASS.get_or_init(|| global)
+        }
+    };
+    f(env, &class, &activity)
 }

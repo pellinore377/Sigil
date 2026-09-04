@@ -56,6 +56,19 @@ export struct ContactField {
 }
 
 /// One character of an animated SigilText run (per-glyph motion).
+/// One typed character of the composer's live preview: where it sits as
+/// typed and where it settles once its run's markup has gone, with the style
+/// it wears there. The composer interpolates between the two.
+export struct ComposerCell {
+    ch: string,
+    from-x: length, from-y: length,
+    to-x: length, to-y: length,
+    size: length,
+    color: color, has-color: bool,
+    bold: bool, italic: bool, mono: bool,
+    gone: bool,
+}
+
 export struct FxChar {
     ch: string,
     color: color,

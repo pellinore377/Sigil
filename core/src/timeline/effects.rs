@@ -327,6 +327,113 @@ fn take_spoiler(chars: &[char], i: usize) -> Option<(String, usize)> {
     None
 }
 
+/// How each typed character fares when the message is composed. `Content`
+/// reaches the body; `Markup` (a run's `mod::` head, its `;`, a spoiler's
+/// `||`) and `Escape` (the backslash that passes the next character through)
+/// do not. The composer shows a run settling into its styled content off
+/// this, so it has to agree with `parse_run` exactly: it walks the same
+/// helpers over the same characters, and only records instead of building.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SrcKind {
+    Content,
+    Markup,
+    Escape,
+}
+
+/// One run in the source, head to terminator, with the effect its own
+/// modifiers make. Positions are SOURCE character indices.
+#[derive(Clone, Debug)]
+pub struct SrcRun {
+    pub start: usize,
+    pub end: usize,
+    /// Where the content begins, after the `mod::` head.
+    pub content_start: usize,
+    /// Where it ends, before the `;` when there is one.
+    pub content_end: usize,
+    /// A `;` closed it. An open run styles to the end of its line, so the
+    /// styling is real either way; the terminator is what settles it.
+    pub terminated: bool,
+    pub effect: TextEffect,
+}
+
+pub struct SourceMap {
+    pub kinds: Vec<SrcKind>,
+    /// Inner runs before the run that holds them.
+    pub runs: Vec<SrcRun>,
+}
+
+pub fn source_map(src: &str) -> SourceMap {
+    let chars: Vec<char> = src.chars().collect();
+    let mut kinds = vec![SrcKind::Content; chars.len()];
+    let mut runs = Vec::new();
+    map_run(&chars, 0, chars.len(), &mut kinds, &mut runs);
+    SourceMap { kinds, runs }
+}
+
+fn map_run(chars: &[char], from: usize, to: usize, kinds: &mut [SrcKind], runs: &mut Vec<SrcRun>) {
+    let mut i = from;
+    while i < to {
+        if chars[i] == '\\' && i + 1 < to {
+            kinds[i] = SrcKind::Escape;
+            i += 2;
+            continue;
+        }
+        if chars[i] == '|' && i + 1 < to && chars[i + 1] == '|' {
+            if let Some((_, next)) = take_spoiler(&chars[..to], i) {
+                let (inner_start, inner_end) = (i + 2, next - 2);
+                for k in [i, i + 1, next - 2, next - 1] {
+                    kinds[k] = SrcKind::Markup;
+                }
+                map_run(chars, inner_start, inner_end, kinds, runs);
+                runs.push(SrcRun {
+                    start: i,
+                    end: next,
+                    content_start: inner_start,
+                    content_end: inner_end,
+                    terminated: true,
+                    effect: TextEffect { start: inner_start, end: inner_end, spoiler: true, ..Default::default() },
+                });
+                i = next;
+                continue;
+            }
+        }
+        if let Some((mods, content_start)) = take_modifiers(&chars[..to], i) {
+            let (content, next, terminated) = take_content(&chars[..to], content_start);
+            if content.is_empty() {
+                i = next;
+                continue;
+            }
+            let content_end = if terminated { next - 1 } else { next };
+            for k in kinds[i..content_start].iter_mut() {
+                *k = SrcKind::Markup;
+            }
+            if terminated {
+                kinds[next - 1] = SrcKind::Markup;
+            }
+            map_run(chars, content_start, content_end, kinds, runs);
+            let mut fx = TextEffect { start: content_start, end: content_end, ..Default::default() };
+            for m in mods {
+                match m {
+                    Modifier::Anim(a) => fx.animation = Some(a),
+                    Modifier::Colour(c) => fx.color = Some(c),
+                    Modifier::Size(n) => fx.size = n,
+                    Modifier::Underline => fx.underline = true,
+                    Modifier::Mark => fx.mark = true,
+                    Modifier::Mono => fx.mono = true,
+                    Modifier::Bold => fx.bold = true,
+                    Modifier::Italic => fx.italic = true,
+                    Modifier::Strike => fx.strike = true,
+                    Modifier::Spoiler => fx.spoiler = true,
+                }
+            }
+            runs.push(SrcRun { start: i, end: next, content_start, content_end, terminated, effect: fx });
+            i = next;
+            continue;
+        }
+        i += 1;
+    }
+}
+
 /// A composed message: `body`, `formatted_body`, and `com.sigil.text_effects`.
 #[derive(Debug, Default, Clone, PartialEq)]
 pub struct Composed {
@@ -894,5 +1001,78 @@ mod tests {
         let plain = to_json(&parse("red::x;").effects);
         assert!(plain[0].get("underline").is_none());
         assert!(plain[0].get("size").is_none());
+    }
+}
+
+#[cfg(test)]
+mod source_map_tests {
+    use super::*;
+
+    fn kinds(src: &str) -> String {
+        source_map(src)
+            .kinds
+            .iter()
+            .map(|k| match k {
+                SrcKind::Content => 'c',
+                SrcKind::Markup => 'm',
+                SrcKind::Escape => 'e',
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_terminated_run_marks_its_head_and_its_terminator() {
+        assert_eq!(kinds("red::text;"), "mmmmmccccm");
+        let m = source_map("red::text;");
+        assert_eq!(m.runs.len(), 1);
+        let r = &m.runs[0];
+        assert!(r.terminated);
+        assert_eq!((r.start, r.content_start, r.content_end, r.end), (0, 5, 9, 10));
+        assert!(matches!(r.effect.color, Some(ColorSpec::Solid { .. })));
+    }
+
+    #[test]
+    fn an_open_run_is_styled_but_not_settled() {
+        assert_eq!(kinds("hi red::text"), "cccmmmmmcccc");
+        let m = source_map("hi red::text");
+        assert_eq!(m.runs.len(), 1);
+        assert!(!m.runs[0].terminated);
+        assert_eq!(m.runs[0].content_end, 12);
+    }
+
+    #[test]
+    fn an_escape_keeps_the_run_literal_and_hides_only_the_backslash() {
+        assert_eq!(kinds("\\red::x;"), "eccccccc");
+        assert!(source_map("\\red::x;").runs.is_empty());
+    }
+
+    #[test]
+    fn code_like_text_is_not_a_run() {
+        assert_eq!(kinds("std::vector"), "ccccccccccc");
+        assert!(source_map("std::vector").runs.is_empty());
+    }
+
+    #[test]
+    fn a_spoiler_and_a_nested_run_are_both_recorded() {
+        let src = "||glow::hi;||";
+        assert_eq!(kinds(src), "mmmmmmmmccmmm");
+        let m = source_map(src);
+        assert_eq!(m.runs.len(), 2);
+        assert!(m.runs[0].effect.animation.is_some());
+        assert!(m.runs[1].effect.spoiler);
+    }
+
+    #[test]
+    fn the_map_agrees_with_compose_on_the_body() {
+        for src in ["red::text; and blue::sky", "plain", "a \\red::b; c", "||secret||"] {
+            let m = source_map(src);
+            let kept: String = src
+                .chars()
+                .zip(m.kinds.iter())
+                .filter(|(_, k)| **k == SrcKind::Content)
+                .map(|(c, _)| c)
+                .collect();
+            assert_eq!(kept, compose(src).body, "{src:?}");
+        }
     }
 }

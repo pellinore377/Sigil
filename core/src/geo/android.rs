@@ -138,7 +138,7 @@ fn look() -> Option<Fix> {
 
 /// The JavaVM: the frontend's if it handed one over, otherwise the one android-activity
 /// parked in ndk-context.
-fn vm() -> Result<jni::JavaVM> {
+pub(crate) fn vm() -> Result<jni::JavaVM> {
     let stored = VM.load(Ordering::Acquire);
     let raw = if stored.is_null() { ndk_context::android_context().vm() } else { stored };
     if raw.is_null() {

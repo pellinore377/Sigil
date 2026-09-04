@@ -475,11 +475,24 @@ export component Bubble inherits Rectangle {
                                 width: 100%; height: 100%;
                             }
                         }
-                        TouchArea {
+                        // The tap opens the viewer, but the press must still
+                        // reach the sheet: a plain TouchArea here grabs the
+                        // pointer on the way down, so `press-area` behind it
+                        // never started its hold and a long press on a picture
+                        // did nothing. HoldArea carries both — the hold wins
+                        // after its 500ms, and the tap only fires on a release
+                        // that never became one (the document and audio bodies
+                        // are wired the same way).
+                        HoldArea {
                             clicked => {
-                                if (item.kind == "video") { root.play-video(item); }
-                                else { root.open-image(item); }
+                                if (!self.fired) {
+                                    if (item.kind == "video") { root.play-video(item); }
+                                    else { root.open-image(item); }
+                                }
+                                self.fired = false;
                             }
+                            hold-started => { root.begin-hold(); }
+                            held => { root.open-menu(); }
                         }
                     }
 

@@ -28,8 +28,12 @@ fn android_picker_dex() {
         return;
     }
 
-    let src = "java/SigilFilePicker.java";
-    println!("cargo:rerun-if-changed={src}");
+    // Both classes go in the one dex, through the one loader.
+    let srcs = ["java/SigilFilePicker.java", "java/SigilVideo.java"];
+    let src = "java/*.java";
+    for s in srcs {
+        println!("cargo:rerun-if-changed={s}");
+    }
 
     let out = std::path::PathBuf::from(std::env::var_os("OUT_DIR").unwrap());
     // Its own two directories: OUT_DIR already holds Slint's generated code,
@@ -47,7 +51,8 @@ fn android_picker_dex() {
 
     // Java 8 bytecode: what d8 and the app's min_sdk of 26 expect.
     let javac = android_build::JavaBuild::new()
-        .file(src)
+        .file(srcs[0])
+        .file(srcs[1])
         .class_path(&android_jar)
         .classes_out_dir(&classes)
         .java_source_version(8)

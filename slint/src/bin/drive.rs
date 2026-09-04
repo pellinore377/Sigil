@@ -387,6 +387,42 @@ fn home(
         },
     )?;
     h.shoot("live-chat-replied")?;
+
+    // 5. Start chat: find someone by name and write to them. Runs when the
+    //    suite has registered a third account for us to find
+    //    (`DRIVE_FIND_USER`), someone we have never spoken to — so the row
+    //    can only have come from the front desk, through the page the user
+    //    actually taps. All three ways of typing the name are tried,
+    //    because all three are what people type.
+    if let Ok(who) = std::env::var("DRIVE_FIND_USER") {
+        let full = format!("@{who}:sigil.test");
+        app.invoke_go("start".into());
+        // Nothing typed: the suggestions are the people we already know.
+        h.wait_until("the suggestions", Duration::from_secs(30), || {
+            app.get_st_people()
+                .iter()
+                .any(|p| p.user_id == "@alice:sigil.test")
+        })?;
+        println!("suggestions hold alice");
+        for typed in [who.clone(), format!("@{who}"), full.clone()] {
+            // Clear first, or a query that already found them cannot fail.
+            app.invoke_act("dir-search-start".into(), "".into(), "".into());
+            h.settle();
+            app.invoke_act("dir-search-start".into(), typed.as_str().into(), "".into());
+            h.wait_until(
+                &format!("'{typed}' to find {full}"),
+                Duration::from_secs(30),
+                || app.get_st_people().iter().any(|p| p.user_id == full),
+            )?;
+            println!("found {full} by '{typed}'");
+        }
+        h.shoot("live-start-found")?;
+        app.invoke_act("start-dm".into(), full.as_str().into(), "".into());
+        h.wait_until("the new conversation", Duration::from_secs(60), || {
+            app.get_nav() == "chat" && app.get_rooms().row_count() == 2
+        })?;
+        println!("dm with {full} opened");
+    }
     println!("drive ok");
     Ok(())
 }

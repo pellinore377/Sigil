@@ -18,6 +18,23 @@ pub const TILE: f64 = 256.0;
 pub const Z_MIN: u32 = 3;
 pub const Z_MAX: u32 = 19;
 
+/// How far the drawn zoom may drift from the level the tiles come from before
+/// the level is swapped, in whole levels.
+///
+/// Half a level is the "nearest level" rule, and it is what made a pinch feel
+/// finicky: a pinch that hovers around the halfway point swaps the entire grid
+/// back and forth every frame, and each swap is a set of tiles that has not
+/// been fetched yet, so the map blinks. Three quarters of a level keeps a
+/// level until the gesture has clearly left it — the classic hysteresis — at
+/// the price of drawing tiles at up to 2^0.75 ≈ 1.68 of their size, which is
+/// soft but never blank.
+const LEVEL_KEEP: f64 = 0.75;
+
+/// The whole level a fractional zoom belongs to.
+fn level_of(zf: f64) -> u32 {
+    (zf.round() as i64).clamp(Z_MIN as i64, Z_MAX as i64) as u32
+}
+
 /// How far across the world is at this zoom, in drawn pixels.
 fn world(z: u32) -> f64 {
     TILE * f64::from(1u32 << z)
@@ -41,6 +58,17 @@ struct Grip {
     cx: f64,
     cy: f64,
     scale: f64,
+    /// The level the grid is being drawn from, carried through the gesture so
+    /// the hysteresis has a memory: without it every step would re-decide from
+    /// the grip and a finger sitting on the boundary would still thrash.
+    lvl: u32,
+    /// Where the fingers' midpoint was when the gesture began, in the map
+    /// area. The spot of world under it is the one the pinch is about, and it
+    /// is kept under the midpoint wherever that travels — so two fingers drag
+    /// the map as well as magnify it, the way every map does. It is taken from
+    /// the first `pinch_to` rather than from `pinch_begin`, which the runtime
+    /// reports without a position.
+    anchor: Option<(f64, f64)>,
 }
 
 /// The page's view of the map: where it is looking and what it has drawn.
@@ -49,10 +77,13 @@ pub struct MapView {
     /// is all the renderer serves.
     pub z: u32,
     /// How much those tiles are magnified as they are drawn. A pinch moves
-    /// this continuously; between gestures it is 1. The view's real zoom is
-    /// `z + log2(scale)`, and `z` is kept as the level nearest it, so `scale`
-    /// stays inside [1/√2, √2] and the tiles under the fingers are always the
-    /// right ones.
+    /// this continuously, and it is *left* wherever the fingers put it: the
+    /// view's real zoom is `z + log2(scale)` and nothing rounds that off, so
+    /// letting go of a pinch does not move the map. What settles on the lift
+    /// is `z` — the level the tiles are fetched from — which becomes the whole
+    /// level nearest the zoom without the zoom itself changing. Between
+    /// gestures `scale` is therefore within [1/√2, √2] of 1, and during one
+    /// within [2^-0.75, 2^0.75] (`LEVEL_KEEP`).
     pub scale: f64,
     /// The centre of the view on the world sheet at `z`, in *unmagnified*
     /// drawn pixels — so panning and clamping stay in one space whatever the
@@ -120,10 +151,32 @@ impl MapView {
         self.clamp();
     }
 
+    /// Put the view back where the page opened it: the shared point, at the
+    /// level the page opens on. What the recentre disc does (MapPage.qml:351-366).
+    pub fn recentre(&mut self) {
+        self.z = 15;
+        self.scale = 1.0;
+        self.grip = None;
+        let (x, y) = px_of(self.lat, self.lon, self.z);
+        self.cx = x;
+        self.cy = y;
+        self.clamp();
+    }
+
     /// Dragged by this much: the map goes with the finger, so the centre goes
     /// against it. The drag is in drawn pixels, the centre in unmagnified
     /// ones, so it divides through the magnification.
+    ///
+    /// A drag reported while two fingers are down is dropped: the pinch is
+    /// already moving the map by its own midpoint, and letting the single
+    /// pointer's drag through as well moves it twice, which is most of what
+    /// made the gesture feel finicky. The page disarms its drag area when the
+    /// pinch starts too; this is the belt to that pair of braces, and it is
+    /// the half that can be tested.
     pub fn pan(&mut self, dx: f64, dy: f64) {
+        if self.pinching() {
+            return;
+        }
         self.cx -= dx / self.scale;
         self.cy -= dy / self.scale;
         self.clamp();
@@ -145,23 +198,43 @@ impl MapView {
     }
 
     /// Look at this zoom — a fraction of a level is allowed — holding the
-    /// point at `(ax, ay)` in the view still. The whole level nearest it
-    /// becomes the one the tiles come from and the remainder becomes the
-    /// magnification, so the grid is never more than √2 off its drawn size.
+    /// point at `(ax, ay)` in the view still. The level the tiles come from is
+    /// kept where it is until the zoom has drifted `LEVEL_KEEP` away from it.
     pub fn zoom_to(&mut self, zf: f64, ax: f64, ay: f64) {
         let zf = zf.clamp(Z_MIN as f64, Z_MAX as f64);
-        // Where the anchor is on the world sheet, as a fraction of the whole
-        // of it — the one description of the spot that survives a change of
-        // level.
+        let lvl = self.level_for(zf, self.z);
+        self.look(zf, lvl, ax, ay, ax, ay);
+    }
+
+    /// The level to draw from at `zf`, given the one already in use: `from`
+    /// while the zoom is within `LEVEL_KEEP` of it, the nearest level once it
+    /// is not.
+    fn level_for(&self, zf: f64, from: u32) -> u32 {
+        if (zf - f64::from(from)).abs() <= LEVEL_KEEP {
+            from
+        } else {
+            level_of(zf)
+        }
+    }
+
+    /// Look at `zf`, drawing level `lvl`, so that whatever is under `(sx, sy)`
+    /// now ends up under `(dx, dy)`. The two points are the same for a zoom
+    /// about a spot; a pinch passes the midpoint it started from and the one
+    /// the fingers are at now, which is what makes two fingers pan.
+    fn look(&mut self, zf: f64, lvl: u32, sx: f64, sy: f64, dx: f64, dy: f64) {
+        let zf = zf.clamp(Z_MIN as f64, Z_MAX as f64);
+        // Where the source point is on the world sheet, as a fraction of the
+        // whole of it — the one description of the spot that survives a
+        // change of level.
         let (ox, oy) = self.origin();
         let w0 = world(self.z);
-        let (fx, fy) = ((ox + ax / self.scale) / w0, (oy + ay / self.scale) / w0);
-        self.z = (zf.round() as i64).clamp(Z_MIN as i64, Z_MAX as i64) as u32;
-        self.scale = 2f64.powf(zf - self.z as f64);
+        let (fx, fy) = ((ox + sx / self.scale) / w0, (oy + sy / self.scale) / w0);
+        self.z = lvl.clamp(Z_MIN, Z_MAX);
+        self.scale = 2f64.powf(zf - f64::from(self.z));
         let w1 = world(self.z);
-        // Put the anchor back under the same place on the screen.
-        self.cx = fx * w1 - ax / self.scale + self.w / (2.0 * self.scale);
-        self.cy = fy * w1 - ay / self.scale + self.h / (2.0 * self.scale);
+        // Put it back under the destination place on the screen.
+        self.cx = fx * w1 - dx / self.scale + self.w / (2.0 * self.scale);
+        self.cy = fy * w1 - dy / self.scale + self.h / (2.0 * self.scale);
         self.clamp();
     }
 
@@ -179,40 +252,64 @@ impl MapView {
             cx: self.cx,
             cy: self.cy,
             scale: self.scale,
+            lvl: self.z,
+            anchor: None,
         });
     }
 
     /// The fingers have spread by `factor` since they went down, their
-    /// midpoint at `(ax, ay)` in the map area: magnify about it by that much.
+    /// midpoint at `(ax, ay)` in the map area: magnify about the spot the
+    /// gesture began on by that much, and carry that spot to where the
+    /// midpoint is now.
     pub fn pinch_to(&mut self, factor: f64, ax: f64, ay: f64) {
-        let Some(g) = self.grip else { return };
+        let Some(mut g) = self.grip else { return };
         let factor = if factor.is_finite() && factor > 1e-12 {
             factor
         } else {
             return;
         };
-        // Back to where the gesture began, then the whole of it in one move.
-        let from = g.z as f64 + g.scale.log2();
+        // The first report of the gesture fixes the spot it is about.
+        let (sx, sy) = match g.anchor {
+            Some(p) => p,
+            None => (ax, ay),
+        };
+        let from = f64::from(g.z) + g.scale.log2();
+        let zf = (from + factor.log2()).clamp(Z_MIN as f64, Z_MAX as f64);
+        // The level is decided against the one the gesture is already drawing,
+        // not against the grip, so a finger resting on a boundary cannot make
+        // it flip on alternate frames.
+        let lvl = if (zf - f64::from(g.lvl)).abs() > LEVEL_KEEP {
+            level_of(zf)
+        } else {
+            g.lvl
+        };
+        g.lvl = lvl;
+        g.anchor = Some((sx, sy));
+        self.grip = Some(g);
+        // Back to where the gesture began, then the whole of it in one move:
+        // every step of the pinch is measured from the grip, so a report that
+        // arrives out of order or is dropped costs nothing.
         self.z = g.z;
         self.scale = g.scale;
         self.cx = g.cx;
         self.cy = g.cy;
-        self.zoom_to(from + factor.log2(), ax, ay);
+        self.look(zf, lvl, sx, sy, ax, ay);
     }
 
-    /// The fingers lifted. Returns the zoom to ease to — the whole level
-    /// nearest where the pinch left off — or `None` if the view is already on
-    /// one.
-    pub fn pinch_end(&mut self) -> Option<f64> {
+    /// The fingers lifted.
+    ///
+    /// Nothing about the view changes: the zoom stays exactly where the
+    /// fingers left it, because a map that jumps half a level the moment you
+    /// let go of it is the single worst thing a pinch can do. What settles is
+    /// which level the tiles are *fetched* from — the whole level nearest the
+    /// zoom — and since the view is re-anchored on its own centre at the same
+    /// fractional zoom, that is a change no one can see except as the imagery
+    /// arriving at its proper size.
+    pub fn pinch_end(&mut self) {
         self.grip = None;
         let zf = self.zoom_f();
-        let to = zf.round().clamp(Z_MIN as f64, Z_MAX as f64);
-        if (zf - to).abs() < 1e-4 {
-            self.scale = 1.0;
-            None
-        } else {
-            Some(to)
-        }
+        let (ax, ay) = (self.w / 2.0, self.h / 2.0);
+        self.look(zf, level_of(zf), ax, ay, ax, ay);
     }
 
     /// The map area in unmagnified pixels: what the view covers of the sheet.
@@ -259,18 +356,45 @@ impl MapView {
         out
     }
 
-    /// Where a tile sits inside the map area, in logical pixels.
-    pub fn place(&self, tx: i64, ty: i64) -> (f32, f32) {
+    /// Where a tile sits inside the map area and how big it is drawn, in
+    /// logical pixels, given how many device pixels there are to a logical one.
+    ///
+    /// The seams come from here. A tile used to be placed at a fractional
+    /// position and given one fractional side, and a renderer resolves that by
+    /// rounding the position and the side *separately*: tile n ends at
+    /// round(x·d) + round(s·d) and tile n+1 begins at round((x + s)·d), which
+    /// is one device pixel further along about as often as not. What shows in
+    /// the gap is the page's ground, and on a light map that is a hard dark
+    /// hairline down the join — exactly what a screenshot of the phone has in
+    /// it, one device pixel of #27272b, not a blend.
+    ///
+    /// So both edges are put on whole device pixels here and the size is the
+    /// difference between them, and a tile's far edge is computed by the very
+    /// same expression as its neighbour's near edge: the two are one number by
+    /// construction, whatever the magnification. Widths then differ by a pixel
+    /// here and there, which is what a fractional grid of whole pixels is.
+    ///
+    /// `BLEED` is the belt to that pair of braces: the tile is drawn one
+    /// device pixel wider and taller than the ground it owns, so a renderer
+    /// that truncates where this assumes it rounds still has no crack to show.
+    /// The cost is one duplicated column of pixels per join — a third of a
+    /// logical pixel of imagery drawn twice, out of continuous map artwork,
+    /// which is not visible; the cost of getting it wrong the other way is a
+    /// black line across the map, which is all too visible.
+    pub fn place(&self, tx: i64, ty: i64, dpr: f64) -> (f32, f32, f32, f32) {
+        /// Device pixels of overlap between one tile and the next.
+        const BLEED: f64 = 1.0;
         let (ox, oy) = self.origin();
+        let d = if dpr.is_finite() && dpr > 0.01 { dpr } else { 1.0 };
+        let edge = |t: i64, o: f64| ((t as f64 * TILE - o) * self.scale * d).round();
+        let (x0, x1) = (edge(tx, ox), edge(tx + 1, ox));
+        let (y0, y1) = (edge(ty, oy), edge(ty + 1, oy));
         (
-            ((tx as f64 * TILE - ox) * self.scale) as f32,
-            ((ty as f64 * TILE - oy) * self.scale) as f32,
+            (x0 / d) as f32,
+            (y0 / d) as f32,
+            ((x1 - x0 + BLEED) / d) as f32,
+            ((y1 - y0 + BLEED) / d) as f32,
         )
-    }
-
-    /// A tile's side where it is drawn, magnification included.
-    pub fn tile_size(&self) -> f32 {
-        (TILE * self.scale) as f32
     }
 
     /// Where the shared point sits inside the map area. It can be off the
@@ -375,52 +499,132 @@ mod tests {
         let mut v = MapView::default();
         v.resize(400.0, 600.0);
         v.open(10.0, 20.0);
+        // What must match is what is on the screen — the zoom, and where the
+        // view is looking. Not `z`: which level the tiles are fetched from
+        // depends on the road taken, since it is held until the gesture has
+        // clearly left it, and that is the whole point of holding it.
+        let looking = |v: &MapView| {
+            let (ox, oy) = v.origin();
+            let w = world(v.z);
+            (v.zoom_f(), ox / w, oy / w)
+        };
         v.pinch_begin();
         v.pinch_to(3.0, 200.0, 300.0);
-        let straight = (v.z, v.scale, v.cx, v.cy);
+        let straight = looking(&v);
         // The same gesture reported in steps must land in the same place.
         v.open(10.0, 20.0);
         v.pinch_begin();
         for f in [1.2, 1.7, 2.4, 3.0] {
             v.pinch_to(f, 200.0, 300.0);
         }
-        assert_eq!(v.z, straight.0);
-        assert!((v.scale - straight.1).abs() < 1e-9);
-        assert!((v.cx - straight.2).abs() < 1e-6);
-        assert!((v.cy - straight.3).abs() < 1e-6);
+        let stepped = looking(&v);
+        assert!((stepped.0 - straight.0).abs() < 1e-9, "{stepped:?} {straight:?}");
+        assert!((stepped.1 - straight.1).abs() < 1e-12, "{stepped:?} {straight:?}");
+        assert!((stepped.2 - straight.2).abs() < 1e-12, "{stepped:?} {straight:?}");
     }
 
     #[test]
-    fn the_level_drawn_is_always_the_one_nearest_the_zoom() {
+    fn the_level_drawn_never_strays_far_from_the_zoom() {
         let mut v = MapView::default();
         v.resize(400.0, 600.0);
         v.open(10.0, 20.0);
         v.pinch_begin();
-        // A pinch right across the range: the tiles fetched stay within half
-        // a level of what is shown, so they are never stretched past √2.
+        // A pinch right across the range: the tiles fetched stay within
+        // LEVEL_KEEP of what is shown, so they are never stretched past 1.68.
+        let cap = 2f64.powf(LEVEL_KEEP);
         for i in 1..=60 {
             v.pinch_to(1.0 + i as f64 * 0.4, 200.0, 300.0);
-            assert!(v.scale >= 0.7071 - 1e-9 && v.scale <= 1.4143, "{}", v.scale);
-            assert!((v.zoom_f() - v.z as f64).abs() <= 0.5 + 1e-9);
+            assert!(v.scale >= 1.0 / cap - 1e-9 && v.scale <= cap + 1e-9, "{}", v.scale);
+            assert!((v.zoom_f() - f64::from(v.z)).abs() <= LEVEL_KEEP + 1e-9);
         }
     }
 
     #[test]
-    fn the_fingers_lift_onto_a_whole_zoom() {
+    fn a_finger_resting_on_a_level_boundary_does_not_swap_the_grid() {
+        let mut v = MapView::default();
+        v.resize(400.0, 600.0);
+        v.open(10.0, 20.0);
+        v.pinch_begin();
+        // Halfway between two levels is where the old nearest-level rule
+        // flipped the whole grid on alternate frames. A hand shaking about
+        // that point must keep drawing one level.
+        let mut levels = std::collections::HashSet::new();
+        for i in 0..40 {
+            let jitter = if i % 2 == 0 { 1.0e-3 } else { -1.0e-3 };
+            v.pinch_to(2f64.powf(0.5 + jitter), 200.0, 300.0);
+            levels.insert(v.z);
+        }
+        assert_eq!(levels.len(), 1, "the grid swapped levels: {levels:?}");
+    }
+
+    #[test]
+    fn letting_go_of_a_pinch_does_not_move_the_map() {
         let mut v = MapView::default();
         v.resize(400.0, 600.0);
         v.open(10.0, 20.0);
         v.pinch_begin();
         v.pinch_to(1.3, 200.0, 300.0);
-        let to = v.pinch_end().expect("mid-level, so there is somewhere to go");
-        assert_eq!(to, to.round());
-        v.zoom_to(to, 200.0, 300.0);
-        assert!((v.scale - 1.0).abs() < 1e-9);
-        // A pinch that went nowhere has nothing to settle.
+        // Where a spot on the screen is looking, as a fraction of the sheet.
+        let spot = |v: &MapView, sx: f64, sy: f64| {
+            let (ox, oy) = v.origin();
+            let w = world(v.z);
+            ((ox + sx / v.scale) / w, (oy + sy / v.scale) / w)
+        };
+        let zoom = v.zoom_f();
+        let corners = [(0.0, 0.0), (400.0, 600.0), (137.0, 421.0)];
+        let before: Vec<_> = corners.iter().map(|&(x, y)| spot(&v, x, y)).collect();
+        v.pinch_end();
+        // The zoom is left exactly where the fingers put it …
+        assert!((v.zoom_f() - zoom).abs() < 1e-9, "{} {}", v.zoom_f(), zoom);
+        // … and every part of the screen is still looking at the same place.
+        for (i, &(x, y)) in corners.iter().enumerate() {
+            let now = spot(&v, x, y);
+            assert!((now.0 - before[i].0).abs() < 1e-12, "{now:?} {:?}", before[i]);
+            assert!((now.1 - before[i].1).abs() < 1e-12, "{now:?} {:?}", before[i]);
+        }
+        // What it does settle is the level the tiles come from.
+        assert_eq!(v.z, level_of(zoom));
+    }
+
+    #[test]
+    fn two_fingers_carry_the_map_with_them() {
+        let mut v = MapView::default();
+        v.resize(400.0, 600.0);
+        v.open(10.0, 20.0);
+        let spot = |v: &MapView, sx: f64, sy: f64| {
+            let (ox, oy) = v.origin();
+            let w = world(v.z);
+            ((ox + sx / v.scale) / w, (oy + sy / v.scale) / w)
+        };
         v.pinch_begin();
-        v.pinch_to(1.0, 200.0, 300.0);
-        assert!(v.pinch_end().is_none());
-        assert!((v.scale - 1.0).abs() < 1e-9);
+        // The gesture is about the spot the midpoint started on …
+        v.pinch_to(1.0, 100.0, 200.0);
+        let held = spot(&v, 100.0, 200.0);
+        // … and that spot follows the midpoint across the screen, whatever
+        // the fingers do to the zoom on the way.
+        for (f, x, y) in [(1.2, 160.0, 260.0), (1.9, 300.0, 180.0), (1.4, 90.0, 500.0)] {
+            v.pinch_to(f, x, y);
+            let now = spot(&v, x, y);
+            assert!((now.0 - held.0).abs() < 1e-12, "{f}: {now:?} {held:?}");
+            assert!((now.1 - held.1).abs() < 1e-12, "{f}: {now:?} {held:?}");
+        }
+    }
+
+    #[test]
+    fn a_drag_reported_under_a_pinch_is_ignored() {
+        let mut v = MapView::default();
+        v.resize(400.0, 600.0);
+        v.open(10.0, 20.0);
+        v.pinch_begin();
+        v.pinch_to(1.2, 200.0, 300.0);
+        let (cx, cy) = (v.cx, v.cy);
+        v.pan(80.0, -40.0);
+        assert!((v.cx - cx).abs() < 1e-12 && (v.cy - cy).abs() < 1e-12);
+        // …and it is heard again the moment the fingers are up.
+        v.pinch_end();
+        let after_lift = v.cx;
+        v.pan(80.0, 0.0);
+        assert!((v.cx - (after_lift - 80.0 / v.scale)).abs() < 1e-9);
     }
 
     #[test]
@@ -438,7 +642,7 @@ mod tests {
     }
 
     #[test]
-    fn a_drag_mid_pinch_moves_by_what_the_finger_covered_on_screen() {
+    fn a_drag_after_a_pinch_moves_by_what_the_finger_covered_on_screen() {
         let mut v = MapView::default();
         v.resize(400.0, 600.0);
         v.open(10.0, 20.0);
@@ -452,6 +656,20 @@ mod tests {
     }
 
     #[test]
+    fn the_recentre_disc_puts_the_point_back_in_the_middle() {
+        let mut v = MapView::default();
+        v.resize(400.0, 600.0);
+        v.open(10.0, 20.0);
+        v.pan(500.0, -300.0);
+        v.zoom(2, 10.0, 10.0);
+        v.recentre();
+        let (px, py) = v.pin();
+        assert!((f64::from(px) - 200.0).abs() < 0.5, "{px}");
+        assert!((f64::from(py) - 300.0).abs() < 0.5, "{py}");
+        assert!((v.scale - 1.0).abs() < 1e-9);
+    }
+
+    #[test]
     fn the_grid_covers_the_view_with_a_ring_to_spare() {
         let mut v = MapView::default();
         v.resize(TILE as f64, TILE as f64);
@@ -459,5 +677,58 @@ mod tests {
         let want = v.wanted();
         // one tile of view plus a ring is three by three at most
         assert!(want.len() >= 9 && want.len() <= 16, "{}", want.len());
+    }
+
+    #[test]
+    fn neighbouring_tiles_overlap_by_exactly_one_device_pixel() {
+        // The seam test, as arithmetic: whatever the magnification and
+        // whatever the device pixel ratio, every edge sits on a whole device
+        // pixel and a tile reaches one device pixel past where its neighbour
+        // begins. A gap of any size would be a hairline of ground; more than a
+        // pixel of overlap would be imagery drawn where it does not belong.
+        for dpr in [1.0, 1.5, 2.0, 2.625, 3.0] {
+            for mag in [0.6, 0.7071, 0.83, 1.0, 1.0001, 1.13, 1.4142, 1.618, 1.68] {
+                let mut v = MapView::default();
+                v.resize(400.0, 600.0);
+                v.open(51.5, -0.12);
+                v.scale = mag;
+                v.clamp();
+                let mut seen: Vec<(i64, i64, f32, f32, f32, f32)> = Vec::new();
+                for (tx, ty) in v.wanted() {
+                    let (x, y, w, h) = v.place(tx, ty, dpr);
+                    // Whole device pixels, both corners.
+                    for e in [x, y, x + w, y + h] {
+                        let d = f64::from(e) * dpr;
+                        assert!(
+                            (d - d.round()).abs() < 1e-3,
+                            "dpr {dpr} mag {mag}: edge {e} is not a device pixel"
+                        );
+                    }
+                    assert!(w > 0.0 && h > 0.0, "dpr {dpr} mag {mag}: empty tile");
+                    seen.push((tx, ty, x, y, w, h));
+                }
+                let over = 1.0 / dpr; // one device pixel, in logical ones
+                for &(tx, ty, x, y, w, h) in &seen {
+                    if let Some(&(_, _, rx, _, _, _)) =
+                        seen.iter().find(|t| t.0 == tx + 1 && t.1 == ty)
+                    {
+                        let gap = f64::from(rx) - f64::from(x + w);
+                        assert!(
+                            (gap + over).abs() < 1e-3,
+                            "dpr {dpr} mag {mag}: {gap} beside {tx},{ty}, wanted -{over}"
+                        );
+                    }
+                    if let Some(&(_, _, _, by, _, _)) =
+                        seen.iter().find(|t| t.0 == tx && t.1 == ty + 1)
+                    {
+                        let gap = f64::from(by) - f64::from(y + h);
+                        assert!(
+                            (gap + over).abs() < 1e-3,
+                            "dpr {dpr} mag {mag}: {gap} under {tx},{ty}, wanted -{over}"
+                        );
+                    }
+                }
+            }
+        }
     }
 }

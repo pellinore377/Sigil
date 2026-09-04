@@ -6,6 +6,8 @@ use std::path::PathBuf;
 
 pub mod audio;
 pub mod emoji;
+#[cfg(target_os = "android")]
+pub mod emoji_android;
 pub mod av;
 pub mod gif;
 pub mod images;
