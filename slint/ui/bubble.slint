@@ -72,6 +72,7 @@ export component Bubble inherits Rectangle {
     /// reactions and the pin, which straddle the bubble's edge, step out of
     /// the frame so the copy is the bubble alone.
     in property <bool> copying: false;
+    /// A copy shows the bubble alone: no reactions, no pin, no receipts.
     in-out property <bool> details-open: false;
 
     /// A hold has been recognised on this bubble: where it is, with its corners.
@@ -100,7 +101,15 @@ export component Bubble inherits Rectangle {
     /// RichText.qml:169 — the spoilers of this event were revealed; remember it.
     callback spoiler-revealed(string);
 
-    property <length> bubble-max: root.width * (Theme.mode != "desktop" ? 0.75 : 0.78);
+    /// The sheet's lifted message is this same component drawn again, not a
+    /// picture of the screen: the bubble alone, no day stamp, no sender line,
+    /// no receipts, no reactions, laid out to `max-w` so it wraps exactly as
+    /// the one in the timeline does.
+    in property <bool> copy-only: false;
+    /// The timeline's own bubble width, for a copy standing outside the list.
+    in property <length> max-w: 0px;
+    property <length> bubble-max: root.max-w > 0px ? root.max-w
+        : root.width * (Theme.mode != "desktop" ? 0.75 : 0.78);
     property <bool> is-msg: item.kind != "state" && item.kind != "dayDivider" && !item.is-read-marker;
     property <bool> media-kind: item.kind == "image" || item.kind == "sticker" || item.kind == "video";
     // BubbleDelegate.qml:628 — an audio file that carries a waveform draws
@@ -187,10 +196,10 @@ export component Bubble inherits Rectangle {
     // clock: dx 300ms OutCubic, dy 320ms OutBack(0.8), scale 320ms
     // OutBack(1.0), opacity 190ms OutCubic. Plays once, on the row that just
     // arrived; the whole row travels (reactions, pin included — :48-57).
-    property <float> entry-x: item.is-new ? 0.0 : 1.0;
-    property <float> entry-y: item.is-new ? 0.0 : 1.0;
-    property <float> entry-s: item.is-new ? 0.0 : 1.0;
-    property <float> entry-o: item.is-new ? 0.0 : 1.0;
+    property <float> entry-x: (item.is-new && !root.copy-only) ? 0.0 : 1.0;
+    property <float> entry-y: (item.is-new && !root.copy-only) ? 0.0 : 1.0;
+    property <float> entry-s: (item.is-new && !root.copy-only) ? 0.0 : 1.0;
+    property <float> entry-o: (item.is-new && !root.copy-only) ? 0.0 : 1.0;
     animate entry-x { duration: 300ms; easing: cubic-bezier(0.33, 1, 0.68, 1); }
     animate entry-y { duration: 320ms; easing: cubic-bezier(0.34, 1.26, 0.64, 1); }
     animate entry-s { duration: 320ms; easing: cubic-bezier(0.34, 1.33, 0.64, 1); }
@@ -217,10 +226,11 @@ export component Bubble inherits Rectangle {
     function begin-hold() { root.hold-started(item.event-id, root.rect()); }
 
     col := VerticalLayout {
-        padding-left: 14px; padding-right: 14px;
+        padding-left: root.copy-only ? 0px : 14px;
+        padding-right: root.copy-only ? 0px : 14px;
 
         // Session stamp (GM style)
-        if item.day-label != "" : Rectangle {
+        if item.day-label != "" && !root.copy-only : Rectangle {
             height: 30px;
             Text {
                 text: item.day-label;
@@ -232,7 +242,7 @@ export component Bubble inherits Rectangle {
         }
 
         // Unread divider — BubbleDelegate.qml:261-262 gates it on the page's leave.
-        if item.is-read-marker && root.unread-divider-allowed : Rectangle {
+        if item.is-read-marker && root.unread-divider-allowed && !root.copy-only : Rectangle {
             height: 20px;
             Rectangle {
                 y: 9.5px; width: 100%; height: 1px;
@@ -255,7 +265,7 @@ export component Bubble inherits Rectangle {
         }
 
         // State caption
-        if item.kind == "state" && item.body != "" : Rectangle {
+        if item.kind == "state" && item.body != "" && !root.copy-only : Rectangle {
             height: state-text.preferred-height + 10px;
             state-text := Text {
                 y: 10px;
@@ -271,7 +281,7 @@ export component Bubble inherits Rectangle {
         // Sender header: avatar beside the name, group starts in group rooms only.
         // BubbleDelegate.qml:288-299 — the 20px row sits at the bottom of the
         // 28px box, 2px up: avatar y 6.
-        if root.is-msg && item.show-header && !root.dm && !item.is-own : Rectangle {
+        if root.is-msg && item.show-header && !root.dm && !item.is-own && !root.copy-only : Rectangle {
             height: 28px;
             Avatar {
                 x: 0; y: 6px;
@@ -292,7 +302,8 @@ export component Bubble inherits Rectangle {
         // Bubble row. Unconditional (height 0 for state rows) so `bubble`
         // is in scope for open-menu.
         brow := Rectangle {
-            height: root.is-msg ? bubble.height + (item.group-start ? 10px : 3px) + max(root.reaction-lift, root.pin-lift) : 0px;
+            height: root.copy-only ? bubble.height
+                : root.is-msg ? bubble.height + (item.group-start ? 10px : 3px) + max(root.reaction-lift, root.pin-lift) : 0px;
             visible: root.is-msg;
 
             // BubbleDelegate.qml:315-318 — tapping the empty space beside the
@@ -1537,7 +1548,7 @@ export component Bubble inherits Rectangle {
                               : bubble.x + bubble.width + 9px - self.preferred-width;
                 y: bubble.y - self.preferred-height / 2;
                 spacing: 2px;
-                visible: !root.copying;
+                visible: !root.copying && !root.copy-only;
                 for chip in item.reactions : r-chip := Rectangle {
                     width: r-lay.preferred-width;
                     height: r-lay.preferred-height;
@@ -1589,7 +1600,7 @@ export component Bubble inherits Rectangle {
                 border-color: Theme.popup-background;
                 opacity: item.pinned ? 1.0 : 0.0;
                 animate opacity { duration: 160ms; }
-                visible: self.opacity > 0.01 && !root.copying;
+                visible: self.opacity > 0.01 && !root.copying && !root.copy-only;
                 property <float> pop: item.pinned ? 1.0 : 0.6;
                 animate pop { duration: 220ms; easing: cubic-bezier(0.34, 1.9, 0.64, 1); }
                 transform-origin: { x: self.width / 2, y: self.height / 2 };
@@ -1616,7 +1627,7 @@ export component Bubble inherits Rectangle {
             // at, with air between them and the bubble above.
             property <length> mark-dot: root.phone ? 16px : 13px;
             property <length> lead: root.phone ? 6px : 0px;
-            property <bool> wanted: root.is-msg && ((item.is-own && (item.owns-receipt || item.send-state != "sent")) || root.details-open);
+            property <bool> wanted: root.is-msg && !root.copy-only && ((item.is-own && (item.owns-receipt || item.send-state != "sent")) || root.details-open);
             property <bool> show-faces: item.is-own && item.send-state == "sent" && item.readers.length > 0;
             height: self.wanted ? self.mark-dot + 4px + 2 * self.lead : 0px;
             animate height { duration: 180ms; easing: cubic-bezier(0.33, 1, 0.68, 1); }

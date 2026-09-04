@@ -156,14 +156,10 @@ export component ChatPage inherits Rectangle {
     /// A press on a bubble is lasting: the bridge may take the frost's
     /// picture now, with the bubble's rect masked out, so the open has it ready.
     callback sheet-prewarm(string /*event-id*/, SheetRect);
-    /// The hold fired: take the bubble's picture for the lifted copy (its
-    /// reactions and pin stepped out — `copy-of`) and set the frost from the
-    /// prewarmed picture, or from this one when none is ready.
+    /// The hold fired: set the frost from the prewarmed picture, or from a
+    /// fresh one when no press warmed it. The lifted copy is not a picture.
     callback sheet-snapshot(string /*event-id*/, SheetRect);
-    /// The row whose picture is being taken this instant (Bubble.copying).
-    property <string> copy-of: "";
     in property <image> sheet-backdrop;
-    in property <image> sheet-copy;
     /// The window's zones above and below this page (status bar and sync
     /// strip; gesture bar or keyboard) that the sheet's frost must cover too.
     in property <length> bleed-top: 0px;
@@ -230,36 +226,17 @@ export component ChatPage inherits Rectangle {
             r-br: it.link-only ? 14px : (it.is-own && !it.group-end) ? 5px : 16px,
         });
     }
-    /// The pressed bubble has to be whole before its picture is taken: the
-    /// sheet crops the window, so a message half under the header or behind
-    /// the composer would carry that chrome into the lifted copy. Nudge the
-    /// timeline until it clears both, and say whether anything moved.
-    function ensure-visible(r: SheetRect) -> bool {
-        if (list.viewport-height <= list.height) { return false; }
-        if (r.y < list.absolute-position.y + 6px) {
-            list.viewport-y = min(0px,
-                list.viewport-y + (list.absolute-position.y + 6px - r.y));
-            return true;
-        }
-        if (r.y + r.h > list.absolute-position.y + list.height - 6px) {
-            list.viewport-y = max(list.height - list.viewport-height,
-                list.viewport-y - (r.y + r.h - (list.absolute-position.y + list.height - 6px)));
-            return true;
-        }
-        return false;
-    }
     /// A hold fired on `it`, drawn at `r` (window coordinates).
     function open-menu-for(it: TimelineRow, r: SheetRect) {
         sheet.item = it;
-        // The bubble's picture first, while the original is still drawn and
-        // with its reactions and pin stepped out of the frame …
-        root.copy-of = it.event-id;
+        // The frost first, while the original is still drawn …
         root.sheet-snapshot(it.event-id, r);
-        root.copy-of = "";
         root.menu-action("prepare", it.event-id);
         // … then the sheet, in window coordinates: it subtracts its own
         // absolute-position (safe area, status strip, holder — app.slint:443-492)
-        // so the copy takes off exactly on the bubble.
+        // so the copy takes off exactly on the bubble. The copy itself is a
+        // second Bubble over the row's own data, so nothing about where the
+        // message was standing can crop it.
         sheet.open-for(r);
     }
     public function sheet-close() { sheet.open = false; }
@@ -807,14 +784,8 @@ export component ChatPage inherits Rectangle {
                         dm: root.is-dm;
                         encrypted: root.room-encrypted;
                         convo-ground: root.convo-c;
-                        // A scrolled timeline makes the prewarmed frost stale
-                        // (its hole would sit where the bubble was), so that
-                        // press takes its blur from the picture at hold time.
-                        hold-started(id, r) => {
-                            if (!root.ensure-visible(r)) { root.sheet-prewarm(id, r); }
-                        }
+                        hold-started(id, r) => { root.sheet-prewarm(id, r); }
                         menu-requested(it, r) => { root.open-menu-for(it, r); }
-                        copying: root.copy-of != "" && root.copy-of == item.event-id;
                         // MessageSheet.qml:205 hideSource: the pressed bubble
                         // vanishes for the sheet's whole life, fly-home too —
                         // the copy stands in for it. `hide-source` rises after
@@ -1415,7 +1386,6 @@ export component ChatPage inherits Rectangle {
     sheet := MessageSheet {
         actions: root.sheet-actions;
         backdrop: root.sheet-backdrop;
-        copy-image: root.sheet-copy;
         width: 100%; height: 100%;
         // The frost reaches the window's zones around the page.
         bleed-top: root.bleed-top;
@@ -1451,5 +1421,25 @@ export component ChatPage inherits Rectangle {
         react(id, key) => { root.react(id, key); }
         emoji-search(q) => { root.emoji-search(q); }
         load-emoji => { root.load-emoji(); }
+
+        // The lifted message: the same delegate over the same row, in the
+        // copy's mode — the bubble alone, laid out to the timeline's width so
+        // it wraps line for line as the original does. Drawn, not cropped, so
+        // a message under the header or behind the composer lifts whole.
+        Bubble {
+            item: sheet.item;
+            copy-only: true;
+            max-w: list.width * (root.phone ? 0.75 : 0.78);
+            width: sheet.hole-w;
+            fg: root.fg;
+            accent: root.accent;
+            dm: root.is-dm;
+            encrypted: root.room-encrypted;
+            convo-ground: root.convo-c;
+            theme-surface: root.themed ? root.surface-c : transparent;
+            boot-epoch-s: root.boot-epoch-s;
+            // Frozen: a copy runs no effects and no live-location clock.
+            on-screen: false;
+        }
     }
 }

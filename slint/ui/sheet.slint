@@ -1,18 +1,21 @@
 // Message action sheet — MessageSheet.qml. The whole screen frosts behind a
 // blurred snapshot under 55 % black, like Google Messages; the pressed
-// bubble lifts as a crop of its own pixels to a computed resting place, the
-// quick-reaction pill above it and the action menu below, with a
-// delete-confirm bottom sheet and the emoji drawer sharing the same host.
+// bubble lifts to a computed resting place, the quick-reaction pill above it
+// and the action menu below, with a delete-confirm bottom sheet and the
+// emoji drawer sharing the same host.
 //
-// Two pictures (frost.rs takes both): the bubble's crop, rounded with the
-// bubble's own corners and without its reactions, taken the instant the
-// hold fires while the original is still drawn — so the copy is
-// pixel-identical to it — and the page for the frost, taken while the
-// press was still lasting (the prewarm) with the bubble's rect painted
-// over before the blur, so it has a hole where the bubble stood and never
-// shows it twice, and the lift starts with every frame its own. Without
-// pictures (a renderer that cannot take them) the scrim is a deeper dim
-// and the copy is redrawn.
+// The lifted message is the SAME component drawn again (the host hands one
+// in as this sheet's child, in copy-only mode), not a picture of the screen:
+// a crop carries whatever the window happened to have over the bubble — the
+// header above it, the composer below it — and can only ever show as much of
+// the message as the timeline was not clipping. Drawn from the row, the copy
+// is whole wherever the message was standing.
+//
+// One picture remains (frost.rs): the page for the frost, taken while the
+// press was still lasting (the prewarm) with the bubble's rect painted over
+// before the blur, so it has a hole where the bubble stood and never shows
+// it twice, and the lift starts with every frame its own. Without it (a
+// renderer that cannot snapshot) the scrim is a deeper dim.
 //
 // The sheet is the page's size but its frost, tap-away and bottom sheets
 // bleed past it by `bleed-top` / `bleed-bottom` — the phone's status-bar
@@ -62,8 +65,6 @@ export component MessageSheet inherits Rectangle {
     /// The whole WINDOW as it was with the bubble hidden, blurred; empty when
     /// the renderer could not snapshot.
     in property <image> backdrop;
-    /// The pressed bubble as it was drawn; empty when the renderer could not snapshot.
-    in property <image> copy-image;
     property <bool> frosted: root.backdrop.width > 0;
 
     // Where the bubble was pressed, in the SHEET's coordinates: open-for
@@ -251,7 +252,7 @@ export component MessageSheet inherits Rectangle {
         y: root.copy-y;
         width: root.hole-w;
         height: root.hole-h;
-        // MessageSheet.qml:197-205: the lift is the bubble's own pixels, cut
+        // MessageSheet.qml:197-205: the corners the copy carries in flight —
         // to the bubble's own corners (each its own radius: a uniform 16px
         // gouged the 5px group corners in flight) — frost.rs cuts the
         // picture and this clip agrees with it.
@@ -259,28 +260,15 @@ export component MessageSheet inherits Rectangle {
         border-top-right-radius: root.copy-r-tr;
         border-bottom-left-radius: root.copy-r-bl;
         border-bottom-right-radius: root.copy-r-br;
-        clip: true;
-        if root.copy-image.width > 0 : Image {
-            source: root.copy-image;
-            width: 100%; height: 100%;
-            image-fit: fill;
-        }
-        if root.copy-image.width == 0 : Rectangle {
-            width: 100%; height: 100%;
-            background: root.surface.with-alpha(0.97);
-            Text {
-                x: 10px; y: 10px;
-                width: copy-card.width - 20px;
-                height: copy-card.height - 20px;
-                text: item.kind == "poll" ? item.poll-question
-                    : item.kind == "location" ? (item.location-label != "" ? item.location-label : "Location")
-                    : item.body;
-                color: root.fg;
-                font-family: Theme.font-ui; font-size: Theme.body;
-                wrap: word-wrap;
-                overflow: elide;
-            }
-        }
+        // The message itself, drawn again by the host (chat.slint hands in a
+        // Bubble in copy-only mode). Not a picture of the screen: a crop
+        // carries whatever the window had over the bubble — the header above
+        // it, the composer below it — and cannot show what the timeline was
+        // clipping. Drawn from the same row, the copy is always whole.
+        @children
+        // Tapping the lifted message dismisses, as tapping away does. Last,
+        // so it wins over the copy's own touch areas.
+        TouchArea { clicked => { root.open = false; } }
     }
 
     // Quick reactions pill. The QML reacts with "❤️" (U+2764 U+FE0F) — the key

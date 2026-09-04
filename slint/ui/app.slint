@@ -149,7 +149,6 @@ export component AppWindow inherits Window {
     in property <bool> call-here;
     in property <[MenuEntry]> sheet-actions;
     in property <image> sheet-backdrop;
-    in property <image> sheet-copy;
     in property <[[EmojiItem]]> emoji-rows;
     /// The sheet's six quick reactions, as pictures when the device has a colour font.
     in property <[EmojiItem]> quick-emoji;
@@ -632,7 +631,6 @@ export component AppWindow inherits Window {
                 toast <=> root.chat-toast;
                 items: root.items;
                 sheet-backdrop: root.sheet-backdrop;
-                sheet-copy: root.sheet-copy;
                 sheet-snapshot(id, r) => { root.sheet-snapshot(id, r); }
                 sheet-prewarm(id, r) => { root.sheet-prewarm(id, r); }
                 // Everything the window paints around the page: the sheet's

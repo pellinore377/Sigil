@@ -134,6 +134,18 @@ fn main() -> anyhow::Result<()> {
     // proves the pressed row holds no second bubble behind the lifted copy
     app.set_sheet_backdrop(Default::default());
     h.shoot("chat-sheet-dim")?;
+    app.invoke_debug_sheet_close();
+    h.settle();
+    // the same message pressed where the timeline was cutting it off: a rect
+    // that starts above the convo's top edge, under the header. The copy is
+    // drawn from the row rather than cropped out of the window, so it must
+    // still lift whole, with no header in it and nothing missing.
+    app.invoke_debug_sheet(pressed as i32, 14.0, 30.0, 207.0, 36.0);
+    h.shoot("chat-sheet-clipped")?;
+    app.invoke_debug_sheet_close();
+    h.settle();
+    app.invoke_debug_sheet(pressed as i32, 14.0, 546.0, 207.0, 36.0);
+    h.settle();
     // after the close settles the original bubble must be back in the
     // timeline (the sheet hid it for its lifetime — MessageSheet.qml:205)
     app.invoke_debug_sheet_close();

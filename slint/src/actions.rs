@@ -235,18 +235,15 @@ pub fn sheet_prewarm(ui: &mut UiState, win: &AppWindow, id: &str, r: &SheetRect)
     ui.sheet_prewarm = frost.map(|f| (id.to_string(), f));
 }
 
-/// The hold fired: the pressed bubble's own pixels, cut from a picture of
-/// the whole window taken now — before the sheet hides the original, with
-/// the reactions and pin stepped out of the frame (Bubble.copying) — and
-/// the frost from the prewarm, or from this same picture if the press
-/// arrived without one (the test hook, a hold that fired at once).
+/// The hold fired: the frost from the prewarm, or from a picture taken now
+/// if the press arrived without one (the test hook, a hold that fired at
+/// once). The lifted message is not a picture at all — the sheet draws the
+/// row a second time, so nothing that overlapped the bubble can reach it.
 pub fn sheet_snapshot(ui: &mut UiState, win: &AppWindow, id: &str, r: &SheetRect) {
     // the platform's long-press buzz, the moment the hold fires
     #[cfg(target_os = "android")]
     i_slint_backend_android_activity::haptic_long_press();
     let snap = crate::frost::Snapshot::take(win.window());
-    let copy = snap.as_ref().and_then(|snap| snap.crop(sheet_px(win, snap, r)));
-    win.set_sheet_copy(copy.unwrap_or_default());
     let warm = match ui.sheet_prewarm.take() {
         Some((warm_id, img)) if warm_id == id => Some(img),
         _ => None,
