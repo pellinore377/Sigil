@@ -135,7 +135,14 @@ impl i_slint_core::platform::Platform for AndroidPlatform {
                     self.vsync.request();
                 }
                 if self.window.pending_redraw.take() || self.window.window.has_active_animations() {
+                    // SIGIL PATCH: a frame that overran its vsync slot is
+                    // named in the log, with its cost — the chop is in these.
+                    let started = std::time::Instant::now();
                     self.window.do_render()?;
+                    let took = started.elapsed();
+                    if took > Duration::from_millis(9) {
+                        i_slint_core::debug_log!("slow frame: {took:?}");
+                    }
                 }
             }
         }

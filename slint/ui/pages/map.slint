@@ -256,19 +256,19 @@ export component MapPage inherits Rectangle {
     /// anything else is a dropped pin (attach.slint:554-561).
     property <string> category: root.live || root.ended ? "live"
         : root.self-marker ? "current" : "pin";
-    /// The glyph beside the status line, and it is the TIMELINE's.
+    /// The category's own glyph, beside the status line.
     ///
-    /// This used to be the category's own — share_location, my_location,
-    /// pin_drop — which meant a point wore one glyph in the conversation and a
-    /// different one the moment you opened it, and the crosshair in particular
-    /// reads as nothing like the pin the bubble shows. The location bubble
-    /// draws exactly one glyph for all three categories, the filled `place`
-    /// pin (bubble.slint:1117-1123 for the no-map card and :1179-1185 for the
-    /// marker), and says WHICH category it is the way this sheet already does:
-    /// in words, and in the rings round the marker. So this is that same pin,
-    /// at that same weight, and `category` is left to name the page's tone
-    /// rather than to pick a picture.
-    property <string> cat-icon: Icons.location;
+    /// One picture per CATEGORY, the same one wherever that category appears:
+    /// the attach sheet's tile that started the share, the timeline bubble's
+    /// card (bubble.slint `cat-icon`), the picker's preview and this line. A
+    /// live share is share_location everywhere, a fix is my_location, a
+    /// dropped point is pin_drop — filled in every one of them.
+    ///
+    /// The MARKER on the imagery is deliberately not this: it is the filled
+    /// `place` pin with the sharer's face in its head, in all three cases,
+    /// because it answers "where", not "what kind".
+    property <string> cat-icon: root.category == "live" ? Icons.liveLocation
+        : root.category == "current" ? Icons.myLocation : Icons.pinDrop;
     // The engine's composite, centred on the point; empty until location.map
     // lands. It is the still fallback: with a tile server the page draws the
     // grid below instead, which drags and zooms.

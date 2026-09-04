@@ -172,5 +172,16 @@ fn android_main(app: slint::android::AndroidApp) {
         std::env::set_var("SLINT_DEBUG_PERFORMANCE", "refresh_lazy,console");
     }
     slint::android::init(app).expect("slint android init");
+    // The runtime's own messages — the frame report above all — through the
+    // app's tracing logger, which does reach logcat. The `log` route they
+    // take by default never showed on the device.
+    let _ = i_slint_core::with_global_context(
+        || Err(i_slint_core::api::PlatformError::NoPlatform),
+        |ctx| {
+            ctx.set_log_message_handler(Some(Box::new(|m| {
+                tracing::info!(target: "slint", "{}", m.message_arguments());
+            })));
+        },
+    );
     run_app().expect("sigil-slint");
 }

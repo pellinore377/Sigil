@@ -310,6 +310,50 @@ fn main() -> anyhow::Result<()> {
     }
     h.settle();
     h.shoot("chat")?;
+    // The location card at each of its three categories. Two things to read
+    // off these: the card's glyph is that CATEGORY'S own — share_location for
+    // a live share, my_location for a fix, pin_drop for a dropped point, the
+    // same picture the attach tile and the location page show — and the
+    // marker's face is OPAQUE. The face is the one that bit: with no cached
+    // picture `Avatar` grounds the initials at `tint.with-alpha(0.55)`
+    // (components.slint:59), so on a map the street showed through the
+    // sender's head.
+    {
+        let items = app.get_items();
+        let loc = (0..items.row_count())
+            .find(|i| items.row_data(*i).map(|r| r.kind == "location").unwrap_or(false));
+        if let Some(i) = loc {
+            for (name, live, ended, self_loc) in [
+                ("bubble-loc-live", true, false, true),
+                ("bubble-loc-ended", false, true, true),
+                ("bubble-loc-current", false, false, true),
+                ("bubble-loc-pin", false, false, false),
+            ] {
+                if let Some(mut row) = items.row_data(i) {
+                    row.location_live = live;
+                    row.location_ended = ended;
+                    row.location_self = self_loc;
+                    // No composite: the card falls back to its category glyph,
+                    // which is the half of this that is about icons.
+                    row.location_map = Default::default();
+                    items.set_row_data(i, row);
+                }
+                h.settle();
+                h.shoot(name)?;
+            }
+            // …and once more over imagery, where the marker's face is drawn
+            // and the ground behind it is the thing being checked.
+            if let Some(mut row) = items.row_data(i) {
+                row.location_live = true;
+                row.location_ended = false;
+                row.location_self = true;
+                row.location_map = solid_tile(0, 150, 220);
+                items.set_row_data(i, row);
+            }
+            h.settle();
+            h.shoot("bubble-loc-face")?;
+        }
+    }
     // the voice recorder: idle, mid-take, then with a clip ready to send
     app.set_recorder_open(true);
     h.settle();
@@ -343,13 +387,18 @@ fn main() -> anyhow::Result<()> {
     // an assertion before it is a picture — the page hands `chat-panel-top`
     // back and it must be the same number in every state.
     //
-    // A SHORT keyboard, 290, is the case that makes both panels give: it is
-    // under the tile grid's natural 302 — 38 of handle strip, 16, two 116
-    // rows and 16 — so the grid has to scroll inside the panel, and well
-    // under the recorder's natural 400, so its card comes down from 300 to
-    // 190 while the pill row and the level band keep their sizes. The
-    // reference's own user had shrunk their keyboard, which is how the whole
-    // question came up.
+    // The remembered height is set here rather than driven through a fake
+    // keyboard: the app keeps the TALLEST keyboard it has ever seen (a user
+    // who has shrunk theirs for a moment must not shrink the panels with it),
+    // so a short keyboard would no longer move it.
+    //
+    // Three heights, because they answer different questions. 290 clears the
+    // tile grid's 264 — 16, two 116 rows, 16 — so the whole grid is in view,
+    // there is nothing to drag and no handle is drawn; and it clears the
+    // recorder's 284 floor, so both panels can be exactly the keyboard's
+    // height and the composer can be checked across all of it. 240 does not
+    // clear the grid, so the handle and the drag exist there. 180 is under
+    // even one row, and only a picture.
     //
     // The phone palette for the length of it: the handle, the scrolling grid
     // and the translucent panel ground are all phone-only, and shots run in
@@ -358,8 +407,11 @@ fn main() -> anyhow::Result<()> {
     if shot_mode == "desktop" {
         app.global::<sigil_slint::Theme>().set_mode("dark".into());
     }
-    const SHORT_KB: f32 = 290.0;
-    app.set_kb_overlap(SHORT_KB);
+    const ROOMY_KB: f32 = 290.0;
+    const TIGHT_KB: f32 = 240.0;
+    let mid = WIDTH as f32 / 2.0;
+    app.set_kb_height_px(ROOMY_KB as i32);
+    app.set_kb_overlap(ROOMY_KB);
     h.settle();
     let y_keyboard = app.get_chat_panel_top();
     h.shoot("foot-keyboard")?;
@@ -373,42 +425,26 @@ fn main() -> anyhow::Result<()> {
     app.set_kb_overlap(0.0);
     h.settle();
     let y_attach = app.get_chat_panel_top();
-    // The grid at 290: the handle's strip, the 16 lead-in and the two rows
-    // with the foot of the second one under the fold, so the grid scrolls.
-    h.shoot("foot-attach-short")?;
-    // Dragging the handle up takes the panel to the whole page below the
-    // composer — the chevron turns over and every tile is there. The handle's
-    // chevron sits 24 into a 38 strip at the panel's own top edge.
-    let mid = WIDTH as f32 / 2.0;
-    let handle_y = HEIGHT as f32 - SHORT_KB + 19.0;
-    press(&app, mid, handle_y);
-    drag_to(&app, mid, handle_y - 60.0);
-    release(&app, mid, handle_y - 60.0);
-    h.settle();
-    let y_full = app.get_chat_panel_top();
-    h.shoot("foot-attach-full")?;
-    // ...and dragging it back down puts it where it was. The composer's band
-    // is all that lies between the panel's top edge and the page's own top in
-    // either state, so its height comes straight out of the collapsed y.
-    let band = HEIGHT as f32 - SHORT_KB - y_attach;
-    let handle_full_y = y_full + band + 19.0;
-    press(&app, mid, handle_full_y);
-    drag_to(&app, mid, handle_full_y + 60.0);
-    release(&app, mid, handle_full_y + 60.0);
+    // The whole grid at 290, and NO handle: the affordance exists only when
+    // there is somewhere for the sheet to go.
+    h.shoot("foot-attach-roomy")?;
+    // A tap in the lead-in above the first row — where the handle's strip
+    // would be if there were one — must do nothing whatever.
+    tap(&app, mid, HEIGHT as f32 - ROOMY_KB + 8.0);
     h.settle();
     anyhow::ensure!(
-        (app.get_chat_panel_top() - y_attach).abs() < 0.5,
-        "the handle dragged back down did not collapse the panel: {} vs {y_attach}",
+        (app.get_chat_panel_top() - y_attach).abs() < 0.5 && app.get_attach_open(),
+        "there is a handle in a panel that does not need one: a tap at its \
+         place moved the composer from {y_attach} to {}",
         app.get_chat_panel_top()
     );
-    // Shutting the panel drops the latch with it, so the next visit is the
-    // keyboard's height again rather than the page it was left at.
     app.set_attach_open(false);
     h.settle();
+
     // The recorder at the same 290: a card squeezed from 300 to 190 under a
     // pill row and a level band that keep their sizes, which is the give the
     // panel has when the keyboard is shorter than the panel's natural height.
-    app.set_kb_overlap(SHORT_KB);
+    app.set_kb_overlap(ROOMY_KB);
     app.set_recorder_open(true);
     h.settle();
     let y_recorder_over_keyboard = app.get_chat_panel_top();
@@ -419,31 +455,78 @@ fn main() -> anyhow::Result<()> {
     app.set_recorder_open(false);
     h.settle();
 
-    // The hardest leg, and the one a max() alone cannot hold: a tap on the
-    // text field, which shuts the panel AND calls the keyboard up. The panel
-    // is going before the keyboard has begun to arrive, so for the length of
-    // the handover the foot is held at the keyboard's height. Pumped rather
-    // than settled — `settle` jumps the clock three seconds, which would run
-    // the handover's own half-second give-up timer before the keyboard lands.
+    // ---- the IME's own frames ----
+    //
+    // Android reports the keyboard's inset once per frame of its animation
+    // (SlintAndroidJavaHelper's WindowInsetsAnimation.Callback), and the
+    // backend now asks for a frame when one arrives — without that the value
+    // sat in Slint's property graph until something unrelated happened to
+    // draw, which on screen read as the composer chasing the keyboard rather
+    // than being pushed by it. Nothing on this side may smooth those frames:
+    // the composer's lift is the inset, with no tween anywhere between them.
+    // Driven here as the IME drives it — a ramp — and checked at every step.
+    let ime_ramp: Vec<f32> = (0..=12).map(|i| ROOMY_KB * i as f32 / 12.0).collect();
+    let mut last = app.get_chat_panel_top();
+    for &inset in &ime_ramp {
+        app.set_kb_overlap(inset);
+        h.pump();
+        let y = app.get_chat_panel_top();
+        anyhow::ensure!(
+            y <= last + 0.5,
+            "the composer went back down during the keyboard's rise: {y} after {last}"
+        );
+        // No tween: the frame the inset arrived on is the frame it is at.
+        if inset > 96.0 {
+            anyhow::ensure!(
+                (y - (y_keyboard + (ROOMY_KB - inset))).abs() < 0.5,
+                "the composer lagged the keyboard's own frame: inset {inset} \
+                 put it at {y}, not {}",
+                y_keyboard + (ROOMY_KB - inset)
+            );
+        }
+        last = y;
+    }
+    app.set_kb_overlap(0.0);
+    h.settle();
+
+    // ---- the handover ----
+    //
+    // A tap on the text field asks for the keyboard while a panel is standing
+    // there. The panel must NOT go yet: a panel falling to nothing against a
+    // keyboard still on its way makes max() dip at the crossing, which is the
+    // bob the other way round. It holds its height, the keyboard's frames come
+    // in underneath it, and the moment they cover it it is dropped behind
+    // them. Pumped rather than settled — `settle` jumps the clock three
+    // seconds, which would run the handover's own give-up timer.
     app.set_attach_open(true);
     h.settle();
-    tap(&app, WIDTH as f32 / 2.0, y_attach + 30.0);
+    tap(&app, mid, y_attach + 30.0);
     for _ in 0..4 {
         h.pump();
     }
-    let y_handover = app.get_chat_panel_top();
-    // If the tap missed the field the panel would still be open and the line
-    // above would hold for the wrong reason.
     anyhow::ensure!(
-        !app.get_attach_open(),
-        "the tap on the composer did not shut the panel — the handover is untested"
+        app.get_attach_open(),
+        "the panel went before the keyboard arrived — that is the bob"
     );
-    // ...and the keyboard lands, which is what the hold was waiting for
-    app.set_kb_overlap(SHORT_KB);
-    for _ in 0..4 {
+    let y_holding = app.get_chat_panel_top();
+    // ...and the keyboard rises through it, frame by frame. Not "never goes
+    // backward" here but "never moves at all": the panel holds the foot at its
+    // own height until the keyboard passes it, and the keyboard is rising to
+    // exactly that height, so every frame lands on the same number.
+    for &inset in &ime_ramp {
+        app.set_kb_overlap(inset);
         h.pump();
+        anyhow::ensure!(
+            (app.get_chat_panel_top() - y_keyboard).abs() < 0.5,
+            "the composer moved during the handover: inset {inset} put it at {}",
+            app.get_chat_panel_top()
+        );
     }
     let y_landed = app.get_chat_panel_top();
+    anyhow::ensure!(
+        !app.get_attach_open(),
+        "the panel was still open behind a keyboard that had covered it"
+    );
     app.set_kb_overlap(0.0);
     // Opening a panel clears the composer's focus, which is the only way back
     // out of the field from here; shutting it again leaves the page as found.
@@ -459,8 +542,8 @@ fn main() -> anyhow::Result<()> {
         ("attach alone", y_attach),
         ("recorder over the keyboard", y_recorder_over_keyboard),
         ("recorder alone", y_recorder),
-        ("the panel gone and the keyboard not yet up", y_handover),
-        ("the keyboard landed after it", y_landed),
+        ("a panel holding for the keyboard it asked for", y_holding),
+        ("the keyboard landed over it", y_landed),
     ] {
         anyhow::ensure!(
             (y - y_keyboard).abs() < 0.5,
@@ -468,14 +551,87 @@ fn main() -> anyhow::Result<()> {
         );
     }
 
+    // ---- the handle, and the drag, at a keyboard the grid does not fit in ----
+    app.set_kb_height_px(TIGHT_KB as i32);
+    app.set_attach_open(true);
+    h.settle();
+    let y_tight = app.get_chat_panel_top();
+    // 240: the handle's strip, the 16 lead-in, one row of tiles and the next
+    // cut off at the fold, so the grid scrolls — the state the reference's own
+    // shot is in, its last row peeking under the edge.
+    h.shoot("foot-attach-short")?;
+    //
+    // The finger takes the sheet 1:1 between its two heights and NOTHING
+    // latches on the way: an earlier pass decided open/shut from the move
+    // handler, and one gesture that crossed the threshold a few times flipped
+    // the panel open and shut over and over — "it freaks out". So the drag is
+    // checked frame by frame: at every step the panel is exactly as tall as
+    // the finger has made it, and the state has not moved.
+    let handle_y = HEIGHT as f32 - TIGHT_KB + 19.0;
+    press(&app, mid, handle_y);
+    // Up, back down, up again, past the halfway mark and back under it: a
+    // gesture that would have flipped the old latch four times.
+    for step in [10.0f32, 30.0, 55.0, 30.0, 80.0, 20.0, 120.0] {
+        drag_to(&app, mid, handle_y - step);
+        h.pump();
+        anyhow::ensure!(
+            (app.get_chat_panel_top() - (y_tight - step)).abs() < 0.5,
+            "the sheet did not follow the finger: {step} of drag put the composer \
+             at {} rather than {}",
+            app.get_chat_panel_top(),
+            y_tight - step
+        );
+    }
+    // 120 up from the resting height is well past the flick threshold, so the
+    // release opens it the whole way.
+    release(&app, mid, handle_y - 120.0);
+    h.settle();
+    let y_full = app.get_chat_panel_top();
+    anyhow::ensure!(
+        y_full < y_tight - 120.0,
+        "the release did not snap the sheet open: {y_full}"
+    );
+    h.shoot("foot-attach-full")?;
+    // ...and dragging it back down puts it where it was. The composer's band
+    // is all that lies between the panel's top edge and the page's own top in
+    // either state, so its height comes straight out of the collapsed y.
+    let band = HEIGHT as f32 - TIGHT_KB - y_tight;
+    let handle_full_y = y_full + band + 19.0;
+    press(&app, mid, handle_full_y);
+    drag_to(&app, mid, handle_full_y + 60.0);
+    release(&app, mid, handle_full_y + 60.0);
+    h.settle();
+    anyhow::ensure!(
+        (app.get_chat_panel_top() - y_tight).abs() < 0.5,
+        "the handle dragged back down did not collapse the panel: {} vs {y_tight}",
+        app.get_chat_panel_top()
+    );
+    // A tap on the handle toggles ONCE — no travel, one decision.
+    tap(&app, mid, handle_y);
+    h.settle();
+    anyhow::ensure!(
+        (app.get_chat_panel_top() - y_full).abs() < 0.5,
+        "a tap on the handle did not open the sheet: {} vs {y_full}",
+        app.get_chat_panel_top()
+    );
+    tap(&app, mid, handle_full_y);
+    h.settle();
+    anyhow::ensure!(
+        (app.get_chat_panel_top() - y_tight).abs() < 0.5,
+        "a second tap did not close it again: {}",
+        app.get_chat_panel_top()
+    );
+    // Shutting the panel drops the latch with it, so the next visit is the
+    // keyboard's height again rather than the page it was left at.
+    app.set_attach_open(false);
+    h.settle();
+
     // A keyboard shorter than one row of tiles and the handle above it: the
-    // panel stops at that floor and the grid scrolls inside whatever it got,
-    // with the second row below the fold — the state the reference's own shot
-    // is in (its third row peeking under the edge). The recorder cannot follow
-    // a keyboard this short — its pill row and level band are fixed and its
-    // floor is 284 — so this one is a picture only, with no claim about the
-    // composer's y, and it comes after the claims above.
-    app.set_kb_overlap(180.0);
+    // panel stops at that floor and the grid scrolls inside whatever it got.
+    // The recorder cannot follow a keyboard this short — its pill row and
+    // level band are fixed and its floor is 284 — so this one is a picture
+    // only, with no claim about the composer's y.
+    app.set_kb_height_px(180);
     app.set_attach_open(true);
     h.settle();
     h.shoot("foot-attach-tiny")?;
@@ -490,7 +646,6 @@ fn main() -> anyhow::Result<()> {
     // later shot.
     app.set_kb_height_px(sigil_slint::bridge::KB_HEIGHT_DEFAULT);
     h.settle();
-
     // the long-press sheet over a real bubble ("solid red …"), pressed the
     // way a finger presses it: the row fires the menu with its own live
     // rectangle, the list glides the bubble to the sheet's resting place,

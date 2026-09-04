@@ -88,6 +88,23 @@ pub struct UiState {
     /// code page opens the moment the session comes up.
     /// Avatar images by path; a cache because rooms.list re-arrives constantly.
     pub avatars: HashMap<String, slint::Image>,
+    /// Pictures being decoded off the UI thread (by path): a row draws
+    /// without its picture until the decode lands, then a rebuild fills it
+    /// in. Decoding on the UI thread stalled a room's first frame by
+    /// hundreds of milliseconds.
+    pub decoding: std::collections::HashSet<String>,
+    /// A rebuild is already scheduled for pictures that have landed.
+    pub decode_rebuild: bool,
+    /// The bytes the decoded pictures hold; the cache is emptied past a cap.
+    pub avatar_bytes: usize,
+    /// The open room's timeline as rows, and how many of them — counted from
+    /// the newest end — the list holds right now. A room's rows are handed
+    /// to the list a screenful first and then a couple per frame (`drip`):
+    /// instantiating forty bubbles in one frame was the stall that skipped
+    /// the open animation outright.
+    pub rows_full: Vec<TimelineRow>,
+    pub rows_shown: usize,
+    pub drip: slint::Timer,
     /// THE timeline model. Mutated in place: handing the ListView a fresh
     /// model on every diff resets the viewport, which reads as "cannot
     /// scroll" the moment receipts start flowing.
@@ -236,24 +253,32 @@ pub fn with_ui(f: impl FnOnce(&mut UiState)) {
     });
 }
 
-/// How tall this device's keyboard was, the last time one stood up.
+/// This device's keyboard at its DEFAULT height: the tallest one it has ever
+/// stood up.
 ///
 /// The conversation's panels — the attachment sheet and the voice recorder —
-/// open at exactly the keyboard's height, so that switching between the
-/// keyboard and a panel never moves the composer above them (the reference
-/// does the same). A keyboard is the user's own choice of size, so the number
-/// has to be learnt from the device; and the first panel of a session is
-/// usually opened before any keyboard has been up, so it has to survive the
-/// launch as well.
+/// open at exactly that height, so that switching between the keyboard and a
+/// panel never moves the composer above them (the reference does the same). A
+/// keyboard is the user's own choice of size, so the number has to be learnt
+/// from the device; and the first panel of a session is usually opened before
+/// any keyboard has been up, so it has to survive the launch as well.
+///
+/// The tallest, not the last: keyboards are resizable, and a user who drags
+/// theirs short for a moment — or a split one, or the number pad a phone field
+/// puts up — must not shrink the attachment panel with it. The window only
+/// ever sends a bigger number (app.slint's `kb-settle`).
 ///
 /// It lives as one integer beside the other device-local settings, in the
 /// `settings.json` the engine keeps under the state directory — the same file
 /// and the same bare-key shape `mapStyleUrl` uses (core/src/maps). That
 /// directory follows `XDG_STATE_HOME`, so the harnesses that point it at a
-/// temporary directory get the default and write nothing of the developer's.
+/// temporary directory get nothing stored and write nothing of the
+/// developer's.
 ///
-/// 400 is what the sheets stood at before any of this: a device with nothing
-/// stored opens its first panel exactly where it always did.
+/// Zero means "nothing known", which is what a fresh install has; the window
+/// stands `kb-fallback` in until the first real keyboard, whatever its size,
+/// replaces it. 400 is that fallback, and is what the sheets stood at before
+/// any of this was measured.
 pub const KB_HEIGHT_DEFAULT: i32 = 400;
 
 fn kb_height_load() -> i32 {
@@ -265,7 +290,7 @@ fn kb_height_load() -> i32 {
         // was never laid out, a hand-edited file) is no better than none.
         .filter(|px| (96..=2000).contains(px))
         .map(|px| px as i32)
-        .unwrap_or(KB_HEIGHT_DEFAULT)
+        .unwrap_or(0)
 }
 
 fn kb_height_save(px: i32) {
@@ -323,6 +348,12 @@ pub fn start(win: &AppWindow, rt: &tokio::runtime::Runtime, icons: IconSet) -> R
         door_oidc_issuer: String::new(),
         door_oidc_client: String::new(),
         avatars: HashMap::new(),
+        decoding: Default::default(),
+        decode_rebuild: false,
+        avatar_bytes: 0,
+        rows_full: Vec::new(),
+        rows_shown: 0,
+        drip: slint::Timer::default(),
         items_model: std::rc::Rc::new(VecModel::default()),
         rooms_model: std::rc::Rc::new(VecModel::default()),
         requests_model: std::rc::Rc::new(VecModel::default()),
@@ -1315,8 +1346,74 @@ fn typing_line(ui: &UiState) -> String {
     }
 }
 
+/// A picture NOW, at its full size, decoded by the renderer when it is
+/// first drawn: for the places that need it in hand this frame — map tiles,
+/// the map composite, a room's avatar. The timeline uses `avatar_thumb`.
 pub fn avatar_pub(ui: &mut UiState, path: &str) -> Option<slint::Image> {
+    if path.is_empty() {
+        return None;
+    }
+    if let Some(img) = ui.avatars.get(path) {
+        return Some(img.clone());
+    }
+    let img = slint::Image::load_from_path(std::path::Path::new(path)).ok()?;
+    ui.avatars.insert(path.to_string(), img.clone());
+    Some(img)
+}
+
+/// A timeline picture: from the cache, or none for now while a worker
+/// decodes it at timeline size — a rebuild fills it in when it lands.
+pub fn avatar_thumb(ui: &mut UiState, path: &str) -> Option<slint::Image> {
     avatar(ui, path)
+}
+
+/// The longest side a timeline picture is kept at: the widest card is
+/// about a thousand device pixels on the phone, and a photo decoded at its
+/// full size cost tens of megabytes to upload for nothing.
+const THUMB_MAX: u32 = 1280;
+/// The decoded pictures the cache holds before it is emptied and rebuilt
+/// from what the open room needs.
+const AVATAR_CACHE_BYTES: usize = 160 << 20;
+
+fn decode_for_timeline(path: &str) -> Option<slint::SharedPixelBuffer<slint::Rgba8Pixel>> {
+    let img = image::open(path).ok()?;
+    let img = if img.width().max(img.height()) > THUMB_MAX {
+        img.thumbnail(THUMB_MAX, THUMB_MAX)
+    } else {
+        img
+    };
+    let rgba = img.to_rgba8();
+    Some(slint::SharedPixelBuffer::clone_from_slice(rgba.as_raw(), rgba.width(), rgba.height()))
+}
+
+/// A worker finished a picture: cache it and schedule one rebuild for every
+/// picture that lands in the same few frames.
+fn picture_landed(path: String, decoded: Option<slint::SharedPixelBuffer<slint::Rgba8Pixel>>) {
+    with_ui(|ui| {
+        ui.decoding.remove(&path);
+        // undecodable: the row stays without it, as a failed load always did
+        let Some(buf) = decoded else { return };
+        let bytes = (buf.width() * buf.height() * 4) as usize;
+        if ui.avatar_bytes + bytes > AVATAR_CACHE_BYTES {
+            ui.avatars.clear();
+            ui.avatar_bytes = 0;
+        }
+        ui.avatar_bytes += bytes;
+        ui.avatars.insert(path, slint::Image::from_rgba8(buf));
+        if !ui.decode_rebuild {
+            ui.decode_rebuild = true;
+            slint::Timer::single_shot(std::time::Duration::from_millis(16), || {
+                with_ui(|ui| {
+                    ui.decode_rebuild = false;
+                    let Some(win) = ui.win.upgrade() else { return };
+                    rebuild_rooms(ui, &win);
+                    if !ui.open_room.is_empty() {
+                        rebuild_timeline(ui, &win);
+                    }
+                });
+            });
+        }
+    });
 }
 
 /// Bring the timeline model to `new` row by row, matched on event id:
@@ -1325,6 +1422,52 @@ pub fn avatar_pub(ui: &mut UiState, path: &str) -> Option<slint::Image> {
 /// costs one extra insert-and-remove; never a reset.
 fn sync_rows(model: &VecModel<TimelineRow>, new: Vec<TimelineRow>) {
     sync_model(model, new, |r| r.event_id.clone());
+}
+
+/// The rows a room opens with: a screen of the newest, instantiated in the
+/// open's first frame (fourteen made that frame 21–25ms on the phone; eight
+/// is a screen of ordinary messages). The rest follow through `start_drip`.
+const FIRST_SCREENFUL: usize = 8;
+/// Rows handed to the list per frame while a room's timeline is still
+/// arriving in it: a bubble costs a few milliseconds to instantiate on the
+/// phone, and two fit under a 120Hz frame with the render.
+const DRIP_PER_FRAME: usize = 2;
+
+/// Put the newest `rows_shown` of `rows_full` in the list, in place.
+fn apply_shown_rows(ui: &mut UiState) {
+    let len = ui.rows_full.len();
+    let shown = ui.rows_shown.min(len);
+    let tail = ui.rows_full[len - shown..].to_vec();
+    sync_rows(&ui.items_model, tail);
+}
+
+/// Feed the rows the list does not hold yet, a couple per frame, holding
+/// the reader's distance from the newest end across each insertion so the
+/// view never jumps (the pinned bottom stays pinned; a reader scrolled up
+/// stays where they are).
+fn start_drip(ui: &mut UiState) {
+    if ui.drip.running() {
+        return;
+    }
+    ui.drip.start(slint::TimerMode::Repeated, std::time::Duration::from_millis(8), || {
+        with_ui(|ui| {
+            let Some(win) = ui.win.upgrade() else {
+                ui.drip.stop();
+                return;
+            };
+            if ui.rows_shown >= ui.rows_full.len() {
+                ui.drip.stop();
+                return;
+            }
+            let from_end = win.get_chat_from_end();
+            ui.rows_shown = (ui.rows_shown + DRIP_PER_FRAME).min(ui.rows_full.len());
+            apply_shown_rows(ui);
+            win.invoke_restore_timeline_from_end(from_end);
+            if ui.rows_shown >= ui.rows_full.len() {
+                ui.drip.stop();
+            }
+        });
+    });
 }
 
 /// The same for any list keyed by a string (`key`); the home page's three
@@ -1366,9 +1509,23 @@ fn avatar(ui: &mut UiState, path: &str) -> Option<slint::Image> {
     if let Some(img) = ui.avatars.get(path) {
         return Some(img.clone());
     }
-    let img = slint::Image::load_from_path(std::path::Path::new(path)).ok()?;
-    ui.avatars.insert(path.to_string(), img.clone());
-    Some(img)
+    // Vector pictures, which the decoder does not read: the renderer's own
+    // loader, now — they are small.
+    let lower = path.to_ascii_lowercase();
+    if lower.ends_with(".svg") || lower.ends_with(".svgz") {
+        return avatar_pub(ui, path);
+    }
+    // Off the UI thread: a decode on it stalled a room's first frame by
+    // hundreds of milliseconds. The row draws without the picture until
+    // it lands (`picture_landed`).
+    if ui.decoding.insert(path.to_string()) {
+        let p = path.to_string();
+        std::thread::spawn(move || {
+            let decoded = decode_for_timeline(&p);
+            let _ = slint::invoke_from_event_loop(move || picture_landed(p, decoded));
+        });
+    }
+    None
 }
 
 pub fn open_room(ui: &mut UiState, win: &AppWindow, id: &str) {
@@ -1383,10 +1540,19 @@ pub fn open_room(ui: &mut UiState, win: &AppWindow, id: &str) {
             ui.drafts.insert(leaving, text);
         }
     }
+    // The same room again keeps its rows: the timeline the engine sends
+    // back diffs to nothing, and every bubble instance survives, so the
+    // page opens with its content already standing. Another room clears
+    // them — its rows are all new anyway.
+    if ui.open_room != id {
+        ui.items_model.set_vec(Vec::new());
+        ui.rows_full.clear();
+        ui.rows_shown = 0;
+        ui.drip.stop();
+    }
     ui.open_room = id.to_string();
     ui.shadow.clear();
     ui.typing_sent = false;
-    ui.items_model.set_vec(Vec::new());
     win.set_typing_line(typing_line(ui).into());
     win.set_chat_is_thread(false);
     win.set_pagination_state("idle".into());
@@ -2259,6 +2425,14 @@ pub fn rebuild_timeline(ui: &mut UiState, win: &AppWindow) {
         };
         let location = item.get("location").cloned().unwrap_or(Value::Null);
         let live = item.get("liveShare").cloned().unwrap_or(Value::Null);
+        let live_now = live["live"].as_bool().unwrap_or(false) && {
+            let expires_ms = live["expiresAt"].as_f64().unwrap_or(0.0) as i64;
+            let now_ms = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_millis() as i64)
+                .unwrap_or(0);
+            expires_ms <= 0 || expires_ms > now_ms
+        };
         // The card shows an actual map: an engine-composited OSM tile crop.
         let mut location_map: Option<slint::Image> = None;
         if matches!(kind, "location" | "liveLocation") {
@@ -2404,11 +2578,14 @@ pub fn rebuild_timeline(ui: &mut UiState, win: &AppWindow) {
             contact_initials: rows::initials(contact["displayName"].as_str().unwrap_or("")).into(),
             contact_tint: rows::tint_for(contact["userId"].as_str().unwrap_or("")),
             location_label: location["description"].as_str().unwrap_or("").into(),
-            location_live: live["live"].as_bool().unwrap_or(false),
+            // A share past its own expiry is ended, whatever the item still
+            // says: the engine marks the end when it learns of it, and until
+            // then the card sat at "0:00" as if still live. The clock tick
+            // rebuilds on the second a share crosses over (actions.rs).
+            location_live: live_now,
             location_expires_s: (live["expiresAt"].as_f64().unwrap_or(0.0) / 1000.0) as i32,
             location_map: location_map.unwrap_or_default(),
-            location_ended: item["kind"].as_str() == Some("liveLocation")
-                && !live["live"].as_bool().unwrap_or(false),
+            location_ended: item["kind"].as_str() == Some("liveLocation") && !live_now,
             audio_have_art: audio_art.is_some(),
             audio_art: audio_art.unwrap_or_default(),
             audio_tone: audio_tone.unwrap_or(slint::Color::from_rgb_u8(0xa8, 0xa8, 0xa8)),
@@ -2452,7 +2629,18 @@ pub fn rebuild_timeline(ui: &mut UiState, win: &AppWindow) {
     // next frame — the stutter while chatting. Rows updated in place keep
     // their instances (and their scroll, animations and layout), and only
     // rows that arrived or left are instantiated or dropped.
-    sync_rows(&ui.items_model, rows_out);
+    //
+    // And never all of a room at once: the list gets the newest screenful
+    // now and the rest two per frame (`drip_rows`), so no single frame
+    // instantiates forty bubbles.
+    ui.rows_full = rows_out;
+    if ui.rows_shown == 0 || ui.rows_shown > ui.rows_full.len() {
+        ui.rows_shown = ui.rows_full.len().min(FIRST_SCREENFUL);
+    }
+    apply_shown_rows(ui);
+    if ui.rows_shown < ui.rows_full.len() {
+        start_drip(ui);
+    }
     win.set_items(ModelRc::from(ui.items_model.clone()));
     // an entry plays once: the next rebuild sees these as settled
     ui.entry_pending.clear();
@@ -2487,6 +2675,12 @@ fn start_demo(win: &AppWindow, rt: &tokio::runtime::Runtime, icons: IconSet) -> 
         door_oidc_issuer: String::new(),
         door_oidc_client: String::new(),
         avatars: HashMap::new(),
+        decoding: Default::default(),
+        decode_rebuild: false,
+        avatar_bytes: 0,
+        rows_full: Vec::new(),
+        rows_shown: 0,
+        drip: slint::Timer::default(),
         items_model: std::rc::Rc::new(VecModel::default()),
         rooms_model: std::rc::Rc::new(VecModel::default()),
         requests_model: std::rc::Rc::new(VecModel::default()),

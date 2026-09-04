@@ -237,6 +237,8 @@ component AttachTile inherits Rectangle {
 // as box-local pixels and the bridge turns them into lat/lon and re-crops.
 component LocationPages inherits Rectangle {
     in property <string> mode: "pin";          // current | live | pin
+    /// The gesture bar's height: the bottom bar stands above it.
+    in property <length> bottom-inset: 0px;
     in property <color> fg;
     in property <color> accent;
     in property <color> chip;
@@ -283,6 +285,11 @@ component LocationPages inherits Rectangle {
 
     property <bool> pin-mode: root.mode == "pin";
     property <bool> live-mode: root.mode == "live";
+    /// This page's category glyph — the very one its tile in the grid carries
+    /// (:716-718), and the one the timeline bubble and the location page show
+    /// for a point that came from here. One picture per category, everywhere.
+    property <string> cat-icon: root.live-mode ? Icons.liveLocation
+        : root.pin-mode ? Icons.pinDrop : Icons.myLocation;
     property <bool> can-share: root.pin-mode ? root.marked : root.have-fix;
     // stands in for QML's mapReady (LocationPicker.qml:32): the style exists
     // until the engine says otherwise.
@@ -464,11 +471,14 @@ component LocationPages inherits Rectangle {
                     initials: root.my-initials;
                     tint: root.my-tint;
                 }
-                // :140-141 — the no-map glyph: filled `place`, 36px, accent@0.8.
+                // :140-141 — the no-map glyph, 36px. This page's own category
+                // glyph: the same picture its tile in the grid carries, and
+                // the same one the timeline bubble and the location page show
+                // for a point of this kind. Filled, like the tile.
                 if root.pin-mode || !root.have-fix : IconLabel {
-                    text: Icons.location;
+                    text: root.cat-icon;
                     filled: true;
-                    color: root.accent.with-alpha(0.8);
+                    color: root.accent;
                     font-size: 36px;
                     width: 36px; height: 36px;
                 }
@@ -575,7 +585,8 @@ component LocationPages inherits Rectangle {
     bottom-bar := VerticalLayout {
         x: 16px;
         width: root.width - 32px;
-        y: root.height - 16px - self.preferred-height;
+        // above the gesture bar, which the sheet's ground runs on under
+        y: root.height - 16px - root.bottom-inset - self.preferred-height;
         height: self.preferred-height;
         spacing: 8px;
 
@@ -684,23 +695,59 @@ export component AttachMenu inherits Rectangle {
     /// The gesture bar's height. The sheet's ground runs on under it and the
     /// pages that lay out from the top stand their content off it with this.
     in property <length> bottom-inset: 0px;
-    /// The height the host's frame has settled on: the remembered keyboard's
-    /// (chat.slint's `kb-h`), or the whole page below the composer once this
-    /// sheet has been taken up. The sheet is laid out AT it rather than
-    /// cropped to it. Zero means "your own natural size" — the desktop.
+    /// The height the host's frame has settled on: the sheet is laid out AT it
+    /// rather than cropped to it. Zero means "your own natural size" — the
+    /// desktop.
     in property <length> avail: 0px;
+    /// The two heights this sheet moves between, from the host: the keyboard's
+    /// (where it rests) and the whole page below the composer (where the
+    /// handle can take it). Only the tile grid uses them.
+    in property <length> rest-h: 0px;
+    in property <length> full-h: 0px;
     /// This sheet is the thing in front. Cleared by the host when the panel
     /// shuts, and the expansion latch goes with it: the next visit opens at
     /// the keyboard's height again, as the emoji picker's does.
     in property <bool> active: true;
-    /// Taken to the full page — by the handle, or by the grid being scrolled
-    /// past its top. Read by the host (chat.slint's `panel-full`), which
-    /// answers by giving the frame everything below the composer.
-    out property <bool> full: false;
-    changed active => { if (!root.active) { root.full = false; } }
+    /// There is more grid than the keyboard's height can show, so the sheet
+    /// has somewhere to go and there is a handle to take it there.
+    ///
+    /// This is the whole gate on the drag flow. A keyboard is normally taller
+    /// than two rows of tiles and everything fits, and then there is no
+    /// handle, nothing to drag and nothing to toggle — the panel is simply the
+    /// keyboard's height with the grid in it. The affordance appears only when
+    /// it has a job: a short keyboard, a large display font, a longer grid.
+    /// Measured against the RESTING height, not the current one: judged
+    /// against the current height it would vanish the moment it was used.
+    out property <bool> can-expand: root.phone && root.page == "grid"
+        && root.rest-h > 0px && root.full-h > root.rest-h
+        && root.natural-h + root.bottom-inset > root.rest-h;
+    /// The latch, and what the host reads. A latch left over from a grid that
+    /// used to overflow cannot hold a sheet open that now fits.
+    property <bool> expanded: false;
+    out property <bool> full: root.can-expand && root.expanded;
+    changed active => { if (!root.active) { root.expanded = false; } }
     // Leaving the tile grid drops the latch too: the emoji page keeps its own
     // (the picker's), and coming back must be the grid's resting height.
-    changed page => { root.full = false; }
+    changed page => { root.expanded = false; }
+
+    // ---- the drag ----
+    //
+    // While a finger is down the sheet follows it 1:1 between the two heights
+    // and NOTHING latches: an earlier pass set `expanded` from the move
+    // handler, so one gesture crossing the threshold a few times flipped the
+    // panel open and shut over and over under the finger. The state is decided
+    // once, on release.
+    /// A finger is on the handle. Out, so the host can hold its own easing off
+    /// while it is: a 220ms tween between one frame's height and the next's is
+    /// exactly the lag that makes a drag feel unattached to the finger.
+    out property <bool> dragging: false;
+    property <length> drag-base: 0px;
+    property <length> drag-dy: 0px;
+    /// The height this sheet wants: wherever the finger has it, or one of the
+    /// two ends. The host takes this as the frame's height.
+    out property <length> want-h: root.dragging
+        ? clamp(root.drag-base - root.drag-dy, root.rest-h, root.full-h)
+        : (root.full ? root.full-h : root.rest-h);
 
     // grid | poll | stickers | emoji | note | pin | current | live — a
     // location tile emits open-location and the bridge answers by setting
@@ -819,7 +866,11 @@ export component AttachMenu inherits Rectangle {
     // It is drawn rather than set as a glyph: this chevron is far flatter and
     // heavier than Material's expand_less, which at the width measured here
     // would be three times as deep.
-    property <length> handle-strip: 38px;
+    //
+    // The strip is there only when the grid overflows (`can-expand`): with the
+    // whole grid in view there is nothing to pull up, so the tiles start at
+    // their own 16 lead-in and no handle is drawn at all.
+    property <length> handle-strip: root.can-expand ? 38px : 0px;
     property <length> handle-w: 36px;
     property <length> handle-ink: 7.5px;
     property <length> handle-stroke: 4.2px;
@@ -845,8 +896,12 @@ export component AttachMenu inherits Rectangle {
     /// keyboard is a poll with no options in it, so they keep their own size,
     /// and the host's cap on the page is all that trims them. The desktop has
     /// no keyboard to match at all and gives nothing anywhere.
+    // A grid this short certainly overflows, so the strip is counted at its
+    // full 38 rather than through `can-expand` — which reads the host's resting
+    // height, which the host works out from THIS. One of the two has to be
+    // arithmetic, and the floor is the one nothing has to look at.
     out property <length> min-h: !root.phone ? root.natural-h
-        : root.page == "grid" ? root.handle-strip + 16px + 116px + root.bottom-inset
+        : root.page == "grid" ? 38px + 16px + 116px + root.bottom-inset
         : root.page == "emoji" ? 172px + root.bottom-inset
         : root.natural-h;
     // The reference gives every panel under the composer EXACTLY the height of
@@ -924,9 +979,14 @@ export component AttachMenu inherits Rectangle {
             height: max(0px, grid-box.height - self.y);
             // The same latch the emoji picker uses: the first move of the grid
             // takes the panel up and it stays there. 6 of slack so a tap that
-            // grazes is not a scroll.
+            // grazes is not a scroll. One-way — it only ever sets — so it
+            // cannot flip back and forth the way the old drag handler did, and
+            // it stands down entirely while a finger is on the handle.
             changed viewport-y => {
-                if (root.phone && root.active && grid.viewport-y < -6px) { root.full = true; }
+                if (root.can-expand && root.active && !root.dragging
+                    && grid.viewport-y < -6px) {
+                    root.expanded = true;
+                }
             }
             // ONE child, sized by hand, so the block below keeps the exact
             // placement it had before it could scroll.
@@ -967,16 +1027,17 @@ export component AttachMenu inherits Rectangle {
             }
         }
 
-        // The drag handle. The reference draws a chevron at the head of the
+        // The drag handle, and ONLY when there is more grid than the sheet can
+        // show (`can-expand`). The reference draws a chevron at the head of the
         // sheet — pointing UP at rest ("there is more, take me up") and DOWN
-        // once the sheet has the whole page. Dragging it either way moves the
-        // sheet between those two heights and a tap toggles them; the grid
-        // being scrolled does the same thing from below.
+        // once the sheet has the whole page. The finger moves the sheet between
+        // those two heights 1:1 and it snaps to one of them on release; a tap
+        // toggles once; the grid being scrolled does the same thing from below.
         //
         // It paints no ground of its own: the sheet's shows through, so a row
         // of tiles scrolling under the strip stays visible right up to its
         // foot, as the reference's does.
-        if root.phone : handle := Rectangle {
+        if root.can-expand : handle := Rectangle {
             x: 0; y: 0; width: root.width; height: root.handle-strip;
             background: transparent;
             // The chevron flips with the state: up while there is more sheet
@@ -997,26 +1058,48 @@ export component AttachMenu inherits Rectangle {
                 stroke: root.fg.with-alpha(0.34);
                 stroke-width: root.handle-stroke;
             }
+            // The gesture. While the finger is down the sheet is wherever the
+            // finger has put it (`want-h`) and NO state changes: an earlier
+            // pass decided open/shut from the move handler, and a single drag
+            // that crossed the threshold a few times flipped the panel open and
+            // shut over and over under the finger. Now one release, one
+            // decision — a flick says which way it was going, a slow drag lands
+            // at the end it is nearer, and a finger that did not travel is a
+            // tap and toggles once.
             h-t := TouchArea {
                 property <length> from;
-                property <bool> dragged;
+                // 40 of travel is a flick; 4 keeps a tap that trembles a tap.
+                property <length> flick: 40px;
+                property <length> slop: 4px;
+                /// The finger's y in the WINDOW, not in this strip. The strip
+                /// rides the sheet's top edge, so as the sheet grows under the
+                /// drag the strip rises with it and a local `mouse-y` measures
+                /// the finger against a ruler the finger is moving: the sheet
+                /// then followed at about half rate and stalled. Absolute, and
+                /// it follows 1:1.
+                property <length> at: handle.absolute-position.y + self.mouse-y;
                 pointer-event(e) => {
                     if (e.kind == PointerEventKind.down) {
-                        self.from = self.mouse-y;
-                        self.dragged = false;
+                        self.from = self.at;
+                        root.drag-base = root.full ? root.full-h : root.rest-h;
+                        root.drag-dy = 0px;
+                        root.dragging = true;
+                    }
+                    if (root.dragging
+                        && (e.kind == PointerEventKind.up
+                            || e.kind == PointerEventKind.cancel)) {
+                        root.dragging = false;
+                        if (abs(root.drag-dy / 1px) > self.flick / 1px) {
+                            root.expanded = root.drag-dy < 0px;
+                        } else if (abs(root.drag-dy / 1px) > self.slop / 1px) {
+                            root.expanded = (root.drag-base - root.drag-dy)
+                                > (root.rest-h + root.full-h) / 2;
+                        } else {
+                            root.expanded = !root.expanded;
+                        }
                     }
                 }
-                // A snap, not a drag-along: the reference jumps between its two
-                // heights rather than tracking the finger, and 24 of travel is
-                // what commits. `dragged` keeps the release from also counting
-                // as the tap that would toggle it straight back.
-                moved => {
-                    if (abs((self.mouse-y - self.from) / 1px) > 24) {
-                        self.dragged = true;
-                        root.full = self.mouse-y < self.from;
-                    }
-                }
-                clicked => { if (!self.dragged) { root.full = !root.full; } }
+                moved => { if (root.dragging) { root.drag-dy = self.at - self.from; } }
             }
         }
     }
@@ -1276,6 +1359,7 @@ export component AttachMenu inherits Rectangle {
         fg: root.fg;
         accent: root.accent;
         chip: root.chip;
+        bottom-inset: root.bottom-inset;
         map-img: root.lp-map;
         map-unavailable: root.lp-unavailable;
         have-fix: root.lp-have-fix;

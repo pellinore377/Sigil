@@ -85,12 +85,19 @@ export component MessageSheet inherits Rectangle {
     in-out property <length> hole-r-tr;
     in-out property <length> hole-r-bl;
     in-out property <length> hole-r-br;
-    /// How far the host's list has scrolled since the press (its viewport-y
-    /// now, less its viewport-y then): the bubble is at `hole-y + shift`.
-    in property <length> shift: 0px;
-    /// Where the bubble IS, this frame — the hole, the pill and the menu
-    /// are laid out around it, so they ride the glide.
-    property <length> bubble-y: root.hole-y + root.shift;
+    /// How far the BUBBLE has lifted from where it was pressed: zero at the
+    /// press, `dest-y - hole-y` at rest, and back to zero as the sheet goes.
+    /// The host moves the real row's bubble by exactly this (the list does
+    /// not move), and the hole, the pill and the menu are laid out around
+    /// `bubble-y`, so all four travel as one. Lift: 220ms on an overshoot
+    /// curve; home: 200ms on a harder one.
+    out property <length> lift: root.up ? root.dest-y - root.hole-y : 0px;
+    animate lift {
+        duration: root.closing ? 200ms : 220ms;
+        easing: root.closing ? cubic-bezier(0.34, 1.42, 0.64, 1) : cubic-bezier(0.34, 1.3, 0.64, 1);
+    }
+    /// Where the bubble IS, this frame.
+    property <length> bubble-y: root.hole-y + root.lift;
 
     callback act(string /*action*/, string /*event-id*/);
     callback react(string /*event-id*/, string /*key*/);
@@ -150,6 +157,7 @@ export component MessageSheet inherits Rectangle {
     // the value last evaluated, so the fades are read at rest before the
     // flip that animates them.
     property <float> motion-rest;
+    property <length> lift-rest;
     // Pill and menu: scale 0.9→1 over 160ms OutCubic, opacity LINEAR over 130ms.
     property <float> pop: root.up ? 1.0 : 0.0;
     animate pop { duration: 160ms; easing: cubic-bezier(0.33, 1, 0.68, 1); }
@@ -165,6 +173,8 @@ export component MessageSheet inherits Rectangle {
         close-timer.running = false;
         root.closing = false;
         root.motion-rest = root.pop + root.fade + root.dim-a;
+        // the lift too: read at zero, so the flip below animates from zero
+        root.lift-rest = root.lift;
         root.shown = true;
     }
     function begin-close() {

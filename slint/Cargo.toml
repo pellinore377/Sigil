@@ -33,7 +33,10 @@ qrcode = { version = "0.14", default-features = false }
 # The screenshot harness writes a real animated GIF for the engine to decode.
 # Same crate and version the engine already links, with a feature it already
 # turns on, so cargo unifies it and nothing new rides into the binary.
-image = { version = "0.25", default-features = false, features = ["gif"] }
+# png/jpeg/webp: the timeline's pictures are decoded off the UI thread
+# (bridge.rs avatar_thumb), at timeline size, instead of by the renderer on
+# the frame that first draws them.
+image = { version = "0.25", default-features = false, features = ["gif", "png", "jpeg", "webp"] }
 ttf-parser = "0.25"
 # the call media stack: the WebRTC peer, sound in and out, the codec
 str0m = "0.9"
@@ -60,6 +63,9 @@ tracing-android = "0.2"
 # crate; without a backend it went nowhere on the phone.
 android_logger = "0.14"
 log = "0.4"
+# The runtime's log handler (its frame-time report under the `perf` flag),
+# reached directly: the `log` route above never showed on the device.
+i-slint-core = "1.17"
 
 [build-dependencies]
 slint-build = "1.17"
@@ -155,3 +161,6 @@ keystore_password = "android"
 [patch.crates-io]
 i-slint-core = { path = "vendor/i-slint-core" }
 i-slint-backend-android-activity = { path = "vendor/i-slint-backend-android-activity" }
+# SIGIL PATCH in opengl_surface.rs: a stencil buffer for the GL surface, so
+# Skia clips the bubbles' mixed-radius corners on the GPU.
+i-slint-renderer-skia = { path = "vendor/i-slint-renderer-skia" }

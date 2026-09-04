@@ -237,6 +237,13 @@ export component ChatPage inherits Rectangle {
     /// the row itself fires the menu with its own live rectangle, so the
     /// sheet's hole and glide are measured against the real bubble.
     in-out property <string> debug-press-id;
+    /// The held row's y in the list, banked when the hold fires: the rows a
+    /// downward lift crosses measure themselves against it.
+    property <length> held-y: -1px;
+    /// The list's viewport, snapshotted in its `changed` callbacks for the
+    /// rows' virtualisation (a binding would loop through the layout).
+    property <length> vp-y: 0px;
+    property <length> vp-h: 0px;
     public function sheet-open-id(id: string) { root.debug-press-id = id; }
     /// Test hook: open the sheet for one row with a rectangle the harness
     /// names (for cases the live rows cannot stage).
@@ -261,32 +268,13 @@ export component ChatPage inherits Rectangle {
         // coordinates: it subtracts its own absolute-position (safe area,
         // status strip, holder) so its hole lands exactly on the bubble.
         root.menu-action("prepare", it.event-id);
-        root.sheet-vy0 = list.viewport-y;
-        root.sheet-pad-end = 0px;
-        root.sheet-pad-start = 0px;
+        // The bubble is the real row, and it is the BUBBLE that moves: the
+        // pressed row lifts its bubble by the sheet's `lift` (the row's
+        // Bubble binds its y to it) while the list stays exactly where it
+        // is; the sheet's hole, pill and menu are laid out around the same
+        // number, so all of it travels together.
         sheet.open-for(r);
-        // The bubble is the real row: the LIST glides so the bubble comes to
-        // the sheet's resting place, pill above and menu below. Where the
-        // list cannot scroll that far — the newest message needs to rise,
-        // the oldest to drop — padding is opened at that end first, so the
-        // Flickable never clamps the glide short.
-        root.sheet-glide = true;
-        root.sheet-target = root.sheet-vy0 + (sheet.dest-y - sheet.hole-y);
-        if (root.sheet-target < list.height - list.viewport-height) {
-            root.sheet-pad-end = (list.height - list.viewport-height) - root.sheet-target;
-        }
-        if (root.sheet-target > 0px) {
-            root.sheet-pad-start = root.sheet-target;
-        }
-        list.viewport-y = root.sheet-target;
     }
-    /// The list's viewport-y when the hold fired, and where the glide takes
-    /// it; the padding opened at either end so the glide has the room.
-    property <length> sheet-vy0;
-    property <length> sheet-target;
-    property <bool> sheet-glide: false;
-    property <length> sheet-pad-end: 0px;
-    property <length> sheet-pad-start: 0px;
     public function sheet-close() { sheet.open = false; }
     /// Test hook: the sheet's emoji drawer, as the pill's add-reaction cell raises it.
     public function sheet-open-drawer() { root.load-emoji(); sheet.drawer-open = true; }
@@ -506,9 +494,9 @@ export component ChatPage inherits Rectangle {
     property <color> convo-paint: root.convo-c.mix(
         root.phone ? root.top-ground : Theme.menu-background, 0.94);
     /// How much of the band is ground; the rest is the conversation under it.
-    // The footer's ground: 90 % over the timeline on the phone — translucent,
+    // The footer's ground: 95 % over the timeline on the phone — translucent,
     // not near-transparent. The input well and the disc are opaque on top.
-    property <float> band-alpha: root.phone ? 0.9 : 0.55;
+    property <float> band-alpha: root.phone ? 0.95 : 0.55;
     // surfaceC: ONE literal surface for themed chrome (mix of lighter(menu, 1.35)
     // and the accent at 0.35); chromeC is the header band (ChatPage.qml:47-49).
     property <color> surface-c: root.themed
@@ -556,14 +544,15 @@ export component ChatPage inherits Rectangle {
     // why the gesture share falls to zero rather than staying.
     property <length> gesture-inset: root.bottom-inset > 96px ? 0px : root.bottom-inset;
     property <length> kb-inset: root.bottom-inset > 96px ? root.bottom-inset : 0px;
-    /// How tall this user's keyboard is. The reference (Google Messages) opens
-    /// every panel under the composer at EXACTLY the keyboard's height, so
-    /// that switching keyboard ↔ panel never moves the composer; a keyboard is
-    /// the user's own choice of size (the reference's user had shrunk theirs),
-    /// so the number has to be learnt from the device rather than assumed —
-    /// and remembered across launches, since the first panel of a session
-    /// opens before any keyboard has been seen. Measured and remembered by the
-    /// window, which is also where Rust is told to keep it (app.slint's
+    /// This keyboard at its DEFAULT height: the tallest one this device has
+    /// stood up. The reference (Google Messages) opens every panel under the
+    /// composer at EXACTLY the keyboard's height, so that switching keyboard ↔
+    /// panel never moves the composer; a keyboard is the user's own choice of
+    /// size, so the number is learnt from the device rather than assumed, and
+    /// remembered across launches — the first panel of a session opens before
+    /// any keyboard has been seen. The tallest and not the last, because a
+    /// keyboard dragged short for a moment must not shrink the panels with it.
+    /// Measured, remembered and stored by the window (app.slint's
     /// `kb-height-px`, bridge.rs's `keyboardHeightPx`); 400 is what the sheets
     /// stood at before any of this, and what a device with nothing stored gets.
     in property <length> kb-h: 400px;
@@ -574,19 +563,19 @@ export component ChatPage inherits Rectangle {
     /// panel takes when it is taken to full height, which puts the composer
     /// directly under the header, as the reference's expanded sheet does.
     property <length> panel-max: max(0px, root.height - root.sheet-y - root.well-band);
-    /// The open panel has been taken to the full page — by the emoji picker
-    /// being scrolled, or by the tile grid's handle (one shared state, so the
-    /// frame does not have to know which page is in front).
-    property <bool> panel-full: root.at-page == "emoji" ? epicker.expanded : att.full;
     /// The height a panel is asked to open at. On the phone that is the
     /// remembered keyboard's, which is the whole point; the desktop has no
     /// keyboard to match and its sheets keep their own sizes (zero asks for
     /// nothing, and each panel's own floor is then its natural height).
     property <length> panel-want: root.phone ? root.kb-h : 0px;
-    /// What a panel opens AT: that, floored by what the page in front cannot
-    /// do without and capped by the page itself.
-    property <length> att-h: root.panel-full ? root.panel-max
-        : min(root.panel-max, max(root.panel-want, att.min-h));
+    /// Where the attach sheet RESTS: that, floored by what the page in front
+    /// cannot do without and capped by the page itself. The sheet is handed
+    /// this and the full height, and answers with the one it wants — which,
+    /// while a finger is on its handle, is wherever the finger has it.
+    property <length> att-rest: min(root.panel-max, max(root.panel-want, att.min-h));
+    property <length> att-h: root.at-page == "emoji"
+        ? (epicker.expanded ? root.panel-max : root.att-rest)
+        : att.want-h;
     property <length> rec-h: min(root.panel-max, max(root.panel-want, rec.min-h));
     /// The room the open panel is actually taking right now (mid-animation
     /// included). Only one of the two is ever open.
@@ -602,25 +591,72 @@ export component ChatPage inherits Rectangle {
     /// it), so only the keyboard's share is compared.
     ///
     /// `handover` is the one case the two numbers cannot cover between them:
-    /// a tap on the text field, which shuts the panel AND calls the keyboard
-    /// up. The panel is going before the keyboard has begun to arrive, and a
-    /// max() of a falling panel and a rising keyboard dips to half at the
-    /// crossing — the composer's bob, the other way round. So for the length
-    /// of the handover the foot is simply held at the keyboard's height; the
-    /// panel goes at once (no wipe, below) and the keyboard slides up into
-    /// the room it left. The latch clears itself the moment the keyboard
-    /// lands, and gives up after half a second if it never does — a keyboard
-    /// the platform decided not to raise must not leave the composer floating.
+    /// a tap on the text field, which asks for the keyboard while a panel is
+    /// standing there. The panel must not go yet — a panel falling to nothing
+    /// while the keyboard is still on its way leaves max() reading whichever
+    /// of the two is bigger at each instant, and that dips at the crossing:
+    /// the composer's bob, the other way round.
+    ///
+    /// So the panel simply STAYS, at its full height, doing nothing, while the
+    /// keyboard's own animation frames come in underneath it. The moment the
+    /// keyboard has covered it the panel is dropped in one step, behind the
+    /// keyboard where there is nothing to see. The foot is max(panel, keyboard)
+    /// throughout and cannot move backwards: the panel's height until the
+    /// keyboard passes it, the keyboard's after.
+    ///
+    /// If the keyboard never comes, or lands SHORTER than the panel — a
+    /// keypad, a floating keyboard, a platform that declined — the timer gives
+    /// up and the panel closes the ordinary way, with its wipe, and the
+    /// composer glides down to whatever the keyboard turned out to be.
     property <bool> handover: false;
-    handover-timer := Timer {
-        interval: 500ms;
-        running: root.handover;
-        triggered => { root.handover = false; }
+    /// The handover ended with the keyboard NOT covering the panel, so the
+    /// close is an ordinary wipe and the composer rides it down rather than
+    /// dropping. Held just long enough for that wipe to start.
+    property <bool> give-up: false;
+    give-up-timer := Timer {
+        interval: 260ms;
+        running: root.give-up;
+        triggered => { root.give-up = false; }
     }
-    changed kb-inset => { if (root.kb-inset > 0px) { root.handover = false; } }
+    function end-handover(covered: bool) {
+        root.handover = false;
+        root.give-up = !covered;
+        root.attach-open = false;
+        root.recorder-open = false;
+    }
+    handover-timer := Timer {
+        interval: 700ms;
+        running: root.handover;
+        triggered => { root.end-handover(false); }
+    }
+    changed kb-inset => {
+        if (root.handover && root.kb-inset >= root.panel-h) { root.end-handover(true); }
+    }
     property <length> foot-h: max(root.panel-h,
-        max((root.attach-open || root.recorder-open) ? root.kb-inset : root.bottom-inset,
-            root.handover ? root.kb-h : 0px));
+        (root.attach-open || root.recorder-open) ? root.kb-inset : root.bottom-inset);
+    /// The height the open panel is HEADING for. The frames' own heights are
+    /// the animated ones, and they are what the durations below drive, so
+    /// nothing a duration reads may be one of them.
+    property <length> panel-aim: (root.attach-open ? root.att-h : 0px)
+        + (root.recorder-open ? root.rec-h : 0px);
+    /// Whether a panel about to change height should just BE there. Read at
+    /// the instant the animation starts, which is what makes one expression
+    /// enough for every case:
+    ///
+    ///   opening while the keyboard is up   the panel is going exactly where
+    ///                                      the keyboard already is → instant,
+    ///                                      and it waits there behind it
+    ///   closing because the keyboard has
+    ///     covered it (the handover)        aim is 0 under a keyboard →
+    ///                                      instant, with nothing on screen
+    ///                                      to see it go
+    ///   opening from the bare screen       no keyboard → the 220 wipe
+    ///   closing to the bare screen         no keyboard → the 220 wipe
+    ///   closing under a keyboard that
+    ///     landed SHORTER than the panel    `give-up` → the wipe, and the
+    ///                                      composer rides it down
+    property <bool> panel-instant: !root.give-up
+        && root.kb-inset > 0px && root.kb-inset >= root.panel-aim;
     /// Whatever of the foot the panel is not already covering: the composer's
     /// own bottom padding. Zero once a panel has grown to the keyboard's size.
     property <length> composer-inset: root.is-invite ? 0px : root.foot-h - root.panel-h;
@@ -999,17 +1035,13 @@ export component ChatPage inherits Rectangle {
                 // The panels below take their room from the list: keep
                 // the bottom pinned as it shrinks or grows.
                 changed height => {
+                    root.vp-h = self.height;
                     if (self.stick && !sheet.shown) { root.pin-list(); }
                 }
-                // The sheet's glide: the bubble's row travels to the sheet's
-                // resting place and home again on the sheet's own curves;
-                // every other assignment to viewport-y is instant, as before.
-                animate viewport-y {
-                    duration: root.sheet-glide ? (sheet.closing ? 200ms : 220ms) : 0ms;
-                    easing: sheet.closing ? cubic-bezier(0.34, 1.42, 0.64, 1) : cubic-bezier(0.34, 1.3, 0.64, 1);
-                }
+                init => { root.vp-h = self.height; root.vp-y = self.viewport-y; }
                 // Fetch older history a screen and a half early (maybePaginate).
                 changed viewport-y => {
+                    root.vp-y = self.viewport-y;
                     list.stick = root.from-end < 12px;
                     if (self.viewport-y > -1.5 * self.height
                         && root.pagination-state == "idle"
@@ -1021,8 +1053,7 @@ export component ChatPage inherits Rectangle {
                 // ListView footer (the oldest end): 8px of breathing room,
                 // or the 34px pagination spinner in its place (:1198-1201).
                 footer := Rectangle {
-                    // plus the room the sheet's glide opens at this end
-                    height: (root.pagination-state == "paginating" ? 34px : 8px) + root.sheet-pad-start;
+                    height: root.pagination-state == "paginating" ? 34px : 8px;
                     if root.pagination-state == "paginating" : Spinner {
                         x: (footer.width - self.width) / 2;
                         y: (34px - self.height) / 2;
@@ -1037,13 +1068,44 @@ export component ChatPage inherits Rectangle {
                 // sender line, reactions and all — and because the affordance
                 // has to be drawn in the space the row leaves behind it.
                 for item in root.items : row := Rectangle {
-                    height: bub.height;
+                    // Virtualised: a row carries a live Bubble only while it
+                    // stands within a screen and a half of the viewport, and
+                    // holds its last measured height as a bare slot otherwise.
+                    // Every loaded row fully instantiated was the per-frame
+                    // cost on the phone — a frame walked forty bubbles' items
+                    // whether or not they were on screen, and grew with every
+                    // page of history. `near` is measured against `row.y`
+                    // (the rows above) and the remembered height, never this
+                    // row's live height, or the two would chase each other.
+                    // The row's height is a plain number the live half writes
+                    // from its `changed height` (never a binding on `live`):
+                    // that is what keeps `near` free to read the layout's own
+                    // `y` and the list's viewport without a loop.
+                    property <length> known-h: 0px;
+                    property <bool> near: row.y + max(row.known-h, 1px) > -list.viewport-y - 1.5 * list.height
+                        && row.y < -list.viewport-y + 2.5 * list.height;
+                    property <bool> live: row.near || row.known-h == 0px;
+                    height: row.known-h;
+                    // a narrower or wider list rewraps every message: measure again
+                    changed width => { row.known-h = 0px; }
+                    /// This row's bubble is the one the sheet holds: it lifts
+                    /// out of its slot by the sheet's `lift` and floats over
+                    /// its neighbours, which stay exactly where they are,
+                    /// dimmed under the scrim. Rows are drawn in order, so a
+                    /// bubble lifting UP (the usual case: a recent message
+                    /// making room for its menu) lies over the rows above it
+                    /// by itself. Lifting DOWN happens only for a message
+                    /// pressed half under the header; the rows below would be
+                    /// drawn over it, so those alone move down with it.
+                    property <bool> held: sheet.shown && item.event-id != "" && sheet.item.event-id == item.event-id;
+                    changed held => { if (self.held) { root.held-y = self.y; } }
+                    /// How far this row's bubble is carried by the sheet.
+                    property <length> carry: !sheet.shown ? 0px
+                        : self.held ? sheet.lift
+                        : (sheet.lift > 0px && self.y > root.held-y) ? sheet.lift : 0px;
                     // The harness's long-press: the named row fires its own
                     // menu, with its own rectangle, as a finger would.
                     property <bool> press-me: root.debug-press-id != "" && root.debug-press-id == item.event-id;
-                    changed press-me => {
-                        if (self.press-me) { bub.open-menu(); root.debug-press-id = ""; }
-                    }
                     // A real message only, and not one still on its way out.
                     property <bool> swipeable: root.phone && item.event-id != ""
                         && item.kind != "state" && item.kind != "dayDivider"
@@ -1083,12 +1145,11 @@ export component ChatPage inherits Rectangle {
                                     root.swipe-detent-at / 1px
                                     + (abs(d / 1px) - root.swipe-detent-at / 1px) * 0.42);
                     }
-                    function follow() {
-                        // `moved` also fires below the recogniser's threshold,
-                        // while the drag could still turn into a scroll.
-                        if (!swipe.swiping) { return; }
+                    /// The finger's travel across, from the recogniser (which
+                    /// lives in the row's live half and hands the number up).
+                    function follow(dx: length) {
                         row.tracking = true;
-                        row.off = row.resist(swipe.current-position.x - swipe.pressed-position.x);
+                        row.off = row.resist(dx);
                         if (abs(row.off / 1px) >= root.swipe-detent-at / 1px) {
                             if (!row.past) { row.past = true; root.swipe-detent(); }
                         } else if (row.past) {
@@ -1111,6 +1172,21 @@ export component ChatPage inherits Rectangle {
                             }
                         }
                         row.spring-home();
+                    }
+                    // The live half of the row: the bubble, its swipe
+                    // recogniser and its affordance, standing only while the
+                    // row is near. Its height is what the row stands at while
+                    // it lives, and what the row remembers after it goes.
+                    if row.live : holder := Rectangle {
+                    x: 0; width: 100%;
+                    height: bub.height;
+                    changed height => { if (self.height > 0px) { row.known-h = self.height; } }
+                    init => { if (self.height > 0px) { row.known-h = self.height; } }
+                    // The harness's long-press: the named row fires its own
+                    // menu, with its own rectangle, as a finger would.
+                    property <bool> press-me: row.press-me;
+                    changed press-me => {
+                        if (self.press-me) { bub.open-menu(); root.debug-press-id = ""; }
                     }
                     /// Everything `col` stacks above the bubble inside the row
                     /// (bubble.slint:228-306), so the affordance can be centred
@@ -1135,8 +1211,8 @@ export component ChatPage inherits Rectangle {
                         x: row.off > 0px
                             ? 14px + row.off - root.swipe-gap - root.swipe-disc
                             : row.width - 14px + root.swipe-gap + row.off;
-                        y: row.extras
-                            + (row.height - row.extras - row.trail - root.swipe-disc) / 2;
+                        y: holder.extras
+                            + (holder.height - holder.extras - holder.trail - root.swipe-disc) / 2;
                         width: root.swipe-disc; height: root.swipe-disc;
                         border-radius: root.swipe-disc / 2;
                         background: root.fg.with-alpha(0.92);
@@ -1166,11 +1242,19 @@ export component ChatPage inherits Rectangle {
                         enabled: row.allow-left || row.allow-right;
                         handle-swipe-left: row.allow-left;
                         handle-swipe-right: row.allow-right;
-                        moved => { row.follow(); }
+                        // `moved` also fires below the recogniser's threshold,
+                        // while the drag could still turn into a scroll.
+                        moved => {
+                            if (self.swiping) {
+                                row.follow(self.current-position.x - self.pressed-position.x);
+                            }
+                        }
                         swiped => { row.commit(); }
                         cancelled => { row.spring-home(); }
                         bub := Bubble {
                             x: row.off;
+                            // the held bubble moves, and pushes its neighbours; the list does not
+                            y: row.carry;
                             width: row.width;
                             item: item;
                             fx-clock: root.fx-clock;
@@ -1207,10 +1291,11 @@ export component ChatPage inherits Rectangle {
                             vote(id, opt) => { root.vote(id, opt); }
                         }
                     }
+                    }
                 }
                 // 8px of breathing room, plus the room the floating
                 // composer band and typing row take out of the view.
-                Rectangle { height: 8px + root.composer-h + root.panel-h + typing-row.height + root.sheet-pad-end; }
+                Rectangle { height: 8px + root.composer-h + root.panel-h + typing-row.height; }
             }
 
             // Typing indicator (TypingIndicator.qml): folds 0↔38 over 180ms
@@ -1518,16 +1603,23 @@ export component ChatPage inherits Rectangle {
                                 // bottom of the page: a panel up there closes.
                                 changed has-focus => {
                                     if (self.has-focus) {
-                                        // The panel goes and the keyboard
-                                        // comes: hold the foot at the
-                                        // keyboard's height across the swap
-                                        // (root.handover) so the composer does
-                                        // not sink between the two.
+                                        // A panel standing there does NOT go
+                                        // yet: it holds its height until the
+                                        // rising keyboard has covered it, and
+                                        // is dropped behind it then (root's
+                                        // `handover`). Closing it here would
+                                        // put a falling panel against a rising
+                                        // keyboard, and the composer would sag
+                                        // between the two.
                                         if (root.attach-open || root.recorder-open) {
                                             root.handover = true;
+                                            // Already covered — the panel was
+                                            // sitting behind a keyboard that
+                                            // is still up. Nothing to wait for.
+                                            if (root.kb-inset >= root.panel-h) {
+                                                root.end-handover(true);
+                                            }
                                         }
-                                        root.attach-open = false;
-                                        root.recorder-open = false;
                                     }
                                 }
                                 // Keep the caret in view once the text scrolls.
@@ -1688,19 +1780,16 @@ export component ChatPage inherits Rectangle {
                 // gets taller under a rising search row, rather than the whole
                 // panel sliding up from under the fold. The grid's own offset
                 // is untouched by it, so nothing the finger was on moves.
-                animate grown { duration: 220ms; easing: cubic-bezier(0.33, 1, 0.68, 1); }
+                animate grown {
+                    duration: att.dragging ? 0ms : 220ms;
+                    easing: cubic-bezier(0.33, 1, 0.68, 1);
+                }
                 height: root.is-invite ? 0px : root.attach-open ? self.body-h : 0px;
-                // The wipe is for opening from the bare screen. Opening from
-                // the KEYBOARD it must not play at all: the panel is already
-                // the keyboard's height and stands exactly where the keyboard
-                // is, so it has to be full size the instant the keyboard
-                // starts to leave — anything else and the composer, which is
-                // holding at max(keyboard, panel), sinks as the keyboard goes
-                // and rises again as the panel arrives. That bob is the whole
-                // complaint. (The `duration` is read when the animation
-                // starts, so this is the state at the moment of the tap.)
+                // No easing while a finger is on the handle: a 220 tween
+                // between one frame's height and the next's is exactly the lag
+                // that makes a sheet feel unattached to the finger dragging it.
                 animate height {
-                    duration: (root.kb-inset > 0px || root.handover) ? 0ms : 220ms;
+                    duration: (root.panel-instant || att.dragging) ? 0ms : 220ms;
                     easing: cubic-bezier(0.33, 1, 0.68, 1);
                 }
                 clip: true;
@@ -1713,12 +1802,15 @@ export component ChatPage inherits Rectangle {
                     // then crops, so a page shorter than the keyboard fills it
                     // and a taller one scrolls inside it.
                     avail: att-frame.grown;
-                    // The panel's ground is the FOOTER's — the same paint at
-                    // the same 80 %, with the timeline running on under it (the
-                    // list extends beneath the sheet for exactly this), so the
-                    // conversation shows through the panel as it shows through
-                    // the composer band. The tiles on top stay opaque.
-                    ground: root.convo-paint.with-alpha(root.band-alpha);
+                    // The two heights the sheet moves between: the keyboard's,
+                    // where it rests, and the whole page below the composer.
+                    // It answers with `want-h` — one of those, or wherever a
+                    // finger on its handle currently has it — and decides for
+                    // itself, from the two, whether there is anything to drag.
+                    rest-h: root.att-rest;
+                    full-h: root.panel-max;
+                    // The attach sheet keeps its own opaque card ground: only
+                    // the footer band and the voice panel are translucent.
                     // The gesture bar is the panel's own to stand off, from the
                     // inside: its ground runs on under it.
                     bottom-inset: root.gesture-inset;
@@ -1815,10 +1907,9 @@ export component ChatPage inherits Rectangle {
                 // bare conversation — a different tone from the band above.
                 background: root.convo-paint.with-alpha(root.band-alpha);
                 height: root.is-invite ? 0px : root.recorder-open ? rec.height : 0px;
-                // The same rule as the attach panel's: no wipe when the panel
-                // is stepping straight into the keyboard's place (att-frame).
+                // The same rule as the attach panel's (root.panel-instant).
                 animate height {
-                    duration: (root.kb-inset > 0px || root.handover) ? 0ms : 220ms;
+                    duration: root.panel-instant ? 0ms : 220ms;
                     easing: cubic-bezier(0.33, 1, 0.68, 1);
                 }
                 clip: true;
@@ -1992,21 +2083,6 @@ export component ChatPage inherits Rectangle {
     sheet := MessageSheet {
         actions: root.sheet-actions;
         width: 100%; height: 100%;
-        // How far the list has carried the bubble since the hold: the
-        // sheet's hole, pill and menu ride on it.
-        shift: list.viewport-y - root.sheet-vy0;
-        // The fly-home: the list glides back to where the hold found it,
-        // and once the sheet has cleared the padding it opened goes too.
-        changed closing => {
-            if (self.closing) { list.viewport-y = root.sheet-vy0; }
-        }
-        changed shown => {
-            if (!self.shown) {
-                root.sheet-glide = false;
-                root.sheet-pad-end = 0px;
-                root.sheet-pad-start = 0px;
-            }
-        }
         // The frost reaches the window's zones around the page.
         bleed-top: root.bleed-top;
         bleed-bottom: root.bleed-bottom;

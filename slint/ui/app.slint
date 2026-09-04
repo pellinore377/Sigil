@@ -500,29 +500,40 @@ export component AppWindow inherits Window {
     /// it, nothing in the app does.
     in-out property <length> kb-overlap: root.virtual-keyboard-size.height > 0px
         ? max(0px, root.height - root.virtual-keyboard-position.y) : 0px;
-    /// How tall this user's keyboard was the last time one stood up — measured
-    /// from the window's bottom edge, so it counts the gesture bar the same way
-    /// the keyboard covers it. The conversation's panels (attach sheet, voice
-    /// recorder) open at exactly this height, so that switching between the
-    /// keyboard and a panel never moves the composer, which is what the
-    /// reference does. Seeded by Rust at launch from the stored value and
-    /// stored back whenever it changes, because the first panel of a session
-    /// is opened before any keyboard has been up. 400 is what the sheets stood
-    /// at before any of this, and is what a device with nothing stored gets.
-    in-out property <int> kb-height-px: 400;
+    /// This keyboard's DEFAULT height: the tallest one this device has ever
+    /// stood up, measured from the window's bottom edge so it counts the
+    /// gesture bar the same way the keyboard covers it. The conversation's
+    /// panels (attach sheet, voice recorder) open at exactly this height, so
+    /// that switching between the keyboard and a panel never moves the
+    /// composer, which is what the reference does.
+    ///
+    /// The tallest, not the last: a keyboard is resizable, and a user who has
+    /// dragged theirs short for a moment — or a split/floating one, or the
+    /// number keypad a phone field puts up — must not shrink the attachment
+    /// panel with it. It only ever grows.
+    ///
+    /// Zero is "nothing known yet", which is what a fresh install has and what
+    /// the harnesses get: `kb-fallback` stands in until a real keyboard is
+    /// seen, and the FIRST one replaces it whatever its size. Seeded by Rust at
+    /// launch from the stored value and stored back when it grows, because the
+    /// first panel of a session is opened before any keyboard has been up.
+    in-out property <int> kb-height-px: 0;
+    /// What the panels stood at before any of this was measured.
+    property <length> kb-fallback: 400px;
+    out property <length> kb-height: root.kb-height-px > 0 ? root.kb-height-px * 1px : root.kb-fallback;
     callback kb-height-seen(int);
     /// Taken when the number has STOPPED moving. Android hands the inset over
     /// during the IME's own slide, so the raw overlap runs up through every
-    /// value between nothing and the keyboard; latching any of them would size
+    /// value between nothing and the keyboard; latching one of those would size
     /// the panels to a frame of an animation, and store it. Every report
     /// restarts the wait, so only the value that stands still is kept — and
-    /// the guard below means a keyboard of the same height as last time
+    /// the guard below means a keyboard no taller than the one on record
     /// touches neither the property nor the file.
     kb-settle := Timer {
         interval: 350ms;
         running: root.kb-overlap > 96px;
         triggered => {
-            if (root.kb-overlap > 96px && round(root.kb-overlap / 1px) != root.kb-height-px) {
+            if (root.kb-overlap > 96px && round(root.kb-overlap / 1px) > root.kb-height-px) {
                 root.kb-height-px = round(root.kb-overlap / 1px);
                 root.kb-height-seen(root.kb-height-px);
             }
@@ -825,10 +836,10 @@ export component AppWindow inherits Window {
                 // The gesture bar (or the keyboard) is the page's own to keep
                 // clear: the composer stands that far up from the bottom.
                 bottom-inset: root.bottom-inset;
-                // And how tall the keyboard was: the page opens its panels at
+                // And how tall this keyboard is: the page opens its panels at
                 // exactly that height, so the composer does not move when one
                 // takes the other's place.
-                kb-h: root.kb-height-px * 1px;
+                kb-h: root.kb-height;
                 back => { root.go-back(); }
                 send(text) => { root.send-message(text); }
                 send-reply(ev, text) => { root.act("send-reply", ev, text); }

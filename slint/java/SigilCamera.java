@@ -390,6 +390,9 @@ public final class SigilCamera {
     private static volatile String pickedPath = "";
 
     private static long recordStart;
+    /// Bumped by every open(), so a retry left on the decor's queue by the
+    /// open before this one cannot build a second overlay behind this one.
+    private static int epoch;
     /// 0 at rest, 1 dragged full. Everything the sheet moves reads it.
     private static float expand;
     /// Which bucket the grid is showing, or "" for everything.
@@ -432,6 +435,7 @@ public final class SigilCamera {
         expand = 0f;
         bucket = "";
         bucketName = "";
+        final int mine = ++epoch;
 
         symbols = null;
         if (fontPath != null && !fontPath.isEmpty()) {
@@ -442,9 +446,32 @@ public final class SigilCamera {
             }
         }
 
+        // NOTHING that touches the window happens here. open() is called from
+        // the engine's thread, and Window.getDecorView() off the main thread
+        // will INSTALL a decor from the wrong thread if one is not there yet —
+        // a decor that is never attached to a window, whose getWindowToken()
+        // is therefore null forever, which is exactly the null a sub-panel
+        // window is refused for. So the whole of it is posted, and the camera
+        // is picked there too: it is a handful of characteristics reads, and
+        // it needs the window's size to choose a preview shape anyway.
+        activity.runOnUiThread(new Runnable() {
+            @Override
+            public void run() {
+                if (mine == epoch) start(activity, mine);
+            }
+        });
+    }
+
+    /// The main thread, with a window that really is up.
+    private static void start(Activity activity, int mine) {
         density = activity.getResources().getDisplayMetrics().density;
         measureWindow(activity);
-        if (!pickCamera(activity)) return;
+        if (!pickCamera(activity)) {
+            // Nothing to tear down yet, but the bridge has to be told, and
+            // `closed` is the flag it already watches.
+            closed = true;
+            return;
+        }
 
         thread = new HandlerThread("sigil-camera");
         thread.start();
@@ -454,42 +481,109 @@ public final class SigilCamera {
         io = new Handler(ioThread.getLooper());
         ui = new Handler(Looper.getMainLooper());
 
-        activity.runOnUiThread(new Runnable() {
+        attach(activity, mine, 0);
+    }
+
+    /// A sub-panel window hangs off its parent's token, and it is refused
+    /// outright without one. The framework will fill the token in from the
+    /// decor when it can, but it silently leaves it null when it cannot, and
+    /// the refusal comes back as BadTokenException — so the token is fetched
+    /// HERE, and if the decor is not attached yet the attempt is posted back
+    /// onto the decor's own queue until it is.
+    private static void attach(final Activity activity, final int mine, final int tries) {
+        if (mine != epoch) return;
+        View decor;
+        android.os.IBinder token = null;
+        try {
+            decor = activity.getWindow().getDecorView();
+            token = decor.getWindowToken();
+        } catch (RuntimeException e) {
+            fail("the viewfinder has no window to stand on: " + e);
+            closed = true;
+            return;
+        }
+        if (token == null) {
+            // A second of waiting is far longer than an attach ever takes;
+            // past that the activity is not really on screen and giving up
+            // beats a view tree that never appears.
+            if (tries >= 60) {
+                fail("the viewfinder has no window to stand on");
+                closed = true;
+                return;
+            }
+            decor.postDelayed(new Runnable() {
+                @Override
+                public void run() {
+                    attach(activity, mine, tries + 1);
+                }
+            }, 16L);
+            return;
+        }
+        Log.i(TAG, "camera: the viewfinder has its parent token after "
+                + tries + " turns");
+        // One frame's grace before the add. A window is told whether the app
+        // is visible ONCE, by the flag WindowManager answers addWindow with,
+        // and ViewRootImpl holds its root GONE for as long as that answer was
+        // "no" — so an add that lands in the middle of a transition (the
+        // attach sheet closing under us, say) gives a window that is up, laid
+        // out, and never drawn. Waiting for the queue to drain costs a frame
+        // and takes that whole class of failure away.
+        final android.os.IBinder tok = token;
+        decor.post(new Runnable() {
             @Override
             public void run() {
-                build(activity);
+                if (mine != epoch) return;
+                build(activity, tok);
             }
         });
     }
 
     /// The window's size and its system-bar insets, in physical pixels, and
     /// the picture's foot off them.
+    ///
+    /// NOT off the decor view. The decor is the size of the ACTIVITY's window,
+    /// which stops at the system bars; this overlay is FLAG_LAYOUT_NO_LIMITS
+    /// and runs under them, so measuring off the decor made it short by the
+    /// height of the status and gesture bars and put the gallery sheet's foot
+    /// above the bottom of the screen. The window metrics are the display's
+    /// own bounds, which is what the reference's 1344 × 2992 is.
     private static void measureWindow(Activity a) {
         insetTop = 0;
         insetBottom = 0;
+        winW = 0;
+        winH = 0;
         try {
-            View decor = a.getWindow().getDecorView();
-            winW = decor.getWidth();
-            winH = decor.getHeight();
-            WindowInsets wi = decor.getRootWindowInsets();
-            if (wi != null) {
-                if (Build.VERSION.SDK_INT >= 30) {
-                    android.graphics.Insets in =
-                            wi.getInsets(WindowInsets.Type.systemBars());
-                    insetTop = in.top;
-                    insetBottom = in.bottom;
-                } else {
+            WindowManager wm = a.getWindowManager();
+            if (Build.VERSION.SDK_INT >= 30) {
+                android.view.WindowMetrics m = wm.getCurrentWindowMetrics();
+                Rect b = m.getBounds();
+                winW = b.width();
+                winH = b.height();
+                android.graphics.Insets in = m.getWindowInsets()
+                        .getInsets(WindowInsets.Type.systemBars());
+                insetTop = in.top;
+                insetBottom = in.bottom;
+            } else {
+                android.util.DisplayMetrics dm = new android.util.DisplayMetrics();
+                wm.getDefaultDisplay().getRealMetrics(dm);
+                winW = dm.widthPixels;
+                winH = dm.heightPixels;
+                WindowInsets wi = a.getWindow().getDecorView().getRootWindowInsets();
+                if (wi != null) {
                     insetTop = wi.getSystemWindowInsetTop();
                     insetBottom = wi.getSystemWindowInsetBottom();
                 }
             }
-        } catch (RuntimeException ignored) {
+        } catch (RuntimeException e) {
+            Log.w(TAG, "camera: the window would not be measured: " + e);
         }
         if (winW <= 0 || winH <= 0) {
             winW = a.getResources().getDisplayMetrics().widthPixels;
             winH = a.getResources().getDisplayMetrics().heightPixels;
         }
         settleFoot();
+        Log.i(TAG, "camera: window " + winW + "x" + winH
+                + " insets " + insetTop + "/" + insetBottom + " foot " + foot);
     }
 
     /// The picture's foot: the 4:3 preview at full width. Held back from the
@@ -505,12 +599,33 @@ public final class SigilCamera {
         return Math.round(v * density);
     }
 
+    /// One attempt at putting the window up, through the ACTIVITY's own
+    /// WindowManager — the only one that knows which window is the parent.
+    private static boolean place(Activity a, View root, WindowManager.LayoutParams lp) {
+        try {
+            a.getWindowManager().addView(root, lp);
+            return true;
+        } catch (RuntimeException e) {
+            fail("the viewfinder could not be shown: " + e);
+            Log.w(TAG, "camera: addView type " + lp.type + " refused: " + e);
+            return false;
+        }
+    }
+
     // ---------------------------------------------------------- the window
 
-    /// Build the whole overlay and add it as a window of its own. Main thread.
-    private static void build(final Activity activity) {
+    /// Build the whole overlay and add it as a window of its own. Main
+    /// thread, with the parent window's token in hand.
+    private static void build(final Activity activity, android.os.IBinder token) {
         FrameLayout root = new FrameLayout(activity);
         root.setBackgroundColor(GROUND);
+        // Said out loud. A window is added with whatever visibility its root
+        // view has, and a root that is not VISIBLE gives a window that is
+        // never drawn AND a SurfaceView that is never given a surface — which
+        // deadlocks the camera, because the surface callback is what opens the
+        // device. Nothing here should set it otherwise; this is so that a
+        // future something cannot.
+        root.setVisibility(View.VISIBLE);
         // The camera is modal: nothing behind it may be touched, and a tap on
         // the ground between the controls must not fall through to the app.
         root.setClickable(true);
@@ -529,6 +644,7 @@ public final class SigilCamera {
         root.addView(pictureBox, boxLp);
 
         SurfaceView v = new SurfaceView(activity);
+        v.setVisibility(View.VISIBLE);
         // NOT setZOrderOnTop and NOT setZOrderMediaOverlay: at the default
         // sublayer the surface sits UNDER this window's own drawing, which is
         // what lets every control paint over it.
@@ -536,22 +652,29 @@ public final class SigilCamera {
         hl.setFixedSize(previewSize.getWidth(), previewSize.getHeight());
         hl.addCallback(new SurfaceHolder.Callback() {
             @Override
-            public void surfaceCreated(SurfaceHolder h) {}
+            public void surfaceCreated(SurfaceHolder h) {
+                Log.i(TAG, "camera: preview surface created");
+            }
 
             @Override
             public void surfaceChanged(SurfaceHolder h, int fmt, int sw, int sh) {
+                Log.i(TAG, "camera: preview surface " + sw + "x" + sh);
                 surfaceReady = true;
                 openDevice();
             }
 
             @Override
             public void surfaceDestroyed(SurfaceHolder h) {
+                Log.i(TAG, "camera: preview surface destroyed");
                 surfaceReady = false;
             }
         });
-        pictureBox.addView(v, new FrameLayout.LayoutParams(1, 1));
+        // Its real rectangle from the start rather than 1×1 corrected later:
+        // a surface is created at whatever size the view has when it is
+        // attached, and one pixel of it is a preview nobody can see.
         view = v;
         holder = hl;
+        pictureBox.addView(v, previewParams());
 
         // ---- the picture's rounded bottom edge -----------------------------
         frameView = new FrameView(activity);
@@ -596,23 +719,52 @@ public final class SigilCamera {
                         | WindowManager.LayoutParams.FLAG_HARDWARE_ACCELERATED,
                 PixelFormat.TRANSLUCENT);
         lp.gravity = Gravity.TOP | Gravity.START;
+        // The token, stated rather than hoped for. A sub-window is layered
+        // against its parent, and WindowManager refuses one whose token is
+        // null with BadTokenException — which is what happened when this was
+        // left to Window.adjustLayoutParamsForSubWindow to fill in.
+        lp.token = token;
         if (Build.VERSION.SDK_INT >= 28) {
             lp.layoutInDisplayCutoutMode = WindowManager.LayoutParams
                     .LAYOUT_IN_DISPLAY_CUTOUT_MODE_ALWAYS;
         }
-        try {
-            activity.getWindowManager().addView(root, lp);
-        } catch (RuntimeException e) {
-            fail("the viewfinder could not be shown: " + e);
-            return;
+        if (!place(activity, root, lp)) {
+            // Sublayer +1 instead of +2. Still above the activity's own
+            // window, which is all that actually matters here — the app
+            // paints the window surface itself and owns no SurfaceView of its
+            // own for this to tie with.
+            lp.type = WindowManager.LayoutParams.TYPE_APPLICATION_PANEL;
+            if (!place(activity, root, lp)) {
+                closed = true;
+                return;
+            }
+            // The first refusal is not a failure once the second worked.
+            failure = null;
+            state = OPENING;
+            Log.w(TAG, "camera: the viewfinder is on a panel, not a sub-panel");
         }
         overlay = root;
+        Log.i(TAG, "camera: overlay added, type " + lp.type
+                + ", visibility " + root.getVisibility());
 
+        root.addOnAttachStateChangeListener(new View.OnAttachStateChangeListener() {
+            @Override
+            public void onViewAttachedToWindow(View x) {
+                Log.i(TAG, "camera: overlay attached, visibility " + x.getVisibility());
+            }
+
+            @Override
+            public void onViewDetachedFromWindow(View x) {
+                Log.i(TAG, "camera: overlay detached");
+            }
+        });
         root.addOnLayoutChangeListener(new View.OnLayoutChangeListener() {
             @Override
             public void onLayoutChange(View x, int l, int t, int r, int b,
                                        int ol, int ot, int or_, int ob) {
                 if (r - l <= 0 || b - t <= 0) return;
+                Log.i(TAG, "camera: overlay visible " + (r - l) + "x" + (b - t)
+                        + " visibility " + x.getVisibility());
                 if (r - l == winW && b - t == winH) return;
                 winW = r - l;
                 winH = b - t;
@@ -654,6 +806,63 @@ public final class SigilCamera {
         syncUi();
         ui.post(TICK);
         loadGallery(activity, 0);
+
+        // A surface that never arrives is the one failure that looks like
+        // nothing at all: the window is up, the log is quiet, and the device
+        // is never opened, because the surface callback is what opens it.
+        //
+        // The cause worth recovering from is the one above: a window told at
+        // add time that its app was not visible stays GONE, and no amount of
+        // setVisibility on the root will move it — getHostVisibility() does
+        // not even look at the root while ViewRootImpl believes that. The one
+        // thing that DOES clear it is asking WindowManager again, so that is
+        // what this does: take the window down and put the same view tree
+        // back up. Twice, and then say so rather than hang.
+        watchSurface(activity, epoch, 0);
+    }
+
+    /// Wait for the preview surface; put the window up again if it never came.
+    private static void watchSurface(final Activity activity, final int mine,
+                                     final int again) {
+        if (ui == null) return;
+        ui.postDelayed(new Runnable() {
+            @Override
+            public void run() {
+                if (mine != epoch || overlay == null || surfaceReady) return;
+                Log.w(TAG, "camera: no preview surface after " + (again + 1)
+                        + " — overlay visibility " + overlay.getVisibility()
+                        + ", window visibility " + overlay.getWindowVisibility()
+                        + ", attached " + overlay.isAttachedToWindow()
+                        + ", size " + overlay.getWidth() + "x" + overlay.getHeight());
+                if (again >= 2) {
+                    fail("the viewfinder could not be drawn");
+                    closed = true;
+                    return;
+                }
+                ViewGroup root = overlay;
+                ViewGroup.LayoutParams raw = root.getLayoutParams();
+                if (!(raw instanceof WindowManager.LayoutParams)) {
+                    fail("the viewfinder could not be drawn");
+                    closed = true;
+                    return;
+                }
+                WindowManager.LayoutParams lp = (WindowManager.LayoutParams) raw;
+                try {
+                    activity.getWindowManager().removeViewImmediate(root);
+                } catch (RuntimeException e) {
+                    Log.w(TAG, "camera: the overlay would not come down: " + e);
+                }
+                root.setVisibility(View.VISIBLE);
+                if (!place(activity, root, lp)) {
+                    closed = true;
+                    return;
+                }
+                failure = null;
+                state = OPENING;
+                Log.i(TAG, "camera: the overlay went up again");
+                watchSurface(activity, mine, again + 1);
+            }
+        }, 1200L);
     }
 
     /// The close, the flash, the zoom pill, the shutter, the flip and the
@@ -911,27 +1120,36 @@ public final class SigilCamera {
     private static void applyPreviewBounds() {
         SurfaceView v = view;
         if (v == null || previewSize == null || winW <= 0 || foot <= 0) return;
-        boolean swap = (sensorOrientation % 180) != 0;
-        float a = swap
-                ? (float) previewSize.getHeight() / (float) previewSize.getWidth()
-                : (float) previewSize.getWidth() / (float) previewSize.getHeight();
-        int w, h;
-        if (a > (float) winW / (float) foot) {
-            w = winW;
-            h = Math.round(winW / a);
-        } else {
-            h = foot;
-            w = Math.round(foot * a);
+        v.setLayoutParams(previewParams());
+        // The selfie camera shows you a mirror, as every phone's does.
+        v.setScaleX(front ? -1f : 1f);
+    }
+
+    /// The preview's rectangle, computed without needing the view — so it can
+    /// be given its real size the moment it is made.
+    private static FrameLayout.LayoutParams previewParams() {
+        int w = Math.max(1, winW);
+        int h = Math.max(1, foot);
+        if (previewSize != null && winW > 0 && foot > 0) {
+            boolean swap = (sensorOrientation % 180) != 0;
+            float a = swap
+                    ? (float) previewSize.getHeight() / (float) previewSize.getWidth()
+                    : (float) previewSize.getWidth() / (float) previewSize.getHeight();
+            if (a > (float) winW / (float) foot) {
+                w = winW;
+                h = Math.round(winW / a);
+            } else {
+                h = foot;
+                w = Math.round(foot * a);
+            }
+            w = Math.max(1, Math.min(w, winW));
+            h = Math.max(1, Math.min(h, foot));
         }
-        w = Math.max(1, Math.min(w, winW));
-        h = Math.max(1, Math.min(h, foot));
         FrameLayout.LayoutParams lp = new FrameLayout.LayoutParams(w, h);
         lp.gravity = Gravity.TOP | Gravity.START;
         lp.leftMargin = (winW - w) / 2;
         lp.topMargin = (foot - h) / 2;
-        v.setLayoutParams(lp);
-        // The selfie camera shows you a mirror, as every phone's does.
-        v.setScaleX(front ? -1f : 1f);
+        return lp;
     }
 
     // ----------------------------------------------------- the animations
@@ -2047,14 +2265,20 @@ public final class SigilCamera {
         @Override public void onActivityStarted(Activity a) {}
         @Override public void onActivityResumed(Activity a) {}
         @Override public void onActivityPaused(Activity a) {
-            if (a == mine) closed = true;
+            if (a != mine) return;
+            Log.i(TAG, "camera: the activity paused");
+            closed = true;
         }
         @Override public void onActivityStopped(Activity a) {
-            if (a == mine) closed = true;
+            if (a != mine) return;
+            Log.i(TAG, "camera: the activity stopped");
+            closed = true;
         }
         @Override public void onActivitySaveInstanceState(Activity a, Bundle b) {}
         @Override public void onActivityDestroyed(Activity a) {
-            if (a == mine) closed = true;
+            if (a != mine) return;
+            Log.i(TAG, "camera: the activity was destroyed");
+            closed = true;
         }
     }
     // -------------------------------------------------------- the session
@@ -2215,7 +2439,13 @@ public final class SigilCamera {
 
     private static void openDevice() {
         final Activity a = host;
-        if (a == null || bg == null || !surfaceReady || device != null || opening) return;
+        if (a == null || bg == null || !surfaceReady || device != null || opening) {
+            Log.i(TAG, "camera: not opening the device yet (host " + (a != null)
+                    + " bg " + (bg != null) + " surface " + surfaceReady
+                    + " open " + (device != null) + " opening " + opening + ")");
+            return;
+        }
+        Log.i(TAG, "camera: opening the device");
         opening = true;
         bg.post(new Runnable() {
             @Override
@@ -2284,6 +2514,7 @@ public final class SigilCamera {
             d.createCaptureSession(outputs, new CameraCaptureSession.StateCallback() {
                 @Override
                 public void onConfigured(CameraCaptureSession s) {
+                    Log.i(TAG, "camera: session configured");
                     session = s;
                     startPreview(CameraDevice.TEMPLATE_PREVIEW, null);
                     state = READY;

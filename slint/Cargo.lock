@@ -3646,8 +3646,6 @@ dependencies = [
 [[package]]
 name = "i-slint-renderer-skia"
 version = "1.17.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7b6eed7f3f0a9a3d3ca6e8b9d4ca233371d989351fdb2a7ab88ec368b99e7b57"
 dependencies = [
  "bytemuck",
  "cfg-if",
@@ -7092,6 +7090,7 @@ dependencies = [
  "cpal",
  "hex",
  "i-slint-backend-android-activity",
+ "i-slint-core",
  "image",
  "jni 0.21.1",
  "log",

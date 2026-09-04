@@ -634,6 +634,25 @@ impl AndroidWindowAdapter {
         };
 
         self.window.set_virtual_keyboard(rect.0, rect.1, i_slint_core::InternalToken);
+
+        // SIGIL PATCH: ask for a frame.
+        //
+        // The Java side already reports the IME's inset once per animation
+        // frame (SlintAndroidJavaHelper's WindowInsetsAnimation.Callback), and
+        // every one of those reaches this function — but all this function
+        // does is write two properties, and Slint's property system is a pull
+        // graph: a write marks its dependents dirty and nothing more. The
+        // event loop (lib.rs) renders only when `pending_redraw` is set or a
+        // Slint animation is in flight, and neither is true of an inset
+        // arriving, so the frames sat in the graph until some unrelated event
+        // happened to draw. On screen that read as the composer chasing the
+        // keyboard a beat behind and landing in one jump at the end, instead
+        // of being pushed by it. One line: the inset that moved is a reason to
+        // draw, so the layout above the keyboard tracks the keyboard's own
+        // curve exactly. (The flag `request_redraw` sets, set directly: this
+        // is an inherent method and the trait's need not be in scope. The loop
+        // picks it up on its next turn and renders at the next vsync.)
+        self.pending_redraw.set(true);
     }
 }
 

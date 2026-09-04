@@ -401,6 +401,13 @@ fn now_ms() -> i64 {
 fn clock_tick(ui: &mut UiState, win: &AppWindow) {
     let now = now_ms();
     win.set_now_epoch_s((now / 1000) as i32);
+    // A live share the list still shows as live has just run out: the rows
+    // are built with the expiry in mind (bridge.rs `live_now`), so one
+    // rebuild turns the card to "ended" on the second it happens.
+    let now_s = (now / 1000) as i32;
+    if ui.rows_full.iter().any(|r| r.location_live && r.location_expires_s > 0 && r.location_expires_s <= now_s) {
+        crate::bridge::rebuild_timeline(ui, win);
+    }
     // The page's chip is the same derivation as the bubble's (rows::live_remaining).
     if win.get_nav() == "map" && win.get_mp_live() {
         win.set_mp_remaining(crate::rows::live_remaining(ui.mapview.expires_ms, now).into());
@@ -905,7 +912,7 @@ fn simple_row(ui: &mut UiState, item: &Value) -> TimelineRow {
         .or(item["media"]["path"].as_str())
         .unwrap_or("")
         .to_string();
-    if let Some(img) = crate::bridge::avatar_pub(ui, &thumb) {
+    if let Some(img) = crate::bridge::avatar_thumb(ui, &thumb) {
         row.thumb = img;
     }
     row
