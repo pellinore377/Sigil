@@ -69,7 +69,14 @@ fn present(safe: &str) -> String {
     let mut out = String::with_capacity(safe.len());
     let mut i = 0usize;
     while i < b.len() {
-        if b[i] != b'<' { out.push(b[i] as char); i += 1; continue; }
+        if b[i] != b'<' {
+            // whole characters: a byte pushed as a char turns every non-ASCII
+            // glyph (an emoji, an accent) into Latin-1 debris
+            let ch = safe[i..].chars().next().unwrap_or('\u{fffd}');
+            out.push(ch);
+            i += ch.len_utf8().max(1);
+            continue;
+        }
         let Some(close) = safe[i..].find('>').map(|p| i + p) else {
             out.push_str("&lt;");
             i += 1;
@@ -179,7 +186,12 @@ fn take_pre(safe: &str, from: usize) -> Option<(String, Option<String>, usize)> 
     let b = inner_raw.as_bytes();
     let mut j = 0usize;
     while j < b.len() {
-        if b[j] != b'<' { text.push(b[j] as char); j += 1; continue }
+        if b[j] != b'<' {
+            let ch = inner_raw[j..].chars().next().unwrap_or('\u{fffd}');
+            text.push(ch);
+            j += ch.len_utf8().max(1);
+            continue
+        }
         let Some(close) = inner_raw[j..].find('>').map(|p| j + p) else { break };
         let raw = &inner_raw[j + 1..close];
         if lang.is_none() && raw.to_ascii_lowercase().starts_with("code") {
@@ -353,5 +365,17 @@ mod tests {
     fn an_unterminated_block_does_not_swallow_the_message() {
         let out = to_rich_text("<pre><code>oops");
         assert!(out.contains("oops"), "{out}");
+    }
+}
+
+#[cfg(test)]
+mod utf8_tests {
+    #[test]
+    fn non_ascii_survives_presentation() {
+        let out = super::to_rich_text("<b>caf\u{e9}</b> \u{1f629}\u{1f629}");
+        assert!(out.contains("caf\u{e9}"), "{out}");
+        assert!(out.contains("\u{1f629}\u{1f629}"), "{out}");
+        let pre = super::to_rich_text("<pre><code>\u{1f600} x</code></pre>");
+        assert!(pre.contains("\u{1f600}"), "{pre}");
     }
 }
