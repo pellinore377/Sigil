@@ -89,9 +89,11 @@ component AttachTile inherits Rectangle {
     in property <color> chip;
     in property <bool> phone: false;
     callback clicked;
-    width: 62px; height: root.phone ? 112px : 72px;
-    property <length> pill-w: root.phone ? 56px : 58px;
-    property <length> pill-h: root.phone ? 40px : 40px;
+    width: 62px; height: root.phone ? 116px : 72px;
+    // The platform messenger's tile, measured off its own sheet: a 72 × 56
+    // stadium (radius = half the height) with the label 8 below.
+    property <length> pill-w: root.phone ? 72px : 58px;
+    property <length> pill-h: root.phone ? 56px : 40px;
     disc := Rectangle {
         // Top of the tile (QML anchors only horizontalCenter): a sized child
         // outside a layout is otherwise centred by default in Slint.

@@ -162,7 +162,7 @@ export component Bubble inherits Rectangle {
     // grouped side), 16/12dp padding, three quarters of the width at most.
     property <bool> phone: Theme.mode != "desktop";
     property <length> inset-x: root.phone ? 16px : 10px;
-    property <length> inset-y: root.phone ? 12px : 10px;
+    property <length> inset-y: root.phone ? 10px : 10px;
     property <length> r-big: root.phone ? 20px : 16px;
     property <length> r-small: root.phone ? 4px : 5px;
     // BubbleDelegate.qml:862 — a link-only card wears its own 14px corners.
@@ -337,7 +337,7 @@ export component Bubble inherits Rectangle {
                     : item.kind == "location" ? root.bubble-max
                     : root.doc-kind || root.track-kind || item.kind == "contact"
                       || root.code-kind || root.link-card || item.link-only ? root.bubble-max
-                    : b-inner.preferred-width + (root.pad-free ? 0px : 22px);
+                    : b-inner.preferred-width + (root.pad-free ? 0px : 2 * root.inset-x);
                 width: min(root.bubble-max, max(40px, self.content-w));
                 height: b-inner.preferred-height + (root.pad-free ? 0px : 2 * root.inset-y);
                 // cardOnly: a body that IS the link renders the card alone; a
@@ -371,10 +371,12 @@ export component Bubble inherits Rectangle {
 
                 b-inner := VerticalLayout {
                     // BubbleDelegate.qml:421-422 — 10px inset, 4px spacing;
-                    // both gone for full-bleed bodies and the poll.
-                    x: root.pad-free ? 0px : 10px;
-                    y: root.pad-free ? 0px : 10px;
-                    width: bubble.width - (root.pad-free ? 0px : 20px);
+                    // both gone for full-bleed bodies and the poll. The phone
+                    // takes the platform messenger's 16/10 instead, measured
+                    // off its own bubbles.
+                    x: root.pad-free ? 0px : root.inset-x;
+                    y: root.pad-free ? 0px : root.inset-y;
+                    width: bubble.width - (root.pad-free ? 0px : 2 * root.inset-x);
                     // Its own height: left to the bubble's, the layout would
                     // spread its children into the padding.
                     height: self.preferred-height;
@@ -1238,7 +1240,7 @@ export component Bubble inherits Rectangle {
                             width: parent.width - 20px;
                             text: root.link-card ? root.link-caption : item.body;
                             color: root.fg;
-                            font-family: Theme.font-ui; font-size: Theme.body;
+                            font-family: Theme.font-ui; font-size: Theme.msg-body;
                             wrap: word-wrap;
                         }
                     }
@@ -1246,9 +1248,9 @@ export component Bubble inherits Rectangle {
                     if root.caption-visible && !root.full-bleed : Text {
                         text: item.body;
                         color: root.fg;
-                        font-family: Theme.font-ui; font-size: Theme.body;
+                        font-family: Theme.font-ui; font-size: Theme.msg-body;
                         wrap: word-wrap;
-                        width: min(root.bubble-max - 22px, self.preferred-width);
+                        width: min(root.bubble-max - 2 * root.inset-x, self.preferred-width);
                     }
 
                     // Body text / utd / redacted
@@ -1463,10 +1465,10 @@ export component Bubble inherits Rectangle {
                         text: item.rich-body;
                         default-color: root.fg;
                         default-font-family: Theme.font-ui;
-                        default-font-size: Theme.body;
+                        default-font-size: Theme.msg-body;
                         // BubbleDelegate.qml:163-168 — anchors are the accent itself.
                         link-color: root.accent;
-                        width: min(root.bubble-max - 22px, self.preferred-width);
+                        width: min(root.bubble-max - 2 * root.inset-x, self.preferred-width);
                         x: root.link-card ? 10px : 0px;
                         link-clicked(l) => { root.open-url(l); }
                     }
@@ -1481,10 +1483,10 @@ export component Bubble inherits Rectangle {
                             : item.body;
                         color: item.kind == "utd" || item.kind == "redacted"
                             ? root.fg.with-alpha(0.55) : root.fg;
-                        font-family: Theme.font-ui; font-size: Theme.body;
+                        font-family: Theme.font-ui; font-size: Theme.msg-body;
                         font-italic: item.kind == "emote" || item.kind == "redacted";
                         wrap: word-wrap;
-                        width: min(root.bubble-max - 22px, self.preferred-width);
+                        width: min(root.bubble-max - 2 * root.inset-x, self.preferred-width);
                     }
 
                     // Thread summary chip
@@ -1610,10 +1612,13 @@ export component Bubble inherits Rectangle {
         // Non-own messages get the row too, left-anchored with the mark
         // hidden. Opens over 180ms (height) / 220ms (opacity), OutCubic.
         detail-row := Rectangle {
-            property <length> mark-dot: 13px;
+            // The mark and the faces, at the size the phone's receipts read
+            // at, with air between them and the bubble above.
+            property <length> mark-dot: root.phone ? 16px : 13px;
+            property <length> lead: root.phone ? 6px : 0px;
             property <bool> wanted: root.is-msg && ((item.is-own && (item.owns-receipt || item.send-state != "sent")) || root.details-open);
             property <bool> show-faces: item.is-own && item.send-state == "sent" && item.readers.length > 0;
-            height: self.wanted ? self.mark-dot + 4px : 0px;
+            height: self.wanted ? self.mark-dot + 4px + 2 * self.lead : 0px;
             animate height { duration: 180ms; easing: cubic-bezier(0.33, 1, 0.68, 1); }
             opacity: self.wanted ? 1.0 : 0.0;
             animate opacity { duration: 220ms; easing: cubic-bezier(0.33, 1, 0.68, 1); }
@@ -1639,7 +1644,7 @@ export component Bubble inherits Rectangle {
                     IconLabel {
                         x: parent.width - detail-row.mark-dot; width: detail-row.mark-dot; height: 100%;
                         text: Icons.statusDot; color: root.fg.with-alpha(0.55);
-                        font-size: 13px;
+                        font-size: detail-row.mark-dot;
                         opacity: item.send-state == "sending" ? 1.0 : 0.0;
                         animate opacity { duration: 160ms; }
                         visible: self.opacity > 0.01;
@@ -1648,7 +1653,7 @@ export component Bubble inherits Rectangle {
                         x: parent.width - detail-row.mark-dot; width: detail-row.mark-dot; height: 100%;
                         text: Icons.errorMark; color: Theme.urgent;
                         filled: true;   // BubbleDelegate.qml:1175
-                        font-size: 13px;
+                        font-size: detail-row.mark-dot;
                         opacity: item.send-state == "failed" ? 1.0 : 0.0;
                         animate opacity { duration: 160ms; }
                         visible: self.opacity > 0.01;
@@ -1657,7 +1662,7 @@ export component Bubble inherits Rectangle {
                         x: parent.width - detail-row.mark-dot; width: detail-row.mark-dot; height: 100%;
                         text: Icons.checkCircle; color: root.accent;
                         filled: true;   // BubbleDelegate.qml:1188
-                        font-size: 13px;
+                        font-size: detail-row.mark-dot;
                         opacity: item.send-state == "sent" && item.readers.length == 0 ? 1.0 : 0.0;
                         animate opacity { duration: 200ms; }
                         visible: self.opacity > 0.01;
@@ -1730,13 +1735,13 @@ export component Bubble inherits Rectangle {
                         Text {
                             text: item.edited ? "\{item.stamp} · Edited" : item.stamp;
                             color: item.send-state == "failed" ? Theme.urgent : root.fg.with-alpha(0.5);
-                            font-family: Theme.font-ui; font-size: 10px;
+                            font-family: Theme.font-ui; font-size: root.phone ? Theme.caption : 10px;
                             vertical-alignment: center;
                         }
                         IconLabel {
                             text: root.encrypted ? Icons.lock : Icons.lockOff;
                             color: item.send-state == "failed" ? Theme.urgent : root.fg.with-alpha(0.5);
-                            font-size: 10px;
+                            font-size: root.phone ? Theme.caption : 10px;
                             vertical-alignment: center;
                         }
                     }

@@ -79,6 +79,10 @@ export global Theme {
     out property <length> caption: phone ? 12px : 10px;
     out property <length> body-small: phone ? 14px : 11px;
     out property <length> body: phone ? 16px : 12px;
+    /// A message body inside a bubble: measured off the platform messenger's
+    /// own bubbles (cap height 31px at this density), which run a shade
+    /// larger than its list text.
+    out property <length> msg-body: phone ? 17px : 12px;
     out property <length> subtitle: phone ? 16px : 13px;
     out property <length> title: phone ? 17px : 14px;
     out property <length> heading: phone ? 22px : 16px;

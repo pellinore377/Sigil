@@ -3,7 +3,7 @@
 //! the desktop path, and finalises a WAV the send path uploads as audio/wav.
 
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use serde_json::json;
@@ -254,6 +254,11 @@ extern "C" {
 pub struct Playback {
     stop: Arc<AtomicBool>,
     thread: Option<std::thread::JoinHandle<()>>,
+    /// How far the writer has reached, in microseconds from the clip's start
+    /// (the seek included). The UI polls this to paint the waveform.
+    pos_us: Arc<AtomicU64>,
+    /// Set once the loop has run off the end rather than been stopped.
+    done: Arc<AtomicBool>,
 }
 
 impl Playback {
@@ -263,30 +268,46 @@ impl Playback {
             let _ = t.join();
         }
     }
+
+    pub fn position(&self) -> f64 {
+        self.pos_us.load(Ordering::Relaxed) as f64 / 1_000_000.0
+    }
+
+    pub fn finished(&self) -> bool {
+        self.done.load(Ordering::Relaxed)
+    }
 }
 
 pub fn play(file: &std::path::Path, seek: f64) -> anyhow::Result<Playback> {
     use std::os::fd::IntoRawFd;
     let stop = Arc::new(AtomicBool::new(false));
     let stop2 = stop.clone();
+    // The playhead starts where the seek put it; each written block moves it.
+    let pos_us = Arc::new(AtomicU64::new((seek.max(0.0) * 1_000_000.0) as u64));
+    let done = Arc::new(AtomicBool::new(false));
+    let (pos2, done2) = (pos_us.clone(), done.clone());
     // Our own recordings (and their composer preview) are plain WAV, which
     // needs no codec round trip — and a sample-exact seek comes free. Any
     // other RIFF flavour falls through to the extractor.
     if is_wav(file) {
         let bytes = std::fs::read(file)?;
         if wav_pcm16(&bytes).is_some() {
-            let thread = std::thread::spawn(move || wav_loop(&bytes, seek, &stop2));
-            return Ok(Playback { stop, thread: Some(thread) });
+            let thread = std::thread::spawn(move || {
+                wav_loop(&bytes, seek, &stop2, &pos2);
+                done2.store(true, Ordering::Relaxed);
+            });
+            return Ok(Playback { stop, thread: Some(thread), pos_us, done });
         }
     }
     let f = std::fs::File::open(file)?;
     let len = f.metadata()?.len() as i64;
     let fd = f.into_raw_fd();
     let thread = std::thread::spawn(move || {
-        decode_loop(fd, len, seek, &stop2);
+        decode_loop(fd, len, seek, &stop2, &pos2);
+        done2.store(true, Ordering::Relaxed);
         unsafe { libc::close(fd) };
     });
-    Ok(Playback { stop, thread: Some(thread) })
+    Ok(Playback { stop, thread: Some(thread), pos_us, done })
 }
 
 fn is_wav(file: &std::path::Path) -> bool {
@@ -326,7 +347,7 @@ fn wav_pcm16(bytes: &[u8]) -> Option<(u32, usize, usize, usize)> {
 }
 
 /// Play a 16-bit PCM WAV straight to AAudio.
-fn wav_loop(bytes: &[u8], seek: f64, stop: &AtomicBool) {
+fn wav_loop(bytes: &[u8], seek: f64, stop: &AtomicBool, pos_us: &AtomicU64) {
     let Some((rate, channels, off, len)) = wav_pcm16(bytes) else { return };
     let Some(out) = open_output(rate as i32, channels as i32) else { return };
     let frame_bytes = 2 * channels;
@@ -348,6 +369,10 @@ fn wav_loop(bytes: &[u8], seek: f64, stop: &AtomicBool) {
             );
         }
         p += frames * frame_bytes;
+        // AAudioStream_write blocks on a full buffer, so frames-written is
+        // within one buffer of what the ear has heard.
+        let played = ((p - off) / frame_bytes) as u64;
+        pos_us.store(played * 1_000_000 / rate as u64, Ordering::Relaxed);
     }
     unsafe {
         // Let the tail drain rather than clipping the last word.
@@ -361,7 +386,7 @@ fn cstr(s: &[u8]) -> *const core::ffi::c_char {
     s.as_ptr() as *const core::ffi::c_char
 }
 
-fn decode_loop(fd: i32, len: i64, seek: f64, stop: &AtomicBool) {
+fn decode_loop(fd: i32, len: i64, seek: f64, stop: &AtomicBool, pos_us: &AtomicU64) {
     unsafe {
         let ex = AMediaExtractor_new();
         if ex.is_null() {
@@ -457,6 +482,9 @@ fn decode_loop(fd: i32, len: i64, seek: f64, stop: &AtomicBool) {
                     let frames = info.size / 2 / channels.max(1);
                     let data = buf.add(info.offset as usize) as *const core::ffi::c_void;
                     AAudioStream_write(out_stream, data, frames, 500_000_000);
+                    // The extractor's timestamps run from the file's start, so
+                    // this already accounts for the seek.
+                    pos_us.store(info.presentation_time_us.max(0) as u64, Ordering::Relaxed);
                 }
                 let eos = info.flags & AMEDIACODEC_BUFFER_FLAG_END_OF_STREAM != 0;
                 AMediaCodec_releaseOutputBuffer(codec, oidx as usize, false);

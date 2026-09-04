@@ -167,6 +167,7 @@ pub struct AudioPlayback {
     child: Child,
     pub event_id: String,
     pub start_at: f64,
+    started: std::time::Instant,
 }
 
 #[cfg(not(target_os = "android"))]
@@ -174,6 +175,17 @@ impl AudioPlayback {
     pub fn stop(&mut self) {
         let _ = self.child.kill();
         let _ = self.child.wait();
+    }
+
+    /// Seconds into the clip. ffplay reports nothing back, so this is the
+    /// wall clock since it started, offset by wherever the seek put it.
+    pub fn position(&self) -> f64 {
+        self.start_at + self.started.elapsed().as_secs_f64()
+    }
+
+    /// True once the player has run out (ffplay carries `-autoexit`).
+    pub fn finished(&mut self) -> bool {
+        matches!(self.child.try_wait(), Ok(Some(_)))
     }
 }
 
@@ -187,7 +199,12 @@ pub fn play(file: &std::path::Path, event_id: &str, seek: f64) -> anyhow::Result
         .spawn()
         .context("ffplay")?;
     if false { warn!("unreachable"); }
-    Ok(AudioPlayback { child, event_id: event_id.to_string(), start_at: seek })
+    Ok(AudioPlayback {
+        child,
+        event_id: event_id.to_string(),
+        start_at: seek,
+        started: std::time::Instant::now(),
+    })
 }
 
 // ---- Android: the same four entry points over voice_android --------------
@@ -232,6 +249,16 @@ pub struct AudioPlayback {
 impl AudioPlayback {
     pub fn stop(&mut self) {
         self.inner.stop();
+    }
+
+    /// Seconds into the clip, counted by the frames handed to AAudio.
+    pub fn position(&self) -> f64 {
+        self.inner.position()
+    }
+
+    /// True once the decode/write loop has run off the end of the clip.
+    pub fn finished(&mut self) -> bool {
+        self.inner.finished()
     }
 }
 

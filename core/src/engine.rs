@@ -161,6 +161,7 @@ impl Engine {
             "audio.play" => crate::media::audio_play(self.clone(), p).await,
             "audio.playFile" => crate::media::audio_play_file(self.clone(), p).await,
             "audio.stop" => crate::media::audio_stop(self.clone(), p).await,
+            "audio.position" => crate::media::audio_position(self.clone(), p).await,
             "video.play" => crate::media::video_play(self.clone(), p).await,
             "video.seek" => crate::media::video_seek(self.clone(), p).await,
             "video.stop" => crate::media::video_stop(self.clone(), p).await,

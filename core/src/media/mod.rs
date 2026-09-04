@@ -74,6 +74,28 @@ pub async fn audio_play(engine: SharedEngine, p: &serde_json::Map<String, Value>
     audio_play_file(engine, &q).await
 }
 
+/// `audio.position` → {playing, position, eventId} — where the one running
+/// player has reached, in seconds. The UI polls this to advance a voice
+/// note's waveform; a player that has run out is dropped here, so the poll
+/// that sees the end also clears the engine's slot.
+pub async fn audio_position(engine: SharedEngine, _p: &serde_json::Map<String, Value>) -> Reply {
+    let out = {
+        let mut slot = engine.audio_play.lock();
+        match slot.as_mut() {
+            None => json!({"playing": false, "position": 0.0}),
+            Some(a) => {
+                if a.finished() {
+                    *slot = None;
+                    json!({"playing": false, "position": 0.0})
+                } else {
+                    json!({"playing": true, "position": a.position(), "eventId": a.event_id})
+                }
+            }
+        }
+    };
+    Reply::ok(out)
+}
+
 /// `voice.start` — begin recording; `voice.level` events stream while it runs.
 pub async fn voice_start(engine: SharedEngine, _p: &serde_json::Map<String, Value>) -> Reply {
     if engine.recording.lock().is_some() {
@@ -119,7 +141,13 @@ pub async fn audio_play_file(engine: SharedEngine, p: &serde_json::Map<String, V
     if let Some(mut a) = engine.audio_play.lock().take() {
         a.stop();
     }
-    match voice::play(&path, "local", seek) {
+    // The timeline's event id rides along so a poll can say what is playing;
+    // a composer preview has none and answers to "local".
+    let event = match p.get("eventId").and_then(Value::as_str) {
+        Some(e) if !e.is_empty() => e,
+        _ => "local",
+    };
+    match voice::play(&path, event, seek) {
         Ok(a) => {
             *engine.audio_play.lock() = Some(a);
             Reply::ok(json!({}))

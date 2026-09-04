@@ -230,6 +230,24 @@ export component ChatPage inherits Rectangle {
             r-br: it.link-only ? 14px : (it.is-own && !it.group-end) ? 5px : 16px,
         });
     }
+    /// The pressed bubble has to be whole before its picture is taken: the
+    /// sheet crops the window, so a message half under the header or behind
+    /// the composer would carry that chrome into the lifted copy. Nudge the
+    /// timeline until it clears both, and say whether anything moved.
+    function ensure-visible(r: SheetRect) -> bool {
+        if (list.viewport-height <= list.height) { return false; }
+        if (r.y < list.absolute-position.y + 6px) {
+            list.viewport-y = min(0px,
+                list.viewport-y + (list.absolute-position.y + 6px - r.y));
+            return true;
+        }
+        if (r.y + r.h > list.absolute-position.y + list.height - 6px) {
+            list.viewport-y = max(list.height - list.viewport-height,
+                list.viewport-y - (r.y + r.h - (list.absolute-position.y + list.height - 6px)));
+            return true;
+        }
+        return false;
+    }
     /// A hold fired on `it`, drawn at `r` (window coordinates).
     function open-menu-for(it: TimelineRow, r: SheetRect) {
         sheet.item = it;
@@ -392,7 +410,15 @@ export component ChatPage inherits Rectangle {
     // — darkens by the measured ratio and the dark ones pass through.
     property <color> deep-chip-c: Theme.mode == "light" ? root.chip-c.darker(1.4) : root.chip-c;
     // A staged voice clip outranks the quote for the extra band (QML: 60 vs 52).
-    property <length> quote-h: root.voice-staged ? 60px : root.quote-armed ? 52px : 0px;
+    // On the phone both bands are one height, and a card inside the pill is
+    // inset by `chip-pad` with the concentric radius (pill 28 less the inset)
+    // so its corners follow the pill's instead of poking through them.
+    property <length> chip-pad: root.phone ? 8px : 6px;
+    property <length> chip-r: root.phone ? 20px : 14px;
+    property <length> quote-h: root.phone
+        ? ((root.voice-staged || root.quote-armed) ? 64px : 0px)
+        : (root.voice-staged ? 60px : root.quote-armed ? 52px : 0px);
+    property <length> chip-h: root.quote-h - 2 * root.chip-pad;
     // inputPill.height (ChatPage.qml:1384): the text's own height between 38
     // and 110 (the QML TextArea's 3px paddings included), plus the quote band.
     // The phone's pill is the platform's (dp): 56 tall, r28, from 16 to a
@@ -781,7 +807,12 @@ export component ChatPage inherits Rectangle {
                         dm: root.is-dm;
                         encrypted: root.room-encrypted;
                         convo-ground: root.convo-c;
-                        hold-started(id, r) => { root.sheet-prewarm(id, r); }
+                        // A scrolled timeline makes the prewarmed frost stale
+                        // (its hole would sit where the bubble was), so that
+                        // press takes its blur from the picture at hold time.
+                        hold-started(id, r) => {
+                            if (!root.ensure-visible(r)) { root.sheet-prewarm(id, r); }
+                        }
                         menu-requested(it, r) => { root.open-menu-for(it, r); }
                         copying: root.copy-of != "" && root.copy-of == item.event-id;
                         // MessageSheet.qml:205 hideSource: the pressed bubble
@@ -916,16 +947,16 @@ export component ChatPage inherits Rectangle {
                         clip-chip-band := Rectangle {
                             visible: root.voice-staged;
                             x: 0; y: 0;
-                            width: well.width; height: 60px;
+                            width: well.width; height: root.quote-h;
                             clip-chip := Rectangle {
-                                x: 6px; y: 6px;
-                                width: clip-chip-band.width - 12px;
-                                height: 48px;
-                                border-radius: 14px;
+                                x: root.chip-pad; y: root.chip-pad;
+                                width: clip-chip-band.width - 2 * root.chip-pad;
+                                height: root.chip-h;
+                                border-radius: root.chip-r;
                                 property <color> ink: #17181a;
                                 background: root.accent.brighter(0.35);
                                 clip-play := Rectangle {
-                                    x: 7px; y: (48px - 32px) / 2;
+                                    x: root.chip-pad - 1px; y: (root.chip-h - 32px) / 2;
                                     width: 32px; height: 32px; border-radius: 16px;
                                     background: #ffffff.with-alpha(0.9);
                                     IconLabel {
@@ -940,7 +971,7 @@ export component ChatPage inherits Rectangle {
                                     } }
                                 }
                                 clip-wave := Rectangle {
-                                    x: 49px; y: (48px - 26px) / 2;
+                                    x: root.chip-pad + 41px; y: (root.chip-h - 26px) / 2;
                                     width: clip-dur.x - self.x - 8px;
                                     height: 26px;
                                     clip: true;
@@ -976,7 +1007,7 @@ export component ChatPage inherits Rectangle {
                                 }
                                 clip-close := Rectangle {
                                     x: clip-chip.width - 26px - 8px;
-                                    y: (48px - 26px) / 2;
+                                    y: (root.chip-h - 26px) / 2;
                                     width: 26px; height: 26px; border-radius: 13px;
                                     background: clip-chip.ink.with-alpha(0.12);
                                     IconLabel {
@@ -997,12 +1028,12 @@ export component ChatPage inherits Rectangle {
                         // card at the right (ChatPage.qml:1630).
                         if root.quote-armed && !root.voice-staged : quote := Rectangle {
                             x: 0; y: 0;
-                            width: well.width; height: 52px;
+                            width: well.width; height: root.quote-h;
                             quote-box := Rectangle {
-                                x: 5px; y: 5px;
-                                width: quote.width - 10px;
-                                height: 43px;
-                                border-radius: 15px;
+                                x: root.chip-pad; y: root.chip-pad;
+                                width: quote.width - 2 * root.chip-pad;
+                                height: root.chip-h;
+                                border-radius: root.chip-r;
                                 background: root.convo-c.with-alpha(0.92);
                                 VerticalLayout {
                                     // Text ends 6px before the 26px close at 8 (:1641,:1649).
@@ -1026,7 +1057,7 @@ export component ChatPage inherits Rectangle {
                                 }
                                 quote-close := Rectangle {
                                     x: quote-box.width - self.width - 8px;
-                                    y: (43px - 26px) / 2;
+                                    y: (root.chip-h - 26px) / 2;
                                     width: 26px; height: 26px; border-radius: 13px;
                                     background: qc-t.has-hover ? root.fg.with-alpha(0.12) : transparent;
                                     IconLabel {
@@ -1048,7 +1079,7 @@ export component ChatPage inherits Rectangle {
                         // its bottom (:1656-1661); the cancel affordance while the
                         // sheet is open — glyph swap + 90° turn, colour on hover/on.
                         attach-btn := Rectangle {
-                            x: root.phone ? 8px : 6px; y: well.height - root.attach-box - 4px;
+                            x: root.phone ? 0px : 6px; y: well.height - root.attach-box - (root.phone ? 3px : 4px);
                             width: root.attach-box; height: root.attach-box;
                             IconLabel {
                                 x: 0; y: 0; width: root.attach-box; height: root.attach-box;
@@ -1067,7 +1098,7 @@ export component ChatPage inherits Rectangle {
                         // below the quote band; grows with the text and scrolls
                         // past the 110px cap (:1688-1694).
                         input-box := Rectangle {
-                            x: root.phone ? 60px : 38px; y: root.quote-h;
+                            x: root.phone ? 50px : 38px; y: root.quote-h;
                             width: well.width - self.x - (root.phone ? 16px : 10px);
                             height: well.height - root.quote-h;
                             clip: true;

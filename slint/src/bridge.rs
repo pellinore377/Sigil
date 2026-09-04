@@ -124,6 +124,10 @@ pub struct UiState {
     pub sheet_prewarm: Option<(String, slint::Image)>,
     pub emojis: Vec<(String, String)>, // glyph, keywords
     pub voice_positions: HashMap<String, f64>, // eventId -> seconds (playback)
+    /// One shared 50 ms poll for the whole chat page: it asks the engine
+    /// where the voice player has reached and paints the row that is
+    /// playing. Runs only while something plays (ChatPage.qml:86-92).
+    pub voice_timer: slint::Timer,
     pub chat_themes: Value,
     pub viewer_items: Vec<Value>, // timeline items behind the viewer pager
     pub doc_pages: Vec<Value>,    // doc.page results by index
@@ -282,6 +286,7 @@ pub fn start(win: &AppWindow, rt: &tokio::runtime::Runtime, icons: IconSet) -> R
         sheet_prewarm: None,
         emojis: Vec::new(),
         voice_positions: HashMap::new(),
+        voice_timer: slint::Timer::default(),
         chat_themes: crate::actions::load_themes(),
         viewer_items: Vec::new(),
         doc_pages: Vec::new(),
@@ -1748,7 +1753,7 @@ pub fn rebuild_timeline(ui: &mut UiState, win: &AppWindow) {
                 // the bubble's inset, at the bubble's share of the timeline.
                 let phone = win.global::<crate::Theme>().get_mode() != "desktop";
                 let (base_px, max_w) =
-                    if phone { (16.0, tl_w * 0.75 - 32.0) } else { (12.0, tl_w * 0.78 - 22.0) };
+                    if phone { (17.0, tl_w * 0.75 - 32.0) } else { (12.0, tl_w * 0.78 - 22.0) };
                 match crate::fx::layout(
                     &body,
                     &item["effects"],
@@ -2151,7 +2156,7 @@ pub fn rebuild_timeline(ui: &mut UiState, win: &AppWindow) {
             voice_playing: ui.audio_playing && ui.audio_ctx.1 == event_id,
             voice_frac: if duration_ms > 0.0 {
                 (ui.voice_positions.get(&event_id).copied().unwrap_or(0.0) * 1000.0 / duration_ms)
-                    as f32
+                    .clamp(0.0, 1.0) as f32
             } else {
                 0.0
             },
@@ -2270,6 +2275,7 @@ fn start_demo(win: &AppWindow, rt: &tokio::runtime::Runtime, icons: IconSet) -> 
         sheet_prewarm: None,
         emojis: Vec::new(),
         voice_positions: HashMap::new(),
+        voice_timer: slint::Timer::default(),
         chat_themes: crate::actions::load_themes(),
         viewer_items: Vec::new(),
         doc_pages: Vec::new(),

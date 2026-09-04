@@ -1942,38 +1942,130 @@ fn dir_search(ui: &mut UiState, win: &AppWindow, which: &str, q: &str) {
 }
 
 fn voice_toggle(ui: &mut UiState, win: &AppWindow, event_id: &str) {
-    let req = ui.req.clone();
     if ui.audio_playing && ui.audio_ctx.1 == event_id {
-        req.fire("audio.stop", json!({}));
-        ui.audio_playing = false;
+        voice_playback_end(ui, true);
+        rebuild_timeline(ui, win);
     } else {
-        let room = room_of_key(&ui.open_room);
-        ui.audio_ctx = (room.clone(), event_id.to_string());
-        ui.audio_playing = true;
-        req.fire(
-            "audio.play",
-            json!({"roomId": room, "eventId": event_id, "seek": 0}),
-        );
+        voice_playback_start(ui, win, event_id, 0.0);
     }
-    rebuild_timeline(ui, win);
 }
 
 fn voice_seek(ui: &mut UiState, win: &AppWindow, event_id: &str, frac: f64) {
-    let room = room_of_key(&ui.open_room);
-    let dur = ui
-        .shadow
+    let dur = voice_duration(ui, event_id);
+    voice_playback_start(ui, win, event_id, frac.clamp(0.0, 1.0) * dur);
+}
+
+/// A voice note's length in seconds, from the event the timeline holds.
+fn voice_duration(ui: &UiState, event_id: &str) -> f64 {
+    ui.shadow
         .iter()
         .find(|i| i["eventId"].as_str() == Some(event_id))
         .and_then(|i| i["media"]["duration"].as_f64())
         .unwrap_or(0.0)
-        / 1000.0;
+        / 1000.0
+}
+
+/// Play `event_id` from `from` seconds and start the shared poll. The poll
+/// only starts once the engine has answered: `audio.play` may have to fetch
+/// the file first, and until it replies there is no player to ask.
+fn voice_playback_start(ui: &mut UiState, win: &AppWindow, event_id: &str, from: f64) {
+    let room = room_of_key(&ui.open_room);
+    ui.voice_timer.stop();
+    ui.voice_positions.clear();
+    ui.voice_positions.insert(event_id.to_string(), from);
     ui.audio_ctx = (room.clone(), event_id.to_string());
     ui.audio_playing = true;
-    ui.req.fire(
+    let want = event_id.to_string();
+    call_ui(
+        &ui.req.clone(),
         "audio.play",
-        json!({"roomId": room, "eventId": event_id, "seek": frac * dur}),
+        json!({"roomId": room, "eventId": event_id, "seek": from}),
+        move |ui, win, out| {
+            // The user may have pressed pause, or started another note,
+            // while the file was on its way.
+            if !ui.audio_playing || ui.audio_ctx.1 != want {
+                return;
+            }
+            match out {
+                Ok(_) => voice_track(ui),
+                Err(_) => {
+                    voice_playback_end(ui, false);
+                    rebuild_timeline(ui, win);
+                }
+            }
+        },
     );
     rebuild_timeline(ui, win);
+}
+
+/// Playback is over — paused by hand (`tell` the engine) or run out (the
+/// poll saw the player go). Either way the row goes back to zero.
+fn voice_playback_end(ui: &mut UiState, tell_engine: bool) {
+    ui.voice_timer.stop();
+    if tell_engine {
+        ui.req.fire("audio.stop", json!({}));
+    }
+    ui.audio_playing = false;
+    ui.voice_positions.clear();
+    voice_paint(ui, 0.0);
+}
+
+/// The one timer the played waveform runs on: 20 Hz is well past the ~36
+/// bars a note is drawn with, and costs one engine read per tick.
+fn voice_track(ui: &mut UiState) {
+    let req = ui.req.clone();
+    ui.voice_timer.start(
+        slint::TimerMode::Repeated,
+        std::time::Duration::from_millis(50),
+        move || {
+            call_ui(&req, "audio.position", json!({}), |ui, _win, out| {
+                if !ui.audio_playing {
+                    ui.voice_timer.stop();
+                    return;
+                }
+                let v = out.unwrap_or_else(|_| json!({}));
+                if v["playing"].as_bool().unwrap_or(false) {
+                    voice_paint(ui, v["position"].as_f64().unwrap_or(0.0));
+                } else {
+                    // The clip ran out: the engine has already dropped it.
+                    voice_playback_end(ui, false);
+                }
+            });
+        },
+    );
+}
+
+/// Set voice-playing/voice-frac on the row that is playing and clear the
+/// rest, patching the rows in place — a full rebuild 20 times a second
+/// would redo every bubble in the room.
+fn voice_paint(ui: &mut UiState, pos: f64) {
+    use slint::Model as _;
+    let (playing, ev) = (ui.audio_playing, ui.audio_ctx.1.clone());
+    if playing {
+        ui.voice_positions.clear();
+        ui.voice_positions.insert(ev.clone(), pos);
+    }
+    let dur = voice_duration(ui, &ev);
+    let frac = if playing && dur > 0.0 {
+        (pos / dur).clamp(0.0, 1.0) as f32
+    } else {
+        0.0
+    };
+    let model = ui.items_model.clone();
+    for i in 0..model.row_count() {
+        let Some(row) = model.row_data(i) else { continue };
+        if row.kind.as_str() != "voice" && row.kind.as_str() != "audio" {
+            continue;
+        }
+        let hit = playing && row.event_id.as_str() == ev;
+        let want = if hit { frac } else { 0.0 };
+        if row.voice_playing != hit || (row.voice_frac - want).abs() > 0.001 {
+            let mut row = row;
+            row.voice_playing = hit;
+            row.voice_frac = want;
+            model.set_row_data(i, row);
+        }
+    }
 }
 
 fn push_emoji(ui: &mut UiState, win: &AppWindow, query: &str) {
