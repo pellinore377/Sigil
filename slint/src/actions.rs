@@ -2492,37 +2492,21 @@ fn emoji_font_bytes() -> Option<Vec<u8>> {
     tries.iter().find(|p| p.is_file()).and_then(|p| std::fs::read(p).ok())
 }
 
-/// The one scalar `emoji.render` would draw, if the entry is only that.
-///
-/// The engine cuts its picture for a SINGLE code point: it drops the
-/// selectors and joiners and takes the first of what is left
-/// (core/src/media/emoji.rs:38-42). So a joined sequence comes back as its
-/// opening glyph and nothing else — 🇬🇧 as a blue letter G, 👍🏽 as the bare
-/// hand, 😶‍🌫️ as a plain face — which is not the emoji the cell offered.
-/// Those are refused here rather than drawn as something else.
-fn lone_scalar(glyph: &str) -> Option<char> {
-    let mut cs = glyph
-        .chars()
-        .filter(|c| !matches!(*c, '\u{fe0f}' | '\u{fe0e}'));
-    let first = cs.next()?;
-    cs.next().is_none().then_some(first)
-}
-
 /// The list cut down to what this device can actually draw, and where each
 /// category starts in it.
 ///
-/// Two ways an offer goes bad. A sequence the engine can only render as its
-/// first code point (above). And a code point the font has never heard of:
-/// `emoji.render` answers `not_found`, the cell falls through to text, and the
-/// text face draws a notdef box — a tofu on a phone, the loose pieces of a
-/// joined sequence beside it, or nothing at all where the renderer has no
-/// emoji outlines. A picker that offers those is lying about what it can send,
-/// so the test runs ONCE, here, as the list is built, and the rows below never
-/// see a glyph that fails it.
+/// An offer goes bad when the font cannot draw the whole entry: a code point
+/// it has never heard of, or a sequence its own rules do not fold into one
+/// glyph. `emoji.render` answers `not_found` for both, the cell falls through
+/// to text, and the text face draws a notdef box — a tofu on a phone, the
+/// loose pieces of a joined sequence beside it, or nothing at all where the
+/// renderer has no emoji outlines. A picker that offers those is lying about
+/// what it can send, so the test runs ONCE, here, as the list is built, and
+/// the rows below never see a glyph that fails it.
 ///
-/// The face is asked the same two questions the engine asks — the bare glyph,
-/// then the one the emoji-presentation pair maps to (core/src/media/emoji.rs:
-/// 66-75) — so the two can never disagree.
+/// The question is the engine's own — `emoji::drawable` is the same code that
+/// cuts the picture, composing the sequence through the font's GSUB rules
+/// (core/src/media/emoji.rs) — so the two can never disagree.
 ///
 /// With no colour emoji font at all there are no pictures to be had and text
 /// IS the intended fallback (core/src/media/emoji.rs:1-6), so the list is kept
@@ -2556,14 +2540,9 @@ fn keep_drawable(listed: Vec<(String, String)>) -> (Vec<(String, String)>, Vec<u
         let bounds = bounds_of(&listed, &listed);
         return (listed, bounds);
     };
-    let has_picture = |c: char| {
-        let pic = |gid| face.glyph_raster_image(gid, u16::MAX).is_some();
-        face.glyph_index(c).map(pic).unwrap_or(false)
-            || face.glyph_variation_index(c, '\u{fe0f}').map(pic).unwrap_or(false)
-    };
     let kept: Vec<(String, String)> = listed
         .iter()
-        .filter(|(g, _)| lone_scalar(g).map(has_picture).unwrap_or(false))
+        .filter(|(g, _)| sigil_engine::media::emoji::drawable(&face, g))
         .cloned()
         .collect();
     tracing::info!(
@@ -2644,8 +2623,17 @@ fn recent_emojis(all: &[(String, String)]) -> Vec<(String, String)> {
 /// next time it is opened (every open re-runs `emoji-search`).
 pub fn note_emoji_used(glyph: &str) {
     // Reaction keys come off the wire, so take only what looks like an emoji:
-    // short, and nothing an ASCII keyboard could have typed.
-    if glyph.is_empty() || glyph.chars().count() > 8 || glyph.chars().any(|c| c.is_ascii()) {
+    // short, and carrying at least one code point no ASCII keyboard could
+    // have typed. The ASCII that is allowed through is the keycap bases —
+    // 1️⃣ and #️⃣ open on a digit — so "+1" and "lol" are still refused. The
+    // length is the engine's own limit (core/src/media/emoji.rs), because a
+    // toned family of four runs to eleven code points.
+    const KEYCAP_BASE: &str = "0123456789#*";
+    if glyph.is_empty()
+        || glyph.chars().count() > 32
+        || !glyph.chars().any(|c| !c.is_ascii())
+        || glyph.chars().any(|c| c.is_ascii() && !KEYCAP_BASE.contains(c))
+    {
         return;
     }
     EMOJI_RECENTS.with(|cell| {
@@ -3387,6 +3375,14 @@ fn push_theme(ui: &mut UiState, win: &AppWindow) {
     set_theme_props(ui, win, &t);
 }
 
+/// The swatches the chat-theme page offers, in its own order. The page
+/// resolves the same six to colours (pages/chattheme.slint's `pal-color`,
+/// since Slint parses no colour from a string); this side decides whether a
+/// pending accent is one of them or a colour of the user's own.
+pub const THEME_PALETTE: [&str; 6] = [
+    "#7c9fd4", "#5cb8d6", "#b48ad6", "#9aab7e", "#e0a370", "#d98aa8",
+];
+
 /// Everything the chrome derives from a theme record {accent, wallpaper}:
 /// used for the editor's pending copy and for a room's saved theme on open.
 pub fn set_theme_props(ui: &mut UiState, win: &AppWindow, t: &Value) {
@@ -3401,7 +3397,10 @@ pub fn set_theme_props(ui: &mut UiState, win: &AppWindow, t: &Value) {
             c as u8,
         ));
     }
-    win.set_ct_custom(!accent.is_empty());
+    // "Custom" means a colour the palette does not offer, not merely that a
+    // colour is set: picking a palette swatch was lighting the custom entry
+    // as well as the swatch.
+    win.set_ct_custom(!accent.is_empty() && !THEME_PALETTE.contains(&accent.as_str()));
     win.set_ct_gradients(ModelRc::new(VecModel::from(theme_gradients(if accent.is_empty() { "#a8a8a8" } else { &accent }))));
     if let Some(n) = wallpaper
         .strip_prefix("grad:")

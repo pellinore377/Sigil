@@ -774,8 +774,14 @@ export component AppWindow inherits Window {
                 attach-loc-retry => { root.act("position-refresh", "", ""); }
                 attach-loc-share(la, lo, ms, mode) => { root.act("location-share", "\{la},\{lo},\{mode}", "\{ms}"); }
                 insert-emoji(e) => { root.act("composer-insert", e, ""); }
-                create-poll(q, opts, closed2) => {
+                // `act` has three slots and the third already packs the poll,
+                // so "voters may pick more than one" rides inside it, second
+                // after `closed` and before the options — "1" or empty, so a
+                // reader that does not know about it drops the field with the
+                // blank option slots instead of taking it for an answer.
+                create-poll(q, opts, closed2, multi) => {
                     root.act("create-poll", q, (closed2 ? "1" : "0")
+                        + "\u{1f}" + (multi ? "1" : "")
                         + "\u{1f}" + opts[0] + "\u{1f}" + opts[1] + "\u{1f}" + opts[2]
                         + "\u{1f}" + opts[3] + "\u{1f}" + opts[4] + "\u{1f}" + opts[5]
                         + "\u{1f}" + opts[6] + "\u{1f}" + opts[7]);

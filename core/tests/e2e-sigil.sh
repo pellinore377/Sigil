@@ -82,6 +82,21 @@ H a --assert "$R[?body==\"echo two\"].sendState == \"sent\"" || fail "the echo n
 H a --assert "$R[?kind==\"location\"].sendState == \"sent\"" || fail "the place never settled" engine-a.log
 H b --assert "$R[][?body==\"echo two\"].length" || fail "bob missed echo two" engine-b.log
 H b --assert "$R[][?kind==\"location\"].length" || fail "bob missed the place" engine-b.log
+# a poll, and a vote that counts on the tap. The tally is filed under the
+# name of whoever cast it, so our own copy coming back off the slot lands on
+# the same numbers and nothing is counted twice.
+A poll.create roomId="$ROOM" question="tea or coffee" options:='["tea","coffee"]' | result || fail "poll.create" engine-a.log
+POLL=$(H a "$R[?kind==\"poll\"].eventId")
+A poll.vote roomId="$ROOM" eventId="$POLL" answers:='["1"]' >/dev/null & PV=$!
+sleep 0.5
+H a --assert "$R[?kind==\"poll\"].poll.answers[1].mine" \
+    --assert "$R[?kind==\"poll\"].poll.answers[1].votes == 1" \
+  || fail "the vote did not count until it had gone out" engine-a.log
+wait $PV
+sleep 4
+H a --assert "$R[?kind==\"poll\"].poll.answers[1].votes == 1" --assert "$R[?kind==\"poll\"].poll.voters == 1" \
+  || fail "the vote did not settle to one" engine-a.log
+H b --assert "$R[?kind==\"poll\"].poll.answers[1].votes == 1" || fail "bob did not see the vote" engine-b.log
 # restart bob's engine: session, rooms, history come back
 kill "${PIDS[-1]}" 2>/dev/null || true; sleep 1
 start_engine b; sleep 3

@@ -205,7 +205,8 @@ export component ChatPage inherits Rectangle {
     callback attach-loc-retry;
     callback attach-loc-share(float, float, float, string); // lat, lon, ms, mode
     callback insert-emoji(string);
-    callback create-poll(string, [string], bool);
+    // question, options, closed, "voters may pick more than one"
+    callback create-poll(string, [string], bool, bool);
     callback send-sticker(int);
     callback load-stickers;
     callback load-emoji;
@@ -1432,7 +1433,7 @@ export component ChatPage inherits Rectangle {
                     loc-retry => { root.attach-loc-retry(); }
                     share-location(la, lo, ms, mode) => { root.attach-loc-share(la, lo, ms, mode); }
                     insert-emoji(e) => { root.insert-emoji(e); }
-                    create-poll(q, opts, closed) => { root.create-poll(q, opts, closed); }
+                    create-poll(q, opts, closed, multi) => { root.create-poll(q, opts, closed, multi); }
                     send-sticker(i) => { root.send-sticker(i); }
                     load-stickers => { root.load-stickers(); }
                     load-emoji => { root.load-emoji(); }

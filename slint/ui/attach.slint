@@ -576,7 +576,7 @@ export component AttachMenu inherits Rectangle {
     callback loc-retry;                 // position.refresh
     callback share-location(float, float, float, string); // lat, lon, ms, mode
     callback insert-emoji(string);
-    callback create-poll(string, [string], bool); // question, options, closed
+    callback create-poll(string, [string], bool, bool); // question, options, closed, multiple answers
     callback send-sticker(int);     // index into stickers
     callback load-stickers;
     callback load-emoji;
@@ -844,17 +844,9 @@ export component AttachMenu inherits Rectangle {
                 TouchArea {
                     clicked => {
                         if (root.poll-valid) {
-                            // The sheet's only seam to the bridge is
-                            // create-poll(question, options, closed) — the
-                            // forwarding in chat.slint and app.slint is
-                            // another owner's — so "voters may pick more than
-                            // one" rides a \u{1} header on the question, which
-                            // no text field can produce and actions.rs
-                            // create_poll strips. Widen the callback when
-                            // those files are free and this goes away.
-                            root.create-poll("\u{1}\{root.poll-multi ? "1" : "0"}" + root.pq,
+                            root.create-poll(root.pq,
                                 [root.po1, root.po2, root.po3, root.po4, root.po5, root.po6, root.po7, root.po8],
-                                root.poll-closed);
+                                root.poll-closed, root.poll-multi);
                         }
                     }
                 }

@@ -523,12 +523,43 @@ impl SigilSession {
             return Reply::err("bad_request", "this poll has ended");
         }
         let body = json!({"ids": ids});
+        let me = self.username.clone();
+        // The row moves on the tap and the event goes out behind it, the way
+        // a message's row appears before it has been sent. A vote is filed
+        // under the name of whoever cast it, so applying it here and again
+        // when our own copy comes back off the slot lands on the same tally:
+        // there is nothing to double count. A refusal puts our old answer
+        // back, and only ours — a vote that arrived while this one was in
+        // the air stays where it is.
+        let was = item["poll"]["votesBy"][&me].clone();
+        self.apply_vote(engine, &room_id, &event_id, &me, &body);
         if let Err(r) = self.send_raw(engine, &room_id, Kind::Vote, &event_id, body.to_string().as_bytes()).await {
+            self.restore_vote(engine, &room_id, &event_id, &me, was);
             return r;
         }
-        let me = self.username.clone();
-        self.apply_vote(engine, &room_id, &event_id, &me, &body);
         Reply::ok(json!({}))
+    }
+
+    /// Put one voter's answers back where they were, without touching
+    /// anyone else's: what a refused vote needs undone.
+    fn restore_vote(&self, engine: &SharedEngine, room_id: &str, poll_id: &str, voter: &str, was: Value) {
+        let me = self.username.clone();
+        let voter = voter.to_string();
+        self.update_item(engine, room_id, poll_id, |it| {
+            let Some(poll) = it.get_mut("poll").and_then(Value::as_object_mut) else { return };
+            let votes = poll.entry("votesBy").or_insert_with(|| json!({}));
+            if let Some(v) = votes.as_object_mut() {
+                match was.as_array() {
+                    Some(_) => {
+                        v.insert(voter, was);
+                    }
+                    None => {
+                        v.remove(&voter);
+                    }
+                }
+            }
+            poll_view(poll, &me);
+        });
     }
 
     fn apply_vote(&self, engine: &SharedEngine, room_id: &str, poll_id: &str, sender: &str, body: &Value) {
@@ -568,11 +599,19 @@ impl SigilSession {
         if item["sender"].as_str() != Some(self.username.as_str()) {
             return Reply::err("forbidden", "only the person who asked can end a poll");
         }
+        let me = self.username.clone();
+        // Ended on the tap, like a vote; a refusal opens it again. Ending is
+        // a flag, so our own copy coming back off the slot changes nothing.
+        self.apply_poll_end(engine, &room_id, &event_id, &me);
         if let Err(r) = self.send_raw(engine, &room_id, Kind::PollEnd, &event_id, b"{}").await {
+            let me2 = me.clone();
+            self.update_item(engine, &room_id, &event_id, |it| {
+                let Some(poll) = it.get_mut("poll").and_then(Value::as_object_mut) else { return };
+                poll.insert("ended".into(), json!(false));
+                poll_view(poll, &me2);
+            });
             return r;
         }
-        let me = self.username.clone();
-        self.apply_poll_end(engine, &room_id, &event_id, &me);
         Reply::ok(json!({}))
     }
 

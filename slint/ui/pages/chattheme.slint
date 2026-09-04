@@ -34,6 +34,14 @@ import { IconLabel, ActionButton } from "../components.slint";
 
 export struct GradPair { top: color, bot: color }
 
+// TEMP diagnostic
+export global CtDebug {
+    in-out property <int> ticks;
+    in-out property <int> changes;
+    in-out property <float> last-sum;
+    in-out property <bool> last-opened;
+}
+
 // One palette swatch. The reference draws a disc split in three: the top
 // HALF is one colour across the full width, and the bottom half is split
 // down the middle into two quarters, each its own colour (measured at
@@ -240,6 +248,42 @@ export component ChatThemePage inherits Rectangle {
             }
         }
     ]
+    /// Somebody has to WATCH the three clocks while the page is put away.
+    ///
+    /// They are read only by things that get drawn — a child's `y`, an
+    /// `opacity` — and the page is never drawn while it is away: PageHolder
+    /// carries `visible: root.x < root.width - 0.5px`. So while the page is
+    /// closed nothing evaluates them; the state machine never records that
+    /// the page WAS closed; and when the holder goes active there is no
+    /// change left to animate, so the page wakes already at rest. Leaving
+    /// looks right only because the page stays visible through all of it.
+    ///
+    /// One timer tick is the cure — the event loop runs it whether or not a
+    /// frame is drawn. It is armed at construction, so the first arrival of
+    /// the session has a closed state to come out of, and re-armed whenever
+    /// `opened` moves, so every later one does too. An `init` handler cannot
+    /// stand in for the first tick: at construction the bridge has not set
+    /// `Theme.mode` yet, `phone` is still false, and the closed state is not
+    /// even reachable to be recorded. A reader inside the page's own tree
+    /// cannot stand in either, `if` conditions included — the whole subtree
+    /// is what goes unevaluated.
+    ///
+    /// map.slint and threads.slint run these same three beats behind the
+    /// same holder and need the same six lines, over their own clock names.
+    property <float> observed;
+    property <bool> observing: true;
+    observe := Timer {
+        interval: 16ms;
+        running: root.observing;
+        triggered => {
+            root.observed = root.head-t + root.stage-t + root.foot-t;
+            root.observing = false;
+            CtDebug.ticks += 1;
+            CtDebug.last-sum = root.observed;
+            CtDebug.last-opened = root.opened;
+        }
+    }
+    changed opened => { root.observing = true; CtDebug.changes += 1; }
     property <float> head-e: 1 - (1 - root.head-t) * (1 - root.head-t) * (1 - root.head-t);
     property <float> stage-e: 1 - (1 - root.stage-t) * (1 - root.stage-t) * (1 - root.stage-t);
     property <float> foot-e: 1 - (1 - root.foot-t) * (1 - root.foot-t) * (1 - root.foot-t);
@@ -274,14 +318,10 @@ export component ChatThemePage inherits Rectangle {
 
     // grad-sel: index of the pending "grad:N" wallpaper, for the preview.
     in property <int> grad-sel: 0;
-    /// `custom-sel` arrives as "the pending theme has an accent at all"
-    /// (actions.rs set_theme_props), which is true of the seven palette
-    /// entries too — so the ring is drawn round the plus only when the
-    /// pending colour is one none of them offers.
-    property <bool> custom-ring: root.custom-sel
-        && root.pending-accent != "#7c9fd4" && root.pending-accent != "#5cb8d6"
-        && root.pending-accent != "#b48ad6" && root.pending-accent != "#9aab7e"
-        && root.pending-accent != "#e0a370" && root.pending-accent != "#d98aa8";
+    /// `custom-sel` means the pending accent is a colour the palette does not
+    /// offer (actions.rs set_theme_props holds the same six this page
+    /// resolves below), so it is the ring round the plus outright.
+    property <bool> custom-ring: root.custom-sel;
     pure function pal-color(hex: string) -> color {
         // The seven palette entries, resolved without a string->color parser.
         if (hex == "#7c9fd4") { return #7c9fd4; }
@@ -342,7 +382,7 @@ export component ChatThemePage inherits Rectangle {
                 overflow: elide;
             }
             Text {
-                text: "Only you will see these changes";
+                text: "t" + CtDebug.ticks + " c" + CtDebug.changes + " s" + round(CtDebug.last-sum * 100) + (CtDebug.last-opened ? " OPEN" : " shut");
                 color: root.fg.with-alpha(0.55);
                 font-family: Theme.font-ui;
                 font-size: Theme.caption;
@@ -379,6 +419,7 @@ export component ChatThemePage inherits Rectangle {
     // page. On the phone it rises from the page bottom once the header has
     // settled, taking the preview and the reset pill with it; the panel is
     // its bottom sheet and follows it up after.
+
     stage := Rectangle {
         x: 0;
         width: 100%;
