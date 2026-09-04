@@ -271,6 +271,17 @@ export component ChatPage inherits Rectangle {
 
     // Read-marking: 800ms after settling at the bottom, only while on screen
     // (ChatPage.qml:1985-1986 readTimer/maybeMarkRead).
+    /// How many loaded rows carry running effects (the bridge counts them);
+    /// the shared clock ticks only while there are any and the page shows.
+    in property <int> fx-count: 0;
+    property <duration> fx-clock: 0ms;
+    // Accumulated, not read from animation-tick(): reading the tick marks
+    // animations as running and the renderer then draws every vsync.
+    fx-timer := Timer {
+        interval: 50ms;
+        running: root.fx-count > 0 && root.visible-to-user;
+        triggered => { root.fx-clock += 50ms; }
+    }
     read-timer := Timer {
         interval: 800ms;
         running: false;
@@ -360,7 +371,9 @@ export component ChatPage inherits Rectangle {
     }
     public function jump-to-latest() { root.jumping = true; }
 
-    background: Theme.menu-background;
+    // The phone's page ground is the header's, so the sheet's rounded top
+    // corners reveal the header colour behind them (the platform look).
+    background: root.phone ? root.top-ground : Theme.menu-background;
 
     VerticalLayout {
         // Header (ChatPage.qml:993-1049): 22px PanelActionButtons; back at 6,
@@ -502,8 +515,8 @@ export component ChatPage inherits Rectangle {
             // The phone keeps the platform messenger's sheet: rounded where it
             // meets the header, square at the bottom, the composer and the
             // gesture zone on the same ground.
-            border-top-left-radius: root.phone ? 28px : 24px;
-            border-top-right-radius: root.phone ? 28px : 24px;
+            border-top-left-radius: Theme.dbg-no-convo-clip ? 0px : root.phone ? 28px : 24px;
+            border-top-right-radius: Theme.dbg-no-convo-clip ? 0px : root.phone ? 28px : 24px;
             border-bottom-left-radius: root.phone ? 0px : 22px;
             border-bottom-right-radius: root.phone ? 0px : 22px;
             clip: true;
@@ -555,6 +568,7 @@ export component ChatPage inherits Rectangle {
                     }
                     for item in root.items : Bubble {
                         item: item;
+                        fx-clock: root.fx-clock;
                         // a screen's height of slack either side keeps entries smooth
                         on-screen: self.y + self.height > -list.viewport-y - list.height
                             && self.y < -list.viewport-y + 2 * list.height;
@@ -683,7 +697,7 @@ export component ChatPage inherits Rectangle {
                 composer := Rectangle {
                     height: root.composer-h;
                     visible: !root.is-invite;
-                    background: root.phone ? transparent : root.convo-c.with-alpha(0.55);
+                    background: root.phone ? root.convo-c : root.convo-c.with-alpha(0.55);
                     // inputPill: fill only, no focus border, radius 19; parent
                     // minus the send disc and the 8px spacing.
                     well := Rectangle {

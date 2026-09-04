@@ -121,17 +121,12 @@ export component Bubble inherits Rectangle {
     /// for rows nobody can see (an animation-tick() dependency anywhere
     /// re-renders the whole window at frame rate).
     in property <bool> on-screen: true;
-    // The effects clock: 30 steps a second from a timer rather than
-    // animation-tick(), which would redraw at the display's full rate (120
-    // on this class of phone) for glyph-by-glyph text that reads the same
-    // at 30. Runs only for effect rows that are on screen.
-    property <bool> animating: root.on-screen && (item.fx-chars.length > 0 || item.location-live || item.kind == "voice");
-    property <duration> clock: 0ms;
-    fx-clock := Timer {
-        interval: 33ms;
-        running: root.animating;
-        triggered => { root.clock = animation-tick(); }
-    }
+    /// The chat's shared 30 Hz effects clock (one timer for the page, not
+    /// one per row: several out-of-phase timers redraw at every vsync).
+    /// A row off screen reads a frozen clock and so redraws nothing.
+    in property <duration> fx-clock: 0ms;
+    property <bool> animating: root.on-screen && (item.fx-chars.length > 0 || item.location-live);
+    property <duration> clock: root.animating ? root.fx-clock : 0ms;
     /// Epoch seconds at app start (window's boot-epoch-s) for the live countdown.
     in property <int> boot-epoch-s: 0;
     property <int> live-remaining: max(0, item.location-expires-s - root.boot-epoch-s - floor(root.clock / 1s));
@@ -307,6 +302,11 @@ export component Bubble inherits Rectangle {
                 transform-scale-y: (item.is-own ? 0.84 : 0.9) + (item.is-own ? 0.16 : 0.1) * root.entry-s;
 
             bubble := Rectangle {
+                // A still bubble is rendered once into a layer and blitted
+                // after that; only rows with running effects redraw their
+                // text each frame. This is what keeps a chat with animated
+                // text (and every scroll) off the CPU.
+                cache-rendering-hint: Theme.dbg-cache-bubbles && !root.animating;
                 x: item.is-own ? brow.width - self.width : 0px;
                 y: brow.height - self.height;
                 // Invisible for the sheet's lifetime, fly-home included
@@ -1268,7 +1268,32 @@ export component Bubble inherits Rectangle {
                         animate blur-amt { duration: 260ms; easing: cubic-bezier(0.33, 1, 0.68, 1); }
                         // RichText.qml:175-181 — the typewriter clock starts on creation.
                         property <duration> t0: 0ms;
-                        init => { self.t0 = animation-tick(); }
+                        init => { self.t0 = root.fx-clock; }
+                        // The uniform glow run: the body once, and one breathing
+                        // copy behind it (RichText.qml:299-310's cycle) — the
+                        // per-glyph cells below then hold no Text.
+                        if item.fx-run : Text {
+                            property <float> gp: 0.5 - 0.5 * cos(360deg * (mod(root.clock / 1ms, 1800.0) / 1800.0));
+                            x: 0; y: 0; width: 100%; height: 100%;
+                            text: item.fx-text;
+                            color: root.fg.with-alpha(0.05 + 0.40 * self.gp);
+                            font-family: item.fx-chars[0].mono ? Theme.font-mono : Theme.font-ui;
+                            font-size: item.fx-chars[0].size;
+                            font-weight: item.fx-chars[0].bold ? 800 : 400; font-italic: item.fx-chars[0].italic;
+                            wrap: word-wrap;
+                            transform-origin: { x: self.width / 2, y: self.height / 2 };
+                            transform-scale-x: 1.1 + 0.4 * self.gp;
+                            transform-scale-y: 1.1 + 0.4 * self.gp;
+                        }
+                        if item.fx-run : Text {
+                            x: 0; y: 0; width: 100%; height: 100%;
+                            text: item.fx-text;
+                            color: root.fg;
+                            font-family: item.fx-chars[0].mono ? Theme.font-mono : Theme.font-ui;
+                            font-size: item.fx-chars[0].size;
+                            font-weight: item.fx-chars[0].bold ? 800 : 400; font-italic: item.fx-chars[0].italic;
+                            wrap: word-wrap;
+                        }
                         for c in item.fx-chars : fx-cell := Rectangle {
                             x: c.x;
                             y: c.y;
@@ -1299,16 +1324,14 @@ export component Bubble inherits Rectangle {
                             // windows (530ms cycle, lead -2px, trail +1.5px, alpha 0.7).
                             property <float> glitch-t: mod((root.clock / 1ms) + c.idx * 53.0, 530.0);
                             property <bool> glitch-on: c.anim == "glitch" && self.glitch-t < 270.0;
-                            if c.anim == "glitch" : Text {
-                                text: c.ch; color: #FF2640;
-                                opacity: fx-cell.glitch-on ? 0.7 : 0.0;
+                            if c.anim == "glitch" && !Theme.dbg-no-fx-copies : Text {
+                                text: c.ch; color: #FF2640.with-alpha(fx-cell.glitch-on ? 0.7 : 0.0);
                                 font-family: c.mono ? Theme.font-mono : Theme.font-ui; font-size: c.size;
                                 font-weight: c.bold ? 800 : 400; font-italic: c.italic;
                                 x: fx-cell.glitch-on ? -2px : 0px; height: 100%; vertical-alignment: center;
                             }
-                            if c.anim == "glitch" : Text {
-                                text: c.ch; color: #26F2FF;
-                                opacity: fx-cell.glitch-on ? 0.7 : 0.0;
+                            if c.anim == "glitch" && !Theme.dbg-no-fx-copies : Text {
+                                text: c.ch; color: #26F2FF.with-alpha(fx-cell.glitch-on ? 0.7 : 0.0);
                                 font-family: c.mono ? Theme.font-mono : Theme.font-ui; font-size: c.size;
                                 font-weight: c.bold ? 800 : 400; font-italic: c.italic;
                                 x: fx-cell.glitch-on ? 1.5px : 0px; height: 100%; vertical-alignment: center;
@@ -1316,10 +1339,11 @@ export component Bubble inherits Rectangle {
                             // Glow: a soft copy breathing behind the glyph —
                             // RichText.qml:299-310: 1800ms cycle, scale 1.1↔1.5,
                             // opacity 0.05↔0.45.
-                            if c.anim == "glow" : Text {
+                            if c.anim == "glow" && !Theme.dbg-no-fx-copies && !item.fx-run : Text {
                                 property <float> gp: 0.5 - 0.5 * cos(360deg * (mod(fx-cell.raw-ms, 1800.0) / 1800.0));
-                                text: c.ch; color: fx-cell.ink;
-                                opacity: 0.05 + 0.40 * self.gp;
+                                // alpha in the colour, not `opacity`: an opacity on a
+                                // Text is an offscreen layer per glyph per frame
+                                text: c.ch; color: fx-cell.ink.with-alpha(0.05 + 0.40 * self.gp);
                                 font-family: c.mono ? Theme.font-mono : Theme.font-ui; font-size: c.size;
                                 font-weight: c.bold ? 800 : 400; font-italic: c.italic;
                                 width: 100%; height: 100%; vertical-alignment: center; horizontal-alignment: center;
@@ -1338,9 +1362,13 @@ export component Bubble inherits Rectangle {
                                 font-family: c.mono ? Theme.font-mono : Theme.font-ui; font-size: c.size;
                                 x: 1.5px * fx-box.blur-amt; y: 1.5px * fx-box.blur-amt; height: 100%; vertical-alignment: center;
                             }
-                            fx-t := Text {
+                            if !item.fx-run : fx-t := Text {
                                 text: c.ch;
-                                color: fx-cell.ink;
+                                // RichText.qml:252-257 — typed × shown, and the blur's
+                                // dimming, as colour alpha (an `opacity` here would be
+                                // an offscreen layer per glyph per frame).
+                                color: fx-cell.ink.with-alpha((fx-cell.typed ? 1.0 : 0.0) * fx-cell.shown
+                                    * (c.anim == "blur" ? 1 - 0.7 * fx-box.blur-amt : 1.0));
                                 font-family: c.mono ? Theme.font-mono : Theme.font-ui;
                                 font-size: c.size;
                                 font-weight: c.bold ? 800 : 400;
@@ -1349,9 +1377,6 @@ export component Bubble inherits Rectangle {
                                 vertical-alignment: center;
                                 x: c.anim == "shake" ? sin(360deg * (mod(fx-cell.tick-ms, 240.0) / 240.0)) * 0.8px : 0px;
                                 y: c.anim == "wave" ? sin(360deg * (mod(fx-cell.tick-ms, 1300.0) / 1300.0)) * 1.8px : 0px;
-                                // RichText.qml:252-257 — typed × shown, and the blur's dimming.
-                                opacity: (fx-cell.typed ? 1.0 : 0.0) * fx-cell.shown
-                                    * (c.anim == "blur" ? 1 - 0.7 * fx-box.blur-amt : 1.0);
                                 transform-origin: { x: self.width / 2, y: self.height / 2 };
                                 transform-rotation: c.anim == "barrel" ? 360deg * fx-cell.bq
                                     : c.anim == "flip" ? 180deg : 0deg;

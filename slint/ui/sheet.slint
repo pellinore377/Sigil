@@ -168,12 +168,19 @@ export component MessageSheet inherits Rectangle {
         // The original goes first, then the frost's picture is taken of the
         // page without it (the sheet is not drawn yet: `shown` is still off) …
         root.hide-source = true;
-        root.frost-snapshot();
         // … :121-133 — then the sheet shows, its copy on the bubble, lifting
-        // to where it will rest.
+        // to where it will rest. The frost's picture is taken on the next
+        // frame: the readback and blur cost tens of milliseconds, and taken
+        // here they would stall the lift at the moment of the press.
         root.animate-copy = true;
         root.lifted = true;
         root.shown = true;
+        frost-later.running = true;
+    }
+    frost-later := Timer {
+        interval: 1ms;
+        running: false;
+        triggered => { self.running = false; root.frost-snapshot(); }
     }
     function begin-close() {
         // MessageSheet.qml:135-143 close(): fly home as the frost lifts, then clear.

@@ -17,7 +17,7 @@ use sigil_engine::ipc::wire::{Reply, Request};
 
 use crate::rows::{self, IconSet};
 use crate::{AppWindow, RoomRow, TimelineRow};
-use slint::{ComponentHandle, ModelRc, SharedString, VecModel};
+use slint::{ComponentHandle, Model, ModelRc, SharedString, VecModel};
 
 /// Fire requests at the engine from the UI thread.
 #[derive(Clone)]
@@ -1866,6 +1866,22 @@ pub fn rebuild_timeline(ui: &mut UiState, win: &AppWindow) {
             waveform.clear();
         }
         let duration_ms = media["duration"].as_f64().unwrap_or(0.0);
+        // One uniform glow run (the common "everything glows" message): the
+        // bubble draws it as two Text items rather than two per glyph.
+        let fx_run = !fx_chars.is_empty()
+            && fx_chars.iter().all(|c| {
+                c.anim == "glow"
+                    && !c.mark
+                    && !c.spoiler
+                    && !c.underline
+                    && !c.strike
+                    && !c.has_color
+                    && c.size == fx_chars[0].size
+                    && c.bold == fx_chars[0].bold
+                    && c.italic == fx_chars[0].italic
+                    && c.mono == fx_chars[0].mono
+            });
+        let fx_text: String = if fx_run { fx_chars.iter().map(|c| c.ch.as_str()).collect() } else { String::new() };
         let reply = item.get("replyTo").cloned().filter(|r| !r.is_null());
         let reactions: Vec<crate::ReactionChip> = item["reactions"]
             .as_array()
@@ -2036,6 +2052,8 @@ pub fn rebuild_timeline(ui: &mut UiState, win: &AppWindow) {
             // as parts instead, and a plain body stays on the fast Text path.
             rich_body: rich_body.clone().unwrap_or_default(),
             has_rich: rich_body.is_some() && fx_chars.is_empty(),
+            fx_run,
+            fx_text: fx_text.into(),
             fx_chars: slint::ModelRc::new(VecModel::from(fx_chars)),
             fx_w,
             fx_h,
@@ -2185,6 +2203,9 @@ pub fn rebuild_timeline(ui: &mut UiState, win: &AppWindow) {
             ..Default::default()
         });
     }
+    // the shared effects clock runs only while something needs it
+    let fx_rows = rows_out.iter().filter(|r| r.fx_chars.row_count() > 0 || r.location_live).count();
+    win.set_chat_fx_count(fx_rows as i32);
     ui.items_model.set_vec(rows_out);
     win.set_items(ModelRc::from(ui.items_model.clone()));
     // an entry plays once: the next rebuild sees these as settled

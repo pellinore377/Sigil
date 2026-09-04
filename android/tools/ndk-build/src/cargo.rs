@@ -68,6 +68,10 @@ pub fn cargo_ndk(
     }
     rustflags.push_str("-Clink-arg=");
     rustflags.push_str(&clang_target);
+    // 16 KB page alignment: the platform's newer devices and its store
+    // require it of every native library.
+    rustflags.push_str(SEP);
+    rustflags.push_str("-Clink-arg=-Wl,-z,max-page-size=16384");
 
     let ar = ndk.toolchain_bin("ar", target)?;
     cargo.env(format!("AR_{}", triple), &ar);

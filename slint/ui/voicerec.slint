@@ -4,6 +4,11 @@
 // clip's waveform + duration). Controls: side pills + a 120px centre pill.
 // The root is transparent (VoiceRecorder.qml:7): the conversation ground
 // shows through around the stage card and the pills.
+//
+// The phone's is the platform messenger's: a 300dp sheet on the card ground
+// (radius 28, 16 from the sides, 12 under the composer) and, outside it, a
+// 56dp row of three pills — outlined Cancel and Attach, the mic on an accent
+// container between them, split 1 : 1.1 : 1.
 
 import { Theme } from "style.slint";
 import { Icons } from "icons.slint";
@@ -28,32 +33,40 @@ export component VoiceRecorder inherits Rectangle {
     callback attach;
     callback cancelled;
 
+    property <bool> phone: Theme.mode != "desktop";
     // The card ink: the QML flips to dark on light theme tints; Frosted Glass
     // stays dark, so fg stands in until chat themes reach the recorder.
-    property <color> ink: root.fg;
+    property <color> ink: root.phone ? Theme.menu-text : root.fg;
     property <color> pill-c: root.chip;
-    property <float> shown: root.state == "recording" ? root.elapsed : root.clip-duration;
+    // The phone's accent container: the accent sunk into the ground.
+    property <color> accent-container: Theme.accent.mix(Theme.background, Theme.mode == "light" ? 0.22 : 0.42);
+    property <bool> recording: root.state == "recording";
+    property <float> shown: root.recording ? root.elapsed : root.clip-duration;
     property <string> timer-text:
         (floor(root.shown / 60) < 10 ? "0" : "") + floor(root.shown / 60)
         + ":" + (mod(floor(root.shown), 60) < 10 ? "0" : "") + mod(floor(root.shown), 60);
 
-    height: 230px;
+    // 12 + 300 + 12 + 56 + 16 on the phone.
+    height: root.phone ? 396px : 230px;
     background: transparent;
 
     VerticalLayout {
-        padding: 10px;
-        spacing: 10px;
+        padding-left: root.phone ? 16px : 10px;
+        padding-right: root.phone ? 16px : 10px;
+        padding-top: root.phone ? 12px : 10px;
+        padding-bottom: root.phone ? 16px : 10px;
+        spacing: root.phone ? 12px : 10px;
 
         // Stage card
         stage := Rectangle {
             vertical-stretch: 1;
-            border-radius: 18px;
-            background: root.surface;
+            border-radius: root.phone ? 28px : 18px;
+            background: root.phone ? Theme.card-ground : root.surface;
 
             // idle: static waveform glyph + caption
             if root.state == "idle" : VerticalLayout {
                 alignment: center;
-                spacing: 10px;
+                spacing: root.phone ? 16px : 10px;
                 // A 46px band; each bar is centred in its own column so the
                 // layout cannot pin it to the top.
                 idle-wave := HorizontalLayout {
@@ -73,7 +86,7 @@ export component VoiceRecorder inherits Rectangle {
                 }
                 Text {
                     text: "Tap to record your voice";
-                    color: root.ink.with-alpha(0.8);
+                    color: root.phone ? root.ink : root.ink.with-alpha(0.8);
                     font-family: Theme.font-ui;
                     font-size: Theme.body;
                     horizontal-alignment: center;
@@ -90,7 +103,7 @@ export component VoiceRecorder inherits Rectangle {
                 HorizontalLayout {
                     alignment: center;
                     spacing: 7px;
-                    if root.state == "recording" : Rectangle {
+                    if root.recording : Rectangle {
                         width: 9px;
                         rec-dot := Rectangle {
                             x: 0; y: (parent.height - 9px) / 2;
@@ -115,7 +128,7 @@ export component VoiceRecorder inherits Rectangle {
                     bars := HorizontalLayout {
                         alignment: center;
                         spacing: 2px;
-                        for level in (root.state == "recording" ? root.levels : root.clip-waveform) : Rectangle {
+                        for level in (root.recording ? root.levels : root.clip-waveform) : Rectangle {
                             width: 3px; height: 48px;
                             Rectangle {
                                 x: 0; y: (48px - self.height) / 2;
@@ -132,67 +145,77 @@ export component VoiceRecorder inherits Rectangle {
 
         // Controls: Restart/Cancel · record/stop · Attach — sides (W-136)/2.
         controls := HorizontalLayout {
-            height: 46px;
-            spacing: 8px;
+            height: root.phone ? 56px : 46px;
+            spacing: root.phone ? 12px : 8px;
             cancel-b := Rectangle {
                 horizontal-stretch: 1;
-                border-radius: 23px;
-                background: root.pill-c;
+                border-radius: root.phone ? 28px : 23px;
+                background: root.phone ? transparent : root.pill-c;
+                border-width: root.phone ? 1px : 0px;
+                border-color: Theme.popup-border;
                 HorizontalLayout {
                     alignment: center;
                     // QML's fitWidth icon boxes hug the glyph at spacing 6; a
                     // Slint glyph cell is wider, so 4 lands the same gap.
-                    spacing: 4px;
+                    spacing: root.phone ? 8px : 4px;
                     IconLabel {
-                        text: root.state == "recording" ? Icons.refresh : Icons.close;
-                        font-size: Theme.icon-size;   // VoiceRecorder.qml:178
-                        color: root.fg; vertical-alignment: center;
+                        text: root.recording ? Icons.refresh : Icons.close;
+                        font-size: root.phone ? 20px : Theme.icon-size;   // VoiceRecorder.qml:178
+                        color: root.phone ? Theme.accent : root.fg; vertical-alignment: center;
                     }
                     Text {
-                        text: root.state == "recording" ? "Restart" : "Cancel";
-                        color: root.fg;
+                        text: root.recording ? "Restart" : "Cancel";
+                        color: root.phone ? Theme.accent : root.fg;
                         font-family: Theme.font-ui; font-size: Theme.body;
                         vertical-alignment: center;
                     }
                 }
                 cancel-t := TouchArea { clicked => {
-                    if (root.state == "recording") { root.restart(); }
+                    if (root.recording) { root.restart(); }
                     else { root.cancelled(); }
                 } }
             }
             mic-b := Rectangle {
-                width: 120px;
-                border-radius: 23px;
-                background: root.state == "recording" ? Theme.urgent.brighter(0.25) : root.accent.brighter(0.3);
+                // 120 on the desktop; the phone's takes 1.1 of the split.
+                min-width: root.phone ? 0px : 120px;
+                max-width: root.phone ? 10000px : 120px;
+                horizontal-stretch: root.phone ? 1.1 : 0;
+                border-radius: root.phone ? 28px : 23px;
+                background: root.phone
+                    ? (root.recording ? Theme.urgent : root.accent-container)
+                    : root.recording ? Theme.urgent.brighter(0.25) : root.accent.brighter(0.3);
                 IconLabel {
-                    text: root.state == "recording" ? Icons.stop : Icons.record;
+                    text: root.recording ? Icons.stop : Icons.record;
                     filled: true;   // VoiceRecorder.qml:194
-                    color: Theme.background;
-                    font-size: 22px;
+                    color: root.phone ? Theme.menu-text : Theme.background;
+                    font-size: root.phone ? 24px : 22px;
                     width: 100%; height: 100%;
                 }
                 mic-t := TouchArea { clicked => {
-                    if (root.state == "recording") { root.stop(); }
+                    if (root.recording) { root.stop(); }
                     else if (root.state == "ready") { root.restart(); }
                     else { root.record(); }
                 } }
             }
             attach-b := Rectangle {
                 horizontal-stretch: 1;
-                border-radius: 23px;
-                opacity: root.state == "idle" ? 0.6 : 1;
-                background: root.state == "idle" ? root.pill-c : root.accent.brighter(0.3);
+                border-radius: root.phone ? 28px : 23px;
+                opacity: root.state == "idle" ? (root.phone ? 0.45 : 0.6) : 1;
+                background: root.phone ? transparent
+                          : root.state == "idle" ? root.pill-c : root.accent.brighter(0.3);
+                border-width: root.phone ? 1px : 0px;
+                border-color: Theme.popup-border;
                 HorizontalLayout {
                     alignment: center;
-                    spacing: 4px;
+                    spacing: root.phone ? 8px : 4px;
                     IconLabel {
-                        text: Icons.check; font-size: Theme.icon-size;   // VoiceRecorder.qml:214
-                        color: root.state == "idle" ? root.fg : #1a1a1a;
+                        text: Icons.check; font-size: root.phone ? 20px : Theme.icon-size;   // VoiceRecorder.qml:214
+                        color: root.phone ? Theme.accent : root.state == "idle" ? root.fg : #1a1a1a;
                         vertical-alignment: center;
                     }
                     Text {
                         text: "Attach";
-                        color: root.state == "idle" ? root.fg : #1a1a1a;
+                        color: root.phone ? Theme.accent : root.state == "idle" ? root.fg : #1a1a1a;
                         font-family: Theme.font-ui; font-size: Theme.body;
                         vertical-alignment: center;
                     }
@@ -201,7 +224,7 @@ export component VoiceRecorder inherits Rectangle {
                     enabled: root.state != "idle";
                     // Attaching mid-recording stops the take first (QML attach()).
                     clicked => {
-                        if (root.state == "recording") { root.stop(); }
+                        if (root.recording) { root.stop(); }
                         else { root.attach(); }
                     }
                 }

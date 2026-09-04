@@ -30,6 +30,11 @@ export global Theme {
     // system. The bridge picks the mode from the device and feeds the
     // system's Material accent.
     in-out property <string> mode: "desktop";
+    // Diagnostic switches, set from /data/local/tmp/sigil-flags on a
+    // device (one name per line), so a single build can bisect frame cost.
+    in-out property <bool> dbg-no-fx-copies: false;
+    in-out property <bool> dbg-no-convo-clip: false;
+    in-out property <bool> dbg-cache-bubbles: false;
     in-out property <color> system-accent: #a8a8a8;
     property <bool> dark: mode == "dark";
     property <bool> light: mode == "light";

@@ -30,6 +30,18 @@ pub fn run_app() -> anyhow::Result<()> {
     if let Ok(m) = std::env::var("SIGIL_THEME_MODE") {
         win.global::<Theme>().set_mode(m.as_str().into());
     }
+    // Diagnostic switches for a device build: one flag name per line.
+    if let Ok(flags) = std::fs::read_to_string("/data/local/tmp/sigil-flags") {
+        let t = win.global::<Theme>();
+        for f in flags.lines().map(str::trim) {
+            match f {
+                "no-fx-copies" => t.set_dbg_no_fx_copies(true),
+                "no-convo-clip" => t.set_dbg_no_convo_clip(true),
+                "cache-bubbles" => t.set_dbg_cache_bubbles(true),
+                _ => {}
+            }
+        }
+    }
     scale::keep(&win);
     // the desktop shows the card in its frame; a phone is the card
     #[cfg(not(target_os = "android"))]

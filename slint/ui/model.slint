@@ -97,6 +97,11 @@ export struct TimelineRow {
     fx-w: length,            // the glyph box
     fx-h: length,
     fx-spoiler: bool,        // some glyphs are covered until tapped
+    // A message that is one uniform glow run draws as two Text items
+    // (body + breathing copy) instead of two per glyph; `fx-text` is the
+    // run's text for that path.
+    fx-run: bool,
+    fx-text: string,
     is-new: bool,            // just arrived: plays the entry animation once
     html-ish: bool,      // body carries formatting the effects pass renders
     sender: string,

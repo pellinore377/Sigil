@@ -140,6 +140,8 @@ export component AppWindow inherits Window {
     /// how many bars the chip has room for; the bridge resamples to it
     out property <int> chat-clip-wave-bars: chat.clip-wave-bars;
     /// @ and # suggestions under the composer, and the page's note pill
+    /// rows with running effects in the open timeline (see ChatPage.fx-count)
+    in property <int> chat-fx-count;
     in property <[UserRow]> chat-ac-items;
     in-out property <int> chat-ac-index: 0;
     in-out property <string> chat-toast;
@@ -446,8 +448,9 @@ export component AppWindow inherits Window {
     // insets are part of the page. Desktop insets are zero.
     Rectangle {
         x: 0; y: 0; width: 100%; height: root.safe-area-insets.top;
-        background: root.in-session && root.nav != "home" && root.nav != "start" && root.nav != "settings"
-            ? chat.top-ground : Theme.card-ground;
+        background: root.in-session && root.nav == "home" ? Theme.background
+            : root.in-session && root.nav != "start" && root.nav != "settings" ? chat.top-ground
+            : Theme.card-ground;
     }
     Rectangle {
         x: 0; y: root.height - max(root.safe-area-insets.bottom, root.kb-overlap);
@@ -606,6 +609,7 @@ export component AppWindow inherits Window {
                 voice-staged-wave: root.voice-staged-wave;
                 clip-frac: root.chat-clip-frac;
                 clip-playing <=> root.chat-clip-playing;
+                fx-count: root.chat-fx-count;
                 ac-items: root.chat-ac-items;
                 ac-index <=> root.chat-ac-index;
                 toast <=> root.chat-toast;

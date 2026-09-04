@@ -89,8 +89,18 @@ fn main() -> anyhow::Result<()> {
     }
     h.settle();
     h.shoot("chat")?;
-    // the voice recorder with a clip ready to send
+    // the voice recorder: idle, mid-take, then with a clip ready to send
     app.set_recorder_open(true);
+    h.settle();
+    h.shoot("recorder-idle")?;
+    app.set_rec_state("recording".into());
+    app.set_rec_elapsed(4.0);
+    let live: Vec<f32> = (0..60)
+        .map(|i| 0.15 + 0.6 * ((i as f32 * 0.7).cos().abs()))
+        .collect();
+    app.set_rec_levels(slint::ModelRc::new(slint::VecModel::from(live)));
+    h.settle();
+    h.shoot("recorder-recording")?;
     app.set_rec_state("ready".into());
     app.set_rec_clip_duration(7.0);
     let bars: Vec<f32> = (0..60)
@@ -137,6 +147,8 @@ fn main() -> anyhow::Result<()> {
     app.set_nav("chat".into());
     h.settle();
     app.set_attach_open(true);
+    h.settle();
+    h.shoot("attach-grid")?;
     app.set_lp_have_fix(true);
     app.set_lp_lat(51.5007);
     app.set_lp_lon(-0.1246);
