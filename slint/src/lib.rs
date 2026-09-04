@@ -29,6 +29,7 @@ pub fn run_app() -> anyhow::Result<()> {
     // For the phone-shaped desktop check: force the phone palette.
     if let Ok(m) = std::env::var("SIGIL_THEME_MODE") {
         win.global::<Theme>().set_mode(m.as_str().into());
+        rows::DARK_SCHEME.store(m != "light", std::sync::atomic::Ordering::Relaxed);
     }
     // Diagnostic switches for a device build: one flag name per line.
     if let Ok(flags) = std::fs::read_to_string("/data/local/tmp/sigil-flags") {

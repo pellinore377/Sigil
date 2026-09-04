@@ -544,6 +544,56 @@ pub fn effects_markdown(body: &str, effects: &Value) -> Option<String> {
 }
 
 /// Per-character colour from effect spans, later effects painting over earlier.
+/// Which of an effect's two swatches applies: the composer stores a dark and
+/// a light hex per colour, and the phone follows the system setting.
+pub static DARK_SCHEME: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
+
+fn scheme_hex(rgb: &Value) -> Option<String> {
+    let dark = DARK_SCHEME.load(std::sync::atomic::Ordering::Relaxed);
+    let (first, other) = if dark { ("dark", "light") } else { ("light", "dark") };
+    rgb[first]
+        .as_str()
+        .filter(|s| !s.is_empty())
+        .or_else(|| rgb[other].as_str().filter(|s| !s.is_empty()))
+        .map(str::to_string)
+}
+
+fn luminance((r, g, b): (u8, u8, u8)) -> f32 {
+    let lin = |c: u8| {
+        let c = c as f32 / 255.0;
+        if c <= 0.03928 { c / 12.92 } else { ((c + 0.055) / 1.055).powf(2.4) }
+    };
+    0.2126 * lin(r) + 0.7152 * lin(g) + 0.0722 * lin(b)
+}
+
+/// A colour picked for one scheme, kept readable on the bubble it lands on:
+/// too dark for a dark ground is lifted toward white, too light for a light
+/// ground is pulled toward black, hue kept. The floors are what a bubble's
+/// container needs for 4.5:1 against the messenger's greys.
+fn legible((r, g, b): (u8, u8, u8)) -> (u8, u8, u8) {
+    let dark = DARK_SCHEME.load(std::sync::atomic::Ordering::Relaxed);
+    let (floor, target) = if dark { (0.35, 255.0) } else { (0.15, 0.0) };
+    let y = luminance((r, g, b));
+    if (dark && y >= floor) || (!dark && y <= floor) {
+        return (r, g, b);
+    }
+    let mix = |t: f32| {
+        let m = |c: u8| (c as f32 + (target - c as f32) * t).round() as u8;
+        (m(r), m(g), m(b))
+    };
+    let (mut lo, mut hi) = (0.0f32, 1.0f32);
+    for _ in 0..12 {
+        let mid = (lo + hi) / 2.0;
+        let y = luminance(mix(mid));
+        if (dark && y < floor) || (!dark && y > floor) { lo = mid } else { hi = mid }
+    }
+    mix(hi)
+}
+
+fn hex_of((r, g, b): (u8, u8, u8)) -> String {
+    format!("#{r:02x}{g:02x}{b:02x}")
+}
+
 pub(crate) fn effect_char_colors(
     chars: &[char],
     effects: &Value,
@@ -563,12 +613,11 @@ pub(crate) fn effect_char_colors(
         let c = &e["color"];
         match c["type"].as_str() {
             Some("solid") => {
-                let hex = c["rgb"]["dark"].as_str().unwrap_or("");
-                if hex.is_empty() {
+                let Some(hex) = scheme_hex(&c["rgb"]).and_then(|h| parse_hex(&h)).map(|rgb| hex_of(legible(rgb))) else {
                     continue;
-                }
+                };
                 for slot in &mut colors[start..end] {
-                    *slot = Some(hex.to_string());
+                    *slot = Some(hex.clone());
                 }
                 any = true;
             }
@@ -577,7 +626,7 @@ pub(crate) fn effect_char_colors(
                     .as_array()
                     .map(|a| {
                         a.iter()
-                            .filter_map(|s| s["dark"].as_str().and_then(parse_hex))
+                            .filter_map(|s| scheme_hex(s).and_then(|h| parse_hex(&h)).map(legible))
                             .collect()
                     })
                     .unwrap_or_default();
@@ -602,8 +651,7 @@ pub(crate) fn effect_char_colors(
             Some("rainbow") => {
                 let n = (end - start).max(1) as f32;
                 for (k, slot) in colors[start..end].iter_mut().enumerate() {
-                    let (r, g, b) = hue_rgb(k as f32 / n);
-                    *slot = Some(format!("#{r:02x}{g:02x}{b:02x}"));
+                    *slot = Some(hex_of(legible(hue_rgb(k as f32 / n))));
                 }
                 any = true;
             }

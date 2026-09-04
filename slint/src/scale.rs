@@ -151,6 +151,7 @@ fn follow_device(win: &crate::AppWindow) {
         };
         if theme.get_mode() != mode {
             theme.set_mode(mode.into());
+            crate::rows::DARK_SCHEME.store(mode == "dark", std::sync::atomic::Ordering::Relaxed);
             i_slint_backend_android_activity::set_dark_system_bars(mode == "dark");
         }
         if let Some(accent) = i_slint_backend_android_activity::system_accent_color() {

@@ -45,9 +45,20 @@ pub struct AndroidWindowAdapter {
     /// Whether the cursor handle should be shown.
     /// They are shown when taping, but hidden whenever keys are pressed
     pub(crate) show_cursor_handles: Cell<bool>,
+    /// SIGIL PATCH: the platform fades its insertion handle out after a
+    /// few seconds untouched; this is that clock.
+    handle_timer: Timer,
 
     long_press: RefCell<Option<LongPressDetection>>,
     last_pressed_state: Cell<ButtonState>,
+}
+
+impl AndroidWindowAdapter {
+    pub(crate) fn hide_cursor_handles(&self) {
+        self.show_cursor_handles.set(false);
+        self.handle_timer.stop();
+        self.java_helper.hide_handles().unwrap_or_else(|e| print_jni_error(&self.app, e));
+    }
 }
 
 impl WindowAdapter for AndroidWindowAdapter {
@@ -193,6 +204,7 @@ impl AndroidWindowAdapter {
             fullscreen: Cell::new(false),
             offset: Default::default(),
             show_cursor_handles: Cell::new(false),
+            handle_timer: Timer::default(),
             long_press: RefCell::default(),
             last_pressed_state: Cell::new(ButtonState(0)),
         })
@@ -373,6 +385,33 @@ impl AndroidWindowAdapter {
                                     touch_pos(&p),
                                     TouchPhase::Started,
                                 );
+                            }
+                            // SIGIL PATCH: the handle belongs to a tap in the
+                            // focused field, not to any touch on the window;
+                            // and like the platform's it fades after 4 s.
+                            let in_field = WindowInner::from_pub(&self.window)
+                                .focus_item
+                                .borrow()
+                                .upgrade()
+                                .map_or(false, |f| {
+                                    f.downcast::<i_slint_core::items::TextInput>().is_some()
+                                        && f
+                                            .geometry()
+                                            .translate(f.map_to_window(Default::default()).to_vector())
+                                            .contains(i_slint_core::lengths::logical_point_from_api(position))
+                                });
+                            if in_field {
+                                self.handle_timer.start(
+                                    TimerMode::SingleShot,
+                                    std::time::Duration::from_millis(4000),
+                                    || {
+                                        if let Some(a) = CURRENT_WINDOW.with_borrow(|x| x.upgrade()) {
+                                            a.hide_cursor_handles();
+                                        }
+                                    },
+                                );
+                            } else {
+                                self.hide_cursor_handles();
                             }
                             InputStatus::Handled
                         }

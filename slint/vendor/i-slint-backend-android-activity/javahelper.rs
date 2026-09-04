@@ -66,6 +66,10 @@ bind_java_type! {
             name = "hide_keyboard",
             sig = (),
         },
+        fn hide_handles {
+            name = "hide_handles",
+            sig = (),
+        },
         fn haptic_long_press {
             name = "haptic_long_press",
             sig = () -> (),
@@ -453,6 +457,10 @@ impl JavaHelper {
         })
     }
 
+    pub fn hide_handles(&self) -> Result<(), jni::errors::Error> {
+        self.with_jni_env(|env, helper| helper.hide_handles(env))
+    }
+
     pub fn haptic_long_press(&self) -> Result<(), jni::errors::Error> {
         self.with_jni_env(|env, helper| helper.haptic_long_press(env))
     }
@@ -743,6 +751,10 @@ fn callback_set_insets<'local>(
 ) -> Result<(), jni::errors::Error> {
     i_slint_core::api::invoke_from_event_loop(move || {
         if let Some(w) = CURRENT_WINDOW.with_borrow(|x| x.upgrade()) {
+            // SIGIL PATCH: the layout is about to move under the insertion
+            // handle (the keyboard opening or closing); it is not repositioned
+            // until the next cursor change, so it goes.
+            w.hide_cursor_handles();
             w.update_window_insets(
                 PhysicalPosition::new(window_left as _, window_top as _),
                 PhysicalSize::new(

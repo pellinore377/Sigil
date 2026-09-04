@@ -520,6 +520,18 @@ public class SlintAndroidJavaHelper {
         });
     }
 
+    // SIGIL PATCH: the insertion handle is a popup pinned to a window
+    // position; when the layout moves under it (the keyboard closing,
+    // a tap elsewhere) it is dropped rather than left floating.
+    public void hide_handles() {
+        mActivity.runOnUiThread(new Runnable() {
+            @Override
+            public void run() {
+                mInputView.setCursorPos(0, 0, 0, 0, 0, 0);
+            }
+        });
+    }
+
     public void hide_keyboard() {
         mActivity.runOnUiThread(new Runnable() {
             @Override

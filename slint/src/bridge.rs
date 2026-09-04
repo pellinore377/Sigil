@@ -1744,12 +1744,16 @@ pub fn rebuild_timeline(ui: &mut UiState, win: &AppWindow) {
                 } else {
                     crate::headless::WIDTH as f32
                 };
-                let max_w = tl_w * 0.78 - 22.0;
+                // The same measure as the plain body Text: Theme.body inside
+                // the bubble's inset, at the bubble's share of the timeline.
+                let phone = win.global::<crate::Theme>().get_mode() != "desktop";
+                let (base_px, max_w) =
+                    if phone { (16.0, tl_w * 0.75 - 32.0) } else { (12.0, tl_w * 0.78 - 22.0) };
                 match crate::fx::layout(
                     &body,
                     &item["effects"],
                     chrono::Utc::now().timestamp_millis() - ts < 5_000,
-                    12.0,
+                    base_px,
                     max_w,
                 ) {
                     Some(lay) => (

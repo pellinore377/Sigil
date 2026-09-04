@@ -21,6 +21,7 @@ fn main() -> anyhow::Result<()> {
     // preview the phone palettes: SIGIL_THEME_MODE=dark|light
     if let Ok(m) = std::env::var("SIGIL_THEME_MODE") {
         app.global::<sigil_slint::Theme>().set_mode(m.as_str().into());
+        sigil_slint::rows::DARK_SCHEME.store(m != "light", std::sync::atomic::Ordering::Relaxed);
         app.global::<sigil_slint::Theme>().set_system_accent(slint::Color::from_rgb_u8(0xE8, 0x91, 0x4E));
     }
     app.window()

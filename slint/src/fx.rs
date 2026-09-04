@@ -296,7 +296,8 @@ mod tests {
                 assert!(w[1].x >= w[0].x + w[0].w - 0.01);
             }
         }
-        assert_eq!(lay.glyphs[0].color.as_deref(), Some("#ff4444"));
+        // The dark swatch, lifted to the legibility floor for a dark bubble.
+        assert_eq!(lay.glyphs[0].color.as_deref(), Some("#ff7474"));
     }
 
     #[test]
