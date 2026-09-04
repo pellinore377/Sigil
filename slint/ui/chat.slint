@@ -14,7 +14,7 @@ import { Icons } from "icons.slint";
 import { IconLabel, ActionButton, Avatar, SButton } from "components.slint";
 import { Spinner, TouchList } from "furniture.slint";
 import { OverflowMenu, MenuEntry } from "furniture.slint";
-import { TimelineRow, ReactionChip, ReplyRef, EmojiItem, UserRow } from "model.slint";
+import { TimelineRow, ReactionChip, ReplyRef, EmojiItem, UserRow, SheetRect } from "model.slint";
 import { Bubble } from "bubble.slint";
 import { MessageSheet } from "sheet.slint";
 import { AttachMenu, StickerItem } from "attach.slint";
@@ -79,6 +79,34 @@ export component ChatPage inherits Rectangle {
     in property <float> lp-mark-lat;
     in property <float> lp-mark-lon;
     in property <image> my-avatar;
+    in property <string> my-initials;
+    in property <color> my-tint: Theme.accent;
+    /// The page is the one on the stack (app.slint's chat holder). The phone
+    /// plays its open choreography on the rise and the reverse on the fall;
+    /// the desktop card keeps its holder slide.
+    in property <bool> opened: true;
+    // open-t: header morph and the sheet's rise; footer-t: the composer's,
+    // after them. 0 → 1 over 280 + 160ms; back: composer 100, then 220.
+    property <float> open-t: 1.0;
+    property <float> footer-t: 1.0;
+    states [
+        closed when root.phone && !root.opened : {
+            open-t: 0.0;
+            footer-t: 0.0;
+            // Linear clocks: the fades take their windows off them, the
+            // motion its OutCubic (an InCubic on the way back) from open-e.
+            in {
+                animate footer-t { duration: 100ms; }
+                animate open-t { duration: 220ms; delay: 100ms; }
+            }
+            out {
+                animate open-t { duration: 280ms; }
+                animate footer-t { duration: 160ms; delay: 280ms; }
+            }
+        }
+    ]
+    property <float> open-e: 1 - (1 - root.open-t) * (1 - root.open-t) * (1 - root.open-t);
+    property <float> footer-e: 1 - (1 - root.footer-t) * (1 - root.footer-t) * (1 - root.footer-t);
     // Composer furniture the bridge fills: the @/# autocomplete rows (label =
     // display-name, sub = user-id) and the toast (ChatPage.qml note()); the
     // page clears the toast itself after 2600ms.
@@ -125,11 +153,15 @@ export component ChatPage inherits Rectangle {
     callback decline-invite;
     callback paginate;
     callback menu-action(string /*action*/, string /*event-id*/);
-    /// Take the pressed bubble's picture before the sheet hides it: (x, y, w, h)
-    /// of the bubble, logical lengths from the window's origin (absolute-position).
-    callback sheet-snapshot(length, length, length, length);
-    /// Take the window's picture for the sheet's frost — the bubble is hidden by now.
-    callback sheet-frost;
+    /// A press on a bubble is lasting: the bridge may take the frost's
+    /// picture now, with the bubble's rect masked out, so the open has it ready.
+    callback sheet-prewarm(string /*event-id*/, SheetRect);
+    /// The hold fired: take the bubble's picture for the lifted copy (its
+    /// reactions and pin stepped out — `copy-of`) and set the frost from the
+    /// prewarmed picture, or from this one when none is ready.
+    callback sheet-snapshot(string /*event-id*/, SheetRect);
+    /// The row whose picture is being taken this instant (Bubble.copying).
+    property <string> copy-of: "";
     in property <image> sheet-backdrop;
     in property <image> sheet-copy;
     /// The window's zones above and below this page (status bar and sync
@@ -189,15 +221,28 @@ export component ChatPage inherits Rectangle {
     /// Test hook: open the sheet for one row as a long-press would (the
     /// harness cannot reach into the list's bubbles).
     public function sheet-open(it: TimelineRow, x: length, y: length, w: length, h: length) {
+        // The corners as Bubble draws them (bubble.slint r-tl … r-br).
+        root.open-menu-for(it, {
+            x: x, y: y, w: w, h: h,
+            r-tl: it.link-only ? 14px : (!it.is-own && !it.group-start) ? 5px : 16px,
+            r-bl: it.link-only ? 14px : (!it.is-own && !it.group-end) ? 5px : 16px,
+            r-tr: it.link-only ? 14px : (it.is-own && !it.group-start) ? 5px : 16px,
+            r-br: it.link-only ? 14px : (it.is-own && !it.group-end) ? 5px : 16px,
+        });
+    }
+    /// A hold fired on `it`, drawn at `r` (window coordinates).
+    function open-menu-for(it: TimelineRow, r: SheetRect) {
         sheet.item = it;
-        // The bubble's picture first, while the original is still drawn …
-        root.sheet-snapshot(x, y, w, h);
+        // The bubble's picture first, while the original is still drawn and
+        // with its reactions and pin stepped out of the frame …
+        root.copy-of = it.event-id;
+        root.sheet-snapshot(it.event-id, r);
+        root.copy-of = "";
         root.menu-action("prepare", it.event-id);
         // … then the sheet, in window coordinates: it subtracts its own
         // absolute-position (safe area, status strip, holder — app.slint:443-492)
-        // so the copy takes off exactly on the bubble, and hides the original
-        // before taking the frost's picture (sheet-frost).
-        sheet.open-for(x, y, w, h);
+        // so the copy takes off exactly on the bubble.
+        sheet.open-for(r);
     }
     public function sheet-close() { sheet.open = false; }
     /// Whatever is staged goes: a voice clip, a caption, an edit, a reply, or plain text.
@@ -311,11 +356,23 @@ export component ChatPage inherits Rectangle {
     /// What sits under the status bar and the gesture bar on the phone: the
     /// header's own ground above, the composer's below, so the insets read
     /// as part of the page rather than as bars.
-    out property <color> top-ground: root.themed ? root.chrome-c : Theme.card-ground;
-    out property <color> bottom-ground: root.phone ? root.convo-c : root.convo-c.with-alpha(0.94).mix(Theme.card-ground, 0.94);
+    // On the phone the header's ground starts as the home bar's and settles
+    // over the open choreography.
+    property <color> top-rest: root.themed ? root.chrome-c : Theme.card-ground;
+    out property <color> top-ground: root.phone ? root.top-rest.mix(Theme.background, root.open-e) : root.top-rest;
+    // With a panel open the page bottom is the panel, so the gesture zone
+    // follows it.
+    out property <color> bottom-ground: root.phone
+        ? (root.attach-open || root.recorder-open ? (root.themed ? root.surface-c : Theme.card-ground) : root.convo-c)
+        : root.convo-c.with-alpha(0.94).mix(Theme.card-ground, 0.94);
+    // ChatPage.qml:20-32 convoC: darker(menu, 1.35), tinted 18% by the
+    // accent when themed. The phone's light palette is near white and
+    // darkening it reads as grey, so there the sheet sits on the card
+    // ground (the platform's lightly elevated surface) instead.
+    property <color> convo-base: root.phone && Theme.mode == "light" ? Theme.card-ground : Theme.menu-background.darker(0.35);
     property <color> convo-c: root.themed
-        ? Theme.menu-background.darker(0.35).mix(root.accent, 0.82)
-        : Theme.menu-background.darker(0.35);
+        ? root.convo-base.mix(root.accent, 0.82)
+        : root.convo-base;
     // surfaceC: ONE literal surface for themed chrome (mix of lighter(menu, 1.35)
     // and the accent at 0.35); chromeC is the header band (ChatPage.qml:47-49).
     property <color> surface-c: root.themed
@@ -337,9 +394,16 @@ export component ChatPage inherits Rectangle {
     property <length> quote-h: root.voice-staged ? 60px : root.quote-armed ? 52px : 0px;
     // inputPill.height (ChatPage.qml:1384): the text's own height between 38
     // and 110 (the QML TextArea's 3px paddings included), plus the quote band.
-    property <length> well-h: min(110px, max(38px, composer-input.preferred-height + 6px)) + root.quote-h;
+    // The phone's pill is the platform's (dp): 56 tall, r28, from 16 to a
+    // 56 send disc 8 past it and 16 in, 12 above the bottom; the + is a 24
+    // glyph in a 48 target 8 inside the pill.
+    property <length> well-h: root.phone
+        ? min(140px, max(54px, composer-input.preferred-height + 20px)) + root.quote-h
+        : min(110px, max(38px, composer-input.preferred-height + 6px)) + root.quote-h;
+    property <length> disc: root.phone ? 54px : 38px;
+    property <length> attach-box: root.phone ? 48px : 30px;
     // composerBox = pill + 18 (:1222): 8 above, 10 below.
-    property <length> composer-h: root.is-invite ? 0px : root.well-h + 18px + root.bottom-inset;
+    property <length> composer-h: root.is-invite ? 0px : root.well-h + (root.phone ? 20px : 18px) + root.bottom-inset;
     /// Where the composer stack starts, measured from the page bottom: the
     /// composer plus whichever inline panel is open (:1869-1884).
     property <length> panel-top: root.height - root.composer-h - att-frame.height - rec-frame.height;
@@ -375,20 +439,26 @@ export component ChatPage inherits Rectangle {
     // corners reveal the header colour behind them (the platform look).
     background: root.phone ? root.top-ground : Theme.menu-background;
 
-    VerticalLayout {
+    // The page's three bands, placed by hand so the phone can move the sheet
+    // and the composer separately: header, the invite banner, the convo.
+    property <length> header-h: root.phone ? 60px : 52px;
+    property <length> sheet-y: root.header-h + (root.is-invite ? 52px : 0px);
+    Rectangle {
+        width: 100%; height: 100%;
         // Header (ChatPage.qml:993-1049): 22px PanelActionButtons; back at 6,
         // avatar 4 after it, title 10 after that and 4 before the trailing
         // buttons, which sit at spacing 0 with an 8px right margin.
         header := Rectangle {
-            height: 52px;
+            x: 0; y: 0; width: 100%;
+            height: root.header-h;
             // The themed chrome band with 22px top radii (:986-992). The
-            // phone is flat: no card corners, the band runs edge to edge.
-            if root.themed : Rectangle {
+            // phone's band is the page ground itself (top-ground).
+            if root.themed && !root.phone : Rectangle {
                 width: 100%; height: 100%;
-                border-top-left-radius: root.phone ? 0px : 22px; border-top-right-radius: root.phone ? 0px : 22px;
+                border-top-left-radius: 22px; border-top-right-radius: 22px;
                 background: root.chrome-c;
             }
-            HorizontalLayout {
+            if !root.phone : HorizontalLayout {
                 padding-left: 6px; padding-right: 8px;
                 spacing: 0;
                 Rectangle {
@@ -491,11 +561,132 @@ export component ChatPage inherits Rectangle {
                     TouchArea { clicked => { root.menu-open = true; } }
                 }
             }
+            // The phone's bar (the platform messenger's, dp): 60 tall, a 24px
+            // back glyph in a 48 target at 4, the 40 avatar at 56, the title
+            // at 108, three 48 targets from the right 8 apart and 8 in. It
+            // opens over the home bar: "Sigil" lets go, the account avatar
+            // flies to the room's spot and becomes it, the back arrow fades
+            // in, the title arrives from the right and the glyphs from past
+            // the edge (open-t).
+            if root.phone : phone-bar := Rectangle {
+                width: 100%; height: 100%;
+                clip: true;
+                property <float> t: root.open-t;
+                property <float> e: root.open-e;
+                property <float> late: clamp((self.t - 0.5) / 0.5, 0.0, 1.0);
+                property <float> late-e: 1 - (1 - self.late) * (1 - self.late) * (1 - self.late);
+                property <float> tail: clamp((self.t - 0.35) / 0.65, 0.0, 1.0);
+                property <float> tail-e: 1 - (1 - self.tail) * (1 - self.tail) * (1 - self.tail);
+                property <length> dx: 160px * (1 - self.tail-e);
+                property <length> title-right: root.is-thread ? self.width - 16px
+                    : root.is-invite ? self.width - 64px
+                    : root.call-here ? join-pill.x - 8px
+                    : self.width - 176px;
+                Text {
+                    x: 16px; height: 100%;
+                    text: "Sigil";
+                    color: Theme.menu-text;
+                    font-family: Theme.font-ui; font-size: 22px; font-weight: 500;
+                    vertical-alignment: center;
+                    opacity: max(0.0, 1 - phone-bar.t / 0.4);
+                    visible: phone-bar.t < 0.4;
+                }
+                back-target := Rectangle {
+                    x: 4px; y: 6px; width: 48px; height: 48px; border-radius: 24px;
+                    opacity: min(1.0, phone-bar.t / 0.536);
+                    background: back-t.pressed ? root.fg.with-alpha(0.10)
+                              : back-t.has-hover ? root.fg.with-alpha(0.06) : transparent;
+                    IconLabel { text: Icons.back; filled: true; color: root.fg; font-size: 24px; width: 100%; height: 100%; }
+                    back-t := TouchArea { clicked => { root.back(); } }
+                }
+                avatar-spot := Rectangle {
+                    property <length> from-x: phone-bar.width - 48px;
+                    x: self.from-x + (56px - self.from-x) * phone-bar.e;
+                    y: 14px - 4px * phone-bar.e;
+                    width: 32px + 8px * phone-bar.e; height: self.width;
+                    if phone-bar.t < 1 : Avatar {
+                        x: 0; y: 0; size: avatar-spot.width;
+                        source: root.my-avatar; initials: root.my-initials; tint: root.my-tint;
+                        opacity: 1 - phone-bar.e;
+                    }
+                    Avatar {
+                        x: 0; y: 0; size: avatar-spot.width;
+                        source: root.room-avatar; initials: root.room-initials; tint: root.room-tint;
+                        status-backdrop: root.chrome-c;
+                        opacity: phone-bar.e;
+                    }
+                }
+                title-col := VerticalLayout {
+                    x: 108px + 24px * (1 - phone-bar.late-e);
+                    y: 0; height: 100%;
+                    width: max(0px, phone-bar.title-right - 108px);
+                    alignment: center;
+                    opacity: phone-bar.late;
+                    Text {
+                        text: root.is-thread ? "Thread" : root.room-name;
+                        color: root.fg;
+                        font-family: Theme.font-ui; font-size: 17px; font-weight: 500;
+                        overflow: elide;
+                    }
+                    if root.room-subtitle != "" || root.typing-line != "" : Text {
+                        text: root.typing-line != "" ? root.typing-line
+                            : root.is-thread ? root.room-name : root.room-subtitle;
+                        color: root.typing-line != "" ? Theme.accent : root.fg.with-alpha(0.5);
+                        font-family: Theme.font-ui; font-size: 13px;
+                        overflow: elide;
+                    }
+                }
+                if !root.is-thread : Rectangle {
+                    x: phone-bar.width - 56px + phone-bar.dx; y: 6px;
+                    width: 48px; height: 48px; border-radius: 24px;
+                    opacity: phone-bar.tail;
+                    background: more-t.pressed ? root.fg.with-alpha(0.10)
+                              : more-t.has-hover ? root.fg.with-alpha(0.06) : transparent;
+                    IconLabel { text: Icons.moreVertical; filled: true; color: root.fg; font-size: 24px; width: 100%; height: 100%; }
+                    more-t := TouchArea { clicked => { root.menu-open = true; } }
+                }
+                if !root.call-here && !root.is-thread && !root.is-invite : Rectangle {
+                    x: phone-bar.width - 112px + phone-bar.dx; y: 6px;
+                    width: 48px; height: 48px; border-radius: 24px;
+                    opacity: phone-bar.tail * (root.in-call ? 0.4 : 1);
+                    background: video-t.pressed ? root.fg.with-alpha(0.10)
+                              : video-t.has-hover ? root.fg.with-alpha(0.06) : transparent;
+                    IconLabel { text: Icons.videoOn; filled: true; color: root.fg; font-size: 24px; width: 100%; height: 100%; }
+                    video-t := TouchArea { clicked => { if (!root.in-call) { root.start-call(true); } } }
+                }
+                if !root.call-here && !root.is-thread && !root.is-invite : Rectangle {
+                    x: phone-bar.width - 168px + phone-bar.dx; y: 6px;
+                    width: 48px; height: 48px; border-radius: 24px;
+                    opacity: phone-bar.tail * (root.in-call ? 0.4 : 1);
+                    background: call-t.pressed ? root.fg.with-alpha(0.10)
+                              : call-t.has-hover ? root.fg.with-alpha(0.06) : transparent;
+                    IconLabel { text: Icons.phone; filled: true; color: root.fg; font-size: 24px; width: 100%; height: 100%; }
+                    call-t := TouchArea { clicked => { if (!root.in-call) { root.start-call(false); } } }
+                }
+                // A live call in this room: the Join chip before the ⋮.
+                join-pill := Rectangle {
+                    visible: root.call-here && !root.is-thread;
+                    x: phone-bar.width - 64px - self.width + phone-bar.dx;
+                    y: 16px;
+                    width: join-row-p.preferred-width + 22px;
+                    height: 28px; border-radius: 14px;
+                    opacity: phone-bar.tail;
+                    background: root.accent.with-alpha(0.9);
+                    join-row-p := HorizontalLayout {
+                        alignment: center;
+                        spacing: 5px;
+                        IconLabel { text: Icons.phone; filled: true; color: #141414; font-size: Theme.caption; vertical-alignment: center; }
+                        Text { text: "Join"; color: #141414; font-family: Theme.font-ui; font-size: Theme.caption; font-weight: 700; vertical-alignment: center; }
+                    }
+                    TouchArea { clicked => { root.join-call(); } }
+                }
+            }
         }
 
         // Invite banner (:1061-1062): "Accept invite" bordered, "Decline" a
         // bare urgent label; centred at spacing 10 in a 52px accent@0.1 band.
         if root.is-invite : invite-bar := Rectangle {
+            x: 0; y: root.header-h; width: 100%;
             height: 52px;
             background: Theme.accent.with-alpha(0.1);
             HorizontalLayout {
@@ -509,8 +700,19 @@ export component ChatPage inherits Rectangle {
 
         // Conversation ground: rounded top corners revealing the header tone,
         // 22px bottom corners unconditionally (:923).
+        // Until the sheet arrives the home sheet's ground stands under the
+        // header (the page opens over home); the convo covers it at rest.
+        if root.phone && root.open-t < 1 : Rectangle {
+            x: 0; y: root.sheet-y; width: 100%;
+            height: root.height - root.sheet-y;
+            background: Theme.card-ground;
+            border-top-left-radius: 28px; border-top-right-radius: 28px;
+        }
         convo := Rectangle {
-            vertical-stretch: 1;
+            x: 0; width: 100%;
+            height: root.height - root.sheet-y;
+            // The phone's sheet rises from the page bottom (open-t).
+            y: root.sheet-y + (root.height - root.sheet-y) * (1 - root.open-e);
             background: root.convo-c.with-alpha(0.94);
             // The phone keeps the platform messenger's sheet: rounded where it
             // meets the header, square at the bottom, the composer and the
@@ -578,18 +780,13 @@ export component ChatPage inherits Rectangle {
                         dm: root.is-dm;
                         encrypted: root.room-encrypted;
                         convo-ground: root.convo-c;
-                        menu-requested(it, x, y, w, h) => {
-                            sheet.item = it;
-                            root.sheet-snapshot(x, y, w, h);
-                            root.menu-action("prepare", it.event-id);
-                            // Window coordinates; the sheet converts (sheet-open).
-                            sheet.open-for(x, y, w, h);
-                        }
+                        hold-started(id, r) => { root.sheet-prewarm(id, r); }
+                        menu-requested(it, r) => { root.open-menu-for(it, r); }
+                        copying: root.copy-of != "" && root.copy-of == item.event-id;
                         // MessageSheet.qml:205 hideSource: the pressed bubble
                         // vanishes for the sheet's whole life, fly-home too —
                         // the copy stands in for it. `hide-source` rises after
-                        // the bubble's own picture and before the frost's, so
-                        // the copy keeps its pixels and the frost has none.
+                        // the bubble's own picture, so the copy keeps its pixels.
                         sheet-lit: sheet.hide-source && item.event-id != ""
                             && sheet.item.event-id == item.event-id;
                         reply-requested(e, n, b) => { root.arm-reply(e, n, b); }
@@ -698,13 +895,18 @@ export component ChatPage inherits Rectangle {
                     height: root.composer-h;
                     visible: !root.is-invite;
                     background: root.phone ? root.convo-c : root.convo-c.with-alpha(0.55);
+                    // The phone's pill and disc arrive from below the page
+                    // once the sheet has (footer-t); the band stays put.
+                    composer-body := Rectangle {
+                    x: 0; width: 100%; height: composer.height;
+                    y: root.phone ? composer.height * (1 - root.footer-e) : 0px;
                     // inputPill: fill only, no focus border, radius 19; parent
                     // minus the send disc and the 8px spacing.
                     well := Rectangle {
-                        x: 10px; y: 8px;
-                        width: composer.width - 20px - 38px - 8px;
+                        x: root.phone ? 8px : 10px; y: 8px;
+                        width: composer.width - self.x - root.disc - 8px - (root.phone ? 8px : 10px);
                         height: root.well-h;
-                        border-radius: 19px;
+                        border-radius: root.phone ? 28px : 19px;
                         background: root.themed ? root.surface-c : root.fg.with-alpha(0.07);
 
                         // Voice clip chip: a light card inset in the pill. Always
@@ -845,13 +1047,13 @@ export component ChatPage inherits Rectangle {
                         // its bottom (:1656-1661); the cancel affordance while the
                         // sheet is open — glyph swap + 90° turn, colour on hover/on.
                         attach-btn := Rectangle {
-                            x: 6px; y: well.height - 30px - 4px;
-                            width: 30px; height: 30px;
+                            x: root.phone ? 8px : 6px; y: well.height - root.attach-box - 4px;
+                            width: root.attach-box; height: root.attach-box;
                             IconLabel {
-                                x: 0; y: 0; width: 30px; height: 30px;
+                                x: 0; y: 0; width: root.attach-box; height: root.attach-box;
                                 text: root.attach-open ? Icons.cancel : Icons.plusCircle;
                                 filled: root.attach-open;
-                                transform-origin: { x: 15px, y: 15px };
+                                transform-origin: { x: root.attach-box / 2, y: root.attach-box / 2 };
                                 transform-rotation: root.attach-open ? 90deg : 0deg;
                                 animate transform-rotation { duration: 180ms; easing: cubic-bezier(0.33, 1, 0.68, 1); }
                                 color: at-t.has-hover || root.attach-open ? #c6c6c6 : #c6c6c6.with-alpha(0.85);
@@ -864,8 +1066,8 @@ export component ChatPage inherits Rectangle {
                         // below the quote band; grows with the text and scrolls
                         // past the 110px cap (:1688-1694).
                         input-box := Rectangle {
-                            x: 38px; y: root.quote-h;
-                            width: well.width - 48px;
+                            x: root.phone ? 60px : 38px; y: root.quote-h;
+                            width: well.width - self.x - (root.phone ? 16px : 10px);
                             height: well.height - root.quote-h;
                             clip: true;
                             input-flick := Flickable {
@@ -920,13 +1122,13 @@ export component ChatPage inherits Rectangle {
                     // (180ms); send also turns in from -35° (:1757-1780).
                     send-btn := Rectangle {
                         property <bool> send-mode: composer-input.text != "" || root.voice-staged;
-                        x: composer.width - 10px - 38px;
-                        y: composer.height - 38px - 10px - root.bottom-inset;
-                        width: 38px; height: 38px; border-radius: 19px;
+                        x: composer.width - (root.phone ? 16px : 10px) - root.disc;
+                        y: composer.height - root.disc - (root.phone ? 12px : 10px) - root.bottom-inset;
+                        width: root.disc; height: root.disc; border-radius: root.disc / 2;
                         background: root.send-c;
                         animate background { duration: 120ms; }
                         send-glyph := IconLabel {
-                            x: 0; y: 0; width: 38px; height: 38px;
+                            x: 0; y: 0; width: root.disc; height: root.disc;
                             text: Icons.send;
                             filled: true;   // ChatPage.qml:1768 Fonts.iconFilled
                             color: Theme.background;
@@ -934,7 +1136,7 @@ export component ChatPage inherits Rectangle {
                             opacity: send-btn.send-mode ? 1 : 0;
                             animate opacity { duration: 130ms; }
                             visible: send-btn.send-mode || self.opacity > 0.01;
-                            transform-origin: { x: 19px, y: 19px };
+                            transform-origin: { x: root.disc / 2, y: root.disc / 2 };
                             // Qt OutBack overshoot 2.0 ≈ Slint's ease-out-back (1.56).
                             transform-scale-x: send-btn.send-mode ? 1 : 0.55;
                             transform-scale-y: send-btn.send-mode ? 1 : 0.55;
@@ -943,7 +1145,7 @@ export component ChatPage inherits Rectangle {
                             animate transform-rotation { duration: 180ms; easing: cubic-bezier(0.33, 1, 0.68, 1); }
                         }
                         voice-glyph := IconLabel {
-                            x: 0; y: 0; width: 38px; height: 38px;
+                            x: 0; y: 0; width: root.disc; height: root.disc;
                             text: Icons.voiceMemo;
                             filled: true;   // ChatPage.qml:1779 Fonts.iconFilled
                             color: Theme.background;
@@ -951,7 +1153,7 @@ export component ChatPage inherits Rectangle {
                             opacity: send-btn.send-mode ? 0 : 1;
                             animate opacity { duration: 130ms; }
                             visible: !send-btn.send-mode || self.opacity > 0.01;
-                            transform-origin: { x: 19px, y: 19px };
+                            transform-origin: { x: root.disc / 2, y: root.disc / 2 };
                             transform-scale-x: send-btn.send-mode ? 0.55 : 1;
                             transform-scale-y: send-btn.send-mode ? 0.55 : 1;
                             animate transform-scale-x, transform-scale-y { duration: 180ms; easing: ease-out-back; }
@@ -963,6 +1165,7 @@ export component ChatPage inherits Rectangle {
                             }
                         }
                     }
+                    }   // composer-body
                 }
 
                 // The attachment sheet, inline under the composer (:1795-1820).
@@ -982,6 +1185,7 @@ export component ChatPage inherits Rectangle {
                         accent: root.accent;
                         surface: root.themed ? root.surface-c : root.fg.with-alpha(0.07);
                         chip: root.chip-c;
+                        themed: root.themed;
                         stickers: root.stickers;
                         stickers-loaded: root.stickers-loaded;
                         sticker-dir: root.sticker-dir;
@@ -1036,6 +1240,7 @@ export component ChatPage inherits Rectangle {
                         accent: root.send-c;
                         surface: root.themed ? root.surface-c : root.fg.with-alpha(0.07);
                         chip: root.chip-c;
+                        themed: root.themed;
                         state: root.rec-state;
                         elapsed: root.rec-elapsed;
                         clip-duration: root.rec-clip-duration;
@@ -1160,7 +1365,7 @@ export component ChatPage inherits Rectangle {
     chat-menu := OverflowMenu {
         width: 100%; height: 100%;
         open <=> root.menu-open;
-        top-inset: 50px;
+        top-inset: root.phone ? 56px : 50px;
         card-width: 170px;
         surface: (root.themed ? root.surface-c : Theme.popup-background).with-alpha(0.98);
         fg: root.fg;
@@ -1183,7 +1388,6 @@ export component ChatPage inherits Rectangle {
         // The frost reaches the window's zones around the page.
         bleed-top: root.bleed-top;
         bleed-bottom: root.bleed-bottom;
-        frost-snapshot => { root.sheet-frost(); }
         // The frost mask and the bottom sheets follow the page's corners: the
         // desktop card's 22, square on the phone (convo above).
         card-radius: root.phone ? 0px : 22px;

@@ -2,18 +2,20 @@
 # The OIDC gate and short names, for real: a sigil-server whose
 # registration is a sign-in at an identity provider (the fake issuer
 # stands in for Pocket ID), reached through a pointer on its bare domain
-# (python's http.server plays the domain's website, serving
+# (the static-site example plays the domain's website, serving
 # /.well-known/sigil), and the Slint app going through the doors: type
 # the bare name, probe, "Sign in with …", the browser round-trip (curl
 # plays the browser: the issuer's login page redirects straight back to
 # the app's loopback listener), name, recovery password, Home; then a
 # second device brought back with the password alone.
-# Needs server/target/debug/sigil-server, server/target/debug/examples/
-# fake-issuer and slint/target/debug/drive.
+# Needs server/target/debug/sigil-server, slint/target/debug/drive and,
+# from `cargo build --example fake-issuer --example static-site` in
+# server/, server/target/debug/examples/{fake-issuer,static-site}.
 set -euo pipefail
 ROOT=$(cd "$(dirname "$0")/../.." && pwd)
 SV=$ROOT/server/target/debug/sigil-server
 ISSUER=$ROOT/server/target/debug/examples/fake-issuer
+SITE=$ROOT/server/target/debug/examples/static-site
 DRIVE=$ROOT/slint/target/debug/drive
 W=$(mktemp -d); mkdir -p "$W/state" "$W/cache" "$W/shots"; cd "$W"
 PIDS=()
@@ -25,7 +27,7 @@ $ISSUER --listen 127.0.0.1:18471 --client-id sigil-test --user marlowe >issuer.l
 
 # the bare domain's website: nothing but the pointer to where Sigil lives
 mkdir -p site/.well-known && echo '{"server": "127.0.0.1:18452"}' > site/.well-known/sigil
-python3 -m http.server 18460 --bind 127.0.0.1 --directory site >site.log 2>&1 & PIDS+=($!)
+$SITE 127.0.0.1:18460 site >site.log 2>&1 & PIDS+=($!)
 
 # the server is configured the way a container would be: from the environment;
 # its name is the bare domain, its address the port the pointer names

@@ -122,6 +122,12 @@ impl Harness {
 
     pub fn shoot(&self, name: &str) -> anyhow::Result<std::path::PathBuf> {
         self.settle();
+        self.frame(name)
+    }
+
+    /// The window as it is at this instant of the mock clock — animations
+    /// mid-flight, timers unfired — for checking motion frame by frame.
+    pub fn frame(&self, name: &str) -> anyhow::Result<std::path::PathBuf> {
         let mut pixels = vec![Rgb8Pixel::default(); (WIDTH * HEIGHT) as usize];
         self.window.request_redraw();
         let drew = self.window.draw_if_needed(|renderer| {

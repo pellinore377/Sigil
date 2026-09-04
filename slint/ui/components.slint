@@ -244,6 +244,10 @@ export component TextWell inherits Rectangle {
 // long-press opens the message menu from anywhere on a bubble, as in QML.
 export component HoldArea inherits TouchArea {
     callback held;
+    /// The press has outlasted a tap (160ms of the 500) and is probably a
+    /// hold: whoever answers `held` can prepare for it now. Not on the down
+    /// itself, so a plain tap costs nothing.
+    callback hold-started;
     in-out property <bool> fired: false;
     hold-timer := Timer {
         interval: 500ms;
@@ -254,17 +258,25 @@ export component HoldArea inherits TouchArea {
             root.held();
         }
     }
+    warm-timer := Timer {
+        interval: 160ms;
+        running: false;
+        triggered => { self.running = false; root.hold-started(); }
+    }
     pointer-event(ev) => {
         if (ev.kind == PointerEventKind.down) {
             root.fired = false;
             hold-timer.running = true;
+            warm-timer.running = true;
         } else if (ev.kind == PointerEventKind.up || ev.kind == PointerEventKind.cancel) {
             hold-timer.running = false;
+            warm-timer.running = false;
         }
     }
     moved => {
         if (abs((self.mouse-x - self.pressed-x) / 1px) > 12 || abs((self.mouse-y - self.pressed-y) / 1px) > 12) {
             hold-timer.running = false;
+            warm-timer.running = false;
         }
     }
 }

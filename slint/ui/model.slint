@@ -339,3 +339,16 @@ export struct EmojiItem {
     img: image,
     has-img: bool,
 }
+
+/// Where a bubble is drawn — logical lengths from the window's origin — and
+/// its four corner radii, for the message sheet's lifted copy and its frost.
+export struct SheetRect {
+    x: length,
+    y: length,
+    w: length,
+    h: length,
+    r-tl: length,
+    r-tr: length,
+    r-bl: length,
+    r-br: length,
+}

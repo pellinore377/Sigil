@@ -178,6 +178,35 @@ fn main() -> anyhow::Result<()> {
     app.set_nav("chat".into());
     h.settle();
 
+    // the phone's attach sheet and recorder in a themed room: the room accent
+    // staged on the window, as the bridge does when a chat theme is set
+    if std::env::var_os("SIGIL_THEME_MODE").is_some() {
+        app.set_ct_accent("#E8914E".into());
+        app.set_ct_color(slint::Color::from_rgb_u8(0xE8, 0x91, 0x4E));
+        h.settle();
+        app.set_attach_open(true);
+        h.settle();
+        h.shoot("attach-grid-themed")?;
+        app.set_at_page("pin".into());
+        h.settle();
+        h.shoot("attach-pin-themed")?;
+        app.set_at_page("grid".into());
+        app.set_attach_open(false);
+        h.settle();
+        app.set_recorder_open(true);
+        h.settle();
+        h.shoot("recorder-idle-themed")?;
+        app.set_rec_state("recording".into());
+        app.set_rec_elapsed(4.0);
+        h.settle();
+        h.shoot("recorder-recording-themed")?;
+        app.set_rec_state("idle".into());
+        app.set_recorder_open(false);
+        app.set_ct_accent(Default::default());
+        app.set_ct_color(app.global::<sigil_slint::Theme>().get_accent());
+        h.settle();
+    }
+
     // home and what starts from it
     app.invoke_back_to_home();
     app.set_nav("home".into());

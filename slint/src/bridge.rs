@@ -120,6 +120,8 @@ pub struct UiState {
     pub audio_ctx: (String, String),
     pub audio_playing: bool,
     pub sheet_item: Value,             // message the action sheet targets
+    /// The sheet's frost, taken while a press lasted, for the event it was on.
+    pub sheet_prewarm: Option<(String, slint::Image)>,
     pub emojis: Vec<(String, String)>, // glyph, keywords
     pub voice_positions: HashMap<String, f64>, // eventId -> seconds (playback)
     pub chat_themes: Value,
@@ -277,6 +279,7 @@ pub fn start(win: &AppWindow, rt: &tokio::runtime::Runtime, icons: IconSet) -> R
         audio_ctx: Default::default(),
         audio_playing: false,
         sheet_item: Value::Null,
+        sheet_prewarm: None,
         emojis: Vec::new(),
         voice_positions: HashMap::new(),
         chat_themes: crate::actions::load_themes(),
@@ -2258,6 +2261,7 @@ fn start_demo(win: &AppWindow, rt: &tokio::runtime::Runtime, icons: IconSet) -> 
         audio_ctx: Default::default(),
         audio_playing: false,
         sheet_item: Value::Null,
+        sheet_prewarm: None,
         emojis: Vec::new(),
         voice_positions: HashMap::new(),
         chat_themes: crate::actions::load_themes(),
@@ -2423,7 +2427,12 @@ fn start_demo(win: &AppWindow, rt: &tokio::runtime::Runtime, icons: IconSet) -> 
                    {"start": 7, "end": 14, "animation": "sparkle", "color": {"type": "solid", "rgb": {"dark": "#e5c07b", "light": "#906010"}}},
                    {"start": 15, "end": 21, "animation": "blur"}
                ]}),
-    ], "len": 19});
+        json!({"id": "fD", "kind": "text", "isOwn": true, "sender": "@wren:sigil.test", "senderName": "Wren",
+               "body": "look at all of this glowing text, it is absolutely amazing and there is no point in denying it", "ts": now - 500, "eventId": "$fD",
+               "effects": [
+                   {"start": 0, "end": 93, "animation": "glow"}
+               ]}),
+    ], "len": 20});
     let status = json!({"event": "status", "session": "loggedIn", "userId": "@wren:sigil.test",
                         "displayName": "Wren", "avatarPath": "", "sync": "", "syncError": "", "login": {"url": ""}});
     let recovery = json!({"event": "recovery.status",

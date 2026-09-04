@@ -75,8 +75,12 @@ component PollOptionRow inherits Rectangle {
     }
 }
 
-// On the phone a tile is a grid cell (112 tall, width from the row): a 56dp
-// filled circle with a 24dp glyph, the label 14sp centred 8 below it.
+// On the phone a tile is a grid cell (112 tall, width from the row) holding
+// the QML pill scaled up: 96 × 64 at radius 32 with a 24dp glyph, the label
+// 14sp centred 8 below it. Five of them do not fit a phone's width at that
+// size, so the pill keeps the 3:2 shape and takes the cell less an 8 gap
+// (67 × 45 on a 400-wide window), growing to the full 96 × 64 where the row
+// allows.
 component AttachTile inherits Rectangle {
     in property <string> icon;
     in property <string> label;
@@ -86,31 +90,32 @@ component AttachTile inherits Rectangle {
     in property <bool> phone: false;
     callback clicked;
     width: 62px; height: root.phone ? 112px : 72px;
+    property <length> pill-w: root.phone ? 56px : 58px;
+    property <length> pill-h: root.phone ? 40px : 40px;
     disc := Rectangle {
         // Top of the tile (QML anchors only horizontalCenter): a sized child
         // outside a layout is otherwise centred by default in Slint.
         x: (root.width - self.width) / 2; y: 0;
-        width: root.phone ? 56px : 58px; height: root.phone ? 56px : 40px;
-        border-radius: root.phone ? 28px : 20px;
+        width: root.pill-w; height: root.pill-h;
+        border-radius: root.pill-h / 2;
         transform-origin: { x: self.width / 2, y: self.height / 2 };
         transform-scale-x: tile-t.has-hover ? 1.05 : 1.0;
         transform-scale-y: tile-t.has-hover ? 1.05 : 1.0;
         animate transform-scale-x, transform-scale-y { duration: 110ms; easing: cubic-bezier(0.33, 1, 0.68, 1); }
         // Lightens on hover only (AttachMenu.qml:121); a press changes nothing.
-        background: root.phone ? (tile-t.has-hover ? Theme.bubble-other.brighter(0.2) : Theme.bubble-other)
-                  : tile-t.has-hover ? root.chip.brighter(0.2) : root.chip;
+        background: tile-t.has-hover ? root.chip.brighter(0.2) : root.chip;
         IconLabel {
             text: root.icon;
-            color: root.phone ? Theme.menu-text : root.fg;
+            color: root.fg;
             font-size: root.phone ? 24px : Theme.icon-size * root.icon-scale;
             width: 100%; height: 100%;
         }
     }
     Text {
-        y: root.phone ? 64px : 45px;
+        y: root.phone ? root.pill-h + 8px : 45px;
         width: root.width;
         text: root.label;
-        color: root.phone ? Theme.menu-text : root.fg.with-alpha(0.75);
+        color: root.phone ? root.fg : root.fg.with-alpha(0.75);
         font-family: Theme.font-ui;
         font-size: root.phone ? 14px : 10px;
         horizontal-alignment: center;
@@ -428,6 +433,9 @@ export component AttachMenu inherits Rectangle {
     // ChatPage.qml chipC (unthemed): alpha(darker(menu.background, 2.1), 0.96)
     // ≈ rgba(36,36,36,0.96). Slint's darker(f) divides V by 1+f, so 1.1.
     in property <color> chip: Theme.menu-background.darker(1.1).with-alpha(0.96);
+    /// The room wears a chat theme: `surface` and `chip` are then its own
+    /// tones and the phone's sheet takes them instead of the neutral grounds.
+    in property <bool> themed: false;
 
     // grid | poll | stickers | emoji | note | pin | current | live — a
     // location tile emits open-location and the bridge answers by setting
@@ -468,6 +476,10 @@ export component AttachMenu inherits Rectangle {
 
     property <bool> location-page: root.page == "pin" || root.page == "current" || root.page == "live";
     property <bool> phone: Theme.mode != "desktop";
+    // The phone's sheet: the room's own surface when themed, else the card
+    // ground; its tiles the room's chip, else a stranger's bubble tone.
+    property <color> sheet-c: root.phone && !root.themed ? Theme.card-ground : root.surface;
+    property <color> tile-c: root.phone && !root.themed ? Theme.bubble-other : root.chip;
     // Phone grid: 16 top, two 112 rows, 16 below.
     height: root.page == "poll" ? 408px
           : root.location-page ? 430px
@@ -479,8 +491,8 @@ export component AttachMenu inherits Rectangle {
 
     // Chrome: ONE translucent wash inset 10 all round, radius 18, over the
     // conversation ground (AttachMenu.qml:67-73). No opaque card, no border.
-    // The phone's is a full-width sheet on the card ground, 28 at the top
-    // corners only, straight under the composer.
+    // The phone's is a full-width sheet, 28 at the top corners only, straight
+    // under the composer.
     chrome := Rectangle {
         x: root.phone ? 0px : 10px; y: root.phone ? 0px : 10px;
         width: root.phone ? root.width : root.width - 20px;
@@ -489,7 +501,7 @@ export component AttachMenu inherits Rectangle {
         border-top-right-radius: root.phone ? 28px : 18px;
         border-bottom-left-radius: root.phone ? 0px : 18px;
         border-bottom-right-radius: root.phone ? 0px : 18px;
-        background: root.phone ? Theme.card-ground : root.surface;
+        background: root.sheet-c;
     }
 
     // Sub-page header — QML margins: 16 top, 18 sides; hidden on the grid and
@@ -533,18 +545,18 @@ export component AttachMenu inherits Rectangle {
             HorizontalLayout {
                 alignment: start;
                 spacing: root.phone ? 0px : 10px;
-                AttachTile { icon: Icons.attach; label: "Files"; fg: root.fg; chip: root.chip; phone: root.phone; width: root.phone ? grid-box.cell : 62px; clicked => { root.pick-files(); root.close-requested(); } }
-                AttachTile { icon: Icons.emoji; label: "Emojis"; fg: root.fg; chip: root.chip; phone: root.phone; width: root.phone ? grid-box.cell : 62px; clicked => { root.load-emoji(); root.page = "emoji"; } }
-                AttachTile { icon: Icons.sticker; label: "Stickers"; fg: root.fg; chip: root.chip; phone: root.phone; width: root.phone ? grid-box.cell : 62px; clicked => { root.load-stickers(); root.page = "stickers"; } }
-                AttachTile { icon: Icons.poll; label: "Poll"; fg: root.fg; chip: root.chip; phone: root.phone; width: root.phone ? grid-box.cell : 62px; clicked => { root.reset-poll(); root.page = "poll"; } }
-                AttachTile { icon: Icons.myLocation; label: "Current\nLocation"; fg: root.fg; chip: root.chip; phone: root.phone; width: root.phone ? grid-box.cell : 62px; clicked => { root.open-location("current"); } }
+                AttachTile { icon: Icons.attach; label: "Files"; fg: root.fg; chip: root.tile-c; phone: root.phone; width: root.phone ? grid-box.cell : 62px; clicked => { root.pick-files(); root.close-requested(); } }
+                AttachTile { icon: Icons.emoji; label: "Emojis"; fg: root.fg; chip: root.tile-c; phone: root.phone; width: root.phone ? grid-box.cell : 62px; clicked => { root.load-emoji(); root.page = "emoji"; } }
+                AttachTile { icon: Icons.sticker; label: "Stickers"; fg: root.fg; chip: root.tile-c; phone: root.phone; width: root.phone ? grid-box.cell : 62px; clicked => { root.load-stickers(); root.page = "stickers"; } }
+                AttachTile { icon: Icons.poll; label: "Poll"; fg: root.fg; chip: root.tile-c; phone: root.phone; width: root.phone ? grid-box.cell : 62px; clicked => { root.reset-poll(); root.page = "poll"; } }
+                AttachTile { icon: Icons.myLocation; label: "Current\nLocation"; fg: root.fg; chip: root.tile-c; phone: root.phone; width: root.phone ? grid-box.cell : 62px; clicked => { root.open-location("current"); } }
             }
             Rectangle { height: root.phone ? 0px : 10px; }
             HorizontalLayout {
                 alignment: start;
                 spacing: root.phone ? 0px : 10px;
-                AttachTile { icon: Icons.liveLocation; label: "Live\nLocation"; fg: root.fg; chip: root.chip; phone: root.phone; width: root.phone ? grid-box.cell : 62px; clicked => { root.open-location("live"); } }
-                AttachTile { icon: Icons.pinDrop; label: "Drop a Pin"; icon-scale: 1.3; fg: root.fg; chip: root.chip; phone: root.phone; width: root.phone ? grid-box.cell : 62px; clicked => { root.open-location("pin"); } }
+                AttachTile { icon: Icons.liveLocation; label: "Live\nLocation"; fg: root.fg; chip: root.tile-c; phone: root.phone; width: root.phone ? grid-box.cell : 62px; clicked => { root.open-location("live"); } }
+                AttachTile { icon: Icons.pinDrop; label: "Drop a Pin"; icon-scale: 1.3; fg: root.fg; chip: root.tile-c; phone: root.phone; width: root.phone ? grid-box.cell : 62px; clicked => { root.open-location("pin"); } }
             }
         }
     }

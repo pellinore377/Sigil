@@ -12,7 +12,7 @@ import { SettingsPage } from "pages/settings.slint";
 import { HomePage } from "home.slint";
 import { ChatPage } from "chat.slint";
 import { PageHolder, MenuEntry, ChoiceSheet } from "furniture.slint";
-import { RoomRow, SearchHit, TimelineRow, MemberRow, ThreadRow, UserRow, RoomSettingsModel, ReactionChip, EmojiItem, ReplyRef, CallParticipant, DeviceRow, PollOption, ReaderRow, DocLine, MsgPart, FxChar } from "model.slint";
+import { RoomRow, SearchHit, TimelineRow, MemberRow, ThreadRow, UserRow, RoomSettingsModel, ReactionChip, EmojiItem, ReplyRef, CallParticipant, DeviceRow, PollOption, ReaderRow, DocLine, MsgPart, FxChar, SheetRect } from "model.slint";
 
 import { StartPage } from "pages/start.slint";
 import { ForwardPage } from "pages/forward.slint";
@@ -36,7 +36,7 @@ import { CallPage, Floater } from "callpage.slint";
 import { CallPip } from "callpip.slint";
 import { CallBanner } from "callbanner.slint";
 
-export { ViewerItem, StickerItem, MenuEntry, RoomRow, TimelineRow, MemberRow, ThreadRow, UserRow, RoomSettingsModel, ReactionChip, EmojiItem, ReplyRef, CallParticipant, DeviceRow, PollOption, ReaderRow, DocLine, MsgPart, FxChar, GradPair, DocBlock, SheetRow, SheetTab, DocPageImage, Icons, Theme }
+export { ViewerItem, StickerItem, MenuEntry, RoomRow, TimelineRow, MemberRow, ThreadRow, UserRow, RoomSettingsModel, ReactionChip, EmojiItem, ReplyRef, CallParticipant, DeviceRow, PollOption, ReaderRow, DocLine, MsgPart, FxChar, GradPair, DocBlock, SheetRow, SheetTab, DocPageImage, SheetRect, Icons, Theme }
 
 export component AppWindow inherits Window {
     title: "Sigil";
@@ -374,8 +374,8 @@ export component AppWindow inherits Window {
     callback nav-opened(string);
     /// Everything else: one channel, Service.qml's function table.
     callback act(string, string, string);
-    callback sheet-snapshot(length, length, length, length);
-    callback sheet-frost;
+    callback sheet-snapshot(string, SheetRect);
+    callback sheet-prewarm(string, SheetRect);
 
     public function scroll-timeline-to-end() { chat.scroll-to-end(); }
     public function restore-timeline-from-end(d: length) { chat.restore-from-end(d); }
@@ -448,7 +448,9 @@ export component AppWindow inherits Window {
     // insets are part of the page. Desktop insets are zero.
     Rectangle {
         x: 0; y: 0; width: 100%; height: root.safe-area-insets.top;
-        background: root.in-session && root.nav == "home" ? Theme.background
+        // Home's ground only once the chat holder has gone: its reverse
+        // choreography carries the header ground back to it.
+        background: root.in-session && root.nav == "home" && !chat-holder.visible ? Theme.background
             : root.in-session && root.nav != "start" && root.nav != "settings" ? chat.top-ground
             : Theme.card-ground;
     }
@@ -566,8 +568,15 @@ export component AppWindow inherits Window {
                 || root.nav == "threads" || root.nav == "thread" || root.nav == "pins"
                 || (root.nav == "addpeople" && root.add-return == "chat"));
             ground: root.page-ground;
+            // The phone's chat opens over home by its own choreography
+            // (ChatPage.opened), not the card's slide; 320ms is its reverse.
+            slides: Theme.mode == "desktop";
+            hold: 320ms;
             chat := ChatPage {
                 width: 100%; height: 100%;
+                opened: chat-holder.active;
+                my-initials: root.my-initials;
+                my-tint: root.my-tint;
                 room-name: root.room-name;
                 room-subtitle: root.room-subtitle;
                 boot-epoch-s: root.boot-epoch-s;
@@ -616,8 +625,8 @@ export component AppWindow inherits Window {
                 items: root.items;
                 sheet-backdrop: root.sheet-backdrop;
                 sheet-copy: root.sheet-copy;
-                sheet-snapshot(x, y, w, h) => { root.sheet-snapshot(x, y, w, h); }
-                sheet-frost => { root.sheet-frost(); }
+                sheet-snapshot(id, r) => { root.sheet-snapshot(id, r); }
+                sheet-prewarm(id, r) => { root.sheet-prewarm(id, r); }
                 // Everything the window paints around the page: the sheet's
                 // frost covers it too (the snapshot is of the whole window).
                 bleed-top: root.safe-area-insets.top + status-strip.height;

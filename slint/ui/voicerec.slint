@@ -21,6 +21,8 @@ export component VoiceRecorder inherits Rectangle {
     in property <color> surface: Theme.menu-text.with-alpha(0.07);
     // deepChipC ≈ rgba(36,36,36,0.96) (ChatPage.qml:56-59, :1839).
     in property <color> chip: Theme.menu-background.darker(1.1).with-alpha(0.96);
+    /// The room wears a chat theme: the phone's sheet takes `surface` then.
+    in property <bool> themed: false;
     in property <string> state: "idle";      // idle | recording | ready
     in property <float> elapsed: 0;          // seconds, ticked by Rust
     in property <float> clip-duration: 0;
@@ -36,10 +38,14 @@ export component VoiceRecorder inherits Rectangle {
     property <bool> phone: Theme.mode != "desktop";
     // The card ink: the QML flips to dark on light theme tints; Frosted Glass
     // stays dark, so fg stands in until chat themes reach the recorder.
-    property <color> ink: root.phone ? Theme.menu-text : root.fg;
+    property <color> ink: root.fg;
     property <color> pill-c: root.chip;
-    // The phone's accent container: the accent sunk into the ground.
-    property <color> accent-container: Theme.accent.mix(Theme.background, Theme.mode == "light" ? 0.22 : 0.42);
+    // The phone's sheet: the room's own surface when themed, else the card ground.
+    property <color> sheet-c: root.phone && !root.themed ? Theme.card-ground : root.surface;
+    // The phone's accent container: the room accent sunk into the ground.
+    // The mic pill wears the platform messenger's accent tint: a light wash of
+    // the accent over dark palettes, a sunk one over light.
+    property <color> accent-container: Theme.mode == "light" ? root.accent.with-alpha(1.0).mix(Theme.background, 0.22) : root.accent.with-alpha(1.0).mix(#ffffff, 0.45);
     property <bool> recording: root.state == "recording";
     property <float> shown: root.recording ? root.elapsed : root.clip-duration;
     property <string> timer-text:
@@ -51,8 +57,8 @@ export component VoiceRecorder inherits Rectangle {
     background: transparent;
 
     VerticalLayout {
-        padding-left: root.phone ? 16px : 10px;
-        padding-right: root.phone ? 16px : 10px;
+        padding-left: root.phone ? 8px : 10px;
+        padding-right: root.phone ? 8px : 10px;
         padding-top: root.phone ? 12px : 10px;
         padding-bottom: root.phone ? 16px : 10px;
         spacing: root.phone ? 12px : 10px;
@@ -61,7 +67,7 @@ export component VoiceRecorder inherits Rectangle {
         stage := Rectangle {
             vertical-stretch: 1;
             border-radius: root.phone ? 28px : 18px;
-            background: root.phone ? Theme.card-ground : root.surface;
+            background: root.sheet-c;
 
             // idle: static waveform glyph + caption
             if root.state == "idle" : VerticalLayout {
@@ -150,9 +156,10 @@ export component VoiceRecorder inherits Rectangle {
             cancel-b := Rectangle {
                 horizontal-stretch: 1;
                 border-radius: root.phone ? 28px : 23px;
-                background: root.phone ? transparent : root.pill-c;
-                border-width: root.phone ? 1px : 0px;
-                border-color: Theme.popup-border;
+                background: root.phone ? Theme.bubble-other : root.pill-c;
+                // The phone's side pills are filled surface containers, accent ink.
+                border-width: 0px;
+                border-color: root.accent;
                 HorizontalLayout {
                     alignment: center;
                     // QML's fitWidth icon boxes hug the glyph at spacing 6; a
@@ -161,11 +168,11 @@ export component VoiceRecorder inherits Rectangle {
                     IconLabel {
                         text: root.recording ? Icons.refresh : Icons.close;
                         font-size: root.phone ? 20px : Theme.icon-size;   // VoiceRecorder.qml:178
-                        color: root.phone ? Theme.accent : root.fg; vertical-alignment: center;
+                        color: root.phone ? root.accent : root.fg; vertical-alignment: center;
                     }
                     Text {
                         text: root.recording ? "Restart" : "Cancel";
-                        color: root.phone ? Theme.accent : root.fg;
+                        color: root.phone ? root.accent : root.fg;
                         font-family: Theme.font-ui; font-size: Theme.body;
                         vertical-alignment: center;
                     }
@@ -187,7 +194,7 @@ export component VoiceRecorder inherits Rectangle {
                 IconLabel {
                     text: root.recording ? Icons.stop : Icons.record;
                     filled: true;   // VoiceRecorder.qml:194
-                    color: root.phone ? Theme.menu-text : Theme.background;
+                    color: root.phone ? (Theme.mode == "light" ? root.ink : #1b1b1f) : Theme.background;
                     font-size: root.phone ? 24px : 22px;
                     width: 100%; height: 100%;
                 }
@@ -201,21 +208,21 @@ export component VoiceRecorder inherits Rectangle {
                 horizontal-stretch: 1;
                 border-radius: root.phone ? 28px : 23px;
                 opacity: root.state == "idle" ? (root.phone ? 0.45 : 0.6) : 1;
-                background: root.phone ? transparent
+                background: root.phone ? Theme.bubble-other
                           : root.state == "idle" ? root.pill-c : root.accent.brighter(0.3);
-                border-width: root.phone ? 1px : 0px;
-                border-color: Theme.popup-border;
+                border-width: 0px;
+                border-color: root.accent;
                 HorizontalLayout {
                     alignment: center;
                     spacing: root.phone ? 8px : 4px;
                     IconLabel {
                         text: Icons.check; font-size: root.phone ? 20px : Theme.icon-size;   // VoiceRecorder.qml:214
-                        color: root.phone ? Theme.accent : root.state == "idle" ? root.fg : #1a1a1a;
+                        color: root.phone ? root.accent : root.state == "idle" ? root.fg : #1a1a1a;
                         vertical-alignment: center;
                     }
                     Text {
                         text: "Attach";
-                        color: root.phone ? Theme.accent : root.state == "idle" ? root.fg : #1a1a1a;
+                        color: root.phone ? root.accent : root.state == "idle" ? root.fg : #1a1a1a;
                         font-family: Theme.font-ui; font-size: Theme.body;
                         vertical-alignment: center;
                     }

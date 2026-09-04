@@ -3,11 +3,13 @@
 # a direct message started by username (MLS Welcome through the requests
 # slot), messages both ways, own-message readback, the offline queue, a
 # server restart, a bad invite and a double spend.
-# Needs: server/target/debug/sigil-server and client/target/debug/sigil-cli.
+# Needs: server/target/debug/sigil-server, client/target/debug/sigil-cli and
+# core/target/debug/sigil-jq (`cargo build --bin sigil-jq` in core/).
 set -euo pipefail
 ROOT=$(cd "$(dirname "$0")/../.." && pwd)
 SV=$ROOT/server/target/debug/sigil-server
 CL=$ROOT/client/target/debug/sigil-cli
+JQ=$ROOT/core/target/debug/sigil-jq
 W=$(mktemp -d); cd "$W"
 trap 'pkill -x sigil-server >/dev/null 2>&1 || true; pkill -x sigil-cli >/dev/null 2>&1 || true; rm -rf "$W"' EXIT
 fail() { echo "FAIL: $1"; shift; for f in "$@"; do echo "--- $f"; cat "$f" 2>/dev/null; done; exit 1; }
@@ -54,12 +56,11 @@ timeout 8 $CL -s bob.json listen 0 --count 4 >bob2.out 2>&1 &
 sleep 4
 grep -q "^4 .*@alice:sigil.test: four$" bob2.out || fail "offline queue" bob2.out
 
-# double spend
-python3 - <<'PY'
-import json; s=json.load(open('bob.json')); s['tokens'].append(s['tokens'][-1]); json.dump(s,open('bob.json','w'))
-PY
+# double spend: the last token in bob's wallet goes in twice
+$JQ -f bob.json --push tokens "\"$($JQ -f bob.json 'tokens[-1]')\""
 $CL -s bob.json send 0 "dup1" >/dev/null
-if $CL -s bob.json send 0 "dup2" 2>/dev/null; then fail "double spend accepted"; fi
+$CL -s bob.json send 0 "dup2" >dup.out 2>&1 && fail "double spend accepted"
+grep -q "TokenSpent" dup.out || fail "the second spend was refused for another reason" dup.out
 
 # restart persistence: history survives, and so does the MLS state on both sides
 pkill -x sigil-server; sleep 0.5

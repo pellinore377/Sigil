@@ -4,12 +4,15 @@
 // quick-reaction pill above it and the action menu below, with a
 // delete-confirm bottom sheet and the emoji drawer sharing the same host.
 //
-// Two pictures, in this order (frost.rs takes both): the bubble's crop
-// while the original is still drawn — so the copy is pixel-identical to it
-// — then, with the original hidden and the sheet not yet drawn, the page
-// for the frost, which therefore has a hole where the bubble stood and
-// never shows it twice. Without pictures (a renderer that cannot take
-// them) the scrim is a deeper dim and the copy is redrawn.
+// Two pictures (frost.rs takes both): the bubble's crop, rounded with the
+// bubble's own corners and without its reactions, taken the instant the
+// hold fires while the original is still drawn — so the copy is
+// pixel-identical to it — and the page for the frost, taken while the
+// press was still lasting (the prewarm) with the bubble's rect painted
+// over before the blur, so it has a hole where the bubble stood and never
+// shows it twice, and the lift starts with every frame its own. Without
+// pictures (a renderer that cannot take them) the scrim is a deeper dim
+// and the copy is redrawn.
 //
 // The sheet is the page's size but its frost, tap-away and bottom sheets
 // bleed past it by `bleed-top` / `bleed-bottom` — the phone's status-bar
@@ -27,7 +30,7 @@ import { Theme } from "style.slint";
 import { Icons } from "icons.slint";
 import { IconLabel } from "components.slint";
 import { MenuEntry } from "furniture.slint";
-import { TimelineRow, EmojiItem } from "model.slint";
+import { TimelineRow, EmojiItem, SheetRect } from "model.slint";
 import { EmojiPicker } from "emoji.slint";
 
 export component MessageSheet inherits Rectangle {
@@ -69,27 +72,30 @@ export component MessageSheet inherits Rectangle {
     in-out property <length> hole-y;
     in-out property <length> hole-w;
     in-out property <length> hole-h;
+    // The bubble's own corners: the copy is cut to them.
+    in-out property <length> copy-r-tl;
+    in-out property <length> copy-r-tr;
+    in-out property <length> copy-r-bl;
+    in-out property <length> copy-r-br;
 
     callback act(string /*action*/, string /*event-id*/);
     callback react(string /*event-id*/, string /*key*/);
     callback emoji-search(string);
     /// MessageSheet.loadEmojis: the drawer picker fills itself when opened.
     callback load-emoji;
-    /// Take the window's picture NOW for the frost: fired from begin-open
-    /// once `hide-source` is up and before the sheet draws, so the picture
-    /// holds neither the original bubble nor the sheet.
-    callback frost-snapshot;
 
-    /// Open over the bubble drawn at (x, y, w, h) — the bubble's
-    /// `absolute-position` and size, i.e. logical lengths from the window's
-    /// origin. The sheet's own `absolute-position` is measured the same way
-    /// (safe-area inset, status strip, page holder and all), so the
-    /// difference is exactly where the bubble sits inside the sheet, whatever
-    /// the scale factor: no physical pixels enter the placement.
-    public function open-for(x: length, y: length, w: length, h: length) {
-        root.hole-x = x - root.absolute-position.x;
-        root.hole-y = y - root.absolute-position.y;
-        root.hole-w = w; root.hole-h = h;
+    /// Open over the bubble drawn at `r` — the bubble's `absolute-position`,
+    /// size and corners, i.e. logical lengths from the window's origin. The
+    /// sheet's own `absolute-position` is measured the same way (safe-area
+    /// inset, status strip, page holder and all), so the difference is
+    /// exactly where the bubble sits inside the sheet, whatever the scale
+    /// factor: no physical pixels enter the placement.
+    public function open-for(r: SheetRect) {
+        root.hole-x = r.x - root.absolute-position.x;
+        root.hole-y = r.y - root.absolute-position.y;
+        root.hole-w = r.w; root.hole-h = r.h;
+        root.copy-r-tl = r.r-tl; root.copy-r-tr = r.r-tr;
+        root.copy-r-bl = r.r-bl; root.copy-r-br = r.r-br;
         root.drawer-open = false;
         root.confirm-open = false;
         root.begin-open();
@@ -165,22 +171,14 @@ export component MessageSheet inherits Rectangle {
         root.lifted = false;
         root.copy-rest = root.copy-y;
         root.motion-rest = root.pop + root.fade + root.frost-a;
-        // The original goes first, then the frost's picture is taken of the
-        // page without it (the sheet is not drawn yet: `shown` is still off) …
+        // The original goes, and :121-133 — the sheet shows in the same
+        // frame, its copy on the bubble, lifting to where it will rest. Both
+        // pictures are already in hand (the frost since the press began),
+        // so nothing stalls the lift.
         root.hide-source = true;
-        // … :121-133 — then the sheet shows, its copy on the bubble, lifting
-        // to where it will rest. The frost's picture is taken on the next
-        // frame: the readback and blur cost tens of milliseconds, and taken
-        // here they would stall the lift at the moment of the press.
         root.animate-copy = true;
         root.lifted = true;
         root.shown = true;
-        frost-later.running = true;
-    }
-    frost-later := Timer {
-        interval: 1ms;
-        running: false;
-        triggered => { self.running = false; root.frost-snapshot(); }
     }
     function begin-close() {
         // MessageSheet.qml:135-143 close(): fly home as the frost lifts, then clear.
@@ -253,10 +251,15 @@ export component MessageSheet inherits Rectangle {
         y: root.copy-y;
         width: root.hole-w;
         height: root.hole-h;
-        // MessageSheet.qml:197-205: the lift is the bubble's own pixels,
-        // never rounded or clipped by the sheet — a 16px clip here gouged
-        // the 5px group corners in flight. Only the redrawn fallback
-        // wears the 16px card (:203).
+        // MessageSheet.qml:197-205: the lift is the bubble's own pixels, cut
+        // to the bubble's own corners (each its own radius: a uniform 16px
+        // gouged the 5px group corners in flight) — frost.rs cuts the
+        // picture and this clip agrees with it.
+        border-top-left-radius: root.copy-r-tl;
+        border-top-right-radius: root.copy-r-tr;
+        border-bottom-left-radius: root.copy-r-bl;
+        border-bottom-right-radius: root.copy-r-br;
+        clip: true;
         if root.copy-image.width > 0 : Image {
             source: root.copy-image;
             width: 100%; height: 100%;
@@ -264,9 +267,7 @@ export component MessageSheet inherits Rectangle {
         }
         if root.copy-image.width == 0 : Rectangle {
             width: 100%; height: 100%;
-            border-radius: 16px;
             background: root.surface.with-alpha(0.97);
-            clip: true;
             Text {
                 x: 10px; y: 10px;
                 width: copy-card.width - 20px;

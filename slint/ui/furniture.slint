@@ -506,6 +506,11 @@ export component Spinner inherits Rectangle {
 export component PageHolder inherits Rectangle {
     in property <bool> active: false;
     in property <color> ground: Theme.menu-background;
+    /// A page with its own arrival (the phone's chat): `slides` false snaps
+    /// x into place, and on the way out holds it for `hold` so the page's
+    /// reverse choreography can play before it goes.
+    in property <bool> slides: true;
+    in property <duration> hold: 0ms;
     // PageHolder.qml:201-202: the first layout and any resize while inactive
     // park the holder at `width` at once; only `active` slides it. The gate
     // drops to 0ms, x is read to snap, and the gate comes back — all before
@@ -515,7 +520,11 @@ export component PageHolder inherits Rectangle {
     x: root.active ? 0px : root.width;
     // PageHolder.qml:26-37 steps d×0.26 per frame with a floor: ≈200ms, a
     // hard early decelerate and a near-linear tail.
-    animate x { duration: root.settled ? 200ms : 0ms; easing: cubic-bezier(0.25, 1, 0.35, 1); }
+    animate x {
+        duration: root.slides && root.settled ? 200ms : 0ms;
+        delay: !root.slides && !root.active && root.settled ? root.hold : 0ms;
+        easing: cubic-bezier(0.25, 1, 0.35, 1);
+    }
     changed width => {
         if (!root.active) { root.settled = false; root.rest = root.x; }
         root.settled = true;

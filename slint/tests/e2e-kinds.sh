@@ -4,12 +4,14 @@
 # place, and gets a link preview from a page served on loopback; Alice on
 # the command-line client votes, answers in the thread and shares a place
 # when the drive prints the ids she needs, and sees every event arrive.
-# Needs the same binaries as e2e-home.sh, plus python3 for the web page.
+# Needs the same binaries as e2e-home.sh, plus server/target/debug/examples/
+# static-site (`cargo build --example static-site` in server/) for the web page.
 set -euo pipefail
 ROOT=$(cd "$(dirname "$0")/../.." && pwd)
 SV=$ROOT/server/target/debug/sigil-server
 CL=$ROOT/client/target/debug/sigil-cli
 DRIVE=$ROOT/slint/target/debug/drive
+SITE=$ROOT/server/target/debug/examples/static-site
 W=$(mktemp -d); mkdir -p "$W/state" "$W/cache" "$W/shots" "$W/www"; cd "$W"
 PIDS=()
 keep_logs() { if [ -n "${KEEP_SHOTS:-}" ]; then mkdir -p "$KEEP_SHOTS"; cp "$W"/*.out "$W"/*.err "$W"/*.log "$W"/shots/*.png "$KEEP_SHOTS"/ 2>/dev/null || true; fi; }
@@ -27,7 +29,7 @@ cat >www/page.html <<'HTML'
 <meta property="og:description" content="Served on loopback for the preview test.">
 </head><body>hello</body></html>
 HTML
-python3 -m http.server 18450 --bind 127.0.0.1 -d www >www.log 2>&1 & PIDS+=($!)
+$SITE 127.0.0.1:18450 www >www.log 2>&1 & PIDS+=($!)
 sleep 1.5
 IA=$($SV -c sigil.toml invite); IB=$($SV -c sigil.toml invite)
 

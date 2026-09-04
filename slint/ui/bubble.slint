@@ -13,7 +13,7 @@ import { Theme } from "style.slint";
 import { Icons } from "icons.slint";
 import { IconLabel, Avatar, HoldArea } from "components.slint";
 import { Spinner } from "furniture.slint";
-import { TimelineRow, ReactionChip, PollOption, ContactField, DocRow } from "model.slint";
+import { TimelineRow, ReactionChip, PollOption, ContactField, DocRow, SheetRect } from "model.slint";
 
 // ContactBody.qml:184-216 — the card's pill button: primary (Message) in
 // accent with dark ink, marked (Saved) in a faint accent, plain in fg@0.12.
@@ -68,9 +68,16 @@ export component Bubble inherits Rectangle {
     /// hideSource) and comes back only when the sheet clears — opacity,
     /// not `if`, so the row keeps its height and the copy lands on it.
     in property <bool> sheet-lit: false;
+    /// The sheet is taking this bubble's picture for its lifted copy: the
+    /// reactions and the pin, which straddle the bubble's edge, step out of
+    /// the frame so the copy is the bubble alone.
+    in property <bool> copying: false;
     in-out property <bool> details-open: false;
 
-    callback menu-requested(TimelineRow, length, length, length, length);
+    /// A hold has been recognised on this bubble: where it is, with its corners.
+    callback menu-requested(TimelineRow, SheetRect);
+    /// A press on this bubble is lasting; the menu may follow (HoldArea.hold-started).
+    callback hold-started(string /*event-id*/, SheetRect);
     callback reply-requested(string, string, string);
     callback open-image(TimelineRow);
     callback play-video(TimelineRow);
@@ -194,11 +201,15 @@ export component Bubble inherits Rectangle {
     // wrapper item that takes its x/y, yet `absolute-position` is built
     // before that as parent + own x/y — so the bubble (hidden by opacity for
     // the sheet) reports its x/y twice. The anchor has neither, and is exact.
-    public function open-menu() {
-        root.menu-requested(item,
-            anchor.absolute-position.x, anchor.absolute-position.y,
-            bubble.width, bubble.height);
+    function rect() -> SheetRect {
+        return {
+            x: anchor.absolute-position.x, y: anchor.absolute-position.y,
+            w: bubble.width, h: bubble.height,
+            r-tl: root.r-tl, r-tr: root.r-tr, r-bl: root.r-bl, r-br: root.r-br,
+        };
     }
+    public function open-menu() { root.menu-requested(item, root.rect()); }
+    function begin-hold() { root.hold-started(item.event-id, root.rect()); }
 
     col := VerticalLayout {
         padding-left: 14px; padding-right: 14px;
@@ -288,6 +299,7 @@ export component Bubble inherits Rectangle {
                     if (!self.fired) { root.details-open = !root.details-open; }
                     self.fired = false;
                 }
+                hold-started => { root.begin-hold(); }
                 held => { root.open-menu(); }
             }
 
@@ -343,24 +355,13 @@ export component Bubble inherits Rectangle {
                 // voice, poll, file, thread chip) sits above it — QML's
                 // TapHandlers live on the bubble behind the bodies' MouseAreas.
                 // Plain text has no handler of its own and falls through here.
-                press-area := TouchArea {
+                press-area := HoldArea {
                     clicked => {
-                        if (!long-timer.fired) { root.details-open = !root.details-open; }
-                        long-timer.fired = false;
+                        if (!self.fired) { root.details-open = !root.details-open; }
+                        self.fired = false;
                     }
-                    pointer-event(ev) => {
-                        if (ev.kind == PointerEventKind.down) {
-                            long-timer.fired = false;
-                            long-timer.running = true;
-                        } else if (ev.kind == PointerEventKind.up || ev.kind == PointerEventKind.cancel) {
-                            long-timer.running = false;
-                        }
-                    }
-                    moved => {
-                        if (abs((self.mouse-x - self.pressed-x) / 1px) > 12 || abs((self.mouse-y - self.pressed-y) / 1px) > 12) {
-                            long-timer.running = false;
-                        }
-                    }
+                    hold-started => { root.begin-hold(); }
+                    held => { root.open-menu(); }
                 }
 
                 b-inner := VerticalLayout {
@@ -624,7 +625,7 @@ export component Bubble inherits Rectangle {
                                 width: 100%; height: 100%;
                             }
                         }
-                        HoldArea { clicked => { if (!self.fired) { root.open-document(item); } self.fired = false; } held => { root.open-menu(); } }
+                        HoldArea { clicked => { if (!self.fired) { root.open-document(item); } self.fired = false; } hold-started => { root.begin-hold(); } held => { root.open-menu(); } }
                     }
 
                     // Music: AudioBody's card — square cover (or bare strip) over
@@ -664,7 +665,7 @@ export component Bubble inherits Rectangle {
                                     width: 100%; height: 100%;
                                 }
                             }
-                            art-tap := HoldArea { clicked => { if (!self.fired) { root.open-audio(item); } self.fired = false; } held => { root.open-menu(); } }
+                            art-tap := HoldArea { clicked => { if (!self.fired) { root.open-audio(item); } self.fired = false; } hold-started => { root.begin-hold(); } held => { root.open-menu(); } }
                         }
                         strip := Rectangle {
                             y: audio-card.height - 52px;
@@ -694,7 +695,7 @@ export component Bubble inherits Rectangle {
                                     overflow: elide;
                                 }
                             }
-                            HoldArea { clicked => { if (!self.fired) { root.open-audio(item); } self.fired = false; } held => { root.open-menu(); } }
+                            HoldArea { clicked => { if (!self.fired) { root.open-audio(item); } self.fired = false; } hold-started => { root.begin-hold(); } held => { root.open-menu(); } }
                         }
                     }
 
@@ -1075,6 +1076,7 @@ export component Bubble inherits Rectangle {
                         // LocationBody.qml:377-382 — an ended share no longer opens.
                         HoldArea {
                             clicked => { if (!self.fired && !item.location-ended) { root.open-location(item); } self.fired = false; }
+                            hold-started => { root.begin-hold(); }
                             held => { root.open-menu(); }
                         }
                     }
@@ -1163,6 +1165,7 @@ export component Bubble inherits Rectangle {
                         }
                         HoldArea {
                             clicked => { if (!self.fired) { root.open-link(item); } self.fired = false; }
+                            hold-started => { root.begin-hold(); }
                             held => { root.open-menu(); }
                         }
                     }
@@ -1253,7 +1256,9 @@ export component Bubble inherits Rectangle {
                     // dots, blur that clears on hover, spoilers that wipe open.
                     if item.fx-chars.length > 0 : fx-box := Rectangle {
                         width: item.fx-w;
-                        height: item.fx-h;
+                        // The run path lays the text out itself, so the box
+                        // follows that layout rather than the engine's glyphs.
+                        height: item.fx-run ? run-body.preferred-height : item.fx-h;
                         // RichText.qml:150-170 — spoilers: covered until tapped,
                         // then a left-to-right wipe (620ms OutCubic) with a
                         // spread of clamp(len*0.35, 4, 14); remembered per event.
@@ -1272,22 +1277,28 @@ export component Bubble inherits Rectangle {
                         // The uniform glow run: the body once, and one breathing
                         // copy behind it (RichText.qml:299-310's cycle) — the
                         // per-glyph cells below then hold no Text.
-                        if item.fx-run : Text {
-                            property <float> gp: 0.5 - 0.5 * cos(360deg * (mod(root.clock / 1ms, 1800.0) / 1800.0));
-                            x: 0; y: 0; width: 100%; height: 100%;
+                        // The glow: four soft copies a pixel or two around the
+                        // body, breathing 0.05..0.45 on the QML's 1800ms cycle —
+                        // the same text and width, so they wrap exactly as the
+                        // body does. (A scaled copy wraps differently and reads
+                        // as a second paragraph.)
+                        property <float> glow-p: 0.5 - 0.5 * cos(360deg * (mod(root.clock / 1ms, 1800.0) / 1800.0));
+                        property <color> glow-ink: root.fg.with-alpha((0.05 + 0.40 * self.glow-p) * 0.5);
+                        for off in [{ x: -1.5, y: -1.0 }, { x: 1.5, y: -1.0 }, { x: -1.5, y: 1.5 }, { x: 1.5, y: 1.5 }] : Text {
+                            x: off.x * 1px * (0.6 + 0.8 * fx-box.glow-p); y: off.y * 1px * (0.6 + 0.8 * fx-box.glow-p);
+                            width: fx-box.width; height: fx-box.height;
+                            visible: item.fx-run;
                             text: item.fx-text;
-                            color: root.fg.with-alpha(0.05 + 0.40 * self.gp);
+                            color: fx-box.glow-ink;
                             font-family: item.fx-chars[0].mono ? Theme.font-mono : Theme.font-ui;
                             font-size: item.fx-chars[0].size;
                             font-weight: item.fx-chars[0].bold ? 800 : 400; font-italic: item.fx-chars[0].italic;
                             wrap: word-wrap;
-                            transform-origin: { x: self.width / 2, y: self.height / 2 };
-                            transform-scale-x: 1.1 + 0.4 * self.gp;
-                            transform-scale-y: 1.1 + 0.4 * self.gp;
                         }
-                        if item.fx-run : Text {
-                            x: 0; y: 0; width: 100%; height: 100%;
-                            text: item.fx-text;
+                        run-body := Text {
+                            x: 0; y: 0; width: 100%;
+                            visible: item.fx-run;
+                            text: item.fx-run ? item.fx-text : "";
                             color: root.fg;
                             font-family: item.fx-chars[0].mono ? Theme.font-mono : Theme.font-ui;
                             font-size: item.fx-chars[0].size;
@@ -1433,6 +1444,7 @@ export component Bubble inherits Rectangle {
                                 }
                                 self.fired = false;
                             }
+                            hold-started => { root.begin-hold(); }
                             held => { root.open-menu(); }
                         }
                     }
@@ -1510,17 +1522,6 @@ export component Bubble inherits Rectangle {
                         TouchArea { clicked => { root.open-thread(item.event-id); } }
                     }
                 }
-
-                long-timer := Timer {
-                    property <bool> fired: false;
-                    interval: 500ms;
-                    running: false;
-                    triggered => {
-                        self.running = false;
-                        self.fired = true;
-                        root.open-menu();
-                    }
-                }
             }
 
             // Reactions straddle the bubble's inner top corner.
@@ -1529,6 +1530,7 @@ export component Bubble inherits Rectangle {
                               : bubble.x + bubble.width + 9px - self.preferred-width;
                 y: bubble.y - self.preferred-height / 2;
                 spacing: 2px;
+                visible: !root.copying;
                 for chip in item.reactions : r-chip := Rectangle {
                     width: r-lay.preferred-width;
                     height: r-lay.preferred-height;
@@ -1580,7 +1582,7 @@ export component Bubble inherits Rectangle {
                 border-color: Theme.popup-background;
                 opacity: item.pinned ? 1.0 : 0.0;
                 animate opacity { duration: 160ms; }
-                visible: self.opacity > 0.01;
+                visible: self.opacity > 0.01 && !root.copying;
                 property <float> pop: item.pinned ? 1.0 : 0.6;
                 animate pop { duration: 220ms; easing: cubic-bezier(0.34, 1.9, 0.64, 1); }
                 transform-origin: { x: self.width / 2, y: self.height / 2 };

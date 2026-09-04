@@ -21,6 +21,11 @@ path = "uniffi-bindgen.rs"
 name = "sigil-engine"
 path = "src/main.rs"
 
+# the JSON query the shell tests use
+[[bin]]
+name = "sigil-jq"
+path = "src/bin/jq.rs"
+
 [features]
 default = []
 

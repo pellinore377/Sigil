@@ -63,10 +63,15 @@ pub fn render(p: &serde_json::Map<String, Value>) -> crate::ipc::wire::Reply {
         let Ok(face) = ttf_parser::Face::parse(&bytes, 0) else {
             return Reply::err("unavailable", "the emoji font could not be parsed");
         };
-        let Some(gid) = face.glyph_index(ch) else {
-            return Reply::err("not_found", "the font has no picture for that");
-        };
-        let Some(img) = face.glyph_raster_image(gid, u16::MAX) else {
+        // The bare code point first; the text-default emoji (a mountain, a
+        // tent) only carry their picture on the glyph the font maps the
+        // emoji-presentation pair (U+FE0F) to, so that is the second try.
+        let picture = |gid: ttf_parser::GlyphId| face.glyph_raster_image(gid, u16::MAX);
+        let Some(img) = face
+            .glyph_index(ch)
+            .and_then(picture)
+            .or_else(|| face.glyph_variation_index(ch, '\u{fe0f}').and_then(picture))
+        else {
             return Reply::err("not_found", "the font has no picture for that");
         };
         if img.format != ttf_parser::RasterImageFormat::PNG {

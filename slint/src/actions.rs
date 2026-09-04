@@ -8,7 +8,7 @@ use slint::{ComponentHandle, ModelRc, SharedString, VecModel};
 
 use crate::bridge::{rebuild_rooms, rebuild_timeline, with_ui, Requester, UiState};
 use crate::rows::{initials, tint_for};
-use crate::{project, AppWindow, TimelineRow, UserRow};
+use crate::{project, AppWindow, SheetRect, TimelineRow, UserRow};
 
 pub fn room_of_key(key: &str) -> String {
     match key.find('|') {
@@ -202,37 +202,72 @@ fn after(req: &Requester, ms: u64, f: impl FnOnce(&mut UiState, &AppWindow) + Se
     });
 }
 
+/// A bubble's rect in the snapshot's pixels. `r` is logical, from the
+/// window's origin; the picture is in whatever pixels the renderer hands
+/// back, so it is scaled by the picture's own size over the window's logical
+/// size rather than by a scale factor the two need not agree on. The cut is
+/// rounded to whole pixels on both edges so it is never resampled against
+/// the rect the sheet draws it in.
+fn sheet_px(win: &AppWindow, snap: &crate::frost::Snapshot, r: &SheetRect) -> crate::frost::PixelRect {
+    let logical = win.window().size().to_logical(win.window().scale_factor());
+    let sx = snap.buf.width() as f32 / logical.width.max(1.0);
+    let sy = snap.buf.height() as f32 / logical.height.max(1.0);
+    let (x0, y0) = ((r.x * sx).round(), (r.y * sy).round());
+    let (x1, y1) = (((r.x + r.w) * sx).round(), ((r.y + r.h) * sy).round());
+    let s = sx.min(sy);
+    crate::frost::PixelRect {
+        x: x0,
+        y: y0,
+        w: x1 - x0,
+        h: y1 - y0,
+        radii: [r.r_tl * s, r.r_tr * s, r.r_bl * s, r.r_br * s],
+    }
+}
+
+/// A press on a bubble is lasting: take the frost now, while the finger is
+/// still and nothing moves, so the lift has every frame to itself when the
+/// hold fires. Dropped unused if the press lets go early.
+pub fn sheet_prewarm(ui: &mut UiState, win: &AppWindow, id: &str, r: &SheetRect) {
+    let frost = crate::frost::Snapshot::take(win.window()).map(|mut snap| {
+        snap.mask(sheet_px(win, &snap, r));
+        snap.frosted()
+    });
+    ui.sheet_prewarm = frost.map(|f| (id.to_string(), f));
+}
+
+/// The hold fired: the pressed bubble's own pixels, cut from a picture of
+/// the whole window taken now — before the sheet hides the original, with
+/// the reactions and pin stepped out of the frame (Bubble.copying) — and
+/// the frost from the prewarm, or from this same picture if the press
+/// arrived without one (the test hook, a hold that fired at once).
+pub fn sheet_snapshot(ui: &mut UiState, win: &AppWindow, id: &str, r: &SheetRect) {
+    let snap = crate::frost::Snapshot::take(win.window());
+    let copy = snap.as_ref().and_then(|snap| snap.crop(sheet_px(win, snap, r)));
+    win.set_sheet_copy(copy.unwrap_or_default());
+    let warm = match ui.sheet_prewarm.take() {
+        Some((warm_id, img)) if warm_id == id => Some(img),
+        _ => None,
+    };
+    let frost = warm.or_else(|| {
+        snap.map(|mut snap| {
+            snap.mask(sheet_px(win, &snap, r));
+            snap.frosted()
+        })
+    });
+    win.set_sheet_backdrop(frost.unwrap_or_default());
+}
+
 pub fn wire_extra(win: &AppWindow) {
-    win.on_sheet_snapshot(|x, y, w, h| {
+    win.on_sheet_prewarm(|id, r| {
         with_ui(|ui| {
             let Some(win) = ui.win.upgrade() else { return };
-            // The pressed bubble's own pixels, cut from a picture of the whole
-            // window taken now — before the sheet hides the original. (x, y,
-            // w, h) are logical, from the window's origin; the picture is in
-            // whatever pixels the renderer hands back, so it is scaled by the
-            // picture's own size over the window's logical size rather than
-            // by a scale factor the two need not agree on. The cut is rounded
-            // to whole pixels on both edges so it is never resampled against
-            // the rect the sheet draws it in.
-            let logical = win.window().size().to_logical(win.window().scale_factor());
-            let copy = crate::frost::Snapshot::take(win.window()).and_then(|snap| {
-                let sx = snap.buf.width() as f32 / logical.width.max(1.0);
-                let sy = snap.buf.height() as f32 / logical.height.max(1.0);
-                let (x0, y0) = ((x * sx).round(), (y * sy).round());
-                let (x1, y1) = (((x + w) * sx).round(), ((y + h) * sy).round());
-                snap.crop(x0, y0, x1 - x0, y1 - y0)
-            });
-            win.set_sheet_copy(copy.unwrap_or_default());
+            sheet_prewarm(ui, &win, id.as_str(), &r);
         });
     });
-    win.on_sheet_frost(|| {
+    win.on_sheet_snapshot(|id, r| {
         with_ui(|ui| {
             let Some(win) = ui.win.upgrade() else { return };
-            // The whole window, blurred, for the sheet's frost — taken after
-            // the page hid the pressed bubble and before the sheet draws, so
-            // the blur holds the page with a hole where the bubble stood.
-            let frost = crate::frost::Snapshot::take(win.window()).map(|snap| snap.frosted());
-            win.set_sheet_backdrop(frost.unwrap_or_default());
+            sheet_snapshot(ui, &win, id.as_str(), &r);
         });
     });
     win.on_nav_opened(|page| {
@@ -1980,15 +2015,16 @@ fn push_emoji(ui: &mut UiState, win: &AppWindow, query: &str) {
         rows.push(ModelRc::new(VecModel::from(row)));
     }
     let cat_marks = ["👋", "🐵", "🍇", "🌍", "🎃", "👓", "🏧", "🏁"];
-    let cats: Vec<i32> = cat_marks
-        .iter()
-        .map(|m| {
+    // Nine entries for the strip's nine categories: the smileys start the
+    // list at row 0, the rest at the row of their first glyph.
+    let cats: Vec<i32> = std::iter::once(0)
+        .chain(cat_marks.iter().map(|m| {
             filtered
                 .iter()
                 .position(|(g, _)| g == m)
                 .map(|i| (i / 8) as i32)
                 .unwrap_or(0)
-        })
+        }))
         .collect();
     win.set_emoji_rows(ModelRc::new(VecModel::from(rows)));
     win.set_emoji_cat_rows(ModelRc::new(VecModel::from(cats)));
