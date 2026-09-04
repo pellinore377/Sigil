@@ -16,6 +16,8 @@ import { Theme } from "style.slint";
 import { Icons } from "icons.slint";
 import { IconLabel, ActionButton } from "components.slint";
 import { Spinner } from "furniture.slint";
+import { EmojiPicker } from "emoji.slint";
+import { EmojiItem } from "model.slint";
 
 export struct ViewerItem {
     event-id: string,
@@ -159,6 +161,7 @@ export component ImageViewer inherits Rectangle {
             root.reset-zoom();
             root.drag-dx = 0; root.turning = false; root.turn-dir = 0;
             root.more-open = false; root.fwd-open = false;
+            root.picker-open = false;
         }
     }
     fade := Timer {
@@ -180,7 +183,8 @@ export component ImageViewer inherits Rectangle {
         init => { if (root.shown) { self.focus(); } }
         key-pressed(event) => {
             if (event.text == Key.Escape && root.shown && !root.closing) {
-                if (root.more-open) { root.more-open = false; }
+                if (root.picker-open) { root.picker-open = false; }
+                else if (root.more-open) { root.more-open = false; }
                 else if (root.fwd-open) { root.fwd-open = false; }
                 else { root.close(); }
                 return accept;
@@ -199,9 +203,15 @@ export component ImageViewer inherits Rectangle {
     property <length> oy: 0;
     property <bool> zoomed: root.zoom > 1.01;
     in-out property <length> drag-dx: 0;
-    // ImageViewer.qml:295-296, 305 — pager inset 58 above, 104 below, pages 56 narrower.
+    // Measured off the platform messenger's own viewer (docs: the reference
+    // shot is 1344×2992 at 2.55 px/dp, so every number below is that shot's
+    // pixels divided by 2.55). The stage runs from the header's bottom edge
+    // (64) to 132 above the viewer's foot — the picture there fills that band
+    // exactly, 899 tall, which is what fixes both numbers. The side inset
+    // stays 28 a side: the reference's picture is a tall one and never
+    // reaches the width, so only the height band is measurable.
     property <length> page-w: root.width - 56px;
-    property <length> page-h: root.height - 58px - 104px;
+    property <length> page-h: root.height - 64px - 132px;
     // ImageViewer.qml:319-321, 328-329 — 800×600 when the media carries no
     // size; fit = round(i × min(W/iw, H/ih)), never under 1.
     property <float> iw: root.it.w > 0 ? root.it.w : 800;
@@ -209,8 +219,13 @@ export component ImageViewer inherits Rectangle {
     property <float> fs: min(root.page-w / 1px / root.iw, root.page-h / 1px / root.ih);
     property <length> fit-w: max(1px, round(root.iw * root.fs) * 1px);
     property <length> fit-h: max(1px, round(root.ih * root.fs) * 1px);
-    // ImageViewer.qml:299, 305 — one page pitch: itemW + spacing 12.
-    property <length> pitch: root.page-w + 12px;
+    // One page pitch. The reference puts the neighbour's inner edge 16 inside
+    // the frame whatever the picture's shape (measured: a 404-wide picture in
+    // a 527 frame, the sliver 16 wide), so the pitch is read off that edge —
+    // half the picture plus half the gutter, less the sliver — rather than
+    // off a fixed page width. A flat page-width pitch only showed the sliver
+    // for a picture that filled the width; a tall one hid it off-screen.
+    property <length> pitch: (root.width + root.fit-w) / 2 - 16px;
 
     function clamp-offsets() {
         root.ox = max(-max(0px, (root.fit-w * root.zoom - root.page-w) / 2),
@@ -294,17 +309,17 @@ export component ImageViewer inherits Rectangle {
 
     // ---- stage ----
     stage := Rectangle {
-        y: 58px;
+        y: 64px;
         width: 100%;
         height: root.page-h;
         clip: true;
 
         // Filmstrip: the neighbouring pictures, one pitch apart, each with its
         // own spinner and no slab behind it (ImageViewer.qml:292-316, :475).
-        // They are there at rest, not only under a drag: a page is 56 narrower
-        // than the viewer and the pitch adds 12, so the neighbour's edge stands
-        // 16px inside the frame the whole time — that sliver is what says there
-        // is another picture to swipe to, and the port was hiding it.
+        // They are there at rest, not only under a drag: `pitch` is set so the
+        // neighbour's edge stands 16 inside the frame the whole time — that
+        // sliver is what says there is another picture to swipe to, and the
+        // port was hiding it for anything but a width-filling picture.
         if root.cur > 0 && !root.zoomed : prev-peek := Rectangle {
             property <ViewerItem> pit: root.items[root.cur - 1];
             property <float> piw: self.pit.w > 0 ? self.pit.w : 800;
@@ -315,7 +330,7 @@ export component ImageViewer inherits Rectangle {
             x: (stage.width - self.pfw) / 2 - root.pitch + root.shift;
             y: (stage.height - self.pfh) / 2;
             width: self.pfw; height: self.pfh;
-            border-radius: 16px;
+            border-radius: 20px;   // measured: 51px at 2.55 px/dp
             clip: true;
             background: transparent;
             if self.pit.have-img : Image {
@@ -337,7 +352,7 @@ export component ImageViewer inherits Rectangle {
             x: (stage.width - self.nfw) / 2 + root.pitch + root.shift;
             y: (stage.height - self.nfh) / 2;
             width: self.nfw; height: self.nfh;
-            border-radius: 16px;
+            border-radius: 20px;   // measured: 51px at 2.55 px/dp
             clip: true;
             background: transparent;
             if self.nit.have-img : Image {
@@ -356,7 +371,7 @@ export component ImageViewer inherits Rectangle {
             y: (stage.height - root.fit-h * root.zoom) / 2 + root.oy;
             width: root.fit-w * root.zoom;
             height: root.fit-h * root.zoom;
-            border-radius: 16px;
+            border-radius: 20px;   // measured: 51px at 2.55 px/dp
             clip: true;
             // The still: the picture, or a video's poster. It stays up through
             // the second or so a decoder takes to hand over its first frame,
@@ -489,50 +504,82 @@ export component ImageViewer inherits Rectangle {
         }
     }
 
-    // ---- top bar (ImageViewer.qml:498-517) ----
+    // ---- top bar ----
+    // Measured off the reference (px @ 2.55 px/dp → dp): the row is 64 tall
+    // with nothing painted behind it, every glyph 24 in a 48 tap target, the
+    // close cross centred 28 from the left and the three right glyphs on a
+    // 48 pitch ending 28 from the right. The two title lines are ink-centred
+    // on the same axis as the glyphs (measured centre 32 from the row's top),
+    // the name 16 and the time 14, both in the same ink — the reference does
+    // not dim the time, and the port's 0.55 was the visible difference.
+    property <length> bar-h: 64px;
+    property <length> tap: 48px;      // the tap target
+    property <length> glyph: 24px;    // the drawn glyph inside it
+    property <length> edge: 4px;      // (28 − 48/2): what centres the glyph at 28
     top-bar := Rectangle {
         // pinned to the top: an element with no geometry centres itself in Slint
         x: 0px; y: 0px; width: 100%;
-        height: 56px;
-        // :502 — 22px PanelActionButton at leftMargin 8, vertically centred.
+        height: root.bar-h;
         close-btn := ActionButton {
-            x: 8px; y: (56px - 22px) / 2;
-            width: 22px; height: 22px;
+            x: root.edge; y: (root.bar-h - root.tap) / 2;
+            width: root.tap; height: root.tap;
             icon: Icons.close;
+            icon-size: root.glyph;
             foreground: root.fg;
             clicked => { root.close(); }
         }
-        // :503-507 — name and time at closeBtn.right + 8 = 38.
+        // Measured: the name's ink starts 56 from the left — the tap target's
+        // right edge (52) plus 4.
         title-col := VerticalLayout {
-            x: 38px;
-            y: (56px - self.preferred-height) / 2;
-            width: right-bar.x - 38px - 8px;
+            x: 56px;
+            // The reference's two baselines stand 21 apart and its ink is
+            // symmetric in the 64 row (measured 15.7 above, 15.4 below); two
+            // stacked Slint line boxes sit 17 apart and ride high by their
+            // unused descender, so the row is opened by 4 and dropped by 2.
+            y: (root.bar-h - self.preferred-height) / 2 + 2px;
+            width: max(0px, right-bar.x - 56px - 8px);
             height: self.preferred-height;
-            Text { text: root.it.is-own ? "You" : root.it.sender-name; color: root.fg; font-family: Theme.font-ui; font-size: Theme.subtitle; font-weight: 700; overflow: elide; }
-            Text { text: root.it.ts-label; color: root.fg.with-alpha(0.55); font-family: Theme.font-ui; font-size: Theme.caption; }
+            spacing: 4px;
+            Text {
+                text: root.it.is-own ? "You" : root.it.sender-name;
+                color: root.fg;
+                font-family: Theme.font-ui;
+                // Measured stroke 0.11em: the medium face, not the bold one.
+                font-size: Theme.subtitle; font-weight: 500;
+                overflow: elide;
+            }
+            Text {
+                text: root.it.ts-label;
+                color: root.fg;
+                font-family: Theme.font-ui;
+                font-size: Theme.body-small;
+                overflow: elide;
+            }
         }
-        // :508-516 — three 22px PanelActionButtons at spacing 2, rightMargin 8.
         right-bar := HorizontalLayout {
-            x: root.width - 8px - self.width;
-            y: (56px - 22px) / 2;
+            x: root.width - root.edge - self.width;
+            y: (root.bar-h - root.tap) / 2;
             width: self.preferred-width;
-            height: 22px;
-            spacing: 2px;
+            height: root.tap;
+            spacing: 0px;             // the 48 targets meet: glyphs land on a 48 pitch
             ActionButton {
-                width: 22px; height: 22px;
+                width: root.tap; height: root.tap;
                 icon: Icons.download;
+                icon-size: root.glyph;
                 foreground: root.fg;
                 clicked => { root.download-requested(); }
             }
             if root.it.can-redact : ActionButton {
-                width: 22px; height: 22px;
+                width: root.tap; height: root.tap;
                 icon: Icons.trash;
+                icon-size: root.glyph;
                 foreground: root.fg;
                 clicked => { root.delete-requested(); }
             }
             ActionButton {
-                width: 22px; height: 22px;
+                width: root.tap; height: root.tap;
                 icon: Icons.moreVertical;
+                icon-size: root.glyph;
                 foreground: root.fg;
                 clicked => { root.more-open = !root.more-open; }
             }
@@ -540,9 +587,11 @@ export component ImageViewer inherits Rectangle {
     }
 
     // ---- video scrubber (ImageViewer.qml:620-672) ----
+    // It rides the band the reference leaves between the picture's foot (132
+    // above the viewer's own) and the reaction row's top (100): 32 clear.
     if root.playing-event != "" : scrub-row := Rectangle {
         x: 16px;
-        y: root.height - 62px - 34px;
+        y: root.height - 132px;
         width: root.width - 32px;
         height: 34px;
         pos-label := Text {
@@ -602,33 +651,104 @@ export component ImageViewer inherits Rectangle {
         }
     }
 
-    // ---- reactions (ImageViewer.qml:674-694) ----
+    // ---- reactions ----
+    // Measured off the reference: six emoji and an add-reaction glyph on a 48
+    // pitch, each glyph ~24 of ink, their centres 72 above the viewer's foot —
+    // and, contrary to the port, no disc under them at rest. The ground shows
+    // straight through; only a press or a hover lights a disc. The reference's
+    // two leftmost buttons (the image-edit sparkle and the comment bubble) are
+    // not ours to have, so the seven that remain are centred on the frame
+    // rather than left where the omission would have parked them.
+    property <length> re-tap: 48px;
+    property <length> re-glyph: 24px;
+    /// The add-reaction glyph raises the full emoji picker — the same one the
+    /// message sheet's drawer and the attach sheet show — in a drawer over
+    /// the picture; a pick reacts and puts the drawer away, the viewer stays.
+    in property <[[EmojiItem]]> emoji-rows;
+    in property <[int]> emoji-cat-rows;
+    /// The gesture bar's height: the drawer's category bar stands off it.
+    in property <length> bottom-inset: 0px;
+    callback emoji-search(string);
+    callback load-emoji;
+    /// Read by the window so Android's Back puts the drawer away before the viewer.
+    in-out property <bool> picker-open: false;
+    property <[string]> quick-1: ["👍", "❤️", "😂", "😮", "😢", "😡"];
     react-row := HorizontalLayout {
         x: (root.width - self.preferred-width) / 2;
-        y: root.height - 54px;
+        y: root.height - 72px - root.re-tap / 2;
         width: self.preferred-width;
-        height: 42px;
-        spacing: 10px;
-        for emo in ["👍", "❤️", "😂", "😮", "😢", "😡"] : re := Rectangle {
-            width: 42px; height: 42px; border-radius: 21px;
-            background: re-t.pressed || re-t.has-hover ? root.accent.with-alpha(0.25) : root.fg.with-alpha(0.08);
-            // :684-687 — emoji are ink-centred, not line-box centred: their
-            // variation selectors widen the advance past the visible glyph, so
-            // plain centring lands 5.5px left of centre (docs/ui-conventions.md
-            // "Icons and centring", measured in this row). Slint cannot measure
-            // text, so the measured nudge is applied as a constant.
+        height: root.re-tap;
+        spacing: 0px;
+        for emo in root.quick-1 : re := Rectangle {
+            width: root.re-tap; height: root.re-tap;
+            border-radius: root.re-tap / 2;
+            background: re-t.pressed || re-t.has-hover ? root.accent.with-alpha(0.25) : transparent;
+            // Emoji are ink-centred, not line-box centred: their variation
+            // selectors widen the advance past the visible glyph, so plain
+            // centring lands a fraction of the em left of centre
+            // (docs/ui-conventions.md "Icons and centring", measured in this
+            // row at 5.5 on a 20px glyph — 0.275 em). Slint cannot measure
+            // text, so the measured nudge rides the font size.
             Text {
-                x: (42px - self.preferred-width) / 2 + 5.5px;
-                y: (42px - self.preferred-height) / 2;
+                x: (root.re-tap - self.preferred-width) / 2 + self.font-size * 0.275;
+                y: (root.re-tap - self.preferred-height) / 2;
                 width: self.preferred-width; height: self.preferred-height;
-                text: emo; font-size: 20px;
+                text: emo; font-size: root.re-glyph;
             }
             re-t := TouchArea { clicked => { root.react(emo); } }
+        }
+        ActionButton {
+            width: root.re-tap; height: root.re-tap;
+            icon: Icons.react;
+            icon-size: root.re-glyph;
+            foreground: root.fg;
+            clicked => { root.load-emoji(); root.picker-open = true; }
+        }
+    }
+
+    // The emoji drawer: the picker in a bottom sheet over the picture, the
+    // message sheet's drawer at its proportions (a 28 crown, an 8 + 24 handle
+    // strip, the picker below). Tapping the picture above it puts it away.
+    if root.picker-open : picker-scrim := TouchArea {
+        width: 100%; height: 100%;
+        clicked => { root.picker-open = false; }
+    }
+    picker-drawer := Rectangle {
+        property <length> open-h: root.height * 0.62;
+        x: 0; width: 100%;
+        height: self.open-h;
+        y: root.picker-open ? root.height - self.open-h : root.height;
+        animate y { duration: 220ms; easing: cubic-bezier(0.33, 1, 0.68, 1); }
+        visible: self.y < root.height;
+        background: Theme.popup-background.with-alpha(0.98);
+        border-top-left-radius: 28px;
+        border-top-right-radius: 28px;
+        clip: true;
+        // Swallow presses on the drawer's own ground so they never reach the
+        // picture's pager underneath.
+        TouchArea { }
+        Rectangle {
+            x: (parent.width - self.width) / 2; y: 8px;
+            width: 32px; height: 4px; border-radius: 2px;
+            background: root.fg.with-alpha(0.4);
+        }
+        EmojiPicker {
+            x: 0; y: 32px; width: 100%;
+            height: max(0px, parent.height - 32px);
+            bottom-inset: root.bottom-inset;
+            fg: root.fg;
+            accent: root.accent;
+            back-slot: false;
+            active: root.picker-open;
+            rows: root.emoji-rows;
+            cat-rows: root.emoji-cat-rows;
+            picked(e) => { root.react(e); root.picker-open = false; }
+            search-edited(q) => { root.emoji-search(q); }
         }
     }
 
     // ImageViewer.qml:101-102, 695-700 — note() holds a toast for 2500ms; its
-    // bottom sits 58 above the viewer's. `toast` is bound by the app, so the
+    // bottom clears the reaction row's top (96) by 12. `toast` is bound by the
     // page hides it rather than clearing it (an assignment would drop the
     // binding); the bridge blanks it first to repeat the same text.
     property <bool> toast-live: root.toast != "";
@@ -643,7 +763,7 @@ export component ImageViewer inherits Rectangle {
     }
     if root.toast != "" && root.toast-live : Text {
         x: (root.width - self.preferred-width) / 2;
-        y: root.height - 58px - self.preferred-height;
+        y: root.height - 108px - self.preferred-height;
         width: self.preferred-width; height: self.preferred-height;
         text: root.toast;
         color: root.fg.with-alpha(0.7);
@@ -673,7 +793,7 @@ export component ImageViewer inherits Rectangle {
     // right, 0.85→1 over 140ms OutCubic (:540-544, :586-590).
     more-card := Rectangle {
         x: root.width - self.width - 10px;
-        y: 42px;                                    // :534 — (56 + 22) / 2 + 3
+        y: 59px;                                    // (bar 64 + tap 48) / 2 + 3
         width: 160px;
         height: 2 * root.menu-row + 12px;           // :530 — two rows + 6 around
         border-radius: 12px;
@@ -712,7 +832,7 @@ export component ImageViewer inherits Rectangle {
     // Forward: pick a room (ImageViewer.qml:566-616).
     fwd-card := Rectangle {
         x: root.width - self.width - 10px;
-        y: 42px;
+        y: 59px;
         width: 240px;
         height: min(330px, fwd-col.preferred-height + 12px);
         border-radius: 12px;

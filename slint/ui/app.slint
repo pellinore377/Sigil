@@ -270,6 +270,8 @@ export component AppWindow inherits Window {
 
     // ---- overlays ----
     in-out property <bool> viewer-open: false;
+    /// The viewer's emoji drawer, for Android's Back to put away first.
+    in-out property <bool> viewer-picker-open <=> viewer.picker-open;
     in property <[ViewerItem]> vw-items;
     in-out property <int> vw-cur: -1;
     in property <[string]> vw-forward-names;
@@ -1304,6 +1306,12 @@ export component AppWindow inherits Window {
             share-requested => { root.act("viewer-share", "", ""); }
             forward-to(i) => { root.act("viewer-forward", "" + i, ""); }
             react(e) => { root.act("viewer-react", e, ""); }
+            // The add-reaction drawer: the same picker and search the sheets use.
+            emoji-rows: root.emoji-rows;
+            emoji-cat-rows: root.emoji-cat-rows;
+            bottom-inset: root.safe-area-insets.bottom;
+            emoji-search(q) => { root.act("emoji-search", q, ""); }
+            load-emoji => { root.act("emoji-search", "", ""); }
             toggle-playback => { root.act("viewer-playback", "", ""); }
             seek-requested(sec) => { root.act("viewer-seek", "" + sec, ""); }
             scrub-state(on, pos) => { root.act("viewer-scrub", on ? "true" : "false", "" + pos); }

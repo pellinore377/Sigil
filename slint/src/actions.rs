@@ -245,13 +245,16 @@ pub fn sheet_snapshot(ui: &mut UiState, win: &AppWindow, id: &str, r: &SheetRect
     // the platform's long-press buzz, the moment the hold fires
     #[cfg(target_os = "android")]
     i_slint_backend_android_activity::haptic_long_press();
-    let snap = crate::frost::Snapshot::take(win.window());
     let warm = match ui.sheet_prewarm.take() {
         Some((warm_id, img)) if warm_id == id => Some(img),
         _ => None,
     };
+    // The hold already took and frosted the window (sheet_prewarm); a second
+    // full-window snapshot here — a re-render and a readback — landed on the
+    // very frame the lift starts, and showed as a hitch at the sheet's open.
+    // Only a cold open (no hold, or another message's hold) captures now.
     let frost = warm.or_else(|| {
-        snap.map(|mut snap| {
+        crate::frost::Snapshot::take(win.window()).map(|mut snap| {
             snap.mask(sheet_px(win, &snap, r));
             snap.frosted()
         })
@@ -265,41 +268,106 @@ pub fn sheet_snapshot(ui: &mut UiState, win: &AppWindow, id: &str, r: &SheetRect
 /// Called on every drag step, so it does no work beyond the arithmetic and a
 /// cache lookup per visible tile; the fetches answer later and place
 /// themselves.
+///
+/// Where a tile has not arrived the placement does not leave a hole: it
+/// borrows the nearest imagery that covers the same ground — the parent from
+/// the level above, cropped to this tile's quarter of it, or the children from
+/// the level below in their quarters of this box (`MapView::layout`). Slint's
+/// Image takes the crop as a rectangle in the picture's own pixels, so the
+/// fractions the layout works in are multiplied up by whatever size the
+/// picture actually came at.
 pub fn map_place(ui: &mut UiState, win: &AppWindow) {
-    let wanted = ui.mapview.wanted();
     // Mid-pinch the grid is drawn magnified, and at a magnification that is
     // rarely a whole number of pixels. The view rounds each tile's edges onto
     // whole *device* pixels, so it needs to know how many of those there are
     // to a logical one; without it adjacent tiles are feathered against the
     // ground and every join shows as a hairline.
     let dpr = f64::from(win.window().scale_factor());
-    let mut rows: Vec<crate::MapTileView> = Vec::with_capacity(wanted.len());
-    let mut missing: Vec<(u32, i64, i64)> = Vec::new();
-    for (tx, ty) in wanted {
-        let key = ui.mapview.key(tx, ty);
-        let (x, y, w, h) = ui.mapview.place(tx, ty, dpr);
-        match ui.mapview.have.get(&key) {
-            Some(img) => rows.push(crate::MapTileView {
-                x: x.into(),
-                y: y.into(),
-                w: w.into(),
-                h: h.into(),
-                img: img.clone(),
-            }),
-            None => {
-                if ui.mapview.asked.insert(key) {
-                    missing.push(key);
-                }
-            }
-        }
+    let plan = ui
+        .mapview
+        .layout(dpr, &|k| ui.mapview.have.contains_key(&k));
+    let mut rows: Vec<crate::MapTileView> = Vec::with_capacity(plan.rows.len());
+    for p in &plan.rows {
+        let Some(img) = ui.mapview.have.get(&p.key) else {
+            continue;
+        };
+        let sz = img.size();
+        let (sw, sh) = (sz.width as f32, sz.height as f32);
+        rows.push(crate::MapTileView {
+            x: p.x.into(),
+            y: p.y.into(),
+            w: p.w.into(),
+            h: p.h.into(),
+            // Rounded outwards from the exact fraction: a crop that lands
+            // between source pixels must take the whole pixel rather than
+            // leave a hair of the neighbouring quarter along the join.
+            sx: (p.fx * sw).floor() as i32,
+            sy: (p.fy * sh).floor() as i32,
+            sw: (p.fw * sw).ceil() as i32,
+            sh: (p.fh * sh).ceil() as i32,
+            img: img.clone(),
+        });
     }
     let (px, py) = ui.mapview.pin();
     win.set_mp_pin_x(px.into());
     win.set_mp_pin_y(py.into());
     win.set_mp_tiles(ModelRc::new(VecModel::from(rows)));
-    for (z, x, y) in missing {
+    // What the view is showing a stand-in (or nothing) for goes to the head of
+    // the queue, ahead of anything a gesture might want later.
+    ui.mapview.want_now(&plan.missing);
+    map_pump(ui);
+}
+
+/// Work out what the view will want next and queue it: the level being drawn,
+/// the level one out and the level one in, over the ground the view covers,
+/// nearest the middle first and capped (`MapView::prefetch`). Called when the
+/// page opens and whenever the view settles — never mid-gesture, where the
+/// answer would be stale before it landed.
+pub fn map_prefetch(ui: &mut UiState) {
+    ui.mapview.refill();
+    map_pump(ui);
+}
+
+/// Hand the engine as much of the queue as the lanes allow. Every fetch goes
+/// through here, which is what makes the queue's order mean anything: the
+/// engine renders a tile on whichever worker thread took the request, so a
+/// hundred requests posted at once are a hundred threads' worth of work in
+/// whatever order the runtime feels like, and the nearest tile finishes last
+/// as often as first.
+fn map_pump(ui: &mut UiState) {
+    // Nobody is looking at the map any more: the queue is imagery for a
+    // gesture that is not going to happen, and the conversation the back arrow
+    // just went to has better uses for the engine's threads. What is already
+    // in flight finishes and lands in the cache, where it will still be
+    // waiting if the page is opened again.
+    //
+    // `shown` is what keeps this from firing on the way UP: the window sets
+    // `nav` after it runs the open action, so the page asks for its first
+    // tiles while the window still says it is showing the conversation.
+    match ui.win.upgrade() {
+        Some(w) if w.get_nav() == "map" => ui.mapview.shown = true,
+        _ if ui.mapview.shown => {
+            ui.mapview.queue.clear();
+            return;
+        }
+        _ => {}
+    }
+    while let Some((z, x, y)) = ui.mapview.next_fetch() {
         fetch_map_tile(ui, z, x, y);
     }
+}
+
+/// Re-queue after the view has stopped moving. A drag reports every frame and
+/// the prefetch set is only worth computing once the finger is off, so this
+/// waits for the moving to stop.
+fn map_prefetch_debounced(ui: &mut UiState) {
+    ui.mapview.settle = ui.mapview.settle.wrapping_add(1);
+    let settle = ui.mapview.settle;
+    after(&ui.req.clone(), 200, move |ui, _win| {
+        if ui.mapview.settle == settle {
+            map_prefetch(ui);
+        }
+    });
 }
 
 /// One rendered tile from the engine. A tile is the same picture whatever
@@ -314,6 +382,7 @@ fn fetch_map_tile(ui: &mut UiState, z: u32, x: i64, y: i64) {
             ui.mapview.asked.remove(&(z, x, y));
             // The page moved to another point while this was in flight.
             if ui.mapview.epoch != epoch {
+                map_pump(ui);
                 return;
             }
             match out {
@@ -321,10 +390,19 @@ fn fetch_map_tile(ui: &mut UiState, z: u32, x: i64, y: i64) {
                     let path = v["path"].as_str().unwrap_or("");
                     if let Some(img) = crate::bridge::avatar_pub(ui, path) {
                         ui.mapview.have.insert((z, x, y), img);
-                        // Only the current zoom is on screen; a tile that
-                        // arrives for a zoom left behind just goes to the cache.
-                        if ui.mapview.z == z {
+                        // Re-place for a tile of the level on screen, and for
+                        // one of a level that could be COVERING the level on
+                        // screen while its own tiles are still out — a parent
+                        // up to `SUB_UP` levels above, or a child one below.
+                        // Otherwise it is imagery for a gesture not yet made,
+                        // and it just goes quietly into the cache.
+                        let here = ui.mapview.z;
+                        let helps = z == here
+                            || (z < here && here - z <= crate::mapview::SUB_UP)
+                            || z == here + 1;
+                        if helps {
                             map_place(ui, win);
+                            return;
                         }
                     }
                 }
@@ -332,6 +410,8 @@ fn fetch_map_tile(ui: &mut UiState, z: u32, x: i64, y: i64) {
                 // the ground shows through, and the composite still stands.
                 Err((code, msg)) => tracing::debug!("map.tile {z}/{x}/{y}: {code} {msg}"),
             }
+            // A lane has come free either way.
+            map_pump(ui);
         },
     );
 }
@@ -342,6 +422,7 @@ pub fn wire_extra(win: &AppWindow) {
             let Some(win) = ui.win.upgrade() else { return };
             ui.mapview.resize(w as f64, h as f64);
             map_place(ui, &win);
+            map_prefetch(ui);
         });
     });
     win.on_map_panned(|dx, dy| {
@@ -349,6 +430,8 @@ pub fn wire_extra(win: &AppWindow) {
             let Some(win) = ui.win.upgrade() else { return };
             ui.mapview.pan(dx as f64, dy as f64);
             map_place(ui, &win);
+            // A drag reports every frame; the wish-list waits for the finger.
+            map_prefetch_debounced(ui);
         });
     });
     // A step in or out about a tapped spot — and, with no step, the recentre
@@ -364,6 +447,8 @@ pub fn wire_extra(win: &AppWindow) {
                 ui.mapview.zoom(step, x as f64, y as f64);
             }
             map_place(ui, &win);
+            // A step lands on a whole level: the view has settled already.
+            map_prefetch(ui);
         });
     });
     win.on_map_pinch_begin(|| {
@@ -373,6 +458,11 @@ pub fn wire_extra(win: &AppWindow) {
         with_ui(|ui| {
             let Some(win) = ui.win.upgrade() else { return };
             ui.mapview.pinch_to(f as f64, x as f64, y as f64);
+            // Placement only: mid-gesture the view is still moving and a
+            // wish-list would be stale before it landed. What the pinch has
+            // just brought into view goes to the head of the queue by way of
+            // `want_now`, and the level it is heading for was queued when the
+            // view last settled — which is the whole point of having done so.
             map_place(ui, &win);
         });
     });
@@ -385,6 +475,10 @@ pub fn wire_extra(win: &AppWindow) {
             let Some(win) = ui.win.upgrade() else { return };
             ui.mapview.pinch_end();
             map_place(ui, &win);
+            // The fingers are off: queue afresh from where they left the view,
+            // which drops whatever was still queued for the level they pinched
+            // past and puts the new neighbours in its place.
+            map_prefetch(ui);
         });
     });
     win.on_sheet_prewarm(|id, r| {
@@ -1410,20 +1504,21 @@ pub fn on_act(ui: &mut UiState, win: &AppWindow, action: &str, a: &str, b2: &str
         }
         "pick-attach-files" => attach_pick(ui, AttachPick::Files, false),
         "pick-attach-gallery" => attach_pick(ui, AttachPick::Gallery, false),
-        // The camera page's shutter — and, on the phone, the page's own
-        // arrival. The attach sheet reaches the window through `at-page` and
-        // these callbacks and nothing else, so the camera page has no channel
-        // of its own to say "I am open"; it fires the shutter's callback on
-        // entry as well, and the two are told apart by whether a viewfinder
-        // is already up. With none, this is the page arriving (or a refused
-        // permission being retried) and the answer is to open one.
+        // The Camera tile on the phone, and the desktop chooser's shutter.
+        // The sheet reaches the window through `at-page` and these callbacks
+        // and nothing else, so the tile has no channel of its own to ask for
+        // a viewfinder; it fires the shutter's callback and closes itself,
+        // and the phone answers by putting the overlay up (which then owns
+        // the shutter, so nothing else comes down here while it is on
+        // screen). The desktop, with no viewfinder of ours, falls straight
+        // through to a capture.
         "pick-attach-camera" => {
-            if !camera_shutter_handled(win) {
+            if !camera_shutter_handled(ui, win) {
                 attach_pick(ui, AttachPick::Photo, false)
             }
         }
         "pick-attach-video" => {
-            if !camera_shutter_handled(win) {
+            if !camera_shutter_handled(ui, win) {
                 attach_pick(ui, AttachPick::Video, false)
             }
         }
@@ -1727,6 +1822,7 @@ pub fn on_act(ui: &mut UiState, win: &AppWindow, action: &str, a: &str, b2: &str
             let (w, h) = (ui.mapview.w / 2.0, ui.mapview.h / 2.0);
             ui.mapview.zoom(step, w, h);
             map_place(ui, win);
+            map_prefetch(ui);
             let z = (ui.map_zoom + step as i64).clamp(3, 19);
             if z != ui.map_zoom {
                 ui.map_zoom = z;
@@ -3099,105 +3195,135 @@ fn video_tick_android(win: &AppWindow) {
 }
 
 // ---------------------------------------------------------------------------
-// The attach sheet's camera page: the phone's own viewfinder, over the sheet.
+// The camera: a viewfinder of the phone's own, full screen, over everything.
 //
-// The same arrangement as video playback above — a platform view laid over the
-// app's one surface at a rectangle the page hands down, followed on a timer
-// (java/SigilCamera.java, platform.rs's camera_*). What differs is where the
-// rectangle comes from: the viewer is mounted on AppWindow and publishes
-// `vw-pic-*` there, while the attach sheet is two components deep with one
-// two-way property to its name, so its box and its controls ride the Theme
-// global instead (style.slint says why).
+// java/SigilCamera.java puts up an overlay WINDOW of its own, covering the
+// whole screen under the status bar and the gesture bar: the reference's
+// picture with every control standing on it — close, flash, zoom, shutter,
+// flip, Photo | Video — and, under the picture's foot, the reference's gallery
+// sheet with the device's own recent pictures in it. Its head comment says why
+// it has to be a window rather than views over the app's. Slint has no camera
+// page any more: the Camera tile closes the sheet and asks for the overlay,
+// and that is the whole seam.
 //
-// The page's controls are STATE, carried down by the poll below; the shutter
-// is the one command, and it goes out through `attach_pick` so a shot lands on
-// the staging page by the route every other attachment takes.
+// The overlay decides everything about itself and three things about nothing:
+// the SHUTTER bumps a counter, the X raises a flag, and a tapped thumbnail is
+// copied to a file whose name it publishes. This poll reads all three, and
+// answers both the shutter and the thumbnail by the same route a gallery pick
+// takes (attach_pick / stage_media → the staging page), so they land where
+// every other attachment does and the staging page needs no new case.
+//
+// EVERY WAY OUT ends here, and this is the ONLY place the overlay is closed,
+// so nothing can leave a camera running:
+//
+//   the X, the app going to the background ....... st.closed
+//   a thumbnail tapped ........................... staged, then closed here
+//   a capture completing ......................... nav leaves "chat" (staging)
+//   leaving the room, going home ................. nav leaves "chat"
+//   the room changing under it ................... open_room moved
+//   system Back .................................. lib.rs closes it, and the
+//                                                  next pass finds no camera
 // ---------------------------------------------------------------------------
 
-/// Whether the shutter callback was the page arriving rather than a capture.
-/// `false` means "carry on and take the shot" — which on the desktop, where
-/// there is no viewfinder to open, is always the answer.
+/// Which way the lens faced last time, kept across opens so the viewfinder
+/// comes back the way it was left. (The mode rides the Theme's `cam-mode`,
+/// which the desktop chooser shares.)
+#[cfg(target_os = "android")]
+static CAMERA_FRONT: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// The Camera tile, and the desktop chooser's shutter, arrive on the same two
+/// callbacks. On the phone the tile's job is to put the overlay up and swallow
+/// the tap; `false` means "carry on and take the shot", which is always the
+/// answer on the desktop and on a phone where no viewfinder of ours would
+/// open — there Android hands the job to the camera app, as it always did.
 // The desktop path follows an Android early return; both are real code.
 #[allow(unreachable_code)]
-fn camera_shutter_handled(win: &AppWindow) -> bool {
+fn camera_shutter_handled(ui: &UiState, win: &AppWindow) -> bool {
     #[cfg(target_os = "android")]
     {
-        if win.get_at_page() != "camera" {
-            return false;
+        // A viewfinder is already up: the overlay owns the shutter, and a
+        // stray callback must not start a second capture behind it.
+        if crate::platform::camera_live() {
+            return true;
         }
-        if !crate::platform::camera_live() {
+        let room = ui.open_room.clone();
+        CAMERA.with(|c| *c.borrow_mut() = CameraView::default());
+        let camera = crate::platform::has_camera_permission();
+        // One run of dialogs for the lot — the camera, the microphone a clip
+        // needs, and the reads the gallery sheet needs. Android skips whatever
+        // is already granted, so asking again for the sheet's sake alone costs
+        // nothing when the camera's is in hand.
+        if !camera || !crate::platform::has_media_permission() {
+            crate::platform::request_camera_permission();
+        }
+        if !camera {
+            // The grant is asynchronous and nothing consumes its result; the
+            // poll below opens the viewfinder as soon as it lands, and gives
+            // up after half a minute of no answer.
+            CAMERA.with(|c| c.borrow_mut().room = room);
             camera_watch(win);
             return true;
         }
-        // A camera that is still opening has nothing to give: swallow the tap
-        // rather than let it fail its way to an error state.
-        let ready = crate::platform::camera_state()
-            .map(|s| s.state == "ready" || s.recording)
-            .unwrap_or(false);
-        return !ready;
+        if !camera_up(win, room) {
+            return false;
+        }
+        camera_watch(win);
+        return true;
     }
-    let _ = win;
+    let _ = (ui, win);
     false
 }
 
-/// What the page last had pushed down to it, so a pass that changes nothing
-/// costs no JNI calls.
+/// Ask Java for the overlay, in the mode and the facing it was left in. The
+/// directory is the one every other picked file lands in, so a thumbnail
+/// tapped in the gallery sheet comes back looking exactly like a gallery pick.
 #[cfg(target_os = "android")]
-#[derive(Clone)]
-struct CameraView {
-    rect: (i32, i32, i32, i32),
-    front: bool,
-    zoom: f32,
-    torch: bool,
-    /// The permission dialog is shown once per visit to the page.
-    asked: bool,
-    /// The last failure toasted: one failure, one toast.
-    said: String,
+fn camera_up(win: &AppWindow, room: String) -> bool {
+    let video = win.global::<crate::Theme>().get_cam_mode() == "video";
+    let front = CAMERA_FRONT.load(std::sync::atomic::Ordering::Relaxed);
+    let dir = sigil_engine::paths::cache_dir().join("picked");
+    if !crate::platform::camera_open(front, video, &dir.to_string_lossy()) {
+        return false;
+    }
+    CAMERA.with(|c| {
+        let mut c = c.borrow_mut();
+        c.opened = true;
+        c.room = room;
+    });
+    true
 }
 
+/// What the poll has already answered, so a pass that changes nothing costs
+/// no work.
 #[cfg(target_os = "android")]
-impl Default for CameraView {
-    fn default() -> Self {
-        Self {
-            rect: (0, 0, 0, 0),
-            front: false,
-            zoom: 1.0,
-            torch: false,
-            asked: false,
-            said: String::new(),
-        }
-    }
+#[derive(Clone, Default)]
+struct CameraView {
+    /// The last shutter press this side has taken. Java resets its own count
+    /// on every open(), so a press left over from the session before cannot
+    /// fire here.
+    shutter: i32,
+    /// The overlay went up: from here on, no camera means it has gone.
+    opened: bool,
+    /// Passes spent waiting on the permission dialog.
+    waited: u32,
+    /// The last failure toasted: one failure, one toast.
+    said: String,
+    /// The room the viewfinder was opened in.
+    room: String,
 }
 
 #[cfg(target_os = "android")]
 thread_local! {
     static CAMERA: std::cell::RefCell<CameraView> =
         std::cell::RefCell::new(CameraView::default());
-    /// Its own clock: the viewer's video and the attach sheet's camera are
-    /// never both on screen, but they are not each other's business either.
+    /// Its own clock: the viewer's video and the camera are never both on
+    /// screen, but they are not each other's business either.
     static CAMERA_CLOCK: slint::Timer = slint::Timer::default();
 }
 
-/// The preview box in physical pixels, off the Theme global the page publishes
-/// it on (style.slint's cam-x/y/w/h, in window coordinates).
-#[cfg(target_os = "android")]
-fn camera_rect(win: &AppWindow) -> (i32, i32, i32, i32) {
-    let t = win.global::<crate::Theme>();
-    let s = win.window().scale_factor();
-    let px = |v: f32| (v * s).round() as i32;
-    (
-        px(t.get_cam_x()),
-        px(t.get_cam_y()),
-        px(t.get_cam_w()).max(1),
-        px(t.get_cam_h()).max(1),
-    )
-}
-
-/// Start following the camera page. Idempotent: entering the page again (or
-/// tapping the shutter after a refused permission) simply restarts it.
+/// Start following the viewfinder. Idempotent: asking again restarts it.
 #[cfg(target_os = "android")]
 fn camera_watch(win: &AppWindow) {
-    CAMERA.with(|c| *c.borrow_mut() = CameraView::default());
     let weak = win.as_weak();
     CAMERA_CLOCK.with(|t| {
         t.start(
@@ -3212,102 +3338,117 @@ fn camera_watch(win: &AppWindow) {
     });
 }
 
-/// One pass: close the camera if the page has gone, otherwise open it, keep it
-/// under the box, and carry the page's controls down.
+/// Stop following, and take the viewfinder down if it is still up. A clip in
+/// flight is NOT stopped politely: close() tears the recorder down without
+/// publishing a file, which is what backing out of a recording should do.
+#[cfg(target_os = "android")]
+fn camera_down() {
+    CAMERA_CLOCK.with(|t| t.stop());
+    CAMERA.with(|c| c.borrow_mut().opened = false);
+    if crate::platform::camera_live() {
+        crate::platform::camera_close();
+    }
+}
+
+/// The room the chat page is on, as the poll can ask for it — from a timer,
+/// where nothing else holds the UI state.
+#[cfg(target_os = "android")]
+fn camera_room() -> String {
+    let mut room = String::new();
+    crate::bridge::with_ui(|ui| room = ui.open_room.clone());
+    room
+}
+
+/// One pass.
 #[cfg(target_os = "android")]
 fn camera_pass(win: &AppWindow) {
-    let theme = win.global::<crate::Theme>();
-
-    // The page is gone — the back disc, the sheet closing behind a tile, the
-    // composer taking focus, a room change, leaving the chat page, or a
-    // capture landing on the staging page. Every one of those routes ends
-    // here, and this is the ONLY place the view is closed, so nothing can
-    // leave a camera running.
-    if !win.get_attach_open() || win.get_at_page() != "camera" {
-        CAMERA_CLOCK.with(|t| t.stop());
-        if crate::platform::camera_live() {
-            crate::platform::camera_stop_video();
-            crate::platform::camera_close();
-        }
-        theme.set_cam_state("".into());
-        theme.set_cam_recording(false);
-        return;
-    }
-
-    let rect = camera_rect(win);
-    // The sheet is still animating open and the box has no size yet.
-    if rect.2 <= 1 || rect.3 <= 1 {
-        return;
-    }
-
     if !crate::platform::camera_live() {
-        if !crate::platform::has_camera_permission() {
-            let asked = CAMERA.with(|c| {
-                let mut c = c.borrow_mut();
-                let was = c.asked;
-                c.asked = true;
-                was
-            });
-            if !asked {
-                crate::platform::request_camera_permission();
-            }
-            theme.set_cam_state("denied".into());
+        // Gone: Back reached lib.rs, which closed it before we could.
+        if CAMERA.with(|c| c.borrow().opened) {
+            camera_down();
             return;
         }
-        theme.set_cam_state("opening".into());
-        let front = theme.get_cam_facing() == "front";
-        if !crate::platform::camera_open(rect.0, rect.1, rect.2, rect.3, front) {
-            theme.set_cam_state("error".into());
-            CAMERA_CLOCK.with(|t| t.stop());
-            return;
-        }
-        CAMERA.with(|c| {
+        // Still waiting on the permission dialog.
+        let waited = CAMERA.with(|c| {
             let mut c = c.borrow_mut();
-            c.rect = rect;
-            c.front = front;
-            c.zoom = 1.0;
-            c.torch = false;
+            c.waited += 1;
+            c.waited
         });
+        if !crate::platform::has_camera_permission() {
+            // Half a minute of no answer is a refusal. Say so: the sheet has
+            // already closed behind the tile, so silence would read as the tap
+            // having done nothing at all.
+            if waited > 600 {
+                CAMERA_CLOCK.with(|t| t.stop());
+                win.set_chat_toast("Sigil needs permission to use the camera".into());
+            }
+            return;
+        }
+        let room = CAMERA.with(|c| c.borrow().room.clone());
+        if !camera_up(win, room) {
+            // No viewfinder of ours on this device after all: hand the job to
+            // the phone's own camera app, which is what the tile did before
+            // there was one of ours.
+            CAMERA_CLOCK.with(|t| t.stop());
+            crate::bridge::with_ui(|ui| attach_pick(ui, AttachPick::Photo, false));
+        }
         return;
     }
+
+    let Some(st) = crate::platform::camera_state() else {
+        camera_down();
+        return;
+    };
+
+    // Every way out, in one place.
+    let room = camera_room();
+    let moved = CAMERA.with(|c| c.borrow().room != room);
+    if st.closed || win.get_nav() != "chat" || moved {
+        camera_down();
+        return;
+    }
+
+    // A thumbnail in the gallery sheet was tapped: its bytes are already a
+    // file in the same directory a gallery pick lands in, so this is the same
+    // call `attach_pick` makes when the system picker answers. Staging turns
+    // nav to "staging", which is what closes the viewfinder on the next pass.
+    if !st.picked.is_empty() {
+        stage_media(win, std::slice::from_ref(&st.picked), false);
+        // Closed here rather than left to the nav check below, so the same
+        // file cannot be staged twice by the pass that follows.
+        camera_down();
+        return;
+    }
+
+    // What the overlay chose, remembered for the next time it opens.
+    win.global::<crate::Theme>()
+        .set_cam_mode(st.mode.as_str().into());
+    CAMERA_FRONT.store(st.front, std::sync::atomic::Ordering::Relaxed);
 
     let mut view = CAMERA.with(|c| c.borrow().clone());
-    if rect != view.rect {
-        crate::platform::camera_move(rect.0, rect.1, rect.2, rect.3);
-        view.rect = rect;
-    }
-    let front = theme.get_cam_facing() == "front";
-    if front != view.front {
-        crate::platform::camera_flip();
-        view.front = front;
-        // The other camera has its own zoom range; the chips go back to 1.0
-        // rather than sit lit on a stop this lens cannot reach.
-        theme.set_cam_zoom(1.0);
-        view.zoom = 1.0;
-    }
-    let zoom = theme.get_cam_zoom();
-    if (zoom - view.zoom).abs() > 0.001 {
-        crate::platform::camera_zoom(zoom);
-        view.zoom = zoom;
-    }
-    let torch = theme.get_cam_torch();
-    if torch != view.torch {
-        crate::platform::camera_torch(torch);
-        view.torch = torch;
+    if let Some(f) = st.failure {
+        if f != view.said {
+            tracing::warn!("camera: {f}");
+            win.set_chat_toast(f.as_str().into());
+            view.said = f;
+        }
     }
 
-    if let Some(st) = crate::platform::camera_state() {
-        theme.set_cam_zoom_min(st.zoom_min);
-        theme.set_cam_zoom_max(st.zoom_max);
-        theme.set_cam_has_flash(st.has_flash);
-        theme.set_cam_recording(st.recording);
-        theme.set_cam_state(st.state.as_str().into());
-        if let Some(f) = st.failure {
-            if f != view.said {
-                tracing::warn!("camera: {f}");
-                win.set_chat_toast(f.as_str().into());
-                view.said = f;
-            }
+    // The shutter, and the only thing this side does with it: the same route
+    // a gallery pick takes. For a clip that is two presses — the first starts
+    // it and the second stops it, inside capture_in_app, which is where the
+    // one-file-per-clip rule lives.
+    if view.shutter != st.shutter {
+        // Taken either way: a press the session was in no state to answer is
+        // swallowed here rather than queued to fire once it is.
+        view.shutter = st.shutter;
+        if st.state == "ready" || st.recording {
+            let what = if st.mode == "video" {
+                AttachPick::Video
+            } else {
+                AttachPick::Photo
+            };
+            crate::bridge::with_ui(|ui| attach_pick(ui, what, false));
         }
     }
     CAMERA.with(|c| *c.borrow_mut() = view);
@@ -4448,6 +4589,10 @@ fn open_map(ui: &mut UiState, win: &AppWindow, event_id: &str) {
         loc["lon"].as_f64().unwrap_or(0.0),
     );
     map_place(ui, win);
+    // The page opens on a point, so this is the first and most valuable
+    // settle there is: the level it opens at, and the two either side of it,
+    // are all in hand before a finger touches the glass.
+    map_prefetch(ui);
 }
 
 /// dm.create is idempotent: an existing conversation comes back.

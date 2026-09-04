@@ -145,6 +145,17 @@ pub async fn map_tile(engine: &SharedEngine, p: &serde_json::Map<String, Value>)
     if y < 0 || y >= n {
         return Reply::err("bad_request", "y is outside the tile grid");
     }
+    let x = x.rem_euclid(n);
+    // Already rendered: the reply is a path, and the path is already good.
+    // This is the whole of a warm hit, and it is what the page's prefetching
+    // leans on — asking for a tile a second time must cost a `stat` and not a
+    // render. It used to call `tile` for the boolean, which read the PNG back,
+    // decoded every one of its 512 squares, un-premultiplied a megabyte of it
+    // and then dropped the picture on the floor and rebuilt this same path.
+    // Resolving the style is skipped with it: a cached tile does not need one.
+    if render::have(z, x, y) {
+        return Reply::ok(json!({"path": render::png_path(z, x, y).to_string_lossy()}));
+    }
     let src = match source_for(engine).await {
         Ok(s) => s,
         Err(e) => return e,
@@ -152,7 +163,7 @@ pub async fn map_tile(engine: &SharedEngine, p: &serde_json::Map<String, Value>)
     if render::tile(engine, &src, z, x, y).await.is_none() {
         return Reply::err("network", "the tile could not be fetched or rendered");
     }
-    Reply::ok(json!({"path": render::png_path(z, x.rem_euclid(n), y).to_string_lossy()}))
+    Reply::ok(json!({"path": render::png_path(z, x, y).to_string_lossy()}))
 }
 
 #[cfg(test)]

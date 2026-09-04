@@ -59,36 +59,99 @@ fn tap(app: &sigil_slint::AppWindow, x: f32, y: f32) {
 /// a size that has gone negative — and not the phone's hairline, which comes
 /// of its own renderer rounding a position and a size apart. That one is
 /// settled in `mapview`'s tests, on the arithmetic.
-fn map_tiles(app: &sigil_slint::AppWindow, mag: f64, dpr: f64) {
+fn solid_tile(r: u8, g: u8, b: u8) -> slint::Image {
+    let mut buf = slint::SharedPixelBuffer::<slint::Rgb8Pixel>::new(512, 512);
+    for p in buf.make_mut_slice() {
+        *p = slint::Rgb8Pixel { r, g, b };
+    }
+    slint::Image::from_rgb8(buf)
+}
+
+/// A tile in four flat quarters, so a crop of it says which quarter it took:
+/// white top-left, yellow top-right, green bottom-left, magenta bottom-right.
+/// This is the parent in the gap shot — a child standing on it comes out one
+/// flat colour, and WHICH colour is the whole assertion.
+fn quartered_tile() -> slint::Image {
+    let mut buf = slint::SharedPixelBuffer::<slint::Rgb8Pixel>::new(512, 512);
+    let w = buf.width() as usize;
+    for (i, p) in buf.make_mut_slice().iter_mut().enumerate() {
+        let (x, y) = (i % w, i / w);
+        *p = match (x >= 256, y >= 256) {
+            (false, false) => slint::Rgb8Pixel { r: 255, g: 255, b: 255 },
+            (true, false) => slint::Rgb8Pixel { r: 255, g: 220, b: 0 },
+            (false, true) => slint::Rgb8Pixel { r: 0, g: 190, b: 90 },
+            (true, true) => slint::Rgb8Pixel { r: 230, g: 0, b: 200 },
+        };
+    }
+    slint::Image::from_rgb8(buf)
+}
+
+/// Place the grid the way the app does — through `MapView::layout`, so the
+/// shot exercises the real placement and the real substitution.
+///
+/// Without `holes` this is the seam fixture from before: a checkerboard of
+/// solid tiles, so any pixel that is neither colour is a join with the ground
+/// showing through.
+///
+/// With it, one whole 2×2 quad — the four children of a single parent — is
+/// taken out of the level being drawn and that parent is put in hand instead.
+/// Every one of the four must then come back as ONE flat colour, and the four
+/// of them together must reproduce `quartered_tile`: white, yellow, green and
+/// magenta, in that arrangement, at four times the size. That is the fallback
+/// and the crop arithmetic both, drawn where the eye can check them — a hole
+/// left blank would be the page's ground, and a crop gone astray would put
+/// the colours in the wrong corners or show four of them inside one tile.
+fn map_tiles(app: &sigil_slint::AppWindow, mag: f64, dpr: f64, holes: bool) {
     use sigil_slint::mapview::MapView;
-    let solid = |r: u8, g: u8, b: u8| {
-        let mut buf = slint::SharedPixelBuffer::<slint::Rgb8Pixel>::new(512, 512);
-        for p in buf.make_mut_slice() {
-            *p = slint::Rgb8Pixel { r, g, b };
-        }
-        slint::Image::from_rgb8(buf)
-    };
-    let (red, blue) = (solid(255, 0, 0), solid(0, 0, 255));
+    let (red, blue) = (solid_tile(255, 0, 0), solid_tile(0, 0, 255));
     let mut v = MapView::default();
     v.resize(WIDTH as f64 / dpr, (HEIGHT - 60) as f64 / dpr);
     v.open(51.5, -0.12);
     v.scale = mag;
-    let rows: Vec<sigil_slint::MapTileView> = v
-        .wanted()
-        .into_iter()
-        .map(|(tx, ty)| {
-            let (x, y, w, h) = v.place(tx, ty, dpr);
-            sigil_slint::MapTileView {
-                x: x.into(),
-                y: y.into(),
-                w: w.into(),
-                h: h.into(),
-                img: if (tx + ty).rem_euclid(2) == 0 {
-                    red.clone()
-                } else {
-                    blue.clone()
-                },
-            }
+    let tiles = v.wanted();
+    // The quad to knock out: the four children of the parent the middle of the
+    // view is standing on — snapped to even, which is what makes them one
+    // parent's four and not a square straddling two.
+    let (bx, by) = (
+        (v.cx / sigil_slint::mapview::TILE).floor() as i64 & !1,
+        (v.cy / sigil_slint::mapview::TILE).floor() as i64 & !1,
+    );
+    let drop: std::collections::HashSet<(i64, i64)> = if holes {
+        [(bx, by), (bx + 1, by), (bx, by + 1), (bx + 1, by + 1)].into_iter().collect()
+    } else {
+        Default::default()
+    };
+    for &(tx, ty) in &tiles {
+        if drop.contains(&(tx, ty)) {
+            continue;
+        }
+        let img = if (tx + ty).rem_euclid(2) == 0 { red.clone() } else { blue.clone() };
+        v.have.insert(v.key(tx, ty), img);
+    }
+    // …and the parent of the quad, in hand, for the holes to borrow from.
+    if holes {
+        let (k, _) = sigil_slint::mapview::ancestor(v.z, bx, by, 1);
+        v.have.insert(k, quartered_tile());
+    }
+    let plan = v.layout(dpr, &|k| v.have.contains_key(&k));
+    let rows: Vec<sigil_slint::MapTileView> = plan
+        .rows
+        .iter()
+        .filter_map(|p| {
+            let img = v.have.get(&p.key)?;
+            let sz = img.size();
+            let (sw, sh) = (sz.width as f32, sz.height as f32);
+            Some(sigil_slint::MapTileView {
+                x: p.x.into(),
+                y: p.y.into(),
+                w: p.w.into(),
+                h: p.h.into(),
+                sx: (p.fx * sw).floor() as i32,
+                sy: (p.fy * sh).floor() as i32,
+                sw: (p.fw * sw).ceil() as i32,
+                sh: (p.fh * sh).ceil() as i32,
+                img: img.clone(),
+            })
         })
         .collect();
     app.set_mp_tiles(std::rc::Rc::new(slint::VecModel::from(rows)).into());
@@ -466,9 +529,37 @@ fn main() -> anyhow::Result<()> {
     app.window().set_size(slint::PhysicalSize::new(WIDTH, HEIGHT));
     for (mag, name) in [(0.86, "086"), (1.13, "113"), (1.68, "168")] {
         h.settle();
-        map_tiles(&app, mag, 3.0);
+        map_tiles(&app, mag, 3.0, false);
         h.frame(&format!("map-seams-{name}"))?;
     }
+    // …and the same grid with a whole quad missing at the level being drawn.
+    // The four holes must be covered by their parent from the level above,
+    // each cropped to the quarter it stands on — white, yellow, green and
+    // magenta in those corners, never the page's ground. One device pixel to
+    // a logical one here, unlike the seam shots: at three the map area is a
+    // tile and a half across and the quad has nowhere to be seen.
+    point(&app, WindowEvent::ScaleFactorChanged { scale_factor: 1.0 });
+    app.window().set_size(slint::PhysicalSize::new(WIDTH, HEIGHT));
+    for (mag, name) in [(1.0, "100"), (1.13, "113")] {
+        h.settle();
+        map_tiles(&app, mag, 1.0, true);
+        h.frame(&format!("map-gaps-{name}"))?;
+    }
+    // The footer against the phone's gesture bar. This page runs edge to edge
+    // (app.slint's `to-the-edge`), so the window paints nothing under the bar
+    // and the page's own bottom edge IS the screen's — the sheet reserves the
+    // inset inside its height, chat.slint's composer fashion, and its ground
+    // fills it. What must hold: the person's row is wholly above the strip,
+    // and the sheet's ground still runs to the very bottom of the window.
+    // A device's bar is 48 of these; the strip is drawn over the shot so the
+    // clearance can be measured with an eye rather than a calculation.
+    app.set_kb_overlap(48.0);
+    h.settle();
+    h.frame("map-footer-gesture")?;
+    app.set_kb_overlap(0.0);
+    h.settle();
+    h.frame("map-footer-flat")?;
+    app.set_mp_tiles(std::rc::Rc::new(slint::VecModel::from(Vec::<sigil_slint::MapTileView>::new())).into());
     point(&app, WindowEvent::ScaleFactorChanged { scale_factor: 1.0 });
     app.window().set_size(slint::PhysicalSize::new(WIDTH, HEIGHT));
     app.set_mp_tiles(std::rc::Rc::new(slint::VecModel::from(Vec::<sigil_slint::MapTileView>::new())).into());
@@ -1112,9 +1203,14 @@ fn main() -> anyhow::Result<()> {
     app.set_attach_open(true);
     h.settle();
     h.shoot("attach-grid-tiles")?;
-    app.set_at_page("camera".into());
-    h.settle();
-    h.shoot("attach-camera")?;
+    // The camera tile opens no page on the phone — it asks for a viewfinder
+    // of the phone's own and closes the sheet — so the chooser only exists to
+    // be shot on the desktop.
+    if std::env::var_os("SIGIL_THEME_MODE").is_none() {
+        app.set_at_page("camera".into());
+        h.settle();
+        h.shoot("attach-camera")?;
+    }
     app.set_at_page("grid".into());
     app.set_attach_open(false);
     h.settle();
@@ -1203,6 +1299,76 @@ fn main() -> anyhow::Result<()> {
     h.settle();
     h.shoot("composer-live-open")?;
     app.invoke_clear_composer();
+    h.settle();
+
+    // ---- the emoji picker at rest, and the grow on the first scroll ----
+    //
+    // The reference (Google Messages, Screenshot_20260903-234221.png) snaps
+    // the picker to the whole page below the composer the moment the grid is
+    // scrolled: the conversation goes, the composer comes to rest just under
+    // the header, and the category bar stays where it was, on the gesture bar.
+    // So there are three things to see here — the resting height, the grow
+    // caught in flight, and the settled full height with the category bar
+    // still standing off the bottom zone — and one to see in all of them: the
+    // 20 of clear band under the search row, which used to be the head of the
+    // scrolled content and so vanished at exactly the moment a glyph came up
+    // to fill it.
+    app.set_nav("chat".into());
+    app.set_kb_overlap(24.0); // a gesture bar under the panel
+    app.set_at_page("emoji".into());
+    app.set_attach_open(true);
+    h.settle();
+    // The blocks above leave "cat" in the well and the grid parked on a
+    // category. The first key of the category bar is both undos at once — it
+    // clears the search (the picker's own reset(), which nothing out here can
+    // reach otherwise) and jumps the grid to RECENTS, offset zero. Ten keys
+    // across the window, the bar 48 tall standing on the 24 gesture strip.
+    tap(&app, 20.0, HEIGHT as f32 - 24.0 - 24.0);
+    app.invoke_act("emoji-search".into(), "".into(), "".into());
+    emoji_pictures(&app, &h)?;
+    h.shoot("emoji-rest")?;
+    {
+        // A finger is the only thing that scrolls a Flickable, and the drag
+        // has to be walked for it to take the grab off the cell underneath.
+        // 140 up, in the middle of the grid band (the sheet's 400 puts it
+        // between the search row at 432 and the category bar at 748).
+        let (x, from, to) = (200.0f32, 700.0f32, 560.0f32);
+        press(&app, x, from);
+        h.advance(std::time::Duration::from_millis(140));
+        h.pump();
+        // The FIRST step is the trigger, so the grow is caught 50ms in — the
+        // search row on its way up, the category bar where it always was.
+        drag_to(&app, x, from - 20.0);
+        h.advance(std::time::Duration::from_millis(50));
+        h.pump();
+        h.frame("emoji-growing")?;
+        for i in 2..=8 {
+            drag_to(&app, x, from + (to - from) * i as f32 / 8.0);
+            h.advance(std::time::Duration::from_millis(16));
+            h.pump();
+        }
+        release(&app, x, to);
+        h.settle();
+        // The grid's own offset is left alone by the grow. What that shows
+        // here is the reference's own answer: 348 of new room opens above a
+        // grid only 140 down, so it runs out of scroll and comes to rest at
+        // the top — which is exactly where the reference's expanded shot is,
+        // RECENTS first, after the scroll that expanded it. A grid further
+        // down keeps its place, the new rows filling in above.
+        h.shoot("emoji-expanded")?;
+    }
+    // Shutting the panel drops the latch (the host clears the picker's
+    // `active`), so the next open is the resting height again — the sheet is
+    // built once and outlives a close, and a picker that came back expanded
+    // would be the wrong size for a page nobody had scrolled yet.
+    app.set_attach_open(false);
+    h.settle();
+    app.set_attach_open(true);
+    h.settle();
+    h.shoot("emoji-reopened")?;
+    app.set_attach_open(false);
+    app.set_at_page("grid".into());
+    app.set_kb_overlap(0.0);
     h.settle();
 
     // The expanded image viewer, from a picture in the timeline: the long
@@ -1340,6 +1506,18 @@ fn viewer(app: &sigil_slint::AppWindow, h: &Harness, ts: i64) -> anyhow::Result<
     // 12, so 16px of the picture before this one stands inside the left edge
     // at rest. Sampled a third of the way down, clear of the top bar.
     h.shoot("viewer-open")?;
+    // The add-reaction drawer: the full picker over the picture. Raised the
+    // way the glyph raises it (load, then open), and put away again.
+    app.invoke_act("emoji-search".into(), "".into(), "".into());
+    app.set_viewer_picker_open(true);
+    h.settle();
+    h.shoot("viewer-emoji")?;
+    anyhow::ensure!(
+        app.get_emoji_rows().row_count() > 0,
+        "the viewer's drawer shows the emoji rows"
+    );
+    app.set_viewer_picker_open(false);
+    h.settle();
     // the ⋮ menu: the third 22px button in from the right edge, at 8 out and
     // 2 apart, so its centre is 8 + 11 = 19 from the right, 28 down.
     tap(app, WIDTH as f32 - 19.0, 28.0);
@@ -1368,81 +1546,34 @@ fn viewer(app: &sigil_slint::AppWindow, h: &Harness, ts: i64) -> anyhow::Result<
     anyhow::ensure!(!app.get_recorder_open(), "the composer took focus but the recorder stayed open");
     h.settle();
 
-    // ---- the camera page's chrome ----
+    // ---- the camera ----
     //
-    // The picture itself is a platform view on the phone (java/SigilCamera.java)
-    // laid over the app's surface, so nothing of it can appear here: what these
-    // check is everything the page is responsible for. That it PUBLISHES its
-    // preview box on the Theme global — without that rectangle the bridge has
-    // nowhere to put the view — and that the box stands inside the window with
-    // the controls clear beneath it, never over it, because a platform view
-    // covers whatever Slint draws under it. Then the two faces of the shutter
-    // row: photo, and a clip running.
-    app.set_nav("chat".into());
-    app.set_attach_open(true);
-    app.set_at_page("camera".into());
-    // Settle first: the page clears the camera's state as it opens (its own
-    // init, which is also how the bridge is told the page has arrived), so
-    // anything seeded before this would be wiped by it.
-    h.settle();
-    let theme = app.global::<sigil_slint::Theme>();
-    // What a phone with an ultra-wide reports; the harness has no camera, so
-    // the range is seeded rather than read, and all three chips are live.
-    theme.set_cam_zoom_min(0.5);
-    theme.set_cam_zoom_max(8.0);
-    theme.set_cam_has_flash(true);
-    theme.set_cam_zoom(1.0);
-    theme.set_cam_torch(false);
-    theme.set_cam_mode("photo".into());
-    theme.set_cam_recording(false);
-    theme.set_cam_state("opening".into());
-    h.settle();
-    h.shoot("attach-camera-photo")?;
-
-    let (bx, by, bw, bh) = (
-        theme.get_cam_x(),
-        theme.get_cam_y(),
-        theme.get_cam_w(),
-        theme.get_cam_h(),
-    );
-    anyhow::ensure!(
-        bw > 0.0 && bh > 0.0,
-        "the camera page must publish its preview box: the platform view has nowhere to go without it"
-    );
-    anyhow::ensure!(
-        bx >= 0.0 && by >= 0.0 && bx + bw <= WIDTH as f32 && by + bh <= HEIGHT as f32,
-        "the preview box must stand inside the window ({bx},{by} {bw}×{bh})"
-    );
-    // The sheet is 600 tall with 214 of controls under the box; the box's own
-    // foot must leave every one of them room, or the platform view would sit
-    // on top of the shutter.
-    anyhow::ensure!(
-        by + bh + 214.0 <= HEIGHT as f32,
-        "the controls must fit beneath the preview box, not under the platform view"
-    );
-
-    // The Photo | Video selector, tapped where the page put it: the box's top
-    // is 54 into the sheet, and the mode row is 150 below the box's foot.
-    let mode_y = by + bh + 14.0 + 36.0 + 14.0 + 72.0 + 14.0 + 20.0;
-    tap(app, WIDTH as f32 / 2.0 + 50.0, mode_y);
-    h.settle();
-    anyhow::ensure!(
-        app.global::<sigil_slint::Theme>().get_cam_mode() == "video",
-        "the Video half of the selector must switch the shutter's mode"
-    );
-    // A clip running: the shutter's disc becomes a stop, flip and the selector
-    // go dead, and the only chrome that has to be seen while the view is up —
-    // the recording pill — stands beside the box, not on it.
-    let theme = app.global::<sigil_slint::Theme>();
-    theme.set_cam_state("recording".into());
-    theme.set_cam_recording(true);
-    h.settle();
-    h.shoot("attach-camera-recording")?;
-    theme.set_cam_recording(false);
-    theme.set_cam_state("".into());
-    theme.set_cam_mode("photo".into());
-    app.set_at_page("grid".into());
-    app.set_attach_open(false);
-    h.settle();
+    // On the PHONE there is nothing to shoot: the viewfinder is a window of
+    // the phone's own laid over the whole screen (java/SigilCamera.java), and
+    // the tile's whole job here is to ask for it and get out of the way — the
+    // sheet closes and no page opens. So the only camera chrome this harness
+    // can see is the DESKTOP chooser, which has no camera behind it and picks
+    // Photo or Video before handing the job to the machine.
+    if std::env::var_os("SIGIL_THEME_MODE").is_none() {
+        app.set_nav("chat".into());
+        app.set_attach_open(true);
+        app.set_at_page("camera".into());
+        h.settle();
+        let theme = app.global::<sigil_slint::Theme>();
+        theme.set_cam_mode("photo".into());
+        h.settle();
+        h.shoot("attach-camera-photo")?;
+        // Both faces of the shutter. The selector is tapped rather than set on
+        // the phone; here the sheet's foot moves with the composer and the
+        // conversation band, so the mode is driven through the property the
+        // selector writes and what is checked is that the chooser follows it.
+        theme.set_cam_mode("video".into());
+        h.settle();
+        h.shoot("attach-camera-video")?;
+        theme.set_cam_mode("photo".into());
+        app.set_at_page("grid".into());
+        app.set_attach_open(false);
+        h.settle();
+    }
     Ok(())
 }

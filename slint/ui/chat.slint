@@ -240,6 +240,10 @@ export component ChatPage inherits Rectangle {
     }
     /// A hold fired on `it`, drawn at `r` (window coordinates).
     function open-menu-for(it: TimelineRow, r: SheetRect) {
+        // A hold with the keyboard up puts the keyboard down (Messages does):
+        // the sheet needs the whole screen, and the menu would stand on the
+        // keyboard's edge otherwise.
+        composer-input.clear-focus();
         sheet.item = it;
         // The frost first, while the original is still drawn …
         root.sheet-snapshot(it.event-id, r);
@@ -504,7 +508,15 @@ export component ChatPage inherits Rectangle {
     property <length> disc: root.phone ? 54px : 38px;
     property <length> attach-box: root.phone ? 48px : 30px;
     // composerBox = pill + 18 (:1222): 8 above, 10 below.
-    property <length> composer-h: root.is-invite ? 0px : root.well-h + (root.phone ? 16px : 18px) + root.bottom-inset;
+    // The gesture inset is the composer's only while it stands on the
+    // screen's edge: with a panel open below it the panel carries that inset
+    // (its own bottom padding stands its content off the gesture bar), so the
+    // composer sits straight on the panel with no strip between them. The
+    // keyboard's share is different — nothing may be under the keyboard, so
+    // the composer keeps lifting by it, panel or no panel (att-frame lifts by
+    // the same number, so the two stay flush). The 96px split is att-frame's.
+    property <length> composer-h: root.is-invite ? 0px : root.well-h + (root.phone ? 16px : 18px)
+        + ((root.attach-open || root.recorder-open) && root.bottom-inset <= 96px ? 0px : root.bottom-inset);
     /// Where the composer stack starts, measured from the page bottom: the
     /// composer plus whichever inline panel is open (:1869-1884).
     property <length> panel-top: root.height - root.composer-h - att-frame.height - rec-frame.height;
@@ -1510,17 +1522,56 @@ export component ChatPage inherits Rectangle {
                 // panel lifts by its height and the composer's own reservation
                 // of the same number (composer-h) is what it lifts into.
                 y: convo.height - rec-frame.height - self.height - self.kb-inset;
+                // Everything there is between the composer's foot and the foot
+                // of the panel's own room: what the panel takes when it is
+                // asked for all of it, and the ceiling on what it takes
+                // otherwise. The gesture strip is not subtracted (the panel's
+                // ground runs on under it and the content stands off it from
+                // the inside, and with a panel open the composer reserves no
+                // gesture inset — composer-h). The keyboard IS already in
+                // composer-h (the composer keeps lifting by it, panel or not),
+                // so the frame's own lift by `kb-inset` is the same number the
+                // composer holds: subtracting it again here would leave the
+                // panel a keyboard short of the composer.
+                property <length> avail: max(172px + self.gesture-inset,
+                    convo.height - root.composer-h - rec-frame.height);
+                /// The emoji picker has been scrolled and wants the page. Only
+                /// while its page is the one in front: the sheet going back to
+                /// the tile grid must be the tile grid's size again.
+                property <bool> emoji-full: root.at-page == "emoji" && epicker.expanded;
                 // The panel's natural height, unless the keyboard has left less
                 // room than that between the composer and the frame's top
                 // edge: then it takes what is going, down to a floor of the
-                // search row, one grid row and the category bar, and the grid
-                // scrolls inside whatever it got. Held apart from `height` so
-                // it does NOT carry the open/close wipe: the body keeps this
-                // size while the frame animates over it, as the sheet always
-                // has, instead of squashing open and shut.
-                property <length> body-h: min(att.height,
-                    max(152px + self.gesture-inset,
-                        convo.height - root.composer-h - rec-frame.height));
+                // search row, its 20 of clear band, one grid row and the
+                // category bar, and the grid scrolls inside whatever it got.
+                // Held apart from `height` so it does NOT carry the open/close
+                // wipe: the body keeps this size while the frame animates over
+                // it, as the sheet always has, instead of squashing open and
+                // shut. The natural height is topped up by the gesture strip
+                // for the pages that lay their content out from the top and
+                // have no other way to stand off it; the emoji page is not one
+                // of those — its picker is handed `gesture-inset` and pads its
+                // own category bar up by it.
+                property <length> body-h: self.emoji-full ? self.avail
+                    : min(att.height + (root.at-page == "emoji" ? 0px : self.gesture-inset),
+                        self.avail);
+                /// What the body is DRAWN at: `body-h` with the grow eased in.
+                /// The frame's own wipe below runs on `body-h` direct and this
+                /// runs beside it on the same curve, so the two move together
+                /// when the body changes size (the picker growing takes the
+                /// frame's top up under it) and only the frame moves when the
+                /// panel opens and shuts. They must not be chained — a height
+                /// animated TOWARDS an animated property never arrives: each
+                /// tick restarts it on a target that has moved, and the frame
+                /// settles at the value the body had when it began, which for
+                /// an opening panel is zero.
+                property <length> grown: self.body-h;
+                // The grow (and the shrink back) is the body's, not the wipe's:
+                // the picker keeps its foot on the screen edge and its grid
+                // gets taller under a rising search row, rather than the whole
+                // panel sliding up from under the fold. The grid's own offset
+                // is untouched by it, so nothing the finger was on moves.
+                animate grown { duration: 220ms; easing: cubic-bezier(0.33, 1, 0.68, 1); }
                 height: root.is-invite ? 0px : root.attach-open ? self.body-h : 0px;
                 animate height { duration: 220ms; easing: cubic-bezier(0.33, 1, 0.68, 1); }
                 clip: true;
@@ -1538,6 +1589,13 @@ export component ChatPage inherits Rectangle {
                     stickers-loaded: root.stickers-loaded;
                     sticker-dir: root.sticker-dir;
                     page <=> root.at-page;
+                    // The frame the sheet is standing in, so its ground can be
+                    // carried on down when the frame is the taller of the two
+                    // (an expanded picker, or a page topped up by the gesture
+                    // strip). Reads the body, never the frame's animating
+                    // height, which is a wipe over a sheet that has already
+                    // settled — and never feeds back into it.
+                    frame-h: att-frame.grown;
                     lp-map: root.lp-map;
                     lp-unavailable: root.lp-unavailable;
                     lp-have-fix: root.lp-have-fix;
@@ -1571,15 +1629,20 @@ export component ChatPage inherits Rectangle {
                     // sheet would have its category bar cut off. 12 is the
                     // sheet's lead-in over the search row (attach.slint's
                     // emoji-slot, which the picker arrives through).
-                    EmojiPicker {
+                    epicker := EmojiPicker {
                         // Placed, not left to the slot: an unplaced child of a
                         // Rectangle is CENTRED in Slint, so a picker shorter
                         // than the sheet floated down the middle of it and had
                         // its category bar cut off by the frame.
                         x: 0px; y: 0px;
                         width: 100%;
-                        height: max(0px, att-frame.body-h - 12px);
+                        height: max(0px, att-frame.grown - 12px);
                         bottom-inset: att-frame.gesture-inset;
+                        // The picker is built whatever page the sheet is on and
+                        // the sheet outlives a close, so this is what tells it
+                        // it has been put away: its expansion latch goes with
+                        // it and the next visit opens at the resting height.
+                        active: root.attach-open && root.at-page == "emoji";
                         fg: root.fg;
                         accent: root.accent;
                         chip: root.chip-c;
@@ -1766,6 +1829,10 @@ export component ChatPage inherits Rectangle {
         // drawer needs the page's inset to stand its category bar off the
         // gesture bar and to keep clear of the keyboard its search field puts up.
         bottom-inset: root.bottom-inset;
+        // The conversation band the flying copy is cut to: under the header,
+        // above the composer.
+        band-top: root.sheet-y;
+        band-bottom: root.panel-top;
         // The frost mask and the bottom sheets follow the page's corners: the
         // desktop card's 22, square on the phone (convo above).
         card-radius: root.phone ? 0px : 22px;

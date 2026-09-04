@@ -111,7 +111,17 @@ export component SelfPin inherits Rectangle {
 /// bridge rounds both of a tile's edges onto whole device pixels and hands the
 /// difference over as the size — plus one pixel of overlap, so a renderer that
 /// truncates has no crack to show either. See `mapview::MapView::place`.
-export struct MapTileView { x: length, y: length, w: length, h: length, img: image }
+/// `sx`/`sy`/`sw`/`sh` are the part of `img` to draw, in the picture's OWN
+/// pixels. For a tile that has arrived it is the whole picture; where one has
+/// not, the bridge stands its parent in and crops that parent to the quarter
+/// (or sixteenth, two levels up) this tile's ground occupies inside it, so a
+/// hole in the grid is covered by blurred imagery instead of being a hole.
+/// See `mapview::MapView::layout`.
+export struct MapTileView {
+    x: length, y: length, w: length, h: length,
+    sx: int, sy: int, sw: int, sh: int,
+    img: image,
+}
 
 export component MapPage inherits Rectangle {
     in property <color> fg: Theme.menu-text;
@@ -351,10 +361,16 @@ export component MapPage inherits Rectangle {
         map-area := Rectangle {
             x: 0;
             width: parent.width;
-            // The page runs on down through the gesture inset — the window
-            // paints nothing there for this page — so the map is that much
-            // taller than the page and the bar shows the map itself.
-            height: parent.height - root.header-h + root.bleed-bottom;
+            // The page ALREADY runs on down through the gesture inset: with
+            // this page up the window is `to-the-edge` (app.slint:57), so
+            // `content` is the whole height and this box's own bottom edge is
+            // the screen's. Adding `bleed-bottom` here as well counted the
+            // inset twice — it pushed the map area, and the sheet anchored to
+            // its foot, that far past the bottom of the screen, which is why
+            // the person's row came out under the gesture bar. The inset is
+            // reserved once, inside the sheet, the way chat.slint's composer
+            // reserves `bottom-inset` in its own height.
+            height: parent.height - root.header-h;
             // The second beat: once the header has settled, the map rises
             // from the page's bottom edge on an OutCubic (chat.slint:719).
             y: root.header-h + (parent.height - root.header-h) * (1 - root.map-e);
@@ -381,10 +397,20 @@ export component MapPage inherits Rectangle {
             // same frame, so the map tracks the finger.
             if root.tiled : Rectangle {
                 width: 100%; height: 100%;
+                // The rows come back to front: the bridge puts every borrowed
+                // tile first and the real ones over them, so imagery arriving
+                // covers the stand-in it replaces.
                 for t in root.tiles : Image {
                     x: t.x; y: t.y;
                     width: t.w; height: t.h;
                     source: t.img;
+                    // Which part of the picture: the whole of it for a tile of
+                    // its own, one quarter of a parent standing in for a tile
+                    // that has not landed yet.
+                    source-clip-x: t.sx;
+                    source-clip-y: t.sy;
+                    source-clip-width: t.sw;
+                    source-clip-height: t.sh;
                     image-fit: fill;
                 }
             }
@@ -608,6 +634,14 @@ export component MapPage inherits Rectangle {
             sheet := Rectangle {
                 y: map-area.height - self.height * (root.phone ? root.foot-e : 1.0);
                 width: 100%;
+                // 14 above the column and 18 below it — and then the gesture
+                // inset on top of that 18, reserved the once. The sheet's foot
+                // is the screen's bottom edge, so its ground fills the inset
+                // and the bar shows the sheet; what stands off by the inset is
+                // the content inside it. chat.slint's composer is built the
+                // same way: `composer-h = well-h + 16px + bottom-inset`, and
+                // the send disc sits at `composer.height - disc - 8px -
+                // bottom-inset` (chat.slint:507, 1445).
                 height: sheet-col.preferred-height + 32px + root.bleed-bottom;
                 border-top-left-radius: 24px;
                 border-top-right-radius: 24px;

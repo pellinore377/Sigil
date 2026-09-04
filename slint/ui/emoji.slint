@@ -19,6 +19,23 @@
 //   category bar   11 cells full width, ink 42, on 122.7    →  20 icons
 //   selected       87 disc under the icon                   →  34
 //
+// That 20 under the search field is the row's OWN padding, not a lead-in at
+// the head of the scrolled content: as scrolled content it was there at rest
+// and gone the moment the grid moved, which is exactly when a glyph runs up
+// under the field. It is laid out below the row instead, so the band stays
+// clear however far the grid has travelled — and a category jump puts that
+// section's caption on the top of the grid with the same air above it.
+//
+// The picker also grows. It opens at the resting height the host gives it and
+// the first scroll of the grid latches `expanded`, which the host reads to
+// take the panel up to the full page below the composer (chat.slint's
+// att-frame). One latch, not a drag-along: the reference snaps rather than
+// tracking the finger, and a height that followed the scroll offset would
+// move the grid under the finger while the finger is moving it. The latch is
+// dropped by the host clearing `active` — the panel closing, or the sheet
+// leaving the emoji page — never by scrolling back to the top, which the
+// reference gives no evidence for.
+//
 // Widths come off `cell` rather than a dp literal because the reference phone
 // is 527dp across and this window is not: nine columns have to keep fitting.
 
@@ -54,8 +71,21 @@ export component EmojiPicker inherits Rectangle {
     /// sheet's chrome, the drawer's surface — still paints on down through it
     /// to the screen edge.
     in property <length> bottom-inset: 0px;
+    /// False while this picker is not the thing in front — the attachment
+    /// sheet showing another page, the panel shut. The expansion latch is
+    /// dropped with it, so the next visit opens at the resting height again.
+    /// The reaction drawer never sets it: it opens at its one height and the
+    /// property is inert there.
+    in property <bool> active: true;
+    /// Latched by the first scroll of the grid and read by the host, which
+    /// answers by taking the whole panel up to the full page (chat.slint's
+    /// att-frame body-h). Held here rather than in the host because the grid
+    /// is the only thing that knows it has been scrolled.
+    out property <bool> expanded: false;
     callback picked(string);
     callback search-edited(string);
+
+    changed active => { if (!root.active) { root.expanded = false; } }
 
     background: transparent;
 
@@ -78,7 +108,10 @@ export component EmojiPicker inherits Rectangle {
     /// the box they go in has to be that much wider to draw the same size.
     property <length> glyph-box: root.cell * 0.669;
     property <length> head-h: 25px;
-    /// The lead-in above the first heading, scrolled away by a category jump.
+    /// The clear band under the search row, below it in the layout and so
+    /// outside everything the grid scrolls — see the head of this file. The
+    /// reference's 50 between the field's foot and the first caption BLOCK
+    /// (which carries its own 20 of air around a 24 cap) is this 20.
     property <length> grid-top: 20px;
     /// Where a section's caption sits in the scrolled content. A caption block
     /// and a glyph row are different heights and the height comes from THIS
@@ -88,8 +121,7 @@ export component EmojiPicker inherits Rectangle {
     /// cat_mark). A section the device has no drawable glyphs for sends the
     /// position of the one after it, so its bar icon still lands somewhere.
     pure function cat-y(i: int) -> length {
-        return root.grid-top
-            + floor(root.cat-rows[i] / 16) * root.row-h
+        return floor(root.cat-rows[i] / 16) * root.row-h
             + mod(root.cat-rows[i], 16) * root.head-h;
     }
 
@@ -164,16 +196,24 @@ export component EmojiPicker inherits Rectangle {
             }
         }
 
+        // The clear band under the search row (and under the host's back
+        // button, which rides in it). Outside the grid, so it survives being
+        // scrolled — see the head of this file.
+        Rectangle { height: root.grid-top; }
+
         grid := TouchList {
             vertical-stretch: 1;
             // The one thing that gives when the panel is short (the keyboard
             // is up): the search row and the category bar keep their sizes and
             // the grid scrolls whatever is left between them.
             min-height: 0px;
-            // The 50 the reference leaves over its first heading. It is part
-            // of the scrolled content, not padding, so a category jump scrolls
-            // it away and puts that section's caption on the top edge.
-            Rectangle { height: root.grid-top; }
+            // The first move of the grid is the whole trigger: the panel goes
+            // to full height and stays there. 6 of slack so a tap that grazes
+            // is not a scroll; a category jump, which sets the offset itself,
+            // counts as one — reaching for Flags is reaching to browse.
+            changed viewport-y => {
+                if (root.active && grid.viewport-y < -6px) { root.expanded = true; }
+            }
             for row in root.rows : erow := Rectangle {
                 property <bool> is-head: row.length == 1 && row[0].glyph == "";
                 height: self.is-head ? root.head-h : root.row-h;

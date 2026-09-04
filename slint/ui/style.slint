@@ -45,39 +45,22 @@ export global Theme {
     /// viewer-closed; empty means "no snapshot", and the viewer dims instead.
     in-out property <image> viewer-frost;
 
-    /// Not tokens either: the attach sheet's camera page and its viewfinder.
+    /// Not a token either: which shutter the camera is showing, "photo" or
+    /// "video".
     ///
-    /// On the phone the viewfinder is a platform view laid OVER the app's one
-    /// surface (java/SigilCamera.java) at a rectangle the page hands down —
-    /// the same arrangement video playback uses, where the viewer publishes
-    /// `vw-pic-*` on AppWindow and actions.rs converts to physical pixels.
-    /// The attach sheet cannot publish anything: it reaches the window through
-    /// exactly one two-way property (`page` ⇄ `at-page`), and it is mounted
-    /// two components deep. So its rectangle and its controls ride the one
-    /// global the root re-exports, right beside the frost above and for the
+    /// This is ALL that is left of the camera on this side. On the phone the
+    /// viewfinder is a window of the phone's own laid over the app, and every
+    /// control — close, flash, zoom, shutter, flip, the mode selector — is
+    /// drawn in it (java/SigilCamera.java says why it has to be); nothing
+    /// about its look crosses into Slint any more. What crosses is this one
+    /// preference, so the overlay opens in the mode it was last left in, and
+    /// so the DESKTOP chooser (attach.slint, which has no camera behind it)
+    /// can share the same selector. The attach sheet cannot publish anything
+    /// of its own — it reaches the window through exactly one two-way
+    /// property (`page` ⇄ `at-page`), two components deep — so this rides the
+    /// one global the root re-exports, beside the frost above and for the
     /// same reason.
-    ///
-    /// Page → bridge. The box, in WINDOW coordinates (absolute-position), and
-    /// what the person has asked the camera to do.
-    in-out property <length> cam-x;
-    in-out property <length> cam-y;
-    in-out property <length> cam-w;
-    in-out property <length> cam-h;
-    /// "back" | "front"
-    in-out property <string> cam-facing: "back";
-    /// "photo" | "video" — which shutter the page is showing.
     in-out property <string> cam-mode: "photo";
-    in-out property <float> cam-zoom: 1.0;
-    in-out property <bool> cam-torch: false;
-
-    /// Bridge → page. What the device turned out to be able to do, and where
-    /// the session is: "" | opening | ready | capturing | recording | denied |
-    /// error. "denied" is ours, not the camera's: the permission was refused.
-    in-out property <string> cam-state: "";
-    in-out property <float> cam-zoom-min: 1.0;
-    in-out property <float> cam-zoom-max: 1.0;
-    in-out property <bool> cam-has-flash: false;
-    in-out property <bool> cam-recording: false;
 
     property <bool> dark: mode == "dark";
     property <bool> light: mode == "light";

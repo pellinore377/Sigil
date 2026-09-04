@@ -92,6 +92,10 @@ pub struct UiState {
     /// model on every diff resets the viewport, which reads as "cannot
     /// scroll" the moment receipts start flowing.
     pub items_model: std::rc::Rc<VecModel<TimelineRow>>,
+    /// The home page's lists, kept and updated in place (see `sync_model`).
+    pub rooms_model: std::rc::Rc<VecModel<RoomRow>>,
+    pub requests_model: std::rc::Rc<VecModel<RoomRow>>,
+    pub all_rooms_model: std::rc::Rc<VecModel<RoomRow>>,
     /// Whether the last typing notice we sent said "typing".
     pub typing_sent: bool,
     // ---- Service.qml parity ----
@@ -266,6 +270,9 @@ pub fn start(win: &AppWindow, rt: &tokio::runtime::Runtime, icons: IconSet) -> R
         door_oidc_client: String::new(),
         avatars: HashMap::new(),
         items_model: std::rc::Rc::new(VecModel::default()),
+        rooms_model: std::rc::Rc::new(VecModel::default()),
+        requests_model: std::rc::Rc::new(VecModel::default()),
+        all_rooms_model: std::rc::Rc::new(VecModel::default()),
         typing_sent: false,
         receipts_by_room: HashMap::new(),
         drafts: HashMap::new(),
@@ -1259,6 +1266,46 @@ pub fn avatar_pub(ui: &mut UiState, path: &str) -> Option<slint::Image> {
     avatar(ui, path)
 }
 
+/// Bring the timeline model to `new` row by row, matched on event id:
+/// a row still present is updated in place (its instance survives), a row
+/// gone is removed, a row new is inserted where it stands. A reordering
+/// costs one extra insert-and-remove; never a reset.
+fn sync_rows(model: &VecModel<TimelineRow>, new: Vec<TimelineRow>) {
+    sync_model(model, new, |r| r.event_id.clone());
+}
+
+/// The same for any list keyed by a string (`key`); the home page's three
+/// room lists use it, which were handed a fresh model on every change.
+fn sync_model<T: Clone + 'static>(
+    model: &VecModel<T>,
+    new: Vec<T>,
+    key: impl Fn(&T) -> SharedString,
+) {
+    let mut ids: Vec<SharedString> = (0..model.row_count())
+        .map(|i| model.row_data(i).map(|r| key(&r)).unwrap_or_default())
+        .collect();
+    let keep: std::collections::HashSet<SharedString> = new.iter().map(&key).collect();
+    let mut pos = 0usize;
+    for row in new {
+        let k = key(&row);
+        while pos < ids.len() && ids[pos] != k && !keep.contains(&ids[pos]) {
+            model.remove(pos);
+            ids.remove(pos);
+        }
+        if pos < ids.len() && ids[pos] == k {
+            model.set_row_data(pos, row);
+        } else {
+            ids.insert(pos, k);
+            model.insert(pos, row);
+        }
+        pos += 1;
+    }
+    while ids.len() > pos {
+        model.remove(pos);
+        ids.pop();
+    }
+}
+
 fn avatar(ui: &mut UiState, path: &str) -> Option<slint::Image> {
     if path.is_empty() {
         return None;
@@ -1427,9 +1474,15 @@ pub fn rebuild_rooms(ui: &mut UiState, win: &AppWindow) {
     let all: Vec<RoomRow> = all.into_iter().map(|r| room_row_of(ui, r)).collect();
     let n = rooms_json.len();
     ui.rooms_json = rooms_json;
-    win.set_rooms(ModelRc::new(VecModel::from(chats)));
-    win.set_requests(ModelRc::new(VecModel::from(requests)));
-    win.set_all_rooms(ModelRc::new(VecModel::from(all)));
+    // In place, keyed by room: a fresh model here re-instantiated every row
+    // of the home list on each sync event (a ModelRc compares by pointer, so
+    // handing the same one back is free).
+    sync_model(&ui.rooms_model, chats, |r| r.id.clone());
+    sync_model(&ui.requests_model, requests, |r| r.id.clone());
+    sync_model(&ui.all_rooms_model, all, |r| r.id.clone());
+    win.set_rooms(ModelRc::from(ui.rooms_model.clone()));
+    win.set_requests(ModelRc::from(ui.requests_model.clone()));
+    win.set_all_rooms(ModelRc::from(ui.all_rooms_model.clone()));
     if !ui.open_room.is_empty() {
         set_chat_header(ui, win);
     }
@@ -2337,7 +2390,13 @@ pub fn rebuild_timeline(ui: &mut UiState, win: &AppWindow) {
     win.set_chat_fx_count(fx_rows as i32);
     let n = rows_out.len();
     let t_build = t_perf.elapsed();
-    ui.items_model.set_vec(rows_out);
+    // Never `set_vec` here: a model reset throws away every row instance
+    // (repeater.rs `reset` clears them all), so each receipt, typing notice
+    // or echo had the list rebuild every visible Bubble from scratch on the
+    // next frame — the stutter while chatting. Rows updated in place keep
+    // their instances (and their scroll, animations and layout), and only
+    // rows that arrived or left are instantiated or dropped.
+    sync_rows(&ui.items_model, rows_out);
     win.set_items(ModelRc::from(ui.items_model.clone()));
     // an entry plays once: the next rebuild sees these as settled
     ui.entry_pending.clear();
@@ -2372,6 +2431,9 @@ fn start_demo(win: &AppWindow, rt: &tokio::runtime::Runtime, icons: IconSet) -> 
         door_oidc_client: String::new(),
         avatars: HashMap::new(),
         items_model: std::rc::Rc::new(VecModel::default()),
+        rooms_model: std::rc::Rc::new(VecModel::default()),
+        requests_model: std::rc::Rc::new(VecModel::default()),
+        all_rooms_model: std::rc::Rc::new(VecModel::default()),
         typing_sent: false,
         receipts_by_room: HashMap::new(),
         drafts: HashMap::new(),

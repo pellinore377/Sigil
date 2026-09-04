@@ -93,6 +93,23 @@ name = "android.permission.MODIFY_AUDIO_SETTINGS"
 [[package.metadata.android.uses_permission]]
 name = "android.permission.CAMERA"
 
+# The gallery sheet under the viewfinder (java/SigilCamera.java) shows the
+# device's own recent pictures and clips, which is a MediaStore read. API 33
+# split the old blanket read into one grant per medium and stopped granting
+# the blanket one at all, so both shapes are declared and the old one is
+# capped at the last level that had it. All three are asked for together with
+# CAMERA (platform.rs); Android ignores whichever does not apply, and a
+# refusal is an empty sheet rather than a camera that will not open.
+[[package.metadata.android.uses_permission]]
+name = "android.permission.READ_MEDIA_IMAGES"
+
+[[package.metadata.android.uses_permission]]
+name = "android.permission.READ_MEDIA_VIDEO"
+
+[[package.metadata.android.uses_permission]]
+name = "android.permission.READ_EXTERNAL_STORAGE"
+max_sdk_version = 32
+
 # Position: the engine's own ladder starts at android.location.LocationManager
 # (core/src/geo/android.rs). Both are runtime grants on targetSdk 35 — the
 # engine asks through the Activity handed to it in android_main; the coarse

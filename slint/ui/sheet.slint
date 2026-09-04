@@ -59,6 +59,10 @@ export component MessageSheet inherits Rectangle {
     /// emoji drawer has: without it its category bar sits under the gesture
     /// bar, and its search field puts it under the keyboard.
     in property <length> bottom-inset: 0px;
+    /// The conversation band, in the sheet's coordinates: the header's bottom
+    /// edge and the composer's top edge. The flying copy is clipped to it.
+    in property <length> band-top: 0px;
+    in property <length> band-bottom: root.height;
     // The two cases pull opposite ways, so split the one number back apart
     // (chat.slint's att-frame does the same, for the same reason): nothing
     // pinned to a screen edge is near 96 tall and no keyboard is near that
@@ -126,8 +130,10 @@ export component MessageSheet inherits Rectangle {
     property <int> action-count: root.actions.length;
     property <length> menu-h: root.action-count * 38px + 16px;
     property <length> content-h: root.pill-h + root.gap + root.hole-h + root.gap + root.menu-h;
+    // The menu stands clear of the gesture bar (or the keyboard, which the
+    // hold now dismisses): the clamp keeps the whole column above the inset.
     property <length> dest-y: max(12px + root.pill-h + root.gap,
-        min(root.hole-y, root.height - root.content-h - 12px + root.pill-h + root.gap));
+        min(root.hole-y, root.height - root.bottom-inset - root.content-h - 12px + root.pill-h + root.gap));
     property <length> card-x: max(12px, min(
         item.is-own ? root.hole-x + root.hole-w - 220px : root.hole-x,
         root.width - 220px - 12px));
@@ -259,11 +265,21 @@ export component MessageSheet inherits Rectangle {
         }
     }
 
-    // Spotlight copy of the message (:184-189). Nothing clips it: not here,
-    // not the sheet, not the page — it flies wherever the lift takes it.
+    // Spotlight copy of the message (:184-189). It flies wherever the lift
+    // takes it — but only within the conversation band: the host names the
+    // header's bottom edge and the composer's top edge, and the copy is cut
+    // there, so a message lifting from under the header or setting down
+    // behind the composer appears and disappears at those edges, as the
+    // real row does, instead of drawing over the header or the footer.
+    copy-clip := Rectangle {
+        x: 0;
+        y: root.band-top;
+        width: 100%;
+        height: root.band-bottom - root.band-top;
+        clip: true;
     copy-card := Rectangle {
         x: root.hole-x;
-        y: root.copy-y;
+        y: root.copy-y - root.band-top;
         width: root.hole-w;
         height: root.hole-h;
         // MessageSheet.qml:197-205: the corners the copy carries in flight —
@@ -283,6 +299,7 @@ export component MessageSheet inherits Rectangle {
         // Tapping the lifted message dismisses, as tapping away does. Last,
         // so it wins over the copy's own touch areas.
         TouchArea { clicked => { root.open = false; } }
+    }
     }
 
     // Quick reactions pill. The QML reacts with "❤️" (U+2764 U+FE0F) — the key

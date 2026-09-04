@@ -36,6 +36,12 @@ pub fn run_app() -> anyhow::Result<()> {
         std::env::set_var("SIGIL_SLINT_DEMO", "1");
         std::env::set_var("SIGIL_SLINT_DEMO_CHAT", "1");
     }
+    // `perf`: Slint's own frame-time report in the log (its metrics collector
+    // reads this at renderer creation), for telling a render-bound stutter
+    // from an event-bound one on the device.
+    if flag("perf") {
+        std::env::set_var("SLINT_DEBUG_PERFORMANCE", "refresh_lazy,console");
+    }
 
     let win = AppWindow::new()?;
     let icons = rows::IconSet::from_window(&win);
@@ -76,12 +82,25 @@ pub fn run_app() -> anyhow::Result<()> {
         let weak = win.as_weak();
         win.window().on_close_requested(move || {
             if let Some(w) = weak.upgrade() {
+                // The camera's viewfinder is a window of its own laid over the
+                // app (java/SigilCamera.java), so the app's own nav knows
+                // nothing about it and Back would unwind the room underneath
+                // it. Back closes the viewfinder and goes no further;
+                // actions.rs's poll sees the camera gone on its next pass and
+                // stops itself.
+                if platform::camera_live() {
+                    platform::camera_close();
+                    return slint::CloseRequestResponse::KeepWindowShown;
+                }
                 if w.get_nav() != "home"
                     || w.get_viewer_open()
                     || w.get_attach_open()
                     || w.get_recorder_open()
                 {
-                    if w.get_viewer_open() {
+                    if w.get_viewer_open() && w.get_viewer_picker_open() {
+                        // the viewer's emoji drawer goes first, the viewer stays
+                        w.set_viewer_picker_open(false);
+                    } else if w.get_viewer_open() {
                         w.set_viewer_open(false);
                     } else if w.get_attach_open() {
                         w.set_attach_open(false);

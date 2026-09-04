@@ -161,6 +161,19 @@ pub fn request_mic_permission() {
 const RECORD_AUDIO: &str = "android.permission.RECORD_AUDIO";
 #[cfg(target_os = "android")]
 const CAMERA: &str = "android.permission.CAMERA";
+/// The gallery sheet under the viewfinder reads MediaStore. Which of these
+/// three is the real one depends on the API level — 33 split the old blanket
+/// read into one grant per medium — so all three are asked for and Android
+/// ignores whichever is not declared for the level it is running (the
+/// manifest caps READ_EXTERNAL_STORAGE at 32). A refusal is an empty sheet,
+/// never a failure to open the camera, so nothing here is checked before
+/// opening.
+#[cfg(target_os = "android")]
+const READ_MEDIA: [&str; 3] = [
+    "android.permission.READ_MEDIA_IMAGES",
+    "android.permission.READ_MEDIA_VIDEO",
+    "android.permission.READ_EXTERNAL_STORAGE",
+];
 /// The requestPermissions code; the result comes back as a lifecycle event we
 /// do not consume — the person taps record again once granted.
 #[cfg(target_os = "android")]
@@ -181,9 +194,9 @@ fn request_mic_permission_android() -> anyhow::Result<()> {
 }
 
 /// The camera is a runtime grant of the same shape as the microphone, and the
-/// page that wants it also records video — so the two are asked for together
-/// and the person sees one pair of dialogs rather than one now and one at the
-/// moment they press record.
+/// viewfinder that wants it also records video and shows a gallery sheet — so
+/// all of them are asked for together and the person sees one run of dialogs
+/// rather than one now and one at the moment they press record.
 #[cfg(target_os = "android")]
 pub fn has_camera_permission() -> bool {
     match permission_android(CAMERA) {
@@ -195,9 +208,26 @@ pub fn has_camera_permission() -> bool {
     }
 }
 
+/// Whether the gallery sheet can read anything. ANY of the three is enough:
+/// which one exists depends on the API level, and the level that has the two
+/// READ_MEDIA_* grants does not have the old blanket one.
+#[cfg(target_os = "android")]
+pub fn has_media_permission() -> bool {
+    READ_MEDIA
+        .iter()
+        .any(|p| permission_android(p).unwrap_or(false))
+}
+
+#[cfg(not(target_os = "android"))]
+pub fn has_media_permission() -> bool {
+    false
+}
+
 #[cfg(target_os = "android")]
 pub fn request_camera_permission() {
-    if let Err(e) = request_permissions_android(&[CAMERA, RECORD_AUDIO], CAMERA_REQUEST_CODE) {
+    let mut want = vec![CAMERA, RECORD_AUDIO];
+    want.extend_from_slice(&READ_MEDIA);
+    if let Err(e) = request_permissions_android(&want, CAMERA_REQUEST_CODE) {
         tracing::warn!("camera permission request: {e:#}");
     }
 }
@@ -301,11 +331,11 @@ pub async fn pick_media() -> Vec<String> {
 
 /// Take a photo, or record a video, and answer with the file.
 ///
-/// The attach sheet's camera page opens a viewfinder of our own (see the
-/// camera section at the foot of this file); while that is up, the shutter is
-/// this call, and it drives that session. With no viewfinder up — the tile
-/// tapped on a build or a device where the page could not open one — Android
-/// hands the job to whatever camera app the phone has, as it always did.
+/// The Camera tile puts up a viewfinder of our own (see the camera section at
+/// the foot of this file); while that is up, the shutter is this call, and it
+/// drives that session. With no viewfinder up — the tile tapped on a build or
+/// a device where the overlay could not open — Android hands the job to
+/// whatever camera app the phone has, as it always did.
 pub async fn capture_media(video: bool) -> Option<String> {
     #[cfg(not(target_os = "android"))]
     {
@@ -838,17 +868,21 @@ fn video_call<T>(
 }
 
 // ---------------------------------------------------------------------------
-// The camera on the phone: the same trick as video, the other way round.
-// java/SigilCamera.java lays a SurfaceView over the app's own surface and runs
-// a Camera2 preview on it, so the attach sheet's camera page can show a live
-// viewfinder in a rectangle it hands down — the app draws through one surface
-// and could never have drawn a camera frame itself.
+// The camera on the phone: a whole viewfinder, in a window of its own.
 //
-// The page's controls are state, not commands: it says where the box is, which
-// way the camera faces, what the zoom is and whether the torch is on, and the
-// bridge's poll (actions.rs camera_pass) carries changes down. The shutter is the one
-// command, and it comes through capture_media above, so a shot lands on the
-// staging page by the route every other attachment takes.
+// java/SigilCamera.java puts up a full-screen overlay WINDOW (its head comment
+// says why it cannot be part of the app's) holding the picture, every control
+// standing on it — close, flash, zoom, shutter, flip, Photo | Video — and the
+// gallery sheet under its foot. Nothing about the way it looks crosses this
+// seam: Slint has no camera page any more, and the only geometry that goes
+// down is the directory a tapped thumbnail is copied into.
+//
+// What DOES cross it is the three things the overlay refuses to decide. The
+// shutter bumps a counter; the X (and the app going to the background) raises
+// a flag; a tapped thumbnail becomes a file whose path is published.
+// actions.rs's poll reads all three out of `camera_state()` and answers — by
+// taking the same route a gallery pick takes, so both a shot and a pick land
+// on the staging page by the route every other attachment does.
 // ---------------------------------------------------------------------------
 
 /// Where the phone's camera stands. `state` is one of idle / opening / ready /
@@ -863,6 +897,15 @@ pub struct CameraState {
     pub front: bool,
     pub recording: bool,
     pub failure: Option<String>,
+    /// "photo" | "video" — which shutter the overlay is showing.
+    pub mode: String,
+    /// How many times the overlay's shutter has been pressed, ever. A change
+    /// since the last pass is one press.
+    pub shutter: i32,
+    /// The X was pressed, or the activity went away.
+    pub closed: bool,
+    /// A thumbnail in the gallery sheet was tapped and copied to this file.
+    pub picked: String,
 }
 
 /// Whether a viewfinder is up. Kept on this side rather than asked of Java:
@@ -874,26 +917,29 @@ pub fn camera_live() -> bool {
     CAMERA_LIVE.load(std::sync::atomic::Ordering::Relaxed)
 }
 
-/// Open a viewfinder over the app inside a rectangle in physical pixels.
-/// `front` picks the selfie camera. Nothing happens off Android.
-pub fn camera_open(x: i32, y: i32, w: i32, h: i32, front: bool) -> bool {
+/// Put the viewfinder up, full screen, over everything. `front` picks the
+/// selfie camera, `video` the mode it opens in, and `dir` is where a tapped
+/// thumbnail in the gallery sheet is copied to — the overlay has no way of
+/// knowing the engine's cache directory, so it is handed down. Nothing
+/// happens off Android.
+pub fn camera_open(front: bool, video: bool, dir: &str) -> bool {
     #[cfg(target_os = "android")]
     {
         match camera_call(|env, class, activity| {
             use jni::objects::JValue;
             let facing = env.new_string(if front { "front" } else { "back" })?;
+            let mode = env.new_string(if video { "video" } else { "photo" })?;
+            let jdir = env.new_string(dir)?;
             jni_call_static(
                 env,
                 class,
                 "open",
-                "(Landroid/app/Activity;IIIILjava/lang/String;)V",
+                "(Landroid/app/Activity;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;)V",
                 &[
                     JValue::Object(activity),
-                    JValue::Int(x),
-                    JValue::Int(y),
-                    JValue::Int(w),
-                    JValue::Int(h),
                     JValue::Object(&facing),
+                    JValue::Object(&mode),
+                    JValue::Object(&jdir),
                 ],
             )?;
             Ok(())
@@ -910,70 +956,9 @@ pub fn camera_open(x: i32, y: i32, w: i32, h: i32, front: bool) -> bool {
     }
     #[allow(unreachable_code)]
     {
-        let _ = (x, y, w, h, front);
+        let _ = (front, video, dir);
         false
     }
-}
-
-/// The page's preview box moved or resized: follow it.
-pub fn camera_move(x: i32, y: i32, w: i32, h: i32) {
-    #[cfg(target_os = "android")]
-    {
-        let _ = camera_call(|env, class, _| {
-            use jni::objects::JValue;
-            jni_call_static(
-                env,
-                class,
-                "move",
-                "(IIII)V",
-                &[JValue::Int(x), JValue::Int(y), JValue::Int(w), JValue::Int(h)],
-            )?;
-            Ok(())
-        });
-    }
-    #[cfg(not(target_os = "android"))]
-    let _ = (x, y, w, h);
-}
-
-/// Swap the facing camera, keeping the view where it is.
-pub fn camera_flip() {
-    #[cfg(target_os = "android")]
-    let _ = camera_call(|env, class, _| {
-        jni_call_static(env, class, "flip", "()V", &[])?;
-        Ok(())
-    });
-}
-
-pub fn camera_zoom(ratio: f32) {
-    #[cfg(target_os = "android")]
-    let _ = camera_call(|env, class, _| {
-        jni_call_static(
-            env,
-            class,
-            "setZoom",
-            "(F)V",
-            &[jni::objects::JValue::Float(ratio)],
-        )?;
-        Ok(())
-    });
-    #[cfg(not(target_os = "android"))]
-    let _ = ratio;
-}
-
-pub fn camera_torch(on: bool) {
-    #[cfg(target_os = "android")]
-    let _ = camera_call(|env, class, _| {
-        jni_call_static(
-            env,
-            class,
-            "torch",
-            "(Z)V",
-            &[jni::objects::JValue::Bool(on as u8)],
-        )?;
-        Ok(())
-    });
-    #[cfg(not(target_os = "android"))]
-    let _ = on;
 }
 
 /// Take one still into `path`; the file is there once `camera_state().path`
@@ -1037,7 +1022,7 @@ pub fn camera_state() -> Option<CameraState> {
         // A frame of its own: this is asked twenty times a second while the
         // page is up, and every answer of it makes a local reference.
         return camera_call(|env, class, _| {
-            env.with_local_frame(8, |env| -> anyhow::Result<CameraState> {
+            env.with_local_frame(12, |env| -> anyhow::Result<CameraState> {
             let state = jni_string(env, class, "state")?.unwrap_or_default();
             let path = jni_string(env, class, "lastPath")?.unwrap_or_default();
             let failure = jni_string(env, class, "failure")?;
@@ -1045,6 +1030,10 @@ pub fn camera_state() -> Option<CameraState> {
             let zoom_max = jni_call_static(env, class, "zoomMax", "()F", &[])?.f()?;
             let has_flash = jni_call_static(env, class, "hasFlash", "()Z", &[])?.z()?;
             let front = jni_call_static(env, class, "isFront", "()Z", &[])?.z()?;
+            let mode = jni_string(env, class, "mode")?.unwrap_or_else(|| "photo".into());
+            let shutter = jni_call_static(env, class, "shutterCount", "()I", &[])?.i()?;
+            let closed = jni_call_static(env, class, "closed", "()Z", &[])?.z()?;
+            let picked = jni_string(env, class, "pickedPath")?.unwrap_or_default();
             Ok(CameraState {
                 recording: state == "recording",
                 state,
@@ -1054,6 +1043,10 @@ pub fn camera_state() -> Option<CameraState> {
                 has_flash,
                 front,
                 failure,
+                mode,
+                shutter,
+                closed,
+                picked,
             })
             })
         })

@@ -52,6 +52,42 @@ fn mvt_cache_path(z: u32, x: i64, y: i64) -> std::path::PathBuf {
     d.join(format!("v-{z}-{x}-{y}.mvt"))
 }
 
+/// Beside itself, then renamed into place — never written over.
+///
+/// Nothing single-flights this cache, so the same tile can be fetched and
+/// rendered by several requests at once, and `fs::write` truncates before it
+/// writes: a reader arriving mid-write used to get a torn file, which is why
+/// both readers here have to tolerate their content being nonsense. A rename
+/// is atomic, so a reader sees the whole of the old file or the whole of the
+/// new one. It is also what lets `have` trust that a PNG on disk is a PNG,
+/// and that is what makes a prefetched tile cost nothing the second time.
+fn write_atomic(path: &std::path::Path, data: &[u8]) {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static SEQ: AtomicU64 = AtomicU64::new(0);
+    let tmp = path.with_extension(format!(
+        "t{}-{}",
+        std::process::id(),
+        SEQ.fetch_add(1, Ordering::Relaxed)
+    ));
+    if std::fs::write(&tmp, data).is_ok() && std::fs::rename(&tmp, path).is_err() {
+        let _ = std::fs::remove_file(&tmp);
+    }
+}
+
+/// Is this tile already rendered and on disk?
+///
+/// The whole of a warm `map.tile`: the reply is a path, and this says the path
+/// is good. It used to go the long way round — render the tile, which read the
+/// PNG, decoded all 512 squares of it and un-premultiplied a megabyte, purely
+/// to learn that the file was there, and then threw the picture away and
+/// rebuilt the path anyway. That is the cost a prefetch pays twice, once to
+/// warm the tile and once when the view actually reaches it, and it is the
+/// difference between prefetching being free and prefetching being the thing
+/// that makes the map slow.
+pub fn have(z: u32, x: i64, y: i64) -> bool {
+    std::fs::metadata(cache_path(z, x, y)).map(|m| m.len() > 0).unwrap_or(false)
+}
+
 async fn fetch_mvt(src: &VectorSource, z: u32, x: i64, y: i64) -> Option<Vec<u8>> {
     let p = mvt_cache_path(z, x, y);
     if let Ok(data) = std::fs::read(&p) {
@@ -73,7 +109,7 @@ async fn fetch_mvt(src: &VectorSource, z: u32, x: i64, y: i64) -> Option<Vec<u8>
         return None;
     }
     let data = resp.bytes().await.ok()?.to_vec();
-    let _ = std::fs::write(&p, &data);
+    write_atomic(&p, &data);
     Some(data)
 }
 
@@ -109,7 +145,9 @@ pub async fn tile(
         (z, x, y, 1.0, 0.0, 0.0)
     };
 
+    let began = std::time::Instant::now();
     let data = fetch_mvt(src, fz, fx, fy).await?;
+    let fetched = began.elapsed();
     let layers = mvt::decode(&data);
     if layers.is_empty() {
         return None;
@@ -118,7 +156,43 @@ pub async fn tile(
     let mut pixmap = Pixmap::new(TILE_PX, TILE_PX)?;
     let bg = src.style.background;
     pixmap.fill(tiny_skia::Color::from_rgba8(bg.0, bg.1, bg.2, bg.3));
+    rasterize(&mut pixmap, src, &layers, z, scale, off_x, off_y);
+    // What a miss costs, split at the only line that matters: how much of it
+    // was waiting for the network and how much was this thread drawing. The
+    // drawing runs on a runtime worker, so it is also how long everything else
+    // the app wanted to do was held up. Nothing times a hit — a hit never
+    // reaches here, it is a `stat` in `map_tile`.
+    debug!(
+        "map tile {z}/{x}/{y}: {:.1}ms fetch + {:.1}ms draw, {} features",
+        fetched.as_secs_f64() * 1e3,
+        (began.elapsed() - fetched).as_secs_f64() * 1e3,
+        layers.iter().map(|l| l.features.len()).sum::<usize>(),
+    );
 
+    let img = image::RgbaImage::from_raw(TILE_PX, TILE_PX, demultiply(pixmap.data()))?;
+    let mut png = Vec::new();
+    if image::DynamicImage::ImageRgba8(img.clone())
+        .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
+        .is_ok()
+    {
+        write_atomic(&cache, &png);
+    } else {
+        warn!("map tile: png encode failed for {z}/{x}/{y}");
+    }
+    Some(img)
+}
+
+/// Draw the style's layers onto the pixmap: the CPU half of a tile, held apart
+/// from the fetching and the encoding around it so it can be timed on its own.
+fn rasterize(
+    pixmap: &mut Pixmap,
+    src: &VectorSource,
+    layers: &[mvt::Layer],
+    z: u32,
+    scale: f32,
+    off_x: f32,
+    off_y: f32,
+) {
     // The zoom the *style* evaluates at (line widths), in CSS px at 1×; we
     // render at 2× so widths double.
     let style_zoom = z as f64;
@@ -127,8 +201,6 @@ pub async fn tile(
         let Some(layer) = layers.iter().find(|l| l.name == draw.source_layer) else { continue };
         // extent units → 512px canvas, windowed for over-zoom.
         let s = TILE_PX as f32 / layer.extent as f32 * scale;
-        let tx = -(off_x / scale.max(1.0)) * TILE_PX as f32 * scale / 1.0;
-        let _ = tx;
         let offset_x = -off_x * TILE_PX as f32;
         let offset_y = -off_y * TILE_PX as f32;
         let ts = Transform::from_row(s, 0.0, 0.0, s, offset_x, offset_y);
@@ -203,18 +275,6 @@ pub async fn tile(
             }
         }
     }
-
-    let img = image::RgbaImage::from_raw(TILE_PX, TILE_PX, demultiply(pixmap.data()))?;
-    let mut png = Vec::new();
-    if image::DynamicImage::ImageRgba8(img.clone())
-        .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
-        .is_ok()
-    {
-        let _ = std::fs::write(&cache, &png);
-    } else {
-        warn!("map tile: png encode failed for {z}/{x}/{y}");
-    }
-    Some(img)
 }
 
 /// tiny-skia stores premultiplied RGBA; `image` wants straight alpha.
@@ -233,3 +293,5 @@ fn demultiply(data: &[u8]) -> Vec<u8> {
     }
     out
 }
+
+
