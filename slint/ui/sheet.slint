@@ -251,13 +251,20 @@ export component MessageSheet inherits Rectangle {
     // standing on the row's own top and carried by `lift` with the hole,
     // the pill and the menu. Over the scrim, under the pill and menu.
     // Tapping it dismisses, as tapping away does.
-    copy-row := Rectangle {
-        x: root.hole-x;
-        y: root.bubble-y;
-        width: root.hole-w;
-        height: root.hole-h;
-        @children
-        TouchArea { clicked => { root.open = false; } }
+    band-clip := Rectangle {
+        x: 0;
+        y: root.band-top;
+        width: 100%;
+        height: max(0px, root.band-bottom - root.band-top);
+        clip: true;
+        copy-row := Rectangle {
+            x: root.hole-x;
+            y: root.bubble-y - root.band-top;
+            width: root.hole-w;
+            height: root.hole-h;
+            @children
+            TouchArea { clicked => { root.open = false; } }
+        }
     }
 
     // Quick reactions pill. The QML reacts with "❤️" (U+2764 U+FE0F) — the key

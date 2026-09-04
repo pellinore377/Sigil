@@ -2173,6 +2173,10 @@ export component ChatPage inherits Rectangle {
         // drawer needs the page's inset to stand its category bar off the
         // gesture bar and to keep clear of the keyboard its search field puts up.
         bottom-inset: root.bottom-inset;
+        // The conversation band the lifted copy is cut to: under the
+        // header, above the composer — where the row itself is visible.
+        band-top: root.sheet-y;
+        band-bottom: root.panel-top;
         // The scrim mask and the bottom sheets follow the page's corners: the
         // desktop card's 22, square on the phone (convo above).
         card-radius: root.phone ? 0px : 22px;
