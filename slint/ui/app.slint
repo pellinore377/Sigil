@@ -55,7 +55,11 @@ export component AppWindow inherits Window {
     /// They take the inset as their own padding (`bottom-inset`) and are
     /// given the whole window instead.
     property <bool> to-the-edge: root.in-session && (root.nav == "chat" || root.nav == "map");
-    property <length> bottom-inset: max(root.safe-area-insets.bottom, root.kb-overlap);
+    /// The gesture bar (or home indicator) alone. In-out for the same reason
+    /// `kb-overlap` is: a headless window has no bar, and the screenshot
+    /// harness has to be able to stand one up.
+    in-out property <length> gesture-overlap: root.safe-area-insets.bottom;
+    property <length> bottom-inset: max(root.gesture-overlap, root.kb-overlap);
     /// the window's logical size as laid out, read back by scale.rs
     out property <length> logical-width: root.width;
     out property <length> logical-height: root.height;
@@ -438,11 +442,28 @@ export component AppWindow inherits Window {
     /// harness reads it back and asserts it across keyboard, attach sheet and
     /// recorder — a bob there is exactly what the reference does not have.
     out property <length> chat-panel-top: chat.panel-top;
+    /// The clear band between the newest message and the composer's well, for
+    /// the harness: it must be the same 16 whatever is standing under the
+    /// composer (chat.slint's `msg-gap`).
+    out property <length> chat-msg-gap: chat.msg-gap;
+    /// The emoji grid's offset, for the harness's collapse-on-scroll-to-top.
+    out property <length> chat-emoji-grid-y: chat.emoji-grid-y;
+    /// The open panel's height, so the harness can say that a panel did not
+    /// resize under a keyboard sliding past it.
+    out property <length> chat-panel-h: chat.panel-h;
     public function clear-composer() { chat.clear-composer(); }
     public function debug-sheet(index: int, x: length, y: length, w: length, h: length) { chat.sheet-open(root.items[index], x, y, w, h); }
     /// The harness's long-press on a real row: its own rectangle, its own glide.
     public function debug-sheet-id(id: string) { chat.sheet-open-id(id); }
     public function debug-sheet-drawer() { chat.sheet-open-drawer(); }
+    out property <length> debug-hole-y: chat.debug-hole-y;
+    out property <length> debug-copy-y: chat.debug-copy-y;
+    out property <length> debug-bubble-top: chat.debug-bubble-top;
+    out property <length> debug-copy-h: chat.debug-copy-h;
+    out property <length> debug-copy-w: chat.debug-copy-w;
+    out property <string> debug-copy-body: chat.debug-copy-body;
+    out property <int> debug-copy-fx: chat.debug-copy-fx;
+    out property <length> debug-copy-fxh: chat.debug-copy-fxh;
     public function debug-sheet-close() { chat.sheet-close(); }
     in-out property <int> home-tab: 0;
     in-out property <string> home-selection;   // the room home's long press picked out
@@ -836,6 +857,18 @@ export component AppWindow inherits Window {
                 // The gesture bar (or the keyboard) is the page's own to keep
                 // clear: the composer stands that far up from the bottom.
                 bottom-inset: root.bottom-inset;
+                // ...and the two of them apart, because the page treats them
+                // oppositely and must not have to guess which is which. It used
+                // to split `bottom-inset` at 96 — nothing is a gesture bar
+                // above that and no keyboard is below it — which holds for a
+                // keyboard that is UP, and not for one in motion: the IME's own
+                // animation walks the inset down through 96 and the page
+                // reclassified the last stretch of the keyboard as a gesture
+                // bar, which the panels then stood off from the inside. The
+                // recorder grew by that much for two frames and the composer
+                // jumped with it. The window knows the answer; it says so.
+                gesture-inset: root.gesture-overlap;
+                kb-inset: root.kb-overlap;
                 // And how tall this keyboard is: the page opens its panels at
                 // exactly that height, so the composer does not move when one
                 // takes the other's place.

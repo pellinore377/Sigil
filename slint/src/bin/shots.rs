@@ -410,6 +410,9 @@ fn main() -> anyhow::Result<()> {
     const ROOMY_KB: f32 = 290.0;
     const TIGHT_KB: f32 = 240.0;
     let mid = WIDTH as f32 / 2.0;
+    // Where the composer stands with nothing under it at all: what a panel
+    // being put away has to give back.
+    let y_bare = app.get_chat_panel_top();
     app.set_kb_height_px(ROOMY_KB as i32);
     app.set_kb_overlap(ROOMY_KB);
     h.settle();
@@ -455,6 +458,106 @@ fn main() -> anyhow::Result<()> {
     app.set_recorder_open(false);
     h.settle();
 
+    // ---- the swap, both ways, frame by frame ----
+    //
+    // Tapping the mic with the keyboard up, and tapping the field with the
+    // recorder up, are the two swaps the user called "very glitchy, it bounces
+    // in a way it shouldn't". A gesture bar is standing under all of it,
+    // because the bounce was about a gesture bar: the page used to split the
+    // window's one bottom inset at 96, and the IME's per-frame slide walks
+    // that number down through 96 — so the last stretch of a LEAVING keyboard
+    // was read as a gesture bar, the recorder's floor (which counts the bar
+    // from the inside) grew by that much, and the composer jumped with it.
+    // The window hands the two down separately now, and the check is exactly
+    // that: through the whole slide the composer holds still and the panel
+    // does not change height by so much as a pixel.
+    //
+    // A keyboard of 340 over a 24 bar, because the recorder's own floor —
+    // 8 + a 184 card + 8 + the 56 pill row + 28 + the bar = 308 — has to fit
+    // inside it for the panel to be able to BE the keyboard's height. A real
+    // phone's is 306 dp and its bar 24, which clears it by a hair; 290 does
+    // not, and there the recorder stands 18 taller than the keyboard and says
+    // so honestly by moving the composer once, at the open.
+    const BAR: f32 = 24.0;
+    const SWAP_KB: f32 = 340.0;
+    app.set_gesture_overlap(BAR);
+    app.set_kb_height_px(SWAP_KB as i32);
+    app.set_kb_overlap(SWAP_KB);
+    h.settle();
+    let y_kb_bar = app.get_chat_panel_top();
+    app.set_recorder_open(true);
+    h.settle();
+    let rec_h = app.get_chat_panel_h();
+    anyhow::ensure!(
+        rec_h > 0.0,
+        "the recorder did not open, so the swap proves nothing"
+    );
+    // the keyboard leaves, one frame at a time, straight through 96
+    let mut prev = app.get_chat_panel_top();
+    for step in (0..=12).rev() {
+        app.set_kb_overlap(SWAP_KB * step as f32 / 12.0);
+        h.pump();
+        let y = app.get_chat_panel_top();
+        anyhow::ensure!(
+            y >= prev - 0.5,
+            "the composer went back up as the keyboard left under the recorder: \
+             {y} after {prev}"
+        );
+        anyhow::ensure!(
+            (app.get_chat_panel_h() - rec_h).abs() < 0.5,
+            "the recorder resized mid-swap: {} vs {rec_h} at inset {}",
+            app.get_chat_panel_h(),
+            SWAP_KB * step as f32 / 12.0
+        );
+        anyhow::ensure!(
+            (y - y_kb_bar).abs() < 0.5,
+            "the composer moved during the swap into the recorder: {y} vs {y_kb_bar}"
+        );
+        prev = y;
+    }
+    // ...and back the other way: the field is tapped, the recorder holds its
+    // height while the keyboard climbs through it, and it goes only once the
+    // keyboard has covered it.
+    tap(&app, mid, y_kb_bar + 30.0);
+    for _ in 0..4 {
+        h.pump();
+    }
+    anyhow::ensure!(
+        app.get_recorder_open(),
+        "the recorder went before the keyboard arrived — that is the bounce"
+    );
+    for step in 0..=12 {
+        app.set_kb_overlap(SWAP_KB * step as f32 / 12.0);
+        h.pump();
+        let y = app.get_chat_panel_top();
+        anyhow::ensure!(
+            (y - y_kb_bar).abs() < 0.5,
+            "the composer moved during the swap out of the recorder: {y} vs \
+             {y_kb_bar} at inset {}",
+            SWAP_KB * step as f32 / 12.0
+        );
+        if app.get_recorder_open() {
+            anyhow::ensure!(
+                (app.get_chat_panel_h() - rec_h).abs() < 0.5,
+                "the recorder resized while the keyboard climbed through it: {} \
+                 vs {rec_h}",
+                app.get_chat_panel_h()
+            );
+        }
+    }
+    anyhow::ensure!(
+        !app.get_recorder_open(),
+        "the recorder was still open behind a keyboard that had covered it"
+    );
+    app.set_kb_overlap(0.0);
+    app.set_gesture_overlap(0.0);
+    app.set_kb_height_px(ROOMY_KB as i32);
+    // the field still has the focus; a panel opening is what clears it
+    app.set_attach_open(true);
+    h.settle();
+    app.set_attach_open(false);
+    h.settle();
+
     // ---- the IME's own frames ----
     //
     // Android reports the keyboard's inset once per frame of its animation
@@ -474,6 +577,15 @@ fn main() -> anyhow::Result<()> {
         anyhow::ensure!(
             y <= last + 0.5,
             "the composer went back down during the keyboard's rise: {y} after {last}"
+        );
+        // ...and the timeline comes up with it. The keyboard is counted in the
+        // composer's band AND in the room the list gives back at its end, and
+        // if those two ever disagree the newest message is left stranded a
+        // keyboard's height above the well.
+        anyhow::ensure!(
+            (app.get_chat_msg_gap() - 16.0).abs() < 0.5,
+            "the newest message is {} above the well at inset {inset}, not 16",
+            app.get_chat_msg_gap()
         );
         // No tween: the frame the inset arrived on is the frame it is at.
         if inset > 96.0 {
@@ -551,6 +663,37 @@ fn main() -> anyhow::Result<()> {
         );
     }
 
+    // ---- and the timeline stays under the composer's chin ----
+    //
+    // The keyboard's height goes into the composer's band (`composer-inset`)
+    // and into the room the list gives back at its end (`list-pad`), and the
+    // composer is then placed from the same two numbers. Count it once too
+    // often in any of the three and the newest message is stranded a whole
+    // keyboard above the well — a band of nothing where the conversation
+    // should be. 8 of air over the band, and the well's own 8 inside it: 16,
+    // in every state there is.
+    for (what, set) in [
+        ("nothing under it", 0u8),
+        ("the keyboard up", 1),
+        ("the attach panel open", 2),
+        ("the recorder open", 3),
+    ] {
+        app.set_kb_overlap(if set == 1 { ROOMY_KB } else { 0.0 });
+        app.set_attach_open(set == 2);
+        app.set_recorder_open(set == 3);
+        h.settle();
+        anyhow::ensure!(
+            (app.get_chat_msg_gap() - 16.0).abs() < 0.5,
+            "with {what} the newest message sits {} above the composer's well, \
+             not 16",
+            app.get_chat_msg_gap()
+        );
+    }
+    app.set_attach_open(false);
+    app.set_recorder_open(false);
+    app.set_kb_overlap(0.0);
+    h.settle();
+
     // ---- the handle, and the drag, at a keyboard the grid does not fit in ----
     app.set_kb_height_px(TIGHT_KB as i32);
     app.set_attach_open(true);
@@ -621,6 +764,49 @@ fn main() -> anyhow::Result<()> {
         "a second tap did not close it again: {}",
         app.get_chat_panel_top()
     );
+
+    // ---- a drag on the conversation puts the panel away ----
+    //
+    // Reaching past an open panel to read is asking for the panel to be gone,
+    // and the reference answers it that way: the attach sheet, the picker or
+    // the recorder shuts with its ordinary wipe and the composer goes back to
+    // the bottom while the list carries on scrolling under the finger. Hung on
+    // the list's `flicked`, which Slint raises for a finger or a wheel and
+    // never for an offset written from code — so the pin that follows the
+    // panel's own opening cannot trip it. The drag is walked, as the emoji
+    // grid's is, so the Flickable takes the grab off the bubble underneath.
+    // Downward, into the history: the list is parked at its end, so a drag the
+    // other way has nowhere to go and the Flickable never moves at all.
+    let (drag_x, drag_from) = (mid, y_tight - 260.0);
+    press(&app, drag_x, drag_from);
+    h.advance(std::time::Duration::from_millis(140));
+    h.pump();
+    for i in 1..=8 {
+        drag_to(&app, drag_x, drag_from + 12.0 * i as f32);
+        h.advance(std::time::Duration::from_millis(16));
+        h.pump();
+    }
+    release(&app, drag_x, drag_from + 96.0);
+    h.settle();
+    anyhow::ensure!(
+        !app.get_attach_open() && !app.get_recorder_open(),
+        "a drag on the conversation left the panel open"
+    );
+    anyhow::ensure!(
+        (app.get_chat_panel_top() - y_bare).abs() < 0.5,
+        "the composer did not go back to the bottom after the drag shut the \
+         panel: {} vs {y_bare}",
+        app.get_chat_panel_top()
+    );
+    // ...and the pin that a panel's own opening sets off must NOT count as one:
+    // open it again, settle, and it is still open.
+    app.set_attach_open(true);
+    h.settle();
+    anyhow::ensure!(
+        app.get_attach_open() && (app.get_chat_panel_top() - y_tight).abs() < 0.5,
+        "the panel's own opening tripped the list's drag guard: {}",
+        app.get_chat_panel_top()
+    );
     // Shutting the panel drops the latch with it, so the next visit is the
     // keyboard's height again rather than the page it was left at.
     app.set_attach_open(false);
@@ -672,6 +858,17 @@ fn main() -> anyhow::Result<()> {
     };
     app.invoke_debug_sheet_id(pressed_id.clone().into());
     h.settle();
+    eprintln!(
+        "SHEET hole-y {} copy-y {} bubble-top {} copy-h {} copy-w {} body {:?} fx {} fx-h {}",
+        app.get_debug_hole_y(),
+        app.get_debug_copy_y(),
+        app.get_debug_bubble_top(),
+        app.get_debug_copy_h(),
+        app.get_debug_copy_w(),
+        app.get_debug_copy_body(),
+        app.get_debug_copy_fx(),
+        app.get_debug_copy_fxh()
+    );
     h.shoot("chat-sheet")?;
     app.invoke_debug_sheet_close();
     h.settle();
@@ -892,10 +1089,10 @@ fn main() -> anyhow::Result<()> {
     // and the sheet's ground still runs to the very bottom of the window.
     // A device's bar is 48 of these; the strip is drawn over the shot so the
     // clearance can be measured with an eye rather than a calculation.
-    app.set_kb_overlap(48.0);
+    app.set_gesture_overlap(48.0);
     h.settle();
     h.frame("map-footer-gesture")?;
-    app.set_kb_overlap(0.0);
+    app.set_gesture_overlap(0.0);
     h.settle();
     h.frame("map-footer-flat")?;
     // The marker wearing a face, over imagery, where both of the things that
@@ -1503,11 +1700,14 @@ fn main() -> anyhow::Result<()> {
     }
     app.invoke_act("emoji-search".into(), "".into(), "".into());
     emoji_pictures(&app, &h)?;
-    for (name, inset) in [
-        ("attach-emoji-gesture", 24.0),
-        ("attach-emoji-keyboard", 420.0),
+    // The two zones are separate numbers now: a gesture bar is not a very
+    // short keyboard, and the page is told which it is looking at.
+    for (name, gesture, kb) in [
+        ("attach-emoji-gesture", 24.0, 0.0),
+        ("attach-emoji-keyboard", 0.0, 420.0),
     ] {
-        app.set_kb_overlap(inset);
+        app.set_gesture_overlap(gesture);
+        app.set_kb_overlap(kb);
         h.settle();
         h.shoot(name)?;
     }
@@ -1534,11 +1734,12 @@ fn main() -> anyhow::Result<()> {
     h.settle();
     app.invoke_debug_sheet_drawer();
     emoji_pictures(&app, &h)?;
-    for (name, inset) in [
-        ("sheet-emoji-gesture", 24.0),
-        ("sheet-emoji-keyboard", 420.0),
+    for (name, gesture, kb) in [
+        ("sheet-emoji-gesture", 24.0, 0.0),
+        ("sheet-emoji-keyboard", 0.0, 420.0),
     ] {
-        app.set_kb_overlap(inset);
+        app.set_gesture_overlap(gesture);
+        app.set_kb_overlap(kb);
         h.settle();
         h.shoot(name)?;
     }
@@ -1672,7 +1873,7 @@ fn main() -> anyhow::Result<()> {
     // scrolled content and so vanished at exactly the moment a glyph came up
     // to fill it.
     app.set_nav("chat".into());
-    app.set_kb_overlap(24.0); // a gesture bar under the panel
+    app.set_gesture_overlap(24.0); // a gesture bar under the panel
     app.set_at_page("emoji".into());
     app.set_attach_open(true);
     h.settle();
@@ -1685,6 +1886,7 @@ fn main() -> anyhow::Result<()> {
     app.invoke_act("emoji-search".into(), "".into(), "".into());
     emoji_pictures(&app, &h)?;
     h.shoot("emoji-rest")?;
+    let y_emoji_rest = app.get_chat_panel_top();
     {
         // A finger is the only thing that scrolls a Flickable, and the drag
         // has to be walked for it to take the grab off the cell underneath.
@@ -1715,6 +1917,89 @@ fn main() -> anyhow::Result<()> {
         // down keeps its place, the new rows filling in above.
         h.shoot("emoji-expanded")?;
     }
+    // ...and scrolling the grid back to its top puts the panel down again.
+    //
+    // The reference collapses on the way back up: the expanded height is the
+    // browsing position, not a mode you have to leave by hand. The shot above
+    // leaves the grid AT the top already (the grow opened more room than the
+    // grid had travelled), so it is walked down into the list first — which
+    // must NOT collapse anything, the picker only comes down at the top — and
+    // then back up to it.
+    {
+        let (x, y0) = (200.0f32, 500.0f32);
+        let y_emoji_full = app.get_chat_panel_top();
+        anyhow::ensure!(
+            y_emoji_full < y_emoji_rest - 40.0,
+            "the picker did not expand, so its collapse proves nothing: \
+             {y_emoji_full} vs {y_emoji_rest}"
+        );
+        // Every drag here ends by holding still for a moment before the
+        // finger lifts. A release with speed on it starts Slint's fling, and
+        // `settle` jumps the clock three seconds — the whole fling in one go,
+        // which carried the grid thousands of pixels down and left the walk
+        // back nowhere near the top. Held still, the offset is exactly what
+        // the finger asked for.
+        press(&app, x, y0);
+        h.advance(std::time::Duration::from_millis(140));
+        h.pump();
+        for i in 1..=10 {
+            drag_to(&app, x, y0 - 16.0 * i as f32);
+            h.advance(std::time::Duration::from_millis(16));
+            h.pump();
+        }
+        drag_to(&app, x, y0 - 160.0);
+        h.advance(std::time::Duration::from_millis(220));
+        h.pump();
+        release(&app, x, y0 - 160.0);
+        h.settle();
+        anyhow::ensure!(
+            app.get_chat_emoji_grid_y() < -100.0,
+            "the grid did not scroll, so nothing below proves anything: \
+             offset {}",
+            app.get_chat_emoji_grid_y()
+        );
+        anyhow::ensure!(
+            (app.get_chat_panel_top() - y_emoji_full).abs() < 0.5,
+            "the picker came down while the grid was still away from its top: \
+             {} vs {y_emoji_full}",
+            app.get_chat_panel_top()
+        );
+        // ...and back up to the top, which is what puts it down. Walked rather
+        // than measured: how far the grid has to travel depends on the row
+        // height, which depends on the palette, so the drag repeats until the
+        // Flickable's own clamp holds it at zero.
+        let up = y0 - 160.0;
+        for _ in 0..6 {
+            if app.get_chat_emoji_grid_y() >= 0.0 {
+                break;
+            }
+            press(&app, x, up);
+            h.advance(std::time::Duration::from_millis(140));
+            h.pump();
+            for i in 1..=16 {
+                drag_to(&app, x, up + 20.0 * i as f32);
+                h.advance(std::time::Duration::from_millis(16));
+                h.pump();
+            }
+            drag_to(&app, x, up + 320.0);
+            h.advance(std::time::Duration::from_millis(220));
+            h.pump();
+            release(&app, x, up + 320.0);
+            h.settle();
+        }
+        anyhow::ensure!(
+            app.get_chat_emoji_grid_y() >= 0.0,
+            "the grid never came back to its top: offset {}",
+            app.get_chat_emoji_grid_y()
+        );
+        h.shoot("emoji-collapsed")?;
+        anyhow::ensure!(
+            (app.get_chat_panel_top() - y_emoji_rest).abs() < 0.5,
+            "the grid was scrolled back to its top and the picker stayed up: \
+             {} vs {y_emoji_rest}",
+            app.get_chat_panel_top()
+        );
+    }
     // Shutting the panel drops the latch (the host clears the picker's
     // `active`), so the next open is the resting height again — the sheet is
     // built once and outlives a close, and a picker that came back expanded
@@ -1726,7 +2011,7 @@ fn main() -> anyhow::Result<()> {
     h.shoot("emoji-reopened")?;
     app.set_attach_open(false);
     app.set_at_page("grid".into());
-    app.set_kb_overlap(0.0);
+    app.set_gesture_overlap(0.0);
     h.settle();
 
     // The expanded image viewer, from a picture in the timeline: the long

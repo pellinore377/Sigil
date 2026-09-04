@@ -292,6 +292,15 @@ export component ChatPage inherits Rectangle {
     /// Test hook: the sheet's emoji drawer, as the pill's add-reaction cell raises it.
     public function sheet-open-drawer() { root.load-emoji(); sheet.drawer-open = true; }
     out property <bool> sheet-shown: sheet.shown;
+    /// Harness probes for the sheet's lifted copy.
+    out property <length> debug-hole-y: sheet.hole-y;
+    out property <length> debug-copy-y: sheet.row-top + sheet.lift;
+    out property <length> debug-bubble-top: lifted.bubble-top;
+    out property <length> debug-copy-h: lifted.height;
+    out property <length> debug-copy-w: lifted.width;
+    out property <string> debug-copy-body: sheet.item.body;
+    out property <int> debug-copy-fx: sheet.item.fx-chars.length;
+    out property <length> debug-copy-fxh: sheet.item.fx-h;
     /// Whatever is staged goes: a voice clip, a caption, an edit, a reply, or plain text.
     public function submit() {
         if (composer-input.text == "" && !root.voice-staged) { return; }
@@ -557,14 +566,21 @@ export component ChatPage inherits Rectangle {
     property <length> attach-box: root.phone ? 48px : 30px;
     // ---------------------------------------------------------------- the foot
     //
-    // The window hands the page ONE number for the zone it must keep clear
-    // (app.slint: max(safe-area.bottom, keyboard)), so split it back apart:
-    // no gesture bar or home indicator is anywhere near 96 tall and no
-    // keyboard is anywhere near that short, so the threshold is never in
-    // doubt. While the keyboard is up the gesture bar is behind it, which is
-    // why the gesture share falls to zero rather than staying.
-    property <length> gesture-inset: root.bottom-inset > 96px ? 0px : root.bottom-inset;
-    property <length> kb-inset: root.bottom-inset > 96px ? root.bottom-inset : 0px;
+    // The two zones at the bottom of the window, handed down apart because the
+    // page treats them oppositely: the gesture bar is the PANEL's to stand its
+    // content off from the inside, its ground running on under it, while
+    // nothing at all may be under the keyboard.
+    //
+    // They used to be one number here, split at 96 — nothing is a gesture bar
+    // above that and no keyboard is below it. That holds for a keyboard
+    // standing still and not for one in motion: the IME reports its inset once
+    // per frame of its own slide, so the number walks down through 96, and the
+    // last stretch of a leaving keyboard was read as a gesture bar. The
+    // recorder's floor counts the gesture bar, so it grew by 70-odd for two
+    // frames and the composer bounced with it — which is what "very glitchy"
+    // was. The window knows which is which; it says so now (app.slint).
+    in property <length> gesture-inset: 0px;
+    in property <length> kb-inset: 0px;
     /// This keyboard at its DEFAULT height: the tallest one this device has
     /// stood up. The reference (Google Messages) opens every panel under the
     /// composer at EXACTLY the keyboard's height, so that switching keyboard ↔
@@ -607,7 +623,7 @@ export component ChatPage inherits Rectangle {
     property <length> rec-h: min(root.panel-max, max(root.panel-want, rec.min-h));
     /// The room the open panel is actually taking right now (mid-animation
     /// included). Only one of the two is ever open.
-    property <length> panel-h: att-frame.height + rec-frame.height;
+    out property <length> panel-h: att-frame.height + rec-frame.height;
     /// The ONE number the composer stands off the bottom of the screen by:
     /// the keyboard, or the panel, whichever is taller — and since a panel is
     /// opened at the keyboard's own height they are the same number, so the
@@ -694,6 +710,21 @@ export component ChatPage inherits Rectangle {
     /// screenshot harness can assert the one thing this is all for — that the
     /// number does not change across keyboard, attach panel and recorder.
     out property <length> panel-top: root.height - root.composer-h - root.panel-h;
+    /// The room the timeline gives back at its end: 8 of air, then everything
+    /// that floats over its bottom — the composer band, whichever panel is
+    /// open, and the typing row.
+    property <length> list-pad: 8px + root.composer-h + root.panel-h + typing-row.height;
+    /// The clear band between the newest message and the top of the composer's
+    /// well: the 8 of air and the well's own 8 inside the band, and nothing
+    /// else, in every state. Out because a keyboard counted twice anywhere —
+    /// in the end padding, in the band's height, in the composer's placement —
+    /// shows up here and nowhere else as a gap the height of the keyboard; the
+    /// harness asserts it with the keyboard up, with it down, and with each
+    /// panel open.
+    out property <length> msg-gap: (composer.y + 8px)
+        - (list.viewport-y + list.viewport-height - root.list-pad);
+    /// The emoji grid's offset, likewise for the harness (emoji.slint).
+    out property <length> emoji-grid-y: epicker.grid-y;
     out property <length> from-end: max(0px, (list.viewport-height - list.height) + list.viewport-y);
     /// The timeline's width, so Rust can wrap effect text to the bubble.
     out property <length> timeline-w: list.width;
@@ -1137,18 +1168,17 @@ export component ChatPage inherits Rectangle {
                     height: row.known-h;
                     // a narrower or wider list rewraps every message: measure again
                     changed width => { row.known-h = 0px; }
-                    /// This row's bubble is the one the sheet holds: it lifts
-                    /// out of its slot by the sheet's `lift` and floats over
-                    /// its neighbours. NOTHING else moves — not the list, not
-                    /// the rows around it, which stay exactly where they are,
-                    /// dimmed under the scrim. Rows are drawn in order, so a
-                    /// bubble lifting UP (the usual case: a recent message
-                    /// making room for its menu) lies over the rows above it
-                    /// by itself.
+                    /// This row is the one the sheet holds. Slint draws rows
+                    /// in order and cannot raise one above the rest at run
+                    /// time, so a bubble lifted in place went under the rows
+                    /// after it. Instead the sheet draws a LIVE second instance
+                    /// of this whole row — bubble, reactions, receipt — in its
+                    /// own layer above everything, starting exactly where this
+                    /// row stands and lifting from there, while this row's
+                    /// content steps aside (its slot stays). Nothing else
+                    /// moves: not the list, not the rows around it.
                     property <bool> held: sheet.shown && item.event-id != "" && sheet.item.event-id == item.event-id;
                     changed held => { if (self.held) { root.held-y = self.y; } }
-                    /// How far this row's bubble is carried by the sheet.
-                    property <length> carry: sheet.shown && self.held ? sheet.lift : 0px;
                     // The harness's long-press: the named row fires its own
                     // menu, with its own rectangle, as a finger would.
                     property <bool> press-me: root.debug-press-id != "" && root.debug-press-id == item.event-id;
@@ -1299,8 +1329,10 @@ export component ChatPage inherits Rectangle {
                         cancelled => { row.spring-home(); }
                         bub := Bubble {
                             x: row.off;
-                            // the held bubble moves, and pushes its neighbours; the list does not
-                            y: row.carry;
+                            // The held row steps aside for the sheet's live
+                            // copy of it, which starts exactly here and lifts.
+                            // `visible`, not `if`: the row keeps its slot.
+                            visible: !row.held;
                             width: row.width;
                             item: item;
                             fx-clock: root.fx-clock;
@@ -1341,7 +1373,7 @@ export component ChatPage inherits Rectangle {
                 }
                 // 8px of breathing room, plus the room the floating
                 // composer band and typing row take out of the view.
-                Rectangle { height: 8px + root.composer-h + root.panel-h + typing-row.height; }
+                Rectangle { height: root.list-pad; }
             }
 
             // Typing indicator (TypingIndicator.qml): folds 0↔38 over 180ms
@@ -2172,5 +2204,29 @@ export component ChatPage inherits Rectangle {
         react(id, key) => { root.react(id, key); }
         emoji-search(q) => { root.emoji-search(q); }
         load-emoji => { root.load-emoji(); }
+        // The lifted bubble: the same delegate over the same row data, live,
+        // in its copy mode (the bubble alone, laid out to the timeline's
+        // width so it wraps line for line as the original), standing on the
+        // sheet's hole and carried with it. Drawn in the sheet's layer above
+        // every row, since the row itself cannot be raised above the rows
+        // drawn after it. Not a picture of anything.
+        lifted := Bubble {
+            item: sheet.item;
+            copy-only: true;
+            // the receipt and the reactions travel with the bubble
+            copy-marks: true;
+            max-w: list.width * (root.phone ? 0.75 : 0.78);
+            width: sheet.hole-w;
+            fg: root.fg;
+            accent: root.accent;
+            dm: root.is-dm;
+            encrypted: root.room-encrypted;
+            convo-ground: root.convo-c;
+            theme-surface: root.themed ? root.surface-c : transparent;
+            boot-epoch-s: root.boot-epoch-s;
+            now-epoch-s: root.now-epoch-s;
+            fx-clock: root.fx-clock;
+            on-screen: true;
+        }
     }
 }

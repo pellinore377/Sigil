@@ -156,6 +156,13 @@ fn android_main(app: slint::android::AndroidApp) {
             .with_tag("slint"),
     );
 
+    // A panic on the UI thread ends the native thread and the activity
+    // quietly drops to the background — its message goes to stderr, which
+    // the phone never shows. Name it in logcat first.
+    std::panic::set_hook(Box::new(|info| {
+        tracing::error!("panic: {info}");
+    }));
+
     scale::remember_android(app.clone());
     // The engine's location backend needs the Activity, not the application
     // context ndk-context carries: only an Activity can show the runtime

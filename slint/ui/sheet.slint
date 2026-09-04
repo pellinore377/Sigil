@@ -85,6 +85,9 @@ export component MessageSheet inherits Rectangle {
     in-out property <length> hole-r-tr;
     in-out property <length> hole-r-bl;
     in-out property <length> hole-r-br;
+    /// The held ROW's top in the sheet's coordinates: the host's live copy
+    /// of the row (this sheet's child) stands there and lifts with the hole.
+    in property <length> row-top: 0px;
     /// How far the BUBBLE has lifted from where it was pressed: zero at the
     /// press, `dest-y - hole-y` at rest, and back to zero as the sheet goes.
     /// The host moves the real row's bubble by exactly this (the list does
@@ -242,6 +245,19 @@ export component MessageSheet inherits Rectangle {
             else if (root.confirm-open) { root.confirm-open = false; }
             else { root.open = false; }
         }
+    }
+
+    // The lifted row: the host's live copy of the held row (its child),
+    // standing on the row's own top and carried by `lift` with the hole,
+    // the pill and the menu. Over the scrim, under the pill and menu.
+    // Tapping it dismisses, as tapping away does.
+    copy-row := Rectangle {
+        x: root.hole-x;
+        y: root.bubble-y;
+        width: root.hole-w;
+        height: root.hole-h;
+        @children
+        TouchArea { clicked => { root.open = false; } }
     }
 
     // Quick reactions pill. The QML reacts with "❤️" (U+2764 U+FE0F) — the key

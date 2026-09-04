@@ -26,15 +26,18 @@
 // clear however far the grid has travelled — and a category jump puts that
 // section's caption on the top of the grid with the same air above it.
 //
-// The picker also grows. It opens at the resting height the host gives it and
-// the first scroll of the grid latches `expanded`, which the host reads to
-// take the panel up to the full page below the composer (chat.slint's
-// att-frame). One latch, not a drag-along: the reference snaps rather than
-// tracking the finger, and a height that followed the scroll offset would
-// move the grid under the finger while the finger is moving it. The latch is
-// dropped by the host clearing `active` — the panel closing, or the sheet
-// leaving the emoji page — never by scrolling back to the top, which the
-// reference gives no evidence for.
+// The picker also grows, and comes back down. It opens at the resting height
+// the host gives it; the first scroll of the grid sets `expanded`, which the
+// host reads to take the panel up to the full page below the composer
+// (chat.slint's att-frame); and scrolling the grid back to its top puts it
+// down again. Both are snaps, not drag-alongs: the reference snaps, and a
+// height that followed the scroll offset would move the grid under the finger
+// while the finger is moving it.
+//
+// The expansion is the browsing position, then, not a mode to be left by hand
+// — which is what the reference does, watched on the phone. The host clearing
+// `active` (the panel closing, or the sheet leaving the emoji page) drops it
+// too, so a fresh visit is always the resting height.
 //
 // Widths come off `cell` rather than a dp literal because the reference phone
 // is 527dp across and this window is not: nine columns have to keep fitting.
@@ -82,6 +85,10 @@ export component EmojiPicker inherits Rectangle {
     /// att-frame body-h). Held here rather than in the host because the grid
     /// is the only thing that knows it has been scrolled.
     out property <bool> expanded: false;
+    /// The grid's own offset, for the screenshot harness: the expansion and
+    /// the collapse both hang off it, and a test that cannot see it can only
+    /// prove one of them by accident.
+    out property <length> grid-y: grid.viewport-y;
     callback picked(string);
     callback search-edited(string);
 
