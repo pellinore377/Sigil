@@ -7053,7 +7053,7 @@ dependencies = [
 
 [[package]]
 name = "sigil-slint"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "android-activity 0.6.1",
  "anyhow",
