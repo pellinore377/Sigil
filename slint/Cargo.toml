@@ -1,6 +1,6 @@
 [package]
 name = "sigil-slint"
-version = "0.1.3"
+version = "0.1.4"
 edition = "2021"
 license = "LicenseRef-Proprietary"
 description = "Sigil's Slint frontend: one UI over the in-process engine, for Android first and every other platform after"
