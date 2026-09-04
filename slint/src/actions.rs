@@ -257,7 +257,98 @@ pub fn sheet_snapshot(ui: &mut UiState, win: &AppWindow, id: &str, r: &SheetRect
     win.set_sheet_backdrop(frost.unwrap_or_default());
 }
 
+// ------------------------------------------------------- the location map
+
+/// Place the grid for where the view is now, and ask for what is missing.
+/// Called on every drag step, so it does no work beyond the arithmetic and a
+/// cache lookup per visible tile; the fetches answer later and place
+/// themselves.
+pub fn map_place(ui: &mut UiState, win: &AppWindow) {
+    let wanted = ui.mapview.wanted();
+    let mut rows: Vec<crate::MapTileView> = Vec::with_capacity(wanted.len());
+    let mut missing: Vec<(u32, i64, i64)> = Vec::new();
+    for (tx, ty) in wanted {
+        let key = ui.mapview.key(tx, ty);
+        let (x, y) = ui.mapview.place(tx, ty);
+        match ui.mapview.have.get(&key) {
+            Some(img) => rows.push(crate::MapTileView {
+                x: x.into(),
+                y: y.into(),
+                size: (crate::mapview::TILE as f32).into(),
+                img: img.clone(),
+            }),
+            None => {
+                if ui.mapview.asked.insert(key) {
+                    missing.push(key);
+                }
+            }
+        }
+    }
+    let (px, py) = ui.mapview.pin();
+    win.set_mp_pin_x(px.into());
+    win.set_mp_pin_y(py.into());
+    win.set_mp_tiles(ModelRc::new(VecModel::from(rows)));
+    for (z, x, y) in missing {
+        fetch_map_tile(ui, z, x, y);
+    }
+}
+
+/// One rendered tile from the engine. A tile is the same picture whatever
+/// page asked for it, so what comes back is kept for the session.
+fn fetch_map_tile(ui: &mut UiState, z: u32, x: i64, y: i64) {
+    let epoch = ui.mapview.epoch;
+    call_ui(
+        &ui.req.clone(),
+        "map.tile",
+        json!({"z": z, "x": x, "y": y}),
+        move |ui, win, out| {
+            ui.mapview.asked.remove(&(z, x, y));
+            // The page moved to another point while this was in flight.
+            if ui.mapview.epoch != epoch {
+                return;
+            }
+            match out {
+                Ok(v) => {
+                    let path = v["path"].as_str().unwrap_or("");
+                    if let Some(img) = crate::bridge::avatar_pub(ui, path) {
+                        ui.mapview.have.insert((z, x, y), img);
+                        // Only the current zoom is on screen; a tile that
+                        // arrives for a zoom left behind just goes to the cache.
+                        if ui.mapview.z == z {
+                            map_place(ui, win);
+                        }
+                    }
+                }
+                // No tile server configured, or the tile would not render:
+                // the ground shows through, and the composite still stands.
+                Err((code, msg)) => tracing::debug!("map.tile {z}/{x}/{y}: {code} {msg}"),
+            }
+        },
+    );
+}
+
 pub fn wire_extra(win: &AppWindow) {
+    win.on_map_viewport(|w, h| {
+        with_ui(|ui| {
+            let Some(win) = ui.win.upgrade() else { return };
+            ui.mapview.resize(w as f64, h as f64);
+            map_place(ui, &win);
+        });
+    });
+    win.on_map_panned(|dx, dy| {
+        with_ui(|ui| {
+            let Some(win) = ui.win.upgrade() else { return };
+            ui.mapview.pan(dx as f64, dy as f64);
+            map_place(ui, &win);
+        });
+    });
+    win.on_map_zoom_at(|step, x, y| {
+        with_ui(|ui| {
+            let Some(win) = ui.win.upgrade() else { return };
+            ui.mapview.zoom(step, x as f64, y as f64);
+            map_place(ui, &win);
+        });
+    });
     win.on_sheet_prewarm(|id, r| {
         with_ui(|ui| {
             let Some(win) = ui.win.upgrade() else { return };
@@ -1438,9 +1529,14 @@ pub fn on_act(ui: &mut UiState, win: &AppWindow, action: &str, a: &str, b2: &str
             req.fire("voice.cancel", json!({}));
         }
         "open-map" => open_map(ui, win, a),
-        // the page's +/- chips: a new composite at zoom ±1
+        // The page's +/- chips: the grid steps about the middle of the view,
+        // and the still composite follows for a server that has no tiles.
         "map-zoom" => {
-            let z = (ui.map_zoom + if a == "in" { 1 } else { -1 }).clamp(3, 19);
+            let step = if a == "in" { 1 } else { -1 };
+            let (w, h) = (ui.mapview.w / 2.0, ui.mapview.h / 2.0);
+            ui.mapview.zoom(step, w, h);
+            map_place(ui, win);
+            let z = (ui.map_zoom + step as i64).clamp(3, 19);
             if z != ui.map_zoom {
                 ui.map_zoom = z;
                 fetch_map_page(ui);
@@ -2989,6 +3085,14 @@ fn open_map(ui: &mut UiState, win: &AppWindow, event_id: &str) {
     ui.map_geo = s(loc, "geoUri").to_string();
     ui.map_zoom = 15;
     fetch_map_page(ui);
+    // The live grid centres on the same point. It only draws where the server
+    // serves single tiles; where it does not, the composite above stands.
+    win.set_mp_tiles(ModelRc::new(VecModel::from(Vec::<crate::MapTileView>::new())));
+    ui.mapview.open(
+        loc["lat"].as_f64().unwrap_or(0.0),
+        loc["lon"].as_f64().unwrap_or(0.0),
+    );
+    map_place(ui, win);
 }
 
 /// dm.create is idempotent: an existing conversation comes back.

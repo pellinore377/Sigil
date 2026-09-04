@@ -26,7 +26,7 @@ import { SearchPage } from "pages/search.slint";
 import { ChatThemePage, GradPair } from "pages/chattheme.slint";
 import { ThreadsPage } from "pages/threads.slint";
 import { PinsPage } from "pages/pins.slint";
-import { MapPage } from "pages/map.slint";
+import { MapPage, MapTileView } from "pages/map.slint";
 import { DocPage, DocBlock, SheetRow, SheetTab, DocPageImage } from "pages/doc.slint";
 import { AudioPage } from "pages/audio.slint";
 import { ImageViewer, ViewerItem } from "viewer.slint";
@@ -290,6 +290,14 @@ export component AppWindow inherits Window {
     in property <string> mp-initials;
     in property <color> mp-tint;
     in property <image> mp-map;
+    /// The location page draws a grid of rendered tiles the bridge places,
+    /// so the map can be dragged and zoomed; mp-map is the still fallback.
+    in property <[MapTileView]> mp-tiles;
+    in property <length> mp-pin-x;
+    in property <length> mp-pin-y;
+    callback map-viewport(length, length);
+    callback map-panned(length, length);
+    callback map-zoom-at(int, length, length);
     // the contact card's and a member's choice sheets
     in-out property <bool> contact-open: false;
     in-out property <bool> member-open: false;
@@ -793,13 +801,25 @@ export component AppWindow inherits Window {
                 unpin(ev) => { root.act("unpin", ev, ""); }
             } }
         map-holder := PageHolder { active: root.in-session && root.nav == "map"; ground: root.page-ground;
+            // The phone's location page arrives like a conversation: it plays
+            // its own choreography instead of sliding in from the edge, and
+            // the holder waits for the reverse before it goes.
+            slides: Theme.mode == "desktop";
+            hold: 280ms;
             MapPage { width: 100%; height: 100%;
+                opened: map-holder.active;
                 who: root.mp-who; own: root.mp-own; live: root.mp-live; ended: root.mp-ended;
                 stoppable: root.mp-stoppable; openable: true; status-text: root.mp-status;
                 remaining-label: root.mp-remaining; lat: root.mp-lat; lon: root.mp-lon;
                 description: root.mp-desc; self-marker: root.mp-self;
                 sender-initials: root.mp-initials; sender-tint: root.mp-tint;
                 map-image: root.mp-map;
+                tiles: root.mp-tiles;
+                pin-x: root.mp-pin-x;
+                pin-y: root.mp-pin-y;
+                viewport(w, h) => { root.map-viewport(w, h); }
+                panned(dx, dy) => { root.map-panned(dx, dy); }
+                zoom-at(s, x, y) => { root.map-zoom-at(s, x, y); }
                 closed => { root.go-back(); }
                 stop-live => { root.act("stop-live", "", ""); }
                 open-osm(u) => { root.act("open-link", u, ""); }

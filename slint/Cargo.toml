@@ -75,6 +75,16 @@ name = "android.permission.RECORD_AUDIO"
 [[package.metadata.android.uses_permission]]
 name = "android.permission.MODIFY_AUDIO_SETTINGS"
 
+# Position: the engine's own ladder starts at android.location.LocationManager
+# (core/src/geo/android.rs). Both are runtime grants on targetSdk 35 — the
+# engine asks through the Activity handed to it in android_main; the coarse
+# one is declared alongside because Android refuses a fine-only request.
+[[package.metadata.android.uses_permission]]
+name = "android.permission.ACCESS_FINE_LOCATION"
+
+[[package.metadata.android.uses_permission]]
+name = "android.permission.ACCESS_COARSE_LOCATION"
+
 [package.metadata.android.application]
 label = "Sigil"
 # The identity keys must never ride a cloud backup: a reinstall on this

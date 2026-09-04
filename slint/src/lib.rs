@@ -10,6 +10,7 @@ pub mod call;
 pub mod frost;
 pub mod fx;
 pub mod headless;
+pub mod mapview;
 pub mod platform;
 pub mod project;
 pub mod qr;
@@ -107,6 +108,11 @@ fn android_main(app: slint::android::AndroidApp) {
     }
 
     scale::remember_android(app.clone());
+    // The engine's location backend needs the Activity, not the application
+    // context ndk-context carries: only an Activity can show the runtime
+    // permission dialog. SAFETY: both are android-activity's own pointers,
+    // valid for the life of the process.
+    sigil_engine::geo::android::use_activity(app.vm_as_ptr(), app.activity_as_ptr());
     slint::android::init(app).expect("slint android init");
     run_app().expect("sigil-slint");
 }

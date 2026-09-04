@@ -180,6 +180,8 @@ pub struct UiState {
     /// The map page's point and the zoom its composite is drawn at.
     pub map_geo: String,
     pub map_zoom: i64,
+    /// The location page's live map: its centre, zoom and rendered tiles.
+    pub mapview: crate::mapview::MapView,
     /// The attach sheet's picker: the device fix and the dropped pin (f64 —
     /// the window's f32 mirrors are display-only), the crop zoom, a counter
     /// that debounces and invalidates location.map requests, and the crop
@@ -319,6 +321,7 @@ pub fn start(win: &AppWindow, rt: &tokio::runtime::Runtime, icons: IconSet) -> R
         gif_frames: HashMap::new(),
         location_maps: HashMap::new(),
         map_geo: String::new(),
+        mapview: Default::default(),
         map_zoom: 15,
         lp_fix: None,
         lp_mark: None,
@@ -2308,6 +2311,7 @@ fn start_demo(win: &AppWindow, rt: &tokio::runtime::Runtime, icons: IconSet) -> 
         gif_frames: HashMap::new(),
         location_maps: HashMap::new(),
         map_geo: String::new(),
+        mapview: Default::default(),
         map_zoom: 15,
         lp_fix: None,
         lp_mark: None,

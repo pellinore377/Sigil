@@ -1,8 +1,11 @@
 // Full-page view of a shared location — MapPage.qml. Slint has no map
 // widget (QML gets MapLibre through QtLocation), so the engine rasterises
-// the tiles instead: MapPage shows a location.map composite centred on the
-// point, with the marker drawn on top and +/- chips that re-request at
-// zoom ±1. Without a configured style the pin card remains, and says so.
+// the tiles and this page is the map: a grid of single rendered tiles
+// (map.tile) the bridge places for a centre and a zoom it keeps, so the
+// page drags with the finger and steps in and out about what was tapped.
+// A server that renders composites but not single tiles keeps the old
+// still picture centred on the point; with neither, the pin card remains
+// and says so. The phone opens the page the way it opens a conversation.
 // The attachment sheet's LocationPicker lives in attach.slint now, on the
 // same imagery; it borrows SelfPin from here.
 
@@ -74,6 +77,11 @@ export component SelfPin inherits Rectangle {
     }
 }
 
+/// One rendered tile, placed by the bridge: the map is a grid of these, not
+/// a single picture, so it can be dragged and zoomed. `size` is the tile's
+/// side in logical pixels; `x`/`y` are its top-left inside the map area.
+export struct MapTileView { x: length, y: length, size: length, img: image }
+
 export component MapPage inherits Rectangle {
     in property <color> fg: Theme.menu-text;
     in property <color> accent: Theme.accent;
@@ -98,10 +106,41 @@ export component MapPage inherits Rectangle {
     in property <string> sender-initials;
     in property <color> sender-tint: Theme.accent;
     in-out property <string> toast;
-    // The engine's composite, centred on the point; empty until location.map lands.
+    /// The phone opens this page the way it opens a conversation: the map
+    /// rises from the bottom while the header settles, instead of the
+    /// desktop card's slide from the edge (chat.slint's open-t / open-e).
+    in property <bool> phone: Theme.mode != "desktop";
+    in property <bool> opened: true;
+    property <float> open-t: 1.0;
+    states [
+        closed when root.phone && !root.opened : {
+            open-t: 0.0;
+            in { animate open-t { duration: 220ms; } }
+            out { animate open-t { duration: 280ms; } }
+        }
+    ]
+    property <float> open-e: 1 - (1 - root.open-t) * (1 - root.open-t) * (1 - root.open-t);
+    // The engine's composite, centred on the point; empty until location.map
+    // lands. It is the still fallback: with a tile server the page draws the
+    // grid below instead, which drags and zooms.
     in property <image> map-image;
     callback zoom-requested(int);          // +1 / −1; the bridge clamps 3..19
     property <bool> has-map: root.map-image.width > 0;
+
+    /// The visible tiles, placed by the bridge for the current centre and
+    /// zoom (map.tile, one rendered tile each).
+    in property <[MapTileView]> tiles;
+    /// The shared point inside the map area, so the marker travels with the
+    /// map as it is dragged.
+    in property <length> pin-x: -1000px;
+    in property <length> pin-y: -1000px;
+    property <bool> tiled: root.tiles.length > 0;
+    /// The map area's size, so the bridge knows how much grid to place.
+    callback viewport(length, length);
+    /// Dragged by this much, in logical pixels.
+    callback panned(length, length);
+    /// A step in or out about a point in the map area (a double tap).
+    callback zoom-at(int, length, length);
 
     property <color> chip: Theme.background.with-alpha(0.85);
     // MapPage.qml:44, 47 — openable = pin || (liveKind && live && !own), where
@@ -119,10 +158,13 @@ export component MapPage inherits Rectangle {
         triggered => { root.toast = ""; self.running = false; }
     }
 
-    VerticalLayout {
+    // Absolute rather than stacked: on the phone the map rises from the page
+    // bottom while the header stays put, so the two move independently.
+    Rectangle {
+        width: 100%; height: 100%;
         // Header (52px, MapPage.qml:158-178 — its own, not the settings header).
         header := Rectangle {
-            height: 52px;
+            x: 0; y: 0; width: parent.width; height: 52px;
             // :162-169 — 22px PanelActionButton at leftMargin 6.
             back-btn := ActionButton {
                 x: 6px; y: (52px - 22px) / 2;
@@ -147,24 +189,92 @@ export component MapPage inherits Rectangle {
         // The "map" area: rounded top, fg@0.08 ground (MapPage.qml:216), the
         // marker and one caption as a card.
         map-area := Rectangle {
-            vertical-stretch: 1;
+            x: 0;
+            width: parent.width;
+            height: parent.height - 52px;
+            // The conversation's arrival: the sheet rises from the page's
+            // bottom edge on an OutCubic (chat.slint:719).
+            y: 52px + (parent.height - 52px) * (1 - root.open-e);
             background: root.fg.with-alpha(0.08);
             border-top-left-radius: 24px;
             border-top-right-radius: 24px;
             clip: true;
+            // The bridge places the grid for this box, so it has to know it.
+            changed width => { root.viewport(self.width, self.height); }
+            changed height => { root.viewport(self.width, self.height); }
+            init => { root.viewport(self.width, self.height); }
 
-            // The rendered composite; its centre is the shared point.
-            if root.has-map : Image {
+            // The rendered composite; its centre is the shared point. It
+            // stands in until the grid has tiles, and stays for a server that
+            // serves composites but no single tiles.
+            if root.has-map && !root.tiled : Image {
                 width: 100%; height: 100%;
                 source: root.map-image;
                 image-fit: cover;
+            }
+
+            // The live map: a grid the bridge places for the current centre
+            // and zoom. Dragging moves the centre and the grid follows in the
+            // same frame, so the map tracks the finger.
+            if root.tiled : Rectangle {
+                width: 100%; height: 100%;
+                for t in root.tiles : Image {
+                    x: t.x; y: t.y;
+                    width: t.size; height: t.size;
+                    source: t.img;
+                    image-fit: fill;
+                }
+            }
+            // Declared before the marker, the chips and the sheet, so all of
+            // those still take their own taps.
+            if root.tiled : drag := TouchArea {
+                width: 100%; height: 100%;
+                property <length> last-x;
+                property <length> last-y;
+                property <bool> dragging: false;
+                pointer-event(e) => {
+                    if (e.button == PointerEventButton.left && e.kind == PointerEventKind.down) {
+                        self.last-x = self.mouse-x;
+                        self.last-y = self.mouse-y;
+                        self.dragging = true;
+                    }
+                    if (e.kind == PointerEventKind.up || e.kind == PointerEventKind.cancel) {
+                        self.dragging = false;
+                    }
+                }
+                moved => {
+                    if (self.dragging) {
+                        root.panned(self.mouse-x - self.last-x, self.mouse-y - self.last-y);
+                        self.last-x = self.mouse-x;
+                        self.last-y = self.mouse-y;
+                    }
+                }
+                // A double tap zooms in on what was tapped, as every map does.
+                double-clicked => { root.zoom-at(1, self.mouse-x, self.mouse-y); }
             }
 
             // MapPage.qml:268-292 — the no-map column: parent − 48 wide,
             // spacing 10, centred in the room above the sheet. The marker is
             // MapView.qml's, since the card stands in for the tiles. With a
             // map the caption goes and the marker's tip sits on the point.
-            place-col := VerticalLayout {
+            // On the grid the marker stands on its own point and travels with
+            // the map; the tip of both markers is the bottom of their box.
+            if root.tiled && root.self-marker : SelfPin {
+                x: root.pin-x - 24px; y: root.pin-y - 48px;
+                pin-color: root.accent;
+                avatar: root.sender-avatar;
+                ripple: root.live;
+            }
+            if root.tiled && !root.self-marker : IconLabel {
+                x: root.pin-x - 23px; y: root.pin-y - 46px;
+                text: Icons.location;
+                filled: true;
+                color: root.accent.with-alpha(0.85);
+                font-size: 46px;
+                width: 46px; height: 46px;
+            }
+
+            if !root.tiled : place-col := VerticalLayout {
                 x: 24px;
                 width: map-area.width - 48px;
                 y: root.has-map
@@ -190,7 +300,7 @@ export component MapPage inherits Rectangle {
                 }
                 // :281-291 — one caption, fg@0.6, wrapped and centred.
                 if !root.has-map : Text {
-                    text: "Sigil on Slint cannot draw maps yet — open the point in your browser.";
+                    text: "No map server is set for this account — open the point in your browser.";
                     color: root.fg.with-alpha(0.6);
                     font-family: Theme.font-ui;
                     font-size: Theme.caption;
@@ -235,7 +345,7 @@ export component MapPage inherits Rectangle {
             }
 
             // Zoom the composite in or out; the bridge re-requests at ±1.
-            if root.has-map : zoom-chips := VerticalLayout {
+            if root.has-map || root.tiled : zoom-chips := VerticalLayout {
                 x: map-area.width - 34px - 12px;
                 y: 12px;
                 width: 34px;

@@ -6994,10 +6994,12 @@ dependencies = [
  "hex",
  "hostname",
  "image",
+ "jni 0.21.1",
  "libc",
  "memmap2",
  "mime",
  "mime_guess",
+ "ndk-context",
  "parking_lot",
  "pdf-extract",
  "pulldown-cmark",
@@ -7051,7 +7053,7 @@ dependencies = [
 
 [[package]]
 name = "sigil-slint"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "android-activity 0.6.1",
  "anyhow",

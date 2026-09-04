@@ -2,6 +2,8 @@
 //! is absent or refuses) our own WiFi lookup, then the coarse IP guess. No API key lives in
 //! this source. There is deliberately no "type in your coordinates" fallback.
 
+#[cfg(target_os = "android")]
+pub mod android;
 pub mod platform;
 pub mod wifi;
 

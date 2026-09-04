@@ -89,6 +89,13 @@ webpki-roots = "1"
 hayro = "0.7.1"
 syntect = { version = "5.3.0", default-features = false, features = ["default-syntaxes", "default-themes", "html", "regex-fancy", "parsing"] }
 
+# Android's position comes from android.location.LocationManager over JNI
+# (core/src/geo/android.rs). ndk-context carries the VM and the application
+# Context that android-activity parks there at start-up; no Play services.
+[target.'cfg(target_os = "android")'.dependencies]
+jni = "0.21"
+ndk-context = "0.1"
+
 [profile.release]
 opt-level = 3
 lto = "thin"

@@ -1,7 +1,10 @@
 //! The OS location service, one backend per target: implement `fix()` and the ladder in
 //! `super`, every caller and the view, stay unchanged.
 
-use super::{now_ms, Fix, Source};
+use super::Fix;
+// The GeoClue backend builds its own Fix; every other target's does so in its own module.
+#[cfg(target_os = "linux")]
+use super::{now_ms, Source};
 
 /// What this build can do, shown when nothing can place the machine. Never empty.
 pub fn describe() -> &'static str {
@@ -12,7 +15,7 @@ pub fn describe() -> &'static str {
     #[cfg(target_os = "windows")]
     { "Windows: Windows.Devices.Geolocation" }
     #[cfg(target_os = "android")]
-    { "Android: FusedLocationProvider" }
+    { super::android::describe() }
     #[cfg(target_os = "ios")]
     { "iOS: CoreLocation" }
     #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows",
@@ -25,6 +28,9 @@ pub async fn fix() -> Option<Fix> {
     #[cfg(target_os = "linux")]
     { linux::fix().await }
 
+    #[cfg(target_os = "android")]
+    { super::android::fix().await }
+
     // Stubs. Each is a real API returning a position directly: no WiFi scan, no key.
     #[cfg(target_os = "macos")]
     {
@@ -34,11 +40,6 @@ pub async fn fix() -> Option<Fix> {
     #[cfg(target_os = "windows")]
     {
         // Geolocator::RequestAccessAsync, then GetGeopositionAsync.
-        None
-    }
-    #[cfg(target_os = "android")]
-    {
-        // FusedLocationProviderClient.getCurrentLocation via JNI (ACCESS_FINE_LOCATION).
         None
     }
     #[cfg(target_os = "ios")]
