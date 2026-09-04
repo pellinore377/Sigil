@@ -1664,6 +1664,17 @@ pub fn rebuild_timeline(ui: &mut UiState, win: &AppWindow) {
         // An animated GIF cycles engine-decoded frames (no animated Image).
         let mut gif_imgs: Vec<slint::Image> = Vec::new();
         let mut gif_delays: Vec<i32> = Vec::new();
+        // BubbleDelegate.qml:459-464 (`animated`) — what makes it a GIF is the
+        // media type, never the strip, so the badge is on the still while the
+        // frames are still being decoded (and on one still being sent, which
+        // has no event id yet for the strip to be asked for).
+        let is_gif = kind == "image"
+            && (media["mime"].as_str().unwrap_or("").contains("gif")
+                || media["filename"]
+                    .as_str()
+                    .unwrap_or("")
+                    .to_ascii_lowercase()
+                    .ends_with(".gif"));
         if kind == "image" && !event_id.is_empty() {
             let mime = media["mime"].as_str().unwrap_or("");
             let fname = media["filename"]
@@ -1675,10 +1686,12 @@ pub fn rebuild_timeline(ui: &mut UiState, win: &AppWindow) {
                 match ui.gif_frames.get(&gkey).cloned() {
                     None => {
                         ui.gif_frames.insert(gkey.clone(), Value::Null);
+                        let file = media["path"].as_str().unwrap_or("").to_string();
                         crate::actions::fetch_gif_frames(
                             &ui.req.clone(),
                             &room_id,
                             &event_id,
+                            &file,
                             gkey,
                         );
                     }
@@ -2188,6 +2201,7 @@ pub fn rebuild_timeline(ui: &mut UiState, win: &AppWindow) {
             media_filename: media["filename"].as_str().unwrap_or("").into(),
             gif_frames: slint::ModelRc::new(VecModel::from(gif_imgs)),
             gif_delays: slint::ModelRc::new(VecModel::from(gif_delays)),
+            is_gif,
             media_size: media["sizeLabel"].as_str().unwrap_or("").into(),
             duration: if duration_ms > 0.0 {
                 // voice rows read MM:SS (BubbleDelegate.qml:685-689); tracks M:SS

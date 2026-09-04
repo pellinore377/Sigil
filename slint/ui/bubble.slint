@@ -458,7 +458,10 @@ export component Bubble inherits Rectangle {
                             IconLabel { text: Icons.play; color: #ffffff; font-size: Theme.icon-large; width: 100%; height: 100%; }
                         }
                         // BubbleDelegate.qml:508-514 — the GIF badge, bottom-left.
-                        if item.gif-frames.length > 1 : gif-badge := Rectangle {
+                        // Gated on the media being a GIF, as the QML is (:509
+                        // `animated`), not on the frames: the badge belongs on
+                        // the still while the strip is still decoding.
+                        if item.is-gif : gif-badge := Rectangle {
                             x: 8px;
                             y: media-box.height - 18px - 8px;
                             width: gif-text.preferred-width + 10px; height: 18px;

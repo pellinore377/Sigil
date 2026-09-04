@@ -139,6 +139,7 @@ export struct TimelineRow {
     media-filename: string,
     gif-frames: [image],   // >1: cycle these instead of the still (AnimatedImage)
     gif-delays: [int],     // per-frame ms, same length
+    is-gif: bool,          // the media IS a GIF: badge on, frames or not
     media-size: string,
     duration: string,
     duration-s: int,         // whole seconds, for the voice countdown (0 = use `duration`)

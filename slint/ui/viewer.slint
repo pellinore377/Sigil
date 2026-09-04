@@ -289,7 +289,12 @@ export component ImageViewer inherits Rectangle {
             height: root.fit-h * root.zoom;
             border-radius: 16px;
             clip: true;
-            if root.it.have-img && !root.playing && root.it.gif-frames.length <= 1 : Image {
+            // The still: the picture, or a video's poster. It stays up through
+            // the second or so a decoder takes to hand over its first frame,
+            // which used to be a black page (ImageViewer.qml kept the poster
+            // under the video surface for the same reason).
+            if root.it.have-img && root.it.gif-frames.length <= 1
+                && (!root.playing || root.video-frame.width == 0) : Image {
                 source: root.it.img;
                 width: 100%; height: 100%;
                 image-fit: fill;

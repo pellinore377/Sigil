@@ -7,6 +7,7 @@ use std::path::PathBuf;
 pub mod audio;
 pub mod emoji;
 pub mod av;
+pub mod gif;
 pub mod images;
 pub mod player;
 pub mod voice;
@@ -24,29 +25,116 @@ pub fn media_dir() -> PathBuf {
     d
 }
 
-/// `video.play {path, audio?}` — play a local file into the shm viewer.
+/// What a started (or resumed) clip tells the view about itself.
+fn playback_json(pb: &player::Playback) -> Value {
+    json!({
+        "path": pb.path,
+        "width": pb.width,
+        "height": pb.height,
+        "duration": pb.duration,
+        "startAt": pb.start_at,
+        "eventId": pb.event_id,
+    })
+}
+
+/// `video.play {roomId, eventId} | {path}` → {path, width, height, duration, startAt, eventId}
+///
+/// `path` is the surface, not the clip: the view maps that shared-memory file
+/// and draws the frames the decoder writes into it. The timeline names an
+/// event, as `audio.play` does, and the session finds the file behind it.
 pub async fn video_play(engine: SharedEngine, p: &serde_json::Map<String, Value>) -> Reply {
-    let file = p
+    let mut file = p
         .get("path")
         .and_then(Value::as_str)
         .unwrap_or("")
         .to_string();
+    let event = p
+        .get("eventId")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_string();
+    // A caller that already holds the file says so and saves the lookup; a
+    // path that has since been swept falls back to the session.
+    if !std::path::Path::new(&file).is_file() {
+        file.clear();
+        let room = p
+            .get("roomId")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string();
+        if room.is_empty() || event.is_empty() {
+            return Reply::err(
+                "bad_request",
+                "video.play needs roomId and eventId (or a local path)",
+            );
+        }
+        let Some(session) = engine.sigil.lock().clone() else {
+            return Reply::err("bad_request", "no session");
+        };
+        file = match session.media_get(&room, &event).await {
+            Reply::Ok(v) => v
+                .get("path")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string(),
+            other => return other,
+        };
+    }
     if file.is_empty() || !std::path::Path::new(&file).is_file() {
-        return Reply::err(
-            "bad_request",
-            "video.play needs a local `path` on the Sigil backend",
-        );
+        return Reply::err("bad_request", "no such file");
     }
     let with_audio = p.get("audio").and_then(Value::as_bool).unwrap_or(true);
+    let seek = p.get("seek").and_then(Value::as_f64).unwrap_or(0.0).max(0.0);
     video_stop(engine.clone(), p).await;
-    match player::start("video-play", &file, with_audio) {
-        Ok(pb) => {
-            let out = json!({"path": pb.path, "width": pb.width, "height": pb.height, "duration": pb.duration, "startAt": pb.start_at});
+    match player::start_at("video-play", &file, with_audio, seek) {
+        Ok(mut pb) => {
+            pb.event_id = event;
+            let out = playback_json(&pb);
             *engine.playback.lock() = Some(pb);
             Reply::ok(out)
         }
-        Err(e) => Reply::err("internal", e.to_string()),
+        // No decoder on this platform (a phone has no ffmpeg): the view must
+        // hear that rather than sit in front of a surface nothing fills.
+        Err(e) => Reply::err("unsupported", format!("{e:#}")),
     }
+}
+
+/// `video.pause` — freeze where it is; the clock holds and the last frame the
+/// view copied stays on screen. Resuming is `video.play` with `seek`.
+pub async fn video_pause(engine: SharedEngine, _p: &serde_json::Map<String, Value>) -> Reply {
+    let mut slot = engine.playback.lock();
+    let Some(pb) = slot.as_mut() else {
+        return Reply::err("bad_request", "nothing playing");
+    };
+    pb.pause();
+    Reply::ok(json!({"position": pb.position(), "eventId": pb.event_id}))
+}
+
+/// `video.position` → {playing, paused, position, duration, eventId, path}
+/// — the media clock, polled while the scrubber is on screen. A clip that has
+/// run out is reported once and then dropped, as `audio.position` does.
+pub async fn video_position(engine: SharedEngine, _p: &serde_json::Map<String, Value>) -> Reply {
+    let mut slot = engine.playback.lock();
+    let out = match slot.as_ref() {
+        None => json!({"playing": false, "paused": false, "position": 0.0, "duration": 0.0}),
+        Some(pb) => json!({
+            "playing": !pb.paused() && !pb.finished(),
+            "paused": pb.paused(),
+            "ended": pb.finished(),
+            "position": pb.position(),
+            "duration": pb.duration,
+            "eventId": pb.event_id,
+            "path": pb.path,
+            "width": pb.width,
+            "height": pb.height,
+        }),
+    };
+    if slot.as_ref().is_some_and(|pb| pb.finished()) {
+        if let Some(mut pb) = slot.take() {
+            pb.stop();
+        }
+    }
+    Reply::ok(out)
 }
 
 /// `audio.play {path, seek?}` — play a local file.
@@ -170,20 +258,27 @@ pub async fn video_seek(engine: SharedEngine, p: &serde_json::Map<String, Value>
         .and_then(Value::as_f64)
         .unwrap_or(0.0)
         .max(0.0);
-    let file = { engine.playback.lock().as_ref().map(|pb| pb.file.clone()) };
-    let Some(file) = file else {
+    let was = {
+        engine
+            .playback
+            .lock()
+            .as_ref()
+            .map(|pb| (pb.file.clone(), pb.event_id.clone()))
+    };
+    let Some((file, event)) = was else {
         return Reply::err("bad_request", "nothing playing");
     };
     if let Some(mut pb) = engine.playback.lock().take() {
         pb.stop();
     }
     match player::start_at("video-play", &file, true, secs) {
-        Ok(pb) => {
-            let out = json!({"path": pb.path, "width": pb.width, "height": pb.height, "duration": pb.duration, "startAt": pb.start_at});
+        Ok(mut pb) => {
+            pb.event_id = event;
+            let out = playback_json(&pb);
             *engine.playback.lock() = Some(pb);
             Reply::ok(out)
         }
-        Err(e) => Reply::err("internal", e.to_string()),
+        Err(e) => Reply::err("unsupported", format!("{e:#}")),
     }
 }
 

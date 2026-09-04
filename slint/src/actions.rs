@@ -127,12 +127,14 @@ fn fetch_map_page(ui: &mut UiState) {
 }
 
 /// Frame strip for an animated GIF (media.gifFrames) — Slint has no
-/// animated Image, so the bubble cycles PNG frames.
-pub fn fetch_gif_frames(req: &Requester, room_id: &str, event_id: &str, key: String) {
+/// animated Image, so the bubble cycles PNG frames. `path` is the local file
+/// when the item already carries one, which saves the engine the lookup;
+/// empty is fine, and the engine finds it from the event.
+pub fn fetch_gif_frames(req: &Requester, room_id: &str, event_id: &str, path: &str, key: String) {
     call_ui(
         req,
         "media.gifFrames",
-        json!({"roomId": room_id, "eventId": event_id}),
+        json!({"roomId": room_id, "eventId": event_id, "path": path}),
         move |ui, win, out| {
             let val = match out {
                 Ok(v) if v["frames"].as_array().map(|a| a.len() > 1).unwrap_or(false) => v,
@@ -1286,18 +1288,12 @@ pub fn on_act(ui: &mut UiState, win: &AppWindow, action: &str, a: &str, b2: &str
             // playing: closing on a paused clip used to stop nothing, and
             // closing while a voice note played used to stop a video that was
             // not running (ImageViewer.qml:204 stops whatever the viewer owns).
-            if !win.get_vw_playing_event().is_empty() {
-                req.fire("video.stop", json!({}));
-                win.set_vw_playing_event("".into());
-            }
+            video_end(&req, win);
         }
         "viewer-page" => {
             // Turning the page leaves the old clip behind: QML stops playback
             // in onCurChanged, or the decoder runs on under the next picture.
-            if !win.get_vw_playing_event().is_empty() {
-                req.fire("video.stop", json!({}));
-                win.set_vw_playing_event("".into());
-            }
+            video_end(&req, win);
             let i: usize = a.parse().unwrap_or(0);
             if let Some(item) = ui.viewer_items.get(i).cloned() {
                 let ev = s(&item, "eventId");
@@ -1319,22 +1315,23 @@ pub fn on_act(ui: &mut UiState, win: &AppWindow, action: &str, a: &str, b2: &str
             if let Some(item) = ui.viewer_items.get(i) {
                 let ev = s(item, "eventId").to_string();
                 if win.get_vw_playing_event() == ev.as_str() {
-                    req.fire("video.stop", json!({}));
-                    win.set_vw_playing_event("".into());
+                    video_toggle(&req, win, &open_room);
                 } else {
-                    req.fire(
-                        "video.play",
-                        json!({"roomId": open_room, "eventId": ev, "audio": true}),
-                    );
-                    win.set_vw_playing_event(ev.as_str().into());
+                    let file = item["media"]["path"].as_str().unwrap_or("").to_string();
+                    video_play(&req, win, &open_room, &ev, &file, 0.0);
                 }
             }
         }
-        "viewer-seek" => req.fire(
-            "video.seek",
-            json!({"seconds": a.parse::<f64>().unwrap_or(0.0)}),
-        ),
-        "viewer-scrub" => {}
+        "viewer-seek" => video_seek(&req, win, &open_room, a.parse::<f64>().unwrap_or(0.0)),
+        // ImageViewer.qml:659-668 — the thumb follows the finger and the poll
+        // stops writing over it until the finger lifts.
+        "viewer-scrub" => {
+            let on = a == "true";
+            VIDEO.with(|v| v.borrow_mut().scrubbing = on);
+            if on {
+                win.set_vw_play_pos(b2.parse::<f32>().unwrap_or(0.0));
+            }
+        }
 
         // ---- doc / audio pages ----
         "open-doc" => doc_open(ui, win, a),
@@ -2698,7 +2695,239 @@ fn gif_frames_for_viewer(ui: &mut UiState, item: &Value) {
         return;
     }
     ui.gif_frames.insert(key.clone(), Value::Null);
-    fetch_gif_frames(&ui.req.clone(), &room_id, &ev, key);
+    let path = item["media"]["path"].as_str().unwrap_or("").to_string();
+    fetch_gif_frames(&ui.req.clone(), &room_id, &ev, &path, key);
+}
+
+// ------------------------------------------------------------ video playback
+//
+// The engine decodes into a shared-memory surface and keeps the media clock;
+// this side maps the surface (crate::video), draws whatever frame is newest,
+// and asks the engine four times a second where the clip has got to. Nothing
+// here decides anything the chrome in viewer.slint does not already show:
+// play/pause, a position, a duration, a scrub bar.
+
+/// What the viewer's clip needs between ticks.
+#[derive(Default)]
+struct VideoView {
+    /// The shared-memory surface `video.play` answered with.
+    surface: String,
+    /// Frozen: the tick is off and the last frame copied stands.
+    paused: bool,
+    /// A finger is on the scrub bar — the poll must not move the thumb.
+    scrubbing: bool,
+    /// Where a paused (or scrubbed) clip sits, so resuming starts there.
+    at: f64,
+    /// The clip's own file when the item already carries one, so resuming
+    /// costs no lookup.
+    file: String,
+}
+
+thread_local! {
+    static VIDEO: std::cell::RefCell<VideoView> =
+        std::cell::RefCell::new(VideoView::default());
+    /// Frames off the surface; the media clock every eighth tick.
+    static VIDEO_CLOCK: slint::Timer = slint::Timer::default();
+}
+
+/// Start (or restart at `seek`) the clip for `event` in the open room. `file`
+/// is the local copy when the item has one; empty is fine and the engine
+/// finds it from the event, downloading if it must.
+fn video_play(req: &Requester, win: &AppWindow, room: &str, event: &str, file: &str, seek: f64) {
+    win.set_vw_playing_event(event.into());
+    win.set_vw_play_pos(seek as f32);
+    VIDEO.with(|v| {
+        let mut v = v.borrow_mut();
+        v.paused = false;
+        v.at = seek;
+        v.file = file.to_string();
+    });
+    let asked = event.to_string();
+    call_ui(
+        req,
+        "video.play",
+        json!({"roomId": room, "eventId": event, "path": file, "audio": true, "seek": seek}),
+        move |ui, win, out| {
+            // The viewer may have turned the page (or closed) while the
+            // decoder was starting: that reply belongs to nothing now.
+            if win.get_vw_playing_event() != asked.as_str() {
+                if out.is_ok() {
+                    ui.req.fire("video.stop", json!({}));
+                }
+                return;
+            }
+            match out {
+                Ok(v) => {
+                    VIDEO.with(|s| {
+                        s.borrow_mut().surface = v["path"].as_str().unwrap_or("").to_string()
+                    });
+                    win.set_vw_play_duration(v["duration"].as_f64().unwrap_or(0.0) as f32);
+                    video_tick(ui, win);
+                }
+                // No decoder on this device: say so, rather than leaving the
+                // viewer in front of a surface nothing will ever fill.
+                Err((code, msg)) => {
+                    tracing::warn!("video.play: {code} {msg}");
+                    video_clear(win);
+                    win.set_vw_toast(if code == "unsupported" {
+                        SharedString::from("This device cannot play video yet")
+                    } else {
+                        SharedString::from(msg)
+                    });
+                }
+            }
+        },
+    );
+}
+
+/// The one clock behind playback: 60 Hz for frames (a repaint only happens
+/// when the surface has a new one), 4 Hz for the position.
+fn video_tick(ui: &mut UiState, win: &AppWindow) {
+    let req = ui.req.clone();
+    let weak = win.as_weak();
+    let mut n: u32 = 0;
+    VIDEO_CLOCK.with(|t| {
+        t.start(
+            slint::TimerMode::Repeated,
+            std::time::Duration::from_millis(16),
+            move || {
+                let Some(win) = weak.upgrade() else { return };
+                if win.get_vw_playing_event().is_empty() {
+                    return;
+                }
+                let surface = VIDEO.with(|v| v.borrow().surface.clone());
+                if !surface.is_empty() {
+                    if let Some(img) = crate::video::next_frame(&surface) {
+                        win.set_vw_frame(img);
+                    }
+                }
+                n = n.wrapping_add(1);
+                if n % 16 != 0 {
+                    return;
+                }
+                call_ui(&req, "video.position", json!({}), |_ui, win, out| {
+                    let Ok(v) = out else { return };
+                    if win.get_vw_playing_event().is_empty()
+                        || VIDEO.with(|s| s.borrow().paused)
+                    {
+                        return;
+                    }
+                    // The clip ran out: the engine has already dropped it, so
+                    // the viewer goes back to its poster and play disc. A
+                    // reply that crossed a pause says `paused`, not `ended`,
+                    // and must not be read as the end.
+                    if v["ended"].as_bool().unwrap_or(false)
+                        || !(v["playing"].as_bool().unwrap_or(false)
+                            || v["paused"].as_bool().unwrap_or(false))
+                    {
+                        video_clear(&win);
+                        return;
+                    }
+                    let d = v["duration"].as_f64().unwrap_or(0.0);
+                    if d > 0.0 {
+                        win.set_vw_play_duration(d as f32);
+                    }
+                    let pos = v["position"].as_f64().unwrap_or(0.0);
+                    VIDEO.with(|s| s.borrow_mut().at = pos);
+                    if !VIDEO.with(|s| s.borrow().scrubbing) {
+                        win.set_vw_play_pos(pos as f32);
+                    }
+                });
+            },
+        )
+    });
+}
+
+/// Tap on a clip that is already the viewer's: pause it, or take it up again
+/// where it stopped (the QML's play/pause, ImageViewer.qml:429).
+fn video_toggle(req: &Requester, win: &AppWindow, room: &str) {
+    let (paused, at, file) = VIDEO.with(|v| {
+        let v = v.borrow();
+        (v.paused, v.at, v.file.clone())
+    });
+    if paused {
+        let ev = win.get_vw_playing_event().to_string();
+        video_play(req, win, room, &ev, &file, at);
+        return;
+    }
+    call_ui(req, "video.pause", json!({}), |_ui, win, out| {
+        let at = match out {
+            Ok(v) => v["position"].as_f64().unwrap_or(0.0),
+            Err(_) => return video_clear(&win),
+        };
+        VIDEO.with(|s| {
+            let mut s = s.borrow_mut();
+            s.paused = true;
+            s.at = at;
+        });
+        // The frame the surface last handed over stays; the decoder and its
+        // surface are gone until the clip is taken up again.
+        VIDEO_CLOCK.with(|t| t.stop());
+        crate::video::release();
+        win.set_vw_play_pos(at as f32);
+    });
+}
+
+/// The scrub bar was let go. Seeking restarts the decoder at the new place —
+/// a paused clip starts playing again there, as the QML scrubber does.
+fn video_seek(req: &Requester, win: &AppWindow, room: &str, secs: f64) {
+    if win.get_vw_playing_event().is_empty() {
+        return;
+    }
+    let secs = secs.max(0.0);
+    win.set_vw_play_pos(secs as f32);
+    VIDEO.with(|v| v.borrow_mut().at = secs);
+    let (paused, file) = VIDEO.with(|v| {
+        let v = v.borrow();
+        (v.paused, v.file.clone())
+    });
+    if paused {
+        let ev = win.get_vw_playing_event().to_string();
+        video_play(req, win, room, &ev, &file, secs);
+        return;
+    }
+    call_ui(
+        req,
+        "video.seek",
+        json!({"seconds": secs}),
+        |_ui, win, out| match out {
+            // A seek is a fresh decoder and a fresh surface.
+            Ok(v) => {
+                VIDEO.with(|s| {
+                    s.borrow_mut().surface = v["path"].as_str().unwrap_or("").to_string()
+                });
+                let d = v["duration"].as_f64().unwrap_or(0.0);
+                if d > 0.0 {
+                    win.set_vw_play_duration(d as f32);
+                }
+            }
+            Err((code, msg)) => {
+                tracing::warn!("video.seek: {code} {msg}");
+                video_clear(&win);
+            }
+        },
+    );
+}
+
+/// Stop the decoder and put the viewer back to its poster.
+fn video_end(req: &Requester, win: &AppWindow) {
+    if win.get_vw_playing_event().is_empty() {
+        return;
+    }
+    req.fire("video.stop", json!({}));
+    video_clear(win);
+}
+
+/// The view half of stopping: no request, so it can run from a poll that has
+/// just learned the engine dropped the clip on its own.
+fn video_clear(win: &AppWindow) {
+    VIDEO_CLOCK.with(|t| t.stop());
+    crate::video::release();
+    VIDEO.with(|v| *v.borrow_mut() = VideoView::default());
+    win.set_vw_playing_event("".into());
+    win.set_vw_play_pos(0.0);
+    win.set_vw_play_duration(0.0);
+    win.set_vw_frame(Default::default());
 }
 
 fn viewer_open(ui: &mut UiState, win: &AppWindow, event_id: &str) {
@@ -2729,11 +2958,18 @@ fn viewer_open(ui: &mut UiState, win: &AppWindow, event_id: &str) {
         .iter()
         .map(|i| {
             let media = i["media"].clone();
-            let path = media["path"]
-                .as_str()
-                .or(media["thumbnailPath"].as_str())
-                .unwrap_or("")
-                .to_string();
+            // A video's `path` is the clip itself; the picture to show is its
+            // poster. BubbleDelegate.qml:466 never hands a video file to the
+            // image decoder either — it only logged an error and drew black.
+            let path = if s(i, "kind") == "video" {
+                media["thumbnailPath"].as_str().unwrap_or("")
+            } else {
+                media["path"]
+                    .as_str()
+                    .or(media["thumbnailPath"].as_str())
+                    .unwrap_or("")
+            }
+            .to_string();
             let img = crate::bridge::avatar_pub(ui, &path);
             // GIFs animate here too, from the frame strip the bubble cached.
             let mut gif_imgs: Vec<slint::Image> = Vec::new();

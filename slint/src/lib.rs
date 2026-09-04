@@ -16,6 +16,7 @@ pub mod project;
 pub mod qr;
 pub mod rows;
 pub mod scale;
+pub mod video;
 
 pub fn run_app() -> anyhow::Result<()> {
     // The engine's own daemon runs 16 MB stacks; matrix-sdk wants the room.

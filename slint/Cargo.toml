@@ -26,8 +26,14 @@ tracing = "0.1"
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 png = "0.18"
+# The engine's OMV1 video surface is mapped, not read: src/video.rs.
+memmap2 = "0.9"
 # The link offer as a QR code, drawn into a Slint image; no image crate needed.
 qrcode = { version = "0.14", default-features = false }
+# The screenshot harness writes a real animated GIF for the engine to decode.
+# Same crate and version the engine already links, with a feature it already
+# turns on, so cargo unifies it and nothing new rides into the binary.
+image = { version = "0.25", default-features = false, features = ["gif"] }
 ttf-parser = "0.25"
 # the call media stack: the WebRTC peer, sound in and out, the codec
 str0m = "0.9"

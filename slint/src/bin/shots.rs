@@ -66,6 +66,49 @@ fn emoji_pictures(app: &sigil_slint::AppWindow, h: &Harness) -> anyhow::Result<(
     })
 }
 
+/// A real animated GIF for the engine to decode: `n` flat-coloured frames at
+/// 120 ms each, so one frame is told from the next at a glance in a capture.
+fn write_gif(path: &std::path::Path, n: u32, w: u32, h: u32) -> anyhow::Result<()> {
+    const HUES: [[u8; 3]; 6] = [
+        [230, 80, 60],
+        [240, 170, 50],
+        [210, 215, 70],
+        [90, 200, 110],
+        [70, 150, 230],
+        [170, 100, 220],
+    ];
+    let file = std::fs::File::create(path)?;
+    let mut enc = image::codecs::gif::GifEncoder::new(std::io::BufWriter::new(file));
+    enc.set_repeat(image::codecs::gif::Repeat::Infinite)?;
+    for i in 0..n {
+        let c = HUES[(i % 6) as usize];
+        let buf = image::RgbaImage::from_pixel(w, h, image::Rgba([c[0], c[1], c[2], 255]));
+        enc.encode_frame(image::Frame::from_parts(
+            buf,
+            0,
+            0,
+            image::Delay::from_numer_denom_ms(120, 1),
+        ))?;
+    }
+    Ok(())
+}
+
+/// A four-second test clip for the viewer's video path. False when this
+/// machine has no encoder, which is the harness's cue to skip that section.
+fn make_clip(path: &std::path::Path) -> bool {
+    std::process::Command::new("ffmpeg")
+        .args([
+            "-hide_banner", "-loglevel", "error", "-y",
+            "-f", "lavfi", "-i", "testsrc=size=320x240:rate=25:duration=4",
+            "-c:v", "libx264", "-pix_fmt", "yuv420p",
+        ])
+        .arg(path)
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
+        && path.exists()
+}
+
 fn main() -> anyhow::Result<()> {
     let out = std::env::args().nth(1).unwrap_or_else(|| "shots".into());
     let h = Harness::install(out)?;
@@ -693,6 +736,167 @@ fn main() -> anyhow::Result<()> {
             .unwrap_or(false);
         anyhow::ensure!(echoed, "the vote was not echoed into the poll row");
     }
+    // An animated GIF, the whole way through: a real GIF on disk, the engine
+    // decoding it into a frame strip (media.gifFrames), and the bubble
+    // cycling the frames on its own clock. Slint has no animated image, so
+    // only stepping the harness clock can show that the picture moves.
+    let gif = h.out.join("wave.gif");
+    write_gif(&gif, 6, 96, 96)?;
+    let seed = vec![serde_json::json!({
+        "id": "g1", "kind": "image", "isOwn": false, "eventId": "$g1",
+        "sender": "@marlowe:sigil.test", "senderName": "Marlowe",
+        "body": "wave.gif", "ts": ts,
+        "media": {"filename": "wave.gif", "mime": "image/gif", "width": 96, "height": 96,
+                  "path": gif.to_string_lossy(), "thumbnailPath": gif.to_string_lossy()}})];
+    sigil_slint::bridge::with_ui(|ui| {
+        ui.open_room = "!marlowe".into();
+        ui.shadow = seed;
+        if let Some(win) = ui.win.upgrade() {
+            sigil_slint::bridge::rebuild_timeline(ui, &win);
+        }
+    });
+    // Before a single frame is back: the badge is on the still, which is what
+    // it is gated on the media type for (BubbleDelegate.qml:509).
+    h.frame("gif-badge-undecoded")?;
+    h.wait_until("the gif strip", std::time::Duration::from_secs(30), || {
+        app.get_items()
+            .iter()
+            .any(|i| i.event_id == "$g1" && i.gif_frames.row_count() > 1)
+    })?;
+    {
+        let row = app
+            .get_items()
+            .iter()
+            .find(|i| i.event_id == "$g1")
+            .expect("the gif row");
+        anyhow::ensure!(row.is_gif, "the row must know it is a GIF");
+        anyhow::ensure!(
+            row.gif_frames.row_count() == 6 && row.gif_delays.row_count() == 6,
+            "six frames and six delays, got {} and {}",
+            row.gif_frames.row_count(),
+            row.gif_delays.row_count()
+        );
+        anyhow::ensure!(
+            row.gif_delays.iter().all(|d| d == 120),
+            "the engine kept the fixture's 120ms frame time"
+        );
+    }
+    h.settle();
+    // One capture per frame of the strip, the clock stepped by exactly the
+    // frame time between them. Different bytes mean the picture moved.
+    let mut moving: Vec<std::path::PathBuf> = Vec::new();
+    for i in 0..4 {
+        moving.push(h.frame(&format!("gif-frame-{i}"))?);
+        h.advance(std::time::Duration::from_millis(120));
+        h.pump();
+    }
+    for (i, a) in moving.iter().enumerate() {
+        for b in moving.iter().skip(i + 1) {
+            anyhow::ensure!(
+                std::fs::read(a)? != std::fs::read(b)?,
+                "{} and {} are the same picture: the GIF is not animating",
+                a.display(),
+                b.display()
+            );
+        }
+    }
+
+    // Video playback in the expanded viewer, all the way through on a machine
+    // that has a decoder: the engine's ffmpeg writes RGBA into its OMV1 shared
+    // surface, the frame reader (src/video.rs) maps it, and the viewer draws
+    // whatever frame is newest while the scrubber follows the media clock.
+    // Skipped where there is no ffmpeg — which is every phone, and why
+    // Android gets the poster and an error instead (see the report).
+    if sigil_engine::media::player::available() {
+        let clip = h.out.join("clip.mp4");
+        if make_clip(&clip) {
+            let poster = h.out.join("clip.poster.png");
+            sigil_engine::media::av::poster_to(&clip, (400, 400), &poster);
+            let seed = vec![serde_json::json!({
+                "id": "v1", "kind": "video", "isOwn": false, "eventId": "$v1",
+                "sender": "@marlowe:sigil.test", "senderName": "Marlowe",
+                "body": "clip.mp4", "ts": ts,
+                "media": {"filename": "clip.mp4", "mime": "video/mp4",
+                          "width": 320, "height": 240, "duration": 4000.0,
+                          "path": clip.to_string_lossy(),
+                          "thumbnailPath": poster.to_string_lossy()}})];
+            sigil_slint::bridge::with_ui(|ui| {
+                ui.open_room = "!marlowe".into();
+                ui.shadow = seed;
+                if let Some(win) = ui.win.upgrade() {
+                    sigil_slint::bridge::rebuild_timeline(ui, &win);
+                }
+            });
+            h.settle();
+            h.shoot("video-bubble")?;
+            app.invoke_act("viewer-open".into(), "$v1".into(), "".into());
+            app.set_viewer_open(true);
+            h.settle();
+            h.shoot("video-poster")?;
+
+            app.invoke_act("viewer-playback".into(), "".into(), "".into());
+            h.wait_until("a decoded frame", std::time::Duration::from_secs(30), || {
+                app.get_vw_frame().size().width > 0
+            })?;
+            h.frame("video-playing")?;
+            anyhow::ensure!(
+                app.get_vw_frame().size().width == 320 && app.get_vw_frame().size().height == 240,
+                "the frame off the surface is the clip's own size, got {:?}",
+                app.get_vw_frame().size()
+            );
+            h.wait_until("the media clock", std::time::Duration::from_secs(30), || {
+                app.get_vw_play_duration() > 0.0 && app.get_vw_play_pos() > 0.0
+            })?;
+            let (pos, dur) = (app.get_vw_play_pos(), app.get_vw_play_duration());
+            anyhow::ensure!(
+                (3.0..5.0).contains(&dur),
+                "the scrubber knows the clip is four seconds, got {dur}"
+            );
+            println!("video: {pos:.2}s of {dur:.2}s, frame {:?}", app.get_vw_frame().size());
+            h.frame("video-scrubber")?;
+
+            // The scrub bar: a finger down moves the thumb without the poll
+            // dragging it back, and letting go seeks there.
+            app.invoke_act("viewer-scrub".into(), "true".into(), "2.5".into());
+            h.pump();
+            anyhow::ensure!(
+                (app.get_vw_play_pos() - 2.5).abs() < 0.01,
+                "the thumb follows the finger, at {}",
+                app.get_vw_play_pos()
+            );
+            h.frame("video-scrubbing")?;
+            app.invoke_act("viewer-seek".into(), "2.5".into(), "".into());
+            app.invoke_act("viewer-scrub".into(), "false".into(), "0".into());
+            h.wait_until("the seek to take", std::time::Duration::from_secs(30), || {
+                app.get_vw_play_pos() >= 2.5
+            })?;
+            h.frame("video-seeked")?;
+
+            // Pause holds the clock and the last frame; closing stops it.
+            app.invoke_act("viewer-playback".into(), "".into(), "".into());
+            h.settle();
+            let held = app.get_vw_play_pos();
+            h.settle();
+            anyhow::ensure!(
+                (app.get_vw_play_pos() - held).abs() < 0.01,
+                "a paused clip does not advance: {held} then {}",
+                app.get_vw_play_pos()
+            );
+            anyhow::ensure!(
+                app.get_vw_frame().size().width > 0,
+                "the last frame stays on screen while paused"
+            );
+            h.frame("video-paused")?;
+            app.set_viewer_open(false);
+            app.invoke_act("viewer-closed".into(), "".into(), "".into());
+            h.settle();
+            anyhow::ensure!(
+                app.get_vw_playing_event().is_empty(),
+                "closing the viewer stops playback"
+            );
+        }
+    }
+
     // the composer: empty (two option rows), then with the last one typed
     // into, which grows a third — caught mid-flight and again at rest.
     // Whatever room the shots before this one left open, the sheet only has
