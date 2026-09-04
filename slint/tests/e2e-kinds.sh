@@ -23,10 +23,17 @@ waitline() { # waitline <pattern> <file> <seconds>
 $SV -c sigil.toml init --hostname sigil.test --listen 127.0.0.1:18449 >/dev/null
 sed -i 's|^media_udp = .*|media_udp = "127.0.0.1:0"|' sigil.toml
 $SV -c sigil.toml run >server.log 2>&1 & PIDS+=($!)
+base64 -d >www/pic.png <<'PNG'
+iVBORw0KGgoAAAANSUhEUgAAABAAAAAJCAIAAAC0SDtlAAAAfElEQVR4Ae3AA6AkWZbG8f937o3IzKdy
+S2Oubdu2bdu2bdu2bWmMnpZKr54yMyLu+Xa3anqmhztr1a/CZx+H43AcjsNxOA7H4Tgch+NwHI7DcTgO
+x6FyE/8aVG7iX4PKTfxrULmJfw0qN/GvQeUm/jWo3MS/BpWb+NfgHwFEigJ1ymuMuQAAAABJRU5ErkJg
+gg==
+PNG
 cat >www/page.html <<'HTML'
 <html><head><title>fallback</title>
 <meta property="og:title" content="A Sigil test page">
 <meta property="og:description" content="Served on loopback for the preview test.">
+<meta property="og:image" content="/pic.png">
 </head><body>hello</body></html>
 HTML
 $SITE 127.0.0.1:18450 www >www.log 2>&1 & PIDS+=($!)

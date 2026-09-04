@@ -1025,9 +1025,16 @@ fn kinds(
         app.get_shape_previews()
     })?;
     app.invoke_send_message("see http://127.0.0.1:18450/page.html".into());
+    // the picture too: the engine's cached copy has to be named for the
+    // format it is, or neither it nor Slint's loader can decode the file.
     h.wait_until("the link card", Duration::from_secs(60), || {
         find("page.html")
-            .map(|i| i.link_has && i.link_title == "A Sigil test page" && i.send_state == "sent")
+            .map(|i| {
+                i.link_has
+                    && i.link_title == "A Sigil test page"
+                    && i.link_img.size().width == 16
+                    && i.send_state == "sent"
+            })
             .unwrap_or(false)
     })?;
     println!(

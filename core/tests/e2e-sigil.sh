@@ -1,13 +1,16 @@
 #!/usr/bin/env bash
 # Two engine daemons on one Sigil server, driven over the JSON protocol the
 # frontends use: account.create, users.search, dm.create, the invite room,
-# room.join, message.send both ways, a reaction, and a restart.
-# Needs server/target/debug/sigil-server and, from `cargo build --bin
-# sigil-engine --bin sigil-jq` in core/, sigil-engine and sigil-jq (the
-# JSON query that reads the replies and the history files here).
+# room.join, message.send both ways, a reaction, a restart, and a link card
+# fetched from a web page served on loopback.
+# Needs server/target/debug/sigil-server, server/target/debug/examples/
+# static-site (`cargo build --example static-site` in server/) and, from
+# `cargo build --bin sigil-engine --bin sigil-jq` in core/, sigil-engine and
+# sigil-jq (the JSON query that reads the replies and the history files here).
 set -euo pipefail
 ROOT=$(cd "$(dirname "$0")/../.." && pwd)
 SV=$ROOT/server/target/debug/sigil-server
+SS=$ROOT/server/target/debug/examples/static-site
 EN=$ROOT/core/target/debug/sigil-engine
 JQ=$ROOT/core/target/debug/sigil-jq
 W=$(mktemp -d); mkdir -p "$W/a" "$W/b" "$W/run"; cd "$W"; export W
@@ -155,5 +158,43 @@ sleep 8
 A message.send roomId="$ROOM" body="after the server came back" | result || fail "send after server restart" engine-a.log
 sleep 6
 H b --assert "$R[-1].body == \"after the server came back\"" || fail "bob missed the message after the server restart" engine-b.log server.log
+# a link card, from a page served on loopback — a committed test never
+# reaches the real web. The page hides its metadata behind 700 KB of filler,
+# where a video site's own <title> sits: the read has to follow the head that
+# far and stop there, and the cached image has to be named for the format it
+# is or nothing downstream can decode it.
+mkdir -p "$W/www"
+base64 -d >"$W/www/pic.png" <<'PNG'
+iVBORw0KGgoAAAANSUhEUgAAABAAAAAJCAIAAAC0SDtlAAAAfElEQVR4Ae3AA6AkWZbG8f937o3IzKdy
+S2Oubdu2bdu2bdu2bWmMnpZKr54yMyLu+Xa3anqmhztr1a/CZx+H43AcjsNxOA7H4Tgch+NwHI7DcTgO
+x6FyE/8aVG7iX4PKTfxrULmJfw0qN/GvQeUm/jWo3MS/BpWb+NfgHwFEigJ1ymuMuQAAAABJRU5ErkJg
+gg==
+PNG
+{ printf '<!doctype html><html><head><!-- '
+  head -c 700000 /dev/zero | tr '\0' 'x'
+  printf ' -->\n<title>fallback</title>\n'
+  printf '<meta property="og:title" content="A page with a card">\n'
+  printf '<meta property="og:description" content="Served on loopback for the preview test.">\n'
+  printf '<meta property="og:site_name" content="Example">\n'
+  printf '<meta property="og:image" content="/pic.png">\n'
+  printf '</head><body>the words after the head are never read</body></html>\n'
+} >"$W/www/page.html"
+$SS 127.0.0.1:18470 "$W/www" >site.log 2>&1 & PIDS+=($!)
+UP=""
+for i in $(seq 1 30); do if grep -q "static site at" site.log 2>/dev/null; then UP=1; break; fi; sleep 0.5; done
+[ -n "$UP" ] || fail "the page server did not start" site.log
+PAGE=http://127.0.0.1:18470/page.html
+# off by default: the site learns the device's address, so nothing is fetched
+A link.preview url="$PAGE" | grep -q '"code": "disabled"' || fail "a card was fetched with the switch off" site.log
+! grep -q "GET /page.html" site.log || fail "the page was fetched with the switch off" site.log
+A shape.settings linkPreviews:=true | $JQ --assert result.linkPreviews || fail "link previews would not turn on"
+A link.preview url="$PAGE" \
+  | $JQ --assert 'result.title == "A page with a card"' \
+        --assert 'result.description == "Served on loopback for the preview test."' \
+        --assert 'result.siteName == "Example"' \
+        --assert result.imagePath \
+        --assert 'result.imageWidth == 16' --assert 'result.imageHeight == 9' \
+  || fail "no card for the page" site.log engine-a.log
+A shape.settings linkPreviews:=false >/dev/null
 ! grep -q "ERROR" engine-a.log engine-b.log engine-c.log engine-d.log || fail "engine logged errors" engine-a.log engine-b.log engine-c.log engine-d.log
 echo "e2e-sigil ok"

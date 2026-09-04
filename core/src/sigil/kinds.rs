@@ -21,9 +21,21 @@ use std::path::PathBuf;
 const LIVE_UPDATE_SECS: u64 = 30;
 /// Longest a live share may run.
 const LIVE_MAX_MS: u64 = 8 * 60 * 60 * 1000;
-/// A fetched page is read up to here; previews live in the head.
-const PREVIEW_HTML_MAX: usize = 512 * 1024;
+/// A fetched page is read up to here. The card's tags live in the head, and
+/// the read stops at `</head>` — but a video or news site can put hundreds of
+/// kilobytes of inline script *before* its own title, so the ceiling has to
+/// clear that or the whole card comes back empty.
+const PREVIEW_HTML_MAX: usize = 2 * 1024 * 1024;
 const PREVIEW_IMAGE_MAX: usize = 4 * 1024 * 1024;
+/// Sent when fetching a card. Honest about who is asking — the point of the
+/// switch is that the site learns this device fetched it — but in the shape
+/// every site's parser knows, because a bare token gets 404s and bot pages.
+const PREVIEW_UA: &str = "Mozilla/5.0 (compatible; Sigil/1; +link preview)";
+/// A page, please, not the JSON an API-first site would rather send: without
+/// this, crates.io (and others) answer 404 to `*/*`. Fixed for everyone, so
+/// it says nothing about the person behind it.
+const PREVIEW_ACCEPT: &str = "text/html,application/xhtml+xml,application/xml;q=0.9,image/*;q=0.8,*/*;q=0.5";
+const PREVIEW_ACCEPT_LANG: &str = "en;q=0.9,*;q=0.5";
 
 /// `room|thread:root` → (room, root). A plain room id comes back alone.
 pub(super) fn split_key(key: &str) -> (String, Option<String>) {
@@ -966,11 +978,15 @@ pub(super) async fn link_preview(url: &str) -> Reply {
     if !(url.starts_with("https://") || url.starts_with("http://")) || url.len() > 2048 {
         return Reply::err("bad_request", "only http(s) links are previewed");
     }
+    let mut headers = reqwest::header::HeaderMap::new();
+    headers.insert(reqwest::header::ACCEPT, reqwest::header::HeaderValue::from_static(PREVIEW_ACCEPT));
+    headers.insert(reqwest::header::ACCEPT_LANGUAGE, reqwest::header::HeaderValue::from_static(PREVIEW_ACCEPT_LANG));
     let mut builder = crate::net::http_builder()
-        .user_agent("Sigil/1")
+        .user_agent(PREVIEW_UA)
+        .default_headers(headers)
         .connect_timeout(std::time::Duration::from_secs(8))
         .timeout(std::time::Duration::from_secs(15))
-        .redirect(reqwest::redirect::Policy::limited(4));
+        .redirect(reqwest::redirect::Policy::limited(8));
     // Direct, or through the proxy set in Sigil; a proxy from the
     // environment is not something the person chose here.
     builder = builder.no_proxy();
@@ -984,7 +1000,7 @@ pub(super) async fn link_preview(url: &str) -> Reply {
         Ok(c) => c,
         Err(e) => return Reply::err("internal", format!("{e}")),
     };
-    let html = match fetch_capped(&client, &url, PREVIEW_HTML_MAX).await {
+    let html = match fetch_capped(&client, &url, PREVIEW_HTML_MAX, true).await {
         Ok((bytes, ct)) if ct.contains("html") || ct.is_empty() => String::from_utf8_lossy(&bytes).into_owned(),
         Ok((_, ct)) => return Reply::ok(json!({"url": url, "title": "", "description": "", "imagePath": "", "contentType": ct})),
         Err(e) => return Reply::err("network", e),
@@ -1000,15 +1016,27 @@ pub(super) async fn link_preview(url: &str) -> Reply {
         if let Some(abs) = absolute(&url, &image) {
             let dir = crate::paths::cache_dir().join("derived");
             let _ = std::fs::create_dir_all(&dir);
-            let out = dir.join(format!("link-{}.img", hex::encode(&sigil_protocol::kdf::hash(abs.as_bytes())[..12])));
-            if !out.exists() {
-                if let Ok((bytes, _)) = fetch_capped(&client, &abs, PREVIEW_IMAGE_MAX).await {
-                    let _ = std::fs::write(&out, bytes);
+            let stem = format!("link-{}", hex::encode(&sigil_protocol::kdf::hash(abs.as_bytes())[..12]));
+            // The name has to carry the real extension: both image::
+            // image_dimensions here and Slint's loader in the frontend pick
+            // the decoder by what the path says, so a catch-all suffix made
+            // every downloaded card image unreadable.
+            let mut file = IMAGE_EXTS.iter().map(|e| dir.join(format!("{stem}.{e}"))).find(|p| p.exists());
+            if file.is_none() {
+                if let Ok((bytes, _)) = fetch_capped(&client, &abs, PREVIEW_IMAGE_MAX, false).await {
+                    if let Some(ext) = image_ext(&bytes) {
+                        let out = dir.join(format!("{stem}.{ext}"));
+                        if std::fs::write(&out, &bytes).is_ok() {
+                            file = Some(out);
+                        }
+                    }
                 }
             }
-            if let Ok((w, h)) = image::image_dimensions(&out) {
-                image_path = out.to_string_lossy().into_owned();
-                (iw, ih) = (w, h);
+            if let Some(out) = file {
+                if let Ok((w, h)) = image::image_dimensions(&out) {
+                    image_path = out.to_string_lossy().into_owned();
+                    (iw, ih) = (w, h);
+                }
             }
         }
     }
@@ -1024,8 +1052,12 @@ pub(super) async fn link_preview(url: &str) -> Reply {
     }))
 }
 
-async fn fetch_capped(client: &reqwest::Client, url: &str, max: usize) -> Result<(Vec<u8>, String), String> {
-    let resp = client.get(url).send().await.map_err(|e| format!("{e}"))?;
+/// Read a reply's body up to `max` bytes. With `head_only` the read also
+/// stops the moment `</head>` has gone by: everything the card needs is in
+/// the head, and a page that runs to megabytes after it should not cost a
+/// phone the rest.
+async fn fetch_capped(client: &reqwest::Client, url: &str, max: usize, head_only: bool) -> Result<(Vec<u8>, String), String> {
+    let mut resp = client.get(url).send().await.map_err(|e| format!("{e}"))?;
     if !resp.status().is_success() {
         return Err(format!("the site answered {}", resp.status()));
     }
@@ -1035,10 +1067,50 @@ async fn fetch_capped(client: &reqwest::Client, url: &str, max: usize) -> Result
         .and_then(|v| v.to_str().ok())
         .unwrap_or("")
         .to_ascii_lowercase();
-    let bytes = resp.bytes().await.map_err(|e| format!("{e}"))?;
-    let mut v = bytes.to_vec();
-    v.truncate(max);
-    Ok((v, ct))
+    let mut body: Vec<u8> = Vec::new();
+    // Where the scan for the closing tag has already looked; a match can
+    // straddle two chunks, so it restarts a tag's width back.
+    let mut scanned = 0usize;
+    while let Some(chunk) = resp.chunk().await.map_err(|e| format!("{e}"))? {
+        body.extend_from_slice(&chunk);
+        if body.len() >= max {
+            body.truncate(max);
+            break;
+        }
+        if head_only {
+            if let Some(end) = head_end(&body, scanned) {
+                body.truncate(end);
+                break;
+            }
+            scanned = body.len().saturating_sub(HEAD_CLOSE.len() - 1);
+        }
+    }
+    Ok((body, ct))
+}
+
+const HEAD_CLOSE: &[u8] = b"</head";
+
+/// Where `</head` starts at or after `from`, in any case.
+fn head_end(body: &[u8], from: usize) -> Option<usize> {
+    let from = from.min(body.len());
+    body[from..]
+        .windows(HEAD_CLOSE.len())
+        .position(|w| w.eq_ignore_ascii_case(HEAD_CLOSE))
+        .map(|i| from + i)
+}
+
+/// The extensions this build's decoders cover, for finding a cached card
+/// image again — the first name each format answers to, in `image`'s order.
+const IMAGE_EXTS: [&str; 7] = ["png", "jpg", "gif", "webp", "tiff", "bmp", "ico"];
+
+/// The file extension for what these bytes actually are, or None when the
+/// format is one this build cannot read.
+fn image_ext(bytes: &[u8]) -> Option<&'static str> {
+    let fmt = image::guess_format(bytes).ok()?;
+    if !fmt.reading_enabled() {
+        return None;
+    }
+    fmt.extensions_str().first().copied().filter(|e| IMAGE_EXTS.contains(e))
 }
 
 /// `<meta property="og:x" content="…">` or `name=`, either attribute order.
@@ -1158,6 +1230,34 @@ mod tests {
         assert_eq!(absolute("https://x.org/a/b.html", "c.png").as_deref(), Some("https://x.org/a/c.png"));
         assert_eq!(absolute("https://x.org", "c.png").as_deref(), Some("https://x.org/c.png"));
         assert_eq!(absolute("https://x.org/a", "//cdn.x/c.png").as_deref(), Some("https://cdn.x/c.png"));
+    }
+
+    #[test]
+    fn the_read_stops_at_the_closing_head_wherever_the_chunk_broke() {
+        // A page's own title can sit hundreds of kilobytes in; the read must
+        // reach it and stop right after the head, not at a fixed prefix.
+        let page = format!("<html><head>{}<title>t</title></head><body>{}</body>", "<!--x-->".repeat(80_000), "y".repeat(900_000));
+        let at = head_end(page.as_bytes(), 0).expect("the closing tag");
+        assert!(at > 640_000, "the head ends at {at}");
+        assert_eq!(&page[at..at + 7], "</head>");
+        // found from a cursor set a tag's width back, as the chunk loop does
+        assert_eq!(head_end(page.as_bytes(), at.saturating_sub(HEAD_CLOSE.len() - 1)), Some(at));
+        assert_eq!(head_end(b"<HTML><HEAD></HEAD>", 0), Some(12));
+        assert_eq!(head_end(b"<html><body>no head</body>", 0), None);
+    }
+
+    #[test]
+    fn a_cached_card_image_is_named_for_what_it_is() {
+        // image::image_dimensions (and Slint's loader) choose the decoder by
+        // the path's extension, so ".img" made every card image unreadable.
+        let png = [0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 0];
+        assert_eq!(image_ext(&png), Some("png"));
+        assert_eq!(image_ext(&[0xff, 0xd8, 0xff, 0xe0, 0, 0, 0, 0]), Some("jpg"));
+        assert_eq!(image_ext(b"GIF89a\0\0\0\0\0\0"), Some("gif"));
+        assert_eq!(image_ext(b"<svg xmlns=\"http://www.w3.org/2000/svg\"/>"), None);
+        for ext in IMAGE_EXTS {
+            assert!(image::ImageFormat::from_extension(ext).is_some(), "{ext} names no format");
+        }
     }
 
     #[test]
