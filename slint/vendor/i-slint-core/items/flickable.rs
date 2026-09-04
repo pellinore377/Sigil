@@ -398,6 +398,11 @@ struct FlickableDataInner {
     last_mouse_position: LogicalPoint,
     /// Set to true if the flickable is flicking and capturing all mouse event, not forwarding back to the children
     capture_events: Option<CaptureEvents>,
+    /// SIGIL PATCH: this press began by travelling across the axis the
+    /// flickable cannot scroll, so it belongs to whatever is inside it and the
+    /// flickable will not take it back for the rest of the press. Cleared on
+    /// every press. See `is_cross_axis_drag`.
+    cross_axis_press: bool,
     /// Heuristics for filtering scroll events from children after we have scrolled ourselves.
     /// We want to filter those to prevent the case where the user scrolls with the mouse wheel,
     /// but the mouse now moves over a child item, and that item captures the scroll event.
@@ -689,6 +694,7 @@ impl FlickableData {
                 inner.velocity_rb = VelocityRingBuffer::default();
                 inner.pressed_mouse_state = Some((crate::animations::current_tick(), *position));
                 inner.last_mouse_position = *position;
+                inner.cross_axis_press = false;   // SIGIL PATCH, see below
                 let viewport_x = (Flickable::FIELD_OFFSETS.viewport_x()).apply_pin(flick);
                 viewport_x.remove_binding(); // Stop animation by removing the binding
                 let viewport_y = (Flickable::FIELD_OFFSETS.viewport_y()).apply_pin(flick);
@@ -709,15 +715,41 @@ impl FlickableData {
                 }
             }
             MouseEvent::Moved { position, .. } => {
+                // SIGIL PATCH (upstream: a flickable steals a cross-axis drag
+                // mid-way): the filter keeps running for the whole 500ms after
+                // the press, even once something inside has taken the grab. A
+                // swipe-to-reply on a row of chat.slint's vertical timeline
+                // therefore dies the moment the finger wanders 8px down —
+                // which a real horizontal drag does all the time. Latch the
+                // axis instead: if the gesture first crossed the threshold on
+                // the axis this flickable CANNOT travel, it is not ours, and
+                // we stay out of it until the finger lifts. A flickable that
+                // scrolls in both directions latches nothing.
+                if !inner.cross_axis_press
+                    && let Some((_, pressed_mouse_position)) = inner.pressed_mouse_state
+                    && self.is_cross_axis_drag(
+                        *position - pressed_mouse_position,
+                        flick,
+                        flick_rc,
+                    )
+                {
+                    inner.cross_axis_press = true;
+                }
                 let do_intercept = inner.capture_events.is_some()
-                    || inner.pressed_mouse_state.is_some_and(
-                        |(pressed_time, pressed_mouse_position)| {
-                            let mouse_delta = *position - pressed_mouse_position;
+                    || (!inner.cross_axis_press
+                        && inner.pressed_mouse_state.is_some_and(
+                            |(pressed_time, pressed_mouse_position)| {
+                                let mouse_delta = *position - pressed_mouse_position;
 
-                            crate::animations::current_tick() - pressed_time <= DURATION_THRESHOLD
-                                && self.should_capture_mouse_direction(mouse_delta, flick, flick_rc)
-                        },
-                    );
+                                crate::animations::current_tick() - pressed_time
+                                    <= DURATION_THRESHOLD
+                                    && self.should_capture_mouse_direction(
+                                        mouse_delta,
+                                        flick,
+                                        flick_rc,
+                                    )
+                            },
+                        ));
                 if do_intercept {
                     InputEventFilterResult::Intercept
                 } else if inner.pressed_mouse_state.is_some() {
@@ -819,6 +851,30 @@ impl FlickableData {
             && abs(mouse_delta.x_length()) > DISTANCE_THRESHOLD)
             || ((viewport_height > flickable_height || flick.viewport_y() != zero)
                 && abs(mouse_delta.y_length()) > DISTANCE_THRESHOLD)
+    }
+
+    /// SIGIL PATCH: the drag has gone past the threshold on the axis this
+    /// flickable cannot scroll, and further along it than along the axis it
+    /// can. Whatever is inside owns the gesture from here (chat.slint's
+    /// swipe-to-reply); the flickable must not claim it back when the finger
+    /// later wanders along its own axis. A flickable that travels in both
+    /// directions never answers true.
+    fn is_cross_axis_drag(
+        &self,
+        mouse_delta: LogicalVector,
+        flick: Pin<&Flickable>,
+        flick_rc: &ItemRc,
+    ) -> bool {
+        let flickable_geometry = Flickable::geometry_without_virtual_keyboard(flick_rc);
+        let zero = LogicalLength::zero();
+        let can_x = flick.viewport_width() > flickable_geometry.width_length()
+            || flick.viewport_x() != zero;
+        let can_y = flick.viewport_height() > flickable_geometry.height_length()
+            || flick.viewport_y() != zero;
+        let dx = abs(mouse_delta.x_length());
+        let dy = abs(mouse_delta.y_length());
+        (!can_x && dx > DISTANCE_THRESHOLD && dx > dy)
+            || (!can_y && dy > DISTANCE_THRESHOLD && dy > dx)
     }
 
     fn handle_mouse(

@@ -3,12 +3,14 @@
 // (blinking dot + zero-padded timer over a live 48px level band), ready (the
 // clip's waveform + duration). Controls: side pills + a 120px centre pill.
 // The root is transparent (VoiceRecorder.qml:7): the conversation ground
-// shows through around the stage card and the pills.
+// shows through around the stage and the pills.
 //
-// The phone's is the platform messenger's: a 300dp sheet on the card ground
-// (radius 28, 16 from the sides, 12 under the composer) and, outside it, a
-// 56dp row of three pills — outlined Cancel and Attach, the mic on an accent
-// container between them, split 1 : 1.1 : 1.
+// The phone's is the platform messenger's: a 300dp stage (radius 28, 16 from
+// the sides, 12 under the composer) and, outside it, a 56dp row of three
+// pills — outlined Cancel and Attach, the mic on an accent container between
+// them, split 1 : 1.1 : 1. Every ground here — the stage, the side pills — is
+// the conversation's own colour at the composer band's alpha (`ground`), so
+// the panel continues the band instead of laying a card over the chat.
 
 import { Theme } from "style.slint";
 import { Icons } from "icons.slint";
@@ -19,9 +21,16 @@ export component VoiceRecorder inherits Rectangle {
     // ChatPage.qml hands the recorder themedSend: accent@0.9 unthemed (:45, :1836).
     in property <color> accent: Theme.accent.with-alpha(0.9);
     in property <color> surface: Theme.menu-text.with-alpha(0.07);
+    /// The conversation's own ground, carrying the composer band's alpha:
+    /// every surface in this panel is painted with it, so the recorder reads
+    /// as the same continuous, translucent ground as the band above it
+    /// rather than as a card sitting on one (ChatPage hands this down).
+    in property <color> ground: Theme.menu-background.darker(0.35).with-alpha(0.75);
     // deepChipC ≈ rgba(36,36,36,0.96) (ChatPage.qml:56-59, :1839).
     in property <color> chip: Theme.menu-background.darker(1.1).with-alpha(0.96);
-    /// The room wears a chat theme: the phone's sheet takes `surface` then.
+    /// The room wears a chat theme. The phone's grounds no longer branch on
+    /// it — `ground` already carries the room's tone, since the conversation
+    /// ground it comes from is the themed one.
     in property <bool> themed: false;
     in property <string> state: "idle";      // idle | recording | ready
     in property <float> elapsed: 0;          // seconds, ticked by Rust
@@ -40,8 +49,11 @@ export component VoiceRecorder inherits Rectangle {
     // stays dark, so fg stands in until chat themes reach the recorder.
     property <color> ink: root.fg;
     property <color> pill-c: root.chip;
-    // The phone's sheet: the room's own surface when themed, else the card ground.
-    property <color> sheet-c: root.phone && !root.themed ? Theme.card-ground : root.surface;
+    // The phone's stage is not a card: it is the conversation ground itself,
+    // translucent, continuous with the composer band. (It used to be the
+    // card ground — a distinctly lighter slab that read as a sheet laid over
+    // the chat.) The desktop keeps its surface card.
+    property <color> sheet-c: root.phone ? root.ground : root.surface;
     // The phone's accent container: the room accent sunk into the ground.
     // The mic pill wears the platform messenger's accent tint: a light wash of
     // the accent over dark palettes, a sunk one over light.
@@ -156,10 +168,13 @@ export component VoiceRecorder inherits Rectangle {
             cancel-b := Rectangle {
                 horizontal-stretch: 1;
                 border-radius: root.phone ? 28px : 23px;
-                background: root.phone ? Theme.bubble-other : root.pill-c;
-                // The phone's side pills are filled surface containers, accent ink.
-                border-width: 0px;
-                border-color: root.accent;
+                background: root.phone ? root.ground : root.pill-c;
+                // The phone's side pills used to be filled neutral containers;
+                // their ground is the conversation's now, like everything else
+                // here, so the outline the design always carried does the work
+                // of telling them from it.
+                border-width: root.phone ? 1px : 0px;
+                border-color: root.accent.with-alpha(0.45);
                 HorizontalLayout {
                     alignment: center;
                     // QML's fitWidth icon boxes hug the glyph at spacing 6; a
@@ -208,10 +223,10 @@ export component VoiceRecorder inherits Rectangle {
                 horizontal-stretch: 1;
                 border-radius: root.phone ? 28px : 23px;
                 opacity: root.state == "idle" ? (root.phone ? 0.45 : 0.6) : 1;
-                background: root.phone ? Theme.bubble-other
+                background: root.phone ? root.ground
                           : root.state == "idle" ? root.pill-c : root.accent.brighter(0.3);
-                border-width: 0px;
-                border-color: root.accent;
+                border-width: root.phone ? 1px : 0px;
+                border-color: root.accent.with-alpha(0.45);
                 HorizontalLayout {
                     alignment: center;
                     spacing: root.phone ? 8px : 4px;

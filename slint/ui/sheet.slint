@@ -474,11 +474,25 @@ export component MessageSheet inherits Rectangle {
     // built and slid 220ms OutCubic from 6 below the edge (MessageSheet.qml:
     // 389-399), so the search and scroll survive a close.
     drawer := Rectangle {
-        y: root.drawer-open ? root.screen-bottom - self.height : root.screen-bottom + 6px;
-        animate y { duration: 220ms; easing: cubic-bezier(0.33, 1, 0.68, 1); }
+        /// How far the handle has dragged the drawer below its resting place.
+        /// Never negative: the drawer does not rubber-band upward.
+        property <length> drag: 0px;
+        /// Past a quarter of its own height it is a dismissal, not a fidget.
+        property <length> dismiss-at: self.height / 4;
+        /// Cleared before `drag` is, so the settle always gets its animation
+        /// (TouchArea.pressed is still set while the release is delivered).
+        property <bool> dragging: false;
+        y: (root.drawer-open ? root.screen-bottom - self.height : root.screen-bottom + 6px)
+            + self.drag;
+        // The finger moves it 1:1; letting go settles with the same 220ms
+        // OutCubic the drawer opens on.
+        animate y {
+            duration: self.dragging ? 0ms : 220ms;
+            easing: cubic-bezier(0.33, 1, 0.68, 1);
+        }
         visible: self.y < root.screen-bottom - 0.5px;
         width: 100%;
-        height: 360px + root.bleed-bottom;
+        height: 400px + root.bleed-bottom;
         border-top-left-radius: 20px;
         border-top-right-radius: 20px;
         border-bottom-left-radius: root.card-radius;
@@ -486,24 +500,46 @@ export component MessageSheet inherits Rectangle {
         background: root.surface;
         TouchArea { }
         VerticalLayout {
-            padding: 12px;
-            padding-bottom: 8px + root.bleed-bottom;
-            spacing: 8px;
+            padding-top: 8px;
+            padding-bottom: root.bleed-bottom;
             alignment: start;
+            // Drag handle: a 24 grab strip with the 36x4 pill centred in it.
+            // It DRAGS — the drawer follows the finger down and either
+            // settles back or dismisses (MessageSheet.qml:389-399 only ever
+            // animated, so this was decoration until now).
             Rectangle {
-                height: 4px;
+                height: 24px;
                 Rectangle {
-                    x: (drawer.width - 24px - 36px) / 2;
                     width: 36px; height: 4px; border-radius: 2px;
-                    background: root.fg.with-alpha(0.25);
+                    background: root.fg.with-alpha(handle-t.pressed ? 0.45 : 0.25);
+                }
+                handle-t := TouchArea {
+                    moved => {
+                        drawer.dragging = true;
+                        // The handle travels WITH the drawer, so `mouse-y` is
+                        // already measured against the moved edge: what is
+                        // left over is the step, not the whole gesture. Adding
+                        // it keeps the pill under the finger (taking the
+                        // difference outright tracks at half speed).
+                        drawer.drag = max(0px, drawer.drag + self.mouse-y - self.pressed-y);
+                    }
+                    pointer-event(e) => {
+                        if (e.kind == PointerEventKind.up || e.kind == PointerEventKind.cancel) {
+                            drawer.dragging = false;
+                            if (drawer.drag > drawer.dismiss-at) { root.drawer-open = false; }
+                            drawer.drag = 0px;
+                        }
+                    }
                 }
             }
             EmojiPicker {
-                // MessageSheet.qml:405-408: the column's height (360 − 12 − 8) less 16.
-                height: (360px - 20px) - 16px;
+                // The rest of the drawer: 400 less the 8 above the handle,
+                // the 24 handle strip and the bottom bleed.
+                height: 400px - 32px;
                 fg: root.fg;
                 accent: root.accent;
                 chip: root.chip;
+                back-slot: false;
                 rows: root.emoji-rows;
                 cat-rows: root.emoji-cat-rows;
                 picked(e) => {

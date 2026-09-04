@@ -501,7 +501,7 @@ async fn run() -> anyhow::Result<()> {
             // current address and deliver live; a commit sends us round again.
             let mut got = 0;
             'epoch: loop {
-                let caught = conversation::catch_up(&link, &mut st, &provider, &conv).await?;
+                let caught = conversation::replay(&link, &mut st, &provider, &conv).await?;
                 // policies and leaves first, so names resolve when printing
                 for c in &caught {
                     if let conversation::Incoming::Event {

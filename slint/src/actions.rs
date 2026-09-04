@@ -265,6 +265,9 @@ pub fn sheet_snapshot(ui: &mut UiState, win: &AppWindow, id: &str, r: &SheetRect
 /// themselves.
 pub fn map_place(ui: &mut UiState, win: &AppWindow) {
     let wanted = ui.mapview.wanted();
+    // Mid-pinch the grid is drawn magnified, so the side comes from the view
+    // rather than from the tile.
+    let side = ui.mapview.tile_size();
     let mut rows: Vec<crate::MapTileView> = Vec::with_capacity(wanted.len());
     let mut missing: Vec<(u32, i64, i64)> = Vec::new();
     for (tx, ty) in wanted {
@@ -274,7 +277,7 @@ pub fn map_place(ui: &mut UiState, win: &AppWindow) {
             Some(img) => rows.push(crate::MapTileView {
                 x: x.into(),
                 y: y.into(),
-                size: (crate::mapview::TILE as f32).into(),
+                size: side.into(),
                 img: img.clone(),
             }),
             None => {
@@ -327,6 +330,34 @@ fn fetch_map_tile(ui: &mut UiState, z: u32, x: i64, y: i64) {
     );
 }
 
+/// The fingers lifted somewhere between two levels. A tile map only has whole
+/// levels, so the view has to land on one; easing it there over ~160ms reads
+/// as the map settling, where jumping the last half-level reads as a glitch.
+/// Each step schedules the next, so nothing has to be kept alive for it.
+fn map_settle(epoch: u64, from: f64, to: f64, step: u32) {
+    const STEPS: u32 = 10;
+    let t = step as f64 / STEPS as f64;
+    let e = 1.0 - (1.0 - t) * (1.0 - t) * (1.0 - t);
+    let mut going = false;
+    with_ui(|ui| {
+        // The page moved on — another point, or closed — or the fingers are
+        // back down and the settle has been overtaken.
+        if ui.mapview.epoch != epoch || ui.mapview.pinching() {
+            return;
+        }
+        let Some(win) = ui.win.upgrade() else { return };
+        let (ax, ay) = (ui.mapview.w / 2.0, ui.mapview.h / 2.0);
+        ui.mapview.zoom_to(from + (to - from) * e, ax, ay);
+        map_place(ui, &win);
+        going = true;
+    });
+    if going && step < STEPS {
+        slint::Timer::single_shot(std::time::Duration::from_millis(16), move || {
+            map_settle(epoch, from, to, step + 1);
+        });
+    }
+}
+
 pub fn wire_extra(win: &AppWindow) {
     win.on_map_viewport(|w, h| {
         with_ui(|ui| {
@@ -348,6 +379,32 @@ pub fn wire_extra(win: &AppWindow) {
             ui.mapview.zoom(step, x as f64, y as f64);
             map_place(ui, &win);
         });
+    });
+    win.on_map_pinch_begin(|| {
+        with_ui(|ui| ui.mapview.pinch_begin());
+    });
+    win.on_map_pinched(|f, x, y| {
+        with_ui(|ui| {
+            let Some(win) = ui.win.upgrade() else { return };
+            ui.mapview.pinch_to(f as f64, x as f64, y as f64);
+            map_place(ui, &win);
+        });
+    });
+    win.on_map_pinch_end(|| {
+        // The settle takes the state again for each of its steps, so it is
+        // started after this one has been let go of, not from inside it.
+        let mut ease = None;
+        with_ui(|ui| {
+            let Some(win) = ui.win.upgrade() else { return };
+            let from = ui.mapview.zoom_f();
+            if let Some(to) = ui.mapview.pinch_end() {
+                ease = Some((ui.mapview.epoch, from, to));
+            }
+            map_place(ui, &win);
+        });
+        if let Some((epoch, from, to)) = ease {
+            map_settle(epoch, from, to, 1);
+        }
     });
     win.on_sheet_prewarm(|id, r| {
         with_ui(|ui| {
@@ -837,10 +894,14 @@ pub fn on_act(ui: &mut UiState, win: &AppWindow, action: &str, a: &str, b2: &str
             json!({"roomId": ui.open_room, "eventId": a, "body": b2.trim(), "markdown": true}),
         ),
         "autocomplete-pick" => autocomplete_pick(ui, win, a.parse().unwrap_or(0)),
-        "react" => req.fire(
-            "message.react",
-            json!({"roomId": ui.open_room, "eventId": a, "key": b2}),
-        ),
+        "react" => {
+            // The picker's RECENTS block follows what was actually used.
+            note_emoji_used(b2);
+            req.fire(
+                "message.react",
+                json!({"roomId": ui.open_room, "eventId": a, "key": b2}),
+            )
+        }
         "paginate" => {
             let state = ui
                 .pagination_by_room
@@ -855,6 +916,81 @@ pub fn on_act(ui: &mut UiState, win: &AppWindow, action: &str, a: &str, b2: &str
             }
         }
         "mark-read" => req.fire("room.markRead", json!({"roomId": open_room})),
+        // A message row's swipe has passed its detent, so letting go now will
+        // reply (or reply in a thread): the platform's buzz at the moment the
+        // gesture commits, exactly as the long-press sheet gets one.
+        "swipe-detent" => {
+            #[cfg(target_os = "android")]
+            i_slint_backend_android_activity::haptic_long_press();
+        }
+        // ---- the home list's long-press bar. `a` is always the room id.
+        // The platform's buzz the moment the hold fires, as the message
+        // sheet gets one (sheet_snapshot).
+        "home-hold" => {
+            #[cfg(target_os = "android")]
+            i_slint_backend_android_activity::haptic_long_press();
+        }
+        // The engine caps pins at five and says so. Home's pill is set
+        // optimistically in the page, so the refusal is only logged until the
+        // window carries a `home-note` property the reply can land in.
+        "home-pin" => {
+            let on = b2 == "1";
+            call_ui(
+                &req,
+                "room.setFavourite",
+                json!({"roomId": a, "favourite": on}),
+                move |_ui, _win, out| {
+                    if let Err((_, m)) = out {
+                        tracing::warn!("room.setFavourite refused: {m}");
+                    }
+                },
+            );
+        }
+        // b2 is "<span>,<mentions>". The dialog names a span; the deadline is
+        // worked out here, where the clock is. "off" (or anything else) lifts
+        // the snooze; "always" runs until it is lifted by hand.
+        "home-snooze" => {
+            let (span, mentions) = b2.split_once(',').unwrap_or((b2, "0"));
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_millis() as i64)
+                .unwrap_or(0);
+            let until = match span {
+                "1h" => now + 3_600_000,
+                "8h" => now + 28_800_000,
+                "24h" => now + 86_400_000,
+                "always" => i64::MAX,
+                _ => 0,
+            };
+            req.fire(
+                "room.setSnooze",
+                json!({"roomId": a, "until": until, "mentions": mentions == "1"}),
+            );
+        }
+        // b2 "1" marks unread by hand; "0" reads it, which also lifts the mark.
+        "home-unread" if b2 == "1" => {
+            req.fire("room.setUnread", json!({"roomId": a, "unread": true}))
+        }
+        "home-unread" => req.fire("room.markRead", json!({"roomId": a})),
+        "home-leave" => {
+            let rid = a.to_string();
+            call_ui(
+                &req,
+                "room.leave",
+                json!({"roomId": rid}),
+                move |ui, win, out| {
+                    if let Err((_, m)) = out {
+                        tracing::warn!("room.leave refused: {m}");
+                        return;
+                    }
+                    // The room that was open has gone with it.
+                    if ui.open_room == rid {
+                        ui.open_room.clear();
+                        win.set_nav("home".into());
+                    }
+                },
+            );
+        }
         // PollBody.pick(): single-select taps toggle (own answer again retracts);
         // multi-select builds the selection set up to maxSelections.
         // Caption edit on a media event: empty body clears the caption.
@@ -883,6 +1019,7 @@ pub fn on_act(ui: &mut UiState, win: &AppWindow, action: &str, a: &str, b2: &str
                 })
                 .unwrap_or_default();
             let tapped_mine = mine.iter().any(|m| m == b2);
+            let before = mine.clone();
             let answers: Option<Vec<String>> = if max <= 1 {
                 Some(if tapped_mine {
                     vec![]
@@ -899,9 +1036,27 @@ pub fn on_act(ui: &mut UiState, win: &AppWindow, action: &str, a: &str, b2: &str
                 None // selection full: QML pick() bails
             };
             if let Some(answers) = answers {
-                req.fire(
+                // The engine applies a vote only once the event has reached
+                // the server (core's poll_vote awaits send_raw before
+                // apply_vote), so nothing at all moves under the finger until
+                // then — two and a half seconds even over loopback in
+                // tests/e2e-kinds.sh. Paint the answer here and now; the
+                // engine's own timeline diff replaces it moments later, and a
+                // vote that never left puts the old one back.
+                let event_id = a.to_string();
+                poll_echo(ui, a, &answers);
+                rebuild_timeline(ui, win);
+                call_ui(
+                    &req,
                     "poll.vote",
                     json!({"roomId": ui.open_room, "eventId": a, "answers": answers}),
+                    move |ui, win, out| {
+                        let Err((_, msg)) = out else { return };
+                        tracing::warn!("poll.vote refused: {msg}");
+                        poll_echo(ui, &event_id, &before);
+                        rebuild_timeline(ui, win);
+                        win.set_chat_toast("Vote not sent".into());
+                    },
                 );
             }
         }
@@ -1127,17 +1282,32 @@ pub fn on_act(ui: &mut UiState, win: &AppWindow, action: &str, a: &str, b2: &str
         // ---- viewer ----
         "viewer-open" => viewer_open(ui, win, a),
         "viewer-closed" => {
-            if ui.audio_playing {
+            // The viewer's own video, not the voice note the composer may be
+            // playing: closing on a paused clip used to stop nothing, and
+            // closing while a voice note played used to stop a video that was
+            // not running (ImageViewer.qml:204 stops whatever the viewer owns).
+            if !win.get_vw_playing_event().is_empty() {
                 req.fire("video.stop", json!({}));
+                win.set_vw_playing_event("".into());
             }
         }
         "viewer-page" => {
+            // Turning the page leaves the old clip behind: QML stops playback
+            // in onCurChanged, or the decoder runs on under the next picture.
+            if !win.get_vw_playing_event().is_empty() {
+                req.fire("video.stop", json!({}));
+                win.set_vw_playing_event("".into());
+            }
             let i: usize = a.parse().unwrap_or(0);
             if let Some(item) = ui.viewer_items.get(i).cloned() {
                 let ev = s(&item, "eventId");
                 if item["media"]["path"].as_str().unwrap_or("").is_empty() && !ev.is_empty() {
                     req.fire("media.get", json!({"roomId": open_room, "eventId": ev}));
                 }
+                // A GIF that the timeline never cached (it only looks at
+                // kind == "image", while the viewer admits stickers too) has
+                // no frames yet; ask for them the way the bridge does.
+                gif_frames_for_viewer(ui, &item);
             }
         }
         "viewer-download" | "viewer-delete" | "viewer-react" | "viewer-forward"
@@ -1245,7 +1415,10 @@ pub fn on_act(ui: &mut UiState, win: &AppWindow, action: &str, a: &str, b2: &str
                 load_stickers(ui, win);
             }
         }
-        "pick-attach-files" => attach_files(ui),
+        "pick-attach-files" => attach_pick(ui, AttachPick::Files),
+        "pick-attach-gallery" => attach_pick(ui, AttachPick::Gallery),
+        "pick-attach-camera" => attach_pick(ui, AttachPick::Photo),
+        "pick-attach-video" => attach_pick(ui, AttachPick::Video),
         // A location tile: reset the picker and turn the sheet's page to the
         // mode, in place (AttachMenu.qml:53-55 activate + locPicker.reset).
         "attach-location" => {
@@ -1415,6 +1588,8 @@ pub fn on_act(ui: &mut UiState, win: &AppWindow, action: &str, a: &str, b2: &str
             }
             let spliced = format!("{}{}{}", &text[..cur], a, &text[cur..]);
             win.invoke_chat_composer_set(spliced.into(), (cur + a.len()) as i32, true);
+            // The picker's RECENTS block follows what was actually used.
+            note_emoji_used(a);
         }
         "create-poll" => create_poll(ui, a, b2),
         "load-stickers" => load_stickers(ui, win),
@@ -2171,11 +2346,14 @@ fn push_emoji(ui: &mut UiState, win: &AppWindow, query: &str) {
             .unwrap_or_else(|_| include_str!("../assets/emojis.json").to_string());
         if let Ok(v) = serde_json::from_str::<Value>(&text) {
             if let Some(arr) = v.as_array() {
-                ui.emojis = arr
+                let listed: Vec<(String, String)> = arr
                     .iter()
                     .map(|e| (s(e, "e").to_string(), s(e, "k").to_string()))
                     .filter(|(g, _)| !g.is_empty())
                     .collect();
+                let (drawable, bounds) = keep_drawable(listed);
+                ui.emojis = drawable;
+                EMOJI_BOUNDS.with(|b| *b.borrow_mut() = bounds);
             }
         }
     }
@@ -2187,7 +2365,8 @@ fn push_emoji(ui: &mut UiState, win: &AppWindow, query: &str) {
         .cloned()
         .collect();
     let mut rows: Vec<ModelRc<crate::EmojiItem>> = Vec::new();
-    for chunk in filtered.chunks(8) {
+    let mut cats: Vec<i32> = Vec::new();
+    let push_row = |ui: &mut UiState, rows: &mut Vec<ModelRc<crate::EmojiItem>>, chunk: &[(String, String)]| {
         let row: Vec<crate::EmojiItem> = chunk
             .iter()
             .map(|(g, k)| {
@@ -2201,21 +2380,286 @@ fn push_emoji(ui: &mut UiState, win: &AppWindow, query: &str) {
             })
             .collect();
         rows.push(ModelRc::new(VecModel::from(row)));
+    };
+    if q.is_empty() {
+        // The Google Messages picker's sectioned grid: a heading, then that
+        // category's own rows, so a row never straddles a boundary. A heading
+        // rides in the SAME model as the glyphs — one item, empty glyph, the
+        // caption in `name` — because `emoji-rows` is the only channel the
+        // picker has (app.slint's property set is fixed).
+        //
+        // Block boundaries were taken while the list was filtered, walking it
+        // in order, so a marker glyph the device cannot draw takes only itself
+        // out and never moves the boundary it named.
+        let mut bounds = EMOJI_BOUNDS.with(|b| b.borrow().clone());
+        bounds.resize(EMOJI_CATS.len(), 0);
+        bounds.push(filtered.len());
+        // RECENTS goes first, before the smileys. With none yet, the clock
+        // still gets an entry so the bar and the strip stay index-for-index.
+        let recents = recent_emojis(&filtered);
+        if !recents.is_empty() {
+            cats.push(cat_mark(&rows));
+            rows.push(heading_row("RECENTS"));
+            for chunk in recents.chunks(EMOJI_COLS) {
+                push_row(ui, &mut rows, chunk);
+            }
+        } else {
+            cats.push(cat_mark(&rows));
+        }
+        for (i, (_, label)) in EMOJI_CATS.iter().enumerate() {
+            let (start, end) = (bounds[i], bounds[i + 1].max(bounds[i]));
+            // An empty block gets no caption; its bar icon still points at
+            // where it would have begun, which is where the next one does.
+            cats.push(cat_mark(&rows));
+            if start >= end {
+                continue;
+            }
+            rows.push(heading_row(label));
+            for chunk in filtered[start..end].chunks(EMOJI_COLS) {
+                push_row(ui, &mut rows, chunk);
+            }
+        }
+    } else {
+        // Searching: results only, no sections (EmojiPicker.qml:89 curCat -1).
+        for chunk in filtered.chunks(EMOJI_COLS) {
+            push_row(ui, &mut rows, chunk);
+        }
     }
-    let cat_marks = ["👋", "🐵", "🍇", "🌍", "🎃", "👓", "🏧", "🏁"];
-    // Nine entries for the strip's nine categories: the smileys start the
-    // list at row 0, the rest at the row of their first glyph.
-    let cats: Vec<i32> = std::iter::once(0)
-        .chain(cat_marks.iter().map(|m| {
-            filtered
-                .iter()
-                .position(|(g, _)| g == m)
-                .map(|i| (i / 8) as i32)
-                .unwrap_or(0)
-        }))
-        .collect();
+    cats.resize(EMOJI_CATS.len() + 1, 0);
     win.set_emoji_rows(ModelRc::new(VecModel::from(rows)));
     win.set_emoji_cat_rows(ModelRc::new(VecModel::from(cats)));
+}
+
+/// Nine columns, the width the reference picker lays a row out in
+/// (Screenshot_20260903-234221.png: cell pitch 146 physical px across 1344).
+const EMOJI_COLS: usize = 9;
+
+/// A category's jump target, for `emoji-cat-rows`. A caption block and a glyph
+/// row are different heights and the height depends on the window's width, so
+/// the picker works the offset out itself — and to do that it needs BOTH counts,
+/// down one `[int]` channel (app.slint's property set is fixed and out of
+/// reach). Captions can never reach 16, so they ride in the low nibble.
+fn cat_mark(rows: &[ModelRc<crate::EmojiItem>]) -> i32 {
+    let heads = rows.iter().filter(|r| is_heading_row(r)).count();
+    ((rows.len() - heads) * 16 + heads) as i32
+}
+
+fn is_heading_row(row: &ModelRc<crate::EmojiItem>) -> bool {
+    use slint::Model as _;
+    row.row_count() == 1 && row.row_data(0).map(|e| e.glyph.is_empty()).unwrap_or(false)
+}
+
+/// The category bar, in the bundled list's Unicode order: the glyph that
+/// opens each block, and the caption over it. The first has no mark — the
+/// smileys open the list — and carries RECENTS in front of it.
+const EMOJI_CATS: [(&str, &str); 9] = [
+    ("", "SMILEYS AND EMOTIONS"),
+    ("👋", "PEOPLE"),
+    ("🐵", "ANIMALS AND NATURE"),
+    ("🍇", "FOOD AND DRINK"),
+    ("🌍", "TRAVEL AND PLACES"),
+    ("🎃", "ACTIVITIES"),
+    ("👓", "OBJECTS"),
+    ("🏧", "SYMBOLS"),
+    ("🏁", "FLAGS"),
+];
+
+/// Where a colour emoji font lives, in the order `emoji.render` tries them
+/// (core/src/media/emoji.rs:12-35). The picker has to look at the SAME face
+/// the engine will cut its pictures from, and the engine's own search is
+/// private to it, so the list is mirrored here rather than guessed at.
+fn emoji_font_bytes() -> Option<Vec<u8>> {
+    const CANDIDATES: &[&str] = &[
+        "/usr/share/fonts/truetype/noto/NotoColorEmoji.ttf",
+        "/usr/share/fonts/noto/NotoColorEmoji.ttf",
+        "/usr/share/fonts/google-noto-emoji/NotoColorEmoji.ttf",
+        "/usr/share/fonts/TTF/NotoColorEmoji.ttf",
+        "/system/fonts/NotoColorEmoji.ttf",
+    ];
+    let mut tries: Vec<std::path::PathBuf> = Vec::new();
+    if let Some(p) = std::env::var_os("SIGIL_EMOJI_FONT") {
+        tries.push(p.into());
+    }
+    if let Some(home) = std::env::var_os("HOME") {
+        for rel in [
+            ".local/share/fonts/NotoColorEmoji.ttf",
+            ".fonts/NotoColorEmoji.ttf",
+        ] {
+            tries.push(std::path::PathBuf::from(&home).join(rel));
+        }
+    }
+    tries.extend(CANDIDATES.iter().map(std::path::PathBuf::from));
+    tries.iter().find(|p| p.is_file()).and_then(|p| std::fs::read(p).ok())
+}
+
+/// The one scalar `emoji.render` would draw, if the entry is only that.
+///
+/// The engine cuts its picture for a SINGLE code point: it drops the
+/// selectors and joiners and takes the first of what is left
+/// (core/src/media/emoji.rs:38-42). So a joined sequence comes back as its
+/// opening glyph and nothing else — 🇬🇧 as a blue letter G, 👍🏽 as the bare
+/// hand, 😶‍🌫️ as a plain face — which is not the emoji the cell offered.
+/// Those are refused here rather than drawn as something else.
+fn lone_scalar(glyph: &str) -> Option<char> {
+    let mut cs = glyph
+        .chars()
+        .filter(|c| !matches!(*c, '\u{fe0f}' | '\u{fe0e}'));
+    let first = cs.next()?;
+    cs.next().is_none().then_some(first)
+}
+
+/// The list cut down to what this device can actually draw, and where each
+/// category starts in it.
+///
+/// Two ways an offer goes bad. A sequence the engine can only render as its
+/// first code point (above). And a code point the font has never heard of:
+/// `emoji.render` answers `not_found`, the cell falls through to text, and the
+/// text face draws a notdef box — a tofu on a phone, the loose pieces of a
+/// joined sequence beside it, or nothing at all where the renderer has no
+/// emoji outlines. A picker that offers those is lying about what it can send,
+/// so the test runs ONCE, here, as the list is built, and the rows below never
+/// see a glyph that fails it.
+///
+/// The face is asked the same two questions the engine asks — the bare glyph,
+/// then the one the emoji-presentation pair maps to (core/src/media/emoji.rs:
+/// 66-75) — so the two can never disagree.
+///
+/// With no colour emoji font at all there are no pictures to be had and text
+/// IS the intended fallback (core/src/media/emoji.rs:1-6), so the list is kept
+/// whole rather than emptied.
+fn keep_drawable(listed: Vec<(String, String)>) -> (Vec<(String, String)>, Vec<usize>) {
+    let bounds_of = |kept: &[(String, String)], listed: &[(String, String)]| {
+        // Walked in order, so a marker glyph that did not survive still leaves
+        // its block starting exactly where the next kept entry does.
+        let mut bounds = vec![0usize; EMOJI_CATS.len()];
+        let mut cat = 1;
+        let mut at = 0;
+        for (g, _) in listed {
+            while cat < EMOJI_CATS.len() && g == EMOJI_CATS[cat].0 {
+                bounds[cat] = at;
+                cat += 1;
+            }
+            if kept.get(at).map(|(k, _)| k == g).unwrap_or(false) {
+                at += 1;
+            }
+        }
+        for b in bounds.iter_mut().skip(cat) {
+            *b = kept.len();
+        }
+        bounds
+    };
+    let Some(bytes) = emoji_font_bytes() else {
+        let bounds = bounds_of(&listed, &listed);
+        return (listed, bounds);
+    };
+    let Ok(face) = ttf_parser::Face::parse(&bytes, 0) else {
+        let bounds = bounds_of(&listed, &listed);
+        return (listed, bounds);
+    };
+    let has_picture = |c: char| {
+        let pic = |gid| face.glyph_raster_image(gid, u16::MAX).is_some();
+        face.glyph_index(c).map(pic).unwrap_or(false)
+            || face.glyph_variation_index(c, '\u{fe0f}').map(pic).unwrap_or(false)
+    };
+    let kept: Vec<(String, String)> = listed
+        .iter()
+        .filter(|(g, _)| lone_scalar(g).map(has_picture).unwrap_or(false))
+        .cloned()
+        .collect();
+    tracing::info!(
+        "emoji picker: {} of {} glyphs are drawable on this device",
+        kept.len(),
+        listed.len()
+    );
+    let bounds = bounds_of(&kept, &listed);
+    (kept, bounds)
+}
+
+thread_local! {
+    /// Where each category begins in the drawable list, taken once with it.
+    static EMOJI_BOUNDS: std::cell::RefCell<Vec<usize>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// A section caption, as the one-item row the picker recognises by its
+/// empty glyph.
+fn heading_row(label: &str) -> ModelRc<crate::EmojiItem> {
+    ModelRc::new(VecModel::from(vec![crate::EmojiItem {
+        glyph: Default::default(),
+        name: label.into(),
+        has_img: false,
+        img: Default::default(),
+    }]))
+}
+
+/// Where the most-recently-used glyphs live: this device only, beside the
+/// chat themes, never sent anywhere.
+fn emoji_recents_path() -> String {
+    format!(
+        "{}/.local/state/sigil/emoji-recents.json",
+        std::env::var("HOME").unwrap_or_default()
+    )
+}
+
+thread_local! {
+    /// Read once per run, written through on every pick.
+    static EMOJI_RECENTS: std::cell::RefCell<Option<Vec<String>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Two rows' worth is what the reference picker's RECENTS block holds before
+/// it starts scrolling under the next heading.
+const EMOJI_RECENTS_MAX: usize = EMOJI_COLS * 2;
+
+/// The RECENTS block, paired back up with the keywords the grid draws from.
+/// A glyph the bundled list no longer has is dropped rather than shown bare —
+/// and since the list `all` comes from has already been cut down to what this
+/// device can draw (`keep_drawable`), so is one carried over from a phone with
+/// a newer font than this one's.
+fn recent_emojis(all: &[(String, String)]) -> Vec<(String, String)> {
+    EMOJI_RECENTS.with(|cell| {
+        let mut slot = cell.borrow_mut();
+        let list = slot.get_or_insert_with(|| {
+            std::fs::read_to_string(emoji_recents_path())
+                .ok()
+                .and_then(|t| serde_json::from_str::<Value>(&t).ok())
+                .and_then(|v| {
+                    Some(
+                        v.as_array()?
+                            .iter()
+                            .filter_map(|g| g.as_str().map(str::to_string))
+                            .collect(),
+                    )
+                })
+                .unwrap_or_default()
+        });
+        list.iter()
+            .filter_map(|g| all.iter().find(|(e, _)| e == g).cloned())
+            .collect()
+    })
+}
+
+/// Remember a glyph the user just sent or reacted with. The list is written
+/// straight back out so it survives a restart; the picker picks it up the
+/// next time it is opened (every open re-runs `emoji-search`).
+pub fn note_emoji_used(glyph: &str) {
+    // Reaction keys come off the wire, so take only what looks like an emoji:
+    // short, and nothing an ASCII keyboard could have typed.
+    if glyph.is_empty() || glyph.chars().count() > 8 || glyph.chars().any(|c| c.is_ascii()) {
+        return;
+    }
+    EMOJI_RECENTS.with(|cell| {
+        let mut slot = cell.borrow_mut();
+        let list = slot.get_or_insert_with(Vec::new);
+        list.retain(|g| g != glyph);
+        list.insert(0, glyph.to_string());
+        list.truncate(EMOJI_RECENTS_MAX);
+        let path = emoji_recents_path();
+        if let Some(dir) = std::path::Path::new(&path).parent() {
+            let _ = std::fs::create_dir_all(dir);
+        }
+        let _ = std::fs::write(&path, json!(list).to_string());
+    });
 }
 
 fn pick_file(ui: &mut UiState, purpose: &str) {
@@ -2244,6 +2688,31 @@ fn reread_settings_later(ui: &mut UiState) {
 
 // ---------------------------------------------------------------- media pass
 
+/// Ask for a GIF's frame strip if nothing has yet.
+///
+/// The timeline asks for its own (bridge.rs), but only for `kind == "image"` —
+/// the viewer admits stickers too, and a viewer opened from the search page can
+/// run ahead of the timeline's pass. `Null` in the map means a request is
+/// already out; `false` means the engine said this is not animated.
+fn gif_frames_for_viewer(ui: &mut UiState, item: &Value) {
+    let ev = s(item, "eventId").to_string();
+    if ev.is_empty() {
+        return;
+    }
+    let mime = item["media"]["mime"].as_str().unwrap_or("");
+    let filename = item["media"]["filename"].as_str().unwrap_or("");
+    if !mime.contains("gif") && !filename.to_ascii_lowercase().ends_with(".gif") {
+        return;
+    }
+    let room_id = room_of_key(&ui.open_room);
+    let key = format!("{room_id}|{ev}");
+    if ui.gif_frames.contains_key(&key) {
+        return;
+    }
+    ui.gif_frames.insert(key.clone(), Value::Null);
+    fetch_gif_frames(&ui.req.clone(), &room_id, &ev, key);
+}
+
 fn viewer_open(ui: &mut UiState, win: &AppWindow, event_id: &str) {
     ui.viewer_items = ui
         .shadow
@@ -2251,6 +2720,16 @@ fn viewer_open(ui: &mut UiState, win: &AppWindow, event_id: &str) {
         .filter(|i| matches!(s(i, "kind"), "image" | "sticker" | "video"))
         .cloned()
         .collect();
+    // The strip the frames come from is shared with the timeline, which may
+    // never have looked at this item; the viewer asks for its own.
+    if let Some(item) = ui
+        .viewer_items
+        .iter()
+        .find(|i| s(i, "eventId") == event_id)
+        .cloned()
+    {
+        gif_frames_for_viewer(ui, &item);
+    }
     let cur = ui
         .viewer_items
         .iter()
@@ -2642,39 +3121,146 @@ fn tick_recorder(ui: &mut UiState) {
     });
 }
 
-fn attach_files(ui: &mut UiState) {
+/// What an attach tile asked for. All four end the same way: real files on
+/// disk, sent to the open room in the order they were chosen.
+#[derive(Clone, Copy)]
+enum AttachPick {
+    /// Any file at all (AttachMenu.qml's only media route).
+    Files,
+    /// Pictures and video from the gallery, several at a time.
+    Gallery,
+    /// The camera, for a still.
+    Photo,
+    /// The camera, recording.
+    Video,
+}
+
+fn attach_pick(ui: &mut UiState, what: AttachPick) {
     let room = room_of_key(&ui.open_room);
     ui.req.handle().spawn(async move {
-        if let Some(path) = crate::platform::pick_file().await {
-            let _ = slint::invoke_from_event_loop(move || {
-                with_ui(|ui| {
-                    ui.req
-                        .fire("attachment.send", json!({"roomId": room, "path": path}));
-                    if let Some(win) = ui.win.upgrade() {
-                        win.set_attach_open(false);
-                    }
-                });
-            });
+        // The picker is a whole system UI away on Android and a subprocess on
+        // the desktop; this can take a minute — a whole photo shoot, for the
+        // camera — and the sheet has closed itself in the meantime
+        // (attach.slint fires close-requested with the tile).
+        let paths: Vec<String> = match what {
+            AttachPick::Files => crate::platform::pick_file().await.into_iter().collect(),
+            AttachPick::Gallery => crate::platform::pick_media().await,
+            AttachPick::Photo => crate::platform::capture_media(false)
+                .await
+                .into_iter()
+                .collect(),
+            AttachPick::Video => crate::platform::capture_media(true)
+                .await
+                .into_iter()
+                .collect(),
+        };
+        if paths.is_empty() {
+            // Backing out of the picker is the ordinary case, so this is not a
+            // warning — but it is the one line that tells the two apart in a
+            // log when nothing arrives in the room.
+            tracing::info!("attach: nothing was chosen");
+            return;
         }
+        let _ = slint::invoke_from_event_loop(move || {
+            with_ui(|ui| {
+                // One send each, in the order they were picked: the engine's
+                // attachment.send takes a single file, and the timeline shows
+                // each as its own message the way the gallery grid implies.
+                for path in &paths {
+                    ui.req.fire(
+                        "attachment.send",
+                        json!({"roomId": room.clone(), "path": path}),
+                    );
+                }
+                if let Some(win) = ui.win.upgrade() {
+                    win.set_attach_open(false);
+                }
+            });
+        });
     });
 }
 
 fn create_poll(ui: &mut UiState, question: &str, packed: &str) {
     let mut parts = packed.split('\u{1f}');
     let closed = parts.next().unwrap_or("0") == "1";
-    // AttachMenu sends the trimmed question and only the non-blank trimmed options.
+    // The sheet's only seam here is create-poll(question, options, closed),
+    // so "voters may pick more than one" arrives as a \u{1}1 / \u{1}0 header
+    // on the question — a control character no text field can produce, and
+    // one an older caller (drive.rs) simply does not send.
+    let (multi, question) = match question.strip_prefix('\u{1}') {
+        Some(rest) => (rest.starts_with('1'), rest.get(1..).unwrap_or("")),
+        None => (false, question),
+    };
+    let question = question.trim();
+    // The sheet cannot trim (Slint has no trim, and its option slots are
+    // plain text), so this is where a blank or whitespace-only option is
+    // dropped — before the poll is built, not merely hidden in the view.
     let options: Vec<&str> = parts.map(str::trim).filter(|o| !o.is_empty()).collect();
-    if options.len() < 2 || question.trim().is_empty() {
+    if options.len() < 2 || question.is_empty() {
+        if let Some(win) = ui.win.upgrade() {
+            win.set_chat_toast(
+                if question.is_empty() {
+                    "A poll needs a question"
+                } else {
+                    "A poll needs two options"
+                }
+                .into(),
+            );
+        }
         return;
     }
+    // Multiple answers means "as many as there are" — the engine clamps
+    // maxSelections to the option count anyway (core kinds.rs poll_create).
+    let max = if multi { options.len() } else { 1 };
     let room = room_of_key(&ui.open_room);
     ui.req.fire(
         "poll.create",
-        json!({"roomId": room, "question": question.trim(), "options": options, "closed": closed}),
+        json!({"roomId": room, "question": question, "options": options,
+               "closed": closed, "maxSelections": max}),
     );
     if let Some(win) = ui.win.upgrade() {
         win.set_attach_open(false);
     }
+}
+
+/// Show a vote the instant it is cast: `mine` moves to the answers just
+/// chosen, each one's count and the voter total move with it, and the engine's
+/// next timeline diff overwrites the lot with the truth.
+fn poll_echo(ui: &mut UiState, event_id: &str, answers: &[String]) {
+    let Some(item) = ui
+        .shadow
+        .iter_mut()
+        .find(|i| i["eventId"].as_str() == Some(event_id))
+    else {
+        return;
+    };
+    let Some(poll) = item.get_mut("poll").and_then(Value::as_object_mut) else {
+        return;
+    };
+    if poll.get("ended").and_then(Value::as_bool).unwrap_or(false) {
+        return;
+    }
+    let mut voted_before = false;
+    if let Some(list) = poll.get_mut("answers").and_then(Value::as_array_mut) {
+        for o in list.iter_mut() {
+            let id = o["id"].as_str().unwrap_or("").to_string();
+            let was = o["mine"].as_bool().unwrap_or(false);
+            let now = answers.iter().any(|x| *x == id);
+            voted_before |= was;
+            if was != now {
+                let n = o["votes"].as_i64().unwrap_or(0) + if now { 1 } else { -1 };
+                o["votes"] = json!(n.max(0));
+            }
+            o["mine"] = json!(now);
+        }
+    }
+    let voters = poll.get("voters").and_then(Value::as_i64).unwrap_or(0);
+    let voters = match (voted_before, answers.is_empty()) {
+        (false, false) => voters + 1, // a new voter
+        (true, true) => voters - 1,   // took the vote back
+        _ => voters,
+    };
+    poll.insert("voters".into(), json!(voters.max(0)));
 }
 
 fn load_stickers(ui: &mut UiState, _win: &AppWindow) {

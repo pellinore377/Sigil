@@ -3,6 +3,14 @@
 // thread-focused timeline and the ordinary chat page renders it
 // (ThreadsPage.qml). Chat-theme tones arrive pre-mixed via `accent`;
 // the full ChatPage derivation is noted in WIRING-spaces.md.
+//
+// On the phone the browser arrives out of the conversation in the same three
+// beats the conversation itself arrives in (chat.slint:90-109, map.slint
+// :153-190): the header's furniture lets go and the word "Threads" comes in
+// from the right (head-t), then the list's ground rises from the page bottom
+// (list-t), and only once those have landed do the rows follow it up
+// (foot-t) — the beat the conversation spends on its composer. Leaving plays
+// the three in reverse; the holder in app.slint waits for it (`hold`).
 
 import { TouchList } from "../furniture.slint";
 import { Theme } from "../style.slint";
@@ -20,6 +28,16 @@ export component ThreadsPage inherits Rectangle {
     /// A chat theme accent is set for this room (ThreadsPage.qml:21).
     in property <bool> themed: false;
 
+    // The conversation's own bar, so the phone's header can start as an exact
+    // copy of it and morph out of it (map.slint:132-146).
+    in property <string> room-subtitle;
+    in property <image> room-avatar;
+    in property <string> room-initials;
+    in property <color> room-tint: Theme.accent;
+    /// The tone the conversation's header settled on (chat.slint's `top-rest`),
+    /// so the bar this page morphs is the very same colour.
+    in property <color> header-c: Theme.card-ground;
+
     callback closed;
     callback thread-picked(string);
 
@@ -31,20 +49,67 @@ export component ThreadsPage inherits Rectangle {
         ? Theme.menu-background.brighter(0.35).mix(root.accent, 0.65)
         : Theme.popup-background;
     property <color> chrome-c: root.themed ? root.surface-c : Theme.menu-background.brighter(0.35);
+    // The conversation's ground, chat.slint:372-375 verbatim: the phone's light
+    // palette is near white and darkening it reads as grey, so there the sheet
+    // sits on the card ground instead.
+    property <color> convo-base: root.phone && Theme.mode == "light"
+        ? Theme.card-ground : Theme.menu-background.darker(0.35);
     property <color> convo-c: root.themed
-        ? Theme.menu-background.darker(0.35).mix(root.accent, 0.82)
-        : Theme.menu-background.darker(0.35);
+        ? root.convo-base.mix(root.accent, 0.82)
+        : root.convo-base;
 
-    background: root.chrome-c;
+    /// The page is the one on the stack (app.slint's threads holder).
+    in property <bool> phone: Theme.mode != "desktop";
+    in property <bool> opened: true;
+    property <float> head-t: 1.0;
+    property <float> list-t: 1.0;
+    property <float> foot-t: 1.0;
+    states [
+        closed when root.phone && !root.opened : {
+            head-t: 0.0;
+            list-t: 0.0;
+            foot-t: 0.0;
+            // `in` is the way back to the conversation, `out` the arrival —
+            // linear clocks, with the fades and the motion taking their own
+            // windows and easings off them (chat.slint:92-107).
+            in {
+                animate foot-t { duration: 150ms; }
+                animate list-t { duration: 200ms; delay: 110ms; }
+                animate head-t { duration: 190ms; delay: 250ms; }
+            }
+            out {
+                animate head-t { duration: 220ms; }
+                animate list-t { duration: 260ms; delay: 200ms; }
+                animate foot-t { duration: 220ms; delay: 440ms; }
+            }
+        }
+    ]
+    property <float> list-e: 1 - (1 - root.list-t) * (1 - root.list-t) * (1 - root.list-t);
+    property <float> foot-e: 1 - (1 - root.foot-t) * (1 - root.foot-t) * (1 - root.foot-t);
+    // The conversation's furniture lets go over the first 45% of the header
+    // beat; the word arrives over the last 65%, so the bar is bare in between.
+    property <float> shed: max(0.0, 1 - root.head-t / 0.45);
+    property <float> word-t: clamp((root.head-t - 0.35) / 0.65, 0.0, 1.0);
+    property <float> word-e: 1 - (1 - root.word-t) * (1 - root.word-t) * (1 - root.word-t);
+    property <length> header-h: root.phone ? 60px : 56px;
+    /// What sits under the status bar: the header's own ground, so the inset
+    /// reads as part of the page (chat.slint's `top-ground`).
+    out property <color> top-ground: root.phone ? root.header-c : root.chrome-c;
 
-    VerticalLayout {
-        // Header: title + unconditional subtitle (a subtitle that appears only
-        // once the count lands makes the title jump on load).
-        // ThreadsPage.qml:80-91: PanelActionButton (22×22) at 6, the title
-        // column 6 past it (x 34) and 14 short of the right edge.
+    background: root.phone ? root.header-c : root.chrome-c;
+
+    // Absolute rather than stacked: on the phone the ground rises from the
+    // page bottom while the header stays put, so the two move independently.
+    Rectangle {
+        width: 100%; height: 100%;
+
         header := Rectangle {
-            height: 56px;
-            HorizontalLayout {
+            x: 0; y: 0; width: parent.width; height: root.header-h;
+            background: transparent;
+            clip: true;
+            // ThreadsPage.qml:80-91: PanelActionButton (22×22) at 6, the title
+            // column 6 past it (x 34) and 14 short of the right edge.
+            if !root.phone : HorizontalLayout {
                 padding-left: 6px; padding-right: 14px;
                 spacing: 6px;
                 Rectangle {
@@ -70,9 +135,7 @@ export component ThreadsPage inherits Rectangle {
                         overflow: elide;
                     }
                     Text {
-                        text: root.threads.length == 0 ? root.room-name
-                            : root.threads.length == 1 ? "\{root.room-name} · 1 thread"
-                            : "\{root.room-name} · \{root.threads.length} threads";
+                        text: root.count-line;
                         color: root.fg.with-alpha(0.55);
                         font-family: Theme.font-ui;
                         font-size: Theme.caption;
@@ -80,119 +143,240 @@ export component ThreadsPage inherits Rectangle {
                     }
                 }
             }
-        }
-
-        ground := Rectangle {
-            vertical-stretch: 1;
-            background: root.convo-c;
-            border-top-left-radius: 24px;
-            border-top-right-radius: 24px;
-            clip: true;
-
-            // Empty and loading say different things.
-            if root.threads.length == 0 : VerticalLayout {
-                alignment: center;
-                padding-left: 30px; padding-right: 30px;
-                spacing: 10px;
-                IconLabel {
-                    text: Icons.thread;
-                    color: root.accent.with-alpha(0.8);
-                    font-size: 44px;
-                    horizontal-alignment: center;
+            // The phone's bar, in chat.slint's own geometry (:586-592): a 24px
+            // back glyph in a 48 target at 4, the 40 avatar at 56, the title at
+            // 108, three 48 targets from the right 8 apart and 8 in.
+            if root.phone : phone-bar := Rectangle {
+                width: 100%; height: 100%;
+                // The back arrow is the one thing that stays: it is already
+                // under the finger that opened the page, and it does not move.
+                back-target := Rectangle {
+                    x: 4px; y: 6px; width: 48px; height: 48px; border-radius: 24px;
+                    background: back-t.pressed ? root.fg.with-alpha(0.10)
+                              : back-t.has-hover ? root.fg.with-alpha(0.06) : transparent;
+                    IconLabel { text: Icons.back; filled: true; color: root.fg; font-size: 24px; width: 100%; height: 100%; }
+                    back-t := TouchArea { clicked => { root.closed(); } }
                 }
-                Text {
-                    text: root.loading || !root.loaded ? "Looking for threads…" : "No threads yet";
-                    color: root.fg;
-                    font-family: Theme.font-ui;
-                    font-size: Theme.body;
-                    font-weight: 700;
-                    horizontal-alignment: center;
+                // Everything the conversation had, fading out where it stood:
+                // the room's face, its name and subtitle, and the trailing
+                // glyphs. They belong to the page underneath, so they are a
+                // picture of it — nothing here is tappable.
+                if root.shed > 0 : Rectangle {
+                    width: 100%; height: 100%;
+                    opacity: root.shed;
+                    Avatar {
+                        x: 56px; y: 10px; size: 40px;
+                        source: root.room-avatar;
+                        initials: root.room-initials;
+                        tint: root.room-tint;
+                        status-backdrop: root.header-c;
+                    }
+                    VerticalLayout {
+                        x: 108px; y: 0; height: 100%;
+                        width: max(0px, phone-bar.width - 176px - 108px);
+                        alignment: center;
+                        Text {
+                            text: root.room-name;
+                            color: root.fg;
+                            font-family: Theme.font-ui; font-size: 17px; font-weight: 500;
+                            overflow: elide;
+                        }
+                        if root.room-subtitle != "" : Text {
+                            text: root.room-subtitle;
+                            color: root.fg.with-alpha(0.5);
+                            font-family: Theme.font-ui; font-size: 13px;
+                            overflow: elide;
+                        }
+                    }
+                    for g[i] in [Icons.phone, Icons.videoOn, Icons.moreVertical] : Rectangle {
+                        x: phone-bar.width - 168px + i * 56px; y: 6px;
+                        width: 48px; height: 48px;
+                        IconLabel { text: g; filled: true; color: root.fg; font-size: 24px; width: 100%; height: 100%; }
+                    }
                 }
-                if root.loaded && !root.loading : Text {
-                    text: "Reply in thread from a message's menu to start one.";
-                    color: root.fg.with-alpha(0.6);
-                    font-family: Theme.font-ui;
-                    font-size: Theme.caption;
-                    horizontal-alignment: center;
-                    wrap: word-wrap;
+                // … and then the word, in from the right edge onto the spot
+                // the conversation's own title held, with the count under it.
+                VerticalLayout {
+                    x: 56px + (phone-bar.width - 56px) * (1 - root.word-e);
+                    y: 0; height: 100%;
+                    width: max(0px, phone-bar.width - 72px);
+                    alignment: center;
+                    opacity: root.word-t;
+                    Text {
+                        text: "Threads";
+                        color: root.fg;
+                        font-family: Theme.font-ui; font-size: 19px; font-weight: 500;
+                        overflow: elide;
+                    }
+                    Text {
+                        text: root.count-line;
+                        color: root.fg.with-alpha(0.5);
+                        font-family: Theme.font-ui; font-size: 13px;
+                        overflow: elide;
+                    }
                 }
             }
+        }
 
-            if root.threads.length > 0 : TouchList {
-                y: 6px;
-                width: 100%; height: ground.height - 6px;
-                for thread in root.threads : trow := Rectangle {
-                    height: 64px;
-                    Rectangle {
-                        x: 8px; width: trow.width - 16px;
-                        y: 4px; height: trow.height - 8px;
-                        border-radius: 14px;
-                        background: trow-t.pressed || trow-t.has-hover
-                            ? root.fg.with-alpha(0.05) : transparent;
+        // Until the ground arrives the conversation's own sheet stands under
+        // the header — the page opens over the chat, so what it stands on is
+        // the chat's ground, in the tone chat.slint paints it (`convo-paint`,
+        // :386-387): the same colour this page's own ground is about to be, so
+        // the arrival changes the rows and nothing else.
+        if root.phone && root.list-t < 1 : Rectangle {
+            x: 0; y: root.header-h; width: 100%;
+            height: parent.height - root.header-h;
+            background: root.convo-c.mix(root.header-c, 0.94);
+            border-top-left-radius: 28px; border-top-right-radius: 28px;
+        }
+
+        // The second beat: once the header has settled, the ground rises from
+        // the page's bottom edge on an OutCubic, exactly as the conversation's
+        // sheet does (chat.slint:733-750).
+        ground := Rectangle {
+            x: 0; width: parent.width;
+            height: parent.height - root.header-h;
+            y: root.header-h + (parent.height - root.header-h) * (1 - root.list-e);
+            background: root.convo-c;
+            border-top-left-radius: root.phone ? 28px : 24px;
+            border-top-right-radius: root.phone ? 28px : 24px;
+            clip: true;
+
+            // 46px highlight across the rounded top (ChatPage.qml:966).
+            if root.phone : Rectangle {
+                x: 0; y: 0; width: 100%; height: 46px;
+                background: @linear-gradient(180deg,
+                    Theme.menu-background.brighter(0.35).with-alpha(0.3) 0%,
+                    transparent 100%);
+            }
+
+            // The third beat: the rows follow the ground up, the room the
+            // conversation gives its composer. Everything inside the ground
+            // rides one lift, so an empty page arrives the same way a full
+            // one does.
+            // The `if` is not only thrift. A clock read from nothing but a
+            // render-time property (an opacity, a child's y) inside a box that
+            // is off screen for the first two beats is never evaluated while
+            // the state changes, so it wakes at its resting value and the beat
+            // never plays; a condition is evaluated with the item tree, whether
+            // anything is drawn or not — which is how `shed` and the
+            // understudy's `list-t` keep the first two beats honest.
+            if root.foot-t > 0 : body := Rectangle {
+                x: 0; width: 100%; height: 100%;
+                y: 24px * (1 - root.foot-e);
+                opacity: root.foot-t;
+
+                // Empty and loading say different things.
+                if root.threads.length == 0 : VerticalLayout {
+                    alignment: center;
+                    padding-left: 30px; padding-right: 30px;
+                    spacing: 10px;
+                    IconLabel {
+                        text: Icons.thread;
+                        color: root.accent.with-alpha(0.8);
+                        font-size: 44px;
+                        horizontal-alignment: center;
                     }
-                    // ThreadsPage.qml:176-229: avatar 44 at 16, centred; text
-                    // 12 past it and 10 short of the stamp, which sits 16
-                    // from the right.
-                    HorizontalLayout {
-                        padding-left: 16px; padding-right: 16px;
-                        spacing: 0px;
+                    Text {
+                        text: root.loading || !root.loaded ? "Looking for threads…" : "No threads yet";
+                        color: root.fg;
+                        font-family: Theme.font-ui;
+                        font-size: Theme.body;
+                        font-weight: 700;
+                        horizontal-alignment: center;
+                    }
+                    if root.loaded && !root.loading : Text {
+                        text: "Swipe a message toward its own edge, or use its menu, to start one.";
+                        color: root.fg.with-alpha(0.6);
+                        font-family: Theme.font-ui;
+                        font-size: Theme.caption;
+                        horizontal-alignment: center;
+                        wrap: word-wrap;
+                    }
+                }
+
+                if root.threads.length > 0 : TouchList {
+                    y: 6px;
+                    width: 100%; height: ground.height - 6px;
+                    for thread in root.threads : trow := Rectangle {
+                        height: 64px;
                         Rectangle {
-                            width: 44px;
-                            Avatar {
-                                y: (trow.height - self.height) / 2;
-                                size: 44px;
-                                source: thread.avatar;
-                                initials: thread.initials;
-                                tint: thread.tint;
-                            }
+                            x: 8px; width: trow.width - 16px;
+                            y: 4px; height: trow.height - 8px;
+                            border-radius: 14px;
+                            background: trow-t.pressed || trow-t.has-hover
+                                ? root.fg.with-alpha(0.05) : transparent;
                         }
-                        Rectangle { width: 12px; }
-                        VerticalLayout {
-                            alignment: center;
-                            spacing: 2px;
-                            horizontal-stretch: 1;
-                            Text {
-                                text: thread.sender-name;
-                                color: root.fg;
-                                font-family: Theme.font-ui;
-                                font-size: Theme.subtitle;
-                                font-weight: 700;
-                                overflow: elide;
-                            }
-                            HorizontalLayout {
-                                alignment: start;
-                                spacing: 5px;
-                                if thread.reply-count > 0 : Text {
-                                    text: thread.reply-count == 1 ? "1 reply" : "\{thread.reply-count} replies";
-                                    color: root.accent.with-alpha(0.9);
-                                    font-family: Theme.font-ui;
-                                    font-size: Theme.body-small;
-                                    font-weight: 700;
-                                    vertical-alignment: center;
+                        // ThreadsPage.qml:176-229: avatar 44 at 16, centred; text
+                        // 12 past it and 10 short of the stamp, which sits 16
+                        // from the right.
+                        HorizontalLayout {
+                            padding-left: 16px; padding-right: 16px;
+                            spacing: 0px;
+                            Rectangle {
+                                width: 44px;
+                                Avatar {
+                                    y: (trow.height - self.height) / 2;
+                                    size: 44px;
+                                    source: thread.avatar;
+                                    initials: thread.initials;
+                                    tint: thread.tint;
                                 }
+                            }
+                            Rectangle { width: 12px; }
+                            VerticalLayout {
+                                alignment: center;
+                                spacing: 2px;
+                                horizontal-stretch: 1;
                                 Text {
-                                    text: thread.body != "" ? thread.body : "Thread";
-                                    color: root.fg.with-alpha(0.55);
+                                    text: thread.sender-name;
+                                    color: root.fg;
                                     font-family: Theme.font-ui;
-                                    font-size: Theme.body-small;
+                                    font-size: Theme.subtitle;
+                                    font-weight: 700;
                                     overflow: elide;
-                                    vertical-alignment: center;
-                                    horizontal-stretch: 1;
+                                }
+                                HorizontalLayout {
+                                    alignment: start;
+                                    spacing: 5px;
+                                    if thread.reply-count > 0 : Text {
+                                        text: thread.reply-count == 1 ? "1 reply" : "\{thread.reply-count} replies";
+                                        color: root.accent.with-alpha(0.9);
+                                        font-family: Theme.font-ui;
+                                        font-size: Theme.body-small;
+                                        font-weight: 700;
+                                        vertical-alignment: center;
+                                    }
+                                    Text {
+                                        text: thread.body != "" ? thread.body : "Thread";
+                                        color: root.fg.with-alpha(0.55);
+                                        font-family: Theme.font-ui;
+                                        font-size: Theme.body-small;
+                                        overflow: elide;
+                                        vertical-alignment: center;
+                                        horizontal-stretch: 1;
+                                    }
                                 }
                             }
+                            Rectangle { width: 10px; }
+                            Text {
+                                text: thread.last-ts-label;
+                                color: root.fg.with-alpha(0.45);
+                                font-family: Theme.font-ui;
+                                font-size: Theme.caption;
+                                vertical-alignment: center;
+                            }
                         }
-                        Rectangle { width: 10px; }
-                        Text {
-                            text: thread.last-ts-label;
-                            color: root.fg.with-alpha(0.45);
-                            font-family: Theme.font-ui;
-                            font-size: Theme.caption;
-                            vertical-alignment: center;
-                        }
+                        trow-t := TouchArea { clicked => { root.thread-picked(thread.root-id); } }
                     }
-                    trow-t := TouchArea { clicked => { root.thread-picked(thread.root-id); } }
                 }
             }
         }
     }
+
+    // A subtitle that appears only once the count lands makes the title jump
+    // on load, so it is unconditional.
+    property <string> count-line: root.threads.length == 0 ? root.room-name
+        : root.threads.length == 1 ? "\{root.room-name} · 1 thread"
+        : "\{root.room-name} · \{root.threads.length} threads";
 }

@@ -518,5 +518,45 @@
     "codepoint": "E7F6",
     "material": "notifications_off",
     "group": "spaces and settings"
+  },
+  "emojiPeople": {
+    "codepoint": "EA1D",
+    "material": "emoji_people",
+    "group": "emoji categories"
+  },
+  "emojiNature": {
+    "codepoint": "EA1C",
+    "material": "emoji_nature",
+    "group": "emoji categories"
+  },
+  "emojiFood": {
+    "codepoint": "EA1B",
+    "material": "emoji_food_beverage",
+    "group": "emoji categories"
+  },
+  "emojiTravel": {
+    "codepoint": "EA1F",
+    "material": "emoji_transportation",
+    "group": "emoji categories"
+  },
+  "emojiEvents": {
+    "codepoint": "E71A",
+    "material": "trophy",
+    "group": "emoji categories"
+  },
+  "emojiObjects": {
+    "codepoint": "EA24",
+    "material": "emoji_objects",
+    "group": "emoji categories"
+  },
+  "emojiSymbols": {
+    "codepoint": "EA1E",
+    "material": "emoji_symbols",
+    "group": "emoji categories"
+  },
+  "emojiFlags": {
+    "codepoint": "E153",
+    "material": "flag",
+    "group": "emoji categories"
   }
 }

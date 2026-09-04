@@ -24,6 +24,17 @@ pub fn run_app() -> anyhow::Result<()> {
         .thread_stack_size(16 * 1024 * 1024)
         .build()?;
 
+    // The device switches, read before anything starts: "demo" stands the
+    // whole app up on the fixtures with no account and no server, which is
+    // how the phone's own look is checked at its real size and density.
+    //   adb shell 'echo demo > /data/local/tmp/sigil-flags'
+    let flags = std::fs::read_to_string("/data/local/tmp/sigil-flags").unwrap_or_default();
+    let flag = |name: &str| flags.lines().any(|l| l.trim() == name);
+    if flag("demo") {
+        std::env::set_var("SIGIL_SLINT_DEMO", "1");
+        std::env::set_var("SIGIL_SLINT_DEMO_CHAT", "1");
+    }
+
     let win = AppWindow::new()?;
     let icons = rows::IconSet::from_window(&win);
     bridge::start(&win, &rt, icons);
@@ -32,16 +43,24 @@ pub fn run_app() -> anyhow::Result<()> {
         win.global::<Theme>().set_mode(m.as_str().into());
         rows::DARK_SCHEME.store(m != "light", std::sync::atomic::Ordering::Relaxed);
     }
-    // Diagnostic switches for a device build: one flag name per line.
-    if let Ok(flags) = std::fs::read_to_string("/data/local/tmp/sigil-flags") {
+    // The rest of the device switches, one flag name per line.
+    {
         let t = win.global::<Theme>();
-        for f in flags.lines().map(str::trim) {
-            match f {
-                "no-fx-copies" => t.set_dbg_no_fx_copies(true),
-                "no-convo-clip" => t.set_dbg_no_convo_clip(true),
-                "cache-bubbles" => t.set_dbg_cache_bubbles(true),
-                _ => {}
-            }
+        if flag("no-fx-copies") {
+            t.set_dbg_no_fx_copies(true);
+        }
+        if flag("no-convo-clip") {
+            t.set_dbg_no_convo_clip(true);
+        }
+        if flag("cache-bubbles") {
+            t.set_dbg_cache_bubbles(true);
+        }
+        // "dark" / "light" force the palette a device check wants to see.
+        if flag("dark") || flag("light") {
+            let m = if flag("dark") { "dark" } else { "light" };
+            t.set_mode(m.into());
+            rows::DARK_SCHEME.store(m == "dark", std::sync::atomic::Ordering::Relaxed);
+            scale::FORCED_MODE.store(true, std::sync::atomic::Ordering::Relaxed);
         }
     }
     scale::keep(&win);

@@ -22,6 +22,11 @@ export component SelfPin inherits Rectangle {
     in property <color> pin-color: Theme.accent;
     in property <image> avatar;
     in property <bool> ripple: false;
+    /// The location category's own glyph (Icons.myLocation / liveLocation /
+    /// pinDrop), worn as a small disc on the pin's shoulder so the marker
+    /// carries the same icon the attach sheet's tile for that category does.
+    /// Empty (the picker's use) leaves the plain pin.
+    in property <string> badge;
     width: 48px; height: 48px;
     background: transparent;
     property <length> head-cx: 48px * 0.4896;
@@ -75,6 +80,23 @@ export component SelfPin inherits Rectangle {
         clip: true;
         Image { source: root.avatar; width: 100%; height: 100%; image-fit: cover; }
     }
+    // The category's glyph on the pin's shoulder, in the attach tile's own
+    // arrangement: the icon centred on a filled disc. The disc is the dark
+    // one, not the pin's colour — on the pin's own colour it would read as a
+    // hole punched in the head rather than as a badge worn on it.
+    if root.badge != "" : Rectangle {
+        x: 30px; y: 0;
+        width: 18px; height: 18px;
+        border-radius: 9px;
+        background: #141414;
+        IconLabel {
+            text: root.badge;
+            filled: true;
+            color: root.pin-color;
+            font-size: 12px;
+            width: 100%; height: 100%;
+        }
+    }
 }
 
 /// One rendered tile, placed by the bridge: the map is a grid of these, not
@@ -106,20 +128,76 @@ export component MapPage inherits Rectangle {
     in property <string> sender-initials;
     in property <color> sender-tint: Theme.accent;
     in-out property <string> toast;
-    /// The phone opens this page the way it opens a conversation: the map
-    /// rises from the bottom while the header settles, instead of the
-    /// desktop card's slide from the edge (chat.slint's open-t / open-e).
+    // The room the point was shared in, so the phone's header can start as
+    // the conversation's own and morph out of it.
+    in property <string> room-name;
+    in property <string> room-subtitle;
+    in property <image> room-avatar;
+    in property <string> room-initials;
+    in property <color> room-tint: Theme.accent;
+    /// The room carries a chat theme: the header band and the footer sheet
+    /// take the conversation's tones instead of the plain chrome.
+    in property <bool> themed;
+    /// The conversation header's ground (chat.slint's `top-ground`), so the
+    /// bar the page morphs out of is the very same colour.
+    in property <color> header-c: Theme.card-ground;
+    /// The themed chrome surface (chat.slint's `surface-c`) the footer sheet
+    /// sits on.
+    in property <color> surface-c: Theme.popup-background;
+    /// The gesture inset below the page. The window paints nothing there for
+    /// this page (`bottom-ground` is transparent), so the map and the footer
+    /// run on down through it and the bar shows the page, not a strip.
+    in property <length> bleed-bottom: 0px;
+    out property <color> bottom-ground: Colors.transparent;
+
+    /// The phone opens this page out of the conversation, in three beats:
+    /// the header's furniture lets go and "Location" arrives from the right
+    /// (head-t), then the map rises from the bottom (map-t), and only once
+    /// those have landed does the footer follow it up (foot-t). Closing plays
+    /// the three in reverse — the holder in app.slint waits for it (`hold`).
     in property <bool> phone: Theme.mode != "desktop";
     in property <bool> opened: true;
-    property <float> open-t: 1.0;
+    property <float> head-t: 1.0;
+    property <float> map-t: 1.0;
+    property <float> foot-t: 1.0;
     states [
         closed when root.phone && !root.opened : {
-            open-t: 0.0;
-            in { animate open-t { duration: 220ms; } }
-            out { animate open-t { duration: 280ms; } }
+            head-t: 0.0;
+            map-t: 0.0;
+            foot-t: 0.0;
+            // `in` is the way back to the conversation, `out` the arrival —
+            // linear clocks, with the fades and the motion taking their own
+            // windows and easings off them (chat.slint:92-107).
+            in {
+                animate foot-t { duration: 150ms; }
+                animate map-t { duration: 200ms; delay: 110ms; }
+                animate head-t { duration: 190ms; delay: 250ms; }
+            }
+            out {
+                animate head-t { duration: 220ms; }
+                animate map-t { duration: 260ms; delay: 200ms; }
+                animate foot-t { duration: 220ms; delay: 440ms; }
+            }
         }
     ]
-    property <float> open-e: 1 - (1 - root.open-t) * (1 - root.open-t) * (1 - root.open-t);
+    property <float> head-e: 1 - (1 - root.head-t) * (1 - root.head-t) * (1 - root.head-t);
+    property <float> map-e: 1 - (1 - root.map-t) * (1 - root.map-t) * (1 - root.map-t);
+    property <float> foot-e: 1 - (1 - root.foot-t) * (1 - root.foot-t) * (1 - root.foot-t);
+    // The conversation's furniture lets go over the first 45% of the header
+    // beat; the word arrives over the last 65%, so the bar is bare in between.
+    property <float> shed: max(0.0, 1 - root.head-t / 0.45);
+    property <float> word-t: clamp((root.head-t - 0.35) / 0.65, 0.0, 1.0);
+    property <float> word-e: 1 - (1 - root.word-t) * (1 - root.word-t) * (1 - root.word-t);
+    property <length> header-h: root.phone ? 60px : 52px;
+
+    /// Which of the attachment sheet's three location tiles this point came
+    /// from, so every glyph on the page is that category's own: a running or
+    /// finished share is Live Location, your own fix is Current Location,
+    /// anything else is a dropped pin (attach.slint:554-561).
+    property <string> category: root.live || root.ended ? "live"
+        : root.self-marker ? "current" : "pin";
+    property <string> cat-icon: root.category == "live" ? Icons.liveLocation
+        : root.category == "current" ? Icons.myLocation : Icons.pinDrop;
     // The engine's composite, centred on the point; empty until location.map
     // lands. It is the still fallback: with a tile server the page draws the
     // grid below instead, which drags and zooms.
@@ -141,6 +219,14 @@ export component MapPage inherits Rectangle {
     callback panned(length, length);
     /// A step in or out about a point in the map area (a double tap).
     callback zoom-at(int, length, length);
+    /// Two fingers went down: the bridge remembers where the view was, so
+    /// every step of the pinch is measured from there.
+    callback pinch-begin();
+    /// The fingers have spread by this much since they went down, with their
+    /// midpoint here in the map area: the view magnifies about it.
+    callback pinched(float, length, length);
+    /// The fingers lifted: the view eases onto the whole zoom nearest it.
+    callback pinch-end();
 
     property <color> chip: Theme.background.with-alpha(0.85);
     // MapPage.qml:44, 47 — openable = pin || (liveKind && live && !own), where
@@ -162,27 +248,102 @@ export component MapPage inherits Rectangle {
     // bottom while the header stays put, so the two move independently.
     Rectangle {
         width: 100%; height: 100%;
-        // Header (52px, MapPage.qml:158-178 — its own, not the settings header).
+        // Header (MapPage.qml:158-178 — its own, not the settings header).
+        // The phone's is the conversation's bar carried across and morphed:
+        // it starts as an exact copy of chat.slint's phone-bar at rest, so
+        // nothing appears to move when the page arrives, and then everything
+        // but the back arrow lets go and the word "Location" comes in from
+        // the right. Its ground is the conversation's own (`header-c`).
         header := Rectangle {
-            x: 0; y: 0; width: parent.width; height: 52px;
-            // :162-169 — 22px PanelActionButton at leftMargin 6.
-            back-btn := ActionButton {
-                x: 6px; y: (52px - 22px) / 2;
-                width: 22px; height: 22px;
-                icon: Icons.back;
-                foreground: root.fg;
-                clicked => { root.closed(); }
+            x: 0; y: 0; width: parent.width; height: root.header-h;
+            background: root.phone ? root.header-c : Colors.transparent;
+            clip: true;
+            if !root.phone : Rectangle {
+                width: 100%; height: 100%;
+                // :162-169 — 22px PanelActionButton at leftMargin 6.
+                back-btn := ActionButton {
+                    x: 6px; y: (52px - 22px) / 2;
+                    width: 22px; height: 22px;
+                    icon: Icons.back;
+                    foreground: root.fg;
+                    clicked => { root.closed(); }
+                }
+                // :170-177 — title at backBtn.right + 8 = 36, rightMargin 12.
+                Text {
+                    x: 36px; width: header.width - 36px - 12px; height: 100%;
+                    text: "Location";
+                    color: root.fg;
+                    font-family: Theme.font-ui;
+                    font-size: Theme.subtitle;
+                    font-weight: 700;
+                    vertical-alignment: center;
+                    overflow: elide;
+                }
             }
-            // :170-177 — title at backBtn.right + 8 = 36, rightMargin 12.
-            Text {
-                x: 36px; width: header.width - 36px - 12px; height: 100%;
-                text: "Location";
-                color: root.fg;
-                font-family: Theme.font-ui;
-                font-size: Theme.subtitle;
-                font-weight: 700;
-                vertical-alignment: center;
-                overflow: elide;
+            // The phone's bar, in chat.slint's own geometry (:568-571): a 24px
+            // back glyph in a 48 target at 4, the 40 avatar at 56, the title at
+            // 108, three 48 targets from the right 8 apart and 8 in.
+            if root.phone : phone-bar := Rectangle {
+                width: 100%; height: 100%;
+                // The back arrow is the one thing that stays: it is already
+                // under the finger that opened the page, and it does not move.
+                back-target := Rectangle {
+                    x: 4px; y: 6px; width: 48px; height: 48px; border-radius: 24px;
+                    background: back-t.pressed ? root.fg.with-alpha(0.10)
+                              : back-t.has-hover ? root.fg.with-alpha(0.06) : transparent;
+                    IconLabel { text: Icons.back; filled: true; color: root.fg; font-size: 24px; width: 100%; height: 100%; }
+                    back-t := TouchArea { clicked => { root.closed(); } }
+                }
+                // Everything the conversation had, fading out where it stood:
+                // the room's face, its name and subtitle, and the trailing
+                // glyphs. They belong to the page underneath, so they are a
+                // picture of it — nothing here is tappable.
+                if root.shed > 0 : Rectangle {
+                    width: 100%; height: 100%;
+                    opacity: root.shed;
+                    Avatar {
+                        x: 56px; y: 10px; size: 40px;
+                        source: root.room-avatar;
+                        initials: root.room-initials;
+                        tint: root.room-tint;
+                        status-backdrop: root.header-c;
+                    }
+                    VerticalLayout {
+                        x: 108px; y: 0; height: 100%;
+                        width: max(0px, phone-bar.width - 176px - 108px);
+                        alignment: center;
+                        Text {
+                            text: root.room-name;
+                            color: root.fg;
+                            font-family: Theme.font-ui; font-size: 17px; font-weight: 500;
+                            overflow: elide;
+                        }
+                        if root.room-subtitle != "" : Text {
+                            text: root.room-subtitle;
+                            color: root.fg.with-alpha(0.5);
+                            font-family: Theme.font-ui; font-size: 13px;
+                            overflow: elide;
+                        }
+                    }
+                    for g[i] in [Icons.phone, Icons.videoOn, Icons.moreVertical] : Rectangle {
+                        x: phone-bar.width - 168px + i * 56px; y: 6px;
+                        width: 48px; height: 48px;
+                        IconLabel { text: g; filled: true; color: root.fg; font-size: 24px; width: 100%; height: 100%; }
+                    }
+                }
+                // … and then the word, in from the right edge onto the spot
+                // the conversation's own title held.
+                Text {
+                    x: 56px + (phone-bar.width - 56px) * (1 - root.word-e);
+                    y: 0; height: 100%;
+                    width: max(0px, phone-bar.width - 72px);
+                    text: "Location";
+                    color: root.fg;
+                    font-family: Theme.font-ui; font-size: 19px; font-weight: 500;
+                    vertical-alignment: center;
+                    overflow: elide;
+                    opacity: root.word-t;
+                }
             }
         }
 
@@ -191,10 +352,13 @@ export component MapPage inherits Rectangle {
         map-area := Rectangle {
             x: 0;
             width: parent.width;
-            height: parent.height - 52px;
-            // The conversation's arrival: the sheet rises from the page's
-            // bottom edge on an OutCubic (chat.slint:719).
-            y: 52px + (parent.height - 52px) * (1 - root.open-e);
+            // The page runs on down through the gesture inset — the window
+            // paints nothing there for this page — so the map is that much
+            // taller than the page and the bar shows the map itself.
+            height: parent.height - root.header-h + root.bleed-bottom;
+            // The second beat: once the header has settled, the map rises
+            // from the page's bottom edge on an OutCubic (chat.slint:719).
+            y: root.header-h + (parent.height - root.header-h) * (1 - root.map-e);
             background: root.fg.with-alpha(0.08);
             border-top-left-radius: 24px;
             border-top-right-radius: 24px;
@@ -224,6 +388,21 @@ export component MapPage inherits Rectangle {
                     source: t.img;
                     image-fit: fill;
                 }
+            }
+            // Two fingers. Slint's TouchArea is single-pointer, but the
+            // runtime recognises a pinch from the raw touch points and hands
+            // it over whole: `scale` is the spread since the fingers went
+            // down and `center` their midpoint, so the map magnifies smoothly
+            // about the spot between them and settles on a whole zoom when
+            // they lift (viewer.slint:336-348 does the same for a picture).
+            // It is declared before the drag area, exactly as there: while a
+            // pinch runs it intercepts, so the two never fight.
+            if root.tiled : ScaleRotateGestureHandler {
+                width: 100%; height: 100%;
+                started => { root.pinch-begin(); }
+                updated => { root.pinched(self.scale, self.center.x, self.center.y); }
+                ended => { root.pinch-end(); }
+                cancelled => { root.pinch-end(); }
             }
             // Declared before the marker, the chips and the sheet, so all of
             // those still take their own taps.
@@ -264,10 +443,13 @@ export component MapPage inherits Rectangle {
                 pin-color: root.accent;
                 avatar: root.sender-avatar;
                 ripple: root.live;
+                badge: root.cat-icon;
             }
+            // A dropped pin wears the Drop a Pin tile's own glyph, in the
+            // marker's colour and size (attach.slint:561).
             if root.tiled && !root.self-marker : IconLabel {
                 x: root.pin-x - 23px; y: root.pin-y - 46px;
-                text: Icons.location;
+                text: root.cat-icon;
                 filled: true;
                 color: root.accent.with-alpha(0.85);
                 font-size: 46px;
@@ -288,10 +470,12 @@ export component MapPage inherits Rectangle {
                         pin-color: root.accent;
                         avatar: root.sender-avatar;
                         ripple: root.live;
+                        badge: root.cat-icon;
                     }
-                    // MapPage.qml:274-280 — a dropped pin: filled `place`, 46px, accent@0.85.
+                    // MapPage.qml:274-280 — a dropped pin: filled glyph, 46px,
+                    // accent@0.85; the glyph is the category's own.
                     if !root.self-marker : IconLabel {
-                        text: Icons.location;
+                        text: root.cat-icon;
                         filled: true;
                         color: root.accent.with-alpha(0.85);
                         font-size: 46px;
@@ -377,13 +561,16 @@ export component MapPage inherits Rectangle {
             }
 
             // Bottom sheet: who is on the map and the one action (MapPage.qml:371-487).
+            // The last beat — it follows the map up, once the map has landed —
+            // on the conversation's own chrome surface, and its ground runs on
+            // through the gesture inset so the bar is the sheet, not a strip.
             sheet := Rectangle {
-                y: map-area.height - self.height;
+                y: map-area.height - self.height * (root.phone ? root.foot-e : 1.0);
                 width: 100%;
-                height: sheet-col.preferred-height + 32px;
+                height: sheet-col.preferred-height + 32px + root.bleed-bottom;
                 border-top-left-radius: 24px;
                 border-top-right-radius: 24px;
-                background: Theme.popup-background;
+                background: root.themed ? root.surface-c : Theme.popup-background;
                 TouchArea { }   // the sheet floats over the card; swallow taps (:382)
                 sheet-col := VerticalLayout {
                     x: 14px; y: 14px;
@@ -427,8 +614,10 @@ export component MapPage inherits Rectangle {
                             }
                             HorizontalLayout {
                                 spacing: 5px;
+                                // The category's own glyph, as the attach
+                                // sheet's tile for it carries (:554-561).
                                 IconLabel {
-                                    text: Icons.recentre;
+                                    text: root.cat-icon;
                                     filled: true;
                                     color: root.fg.with-alpha(0.5);
                                     font-size: Theme.caption;

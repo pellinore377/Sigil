@@ -137,10 +137,17 @@ pub fn keep(win: &crate::AppWindow) {
     std::mem::forget(timer);
 }
 
+/// A device check can pin the palette with the "dark" or "light" switch in
+/// /data/local/tmp/sigil-flags; the system setting is then not followed.
+pub static FORCED_MODE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
 /// The phone decides the palette: dark or light with the system setting,
 /// the accent from Material's dynamic colour. Called at start and from the
 /// keeper's tick, so flipping the system theme restyles the app live.
 fn follow_device(win: &crate::AppWindow) {
+    if FORCED_MODE.load(std::sync::atomic::Ordering::Relaxed) {
+        return;
+    }
     #[cfg(target_os = "android")]
     {
         let theme = win.global::<crate::Theme>();

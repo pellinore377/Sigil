@@ -153,6 +153,10 @@ pub struct UiState {
     pub doc_thumbs: HashMap<String, Value>,
     /// roomId|eventId -> audio.info reply (Null = asked, pending).
     pub audio_infos: HashMap<String, Value>,
+    /// roomId|eventId of the pictures already asked for. The timeline is
+    /// rebuilt on every change to it, and without this every rebuild asked
+    /// the engine again for every picture that had not landed yet.
+    pub media_asked: std::collections::HashSet<String>,
     /// url -> link.preview reply (Null = asked, pending; false = failed).
     pub link_previews: HashMap<String, Value>,
     /// glyph -> emoji.render reply (Null = asked, false = none).
@@ -308,6 +312,7 @@ pub fn start(win: &AppWindow, rt: &tokio::runtime::Runtime, icons: IconSet) -> R
         doc_preview: Value::Null,
         doc_thumbs: HashMap::new(),
         audio_infos: HashMap::new(),
+        media_asked: std::collections::HashSet::new(),
         link_previews: HashMap::new(),
         emoji_imgs: HashMap::new(),
         calls: Default::default(),
@@ -1339,6 +1344,7 @@ pub fn room_row_of(ui: &mut UiState, room: &Value) -> RoomRow {
         badge_urgent,
         unread,
         is_favourite: room["isFavourite"].as_bool().unwrap_or(false),
+        is_snoozed: room["snoozed"].as_bool().unwrap_or(false),
         is_encrypted: room["isEncrypted"].as_bool().unwrap_or(false),
         has_call: room["hasActiveCall"].as_bool().unwrap_or(false),
         is_invite: room["isInvite"].as_bool().unwrap_or(false),
@@ -1358,6 +1364,7 @@ pub fn room_row_of(ui: &mut UiState, room: &Value) -> RoomRow {
 }
 
 pub fn rebuild_rooms(ui: &mut UiState, win: &AppWindow) {
+    let t_perf = std::time::Instant::now();
     let q = ui.search.to_lowercase();
     let mut chats: Vec<RoomRow> = Vec::new();
     let mut requests: Vec<RoomRow> = Vec::new();
@@ -1401,6 +1408,7 @@ pub fn rebuild_rooms(ui: &mut UiState, win: &AppWindow) {
         .collect();
     all.sort_by_key(|r| (!r["isFavourite"].as_bool().unwrap_or(false), -r["lastActivityTs"].as_i64().unwrap_or(0)));
     let all: Vec<RoomRow> = all.into_iter().map(|r| room_row_of(ui, r)).collect();
+    let n = rooms_json.len();
     ui.rooms_json = rooms_json;
     win.set_rooms(ModelRc::new(VecModel::from(chats)));
     win.set_requests(ModelRc::new(VecModel::from(requests)));
@@ -1408,6 +1416,8 @@ pub fn rebuild_rooms(ui: &mut UiState, win: &AppWindow) {
     if !ui.open_room.is_empty() {
         set_chat_header(ui, win);
     }
+    // Debug, not info: the room list is rebuilt on every typing notice.
+    tracing::debug!(target: "perf", "rebuild_rooms: {n} rooms in {:?}", t_perf.elapsed());
 }
 
 pub fn set_chat_header(ui: &mut UiState, win: &AppWindow) {
@@ -1442,6 +1452,8 @@ pub fn set_chat_header(ui: &mut UiState, win: &AppWindow) {
 }
 
 pub fn rebuild_timeline(ui: &mut UiState, win: &AppWindow) {
+    let t_perf = std::time::Instant::now();
+    let (mut t_fx, mut t_md) = (std::time::Duration::ZERO, std::time::Duration::ZERO);
     let key = ui.open_room.clone();
     let room_id = crate::actions::room_of_key(&key);
     let room = ui
@@ -1541,9 +1553,27 @@ pub fn rebuild_timeline(ui: &mut UiState, win: &AppWindow) {
             .unwrap_or("")
             .to_string();
         let event_id = item["eventId"].as_str().unwrap_or("").to_string();
-        // An image without a local file yet: ask for it; media.ready patches us.
+        // An image without a local file yet: ask for it once, the way doc
+        // thumbnails and link cards are asked for. The engine answers with a
+        // `set` on the row when the file lands; asking again on every rebuild
+        // put one request per undownloaded picture behind every keystroke.
         if kind == "image" && thumb_path.is_empty() && !event_id.is_empty() {
-            ui.req.fire("media.get", json!({"roomId": room_id, "eventId": event_id, "thumbnail": {"width": 600, "height": 600}}));
+            let key = format!("{room_id}|{event_id}");
+            if ui.media_asked.insert(key.clone()) {
+                ui.req.call(
+                    "media.get",
+                    json!({"roomId": room_id, "eventId": event_id, "thumbnail": {"width": 600, "height": 600}}),
+                    move |reply| {
+                        // A refusal is worth asking again on the next change;
+                        // a success is patched into the row by the engine.
+                        if let Reply::Err(_) = reply {
+                            on_ui(move |ui, _win| {
+                                ui.media_asked.remove(&key);
+                            });
+                        }
+                    },
+                );
+            }
         }
         // Files with readable previews render as a page card (QML docThumb).
         let doc_key = format!("{room_id}|{event_id}");
@@ -1744,6 +1774,8 @@ pub fn rebuild_timeline(ui: &mut UiState, win: &AppWindow) {
         // Animated short runs render per glyph; colours-only rides StyledText.
         // SigilText: a body with effects is laid out glyph by glyph in Rust
         // (fx.rs), wrapped to the bubble's width, and drawn one Text per glyph.
+        let t_fx0 = std::time::Instant::now();
+        let mut fx_glow = crate::fx::Glow::default();
         let (fx_chars, fx_w, fx_h, fx_spoiler): (Vec<crate::FxChar>, f32, f32, bool) =
             if matches!(kind, "text" | "notice" | "emote") {
                 let tl_w = win.get_timeline_w() as f32;
@@ -1764,18 +1796,36 @@ pub fn rebuild_timeline(ui: &mut UiState, win: &AppWindow) {
                     base_px,
                     max_w,
                 ) {
-                    Some(lay) => (
+                    Some(lay) => {
+                        // The glow, blurred out of the same outlines the
+                        // layout measured with. Colour emoji bring their own
+                        // light: the engine's cached picture, read straight
+                        // off disk (`emoji.render` has already been asked for
+                        // it, and a rebuild follows when it lands).
+                        if let Some(g) = crate::fx::glow(&lay, &mut |ch: &str| {
+                            let _ = emoji_image(ui, ch);
+                            let path = ui
+                                .emoji_imgs
+                                .get(ch)
+                                .and_then(|v| v["path"].as_str())
+                                .unwrap_or("")
+                                .to_string();
+                            emoji_rgba(&path)
+                        }) {
+                            fx_glow = g;
+                        }
+                        (
                         lay.glyphs
-                            .into_iter()
+                            .iter()
                             .map(|g| {
                                 let parsed = g.color.as_deref().and_then(rows::hex_color);
                                 crate::FxChar {
-                                    emoji: g.ch.chars().any(|c| c as u32 >= 0x1F000 || (0x2600..=0x27BF).contains(&(c as u32))),
-                                    ch: g.ch.into(),
+                                    emoji: g.ch.chars().any(crate::fx::is_emoji),
+                                    ch: g.ch.as_str().into(),
                                     has_color: parsed.is_some(),
                                     color: parsed
                                         .unwrap_or(slint::Color::from_rgb_u8(0xc6, 0xc6, 0xc6)),
-                                    anim: g.anim.into(),
+                                    anim: g.anim.as_str().into(),
                                     idx: g.idx,
                                     x: g.x,
                                     y: g.y,
@@ -1799,12 +1849,15 @@ pub fn rebuild_timeline(ui: &mut UiState, win: &AppWindow) {
                         lay.width,
                         lay.height,
                         lay.has_spoiler,
-                    ),
+                        )
+                    }
                     None => (Vec::new(), 0.0, 0.0, false),
                 }
             } else {
                 (Vec::new(), 0.0, 0.0, false)
             };
+        t_fx += t_fx0.elapsed();
+        let t_md0 = std::time::Instant::now();
         let rich_body: Option<slint::StyledText> = if matches!(kind, "text" | "notice" | "emote")
             && item["parts"]
                 .as_array()
@@ -1823,6 +1876,7 @@ pub fn rebuild_timeline(ui: &mut UiState, win: &AppWindow) {
         } else {
             None
         };
+        t_md += t_md0.elapsed();
         // Music files render AudioBody's card: cover art + a strip tinted from
         // the art's palette (audio.info hands both over).
         let mut audio_art: Option<slint::Image> = None;
@@ -1883,7 +1937,7 @@ pub fn rebuild_timeline(ui: &mut UiState, win: &AppWindow) {
         }
         let duration_ms = media["duration"].as_f64().unwrap_or(0.0);
         // One uniform glow run (the common "everything glows" message): the
-        // bubble draws it as two Text items rather than two per glyph.
+        // bubble draws it as a single Text rather than one per glyph.
         let fx_run = !fx_chars.is_empty()
             && fx_chars.iter().all(|c| {
                 c.anim == "glow"
@@ -1898,7 +1952,29 @@ pub fn rebuild_timeline(ui: &mut UiState, win: &AppWindow) {
                     && c.italic == fx_chars[0].italic
                     && c.mono == fx_chars[0].mono
             });
-        let fx_text: String = if fx_run { fx_chars.iter().map(|c| c.ch.as_str()).collect() } else { String::new() };
+        // The run's text carries fx.rs's own line breaks and the bubble draws
+        // it no-wrap, so the engine's layout and Slint's cannot disagree —
+        // which matters now that the glow is a picture registered to the
+        // glyph positions fx.rs measured. (Letting Slint re-wrap risked one
+        // line breaking a word earlier than the light behind it.)
+        let fx_text: String = if fx_run {
+            let mut out = String::with_capacity(body.len() + 8);
+            let mut line = f32::MIN;
+            for c in &fx_chars {
+                if c.y != line {
+                    if line != f32::MIN {
+                        out.push('\n');
+                    }
+                    line = c.y;
+                }
+                if c.ch != "\n" {
+                    out.push_str(&c.ch);
+                }
+            }
+            out
+        } else {
+            String::new()
+        };
         let reply = item.get("replyTo").cloned().filter(|r| !r.is_null());
         let reactions: Vec<crate::ReactionChip> = item["reactions"]
             .as_array()
@@ -2075,6 +2151,11 @@ pub fn rebuild_timeline(ui: &mut UiState, win: &AppWindow) {
             fx_w,
             fx_h,
             fx_spoiler,
+            fx_glow_ink_on: fx_glow.ink.is_some(),
+            fx_glow_hue_on: fx_glow.hue.is_some(),
+            fx_glow_ink: fx_glow.ink.unwrap_or_default(),
+            fx_glow_hue: fx_glow.hue.unwrap_or_default(),
+            fx_glow_pad: fx_glow.pad,
             is_new: ui.entry_pending.contains(item["id"].as_str().unwrap_or("")),
             body: body.into(),
             sender: sender.clone().into(),
@@ -2223,10 +2304,18 @@ pub fn rebuild_timeline(ui: &mut UiState, win: &AppWindow) {
     // the shared effects clock runs only while something needs it
     let fx_rows = rows_out.iter().filter(|r| r.fx_chars.row_count() > 0 || r.location_live).count();
     win.set_chat_fx_count(fx_rows as i32);
+    let n = rows_out.len();
+    let t_build = t_perf.elapsed();
     ui.items_model.set_vec(rows_out);
     win.set_items(ModelRc::from(ui.items_model.clone()));
     // an entry plays once: the next rebuild sees these as settled
     ui.entry_pending.clear();
+    tracing::info!(
+        target: "perf",
+        "rebuild_timeline: {n} rows in {:?} (fx {t_fx:?}, markdown {t_md:?}, model {:?})",
+        t_perf.elapsed(),
+        t_perf.elapsed() - t_build
+    );
 }
 
 fn start_demo(win: &AppWindow, rt: &tokio::runtime::Runtime, icons: IconSet) -> Requester {
@@ -2298,6 +2387,7 @@ fn start_demo(win: &AppWindow, rt: &tokio::runtime::Runtime, icons: IconSet) -> 
         doc_preview: Value::Null,
         doc_thumbs: HashMap::new(),
         audio_infos: HashMap::new(),
+        media_asked: std::collections::HashSet::new(),
         link_previews: HashMap::new(),
         emoji_imgs: HashMap::new(),
         calls: Default::default(),
@@ -2448,6 +2538,15 @@ fn start_demo(win: &AppWindow, rt: &tokio::runtime::Runtime, icons: IconSet) -> 
                "effects": [
                    {"start": 0, "end": 93, "animation": "glow"}
                ]}),
+        // A glow that is not the bubble's own ink: two coloured spans and a
+        // colour emoji, so the coloured half of the glow (fx.rs's `hue`
+        // picture) is on screen too — the emoji spills its own yellow.
+        json!({"id": "fE", "kind": "text", "isOwn": false, "sender": "@marlowe:sigil.test", "senderName": "Marlowe",
+               "body": "yellow lamplight ✨ and a red ember", "ts": now - 200, "eventId": "$fE",
+               "effects": [
+                   {"start": 0, "end": 18, "animation": "glow", "color": {"type": "solid", "rgb": {"dark": "#e5c07b", "light": "#906010"}}},
+                   {"start": 25, "end": 34, "animation": "glow", "color": {"type": "solid", "rgb": {"dark": "#e06c75", "light": "#a03030"}}}
+               ]}),
     ], "len": 20});
     let status = json!({"event": "status", "session": "loggedIn", "userId": "@wren:sigil.test",
                         "displayName": "Wren", "avatarPath": "", "sync": "", "syncError": "", "login": {"url": ""}});
@@ -2479,6 +2578,36 @@ fn start_demo(win: &AppWindow, rt: &tokio::runtime::Runtime, icons: IconSet) -> 
     wire_callbacks(win, req.clone());
     crate::actions::wire_extra(win);
     req
+}
+
+/// The pixels behind such a picture, for the glow: the cached PNG decoded to
+/// straight RGBA so a yellow face can spill yellow light. Small pictures
+/// (Noto's are 136×128), read once per rebuild and then held by fx.rs's own
+/// cache.
+fn emoji_rgba(path: &str) -> Option<(u32, u32, Vec<u8>)> {
+    if path.is_empty() {
+        return None;
+    }
+    let file = std::fs::File::open(path).ok()?;
+    let mut reader = png::Decoder::new(std::io::BufReader::new(file))
+        .read_info()
+        .ok()?;
+    let mut buf = vec![0u8; reader.output_buffer_size()?];
+    let info = reader.next_frame(&mut buf).ok()?;
+    let (w, h) = (info.width, info.height);
+    let px = (w * h) as usize;
+    let rgba = match (info.color_type, info.bit_depth) {
+        (png::ColorType::Rgba, png::BitDepth::Eight) => buf,
+        (png::ColorType::Rgb, png::BitDepth::Eight) => {
+            let mut out = vec![255u8; px * 4];
+            for i in 0..px {
+                out[i * 4..i * 4 + 3].copy_from_slice(&buf[i * 3..i * 3 + 3]);
+            }
+            out
+        }
+        _ => return None,
+    };
+    (rgba.len() >= px * 4).then_some((w, h, rgba))
 }
 
 /// An emoji as a picture, from the engine's colour font, asked for once;

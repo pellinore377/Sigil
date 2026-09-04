@@ -50,6 +50,10 @@ tracing-android = "0.2"
 
 [build-dependencies]
 slint-build = "1.17"
+# javac and d8 for java/SigilFilePicker.java, only when the target is Android.
+# The same crate and the same version the Slint Android backend builds its own
+# Java helper with, so one toolchain serves both.
+android-build = "0.1.2"
 
 [package.metadata.android]
 package = "com.sigil.slint"

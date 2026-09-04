@@ -59,6 +59,29 @@ EID=$(H a "$R[-1].eventId")
 B message.react roomId="$ROOM" eventId="$EID" key=👍 | result || fail "react"
 sleep 3
 H a --assert "$R[-1].reactions[0].key == \"👍\"" || fail "reaction not applied at alice"
+# the local echo, under a send that is still in the air. A send holds the
+# account across its round trips; everything that only reads the account —
+# the next message's row, a place's row, the room list — must not queue
+# behind it. Three sends go out staggered and nothing waits on them.
+A message.send roomId="$ROOM" body="echo one" >/dev/null & E1=$!
+sleep 0.3
+A message.send roomId="$ROOM" body="echo two" >/dev/null & E2=$!
+sleep 0.3
+A location.send roomId="$ROOM" lat:=51.5007 lon:=-0.1246 description="the meeting point" >/dev/null & E3=$!
+sleep 0.5
+H a --assert "$R[?body==\"echo two\"].sendState == \"sending\"" \
+  || fail "the second message had no row until the first had gone out" engine-a.log
+H a --assert "$R[?kind==\"location\"].sendState == \"sending\"" \
+  || fail "a place had no row until it had gone out" engine-a.log
+T0=$(date +%s%N); A rooms.list >/dev/null || fail "rooms.list while sending" engine-a.log; T1=$(date +%s%N)
+LIST_MS=$(( (T1 - T0) / 1000000 ))
+[ "$LIST_MS" -lt 800 ] || fail "the room list waited ${LIST_MS} ms behind sends in flight" engine-a.log
+wait $E1 $E2 $E3
+sleep 4
+H a --assert "$R[?body==\"echo two\"].sendState == \"sent\"" || fail "the echo never settled" engine-a.log
+H a --assert "$R[?kind==\"location\"].sendState == \"sent\"" || fail "the place never settled" engine-a.log
+H b --assert "$R[][?body==\"echo two\"].length" || fail "bob missed echo two" engine-b.log
+H b --assert "$R[][?kind==\"location\"].length" || fail "bob missed the place" engine-b.log
 # restart bob's engine: session, rooms, history come back
 kill "${PIDS[-1]}" 2>/dev/null || true; sleep 1
 start_engine b; sleep 3

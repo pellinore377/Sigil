@@ -48,6 +48,13 @@ export component AppWindow inherits Window {
     /// On a desktop the card has its rounded, bordered frame (Panel.qml:483-484);
     /// on a phone the app is the screen. The bridge sets it.
     in property <bool> card-frame: false;
+    /// The conversation and the location page run under the gesture bar
+    /// themselves: the composer is translucent and the map is a map, so a
+    /// strip of any colour there would be a band across the bottom of both.
+    /// They take the inset as their own padding (`bottom-inset`) and are
+    /// given the whole window instead.
+    property <bool> to-the-edge: root.in-session && (root.nav == "chat" || root.nav == "map");
+    property <length> bottom-inset: max(root.safe-area-insets.bottom, root.kb-overlap);
     /// the window's logical size as laid out, read back by scale.rs
     out property <length> logical-width: root.width;
     out property <length> logical-height: root.height;
@@ -298,6 +305,12 @@ export component AppWindow inherits Window {
     callback map-viewport(length, length);
     callback map-panned(length, length);
     callback map-zoom-at(int, length, length);
+    // Two fingers on the location map: where the view was when they went
+    // down, how far they have spread since and about what, and the lift that
+    // eases the view onto a whole zoom.
+    callback map-pinch-begin();
+    callback map-pinched(float, length, length);
+    callback map-pinch-end();
     // the contact card's and a member's choice sheets
     in-out property <bool> contact-open: false;
     in-out property <bool> member-open: false;
@@ -391,6 +404,9 @@ export component AppWindow inherits Window {
     public function debug-sheet(index: int, x: length, y: length, w: length, h: length) { chat.sheet-open(root.items[index], x, y, w, h); }
     public function debug-sheet-close() { chat.sheet-close(); }
     in-out property <int> home-tab: 0;
+    in-out property <string> home-selection;   // the room home's long press picked out
+    in-out property <string> home-overlay;     // "" | "snooze" | "leave"
+    in-out property <string> home-note;        // what the engine said about the last action
     public function set-home-tab(t: int) { root.home-tab = t; }
     public function debug-search-query(q: string) { search-page.query = q; }
     out property <string> ct-composer-text: chat.composer-text;
@@ -411,6 +427,8 @@ export component AppWindow inherits Window {
         // message sheet, the composer panels.
         if (root.viewer-open) { root.viewer-open = false; return; }
         if (chat.sheet-shown) { chat.sheet-close(); return; }
+        if (root.nav == "home" && root.home-overlay != "") { root.home-overlay = ""; return; }
+        if (root.nav == "home" && root.home-selection != "") { root.home-selection = ""; return; }
         if (root.attach-open || root.recorder-open) { root.attach-open = false; root.recorder-open = false; return; }
         if (root.nav == "thread") { root.go("threads"); return; }
         if (root.nav == "threads" || root.nav == "pins") { root.go("chat"); return; }
@@ -437,6 +455,13 @@ export component AppWindow inherits Window {
     // Pages of a themed room carry the room's chrome (Panel.qml:38-45):
     // base×0.65 + accent×0.35, the mix ChatPage uses for its surface.
     property <color> room-page-ground: root.ct-accent != "" ? Theme.card-ground.mix(root.ct-color, 0.65) : Theme.card-ground;
+    /// The tone the conversation's header settles on (chat.slint's `top-rest`),
+    /// for the pages that open out of the conversation by morphing its bar: the
+    /// bar they draw has to be the very same colour, and while one of them is up
+    /// the status-bar inset is that colour too.
+    property <color> chrome-rest: root.ct-accent != ""
+        ? Theme.menu-background.brighter(0.35).mix(root.ct-color, 0.65)
+        : Theme.card-ground;
     property <bool> in-session: root.session == "loggedIn"
         && !root.recovery-open && !root.password-open;
 
@@ -466,19 +491,24 @@ export component AppWindow inherits Window {
         // Home's ground only once the chat holder has gone: its reverse
         // choreography carries the header ground back to it.
         background: root.in-session && root.nav == "home" && !chat-holder.visible ? Theme.background
+            // The thread browser stands over the conversation with the chat
+            // page collapsed behind it: the inset takes the browser's header
+            // ground, not the ground a closed conversation hands back to home.
+            : root.in-session && root.nav == "threads" ? root.chrome-rest
             : root.in-session && root.nav != "start" && root.nav != "settings" ? chat.top-ground
             : Theme.card-ground;
     }
-    Rectangle {
-        x: 0; y: root.height - max(root.safe-area-insets.bottom, root.kb-overlap);
-        width: 100%; height: max(root.safe-area-insets.bottom, root.kb-overlap);
-        background: root.in-session && root.nav == "chat" ? chat.bottom-ground : Theme.card-ground;
+    if !root.to-the-edge : Rectangle {
+        x: 0; y: root.height - root.bottom-inset;
+        width: 100%; height: root.bottom-inset;
+        background: Theme.card-ground;
     }
     content := Rectangle {
         x: root.safe-area-insets.left;
         y: root.safe-area-insets.top;
         width: root.width - root.safe-area-insets.left - root.safe-area-insets.right;
-        height: root.height - root.safe-area-insets.top - max(root.safe-area-insets.bottom, root.kb-overlap);
+        height: root.height - root.safe-area-insets.top
+            - (root.to-the-edge ? 0px : root.bottom-inset);
         // Panel.qml:483-485: radius 22, border max(1, 2), pages round-clipped
         background: Theme.card-ground;
         border-radius: root.card-frame ? 22px : 0px;
@@ -567,6 +597,10 @@ export component AppWindow inherits Window {
             my-name: root.my-name;
             my-user-id: root.my-user-id;
             sync-line: root.sync-line;
+            selection <=> root.home-selection;
+            overlay <=> root.home-overlay;
+            note <=> root.home-note;
+            room-act(action, a, b) => { root.act(action, a, b); }
             room-clicked(id) => { root.room-clicked(id); root.nav = "chat"; }
             search-edited(q) => { root.search-edited(q); }
             open-search => { root.go("search"); }
@@ -575,21 +609,69 @@ export component AppWindow inherits Window {
             sign-out => { root.sign-out(); }
         }
 
+        // The thread browser sits BELOW the conversation, because an open
+        // thread is the conversation page again (`chat-is-thread`) and has to
+        // rise over the browser it was picked from — Panel.qml:1023's "stays
+        // under an open thread", which a holder declared after the chat page
+        // could not do. It keeps the room's ground (Panel.qml:1045).
+        threads-holder := PageHolder { active: root.in-session && (root.nav == "threads" || root.nav == "thread"); ground: root.room-page-ground;
+            // The browser arrives like a conversation: its own three beats
+            // instead of a slide from the edge, and the holder waits for the
+            // reverse before it goes.
+            slides: Theme.mode == "desktop";
+            hold: 460ms;
+            threads-page := ThreadsPage {
+                width: 100%; height: 100%;
+                // Open only while it is the page on top: an open thread covers
+                // it, and it must not play its reverse under one.
+                opened: root.nav == "threads" || root.nav == "thread";
+                room-name: root.room-name;
+                // The page morphs out of the conversation's bar, so it needs
+                // the bar it is morphing and the tone chat.slint settled on.
+                room-subtitle: root.room-subtitle;
+                room-avatar: root.room-avatar;
+                room-initials: root.room-initials;
+                room-tint: root.room-tint;
+                header-c: root.chrome-rest;
+                // the room's theme (ThreadsPage.qml:20-32), as ChatPage binds it
+                themed: root.ct-accent != "";
+                accent: root.ct-accent != "" ? root.ct-color : Theme.accent;
+                threads: root.th-threads; loading: root.th-loading; loaded: root.th-loaded;
+                closed => { root.go-back(); }
+                thread-picked(rootId) => { root.act("open-thread", rootId, ""); }
+            } }
+
         chat-holder := PageHolder {
             // Panel.qml:68-70 chatUnder: the navs that keep the chat stacked
-            // underneath; anything else slides it out too.
+            // underneath; anything else slides it out too. "threads" is NOT
+            // one of them: the browser covers the conversation, and letting the
+            // page close there is what re-arms its choreography for the thread
+            // that rises out of the browser next.
             active: root.in-session && (root.nav == "chat" || (root.nav == "search" && !root.se-global) || root.nav == "roomsettings"
                 || root.nav == "chattheme" || root.nav == "forward" || root.nav == "map" || root.nav == "doc"
-                || root.nav == "threads" || root.nav == "thread" || root.nav == "pins"
+                || root.nav == "thread" || root.nav == "pins"
                 || (root.nav == "addpeople" && root.add-return == "chat"));
             ground: root.page-ground;
             // The phone's chat opens over home by its own choreography
             // (ChatPage.opened), not the card's slide; 320ms is its reverse.
             slides: Theme.mode == "desktop";
-            hold: 320ms;
+            // …except on the way to the thread browser, which stands BELOW
+            // this holder: the conversation has to be out of the way at once
+            // so the browser's own three beats play over the conversation's
+            // ground rather than behind the conversation's exit. Leaving a
+            // thread for the browser is the other way about — the browser is
+            // already standing where it was left, so the thread plays its
+            // reverse over it and the hold waits for that.
+            hold: root.nav == "threads" && !root.chat-is-thread ? 0ms : 320ms;
             chat := ChatPage {
                 width: 100%; height: 100%;
                 opened: chat-holder.active;
+                // The page is arriving over the thread browser, not over home:
+                // the bar it morphs out of is the browser's, and the ground it
+                // rises over is the room's, not home's card. The browser's
+                // holder is still drawn for its whole 460ms hold, which outlasts
+                // this page's 440ms arrival.
+                over-threads: threads-holder.visible;
                 my-initials: root.my-initials;
                 my-tint: root.my-tint;
                 room-name: root.room-name;
@@ -644,7 +726,9 @@ export component AppWindow inherits Window {
                 // Everything the window paints around the page: the sheet's
                 // frost covers it too (the snapshot is of the whole window).
                 bleed-top: root.safe-area-insets.top + status-strip.height;
-                bleed-bottom: max(root.safe-area-insets.bottom, root.kb-overlap);
+                // The page now reaches the window's own bottom edge, so there
+                // is no strip below it for the frost to cover.
+                bleed-bottom: 0px;
                 typing-line: root.typing-line;
                 typing-avatar: root.typing-avatar;
                 typing-initials: root.typing-initials;
@@ -659,7 +743,9 @@ export component AppWindow inherits Window {
                 emoji-rows: root.emoji-rows;
                 emoji-cat-rows: root.emoji-cat-rows;
                 quick-emoji: root.quick-emoji;
-                bottom-inset: 0px;
+                // The gesture bar (or the keyboard) is the page's own to keep
+                // clear: the composer stands that far up from the bottom.
+                bottom-inset: root.bottom-inset;
                 back => { root.go-back(); }
                 send(text) => { root.send-message(text); }
                 send-reply(ev, text) => { root.act("send-reply", ev, text); }
@@ -678,6 +764,9 @@ export component AppWindow inherits Window {
                 open-attach => { root.act("open-attach", "", ""); }
                 open-recorder => { root.act("open-recorder", "", ""); }
                 pick-attach-files => { root.act("pick-attach-files", "", ""); }
+                pick-attach-camera => { root.act("pick-attach-camera", "", ""); }
+                pick-attach-gallery => { root.act("pick-attach-gallery", "", ""); }
+                pick-attach-video => { root.act("pick-attach-video", "", ""); }
                 attach-location(mode) => { root.act("attach-location", mode, ""); }
                 attach-loc-tap(x, y) => { root.act("lp-tap", (x / 1px) + "," + (y / 1px), ""); }
                 attach-loc-zoom(d) => { root.act("lp-zoom", d > 0 ? "in" : "out", ""); }
@@ -716,7 +805,16 @@ export component AppWindow inherits Window {
                 spoiler-revealed(id) => { root.act("spoiler-revealed", id, ""); }
                 open-audio(item) => { root.act("open-audio-page", item.event-id, ""); root.go("audio"); }
                 open-location(item) => { root.act("open-map", item.event-id, ""); root.go("map"); }
-                open-thread(rootId) => { root.act("open-thread", rootId, ""); }
+                // Every way into a thread goes through the browser: it is the
+                // thread's parent page (go-back walks thread → threads → chat),
+                // it is what the rising thread has to rise OVER, and stepping
+                // through it is what closes the conversation page so its own
+                // three beats play again for the thread. The engine answers
+                // `open-thread` by switching the timeline and setting nav.
+                open-thread(rootId) => { root.go("threads"); root.act("open-thread", rootId, ""); }
+                // The row's swipe passed its detent: the platform's buzz, as
+                // the long-press sheet gets one.
+                swipe-detent => { root.act("swipe-detent", "", ""); }
                 voice-toggled(ev) => { root.act("voice-toggle", ev, ""); }
                 voice-seeked(ev, frac) => { root.act("voice-seek", ev, "" + frac); }
                 vote(ev, opt) => { root.act("vote", ev, opt); }
@@ -760,8 +858,14 @@ export component AppWindow inherits Window {
                 leave => { root.act("leave-room", "", ""); }
             } }
         chattheme-holder := PageHolder { active: root.in-session && root.nav == "chattheme"; ground: root.page-ground;
+            // Like the location page, it arrives by its own three beats rather
+            // than sliding in, and the holder waits for the reverse (header
+            // 220, window 260 from 200, footer 220 from 440).
+            slides: Theme.mode == "desktop";
+            hold: 660ms;
             ChatThemePage {
                 width: 100%; height: 100%;
+                opened: chattheme-holder.active;
                 room-name: root.room-name;
                 pending-accent: root.ct-accent; pending-wallpaper: root.ct-wallpaper;
                 pend-accent: root.ct-color; wallpaper-img: root.ct-wallpaper-img;
@@ -775,18 +879,6 @@ export component AppWindow inherits Window {
                 choose-photo => { root.act("theme-photo", "", ""); }
                 pick-changed(h, s, v) => { root.act("theme-pick", h + "," + s, "" + v); }
                 accept-custom => { root.act("theme-accept-custom", "", ""); }
-            } }
-        // stays under an open thread (Panel.qml:1023); the room's ground (Panel.qml:1045)
-        threads-holder := PageHolder { active: root.in-session && (root.nav == "threads" || root.nav == "thread"); ground: root.room-page-ground;
-            ThreadsPage {
-                width: 100%; height: 100%;
-                room-name: root.room-name;
-                // the room's theme (ThreadsPage.qml:20-32), as ChatPage binds it
-                themed: root.ct-accent != "";
-                accent: root.ct-accent != "" ? root.ct-color : Theme.accent;
-                threads: root.th-threads; loading: root.th-loading; loaded: root.th-loaded;
-                closed => { root.go-back(); }
-                thread-picked(rootId) => { root.act("open-thread", rootId, ""); }
             } }
         pins-holder := PageHolder { active: root.in-session && root.nav == "pins"; ground: root.room-page-ground;
             PinsPage {
@@ -805,9 +897,32 @@ export component AppWindow inherits Window {
             // its own choreography instead of sliding in from the edge, and
             // the holder waits for the reverse before it goes.
             slides: Theme.mode == "desktop";
-            hold: 280ms;
-            MapPage { width: 100%; height: 100%;
+            // Three beats back — footer, map, header — take 440ms.
+            hold: 460ms;
+            map := MapPage { width: 100%; height: 100%;
                 opened: map-holder.active;
+                // The page morphs out of the conversation's header, so it
+                // needs the bar it is morphing: the room, and the very tone
+                // chat.slint settled its own header on.
+                room-name: root.room-name;
+                room-subtitle: root.room-subtitle;
+                room-avatar: root.room-avatar;
+                room-initials: root.room-initials;
+                room-tint: root.room-tint;
+                themed: root.ct-accent != "";
+                accent: root.ct-accent != "" ? root.ct-color : Theme.accent;
+                header-c: chat.top-ground;
+                // ChatPage's surfaceC (chat.slint:374-376), the chrome tone
+                // its own sheets sit on.
+                surface-c: root.ct-accent != ""
+                    ? Theme.menu-background.brighter(0.35).mix(root.ct-color, 0.65)
+                    : Theme.popup-background;
+                // The window paints nothing under the gesture bar for this
+                // page; the map and the footer run on down through it.
+                bleed-bottom: max(root.safe-area-insets.bottom, root.kb-overlap);
+                pinch-begin => { root.map-pinch-begin(); }
+                pinched(f, x, y) => { root.map-pinched(f, x, y); }
+                pinch-end => { root.map-pinch-end(); }
                 who: root.mp-who; own: root.mp-own; live: root.mp-live; ended: root.mp-ended;
                 stoppable: root.mp-stoppable; openable: true; status-text: root.mp-status;
                 remaining-label: root.mp-remaining; lat: root.mp-lat; lon: root.mp-lon;

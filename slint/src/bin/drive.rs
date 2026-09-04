@@ -849,10 +849,16 @@ fn kinds(
         "Lunch?".into(),
         "0\u{1f}Soup\u{1f}Bread".into(),
     );
+    // The poll is drawn from a local echo the moment it is asked for (core's
+    // send_echoed), so the row arrives carrying `local:…`; what the test
+    // hands Alice has to be the id the server gave it a moment later.
     h.wait_until("the poll", Duration::from_secs(60), || {
-        app.get_items()
-            .iter()
-            .any(|i| i.kind == "poll" && i.poll_options.row_count() == 2)
+        app.get_items().iter().any(|i| {
+            i.kind == "poll"
+                && i.poll_options.row_count() == 2
+                && !i.event_id.is_empty()
+                && !i.event_id.starts_with("local:")
+        })
     })?;
     let poll = app
         .get_items()

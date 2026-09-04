@@ -6,10 +6,10 @@
 // Not ported: the "Open as window" PanelActionButton (a desktop-panel
 // affordance with no Android meaning).
 
-import { TouchList } from "furniture.slint";
+import { TouchList, ConfirmDialog, NotePill, SettingsRow } from "furniture.slint";
 import { Theme } from "style.slint";
 import { Icons } from "icons.slint";
-import { IconLabel, ActionButton, Avatar } from "components.slint";
+import { IconLabel, ActionButton, Avatar, HoldArea } from "components.slint";
 
 import { RoomRow } from "model.slint";
 
@@ -29,15 +29,34 @@ export component ChatRow inherits Rectangle {
     in property <bool> badge-urgent;
     in property <bool> unread;
     in property <bool> is-favourite;
+    in property <bool> is-snoozed;
     in property <bool> is-invite;
     in property <bool> is-typing;
     in property <bool> has-call;
     in property <string> draft;
     in property <color> accent-container;
+    /// This row is the one the long press picked out: it wears a filled card
+    /// and a check disc where its avatar was (the platform's selection row).
+    in property <bool> selected;
+    /// Some row is selected, so a tap picks rather than opens.
+    in property <bool> selecting;
     callback clicked;
+    callback held;
 
     height: 78px;
-    background: touch.pressed ? Theme.menu-text.with-alpha(0.08) : transparent;
+    // The pressed face belongs to the row only while it can be opened; in
+    // selection the card below carries the state instead.
+    background: touch.pressed && !root.selecting ? Theme.menu-text.with-alpha(0.08) : transparent;
+
+    // Screenshot_20260903-235157: the selected conversation is drawn as a
+    // filled rounded card inset ~7 from each edge, 76 of the row's 78 tall,
+    // one step above the sheet it sits on.
+    if root.selected : Rectangle {
+        x: 8px; y: 1px;
+        width: root.width - 16px; height: 76px;
+        border-radius: 24px;
+        background: Theme.menu-text.with-alpha(0.10);
+    }
     property <bool> loud: root.unread || (root.badge-urgent && !root.is-invite);
     property <bool> request: root.is-invite;
     property <string> line: root.draft != "" ? root.draft
@@ -45,12 +64,27 @@ export component ChatRow inherits Rectangle {
         : root.request && root.preview == "Invitation — tap to respond" ? "Wants to chat"
         : root.preview;
 
-    Avatar {
+    if !root.selected : Avatar {
         x: 16px; y: (78px - self.size) / 2;
         size: 51px;
         source: root.avatar;
         initials: root.initials;
         tint: root.tint;
+    }
+    // The check takes the avatar's exact place and size (measured: the disc
+    // spans 16→68 in the reference, as the avatar does here).
+    if root.selected : Rectangle {
+        x: 16px; y: (78px - 51px) / 2;
+        width: 51px; height: 51px;
+        border-radius: 25.5px;
+        background: Theme.accent;
+        IconLabel {
+            text: Icons.check;
+            filled: true;
+            font-size: 28px;
+            color: Theme.background;
+            width: 100%; height: 100%;
+        }
     }
 
     VerticalLayout {
@@ -101,7 +135,7 @@ export component ChatRow inherits Rectangle {
         x: root.width - 24px - self.width;
         width: max(stamp.preferred-width,
                    root.request ? pill.width : root.badge != "" ? badge.width
-                   : root.is-favourite ? 14px : 0px);
+                   : marks.preferred-width);
         stamp := Text {
             x: meta.width - self.width;
             y: 19px; height: 16px;
@@ -129,15 +163,28 @@ export component ChatRow inherits Rectangle {
                 width: 100%; height: 100%;
             }
         }
-        IconLabel {
-            visible: !root.request && root.badge == "" && root.is-favourite;
-            x: meta.width - self.width;
+        // A snoozed conversation says so where the pin sits; both marks show
+        // when it is pinned as well.
+        marks := HorizontalLayout {
+            visible: !root.request && root.badge == "";
+            x: meta.width - self.preferred-width;
             y: 41px; height: 20px;
-            text: Icons.pin;
-            filled: true;
-            font-size: 14px;
-            color: Theme.muted;
-            vertical-alignment: center;
+            width: self.preferred-width;
+            spacing: 4px;
+            if root.is-snoozed : IconLabel {
+                text: Icons.bellOff;
+                filled: true;
+                font-size: 14px;
+                color: Theme.muted;
+                vertical-alignment: center;
+            }
+            if root.is-favourite : IconLabel {
+                text: Icons.pin;
+                filled: true;
+                font-size: 14px;
+                color: Theme.muted;
+                vertical-alignment: center;
+            }
         }
         pill := Rectangle {
             visible: root.request;
@@ -159,7 +206,142 @@ export component ChatRow inherits Rectangle {
         }
     }
 
-    touch := TouchArea { clicked => { root.clicked(); } }
+    // The bubble's hold primitive, so the list and the timeline agree on what
+    // a long press is (500ms, cancelled by 12 of travel so a flick still
+    // scrolls). `fired` swallows the click the release would otherwise make.
+    touch := HoldArea {
+        clicked => { if (!self.fired) { root.clicked(); } }
+        held => { root.held(); }
+    }
+}
+
+// One action in the selection bar: a 48 tap circle with a 24 glyph, the
+// platform's app-bar action (Screenshot_20260903-235157: four such icons
+// 48 apart, the last centred 24 in from the right edge).
+component BarAction inherits Rectangle {
+    in property <string> icon;
+    in property <bool> filled: false;
+    in property <color> ink: Theme.menu-text;
+    callback clicked;
+    width: 48px; height: 48px;
+    border-radius: 24px;
+    background: t.pressed ? Theme.menu-text.with-alpha(0.10)
+              : t.has-hover ? Theme.menu-text.with-alpha(0.06) : transparent;
+    IconLabel {
+        text: root.icon;
+        filled: root.filled;
+        color: root.ink;
+        font-size: 24px;
+        width: 100%; height: 100%;
+    }
+    t := TouchArea { clicked => { root.clicked(); } }
+}
+
+// "Snooze notifications?" — Screenshot_20260903-235525's shape (title, the
+// line that says the other side is not told, four spans, the mentions
+// exception, Cancel/Snooze) in the house's own furniture: ConfirmDialog's
+// scrim and card, ChoiceSheet's radio rows.
+component SnoozeDialog inherits Rectangle {
+    in-out property <bool> open: false;
+    in-out property <string> span: "8h";
+    in-out property <bool> mentions: true;
+    in property <color> fg: Theme.menu-text;
+    /// span key, and whether mentions still come through
+    callback chose(string, bool);
+    background: transparent;
+    visible: root.open;
+    scrim := Rectangle {
+        width: 100%; height: 100%;
+        background: #000000.with-alpha(0.5);
+        TouchArea { clicked => { root.open = false; } }
+    }
+    card := Rectangle {
+        x: (root.width - self.width) / 2;
+        y: (root.height - self.height) / 2;
+        width: min(root.width - 48px, 340px);
+        height: col.preferred-height + 32px;
+        border-radius: 18px;
+        background: Theme.popup-background;
+        TouchArea { }
+        col := VerticalLayout {
+            y: 16px;
+            width: card.width;
+            spacing: 0;
+            Text {
+                x: 22px; width: card.width - 44px;
+                text: "Snooze notifications?";
+                color: root.fg;
+                font-family: Theme.font-ui; font-size: Theme.subtitle; font-weight: 700;
+                wrap: word-wrap;
+            }
+            Rectangle { height: 6px; }
+            Text {
+                x: 22px; width: card.width - 44px;
+                text: "Nobody else is told that you snoozed this chat.";
+                color: root.fg.with-alpha(0.6);
+                font-family: Theme.font-ui; font-size: Theme.body-small;
+                wrap: word-wrap;
+            }
+            Rectangle { height: 8px; }
+            for entry in [
+                { t: "1 hour",   v: "1h" },
+                { t: "8 hours",  v: "8h" },
+                { t: "24 hours", v: "24h" },
+                { t: "Always",   v: "always" },
+            ] : SettingsRow {
+                fg: root.fg;
+                label: entry.t;
+                trailing: "radio";
+                on: root.span == entry.v;
+                clicked => { root.span = entry.v; }
+            }
+            Rectangle {
+                height: 1px;
+                background: root.fg.with-alpha(0.1);
+            }
+            // Sigil's own per-room "mentions" notification mode, offered here
+            // as the exception the platform offers.
+            SettingsRow {
+                fg: root.fg;
+                label: "Still notify me when I am mentioned";
+                trailing: "check";
+                on: root.mentions;
+                clicked => { root.mentions = !root.mentions; }
+            }
+            Rectangle { height: 6px; }
+            HorizontalLayout {
+                alignment: end;
+                padding-right: 18px;
+                spacing: 8px;
+                cancel := Rectangle {
+                    width: cancel-text.preferred-width + 26px; height: 34px;
+                    border-radius: 17px;
+                    background: root.fg.with-alpha(cancel-t.has-hover || cancel-t.pressed ? 0.12 : 0.07);
+                    cancel-text := Text {
+                        text: "Cancel"; color: root.fg;
+                        font-family: Theme.font-ui; font-size: Theme.body-small;
+                        horizontal-alignment: center; vertical-alignment: center;
+                        width: 100%; height: 100%;
+                    }
+                    cancel-t := TouchArea { clicked => { root.open = false; } }
+                }
+                ok := Rectangle {
+                    width: ok-text.preferred-width + 26px; height: 34px;
+                    border-radius: 17px;
+                    background: ok-t.has-hover || ok-t.pressed ? Theme.accent.brighter(0.1) : Theme.accent;
+                    ok-text := Text {
+                        text: "Snooze"; color: Theme.background;
+                        font-family: Theme.font-ui; font-size: Theme.body-small; font-weight: 700;
+                        horizontal-alignment: center; vertical-alignment: center;
+                        width: 100%; height: 100%;
+                    }
+                    ok-t := TouchArea {
+                        clicked => { root.open = false; root.chose(root.span, root.mentions); }
+                    }
+                }
+            }
+        }
+    }
 }
 
 export component HomePage inherits Rectangle {
@@ -184,6 +366,40 @@ export component HomePage inherits Rectangle {
     callback sign-out;
     // Drawn in-page, not as a popup (HomePage.qml accountOpen).
     in-out property <bool> account-open: false;
+
+    // ---- the long-press selection, and what hangs off it.
+    /// The room a long press picked out; "" is the ordinary list. The window
+    /// binds this so the back gesture can leave the selection, not the page.
+    in-out property <string> selection: "";
+    /// What is layered over the selection: "" | "snooze" | "leave".
+    in-out property <string> overlay: "";
+    /// What just happened, for the pill.
+    in-out property <string> note: "";
+    /// action, room id, argument — forwarded to the window's act() channel.
+    callback room-act(string, string, string);
+    // The selected row's own state, read off it when the hold fires: the
+    // bar's icons say what its actions will do.
+    property <string> sel-name;
+    property <bool> sel-pinned;
+    property <bool> sel-unread;
+    property <bool> sel-snoozed;
+    function select(room: RoomRow) {
+        root.selection = room.id;
+        root.sel-name = room.name;
+        root.sel-pinned = room.is-favourite;
+        root.sel-unread = room.unread;
+        root.sel-snoozed = room.is-snoozed;
+        // the platform's buzz, as the message sheet gets one
+        root.room-act("home-hold", room.id, "");
+    }
+    /// Fire an action for the selected room and leave the selection, as
+    /// every action in the platform's bar does.
+    function act-on-selection(action: string, arg: string, said: string) {
+        root.room-act(action, root.selection, arg);
+        root.note = said;
+        root.selection = "";
+        root.overlay = "";
+    }
 
     property <bool> chats-mode: root.tab == 0;
     // The phone is not the QML card: it is the platform's own conversation
@@ -585,43 +801,111 @@ export component HomePage inherits Rectangle {
         VerticalLayout {
             // App bar, flat on the window ground: 60 tall, the title at 16,
             // the search glyph's centre 88 and the avatar's 32 from the right.
-            Rectangle {
+            bar := Rectangle {
                 height: 60px;
-                Text {
-                    x: 16px;
-                    height: 100%;
-                    text: "Sigil";
-                    color: Theme.menu-text;
-                    font-family: Theme.font-ui;
-                    font-size: 22px;
-                    font-weight: 500;
-                    vertical-alignment: center;
-                }
-                Rectangle {
-                    x: parent.width - 88px - 24px; y: 6px;
-                    width: 48px; height: 48px;
-                    border-radius: 24px;
-                    background: search-btn.pressed ? Theme.menu-text.with-alpha(0.10)
-                              : search-btn.has-hover ? Theme.menu-text.with-alpha(0.06) : transparent;
-                    IconLabel {
-                        text: Icons.search;
-                        font-size: 24px;
+                if root.selection == "" : Rectangle {
+                    width: 100%; height: 100%;
+                    Text {
+                        x: 16px;
+                        height: 100%;
+                        text: "Sigil";
                         color: Theme.menu-text;
-                        width: 100%; height: 100%;
+                        font-family: Theme.font-ui;
+                        font-size: 22px;
+                        font-weight: 500;
+                        vertical-alignment: center;
                     }
-                    search-btn := TouchArea { clicked => { root.open-search(); } }
+                    Rectangle {
+                        x: bar.width - 88px - 24px; y: 6px;
+                        width: 48px; height: 48px;
+                        border-radius: 24px;
+                        background: search-btn.pressed ? Theme.menu-text.with-alpha(0.10)
+                                  : search-btn.has-hover ? Theme.menu-text.with-alpha(0.06) : transparent;
+                        IconLabel {
+                            text: Icons.search;
+                            font-size: 24px;
+                            color: Theme.menu-text;
+                            width: 100%; height: 100%;
+                        }
+                        search-btn := TouchArea { clicked => { root.open-search(); } }
+                    }
+                    Rectangle {
+                        x: bar.width - 32px - 24px; y: 6px;
+                        width: 48px; height: 48px;
+                        Avatar {
+                            x: 8px; y: 8px;
+                            size: 32px;
+                            source: root.my-avatar;
+                            initials: root.my-initials;
+                            tint: root.my-tint;
+                        }
+                        TouchArea { clicked => { root.account-open = !root.account-open; } }
+                    }
                 }
-                Rectangle {
-                    x: parent.width - 32px - 24px; y: 6px;
-                    width: 48px; height: 48px;
-                    Avatar {
-                        x: 8px; y: 8px;
-                        size: 32px;
-                        source: root.my-avatar;
-                        initials: root.my-initials;
-                        tint: root.my-tint;
+
+                // The selection bar (Screenshot_20260903-235157): a close X
+                // whose 48 circle is centred 28 in, the count at 76, and the
+                // actions right-aligned in 48 boxes — centres 24, 72, 120 and
+                // 168 in from the right edge.
+                if root.selection != "" : Rectangle {
+                    width: 100%; height: 100%;
+                    BarAction {
+                        x: 4px; y: 6px;
+                        icon: Icons.close;
+                        clicked => { root.selection = ""; }
                     }
-                    TouchArea { clicked => { root.account-open = !root.account-open; } }
+                    Text {
+                        x: 76px;
+                        height: 100%;
+                        text: "1";
+                        color: Theme.menu-text;
+                        font-family: Theme.font-ui;
+                        font-size: 22px;
+                        font-weight: 500;
+                        vertical-alignment: center;
+                    }
+                    // Pin — the reference's first action, drawn struck (a
+                    // filled, accented pin) while the chat is already pinned.
+                    BarAction {
+                        x: bar.width - 4 * 48px; y: 6px;
+                        icon: Icons.pin;
+                        filled: root.sel-pinned;
+                        ink: root.sel-pinned ? Theme.accent : Theme.menu-text;
+                        clicked => {
+                            root.act-on-selection("home-pin", root.sel-pinned ? "0" : "1",
+                                root.sel-pinned ? "Unpinned" : "Pinned");
+                        }
+                    }
+                    // Snooze — the dialog, unless it is snoozed already, in
+                    // which case the one thing left to do is lift it.
+                    BarAction {
+                        x: bar.width - 3 * 48px; y: 6px;
+                        icon: root.sel-snoozed ? Icons.bellOff : Icons.clock;
+                        filled: root.sel-snoozed;
+                        ink: root.sel-snoozed ? Theme.accent : Theme.menu-text;
+                        clicked => {
+                            if (root.sel-snoozed) {
+                                root.act-on-selection("home-snooze", "0,0", "Snooze lifted");
+                            } else {
+                                root.overlay = "snooze";
+                            }
+                        }
+                    }
+                    // Mark as read / Mark as unread, following the room.
+                    BarAction {
+                        x: bar.width - 2 * 48px; y: 6px;
+                        icon: root.sel-unread ? Icons.checkCircle : Icons.email;
+                        clicked => {
+                            root.act-on-selection("home-unread", root.sel-unread ? "0" : "1",
+                                root.sel-unread ? "Marked read" : "Marked unread");
+                        }
+                    }
+                    // Leave chat — one way, so it asks first.
+                    BarAction {
+                        x: bar.width - 48px; y: 6px;
+                        icon: Icons.leave;
+                        clicked => { root.overlay = "leave"; }
+                    }
                 }
             }
 
@@ -651,10 +935,24 @@ export component HomePage inherits Rectangle {
                         name: room.name; avatar: room.avatar; initials: room.initials; tint: room.tint;
                         preview: room.preview; preview-icon: room.preview-icon; stamp: room.stamp;
                         badge: room.badge; badge-urgent: room.badge-urgent; unread: room.unread;
-                        is-favourite: room.is-favourite; is-invite: room.is-invite;
+                        is-favourite: room.is-favourite; is-snoozed: room.is-snoozed;
+                        is-invite: room.is-invite;
                         is-typing: room.is-typing; has-call: room.has-call; draft: room.draft;
                         accent-container: phone-tree.accent-container;
-                        clicked => { root.room-clicked(room.id); }
+                        selected: root.selection == room.id;
+                        selecting: root.selection != "";
+                        // While a row is picked out, a tap picks another (or
+                        // lets this one go) rather than opening the chat.
+                        clicked => {
+                            if (root.selection == room.id) { root.selection = ""; }
+                            else if (root.selection != "" && !room.is-invite) { root.select(room); }
+                            else if (root.selection != "") { root.selection = ""; }
+                            else { root.room-clicked(room.id); }
+                        }
+                        // A request is not a conversation yet — it has no pin,
+                        // no snooze and no read state — so it is not one of
+                        // the rows a hold picks out.
+                        held => { if (!room.is-invite) { root.select(room); } }
                     }
                     // room for the FAB past the last row
                     Rectangle { height: 96px; }
@@ -662,8 +960,10 @@ export component HomePage inherits Rectangle {
             }
         }
 
-        // Extended FAB: "Start chat".
+        // Extended FAB: "Start chat". It steps aside while a conversation is
+        // picked out — the bar above is what the list is doing now.
         phone-fab := Rectangle {
+            visible: root.selection == "";
             x: root.width - self.width - 16px;
             y: root.height - self.height - 24px;
             width: fab-row.preferred-width;
@@ -693,6 +993,40 @@ export component HomePage inherits Rectangle {
                 }
             }
             phone-fab-touch := TouchArea { clicked => { root.new-chat(); } }
+        }
+
+        // What the selection bar can open. `overlay` is the one truth (the
+        // back gesture reaches it); the dialogs' own `open` is driven from
+        // it rather than bound to it, because both close themselves.
+        property <bool> want-snooze: root.overlay == "snooze";
+        changed want-snooze => { snooze-dialog.open = phone-tree.want-snooze; }
+        property <bool> want-leave: root.overlay == "leave";
+        changed want-leave => { leave-dialog.open = phone-tree.want-leave; }
+
+        snooze-dialog := SnoozeDialog {
+            width: 100%; height: 100%;
+            chose(span, mentions) => {
+                root.act-on-selection("home-snooze", span + "," + (mentions ? "1" : "0"),
+                    span == "1h" ? "Snoozed for an hour"
+                    : span == "8h" ? "Snoozed for 8 hours"
+                    : span == "24h" ? "Snoozed for 24 hours" : "Snoozed");
+            }
+            changed open => { if (!self.open) { root.overlay = ""; } }
+        }
+        leave-dialog := ConfirmDialog {
+            width: 100%; height: 100%;
+            title: "Leave chat?";
+            body: "You will leave \{root.sel-name}, and this device will forget the conversation. This cannot be undone.";
+            confirm-text: "Leave";
+            confirmed => { root.act-on-selection("home-leave", "", "Left the chat"); }
+            changed open => { if (!self.open) { root.overlay = ""; } }
+        }
+
+        // What the last action did, said once and gone.
+        NotePill {
+            width: 100%; height: 100%;
+            text: root.note;
+            expired => { root.note = ""; }
         }
     }
 

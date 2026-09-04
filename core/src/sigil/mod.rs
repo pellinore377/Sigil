@@ -5,6 +5,7 @@
 
 mod docs;
 mod kinds;
+pub mod local;
 mod oidc;
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
@@ -38,6 +39,13 @@ pub struct SigilSession {
     history: Mutex<HashMap<String, Vec<Value>>>,
     handles: Mutex<HashMap<[u8; 32], Handle>>,
     open: Mutex<HashSet<String>>,
+    /// The conversations and requests in `inner`, as last read. A send holds
+    /// `inner` across its round trips, and everything that only wants to
+    /// *look* at the account — is this room mine, what does the room list
+    /// say — used to queue behind it: the message ahead was still in the
+    /// air when the next one was typed. Readers take this instead, and any
+    /// reader that does find the account free refreshes it.
+    mirror: Mutex<Option<(Vec<Conversation>, Vec<PendingRequest>)>>,
     history_path: PathBuf,
     /// Last typing notice sent per room (ms), for the 5 s rate limit.
     typing_sent: Mutex<HashMap<String, i64>>,
@@ -200,6 +208,7 @@ async fn start(engine: &SharedEngine, acct: Account) -> anyhow::Result<()> {
         history: Mutex::new(history),
         handles: Mutex::new(HashMap::new()),
         open: Mutex::new(HashSet::new()),
+        mirror: Mutex::new(None),
         history_path,
         typing_sent: Mutex::new(HashMap::new()),
         live_shares: Mutex::new(HashMap::new()),
@@ -654,6 +663,33 @@ pub async fn dispatch(engine: &SharedEngine, req: &Request) -> Option<Reply> {
             s.mark_read(engine, &param(p, "roomId")).await;
             Reply::ok(json!({}))
         }
+        // The home list's per-conversation state, all of it local to this
+        // device: pinned, marked unread, snoozed.
+        "room.setFavourite" => {
+            s.set_favourite(
+                engine,
+                &param(p, "roomId"),
+                p.get("favourite").and_then(Value::as_bool).unwrap_or(false),
+            )
+            .await
+        }
+        "room.setUnread" => {
+            s.set_unread(
+                engine,
+                &param(p, "roomId"),
+                p.get("unread").and_then(Value::as_bool).unwrap_or(false),
+            )
+            .await
+        }
+        "room.setSnooze" => {
+            s.set_snooze(
+                engine,
+                &param(p, "roomId"),
+                p.get("until").and_then(Value::as_i64).unwrap_or(0),
+                p.get("mentions").and_then(Value::as_bool).unwrap_or(false),
+            )
+            .await
+        }
         "typing" => {
             s.typing(
                 engine,
@@ -897,7 +933,9 @@ fn media_item(id: &str, sender: &str, ts: i64, is_own: bool, m: &sigil_client::m
     })
 }
 
-fn room_json(c: &Conversation, hist: &[Value]) -> Value {
+/// `flags` is this device's local table (`local::load()`), read once by the
+/// caller so a list of rooms costs one settings read, not one per room.
+fn room_json(c: &Conversation, hist: &[Value], flags: &local::Table) -> Value {
     let peer = c.peers.first().cloned().unwrap_or_default();
     let is_dm = c.name.is_empty() && c.peers.len() <= 1;
     let name = if c.name.is_empty() {
@@ -918,6 +956,10 @@ fn room_json(c: &Conversation, hist: &[Value]) -> Value {
                 && !v.get("read").and_then(Value::as_bool).unwrap_or(false)
         })
         .count();
+    // Marked unread by hand reads as one unread message until the room is
+    // opened: the list has no other way to say "there is something here".
+    let fl = flags.get(&c.group_id).cloned().unwrap_or_default();
+    let unread = if fl.marked_unread { unread.max(1) } else { unread };
     json!({
         "id": c.group_id,
         "name": name,
@@ -932,13 +974,16 @@ fn room_json(c: &Conversation, hist: &[Value]) -> Value {
         "isEncrypted": true,
         "isInvite": false,
         "inviter": Value::Null,
-        "isFavourite": false,
+        "isFavourite": fl.favourite,
         "isLowPriority": false,
         "joinedMembers": c.members.len().max(c.peers.len() + 1),
         "unread": unread,
         "highlights": 0,
         "unreadMessages": unread,
-        "markedUnread": false,
+        "markedUnread": fl.marked_unread,
+        "snoozed": fl.snoozed(now_ms()),
+        "snoozeUntil": fl.snooze_until,
+        "snoozeMentions": fl.snooze_mentions,
         "lastMessage": last.map(|v| json!({"kind": v.get("kind").cloned().unwrap_or(json!("text")), "sender": v.get("sender").cloned(), "senderName": v.get("senderName").cloned(), "body": v.get("body").cloned().unwrap_or(json!(""))})).unwrap_or(Value::Null),
         "lastActivityTs": last_ts,
         "stamp": crate::timeline::fmt::short(last_ts, now_ms()),
@@ -961,6 +1006,7 @@ fn request_room_json(r: &PendingRequest) -> Value {
         "isEncrypted": true, "isInvite": true, "inviter": r.from,
         "isFavourite": false, "isLowPriority": false, "joinedMembers": 1,
         "unread": 1, "highlights": 1, "unreadMessages": 1, "markedUnread": false,
+        "snoozed": false, "snoozeUntil": 0, "snoozeMentions": false,
         "lastMessage": {"kind":"invite","sender": r.from, "body": if r.first_message.is_empty() { "Invitation".to_string() } else { r.first_message.clone() }},
         "lastActivityTs": now_ms(), "stamp": "", "hasActiveCall": false, "callParticipants": [],
     })
@@ -976,6 +1022,41 @@ impl SigilSession {
         }
     }
 
+    /// Is this room one of ours? Answered from the mirror when it can be,
+    /// so the local echo of a message does not wait on `inner`, which the
+    /// message before it holds for as long as its round trips take. The
+    /// account is only asked about a room the mirror has not seen yet — a
+    /// conversation created since the last room list.
+    pub(super) async fn is_ours(&self, room_id: &str) -> bool {
+        let (room_id, _) = kinds::split_key(room_id);
+        if let Some((convs, _)) = self.mirror.lock().as_ref() {
+            if convs.iter().any(|c| c.group_id == room_id) {
+                return true;
+            }
+        }
+        self.conversation(&room_id).await.is_some()
+    }
+
+    /// The conversations and requests, from the account if it is free and
+    /// from the mirror if it is not. Only the first call on a fresh session
+    /// can be made to wait.
+    async fn conversations(&self) -> (Vec<Conversation>, Vec<PendingRequest>) {
+        if let Ok(g) = self.inner.try_lock() {
+            let v = (g.0.conversations.clone(), g.0.requests.clone());
+            drop(g);
+            *self.mirror.lock() = Some(v.clone());
+            return v;
+        }
+        if let Some(v) = self.mirror.lock().clone() {
+            return v;
+        }
+        let g = self.inner.lock().await;
+        let v = (g.0.conversations.clone(), g.0.requests.clone());
+        drop(g);
+        *self.mirror.lock() = Some(v.clone());
+        v
+    }
+
     async fn conversation(&self, room_id: &str) -> Option<Conversation> {
         let (room_id, _) = kinds::split_key(room_id);
         self.inner
@@ -989,14 +1070,17 @@ impl SigilSession {
     }
 
     async fn rooms_snapshot(&self) -> Value {
-        let (convs, reqs) = {
-            let g = self.inner.lock().await;
-            (g.0.conversations.clone(), g.0.requests.clone())
-        };
+        // The rooms themselves come from the mirror when the account is
+        // busy; what each row *says* — the last message, the unread count —
+        // comes from the history, which is always current. So a message sent
+        // while the one before it is still going out still moves its room to
+        // the top of the list at once.
+        let (convs, reqs) = self.conversations().await;
         let h = self.history.lock();
+        let flags = local::load();
         let mut rooms: Vec<Value> = convs
             .iter()
-            .map(|c| room_json(c, h.get(&c.group_id).map(Vec::as_slice).unwrap_or(&[])))
+            .map(|c| room_json(c, h.get(&c.group_id).map(Vec::as_slice).unwrap_or(&[]), &flags))
             .collect();
         rooms.extend(reqs.iter().map(request_room_json));
         rooms.sort_by_key(|r| -r.get("lastActivityTs").and_then(Value::as_i64).unwrap_or(0));
@@ -1061,8 +1145,59 @@ impl SigilSession {
                 }
             }
         }
+        // Reading the room outranks a by-hand "mark unread": the flag was a
+        // note to come back, and this is coming back.
+        if local::get(room_id).marked_unread {
+            local::update(room_id, |f| f.marked_unread = false);
+        }
         self.save_history();
         self.broadcast_rooms(engine).await;
+    }
+
+    /// Pin (QML's "favourite") — device-local, and capped at five as the
+    /// room-settings page has always capped it.
+    async fn set_favourite(&self, engine: &SharedEngine, room_id: &str, on: bool) -> Reply {
+        if self.conversation(room_id).await.is_none() {
+            return Reply::err("unknown_room", "unknown room");
+        }
+        if on && !local::get(room_id).favourite && local::pinned_count() >= 5 {
+            return Reply::err("too_many", "Five conversations are already pinned");
+        }
+        local::update(room_id, |f| f.favourite = on);
+        self.broadcast_rooms(engine).await;
+        Reply::ok(json!({}))
+    }
+
+    /// Mark unread by hand. Marking read is `room.markRead`, which also
+    /// clears this; `unread: false` here only lifts the flag.
+    async fn set_unread(&self, engine: &SharedEngine, room_id: &str, on: bool) -> Reply {
+        if self.conversation(room_id).await.is_none() {
+            return Reply::err("unknown_room", "unknown room");
+        }
+        local::update(room_id, |f| f.marked_unread = on);
+        self.broadcast_rooms(engine).await;
+        Reply::ok(json!({}))
+    }
+
+    /// Hold this conversation's notifications until `until` (unix ms, or
+    /// `local::FOREVER` for "Always"); 0 lifts the snooze. `mentions` lets a
+    /// mention through while it runs.
+    async fn set_snooze(
+        &self,
+        engine: &SharedEngine,
+        room_id: &str,
+        until: i64,
+        mentions: bool,
+    ) -> Reply {
+        if self.conversation(room_id).await.is_none() {
+            return Reply::err("unknown_room", "unknown room");
+        }
+        local::update(room_id, |f| {
+            f.snooze_until = until.max(0);
+            f.snooze_mentions = until != 0 && mentions;
+        });
+        self.broadcast_rooms(engine).await;
+        Reply::ok(json!({}))
     }
 
     async fn members(&self, room_id: &str) -> Reply {
@@ -1170,13 +1305,26 @@ impl SigilSession {
             items.len()
         };
         let _ = len;
+        let t = std::time::Instant::now();
         self.save_history();
+        let t_save = t.elapsed();
         self.mark_dirty();
+        let t = std::time::Instant::now();
         self.emit_push(engine, room_id, &item);
+        let t_push = t.elapsed();
         if let Some(root) = item.get("threadRoot").and_then(Value::as_str).filter(|r| !r.is_empty()) {
             self.note_thread_reply(engine, room_id, root, &item);
         }
+        let t = std::time::Instant::now();
         self.broadcast_rooms(engine).await;
+        tracing::debug!(target: "perf", "append: history {t_save:?}, timeline {t_push:?}, rooms {:?}", t.elapsed());
+    }
+
+    /// Already showing as on its way, with nothing to clear.
+    fn item_is_sending(&self, room_id: &str, event_id: &str) -> bool {
+        self.item_by_id(room_id, event_id)
+            .map(|i| i["sendState"] == json!("sending") && i["sendError"] == json!(""))
+            .unwrap_or(false)
     }
 
     fn item_by_id(&self, room_id: &str, event_id: &str) -> Option<Value> {
@@ -1198,10 +1346,11 @@ impl SigilSession {
         body: &str,
         reply_to: Option<String>,
     ) -> Reply {
+        let t0 = std::time::Instant::now();
         if body.trim().is_empty() {
             return Reply::err("bad_request", "empty message");
         }
-        if self.conversation(room_id).await.is_none() {
+        if !self.is_ours(room_id).await {
             return Reply::err("unknown_room", format!("unknown room {room_id}"));
         }
         let (room_id, thread_root) = kinds::split_key(room_id);
@@ -1217,24 +1366,48 @@ impl SigilSession {
             item["threadRoot"] = json!(root);
         }
         self.append(engine, &room_id, item).await;
-        let reference = kinds::make_reference(thread_root.as_deref(), reply_to.as_deref());
-        self.deliver_text(engine, &room_id, &local_id, body, &reference).await
+        // The two numbers this path is judged by: how long the row took to
+        // appear, and how long the server took to have it. They are worth a
+        // line each time, because the second is mostly the Envoy's own
+        // holding jitter and only a log says so.
+        let echo = t0.elapsed();
+        let r = self
+            .deliver_text(
+                engine,
+                &room_id,
+                &local_id,
+                body,
+                &kinds::make_reference(thread_root.as_deref(), reply_to.as_deref()),
+            )
+            .await;
+        info!(target: "perf", "message.send: echo in {echo:?}, delivered in {:?}", t0.elapsed());
+        r
     }
 
     /// Send the text behind a local item and settle its state.
     async fn deliver_text(&self, engine: &SharedEngine, room_id: &str, local_id: &str, body: &str, reference: &str) -> Reply {
+        let t0 = std::time::Instant::now();
         self.top_up().await;
+        let t_top = t0.elapsed();
         let Some(conv) = self.conversation(room_id).await else {
             return Reply::err("unknown_room", format!("unknown room {room_id}"));
         };
-        self.update_item(engine, room_id, local_id, |it| {
-            it.insert("sendState".into(), json!("sending"));
-            it.insert("sendError".into(), json!(""));
-        });
+        // A fresh echo already says "sending" with no error; only a retry
+        // has anything to reset here, and a needless `set` costs the
+        // frontend a whole timeline rebuild.
+        if !self.item_is_sending(room_id, local_id) {
+            self.update_item(engine, room_id, local_id, |it| {
+                it.insert("sendState".into(), json!("sending"));
+                it.insert("sendError".into(), json!(""));
+            });
+        }
+        let t_pre = t0.elapsed();
         let sent = {
+            let t = std::time::Instant::now();
             let mut g = self.inner.lock().await;
+            let t_lock = t.elapsed();
             let (a, p) = &mut *g;
-            conversation::send_event(
+            let r = conversation::send_event(
                 &self.link,
                 a,
                 p,
@@ -1243,11 +1416,16 @@ impl SigilSession {
                 reference.as_bytes(),
                 body.as_bytes(),
             )
-            .await
+            .await;
+            tracing::debug!(target: "perf", "deliver_text: tokens {t_top:?}, item {t_pre:?}, account lock {t_lock:?}, send {:?}", t.elapsed() - t_lock);
+            r
         };
         match sent {
             Ok(sent) => {
+                let t = std::time::Instant::now();
+                let caught = sent.caught_up.len();
                 self.ingest_caught(engine, &conv, sent.caught_up).await;
+                tracing::debug!(target: "perf", "deliver_text: {caught} caught up in {:?}", t.elapsed());
                 let id = format!("{}:{}", hex::encode(sent.address), sent.seq);
                 self.update_item(engine, room_id, local_id, |it| {
                     it.insert("id".into(), json!(id));
@@ -1286,6 +1464,11 @@ impl SigilSession {
             let caption = item["body"].as_str().unwrap_or("").to_string();
             let caption = if caption == item["media"]["filename"].as_str().unwrap_or("") { String::new() } else { caption };
             return self.deliver_file(engine, &room_id, event_id, std::path::PathBuf::from(path), &caption, Extra::default()).await;
+        }
+        // A place or a poll shows a failed row of its own now; resending one
+        // would put its body out as a text message, so say so instead.
+        if !matches!(item["kind"].as_str().unwrap_or("text"), "text" | "notice" | "emote") {
+            return Reply::err("bad_request", "that kind of message cannot be sent again; cancel it and make a new one");
         }
         let body = item["src"].as_str().unwrap_or_else(|| item["body"].as_str().unwrap_or("")).to_string();
         let reply_to = item["replyTo"]["eventId"].as_str().filter(|r| !r.is_empty()).map(str::to_string);
@@ -1641,6 +1824,10 @@ impl SigilSession {
             "joinedMembers": member_count,
             "memberCount": member_count,
             "notificationMode": crate::notify::room_mode(room_id),
+            "isFavourite": local::get(room_id).favourite,
+            "snoozed": local::get(room_id).snoozed(now_ms()),
+            "snoozeUntil": local::get(room_id).snooze_until,
+            "snoozeMentions": local::get(room_id).snooze_mentions,
             "admins": admins,
             "isAdmin": is_admin,
             "slotServer": conv.slot_server,
@@ -1782,7 +1969,7 @@ impl SigilSession {
         let room_id = param(p, "roomId");
         let path = std::path::PathBuf::from(param(p, "path"));
         let caption = param(p, "caption");
-        if self.conversation(&room_id).await.is_none() {
+        if !self.is_ours(&room_id).await {
             return Reply::err("unknown_room", "unknown room");
         }
         if !path.is_file() {
@@ -1832,10 +2019,12 @@ impl SigilSession {
             },
             _ => extra,
         };
-        self.update_item(engine, room_id, local_id, |it| {
-            it.insert("sendState".into(), json!("sending"));
-            it.insert("sendError".into(), json!(""));
-        });
+        if !self.item_is_sending(room_id, local_id) {
+            self.update_item(engine, room_id, local_id, |it| {
+                it.insert("sendState".into(), json!("sending"));
+                it.insert("sendError".into(), json!(""));
+            });
+        }
         let r = {
             let mut g = self.inner.lock().await;
             let (a, pr) = &mut *g;
@@ -2035,6 +2224,9 @@ impl SigilSession {
                 }
                 a.conversations.retain(|c| c.group_id != room_id);
                 self.history.lock().remove(room_id);
+                // A conversation that is gone takes its pin, its unread mark
+                // and its snooze with it.
+                local::forget(room_id);
             }
             let _ = g.0.save();
         }

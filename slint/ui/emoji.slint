@@ -1,8 +1,26 @@
 // The one emoji picker (components/EmojiPicker.qml): the reaction drawer and
 // the attachment sheet both host this, so they cannot drift apart. The emoji
-// data arrives pre-chunked into rows of 8 from the bridge (QML loads
+// data arrives pre-chunked into rows from the bridge (QML loads
 // /usr/share/omarchy/shell/plugins/emojis/emojis.json — see WIRING-chat.md);
-// a flat `for` over ~1800 glyphs would defeat ListView virtualisation.
+// a flat `for` over ~1800 glyphs would defeat the list's own layout.
+//
+// Laid out from the platform messenger's picker, measured off
+// Screenshot_20260903-234221.png (1344x2992 at 408dpi, so 1dp = 2.55px):
+//
+//   search field   20px margins, 102 tall, fully rounded   →  8 / 40 / pill
+//   search icon    ink 42 square, left edge 39 into the field →  20 at 15
+//   placeholder    cap-to-descender 39                     →  16
+//   grid           9 columns, cell pitch 146, 15 side pad   →  see `cell`
+//   glyph          82 in that 146 cell                      →  0.562 * cell
+//   row            pitch 122                                →  0.836 * cell
+//   heading        cap 24, block 64 between the rows        →  13 / 25
+//   heading indent 35                                       →  14
+//   first heading  50 under the search field                →  20
+//   category bar   11 cells full width, ink 42, on 122.7    →  20 icons
+//   selected       87 disc under the icon                   →  34
+//
+// Widths come off `cell` rather than a dp literal because the reference phone
+// is 527dp across and this window is not: nine columns have to keep fitting.
 
 import { TouchList } from "furniture.slint";
 import { Theme } from "style.slint";
@@ -14,87 +32,153 @@ export component EmojiPicker inherits Rectangle {
     in property <color> fg: Theme.menu-text;
     in property <color> accent: Theme.accent;
     in property <color> chip: Theme.background.with-alpha(0.85);
-    /// Rows of up to 8; filtered by the bridge when `search-edited` fires.
+    /// Rows of up to 9. A row of ONE item whose glyph is empty is a section
+    /// heading, its caption in `name` (actions.rs push_emoji) — the bridge
+    /// has no second channel to send them down.
     in property <[[EmojiItem]]> rows;
-    /// Category jump targets: the ROW index each category starts at.
-    in property <[string]> cat-icons: ["😀", "👋", "🐵", "🍇", "🌍", "🎃", "👓", "🏧", "🏁"];
+    /// Category jump targets: the ROW index each section's heading sits at,
+    /// RECENTS first. The bridge always sends one per icon below.
     in property <[int]> cat-rows;
+    /// Leaves a 40 square open at the right of the search row for the host's
+    /// back button. The attachment sheet's picker is mounted through
+    /// `@children` (attach.slint's emoji-slot), which cannot set a property
+    /// on it or connect a callback — so the sheet draws and handles the
+    /// button over the gap, and the DEFAULT is the sheet's answer. The
+    /// reaction drawer, which does set its own properties, turns it off.
+    in property <bool> back-slot: true;
     callback picked(string);
     callback search-edited(string);
 
     background: transparent;
 
-    // EmojiPicker.qml:89-99 curCat: the row under the top edge (+10), and
-    // the last category starting at or before it. -1 while searching; the
-    // categories are ordered, so the index is a count of those passed.
-    property <float> cur-row: floor((-grid.viewport-y + 10px) / 44px);
+    // The bar, in the bundled list's order (actions.rs EMOJI_CATS), RECENTS
+    // in front. The reference's twelfth key is a backspace into the composer;
+    // this picker has no channel to the composer's cursor, so it is left off
+    // rather than drawn dead.
+    property <[string]> cat-icons: [
+        Icons.clock, Icons.emoji, Icons.emojiPeople, Icons.emojiNature,
+        Icons.emojiFood, Icons.emojiTravel, Icons.emojiEvents,
+        Icons.emojiObjects, Icons.emojiSymbols, Icons.emojiFlags,
+    ];
+
     property <bool> searching: search-input.text != "";
+    /// Nine across, inside the grid's 6 of side padding.
+    property <length> cell: max(1px, (root.width - 12px) / 9);
+    property <length> row-h: root.cell * 0.836;
+    /// The reference's glyph is 82 of its 146 cell — 0.562 — but that is INK,
+    /// and emoji.render's pictures carry about 8% of clear margin a side, so
+    /// the box they go in has to be that much wider to draw the same size.
+    property <length> glyph-box: root.cell * 0.669;
+    property <length> head-h: 25px;
+    /// The lead-in above the first heading, scrolled away by a category jump.
+    property <length> grid-top: 20px;
+    /// Where a section's caption sits in the scrolled content. A caption block
+    /// and a glyph row are different heights and the height comes from THIS
+    /// window's width, so the bridge cannot send a pixel offset; it sends both
+    /// counts packed into the one int it has — glyph rows above the caption in
+    /// the high bits, captions above it in the low nibble (actions.rs
+    /// cat_mark). A section the device has no drawable glyphs for sends the
+    /// position of the one after it, so its bar icon still lands somewhere.
+    pure function cat-y(i: int) -> length {
+        return root.grid-top
+            + floor(root.cat-rows[i] / 16) * root.row-h
+            + mod(root.cat-rows[i], 16) * root.head-h;
+    }
+
+    // EmojiPicker.qml:89-99 curCat: the last section starting at or above the
+    // top edge (+10). -1 while searching; the sections are ordered, so the
+    // index is a count of those passed.
+    property <length> scroll-y: -grid.viewport-y + 10px;
     property <int> cur-cat: root.searching || root.cat-rows.length == 0 ? -1
-        : (root.cat-rows.length > 1 && root.cat-rows[1] <= root.cur-row ? 1 : 0)
-        + (root.cat-rows.length > 2 && root.cat-rows[2] <= root.cur-row ? 1 : 0)
-        + (root.cat-rows.length > 3 && root.cat-rows[3] <= root.cur-row ? 1 : 0)
-        + (root.cat-rows.length > 4 && root.cat-rows[4] <= root.cur-row ? 1 : 0)
-        + (root.cat-rows.length > 5 && root.cat-rows[5] <= root.cur-row ? 1 : 0)
-        + (root.cat-rows.length > 6 && root.cat-rows[6] <= root.cur-row ? 1 : 0)
-        + (root.cat-rows.length > 7 && root.cat-rows[7] <= root.cur-row ? 1 : 0)
-        + (root.cat-rows.length > 8 && root.cat-rows[8] <= root.cur-row ? 1 : 0);
+        : (root.cat-rows.length > 1 && root.cat-y(1) <= root.scroll-y ? 1 : 0)
+        + (root.cat-rows.length > 2 && root.cat-y(2) <= root.scroll-y ? 1 : 0)
+        + (root.cat-rows.length > 3 && root.cat-y(3) <= root.scroll-y ? 1 : 0)
+        + (root.cat-rows.length > 4 && root.cat-y(4) <= root.scroll-y ? 1 : 0)
+        + (root.cat-rows.length > 5 && root.cat-y(5) <= root.scroll-y ? 1 : 0)
+        + (root.cat-rows.length > 6 && root.cat-y(6) <= root.scroll-y ? 1 : 0)
+        + (root.cat-rows.length > 7 && root.cat-y(7) <= root.scroll-y ? 1 : 0)
+        + (root.cat-rows.length > 8 && root.cat-y(8) <= root.scroll-y ? 1 : 0)
+        + (root.cat-rows.length > 9 && root.cat-y(9) <= root.scroll-y ? 1 : 0);
 
     /// EmojiPicker.qml:37 reset(): the attachment sheet clears the search on close.
     public function reset() {
         if (search-input.text != "") { search-input.text = ""; root.search-edited(""); }
     }
 
-    // EmojiPicker.qml:45-48: a Column of search / grid / strip at spacing 8;
-    // the grid is parent − 86 (:70), so 4px of slack sit under the strip.
     VerticalLayout {
-        spacing: 8px;
-        alignment: start;
-
-        // Search well
-        search-well := Rectangle {
-            height: 34px;
-            border-radius: 17px;
-            background: root.chip;
-            HorizontalLayout {
-                padding-left: 12px; padding-right: 10px;
-                spacing: 8px;
-                IconLabel {
-                    text: Icons.search;
-                    color: root.fg.with-alpha(0.5);
-                    font-size: Theme.body-small;
-                    vertical-alignment: center;
-                }
-                Rectangle {
-                    clip: true;
-                    horizontal-stretch: 1;
-                    search-input := TextInput {
-                        color: root.fg;
-                        font-family: Theme.font-ui; font-size: Theme.body-small;
+        // Search row — the field 8 in from each side, the sub-page's back
+        // button on its right where the sheet's own header used to be.
+        HorizontalLayout {
+            padding-left: 8px; padding-right: 8px;
+            spacing: 8px;
+            search-well := Rectangle {
+                height: 40px;
+                border-radius: self.height / 2;
+                background: root.chip;
+                HorizontalLayout {
+                    padding-left: 15px; padding-right: 15px;
+                    spacing: 13px;
+                    IconLabel {
+                        text: Icons.search;
+                        color: root.fg.with-alpha(0.8);
+                        font-size: Theme.icon-size;
+                        width: Theme.icon-size;
                         vertical-alignment: center;
-                        height: 100%; width: 100%;
-                        single-line: true;
-                        edited => { root.search-edited(self.text); }
                     }
-                    if search-input.text == "" : Text {
-                        text: "Search emoji";
-                        color: root.fg.with-alpha(0.45);
-                        font-family: Theme.font-ui; font-size: Theme.body-small;
-                        vertical-alignment: center;
-                        height: 100%;
+                    Rectangle {
+                        clip: true;
+                        horizontal-stretch: 1;
+                        search-input := TextInput {
+                            color: root.fg;
+                            font-family: Theme.font-ui; font-size: Theme.body;
+                            vertical-alignment: center;
+                            height: 100%; width: 100%;
+                            single-line: true;
+                            edited => { root.search-edited(self.text); }
+                        }
+                        if search-input.text == "" : Text {
+                            // Left, on the input's own baseline — unplaced,
+                            // Slint would centre it in the well.
+                            x: 0px;
+                            text: "Search emoji";
+                            color: root.fg.with-alpha(0.8);
+                            font-family: Theme.font-ui; font-size: Theme.body;
+                            vertical-alignment: center;
+                            height: 100%;
+                        }
                     }
                 }
             }
+            if root.back-slot : Rectangle { width: 40px; height: 40px; }
         }
 
         grid := TouchList {
-            height: max(0px, root.height - 86px);
+            vertical-stretch: 1;
+            // The 50 the reference leaves over its first heading. It is part
+            // of the scrolled content, not padding, so a category jump scrolls
+            // it away and puts that section's caption on the top edge.
+            Rectangle { height: root.grid-top; }
             for row in root.rows : erow := Rectangle {
-                height: 44px;
-                HorizontalLayout {
+                property <bool> is-head: row.length == 1 && row[0].glyph == "";
+                height: self.is-head ? root.head-h : root.row-h;
+                if erow.is-head : Text {
+                    x: 14px;
+                    text: row[0].name;
+                    color: root.fg.with-alpha(0.7);
+                    font-family: Theme.font-ui;
+                    font-size: Theme.caption;
+                    font-weight: 500;
+                    letter-spacing: 0.8px;
+                    vertical-alignment: center;
+                    height: 100%;
+                }
+                if !erow.is-head : HorizontalLayout {
+                    padding-left: 6px; padding-right: 6px;
+                    alignment: start;
                     for em in row : cell := Rectangle {
-                        width: grid.width / 8;
-                        // EmojiPicker.qml:80: the highlight is inset 2 with
-                        // radius 8 — 40×40 inside the 44 cell.
+                        width: root.cell;
+                        // EmojiPicker.qml:80: the highlight is inset with a
+                        // radius, a shade inside the cell.
                         Rectangle {
                             x: 2px; y: 2px;
                             width: cell.width - 4px; height: cell.height - 4px;
@@ -104,12 +188,16 @@ export component EmojiPicker inherits Rectangle {
                         }
                         if em.has-img : Image {
                             source: em.img;
-                            x: (cell.width - 26px) / 2; y: 9px; width: 26px; height: 26px;
+                            x: (cell.width - root.glyph-box) / 2;
+                            y: (cell.height - root.glyph-box) / 2;
+                            width: root.glyph-box; height: root.glyph-box;
                             image-fit: contain;
                         }
                         if !em.has-img : Text {
                             text: em.glyph;
-                            font-size: 22px;
+                            // A font draws its glyph at about the size asked
+                            // for, with none of the picture's own margin.
+                            font-size: root.cell * 0.562;
                             horizontal-alignment: center;
                             vertical-alignment: center;
                             width: 100%; height: 100%;
@@ -120,30 +208,35 @@ export component EmojiPicker inherits Rectangle {
             }
         }
 
-        // Category strip: tapping jumps the grid to that section.
-        HorizontalLayout {
-            alignment: center;
-            spacing: 4px;
-            for icon[ci] in root.cat-icons : cat-cell := Rectangle {
-                width: 32px; height: 32px;
-                border-radius: 10px;
-                // EmojiPicker.qml:106-108: the shown category sits on the
-                // accent; hover is the softer tint.
-                background: root.cur-cat == ci ? root.accent
-                    : cat-t.pressed || cat-t.has-hover ? root.accent.with-alpha(0.35) : transparent;
-                Text {
-                    text: icon;
-                    font-size: 15px;
-                    opacity: 0.9;
-                    horizontal-alignment: center; vertical-alignment: center;
-                    width: 100%; height: 100%;
-                }
-                cat-t := TouchArea {
-                    // EmojiPicker.qml:110: the search clears before the jump.
-                    clicked => {
-                        root.reset();
-                        if (ci < root.cat-rows.length) {
-                            grid.viewport-y = -44px * root.cat-rows[ci];
+        // Category bar, pinned under the grid: tapping jumps to that section.
+        Rectangle {
+            height: 48px;
+            HorizontalLayout {
+                for icon[ci] in root.cat-icons : cat-cell := Rectangle {
+                    horizontal-stretch: 1;
+                    // EmojiPicker.qml:106-108: the shown category sits on a
+                    // disc of the accent; hover is the softer tint.
+                    Rectangle {
+                        width: 34px; height: 34px;
+                        border-radius: self.height / 2;
+                        background: root.cur-cat == ci ? root.accent.with-alpha(0.35)
+                            : cat-t.pressed || cat-t.has-hover ? root.accent.with-alpha(0.18)
+                            : transparent;
+                    }
+                    IconLabel {
+                        text: icon;
+                        filled: true;
+                        color: root.fg.with-alpha(0.8);
+                        font-size: Theme.icon-size;
+                        width: 100%; height: 100%;
+                    }
+                    cat-t := TouchArea {
+                        // EmojiPicker.qml:110: the search clears before the jump.
+                        clicked => {
+                            root.reset();
+                            if (ci < root.cat-rows.length) {
+                                grid.viewport-y = -root.cat-y(ci);
+                            }
                         }
                     }
                 }

@@ -329,6 +329,54 @@ impl SigilSession {
         Ok(format!("{}:{}", hex::encode(sent.address), sent.seq))
     }
 
+    /// One event that draws a row of its own: the row appears at once as
+    /// "sending", and turns "sent" with its real id or "failed" with the
+    /// reason once the server has answered. Text and files have gone out
+    /// this way all along; a place or a poll used to wait on the round
+    /// trip before anything was drawn at all.
+    pub(super) async fn send_echoed(
+        &self,
+        engine: &SharedEngine,
+        room_id: &str,
+        kind: Kind,
+        reference: &str,
+        body: &[u8],
+        item_for: impl Fn(&str) -> Value,
+    ) -> Result<String, Reply> {
+        if !self.is_ours(room_id).await {
+            return Err(Reply::err("unknown_room", format!("unknown room {room_id}")));
+        }
+        let local_id = format!("local:{}", uuid::Uuid::new_v4().simple());
+        let mut item = item_for(&local_id);
+        if let Some(o) = item.as_object_mut() {
+            o.insert("sendState".into(), json!("sending"));
+            o.insert("sendError".into(), json!(""));
+        }
+        self.append(engine, room_id, item).await;
+        match self.send_raw(engine, room_id, kind, reference, body).await {
+            Ok(id) => {
+                self.update_item(engine, room_id, &local_id, |it| {
+                    it.insert("id".into(), json!(id));
+                    it.insert("eventId".into(), json!(id));
+                    it.insert("sendState".into(), json!("sent"));
+                    it.insert("sendError".into(), json!(""));
+                });
+                Ok(id)
+            }
+            Err(r) => {
+                let msg = match &r {
+                    Reply::Err(e) => e.message.clone(),
+                    Reply::Ok(_) => String::new(),
+                };
+                self.update_item(engine, room_id, &local_id, |it| {
+                    it.insert("sendState".into(), json!("failed"));
+                    it.insert("sendError".into(), json!(msg));
+                });
+                Err(r)
+            }
+        }
+    }
+
     // ------------------------------------------------------------ pins
 
     pub(super) async fn set_pin(&self, engine: &SharedEngine, room_id: &str, event_id: &str, pin: bool) -> Reply {
@@ -407,12 +455,16 @@ impl SigilSession {
             "closed": closed,
             "max": max,
         });
-        let id = match self.send_raw(engine, &room_id, Kind::Poll, "", body.to_string().as_bytes()).await {
+        let ts = now_ms();
+        let id = match self
+            .send_echoed(engine, &room_id, Kind::Poll, "", body.to_string().as_bytes(), |local| {
+                self.poll_item(local, &self.username, ts, true, &body)
+            })
+            .await
+        {
             Ok(id) => id,
             Err(r) => return r,
         };
-        let item = self.poll_item(&id, &self.username, now_ms(), true, &body);
-        self.append(engine, &room_id, item).await;
         Reply::ok(json!({"eventId": id}))
     }
 
@@ -631,9 +683,10 @@ impl SigilSession {
             .filter_map(|c| c["userId"].as_str().map(str::to_lowercase))
             .collect();
         let h = self.history.lock();
+        let flags = super::local::load();
         let mut rooms: Vec<Value> = convs
             .iter()
-            .map(|c| super::room_json(c, h.get(&c.group_id).map(Vec::as_slice).unwrap_or(&[])))
+            .map(|c| super::room_json(c, h.get(&c.group_id).map(Vec::as_slice).unwrap_or(&[]), &flags))
             .chain(reqs.iter().map(super::request_room_json))
             .filter(|r| q.is_empty() || r["name"].as_str().unwrap_or("").to_lowercase().contains(&q))
             .filter(|r| {
@@ -665,12 +718,14 @@ impl SigilSession {
             _ => false,
         };
         let mut messages: Vec<Value> = Vec::new();
+        // Only the name is wanted here, so the local flags need not be read.
+        let no_flags = super::local::Table::new();
         for c in &convs {
             if !scope.is_empty() && c.group_id != scope {
                 continue;
             }
             let Some(items) = h.get(&c.group_id) else { continue };
-            let name = super::room_json(c, items)["name"].clone();
+            let name = super::room_json(c, items, &no_flags)["name"].clone();
             for it in items.iter().rev() {
                 if !wanted(it) || item_kind(it) == "dayDivider" {
                     continue;
@@ -856,12 +911,16 @@ impl SigilSession {
             let ms = ms.clamp(60_000, LIVE_MAX_MS);
             body["until"] = json!(now_ms() as u64 + ms);
         }
-        let id = match self.send_raw(engine, &room_id, Kind::Location, "", body.to_string().as_bytes()).await {
+        let ts = now_ms();
+        let id = match self
+            .send_echoed(engine, &room_id, Kind::Location, "", body.to_string().as_bytes(), |local| {
+                location_item(local, &self.username, ts, true, &body)
+            })
+            .await
+        {
             Ok(id) => id,
             Err(r) => return r,
         };
-        let item = location_item(&id, &self.username, now_ms(), true, &body);
-        self.append(engine, &room_id, item).await;
         if live_ms.is_some() {
             self.run_live_share(engine.clone(), room_id.clone(), id.clone(), body["until"].as_u64().unwrap_or(0));
         }

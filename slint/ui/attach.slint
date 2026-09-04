@@ -14,6 +14,9 @@ export struct StickerItem { path: string, art: image, body: string, url: string,
 // AttachMenu.qml's poll field: a 10px-radius chip well whose fill LIGHTENS on
 // focus (no border), question at body size, options at body-small. Insets are
 // 12 left and 10 right for options, 12/12 for the question (:264, :234).
+// The phone takes the same well at a finger's size instead: 48 for the
+// question and 46 for an option, both at body, with 14px corners to sit with
+// the composer's own wells.
 component PollField inherits Rectangle {
     in property <string> placeholder;
     in-out property <string> text <=> input.text;
@@ -21,11 +24,15 @@ component PollField inherits Rectangle {
     in property <length> pad-right: 10px;
     in property <color> fg;
     in property <color> chip;
+    /// Every keystroke, so the page can grow a row under the last option.
+    callback edited;
+    property <bool> phone: Theme.mode != "desktop";
     height: 32px;
-    border-radius: 10px;
+    border-radius: root.phone ? 14px : 10px;
     background: input.has-focus ? root.chip.brighter(0.15) : root.chip;
     HorizontalLayout {
-        padding-left: 12px; padding-right: root.pad-right;
+        padding-left: root.phone ? 14px : 12px;
+        padding-right: root.phone ? 14px : root.pad-right;
         Rectangle {
             clip: true;
             input := TextInput {
@@ -35,8 +42,12 @@ component PollField inherits Rectangle {
                 vertical-alignment: center;
                 height: 100%; width: 100%;
                 single-line: true;
+                edited => { root.edited(); }
             }
+            // x: 0 — an unplaced child of a Rectangle is centred in Slint,
+            // and a centred placeholder does not sit where the caret will.
             if input.text == "" : Text {
+                x: 0px;
                 text: root.placeholder;
                 color: root.fg.with-alpha(0.55);
                 font-family: Theme.font-ui;
@@ -48,31 +59,113 @@ component PollField inherits Rectangle {
     }
 }
 
-// A poll option row: the field, and the "×" remove disc that every row shows
+// A poll option row: the field, and the "×" remove disc a filled row shows
 // once there are more than two options (AttachMenu.qml:259, :283). With the
-// disc the field is `parent - 40` wide (34 + 6 spacing), and the disc's 28px
-// end 6px short of the right edge — exactly the QML Row.
+// disc the field gives up the disc's width and 6 beside it — the QML Row,
+// except that the disc ends flush with the right edge so the fields line up
+// under the question's. The phone's disc is 34 in a 46 row.
+//
+// A row that is not `shown` has no height and no opacity: the slot the page
+// grows into. Both animate, and the field keeps its full height, hanging
+// from the row's foot inside the clip, so it drops into the opening as the
+// row makes room rather than stretching with it.
 component PollOptionRow inherits Rectangle {
     in property <string> placeholder;
     in-out property <string> text;
     in property <bool> removable;
+    in property <bool> shown: true;
     in property <color> fg;
     in property <color> chip;
     callback remove;
-    height: 32px;
+    callback edited;
+    property <bool> phone: Theme.mode != "desktop";
+    property <length> row-h: root.phone ? 46px : 32px;
+    property <length> disc: root.phone ? 34px : 28px;
+    property <length> gap: root.disc + 6px;
+    /// The space to the row under it: the list's column runs at zero spacing
+    /// so a closed slot takes no room at all.
+    property <length> gap-below: root.phone ? 8px : 6px;
+    property <length> lift: root.height - root.gap-below - root.row-h;
+    height: root.shown ? root.row-h + root.gap-below : 0px;
+    opacity: root.shown ? 1.0 : 0.0;
+    clip: true;
+    animate height { duration: 220ms; easing: cubic-bezier(0.33, 1, 0.68, 1); }
+    animate opacity { duration: 180ms; easing: cubic-bezier(0.33, 1, 0.68, 1); }
     field := PollField {
-        x: 0; y: 0;
-        width: root.removable ? root.width - 40px : root.width;
-        placeholder: root.placeholder; text <=> root.text; fg: root.fg; chip: root.chip;
+        x: 0; y: root.lift;
+        height: root.row-h;
+        width: root.removable ? root.width - root.gap : root.width;
+        placeholder: root.placeholder; text <=> root.text;
+        font-px: root.phone ? Theme.body : Theme.body-small;
+        fg: root.fg; chip: root.chip;
+        edited => { root.edited(); }
     }
     if root.removable : Rectangle {
-        x: root.width - 40px + 6px; y: 2px;
-        width: 28px; height: 28px; border-radius: 14px;
-        background: rm-t.has-hover ? root.chip.brighter(0.2) : root.chip;
+        x: root.width - root.disc;
+        y: root.lift + (root.row-h - root.disc) / 2;
+        width: root.disc; height: root.disc; border-radius: root.disc / 2;
+        background: rm-t.pressed || rm-t.has-hover ? root.chip.brighter(0.2) : root.chip;
         // A literal multiplication sign in the UI face at body size (:283).
         Text { text: "\u{00d7}"; color: root.fg; font-family: Theme.font-ui; font-size: Theme.body; width: 100%; height: 100%; horizontal-alignment: center; vertical-alignment: center; }
         rm-t := TouchArea { clicked => { root.remove(); } }
     }
+}
+
+// One switch line in the poll page: a label, the state's own sentence under
+// it, and the 38 × 22 pill the settings pages wear (furniture.slint's
+// SettingsRow), without that page's 22/56/20 columns — the sheet's body is
+// already inset 20 from the edge.
+component PollToggleRow inherits Rectangle {
+    in property <string> label;
+    in property <string> sublabel;
+    in property <bool> on;
+    in property <color> fg;
+    callback toggled;
+    property <bool> phone: Theme.mode != "desktop";
+    height: max(root.phone ? 52px : 40px, txt.preferred-height + 12px);
+    Rectangle {
+        x: -8px; width: root.width + 16px;
+        border-radius: 12px;
+        background: t.pressed ? root.fg.with-alpha(0.06) : transparent;
+    }
+    txt := VerticalLayout {
+        x: 0px;
+        width: root.width - 38px - 14px;
+        height: root.height;
+        alignment: center;
+        spacing: 2px;
+        Text {
+            text: root.label;
+            color: root.fg;
+            font-family: Theme.font-ui;
+            font-size: root.phone ? Theme.body : Theme.body-small;
+            font-weight: 700;
+            overflow: elide;
+        }
+        Text {
+            text: root.sublabel;
+            color: root.fg.with-alpha(0.55);
+            font-family: Theme.font-ui;
+            font-size: Theme.caption;
+            wrap: word-wrap;
+        }
+    }
+    Rectangle {
+        x: root.width - 38px;
+        y: (root.height - 22px) / 2;
+        width: 38px; height: 22px;
+        border-radius: 11px;
+        background: root.on ? Theme.accent.with-alpha(0.8) : root.fg.with-alpha(0.15);
+        animate background { duration: 120ms; }
+        Rectangle {
+            width: 16px; height: 16px; border-radius: 8px;
+            y: 3px;
+            x: root.on ? 38px - 16px - 3px : 3px;
+            background: root.fg;
+            animate x { duration: 120ms; }
+        }
+    }
+    t := TouchArea { clicked => { root.toggled(); } }
 }
 
 // On the phone a tile is a grid cell (112 tall, width from the row) holding
@@ -169,8 +262,16 @@ component LocationPages inherits Rectangle {
     property <[string]> duration-labels: ["Share for 15m", "Share for 1h", "Share for 8h"];
     property <[float]> duration-ms: [900000, 3600000, 28800000];
     in-out property <bool> duration-open: false;
-    // LocationPicker.qml:20-22 — the popup ground with its alpha forced to 1.
-    property <color> menu-solid: Theme.popup-background.with-alpha(1.0);
+    // LocationPicker.qml:20-22 — `menuSurface`, with its alpha forced to 1.
+    // AttachMenu.qml:362 hands that the sheet's DEEP chip (ChatPage.qml:56-59:
+    // the chip's own tone with its luminance sunk to 0.19), so the duration
+    // field and its menu are a well cut into the sheet, darker than the round
+    // chips over the map — not a card raised off it. The port keeps that on
+    // the dark and desktop palettes, where `fg` is light over a near-black
+    // well; the phone's light palette has a dark `fg`, and there the popup
+    // ground stands in rather than hiding the label in the well.
+    property <color> menu-solid: Theme.mode == "light" ? Theme.popup-background
+        : root.chip.with-alpha(1.0);
 
     background: transparent;
 
@@ -463,6 +564,11 @@ export component AttachMenu inherits Rectangle {
     in property <image> my-avatar;
 
     callback pick-files;
+    /// Capture and gallery, which the sheet leads with: the QML had neither,
+    /// so these follow the platform messenger's own arrangement.
+    callback pick-camera;
+    callback pick-gallery;
+    callback pick-video;
     callback open-location(string); // "pin" | "current" | "live"
     callback loc-tap(length, length);   // map tap, logical px in the map box
     callback loc-zoom(int);             // +1 / −1
@@ -482,10 +588,23 @@ export component AttachMenu inherits Rectangle {
     // ground; its tiles the room's chip, else a stranger's bubble tone.
     property <color> sheet-c: root.phone && !root.themed ? Theme.card-ground : root.surface;
     property <color> tile-c: root.phone && !root.themed ? Theme.bubble-other : root.chip;
+    /// The poll page's wells and pills. A well is inset, so it wants to be
+    /// darker than the sheet — which the chip already is over a dark ground,
+    /// while over the light palette that same chip is a slab of mid grey
+    /// (menu-background darkened 2.1×). There the neutral container stands in.
+    property <color> well-c: root.phone && !root.themed && Theme.mode == "light"
+        ? Theme.bubble-other : root.chip;
     // Phone grid: 16 top, two 112 rows, 16 below.
-    height: root.page == "poll" ? 408px
+    // The emoji page stands in for a keyboard, so it is the tallest of them:
+    // 12 lead-in, a 40 search row, the grid, and the 48 category bar.
+    // The poll page at a phone's sizes: 52 to the body, then the body itself
+    // — a label, the 48 question, a label, THREE 54 option rows and the two
+    // 52 switches, 393 measured — then the 44 footer over its 8 and the 20
+    // margin. Three options is what a poll usually has; a fourth flicks.
+    height: root.page == "poll" ? (root.phone ? 520px : 408px)
           : root.location-page ? 430px
-          : (root.page == "emoji" || root.page == "stickers") ? 330px
+          : root.page == "emoji" ? 400px
+          : root.page == "stickers" ? 330px
           : root.phone ? 396px
           : 232px;
 
@@ -507,8 +626,10 @@ export component AttachMenu inherits Rectangle {
     }
 
     // Sub-page header — QML margins: 16 top, 18 sides; hidden on the grid and
-    // on the location pages (:75-78).
-    if root.page != "grid" && !root.location-page : header := Rectangle {
+    // on the location pages (:75-78). The emoji page has none either: its
+    // back button rides in the picker's search row instead, where the
+    // platform messenger puts the picker's own chrome.
+    if root.page != "grid" && root.page != "emoji" && !root.location-page : header := Rectangle {
         x: 18px; y: 16px;
         width: root.width - 36px; height: 30px;
         back-disc := Rectangle {
@@ -547,16 +668,19 @@ export component AttachMenu inherits Rectangle {
             HorizontalLayout {
                 alignment: start;
                 spacing: root.phone ? 0px : 10px;
+                AttachTile { icon: Icons.camera; label: "Camera"; fg: root.fg; chip: root.tile-c; phone: root.phone; width: root.phone ? grid-box.cell : 62px; clicked => { root.pick-camera(); root.close-requested(); } }
+                AttachTile { icon: Icons.image; label: "Gallery"; fg: root.fg; chip: root.tile-c; phone: root.phone; width: root.phone ? grid-box.cell : 62px; clicked => { root.pick-gallery(); root.close-requested(); } }
+                AttachTile { icon: Icons.videoOn; label: "Video"; fg: root.fg; chip: root.tile-c; phone: root.phone; width: root.phone ? grid-box.cell : 62px; clicked => { root.pick-video(); root.close-requested(); } }
                 AttachTile { icon: Icons.attach; label: "Files"; fg: root.fg; chip: root.tile-c; phone: root.phone; width: root.phone ? grid-box.cell : 62px; clicked => { root.pick-files(); root.close-requested(); } }
                 AttachTile { icon: Icons.emoji; label: "Emojis"; fg: root.fg; chip: root.tile-c; phone: root.phone; width: root.phone ? grid-box.cell : 62px; clicked => { root.load-emoji(); root.page = "emoji"; } }
-                AttachTile { icon: Icons.sticker; label: "Stickers"; fg: root.fg; chip: root.tile-c; phone: root.phone; width: root.phone ? grid-box.cell : 62px; clicked => { root.load-stickers(); root.page = "stickers"; } }
-                AttachTile { icon: Icons.poll; label: "Poll"; fg: root.fg; chip: root.tile-c; phone: root.phone; width: root.phone ? grid-box.cell : 62px; clicked => { root.reset-poll(); root.page = "poll"; } }
-                AttachTile { icon: Icons.myLocation; label: "Current\nLocation"; fg: root.fg; chip: root.tile-c; phone: root.phone; width: root.phone ? grid-box.cell : 62px; clicked => { root.open-location("current"); } }
             }
             Rectangle { height: root.phone ? 0px : 10px; }
             HorizontalLayout {
                 alignment: start;
                 spacing: root.phone ? 0px : 10px;
+                AttachTile { icon: Icons.sticker; label: "Stickers"; fg: root.fg; chip: root.tile-c; phone: root.phone; width: root.phone ? grid-box.cell : 62px; clicked => { root.load-stickers(); root.page = "stickers"; } }
+                AttachTile { icon: Icons.poll; label: "Poll"; fg: root.fg; chip: root.tile-c; phone: root.phone; width: root.phone ? grid-box.cell : 62px; clicked => { root.reset-poll(); root.page = "poll"; } }
+                AttachTile { icon: Icons.myLocation; label: "Current\nLocation"; fg: root.fg; chip: root.tile-c; phone: root.phone; width: root.phone ? grid-box.cell : 62px; clicked => { root.open-location("current"); } }
                 AttachTile { icon: Icons.liveLocation; label: "Live\nLocation"; fg: root.fg; chip: root.tile-c; phone: root.phone; width: root.phone ? grid-box.cell : 62px; clicked => { root.open-location("live"); } }
                 AttachTile { icon: Icons.pinDrop; label: "Drop a Pin"; icon-scale: 1.3; fg: root.fg; chip: root.tile-c; phone: root.phone; width: root.phone ? grid-box.cell : 62px; clicked => { root.open-location("pin"); } }
             }
@@ -576,9 +700,14 @@ export component AttachMenu inherits Rectangle {
         wrap: word-wrap;
     }
 
-    // Poll: question + up to 8 option slots (Slint models are not mutable
-    // from the language, so the slots are explicit; count gates visibility).
+    // Poll: question, then the options, then how the poll behaves — the order
+    // the poll is thought of in. Up to 8 option slots (Slint models are not
+    // mutable from the language, so the slots are explicit); `option-count`
+    // is how many of them are open, and the list opens the next one itself as
+    // soon as the last has words in it, so nothing has to be added by hand.
     in-out property <bool> poll-closed: false;
+    /// Voters may pick more than one answer (engine: maxSelections).
+    in-out property <bool> poll-multi: false;
     in-out property <int> option-count: 2;
     // The inputs live inside the poll page's `if`, so their ids are out of
     // scope here; the texts ride two-way component properties instead.
@@ -587,20 +716,33 @@ export component AttachMenu inherits Rectangle {
     in-out property <string> po3; in-out property <string> po4;
     in-out property <string> po5; in-out property <string> po6;
     in-out property <string> po7; in-out property <string> po8;
-    // Whitespace-only entries count here; the QML trims (:170-175) — the
-    // bridge trims before creating (chat-handoff.md B15).
+    // Whitespace-only entries count here — Slint has no trim, and the sheet
+    // cannot ask the bridge for one (create-poll is the only seam it has).
+    // The bridge trims the question and drops blank and whitespace-only
+    // options before the poll is built (actions.rs create_poll), and says so
+    // in a toast if that leaves fewer than two.
     property <bool> poll-valid: root.pq != ""
         && ((root.po1 != "" ? 1 : 0) + (root.po2 != "" ? 1 : 0) + (root.po3 != "" ? 1 : 0)
           + (root.po4 != "" ? 1 : 0) + (root.po5 != "" ? 1 : 0) + (root.po6 != "" ? 1 : 0)
           + (root.po7 != "" ? 1 : 0) + (root.po8 != "" ? 1 : 0)) >= 2;
     public function reset-poll() {
         root.poll-closed = false;
+        root.poll-multi = false;
         root.option-count = 2;
         root.pq = ""; root.po1 = ""; root.po2 = ""; root.po3 = ""; root.po4 = "";
         root.po5 = ""; root.po6 = ""; root.po7 = ""; root.po8 = "";
     }
+    // Typing into the last open slot opens the one under it (never the other
+    // way round: a slot you have emptied stays, so the row you are working in
+    // cannot vanish under the cursor). Blank ones cost nothing — the bridge
+    // drops them when the poll is built.
+    public function note-typed(i: int, t: string) {
+        if (i == root.option-count && t != "" && root.option-count < 8) {
+            root.option-count += 1;
+        }
+    }
     // Removing an option shifts the later slots up (QML pollOptions.remove);
-    // any row can go once there are more than two.
+    // any filled row can go once there are more than two.
     public function remove-option(i: int) {
         if (i <= 1) { root.po1 = root.po2; }
         if (i <= 2) { root.po2 = root.po3; }
@@ -614,103 +756,105 @@ export component AttachMenu inherits Rectangle {
     }
     if root.page == "poll" : poll-box := Rectangle {
         x: 20px; y: 52px;
-        // Margins 20, top 52; the footer is 34 with an 8px gap above it (:180-186, :305-308).
-        width: root.width - 40px; height: root.height - 52px - 20px - 34px - 8px;
+        // Margins 20, top 52; the footer is 34 (44 on the phone) with an 8px
+        // gap above it (:180-186, :305-308).
+        width: root.width - 40px;
+        height: root.height - 52px - 20px - (root.phone ? 44px : 34px) - 8px;
         clip: true;
+        property <length> label-gap: root.phone ? 6px : 4px;
         poll-flick := Flickable {
             width: 100%; height: 100%;
             viewport-height: poll-col.preferred-height;
             poll-col := VerticalLayout {
                 width: poll-box.width;
                 spacing: 6px;
-                Text { text: "Poll type"; color: root.fg; font-family: Theme.font-ui; font-size: Theme.body-small; font-weight: 700; }
-                HorizontalLayout {
-                    alignment: start;
-                    spacing: 6px;
-                    open-seg := Rectangle {
-                        width: 84px; height: 28px; border-radius: 14px;
-                        background: !root.poll-closed ? root.accent : root.chip;
-                        Text { text: "Open"; color: !root.poll-closed ? Theme.background : root.fg; font-family: Theme.font-ui; font-size: Theme.body-small; font-weight: !root.poll-closed ? 700 : 400; width: 100%; height: 100%; horizontal-alignment: center; vertical-alignment: center; }
-                        TouchArea { clicked => { root.poll-closed = false; } }
-                    }
-                    closed-seg := Rectangle {
-                        width: 84px; height: 28px; border-radius: 14px;
-                        background: root.poll-closed ? root.accent : root.chip;
-                        Text { text: "Closed"; color: root.poll-closed ? Theme.background : root.fg; font-family: Theme.font-ui; font-size: Theme.body-small; font-weight: root.poll-closed ? 700 : 400; width: 100%; height: 100%; horizontal-alignment: center; vertical-alignment: center; }
-                        TouchArea { clicked => { root.poll-closed = true; } }
-                    }
-                }
-                Text {
-                    text: root.poll-closed ? "Results stay hidden until you close the poll"
-                                           : "Voters see results as soon as they have voted";
-                    color: root.fg.with-alpha(0.6);
-                    font-family: Theme.font-ui;
-                    font-size: 10px;
-                    wrap: word-wrap;
-                }
-                Rectangle { height: 4px; }   // the description's bottomPadding (:222)
                 Text { text: "Question"; color: root.fg; font-family: Theme.font-ui; font-size: Theme.body-small; font-weight: 700; }
-                q := PollField { placeholder: "Ask something…"; text <=> root.pq; height: 34px; font-px: Theme.body; pad-right: 12px; fg: root.fg; chip: root.chip; }
-                Rectangle { height: 4px; }
+                q := PollField {
+                    placeholder: "Ask something…";
+                    text <=> root.pq;
+                    height: root.phone ? 48px : 34px;
+                    font-px: Theme.body; pad-right: 12px;
+                    fg: root.fg; chip: root.well-c;
+                }
+                Rectangle { height: poll-box.label-gap; }
                 Text { text: "Options"; color: root.fg; font-family: Theme.font-ui; font-size: Theme.body-small; font-weight: 700; }
-                PollOptionRow { placeholder: "Option 1"; text <=> root.po1; removable: root.option-count > 2; fg: root.fg; chip: root.chip; remove => { root.remove-option(1); } }
-                PollOptionRow { placeholder: "Option 2"; text <=> root.po2; removable: root.option-count > 2; fg: root.fg; chip: root.chip; remove => { root.remove-option(2); } }
-                if root.option-count >= 3 : PollOptionRow { placeholder: "Option 3"; text <=> root.po3; removable: true; fg: root.fg; chip: root.chip; remove => { root.remove-option(3); } }
-                if root.option-count >= 4 : PollOptionRow { placeholder: "Option 4"; text <=> root.po4; removable: true; fg: root.fg; chip: root.chip; remove => { root.remove-option(4); } }
-                if root.option-count >= 5 : PollOptionRow { placeholder: "Option 5"; text <=> root.po5; removable: true; fg: root.fg; chip: root.chip; remove => { root.remove-option(5); } }
-                if root.option-count >= 6 : PollOptionRow { placeholder: "Option 6"; text <=> root.po6; removable: true; fg: root.fg; chip: root.chip; remove => { root.remove-option(6); } }
-                if root.option-count >= 7 : PollOptionRow { placeholder: "Option 7"; text <=> root.po7; removable: true; fg: root.fg; chip: root.chip; remove => { root.remove-option(7); } }
-                if root.option-count >= 8 : PollOptionRow { placeholder: "Option 8"; text <=> root.po8; removable: true; fg: root.fg; chip: root.chip; remove => { root.remove-option(8); } }
-                if root.option-count < 8 : add-row := Rectangle {
-                    height: 30px;
-                    HorizontalLayout {
-                        alignment: start;
-                        spacing: 6px;
-                        IconLabel { text: Icons.plus; color: root.accent; font-size: Theme.body-small; vertical-alignment: center; }
-                        Rectangle {
-                            width: add-label.preferred-width;
-                            add-label := Text { text: "Add option"; color: root.accent; font-family: Theme.font-ui; font-size: Theme.body-small; vertical-alignment: center; height: 100%; }
-                            // QML underlines the label on hover (:297); Slint Text has
-                            // no underline, so a 1px rule stands in for it.
-                            Rectangle {
-                                y: (30px + add-label.preferred-height) / 2 - 1px;
-                                width: 100%; height: 1px;
-                                background: add-t.has-hover ? root.accent : transparent;
-                            }
-                        }
-                    }
-                    add-t := TouchArea { clicked => { root.option-count += 1; } }
+                // Their own column at zero spacing: a closed slot has no
+                // height, and a layout's spacing would still hold a gap open
+                // for each of them. The gap rides inside the row instead.
+                opts := VerticalLayout {
+                    spacing: 0px;
+                    PollOptionRow { placeholder: "Option 1"; text <=> root.po1; shown: true; removable: root.option-count > 2 && root.po1 != ""; fg: root.fg; chip: root.well-c; remove => { root.remove-option(1); } edited => { root.note-typed(1, root.po1); } }
+                    PollOptionRow { placeholder: "Option 2"; text <=> root.po2; shown: true; removable: root.option-count > 2 && root.po2 != ""; fg: root.fg; chip: root.well-c; remove => { root.remove-option(2); } edited => { root.note-typed(2, root.po2); } }
+                    PollOptionRow { placeholder: "Option 3"; text <=> root.po3; shown: root.option-count >= 3; removable: root.po3 != ""; fg: root.fg; chip: root.well-c; remove => { root.remove-option(3); } edited => { root.note-typed(3, root.po3); } }
+                    PollOptionRow { placeholder: "Option 4"; text <=> root.po4; shown: root.option-count >= 4; removable: root.po4 != ""; fg: root.fg; chip: root.well-c; remove => { root.remove-option(4); } edited => { root.note-typed(4, root.po4); } }
+                    PollOptionRow { placeholder: "Option 5"; text <=> root.po5; shown: root.option-count >= 5; removable: root.po5 != ""; fg: root.fg; chip: root.well-c; remove => { root.remove-option(5); } edited => { root.note-typed(5, root.po5); } }
+                    PollOptionRow { placeholder: "Option 6"; text <=> root.po6; shown: root.option-count >= 6; removable: root.po6 != ""; fg: root.fg; chip: root.well-c; remove => { root.remove-option(6); } edited => { root.note-typed(6, root.po6); } }
+                    PollOptionRow { placeholder: "Option 7"; text <=> root.po7; shown: root.option-count >= 7; removable: root.po7 != ""; fg: root.fg; chip: root.well-c; remove => { root.remove-option(7); } edited => { root.note-typed(7, root.po7); } }
+                    PollOptionRow { placeholder: "Option 8"; text <=> root.po8; shown: root.option-count >= 8; removable: root.po8 != ""; fg: root.fg; chip: root.well-c; remove => { root.remove-option(8); } edited => { root.note-typed(8, root.po8); } }
+                }
+                // How the poll behaves, under what it asks: the QML's
+                // Open/Closed segments as a switch, and multiple answers.
+                PollToggleRow {
+                    label: "Open poll";
+                    sublabel: root.poll-closed ? "Results stay hidden until you close the poll"
+                                               : "Voters see results as soon as they have voted";
+                    on: !root.poll-closed;
+                    fg: root.fg;
+                    toggled => { root.poll-closed = !root.poll-closed; }
+                }
+                PollToggleRow {
+                    label: "Multiple answers";
+                    sublabel: root.poll-multi ? "Voters can pick as many options as they like"
+                                              : "Voters pick one option";
+                    on: root.poll-multi;
+                    fg: root.fg;
+                    toggled => { root.poll-multi = !root.poll-multi; }
                 }
             }
         }
     }
+    // The footer pills, at the QML's 30 on the desktop and a finger's 44 on
+    // the phone (the sheet's own height counts on this: 54 / 64 to the edge).
     if root.page == "poll" : poll-footer := Rectangle {
-        x: 20px; y: root.height - 54px;
-        width: root.width - 40px; height: 34px;
+        property <length> pill-h: root.phone ? 44px : 30px;
+        x: 20px; y: root.height - self.pill-h - 20px;
+        width: root.width - 40px; height: self.pill-h;
         HorizontalLayout {
             alignment: end;
             spacing: 8px;
             cancel-pill := Rectangle {
-                width: 72px; height: 30px; border-radius: 15px;
-                background: cp-t.has-hover ? root.chip.brighter(0.2) : root.chip;
-                Text { text: "Cancel"; color: root.fg; font-family: Theme.font-ui; font-size: Theme.body-small; width: 100%; height: 100%; horizontal-alignment: center; vertical-alignment: center; }
+                width: root.phone ? 100px : 72px;
+                height: poll-footer.pill-h; border-radius: self.height / 2;
+                background: cp-t.pressed || cp-t.has-hover ? root.well-c.brighter(0.2) : root.well-c;
+                Text { text: "Cancel"; color: root.fg; font-family: Theme.font-ui; font-size: root.phone ? Theme.body : Theme.body-small; width: 100%; height: 100%; horizontal-alignment: center; vertical-alignment: center; }
                 cp-t := TouchArea { clicked => { root.reset(); } }
             }
             create-pill := Rectangle {
-                width: 96px; height: 30px; border-radius: 15px;
+                width: root.phone ? 132px : 96px;
+                height: poll-footer.pill-h; border-radius: self.height / 2;
                 background: root.poll-valid ? root.accent : root.chip;
                 opacity: root.poll-valid ? 1 : 0.7;
                 Text {
                     text: "Create poll";
                     color: root.poll-valid ? Theme.background : root.fg.with-alpha(0.5);
-                    font-family: Theme.font-ui; font-size: Theme.body-small;
+                    font-family: Theme.font-ui; font-size: root.phone ? Theme.body : Theme.body-small;
                     font-weight: root.poll-valid ? 700 : 400;
                     width: 100%; height: 100%; horizontal-alignment: center; vertical-alignment: center;
                 }
                 TouchArea {
                     clicked => {
                         if (root.poll-valid) {
-                            root.create-poll(root.pq, [root.po1, root.po2, root.po3, root.po4, root.po5, root.po6, root.po7, root.po8], root.poll-closed);
+                            // The sheet's only seam to the bridge is
+                            // create-poll(question, options, closed) — the
+                            // forwarding in chat.slint and app.slint is
+                            // another owner's — so "voters may pick more than
+                            // one" rides a \u{1} header on the question, which
+                            // no text field can produce and actions.rs
+                            // create_poll strips. Widen the callback when
+                            // those files are free and this goes away.
+                            root.create-poll("\u{1}\{root.poll-multi ? "1" : "0"}" + root.pq,
+                                [root.po1, root.po2, root.po3, root.po4, root.po5, root.po6, root.po7, root.po8],
+                                root.poll-closed);
                         }
                     }
                 }
@@ -782,13 +926,28 @@ export component AttachMenu inherits Rectangle {
         }
     }
 
-    // Emoji page body is the host's EmojiPicker mount; reserve the space
-    // (margins 20, top 52 — :392-396). (@children cannot sit under a
-    // conditional, so visibility gates it.)
+    // Emoji page body is the host's EmojiPicker mount. The picker carries its
+    // own 8 side padding and its category bar sits on the sheet's bottom
+    // edge, so the slot is the whole sheet less a 12 lead-in over the search
+    // row. (@children cannot sit under a conditional, so visibility gates it.)
     emoji-slot := Rectangle {
         visible: root.page == "emoji";
-        x: 20px; y: 52px;
-        width: root.width - 40px; height: root.height - 72px;
+        x: 0px; y: 12px;
+        width: root.width; height: root.height - 12px;
         @children
+    }
+
+    // The back button, in the picker's search row — the gap EmojiPicker's
+    // `back-slot` leaves at the right of the field, 8 in from the sheet edge
+    // and 40 square, level with the 40 field. It lives here because the
+    // picker arrives through @children, which can neither be given a property
+    // nor have a callback connected.
+    if root.page == "emoji" : emoji-back := Rectangle {
+        x: root.width - 48px; y: 12px;
+        width: 40px; height: 40px;
+        border-radius: 20px;
+        background: eb-t.pressed || eb-t.has-hover ? root.chip.brighter(0.2) : root.chip;
+        IconLabel { text: Icons.back; color: root.fg; font-size: Theme.icon-size; width: 100%; height: 100%; }
+        eb-t := TouchArea { clicked => { root.reset(); } }
     }
 }

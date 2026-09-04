@@ -136,4 +136,14 @@ QtObject {
   readonly property string star:           "\uE838"  // star
   readonly property string bell:           "\uE7F4"  // notifications
   readonly property string bellOff:        "\uE7F6"  // notifications_off
+
+  // emoji categories
+  readonly property string emojiPeople:    "\uEA1D"  // emoji_people
+  readonly property string emojiNature:    "\uEA1C"  // emoji_nature
+  readonly property string emojiFood:      "\uEA1B"  // emoji_food_beverage
+  readonly property string emojiTravel:    "\uEA1F"  // emoji_transportation
+  readonly property string emojiEvents:    "\uE71A"  // trophy
+  readonly property string emojiObjects:   "\uEA24"  // emoji_objects
+  readonly property string emojiSymbols:   "\uEA1E"  // emoji_symbols
+  readonly property string emojiFlags:     "\uE153"  // flag
 }

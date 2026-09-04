@@ -18,6 +18,16 @@ use tls_codec::Deserialize as _;
 /// a rotation can still be read after it.
 pub const PAST_EPOCHS: usize = 3;
 
+/// Timings for the send path, printed when SIGIL_PERF is set. The crate has
+/// no logger of its own; stderr is where the engine's log goes anyway.
+fn perf_on() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var_os("SIGIL_PERF").is_some())
+}
+macro_rules! perf {
+    ($($a:tt)*) => { if perf_on() { eprintln!($($a)*); } };
+}
+
 pub fn create_config() -> MlsGroupCreateConfig {
     MlsGroupCreateConfig::builder()
         .ciphersuite(CIPHERSUITE)
@@ -206,7 +216,9 @@ pub async fn send_event(
     reference: &[u8],
     body: &[u8],
 ) -> anyhow::Result<Sent> {
+    let t0 = std::time::Instant::now();
     let caught_up = catch_up(link, st, provider, conv).await?;
+    let t_catch = t0.elapsed();
     let mut group = load_group(provider, conv)?;
     let (_, signer) = mls_credential(st);
     let ev = envelope::Event {
@@ -230,6 +242,7 @@ pub async fn send_event(
     .map_err(|e| anyhow::anyhow!("{e:?}"))?;
     let sig = epoch::sign_put(&ep.write_key, &ep.address, &sealed);
     let token = st.take_token()?;
+    let t_seal = t0.elapsed();
     let resp = link
         .call(
             &conv.slot_server,
@@ -246,6 +259,7 @@ pub async fn send_event(
     let Response::SlotPut { seq } = resp else {
         anyhow::bail!("unexpected")
     };
+    let t_put = t0.elapsed();
     if let Some(c) = st
         .conversations
         .iter_mut()
@@ -267,6 +281,13 @@ pub async fn send_event(
     // the cursor past it would drop it. The next catch-up recognises our
     // own envelope from the sent record and moves on.
     st.save()?;
+    perf!(
+        "perf send_event: catch_up {t_catch:?} seal {:?} put {:?} save {:?} total {:?}",
+        t_seal - t_catch,
+        t_put - t_seal,
+        t0.elapsed() - t_put,
+        t0.elapsed()
+    );
     Ok(Sent {
         seq,
         address: ep.address,
@@ -333,8 +354,33 @@ pub async fn catch_up(
     provider: &SigilProvider,
     conv: &Conversation,
 ) -> anyhow::Result<Vec<Caught>> {
+    read_slots(link, st, provider, conv, false).await
+}
+
+/// The same walk, but from the start of the current slot: a reader that is
+/// showing the conversation from scratch wants our own messages back out of
+/// the sent record, which a catch-up from the cursor has no reason to
+/// repeat. Callers that keep their own history do not want this.
+pub async fn replay(
+    link: &Link,
+    st: &mut State,
+    provider: &SigilProvider,
+    conv: &Conversation,
+) -> anyhow::Result<Vec<Caught>> {
+    read_slots(link, st, provider, conv, true).await
+}
+
+async fn read_slots(
+    link: &Link,
+    st: &mut State,
+    provider: &SigilProvider,
+    conv: &Conversation,
+    from_start: bool,
+) -> anyhow::Result<Vec<Caught>> {
     let mut out = Vec::new();
     let me = st.identity().public();
+    let t0 = std::time::Instant::now();
+    let (mut pages, mut seen, mut net, mut opened) = (0u32, 0u32, std::time::Duration::ZERO, 0u32);
     'epoch: for _ in 0..64 {
         let address = {
             let group = load_group(provider, conv)?;
@@ -342,14 +388,21 @@ pub async fn catch_up(
             record_epoch(st, conv, &ep);
             ep.address
         };
-        // Read the whole current slot: our own envelopes come back from the
-        // sent record whatever the cursor says, everything else is
-        // processed once, past the cursor.
-        let mut after = 0;
+        // Read from the cursor, not from the start of the slot. The cursor
+        // is only ever moved onto a sequence this device has handled — our
+        // own envelopes included, recognised through the sent record — so
+        // everything above it is new and everything below it is done. Re-
+        // reading the whole slot on every send cost a round trip per 64
+        // events and re-processed the room's whole history each time.
+        let mut after = if from_start { 0 } else { cursor(st, conv, &address) };
         let mut rotated = false;
         loop {
+            let tb = std::time::Instant::now();
             let items = backfill(link, provider, conv, after).await?;
+            net += tb.elapsed();
+            pages += 1;
             let n = items.len();
+            seen += n as u32;
             for (seq, env) in items {
                 after = seq;
                 if let Some((ts_ms, text)) = own_sent(st, conv, &address, seq) {
@@ -372,6 +425,7 @@ pub async fn catch_up(
                     continue;
                 }
                 set_cursor(st, conv, &address, seq);
+                opened += 1;
                 match receive(provider, conv, &env) {
                     Ok(Incoming::Rotated) => {
                         out.push(Caught {
@@ -403,7 +457,13 @@ pub async fn catch_up(
             }
         }
     }
+    let t_loop = t0.elapsed();
     st.save()?;
+    perf!(
+        "perf catch_up: {pages} pages, {seen} envelopes seen, {opened} opened, net {net:?}, cpu {:?}, save {:?}",
+        t_loop - net,
+        t0.elapsed() - t_loop
+    );
     Ok(out)
 }
 

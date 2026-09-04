@@ -763,23 +763,79 @@ export component Bubble inherits Rectangle {
                     // Poll (MSC3381) — PollBody.qml. The poll wears its own card
                     // (the bubble behind it is transparent); counts only exist
                     // once disclosed or ended; the pick dot marks your answer.
+                    //
+                    // The QML card is a desktop card: 252 wide, 34-tall rows,
+                    // 10px numbers. On the phone it takes the bubble's own
+                    // measurements instead — the full bubble width, the
+                    // bubble's 16/20 inset and corner, the message face for
+                    // the question and body for the answers — so a poll is as
+                    // large as the message beside it and a row is a finger
+                    // wide (46, over the platform's 48dp target once the 8
+                    // between rows counts).
                     if item.kind == "poll" : poll-card := Rectangle {
                         property <bool> show-counts: item.poll-ended || item.poll-disclosed;
                         property <bool> can-vote: !item.poll-ended;
                         property <int> total-votes: root.poll-sum;
-                        width: min(root.bubble-max, 252px);
-                        height: poll-col.preferred-height + 24px;
-                        border-radius: 16px;
+                        /// An ended poll is a record, not a control: it says so
+                        /// in a stamp, recedes towards the page ground behind a
+                        /// hairline, flattens its wells and puts the winner in
+                        /// bold under a full accent bar.
+                        property <bool> done: item.poll-ended;
+                        property <bool> pale: Theme.mode == "light";
+                        property <length> pad-x: root.phone ? root.inset-x : 12px;
+                        property <length> pad-y: root.phone ? 14px : 12px;
+                        property <length> row-h: root.phone ? 46px : 34px;
+                        property <length> row-r: root.phone ? 14px : 11px;
+                        property <length> dot-d: root.phone ? 20px : 15px;
+                        width: root.phone ? root.bubble-max : min(root.bubble-max, 252px);
+                        height: poll-col.preferred-height + 2 * poll-card.pad-y;
+                        border-radius: root.phone ? root.r-big : 16px;
                         // BubbleDelegate.qml:615 — the surface is the bubble's own fill.
-                        background: root.bubble-fill;
+                        background: poll-card.done ? root.bubble-fill.mix(Theme.background, 0.6)
+                                                   : root.bubble-fill;
+                        border-width: poll-card.done ? 1px : 0px;
+                        border-color: root.accent.with-alpha(0.3);
                         poll-col := VerticalLayout {
-                            x: 12px; y: 12px;
-                            width: poll-card.width - 24px;
-                            spacing: 7px;
+                            x: poll-card.pad-x; y: poll-card.pad-y;
+                            width: poll-card.width - 2 * poll-card.pad-x;
+                            // Its own height. Left to the card's (which is
+                            // preferred + both pads), the layout has 28 spare
+                            // and spreads it through the column: measured, the
+                            // rows sat 14 low and the tally line's box ended
+                            // flush with the card's bottom edge — all of the
+                            // bottom padding gone, while the top kept its 14.
+                            height: self.preferred-height;
+                            spacing: root.phone ? 8px : 7px;
+                            // The stamp: what tells a finished poll from a live
+                            // one across the room, before a word is read.
+                            if poll-card.done : Rectangle {
+                                height: stamp.preferred-height;
+                                stamp := HorizontalLayout {
+                                    alignment: start;
+                                    spacing: 5px;
+                                    IconLabel {
+                                        text: Icons.checkCircle;
+                                        filled: true;
+                                        color: root.accent;
+                                        font-size: root.phone ? 15px : 12px;
+                                        vertical-alignment: center;
+                                    }
+                                    Text {
+                                        text: "Final results";
+                                        color: root.accent;
+                                        font-family: Theme.font-ui;
+                                        font-size: Theme.caption;
+                                        font-weight: 700;
+                                        vertical-alignment: center;
+                                    }
+                                }
+                            }
                             Text {
                                 text: item.poll-question;
                                 color: root.fg;
-                                font-family: Theme.font-ui; font-size: Theme.body; font-weight: 700;
+                                font-family: Theme.font-ui;
+                                font-size: root.phone ? Theme.msg-body : Theme.body;
+                                font-weight: 700;
                                 wrap: word-wrap;
                             }
                             for opt in item.poll-options : opt-row := Rectangle {
@@ -787,50 +843,72 @@ export component Bubble inherits Rectangle {
                                     ? opt.votes / poll-card.total-votes : 0.0;
                                 property <bool> leading: poll-card.show-counts && opt.winner;
                                 property <bool> dot-visible: poll-card.can-vote || opt.mine;
-                                height: 34px;
-                                border-radius: 11px;
-                                background: #000000.with-alpha(opt-touch.has-hover && poll-card.can-vote ? 0.30 : 0.22);
+                                height: poll-card.row-h;
+                                border-radius: poll-card.row-r;
+                                // A well while the poll can be answered, lit
+                                // under the finger: nothing hovers before a
+                                // finger lands, so the press is the only
+                                // feedback a phone gets, and it goes a shade
+                                // past the mouse's hover. Flat once the poll
+                                // is only a result. The QML's black at 0.22 is
+                                // a dark-theme number — over the light
+                                // palette's near-white card the same ink is a
+                                // bruise, so the well there is a tenth of it.
+                                background: poll-card.done ? root.fg.with-alpha(0.07)
+                                    : #000000.with-alpha(poll-card.pale
+                                        ? (opt-touch.pressed ? 0.16
+                                            : opt-touch.has-hover && poll-card.can-vote ? 0.13 : 0.09)
+                                        : (opt-touch.pressed ? 0.34
+                                            : opt-touch.has-hover && poll-card.can-vote ? 0.30 : 0.22));
                                 clip: true;
                                 Rectangle {
                                     x: 0; width: opt-row.width * max(0.0, min(1.0, opt-row.share));
                                     height: 100%;
-                                    border-radius: 11px;
-                                    background: root.accent.with-alpha(opt-row.leading ? 0.55 : 0.28);
+                                    border-radius: poll-card.row-r;
+                                    background: root.accent.with-alpha(opt-row.leading ? 0.55
+                                        : poll-card.done ? 0.18 : 0.28);
                                     animate width { duration: 320ms; easing: cubic-bezier(0.33, 1, 0.68, 1); }
                                 }
                                 // Your pick as a filled dot; empty ring while open
                                 // (PollBody.qml:124-143: 1.5px ring, outlined tick).
                                 if opt-row.dot-visible : pick-dot := Rectangle {
-                                    x: 10px; y: (34px - 15px) / 2;
-                                    width: 15px; height: 15px; border-radius: 7.5px;
+                                    x: root.phone ? 12px : 10px;
+                                    y: (poll-card.row-h - poll-card.dot-d) / 2;
+                                    width: poll-card.dot-d; height: poll-card.dot-d;
+                                    border-radius: poll-card.dot-d / 2;
                                     background: opt.mine ? root.accent : transparent;
-                                    border-width: opt.mine ? 0px : 1.5px;
+                                    border-width: opt.mine ? 0px : (root.phone ? 2px : 1.5px);
                                     border-color: root.fg.with-alpha(0.4);
                                     if opt.mine : IconLabel {
                                         text: Icons.check;
                                         color: Theme.background;
-                                        font-size: 9px;
+                                        font-size: root.phone ? 12px : 9px;
                                         width: 100%; height: 100%;
                                     }
                                 }
                                 Text {
-                                    x: opt-row.dot-visible ? 33px : 12px;
+                                    // the dot's own inset + its width + 8
+                                    x: opt-row.dot-visible
+                                        ? (root.phone ? 12px : 10px) + poll-card.dot-d + 8px
+                                        : (root.phone ? 14px : 12px);
                                     width: tally.x - self.x - 8px;
                                     height: 100%;
                                     text: opt.text;
-                                    color: root.fg;
-                                    font-family: Theme.font-ui; font-size: Theme.body-small;
+                                    color: opt-row.leading || !poll-card.done ? root.fg : root.fg.with-alpha(0.72);
+                                    font-family: Theme.font-ui;
+                                    font-size: root.phone ? Theme.body : Theme.body-small;
+                                    font-weight: opt-row.leading ? 700 : 400;
                                     vertical-alignment: center;
                                     overflow: elide;
                                 }
                                 tally := Text {
-                                    x: opt-row.width - self.preferred-width - 11px;
+                                    x: opt-row.width - self.preferred-width - (root.phone ? 14px : 11px);
                                     height: 100%;
                                     visible: poll-card.show-counts;
                                     text: poll-card.total-votes <= 0 ? "0"
                                         : "\{opt.votes}  \{round(opt-row.share * 100)}%";
-                                    color: root.fg.with-alpha(0.7);
-                                    font-family: Theme.font-ui; font-size: 10px;
+                                    color: opt-row.leading ? root.fg : root.fg.with-alpha(0.7);
+                                    font-family: Theme.font-ui; font-size: Theme.caption;
                                     font-weight: opt-row.leading ? 700 : 400;
                                     vertical-alignment: center;
                                 }
@@ -843,12 +921,14 @@ export component Bubble inherits Rectangle {
                                 }
                             }
                             Text {
-                                text: item.poll-ended ? "Final results · \{root.votes-word}"
+                                // The stamp above already says a finished poll
+                                // is finished, so the footer only counts heads.
+                                text: item.poll-ended ? root.votes-word
                                     : !item.poll-disclosed ? "Results hidden until the poll ends · \{root.votes-word}"
                                     : item.poll-max > 1 ? "Pick up to \{item.poll-max} · \{root.votes-word}"
                                     : root.votes-word;
                                 color: root.fg.with-alpha(0.5);
-                                font-family: Theme.font-ui; font-size: 10px;
+                                font-family: Theme.font-ui; font-size: Theme.caption;
                                 wrap: word-wrap;
                             }
                         }
@@ -988,79 +1068,154 @@ export component Bubble inherits Rectangle {
                         // BubbleDelegate.qml:145-147 — a live share, or `m.self`,
                         // marks the sender rather than a place.
                         property <bool> self-loc: item.location-self || item.location-live || item.location-ended;
+                        // LocationBody.qml:79-80 — an ended share desaturates
+                        // the WHOLE card (MultiEffect saturation −1, 600ms
+                        // OutCubic). Slint has no colour matrix, so the two
+                        // halves of that are done by hand: the vector ink
+                        // (pin, rings) drops to the accent's own luminance —
+                        // the coefficients Qt's saturation matrix uses — and
+                        // the map picture takes a grey wash below. Everything
+                        // else on the card (the pill's #ececec and its grey
+                        // dot) is already neutral, as it is under the QML
+                        // layer.
+                        property <float> ink-lum: 0.299 * root.accent.red
+                            + 0.587 * root.accent.green + 0.114 * root.accent.blue;
+                        property <color> ink: item.location-ended
+                            ? Colors.rgb(round(loc-box.ink-lum), round(loc-box.ink-lum), round(loc-box.ink-lum))
+                            : root.accent;
+                        animate ink { duration: 600ms; easing: cubic-bezier(0.33, 1, 0.68, 1); }
                         if loc-box.have-map : Image {
                             source: item.location-map;
                             width: 100%; height: 100%;
                             image-fit: cover;
                         }
-                        // LocationBody.qml:311-318 — the offline/pending fallback pin.
-                        if !loc-box.have-map : IconLabel {
-                            text: Icons.location;
-                            filled: true;   // LocationBody.qml:115 Fonts.iconFilled
-                            color: root.accent.with-alpha(0.85);
-                            font-size: 40px;
-                            width: 100%; height: 100%;
-                        }
-                        // MapView.qml:156-168 — a 48px accent pin whose tip is
-                        // the coordinate (the card's centre).
-                        if loc-box.have-map : marker := Rectangle {
-                            x: (loc-box.width - 48px) / 2;
-                            y: loc-box.height / 2 - 48px;
-                            width: 48px; height: 48px;
-                            // MapView.qml:193-235 — two broadcast rings while
-                            // live: scale 0.8→2.2, opacity 0.8→0 over 1700ms
-                            // OutCubic, the second 850ms behind.
-                            if loc-box.self-loc && item.location-live : Rectangle {
-                                for ri in [0, 1] : Rectangle {
-                                    property <float> pause: ri * 850;
-                                    property <float> t: mod(root.clock / 1ms, 1700 + self.pause);
-                                    property <float> p: max(0.0, self.t - self.pause) / 1700;
-                                    property <float> e: 1 - pow(1 - self.p, 3);
-                                    x: 48px * 0.4896 - 21px; y: 48px * 0.4062 - 21px;
-                                    width: 42px; height: 42px; border-radius: 21px;
-                                    border-width: 2px; border-color: root.accent;
-                                    background: transparent;
-                                    opacity: self.t < self.pause ? 0 : 0.8 * (1 - self.e);
-                                    transform-origin: { x: self.width / 2, y: self.height / 2 };
-                                    transform-scale-x: 0.8 + 1.4 * self.e;
-                                    transform-scale-y: 0.8 + 1.4 * self.e;
-                                }
-                            }
-                            IconLabel {
-                                text: Icons.location;
-                                filled: true;   // MapView.qml:165
-                                color: root.accent;
-                                font-size: 48px;
-                                width: 100%; height: 100%;
-                            }
-                            // MapView.qml:173-280 — your own position: the face
-                            // inside the pin's head (centre 0.4896/0.4062, r 0.26).
-                            if loc-box.self-loc : Avatar {
-                                x: 48px * 0.4896 - 12.5px; y: 48px * 0.4062 - 12.5px;
-                                size: 25px;
-                                source: item.avatar;
-                                initials: item.initials;
-                                tint: item.tint;
-                            }
-                        }
-                        // LocationBody.qml:272-282 — an ended share is desaturated;
-                        // a grey wash stands in (600ms OutCubic).
-                        ended-wash := Rectangle {
+                        // The picture's half of :79 — the ink above is the rest.
+                        if loc-box.have-map : ended-wash := Rectangle {
                             width: 100%; height: 100%;
                             background: #8a8a8a.with-alpha(0.55);
                             opacity: item.location-ended ? 1.0 : 0.0;
                             animate opacity { duration: 600ms; easing: cubic-bezier(0.33, 1, 0.68, 1); }
                         }
-                        // LocationBody.qml:320-375 — the countdown pill: row + 20
+                        // LocationBody.qml:110-117 — the no-map fallback pin:
+                        // the filled `place` glyph at 40, centred, ink@0.85.
+                        if !loc-box.have-map : IconLabel {
+                            text: Icons.location;
+                            filled: true;   // :115 Fonts.iconFilled
+                            color: loc-box.ink.with-alpha(0.85);
+                            font-size: 40px;
+                            width: 100%; height: 100%;
+                        }
+                        // MapView.qml:156-168 — a 48px pin whose TIP is the
+                        // coordinate (anchorPoint 24/48); the crop is centred
+                        // on the point, so the tip stands at the card's middle.
+                        if loc-box.have-map : marker := Rectangle {
+                            x: (loc-box.width - 48px) / 2;
+                            y: loc-box.height / 2 - 48px;
+                            width: 48px; height: 48px;
+                            background: transparent;
+                            // MapView.qml:186-190 — the head of the filled
+                            // `place` glyph, as fractions of the 48px box.
+                            property <length> head-cx: 48px * 0.4896;
+                            property <length> head-cy: 48px * 0.4062;
+                            property <length> head-r: 48px * 0.26;
+                            // MapView.qml:193-236 — two broadcast rings while
+                            // the share runs, each a pair of 68° arcs
+                            // (−34°…34° and 146°…214°) of radius 1.7·headR
+                            // about the FACE, stroke 2; ring i pauses i×850ms,
+                            // then fades 0.8→0 while it grows 0.8→2.2 over
+                            // 1700ms OutCubic, looping.
+                            //
+                            // Drawn the way pages/map.slint's SelfPin draws it:
+                            // a bordered ring clipped to the band those arcs
+                            // occupy (half-height r·sin 34°), with the scale
+                            // folded into the geometry. `transform-scale` is
+                            // not honoured by the software renderer, and :200
+                            // scales about the 48px BOX centre rather than the
+                            // ring's — both of which a bare scaled circle got
+                            // wrong. The clock is the row's shared fx clock
+                            // (:139-145), not animation-tick(): a tick here
+                            // would redraw the window for every row.
+                            if loc-box.self-loc && item.location-live : Rectangle {
+                                for ri in 2 : wave := Rectangle {
+                                    property <float> u: mod(root.clock / 1ms, ri * 850 + 1700);
+                                    property <float> p: self.u < ri * 850 ? -1.0 : (self.u - ri * 850) / 1700;
+                                    property <float> e: 1 - pow(1 - self.p, 3.0);
+                                    property <float> s: self.p < 0 ? 0.8 : 0.8 + 1.4 * self.e;
+                                    property <length> r: marker.head-r * 1.7 * self.s;
+                                    property <length> cx: 24px + (marker.head-cx - 24px) * self.s;
+                                    property <length> cy: 24px + (marker.head-cy - 24px) * self.s;
+                                    property <length> hh: marker.head-r * 1.7 * 0.5592 * self.s;   // r·sin 34°
+                                    x: self.cx - self.r - 2px; y: self.cy - self.hh;
+                                    width: self.r * 2 + 4px; height: self.hh * 2;
+                                    clip: true;
+                                    background: transparent;
+                                    opacity: self.p < 0 ? 0 : 0.8 * (1 - self.e);
+                                    Rectangle {
+                                        x: 2px; y: wave.hh - wave.r;
+                                        width: wave.r * 2; height: wave.r * 2;
+                                        border-radius: wave.r;
+                                        border-width: 2px * wave.s;
+                                        border-color: loc-box.ink;
+                                        background: transparent;
+                                    }
+                                }
+                            }
+                            IconLabel {
+                                text: Icons.location;
+                                filled: true;   // MapView.qml:165
+                                color: loc-box.ink;
+                                font-size: 48px;
+                                width: 100%; height: 100%;
+                            }
+                            // MapView.qml:171-274 — your own position: the face
+                            // masked into the pin's head. No avatar file leaves
+                            // the plain pin in QML; here the initials disc the
+                            // rest of the port uses stands in for it.
+                            if loc-box.self-loc : Avatar {
+                                x: marker.head-cx - marker.head-r;
+                                y: marker.head-cy - marker.head-r;
+                                size: marker.head-r * 2;
+                                source: item.avatar;
+                                initials: item.initials;
+                                // The initials disc is drawn, not photographed,
+                                // so it greys the way the ink does (:79).
+                                tint: item.location-ended ? #8a8a8a : item.tint;
+                            }
+                            // The face is inside the desaturated layer too
+                            // (:79): the wash the picture takes, cut to the
+                            // head's circle. A photograph cannot be greyed by
+                            // picking a colour the way the pin's ink is.
+                            if loc-box.self-loc : Rectangle {
+                                x: marker.head-cx - marker.head-r;
+                                y: marker.head-cy - marker.head-r;
+                                width: marker.head-r * 2; height: marker.head-r * 2;
+                                border-radius: marker.head-r;
+                                background: #8a8a8a.with-alpha(0.55);
+                                opacity: item.location-ended ? 1.0 : 0.0;
+                                animate opacity { duration: 600ms; easing: cubic-bezier(0.33, 1, 0.68, 1); }
+                            }
+                        }
+                        // LocationBody.qml:119-174 — the countdown pill: row + 20
                         // wide, 24 tall, background@0.72; 7px dot, red while
-                        // live and grey once ended; 10px bold #ececec text.
+                        // live and grey once ended; bold #ececec text.
                         if item.location-live || item.location-ended : live-pill := Rectangle {
                             x: loc-box.width - self.width - 8px;
                             y: 8px;
                             width: live-row.preferred-width + 20px;
                             height: 24px;
                             border-radius: 12px;
-                            background: Theme.background.with-alpha(0.72);
+                            // :129 alpha(Color.background, 0.72). Omarchy's
+                            // background IS the dark desktop ground, and :168
+                            // pins the ink at #ececec: this is a dark scrim
+                            // over map imagery, not a themed surface. The
+                            // phone's light palette has a near-white
+                            // background, which puts light ink on light ink, so
+                            // there the scrim keeps the dark palette's ground
+                            // (style.slint:43) and the countdown stays
+                            // readable — as pages/map.slint's twin chip does
+                            // on the sheet's deep chip.
+                            background: (Theme.mode == "light" ? #101014 : Theme.background)
+                                .with-alpha(0.72);
                             live-row := HorizontalLayout {
                                 x: 10px;
                                 width: self.preferred-width;
@@ -1070,13 +1225,17 @@ export component Bubble inherits Rectangle {
                                     y: (24px - 7px) / 2;
                                     width: 7px; height: 7px; border-radius: 3.5px;
                                     background: item.location-live ? #e8646a : #ececec.with-alpha(0.5);
-                                    // :350-355 — pulses 1↔0.3, 800ms each way.
+                                    // :149-154 — a LINEAR ramp 1→0.3→1, 800ms
+                                    // each way (NumberAnimation's default
+                                    // easing), not a sine: the same shape
+                                    // pages/map.slint gives the twin chip.
+                                    property <float> ph: mod(root.clock / 1600ms, 1.0);
                                     opacity: item.location-live
-                                        ? 0.65 + 0.35 * cos(360deg * (mod(root.clock / 1ms, 1600.0) / 1600.0))
+                                        ? (self.ph < 0.5 ? 1 - 1.4 * self.ph : 0.3 + 1.4 * (self.ph - 0.5))
                                         : 1.0;
                                 }
                                 Text {
-                                    // :360-368 — "Hh MMm" above an hour, else M:SS.
+                                    // :156-172 — "Hh MMm" above an hour, else M:SS.
                                     text: !item.location-live ? "Live location ended"
                                         : item.location-expires-s > 0 && root.boot-epoch-s > 0
                                         ? (root.live-remaining >= 3600
@@ -1086,12 +1245,21 @@ export component Bubble inherits Rectangle {
                                             : floor(root.live-remaining / 60) + ":" + (mod(root.live-remaining, 60) < 10 ? "0" : "") + mod(root.live-remaining, 60))
                                         : "Live";
                                     color: #ececec;
-                                    font-family: Theme.font-ui; font-size: 10px; font-weight: 700;
+                                    // :170 is Style.space(10) rather than the
+                                    // caption step, but MapPage.qml:295 calls
+                                    // its own chip "the same chip the bubble
+                                    // carries" and sizes THAT one at
+                                    // Style.font.caption (:344). They are the
+                                    // same on the desktop, where the caption
+                                    // step is 10; the caption step is what
+                                    // keeps them the same on the phone too.
+                                    font-family: Theme.font-ui; font-size: Theme.caption; font-weight: 700;
                                     vertical-alignment: center;
                                 }
                             }
                         }
-                        // LocationBody.qml:377-382 — an ended share no longer opens.
+                        // LocationBody.qml:24, :176-181 — an ended share no
+                        // longer opens (openable: !ended).
                         HoldArea {
                             clicked => { if (!self.fired && !item.location-ended) { root.open-location(item); } self.fired = false; }
                             hold-started => { root.begin-hold(); }
@@ -1292,26 +1460,47 @@ export component Bubble inherits Rectangle {
                         // RichText.qml:175-181 — the typewriter clock starts on creation.
                         property <duration> t0: 0ms;
                         init => { self.t0 = root.fx-clock; }
-                        // The uniform glow run: the body once, and one breathing
-                        // copy behind it (RichText.qml:299-310's cycle) — the
-                        // per-glyph cells below then hold no Text.
-                        // The glow: four soft copies a pixel or two around the
-                        // body, breathing 0.05..0.45 on the QML's 1800ms cycle —
-                        // the same text and width, so they wrap exactly as the
-                        // body does. (A scaled copy wraps differently and reads
-                        // as a second paragraph.)
+                        // The glow — one picture of light, not copies of the
+                        // text. fx.rs fills the run's outlines, blurs the
+                        // coverage twice (frost.rs's approximation of a
+                        // Gaussian) and hands over two rasters that sit
+                        // `fx-glow-pad` outside the text box: `ink` is alpha
+                        // alone and wears the bubble's own foreground, so
+                        // white text glows white; `hue` is already coloured,
+                        // for spans with a colour and for colour emoji, so a
+                        // yellow face spills yellow.
+                        //
+                        // Nothing is rasterised per frame: the pictures are
+                        // built once with the layout and cached, and the
+                        // 1800ms breath (RichText.qml:299-310) is a single
+                        // alpha on a leaf Image, which Slint applies to the
+                        // paint rather than to an offscreen layer.
                         property <float> glow-p: 0.5 - 0.5 * cos(360deg * (mod(root.clock / 1ms, 1800.0) / 1800.0));
-                        property <color> glow-ink: root.fg.with-alpha((0.05 + 0.40 * self.glow-p) * 0.5);
-                        for off in [{ x: -1.5, y: -1.0 }, { x: 1.5, y: -1.0 }, { x: -1.5, y: 1.5 }, { x: 1.5, y: 1.5 }] : Text {
-                            x: off.x * 1px * (0.6 + 0.8 * fx-box.glow-p); y: off.y * 1px * (0.6 + 0.8 * fx-box.glow-p);
-                            width: fx-box.width; height: fx-box.height;
-                            visible: item.fx-run;
-                            text: item.fx-text;
-                            color: fx-box.glow-ink;
-                            font-family: item.fx-chars[0].mono ? Theme.font-mono : Theme.font-ui;
-                            font-size: item.fx-chars[0].size;
-                            font-weight: item.fx-chars[0].bold ? 800 : 400; font-italic: item.fx-chars[0].italic;
-                            wrap: word-wrap;
+                        // 0.18..0.70 over the breath: bright enough to be light,
+                        // never so bright that the letters lose their counters.
+                        // Dark ink on a light bubble cannot glow — the halo
+                        // there is a bloom of the letter's own colour, and at
+                        // full strength it reads as a smudge, so it is pulled
+                        // back in proportion to how dark the ink is.
+                        property <float> ink-lum: (0.299 * root.fg.red + 0.587 * root.fg.green + 0.114 * root.fg.blue) / 255;
+                        property <float> glow-a: (0.18 + 0.52 * self.glow-p)
+                            * (0.45 + 0.55 * self.ink-lum) * (Theme.dbg-no-fx-copies ? 0 : 1);
+                        if item.fx-glow-ink-on : Image {
+                            x: -item.fx-glow-pad; y: -item.fx-glow-pad;
+                            width: item.fx-w + 2 * item.fx-glow-pad;
+                            height: item.fx-h + 2 * item.fx-glow-pad;
+                            source: item.fx-glow-ink;
+                            colorize: root.fg;
+                            image-rendering: smooth;
+                            opacity: fx-box.glow-a;
+                        }
+                        if item.fx-glow-hue-on : Image {
+                            x: -item.fx-glow-pad; y: -item.fx-glow-pad;
+                            width: item.fx-w + 2 * item.fx-glow-pad;
+                            height: item.fx-h + 2 * item.fx-glow-pad;
+                            source: item.fx-glow-hue;
+                            image-rendering: smooth;
+                            opacity: fx-box.glow-a;
                         }
                         run-body := Text {
                             x: 0; y: 0; width: 100%;
@@ -1321,7 +1510,9 @@ export component Bubble inherits Rectangle {
                             font-family: item.fx-chars[0].mono ? Theme.font-mono : Theme.font-ui;
                             font-size: item.fx-chars[0].size;
                             font-weight: item.fx-chars[0].bold ? 800 : 400; font-italic: item.fx-chars[0].italic;
-                            wrap: word-wrap;
+                            // `fx-text` already carries fx.rs's line breaks, so
+                            // the run wraps where the glow behind it does.
+                            wrap: no-wrap;
                         }
                         for c in item.fx-chars : fx-cell := Rectangle {
                             x: c.x;
@@ -1365,21 +1556,8 @@ export component Bubble inherits Rectangle {
                                 font-weight: c.bold ? 800 : 400; font-italic: c.italic;
                                 x: fx-cell.glitch-on ? 1.5px : 0px; height: 100%; vertical-alignment: center;
                             }
-                            // Glow: a soft copy breathing behind the glyph —
-                            // RichText.qml:299-310: 1800ms cycle, scale 1.1↔1.5,
-                            // opacity 0.05↔0.45.
-                            if c.anim == "glow" && !Theme.dbg-no-fx-copies && !item.fx-run && !c.emoji : Text {
-                                property <float> gp: 0.5 - 0.5 * cos(360deg * (mod(fx-cell.raw-ms, 1800.0) / 1800.0));
-                                // alpha in the colour, not `opacity`: an opacity on a
-                                // Text is an offscreen layer per glyph per frame
-                                text: c.ch; color: fx-cell.ink.with-alpha(0.05 + 0.40 * self.gp);
-                                font-family: c.mono ? Theme.font-mono : Theme.font-ui; font-size: c.size;
-                                font-weight: c.bold ? 800 : 400; font-italic: c.italic;
-                                width: 100%; height: 100%; vertical-alignment: center; horizontal-alignment: center;
-                                transform-origin: { x: self.width / 2, y: self.height / 2 };
-                                transform-scale-x: 1.1 + 0.4 * self.gp;
-                                transform-scale-y: 1.1 + 0.4 * self.gp;
-                            }
+                            // (Glow has no per-glyph cell: the whole run's light
+                            // is one blurred picture behind the box, above.)
                             // Text-blur: ghost copies fake the radius; hover clears it.
                             if c.anim == "blur" : Text {
                                 text: c.ch; color: fx-cell.ink.with-alpha(0.3 * fx-box.blur-amt);

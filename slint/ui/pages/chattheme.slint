@@ -1,12 +1,32 @@
-// ChatThemePage — mobile/ChatThemePage.qml. Live mini preview, Apply/Reset,
-// palettes derived from one base hue, wallpapers. The pending theme itself
-// lives Rust-side (it is JSON on disk); this renders derived colours handed
-// down and reports edits up. The QML page's custom-colour wheel needs a conic
-// gradient Slint cannot draw, so the custom picker is three sliders (hue /
-// saturation / brightness) driving the same numbers.
+// ChatThemePage — mobile/ChatThemePage.qml, redrawn against the platform
+// messenger's own chat-theme screen (measured off two 1344x2992 @408dpi
+// captures, so every number below is dp = physical/2.55).
 //
-// The QML's two hover-only swatch selection rings are pressed+selected states
-// here — portability.md flagged them as invisible on touch.
+// The shape it now takes:
+//
+//   header    our own bar, not theirs: the back glyph in a 48 target at 4,
+//             the title (and its one-line caveat) at 56, an Apply pill 12
+//             from the right.
+//   stage     the page body: a phone-shaped LIVE preview of the room (the
+//             window's own aspect — 256 x 572 in the reference's 527 x 1173
+//             page) over the "Reset to default" pill. It rises as one.
+//   panel     the chrome sheet along the bottom (390 of 1173 = 33% there,
+//             37.6% of the room under the header here): "Colors" over a row
+//             of eight three-part swatches, then "Wallpapers" over the
+//             photo pill and the gradient grid. It scrolls inside itself.
+//
+// The page WEARS the theme it is editing: the header band and the panel are
+// chat.slint's own tones, so choosing a colour repaints the page in the
+// very tones the conversation will take.
+//
+// It arrives in the same three beats the conversation and the location page
+// use — header, window, footer — and leaves in reverse; see `opened`.
+//
+// The QML page's custom-colour wheel needs a conic gradient Slint cannot
+// draw, so the custom picker is still three sliders (hue / saturation /
+// brightness) driving the same numbers. The QML's two hover-only swatch
+// selection rings are pressed+selected states here — portability.md flagged
+// them as invisible on touch.
 
 import { Theme } from "../style.slint";
 import { Icons } from "../icons.slint";
@@ -14,39 +34,99 @@ import { IconLabel, ActionButton } from "../components.slint";
 
 export struct GradPair { top: color, bot: color }
 
+// One palette swatch. The reference draws a disc split in three: the top
+// HALF is one colour across the full width, and the bottom half is split
+// down the middle into two quarters, each its own colour (measured at
+// y=1100 of the second capture: swatch 2 runs #3E475B up to its centre
+// x=287 and #5F3867 past it). Slint has no conic gradient, so it is built
+// from three stacked draws:
+//
+//   1. the whole disc in the bottom-RIGHT colour,
+//   2. a rectangular clip over the left half, holding a second whole disc
+//      in the bottom-LEFT colour,
+//   3. a rectangular clip over the top half, holding a third whole disc in
+//      the TOP colour.
+//
+// Every clip is axis-aligned, so this draws in the software renderer too
+// (which has no rounded clipping); the rounding always comes from the disc
+// inside the clip, never from the clip itself.
+//
+// Selecting it turns the circle into a squircle: the corner radius eases
+// from d/2 (20) to 0.28·d (11) — the reference's selected swatch is 40 wide
+// and still 40 wide 29 of its 50 half-heights down, which no circle is, and
+// its corner solves to r ≈ 11. The ring the reference draws round the
+// selected one follows the same radius 6 further out, so the two stay
+// concentric through the whole transition.
 component Swatch inherits Rectangle {
-    in property <color> base;
+    /// The theme's light primary — the top half.
+    in property <color> top-c;
+    /// Its chrome surface — the bottom-left quarter.
+    in property <color> left-c;
+    /// Its deep secondary — the bottom-right quarter.
+    in property <color> right-c;
     in property <bool> sel;
     in property <color> fg;
-    in property <color> lower;
     callback clicked;
-    width: 38px; height: 38px;
+    /// The disc: 40 on the reference's 527-wide page. The row hands down a
+    /// smaller one on a narrower window rather than letting the eight of
+    /// them close up.
+    in property <length> d: 40px;
+    /// The ring's box: the disc plus 3 of gap and 3 of stroke on each side —
+    /// 52 at the reference's size, exactly its 133 physical pixels.
+    width: root.d + 12px; height: root.d + 12px;
+    background: transparent;
+    property <length> rad: root.sel ? root.d * 0.28 : root.d / 2;
+    animate rad { duration: 260ms; easing: cubic-bezier(0.33, 1, 0.68, 1); }
     // ChatThemePage.qml:326-327: the swatch grows to 1.08 under the pointer,
     // 110ms OutCubic; a press stands in for hover on touch.
     transform-origin: { x: self.width / 2, y: self.height / 2 };
     transform-scale-x: sw-t.has-hover || sw-t.pressed ? 1.08 : 1.0;
     transform-scale-y: sw-t.has-hover || sw-t.pressed ? 1.08 : 1.0;
     animate transform-scale-x, transform-scale-y { duration: 110ms; easing: cubic-bezier(0.33, 1, 0.68, 1); }
-    lower-disc := Rectangle {
-        width: 100%; height: 100%; border-radius: 19px;
-        background: root.lower;
-    }
-    upper-half := Rectangle {
-        width: 100%; height: 50%;
-        clip: true;
+
+    disc := Rectangle {
+        x: (root.width - root.d) / 2; y: (root.height - root.d) / 2;
+        width: root.d; height: root.d;
+        // 1 — the whole disc, in the bottom-right colour.
         Rectangle {
-            width: root.width; height: root.width; border-radius: 19px;
-            background: root.base.brighter(0.35);
+            width: 100%; height: 100%;
+            border-radius: root.rad;
+            background: root.right-c;
+        }
+        // 2 — its left half, in the bottom-left colour.
+        Rectangle {
+            x: 0; y: 0; width: root.d / 2; height: root.d;
+            clip: true;
+            Rectangle {
+                x: 0; y: 0; width: root.d; height: root.d;
+                border-radius: root.rad;
+                background: root.left-c;
+            }
+        }
+        // 3 — its top half, in the primary, across the full width.
+        Rectangle {
+            x: 0; y: 0; width: root.d; height: root.d / 2;
+            clip: true;
+            Rectangle {
+                x: 0; y: 0; width: root.d; height: root.d;
+                border-radius: root.rad;
+                background: root.top-c;
+            }
         }
     }
+    // The ring: 3 of stroke, 3 clear of the disc, concentric through the
+    // squircle transition. Selected it is the theme's own light tone (the
+    // reference's ring is #C8C7BF against a #C6C8B8 swatch — the primary);
+    // pressed, a faint ink, since touch has no hover.
     ring := Rectangle {
-        x: -3px; y: -3px;
-        width: root.width + 6px; height: root.height + 6px;
-        border-radius: (root.width + 6px) / 2;
-        border-width: 2px;
-        // selected: full ink; pressed (the touch stand-in for hover): faint ink
-        border-color: root.sel ? root.fg
+        width: 100%; height: 100%;
+        border-radius: root.rad + 6px;
+        border-width: 3px;
+        // A fifth of the page's ink carried into it, so the ring still reads
+        // on the light palette, where the primary and the panel are both pale.
+        border-color: root.sel ? root.top-c.mix(root.fg, 0.8)
                     : sw-t.pressed ? root.fg.with-alpha(0.45) : transparent;
+        background: transparent;
     }
     sw-t := TouchArea { clicked => { root.clicked(); } }
 }
@@ -81,172 +161,435 @@ export component ChatThemePage inherits Rectangle {
     in-out property <bool> picking: false;
 
     property <bool> themed: root.pending-accent != "";
-    // ChatThemePage.qml tintBg(): menu.background darkened 1.35, mixed toward base.
-    pure function tint-bg(base: color, amt: float) -> color {
-        return Theme.menu-background.darker(0.35).mix(base, 1.0 - amt);
+
+    // ---- The theme, worn ------------------------------------------------
+    // Three levels, in the reference's own relation: the page and its header
+    // band a neutral ground (32,31,30 there), the phone preview DARKER than
+    // it (20,20,20 — it is the conversation), and the panel LIGHTER and
+    // plainly tinted (47,50,39 under the olive theme). Each is the tone
+    // chat.slint derives for the very same job, so the page is a true
+    // preview of the room it is editing and repaints as the choice changes.
+    pure function surface-of(base: color) -> color {
+        return Theme.menu-background.brighter(0.35).mix(base, 0.65);
     }
-    pure function bubble-fill(base: color) -> color {
-        return base.mix(Theme.popup-background, 0.42);
+    pure function convo-of(base: color) -> color {
+        return root.convo-base.mix(base, 0.82);
     }
+    /// The theme's deep secondary: the accent rotated 45° and taken down,
+    /// which is what the reference's bottom-right quarter is (its blue
+    /// swatch reads #5F3867, a purple 45° off its #ACC7FE primary).
+    pure function second-of(base: color) -> color {
+        return hsv(mod(base.to-hsv().hue + 45, 360), max(0.35, base.to-hsv().saturation),
+                   base.to-hsv().value * 0.5);
+    }
+    /// The conversation's ground: a shade off the page in whichever
+    /// direction the palette has room for — darker on the phone's near-black
+    /// (as chat.slint takes it), and the paper white on its near-white,
+    /// where darkening only reads as grey.
+    property <color> convo-base: Theme.mode == "light"
+        ? Theme.background : Theme.menu-background.darker(0.35);
+    /// The panel and every lifted surface: chat.slint's `surface-c`.
+    property <color> surface-c: root.themed ? root.surface-of(root.pend-accent) : Theme.popup-background;
+    /// The page and its header band: the card ground, barely tinted, the way
+    /// the reference's page sits a shade off neutral under an olive theme.
+    property <color> page-c: root.themed ? Theme.card-ground.mix(root.pend-accent, 0.86) : Theme.card-ground;
+    /// Inside the preview: the conversation's own ground, darker than the
+    /// page, exactly as chat.slint paints it.
+    property <color> convo-c: root.themed ? root.convo-of(root.pend-accent) : root.convo-base;
+    /// Chrome INSIDE the preview — its bar and its composer field. Unthemed
+    /// it is a wash of ink over the conversation's own ground, which lifts on
+    /// the dark palette and settles on the light one without a second token.
+    property <color> prev-chrome: root.themed ? root.surface-c : root.convo-c.mix(root.fg, 0.92);
+    property <color> own-fill: root.themed ? root.pend-accent.darker(0.25) : Theme.accent.darker(0.25);
     property <color> other-fill: root.themed
-        ? root.bubble-fill(root.fg).mix(root.pend-accent, 0.82)
-        : root.bubble-fill(root.fg);
+        ? Theme.bubble-other.mix(root.pend-accent, 0.86) : Theme.bubble-other;
 
-    background: transparent;
+    // The page's own ground IS the header band's, exactly as the
+    // conversation's is; the stage below draws the room over it.
+    background: root.page-c;
 
-    flick := Flickable {
-        width: 100%; height: 100%;
-        viewport-height: body.preferred-height;
-        body := VerticalLayout {
-            width: root.width;
-            // Header — ChatThemePage.qml:190-206: PanelActionButton (22×22)
-            // at 6, the title column 6 past it (x 34), Apply 12 from the right.
-            hdr := Rectangle {
-                height: 56px;
-                HorizontalLayout {
-                    padding-left: 6px; padding-right: 12px;
-                    spacing: 6px;
-                    Rectangle {
-                        width: 22px;
-                        ActionButton {
-                            y: (56px - self.height) / 2;
-                            width: 22px; height: 22px;
-                            icon: Icons.back;
-                            foreground: root.fg;
-                            clicked => { root.closed(); }
-                        }
-                        TouchArea { clicked => { root.closed(); } }
-                    }
-                    VerticalLayout {
-                        alignment: center;
-                        horizontal-stretch: 1;
-                        Text { text: "Chat theme"; color: root.fg; font-family: Theme.font-ui; font-size: Theme.heading; font-weight: 700; }
-                        Text { text: "Only you will see these changes"; color: root.fg.with-alpha(0.55); font-family: Theme.font-ui; font-size: Theme.caption; }
-                    }
-                    apply-pill := Rectangle {
-                        y: (56px - self.height) / 2;
-                        width: 74px; height: 34px; border-radius: 17px;
-                        background: root.pend-accent.brighter(0.35);
-                        Text { text: "Apply"; color: #1a1a1a; font-family: Theme.font-ui; font-size: Theme.body-small; font-weight: 700; width: 100%; height: 100%; horizontal-alignment: center; vertical-alignment: center; }
-                        TouchArea { clicked => { root.apply(); } }
-                    }
+    // ---- The three beats -------------------------------------------------
+    /// The phone opens this page out of the conversation the way the
+    /// location page does: the header's title and its Apply pill arrive from
+    /// the right (head-t), then the stage — preview and reset — rises from
+    /// the page bottom (stage-t), and only once those have landed does the
+    /// panel follow it up (foot-t). Closing plays the three in reverse; the
+    /// holder in app.slint waits for it (`hold`).
+    in property <bool> phone: Theme.mode != "desktop";
+    in property <bool> opened: true;
+    property <float> head-t: 1.0;
+    property <float> stage-t: 1.0;
+    property <float> foot-t: 1.0;
+    states [
+        closed when root.phone && !root.opened : {
+            head-t: 0.0;
+            stage-t: 0.0;
+            foot-t: 0.0;
+            // `in` is the way back to the conversation, `out` the arrival —
+            // linear clocks, with the fades and the motion taking their own
+            // windows and easings off them (map.slint:163-182).
+            in {
+                animate foot-t { duration: 150ms; }
+                animate stage-t { duration: 200ms; delay: 110ms; }
+                animate head-t { duration: 190ms; delay: 250ms; }
+            }
+            out {
+                animate head-t { duration: 220ms; }
+                animate stage-t { duration: 260ms; delay: 200ms; }
+                animate foot-t { duration: 220ms; delay: 440ms; }
+            }
+        }
+    ]
+    property <float> head-e: 1 - (1 - root.head-t) * (1 - root.head-t) * (1 - root.head-t);
+    property <float> stage-e: 1 - (1 - root.stage-t) * (1 - root.stage-t) * (1 - root.stage-t);
+    property <float> foot-e: 1 - (1 - root.foot-t) * (1 - root.foot-t) * (1 - root.foot-t);
+    // The words arrive over the last 65% of the header beat, so the bar is
+    // bare for a moment first (map.slint's `word-t`).
+    property <float> word-t: clamp((root.head-t - 0.35) / 0.65, 0.0, 1.0);
+    property <float> word-e: 1 - (1 - root.word-t) * (1 - root.word-t) * (1 - root.word-t);
+
+    // ---- Geometry --------------------------------------------------------
+    // Measured off the reference (527 x 1173 dp, the very size the headless
+    // harness renders): header bottom 137, preview 256 x 572 at y 142, the
+    // reset pill 40 tall 14 under it, and the panel's top edge at 783 — 390
+    // of the page, 37.6% of the 1036 under the header. Those fractions, not
+    // those pixels, so the page holds its proportions at any size.
+    property <length> header-h: root.phone ? 60px : 52px;
+    property <length> gap-a: 6px;    // header -> preview
+    property <length> gap-b: 14px;   // preview -> reset pill
+    property <length> reset-h: 40px;
+    property <length> gap-c: 16px;   // reset pill -> panel
+    property <length> avail: max(1px, root.height - root.header-h);
+    property <length> panel-h: max(150px, self.avail * 0.376);
+    property <length> stage-room: self.avail - self.panel-h - self.gap-a - self.gap-b
+        - self.reset-h - self.gap-c;
+    /// The preview is the window's own shape — a phone-shaped picture of
+    /// this very conversation — capped so it never crowds the page.
+    property <length> preview-w: max(80px, min(self.stage-room * root.width / max(1px, root.height),
+                                               root.width * 0.52));
+    property <length> preview-h: self.preview-w * root.height / max(1px, root.width);
+    property <length> pv-r: self.preview-w * 0.085;   // 20 of 256 in the reference
+    /// The Apply pill: 85 x 40 in the reference, 12 clear of the right edge.
+    property <length> apply-w: root.phone ? 86px : 66px;
+
+    // grad-sel: index of the pending "grad:N" wallpaper, for the preview.
+    in property <int> grad-sel: 0;
+    /// `custom-sel` arrives as "the pending theme has an accent at all"
+    /// (actions.rs set_theme_props), which is true of the seven palette
+    /// entries too — so the ring is drawn round the plus only when the
+    /// pending colour is one none of them offers.
+    property <bool> custom-ring: root.custom-sel
+        && root.pending-accent != "#7c9fd4" && root.pending-accent != "#5cb8d6"
+        && root.pending-accent != "#b48ad6" && root.pending-accent != "#9aab7e"
+        && root.pending-accent != "#e0a370" && root.pending-accent != "#d98aa8";
+    pure function pal-color(hex: string) -> color {
+        // The seven palette entries, resolved without a string->color parser.
+        if (hex == "#7c9fd4") { return #7c9fd4; }
+        if (hex == "#5cb8d6") { return #5cb8d6; }
+        if (hex == "#b48ad6") { return #b48ad6; }
+        if (hex == "#9aab7e") { return #9aab7e; }
+        if (hex == "#e0a370") { return #e0a370; }
+        if (hex == "#d98aa8") { return #d98aa8; }
+        return Theme.accent;
+    }
+
+    // ---- 1. The header ---------------------------------------------------
+    // Ours, not the reference's: chat.slint's phone bar geometry — a 24px
+    // back glyph in a 48 target at 4 — with the page title at 56 and one
+    // trailing pill 12 from the right. The desktop keeps the 22px
+    // PanelActionButton band every other page in pages/ uses.
+    header := Rectangle {
+        x: 0; y: 0; width: 100%; height: root.header-h;
+        background: transparent;
+        clip: true;
+        // The back arrow is the one thing that does not move: it is already
+        // under the finger that opened the page.
+        if root.phone : back-target := Rectangle {
+            x: 4px; y: 6px; width: 48px; height: 48px; border-radius: 24px;
+            background: back-t.pressed ? root.fg.with-alpha(0.10)
+                      : back-t.has-hover ? root.fg.with-alpha(0.06) : transparent;
+            IconLabel { text: Icons.back; filled: true; color: root.fg; font-size: 24px; width: 100%; height: 100%; }
+            back-t := TouchArea { clicked => { root.closed(); } }
+        }
+        if !root.phone : Rectangle {
+            x: 6px; y: (52px - 22px) / 2; width: 22px; height: 22px;
+            ActionButton {
+                width: 100%; height: 100%;
+                icon: Icons.back;
+                foreground: root.fg;
+                clicked => { root.closed(); }
+            }
+        }
+        // The title and its caveat, in from the right onto their place. Its
+        // box is measured off the pill's RESTING place, never off the pill
+        // itself: a width that moved with the animation would re-lay the
+        // text out on every frame of it.
+        property <length> text-x: root.phone ? 56px : 34px;
+        titles := VerticalLayout {
+            x: header.text-x + (header.width - header.text-x) * (1 - root.word-e);
+            y: 0; height: 100%;
+            width: max(0px, header.width - header.text-x - root.apply-w - 22px);
+            alignment: center;
+            opacity: root.word-t;
+            // Our own page-title type — Theme.heading at 700 over a caption
+            // at 0.55, the pair every settings page in pages/ uses.
+            Text {
+                text: "Chat theme";
+                color: root.fg;
+                font-family: Theme.font-ui;
+                font-size: Theme.heading;
+                font-weight: 700;
+                overflow: elide;
+            }
+            Text {
+                text: "Only you will see these changes";
+                color: root.fg.with-alpha(0.55);
+                font-family: Theme.font-ui;
+                font-size: Theme.caption;
+                overflow: elide;
+            }
+        }
+        // Apply: 85 x 40 with a 20 radius, 12 from the right in the
+        // reference. It comes in past the edge on the same beat.
+        apply-pill := Rectangle {
+            x: header.width - self.width - 12px
+                + (header.width * 0.5) * (1 - root.word-e);
+            y: (header.height - self.height) / 2;
+            width: root.apply-w;
+            height: root.phone ? 40px : 30px;
+            border-radius: self.height / 2;
+            opacity: root.word-t;
+            background: ap-t.pressed ? root.pend-accent.brighter(0.15) : root.pend-accent.brighter(0.35);
+            apply-label := Text {
+                text: "Apply";
+                color: #1a1a1a;
+                font-family: Theme.font-ui;
+                font-size: root.phone ? Theme.body : Theme.body-small;
+                font-weight: 700;
+                width: 100%; height: 100%;
+                horizontal-alignment: center; vertical-alignment: center;
+            }
+            ap-t := TouchArea { clicked => { root.apply(); } }
+        }
+    }
+
+    // ---- 2. The stage, and 3. the panel inside it ------------------------
+    // The stage carries the page's own ground under chat.slint's 28 top
+    // corners, so the band above it reads as a header rather than as more
+    // page. On the phone it rises from the page bottom once the header has
+    // settled, taking the preview and the reset pill with it; the panel is
+    // its bottom sheet and follows it up after.
+    stage := Rectangle {
+        x: 0;
+        width: 100%;
+        height: root.avail;
+        y: root.header-h + (root.phone ? root.avail * (1 - root.stage-e) : 0px);
+        background: root.page-c;
+        border-top-left-radius: 28px;
+        border-top-right-radius: 28px;
+        clip: true;
+
+        // The live preview: a phone-shaped picture of this room, in the
+        // pending theme. Everything inside is a fraction of its width, so
+        // it stays in proportion at any page size.
+        preview := Rectangle {
+            x: (stage.width - self.width) / 2;
+            y: root.gap-a + (root.stage-room - self.height) / 2;
+            width: root.preview-w; height: root.preview-h;
+            border-radius: root.pv-r;
+            clip: true;
+            background: root.convo-c;
+            // A hairline, so the device reads as a device even where the
+            // palette leaves its ground and the page's a shade apart.
+            border-width: 1px;
+            border-color: root.fg.with-alpha(0.10);
+            property <float> u: self.width / 256px;   // the reference’s own dp
+
+            if root.pending-wallpaper != "" && root.wallpaper-img.width > 0 : Image {
+                source: root.wallpaper-img;
+                width: 100%; height: 100%;
+                image-fit: cover;
+            }
+            // Gradient ONLY for a grad:* wallpaper (grad-sel < 0 for a
+            // photo): an undecoded photo shows the tint, not gradient 0.
+            if root.grad-sel >= 0 && root.pending-wallpaper != "" && root.gradients.length == 9 && root.wallpaper-img.width == 0 : prev-grad := Rectangle {
+                width: 100%; height: 100%;
+                background: @linear-gradient(180deg, root.gradients[root.grad-sel].top 0%, root.gradients[root.grad-sel].bot 100%);
+            }
+            // The room's own bar, as the conversation wears it.
+            prev-bar := Rectangle {
+                x: 0; y: 0; width: 100%; height: preview.u * 46px;
+                background: root.prev-chrome;
+                IconLabel {
+                    x: preview.u * 8px; y: (parent.height - self.height) / 2;
+                    text: Icons.back; filled: true; color: root.fg;
+                    font-size: preview.u * 14px;
+                    width: preview.u * 16px; height: preview.u * 16px;
+                }
+                Rectangle {
+                    x: preview.u * 30px; y: (parent.height - self.height) / 2;
+                    width: preview.u * 22px; height: preview.u * 22px;
+                    border-radius: self.width / 2;
+                    background: root.pend-accent.brighter(0.3);
+                }
+                Text {
+                    x: preview.u * 60px; y: 0; height: 100%;
+                    width: preview.width - preview.u * 100px;
+                    text: root.room-name;
+                    color: root.fg;
+                    font-family: Theme.font-ui;
+                    font-size: preview.u * 13px;
+                    font-weight: 500;
+                    vertical-alignment: center;
+                    overflow: elide;
+                }
+                for g[i] in [Icons.phone, Icons.videoOn] : IconLabel {
+                    x: preview.width - preview.u * (56px - i * 26px);
+                    y: (parent.height - self.height) / 2;
+                    text: g; filled: true; color: root.fg.with-alpha(0.85);
+                    font-size: preview.u * 13px;
+                    width: preview.u * 16px; height: preview.u * 16px;
                 }
             }
-            Rectangle { height: 6px; }
-            // Mini preview
-            preview-row := Rectangle {
-                height: 300px;
-                preview := Rectangle {
-                    x: (root.width - self.width) / 2;
-                    width: 196px; height: 296px;
-                    border-radius: 18px;
-                    clip: true;
-                    background: root.tint-bg(root.pend-accent, root.themed ? 0.18 : 0.0);
-                    if root.pending-wallpaper != "" && root.wallpaper-img.width > 0 : Image {
-                        source: root.wallpaper-img;
+            // A handful of bubbles, in the theme's tones.
+            mini := VerticalLayout {
+                x: preview.u * 12px;
+                y: preview.height - self.preferred-height - preview.u * 62px;
+                width: preview.width - preview.u * 24px;
+                spacing: preview.u * 6px;
+                HorizontalLayout { alignment: end; Rectangle { width: preview.u * 118px; height: preview.u * 22px; border-radius: preview.u * 11px; background: root.own-fill; } }
+                HorizontalLayout { alignment: start; Rectangle { width: preview.u * 132px; height: preview.u * 22px; border-radius: preview.u * 11px; background: root.other-fill; } }
+                HorizontalLayout { alignment: start; Rectangle { width: preview.u * 96px; height: preview.u * 22px; border-radius: preview.u * 11px; background: root.other-fill; } }
+                HorizontalLayout { alignment: end; Rectangle { width: preview.u * 104px; height: preview.u * 22px; border-radius: preview.u * 11px; background: root.own-fill; } }
+            }
+            // The composer band and its send disc.
+            mini-composer := Rectangle {
+                x: preview.u * 12px;
+                y: preview.height - preview.u * 44px;
+                width: preview.width - preview.u * 24px;
+                height: preview.u * 30px;
+                Rectangle {
+                    x: 0; y: 0;
+                    width: parent.width - preview.u * 36px; height: 100%;
+                    border-radius: self.height / 2;
+                    background: root.prev-chrome;
+                    Text {
+                        x: preview.u * 12px; height: 100%;
+                        text: "Message";
+                        color: root.fg.with-alpha(0.45);
+                        font-family: Theme.font-ui;
+                        font-size: preview.u * 11px;
+                        vertical-alignment: center;
+                    }
+                }
+                Rectangle {
+                    x: parent.width - preview.u * 30px; y: 0;
+                    width: preview.u * 30px; height: preview.u * 30px;
+                    border-radius: self.width / 2;
+                    background: root.pend-accent.darker(0.15);
+                    IconLabel {
+                        text: Icons.send; filled: true; color: #1a1a1a;
+                        font-size: preview.u * 14px;
                         width: 100%; height: 100%;
-                        image-fit: cover;
-                    }
-                    // Gradient ONLY for a grad:* wallpaper (grad-sel < 0 for a
-                    // photo): an undecoded photo shows the tint, not gradient 0.
-                    if root.grad-sel >= 0 && root.pending-wallpaper != "" && root.gradients.length == 9 && root.wallpaper-img.width == 0 : prev-grad := Rectangle {
-                        width: 100%; height: 100%;
-                        // Rust passes the selected gradient resolved as pair 0..8;
-                        // display uses the pending index handed down in grad-sel.
-                        background: @linear-gradient(180deg, root.gradients[root.grad-sel].top 0%, root.gradients[root.grad-sel].bot 100%);
-                    }
-                    HorizontalLayout {
-                        x: 10px; y: 10px;
-                        height: 16px;
-                        spacing: 6px;
-                        alignment: start;
-                        Rectangle { width: 16px; height: 16px; border-radius: 8px; background: root.pend-accent.brighter(0.3); }
-                        Text { text: root.room-name; color: root.fg; font-family: Theme.font-ui; font-size: 10px; font-weight: 700; vertical-alignment: center; }
-                    }
-                    mini := VerticalLayout {
-                        x: 10px;
-                        y: preview.height - self.preferred-height - 40px;
-                        width: preview.width - 20px;
-                        spacing: 5px;
-                        HorizontalLayout { alignment: end; Rectangle { width: 96px; height: 18px; border-radius: 9px; background: root.bubble-fill(root.pend-accent); } }
-                        HorizontalLayout { alignment: start; Rectangle { width: 80px; height: 18px; border-radius: 9px; background: root.other-fill; } }
-                        HorizontalLayout { alignment: start; Rectangle { width: 110px; height: 18px; border-radius: 9px; background: root.other-fill; } }
-                        HorizontalLayout { alignment: end; Rectangle { width: 72px; height: 18px; border-radius: 9px; background: root.bubble-fill(root.pend-accent); } }
-                    }
-                    mini-composer := HorizontalLayout {
-                        x: 10px;
-                        y: preview.height - 32px;
-                        width: preview.width - 20px;
-                        height: 22px;
-                        spacing: 6px;
-                        Rectangle {
-                            horizontal-stretch: 1;
-                            border-radius: 11px;
-                            background: root.fg.with-alpha(0.1);
-                            Text { x: 8px; text: "Message"; color: root.fg.with-alpha(0.4); font-family: Theme.font-ui; font-size: 9px; vertical-alignment: center; height: 100%; }
-                        }
-                        Rectangle { width: 22px; border-radius: 11px; background: root.pend-accent.darker(0.15); }
                     }
                 }
             }
-            Rectangle { height: 8px; }
-            HorizontalLayout {
-                alignment: center;
-                reset-pill := Rectangle {
-                    width: 150px; height: 32px; border-radius: 16px;
-                    background: rp-t.pressed ? root.fg.with-alpha(0.16) : root.fg.with-alpha(0.1);
-                    Text { text: "Reset to default"; color: root.fg; font-family: Theme.font-ui; font-size: Theme.body-small; width: 100%; height: 100%; horizontal-alignment: center; vertical-alignment: center; }
-                    rp-t := TouchArea { clicked => { root.reset-pending(); } }
-                }
+        }
+
+        // "Reset to default": ~150 x 40, centred, 14 under the preview.
+        reset-pill := Rectangle {
+            x: (stage.width - self.width) / 2;
+            y: preview.y + preview.height + root.gap-b;
+            width: reset-row.preferred-width + 36px;
+            height: root.reset-h;
+            border-radius: self.height / 2;
+            background: rp-t.pressed ? root.fg.with-alpha(0.18) : root.fg.with-alpha(0.10);
+            reset-row := HorizontalLayout {
+                x: (parent.width - self.preferred-width) / 2;
+                width: self.preferred-width; height: 100%;
+                spacing: 8px;
+                IconLabel { text: Icons.refresh; color: root.fg.with-alpha(0.85); font-size: Theme.icon-size; vertical-alignment: center; }
+                Text { text: "Reset to default"; color: root.fg; font-family: Theme.font-ui; font-size: Theme.body-small; vertical-alignment: center; }
             }
-            Rectangle { height: 10px; }
-            // Tinted lower section
-            section := Rectangle {
-                height: sec-col.preferred-height + 32px;
-                border-top-left-radius: 20px;
-                border-top-right-radius: 20px;
-                border-bottom-left-radius: 22px;
-                border-bottom-right-radius: 22px;
-                background: root.tint-bg(root.pend-accent, root.themed ? 0.35 : 0.06);
-                // ChatThemePage.qml:298-302: a Column hugs its content; the
-                // section's 32 of slack must not stretch the rows.
+            rp-t := TouchArea { clicked => { root.reset-pending(); } }
+        }
+
+        // The panel — the last beat. It is the chrome sheet along the
+        // bottom, on the theme's own surface, its 32 top corners taken from
+        // the reference (80 physical, radius reached 89 below its top edge).
+        panel := Rectangle {
+            x: 0;
+            y: stage.height - self.height * (root.phone ? root.foot-e : 1.0);
+            width: 100%;
+            height: root.panel-h;
+            border-top-left-radius: 32px;
+            border-top-right-radius: 32px;
+            background: root.surface-c;
+            clip: true;
+            TouchArea { }   // the panel floats over the stage; swallow taps
+
+            pf := Flickable {
+                width: 100%; height: 100%;
+                viewport-height: sec-col.preferred-height;
                 sec-col := VerticalLayout {
-                    x: 16px; y: 16px;
-                    width: section.width - 32px;
-                    spacing: 8px;
+                    x: 20px;
+                    width: panel.width - 40px;
                     alignment: start;
-                    Text { text: "Colors"; color: root.fg; font-family: Theme.font-ui; font-size: Theme.subtitle; font-weight: 700; }
-                    HorizontalLayout {
-                        alignment: start;
-                        spacing: 8px;
-                        for pal in ["", "#7c9fd4", "#5cb8d6", "#b48ad6", "#9aab7e", "#e0a370", "#d98aa8"] : Swatch {
-                            base: pal == "" ? Theme.accent : root.pal-color(pal);
-                            lower: root.tint-bg(pal == "" ? Theme.accent : root.pal-color(pal), 0.4);
+                    Rectangle { height: 22px; }
+                    Text { text: "Colors"; color: root.fg; font-family: Theme.font-ui; font-size: Theme.subtitle; font-weight: 500; }
+                    Rectangle { height: 16px; }
+                    // Eight swatches — seven palettes and the custom one —
+                    // spread across the column: 52 boxes on a 62 pitch in
+                    // the reference (centres 128 and 1241 physical, 159
+                    // apart), which is exactly this row divided by seven.
+                    // On a narrower window the discs shrink instead of
+                    // closing up: eight of them keep a twelfth of the row
+                    // clear between each pair, whatever the row is.
+                    sw-row := Rectangle {
+                        property <length> d: min(40px, self.width / 8 - 12px);
+                        property <length> box: self.d + 12px;
+                        property <length> pitch: (self.width - self.box) / 7;
+                        height: self.box;
+                        for pal[i] in ["", "#7c9fd4", "#5cb8d6", "#b48ad6", "#9aab7e", "#e0a370", "#d98aa8"] : Swatch {
+                            x: i * sw-row.pitch;
+                            d: sw-row.d;
+                            property <color> base: pal == "" ? Theme.accent : root.pal-color(pal);
+                            top-c: self.base.brighter(0.35);
+                            left-c: root.surface-of(self.base);
+                            right-c: root.second-of(self.base);
                             sel: root.pending-accent == pal;
                             fg: root.fg;
                             clicked => { root.set-accent(pal); }
                         }
+                        // The custom one keeps its spectrum and its plus.
                         custom-swatch := Rectangle {
-                            width: 38px; height: 38px;
+                            x: 7 * sw-row.pitch;
+                            width: sw-row.box; height: sw-row.box;
+                            background: transparent;
+                            property <length> rad: root.custom-ring ? sw-row.d * 0.28 : sw-row.d / 2;
+                            animate rad { duration: 260ms; easing: cubic-bezier(0.33, 1, 0.68, 1); }
                             // ChatThemePage.qml:352-353: same 1.08 grow as the swatches.
                             transform-origin: { x: self.width / 2, y: self.height / 2 };
                             transform-scale-x: cs-t.has-hover || cs-t.pressed ? 1.08 : 1.0;
                             transform-scale-y: cs-t.has-hover || cs-t.pressed ? 1.08 : 1.0;
                             animate transform-scale-x, transform-scale-y { duration: 110ms; easing: cubic-bezier(0.33, 1, 0.68, 1); }
                             Rectangle {
-                                width: 100%; height: 100%; border-radius: 19px;
+                                x: 6px; y: 6px; width: sw-row.d; height: sw-row.d;
+                                border-radius: parent.rad;
                                 background: @linear-gradient(90deg, #d96a6a 0%, #d9c76a 25%, #6ad98c 50%, #6a9ed9 75%, #b06ad9 100%);
+                                Text { text: "+"; color: #1a1a1a; font-family: Theme.font-ui; font-size: Theme.icon-large; font-weight: 700; width: 100%; height: 100%; horizontal-alignment: center; vertical-alignment: center; }
                             }
-                            Text { text: "+"; color: #1a1a1a; font-family: Theme.font-ui; font-size: Theme.icon-size; font-weight: 700; width: 100%; height: 100%; horizontal-alignment: center; vertical-alignment: center; }
                             Rectangle {
-                                x: -3px; y: -3px; width: 44px; height: 44px; border-radius: 22px;
-                                border-width: 2px;
-                                border-color: root.custom-sel ? root.fg : cs-t.pressed ? root.fg.with-alpha(0.45) : transparent;
+                                width: 100%; height: 100%;
+                                border-radius: parent.rad + 6px;
+                                border-width: 3px;
+                                border-color: root.custom-ring ? root.fg : cs-t.pressed ? root.fg.with-alpha(0.45) : transparent;
+                                background: transparent;
                             }
                             cs-t := TouchArea { clicked => {
                                 // Re-seed the sliders from the live accent when
                                 // re-opening on the custom colour (QML:357).
-                                if (root.custom-sel) {
+                                if (root.custom-ring) {
                                     root.pick-h = root.pend-accent.to-hsv().hue / 360.0;
                                     root.pick-s = root.pend-accent.to-hsv().saturation;
                                     root.pick-v = root.pend-accent.to-hsv().value;
@@ -256,36 +599,41 @@ export component ChatThemePage inherits Rectangle {
                             } }
                         }
                     }
-                    Rectangle { height: 4px; }
-                    Text { text: "Wallpapers"; color: root.fg; font-family: Theme.font-ui; font-size: Theme.subtitle; font-weight: 700; }
+                    Rectangle { height: 20px; }
+                    Text { text: "Wallpapers"; color: root.fg; font-family: Theme.font-ui; font-size: Theme.subtitle; font-weight: 500; }
+                    Rectangle { height: 16px; }
                     HorizontalLayout {
                         alignment: center;
-                        // ChatThemePage.qml:366-368: 90 narrower than the column it sits in.
+                        // 262 of the reference's 487-wide column: 54%.
                         photo-pill := Rectangle {
-                            width: sec-col.width - 90px; height: 38px; border-radius: 19px;
-                            background: root.pend-accent.brighter(0.35);
+                            width: max(200px, sec-col.width * 0.55); height: 48px;
+                            border-radius: 24px;
+                            background: pp-t.pressed ? root.pend-accent.brighter(0.15) : root.pend-accent.brighter(0.35);
                             HorizontalLayout {
                                 alignment: center;
-                                spacing: 8px;
-                                IconLabel { text: Icons.image; font-size: Theme.icon-size; color: #1a1a1a; vertical-alignment: center; }
-                                Text { text: "Choose a photo"; color: #1a1a1a; font-family: Theme.font-ui; font-size: Theme.body; font-weight: 700; vertical-alignment: center; }
+                                spacing: 10px;
+                                IconLabel { text: Icons.image; font-size: Theme.icon-large; color: #1a1a1a; vertical-alignment: center; }
+                                Text { text: "Choose a photo"; color: #1a1a1a; font-family: Theme.font-ui; font-size: Theme.body; font-weight: 500; vertical-alignment: center; }
                             }
-                            TouchArea { clicked => { root.choose-photo(); } }
+                            pp-t := TouchArea { clicked => { root.choose-photo(); } }
                         }
                     }
+                    Rectangle { height: 16px; }
+                    // Three across with 14 between and a 12 radius — the
+                    // reference's tiles are 153 wide on a 487 column.
                     grad-grid := Rectangle {
-                        property <length> cell: (sec-col.width - 16px) / 3;
-                        height: 3 * self.cell + 16px;
+                        property <length> cell: (sec-col.width - 28px) / 3;
+                        height: 3 * self.cell + 28px;
                         for gi in [0, 1, 2, 3, 4, 5, 6, 7, 8] : grad-cell := Rectangle {
-                            x: mod(gi, 3) * (grad-grid.cell + 8px);
-                            y: ((gi - mod(gi, 3)) / 3) * (grad-grid.cell + 8px);
+                            x: mod(gi, 3) * (grad-grid.cell + 14px);
+                            y: ((gi - mod(gi, 3)) / 3) * (grad-grid.cell + 14px);
                             width: grad-grid.cell; height: grad-grid.cell;
                             border-radius: 12px;
                             background: root.gradients.length == 9
                                 ? @linear-gradient(180deg, root.gradients[gi].top 0%, root.gradients[gi].bot 100%)
                                 : Theme.menu-background;
                             property <bool> sel: root.pending-wallpaper == "grad:" + gi;
-                            border-width: self.sel ? 2px : gc-t.has-hover || gc-t.pressed ? 2px : 0px;
+                            border-width: self.sel ? 3px : gc-t.has-hover || gc-t.pressed ? 2px : 0px;
                             border-color: self.sel ? root.fg : root.fg.with-alpha(0.45);
                             // ChatThemePage.qml:396-397: an unselected cell grows to 1.04
                             // under the pointer, 110ms OutCubic.
@@ -296,22 +644,10 @@ export component ChatThemePage inherits Rectangle {
                             gc-t := TouchArea { clicked => { root.set-wallpaper("grad:" + gi); } }
                         }
                     }
+                    Rectangle { height: 20px; }
                 }
             }
         }
-    }
-
-    // grad-sel: index of the pending "grad:N" wallpaper, for the preview.
-    in property <int> grad-sel: 0;
-    pure function pal-color(hex: string) -> color {
-        // The seven palette entries, resolved without a string->color parser.
-        if (hex == "#7c9fd4") { return #7c9fd4; }
-        if (hex == "#5cb8d6") { return #5cb8d6; }
-        if (hex == "#b48ad6") { return #b48ad6; }
-        if (hex == "#9aab7e") { return #9aab7e; }
-        if (hex == "#e0a370") { return #e0a370; }
-        if (hex == "#d98aa8") { return #d98aa8; }
-        return Theme.accent;
     }
 
     // Custom colour: bottom sheet with hue/saturation/brightness sliders.
@@ -339,7 +675,7 @@ export component ChatThemePage inherits Rectangle {
             height: card-col.preferred-height + 26px;
             border-top-left-radius: 20px;
             border-top-right-radius: 20px;
-            background: Theme.popup-background.with-alpha(0.98);
+            background: (root.themed ? root.surface-c : Theme.popup-background).with-alpha(0.98);
             TouchArea { }
             card-col := VerticalLayout {
                 x: 16px; y: 10px;

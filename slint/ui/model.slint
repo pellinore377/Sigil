@@ -98,11 +98,20 @@ export struct TimelineRow {
     fx-w: length,            // the glyph box
     fx-h: length,
     fx-spoiler: bool,        // some glyphs are covered until tapped
-    // A message that is one uniform glow run draws as two Text items
-    // (body + breathing copy) instead of two per glyph; `fx-text` is the
-    // run's text for that path.
+    // A message that is one uniform glow run draws as a single wrapped Text
+    // instead of one per glyph; `fx-text` is the run's text for that path.
     fx-run: bool,
     fx-text: string,
+    // The glow, blurred out of the glyph outlines in Rust (fx.rs) and drawn
+    // behind the words as light. `ink` is alpha alone and is tinted with the
+    // bubble's foreground (white text glows white); `hue` carries the spans
+    // that brought their own colour, and colour emoji, already coloured.
+    // Both sit `fx-glow-pad` outside the text box on every side.
+    fx-glow-ink: image,
+    fx-glow-hue: image,
+    fx-glow-ink-on: bool,
+    fx-glow-hue-on: bool,
+    fx-glow-pad: length,
     is-new: bool,            // just arrived: plays the entry animation once
     html-ish: bool,      // body carries formatting the effects pass renders
     sender: string,
@@ -231,6 +240,9 @@ export struct RoomRow {
     badge-urgent: bool,
     unread: bool,
     is-favourite: bool,
+    /// Notifications held until a deadline this device keeps (engine
+    /// `snoozed`); the home row wears a struck bell for it.
+    is-snoozed: bool,
     is-low-priority: bool,
     is-encrypted: bool,
     has-call: bool,
