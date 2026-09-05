@@ -1025,7 +1025,11 @@ pub fn on_act(ui: &mut UiState, win: &AppWindow, action: &str, a: &str, b2: &str
                 );
             }
         }
-        "mark-read" => req.fire("room.markRead", json!({"roomId": open_room})),
+        "mark-read" => {
+            req.fire("room.markRead", json!({"roomId": open_room}));
+            let rid = open_room.clone();
+            crate::bridge::notify_seen(ui, &rid);
+        }
         // A message row's swipe has passed its detent, so letting go now will
         // reply (or reply in a thread): the platform's buzz at the moment the
         // gesture commits, exactly as the long-press sheet gets one.
@@ -1081,7 +1085,11 @@ pub fn on_act(ui: &mut UiState, win: &AppWindow, action: &str, a: &str, b2: &str
         "home-unread" if b2 == "1" => {
             req.fire("room.setUnread", json!({"roomId": a, "unread": true}))
         }
-        "home-unread" => req.fire("room.markRead", json!({"roomId": a})),
+        "home-unread" => {
+            req.fire("room.markRead", json!({"roomId": a}));
+            let rid = a.to_string();
+            crate::bridge::notify_seen(ui, &rid);
+        }
         "home-leave" => {
             let rid = a.to_string();
             call_ui(

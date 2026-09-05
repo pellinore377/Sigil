@@ -28,12 +28,21 @@ fn android_picker_dex() {
         return;
     }
 
-    // Every class goes in the one dex, through the one loader.
+    // Every class goes in the one dex. The first four are reached through the
+    // InMemoryDexClassLoader described above; the last four are ALSO in the
+    // APK's own classes.dex (see the copy at the foot of this function),
+    // because a Service and a BroadcastReceiver named in the manifest are
+    // instantiated by the system with the app's own class loader and can come
+    // from nowhere else.
     let srcs = [
         "java/SigilFilePicker.java",
         "java/SigilVideo.java",
         "java/SigilCamera.java",
         "java/SigilGallery.java",
+        "java/SigilNative.java",
+        "java/SigilNotify.java",
+        "java/SigilReceiver.java",
+        "java/SigilService.java",
     ];
     let src = "java/*.java";
     for s in srcs {
@@ -88,4 +97,22 @@ fn android_picker_dex() {
     if !d8.status.success() {
         panic!("{src} did not dex: {}", String::from_utf8_lossy(&d8.stderr));
     }
+
+    // The same dex, at a path a human can write down. OUT_DIR is a hashed
+    // directory that changes with the profile and the feature set, so
+    // `[package.metadata.android] dex` in Cargo.toml — which cargo-apk reads
+    // long before this script runs — cannot name it. Everything the system
+    // instantiates by name (the foreground Service, the notification-action
+    // Receiver) has to be in the APK's own classes.dex, and that is the copy
+    // cargo-apk packs; `src/platform.rs` keeps loading the OUT_DIR one for the
+    // helpers it reaches through InMemoryDexClassLoader.
+    let target_dir = std::env::var_os("CARGO_TARGET_DIR")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| {
+            std::path::PathBuf::from(std::env::var_os("CARGO_MANIFEST_DIR").unwrap()).join("target")
+        });
+    let stable = target_dir.join("java");
+    std::fs::create_dir_all(&stable).expect("create the packaged dex directory");
+    std::fs::copy(dex.join("classes.dex"), stable.join("classes.dex"))
+        .expect("copy the dex to the packaged path");
 }

@@ -1,6 +1,12 @@
 //! The per-platform seams, kept to two: where files live, and how a URL opens.
 //! Everything else is the same code on every platform.
 
+/// Whether the activity is in front (between its Resume and its Pause).
+/// Set by lib.rs from the backend's lifecycle hook; read wherever the
+/// answer depends on the user looking at the screen — no notification for
+/// the room on it, a proven Envoy socket the moment it comes back.
+pub static FOREGROUND: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
+
 /// Open a URL in the platform browser. Used for the OIDC login page; the
 /// engine finishes the flow on its localhost redirect, which the browser can
 /// reach on-device on every platform we ship to.
@@ -1341,4 +1347,379 @@ fn gallery_call<T>(
         }
     };
     f(env, class, &activity)
+}
+
+// ---------------------------------------------------------------------------
+// Notifications.
+//
+// java/SigilNotify.java draws them, java/SigilReceiver.java answers their two
+// buttons, java/SigilService.java keeps the process alive to receive anything
+// at all. This section is the seam: what to post, when to take it away, and
+// how a tap on Reply gets back into the engine.
+//
+// THE CLASS LOADER MATTERS HERE, and it is the one thing that is different
+// from every other Java in this file. The camera, the picker, the video view
+// and the gallery are loaded out of a dex embedded in this library, through an
+// InMemoryDexClassLoader of our own. That cannot work for these four:
+//
+//   * SigilService and SigilReceiver are named in the manifest, so the SYSTEM
+//     builds them, with the app's own class loader, out of the APK's
+//     classes.dex. A copy of the class on any other loader is a different
+//     class.
+//   * SigilNotify holds the per-room threads that the notification is redrawn
+//     from, in statics. The receiver's reply appends to those statics, so the
+//     class Rust posts through and the class the receiver touches must be one
+//     and the same.
+//   * SigilNative's natives are registered on the class object; register them
+//     on the wrong copy and the receiver's call throws UnsatisfiedLinkError.
+//
+// So everything below goes through `apk_class`: the ACTIVITY's class loader,
+// which is the APK's. (`FindClass` from a thread Rust attached would give the
+// system loader, which cannot see the app's classes at all — the usual, silent
+// ClassNotFoundException at the far end of a JNI call.) build.rs puts the same
+// dex in both places, so the in-memory loader still answers for the other
+// four; its parent is the activity's loader, so even a lookup that went the
+// old way would resolve to the APK copy first.
+// ---------------------------------------------------------------------------
+
+/// Post (or update) the notification for one conversation. Everything about
+/// WHETHER to post — the account's notify settings, the room's mode, whose
+/// message it is, whether that room is the one on screen — is decided in
+/// bridge.rs; this only carries the decision across.
+pub fn notify_post(
+    room_id: &str,
+    room_name: &str,
+    is_group: bool,
+    sender: &str,
+    avatar_path: &str,
+    text: &str,
+    ts_ms: i64,
+    unread: i32,
+) {
+    #[cfg(target_os = "android")]
+    if let Err(e) = notify_call(|env, class, context| {
+        use jni::objects::JValue;
+        let jroom = env.new_string(room_id)?;
+        let jname = env.new_string(room_name)?;
+        let jsender = env.new_string(sender)?;
+        let javatar = env.new_string(avatar_path)?;
+        let jtext = env.new_string(text)?;
+        jni_call_static(
+            env,
+            class,
+            "post",
+            "(Landroid/content/Context;Ljava/lang/String;Ljava/lang/String;Z\
+              Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;JI)V",
+            &[
+                JValue::Object(context),
+                JValue::Object(&jroom),
+                JValue::Object(&jname),
+                JValue::Bool(u8::from(is_group)),
+                JValue::Object(&jsender),
+                JValue::Object(&javatar),
+                JValue::Object(&jtext),
+                JValue::Long(ts_ms),
+                JValue::Int(unread),
+            ],
+        )?;
+        Ok(())
+    }) {
+        tracing::warn!("notify: {room_id} could not be posted: {e:#}");
+    }
+    #[cfg(not(target_os = "android"))]
+    {
+        // No shade on the desktop yet; the room list is the notification.
+        let _ = (
+            room_id,
+            room_name,
+            is_group,
+            sender,
+            avatar_path,
+            text,
+            ts_ms,
+            unread,
+        );
+    }
+}
+
+/// Take one conversation's notification away: it was opened, read, or
+/// replied to.
+pub fn notify_cancel(room_id: &str) {
+    #[cfg(target_os = "android")]
+    if let Err(e) = notify_call(|env, class, context| {
+        use jni::objects::JValue;
+        let jroom = env.new_string(room_id)?;
+        jni_call_static(
+            env,
+            class,
+            "cancel",
+            "(Landroid/content/Context;Ljava/lang/String;)V",
+            &[JValue::Object(context), JValue::Object(&jroom)],
+        )?;
+        Ok(())
+    }) {
+        tracing::warn!("notify: {room_id} could not be cancelled: {e:#}");
+    }
+    #[cfg(not(target_os = "android"))]
+    let _ = room_id;
+}
+
+/// Everything goes: signed out, or notifications turned off.
+pub fn notify_cancel_all() {
+    #[cfg(target_os = "android")]
+    if let Err(e) = notify_call(|env, class, context| {
+        jni_call_static(
+            env,
+            class,
+            "cancelAll",
+            "(Landroid/content/Context;)V",
+            &[jni::objects::JValue::Object(context)],
+        )?;
+        Ok(())
+    }) {
+        tracing::warn!("notify: the shade could not be cleared: {e:#}");
+    }
+}
+
+/// Start the foreground service (java/SigilService.java). Called once a
+/// session is up: before that there is nothing to stay connected for.
+pub fn service_start() {
+    #[cfg(target_os = "android")]
+    if let Err(e) = notify_call(|env, class, context| {
+        jni_call_static(
+            env,
+            class,
+            "startForeground",
+            "(Landroid/content/Context;)V",
+            &[jni::objects::JValue::Object(context)],
+        )?;
+        Ok(())
+    }) {
+        tracing::warn!("notify: the connection service did not start: {e:#}");
+    }
+}
+
+pub fn service_stop() {
+    #[cfg(target_os = "android")]
+    if let Err(e) = notify_call(|env, class, context| {
+        jni_call_static(
+            env,
+            class,
+            "stopForeground",
+            "(Landroid/content/Context;)V",
+            &[jni::objects::JValue::Object(context)],
+        )?;
+        Ok(())
+    }) {
+        tracing::warn!("notify: the connection service did not stop: {e:#}");
+    }
+}
+
+/// Whether the shade will take anything from us. Before API 33 posting needed
+/// no grant at all, so the answer there is yes.
+pub fn notifications_permitted() -> bool {
+    #[cfg(target_os = "android")]
+    {
+        if sdk_int() < 33 {
+            return true;
+        }
+        return match permission_android(POST_NOTIFICATIONS) {
+            Ok(granted) => granted,
+            Err(e) => {
+                tracing::warn!("notify: the POST_NOTIFICATIONS grant could not be read: {e:#}");
+                false
+            }
+        };
+    }
+    #[allow(unreachable_code)]
+    false
+}
+
+/// Ask for it, once a session exists — the dialog is meaningless before the
+/// person has anything to be notified about. Nothing consumes the result;
+/// the next post either lands or does not.
+pub fn request_notifications_permission() {
+    #[cfg(target_os = "android")]
+    {
+        if sdk_int() < 33 || notifications_permitted() {
+            return;
+        }
+        tracing::info!("notify: asking for POST_NOTIFICATIONS");
+        if let Err(e) = request_permissions_android(&[POST_NOTIFICATIONS], NOTIFY_REQUEST_CODE) {
+            tracing::warn!("notify: the grant dialog could not be shown: {e:#}");
+        }
+    }
+}
+
+#[cfg(target_os = "android")]
+const POST_NOTIFICATIONS: &str = "android.permission.POST_NOTIFICATIONS";
+/// The shade's own request code; like the camera's, nothing consumes the
+/// result.
+#[cfg(target_os = "android")]
+const NOTIFY_REQUEST_CODE: i32 = 7004;
+
+#[cfg(target_os = "android")]
+static NOTIFY_CLASS: std::sync::OnceLock<jni::objects::GlobalRef> = std::sync::OnceLock::new();
+
+/// Attach, find SigilNotify on the APK's loader once, and run `f` with it and
+/// the Activity (which is the Context every one of these calls wants).
+#[cfg(target_os = "android")]
+fn notify_call<T>(
+    f: impl FnOnce(
+        &mut jni::JNIEnv,
+        &'static jni::objects::GlobalRef,
+        &jni::objects::JObject,
+    ) -> anyhow::Result<T>,
+) -> anyhow::Result<T> {
+    use anyhow::Context as _;
+    let app = crate::scale::android().ok_or_else(|| anyhow::anyhow!("no Android app handle"))?;
+    // SAFETY: android-activity's own pointers, valid for the life of the process.
+    let vm = unsafe { jni::JavaVM::from_raw(app.vm_as_ptr().cast()) }?;
+    let mut guard = vm.attach_current_thread().context("attach to the JVM")?;
+    let env = &mut *guard;
+    let activity = unsafe { jni::objects::JObject::from_raw(app.activity_as_ptr().cast()) };
+    let class = match NOTIFY_CLASS.get() {
+        Some(c) => c,
+        None => {
+            let global = apk_class(env, &activity, "com.sigil.slint.SigilNotify")?;
+            tracing::info!("notify: SigilNotify is loaded");
+            NOTIFY_CLASS.get_or_init(|| global)
+        }
+    };
+    // A frame of its own: a post makes a handful of strings, and this runs
+    // once per arriving message for the life of the process.
+    env.with_local_frame(16, |env| -> anyhow::Result<T> {
+        f(env, class, &activity)
+    })
+}
+
+/// A class out of the APK's own dex, by fully qualified name, through the
+/// ACTIVITY's class loader. See this section's head comment for why nothing
+/// here may go through the in-memory loader.
+#[cfg(target_os = "android")]
+fn apk_class(
+    env: &mut jni::JNIEnv,
+    activity: &jni::objects::JObject,
+    name: &str,
+) -> anyhow::Result<jni::objects::GlobalRef> {
+    use jni::objects::JValue;
+    let loader = jni_call(env, activity, "getClassLoader", "()Ljava/lang/ClassLoader;", &[])?.l()?;
+    anyhow::ensure!(!loader.is_null(), "the activity has no class loader");
+    let jname = env.new_string(name)?;
+    let class = jni_call(
+        env,
+        &loader,
+        "loadClass",
+        "(Ljava/lang/String;)Ljava/lang/Class;",
+        &[JValue::Object(&jname)],
+    )?
+    .l()?;
+    anyhow::ensure!(!class.is_null(), "{name} is not in the APK's dex");
+    Ok(env.new_global_ref(&class)?)
+}
+
+/// Wire `SigilNative.reply` and `SigilNative.markRead` to the two functions
+/// below, and raise the flag SigilReceiver checks before it calls either.
+///
+/// RegisterNatives rather than exported `Java_com_sigil_slint_…` symbols: the
+/// library is loaded by NativeActivity under its own name, and the engine's
+/// request path is a great deal easier to reach from ordinary Rust than from
+/// a symbol the linker has to be talked into keeping. It is registered on the
+/// class the APK's loader answers with — see this section's head comment.
+pub fn register_natives() {
+    #[cfg(target_os = "android")]
+    if let Err(e) = register_natives_android() {
+        tracing::warn!("notify: the reply natives could not be registered: {e:#}");
+    }
+}
+
+#[cfg(target_os = "android")]
+fn register_natives_android() -> anyhow::Result<()> {
+    use anyhow::Context as _;
+    use jni::NativeMethod;
+    let app = crate::scale::android().ok_or_else(|| anyhow::anyhow!("no Android app handle"))?;
+    // SAFETY: android-activity's own pointers, valid for the life of the process.
+    let vm = unsafe { jni::JavaVM::from_raw(app.vm_as_ptr().cast()) }?;
+    let mut guard = vm.attach_current_thread().context("attach to the JVM")?;
+    let env = &mut *guard;
+    let activity = unsafe { jni::objects::JObject::from_raw(app.activity_as_ptr().cast()) };
+
+    let class = apk_class(env, &activity, "com.sigil.slint.SigilNative")?;
+    let methods = [
+        NativeMethod {
+            name: "reply".into(),
+            sig: "(Ljava/lang/String;Ljava/lang/String;)V".into(),
+            fn_ptr: native_reply as *mut std::ffi::c_void,
+        },
+        NativeMethod {
+            name: "markRead".into(),
+            sig: "(Ljava/lang/String;)V".into(),
+            fn_ptr: native_mark_read as *mut std::ffi::c_void,
+        },
+    ];
+    let result = env.register_native_methods(&class, &methods);
+    jni_check(env, "RegisterNatives")?;
+    result?;
+    // The receiver reads this before it calls either method: a process the
+    // system started for a broadcast alone never gets this far.
+    env.set_static_field(&class, (&class, "ready", "Z"), jni::objects::JValue::Bool(1))?;
+    jni_check(env, "SigilNative.ready")?;
+    tracing::info!("notify: SigilNative is wired");
+    Ok(())
+}
+
+/// `SigilNative.reply` — the shade's reply field, on a Binder thread.
+///
+/// Nothing about the engine may be touched here: the UI state lives on the
+/// Slint event loop's thread and the Requester is hers. So the strings are
+/// copied out of Java and the work is posted, which is the same hop every
+/// engine reply already takes.
+#[cfg(target_os = "android")]
+unsafe extern "C" fn native_reply(
+    mut env: jni::JNIEnv,
+    _class: jni::objects::JClass,
+    room: jni::objects::JString,
+    text: jni::objects::JString,
+) {
+    let (Ok(room), Ok(text)) = (env.get_string(&room), env.get_string(&text)) else {
+        tracing::warn!("notify: a reply arrived with no text");
+        return;
+    };
+    let room: String = room.into();
+    let text: String = text.into();
+    tracing::info!("notify: replying to {room} from the shade");
+    let _ = slint::invoke_from_event_loop(move || {
+        crate::bridge::with_ui(|ui| {
+            ui.req.fire(
+                "message.send",
+                // markdown false: the shade's field is a plain text box, and
+                // what was typed there is what should be sent.
+                serde_json::json!({"roomId": room, "body": text, "markdown": false}),
+            );
+            // Replying is reading; without this the room keeps its badge and
+            // the next message re-posts the notification with a stale count.
+            ui.req
+                .fire("room.markRead", serde_json::json!({"roomId": room}));
+        });
+    });
+}
+
+/// `SigilNative.markRead` — the other button.
+#[cfg(target_os = "android")]
+unsafe extern "C" fn native_mark_read(
+    mut env: jni::JNIEnv,
+    _class: jni::objects::JClass,
+    room: jni::objects::JString,
+) {
+    let Ok(room) = env.get_string(&room) else {
+        return;
+    };
+    let room: String = room.into();
+    tracing::info!("notify: marking {room} read from the shade");
+    let _ = slint::invoke_from_event_loop(move || {
+        crate::bridge::with_ui(|ui| {
+            ui.req
+                .fire("room.markRead", serde_json::json!({"roomId": room}));
+        });
+    });
 }

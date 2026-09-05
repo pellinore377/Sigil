@@ -81,6 +81,12 @@ android-build = "0.1.2"
 package = "com.sigil.slint"
 apk_name = "sigil-slint"
 build_targets = ["aarch64-linux-android"]
+# The Java that the SYSTEM instantiates by name — the foreground service and
+# the notification actions' broadcast receiver — cannot come from the
+# in-memory dex platform.rs loads for the camera and the file picker: a
+# manifest component is built by the app's own class loader. build.rs writes
+# the same dex here for cargo-apk to pack into the APK.
+dex = "target/java/classes.dex"
 
 [package.metadata.android.sdk]
 min_sdk_version = 26
@@ -126,6 +132,26 @@ name = "android.permission.READ_MEDIA_VIDEO"
 name = "android.permission.READ_EXTERNAL_STORAGE"
 max_sdk_version = 32
 
+# Notifications. POST_NOTIFICATIONS is the runtime grant API 33 introduced —
+# before it, an app could post unasked; from it, a refusal means the shade
+# stays empty and nothing else changes. platform.rs asks through the Activity
+# the first time a session comes up, exactly as the camera does.
+[[package.metadata.android.uses_permission]]
+name = "android.permission.POST_NOTIFICATIONS"
+
+# The foreground service (java/SigilService.java) that keeps this process —
+# and with it the engine's Envoy socket — alive while the app is in the
+# background; without it Android freezes the process and the message that
+# should have rung never arrives. From API 34 the service's TYPE must be
+# permitted separately, and remoteMessaging is the one this case is named
+# after; the type is declared again on the service entry below, and the two
+# must agree or the service refuses to start.
+[[package.metadata.android.uses_permission]]
+name = "android.permission.FOREGROUND_SERVICE"
+
+[[package.metadata.android.uses_permission]]
+name = "android.permission.FOREGROUND_SERVICE_REMOTE_MESSAGING"
+
 # Position: the engine's own ladder starts at android.location.LocationManager
 # (core/src/geo/android.rs). Both are runtime grants on targetSdk 35 — the
 # engine asks through the Activity handed to it in android_main; the coarse
@@ -142,6 +168,19 @@ label = "Sigil"
 # package restored the whole account from Google's backup unasked.
 allow_backup = false
 theme = "@android:style/Theme.DeviceDefault.NoActionBar"
+
+# java/SigilService.java. Not exported: SigilNotify starts it by explicit
+# component and nothing outside the app has any business with it.
+[[package.metadata.android.application.service]]
+name = "com.sigil.slint.SigilService"
+exported = false
+foreground_service_type = "remoteMessaging"
+
+# java/SigilReceiver.java: Reply and Mark as read under a notification. Not
+# exported either — every PendingIntent that reaches it names the component.
+[[package.metadata.android.application.receiver]]
+name = "com.sigil.slint.SigilReceiver"
+exported = false
 
 # Symbols too: the Android library is 98 MB with them and 69 MB without,
 # and the difference is what puts the APK under the 30 MB most channels

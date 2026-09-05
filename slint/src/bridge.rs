@@ -214,6 +214,13 @@ pub struct UiState {
     pub lp_zoom: i64,
     pub lp_epoch: u64,
     pub lp_view: Option<LpView>,
+    /// Where each conversation stood the last time the room list arrived, so
+    /// a snapshot that moves one forward is a new message rather than a
+    /// re-listing (`notify_scan`). Empty until the first snapshot.
+    pub notified: HashMap<String, i64>,
+    /// Whether that first snapshot has landed. Nothing that arrived before
+    /// the app started should ring.
+    pub notify_primed: bool,
 }
 
 /// One location.map crop as the picker requested it: centre, zoom, and the
@@ -319,6 +326,10 @@ fn wire_kb_height(win: &AppWindow) {
 /// Boot the engine and wire the event stream into the UI. Call once, on the
 /// UI thread, after the window exists.
 pub fn start(win: &AppWindow, rt: &tokio::runtime::Runtime, icons: IconSet) -> Requester {
+    // Before anything else: the shade's Reply and Mark as read arrive on a
+    // Binder thread through SigilNative, and a broadcast that lands before
+    // the natives are registered is dropped with a line in the log.
+    crate::platform::register_natives();
     if std::env::var_os("SIGIL_SLINT_DEMO").is_some() {
         return start_demo(win, rt, icons);
     }
@@ -424,6 +435,8 @@ pub fn start(win: &AppWindow, rt: &tokio::runtime::Runtime, icons: IconSet) -> R
         lp_zoom: 16,
         lp_epoch: 0,
         lp_view: None,
+        notified: HashMap::new(),
+        notify_primed: false,
     }));
     UI.with(|ui| *ui.borrow_mut() = Some(state));
 
@@ -987,6 +1000,11 @@ pub fn apply_shape(win: &AppWindow, v: &Value) {
 }
 
 pub fn apply_notify(win: &AppWindow, v: &Value) {
+    // Turned off in Settings: the shade should not keep what it already
+    // holds. `notify_scan` reads the same file before it posts anything.
+    if !v["enabled"].as_bool().unwrap_or(true) {
+        crate::platform::notify_cancel_all();
+    }
     win.set_notify_enabled(v["enabled"].as_bool().unwrap_or(true));
     win.set_notify_dms(v["dms"].as_bool().unwrap_or(true));
     win.set_notify_mentions(v["mentions"].as_bool().unwrap_or(true));
@@ -1033,7 +1051,12 @@ fn handle_event(ui: &mut UiState, v: &Value) {
             let was_in = win.get_session() == "loggedIn";
             win.set_session(session.into());
             if was_in && session != "loggedIn" {
-                // Signed out from under the UI: drop everything the session owned.
+                // Signed out from under the UI: drop everything the session
+                // owned, the shade and the connection service included.
+                crate::platform::notify_cancel_all();
+                crate::platform::service_stop();
+                ui.notified.clear();
+                ui.notify_primed = false;
                 ui.rooms_json.clear();
                 ui.shadow.clear();
                 ui.typing.clear();
@@ -1053,6 +1076,13 @@ fn handle_event(ui: &mut UiState, v: &Value) {
                 win.set_door_busy(false);
                 win.set_link_state(SharedString::new());
                 crate::actions::load_saved_contacts(ui);
+                // There is something to be notified about now, and something
+                // to stay connected for: the grant is asked for here rather
+                // than at launch, where the dialog would mean nothing, and
+                // the foreground service keeps the engine's socket alive
+                // once the app goes to the background.
+                crate::platform::request_notifications_permission();
+                crate::platform::service_start();
             }
             ui.my_user = v["userId"].as_str().unwrap_or("").to_string();
             win.set_my_user_id(ui.my_user.as_str().into());
@@ -1139,6 +1169,7 @@ fn handle_event(ui: &mut UiState, v: &Value) {
             win.set_rooms_loaded(v["loaded"].as_bool().unwrap_or(true));
             ui.rooms_json = v["rooms"].as_array().cloned().unwrap_or_default();
             rebuild_rooms(ui, &win);
+            notify_scan(ui, &win);
         }
         "room.typing" => {
             let room = v["roomId"].as_str().unwrap_or("").to_string();
@@ -1576,6 +1607,9 @@ pub fn open_room(ui: &mut UiState, win: &AppWindow, id: &str) {
         "room.markRead",
         json!({"roomId": crate::actions::room_of_key(&ui.open_room)}),
     );
+    // Reading it here is what the shade's notification was for.
+    let opened = crate::actions::room_of_key(&ui.open_room);
+    notify_seen(ui, &opened);
     // Pins come as a reply here and as room.pinned pushes afterwards.
     let rid = crate::actions::room_of_key(&ui.open_room);
     crate::actions::load_pinned_ids(ui, &rid);
@@ -1647,6 +1681,203 @@ pub fn room_row_of(ui: &mut UiState, room: &Value) -> RoomRow {
             SharedString::new()
         },
     }
+}
+
+// ---------------------------------------------------------------------------
+// The shade.
+//
+// A notification is by definition about a conversation that is NOT open, and
+// `timeline.diff` only ever arrives for the one that is — so the room list is
+// the only place a background message can be seen from. The engine broadcasts
+// the whole list whenever anything moves, so a room whose `lastActivityTs` has
+// grown since the last snapshot has just been written to.
+//
+// Everything the phone then does with that is java/SigilNotify.java, reached
+// through platform.rs; this decides only whether it should happen at all.
+// ---------------------------------------------------------------------------
+
+/// How recent a conversation we have never seen before has to be for its
+/// arrival to be worth a notification. Five minutes: long enough that a
+/// message which landed while the app was starting still rings, short enough
+/// that a room list arriving a page at a time never does.
+const NEW_ROOM_WINDOW_MS: i64 = 5 * 60 * 1000;
+
+fn notify_scan(ui: &mut UiState, win: &AppWindow) {
+    // The first snapshot only records where every room stands. What arrived
+    // before the app started has already been seen on the phone, or was never
+    // going to be, and a fresh install would otherwise ring once per room.
+    let primed = ui.notify_primed;
+    ui.notify_primed = true;
+
+    let rooms = ui.rooms_json.clone();
+    let mut fresh: Vec<Value> = Vec::new();
+    for r in &rooms {
+        let Some(id) = r["id"].as_str().filter(|s| !s.is_empty()) else {
+            continue;
+        };
+        let ts = r["lastActivityTs"].as_i64().unwrap_or(0);
+        let seen = ui.notified.insert(id.to_string(), ts);
+        if !primed {
+            continue;
+        }
+        let news = match seen {
+            // Seen before: news is the stamp moving forward.
+            Some(before) => ts > before,
+            // Never seen before. That is a conversation that has just begun
+            // — or the room list still filling in, which it does over the
+            // first seconds of a session and which arrives with old stamps.
+            // Only what was said just now rings.
+            None => ts > 0 && chrono::Utc::now().timestamp_millis() - ts < NEW_ROOM_WINDOW_MS,
+        };
+        if news {
+            fresh.push(r.clone());
+        }
+    }
+    if fresh.is_empty() {
+        return;
+    }
+
+    // Read once, and only when there is something to decide: these live in a
+    // file the engine owns, and the settings page is the only other reader.
+    let settings = sigil_engine::notify::load_settings();
+    if !settings.enabled {
+        return;
+    }
+    let me = ui.my_user.clone();
+    let my_name = win.get_my_name().to_string();
+    let open = crate::actions::room_of_key(&ui.open_room);
+    // The one case the phone must stay quiet for: the person is looking at
+    // that very conversation.
+    let looking = crate::platform::FOREGROUND.load(std::sync::atomic::Ordering::Relaxed)
+        && win.get_nav() == "chat";
+
+    for r in fresh {
+        let id = r["id"].as_str().unwrap_or("").to_string();
+        let lm = &r["lastMessage"];
+        if lm.is_null() {
+            continue;
+        }
+        // Our own message moved the stamp too; it is not news to us.
+        let sender = lm["sender"].as_str().unwrap_or("");
+        if !me.is_empty() && sender == me {
+            continue;
+        }
+        let unread = r["unread"]
+            .as_i64()
+            .unwrap_or(0)
+            .max(r["unreadMessages"].as_i64().unwrap_or(0));
+        // Already read — the room was open, or another device got there.
+        if unread <= 0 {
+            continue;
+        }
+        if looking && id == open {
+            continue;
+        }
+
+        let is_dm = r["isDm"].as_bool().unwrap_or(false);
+        let body = notify_body(lm);
+        let mention = mentions_me(&body, &my_name, &me);
+
+        // The conversation's own mode outranks the account: `mute` never
+        // rings and `mentions` rings only when the message names us.
+        match sigil_engine::notify::room_mode(&id).as_str() {
+            "mute" => continue,
+            "mentions" if !mention => continue,
+            _ => {}
+        }
+        // A snooze is a mute with an end, and may be set to let a mention
+        // through it.
+        if r["snoozed"].as_bool().unwrap_or(false)
+            && !(mention && r["snoozeMentions"].as_bool().unwrap_or(false))
+        {
+            continue;
+        }
+        // Which of the account's switches this message answers to: a message
+        // that names us answers to `mentions`, a one-to-one conversation to
+        // `dms`, and an ordinary group message to neither — it rings, the way
+        // the platform messenger's does.
+        let wanted = if mention {
+            settings.mentions
+        } else if is_dm {
+            settings.dms
+        } else {
+            true
+        };
+        if !wanted {
+            continue;
+        }
+
+        let name = r["name"].as_str().unwrap_or("");
+        let sender_name = match lm["senderName"].as_str().unwrap_or("") {
+            "" => rows::localpart(sender),
+            n => n.to_string(),
+        };
+        let sender_name = if sender_name.is_empty() {
+            name.to_string()
+        } else {
+            sender_name
+        };
+        crate::platform::notify_post(
+            &id,
+            name,
+            !is_dm,
+            &sender_name,
+            // The room's picture stands in for the sender's: a one-to-one
+            // conversation's IS theirs, and a group's is the group's, which
+            // is what the shade shows beside a group anyway. The engine
+            // answers "" for both today.
+            r["avatarPath"].as_str().unwrap_or(""),
+            &body,
+            r["lastActivityTs"].as_i64().unwrap_or(0),
+            unread as i32,
+        );
+    }
+}
+
+/// What the notification says. A message with no text of its own — a picture,
+/// a voice note — is named by its kind, the way the room list names it.
+fn notify_body(lm: &Value) -> String {
+    let body = lm["body"].as_str().unwrap_or("").trim();
+    if !body.is_empty() {
+        return body.to_string();
+    }
+    match lm["kind"].as_str().unwrap_or("") {
+        "image" => "Photo",
+        "video" => "Video",
+        "voice" | "audio" => "Voice message",
+        "file" => "Attachment",
+        "location" => "Location",
+        "sticker" => "Sticker",
+        "call" => "Call",
+        _ => "New message",
+    }
+    .to_string()
+}
+
+/// Whether the message names us — by display name or by the first half of
+/// the user id, which is what a mention inserts.
+fn mentions_me(body: &str, my_name: &str, my_user: &str) -> bool {
+    let hay = body.to_lowercase();
+    let name = my_name.trim().to_lowercase();
+    let local = rows::localpart(my_user).to_lowercase();
+    (!name.is_empty() && hay.contains(&name)) || (!local.is_empty() && hay.contains(&local))
+}
+
+/// The room is being read: take its notification off the shade, and move its
+/// stamp forward so the snapshot that follows does not put it back.
+pub fn notify_seen(ui: &mut UiState, room_id: &str) {
+    if room_id.is_empty() {
+        return;
+    }
+    if let Some(ts) = ui
+        .rooms_json
+        .iter()
+        .find(|r| r["id"].as_str() == Some(room_id))
+        .and_then(|r| r["lastActivityTs"].as_i64())
+    {
+        ui.notified.insert(room_id.to_string(), ts);
+    }
+    crate::platform::notify_cancel(room_id);
 }
 
 pub fn rebuild_rooms(ui: &mut UiState, win: &AppWindow) {
@@ -2764,6 +2995,8 @@ fn start_demo(win: &AppWindow, rt: &tokio::runtime::Runtime, icons: IconSet) -> 
         lp_zoom: 16,
         lp_epoch: 0,
         lp_view: None,
+        notified: HashMap::new(),
+        notify_primed: false,
     }));
     UI.with(|ui| *ui.borrow_mut() = Some(state));
 
