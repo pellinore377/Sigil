@@ -7,11 +7,13 @@
 // logical pixel scaled by the platform's device pixel ratio, which is the whole
 // job Style.space did on Quickshell. A design px in QML is a `px` here, 1:1.
 
-// The bundled fonts, embedded at compile time. Nothing asks the system for a font.
-import "../../shared/fonts/Roboto-Regular.ttf";
-import "../../shared/fonts/Roboto-Medium.ttf";
-import "../../shared/fonts/Roboto-Bold.ttf";
-import "../../shared/fonts/RobotoMono-Regular.ttf";
+// The icon fonts, embedded at compile time. The two TEXT families (Google Sans
+// Flex and Google Sans Code) are registered at start from the engine's one
+// embedded copy of each (sigil_engine::fonts, slint/src/lib.rs register_fonts)
+// rather than imported here, which would embed them a second time. Nothing
+// asks the system for a font.
+// Both text families are VARIABLE: one file each, and font-weight drives the
+// wght axis, so 400 / 500 / 700 all come out of GoogleSansFlex.ttf.
 import "../../shared/fonts/MaterialSymbolsRounded.ttf";
 import "../../shared/fonts/MaterialSymbolsRounded-Filled.ttf";
 
@@ -91,8 +93,8 @@ export global Theme {
     out property <color> popup-border: dark ? #38363d : light ? #dcd9de : #5c5c5c;
 
     // Fonts, by the family names the bundled files declare.
-    out property <string> font-ui: "Roboto";
-    out property <string> font-mono: "Roboto Mono";
+    out property <string> font-ui: "Google Sans Flex";
+    out property <string> font-mono: "Google Sans Code";
     out property <string> font-icon: "Material Symbols Rounded";
     out property <string> font-icon-filled: "Material Symbols Rounded Filled";
 

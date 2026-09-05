@@ -38,15 +38,30 @@ use tiny_skia::{FillRule, Paint, PathBuilder, Pixmap, Stroke, Transform};
 
 use super::mvt;
 
-/// Roboto Medium — the face the app's own UI is set in (`shared/fonts`), so
-/// the map is lettered in the same hand as everything around it. Medium
-/// rather than Regular because map labels are small, sit on busy ground, and
-/// give up a little of every stroke to the halo.
-static FONT: &[u8] = include_bytes!("../../../shared/fonts/Roboto-Medium.ttf");
+/// Google Sans Flex — the face the app's own UI is set in (`shared/fonts`), so
+/// the map is lettered in the same hand as everything around it. One variable
+/// file, pinned below to Medium rather than Regular because map labels are
+/// small, sit on busy ground, and give up a little of every stroke to the halo.
+static FONT: &[u8] = crate::fonts::SANS;
 
+/// The `wght` value the labels are lettered at. Flex is variable, so Medium is
+/// an axis setting on the one file, not a second file.
+const MEDIUM: f32 = 500.0;
+
+/// The parsed face, weight pinned.
+///
+/// `ttf-parser` needs its `gvar-alloc` feature for this font: Flex carries
+/// more than the 32 variation tuples the crate keeps on the stack, and without
+/// the feature every `outline_glyph` silently returns `None` — every label
+/// would come out as halo with no ink. `Cargo.toml` turns it on.
 fn face() -> Option<&'static ttf_parser::Face<'static>> {
     static F: std::sync::OnceLock<Option<ttf_parser::Face<'static>>> = std::sync::OnceLock::new();
-    F.get_or_init(|| ttf_parser::Face::parse(FONT, 0).ok()).as_ref()
+    F.get_or_init(|| {
+        let mut f = ttf_parser::Face::parse(FONT, 0).ok()?;
+        f.set_variation(ttf_parser::Tag::from_bytes(b"wght"), MEDIUM);
+        Some(f)
+    })
+    .as_ref()
 }
 
 /// The white worn round every glyph, in canvas pixels. The canvas is 2× (512
@@ -262,9 +277,11 @@ impl ttf_parser::OutlineBuilder for Pen<'_> {
 }
 
 /// Every glyph's advance, in canvas pixels at `size`. `None` if the face has
-/// no glyph for one of the characters — a Cyrillic street name is fine (Roboto
-/// carries Cyrillic and Greek), a Chinese one is not, and half a name drawn
-/// with the rest as empty boxes is worse than no name.
+/// no glyph for one of the characters. Google Sans Flex is a LATIN face — it
+/// spells Latin-1, Latin Extended-A and Vietnamese, but not the Cyrillic and
+/// Greek Roboto used to carry — so a Cyrillic or Chinese street name comes
+/// back `None` and goes unlettered, which beats drawing half a name with the
+/// rest as empty boxes.
 fn advances(f: &ttf_parser::Face, text: &str, size: f32) -> Option<Vec<(char, f32)>> {
     let upem = f.units_per_em() as f32;
     let s = size / upem;
@@ -288,7 +305,7 @@ fn width_of(adv: &[(char, f32)]) -> f32 {
 /// to the eye.
 fn lay_point(f: &ttf_parser::Face, pb: &mut PathBuilder, adv: &[(char, f32)], size: f32, cx: f32, cy: f32) {
     let mut x = cx - width_of(adv) / 2.0;
-    // Roboto's cap height is about 0.71 em; half of it lifts the optical
+    // Google Sans Flex's cap height is 0.716 em; half of it lifts the optical
     // middle of a line of capitals onto the point.
     let y = cy + size * 0.355;
     for (c, a) in adv {
@@ -807,14 +824,19 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_bundled_face_parses_and_carries_latin_and_cyrillic() {
-        let f = face().expect("Roboto Medium did not parse");
+    fn the_bundled_face_parses_and_carries_latin() {
+        let f = face().expect("Google Sans Flex did not parse");
         assert!(f.units_per_em() > 0);
-        // A Latin street name and a Cyrillic one both measure; a Han one does
-        // not, and `advances` says so rather than drawing empty boxes.
+        // A Latin street name measures, accents and all — and the outline is
+        // really there, which without ttf-parser's `gvar-alloc` it would not
+        // be. Flex is Latin-only, so a Cyrillic or Han name does not measure,
+        // and `advances` says so rather than drawing empty boxes.
         assert!(advances(f, "Marlowe Street", 22.0).is_some());
-        assert!(advances(f, "Тверская", 22.0).is_some());
+        assert!(advances(f, "Rue de l'Église", 22.0).is_some());
+        assert!(advances(f, "Тверская", 22.0).is_none());
         assert!(advances(f, "中山路", 22.0).is_none());
+        let g = f.glyph_index('M').unwrap();
+        assert!(f.glyph_bounding_box(g).is_some(), "gvar-alloc is off");
     }
 
     #[test]

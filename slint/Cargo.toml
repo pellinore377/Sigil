@@ -15,7 +15,7 @@ name = "sigil-slint"
 path = "src/main.rs"
 
 [dependencies]
-slint = "1.17"
+slint = { version = "1.17", features = ["unstable-fontique-010"] }
 # The engine linked directly — no daemon, no socket, no bindings layer.
 # `calls` is off for the same reason as android/build-engine.sh: no libwebrtc here yet.
 sigil-engine = { path = "../core", default-features = false }
@@ -37,7 +37,10 @@ qrcode = { version = "0.14", default-features = false }
 # (bridge.rs avatar_thumb), at timeline size, instead of by the renderer on
 # the frame that first draws them.
 image = { version = "0.25", default-features = false, features = ["gif", "png", "jpeg", "webp"] }
-ttf-parser = "0.25"
+# gvar-alloc: Google Sans Flex has more than the 32 variation tuples ttf-parser
+# keeps on the stack, and without this feature every outline_glyph on it
+# silently returns None. See shared/fonts/README.md.
+ttf-parser = { version = "0.25", features = ["gvar-alloc"] }
 # the call media stack: the WebRTC peer, sound in and out, the codec
 str0m = "0.9"
 cpal = "0.15"
@@ -52,7 +55,7 @@ i-slint-backend-android-activity = "=1.17.1"
 # `log`: Slint's own messages (the `perf` frame report among them) through
 # the `log` crate, which android_logger carries to logcat; otherwise they go
 # to stderr, which the phone never shows.
-slint = { version = "1.17", features = ["backend-android-activity-06", "log"] }
+slint = { version = "1.17", features = ["backend-android-activity-06", "log", "unstable-fontique-010"] }
 # android-activity needs exactly one activity flavour chosen by the final crate.
 android-activity = { version = "0.6", features = ["native-activity"] }
 # Opening the login URL means one JNI call; there is no xdg-open on a phone.

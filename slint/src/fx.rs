@@ -21,12 +21,29 @@ use std::collections::HashMap;
 use std::rc::Rc;
 use ttf_parser::Face;
 
-static REGULAR: &[u8] = include_bytes!("../../shared/fonts/Roboto-Regular.ttf");
-static BOLD: &[u8] = include_bytes!("../../shared/fonts/Roboto-Bold.ttf");
-static MONO: &[u8] = include_bytes!("../../shared/fonts/RobotoMono-Regular.ttf");
+static TEXT: &[u8] = sigil_engine::fonts::SANS;
+static MONO: &[u8] = sigil_engine::fonts::CODE;
+
+/// Both bundled families are ONE variable file each, so a weight is an axis
+/// setting rather than a second file: `wght` 400 for regular, 700 for bold.
+/// `ttf-parser` applies it to the outline through `gvar` and to the advance
+/// through `HVAR` — but only with the crate's `gvar-alloc` feature on,
+/// which `Cargo.toml` turns on. Without it Flex has more than the 32 variation
+/// tuples ttf-parser keeps on the stack and every `outline_glyph` silently
+/// returns `None`: no glow at all, no error.
+const REGULAR_WGHT: f32 = 400.0;
+const BOLD_WGHT: f32 = 700.0;
+const WGHT: ttf_parser::Tag = ttf_parser::Tag::from_bytes(b"wght");
+
+/// One face off `bytes` with its weight axis pinned.
+fn face_at(bytes: &[u8], weight: f32) -> Option<Face<'_>> {
+    let mut f = Face::parse(bytes, 0).ok()?;
+    f.set_variation(WGHT, weight);
+    Some(f)
+}
 
 /// Line height as a multiple of the font size; matches what Slint's Text
-/// gives Roboto at the body size.
+/// gives Google Sans Flex at the body size.
 pub const LINE: f32 = 1.3;
 /// Longer than this and a message is laid out as plain text: per-glyph
 /// animation burns a core.
@@ -81,9 +98,9 @@ struct Fonts<'a> {
 impl<'a> Fonts<'a> {
     fn load() -> Option<Fonts<'a>> {
         Some(Fonts {
-            regular: Face::parse(REGULAR, 0).ok()?,
-            bold: Face::parse(BOLD, 0).ok()?,
-            mono: Face::parse(MONO, 0).ok()?,
+            regular: face_at(TEXT, REGULAR_WGHT)?,
+            bold: face_at(TEXT, BOLD_WGHT)?,
+            mono: face_at(MONO, REGULAR_WGHT)?,
         })
     }
 
@@ -477,14 +494,8 @@ fn mask(ch: char, size: f32, bold: bool, italic: bool, mono: bool) -> Option<Rc<
 }
 
 fn build_mask(ch: char, size: f32, bold: bool, italic: bool, mono: bool) -> Option<Mask> {
-    let bytes = if mono {
-        MONO
-    } else if bold {
-        BOLD
-    } else {
-        REGULAR
-    };
-    let face = Face::parse(bytes, 0).ok()?;
+    let weight = if bold { BOLD_WGHT } else { REGULAR_WGHT };
+    let face = face_at(if mono { MONO } else { TEXT }, weight)?;
     let gid = face.glyph_index(ch)?;
     let scale = size / face.units_per_em() as f32;
     let shear = if italic { 0.21 } else { 0.0 };
@@ -632,7 +643,7 @@ fn build_glow(lay: &Layout, emoji: &mut EmojiPix) -> Option<Built> {
     }
     // The baseline inside a glyph cell: Slint centres the line box in the
     // cell's `size * LINE`, so the pen sits an ascent below that top.
-    let face = Face::parse(REGULAR, 0).ok()?;
+    let face = face_at(TEXT, REGULAR_WGHT)?;
     let upem = face.units_per_em() as f32;
     let (asc, desc) = (face.ascender() as f32 / upem, face.descender() as f32 / upem);
     let base_of = |g: &Glyph| g.y + (g.size * LINE - g.size * (asc - desc)) / 2.0 + g.size * asc;

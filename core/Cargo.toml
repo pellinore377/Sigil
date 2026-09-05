@@ -58,7 +58,10 @@ memmap2 = "0.9"
 mime = "0.3"
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 mime_guess = "2"
-ttf-parser = "0.25"
+# gvar-alloc: Google Sans Flex has more than the 32 variation tuples ttf-parser
+# keeps on the stack, and without this feature every outline_glyph on it
+# silently returns None. See shared/fonts/README.md.
+ttf-parser = { version = "0.25", features = ["gvar-alloc"] }
 # tiff/bmp/ico join the set so the engine can normalise them itself; AVIF,
 # HEIC and JPEG XL go through ffmpeg instead of pulling in more C libraries.
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp", "gif", "tiff", "bmp", "ico"] }

@@ -13,6 +13,16 @@ uniffi::setup_scaffolding!();
 pub mod docs;
 pub mod engine;
 pub mod ffi;
+/// The two families the app ships, embedded ONCE. Slint registers them
+/// from here (slint/src/lib.rs), the map lettering and the message-effect
+/// rasteriser read them from here; a second `include_bytes!` anywhere is
+/// another 4 MB in the binary.
+pub mod fonts {
+    /// Google Sans Flex, the variable font (wght, wdth, opsz, slnt, GRAD, ROND).
+    pub static SANS: &[u8] = include_bytes!("../../shared/fonts/GoogleSansFlex.ttf");
+    /// Google Sans Code, variable (wght, MONO).
+    pub static CODE: &[u8] = include_bytes!("../../shared/fonts/GoogleSansCode.ttf");
+}
 pub mod geo;
 pub mod ipc;
 pub mod maps;
