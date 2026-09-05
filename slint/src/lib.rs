@@ -19,6 +19,26 @@ pub mod rows;
 pub mod scale;
 pub mod video;
 
+/// The app's two families, handed to Slint from the engine's one embedded
+/// copy of each (sigil_engine::fonts) rather than imported in style.slint,
+/// which would embed them a second time. Before the first window.
+pub fn register_fonts() {
+    use slint::fontique_010::fontique;
+    // The process-wide collection every renderer resolves `font-family`
+    // through (Slint 1.17 lays text out with parley on all of them).
+    let mut collection = slint::fontique_010::shared_collection();
+    for (name, bytes) in [
+        ("Google Sans Flex", sigil_engine::fonts::SANS),
+        ("Google Sans Code", sigil_engine::fonts::CODE),
+    ] {
+        let blob = fontique::Blob::new(std::sync::Arc::new(bytes));
+        let fonts = collection.register_fonts(blob, None);
+        if fonts.is_empty() {
+            tracing::error!("font: {name} did not register");
+        }
+    }
+}
+
 pub fn run_app() -> anyhow::Result<()> {
     // The engine's own daemon runs 16 MB stacks; matrix-sdk wants the room.
     let rt = tokio::runtime::Builder::new_multi_thread()
@@ -43,9 +63,22 @@ pub fn run_app() -> anyhow::Result<()> {
         std::env::set_var("SLINT_DEBUG_PERFORMANCE", "refresh_lazy,console");
     }
 
+    register_fonts();
     let win = AppWindow::new()?;
     let icons = rows::IconSet::from_window(&win);
-    bridge::start(&win, &rt, icons);
+    let req = bridge::start(&win, &rt, icons);
+    // The activity's Resume and Pause. In front: the engine proves its
+    // Envoy socket at once (a phone's socket dies silently while it sleeps,
+    // and a message held at the Envoy would otherwise wait for the dead
+    // socket to be noticed), and no notification is posted for the room on
+    // screen. At the back: notifications for everything.
+    #[cfg(target_os = "android")]
+    i_slint_backend_android_activity::set_lifecycle_hook(Box::new(move |front| {
+        platform::FOREGROUND.store(front, std::sync::atomic::Ordering::Relaxed);
+        req.fire("app.foreground", serde_json::json!({"on": front}));
+    }));
+    #[cfg(not(target_os = "android"))]
+    drop(req);
     // For the phone-shaped desktop check: force the phone palette.
     if let Ok(m) = std::env::var("SIGIL_THEME_MODE") {
         win.global::<Theme>().set_mode(m.as_str().into());

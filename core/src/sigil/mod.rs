@@ -584,6 +584,19 @@ pub async fn dispatch(engine: &SharedEngine, req: &Request) -> Option<Reply> {
         }
         _ => {}
     }
+    // The app came to the front (or its network changed): prove the Envoy
+    // socket now, so anything held there while the phone slept arrives at
+    // once instead of when the dead socket is finally noticed. Answered
+    // before the session gate below: the first one arrives with the
+    // activity's first Resume, before there is a session to nudge, and
+    // that is nothing to complain about.
+    if req.req == "app.foreground" {
+        let on = p.get("on").and_then(Value::as_bool).unwrap_or(true);
+        if let (true, Some(s)) = (on, engine.sigil.lock().clone()) {
+            s.link.nudge();
+        }
+        return Some(Reply::ok(json!({})));
+    }
     let s = engine.sigil.lock().clone()?;
     Some(match req.req.as_str() {
         "rooms.list" => Reply::ok(s.rooms_snapshot().await),

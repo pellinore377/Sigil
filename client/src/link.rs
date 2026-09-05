@@ -28,7 +28,20 @@ pub struct Link {
     envoy_http: String,
     cards: Mutex<HashMap<String, ServerCard>>,
     http: reqwest::Client,
+    /// Wakes the socket task to prove the connection now (see `nudge`).
+    poke: Arc<tokio::sync::Notify>,
 }
+
+/// The Envoy pings a quiet socket every 25 s, so a socket that has said
+/// nothing for this long is dead, whatever the kernel still thinks.
+const SILENCE_LIMIT: std::time::Duration = std::time::Duration::from_secs(50);
+/// How often the task looks at the silence, and pings on its own account —
+/// a write is what makes a half-open socket (the phone changed networks,
+/// or slept through the NAT's idle cut) fail with an error at last.
+const PING_EVERY: std::time::Duration = std::time::Duration::from_secs(20);
+/// After a nudge, an answer must come back within this or the socket is
+/// dropped and dialled afresh.
+const NUDGE_GRACE: std::time::Duration = std::time::Duration::from_secs(4);
 
 impl Link {
     pub async fn connect(envoy_ws: &str, device_id: &str) -> anyhow::Result<Link> {
@@ -51,6 +64,7 @@ impl Link {
             Arc::new(Mutex::new(HashMap::new()));
         let nonces: Arc<Mutex<HashMap<String, oneshot::Sender<[u8; 32]>>>> =
             Arc::new(Mutex::new(HashMap::new()));
+        let poke = Arc::new(tokio::sync::Notify::new());
         tokio::spawn(run(
             sink,
             source,
@@ -60,6 +74,7 @@ impl Link {
             nonces.clone(),
             url,
             proxy.map(str::to_string),
+            poke.clone(),
         ));
         let envoy_http = envoy_ws
             .replacen("ws", "http", 1)
@@ -78,7 +93,16 @@ impl Link {
             envoy_http,
             cards: Mutex::new(HashMap::new()),
             http: http.build()?,
+            poke,
         })
+    }
+
+    /// The app came to the front, or the network changed under it: prove
+    /// the socket now rather than when the next message happens to try
+    /// it. The task pings; no answer within a few seconds and it redials
+    /// at once, so whatever the Envoy has been holding arrives now.
+    pub fn nudge(&self) {
+        self.poke.notify_one();
     }
 
     pub async fn server_card(&self, server: &str) -> anyhow::Result<ServerCard> {
@@ -240,9 +264,23 @@ async fn run(
     nonces: Arc<Mutex<HashMap<String, oneshot::Sender<[u8; 32]>>>>,
     url: String,
     proxy: Option<String>,
+    poke: Arc<tokio::sync::Notify>,
 ) {
     let mut backoff = std::time::Duration::from_millis(1500);
     loop {
+        // Liveness. A phone's socket dies without a word — the network
+        // changed, or the process slept past the NAT's idle timer — and a
+        // read on it then waits for ever: no frame, no error. The Envoy
+        // pings every 25 s, so silence is the tell; and a ping of our own
+        // every 20 s makes a half-open socket fail on the write. A nudge
+        // from the app (it came to the front) shortens the wait to a few
+        // seconds, so a message held at the Envoy while the phone slept is
+        // on screen before the user has finished looking for it.
+        let mut last_rx = std::time::Instant::now();
+        let mut deadline: Option<std::time::Instant> = None;
+        let mut tick = tokio::time::interval(PING_EVERY);
+        tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        tick.tick().await; // the first tick is immediate; the socket is fresh
         loop {
             tokio::select! {
                 f = rx.recv() => match f {
@@ -253,28 +291,63 @@ async fn run(
                     }
                     None => return,
                 },
-                m = source.next() => match m {
-                    Some(Ok(Message::Binary(b))) => match Frame::decode(&b) {
-                        Ok(Frame::BagResponse { id, response }) => {
-                            if let Some(s) = waiting.lock().await.remove(&id) {
-                                let _ = s.send(response);
+                m = source.next() => {
+                    last_rx = std::time::Instant::now();
+                    deadline = None;
+                    match m {
+                        Some(Ok(Message::Binary(b))) => match Frame::decode(&b) {
+                            Ok(Frame::BagResponse { id, response }) => {
+                                if let Some(s) = waiting.lock().await.remove(&id) {
+                                    let _ = s.send(response);
+                                }
                             }
-                        }
-                        Ok(Frame::Nonce { server, nonce }) => {
-                            if let Some(s) = nonces.lock().await.remove(&server) {
-                                let _ = s.send(nonce);
+                            Ok(Frame::Nonce { server, nonce }) => {
+                                if let Some(s) = nonces.lock().await.remove(&server) {
+                                    let _ = s.send(nonce);
+                                }
                             }
-                        }
-                        Ok(f @ Frame::Deliver { .. }) => {
-                            let _ = dtx.send(f).await;
-                        }
-                        _ => {}
-                    },
-                    Some(Ok(_)) => {} // ping, pong, text: nothing to do
-                    Some(Err(_)) | None => break,
-                },
+                            Ok(f @ Frame::Deliver { .. }) => {
+                                let _ = dtx.send(f).await;
+                            }
+                            _ => {}
+                        },
+                        Some(Ok(_)) => {} // ping, pong, text: nothing to do
+                        Some(Err(_)) | None => break,
+                    }
+                }
+                _ = tick.tick() => {
+                    if last_rx.elapsed() > SILENCE_LIMIT {
+                        tracing::info!("link: no word from the Envoy in {:?}; redialling", last_rx.elapsed());
+                        break;
+                    }
+                    if sink.send(Message::Ping(Default::default())).await.is_err() {
+                        break;
+                    }
+                }
+                _ = poke.notified() => {
+                    if sink.send(Message::Ping(Default::default())).await.is_err() {
+                        break;
+                    }
+                    deadline.get_or_insert(std::time::Instant::now() + NUDGE_GRACE);
+                    // Dial without the usual pause if this one turns out dead.
+                    backoff = std::time::Duration::from_millis(100);
+                }
+                _ = async {
+                    match deadline {
+                        Some(d) => tokio::time::sleep_until(tokio::time::Instant::from_std(d)).await,
+                        None => std::future::pending::<()>().await,
+                    }
+                } => {
+                    tracing::info!("link: the Envoy did not answer the nudge; redialling");
+                    break;
+                }
             }
         }
+        // Every bag in flight went with the socket: its caller finds out
+        // now, not at its own 30 s timeout, and can try again on the next
+        // connection.
+        waiting.lock().await.clear();
+        nonces.lock().await.clear();
         loop {
             tokio::time::sleep(backoff).await;
             match dial(&url, proxy.as_deref()).await {
@@ -282,6 +355,7 @@ async fn run(
                     sink = s;
                     source = src;
                     backoff = std::time::Duration::from_millis(1500);
+                    tracing::info!("link: connected again");
                     break;
                 }
                 Err(_) => backoff = (backoff * 2).min(std::time::Duration::from_secs(30)),

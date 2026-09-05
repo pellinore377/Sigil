@@ -206,6 +206,30 @@ impl i_slint_core::platform::Platform for AndroidPlatform {
     }
 }
 
+/// SIGIL PATCH: the activity's Resume and Pause, for the app. Slint only
+/// reports window focus, which a notification shade or a permission
+/// dialog also takes; the app wants to know when it is truly in front
+/// (prove the network, no notifications for the open room) and when it
+/// has gone to the back. Called on the main thread with `true` on Resume
+/// and `false` on Pause.
+pub fn set_lifecycle_hook(hook: Box<dyn Fn(bool)>) {
+    LIFECYCLE_HOOK.with(|h| *h.borrow_mut() = Some(hook));
+}
+
+thread_local! {
+    // Main thread only, set and called: the hook may hold the app's own
+    // (non-Send) handles.
+    static LIFECYCLE_HOOK: RefCell<Option<Box<dyn Fn(bool)>>> = const { RefCell::new(None) };
+}
+
+pub(crate) fn lifecycle(in_front: bool) {
+    LIFECYCLE_HOOK.with(|h| {
+        if let Some(h) = h.borrow().as_ref() {
+            h(in_front);
+        }
+    });
+}
+
 /// SIGIL PATCH: the app reads the phone's mode and scale and steers the
 /// system-bar glyphs. All main-thread only (where the Slint UI runs).
 pub fn night_mode() -> Option<bool> {

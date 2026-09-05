@@ -51,6 +51,9 @@ pub struct AndroidWindowAdapter {
 
     long_press: RefCell<Option<LongPressDetection>>,
     last_pressed_state: Cell<ButtonState>,
+    /// SIGIL PATCH: whether the Back DOWN in flight was given to the system
+    /// (the window agreed to close), so its UP goes the same way.
+    back_to_system: Cell<bool>,
 }
 
 impl AndroidWindowAdapter {
@@ -207,6 +210,7 @@ impl AndroidWindowAdapter {
             handle_timer: Timer::default(),
             long_press: RefCell::default(),
             last_pressed_state: Cell::new(ButtonState(0)),
+            back_to_system: Cell::new(false),
         })
     }
 
@@ -258,6 +262,10 @@ impl AndroidWindowAdapter {
                 self.pending_redraw.set(false);
                 self.do_render()?;
             }
+            // SIGIL PATCH: the activity's own lifecycle, for the app (lib.rs
+            // set_lifecycle_hook). Focus is not it: the shade takes focus.
+            PollEvent::Main(MainEvent::Resume { .. }) => crate::lifecycle(true),
+            PollEvent::Main(MainEvent::Pause) => crate::lifecycle(false),
             PollEvent::Main(MainEvent::GainedFocus) => {
                 self.window.try_dispatch_event(WindowEvent::WindowActiveChanged(true))?;
             }
@@ -337,6 +345,38 @@ impl AndroidWindowAdapter {
                     Some(ev) => {
                         if self.try_dispatch_key_event(ev) == KeyEventResult::EventAccepted {
                             InputStatus::Handled
+                        } else if key_event.key_code() == Keycode::Back {
+                            // SIGIL PATCH: Back that no item took. Handed back
+                            // to the system, the activity finishes on the
+                            // matching UP — and nothing takes it whenever
+                            // focus is nowhere (a text field just cleared
+                            // it), so the app died from any page. Ask the
+                            // window's close_requested first: the app unwinds
+                            // its own navigation there and keeps the window,
+                            // and only from its front page lets the OS have
+                            // the press. The UP must follow the DOWN's answer
+                            // (the activity only finishes on an UP whose DOWN
+                            // it tracked), so it is remembered.
+                            match key_event.action() {
+                                KeyAction::Down | KeyAction::Multiple => {
+                                    let close = WindowInner::from_pub(&self.window)
+                                        .request_close();
+                                    self.back_to_system.set(close);
+                                    if close {
+                                        InputStatus::Unhandled
+                                    } else {
+                                        InputStatus::Handled
+                                    }
+                                }
+                                KeyAction::Up => {
+                                    if self.back_to_system.replace(false) {
+                                        InputStatus::Unhandled
+                                    } else {
+                                        InputStatus::Handled
+                                    }
+                                }
+                                _ => InputStatus::Unhandled,
+                            }
                         } else {
                             InputStatus::Unhandled
                         }
