@@ -128,10 +128,14 @@ impl Harness {
     /// The window as it is at this instant of the mock clock — animations
     /// mid-flight, timers unfired — for checking motion frame by frame.
     pub fn frame(&self, name: &str) -> anyhow::Result<std::path::PathBuf> {
-        let mut pixels = vec![Rgb8Pixel::default(); (WIDTH * HEIGHT) as usize];
+        // The window's size as it is now, not the phone's default: a scene
+        // may have turned it on its side.
+        let size = self.window.size();
+        let (w, h) = (size.width.max(1), size.height.max(1));
+        let mut pixels = vec![Rgb8Pixel::default(); (w * h) as usize];
         self.window.request_redraw();
         let drew = self.window.draw_if_needed(|renderer| {
-            renderer.render(&mut pixels, WIDTH as usize);
+            renderer.render(&mut pixels, w as usize);
         });
         anyhow::ensure!(drew, "nothing to draw for {name}");
         let mut bytes = Vec::with_capacity(pixels.len() * 3);
@@ -140,7 +144,7 @@ impl Harness {
         }
         let path = self.out.join(format!("{name}.png"));
         let file = std::fs::File::create(&path)?;
-        let mut enc = png::Encoder::new(std::io::BufWriter::new(file), WIDTH, HEIGHT);
+        let mut enc = png::Encoder::new(std::io::BufWriter::new(file), w, h);
         enc.set_color(png::ColorType::Rgb);
         enc.set_depth(png::BitDepth::Eight);
         enc.write_header()?.write_image_data(&bytes)?;

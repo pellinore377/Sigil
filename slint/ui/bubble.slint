@@ -63,16 +63,20 @@ export component Bubble inherits Rectangle {
     in property <color> theme-surface: transparent;
     /// BubbleDelegate.qml:210 — the page can suppress the unread divider.
     in property <bool> unread-divider-allowed: true;
-    /// The message sheet is spotlighting THIS row's bubble: the original
-    /// renders invisible while the copy flies (MessageSheet.qml:205
-    /// hideSource) and comes back only when the sheet clears — opacity,
-    /// not `if`, so the row keeps its height and the copy lands on it.
+    /// The message sheet is spotlighting THIS row's bubble: what the copy
+    /// lifts steps aside here while the copy flies (MessageSheet.qml:205
+    /// hideSource) and comes back only when the sheet clears — opacity and
+    /// `visible`, not `if`, so the row keeps its height and the copy lands
+    /// on it. What lifts is the bubble and the marks that straddle its edge
+    /// (the reactions, the pin) and no more: the day stamp, the sender line
+    /// and the RECEIPT under the bubble stay exactly where they are in the
+    /// list and dim under the scrim like every other neighbour.
     in property <bool> sheet-lit: false;
     /// The sheet is taking this bubble's picture for its lifted copy: the
     /// reactions and the pin, which straddle the bubble's edge, step out of
     /// the frame so the copy is the bubble alone.
     in property <bool> copying: false;
-    /// A copy shows the bubble alone: no reactions, no pin, no receipts.
+    /// The tapped-open details: the stamp and the lock beside the mark.
     in-out property <bool> details-open: false;
 
     /// A hold has been recognised on this bubble: where it is, with its corners.
@@ -106,8 +110,10 @@ export component Bubble inherits Rectangle {
     /// no receipts, no reactions, laid out to `max-w` so it wraps exactly as
     /// the one in the timeline does.
     in property <bool> copy-only: false;
-    /// With `copy-only`: keep the reactions and the mark line (receipt,
-    /// time) under the bubble, so the sheet's lifted copy carries them.
+    /// With `copy-only`: keep the reactions and the pin, which straddle the
+    /// bubble's own edge, so the sheet's lifted copy carries them. Never the
+    /// receipt: the mark line is a row of the timeline under the bubble, not
+    /// part of it, and it stays in the list while the bubble lifts.
     in property <bool> copy-marks: false;
     /// The timeline's own bubble width, for a copy standing outside the list.
     in property <length> max-w: 0px;
@@ -322,9 +328,14 @@ export component Bubble inherits Rectangle {
         // Bubble row. Unconditional (height 0 for state rows) so `bubble`
         // is in scope for open-menu.
         brow := Rectangle {
-            // The copy keeps no gap above (its bubble is the copy's own top
-            // edge) but, with the marks, the reactions' overhang below.
-            height: root.copy-only ? bubble.height + (root.copy-marks ? max(root.reaction-lift, root.pin-lift) : 0px)
+            // The copy is the bubble and nothing else: no gap above, no room
+            // kept for the reactions' overhang, so the copy's box IS the
+            // bubble's box. The sheet stands the copy in a hole-sized frame
+            // and centres it there, so a copy even a few px taller than the
+            // bubble would sit off its own hole; the reactions hang over the
+            // top edge instead, drawn outside the box exactly as they hang
+            // over the bubble in the timeline.
+            height: root.copy-only ? bubble.height
                 : root.is-msg ? bubble.height + (item.group-start ? 10px : 3px) + max(root.reaction-lift, root.pin-lift) : 0px;
             visible: root.is-msg;
 
@@ -1814,7 +1825,7 @@ export component Bubble inherits Rectangle {
                               : bubble.x + bubble.width + 9px - self.preferred-width;
                 y: bubble.y - self.preferred-height / 2;
                 spacing: 2px;
-                visible: !root.copying && (!root.copy-only || root.copy-marks);
+                visible: !root.copying && !root.sheet-lit && (!root.copy-only || root.copy-marks);
                 for chip in item.reactions : r-chip := Rectangle {
                     width: r-lay.preferred-width;
                     height: r-lay.preferred-height;
@@ -1866,7 +1877,7 @@ export component Bubble inherits Rectangle {
                 border-color: Theme.popup-background;
                 opacity: item.pinned ? 1.0 : 0.0;
                 animate opacity { duration: 160ms; }
-                visible: self.opacity > 0.01 && !root.copying && (!root.copy-only || root.copy-marks);
+                visible: self.opacity > 0.01 && !root.copying && !root.sheet-lit && (!root.copy-only || root.copy-marks);
                 property <float> pop: item.pinned ? 1.0 : 0.6;
                 animate pop { duration: 220ms; easing: cubic-bezier(0.34, 1.9, 0.64, 1); }
                 transform-origin: { x: self.width / 2, y: self.height / 2 };
@@ -1893,7 +1904,7 @@ export component Bubble inherits Rectangle {
             // at, with air between them and the bubble above.
             property <length> mark-dot: root.phone ? 16px : 13px;
             property <length> lead: root.phone ? 6px : 0px;
-            property <bool> wanted: root.is-msg && (!root.copy-only || root.copy-marks) && ((item.is-own && (item.owns-receipt || item.send-state != "sent")) || root.details-open);
+            property <bool> wanted: root.is-msg && !root.copy-only && ((item.is-own && (item.owns-receipt || item.send-state != "sent")) || root.details-open);
             property <bool> show-faces: item.is-own && item.send-state == "sent" && item.readers.length > 0;
             height: self.wanted ? self.mark-dot + 4px + 2 * self.lead : 0px;
             animate height { duration: 180ms; easing: cubic-bezier(0.33, 1, 0.68, 1); }

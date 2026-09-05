@@ -194,17 +194,24 @@ public final class SigilCamera {
     private static final float FLIP_D = 52f;         // 133px
     private static final float FLIP_STROKE = 2.35f;  // 6px
     private static final float FLIP_INK = 25.9f;     // 66px
-    /// The zoom pill: 341×79px. The chip block is what is centred on screen,
-    /// not the pill — 13px of pad on the left and none on the right, which is
-    /// what puts the chips on 548.5 / 671.5 / 794.5 with the pill at 495..835.
-    private static final float PILL_H = 31f;         // 79px
+    /// The zoom stops, measured off Google Messages on this phone against a
+    /// plain grey floor, which is the only background that shows what the
+    /// translucent parts really are:
+    ///
+    ///   pill      495..848 × 1241..1348 — 354 × 108px, fully rounded
+    ///   chips     three 82px discs, centres 548.5 / 671.5 / 794.5 (123 apart)
+    ///   pad       13px at each end: 13 + 82 + 41 + 82 + 41 + 82 + 13 = 354
+    ///   scrim     #2D2C2D over a #706C6D floor — black at 59%
+    ///   unlit     #424141 over that scrim — white at 10%, ON ALL THREE
+    ///   lit       #9F9E97 flat, so opaque
+    ///   text      #E7E5DF unlit, #20211C lit, one weight, 27px of ink
+    ///
+    /// The disc is 82 in a 108 pill, so it sits well inside it now — the pill
+    /// used to be 79 and every disc was sliced by it.
+    private static final float PILL_H = 42.35f;      // 108px (1241..1348)
     private static final float CHIP_D = 32f;         // 82px
     private static final float CHIP_PITCH = 48.2f;   // 123px between centres
-    private static final float PILL_PAD = 2.35f;     // 6px at each end
-    /// The lit disc is 82px in a 79px pill, so it stands proud of it — which
-    /// is why the pill and its three discs are ONE view that draws them all
-    /// and cannot clip anything, rather than a layout with children in it.
-    private static final float PILL_VIEW_H = 32f;    // 82px
+    private static final float PILL_PAD = 5.1f;      // 13px at each end
     private static final float CHIP_SP = 15f;
     /// Photo | Video: two 180×67px cells 18px apart, so their centres are
     /// 198px apart, and the LIT one is centred on screen — which is what the
@@ -286,8 +293,10 @@ public final class SigilCamera {
     /// Colours, sampled off the reference.
     private static final int ON_BG = 0xFF9F9E97;     // the lit chip / mode pill
     private static final int ON_FG = 0xFF20211C;
-    private static final int OFF_FG = 0xFFE5E5E5;
-    private static final int SCRIM = 0x73000000;     // the zoom pill
+    private static final int OFF_FG = 0xFFE7E5DF;
+    private static final int SCRIM = 0x96000000;     // 59% black, measured
+    /// The two stops that are not chosen: a tenth of white over that scrim.
+    private static final int CHIP_OFF_BG = 0x1AFFFFFF;
     private static final int REC = 0xFFE0403A;
     private static final int GROUND = 0xFF0E0E0D;    // under the picture
     private static final int SHEET_BG = 0xFF20201D;
@@ -1032,18 +1041,19 @@ public final class SigilCamera {
         return lp;
     }
 
-    /// The zoom pill: 6 + 82 + 41 + 82 + 41 + 82 + 6 = 340px across, 82 tall
-    /// so the lit disc has room, centred — which puts the three chip centres
-    /// on 549 / 672 / 795, the reference's 548.5 / 671.5 / 794.5.
+    /// The zoom pill: 13 + 82 + 41 + 82 + 41 + 82 + 13 = 354px across and 108
+    /// tall, centred — which puts the pill on 495..848 and the three chip
+    /// centres on 549 / 672 / 795, against the reference's 495..848 and
+    /// 548.5 / 671.5 / 794.5.
     private static int pillWidth() {
         return dp(PILL_PAD) * 2 + dp(CHIP_D) * 3 + (dp(CHIP_PITCH) - dp(CHIP_D)) * 2;
     }
 
     private static FrameLayout.LayoutParams pillParams() {
         FrameLayout.LayoutParams lp =
-                new FrameLayout.LayoutParams(pillWidth(), dp(PILL_VIEW_H));
+                new FrameLayout.LayoutParams(pillWidth(), dp(PILL_H));
         lp.gravity = Gravity.TOP | Gravity.CENTER_HORIZONTAL;
-        lp.topMargin = foot - dp(ROW_ZOOM) - dp(PILL_VIEW_H) / 2;
+        lp.topMargin = foot - dp(ROW_ZOOM) - dp(PILL_H) / 2;
         return lp;
     }
 
@@ -2185,11 +2195,17 @@ public final class SigilCamera {
             canvas.drawRoundRect(box, pillH / 2f, pillH / 2f, scrim);
 
             float r = dp(CHIP_D) / 2f;
-            // One filled disc, under the label of whichever stop is lit; the
-            // other two are the pill's own ground showing through.
+            // A disc under EVERY stop, not just the chosen one: over a plain
+            // floor the reference's other two read #424141 against a #2D2C2D
+            // scrim, which is a tenth of white — barely there, and the thing
+            // that makes the row look like three seats rather than one blob.
+            disc.setColor(CHIP_OFF_BG);
+            for (int i = 0; i < STOPS.length; i++) {
+                canvas.drawCircle(chipCx(i), cy, r, disc);
+            }
+            // Then the chosen one, opaque, wherever the glide has it.
             disc.setColor(ON_BG);
             canvas.drawCircle(litCx, cy, r, disc);
-
             text.setTextSize(dp(CHIP_SP));
             Paint.FontMetrics fm = text.getFontMetrics();
             float baseline = cy - (fm.ascent + fm.descent) / 2f;

@@ -1250,17 +1250,26 @@ export component ChatPage inherits Rectangle {
                     // that is what keeps `near` free to read the layout's own
                     // `y` and the list's viewport without a loop.
                     property <length> known-h: 0px;
+                    // The width that height was measured at. A narrower or
+                    // wider list (the phone turned on its side) rewraps every
+                    // message, so a height from another width is no height:
+                    // the row goes live until measured again. It used to zero
+                    // known-h on `changed width` instead — and for a row
+                    // already live that zero landed AFTER the holder had
+                    // written its new height, with nothing left to write it
+                    // again, so the row stood at nothing and the timeline
+                    // piled up on itself after every turn.
+                    property <length> known-w: 0px;
                     property <bool> near: row.y + max(row.known-h, 1px) > -list.viewport-y - 1.5 * list.height
                         && row.y < -list.viewport-y + 2.5 * list.height;
-                    property <bool> live: row.near || row.known-h == 0px;
+                    property <bool> live: row.near || row.known-h == 0px || row.known-w != row.width;
                     height: row.known-h;
-                    // a narrower or wider list rewraps every message: measure again
-                    changed width => { row.known-h = 0px; }
                     /// This row is the one the sheet holds. Slint draws rows
                     /// in order and cannot raise one above the rest at run
                     /// time, so a bubble lifted in place went under the rows
                     /// after it. Instead the sheet draws a LIVE second instance
-                    /// of this whole row — bubble, reactions, receipt — in its
+                    /// of the lifted part of it — the bubble with its reactions,
+                    /// the receipt left behind in the list — in its
                     /// own layer above everything, starting exactly where this
                     /// row stands and lifting from there, while this row's
                     /// content steps aside (its slot stays). Nothing else
@@ -1344,8 +1353,15 @@ export component ChatPage inherits Rectangle {
                     if row.live : holder := Rectangle {
                     x: 0; width: 100%;
                     height: bub.height;
-                    changed height => { if (self.height > 0px) { row.known-h = self.height; } }
-                    init => { if (self.height > 0px) { row.known-h = self.height; } }
+                    // Height and the width it holds at, written together. On
+                    // a width change the two `changed` handlers may run in
+                    // either order (the rewrapped height before or after the
+                    // width), and both write what is current, so the last
+                    // word is always the right one — including a bubble
+                    // whose height did not change at all.
+                    changed height => { if (self.height > 0px) { row.known-h = self.height; row.known-w = row.width; } }
+                    changed width => { if (self.height > 0px) { row.known-h = self.height; row.known-w = row.width; } }
+                    init => { if (self.height > 0px) { row.known-h = self.height; row.known-w = row.width; } }
                     // The harness's long-press: the named row fires its own
                     // menu, with its own rectangle, as a finger would.
                     property <bool> press-me: row.press-me;
@@ -1418,9 +1434,16 @@ export component ChatPage inherits Rectangle {
                         bub := Bubble {
                             x: row.off;
                             // The held row steps aside for the sheet's live
-                            // copy of it, which starts exactly here and lifts.
-                            // `visible`, not `if`: the row keeps its slot.
-                            visible: !row.held;
+                            // copy of it, which starts exactly here and lifts
+                            // — but only as far as the copy reaches. The copy
+                            // is the bubble with the reactions and the pin
+                            // that straddle its edge, so only those step
+                            // aside; the receipt under the bubble is a mark of
+                            // the timeline, not of the lifted bubble, and it
+                            // stays put and dims under the scrim as Messages
+                            // leaves it. Nothing is dropped from the row, so
+                            // the row keeps its slot and its height.
+                            sheet-lit: row.held;
                             width: row.width;
                             item: item;
                             fx-clock: root.fx-clock;
@@ -2318,7 +2341,8 @@ export component ChatPage inherits Rectangle {
         lifted := Bubble {
             item: sheet.item;
             copy-only: true;
-            // the receipt and the reactions travel with the bubble
+            // the reactions and the pin travel with the bubble; the
+            // receipt does not — it stays in the row it was drawn in
             copy-marks: true;
             max-w: list.width * (root.phone ? 0.75 : 0.78);
             width: sheet.hole-w;

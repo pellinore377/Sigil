@@ -229,6 +229,7 @@ fn main() -> anyhow::Result<()> {
     let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()?;
+    sigil_slint::register_fonts();
     let app = sigil_slint::AppWindow::new()?;
     // preview the phone palettes: SIGIL_THEME_MODE=dark|light
     if let Ok(m) = std::env::var("SIGIL_THEME_MODE") {
@@ -310,6 +311,16 @@ fn main() -> anyhow::Result<()> {
     }
     h.settle();
     h.shoot("chat")?;
+    // The phone turned on its side and back. The rows are virtualised (their
+    // heights remembered in `known-h`), and a width change makes every
+    // remembered height wrong at once; the timeline after the turn back must
+    // read exactly like the one before it, no row over another.
+    app.window().set_size(slint::PhysicalSize::new(HEIGHT, WIDTH));
+    h.settle();
+    h.shoot("chat-landscape")?;
+    app.window().set_size(slint::PhysicalSize::new(WIDTH, HEIGHT));
+    h.settle();
+    h.shoot("chat-turned-back")?;
     // The location card at each of its three categories. Two things to read
     // off these: the card's glyph is that CATEGORY'S own — share_location for
     // a live share, my_location for a fix, pin_drop for a dropped point, the
