@@ -198,6 +198,20 @@ impl<'a> ApkBuilder<'a> {
             .runtime_libs
             .as_ref()
             .map(|libs| dunce::simplified(&crate_path.join(libs)).to_owned());
+        // SIGIL PATCH: the prebuilt `classes.dex` named by
+        // `[package.metadata.android] dex = "..."`, resolved against the crate
+        // root. Declaring it flips `android:hasCode` on by itself: a manifest
+        // that names a Service or a Receiver and claims to have no code is one
+        // the platform will refuse to instantiate from.
+        let dex = self
+            .manifest
+            .dex
+            .as_ref()
+            .map(|dex| dunce::simplified(&crate_path.join(dex)).to_owned());
+        if dex.is_some() {
+            manifest.application.has_code = true;
+        }
+
         let apk_name = self
             .manifest
             .apk_name
@@ -252,6 +266,17 @@ impl<'a> ApkBuilder<'a> {
             if let Some(runtime_libs) = &runtime_libs {
                 apk.add_runtime_libs(runtime_libs, *target, libs_search_paths.as_slice())?;
             }
+        }
+
+        // SIGIL PATCH: added after the cargo build above, because the dex is
+        // usually produced by the crate's own build script and so does not
+        // exist until that has run at least once.
+        if let Some(dex) = &dex {
+            if !dex.exists() {
+                return Err(Error::DexNotFound(dex.clone()));
+            }
+            println!("Adding `{}` to the APK as `classes.dex`", dex.display());
+            apk.add_dex(dex)?;
         }
 
         let profile_name = match self.cmd.profile() {

@@ -23,6 +23,11 @@ pub(crate) struct Manifest {
     pub(crate) assets: Option<PathBuf>,
     pub(crate) resources: Option<PathBuf>,
     pub(crate) runtime_libs: Option<PathBuf>,
+    /// SIGIL PATCH: a prebuilt `classes.dex` to pack at the APK root, relative
+    /// to the crate root. The app needs Java the system can instantiate by
+    /// name (a foreground Service, a notification-action Receiver), which a
+    /// runtime `InMemoryDexClassLoader` cannot provide.
+    pub(crate) dex: Option<PathBuf>,
     /// Maps profiles to keystores
     pub(crate) signing: HashMap<String, Signing>,
     pub(crate) reverse_port_forward: HashMap<String, String>,
@@ -50,6 +55,7 @@ impl Manifest {
             assets: metadata.assets,
             resources: metadata.resources,
             runtime_libs: metadata.runtime_libs,
+            dex: metadata.dex,
             signing: metadata.signing,
             reverse_port_forward: metadata.reverse_port_forward,
             strip: metadata.strip,
@@ -103,6 +109,8 @@ struct AndroidMetadata {
     assets: Option<PathBuf>,
     resources: Option<PathBuf>,
     runtime_libs: Option<PathBuf>,
+    // SIGIL PATCH: see `Manifest::dex`.
+    dex: Option<PathBuf>,
     /// Maps profiles to keystores
     #[serde(default)]
     signing: HashMap<String, Signing>,
@@ -117,4 +125,111 @@ struct AndroidMetadata {
 pub(crate) struct Signing {
     pub(crate) path: PathBuf,
     pub(crate) keystore_password: String,
+}
+
+// SIGIL PATCH: the `dex` key and the `service`/`receiver` tables, read through
+// the real `Cargo.toml` parser and out again as the XML `aapt` is handed.
+#[cfg(test)]
+mod sigil_tests {
+    use super::*;
+
+    const METADATA: &str = r#"
+[package]
+name = "sigil-slint"
+version = "0.1.4"
+
+[package.metadata.android]
+package = "com.sigil.slint"
+apk_name = "sigil-slint"
+dex = "target/java/classes.dex"
+
+[package.metadata.android.sdk]
+min_sdk_version = 26
+target_sdk_version = 35
+
+[package.metadata.android.application]
+label = "Sigil"
+
+[[package.metadata.android.application.service]]
+name = "com.sigil.slint.SigilCallService"
+exported = false
+foreground_service_type = "microphone|phoneCall"
+
+[[package.metadata.android.application.receiver]]
+name = "com.sigil.slint.SigilCallReceiver"
+exported = false
+
+[[package.metadata.android.application.receiver.intent_filter]]
+actions = ["com.sigil.slint.ANSWER", "com.sigil.slint.DECLINE"]
+"#;
+
+    fn parse() -> Manifest {
+        let dir = std::env::temp_dir().join("sigil-cargo-apk-metadata-test");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("Cargo.toml");
+        std::fs::write(&path, METADATA).unwrap();
+        Manifest::parse_from_toml(&path).unwrap()
+    }
+
+    #[test]
+    fn dex_service_and_receiver_are_read_from_metadata() {
+        let manifest = parse();
+        assert_eq!(
+            manifest.dex.as_deref(),
+            Some(std::path::Path::new("target/java/classes.dex"))
+        );
+
+        let app = &manifest.android_manifest.application;
+        assert_eq!(app.service.len(), 1);
+        assert_eq!(app.service[0].name, "com.sigil.slint.SigilCallService");
+        assert_eq!(app.service[0].exported, Some(false));
+        assert_eq!(
+            app.service[0].foreground_service_type.as_deref(),
+            Some("microphone|phoneCall")
+        );
+        assert_eq!(app.receiver.len(), 1);
+        assert_eq!(app.receiver[0].name, "com.sigil.slint.SigilCallReceiver");
+        assert_eq!(
+            app.receiver[0].intent_filter[0].actions,
+            vec![
+                "com.sigil.slint.ANSWER".to_string(),
+                "com.sigil.slint.DECLINE".to_string()
+            ]
+        );
+    }
+
+    /// What `create_apk` writes to disk for `aapt`, with `hasCode` on the way
+    /// `ApkBuilder::build` sets it once a dex is configured.
+    #[test]
+    fn the_written_manifest_declares_them() {
+        let mut manifest = parse().android_manifest;
+        manifest.application.has_code = true;
+        let dir = std::env::temp_dir().join("sigil-cargo-apk-manifest-test");
+        std::fs::create_dir_all(&dir).unwrap();
+        manifest.write_to(&dir).unwrap();
+        let xml = std::fs::read_to_string(dir.join("AndroidManifest.xml")).unwrap();
+        println!("{}", xml);
+
+        assert!(xml.contains("android:hasCode=\"true\""), "{}", xml);
+        assert!(
+            xml.contains("<service android:name=\"com.sigil.slint.SigilCallService\""),
+            "{}",
+            xml
+        );
+        assert!(
+            xml.contains("android:foregroundServiceType=\"microphone|phoneCall\""),
+            "{}",
+            xml
+        );
+        assert!(
+            xml.contains("<receiver android:name=\"com.sigil.slint.SigilCallReceiver\""),
+            "{}",
+            xml
+        );
+        assert!(
+            xml.contains("<action android:name=\"com.sigil.slint.DECLINE\"/>"),
+            "{}",
+            xml
+        );
+    }
 }

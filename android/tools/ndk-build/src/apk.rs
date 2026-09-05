@@ -179,6 +179,21 @@ impl<'a> UnalignedApk<'a> {
         Ok(())
     }
 
+    // SIGIL PATCH: the APK's own `classes.dex`. Upstream only ever puts `.so`
+    // files in, because a native-only app has no Java the system needs to find
+    // by name; a manifest-declared Service or Receiver does, and the platform
+    // class loader only looks in the APK root. The file joins `pending_libs`
+    // so it goes in through the same `aapt add` (and so under the same
+    // compression setting) as the libraries, before `zipalign` runs.
+    pub fn add_dex(&mut self, path: &Path) -> Result<(), NdkError> {
+        if !path.exists() {
+            return Err(NdkError::PathNotFound(path.into()));
+        }
+        std::fs::copy(path, self.config.build_dir.join("classes.dex"))?;
+        self.pending_libs.insert("classes.dex".to_string());
+        Ok(())
+    }
+
     pub fn add_runtime_libs(
         &mut self,
         path: &Path,

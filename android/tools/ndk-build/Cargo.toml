@@ -46,3 +46,8 @@ version = "1"
 
 [dependencies.which]
 version = "4"
+
+# SIGIL PATCH: the `<service>`/`<receiver>` metadata test in `manifest.rs`
+# parses the same TOML shape `cargo-apk` reads out of a `Cargo.toml`.
+[dev-dependencies.toml]
+version = "0.5"

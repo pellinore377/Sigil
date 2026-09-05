@@ -69,6 +69,12 @@ pub struct Application {
     pub debuggable: Option<bool>,
     #[serde(rename(serialize = "android:theme"))]
     pub theme: Option<String>,
+    // SIGIL PATCH: `has_code` is read straight from
+    // `[package.metadata.android.application] has_code = true` (the rename is
+    // serialize-only, so the TOML key is the field name), and nothing forces
+    // it back to false for native-only apps. `cargo-apk` additionally turns it
+    // on by itself whenever `[package.metadata.android] dex = "..."` names a
+    // dex to pack, so the two can never disagree.
     #[serde(rename(serialize = "android:hasCode"))]
     #[serde(default)]
     pub has_code: bool,
@@ -89,6 +95,16 @@ pub struct Application {
     pub meta_data: Vec<MetaData>,
     #[serde(default)]
     pub activity: Activity,
+    // SIGIL PATCH: the app needs components the system instantiates itself — a
+    // foreground Service and a BroadcastReceiver for notification actions —
+    // and those only exist if they are declared here.
+    #[serde(default)]
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub service: Vec<Service>,
+    // SIGIL PATCH: see `service` above.
+    #[serde(default)]
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub receiver: Vec<Receiver>,
 }
 
 /// Android [activity element](https://developer.android.com/guide/topics/manifest/activity-element).
@@ -137,6 +153,52 @@ impl Default for Activity {
             intent_filter: Default::default(),
         }
     }
+}
+
+// SIGIL PATCH: `<service>` and `<receiver>`. Upstream `cargo-apk` only ever
+// describes the one NativeActivity, because a native-only app never has a
+// class for the system to instantiate. A foreground service and a
+// notification-action receiver are both instantiated by the system from their
+// manifest name, so they have to be declared here and live in the APK's own
+// `classes.dex` (see the `dex` key handled in `cargo-apk`).
+
+/// Android [service element](https://developer.android.com/guide/topics/manifest/service-element).
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+pub struct Service {
+    #[serde(rename(serialize = "android:name"))]
+    pub name: String,
+    #[serde(rename(serialize = "android:exported"))]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub exported: Option<bool>,
+    #[serde(rename(serialize = "android:foregroundServiceType"))]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub foreground_service_type: Option<String>,
+    #[serde(rename(serialize = "android:permission"))]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub permission: Option<String>,
+
+    #[serde(rename(serialize = "intent-filter"))]
+    #[serde(default)]
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub intent_filter: Vec<IntentFilter>,
+}
+
+/// Android [receiver element](https://developer.android.com/guide/topics/manifest/receiver-element).
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+pub struct Receiver {
+    #[serde(rename(serialize = "android:name"))]
+    pub name: String,
+    #[serde(rename(serialize = "android:exported"))]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub exported: Option<bool>,
+    #[serde(rename(serialize = "android:permission"))]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub permission: Option<String>,
+
+    #[serde(rename(serialize = "intent-filter"))]
+    #[serde(default)]
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub intent_filter: Vec<IntentFilter>,
 }
 
 /// Android [intent filter element](https://developer.android.com/guide/topics/manifest/intent-filter-element).
@@ -335,4 +397,106 @@ fn default_activity_name() -> String {
 
 fn default_config_changes() -> Option<String> {
     Some("orientation|keyboardHidden|screenSize".to_string())
+}
+
+// SIGIL PATCH: proof that a service and a receiver reach the XML as real
+// children of `<application>`, with their attributes in the `android:`
+// namespace and their intent filters nested inside them.
+#[cfg(test)]
+mod sigil_tests {
+    use super::*;
+
+    fn app() -> Application {
+        Application {
+            label: "Sigil".to_string(),
+            has_code: true,
+            service: vec![Service {
+                name: "com.sigil.slint.SigilCallService".to_string(),
+                exported: Some(false),
+                foreground_service_type: Some("microphone|phoneCall".to_string()),
+                permission: None,
+                intent_filter: vec![],
+            }],
+            receiver: vec![Receiver {
+                name: "com.sigil.slint.SigilCallReceiver".to_string(),
+                exported: Some(false),
+                permission: None,
+                intent_filter: vec![IntentFilter {
+                    actions: vec!["com.sigil.slint.ANSWER".to_string()],
+                    categories: vec![],
+                    data: vec![],
+                }],
+            }],
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn service_and_receiver_serialize_as_application_children() {
+        let xml = quick_xml::se::to_string(&app()).unwrap();
+
+        assert!(xml.contains("android:hasCode=\"true\""), "{}", xml);
+        assert!(
+            xml.contains(
+                "<service android:name=\"com.sigil.slint.SigilCallService\" \
+                 android:exported=\"false\" \
+                 android:foregroundServiceType=\"microphone|phoneCall\"/>"
+            ),
+            "{}",
+            xml
+        );
+        assert!(
+            xml.contains(
+                "<receiver android:name=\"com.sigil.slint.SigilCallReceiver\" \
+                 android:exported=\"false\"><intent-filter>\
+                 <action android:name=\"com.sigil.slint.ANSWER\"/>\
+                 </intent-filter></receiver>"
+            ),
+            "{}",
+            xml
+        );
+        // Absent options and empty filters leave no trace.
+        assert!(!xml.contains("android:permission"), "{}", xml);
+    }
+
+    #[test]
+    fn empty_service_and_receiver_lists_serialize_to_nothing() {
+        let xml = quick_xml::se::to_string(&Application::default()).unwrap();
+        assert!(!xml.contains("<service"), "{}", xml);
+        assert!(!xml.contains("<receiver"), "{}", xml);
+    }
+
+    /// The shape another crate's `Cargo.toml` metadata actually uses.
+    #[test]
+    fn service_and_receiver_parse_from_cargo_metadata() {
+        let toml = r#"
+label = "Sigil"
+has_code = true
+
+[[service]]
+name = "com.sigil.slint.SigilCallService"
+exported = false
+foreground_service_type = "microphone|phoneCall"
+
+[[receiver]]
+name = "com.sigil.slint.SigilCallReceiver"
+exported = false
+
+[[receiver.intent_filter]]
+actions = ["com.sigil.slint.ANSWER"]
+"#;
+        let app: Application = toml::from_str(toml).unwrap();
+        assert!(app.has_code);
+        assert_eq!(app.service.len(), 1);
+        assert_eq!(
+            app.service[0].foreground_service_type.as_deref(),
+            Some("microphone|phoneCall")
+        );
+        assert_eq!(app.receiver.len(), 1);
+        assert_eq!(app.receiver[0].intent_filter.len(), 1);
+        assert_eq!(
+            app.receiver[0].intent_filter[0].actions,
+            vec!["com.sigil.slint.ANSWER".to_string()]
+        );
+    }
 }

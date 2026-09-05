@@ -14,6 +14,10 @@ pub enum Error {
     Ndk(#[from] NdkError),
     #[error(transparent)]
     Io(#[from] IoError),
+    // SIGIL PATCH: `[package.metadata.android] dex = "..."` named a file that
+    // is not there — usually a build script that did not write it.
+    #[error("`[package.metadata.android] dex` points at `{0}`, which does not exist")]
+    DexNotFound(std::path::PathBuf),
     #[error("Configure a release keystore via `[package.metadata.android.signing.{0}]`")]
     MissingReleaseKey(String),
     #[error("`workspace=false` is unsupported")]
