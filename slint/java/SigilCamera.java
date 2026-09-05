@@ -199,14 +199,28 @@ public final class SigilCamera {
     /// what puts the chips on 548.5 / 671.5 / 794.5 with the pill at 495..835.
     private static final float PILL_H = 31f;         // 79px
     private static final float CHIP_D = 32f;         // 82px
-    private static final float CHIP_GAP = 16f;       // centres 122.75px apart
-    private static final float PILL_PAD_L = 5.1f;    // 13px; the right is 0
+    private static final float CHIP_PITCH = 48.2f;   // 123px between centres
+    private static final float PILL_PAD = 2.35f;     // 6px at each end
+    /// The lit disc is 82px in a 79px pill, so it stands proud of it — which
+    /// is why the pill and its three discs are ONE view that draws them all
+    /// and cannot clip anything, rather than a layout with children in it.
+    private static final float PILL_VIEW_H = 32f;    // 82px
+    private static final float CHIP_SP = 15f;
     /// Photo | Video: two 180×67px cells 18px apart, so their centres are
     /// 198px apart, and the LIT one is centred on screen — which is what the
     /// reference shows, not a centred row.
     private static final float MODE_CELL = 70.5f;    // 180px
     private static final float MODE_GAP = 7f;        // 18px
     private static final float MODE_H = 26.3f;       // 67px
+    private static final float MODE_PAD_V = 3.9f;    // 10px over, 10px under
+    /// The dark fill inside the shutter's ring and the flip's: the reference
+    /// shows a translucent black under the white, not the live picture.
+    private static final int RING_FILL = 0xCC000000;
+    /// The lens dot in the middle of flip_camera_android, as a fraction of the
+    /// glyph's ink box: measured at 29/200 across a rendering of EA37. It is
+    /// cut back out of the path, because no codepoint in the app's font draws
+    /// those two arrows without it.
+    private static final float FLIP_DOT = 0.155f;
     /// Every drawn line that is not a glyph.
     private static final float STROKE = 2.4f;        // 6px
     /// Heights above the PICTURE'S FOOT: mode centre 82px, shutter centre
@@ -323,9 +337,7 @@ public final class SigilCamera {
     private static IconView flashBtn;
     private static IconView flipBtn;
     private static ShutterView shutterBtn;
-    private static FrameLayout zoomPill;
-    private static View zoomLit;
-    private static TextView[] chips;
+    private static ZoomPill zoomPill;
     private static LinearLayout modeRow;
     private static TextView[] modeLabels;
     private static View cameraLayer;
@@ -929,43 +941,12 @@ public final class SigilCamera {
         cam.addView(flashBtn, iconParams(false));
 
         // ---- the zoom pill ---------------------------------------------------
-        // The lit disc is a view of its own BEHIND the chips, so choosing a
-        // stop slides it rather than repainting three backgrounds.
-        zoomPill = new FrameLayout(activity);
-        zoomPill.setBackground(pill(SCRIM, dp(PILL_H / 2)));
-        // The lit disc is 82px in a 79px pill — 1.5px proud top and bottom,
-        // exactly as the reference has it — so the pill must not clip.
-        zoomPill.setClipChildren(false);
-        zoomPill.setClipToPadding(false);
-        zoomLit = new View(activity);
-        zoomLit.setBackground(pill(ON_BG, dp(CHIP_D / 2)));
-        FrameLayout.LayoutParams litLp =
-                new FrameLayout.LayoutParams(dp(CHIP_D), dp(CHIP_D));
-        litLp.gravity = Gravity.TOP | Gravity.START;
-        litLp.topMargin = (dp(PILL_H) - dp(CHIP_D)) / 2;
-        zoomPill.addView(zoomLit, litLp);
-        chips = new TextView[STOPS.length];
-        for (int i = 0; i < STOPS.length; i++) {
-            final float stop = STOPS[i];
-            TextView c = new TextView(activity);
-            c.setText(label(stop));
-            c.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 15f);
-            c.setGravity(Gravity.CENTER);
-            c.setOnClickListener(new View.OnClickListener() {
-                @Override
-                public void onClick(View x) {
-                    if (!reachable(stop)) return;
-                    glideZoom(stop);
-                }
-            });
-            FrameLayout.LayoutParams lp =
-                    new FrameLayout.LayoutParams(dp(CHIP_D), dp(CHIP_D));
-            lp.gravity = Gravity.TOP | Gravity.START;
-            lp.leftMargin = chipX(i);
-            lp.topMargin = (dp(PILL_H) - dp(CHIP_D)) / 2;
-            zoomPill.addView(c, lp);
-            chips[i] = c;
-        }
+        // ONE view for the scrim, the three discs and the three labels. It was
+        // a layout with children before, and the lit disc — 82px in a 79px
+        // pill — was sliced flat top and bottom by its parent's bounds however
+        // often clipChildren was turned off. A view that draws the lot has no
+        // bounds to be cut by.
+        zoomPill = new ZoomPill(activity);
         cam.addView(zoomPill, pillParams());
 
         // ---- the shutter -------------------------------------------------
@@ -985,6 +966,7 @@ public final class SigilCamera {
         // ---- the flip ring, beside it -------------------------------------
         flipBtn = new IconView(activity, G_FLIP, FLIP_INK);
         flipBtn.ring = true;
+        flipBtn.punch = FLIP_DOT;
         flipBtn.setOnClickListener(new View.OnClickListener() {
             @Override
             public void onClick(View x) {
@@ -1013,6 +995,9 @@ public final class SigilCamera {
             t.setText(names[i]);
             t.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 15f);
             t.setGravity(Gravity.CENTER);
+            // The reference's pill is 67px tall around 27px of text: ten
+            // pixels of air above the letters and ten below.
+            t.setPadding(0, dp(MODE_PAD_V), 0, dp(MODE_PAD_V));
             t.setOnClickListener(new View.OnClickListener() {
                 @Override
                 public void onClick(View x) {
@@ -1047,21 +1032,24 @@ public final class SigilCamera {
         return lp;
     }
 
-    /// The zoom pill. What is centred on the screen is the CHIP BLOCK, not the
-    /// pill: the reference pads 13px on the left of the first chip and nothing
-    /// on the right of the last, so the pill hangs 6px left of centre.
+    /// The zoom pill: 6 + 82 + 41 + 82 + 41 + 82 + 6 = 340px across, 82 tall
+    /// so the lit disc has room, centred — which puts the three chip centres
+    /// on 549 / 672 / 795, the reference's 548.5 / 671.5 / 794.5.
+    private static int pillWidth() {
+        return dp(PILL_PAD) * 2 + dp(CHIP_D) * 3 + (dp(CHIP_PITCH) - dp(CHIP_D)) * 2;
+    }
+
     private static FrameLayout.LayoutParams pillParams() {
-        int block = dp(CHIP_D) * 3 + dp(CHIP_GAP) * 2;
-        FrameLayout.LayoutParams lp = new FrameLayout.LayoutParams(
-                block + dp(PILL_PAD_L), dp(PILL_H));
+        FrameLayout.LayoutParams lp =
+                new FrameLayout.LayoutParams(pillWidth(), dp(PILL_VIEW_H));
         lp.gravity = Gravity.TOP | Gravity.CENTER_HORIZONTAL;
-        lp.leftMargin = -dp(PILL_PAD_L) / 2;
-        lp.topMargin = foot - dp(ROW_ZOOM) - dp(PILL_H) / 2;
+        lp.topMargin = foot - dp(ROW_ZOOM) - dp(PILL_VIEW_H) / 2;
         return lp;
     }
 
-    private static int chipX(int i) {
-        return dp(PILL_PAD_L) + i * (dp(CHIP_D) + dp(CHIP_GAP));
+    /// The centre of chip `i`, from the pill's own left edge.
+    private static float chipCx(int i) {
+        return dp(PILL_PAD) + dp(CHIP_D) / 2f + i * dp(CHIP_PITCH);
     }
 
     /// A control standing `above` dp over the picture's foot, `tall` dp high,
@@ -1206,11 +1194,17 @@ public final class SigilCamera {
     /// request re-issued on every frame, so the viewfinder travels between
     /// stops instead of jumping. The lit disc slides under the chips beside it.
     private static void glideZoom(final float target) {
-        final float want = Math.max(zoomMin, Math.min(zoomMax, target));
+        // CLAMPED, not rejected. This Pixel's logical camera reports a range
+        // starting at 0.50783783, so the 0.5 chip asking for exactly 0.5 was
+        // below the lower bound and read as unreachable — the chip sat dimmed
+        // and dead on a phone that has an ultra-wide. A stop under the range
+        // means "as wide as this lens goes".
+        final float want = clampZoom(target);
         if (zoomAnim != null) zoomAnim.cancel();
         final float from = zoom;
-        final float litFrom = zoomLit == null ? 0f : zoomLit.getTranslationX();
-        final float litTo = chipX(nearestStop(target)) - chipX(0);
+        final float litFrom = zoomPill == null ? chipCx(1) : zoomPill.litCx;
+        final float litTo = chipCx(nearestStop(target));
+        tracing(target, want);
         zoomAnim = ValueAnimator.ofFloat(0f, 1f);
         zoomAnim.setDuration(ZOOM_MS);
         zoomAnim.setInterpolator(new DecelerateInterpolator());
@@ -1220,14 +1214,24 @@ public final class SigilCamera {
                 float t = (Float) a.getAnimatedValue();
                 zoom = from + (want - from) * t;
                 pushZoom();
-                if (zoomLit != null) {
-                    zoomLit.setTranslationX(litFrom + (litTo - litFrom) * t);
+                if (zoomPill != null) {
+                    zoomPill.litCx = litFrom + (litTo - litFrom) * t;
+                    zoomPill.invalidate();
                 }
             }
         });
         zoomAnim.start();
         zoomTarget = target;
-        syncChips();
+    }
+
+    private static void tracing(float asked, float set) {
+        Log.i(TAG, "camera: zoom " + asked + " -> " + set
+                + " (range " + zoomMin + ".." + zoomMax
+                + (zoomRatioSupported ? ", ratio" : ", crop") + ")");
+    }
+
+    private static float clampZoom(float v) {
+        return Math.max(zoomMin, Math.min(zoomMax, v));
     }
 
     private static volatile float zoomTarget = 1f;
@@ -1313,18 +1317,11 @@ public final class SigilCamera {
     }
 
     private static void syncChips() {
-        if (chips == null) return;
-        int lit = nearestStop(zoomTarget);
-        for (int i = 0; i < chips.length; i++) {
-            boolean on = i == lit;
-            boolean can = reachable(STOPS[i]);
-            chips[i].setTextColor(on ? ON_FG : OFF_FG);
-            chips[i].setTypeface(null, on ? Typeface.BOLD : Typeface.NORMAL);
-            chips[i].setAlpha(can ? 1f : 0.35f);
+        if (zoomPill == null) return;
+        if (zoomAnim == null || !zoomAnim.isRunning()) {
+            zoomPill.litCx = chipCx(nearestStop(zoomTarget));
         }
-        if (zoomLit != null && (zoomAnim == null || !zoomAnim.isRunning())) {
-            zoomLit.setTranslationX(chipX(lit) - chipX(0));
-        }
+        zoomPill.invalidate();
     }
 
     private static void syncModeLabels() {
@@ -1333,7 +1330,10 @@ public final class SigilCamera {
             boolean on = (i == 0) == "photo".equals(mode);
             modeLabels[i].setBackground(on ? pill(ON_BG, dp(MODE_H / 2)) : null);
             modeLabels[i].setTextColor(on ? ON_FG : OFF_FG);
-            modeLabels[i].setTypeface(null, on ? Typeface.BOLD : Typeface.NORMAL);
+            // The same weight either way: the reference's lit label is not
+            // bold, and making it so was the whole of what made ours read
+            // wrong beside it.
+            modeLabels[i].setTypeface(null, Typeface.NORMAL);
         }
     }
 
@@ -1348,8 +1348,13 @@ public final class SigilCamera {
         }
     };
 
+    /// Whether a stop is worth offering: the clamped ratio has to land near
+    /// enough to the number on the chip to be honest about it. A range of
+    /// 0.5078..30 makes 0.5 reachable (it clamps to 0.5078, which IS the
+    /// ultra-wide); a range of 1..10 does not (it would clamp to 1, and a
+    /// chip reading 0.5 that gives you 1 is a lie).
     private static boolean reachable(float stop) {
-        return stop >= zoomMin - 0.001f && stop <= zoomMax + 0.001f;
+        return Math.abs(clampZoom(stop) - stop) <= stop * 0.1f + 0.001f;
     }
 
     private static String label(float stop) {
@@ -1386,26 +1391,38 @@ public final class SigilCamera {
             setClickable(true);
         }
 
+        // THE FINGER IS MEASURED AGAINST THE SCREEN, NEVER AGAINST THIS VIEW.
+        // getY() is relative to the sheet, and the sheet is the thing being
+        // dragged: as it follows the finger, the finger's position INSIDE it
+        // barely changes, so the delta collapsed towards zero, flipped sign on
+        // the next jitter, and the sheet flickered between open and shut under
+        // a held finger. getRawY() is a fixed ruler and the delta is real.
+        //
+        // And the direction is decided ONCE, when the drag begins. It used to
+        // be re-decided on every move against `expand`, which the same move
+        // was changing — a latch reading the thing it drives.
+
         @Override
         public boolean onInterceptTouchEvent(MotionEvent ev) {
             switch (ev.getActionMasked()) {
                 case MotionEvent.ACTION_DOWN:
-                    y0 = ev.getY();
+                    y0 = ev.getRawY();
                     dragging = false;
                     return false;
                 case MotionEvent.ACTION_MOVE: {
-                    float dy = ev.getY() - y0;
+                    if (dragging) return true;
+                    float dy = ev.getRawY() - y0;
                     if (Math.abs(dy) < slop) return false;
                     boolean up = dy < 0;
                     // Rising: any upward drag takes the sheet with it.
-                    if (up && expand < 1f) return start(ev);
-                    // Falling: only from a grid that is already at its top,
-                    // so a scrolled grid keeps its own gesture.
-                    if (!up && expand > 0f
-                            && (galleryScroll == null || galleryScroll.getScrollY() == 0)) {
-                        return start(ev);
-                    }
-                    return false;
+                    // Falling: only from a grid already at its top, so a
+                    // scrolled grid keeps its own gesture.
+                    boolean mine = up
+                            ? expand < 1f
+                            : expand > 0f
+                                    && (galleryScroll == null
+                                            || galleryScroll.getScrollY() == 0);
+                    return mine && start(ev);
                 }
                 default:
                     return false;
@@ -1415,8 +1432,10 @@ public final class SigilCamera {
         private boolean start(MotionEvent ev) {
             dragging = true;
             startExpand = expand;
-            y0 = ev.getY();
+            // From HERE, so the slop is not counted as travel.
+            y0 = ev.getRawY();
             if (sheetAnim != null) sheetAnim.cancel();
+            if (tracker != null) tracker.recycle();
             tracker = VelocityTracker.obtain();
             tracker.addMovement(ev);
             return true;
@@ -1424,13 +1443,14 @@ public final class SigilCamera {
 
         @Override
         public boolean onTouchEvent(MotionEvent ev) {
+            int what = ev.getActionMasked();
             if (!dragging) {
-                if (ev.getActionMasked() == MotionEvent.ACTION_DOWN) {
-                    y0 = ev.getY();
+                if (what == MotionEvent.ACTION_DOWN) {
+                    y0 = ev.getRawY();
                     return true;
                 }
-                if (ev.getActionMasked() == MotionEvent.ACTION_MOVE
-                        && Math.abs(ev.getY() - y0) >= slop) {
+                if (what == MotionEvent.ACTION_MOVE
+                        && Math.abs(ev.getRawY() - y0) >= slop) {
                     start(ev);
                 } else {
                     return true;
@@ -1438,9 +1458,11 @@ public final class SigilCamera {
             }
             if (tracker != null) tracker.addMovement(ev);
             float travel = Math.max(1, restTop() - dp(EX_TOP));
-            switch (ev.getActionMasked()) {
+            switch (what) {
                 case MotionEvent.ACTION_MOVE: {
-                    float dy = ev.getY() - y0;
+                    // One to one with the finger, and nothing else changes
+                    // until it lifts.
+                    float dy = ev.getRawY() - y0;
                     applyExpand(clamp(startExpand - dy / travel));
                     return true;
                 }
@@ -1453,12 +1475,11 @@ public final class SigilCamera {
                         tracker.recycle();
                         tracker = null;
                     }
-                    // A flick decides on its own; a slow drag on where it got.
-                    boolean full = Math.abs(v) > dp(600)
-                            ? v < 0
-                            : expand > 0.5f;
-                    snap(full ? 1f : 0f);
                     dragging = false;
+                    // A flick goes the way it was thrown; anything slower
+                    // goes to whichever end it ended up nearer.
+                    boolean flick = Math.abs(v) > dp(600);
+                    snap(flick ? (v < 0 ? 1f : 0f) : (expand > 0.5f ? 1f : 0f));
                     return true;
                 }
                 default:
@@ -2134,6 +2155,71 @@ public final class SigilCamera {
         }
     }
 
+    /// The zoom stops: the scrim, three discs and three labels, all drawn by
+    /// one view so nothing can be clipped by anything. The lit disc is where
+    /// the highlight has glided to, not where the chosen stop is, so the two
+    /// move together over the 300ms.
+    private static final class ZoomPill extends View {
+        /// The lit disc's centre, in this view's own pixels; animated.
+        float litCx;
+        private final Paint scrim = new Paint(Paint.ANTI_ALIAS_FLAG);
+        private final Paint disc = new Paint(Paint.ANTI_ALIAS_FLAG);
+        private final Paint text = new Paint(Paint.ANTI_ALIAS_FLAG);
+        private final RectF box = new RectF();
+
+        ZoomPill(Context c) {
+            super(c);
+            setClickable(true);
+            scrim.setStyle(Paint.Style.FILL);
+            scrim.setColor(SCRIM);
+            disc.setStyle(Paint.Style.FILL);
+            text.setTextAlign(Paint.Align.CENTER);
+            litCx = chipCx(1);
+        }
+
+        @Override
+        protected void onDraw(Canvas canvas) {
+            float cy = getHeight() / 2f;
+            float pillH = dp(PILL_H);
+            box.set(0, cy - pillH / 2f, getWidth(), cy + pillH / 2f);
+            canvas.drawRoundRect(box, pillH / 2f, pillH / 2f, scrim);
+
+            float r = dp(CHIP_D) / 2f;
+            // One filled disc, under the label of whichever stop is lit; the
+            // other two are the pill's own ground showing through.
+            disc.setColor(ON_BG);
+            canvas.drawCircle(litCx, cy, r, disc);
+
+            text.setTextSize(dp(CHIP_SP));
+            Paint.FontMetrics fm = text.getFontMetrics();
+            float baseline = cy - (fm.ascent + fm.descent) / 2f;
+            for (int i = 0; i < STOPS.length; i++) {
+                float x = chipCx(i);
+                // Lit by proximity to the highlight, so the label's colour
+                // turns over as the disc arrives rather than before it.
+                boolean on = Math.abs(x - litCx) < dp(CHIP_PITCH) / 2f;
+                text.setColor(on ? ON_FG : OFF_FG);
+                text.setAlpha(reachable(STOPS[i]) ? 255 : 90);
+                canvas.drawText(label(STOPS[i]), x, baseline, text);
+            }
+        }
+
+        @Override
+        public boolean onTouchEvent(MotionEvent ev) {
+            if (ev.getActionMasked() != MotionEvent.ACTION_UP) {
+                return super.onTouchEvent(ev);
+            }
+            float x = ev.getX();
+            for (int i = 0; i < STOPS.length; i++) {
+                if (Math.abs(x - chipCx(i)) <= dp(CHIP_PITCH) / 2f) {
+                    if (reachable(STOPS[i])) glideZoom(STOPS[i]);
+                    break;
+                }
+            }
+            return super.onTouchEvent(ev);
+        }
+    }
+
     /// The shutter: a white ring with a disc inside it. `red` is how far along
     /// the Photo → Video crossfade the disc is, and `recording` squares it off
     /// — the same button ends the clip.
@@ -2158,6 +2244,10 @@ public final class SigilCamera {
             float cy = getHeight() / 2f;
             float stroke = dp(SHUTTER_STROKE);
             ring.setStrokeWidth(stroke);
+            // The dark inside first, then the ring over its edge, then the
+            // disc: the reference's shutter is not a hole onto the picture.
+            fill.setColor(RING_FILL);
+            canvas.drawCircle(cx, cy, Math.min(cx, cy) - stroke, fill);
             canvas.drawCircle(cx, cy, Math.min(cx, cy) - stroke / 2f, ring);
 
             fill.setColor(mix(Color.WHITE, REC, red));
@@ -2197,12 +2287,15 @@ public final class SigilCamera {
         float ink;
         /// The flip carries a ring of its own; nothing else does.
         boolean ring;
+        /// A circle of this fraction of the ink box cut out of the middle.
+        float punch;
         int tint = Color.WHITE;
 
         private final Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
         private final Paint line = new Paint(Paint.ANTI_ALIAS_FLAG);
         private final Path path = new Path();
         private final Path scaled = new Path();
+        private final Path cut = new Path();
         private final RectF bounds = new RectF();
         private final Matrix matrix = new Matrix();
         private String built = "";
@@ -2223,9 +2316,12 @@ public final class SigilCamera {
             float cy = getHeight() / 2f;
 
             if (ring) {
-                line.setStrokeWidth(dp(FLIP_STROKE));
+                float stroke = dp(FLIP_STROKE);
+                paint.setColor(RING_FILL);
+                canvas.drawCircle(cx, cy, Math.min(cx, cy) - stroke, paint);
+                line.setStrokeWidth(stroke);
                 line.setColor(tint);
-                canvas.drawCircle(cx, cy, Math.min(cx, cy) - dp(FLIP_STROKE) / 2f, line);
+                canvas.drawCircle(cx, cy, Math.min(cx, cy) - stroke / 2f, line);
             }
             if (symbols == null || glyph == null || glyph.isEmpty()) return;
 
@@ -2245,6 +2341,16 @@ public final class SigilCamera {
                     cy - (bounds.top + bounds.height() / 2f) * s);
             scaled.reset();
             path.transform(matrix, scaled);
+            if (punch > 0f) {
+                // flip_camera_android carries a filled lens in the middle and
+                // the reference's icon does not. No codepoint in the app's
+                // font draws the two arrows alone — every one of the 4200 was
+                // measured against the reference and this was still the
+                // closest — so the dot is cut out of the path instead.
+                cut.reset();
+                cut.addCircle(cx, cy, dp(ink) * punch, Path.Direction.CW);
+                scaled.op(cut, Path.Op.DIFFERENCE);
+            }
             paint.setColor(tint);
             canvas.drawPath(scaled, paint);
         }
@@ -3009,7 +3115,6 @@ public final class SigilCamera {
         flipBtn = null;
         shutterBtn = null;
         zoomPill = null;
-        chips = null;
         modeRow = null;
         modeLabels = null;
         surfaceReady = false;

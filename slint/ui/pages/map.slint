@@ -225,6 +225,19 @@ export component MapPage inherits Rectangle {
     /// run on down through it and the bar shows the page, not a strip.
     in property <length> bleed-bottom: 0px;
     out property <color> bottom-ground: Colors.transparent;
+    /// Where the map's own box ends and where the footer sheet begins, both
+    /// measured from the top of the PAGE, for the harness to hold to account:
+    /// the two must be the same number, or there is a band of nothing between
+    /// the imagery and the sheet. They came apart once already, when the
+    /// picker's panel-sized map area was allowed to reshape this page's view
+    /// (mapview::MapView::size).
+    /// What the bridge was last told the map area is, so a viewport that has
+    /// been reshaped by something else is visible to a test.
+    in property <length> viewport-h: 0px;
+    out property <length> map-bottom: map-area.y + map-area.height;
+    out property <length> foot-top: map-area.y + sheet.y;
+    /// The page's own height, so a test can say the map reaches the bottom of it.
+    out property <length> page-h: root.height;
 
     /// The phone opens this page out of the conversation, in three beats:
     /// the header's furniture lets go and "Location" arrives from the right

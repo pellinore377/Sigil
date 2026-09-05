@@ -237,6 +237,23 @@ export component ChatPage inherits Rectangle {
     /// code — and this is the baseline the 8 of slack is measured from, so a
     /// pin landing mid-gesture cannot leave a stale number behind either.
     property <length> list-vy: 0px;
+    /// A finger — or the fling it let go of — has the list. Nothing else may
+    /// move it while that lasts.
+    ///
+    /// The composer's own room changes under a running flick all the time: the
+    /// keyboard closing takes 13 frames of IME to shrink the list's end
+    /// padding, and every one of those frames is a `changed viewport-height`.
+    /// Pinning on any of them writes `viewport-y` straight over the flick's
+    /// own animation, and the content stops dead or jumps back — the timeline
+    /// "freaking out" while the keyboard goes down under a scroll. The pin is
+    /// for rows inflating under a view that is standing still; a view that is
+    /// moving is the user's, and it waits.
+    property <bool> flicking: false;
+    flick-timer := Timer {
+        interval: 260ms;
+        running: root.flicking;
+        triggered => { root.flicking = false; }
+    }
     public function scroll-to-end() {
         list.stick = true;
         list.viewport-y = min(0px, list.height - list.viewport-height);
@@ -255,7 +272,13 @@ export component ChatPage inherits Rectangle {
     property <length> held-y: -1px;
     /// The list's viewport, snapshotted in its `changed` callbacks for the
     /// rows' virtualisation (a binding would loop through the layout).
-    property <length> vp-y: 0px;
+    ///
+    /// `vp-y` is out as well: everything the timeline adds and takes away —
+    /// the composer's band, a panel, the keyboard — is padding at the END of
+    /// the content, so a view that is holding its place is a view whose
+    /// `viewport-y` does not change, and the harness says so in exactly those
+    /// terms.
+    out property <length> vp-y: 0px;
     property <length> vp-h: 0px;
     public function sheet-open-id(id: string) { root.debug-press-id = id; }
     /// Test hook: open the sheet for one row with a rectangle the harness
@@ -419,13 +442,30 @@ export component ChatPage inherits Rectangle {
     // composer lets go of focus, so the keyboard goes with it.
     // The keyboard's height is banked BEFORE the focus goes (the inset is
     // still the keyboard's at that instant): the panel opens at exactly it.
+    // `kb-steady`, not `kb-inset`: the inset at this instant may be a frame of
+    // the IME's own slide, and a panel opened on one of those took whatever
+    // height the keyboard happened to be passing through — the composer moving
+    // "intermittently" when panels are opened and shut quickly.
+    //
+    // Opening a panel also ends any handover in flight. Tapping the field and
+    // then the + button before the keyboard has landed used to leave the
+    // handover armed, and its own arrival then shut the panel the second tap
+    // had just opened.
     changed attach-open => {
-        if (self.attach-open) { root.open-kb = root.kb-inset; self.recorder-open = false; composer-input.clear-focus(); }
-        else if (!self.recorder-open) { root.open-kb = 0px; }
+        if (self.attach-open) {
+            root.handover = false;
+            root.open-kb = root.kb-steady;
+            self.recorder-open = false;
+            composer-input.clear-focus();
+        } else if (!self.recorder-open) { root.open-kb = 0px; }
     }
     changed recorder-open => {
-        if (self.recorder-open) { root.open-kb = root.kb-inset; self.attach-open = false; composer-input.clear-focus(); }
-        else if (!self.attach-open) { root.open-kb = 0px; }
+        if (self.recorder-open) {
+            root.handover = false;
+            root.open-kb = root.kb-steady;
+            self.attach-open = false;
+            composer-input.clear-focus();
+        } else if (!self.attach-open) { root.open-kb = 0px; }
     }
     changed visible-to-user => {
         if (!self.visible-to-user) { self.attach-open = false; }
@@ -688,7 +728,20 @@ export component ChatPage inherits Rectangle {
         running: root.handover && root.kb-inset > 96px;
         triggered => { root.end-handover(root.kb-inset >= root.panel-h); }
     }
+    /// The keyboard's height as last seen STANDING STILL, and zero while there
+    /// is no keyboard. What a panel opening over a keyboard takes its height
+    /// from: the raw inset at any given instant may be a frame of the IME's
+    /// slide, and a panel that took one of those opened at whatever height the
+    /// keyboard was passing through.
+    property <length> kb-steady: 0px;
+    kb-steady-timer := Timer {
+        interval: 120ms;
+        running: root.kb-inset > 96px;
+        triggered => { root.kb-steady = root.kb-inset; }
+    }
     changed kb-inset => {
+        if (root.kb-inset > 96px) { kb-steady-timer.restart(); }
+        else { root.kb-steady = 0px; }
         if (root.handover) {
             if (root.kb-inset >= root.panel-h) { root.end-handover(true); }
             else { kb-land-timer.restart(); }
@@ -696,29 +749,31 @@ export component ChatPage inherits Rectangle {
     }
     property <length> foot-h: max(root.panel-h,
         (root.attach-open || root.recorder-open) ? root.kb-inset : root.bottom-inset);
-    /// The height the open panel is HEADING for. The frames' own heights are
-    /// the animated ones, and they are what the durations below drive, so
-    /// nothing a duration reads may be one of them.
-    property <length> panel-aim: (root.attach-open ? root.att-h : 0px)
-        + (root.recorder-open ? root.rec-h : 0px);
     /// Whether a panel about to change height should just BE there. Read at
     /// the instant the animation starts, which is what makes one expression
     /// enough for every case:
     ///
-    ///   opening while the keyboard is up   the panel is going exactly where
-    ///                                      the keyboard already is → instant,
-    ///                                      and it waits there behind it
+    ///   opening while a keyboard is there   the panel is going exactly where
+    ///                                       the keyboard is → instant, and it
+    ///                                       waits there behind it
+    ///   opening while a keyboard is LEAVING  likewise, and this is the one the
+    ///                                       shorter rule missed: a panel
+    ///                                       growing over 220 while the
+    ///                                       keyboard falls away underneath
+    ///                                       makes max() of the two dip in the
+    ///                                       middle, and the composer with it
     ///   closing because the keyboard has
-    ///     covered it (the handover)        aim is 0 under a keyboard →
-    ///                                      instant, with nothing on screen
-    ///                                      to see it go
-    ///   opening from the bare screen       no keyboard → the 220 wipe
-    ///   closing to the bare screen         no keyboard → the 220 wipe
+    ///     covered it (the handover)         under a keyboard → instant, with
+    ///                                       nothing on screen to see it go
+    ///   opening from the bare screen        no keyboard → the 220 wipe
+    ///   closing to the bare screen          no keyboard → the 220 wipe
     ///   closing under a keyboard that
-    ///     landed SHORTER than the panel    `give-up` → the wipe, and the
-    ///                                      composer rides it down
-    property <bool> panel-instant: !root.give-up
-        && root.kb-inset > 0px && root.kb-inset >= root.panel-aim;
+    ///     landed SHORTER than the panel     `give-up` → the wipe, and the
+    ///                                       composer rides it down
+    ///
+    /// Which is to say: a keyboard anywhere in the picture means the panel
+    /// simply is its size, at once, and the only animation is the keyboard's.
+    property <bool> panel-instant: !root.give-up && root.kb-inset > 0px;
     /// Whatever of the foot the panel is not already covering: the composer's
     /// own bottom padding. Zero once a panel has grown to the keyboard's size.
     property <length> composer-inset: root.is-invite ? 0px : root.foot-h - root.panel-h;
@@ -1113,13 +1168,13 @@ export component ChatPage inherits Rectangle {
                 // Not while the sheet holds the list: its padding changes the
                 // viewport on purpose, and the bubble must stay put.
                 changed viewport-height => {
-                    if (self.stick && !sheet.shown) { root.pin-list(); }
+                    if (self.stick && !sheet.shown && !root.flicking) { root.pin-list(); }
                 }
                 // The panels below take their room from the list: keep
                 // the bottom pinned as it shrinks or grows.
                 changed height => {
                     root.vp-h = self.height;
-                    if (self.stick && !sheet.shown) { root.pin-list(); }
+                    if (self.stick && !sheet.shown && !root.flicking) { root.pin-list(); }
                 }
                 init => { root.vp-h = self.height; root.vp-y = self.viewport-y; }
                 // A drag on the conversation puts away whatever was standing
@@ -1142,6 +1197,10 @@ export component ChatPage inherits Rectangle {
                 // trip it. `list-vy` banks every one of those anyway, and 8 of
                 // slack on top rejects the jitter of a press that barely moved.
                 flicked => {
+                    // The list is the user's until 260 after the last frame of
+                    // the gesture — the drag and the fling that follows it.
+                    root.flicking = true;
+                    flick-timer.restart();
                     if (abs((self.viewport-y - root.list-vy) / 1px) > 8) {
                         root.attach-open = false;
                         root.recorder-open = false;
@@ -1904,7 +1963,16 @@ export component ChatPage inherits Rectangle {
                     easing: cubic-bezier(0.33, 1, 0.68, 1);
                 }
                 clip: true;
-                changed height => { if (list.stick || root.attach-open) { root.pin-list(); } }
+                // Only while the view is standing at the end and nothing is
+                // being flicked. The `|| attach-open` this used to carry is
+                // from when the sheet took its room OUT of the list: the list
+                // runs on under it now and gives the room back as padding at
+                // its end, so a reader who has scrolled up keeps their place —
+                // the panel opening over them must not haul the conversation
+                // to the bottom, which is what it did.
+                changed height => {
+                    if (list.stick && !root.flicking) { root.pin-list(); }
+                }
                 att := AttachMenu {
                     x: 0; y: 0;
                     width: att-frame.width;
@@ -2024,7 +2092,9 @@ export component ChatPage inherits Rectangle {
                     easing: cubic-bezier(0.33, 1, 0.68, 1);
                 }
                 clip: true;
-                changed height => { if (list.stick || root.recorder-open) { root.pin-list(); } }
+                changed height => {
+                    if (list.stick && !root.flicking) { root.pin-list(); }
+                }
                 rec := VoiceRecorder {
                     x: 0; y: 0;
                     // The remembered keyboard's height, floored by the pills

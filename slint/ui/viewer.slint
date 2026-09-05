@@ -25,8 +25,21 @@ export struct ViewerItem {
     sender-name: string,
     is-own: bool,
     ts-label: string,    // formatted Rust-side (fmtTs)
-    img: image,          // full image, poster frame for videos
+    img: image,          // the best picture in hand, poster frame for videos
     have-img: bool,
+    /// The thumbnail the timeline already had, when it is a different file
+    /// from `img`. The stage paints it under `img` so that the moment the
+    /// full-resolution picture lands it can be faded in over the picture
+    /// already on screen instead of replacing it — the "flash" on paging
+    /// onto a picture whose full file had not arrived yet.
+    thumb: image,
+    /// `img` is the full-resolution file and `thumb` is a different, smaller
+    /// one: the pair the cross-fade needs. False when there is only one file,
+    /// and then nothing fades — `img` simply paints.
+    has-full: bool,
+    /// The picture's own size, as the event declares it. The fit is computed
+    /// from these and never from the decoded picture, so the frame does not
+    /// move when a thumbnail is replaced by the full file.
     w: int,
     h: int,
     can-redact: bool,
@@ -373,13 +386,34 @@ export component ImageViewer inherits Rectangle {
             height: root.fit-h * root.zoom;
             border-radius: 20px;   // measured: 51px at 2.55 px/dp
             clip: true;
-            // The still: the picture, or a video's poster. It stays up through
-            // the second or so a decoder takes to hand over its first frame,
-            // which used to be a black page (ImageViewer.qml kept the poster
-            // under the video surface for the same reason).
-            if root.it.have-img && root.it.gif-frames.length <= 1
-                && (!root.playing || root.video-frame.width == 0) : Image {
+            // The still, in two layers. The lower one is the thumbnail the
+            // timeline already had; the upper is the best picture in hand.
+            // While only the thumbnail exists the two are the same file and
+            // the upper is transparent, so one picture paints. When the full
+            // file lands, `img` becomes it and `has-full` rises in the same
+            // frame: the upper fades up over the lower across 150ms instead
+            // of the picture being swapped out from under the eye. Nothing
+            // about the frame moves — `fit-w`/`fit-h` come from the event's
+            // declared w/h, never from what was decoded.
+            //
+            // Both layers stay instantiated: an `if` would build the upper
+            // one already opaque and there would be no fade to see. It also
+            // means a page turn between two pictures that both have their
+            // full file leaves `has-full` true throughout, so the turn
+            // carries no fade of its own.
+            property <bool> still: root.it.have-img && root.it.gif-frames.length <= 1
+                && (!root.playing || root.video-frame.width == 0);
+            Image {
+                source: root.it.has-full ? root.it.thumb : root.it.img;
+                visible: media.still;
+                width: 100%; height: 100%;
+                image-fit: fill;
+            }
+            Image {
                 source: root.it.img;
+                visible: media.still && root.it.has-full;
+                opacity: root.it.has-full ? 1.0 : 0.0;
+                animate opacity { duration: 150ms; }
                 width: 100%; height: 100%;
                 image-fit: fill;
             }
@@ -743,11 +777,24 @@ export component ImageViewer inherits Rectangle {
     }
     picker-drawer := Rectangle {
         property <length> open-h: root.height * 0.62;
+        /// How far the handle has dragged the drawer below its resting place.
+        /// Never negative: the drawer does not rubber-band upward.
+        property <length> drag: 0px;
+        /// Past a quarter of its own height it is a dismissal, not a fidget.
+        property <length> dismiss-at: self.height / 4;
+        /// Cleared before `drag` is, so the settle always gets its animation
+        /// (TouchArea.pressed is still set while the release is delivered).
+        property <bool> dragging: false;
         x: 0; width: 100%;
         height: self.open-h;
-        y: root.picker-open ? root.height - self.open-h : root.height;
-        animate y { duration: 220ms; easing: cubic-bezier(0.33, 1, 0.68, 1); }
-        visible: self.y < root.height;
+        y: (root.picker-open ? root.height - self.open-h : root.height + 6px) + self.drag;
+        // The finger moves it 1:1; letting go settles on the same 220ms
+        // OutCubic it opens and closes on.
+        animate y {
+            duration: self.dragging ? 0ms : 220ms;
+            easing: cubic-bezier(0.33, 1, 0.68, 1);
+        }
+        visible: self.y < root.height - 0.5px;
         background: Theme.popup-background.with-alpha(0.98);
         border-top-left-radius: 28px;
         border-top-right-radius: 28px;
@@ -755,10 +802,38 @@ export component ImageViewer inherits Rectangle {
         // Swallow presses on the drawer's own ground so they never reach the
         // picture's pager underneath.
         TouchArea { }
-        Rectangle {
-            x: (parent.width - self.width) / 2; y: 8px;
-            width: 32px; height: 4px; border-radius: 2px;
-            background: root.fg.with-alpha(0.4);
+        // Drag handle: a 24 grab strip with the pill centred in it, the
+        // message sheet's drawer handle exactly (sheet.slint). It DRAGS —
+        // the drawer follows the finger and either settles back or goes.
+        handle-row := Rectangle {
+            x: 0; y: 8px; width: 100%; height: 24px;
+            Rectangle {
+                x: (parent.width - self.width) / 2;
+                y: (parent.height - self.height) / 2;
+                width: 32px; height: 4px; border-radius: 2px;
+                background: root.fg.with-alpha(handle-t.pressed ? 0.6 : 0.4);
+            }
+            handle-t := TouchArea {
+                moved => {
+                    picker-drawer.dragging = true;
+                    // The handle travels WITH the drawer, so `mouse-y` is
+                    // already measured against the moved edge: what is left
+                    // over is the step, not the whole gesture. Adding it
+                    // keeps the pill under the finger (taking the difference
+                    // outright tracks at half speed).
+                    picker-drawer.drag = max(0px,
+                        picker-drawer.drag + self.mouse-y - self.pressed-y);
+                }
+                pointer-event(e) => {
+                    if (e.kind == PointerEventKind.up || e.kind == PointerEventKind.cancel) {
+                        picker-drawer.dragging = false;
+                        if (picker-drawer.drag > picker-drawer.dismiss-at) {
+                            root.picker-open = false;
+                        }
+                        picker-drawer.drag = 0px;
+                    }
+                }
+            }
         }
         EmojiPicker {
             x: 0; y: 32px; width: 100%;

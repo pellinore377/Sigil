@@ -207,6 +207,16 @@ pub enum Owner {
     Picker,
 }
 
+impl Owner {
+    /// Which of the two remembered sizes is this surface's (`MapView::size`).
+    fn slot(self) -> usize {
+        match self {
+            Owner::Picker => 1,
+            _ => 0,
+        }
+    }
+}
+
 /// The page's view of the map: where it is looking and what it has drawn.
 pub struct MapView {
     /// Whose map this is at the moment. Set by whichever surface opened it.
@@ -238,9 +248,25 @@ pub struct MapView {
     /// The shared point the page was opened on.
     pub lat: f64,
     pub lon: f64,
-    /// The map area, in logical pixels.
+    /// The map area, in logical pixels — whichever surface is showing.
     pub w: f64,
     pub h: f64,
+    /// The map area's size as each surface last reported it, by `Owner::slot`.
+    ///
+    /// One view, two surfaces of very different shapes: the location page is a
+    /// whole screen and the picker is a box in a panel under a composer. They
+    /// report their sizes when their boxes are BUILT, which for the picker is
+    /// whenever the attach sheet opens its location page — so the picker's
+    /// `init` was arriving long after the page had reported its own, and
+    /// resizing the shared view to a 294-pixel box. The page then drew a
+    /// screenful of map from a viewport a quarter of its height: tiles for the
+    /// top half only, the marker at the middle of a box nobody could see, and
+    /// a wide dark band where the rest of the map should have been.
+    ///
+    /// So each surface's size is kept apart and `open_for` puts the right one
+    /// back. A report from a surface that is not showing is remembered and not
+    /// applied.
+    pub size: [(f64, f64); 2],
     /// Tiles already rendered, by zoom and tile position.
     pub have: HashMap<(u32, i64, i64), slint::Image>,
     /// Tiles with the engine right now and not yet answered, so nothing is
@@ -284,6 +310,7 @@ impl Default for MapView {
             lon: 0.0,
             w: 0.0,
             h: 0.0,
+            size: [(0.0, 0.0); 2],
             have: HashMap::new(),
             asked: HashSet::new(),
             queue: VecDeque::new(),
@@ -308,6 +335,14 @@ impl MapView {
     pub fn open_for(&mut self, owner: Owner, lat: f64, lon: f64, z: u32) {
         self.epoch = self.epoch.wrapping_add(1);
         self.owner = owner;
+        // Back to this surface's own map area. Without it the view keeps
+        // whatever shape the other one last had, and draws a screenful of page
+        // through a panel-sized window.
+        let (w, h) = self.size[owner.slot()];
+        if w > 0.0 && h > 0.0 {
+            self.w = w;
+            self.h = h;
+        }
         self.open_z = z.clamp(Z_MIN, Z_MAX);
         self.z = self.open_z;
         self.scale = 1.0;
@@ -331,6 +366,23 @@ impl MapView {
         self.w = w.max(0.0);
         self.h = h.max(0.0);
         self.clamp();
+    }
+
+    /// A surface reporting the size of its map area.
+    ///
+    /// Remembered against that surface, and applied only if it is the one
+    /// showing — the picker's box announces itself the moment the attach sheet
+    /// builds it, which is no reason to reshape the location page's map.
+    /// Returns whether the view actually changed size, so the caller can skip
+    /// re-placing a grid that has not moved.
+    pub fn viewport(&mut self, owner: Owner, w: f64, h: f64) -> bool {
+        let (w, h) = (w.max(0.0), h.max(0.0));
+        self.size[owner.slot()] = (w, h);
+        if owner != self.owner || (self.w == w && self.h == h) {
+            return false;
+        }
+        self.resize(w, h);
+        true
     }
 
     /// Put the view back where the page opened it: the shared point, at the
@@ -1098,6 +1150,59 @@ mod tests {
         let want = v.wanted();
         // one tile of view plus a ring is three by three at most
         assert!(want.len() >= 9 && want.len() <= 16, "{}", want.len());
+    }
+
+    /// The regression the user saw as a wide dark band under the map.
+    ///
+    /// The attach sheet's picker shares this view, and its map box announces
+    /// its size when the sheet BUILDS it — which is whenever somebody opens
+    /// the location page of the attach sheet, long after the location page
+    /// itself reported its own screenful. Routed to the same handler, that
+    /// 294-pixel panel reshaped the whole page, and the page then drew tiles
+    /// for a quarter of its height.
+    #[test]
+    fn the_picker_sizing_its_panel_does_not_reshape_the_page() {
+        let mut v = MapView::default();
+        // The page's box reports itself at startup, before anything is open:
+        // filed against the page, applied when the page opens.
+        assert!(!v.viewport(Owner::Page, 527.0, 1113.0));
+        v.open_for(Owner::Page, 51.5, -0.12, 15);
+        assert_eq!((v.w, v.h), (527.0, 1113.0));
+        // Now it IS the surface showing, so its own reports land at once.
+        assert!(v.viewport(Owner::Page, 527.0, 1100.0));
+        assert!(v.viewport(Owner::Page, 527.0, 1113.0));
+        // The sheet builds its picker somewhere else and it announces itself.
+        // Remembered, not applied: nothing about the page may move.
+        assert!(!v.viewport(Owner::Picker, 368.0, 294.0));
+        assert_eq!((v.w, v.h), (527.0, 1113.0));
+        // The grid still covers the whole page …
+        let rows = v.wanted().iter().map(|t| t.1).collect::<HashSet<_>>().len();
+        assert!(rows >= 6, "only {rows} rows of tiles for a 1113px page");
+        // … and the marker still sits in the middle of it.
+        let (_, py) = v.pin();
+        assert!((f64::from(py) - 1113.0 / 2.0).abs() < 1.0, "{py}");
+    }
+
+    #[test]
+    fn each_surface_gets_its_own_map_area_back_when_it_opens() {
+        let mut v = MapView::default();
+        v.viewport(Owner::Page, 527.0, 1113.0);
+        v.viewport(Owner::Picker, 368.0, 294.0);
+        // Whichever opens, the view takes that surface's shape …
+        v.open_for(Owner::Picker, 51.5, -0.12, 16);
+        assert_eq!((v.w, v.h), (368.0, 294.0));
+        v.open_for(Owner::Page, 51.5, -0.12, 15);
+        assert_eq!((v.w, v.h), (527.0, 1113.0));
+        // …and back again, however many times they take turns.
+        v.open_for(Owner::Picker, 40.0, -3.0, 16);
+        assert_eq!((v.w, v.h), (368.0, 294.0));
+        // A surface that is showing is still resized by its own reports — a
+        // window turned sideways has to be heard.
+        assert!(v.viewport(Owner::Picker, 700.0, 200.0));
+        assert_eq!((v.w, v.h), (700.0, 200.0));
+        // A repeat of the size already in use changes nothing and says so, so
+        // the caller can skip re-placing a grid that has not moved.
+        assert!(!v.viewport(Owner::Picker, 700.0, 200.0));
     }
 
     #[test]

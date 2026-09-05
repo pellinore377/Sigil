@@ -341,7 +341,12 @@ export component AppWindow inherits Window {
     in property <[MapTileView]> mp-tiles;
     in property <length> mp-pin-x;
     in property <length> mp-pin-y;
+    /// What the bridge last sized the map view to, surfaced for the harness.
+    in property <length> mp-viewport-h;
     callback map-viewport(length, length);
+    /// The attach picker's map area, kept apart from the page's: one view,
+    /// two surfaces of different shapes (see actions.rs map_resized).
+    callback lp-viewport(length, length);
     callback map-panned(length, length);
     callback map-zoom-at(int, length, length);
     // Two fingers on the location map: where the view was when they went
@@ -442,6 +447,12 @@ export component AppWindow inherits Window {
     /// harness reads it back and asserts it across keyboard, attach sheet and
     /// recorder — a bob there is exactly what the reference does not have.
     out property <length> chat-panel-top: chat.panel-top;
+    /// The location page's map box and its footer, for the harness: the map
+    /// must reach the sheet with nothing between them.
+    out property <length> map-bottom: map.map-bottom;
+    out property <length> map-foot-top: map.foot-top;
+    out property <length> map-view-h: map.viewport-h;
+    out property <length> map-page-h: map.page-h;
     /// The clear band between the newest message and the composer's well, for
     /// the harness: it must be the same 16 whatever is standing under the
     /// composer (chat.slint's `msg-gap`).
@@ -454,6 +465,10 @@ export component AppWindow inherits Window {
     /// Whether the composer's field holds the focus — what keeps the keyboard
     /// up, and so what a drag on the conversation has to let go of.
     out property <bool> chat-composer-focused: chat.composer-focused;
+    /// The timeline's own offset: a view holding its place is one whose
+    /// offset does not move, since everything that comes and goes under the
+    /// composer is padding at the END of the content.
+    out property <length> chat-vp-y: chat.vp-y;
     public function clear-composer() { chat.clear-composer(); }
     public function debug-sheet(index: int, x: length, y: length, w: length, h: length) { chat.sheet-open(root.items[index], x, y, w, h); }
     /// The harness's long-press on a real row: its own rectangle, its own glide.
@@ -910,7 +925,7 @@ export component AppWindow inherits Window {
                 // The picker's gestures go to the location page's own handlers,
                 // because it is the location page's own map: one MapView, and
                 // `mapview::Owner` says which surface is showing it.
-                attach-loc-viewport(w, h) => { root.map-viewport(w, h); }
+                attach-loc-viewport(w, h) => { root.lp-viewport(w, h); }
                 attach-loc-panned(dx, dy) => { root.map-panned(dx, dy); }
                 attach-loc-zoom-at(s, x, y) => { root.map-zoom-at(s, x, y); }
                 attach-loc-pinch-begin => { root.map-pinch-begin(); }
@@ -1069,6 +1084,7 @@ export component AppWindow inherits Window {
                 // The window paints nothing under the gesture bar for this
                 // page; the map and the footer run on down through it.
                 bleed-bottom: max(root.safe-area-insets.bottom, root.kb-overlap);
+                viewport-h: root.mp-viewport-h;
                 pinch-begin => { root.map-pinch-begin(); }
                 pinched(f, x, y) => { root.map-pinched(f, x, y); }
                 pinch-end => { root.map-pinch-end(); }

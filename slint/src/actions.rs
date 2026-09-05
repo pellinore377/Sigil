@@ -270,6 +270,19 @@ pub fn map_place(ui: &mut UiState, win: &AppWindow) {
     map_pump(ui);
 }
 
+/// One of the two map surfaces has told us how big its map area is. Only the
+/// one on screen reshapes the view; the other's size is filed away for when it
+/// is (`MapView::viewport`).
+fn map_resized(ui: &mut UiState, owner: crate::mapview::Owner, w: f64, h: f64) {
+    if !ui.mapview.viewport(owner, w, h) {
+        return;
+    }
+    let Some(win) = ui.win.upgrade() else { return };
+    win.set_mp_viewport_h((ui.mapview.h as f32).into());
+    map_place(ui, &win);
+    map_prefetch(ui);
+}
+
 /// Work out what the view will want next and queue it: the level being drawn,
 /// the level one out and the level one in, over the ground the view covers,
 /// nearest the middle first and capped (`MapView::prefetch`). Called when the
@@ -422,13 +435,15 @@ pub fn wire_extra(win: &AppWindow) {
         let Some(w) = ui.win.upgrade() else { return };
         clock_tick(ui, &w);
     });
+    // The two surfaces report their map areas separately, and the view keeps
+    // both — a box announces its size when it is BUILT, and the attach sheet
+    // builds its location page long after the location page reported its own.
+    // Routed together, the picker's 294-pixel panel reshaped the whole page.
     win.on_map_viewport(|w, h| {
-        with_ui(|ui| {
-            let Some(win) = ui.win.upgrade() else { return };
-            ui.mapview.resize(w as f64, h as f64);
-            map_place(ui, &win);
-            map_prefetch(ui);
-        });
+        with_ui(|ui| map_resized(ui, crate::mapview::Owner::Page, w as f64, h as f64));
+    });
+    win.on_lp_viewport(|w, h| {
+        with_ui(|ui| map_resized(ui, crate::mapview::Owner::Picker, w as f64, h as f64));
     });
     win.on_map_panned(|dx, dy| {
         with_ui(|ui| {
@@ -3618,16 +3633,29 @@ fn viewer_row(ui: &mut UiState, i: &Value, room_id: &str) -> crate::ViewerItem {
     // A video's `path` is the clip itself; the picture to show is its
     // poster. BubbleDelegate.qml:466 never hands a video file to the
     // image decoder either — it only logged an error and drew black.
+    let thumb_path = media["thumbnailPath"].as_str().unwrap_or("").to_string();
     let path = if s(i, "kind") == "video" {
-        media["thumbnailPath"].as_str().unwrap_or("")
+        thumb_path.as_str()
     } else {
-        media["path"]
-            .as_str()
-            .or(media["thumbnailPath"].as_str())
-            .unwrap_or("")
+        let full = media["path"].as_str().unwrap_or("");
+        if full.is_empty() {
+            thumb_path.as_str()
+        } else {
+            full
+        }
     }
     .to_string();
     let img = crate::bridge::avatar_pub(ui, &path);
+    // The pair the stage cross-fades between: the thumbnail the timeline
+    // already drew, and the full file when one has landed and is a different
+    // file. With only one file there is nothing to fade and `has_full` is
+    // false, so the stage paints `img` and nothing animates.
+    let has_full = !thumb_path.is_empty() && thumb_path != path;
+    let thumb = if has_full {
+        crate::bridge::avatar_pub(ui, &thumb_path)
+    } else {
+        img.clone()
+    };
     // GIFs animate here too, from the frame strip the bubble cached.
     let mut gif_imgs: Vec<slint::Image> = Vec::new();
     let mut gif_delays: Vec<i32> = Vec::new();
@@ -3675,6 +3703,10 @@ fn viewer_row(ui: &mut UiState, i: &Value, room_id: &str) -> crate::ViewerItem {
         is_own: b(i, "isOwn"),
         ts_label: crate::project::session_label(i["ts"].as_i64().unwrap_or(0)).into(),
         have_img: img.is_some(),
+        // A thumbnail that failed to decode leaves nothing to fade over, so
+        // the pair collapses back to the one picture.
+        has_full: has_full && thumb.is_some() && img.is_some(),
+        thumb: thumb.unwrap_or_default(),
         img: img.unwrap_or_default(),
         w: media["width"].as_i64().unwrap_or(0) as i32,
         h: media["height"].as_i64().unwrap_or(0) as i32,
@@ -3705,14 +3737,18 @@ fn viewer_ask(ui: &UiState, idx: usize) {
         .fire("media.get", json!({"roomId": room, "eventId": ev}));
 }
 
-/// The page at `cur` and the two beside it, so a turn never lands on a
-/// thumbnail that is still growing into its full picture.
+/// The page at `cur` and the two either side of it. One neighbour deep is not
+/// enough: the turn onto it starts the fetch for the page after, and a finger
+/// already moving arrives before the file does. Two deep means the page you
+/// land on, and the next one in the same direction, are both already whole.
 fn viewer_prefetch(ui: &UiState, cur: usize) {
     viewer_ask(ui, cur);
-    if cur > 0 {
-        viewer_ask(ui, cur - 1);
+    for step in 1..=2 {
+        if cur >= step {
+            viewer_ask(ui, cur - step);
+        }
+        viewer_ask(ui, cur + step);
     }
-    viewer_ask(ui, cur + 1);
 }
 
 /// A picture landed for pages already on screen: replace those rows and only

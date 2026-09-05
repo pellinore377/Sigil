@@ -2614,7 +2614,20 @@ pub fn rebuild_timeline(ui: &mut UiState, win: &AppWindow) {
             caption_stripped,
             spoiler_revealed: ui.spoilers_revealed.contains(&event_id),
             readers_fresh,
-            location_self: location["asset"].as_str() == Some("m.self"),
+            // Does this point mark a PERSON — and so wear their face in the
+            // pin's head — or a place?
+            //
+            // The engine says so with a bool, `location.self` (sigil/kinds.rs
+            // `location_item`), and this read the MSC3488 spelling instead: an
+            // `asset` string that nothing in this app has ever produced. It was
+            // therefore false for every location ever sent. Live shares still
+            // came out right, because the bubble also takes `live || ended` as
+            // proof of a person — which is exactly why the fault showed only on
+            // a one-shot "share my current location": that has neither, so it
+            // fell through to a bare pin while the live cards above it wore a
+            // face. Both spellings are read now; the bool is ours.
+            location_self: location["self"].as_bool().unwrap_or(false)
+                || location["asset"].as_str() == Some("m.self"),
             ..Default::default()
         });
     }

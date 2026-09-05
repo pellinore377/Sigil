@@ -757,6 +757,330 @@ fn main() -> anyhow::Result<()> {
     );
     h.settle();
 
+    // ---- and now every order of every switch, over and over ----
+    //
+    // The composer was still "moving intermittently when opening and closing
+    // and switching between the keyboard, attachment panel, and voice panel" —
+    // intermittently, which means the bad cases are the orderings nobody
+    // reaches by hand. So they are all reached here: a walk over the four
+    // states in a fixed pseudo-random order (the same walk every run — a test
+    // that shuffles is a test that cannot be re-run), at three keyboard
+    // heights, with the IME's own frames wherever a keyboard comes or goes AND
+    // the switch itself landing at a random frame in the MIDDLE of them. That
+    // last part is the whole point: a panel opened while the keyboard is
+    // halfway out is the case a person hits by being quick, and it is where
+    // every one of these bugs lived.
+    //
+    // What is checked, at every frame: the composer's top is exactly
+    // `y_bare - foot`, where the foot is the taller of the panel that OUGHT to
+    // be there — worked out here, never read back off the page — and the
+    // keyboard that is there. Reading the page's own panel height back would
+    // make the check agree with whatever the page did, which is the one thing
+    // it must not do.
+    {
+        let bar = 24.0f32;
+        app.set_gesture_overlap(bar);
+        // 306 over a 24 bar is the reference phone's. 340 is a keyboard both
+        // panels clear easily; 240 is one shorter than the recorder's own 302
+        // floor, where the panel legitimately stands taller than the keyboard.
+        for &kb in [306.0f32, 340.0, 240.0].iter() {
+            app.set_kb_height_px(kb as i32);
+            app.set_kb_overlap(0.0);
+            app.set_attach_open(false);
+            app.set_recorder_open(false);
+            h.settle();
+            // What each state's panel MUST be. The attach grid takes the
+            // keyboard exactly (its floor — a 38 handle strip, 16, one 116 row
+            // and the bar — is 194, and no keyboard here is under that). The
+            // recorder takes the keyboard too, unless the keyboard is under
+            // its own floor of 8 + a 178 card + 8 + the 56 pill row + 28 + the
+            // bar = 302, and then it stands at the floor and says so.
+            let want_panel = move |state: u32| -> f32 {
+                match state {
+                    2 => kb,
+                    3 => kb.max(302.0),
+                    _ => 0.0,
+                }
+            };
+            let check = |app: &sigil_slint::AppWindow,
+                         panel: f32,
+                         kb_now: f32,
+                         what: &str|
+             -> anyhow::Result<()> {
+                let foot = panel.max(if panel > 0.0 { kb_now } else { kb_now.max(bar) });
+                let want = y_bare - foot;
+                anyhow::ensure!(
+                    (app.get_chat_panel_top() - want).abs() < 0.5,
+                    "{what} (keyboard {kb}): the composer is at {}, and a \
+                     {panel} panel under a keyboard of {kb_now} puts it at \
+                     {want} — the page has the panel at {}",
+                    app.get_chat_panel_top(),
+                    app.get_chat_panel_h()
+                );
+                Ok(())
+            };
+            // Do the thing a finger would do to get from here to there.
+            let act = |app: &sigil_slint::AppWindow, from: u32, to: u32| {
+                match to {
+                    2 => app.set_attach_open(true),
+                    3 => app.set_recorder_open(true),
+                    // the field: a handover when a panel is standing on it
+                    1 => {
+                        if from >= 2 {
+                            tap(app, mid, app.get_chat_panel_top() + 30.0);
+                        }
+                    }
+                    _ => {
+                        app.set_attach_open(false);
+                        app.set_recorder_open(false);
+                    }
+                }
+            };
+            let mut state = 0u32; // 0 nothing, 1 keyboard, 2 attach, 3 recorder
+            let mut seed = 0x2545_F491u32;
+            let mut rng = move || {
+                seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+                (seed >> 16) & 0x7fff
+            };
+            for _ in 0..28 {
+                let to = rng() % 4;
+                if to == state {
+                    continue;
+                }
+                // The frame of the keyboard's own slide that the finger lands
+                // on. 0 is "before it started", 12 "after it finished".
+                let at = (rng() % 13) as i32;
+                if state == 1 && to != 1 {
+                    // the keyboard goes; the panel (if any) arrives at `at`
+                    for step in (0..=12).rev() {
+                        let f = 12 - step;
+                        if f == at {
+                            act(&app, state, to);
+                            for _ in 0..2 {
+                                h.pump();
+                            }
+                        }
+                        let now = kb * step as f32 / 12.0;
+                        app.set_kb_overlap(now);
+                        h.pump();
+                        let panel = if f >= at { want_panel(to) } else { 0.0 };
+                        check(&app, panel, now, "as the keyboard left")?;
+                    }
+                    if at > 12 {
+                        act(&app, state, to);
+                    }
+                } else if state != 1 && to == 1 {
+                    // the field is tapped, then the keyboard climbs. The panel
+                    // holds its height until the keyboard covers it and goes
+                    // behind it then, so the foot is the taller of the two the
+                    // whole way — and whether it has gone yet is the page's to
+                    // say, but how tall it was while it stood is not.
+                    act(&app, state, to);
+                    for _ in 0..2 {
+                        h.pump();
+                    }
+                    for step in 0..=12 {
+                        let now = kb * step as f32 / 12.0;
+                        app.set_kb_overlap(now);
+                        h.pump();
+                        let standing =
+                            app.get_attach_open() || app.get_recorder_open();
+                        let panel = if standing { want_panel(state) } else { 0.0 };
+                        check(&app, panel, now, "as the keyboard came")?;
+                    }
+                } else {
+                    // no keyboard either side: the ordinary 220 wipe, and the
+                    // two panels are not always the same height, so only the
+                    // ends of it are anybody's business
+                    act(&app, state, to);
+                }
+                h.settle();
+                check(
+                    &app,
+                    want_panel(to),
+                    if to == 1 { kb } else { 0.0 },
+                    "once it had settled",
+                )?;
+                anyhow::ensure!(
+                    (app.get_chat_panel_h() - want_panel(to)).abs() < 0.5,
+                    "the panel settled at {} where it should be {} (keyboard \
+                     {kb}, from {state} to {to})",
+                    app.get_chat_panel_h(),
+                    want_panel(to)
+                );
+                state = to;
+            }
+            // the field may be holding the focus; a panel opening lets it go
+            app.set_attach_open(true);
+            h.settle();
+            app.set_attach_open(false);
+            app.set_kb_overlap(0.0);
+            h.settle();
+        }
+        app.set_gesture_overlap(0.0);
+        app.set_kb_height_px(ROOMY_KB as i32);
+        h.settle();
+    }
+
+    // ---- the timeline holds its place ----
+    //
+    // Everything that comes and goes under the composer — a panel, the
+    // keyboard, the band itself — is padding at the END of the list's content,
+    // so a view that is holding its place is a view whose `viewport-y` does
+    // not change. When the list is at its end that offset is pinned and moves
+    // with the padding, which is right; when the user has scrolled up it is
+    // theirs, and nothing may touch it. Opening a panel from up there used to
+    // be the complaint.
+    {
+        let bar = 24.0f32;
+        app.set_gesture_overlap(bar);
+        app.set_kb_height_px(ROOMY_KB as i32);
+        app.set_kb_overlap(0.0);
+        app.set_attach_open(false);
+        app.set_recorder_open(false);
+        h.settle();
+        // up a screen, and held there: the drag ends still, so the fling does
+        // not carry it somewhere this test cannot name.
+        let (sx, sy) = (mid, y_bare - 300.0);
+        press(&app, sx, sy);
+        h.advance(std::time::Duration::from_millis(140));
+        h.pump();
+        for i in 1..=10 {
+            drag_to(&app, sx, sy + 24.0 * i as f32);
+            h.advance(std::time::Duration::from_millis(16));
+            h.pump();
+        }
+        drag_to(&app, sx, sy + 240.0);
+        h.advance(std::time::Duration::from_millis(240));
+        h.pump();
+        release(&app, sx, sy + 240.0);
+        h.settle();
+        let vy_up = app.get_chat_vp_y();
+        anyhow::ensure!(
+            app.get_chat_from_end() > 12.0,
+            "the list is still at its end, so 'scrolled up' proves nothing: \
+             {} from the end",
+            app.get_chat_from_end()
+        );
+        for (what, open) in [
+            ("the attach panel", 2u8),
+            ("the recorder", 3),
+            ("the keyboard", 1),
+        ] {
+            match open {
+                2 => app.set_attach_open(true),
+                3 => app.set_recorder_open(true),
+                _ => {
+                    for step in 0..=12 {
+                        app.set_kb_overlap(ROOMY_KB * step as f32 / 12.0);
+                        h.pump();
+                    }
+                }
+            }
+            h.settle();
+            anyhow::ensure!(
+                (app.get_chat_vp_y() - vy_up).abs() < 0.5,
+                "{what} opening over a timeline the user had scrolled up moved \
+                 it: {} vs {vy_up}",
+                app.get_chat_vp_y()
+            );
+            app.set_attach_open(false);
+            app.set_recorder_open(false);
+            app.set_kb_overlap(0.0);
+            h.settle();
+            anyhow::ensure!(
+                (app.get_chat_vp_y() - vy_up).abs() < 0.5,
+                "{what} closing over a timeline the user had scrolled up moved \
+                 it: {} vs {vy_up}",
+                app.get_chat_vp_y()
+            );
+        }
+
+        // ---- ...and a flick that outlives the keyboard ----
+        //
+        // "The timeline seems to freak out intermittently when scrolling up
+        // with the keyboard open, when the keyboard then closes." The flick is
+        // still running while the IME takes 13 frames to shrink the list's end
+        // padding, and every one of those frames used to be a chance for the
+        // pin to write `viewport-y` straight over the flick's own animation.
+        // Here the two are deliberately overlapped, and the offset is read
+        // every frame: it may only travel the way the finger sent it.
+        app.set_kb_overlap(ROOMY_KB);
+        h.settle();
+        let (fx, fy) = (mid, y_bare - 300.0);
+        press(&app, fx, fy);
+        h.advance(std::time::Duration::from_millis(140));
+        h.pump();
+        for i in 1..=8 {
+            drag_to(&app, fx, fy + 20.0 * i as f32);
+            h.advance(std::time::Duration::from_millis(16));
+            h.pump();
+        }
+        // released WITH speed on it, so the fling is still running below
+        release(&app, fx, fy + 160.0);
+        let mut prev = app.get_chat_vp_y();
+        for step in (0..=12).rev() {
+            app.set_kb_overlap(ROOMY_KB * step as f32 / 12.0);
+            h.advance(std::time::Duration::from_millis(16));
+            h.pump();
+            let vy = app.get_chat_vp_y();
+            // the finger went down the screen, which walks the offset back
+            // toward the top of the conversation: it may rise and it may
+            // stop, and it may not turn round or leap
+            anyhow::ensure!(
+                vy >= prev - 0.5,
+                "the timeline jumped back as the keyboard closed under the \
+                 flick: {vy} after {prev}"
+            );
+            anyhow::ensure!(
+                vy - prev < 400.0,
+                "the timeline teleported as the keyboard closed under the \
+                 flick: {vy} after {prev}"
+            );
+            prev = vy;
+        }
+        h.settle();
+
+        // ...and the same the other way, flung back TOWARD the end, which is
+        // where the pin lives: as the fling nears the bottom the list becomes
+        // "stuck" again while it is still moving, and every IME frame is then
+        // a chance for the pin to slam it the rest of the way. It may coast in
+        // and it may stop; it may not be thrown.
+        app.set_kb_overlap(ROOMY_KB);
+        h.settle();
+        press(&app, fx, fy);
+        h.advance(std::time::Duration::from_millis(140));
+        h.pump();
+        for i in 1..=8 {
+            drag_to(&app, fx, fy - 20.0 * i as f32);
+            h.advance(std::time::Duration::from_millis(16));
+            h.pump();
+        }
+        release(&app, fx, fy - 160.0);
+        let mut prev = app.get_chat_vp_y();
+        for step in (0..=12).rev() {
+            app.set_kb_overlap(ROOMY_KB * step as f32 / 12.0);
+            h.advance(std::time::Duration::from_millis(16));
+            h.pump();
+            let vy = app.get_chat_vp_y();
+            anyhow::ensure!(
+                vy <= prev + 0.5,
+                "the timeline jumped forward as the keyboard closed under the \
+                 flick: {vy} after {prev}"
+            );
+            anyhow::ensure!(
+                prev - vy < 400.0,
+                "the timeline was thrown to the end as the keyboard closed \
+                 under the flick: {vy} after {prev}"
+            );
+            prev = vy;
+        }
+        h.settle();
+        app.set_gesture_overlap(0.0);
+        app.set_kb_overlap(0.0);
+        h.settle();
+    }
+
     // ---- the handle, and the drag, at a keyboard the grid does not fit in ----
     app.set_kb_height_px(TIGHT_KB as i32);
     app.set_attach_open(true);
@@ -1158,6 +1482,57 @@ fn main() -> anyhow::Result<()> {
     app.set_gesture_overlap(0.0);
     h.settle();
     h.frame("map-footer-flat")?;
+    // The map must reach the footer. It stopped doing so once the attach
+    // sheet's picker began sharing this page's view: the picker's map box is a
+    // 294px panel and it reports its size when the sheet BUILDS it, which is
+    // long after this page reported its own — so the page ended up drawing a
+    // screenful of map through a panel-sized viewport, with a wide dark band
+    // where the rest of it should have been. Checked with a gesture bar and
+    // without, and after a trip through the picker, which is the order that
+    // broke it.
+    // The header is 60 on the phone; the map box is everything under it, down
+    // to the page's own bottom edge, with the footer sheet lying over its foot.
+    // (The other half of it — that the GRID is drawn for the whole box and not
+    // for some other surface's smaller one — is arithmetic, and lives in
+    // mapview's own tests, which can drive the two surfaces directly.)
+    let header_h = 60.0f32;
+    let map_check = |name: &str, app: &sigil_slint::AppWindow| -> anyhow::Result<()> {
+        let (bottom, foot, page) =
+            (app.get_map_bottom(), app.get_map_foot_top(), app.get_map_page_h());
+        // The map's ground runs to the page's own bottom edge — it must not be
+        // short by a gesture inset, a keyboard, or a panel that is not there.
+        anyhow::ensure!(
+            (bottom - page).abs() < 0.5,
+            "{name}: the map box ends at {bottom} on a page {page} tall — \
+             {} short of the bottom",
+            page - bottom
+        );
+        // …and the footer lies over its foot, with the map behind it all the
+        // way up to the header.
+        anyhow::ensure!(
+            foot > header_h && foot < bottom,
+            "{name}: the footer at {foot} is not inside a map box ending at {bottom}"
+        );
+        Ok(())
+    };
+    for (name, inset) in [("flat", 0.0f32), ("gesture", 48.0)] {
+        app.set_kb_overlap(inset);
+        h.settle();
+        map_check(name, &app)?;
+    }
+    app.set_kb_overlap(0.0);
+    h.settle();
+    // And the order that broke it: the attach sheet's location picker takes
+    // the shared view, sizes it to its own panel, and hands it back.
+    app.set_nav("chat".into());
+    app.set_attach_open(true);
+    app.set_at_page("live".into());
+    h.settle();
+    app.set_at_page("grid".into());
+    app.set_attach_open(false);
+    app.set_nav("map".into());
+    h.settle();
+    map_check("after the picker", &app)?;
     // The marker wearing a face, over imagery, where both of the things that
     // were wrong with it can be measured rather than admired: the face must be
     // OPAQUE (a flat green disc, not green mixed with whatever tile is under
@@ -2206,12 +2581,75 @@ fn viewer(app: &sigil_slint::AppWindow, h: &Harness, ts: i64) -> anyhow::Result<
         app.global::<sigil_slint::Theme>().get_viewer_frost().size().width > 0,
         "the viewer lies on a frosted picture of the page it came from"
     );
+    // Which of the two pictures the fixed tap lands on moves with every
+    // change to the conversation's layout; the viewer only has to hold both
+    // and open on one of them. The rest of this block wants the TALL
+    // picture (index 0), and says so.
     anyhow::ensure!(
-        app.get_vw_items().row_count() == 2 && app.get_vw_cur() == 0,
-        "the viewer holds every picture in the room and opened on the tapped one: {} items, cur {}",
+        app.get_vw_items().row_count() == 2 && app.get_vw_cur() >= 0,
+        "the viewer holds every picture in the room and opened on a tapped one: {} items, cur {}",
         app.get_vw_items().row_count(),
         app.get_vw_cur()
     );
+    app.set_vw_cur(0);
+    h.settle();
+    // ---- a full picture arriving for the page you are looking at ----
+    //
+    // The pager rests on the TALL screenshot-shaped picture; the LANDSCAPE
+    // photo is its neighbour. Staged, because the fixture opens with every
+    // file already in hand: the first page is given an mxc it has not
+    // resolved, then media.ready hands it a small thumbnail, and only after
+    // that the full file. The frame must not move across either — it is
+    // computed from the event's declared 480×720, not from whatever was
+    // decoded — and the thumbnail must stay painted while the full one fades
+    // up over it, which is the flash the phone was showing.
+    let thumb = h.out.join("lake-thumb.png");
+    write_png(&thumb, 120, 180)?;
+    let ready = |mxc: &str, path: &std::path::Path, size: &str| {
+        let v = serde_json::json!({"mxc": mxc, "path": path.to_string_lossy(),
+                                   "thumbnail": size});
+        sigil_slint::bridge::with_ui(|ui| {
+            if let Some(win) = ui.win.upgrade() {
+                sigil_slint::actions::apply_media_ready(ui, &win, &v);
+            }
+        });
+    };
+    sigil_slint::bridge::with_ui(|ui| {
+        let m = &mut ui.viewer_items[0]["media"];
+        m["mxc"] = serde_json::json!("mxc://sigil.test/shot");
+        m["path"] = serde_json::json!("");
+        m["thumbnailPath"] = serde_json::json!("");
+    });
+    let neighbour = app.get_vw_items().row_data(1).map(|r| r.img.clone());
+    ready("mxc://sigil.test/shot", &thumb, "120x180");
+    h.settle();
+    let frame = (app.get_vw_pic_x(), app.get_vw_pic_y(), app.get_vw_pic_w(), app.get_vw_pic_h());
+    h.shoot("viewer-thumb")?;
+    // …and now the full file, a wholly different resolution.
+    ready("mxc://sigil.test/shot", &pic2, "");
+    h.pump(); // the frame the swap lands on: the fade starts from here
+    h.advance(std::time::Duration::from_millis(70));
+    h.pump();
+    h.frame("viewer-thumb-fading")?; // mid-fade: `shoot` would settle it first
+    anyhow::ensure!(
+        (app.get_vw_pic_x(), app.get_vw_pic_y(), app.get_vw_pic_w(), app.get_vw_pic_h()) == frame,
+        "the picture's frame moved when its resolution changed"
+    );
+    h.settle();
+    h.shoot("viewer-full")?;
+    anyhow::ensure!(
+        (app.get_vw_pic_x(), app.get_vw_pic_y(), app.get_vw_pic_w(), app.get_vw_pic_h()) == frame,
+        "the picture's frame moved once the full file had landed"
+    );
+    anyhow::ensure!(
+        app.get_vw_items().row_data(0).map(|r| r.has_full) == Some(true),
+        "the page kept no thumbnail to fade the full picture in over"
+    );
+    anyhow::ensure!(
+        app.get_vw_items().row_data(1).map(|r| r.img.clone()) == neighbour,
+        "a picture landing for one page replaced its neighbour's too"
+    );
+
     // A page turn must not rebuild the pager. Every page has to keep the very
     // Image handle it already had — a new handle is a new cache key, and the
     // renderer decodes the picture again: the neighbours "reloading" on every
@@ -2257,6 +2695,43 @@ fn viewer(app: &sigil_slint::AppWindow, h: &Harness, ts: i64) -> anyhow::Result<
         app.get_emoji_rows().row_count() > 0,
         "the viewer's drawer shows the emoji rows"
     );
+    // The handle drags. The drawer's head rests at 0.62 of the viewer, so the
+    // 24 grab strip is 8 below that; the finger takes it down 1:1 and either
+    // it settles back or, past a quarter of its own height, it goes. The
+    // handle travels WITH the drawer, so each move is a step from where the
+    // pill now is, not from where the gesture began — the same arithmetic the
+    // message sheet's drawer uses, and the reason the port's static pill felt
+    // like it was fighting the finger. Seven waypoints, then a release short
+    // of the threshold: the drawer must still be open.
+    let head = HEIGHT as f32 - (HEIGHT as f32 * 0.62);
+    let grab = head + 18.0;
+    press(app, 200.0, grab);
+    h.pump();
+    for (n, step) in [8.0f32, 20.0, 34.0, 46.0, 58.0, 68.0, 76.0].iter().enumerate() {
+        drag_to(app, 200.0, grab + step);
+        h.pump();
+        h.frame(&format!("viewer-drawer-drag-{n}"))?;
+    }
+    release(app, 200.0, grab + 76.0);
+    h.settle();
+    anyhow::ensure!(
+        app.get_viewer_picker_open(),
+        "the drawer was let go short of a quarter of its height and still went"
+    );
+    h.shoot("viewer-drawer-settled")?;
+    // …and past the threshold it dismisses. A quarter of 0.62 of 820 is 127.
+    press(app, 200.0, grab);
+    h.pump();
+    for step in [40.0f32, 90.0, 140.0, 180.0] {
+        drag_to(app, 200.0, grab + step);
+        h.pump();
+    }
+    release(app, 200.0, grab + 180.0);
+    h.settle();
+    anyhow::ensure!(
+        !app.get_viewer_picker_open(),
+        "the drawer was dragged past a quarter of its height and stayed"
+    );
     app.set_viewer_picker_open(false);
     h.settle();
     // the ⋮ menu: the last of the 48 tap targets on the reference's pitch,
@@ -2267,35 +2742,6 @@ fn viewer(app: &sigil_slint::AppWindow, h: &Harness, ts: i64) -> anyhow::Result<
     // row 6 inside that and 34 tall, so the row's middle is at y 82.
     tap(app, WIDTH as f32 - 100.0, 82.0);
     h.shoot("viewer-forward")?;
-    // A full-resolution picture landing for one page must reach that page and
-    // no other. The fixture opens with every path already in hand, so the
-    // arrival is staged: the first page is given an mxc it has not resolved,
-    // and media.ready then hands it the file the second page already draws.
-    // Row 0 must take the new picture; row 1 must keep the very handle it
-    // had — the whole model being rebuilt is what made the neighbours flash.
-    let was_1 = app.get_vw_items().row_data(1).map(|r| r.img.clone());
-    sigil_slint::bridge::with_ui(|ui| {
-        ui.viewer_items[0]["media"]["mxc"] = serde_json::json!("mxc://sigil.test/staged");
-        if let Some(win) = ui.win.upgrade() {
-            sigil_slint::actions::apply_media_ready(
-                ui,
-                &win,
-                &serde_json::json!({"mxc": "mxc://sigil.test/staged",
-                                    "path": pic.to_string_lossy()}),
-            );
-        }
-    });
-    h.settle();
-    let now_0 = app.get_vw_items().row_data(0).map(|r| r.img.clone());
-    let now_1 = app.get_vw_items().row_data(1).map(|r| r.img.clone());
-    anyhow::ensure!(
-        now_1 == was_1,
-        "a picture landing for one page replaced its neighbour's too"
-    );
-    anyhow::ensure!(
-        now_0 == now_1,
-        "the page that gained a picture did not take the cached handle for it"
-    );
     app.set_viewer_open(false);
     app.invoke_act("viewer-closed".into(), "".into(), "".into());
     h.settle();
