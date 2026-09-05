@@ -360,6 +360,10 @@ export component AppWindow inherits Window {
     in-out property <bool> member-open: false;
     in property <string> member-name;
     in-out property <bool> recorder-open: false;
+    /// Back with the phone's own viewfinder laid over the app: true when it
+    /// took the press (and closed the viewfinder), so the page stays. Nothing
+    /// on the desktop, where there is no such window.
+    callback camera-back() -> bool;
     // Calls: rendered from the call.state digest; live wiring is the desktop
     // pass — Android builds the engine without the calls feature.
     in property <string> call-state: "idle";
@@ -606,6 +610,13 @@ export component AppWindow inherits Window {
         capture-key-pressed(event) => {
             // Escape on a keyboard; the phone's back gesture arrives as Key.Back
             if (event.text == Key.Escape || event.text == Key.Back) {
+                // The camera's viewfinder is a window of the phone's own laid
+                // over this one, so the key lands here while it is up. It
+                // closes the viewfinder and goes no further: the press must
+                // not also unwind the room underneath.
+                if (root.camera-back()) {
+                    return accept;
+                }
                 root.go-back();
                 return accept;
             }

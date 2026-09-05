@@ -79,15 +79,28 @@ pub fn run_app() -> anyhow::Result<()> {
     // first and only let the OS have it from the home screen.
     #[cfg(target_os = "android")]
     {
+        // Back arrives as a KEY (Key.Back, taken by app.slint's back-scope),
+        // not as a close request: the request only fires when nothing in the
+        // UI accepted the key. The camera's viewfinder is a window of its own
+        // laid over the app (java/SigilCamera.java), not focusable, so the
+        // key lands in the app underneath it — and the app's first move on
+        // Back with a viewfinder up is to close that and stop. It used to
+        // unwind the room as well, because the key went straight to go-back
+        // while the camera was only checked on the (never fired) close path.
+        win.on_camera_back(|| {
+            if platform::camera_live() {
+                tracing::info!("camera: back closed the viewfinder");
+                platform::camera_close();
+                true
+            } else {
+                false
+            }
+        });
         let weak = win.as_weak();
         win.window().on_close_requested(move || {
             if let Some(w) = weak.upgrade() {
-                // The camera's viewfinder is a window of its own laid over the
-                // app (java/SigilCamera.java), so the app's own nav knows
-                // nothing about it and Back would unwind the room underneath
-                // it. Back closes the viewfinder and goes no further;
-                // actions.rs's poll sees the camera gone on its next pass and
-                // stops itself.
+                // The same guard for a close request, should one ever arrive
+                // with the viewfinder up (a key nobody accepted).
                 if platform::camera_live() {
                     platform::camera_close();
                     return slint::CloseRequestResponse::KeepWindowShown;
