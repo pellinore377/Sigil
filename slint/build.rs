@@ -33,6 +33,7 @@ fn android_picker_dex() {
         "java/SigilFilePicker.java",
         "java/SigilVideo.java",
         "java/SigilCamera.java",
+        "java/SigilGallery.java",
     ];
     let src = "java/*.java";
     for s in srcs {

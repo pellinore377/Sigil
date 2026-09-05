@@ -537,7 +537,7 @@ export component ImageViewer inherits Rectangle {
             // stacked Slint line boxes sit 17 apart and ride high by their
             // unused descender, so the row is opened by 4 and dropped by 2.
             y: (root.bar-h - self.preferred-height) / 2 + 2px;
-            width: max(0px, right-bar.x - 56px - 8px);
+            width: max(0px, dl-btn.x - 56px - 8px);
             height: self.preferred-height;
             spacing: 4px;
             Text {
@@ -556,33 +556,45 @@ export component ImageViewer inherits Rectangle {
                 overflow: elide;
             }
         }
-        right-bar := HorizontalLayout {
-            x: root.width - root.edge - self.width;
+        // The right group is placed by hand, on the reference's 48 pitch off
+        // the right edge, rather than laid out: the set changes with the page
+        // — a picture of your own carries the bin, one of theirs does not —
+        // and a layout would pop the bin in and out and jump the download
+        // sideways. Held still, the bin cross-fades in its own slot (200ms)
+        // and ⋮ never moves; the download, which is in both sets, slides the
+        // one slot rather than jumping. The bin is declared before the
+        // download so that while it is transparent — and the two slots
+        // coincide — the download, later and so on top, takes the taps.
+        del-btn := ActionButton {
+            x: root.width - root.edge - 2 * root.tap;
             y: (root.bar-h - root.tap) / 2;
-            width: self.preferred-width;
-            height: root.tap;
-            spacing: 0px;             // the 48 targets meet: glyphs land on a 48 pitch
-            ActionButton {
-                width: root.tap; height: root.tap;
-                icon: Icons.download;
-                icon-size: root.glyph;
-                foreground: root.fg;
-                clicked => { root.download-requested(); }
-            }
-            if root.it.can-redact : ActionButton {
-                width: root.tap; height: root.tap;
-                icon: Icons.trash;
-                icon-size: root.glyph;
-                foreground: root.fg;
-                clicked => { root.delete-requested(); }
-            }
-            ActionButton {
-                width: root.tap; height: root.tap;
-                icon: Icons.moreVertical;
-                icon-size: root.glyph;
-                foreground: root.fg;
-                clicked => { root.more-open = !root.more-open; }
-            }
+            width: root.tap; height: root.tap;
+            icon: Icons.trash;
+            icon-size: root.glyph;
+            foreground: root.fg;
+            opacity: root.it.can-redact ? 1 : 0;
+            animate opacity { duration: 200ms; }
+            // Transparent is not gone: refuse the tap rather than the paint.
+            clicked => { if (root.it.can-redact) { root.delete-requested(); } }
+        }
+        dl-btn := ActionButton {
+            x: root.width - root.edge - (root.it.can-redact ? 3 : 2) * root.tap;
+            y: (root.bar-h - root.tap) / 2;
+            width: root.tap; height: root.tap;
+            animate x { duration: 200ms; easing: cubic-bezier(0.33, 1, 0.68, 1); }
+            icon: Icons.download;
+            icon-size: root.glyph;
+            foreground: root.fg;
+            clicked => { root.download-requested(); }
+        }
+        more-btn := ActionButton {
+            x: root.width - root.edge - root.tap;
+            y: (root.bar-h - root.tap) / 2;
+            width: root.tap; height: root.tap;
+            icon: Icons.moreVertical;
+            icon-size: root.glyph;
+            foreground: root.fg;
+            clicked => { root.more-open = !root.more-open; }
         }
     }
 
@@ -672,30 +684,46 @@ export component ImageViewer inherits Rectangle {
     callback load-emoji;
     /// Read by the window so Android's Back puts the drawer away before the viewer.
     in-out property <bool> picker-open: false;
-    property <[string]> quick-1: ["👍", "❤️", "😂", "😮", "😢", "😡"];
+    /// The quick reactions with their pictures, the same model the message
+    /// sheet's pill draws. The phone's text path renders some of these as
+    /// tofu — ❤️ is a VS16 pair and was the one the user saw missing — so a
+    /// glyph is only ever the stand-in until the picture arrives.
+    in property <[EmojiItem]> quick-emoji;
+    property <[EmojiItem]> quick: root.quick-emoji.length == 6 ? root.quick-emoji : [
+        { glyph: "👍" }, { glyph: "❤️" }, { glyph: "😂" }, { glyph: "😮" }, { glyph: "😢" }, { glyph: "😡" }];
     react-row := HorizontalLayout {
         x: (root.width - self.preferred-width) / 2;
         y: root.height - 72px - root.re-tap / 2;
         width: self.preferred-width;
         height: root.re-tap;
         spacing: 0px;
-        for emo in root.quick-1 : re := Rectangle {
+        for e in root.quick : re := Rectangle {
             width: root.re-tap; height: root.re-tap;
             border-radius: root.re-tap / 2;
             background: re-t.pressed || re-t.has-hover ? root.accent.with-alpha(0.25) : transparent;
-            // Emoji are ink-centred, not line-box centred: their variation
-            // selectors widen the advance past the visible glyph, so plain
-            // centring lands a fraction of the em left of centre
-            // (docs/ui-conventions.md "Icons and centring", measured in this
-            // row at 5.5 on a 20px glyph — 0.275 em). Slint cannot measure
-            // text, so the measured nudge rides the font size.
-            Text {
+            // The picture, at the reference's 24 of ink, squarely centred.
+            if e.has-img : Image {
+                x: (root.re-tap - root.re-glyph) / 2;
+                y: (root.re-tap - root.re-glyph) / 2;
+                width: root.re-glyph; height: root.re-glyph;
+                source: e.img;
+                image-fit: contain;
+            }
+            // No picture yet: the glyph stands in. Emoji are ink-centred, not
+            // line-box centred — their variation selectors widen the advance
+            // past the visible glyph, so plain centring lands a fraction of
+            // the em left of centre (docs/ui-conventions.md "Icons and
+            // centring", measured in this row at 5.5 on a 20px glyph — 0.275
+            // em). Slint cannot measure text, so the nudge rides the size.
+            // ❤️ is drawn bare, without its VS16: the pair is tofu here.
+            if !e.has-img : Text {
                 x: (root.re-tap - self.preferred-width) / 2 + self.font-size * 0.275;
                 y: (root.re-tap - self.preferred-height) / 2;
                 width: self.preferred-width; height: self.preferred-height;
-                text: emo; font-size: root.re-glyph;
+                text: e.glyph == "❤️" ? "❤" : e.glyph;
+                font-size: root.re-glyph;
             }
-            re-t := TouchArea { clicked => { root.react(emo); } }
+            re-t := TouchArea { clicked => { root.react(e.glyph); } }
         }
         ActionButton {
             width: root.re-tap; height: root.re-tap;

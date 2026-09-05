@@ -472,14 +472,16 @@ fn main() -> anyhow::Result<()> {
     // that: through the whole slide the composer holds still and the panel
     // does not change height by so much as a pixel.
     //
-    // A keyboard of 340 over a 24 bar, because the recorder's own floor —
-    // 8 + a 184 card + 8 + the 56 pill row + 28 + the bar = 308 — has to fit
-    // inside it for the panel to be able to BE the keyboard's height. A real
-    // phone's is 306 dp and its bar 24, which clears it by a hair; 290 does
-    // not, and there the recorder stands 18 taller than the keyboard and says
-    // so honestly by moving the composer once, at the open.
+    // The phone's own numbers: a 306 keyboard over a 24 bar. The recorder's
+    // floor — 8 + a 178 card + 8 + the 56 pill row + 28 + the bar = 302 — has
+    // to fit inside the keyboard for the panel to be able to BE the keyboard's
+    // height, and 306 is what the reference phone's is. It did not fit while
+    // the card's floor was 184: the panel came out 308, two taller than the
+    // keyboard, so the keyboard never covered it, the handover sat out its
+    // 700 of give-up with the recorder standing there, and swapping back to
+    // the keyboard was the last transition that still moved the composer.
     const BAR: f32 = 24.0;
-    const SWAP_KB: f32 = 340.0;
+    const SWAP_KB: f32 = 306.0;
     app.set_gesture_overlap(BAR);
     app.set_kb_height_px(SWAP_KB as i32);
     app.set_kb_overlap(SWAP_KB);
@@ -491,6 +493,14 @@ fn main() -> anyhow::Result<()> {
     anyhow::ensure!(
         rec_h > 0.0,
         "the recorder did not open, so the swap proves nothing"
+    );
+    // The whole arrangement rests on this: the panel IS the keyboard. A floor
+    // that will not fit inside the keyboard is the fault at its source, and
+    // shows up downstream as a keyboard that never covers the panel.
+    anyhow::ensure!(
+        (rec_h - SWAP_KB).abs() < 0.5,
+        "the recorder came out {rec_h} tall under a {SWAP_KB} keyboard — its \
+         floor does not fit inside the keyboard it has to stand in for"
     );
     // the keyboard leaves, one frame at a time, straight through 96
     let mut prev = app.get_chat_panel_top();
@@ -692,6 +702,59 @@ fn main() -> anyhow::Result<()> {
     app.set_attach_open(false);
     app.set_recorder_open(false);
     app.set_kb_overlap(0.0);
+    h.settle();
+
+    // ---- a drag on the conversation puts the KEYBOARD down too ----
+    //
+    // The same gesture and the same rule as the panels: reaching past what is
+    // standing under the composer, to read, is asking for it to be gone. The
+    // only handle on the keyboard is the focus, so that is what the drag lets
+    // go of; the platform lowers the IME and its own frames bring the composer
+    // down, with no animation of ours running beside them. Headless there is
+    // no IME to watch, so what is checked is both halves of that: the focus
+    // goes, and when the frames come the composer rides them down without ever
+    // going back up.
+    tap(&app, mid, y_bare + 30.0);
+    app.set_kb_overlap(ROOMY_KB);
+    h.settle();
+    anyhow::ensure!(
+        app.get_chat_composer_focused(),
+        "the tap did not put the caret in the field, so the drag proves nothing"
+    );
+    let y_typing = app.get_chat_panel_top();
+    let (kx, ky) = (mid, y_typing - 260.0);
+    press(&app, kx, ky);
+    h.advance(std::time::Duration::from_millis(140));
+    h.pump();
+    for i in 1..=8 {
+        drag_to(&app, kx, ky + 12.0 * i as f32);
+        h.advance(std::time::Duration::from_millis(16));
+        h.pump();
+    }
+    release(&app, kx, ky + 96.0);
+    h.settle();
+    anyhow::ensure!(
+        !app.get_chat_composer_focused(),
+        "a drag on the conversation left the caret in the field, so the \
+         keyboard would have stayed up"
+    );
+    // ...and the IME goes down, frame by frame, with the composer on it
+    let mut prev = app.get_chat_panel_top();
+    for step in (0..=12).rev() {
+        app.set_kb_overlap(ROOMY_KB * step as f32 / 12.0);
+        h.pump();
+        let y = app.get_chat_panel_top();
+        anyhow::ensure!(
+            y >= prev - 0.5,
+            "the composer went back up as the keyboard left: {y} after {prev}"
+        );
+        prev = y;
+    }
+    anyhow::ensure!(
+        (app.get_chat_panel_top() - y_bare).abs() < 0.5,
+        "the composer did not come all the way back down: {} vs {y_bare}",
+        app.get_chat_panel_top()
+    );
     h.settle();
 
     // ---- the handle, and the drag, at a keyboard the grid does not fit in ----
@@ -2106,8 +2169,10 @@ fn viewer(app: &sigil_slint::AppWindow, h: &Harness, ts: i64) -> anyhow::Result<
     // HoldArea behind it with nothing to time, so a hold on a picture opened
     // nothing. Driven the way home-selected drives its own: press, the clock
     // walked past the list's 100ms park and HoldArea's 500, then release.
-    // The wide picture is the last row, its 640×480 scaled to the bubble's
-    // 300 — in this fixture its box lands at 14,517 300×225.
+    // The press lands on the TALL picture, the first of the two: the list is
+    // still settling its rows as the pictures decode, so the point that is
+    // over a picture when the hold fires is higher up the column than the
+    // resting boxes in viewer-bubble.png suggest.
     let (pic_x, pic_y) = (150.0, 600.0);
     app.set_sheet_actions(slint::ModelRc::new(slint::VecModel::from(
         Vec::<sigil_slint::MenuEntry>::new(),
@@ -2142,13 +2207,46 @@ fn viewer(app: &sigil_slint::AppWindow, h: &Harness, ts: i64) -> anyhow::Result<
         "the viewer lies on a frosted picture of the page it came from"
     );
     anyhow::ensure!(
-        app.get_vw_items().row_count() == 2 && app.get_vw_cur() == 1,
-        "the viewer holds every picture in the room and opened on the tapped one"
+        app.get_vw_items().row_count() == 2 && app.get_vw_cur() == 0,
+        "the viewer holds every picture in the room and opened on the tapped one: {} items, cur {}",
+        app.get_vw_items().row_count(),
+        app.get_vw_cur()
     );
-    // The filmstrip: a page is 56 narrower than the viewer and the pitch adds
-    // 12, so 16px of the picture before this one stands inside the left edge
-    // at rest. Sampled a third of the way down, clear of the top bar.
+    // A page turn must not rebuild the pager. Every page has to keep the very
+    // Image handle it already had — a new handle is a new cache key, and the
+    // renderer decodes the picture again: the neighbours "reloading" on every
+    // swipe, which is what the phone showed. Only a page that gains its
+    // full-resolution picture may change, and one row at a time.
+    let before: Vec<slint::Image> = app.get_vw_items().iter().map(|r| r.img.clone()).collect();
+    app.set_vw_cur(1);
+    app.invoke_act("viewer-page".into(), "1".into(), "".into());
+    h.settle();
+    let after: Vec<slint::Image> = app.get_vw_items().iter().map(|r| r.img.clone()).collect();
+    anyhow::ensure!(
+        before == after,
+        "a page turn replaced the pager's pictures: the neighbours re-decode"
+    );
+    // The filmstrip: the pitch is set so 16px of the picture before this one
+    // stands inside the left edge at rest, whatever its shape.
     h.shoot("viewer-open")?;
+    // The header's action set changes with the page — a picture of your own
+    // carries the bin, one of theirs does not. It cross-fades in its own slot
+    // instead of popping: ⋮ never moves, the download slides the one slot.
+    if let Some(mut row) = app.get_vw_items().row_data(1) {
+        row.can_redact = true;
+        app.get_vw_items().set_row_data(1, row);
+    }
+    h.pump(); // the frame the change lands on: the fade starts from here
+    h.advance(std::time::Duration::from_millis(90));
+    h.pump();
+    h.frame("viewer-icons-fading")?; // mid-fade: `shoot` would settle it first
+    h.settle();
+    h.shoot("viewer-icons-own")?;
+    if let Some(mut row) = app.get_vw_items().row_data(1) {
+        row.can_redact = false;
+        app.get_vw_items().set_row_data(1, row);
+    }
+    h.settle();
     // The add-reaction drawer: the full picker over the picture. Raised the
     // way the glyph raises it (load, then open), and put away again.
     app.invoke_act("emoji-search".into(), "".into(), "".into());
@@ -2161,14 +2259,43 @@ fn viewer(app: &sigil_slint::AppWindow, h: &Harness, ts: i64) -> anyhow::Result<
     );
     app.set_viewer_picker_open(false);
     h.settle();
-    // the ⋮ menu: the third 22px button in from the right edge, at 8 out and
-    // 2 apart, so its centre is 8 + 11 = 19 from the right, 28 down.
-    tap(app, WIDTH as f32 - 19.0, 28.0);
+    // the ⋮ menu: the last of the 48 tap targets on the reference's pitch,
+    // its centre 28 in from the right edge and 32 down the 64 bar.
+    tap(app, WIDTH as f32 - 28.0, 32.0);
     h.shoot("viewer-menu")?;
-    // Forward: the card is 160 wide 10 in from the right at y 42, its first
-    // row 6 inside that and 34 tall, so the row's middle is at y 65.
-    tap(app, WIDTH as f32 - 100.0, 65.0);
+    // Forward: the card is 160 wide 10 in from the right at y 59, its first
+    // row 6 inside that and 34 tall, so the row's middle is at y 82.
+    tap(app, WIDTH as f32 - 100.0, 82.0);
     h.shoot("viewer-forward")?;
+    // A full-resolution picture landing for one page must reach that page and
+    // no other. The fixture opens with every path already in hand, so the
+    // arrival is staged: the first page is given an mxc it has not resolved,
+    // and media.ready then hands it the file the second page already draws.
+    // Row 0 must take the new picture; row 1 must keep the very handle it
+    // had — the whole model being rebuilt is what made the neighbours flash.
+    let was_1 = app.get_vw_items().row_data(1).map(|r| r.img.clone());
+    sigil_slint::bridge::with_ui(|ui| {
+        ui.viewer_items[0]["media"]["mxc"] = serde_json::json!("mxc://sigil.test/staged");
+        if let Some(win) = ui.win.upgrade() {
+            sigil_slint::actions::apply_media_ready(
+                ui,
+                &win,
+                &serde_json::json!({"mxc": "mxc://sigil.test/staged",
+                                    "path": pic.to_string_lossy()}),
+            );
+        }
+    });
+    h.settle();
+    let now_0 = app.get_vw_items().row_data(0).map(|r| r.img.clone());
+    let now_1 = app.get_vw_items().row_data(1).map(|r| r.img.clone());
+    anyhow::ensure!(
+        now_1 == was_1,
+        "a picture landing for one page replaced its neighbour's too"
+    );
+    anyhow::ensure!(
+        now_0 == now_1,
+        "the page that gained a picture did not take the cached handle for it"
+    );
     app.set_viewer_open(false);
     app.invoke_act("viewer-closed".into(), "".into(), "".into());
     h.settle();

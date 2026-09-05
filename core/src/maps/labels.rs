@@ -61,6 +61,71 @@ const HALO: f32 = 3.0;
 const INK: (u8, u8, u8) = (0x33, 0x33, 0x33);
 const HALO_C: (u8, u8, u8) = (0xff, 0xff, 0xff);
 
+/// Which of the three things a name can be attached to.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Cat {
+    Road,
+    Place,
+    Water,
+}
+
+/// One named feature, pulled out of a decoded vector tile and kept.
+///
+/// The label pass reads NINE tiles for every one it draws (see `draw`), so
+/// what it reads has to be small and has to be worth caching: this is the few
+/// hundred bytes a named road actually needs, out of the megabyte of buildings
+/// and landuse the tile also carries.
+pub struct Named {
+    pub text: String,
+    pub kind: String,
+    pub cat: Cat,
+    pub min_zoom: f64,
+    pub rank: f64,
+    pub geom: mvt::GeomType,
+    pub extent: u32,
+    /// In this tile's own extent units.
+    pub paths: Vec<Vec<(f32, f32)>>,
+}
+
+/// Everything in a decoded tile that carries a name worth drawing.
+///
+/// Done once per vector tile and cached by the caller, because every tile's
+/// label pass wants its eight neighbours' copies of this as well as its own.
+pub fn extract(layers: &[mvt::Layer]) -> Vec<Named> {
+    let mut out = Vec::new();
+    for layer in layers {
+        let cat = match layer.name.as_str() {
+            "roads" | "transportation_name" => Cat::Road,
+            "places" | "place" => Cat::Place,
+            "water" | "water_name" => Cat::Water,
+            _ => continue,
+        };
+        for f in &layer.features {
+            let Some(text) = name_of(f) else { continue };
+            let kind = tag(f, "kind").or_else(|| tag(f, "class")).unwrap_or("");
+            out.push(Named {
+                text: text.to_string(),
+                kind: kind.to_string(),
+                cat,
+                min_zoom: num(f, "min_zoom").unwrap_or(0.0),
+                rank: num(f, "population_rank").unwrap_or(0.0),
+                geom: f.geom_type,
+                extent: layer.extent,
+                paths: f.paths.clone(),
+            });
+        }
+    }
+    out
+}
+
+/// A tile's worth of names, and where that tile sits relative to the one being
+/// drawn — `(0, 0)` for the tile itself, `(-1, 0)` for its western neighbour.
+pub struct Neighbour<'a> {
+    pub dx: i64,
+    pub dy: i64,
+    pub named: &'a [Named],
+}
+
 /// One name, ready to place.
 struct Cand<'a> {
     text: &'a str,
@@ -68,6 +133,15 @@ struct Cand<'a> {
     rank: i32,
     size: f32,
     kind: Kind,
+    /// Where this label sits on the WORLD, in tile units at this level. Two
+    /// tiles drawing the same road must order and space their candidates
+    /// identically, and their canvas frames differ by exactly one tile — so
+    /// the ordering key has to be absolute, not local.
+    wx: f64,
+    wy: f64,
+    /// Longest first within a rank, so a street gets its name on the run with
+    /// room for it rather than on the first stub the neighbourhood offers.
+    len: f32,
 }
 
 enum Kind {
@@ -79,15 +153,28 @@ enum Kind {
     Line(usize),
 }
 
-/// Which patches of the tile are spoken for.
+/// Which patches of the neighbourhood are spoken for.
 ///
 /// A grid rather than a list of rectangles: a tile can offer a few hundred
 /// candidates and testing each against every label already placed is the
 /// quadratic that shows up as a stutter on the phone. Cells are 16 canvas
-/// pixels, so the whole thing is a 32×32 bitmap and a test is a handful of
-/// byte reads.
+/// pixels and it covers the whole 3×3, so it is a 97×97 bitmap and a test is a
+/// handful of byte reads.
+///
+/// It covers the 3×3 rather than the tile because the labels do: one that
+/// belongs half in the neighbour must still reserve the room it takes there,
+/// or the tile would happily write a second name over the half it cannot see.
+///
+/// The cell size divides the tile side exactly (512 / 16 = 32), which is not a
+/// convenience — it is what makes two adjacent tiles' grids fall on the same
+/// boundaries on the ground. Their canvas frames differ by exactly one tile, so
+/// an exact divisor means a whole number of cells' difference, and the two
+/// agree about which cell any piece of the world is in.
 struct Grid {
     cell: f32,
+    /// Where cell zero starts, in canvas pixels: one tile back, so the
+    /// neighbours' ground has cells of its own.
+    origin: f32,
     n: usize,
     taken: Vec<bool>,
 }
@@ -95,13 +182,17 @@ struct Grid {
 impl Grid {
     fn new(side: f32) -> Grid {
         let cell = 16.0;
-        let n = (side / cell).ceil() as usize + 1;
-        Grid { cell, n, taken: vec![false; n * n] }
+        let n = (3.0 * side / cell).ceil() as usize + 1;
+        Grid { cell, origin: -side, n, taken: vec![false; n * n] }
     }
 
     /// The cell range a box covers, clamped into the grid.
     fn span(&self, b: (f32, f32, f32, f32)) -> (usize, usize, usize, usize) {
-        let c = |v: f32| (v / self.cell).floor().clamp(0.0, self.n as f32 - 1.0) as usize;
+        let c = |v: f32| {
+            ((v - self.origin) / self.cell)
+                .floor()
+                .clamp(0.0, self.n as f32 - 1.0) as usize
+        };
         (c(b.0), c(b.1), c(b.2), c(b.3))
     }
 
@@ -263,9 +354,19 @@ fn lay_line(
     // Upright, or the name is upside down half the time: take the line's
     // overall direction across the span the letters will cover, and walk the
     // run backwards if it points left.
+    //
+    // Near-vertical roads need their own answer. There the x-component is
+    // nearly zero, so "does it point left" is decided by rounding noise, and
+    // the polyline's own digitisation direction gets the casting vote — which
+    // means two halves of one street, digitised opposite ways, read opposite
+    // ways. That is a good part of "the street names are weird". So once a run
+    // is steeper than about four to one, the rule changes to a geometric one:
+    // vertical text reads UPWARD, always, whichever way the data happens to
+    // run.
     let a = at_arc(pts, &acc, start);
     let b = at_arc(pts, &acc, start + w);
-    let flip = b.0 - a.0 < 0.0;
+    let (rx, ry) = (b.0 - a.0, b.1 - a.1);
+    let flip = if rx.abs() > ry.abs() * 0.25 { rx < 0.0 } else { ry > 0.0 };
     let owned: Vec<(f32, f32)>;
     let (pts, acc, start) = if flip {
         owned = pts.iter().rev().copied().collect();
@@ -332,15 +433,18 @@ fn too_soon(f: &mvt::Feature, z: u32) -> bool {
 
 /// How big, and how much it deserves the space. `None` means do not label.
 fn road_style(kind: &str, z: u32) -> Option<(f32, i32)> {
-    // The canvas is 2×, so these are half this many CSS pixels.
+    // The canvas is 2× — a 512px tile drawn at 256 logical px — so these are
+    // half this many dp on the phone. Street names want 11 to 12 dp, which is
+    // where the big map apps set theirs; 20 canvas px was 10 dp and read small
+    // and thin on a 2.55 px/dp screen.
     match kind {
         // OpenMapTiles `class` and Protomaps `kind` land in the same arms.
-        "motorway" | "trunk" | "highway" => Some((23.0, 0)),
-        "primary" | "secondary" | "major_road" => Some((22.0, 1)),
-        "tertiary" | "minor_road" | "street" | "residential" => Some((20.0, 2)),
+        "motorway" | "trunk" | "highway" => Some((25.0, 0)),
+        "primary" | "secondary" | "major_road" => Some((24.0, 1)),
+        "tertiary" | "minor_road" | "street" | "residential" => Some((23.0, 2)),
         // Footpaths and service roads only once the map is properly close in;
         // there are more of them than of everything else put together.
-        "path" | "footway" | "service" | "track" => (z >= 17).then_some((18.0, 4)),
+        "path" | "footway" | "service" | "track" => (z >= 17).then_some((21.0, 4)),
         _ => None,
     }
 }
@@ -356,15 +460,57 @@ fn place_style(kind: &str, rank: f64) -> Option<(f32, i32)> {
     }
 }
 
-/// Draw every name this tile can fit.
+/// How far apart two labels for the SAME name must be before the second is
+/// allowed, in canvas pixels. A long street crossing the view should carry its
+/// name more than once — that is how you follow it — but not once per fragment
+/// the tiling happened to cut it into.
+const REPEAT_GAP: f32 = 760.0;
+
+/// Draw every name this tile can fit, placed across the whole neighbourhood.
+///
+/// # Why nine tiles
+///
+/// A vector tile's geometry is cut at the tile edge, so a road crossing the
+/// edge is TWO features in two tiles, each a stub of the real thing. Placing
+/// from one tile's own geometry therefore did the two worst things at once:
+/// the name was centred on a stub and ran off the edge, where the pixmap cut
+/// it in half — and the neighbour, working from its own stub, centred a second
+/// copy somewhere else entirely. One street, two half names, offset. That is
+/// the "cut off" and most of the "weird".
+///
+/// So the pass reads the tile AND its eight neighbours (`Neighbour`), puts
+/// them all in this tile's canvas frame, and places labels over the whole 3×3.
+/// A label that belongs half in the neighbour is drawn WHOLE, and simply
+/// clipped by the pixmap — and the neighbour, whose own 3×3 contains this tile,
+/// computes the very same placement from the very same run and draws the other
+/// half. The two halves line up because they are the same arithmetic on the
+/// same numbers, not because anybody agreed to co-operate.
+///
+/// Two things make that identity hold rather than nearly hold:
+///
+/// * **Ordering is absolute.** Candidates are sorted by importance and then by
+///   their position on the WORLD (`wx`, `wy` in tile units), never by their
+///   position on this canvas — adjacent tiles' canvases differ by one tile, so
+///   a local key would order them differently and they would resolve conflicts
+///   differently.
+/// * **The collision grid lines up.** Its cell divides the tile side exactly
+///   (512 / 16), so the cell boundaries of two adjacent tiles' grids fall in
+///   the same places on the ground.
+///
+/// Far-apart candidates can still be resolved differently by the two tiles —
+/// each sees a ring the other does not — but a label is at most a couple of
+/// hundred pixels long and the disputed ring starts a whole tile away, so
+/// nothing near the shared edge is ever in doubt.
 ///
 /// `scale`/`off_x`/`off_y` are the over-zoom window `render::tile` computed,
-/// and the geometry is put through exactly the transform the road under it
-/// was drawn with — a label that does not sit on its road is worse than none.
+/// and the geometry is put through exactly the transform the road under it was
+/// drawn with — a label that does not sit on its road is worse than none.
 pub fn draw(
     pixmap: &mut Pixmap,
-    layers: &[mvt::Layer],
+    tiles: &[Neighbour],
     z: u32,
+    tx: i64,
+    ty: i64,
     side: f32,
     scale: f32,
     off_x: f32,
@@ -372,100 +518,86 @@ pub fn draw(
 ) {
     let Some(f) = face() else { return };
 
-    // Canvas-space geometry, kept alive for the candidates to borrow.
     let mut runs: Vec<Vec<(f32, f32)>> = Vec::new();
     let mut cands: Vec<Cand> = Vec::new();
-    // One label per name per layer: a street is a dozen separate features and
-    // labelling each of them writes its name down the road a dozen times.
-    // The longest run wins, since it has the best chance of holding the name.
-    let mut best: HashMap<(&str, &str), (usize, f32)> = HashMap::new();
+    let (ox, oy) = (-off_x * side, -off_y * side);
 
-    for layer in layers {
-        let lname = layer.name.as_str();
-        let is_road = matches!(lname, "roads" | "transportation_name");
-        let is_place = matches!(lname, "places" | "place");
-        let is_water = matches!(lname, "water" | "water_name");
-        if !(is_road || is_place || is_water) {
-            continue;
-        }
-        let s = side / layer.extent as f32 * scale;
-        let (ox, oy) = (-off_x * side, -off_y * side);
-        for feat in &layer.features {
-            let Some(text) = name_of(feat) else { continue };
-            if too_soon(feat, z) {
+    for nb in tiles {
+        // One neighbour tile along is one tile side of canvas — times the
+        // over-zoom magnification, since at z > maxzoom a source tile covers
+        // that many of the tiles being drawn.
+        let (nx, ny) = (nb.dx as f32 * side * scale, nb.dy as f32 * side * scale);
+        for named in nb.named {
+            if z < named.min_zoom as u32 && named.min_zoom > 0.0 {
                 continue;
             }
-            let kind = tag(feat, "kind").or_else(|| tag(feat, "class")).unwrap_or("");
-            let rank = num(feat, "population_rank").unwrap_or(0.0);
-            let styled = if is_road {
-                road_style(kind, z)
-            } else if is_place {
-                place_style(kind, rank)
-            } else {
-                // Water: the big bodies and the rivers, nothing else. A
-                // fountain and a swimming pool have names and no business
-                // carrying them on a street map.
-                match kind {
+            let styled = match named.cat {
+                Cat::Road => road_style(&named.kind, z),
+                Cat::Place => place_style(&named.kind, named.rank),
+                // The big bodies and the rivers, nothing else: a fountain and
+                // a swimming pool have names and no business carrying them on
+                // a street map.
+                Cat::Water => match named.kind.as_str() {
                     "ocean" | "sea" | "lake" | "water" | "bay" | "strait" => Some((24.0, 2)),
                     "river" | "stream" | "canal" => Some((20.0, 3)),
                     _ => None,
-                }
+                },
             };
-            let Some((size, rank_base)) = styled else { continue };
+            let Some((size, rank)) = styled else { continue };
+            let s = side / named.extent as f32 * scale;
+            // Extent units to this tile's canvas, and to the world in tile
+            // units — the first to draw with, the second to agree with the
+            // neighbours about.
+            let put = |p: &(f32, f32)| (p.0 * s + ox + nx, p.1 * s + oy + ny);
+            let world = |p: &(f32, f32)| (
+                (tx + nb.dx) as f64 + f64::from(p.0) / f64::from(named.extent),
+                (ty + nb.dy) as f64 + f64::from(p.1) / f64::from(named.extent),
+            );
 
-            match feat.geom_type {
+            match named.geom {
                 mvt::GeomType::Point => {
-                    let Some(p) = feat.paths.first().and_then(|r| r.first()) else { continue };
-                    let (x, y) = (p.0 * s + ox, p.1 * s + oy);
-                    // Points outside the tile still matter — a name centred
-                    // just past the edge shows half of itself — but not far
-                    // outside.
+                    let Some(p) = named.paths.first().and_then(|r| r.first()) else { continue };
+                    let (x, y) = put(p);
+                    let (wx, wy) = world(p);
                     if x < -side || x > side * 2.0 || y < -side || y > side * 2.0 {
                         continue;
                     }
-                    cands.push(Cand { text, rank: rank_base, size, kind: Kind::Point(x, y) });
+                    cands.push(Cand { text: &named.text, rank, size, kind: Kind::Point(x, y), wx, wy, len: 0.0 });
                 }
                 mvt::GeomType::Line => {
-                    // The longest of the feature's runs: the one with room.
-                    let mut pick: Option<(Vec<(f32, f32)>, f32)> = None;
-                    for r in &feat.paths {
+                    for r in &named.paths {
                         if r.len() < 2 {
                             continue;
                         }
-                        let pts: Vec<(f32, f32)> =
-                            r.iter().map(|p| (p.0 * s + ox, p.1 * s + oy)).collect();
+                        let pts: Vec<(f32, f32)> = r.iter().map(put).collect();
                         let len = *arcs(&pts).last().unwrap_or(&0.0);
-                        if pick.as_ref().map(|(_, l)| len > *l).unwrap_or(true) {
-                            pick = Some((pts, len));
+                        // Nothing that could not reach this tile anyway.
+                        let (lo, hi) = (-side - size * 8.0, side * 2.0 + size * 8.0);
+                        if pts.iter().all(|p| p.0 < lo || p.0 > hi || p.1 < lo || p.1 > hi) {
+                            continue;
                         }
+                        let mid = &r[r.len() / 2];
+                        let (wx, wy) = world(mid);
+                        runs.push(pts);
+                        cands.push(Cand {
+                            text: &named.text,
+                            rank,
+                            size,
+                            kind: Kind::Line(runs.len() - 1),
+                            wx,
+                            wy,
+                            len,
+                        });
                     }
-                    let Some((pts, len)) = pick else { continue };
-                    // A street is a dozen separate features and labelling
-                    // each writes its name down the road a dozen times. One
-                    // candidate per name per layer, and the longest run wins
-                    // it — that is the one with room to hold the name.
-                    let key = (lname, text);
-                    if let Some(&(idx, had)) = best.get(&key) {
-                        if len > had {
-                            runs[idx] = pts;
-                            best.insert(key, (idx, len));
-                        }
-                        continue;
-                    }
-                    runs.push(pts);
-                    best.insert(key, (runs.len() - 1, len));
-                    cands.push(Cand {
-                        text,
-                        rank: rank_base,
-                        size,
-                        kind: Kind::Line(runs.len() - 1),
-                    });
                 }
                 mvt::GeomType::Polygon => {
-                    // A named park or lake: label the middle of its biggest
-                    // ring, which is close enough to a pole of inaccessibility
-                    // for a tile this size.
-                    let Some(ring) = feat.paths.iter().max_by_key(|r| r.len()) else { continue };
+                    // A named park or lake: the middle of its biggest ring,
+                    // which is close enough to a pole of inaccessibility here.
+                    // The ring is cut at the tile edge like everything else, so
+                    // a park spanning tiles offers a different centre from each
+                    // of them — the repeat rule below is what stops those from
+                    // becoming four copies of the name in four wrong places.
+                    let Some(ring) = named.paths.iter().max_by_key(|r| r.len()) else { continue };
                     if ring.len() < 3 {
                         continue;
                     }
@@ -475,34 +607,39 @@ pub fn draw(
                         sy += p.1;
                     }
                     let n = ring.len() as f32;
-                    let (x, y) = (sx / n * s + ox, sy / n * s + oy);
+                    let c = (sx / n, sy / n);
+                    let (x, y) = put(&c);
+                    let (wx, wy) = world(&c);
                     if x < 0.0 || x > side || y < 0.0 || y > side {
                         continue;
                     }
-                    cands.push(Cand { text, rank: rank_base + 1, size, kind: Kind::Point(x, y) });
+                    cands.push(Cand { text: &named.text, rank: rank + 1, size, kind: Kind::Point(x, y), wx, wy, len: 0.0 });
                 }
             }
         }
     }
 
-    // Most important first: whoever asks first gets the space.
-    cands.sort_by(|a, b| a.rank.cmp(&b.rank).then(b.size.total_cmp(&a.size)));
+    // Most important first, then the longest run, then a fixed sweep across
+    // the world. Every one of those keys is the same number in every tile that
+    // can see the candidate, so two neighbours walk the same list in the same
+    // order and reach the same answers where it matters.
+    cands.sort_by(|a, b| {
+        a.rank
+            .cmp(&b.rank)
+            .then(b.len.total_cmp(&a.len))
+            .then(a.wx.total_cmp(&b.wx))
+            .then(a.wy.total_cmp(&b.wy))
+    });
 
     let mut grid = Grid::new(side);
     let mut pb = PathBuilder::new();
     let mut drawn = 0usize;
-    let mut seen: std::collections::HashSet<&str> = std::collections::HashSet::new();
+    // Where each name has already been written, so a street can carry its name
+    // more than once across a long run without carrying it once per fragment.
+    let mut placed: HashMap<&str, Vec<(f32, f32)>> = HashMap::new();
     for c in &cands {
-        // A ceiling as well as a grid: a dense city tile can offer hundreds
-        // of names and the grid alone would happily accept every one that
-        // found a gap, which is a wall of words rather than a map.
-        if drawn >= 48 {
+        if drawn >= 96 {
             break;
-        }
-        // The same name twice on one tile is once too many, whatever layer
-        // the second one came from.
-        if !seen.insert(c.text) {
-            continue;
         }
         let Some(adv) = advances(f, c.text, c.size) else { continue };
         let mut one = PathBuilder::new();
@@ -510,20 +647,28 @@ pub fn draw(
             Kind::Point(x, y) => {
                 let w = width_of(&adv);
                 let b = (x - w / 2.0, y - c.size * 0.6, x + w / 2.0, y + c.size * 0.6);
-                if b.2 < 0.0 || b.0 > side || b.3 < 0.0 || b.1 > side {
-                    continue;
-                }
                 lay_point(f, &mut one, &adv, c.size, x, y);
                 Some(b)
             }
             Kind::Line(i) => lay_line(f, &mut one, &adv, c.size, &runs[i]),
         };
         let Some(b) = boxed else { continue };
+        // Nothing that lands entirely off this tile — it is a neighbour's to
+        // draw, and it has the same candidate in its own list.
+        if b.2 < 0.0 || b.0 > side || b.3 < 0.0 || b.1 > side {
+            continue;
+        }
+        let here = ((b.0 + b.2) / 2.0, (b.1 + b.3) / 2.0);
+        let seen = placed.entry(c.text).or_default();
+        if seen.iter().any(|p| (p.0 - here.0).hypot(p.1 - here.1) < REPEAT_GAP) {
+            continue;
+        }
         if !grid.free(b) {
             continue;
         }
         let Some(p) = one.finish() else { continue };
         grid.take(b);
+        seen.push(here);
         drawn += 1;
         pb.push_path(&p);
     }
@@ -547,9 +692,118 @@ pub fn draw(
     ink.anti_alias = true;
     pixmap.fill_path(&path, &ink, FillRule::Winding, Transform::identity(), None);
 }
-
 #[cfg(test)]
 mod tests {
+
+    /// The heart of the cross-tile fix: where a name lands depends only on the
+    /// run's own geometry, never on which tile happens to be drawing it. Two
+    /// adjacent tiles hold the same road in their canvases one tile-width
+    /// apart, so if placement is translation-equivariant they compute the same
+    /// spot on the ground and their two halves line up across the seam.
+    #[test]
+    fn a_name_lands_in_the_same_place_whichever_tiles_frame_it_is_in() {
+        let f = face().unwrap();
+        let adv = advances(f, "West 58th Street", 23.0).unwrap();
+        let side = 512.0f32;
+        // A road that would straddle the seam: it runs out of one tile and on
+        // into the next.
+        let run: Vec<(f32, f32)> = (0..12).map(|i| (300.0 + i as f32 * 40.0, 200.0 + i as f32 * 9.0)).collect();
+        // The same road as the eastern neighbour sees it: one tile to the left.
+        let shifted: Vec<(f32, f32)> = run.iter().map(|p| (p.0 - side, p.1)).collect();
+        let mut a = PathBuilder::new();
+        let mut b = PathBuilder::new();
+        let ba = lay_line(f, &mut a, &adv, 23.0, &run).expect("should fit");
+        let bb = lay_line(f, &mut b, &adv, 23.0, &shifted).expect("should fit");
+        // The box moves by exactly one tile and not a pixel more …
+        assert!((ba.0 - side - bb.0).abs() < 0.01, "{ba:?} {bb:?}");
+        assert!((ba.1 - bb.1).abs() < 0.01, "{ba:?} {bb:?}");
+        assert!((ba.2 - side - bb.2).abs() < 0.01, "{ba:?} {bb:?}");
+        // … and so does every glyph of the ink, which is what actually has to
+        // line up when the two tiles are laid side by side.
+        let (pa, pb) = (a.finish().unwrap(), b.finish().unwrap());
+        let (ra, rb) = (pa.bounds(), pb.bounds());
+        assert!((ra.left() - side - rb.left()).abs() < 0.01, "{ra:?} {rb:?}");
+        assert!((ra.top() - rb.top()).abs() < 0.01, "{ra:?} {rb:?}");
+        assert!((ra.right() - side - rb.right()).abs() < 0.01, "{ra:?} {rb:?}");
+    }
+
+    /// A near-vertical road has almost no left-or-right to it, so "does this
+    /// point left" was decided by rounding noise — and with it, by whichever
+    /// way the data happened to be digitised. Two halves of one avenue could
+    /// read in opposite directions. Vertical names read upward, always.
+    #[test]
+    fn a_vertical_road_reads_upward_whichever_way_its_data_runs() {
+        let f = face().unwrap();
+        let adv = advances(f, "11th Avenue", 23.0).unwrap();
+        let w = width_of(&adv);
+        // The same avenue, digitised north-to-south and south-to-north, and a
+        // slight lean each way so the near-vertical branch is the one tested.
+        for lean in [0.0f32, 6.0, -6.0] {
+            let down: Vec<(f32, f32)> = (0..8).map(|i| (200.0 + i as f32 * lean, 40.0 + i as f32 * w / 3.0)).collect();
+            let up: Vec<(f32, f32)> = down.iter().rev().copied().collect();
+            let mut a = PathBuilder::new();
+            let mut b = PathBuilder::new();
+            let ba = lay_line(f, &mut a, &adv, 23.0, &down).expect("fits");
+            let bb = lay_line(f, &mut b, &adv, 23.0, &up).expect("fits");
+            // Same box either way: the direction came from the geometry, not
+            // from the order the points were stored in.
+            assert!((ba.0 - bb.0).abs() < 0.5 && (ba.1 - bb.1).abs() < 0.5, "lean {lean}: {ba:?} {bb:?}");
+            let (ra, rb) = (a.finish().unwrap().bounds(), b.finish().unwrap().bounds());
+            assert!((ra.left() - rb.left()).abs() < 0.5, "lean {lean}: {ra:?} {rb:?}");
+            assert!((ra.top() - rb.top()).abs() < 0.5, "lean {lean}: {ra:?} {rb:?}");
+        }
+    }
+
+    /// The collision grid covers the neighbours' ground too, and its cells fall
+    /// on the same boundaries in adjacent tiles — 512 divides by 16 exactly —
+    /// so two tiles agree about which patch of world a label has taken.
+    #[test]
+    fn the_grid_reaches_into_the_neighbours_and_lines_up_with_theirs() {
+        let side = 512.0f32;
+        let mut g = Grid::new(side);
+        // A label mostly in the western neighbour is still reserved.
+        let over = (-300.0, 100.0, -120.0, 130.0);
+        assert!(g.free(over));
+        g.take(over);
+        assert!(!g.free(over));
+        // The centre tile is untouched by it.
+        assert!(g.free((100.0, 100.0, 300.0, 130.0)));
+        // And one straddling the seam is reserved on both sides of it.
+        let seam = (side - 80.0, 300.0, side + 80.0, 330.0);
+        assert!(g.free(seam));
+        g.take(seam);
+        assert!(!g.free((side + 20.0, 300.0, side + 60.0, 330.0)));
+        assert!(!g.free((side - 60.0, 300.0, side - 20.0, 330.0)));
+        // The cell divides the tile side, so a whole number of cells separates
+        // two neighbours' identical grids.
+        assert!((side / g.cell).fract() < 1e-6, "{} / {}", side, g.cell);
+    }
+
+    #[test]
+    fn a_tile_offers_only_the_names_worth_drawing() {
+        use std::collections::HashMap;
+        let mut tags = HashMap::new();
+        tags.insert("name".to_string(), mvt::Value::Str("Marlowe Street".into()));
+        tags.insert("kind".to_string(), mvt::Value::Str("minor_road".into()));
+        tags.insert("min_zoom".to_string(), mvt::Value::Num(14.0));
+        let road = mvt::Feature { geom_type: mvt::GeomType::Line, paths: vec![vec![(0.0, 0.0), (100.0, 0.0)]], tags };
+        let nameless = mvt::Feature {
+            geom_type: mvt::GeomType::Polygon,
+            paths: vec![vec![(0.0, 0.0)]],
+            tags: HashMap::new(),
+        };
+        let layers = vec![
+            mvt::Layer { name: "roads".into(), extent: 4096, features: vec![road, nameless] },
+            // Buildings have no names and are not a label layer either.
+            mvt::Layer { name: "buildings".into(), extent: 4096, features: vec![] },
+        ];
+        let got = extract(&layers);
+        assert_eq!(got.len(), 1);
+        assert_eq!(got[0].text, "Marlowe Street");
+        assert_eq!(got[0].cat, Cat::Road);
+        assert_eq!(got[0].min_zoom, 14.0);
+        assert_eq!(got[0].extent, 4096);
+    }
     use super::*;
 
     #[test]

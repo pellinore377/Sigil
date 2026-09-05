@@ -330,7 +330,7 @@ export component OverflowMenu inherits Rectangle {
     in property <length> top-inset: 48px;
     in property <color> fg: Theme.menu-text;
     /// OverflowMenu.qml:83; ChatPage.qml:871 passes its themed surface.
-    in property <color> surface: Theme.popup-background.with-alpha(0.98);
+    in property <color> surface: Theme.popup-background;
     /// OverflowMenu.qml:105 is 210 wide; ChatPage.qml:868's inline copy is 170.
     in property <length> card-width: 210px;
     callback picked(string);
@@ -486,7 +486,7 @@ export component NotePill inherits Rectangle {
         width: note-text.preferred-width + (root.settings-look ? 26px : 28px);
         height: 34px;
         border-radius: 17px;
-        background: root.settings-look ? Theme.popup-background.with-alpha(0.98) : Theme.popup-background;
+        background: Theme.popup-background;
         border-width: root.settings-look ? 1px : 0px;
         border-color: root.fg.with-alpha(0.12);
         opacity: root.text != "" ? 1 : 0;

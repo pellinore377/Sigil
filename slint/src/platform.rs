@@ -182,6 +182,9 @@ const MIC_REQUEST_CODE: i32 = 7001;
 /// the page's poll notices the grant on its next pass and opens the camera.
 #[cfg(target_os = "android")]
 const CAMERA_REQUEST_CODE: i32 = 7002;
+/// The gallery sheet's reads, asked for on their own once the camera is up.
+#[cfg(target_os = "android")]
+const MEDIA_REQUEST_CODE: i32 = 7003;
 
 #[cfg(target_os = "android")]
 fn mic_permission_android() -> anyhow::Result<bool> {
@@ -194,26 +197,45 @@ fn request_mic_permission_android() -> anyhow::Result<()> {
 }
 
 /// The camera is a runtime grant of the same shape as the microphone, and the
-/// viewfinder that wants it also records video and shows a gallery sheet — so
-/// all of them are asked for together and the person sees one run of dialogs
-/// rather than one now and one at the moment they press record.
+/// viewfinder that wants it also records video — so those two are asked for
+/// together and the person sees one pair of dialogs rather than one now and
+/// one at the moment they press record.
+///
+/// The GALLERY's reads are deliberately NOT in that pair. They were, for one
+/// build, and it is the likeliest reason the camera stopped opening at all:
+/// they are permissions the person has never been asked for, on a request
+/// whose failure was logged without the `camera:` prefix everything else on
+/// this path carries, so nothing about it was visible in a log. The sheet's
+/// reads are a nicety; the camera is the feature. They are asked for on their
+/// own, afterwards, and can no longer delay or break the thing they garnish.
 #[cfg(target_os = "android")]
 pub fn has_camera_permission() -> bool {
     match permission_android(CAMERA) {
         Ok(granted) => granted,
         Err(e) => {
-            tracing::warn!("camera permission check: {e:#}");
+            tracing::warn!("camera: the CAMERA grant could not be read: {e:#}");
             false
         }
     }
 }
 
-/// Whether the gallery sheet can read anything. ANY of the three is enough:
-/// which one exists depends on the API level, and the level that has the two
-/// READ_MEDIA_* grants does not have the old blanket one.
+/// Which read the gallery sheet needs HERE. API 33 split the blanket read into
+/// one grant per medium and stopped granting the blanket one; asking for a
+/// permission the manifest does not carry at this level is a request Android
+/// answers with a silent denial, so only the applicable ones are ever named.
+#[cfg(target_os = "android")]
+fn read_media_perms() -> Vec<&'static str> {
+    if sdk_int() >= 33 {
+        vec![READ_MEDIA[0], READ_MEDIA[1]]
+    } else {
+        vec![READ_MEDIA[2]]
+    }
+}
+
+/// Whether the gallery sheet can read anything.
 #[cfg(target_os = "android")]
 pub fn has_media_permission() -> bool {
-    READ_MEDIA
+    read_media_perms()
         .iter()
         .any(|p| permission_android(p).unwrap_or(false))
 }
@@ -225,11 +247,45 @@ pub fn has_media_permission() -> bool {
 
 #[cfg(target_os = "android")]
 pub fn request_camera_permission() {
-    let mut want = vec![CAMERA, RECORD_AUDIO];
-    want.extend_from_slice(&READ_MEDIA);
-    if let Err(e) = request_permissions_android(&want, CAMERA_REQUEST_CODE) {
-        tracing::warn!("camera permission request: {e:#}");
+    tracing::info!("camera: asking for CAMERA and RECORD_AUDIO");
+    if let Err(e) = request_permissions_android(&[CAMERA, RECORD_AUDIO], CAMERA_REQUEST_CODE) {
+        tracing::warn!("camera: the grant dialog could not be shown: {e:#}");
     }
+}
+
+/// The gallery sheet's reads, on their own and after the camera is up.
+#[cfg(target_os = "android")]
+pub fn request_media_permission() {
+    let want = read_media_perms();
+    tracing::info!("camera: asking for the gallery's reads {want:?}");
+    if let Err(e) = request_permissions_android(&want, MEDIA_REQUEST_CODE) {
+        tracing::warn!("camera: the gallery's grant dialog could not be shown: {e:#}");
+    }
+}
+
+#[cfg(not(target_os = "android"))]
+pub fn request_media_permission() {}
+
+/// android.os.Build.VERSION.SDK_INT, so a permission that does not exist at
+/// this level is never named in a request.
+#[cfg(target_os = "android")]
+fn sdk_int() -> i32 {
+    fn read() -> anyhow::Result<i32> {
+        let app = crate::scale::android().ok_or_else(|| anyhow::anyhow!("no Android app handle"))?;
+        let vm = unsafe { jni::JavaVM::from_raw(app.vm_as_ptr().cast()) }?;
+        let mut env = vm.attach_current_thread()?;
+        Ok(env
+            .get_static_field("android/os/Build$VERSION", "SDK_INT", "I")?
+            .i()?)
+    }
+    static LEVEL: std::sync::OnceLock<i32> = std::sync::OnceLock::new();
+    *LEVEL.get_or_init(|| match read() {
+        Ok(v) => v,
+        Err(e) => {
+            tracing::warn!("camera: the API level could not be read: {e:#}");
+            33
+        }
+    })
 }
 
 /// checkSelfPermission(name) == PERMISSION_GRANTED (0).
@@ -960,7 +1016,11 @@ fn symbols_font() -> Option<String> {
 pub fn camera_open(front: bool, video: bool, dir: &str, to: &str) -> bool {
     #[cfg(target_os = "android")]
     {
+        tracing::info!("camera: opening the viewfinder (front {front}, video {video})");
         let font = symbols_font().unwrap_or_default();
+        if font.is_empty() {
+            tracing::warn!("camera: no icon font; the glyphs will be missing");
+        }
         match camera_call(|env, class, activity| {
             use jni::objects::JValue;
             let facing = env.new_string(if front { "front" } else { "back" })?;
@@ -1138,6 +1198,146 @@ fn camera_call<T>(
             let global = dex_class(env, &activity, "SigilCamera")?;
             tracing::info!("camera: SigilCamera is loaded");
             CAMERA_CLASS.get_or_init(|| global)
+        }
+    };
+    f(env, class, &activity)
+}
+
+// ---------------------------------------------------------------------------
+// Saving a picture or a clip out of the viewer.
+//
+// This used to fire an engine request called `media.saveAs` that the engine
+// has never had, at $HOME/Downloads — which on Android is the app's own
+// private files directory, where no gallery will ever look. Both halves were
+// wrong, so both are gone: the phone gets a MediaStore row of its own
+// (java/SigilGallery.java says how), and the desktop gets a copy in the
+// downloads directory it already means by that name.
+// ---------------------------------------------------------------------------
+
+/// Put a downloaded picture or clip where the person can find it again.
+/// `Ok` carries where it went, for the toast to name.
+pub fn save_to_gallery(path: &str, mime: &str, name: &str) -> Result<String, String> {
+    #[cfg(target_os = "android")]
+    {
+        return match gallery_call(|env, class, activity| {
+            use jni::objects::JValue;
+            let jpath = env.new_string(path)?;
+            let jmime = env.new_string(mime)?;
+            let jname = env.new_string(name)?;
+            let out = jni_call_static(
+                env,
+                class,
+                "save",
+                "(Landroid/app/Activity;Ljava/lang/String;Ljava/lang/String;\
+                  Ljava/lang/String;)Ljava/lang/String;",
+                &[
+                    JValue::Object(activity),
+                    JValue::Object(&jpath),
+                    JValue::Object(&jmime),
+                    JValue::Object(&jname),
+                ],
+            )?
+            .l()?;
+            if out.is_null() {
+                return Ok(String::new());
+            }
+            let s: String = env.get_string(&jni::objects::JString::from(out))?.into();
+            Ok(s)
+        }) {
+            // The helper answers "" when the row is in and a sentence when it
+            // is not, so an empty answer is the good one.
+            Ok(why) if why.is_empty() => Ok(if mime.starts_with("video/") {
+                "Movies"
+            } else if mime.starts_with("image/") || mime.is_empty() {
+                "Pictures"
+            } else {
+                "Downloads"
+            }
+            .to_string()),
+            Ok(why) => Err(why),
+            Err(e) => {
+                tracing::warn!("save: the gallery helper failed: {e:#}");
+                Err("that could not be saved".to_string())
+            }
+        };
+    }
+    #[allow(unreachable_code)]
+    {
+        // The desktop's own downloads directory, by the name it goes by there.
+        let _ = mime;
+        let dir = std::env::var("XDG_DOWNLOAD_DIR")
+            .ok()
+            .filter(|d| !d.is_empty())
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|| {
+                std::path::PathBuf::from(std::env::var("HOME").unwrap_or_default())
+                    .join("Downloads")
+            });
+        std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+        let src = std::path::Path::new(path);
+        let leaf = if name.trim().is_empty() {
+            src.file_name().and_then(|n| n.to_str()).unwrap_or("sigil")
+        } else {
+            name
+        };
+        // Nothing from a message is trusted as a path.
+        let leaf: String = leaf
+            .chars()
+            .map(|c| if c.is_control() || c == '/' || c == '\\' { '_' } else { c })
+            .collect();
+        let leaf = leaf.trim();
+        let leaf = if leaf.is_empty() || leaf == "." || leaf == ".." {
+            "sigil"
+        } else {
+            leaf
+        };
+        // Never write over what is already there.
+        let mut out = dir.join(leaf);
+        let stem = std::path::Path::new(leaf)
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("sigil")
+            .to_string();
+        let ext = std::path::Path::new(leaf)
+            .extension()
+            .and_then(|s| s.to_str())
+            .map(|e| format!(".{e}"))
+            .unwrap_or_default();
+        let mut n = 1;
+        while out.exists() {
+            out = dir.join(format!("{stem} ({n}){ext}"));
+            n += 1;
+        }
+        std::fs::copy(src, &out).map_err(|e| format!("{e}"))?;
+        Ok(out.display().to_string())
+    }
+}
+
+#[cfg(target_os = "android")]
+static GALLERY_CLASS: std::sync::OnceLock<jni::objects::GlobalRef> = std::sync::OnceLock::new();
+
+/// Attach, find the class once, and run `f` with it and the Activity.
+#[cfg(target_os = "android")]
+fn gallery_call<T>(
+    f: impl FnOnce(
+        &mut jni::JNIEnv,
+        &'static jni::objects::GlobalRef,
+        &jni::objects::JObject,
+    ) -> anyhow::Result<T>,
+) -> anyhow::Result<T> {
+    use anyhow::Context as _;
+    let app = crate::scale::android().ok_or_else(|| anyhow::anyhow!("no Android app handle"))?;
+    // SAFETY: android-activity's own pointers, valid for the life of the process.
+    let vm = unsafe { jni::JavaVM::from_raw(app.vm_as_ptr().cast()) }?;
+    let mut guard = vm.attach_current_thread().context("attach to the JVM")?;
+    let env = &mut *guard;
+    let activity = unsafe { jni::objects::JObject::from_raw(app.activity_as_ptr().cast()) };
+    let class = match GALLERY_CLASS.get() {
+        Some(c) => c,
+        None => {
+            let global = dex_class(env, &activity, "SigilGallery")?;
+            tracing::info!("save: SigilGallery is loaded");
+            GALLERY_CLASS.get_or_init(|| global)
         }
     };
     f(env, class, &activity)

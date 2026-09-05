@@ -673,8 +673,26 @@ export component ChatPage inherits Rectangle {
         running: root.handover;
         triggered => { root.end-handover(false); }
     }
+    /// The keyboard has stopped moving.
+    ///
+    /// The handover waits for the panel to be covered, and a keyboard that
+    /// ends up SHORTER than the panel never covers it — one the user has
+    /// shrunk, a keypad, or simply a panel standing a pixel or two taller
+    /// because its own floor counts the gesture bar. Waiting out the 700 of
+    /// give-up for that is the clunk: the panel just sits there, and only then
+    /// does it go. The keyboard landing is the answer either way, so take it —
+    /// covered if it got there, an ordinary wipe if it did not. 120 after the
+    /// last frame of the IME's slide; every frame restarts the wait.
+    kb-land-timer := Timer {
+        interval: 120ms;
+        running: root.handover && root.kb-inset > 96px;
+        triggered => { root.end-handover(root.kb-inset >= root.panel-h); }
+    }
     changed kb-inset => {
-        if (root.handover && root.kb-inset >= root.panel-h) { root.end-handover(true); }
+        if (root.handover) {
+            if (root.kb-inset >= root.panel-h) { root.end-handover(true); }
+            else { kb-land-timer.restart(); }
+        }
     }
     property <length> foot-h: max(root.panel-h,
         (root.attach-open || root.recorder-open) ? root.kb-inset : root.bottom-inset);
@@ -725,6 +743,10 @@ export component ChatPage inherits Rectangle {
         - (list.viewport-y + list.viewport-height - root.list-pad);
     /// The emoji grid's offset, likewise for the harness (emoji.slint).
     out property <length> emoji-grid-y: epicker.grid-y;
+    /// Whether the field holds the focus — which is what holds the keyboard
+    /// up. Out for the harness: a headless window has no IME to watch go down,
+    /// so what it checks is the thing that sends it down.
+    out property <bool> composer-focused: composer-input.has-focus;
     out property <length> from-end: max(0px, (list.viewport-height - list.height) + list.viewport-y);
     /// The timeline's width, so Rust can wrap effect text to the bubble.
     out property <length> timeline-w: list.width;
@@ -1100,11 +1122,18 @@ export component ChatPage inherits Rectangle {
                     if (self.stick && !sheet.shown) { root.pin-list(); }
                 }
                 init => { root.vp-h = self.height; root.vp-y = self.viewport-y; }
-                // A drag on the conversation puts the open panel away — the
-                // attachment sheet, the picker, the recorder — and the composer
-                // goes back to the bottom while the list carries on scrolling.
-                // Reaching past the panel to read is asking for the panel to be
-                // gone, and the reference answers it that way.
+                // A drag on the conversation puts away whatever was standing
+                // under the composer — the attachment sheet, the picker, the
+                // recorder, and the KEYBOARD too. Reaching past it to read is
+                // asking for it to be gone, and the reference answers it that
+                // way; the composer goes back to the bottom while the list
+                // carries on scrolling under the finger.
+                //
+                // The keyboard is put down by taking the focus off the field,
+                // which is the only handle on it there is — the platform lowers
+                // the IME and its frames come back through `kb-inset`, so the
+                // composer follows the keyboard down rather than running its
+                // own animation beside it.
                 //
                 // `flicked` is what makes this safe to hang off the list at
                 // all: Slint fires it for a finger or a wheel and never for an
@@ -1113,10 +1142,10 @@ export component ChatPage inherits Rectangle {
                 // trip it. `list-vy` banks every one of those anyway, and 8 of
                 // slack on top rejects the jitter of a press that barely moved.
                 flicked => {
-                    if ((root.attach-open || root.recorder-open)
-                        && abs((self.viewport-y - root.list-vy) / 1px) > 8) {
+                    if (abs((self.viewport-y - root.list-vy) / 1px) > 8) {
                         root.attach-open = false;
                         root.recorder-open = false;
+                        if (composer-input.has-focus) { composer-input.clear-focus(); }
                     }
                 }
                 // Fetch older history a screen and a half early (maybePaginate).
@@ -2149,7 +2178,8 @@ export component ChatPage inherits Rectangle {
         open <=> root.menu-open;
         top-inset: root.phone ? 56px : 50px;
         card-width: 170px;
-        surface: (root.themed ? root.surface-c : Theme.popup-background).with-alpha(0.98);
+        // opaque: the menus and the pill never show the page through
+        surface: root.themed ? root.surface-c : Theme.popup-background;
         fg: root.fg;
         model: [
             { t: "Search", a: "search", icon: Icons.search, danger: false },
@@ -2185,7 +2215,8 @@ export component ChatPage inherits Rectangle {
         // Panel.qml:1370-1373 — a themed room hands the sheet the chat's own
         // surface, chip and deep chip so pill, menu, drawer and confirm sit
         // in the room's tone; unthemed rooms keep the popup ground.
-        surface: (root.themed ? root.surface-c : Theme.popup-background).with-alpha(0.98);
+        // opaque: the menus and the pill never show the page through
+        surface: root.themed ? root.surface-c : Theme.popup-background;
         chip: root.chip-c;
         deep-chip: root.deep-chip-c;
         emoji-rows: root.emoji-rows;

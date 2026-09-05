@@ -954,6 +954,20 @@ pub fn apply_media_ready(ui: &mut UiState, win: &AppWindow, v: &Value) {
     if touched {
         rebuild_timeline(ui, win);
     }
+    // The open viewer keeps its own copies of these items behind the pager.
+    // Patch the pages that gained a picture and hand the model those rows
+    // alone: replacing the model would give every page a new Image value —
+    // a new cache key — and the neighbours would re-decode on every turn.
+    let mut hit: Vec<usize> = Vec::new();
+    for (n, item) in ui.viewer_items.iter_mut().enumerate() {
+        if item["media"]["mxc"].as_str() == Some(mxc.as_str()) {
+            item["media"][if thumb { "thumbnailPath" } else { "path" }] = json!(path);
+            hit.push(n);
+        }
+    }
+    if !hit.is_empty() && win.get_viewer_open() {
+        viewer_rows_changed(ui, win, &hit);
+    }
 }
 
 // ---------------------------------------------------------------- act()
@@ -1378,11 +1392,10 @@ pub fn on_act(ui: &mut UiState, win: &AppWindow, action: &str, a: &str, b2: &str
             // in onCurChanged, or the decoder runs on under the next picture.
             video_end(&req, win);
             let i: usize = a.parse().unwrap_or(0);
+            // The new page and both its neighbours, so the next turn in
+            // either direction already has its picture in hand.
+            viewer_prefetch(ui, i);
             if let Some(item) = ui.viewer_items.get(i).cloned() {
-                let ev = s(&item, "eventId");
-                if item["media"]["path"].as_str().unwrap_or("").is_empty() && !ev.is_empty() {
-                    req.fire("media.get", json!({"roomId": open_room, "eventId": ev}));
-                }
                 // A GIF that the timeline never cached (it only looks at
                 // kind == "image", while the viewer admits stickers too) has
                 // no frames yet; ask for them the way the bridge does.
@@ -1418,29 +1431,44 @@ pub fn on_act(ui: &mut UiState, win: &AppWindow, action: &str, a: &str, b2: &str
 
         // ---- doc / audio pages ----
         "open-doc" => doc_open(ui, win, a),
+        // The same route the viewer's save takes, and the same reason: this
+        // fired `media.saveAs` too, which the engine has never had.
         "doc-download" | "audio-download" => {
             let (rid, ev) = if action_is_doc {
                 ui.doc_ctx.clone()
             } else {
                 ui.audio_ctx.clone()
             };
-            let dest = format!("{}/Downloads", std::env::var("HOME").unwrap_or_default());
-            call_ui(
-                &req,
-                "media.saveAs",
-                json!({"roomId": rid, "eventId": ev, "dest": dest}),
-                move |_ui, win, out| {
-                    let msg = match out {
-                        Ok(v) => format!("Saved to {}", s(&v, "path")),
-                        Err((_, m)) => m,
-                    };
-                    if action_is_doc {
-                        toast(win, Toast::Doc, msg.as_str().into());
-                    } else {
-                        toast(win, Toast::Audio, msg.as_str().into());
-                    }
-                },
-            );
+            let which = if action_is_doc { Toast::Doc } else { Toast::Audio };
+            let _ = &rid;
+            let Some(item) = ui
+                .shadow
+                .iter()
+                .find(|i| s(i, "eventId") == ev)
+                .cloned()
+            else {
+                toast(win, which, "That is not here any more".into());
+                return;
+            };
+            let path = item["media"]["path"].as_str().unwrap_or("").to_string();
+            if path.is_empty() {
+                toast(win, which, "Still fetching that one".into());
+                return;
+            }
+            let mime = item["media"]["mime"].as_str().unwrap_or("").to_string();
+            let name = item["media"]["filename"].as_str().unwrap_or("").to_string();
+            req.handle().spawn_blocking(move || {
+                let said = match crate::platform::save_to_gallery(&path, &mime, &name) {
+                    Ok(where_to) => format!("Saved to {where_to}"),
+                    Err(why) => why,
+                };
+                let _ = slint::invoke_from_event_loop(move || {
+                    crate::bridge::with_ui(|ui| {
+                        let Some(win) = ui.win.upgrade() else { return };
+                        toast(&win, which, said.as_str().into());
+                    });
+                });
+            });
         }
         "doc-page" => doc_page(ui, win, a, b2),
         "doc-sheet" => doc_sheet(ui, win, a),
@@ -1505,12 +1533,18 @@ pub fn on_act(ui: &mut UiState, win: &AppWindow, action: &str, a: &str, b2: &str
         // the shutter, so nothing else comes down here while it is on
         // screen). The desktop, with no viewfinder of ours, falls straight
         // through to a capture.
+        // The FIRST thing on this path that can speak. If a tap on the tile
+        // leaves no line at all in the log, the break is above Rust — in the
+        // sheet's callback, the chat page's forward of it, or the window's —
+        // and not in anything below here.
         "pick-attach-camera" => {
+            tracing::info!("camera: pick-attach-camera reached the bridge");
             if !camera_shutter_handled(ui, win) {
                 attach_pick(ui, AttachPick::Photo, false)
             }
         }
         "pick-attach-video" => {
+            tracing::info!("camera: pick-attach-video reached the bridge");
             if !camera_shutter_handled(ui, win) {
                 attach_pick(ui, AttachPick::Video, false)
             }
@@ -3262,30 +3296,30 @@ static CAMERA_FRONT: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBo
 fn camera_shutter_handled(ui: &UiState, win: &AppWindow) -> bool {
     #[cfg(target_os = "android")]
     {
+        tracing::info!("camera: the tile was tapped");
         // A viewfinder is already up: the overlay owns the shutter, and a
         // stray callback must not start a second capture behind it.
         if crate::platform::camera_live() {
+            tracing::info!("camera: one is already up; the tap is the overlay's");
             return true;
         }
         let room = ui.open_room.clone();
         CAMERA.with(|c| *c.borrow_mut() = CameraView::default());
-        let camera = crate::platform::has_camera_permission();
-        // One run of dialogs for the lot — the camera, the microphone a clip
-        // needs, and the reads the gallery sheet needs. Android skips whatever
-        // is already granted, so asking again for the sheet's sake alone costs
-        // nothing when the camera's is in hand.
-        if !camera || !crate::platform::has_media_permission() {
-            crate::platform::request_camera_permission();
-        }
-        if !camera {
+        if !crate::platform::has_camera_permission() {
             // The grant is asynchronous and nothing consumes its result; the
             // poll below opens the viewfinder as soon as it lands, and gives
-            // up after half a minute of no answer.
+            // up after half a minute of no answer. NOTHING about the gallery
+            // is asked for here: its reads are not this feature's business
+            // and must never stand between the tap and the camera.
+            tracing::info!("camera: no CAMERA grant yet; asking and waiting");
+            crate::platform::request_camera_permission();
             CAMERA.with(|c| c.borrow_mut().room = room);
             camera_watch(win);
             return true;
         }
+        tracing::info!("camera: the CAMERA grant is in hand");
         if !camera_up(win, room) {
+            tracing::warn!("camera: no viewfinder of ours; the phone's app can have it");
             return false;
         }
         camera_watch(win);
@@ -3309,11 +3343,18 @@ fn camera_up(win: &AppWindow, room: String) -> bool {
     if !crate::platform::camera_open(front, video, &dir.to_string_lossy(), &to) {
         return false;
     }
+    tracing::info!("camera: the viewfinder was asked for; watching it");
     CAMERA.with(|c| {
         let mut c = c.borrow_mut();
         c.opened = true;
         c.room = room;
     });
+    // The gallery's reads, now that the camera itself is up and nothing it
+    // does can be held up by them. Asked once per viewfinder, and only when
+    // they are not already in hand.
+    if !crate::platform::has_media_permission() {
+        crate::platform::request_media_permission();
+    }
     true
 }
 
@@ -3334,6 +3375,8 @@ struct CameraView {
     said: String,
     /// The room the viewfinder was opened in.
     room: String,
+    /// Whether the session's first answer has been logged.
+    saw_state: bool,
 }
 
 #[cfg(target_os = "android")]
@@ -3389,6 +3432,7 @@ fn camera_pass(win: &AppWindow) {
     if !crate::platform::camera_live() {
         // Gone: Back reached lib.rs, which closed it before we could.
         if CAMERA.with(|c| c.borrow().opened) {
+            tracing::info!("camera: the viewfinder went away; the watch stops");
             camera_down();
             return;
         }
@@ -3402,12 +3446,17 @@ fn camera_pass(win: &AppWindow) {
             // Half a minute of no answer is a refusal. Say so: the sheet has
             // already closed behind the tile, so silence would read as the tap
             // having done nothing at all.
+            if waited % 100 == 0 {
+                tracing::info!("camera: still waiting on the CAMERA grant ({waited})");
+            }
             if waited > 600 {
+                tracing::warn!("camera: the CAMERA grant never came; giving up");
                 CAMERA_CLOCK.with(|t| t.stop());
                 win.set_chat_toast("Sigil needs permission to use the camera".into());
             }
             return;
         }
+        tracing::info!("camera: the CAMERA grant landed after {waited} passes");
         let room = CAMERA.with(|c| c.borrow().room.clone());
         if !camera_up(win, room) {
             // No viewfinder of ours on this device after all: hand the job to
@@ -3420,17 +3469,39 @@ fn camera_pass(win: &AppWindow) {
     }
 
     let Some(st) = crate::platform::camera_state() else {
+        tracing::warn!("camera: the viewfinder stopped answering");
         camera_down();
         return;
     };
 
-    // Every way out, in one place.
+    // Every way out, in one place, and each one says which it was: an
+    // overlay that vanishes without a reason in the log is the hardest kind
+    // of bug to be handed.
     let room = camera_room();
     let moved = CAMERA.with(|c| c.borrow().room != room);
-    if st.closed || win.get_nav() != "chat" || moved {
+    let nav = win.get_nav();
+    if st.closed || nav != "chat" || moved {
+        tracing::info!(
+            "camera: closing ({})",
+            if st.closed {
+                "the X, or the app went away"
+            } else if moved {
+                "the room changed"
+            } else {
+                "the chat page was left"
+            }
+        );
         camera_down();
         return;
     }
+    // The first pass after it opens, so the log shows the session arriving.
+    CAMERA.with(|c| {
+        let mut c = c.borrow_mut();
+        if !c.saw_state {
+            c.saw_state = true;
+            tracing::info!("camera: the session says {}", st.state);
+        }
+    });
 
     // A thumbnail in the gallery sheet was tapped: its bytes are already a
     // file in the same directory a gallery pick lands in, so this is the same
@@ -3517,74 +3588,7 @@ fn viewer_open(ui: &mut UiState, win: &AppWindow, event_id: &str) {
     let room_id = room_of_key(&ui.open_room);
     let rows: Vec<crate::ViewerItem> = items
         .iter()
-        .map(|i| {
-            let media = i["media"].clone();
-            // A video's `path` is the clip itself; the picture to show is its
-            // poster. BubbleDelegate.qml:466 never hands a video file to the
-            // image decoder either — it only logged an error and drew black.
-            let path = if s(i, "kind") == "video" {
-                media["thumbnailPath"].as_str().unwrap_or("")
-            } else {
-                media["path"]
-                    .as_str()
-                    .or(media["thumbnailPath"].as_str())
-                    .unwrap_or("")
-            }
-            .to_string();
-            let img = crate::bridge::avatar_pub(ui, &path);
-            // GIFs animate here too, from the frame strip the bubble cached.
-            let mut gif_imgs: Vec<slint::Image> = Vec::new();
-            let mut gif_delays: Vec<i32> = Vec::new();
-            if let Some(v) = ui
-                .gif_frames
-                .get(&format!("{room_id}|{}", s(i, "eventId")))
-                .cloned()
-            {
-                if v.is_object() {
-                    let paths: Vec<String> = v["frames"]
-                        .as_array()
-                        .map(|a| {
-                            a.iter()
-                                .filter_map(Value::as_str)
-                                .map(str::to_string)
-                                .collect()
-                        })
-                        .unwrap_or_default();
-                    for p in &paths {
-                        if let Some(fimg) = crate::bridge::avatar_pub(ui, p) {
-                            gif_imgs.push(fimg);
-                        }
-                    }
-                    gif_delays = v["delays"]
-                        .as_array()
-                        .map(|a| {
-                            a.iter()
-                                .filter_map(Value::as_i64)
-                                .map(|d| d as i32)
-                                .collect()
-                        })
-                        .unwrap_or_default();
-                    if gif_imgs.len() != gif_delays.len() {
-                        gif_imgs.clear();
-                        gif_delays.clear();
-                    }
-                }
-            }
-            crate::ViewerItem {
-                gif_frames: ModelRc::new(VecModel::from(gif_imgs)),
-                gif_delays: ModelRc::new(VecModel::from(gif_delays)),
-                event_id: s(i, "eventId").into(),
-                kind: s(i, "kind").into(),
-                sender_name: s(i, "senderName").into(),
-                is_own: b(i, "isOwn"),
-                ts_label: crate::project::session_label(i["ts"].as_i64().unwrap_or(0)).into(),
-                have_img: img.is_some(),
-                img: img.unwrap_or_default(),
-                w: media["width"].as_i64().unwrap_or(0) as i32,
-                h: media["height"].as_i64().unwrap_or(0) as i32,
-                can_redact: b(&i["can"], "redact"),
-            }
-        })
+        .map(|i| viewer_row(ui, i, &room_id))
         .collect();
     let names: Vec<SharedString> = ui
         .rooms_json
@@ -3597,13 +3601,142 @@ fn viewer_open(ui: &mut UiState, win: &AppWindow, event_id: &str) {
     win.set_vw_forward_names(ModelRc::new(VecModel::from(names)));
     win.set_vw_cur(cur as i32);
     win.set_viewer_open(true);
-    if let Some(item) = ui.viewer_items.get(cur) {
-        let ev = s(item, "eventId");
-        if item["media"]["path"].as_str().unwrap_or("").is_empty() && !ev.is_empty() {
-            let room = room_of_key(&ui.open_room);
-            ui.req
-                .fire("media.get", json!({"roomId": room, "eventId": ev}));
+    // The page opened on, and both its neighbours: a full picture asked for
+    // only when the finger has already turned the page arrives under the eye
+    // and reads as the picture reloading. Asked for now, the turn finds it
+    // there. VIEWER_ASKED keeps the same event from being asked for twice.
+    VIEWER_ASKED.with(|a| a.borrow_mut().clear());
+    viewer_prefetch(ui, cur);
+}
+
+/// One page of the viewer's pager, built from the timeline item behind it.
+/// Every picture comes through `avatar_pub`, whose cache is keyed by path —
+/// so rebuilding a row whose path has not moved hands back the very same
+/// `Image` handle, the row compares equal, and nothing re-decodes.
+fn viewer_row(ui: &mut UiState, i: &Value, room_id: &str) -> crate::ViewerItem {
+    let media = i["media"].clone();
+    // A video's `path` is the clip itself; the picture to show is its
+    // poster. BubbleDelegate.qml:466 never hands a video file to the
+    // image decoder either — it only logged an error and drew black.
+    let path = if s(i, "kind") == "video" {
+        media["thumbnailPath"].as_str().unwrap_or("")
+    } else {
+        media["path"]
+            .as_str()
+            .or(media["thumbnailPath"].as_str())
+            .unwrap_or("")
+    }
+    .to_string();
+    let img = crate::bridge::avatar_pub(ui, &path);
+    // GIFs animate here too, from the frame strip the bubble cached.
+    let mut gif_imgs: Vec<slint::Image> = Vec::new();
+    let mut gif_delays: Vec<i32> = Vec::new();
+    if let Some(v) = ui
+        .gif_frames
+        .get(&format!("{room_id}|{}", s(i, "eventId")))
+        .cloned()
+    {
+        if v.is_object() {
+            let paths: Vec<String> = v["frames"]
+                .as_array()
+                .map(|a| {
+                    a.iter()
+                        .filter_map(Value::as_str)
+                        .map(str::to_string)
+                        .collect()
+                })
+                .unwrap_or_default();
+            for p in &paths {
+                if let Some(fimg) = crate::bridge::avatar_pub(ui, p) {
+                    gif_imgs.push(fimg);
+                }
+            }
+            gif_delays = v["delays"]
+                .as_array()
+                .map(|a| {
+                    a.iter()
+                        .filter_map(Value::as_i64)
+                        .map(|d| d as i32)
+                        .collect()
+                })
+                .unwrap_or_default();
+            if gif_imgs.len() != gif_delays.len() {
+                gif_imgs.clear();
+                gif_delays.clear();
+            }
         }
+    }
+    crate::ViewerItem {
+        gif_frames: ModelRc::new(VecModel::from(gif_imgs)),
+        gif_delays: ModelRc::new(VecModel::from(gif_delays)),
+        event_id: s(i, "eventId").into(),
+        kind: s(i, "kind").into(),
+        sender_name: s(i, "senderName").into(),
+        is_own: b(i, "isOwn"),
+        ts_label: crate::project::session_label(i["ts"].as_i64().unwrap_or(0)).into(),
+        have_img: img.is_some(),
+        img: img.unwrap_or_default(),
+        w: media["width"].as_i64().unwrap_or(0) as i32,
+        h: media["height"].as_i64().unwrap_or(0) as i32,
+        can_redact: b(&i["can"], "redact"),
+    }
+}
+
+thread_local! {
+    /// Events the open viewer has already asked a full picture for.
+    static VIEWER_ASKED: std::cell::RefCell<std::collections::HashSet<String>> =
+        std::cell::RefCell::new(std::collections::HashSet::new());
+}
+
+/// Ask for one page's full-resolution picture, once.
+fn viewer_ask(ui: &UiState, idx: usize) {
+    let Some(item) = ui.viewer_items.get(idx) else {
+        return;
+    };
+    let ev = s(item, "eventId").to_string();
+    if ev.is_empty() || !item["media"]["path"].as_str().unwrap_or("").is_empty() {
+        return;
+    }
+    if !VIEWER_ASKED.with(|a| a.borrow_mut().insert(ev.clone())) {
+        return;
+    }
+    let room = room_of_key(&ui.open_room);
+    ui.req
+        .fire("media.get", json!({"roomId": room, "eventId": ev}));
+}
+
+/// The page at `cur` and the two beside it, so a turn never lands on a
+/// thumbnail that is still growing into its full picture.
+fn viewer_prefetch(ui: &UiState, cur: usize) {
+    viewer_ask(ui, cur);
+    if cur > 0 {
+        viewer_ask(ui, cur - 1);
+    }
+    viewer_ask(ui, cur + 1);
+}
+
+/// A picture landed for pages already on screen: replace those rows and only
+/// those, in place. Rebuilding the whole model would hand every page a new
+/// `Image` value — a fresh cache key for the renderer — and the neighbours
+/// would visibly re-decode on every page turn.
+fn viewer_rows_changed(ui: &mut UiState, win: &AppWindow, idx: &[usize]) {
+    let model = win.get_vw_items();
+    let Some(vec) = model
+        .as_any()
+        .downcast_ref::<VecModel<crate::ViewerItem>>()
+    else {
+        return;
+    };
+    let room_id = room_of_key(&ui.open_room);
+    for &n in idx {
+        if n >= vec.row_count() {
+            continue;
+        }
+        let Some(item) = ui.viewer_items.get(n).cloned() else {
+            continue;
+        };
+        let row = viewer_row(ui, &item, &room_id);
+        vec.set_row_data(n, row);
     }
 }
 
@@ -3616,22 +3749,37 @@ fn viewer_misc(ui: &mut UiState, win: &AppWindow, action: &str, a: &str) {
     let room = room_of_key(&ui.open_room);
     let req = ui.req.clone();
     match action {
+        // Saved where the phone's own gallery will find it — a MediaStore row
+        // in Pictures/Sigil (platform.rs, java/SigilGallery.java), and on the
+        // desktop a copy in the downloads directory. This used to fire an
+        // engine request called `media.saveAs` that the engine has never had,
+        // at a directory no gallery looks in; the log said `bad_request
+        // unknown request` and the toast showed it.
         "viewer-download" => {
-            let dest = format!("{}/Downloads", std::env::var("HOME").unwrap_or_default());
-            call_ui(
-                &req,
-                "media.saveAs",
-                json!({"roomId": room, "eventId": ev, "dest": dest}),
-                |_ui, win, out| {
-                    toast(win, Toast::Viewer, 
-                        match out {
-                            Ok(v) => format!("Saved to {}", s(&v, "path")),
-                            Err((_, m)) => m,
-                        }
-                        .into(),
-                    );
-                },
-            );
+            let path = item["media"]["path"].as_str().unwrap_or("").to_string();
+            if path.is_empty() {
+                // The full file has not landed yet — the viewer shows the
+                // thumbnail until it does, and asking again is what fetches it.
+                toast(win, Toast::Viewer, "Still fetching that one".into());
+                viewer_ask(ui, i);
+                return;
+            }
+            let mime = item["media"]["mime"].as_str().unwrap_or("").to_string();
+            let name = item["media"]["filename"].as_str().unwrap_or("").to_string();
+            // A copy of a video is megabytes: off the UI thread, and the
+            // toast goes up when it lands.
+            req.handle().spawn_blocking(move || {
+                let said = match crate::platform::save_to_gallery(&path, &mime, &name) {
+                    Ok(where_to) => format!("Saved to {where_to}"),
+                    Err(why) => why,
+                };
+                let _ = slint::invoke_from_event_loop(move || {
+                    crate::bridge::with_ui(|ui| {
+                        let Some(win) = ui.win.upgrade() else { return };
+                        toast(&win, Toast::Viewer, said.as_str().into());
+                    });
+                });
+            });
         }
         "viewer-delete" => {
             req.fire("message.redact", json!({"roomId": room, "eventId": ev}));

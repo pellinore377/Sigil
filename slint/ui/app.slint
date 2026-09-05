@@ -451,6 +451,9 @@ export component AppWindow inherits Window {
     /// The open panel's height, so the harness can say that a panel did not
     /// resize under a keyboard sliding past it.
     out property <length> chat-panel-h: chat.panel-h;
+    /// Whether the composer's field holds the focus — what keeps the keyboard
+    /// up, and so what a drag on the conversation has to let go of.
+    out property <bool> chat-composer-focused: chat.composer-focused;
     public function clear-composer() { chat.clear-composer(); }
     public function debug-sheet(index: int, x: length, y: length, w: length, h: length) { chat.sheet-open(root.items[index], x, y, w, h); }
     /// The harness's long-press on a real row: its own rectangle, its own glide.
@@ -1405,7 +1408,9 @@ export component AppWindow inherits Window {
             share-requested => { root.act("viewer-share", "", ""); }
             forward-to(i) => { root.act("viewer-forward", "" + i, ""); }
             react(e) => { root.act("viewer-react", e, ""); }
-            // The add-reaction drawer: the same picker and search the sheets use.
+            // The quick row's pictures, and the add-reaction drawer: the same
+            // model, picker and search the sheets use.
+            quick-emoji: root.quick-emoji;
             emoji-rows: root.emoji-rows;
             emoji-cat-rows: root.emoji-cat-rows;
             bottom-inset: root.safe-area-insets.bottom;

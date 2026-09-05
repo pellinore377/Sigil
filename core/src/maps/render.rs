@@ -3,7 +3,10 @@
 //! for the interactive page. Tiles render at 2× (512px) so the cards stay
 //! crisp on the phone.
 
+use std::collections::HashMap;
 use std::sync::Arc;
+
+use parking_lot::Mutex;
 
 use serde_json::Value;
 use tiny_skia::{FillRule, Paint, PathBuilder, Pixmap, Stroke, Transform};
@@ -20,7 +23,10 @@ pub const TILE_PX: u32 = 512;
 /// and are never read again.
 ///
 /// 2: street and place names.
-const RENDER_VERSION: u32 = 2;
+/// 3: names placed across the tile's whole 3x3 neighbourhood, so one that
+///    crosses a tile edge is drawn whole by both tiles instead of being cut in
+///    half by each; near-vertical names read upward; street text at 11-12 dp.
+const RENDER_VERSION: u32 = 3;
 
 /// Everything the renderer needs, resolved once per style refresh.
 pub struct VectorSource {
@@ -151,6 +157,46 @@ async fn fetch_mvt(src: &VectorSource, z: u32, x: i64, y: i64) -> Option<Vec<u8>
     Some(data)
 }
 
+/// The named features of vector tiles already decoded, so the label pass can
+/// read a tile's eight neighbours without decoding eight tiles.
+///
+/// Every tile's labels are placed across its 3×3 neighbourhood (see
+/// `labels::draw`), which would be nine decodes per tile — except that the
+/// nine overlap almost entirely with the next tile's nine. Keeping the
+/// extracted names, which are a few hundred bytes where the tile is a
+/// megabyte, turns nine decodes back into about one.
+static NAMED: Mutex<Option<HashMap<(u32, i64, i64), Arc<Vec<labels::Named>>>>> = Mutex::new(None);
+
+/// The names in one vector tile, from the cache or by decoding it.
+///
+/// Neighbours are fetched like any other tile, so they land in the vector
+/// cache and cost nothing when their own turn to be drawn comes round. A
+/// neighbour that cannot be had — off the top of the world, a 404, no network
+/// — is simply absent, and its names go unwritten until it arrives.
+async fn named_of(src: &Arc<VectorSource>, z: u32, x: i64, y: i64) -> Option<Arc<Vec<labels::Named>>> {
+    let n = 1i64 << z;
+    if y < 0 || y >= n {
+        return None;
+    }
+    let key = (z, x.rem_euclid(n), y);
+    if let Some(m) = NAMED.lock().as_ref() {
+        if let Some(v) = m.get(&key) {
+            return Some(v.clone());
+        }
+    }
+    let data = fetch_mvt(src, key.0, key.1, key.2).await?;
+    let got = Arc::new(labels::extract(&mvt::decode(&data)));
+    let mut guard = NAMED.lock();
+    let m = guard.get_or_insert_with(HashMap::new);
+    // A plain bound, not an LRU: a map page walks a neighbourhood and then
+    // leaves, and the cheapest correct thing is to start again.
+    if m.len() > 512 {
+        m.clear();
+    }
+    m.insert(key, got.clone());
+    Some(got)
+}
+
 /// Render one raster tile at `TILE_PX`. Beyond the source's maxzoom the parent
 /// tile is over-zoomed (crop + scale), which is how every slippy map extends
 /// its deepest data level.
@@ -200,7 +246,41 @@ pub async fn tile(
     // one: a name has to know where its road went, has to be told what else
     // is already written on this tile, and has to be legible against whatever
     // it lands on. See `labels`.
-    labels::draw(&mut pixmap, &layers, z, TILE_PX as f32, scale, off_x, off_y);
+    // …and then the names, over everything the cartography drew, placed across
+    // this tile AND its eight neighbours so that a street crossing the seam is
+    // written once, whole, and identically by both tiles (`labels::draw`).
+    // The neighbourhood is of the SOURCE tile — at an over-zoom the drawn tile
+    // is a window into it, and its neighbours are the source's.
+    let ring: Vec<(i64, i64, Arc<Vec<labels::Named>>)> = {
+        let mut out = Vec::with_capacity(9);
+        let mut jobs = Vec::with_capacity(9);
+        for dy in -1i64..=1 {
+            for dx in -1i64..=1 {
+                jobs.push(async move { (dx, dy, named_of(src, fz, fx + dx, fy + dy).await) });
+            }
+        }
+        for (dx, dy, got) in futures_util::future::join_all(jobs).await {
+            if let Some(named) = got {
+                out.push((dx, dy, named));
+            }
+        }
+        out
+    };
+    let ring: Vec<labels::Neighbour> = ring
+        .iter()
+        .map(|(dx, dy, named)| labels::Neighbour { dx: *dx, dy: *dy, named })
+        .collect();
+    labels::draw(
+        &mut pixmap,
+        &ring,
+        z,
+        fx,
+        fy,
+        TILE_PX as f32,
+        scale,
+        off_x,
+        off_y,
+    );
     // What a miss costs, split at the only line that matters: how much of it
     // was waiting for the network and how much was this thread drawing. The
     // drawing runs on a runtime worker, so it is also how long everything else

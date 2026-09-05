@@ -121,10 +121,17 @@ export component VoiceRecorder inherits Rectangle {
     in property <length> avail: 0px;
     /// What the card cannot go below: the recording state's own block, which
     /// is the tallest thing that has to fit in it — the 28pt timer's line
-    /// (~36), the 22 under it and the 120 level band, with a little air. The
-    /// band and the pills keep their sizes whatever happens; the card is what
-    /// gives, and this is where it stops giving.
-    property <length> card-min: root.phone ? 184px : 90px;
+    /// (~36), the 22 under it and the 120 level band. The band and the pills
+    /// keep their sizes whatever happens; the card is what gives, and this is
+    /// where it stops giving.
+    ///
+    /// Exactly that block and not a pixel of spare air, because the spare air
+    /// cost more than it bought: at 184 the panel's floor came to 308 on a
+    /// phone whose keyboard is 306 over a 24 bar, so the recorder could not be
+    /// the keyboard's height, the keyboard never covered it, and swapping back
+    /// to the keyboard sat through the handover's give-up timer before the
+    /// panel would go. 178 clears it.
+    property <length> card-min: root.phone ? 178px : 90px;
     /// What the card actually gets: the panel less everything fixed above and
     /// below it. Taken from the panel's own height rather than from the card's
     /// laid-out height — a size read back out of the layout and fed to a child
