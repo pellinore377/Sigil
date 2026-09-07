@@ -1,0 +1,11 @@
+.gradle/
+.kotlin/
+**/build/
+**/target/
+kotlin-js-store/
+local.properties
+*.jks
+*.keystore
+fuzz/corpus/
+fuzz/artifacts/
+fuzz/coverage/

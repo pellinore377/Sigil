@@ -1,0 +1,8 @@
+Synthetic TLS fixtures for local loopback tests only. Never use these keys or
+trust this CA outside tests. No personal certificate, domain or key is included.
+
+The ECDSA P-256 CA and server certificate were generated with OpenSSL for the
+reserved DNS name chat.example. Certificates expire in September 2036. The CA
+signing key was discarded; the unencrypted DER server private key is deliberately
+public test material. Tests install the CA only in an explicitly configured
+test client and replace DNS resolution only inside cfg(test).

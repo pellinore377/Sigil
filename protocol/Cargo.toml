@@ -1,0 +1,9 @@
+[package]
+name = "sigil-protocol"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+serde.workspace = true
+sigil-text = { path = "../text" }

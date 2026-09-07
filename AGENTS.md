@@ -1,0 +1,8 @@
+Keep the codebase compact; remove unused and superseded implementations. No line-count target.
+Do not import, vendor, copy, or port Signal implementation code, including libsignal, zkgroup and zkcredential, directly or through wrappers/forks. Implement published specifications independently using established non-Signal primitives. Relaxing the MIT requirement does not authorize Signal code. Project licensing remains unselected; review other dependencies individually.
+Rust owns shared domain logic; Kotlin is authorized for Compose UI and platform adapters. No handwritten JavaScript or Python application code. Browser JavaScript must be generated glue only.
+Use synthetic content only. Never include personal configuration, credentials, device identifiers, screenshots, or raw device logs in this repository.
+Do not access /home/pellinore/Work/Sigil-dep.
+The design is in docs/Design.md. Protocol and security foundations must pass before real-message use. Never present this local development build as secure messaging.
+Prioritize demonstrated security and correctness over milestone speed. Report reproduced defects, design questions and integration gaps separately; never invent issues or claim security from passing tests alone. Close milestones only against explicit acceptance evidence, disclose unresolved failures, and push back on pressure that would compromise verification.
+External security review follows full backend implementation. Do specification checks, independent test fixtures, failure tests and self-review during development; do not require an external reviewer to continue authorized implementation.

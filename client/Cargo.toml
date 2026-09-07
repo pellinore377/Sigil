@@ -1,0 +1,25 @@
+[package]
+name = "sigil-client"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+sigil-crypto = { path = "../crypto" }
+sigil-protocol = { path = "../protocol" }
+rusqlite = { version = "=0.40.2", default-features = false, features = ["bundled"] }
+zeroize = { version = "=1.9.0", features = ["serde"] }
+sha2 = "=0.10.9"
+serde.workspace = true
+serde_json.workspace = true
+ureq = { version = "=3.4.0", default-features = false, features = ["rustls"] }
+getrandom = "=0.4.3"
+web-push-native = { version = "=0.5.0", default-features = false }
+base64ct = { version = "=1.8.3", features = ["alloc"] }
+
+[dev-dependencies]
+tempfile = "=3.27.0"
+sigil-server = { path = "../server" }
+axum = { version = "=0.8.9", default-features = false, features = ["http1", "json", "tokio"] }
+tokio = { version = "=1.53.1", features = ["rt-multi-thread", "net", "sync", "time"] }
+tokio-rustls = { version = "=0.26.5", default-features = false, features = ["ring", "tls12"] }
