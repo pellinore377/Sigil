@@ -1,0 +1,68 @@
+package org.sigil
+
+import androidx.compose.foundation.isSystemInDarkTheme
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.font.*
+import androidx.compose.ui.unit.sp
+import org.jetbrains.compose.resources.Font
+import sigil.shared.generated.resources.*
+
+data class Appearance(val font: String = "Newsreader", val mode: String = "System", val accent: Int = 0x555555, val dynamic: Boolean = false)
+data class ChatTheme(val accent: Int? = null, val gradient: Boolean = false)
+
+internal val LocalCodeFont = staticCompositionLocalOf<FontFamily> { FontFamily.Monospace }
+
+internal fun parseAccent(text: String): Int? = text.removePrefix("#").takeIf { it.length == 6 }?.toIntOrNull(16)?.takeIf { it in 0..0xffffff }
+internal fun accentText(color: Int) = color.toString(16).padStart(6, '0').uppercase()
+
+internal fun decodeAppearance(value: String?): Appearance {
+    val parts = value?.split('|') ?: return Appearance()
+    return Appearance(
+        font = parts.getOrNull(0)?.takeIf { it == "Google Sans Flex" } ?: "Newsreader",
+        mode = parts.getOrNull(1)?.takeIf { it in listOf("Light", "Dark") } ?: "System",
+        accent = parts.getOrNull(2)?.let(::parseAccent) ?: 0x555555,
+        dynamic = parts.getOrNull(3) == "true",
+    )
+}
+internal fun Appearance.encode() = "$font|$mode|${accentText(accent)}|$dynamic"
+internal fun decodeChat(value: String?): ChatTheme {
+    val parts = value?.split('|') ?: return ChatTheme()
+    return ChatTheme(parts.getOrNull(0)?.let(::parseAccent), parts.getOrNull(1) == "true")
+}
+internal fun ChatTheme.encode() = "${accent?.let(::accentText) ?: ""}|$gradient"
+
+@Composable
+internal fun SigilTheme(appearance: Appearance, chat: ChatTheme? = null, dynamicAccent: Int? = null,
+    palette: (Int, Boolean) -> String, content: @Composable () -> Unit) {
+    val dark = when (appearance.mode) { "Dark" -> true; "Light" -> false; else -> isSystemInDarkTheme() }
+    val seed = chat?.accent ?: if (appearance.dynamic) dynamicAccent ?: appearance.accent else appearance.accent
+    val colors = remember(seed, dark) { palette(seed, dark).split(',').map { Color(0xff000000L or it.toLong(16)) } }
+    val base = if (dark) darkColorScheme() else lightColorScheme()
+    val scheme = base.copy(
+        background = colors[0], onBackground = colors[1], surface = colors[2], onSurface = colors[3],
+        primary = colors[4], onPrimary = colors[5], primaryContainer = colors[6], onPrimaryContainer = colors[7],
+        secondary = colors[4], onSecondary = colors[5], secondaryContainer = colors[6], onSecondaryContainer = colors[7],
+        tertiary = colors[4], onTertiary = colors[5], tertiaryContainer = colors[6], onTertiaryContainer = colors[7],
+        surfaceVariant = colors[6], onSurfaceVariant = colors[7], outline = colors[8], outlineVariant = colors[8].copy(alpha = .3f),
+        surfaceTint = Color.Transparent, surfaceContainer = colors[2], surfaceContainerHigh = colors[2],
+        surfaceContainerHighest = colors[6], surfaceContainerLow = colors[0], surfaceContainerLowest = colors[0],
+        inverseSurface = colors[1], inverseOnSurface = colors[0], inversePrimary = colors[0],
+    )
+    val family = if (appearance.font == "Newsreader") FontFamily(
+        Font(Res.font.newsreader), Font(Res.font.newsreader_italic, style = FontStyle.Italic)
+    ) else FontFamily(Font(Res.font.google_sans_flex), Font(Res.font.google_sans_flex_semibold, FontWeight.SemiBold))
+    fun style(size: Int, line: Int, weight: FontWeight = FontWeight.Normal) = TextStyle(fontFamily = family, fontSize = size.sp, lineHeight = line.sp, fontWeight = weight)
+    val typography = Typography(
+        displayLarge = style(52, 60), displayMedium = style(44, 52), displaySmall = style(36, 44),
+        headlineLarge = style(34, 42), headlineMedium = style(28, 36), headlineSmall = style(24, 32),
+        titleLarge = style(23, 30), titleMedium = style(19, 26), titleSmall = style(17, 24),
+        bodyLarge = style(18, 26), bodyMedium = style(16, 23), bodySmall = style(14, 20),
+        labelLarge = style(16, 22), labelMedium = style(14, 20), labelSmall = style(12, 18),
+    )
+    CompositionLocalProvider(LocalCodeFont provides FontFamily(Font(Res.font.google_sans_code))) {
+        MaterialTheme(colorScheme = scheme, typography = typography, content = content)
+    }
+}

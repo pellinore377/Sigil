@@ -1,0 +1,53 @@
+[package]
+name = "sigil-fuzz"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[package.metadata]
+cargo-fuzz = true
+
+[workspace]
+members = ["."]
+resolver = "2"
+
+[dependencies]
+libfuzzer-sys = "=0.4.13"
+sigil-text = { path = "../text" }
+sigil-protocol = { path = "../protocol" }
+sigil-crypto = { path = "../crypto" }
+sigil-server = { path = "../server" }
+serde_json = "=1.0.151"
+axum = { version = "=0.8.9", default-features = false }
+zeroize = "=1.9.0"
+
+[patch.crates-io]
+ece-native = { path = "../vendor/ece-native" }
+
+[[bin]]
+name = "content"
+path = "fuzz_targets/content.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "wire"
+path = "fuzz_targets/wire.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "checkpoints"
+path = "fuzz_targets/checkpoints.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "federation"
+path = "fuzz_targets/federation.rs"
+test = false
+doc = false
+bench = false
