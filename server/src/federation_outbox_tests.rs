@@ -199,6 +199,10 @@ fn ambiguous_delivery_restarts_without_reencrypting_and_receipt_failure_rolls_ba
         .execute_batch("DROP TRIGGER synthetic_failure")
         .unwrap();
     let outcome = transmit(&mut p.sink, &job, status.not_before);
+    let expected = match &outcome {
+        Outcome::Accepted(receipt) => receipt.clone(),
+        _ => panic!("synthetic delivery must be accepted"),
+    };
     p.source
         .finish_federation_delivery(&job, outcome, status.not_before)
         .unwrap();
@@ -209,7 +213,10 @@ fn ambiguous_delivery_restarts_without_reencrypting_and_receipt_failure_rolls_ba
         .federated_outbound(&p.alice, &p.request.message_id, status.not_before)
         .unwrap();
     assert_eq!(status.state, OutboundState::Accepted);
-    assert_eq!(status.receipt.unwrap().sequence, delivered[0].sequence);
+    assert_eq!(status.receipt, Some(expected));
+    assert!(delivered[0].sequence > 0);
+    assert_eq!(delivered[0].payload, p.request.payload);
+    assert_eq!(delivered[0].message_id, p.request.message_id);
     assert_eq!(usage(&p.source), METADATA as i64);
     assert_eq!(p.enqueue(status.not_before).state, OutboundState::Accepted);
     assert!(p
@@ -469,7 +476,10 @@ fn queued_signed_delivery_crosses_real_https_and_returns_the_bound_receipt() {
         .unwrap();
     let job = p.source.claim_federation_delivery(now).unwrap().unwrap();
     let outcome = job.deliver_with(|| Ok(now), |request| fixture.federation(request));
-    assert!(matches!(outcome, Outcome::Accepted(_)));
+    let expected = match &outcome {
+        Outcome::Accepted(receipt) => receipt.clone(),
+        _ => panic!("synthetic HTTPS delivery must be accepted"),
+    };
     p.source
         .finish_federation_delivery(&job, outcome, now)
         .unwrap();
@@ -490,7 +500,9 @@ fn queued_signed_delivery_crosses_real_https_and_returns_the_bound_receipt() {
     let deliveries: Vec<sigil_protocol::mailbox::Delivery> =
         serde_json::from_slice(&response.body).unwrap();
     assert_eq!(deliveries.len(), 1);
-    assert_eq!(deliveries[0].sequence, status.receipt.unwrap().sequence);
+    assert_eq!(status.receipt, Some(expected));
+    assert!(deliveries[0].sequence > 0);
+    assert_eq!(deliveries[0].message_id, p.request.message_id);
     assert_eq!(
         deliveries[0].origin.as_ref().unwrap().server,
         "remote.example"

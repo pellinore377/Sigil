@@ -12,7 +12,7 @@ use axum::{
     routing::{get, put},
     Json, Router,
 };
-use rusqlite::{Connection, TransactionBehavior};
+use rusqlite::{Connection, Transaction, TransactionBehavior};
 use sigil_protocol::accounts::valid_credential;
 
 pub(crate) const MIGRATION: &str = "
@@ -32,7 +32,12 @@ pub(crate) fn check(db: &Connection, sender: &str, recipient: &str) -> Result<()
     }
 }
 
-pub(crate) fn grant(db: &Connection, sender: &str, recipient: &str) -> Result<(), StoreError> {
+pub(crate) fn grant(
+    db: &Transaction<'_>,
+    sender: &str,
+    recipient: &str,
+    now: u64,
+) -> Result<(), StoreError> {
     match check(db, sender, recipient) {
         Ok(()) => return Ok(()),
         Err(StoreError::Forbidden) => {}
@@ -46,6 +51,7 @@ pub(crate) fn grant(db: &Connection, sender: &str, recipient: &str) -> Result<()
     if count >= 4096 {
         return Err(StoreError::Busy);
     }
+    crate::storage_budget::for_device(db, recipient, crate::storage_budget::SENDER, now)?;
     db.execute(
         "INSERT INTO allowed_senders VALUES(?1,?2)",
         (recipient, sender),
@@ -70,7 +76,7 @@ impl Store {
         if !active(&tx, sender)? {
             return Err(StoreError::NotFound);
         }
-        grant(&tx, sender, &recipient)?;
+        grant(&tx, sender, &recipient, now)?;
         tx.commit()?;
         Ok(())
     }
@@ -96,10 +102,16 @@ impl Store {
                 "revoke same-account devices through device authorization",
             ));
         }
-        tx.execute(
+        let removed = tx.execute(
             "DELETE FROM allowed_senders WHERE recipient=?1 AND sender=?2",
             (&recipient, sender),
         )?;
+        if removed != 0 && tx.execute(
+            "UPDATE retained_storage SET bytes=bytes-?2 WHERE account_id=(SELECT account_id FROM devices WHERE id=?1) AND bytes>=?2",
+            (&recipient, crate::storage_budget::SENDER as i64),
+        )? != 1 {
+            return Err(StoreError::InvalidData);
+        }
         tx.execute("UPDATE mailbox SET payload=NULL WHERE recipient=?1 AND sender=?2 AND payload IS NOT NULL",(&recipient,sender))?;
         tx.commit()?;
         Ok(())

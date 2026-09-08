@@ -116,6 +116,10 @@ impl Store {
             headers,
             now,
         )?;
+        let digest = auth::bytes32(&hash).map_err(|_| StoreError::InvalidData)?;
+        let mut token = [0; 8];
+        token.copy_from_slice(&digest[..8]);
+        let sequence = (i64::from_be_bytes(token) & i64::MAX).max(1);
         if !active(&tx, &request.recipient_device)? {
             return Err(StoreError::NotFound);
         }
@@ -126,9 +130,9 @@ impl Store {
             &request.sender_device,
             &request.recipient_device,
         )?;
-        let old:Option<(i64,Vec<u8>,u64)>=tx.query_row("SELECT sequence,payload_hash,expires_at FROM mailbox WHERE remote_server=?1 AND remote_device=?2 AND message_id=?3",(origin,&request.sender_device,&request.message_id),|r|Ok((r.get(0)?,r.get(1)?,unsigned(r,2)?))).optional()?;
-        if let Some((sequence, previous, expires_at)) = old {
-            if previous != auth::bytes32(&hash).map_err(|_| StoreError::InvalidData)? {
+        let old:Option<(Vec<u8>,u64)>=tx.query_row("SELECT payload_hash,expires_at FROM mailbox WHERE remote_server=?1 AND remote_device=?2 AND message_id=?3",(origin,&request.sender_device,&request.message_id),|r|Ok((r.get(0)?,unsigned(r,1)?))).optional()?;
+        if let Some((previous, expires_at)) = old {
+            if previous != digest {
                 return Err(StoreError::AlreadyExists);
             }
             tx.commit()?;
@@ -139,8 +143,7 @@ impl Store {
             });
         }
         reserve_ingress(&tx, origin, &request, now)?;
-        tx.execute("INSERT INTO mailbox(message_id,recipient,payload,payload_hash,expires_at,remote_server,remote_account,remote_device,remote_grant) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9)",(&request.message_id,&request.recipient_device,&request.payload,auth::bytes32(&hash).map_err(|_|StoreError::InvalidData)?.as_slice(),sql(request.expires_at)?,origin,&request.sender_account,&request.sender_device,&grant))?;
-        let sequence = tx.last_insert_rowid();
+        tx.execute("INSERT INTO mailbox(message_id,recipient,payload,payload_hash,expires_at,remote_server,remote_account,remote_device,remote_grant) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9)",(&request.message_id,&request.recipient_device,&request.payload,digest.as_slice(),sql(request.expires_at)?,origin,&request.sender_account,&request.sender_device,&grant))?;
         crate::push::enqueue(&tx, &request.recipient_device, now)?;
         tx.commit()?;
         Ok(Receipt {

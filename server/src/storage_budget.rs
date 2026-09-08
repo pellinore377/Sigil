@@ -9,6 +9,8 @@ pub(crate) const PREKEY: u64 = 512;
 pub(crate) const DEVICE: u64 = 2048;
 pub(crate) const LINK: u64 = 512;
 pub(crate) const CANCELLATION: u64 = 256;
+pub(crate) const CONTACT: u64 = 512;
+pub(crate) const SENDER: u64 = 256;
 pub(crate) const MIGRATION: &str = "
 CREATE TABLE retained_storage(account_id TEXT PRIMARY KEY REFERENCES accounts(id),bytes INTEGER NOT NULL CHECK(bytes>=0));
 CREATE INDEX mailbox_live_recipient ON mailbox(recipient,sender,sequence) WHERE payload IS NOT NULL;
@@ -22,6 +24,8 @@ pub(crate) fn rebuild(db: &Connection) -> Result<(), StoreError> {
         (SELECT count(*)*512 FROM mailbox m JOIN devices d ON d.id=m.sender WHERE d.account_id=a.id) +
         (SELECT coalesce(sum(512+coalesce(length(p.bundle),0)),0) FROM prekeys p JOIN devices d ON d.id=p.device_id WHERE d.account_id=a.id) +
         (SELECT count(*)*2048 FROM devices d WHERE d.account_id=a.id) +
+        (SELECT count(*)*512 FROM contact_invitations c JOIN devices d ON d.id=c.owner WHERE d.account_id=a.id) +
+        (SELECT count(*)*256 FROM allowed_senders s JOIN devices d ON d.id=s.recipient WHERE d.account_id=a.id) +
         (SELECT coalesce(sum(512+length(l.proof)),0) FROM device_links l JOIN devices d ON d.id=l.sponsor WHERE d.account_id=a.id) +
         (SELECT count(*)*256 FROM cancelled_device_links l JOIN devices d ON d.id=l.sponsor WHERE d.account_id=a.id)
         FROM accounts a;")?;

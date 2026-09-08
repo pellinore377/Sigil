@@ -138,9 +138,8 @@ impl Receiver {
         Ok(&self.bundle)
     }
 
-    /// The caller must independently establish the expected peer identity.
-    /// No plaintext, secret, or consumed-key mutation is returned on authentication failure.
-    pub fn accept(
+    #[cfg(test)]
+    fn accept(
         &mut self,
         identity: &IdentityKey,
         expected_sender: &[u8; 32],
@@ -186,8 +185,8 @@ impl Receiver {
     }
 }
 
-/// Starts one experimental handshake using an independently selected peer identity.
-pub fn initiate(
+#[cfg(test)]
+fn initiate(
     identity: &IdentityKey,
     expected_recipient: &[u8; 32],
     bundle: &Bundle,

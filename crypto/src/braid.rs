@@ -23,7 +23,6 @@ enum Kind {
     Hdr = 1,
     Ek = 2,
     EkCt1Ack = 3,
-    Ct1Ack = 4,
     Ct1 = 5,
     Ct2 = 6,
 }
@@ -59,13 +58,12 @@ impl Message {
             1 => Kind::Hdr,
             2 => Kind::Ek,
             3 => Kind::EkCt1Ack,
-            4 => Kind::Ct1Ack,
             5 => Kind::Ct1,
             6 => Kind::Ct2,
             _ => return Err(Error::Encoding),
         };
         let chunk = match kind {
-            Kind::None | Kind::Ct1Ack if bytes.len() == 9 => None,
+            Kind::None if bytes.len() == 9 => None,
             Kind::Hdr | Kind::Ek | Kind::EkCt1Ack | Kind::Ct1 | Kind::Ct2
                 if bytes.len() == 9 + CHUNK_LEN =>
             {
@@ -663,6 +661,9 @@ mod tests {
         }
         let mut invalid = bytes.clone();
         invalid[8] = 7;
+        assert!(Message::from_bytes(&invalid).is_err());
+        invalid = bytes[..9].to_vec();
+        invalid[8] = 4;
         assert!(Message::from_bytes(&invalid).is_err());
         invalid = bytes.clone();
         invalid[..8].fill(0);

@@ -410,7 +410,7 @@ fn configuration_rotation_migration_and_restore_preserve_safe_retry_boundaries()
     assert_eq!(
         db.query_row("PRAGMA user_version", [], |r| r.get::<_, i64>(0))
             .unwrap(),
-        26
+        27
     );
 }
 
