@@ -83,6 +83,27 @@ pub(crate) fn used(db: &Connection, account: &str, now: u64) -> Result<u64, Stor
 }
 
 impl Store {
+    pub fn account_storage(
+        &mut self,
+        credential: &str,
+        now: u64,
+    ) -> Result<sigil_protocol::recovery::StorageStatus, StoreError> {
+        let tx = self.0.transaction()?;
+        let account = account(&tx, credential, now)?;
+        let quota = crate::admin::quota(&tx, &account)?;
+        let status = sigil_protocol::recovery::StorageStatus {
+            used_bytes: used(&tx, &account, now)?,
+            quota_bytes: quota,
+            recovery_objects: tx.query_row(
+                "SELECT count(*) FROM recovery_objects WHERE account_id=?1",
+                [&account],
+                |r| r.get::<_, i64>(0),
+            )? as u64,
+            recovery_object_limit: MAX_OBJECTS as u64,
+        };
+        tx.commit()?;
+        Ok(status)
+    }
     pub fn put_recovery_object(
         &mut self,
         credential: &str,
@@ -116,10 +137,7 @@ impl Store {
             }
             return Err(StoreError::AlreadyExists);
         }
-        let quota = crate::store::read_configuration(&tx)?
-            .settings
-            .ok_or(StoreError::Unauthorized)?
-            .default_quota_bytes;
+        let quota = crate::admin::quota(&tx, &account)?;
         let count: i64 = tx.query_row(
             "SELECT count(*) FROM recovery_objects WHERE account_id=?1",
             [&account],
@@ -280,9 +298,20 @@ pub(crate) fn routes() -> Router<AppState> {
             get(get_object).put(put_object),
         )
         .route("/client/v0/recovery/head", get(get_head).put(publish_head))
+        .route("/client/v0/storage", get(get_storage))
         .route("/client/v0/recovery/objects/delete", post(delete_objects))
         .layer(RequestBodyLimitLayer::new(MAX_BODY))
         .route_layer(middleware::from_fn(native_only))
+}
+async fn get_storage(State(state): State<AppState>, headers: HeaderMap) -> Response {
+    let token = match bearer(&headers) {
+        Ok(token) => token,
+        Err(error) => return store_error(error),
+    };
+    match with_store(state, move |store| store.account_storage(&token, now()?)).await {
+        Ok(status) => Json(status).into_response(),
+        Err(error) => store_error(error),
+    }
 }
 async fn get_object(
     State(state): State<AppState>,

@@ -6,6 +6,7 @@ use sigil_crypto::{
     private_credentials::{Credential, GroupKey},
     private_group::{Authority, Operation as Kind, Request as Context},
 };
+use sigil_protocol::federation::Service;
 use sigil_protocol::groups::{self, CredentialRequest, CredentialResponse, Operation, Reply};
 
 fn decode(value: &str, limit: usize) -> Result<Vec<u8>, Error> {
@@ -73,12 +74,25 @@ impl HttpsClient {
         fingerprint: [u8; 32],
         expected_profile: Option<[u8; 32]>,
     ) -> Result<Authority, Error> {
-        let encoded: String = self.json(
-            self.anonymous_group("/groups/v0/authority", None::<&()>)?,
-            200,
-            SMALL,
-        )?;
-        let profile = Authority::from_bytes(&decode(&encoded, 431)?, &self.server, fingerprint)
+        self.group_authority_at(&self.server, fingerprint, expected_profile)
+    }
+    pub fn group_authority_at(
+        &self,
+        server: &str,
+        fingerprint: [u8; 32],
+        expected_profile: Option<[u8; 32]>,
+    ) -> Result<Authority, Error> {
+        let encoded: String = if server != self.server {
+            serde_json::from_str(&self.federated_service(server, Service::GroupAuthority)?)
+                .map_err(|_| Error::InvalidResponse)?
+        } else {
+            self.json(
+                self.anonymous_group("/groups/v0/authority", None::<&()>)?,
+                200,
+                SMALL,
+            )?
+        };
+        let profile = Authority::from_bytes(&decode(&encoded, 431)?, server, fingerprint)
             .map_err(|_| Error::InvalidResponse)?;
         if expected_profile.is_some_and(|expected| expected != profile.id()) {
             return Err(Error::InvalidResponse);
@@ -91,7 +105,7 @@ impl HttpsClient {
         binding: &[u8],
         now: u64,
     ) -> Result<Credential, Error> {
-        if profile.server() != self.server || !valid_time(now) {
+        if !valid_time(now) {
             return Err(Error::Configuration);
         }
         let day = u32::try_from(now / 86400).map_err(|_| Error::Configuration)?;
@@ -102,11 +116,23 @@ impl HttpsClient {
             authority: hex(&profile.id()),
             day,
         };
-        let response: CredentialResponse = self.json(
-            self.request(Method::POST, "/client/v0/groups/credential", Some(&request))?,
-            200,
-            SMALL,
-        )?;
+        let response: CredentialResponse = if profile.server() != self.server {
+            serde_json::from_str(&self.federated_service(
+                profile.server(),
+                Service::GroupCredential {
+                    authority: request.authority.clone(),
+                    day,
+                    binding: hex(binding),
+                },
+            )?)
+            .map_err(|_| Error::InvalidResponse)?
+        } else {
+            self.json(
+                self.request(Method::POST, "/client/v0/groups/credential", Some(&request))?,
+                200,
+                SMALL,
+            )?
+        };
         if response.authority != request.authority
             || response.day != day
             || response.uid != hex(&issuance.uid)
@@ -133,13 +159,14 @@ impl HttpsClient {
         operation: &Operation,
         now: u64,
     ) -> Result<Reply, Error> {
-        if profile.server() != self.server || !valid_time(now) {
+        if !valid_time(now) {
             return Err(Error::Configuration);
         }
         let (kind, predecessor) = match operation {
             Operation::Create { .. } => (Kind::Create, [0; 32]),
-            Operation::Read { .. } => (Kind::Read, [0; 32]),
-            Operation::Advance { predecessor, .. } => (
+            Operation::Read { .. } | Operation::Proposals { .. } => (Kind::Read, [0; 32]),
+            Operation::Invite { .. } => (Kind::Advance, [0; 32]),
+            Operation::Advance { predecessor, .. } | Operation::Relay { predecessor, .. } => (
                 Kind::Advance,
                 id(predecessor).map_err(|_| Error::Configuration)?,
             ),
@@ -173,17 +200,139 @@ impl HttpsClient {
                 .present(key, &context)
                 .map_err(|_| Error::Configuration)?),
         };
-        let reply: Reply = self.json(
-            self.anonymous_group("/groups/v0/request", Some(&request))?,
-            200,
-            groups::MAX_CONTROL * 4 + SMALL,
-        )?;
+        let reply: Reply = if profile.server() != self.server {
+            serde_json::from_str(&self.federated_service(
+                profile.server(),
+                Service::GroupRequest {
+                    request: serde_json::to_string(&request).map_err(|_| Error::Configuration)?,
+                },
+            )?)
+            .map_err(|_| Error::InvalidResponse)?
+        } else {
+            self.json(
+                self.anonymous_group("/groups/v0/request", Some(&request))?,
+                200,
+                groups::MAX_CONTROL * 4 + SMALL,
+            )?
+        };
         if reply.authority != request.authority
             || reply.group != request.group
             || reply.revision > i64::MAX as u64
             || id(&reply.head)? == [0; 32]
             || reply.commits.len() > 2
+            || reply.proposals.len() > 2
         {
+            return Err(Error::InvalidResponse);
+        }
+        if let Operation::Invite {
+            id: requested,
+            expires_at,
+            ..
+        } = operation
+        {
+            let invitation = reply.invitation.as_ref().ok_or(Error::InvalidResponse)?;
+            if invitation.id != *requested
+                || !reply.commits.is_empty()
+                || !reply.proposals.is_empty()
+                || reply.restored
+                || (*expires_at == 0 && invitation.state == groups::InvitationState::Pending)
+            {
+                return Err(Error::InvalidResponse);
+            }
+            return Ok(reply);
+        }
+        if reply.invitation.is_some() {
+            return Err(Error::InvalidResponse);
+        }
+        if let Operation::Relay {
+            predecessor,
+            head,
+            revision,
+            control,
+        } = operation
+        {
+            if !reply.commits.is_empty() {
+                if !reply.proposals.is_empty()
+                    || reply.commits.len() != 1
+                    || reply.revision != *revision
+                    || reply.head != *head
+                {
+                    return Err(Error::InvalidResponse);
+                }
+                let record = &reply.commits[0];
+                let receipt = Receipt::from_bytes(
+                    &decode(
+                        record.receipt.as_deref().ok_or(Error::InvalidResponse)?,
+                        208,
+                    )?,
+                    profile.fingerprint(),
+                )
+                .map_err(|_| Error::InvalidResponse)?;
+                if record.control != *control
+                    || record.head != *head
+                    || record.revision != *revision
+                    || receipt.group != group
+                    || receipt.head != id(head)?
+                    || receipt.predecessor != id(predecessor)?
+                    || receipt.revision != *revision
+                {
+                    return Err(Error::InvalidResponse);
+                }
+                return Ok(reply);
+            }
+        }
+        if matches!(
+            operation,
+            Operation::Relay { .. } | Operation::Proposals { .. }
+        ) {
+            if !reply.commits.is_empty() {
+                return Err(Error::InvalidResponse);
+            }
+            let mut previous = match operation {
+                Operation::Proposals { after } => after.as_deref(),
+                _ => None,
+            };
+            for proposal in &reply.proposals {
+                let author = decode(&proposal.author, 64)?;
+                sigil_crypto::private_credentials::validate_ciphertext(&author)
+                    .map_err(|_| Error::InvalidResponse)?;
+                if proposal.predecessor != reply.head
+                    || proposal.revision
+                        != reply
+                            .revision
+                            .checked_add(1)
+                            .ok_or(Error::InvalidResponse)?
+                    || id(&proposal.head)? == [0; 32]
+                    || proposal.head == proposal.predecessor
+                    || !valid_hex(&proposal.control, 2, groups::MAX_CONTROL * 2)
+                    || previous.is_some_and(|p| p >= proposal.author.as_str())
+                {
+                    return Err(Error::InvalidResponse);
+                }
+                previous = Some(&proposal.author);
+            }
+            if let Operation::Relay {
+                predecessor,
+                head,
+                revision,
+                control,
+            } = operation
+            {
+                if reply.proposals.len() != 1 {
+                    return Err(Error::InvalidResponse);
+                }
+                let proposal = &reply.proposals[0];
+                if proposal.predecessor != *predecessor
+                    || proposal.head != *head
+                    || proposal.revision != *revision
+                    || proposal.control != *control
+                {
+                    return Err(Error::InvalidResponse);
+                }
+            }
+            return Ok(reply);
+        }
+        if !reply.proposals.is_empty() {
             return Err(Error::InvalidResponse);
         }
         let mut previous: Option<&groups::Commit> = None;
@@ -216,6 +365,9 @@ impl HttpsClient {
             previous = Some(commit);
         }
         match operation {
+            Operation::Relay { .. } | Operation::Proposals { .. } | Operation::Invite { .. } => {
+                return Err(Error::InvalidResponse)
+            }
             Operation::Read { from_revision } => {
                 let count = if *from_revision > reply.revision {
                     0

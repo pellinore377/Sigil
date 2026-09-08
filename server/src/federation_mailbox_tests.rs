@@ -1,5 +1,6 @@
 use super::*;
 use crate::federation_config::tests::trusted;
+use sigil_protocol::mailbox::Delivery;
 impl Store {
     // Fixture helpers model fresh operator decisions. Retry tests below retain
     // and replay the actual revisioned wire request instead.
@@ -162,18 +163,18 @@ fn ingress_permissions_retry_restart_ack_and_failed_commit_are_atomic() {
         receive(&mut s, &key, &changed, 1000, 3),
         Err(StoreError::AlreadyExists)
     ));
-    assert!(s.mailbox(&token, 1000).unwrap().is_empty());
-    let delivered = s.federated_mailbox(&token, 0, 1000).unwrap();
+    assert!(s.mailbox(&token, 1000).unwrap()[0].origin.is_some());
+    let delivered = s.mailbox_after(&token, 0, 1000).unwrap();
     assert_eq!(delivered.len(), 1);
-    assert_eq!(delivered[0].sender, source);
+    assert_eq!(delivered[0].origin.as_ref().unwrap(), &source);
     drop(s);
     let mut s = Store::open(&path).unwrap();
-    assert_eq!(s.federated_mailbox(&token, 0, 1000).unwrap(), delivered);
+    assert_eq!(s.mailbox_after(&token, 0, 1000).unwrap(), delivered);
     s.acknowledge_message(&token, first.sequence, 1000).unwrap();
     assert_eq!(ingress(&s), METADATA as i64);
     s.acknowledge_message(&token, first.sequence, 1000).unwrap();
     assert_eq!(receive(&mut s, &key, &request, 1000, 3).unwrap(), first);
-    assert!(s.federated_mailbox(&token, 0, 1000).unwrap().is_empty());
+    assert!(s.mailbox_after(&token, 0, 1000).unwrap().is_empty());
     assert_eq!(ingress(&s), METADATA as i64);
 }
 #[test]
@@ -226,10 +227,10 @@ fn revocation_hides_backlog_immediately_and_reallow_does_not_resurrect_it() {
     }
     s.remove_federated_sender(&token, source.clone(), 1400)
         .unwrap();
-    assert!(s.federated_mailbox(&token, 0, 1400).unwrap().is_empty());
+    assert!(s.mailbox_after(&token, 0, 1400).unwrap().is_empty());
     s.allow_federated_sender(&token, source.clone(), 1400)
         .unwrap();
-    assert!(s.federated_mailbox(&token, 0, 1400).unwrap().is_empty());
+    assert!(s.mailbox_after(&token, 0, 1400).unwrap().is_empty());
     drop(s);
     let mut s = Store::open(&path).unwrap();
     for _ in 0..2 {
@@ -255,7 +256,7 @@ fn revocation_hides_backlog_immediately_and_reallow_does_not_resurrect_it() {
         200,
     )
     .unwrap();
-    assert_eq!(s.federated_mailbox(&token, 0, 1400).unwrap().len(), 1);
+    assert_eq!(s.mailbox_after(&token, 0, 1400).unwrap().len(), 1);
     let backup = dir.path().join("backup.db");
     s.backup(&backup).unwrap();
     let restored = dir.path().join("restored.db");
@@ -305,7 +306,10 @@ fn remote_mail_uses_the_existing_push_sequence_and_transaction() {
     s.0.execute_batch("CREATE TRIGGER synthetic_failure BEFORE UPDATE ON push_jobs BEGIN SELECT RAISE(ABORT,'synthetic'); END;").unwrap();
     assert!(receive(&mut s, &key, &request, 1000, 1).is_err());
     assert_eq!(ingress(&s), 0);
-    assert!(s.federated_mailbox(&recipient, 0, 1000).unwrap().is_empty());
+    let retained = s.mailbox_after(&recipient, 0, 1000).unwrap();
+    assert_eq!(retained.len(), 1);
+    assert_eq!(retained[0].sequence, first.sequence);
+    assert!(retained[0].origin.is_none());
     s.0.execute_batch("DROP TRIGGER synthetic_failure").unwrap();
     let second = receive(&mut s, &key, &request, 1000, 1).unwrap();
     assert!(second.sequence > first.sequence);
@@ -317,8 +321,11 @@ fn remote_mail_uses_the_existing_push_sequence_and_transaction() {
         )
         .unwrap();
     assert_eq!(through, second.sequence);
-    assert_eq!(s.mailbox(&recipient, 1000).unwrap().len(), 1);
-    assert_eq!(s.federated_mailbox(&recipient, 0, 1000).unwrap().len(), 1);
+    assert_eq!(s.mailbox(&recipient, 1000).unwrap().len(), 2);
+    let page = s.mailbox_after(&recipient, first.sequence, 1000).unwrap();
+    assert_eq!(page.len(), 1);
+    assert_eq!(page[0].sequence, second.sequence);
+    assert_eq!(page[0].origin.as_ref().unwrap(), &sender(1));
 }
 #[test]
 fn schema_fifteen_upgrade_rolls_back_and_preserves_local_receipts() {
@@ -339,7 +346,7 @@ fn schema_fifteen_upgrade_rolls_back_and_preserves_local_receipts() {
         .unwrap();
     drop(s);
     let db = Connection::open(&path).unwrap();
-    db.execute_batch("ALTER TABLE mailbox RENAME TO mailbox_current;CREATE TABLE mailbox(sequence INTEGER PRIMARY KEY AUTOINCREMENT,sender TEXT NOT NULL REFERENCES devices(id),message_id TEXT NOT NULL,recipient TEXT NOT NULL REFERENCES devices(id),payload TEXT,payload_hash BLOB NOT NULL,expires_at INTEGER NOT NULL,UNIQUE(sender,message_id));INSERT INTO mailbox SELECT sequence,sender,message_id,recipient,payload,payload_hash,expires_at FROM mailbox_current;DROP TABLE mailbox_current;CREATE INDEX mailbox_recipient ON mailbox(recipient,sequence);CREATE INDEX mailbox_expiry ON mailbox(expires_at) WHERE payload IS NOT NULL;CREATE INDEX mailbox_live_recipient ON mailbox(recipient,sender,sequence) WHERE payload IS NOT NULL;DROP TABLE private_group_nonces; DROP TABLE private_group_commits; DROP TABLE private_group_members; DROP TABLE private_groups; DROP TABLE group_credential_uids; DROP TABLE group_authority; DROP INDEX prekeys_available; DROP INDEX prekeys_remote_claim; ALTER TABLE prekeys DROP COLUMN remote_request; ALTER TABLE prekeys DROP COLUMN remote_device; ALTER TABLE prekeys DROP COLUMN remote_account; ALTER TABLE prekeys DROP COLUMN remote_server; CREATE INDEX prekeys_available ON prekeys(device_id,expires_at) WHERE bundle IS NOT NULL AND claimant IS NULL; DROP TABLE federation_outbox;DROP TABLE federation_senders;DROP TABLE federation_revocations;ALTER TABLE federation_admission DROP COLUMN egress_bytes;ALTER TABLE federation_admission DROP COLUMN delivery_not_before;ALTER TABLE federation_usage DROP COLUMN egress_bytes;ALTER TABLE federation_admission DROP COLUMN ingress_bytes;ALTER TABLE federation_usage DROP COLUMN ingress_bytes;PRAGMA user_version=15;CREATE TABLE federation_senders(synthetic INTEGER);").unwrap();
+    db.execute_batch("ALTER TABLE mailbox RENAME TO mailbox_current;CREATE TABLE mailbox(sequence INTEGER PRIMARY KEY AUTOINCREMENT,sender TEXT NOT NULL REFERENCES devices(id),message_id TEXT NOT NULL,recipient TEXT NOT NULL REFERENCES devices(id),payload TEXT,payload_hash BLOB NOT NULL,expires_at INTEGER NOT NULL,UNIQUE(sender,message_id));INSERT INTO mailbox SELECT sequence,sender,message_id,recipient,payload,payload_hash,expires_at FROM mailbox_current;DROP TABLE mailbox_current;CREATE INDEX mailbox_recipient ON mailbox(recipient,sequence);CREATE INDEX mailbox_expiry ON mailbox(expires_at) WHERE payload IS NOT NULL;CREATE INDEX mailbox_live_recipient ON mailbox(recipient,sender,sequence) WHERE payload IS NOT NULL;DROP TABLE operation_uploads; DROP TABLE operations; DROP TABLE operation_configuration; DROP TABLE oidc_grants; DROP TABLE oidc_bindings; DROP TABLE oidc_flows; DROP TABLE oidc_configuration; DROP TABLE registration_usage; DROP TABLE account_policy; DROP TABLE admin_policy; DROP TABLE call_connections; DROP TABLE calls; DROP TABLE call_configuration; DROP TABLE service_budgets; DROP TABLE service_configuration; DROP TABLE map_configuration; DROP TABLE private_group_invitations; DROP TABLE private_group_proposals; DROP TABLE private_group_nonces; DROP TABLE private_group_commits; DROP TABLE private_group_members; DROP TABLE private_groups; DROP TABLE group_credential_uids; DROP TABLE group_authority; DROP INDEX prekeys_available; DROP INDEX prekeys_remote_claim; ALTER TABLE prekeys DROP COLUMN remote_request; ALTER TABLE prekeys DROP COLUMN remote_device; ALTER TABLE prekeys DROP COLUMN remote_account; ALTER TABLE prekeys DROP COLUMN remote_server; CREATE INDEX prekeys_available ON prekeys(device_id,expires_at) WHERE bundle IS NOT NULL AND claimant IS NULL; DROP TABLE federation_outbox;DROP TABLE federation_senders;DROP TABLE federation_revocations;ALTER TABLE federation_admission DROP COLUMN egress_bytes;ALTER TABLE federation_admission DROP COLUMN delivery_not_before;ALTER TABLE federation_usage DROP COLUMN egress_bytes;ALTER TABLE federation_admission DROP COLUMN ingress_bytes;ALTER TABLE federation_usage DROP COLUMN ingress_bytes;PRAGMA user_version=15;CREATE TABLE federation_senders(synthetic INTEGER);").unwrap();
     assert!(Store::open(&path).is_err());
     assert_eq!(
         db.query_row("PRAGMA user_version", [], |r| r.get::<_, i64>(0))
@@ -437,8 +444,7 @@ fn real_https_ingress_and_native_mailbox_enforce_authentication_and_body_limits(
         (Some(token.as_str()), true, 403),
         (Some(token.as_str()), false, 200),
     ] {
-        let mut request =
-            Request::get(fixture.uri("chat.example", "/client/v0/federation/mailbox"));
+        let mut request = Request::get(fixture.uri("chat.example", "/client/v0/mailbox"));
         if let Some(token) = credential {
             request = request.header("authorization", format!("Bearer {token}"));
         }
@@ -451,7 +457,7 @@ fn real_https_ingress_and_native_mailbox_enforce_authentication_and_body_limits(
             let values: Vec<Delivery> = serde_json::from_slice(&response.body).unwrap();
             assert_eq!(values.len(), 1);
             assert_eq!(values[0].sequence, receipt.sequence);
-            assert_eq!(values[0].sender, sender(1));
+            assert_eq!(values[0].origin.as_ref().unwrap(), &sender(1));
         }
     }
     let mut maximum = message(&target, &sender(1), 2, now + 1000);

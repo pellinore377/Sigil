@@ -129,10 +129,15 @@ impl Syntax<'_> {
             }
             let boundary = at == 0
                 || !matches!(self.source.as_bytes()[at-1],b'a'..=b'z'|b'A'..=b'Z'|b'0'..=b'9'|b'_'|b':'|b'-');
-            if boundary && self.eligible[at] && !escaped(self.source, at) {
+            let segment = at >= 2 && self.source.as_bytes()[at - 2..at] == *b"::";
+            if (boundary || segment) && self.eligible[at] && !escaped(self.source, at) {
                 if let Some((content, effects, redact)) =
                     chain(self.source, at, end, &self.eligible)
                 {
+                    if !boundary && !redact {
+                        at = content;
+                        continue;
+                    }
                     let stop = (content..end)
                         .find(|&i| {
                             self.source.as_bytes()[i] == b'\n'
@@ -227,6 +232,16 @@ fn syntax(source: &str) -> Result<Syntax<'_>, Error> {
 fn overlap(a: &Range<usize>, b: &Range<usize>) -> bool {
     a.start < b.end && b.start < a.end
 }
+pub(crate) fn construct_positions(source: &str) -> Result<(Vec<bool>, Vec<bool>), Error> {
+    let syntax = syntax(source)?;
+    let ordinary: Vec<_> = (0..source.len())
+        .map(|at| syntax.eligible[at] && !syntax.code[at] && !escaped(source, at))
+        .collect();
+    let openers = (0..source.len())
+        .map(|at| ordinary[at] && !syntax.redacted(&(at..at + 1)))
+        .collect();
+    Ok((openers, ordinary))
+}
 struct Piece {
     text: String,
     effects: Effects,
@@ -271,6 +286,7 @@ pub fn parse(source: &str, limits: Limits) -> Result<Text, Error> {
     let mut stack = Vec::<Effects>::new();
     let mut current = Effects::default();
     let mut code = false;
+    let mut blocks = crate::blocks::Collector::new();
     for (index, (event, range)) in Parser::new_ext(&source, options())
         .into_offset_iter()
         .enumerate()
@@ -284,6 +300,38 @@ pub fn parse(source: &str, limits: Limits) -> Result<Text, Error> {
                     return Err(Error::Limit);
                 }
                 stack.push(current.clone());
+                let kind = match &tag {
+                    Tag::Paragraph => Some(crate::BlockKind::Paragraph),
+                    Tag::Heading { level, .. } => Some(crate::BlockKind::Heading {
+                        level: *level as u8,
+                    }),
+                    Tag::BlockQuote(_) => Some(crate::BlockKind::Quote),
+                    Tag::Item => Some(crate::BlockKind::Item),
+                    Tag::List(start) => Some(crate::BlockKind::List { start: *start }),
+                    Tag::CodeBlock(kind) => {
+                        let language = match kind {
+                            pulldown_cmark::CodeBlockKind::Fenced(info) => info
+                                .split_whitespace()
+                                .next()
+                                .filter(|s| {
+                                    s.len() <= 32
+                                        && s.bytes().all(|b| {
+                                            b.is_ascii_alphanumeric() || b == b'_' || b == b'-'
+                                        })
+                                })
+                                .map(str::to_owned),
+                            _ => None,
+                        };
+                        Some(crate::BlockKind::Code { language })
+                    }
+                    _ => None,
+                };
+                if let Some(kind) = kind {
+                    if matches!(tag, Tag::CodeBlock(_) | Tag::BlockQuote(_) | Tag::Item) {
+                        line(&mut pieces)?;
+                    }
+                    blocks.start(kind, pieces.iter().map(|p| p.text.len()).sum())?;
+                }
                 match tag {
                     Tag::Strong => current.bold = true,
                     Tag::Emphasis => current.italic = true,
@@ -311,6 +359,17 @@ pub fn parse(source: &str, limits: Limits) -> Result<Text, Error> {
             }
             Event::End(tag) => {
                 current = stack.pop().ok_or(Error::Invalid)?;
+                if matches!(
+                    tag,
+                    TagEnd::Paragraph
+                        | TagEnd::Heading(_)
+                        | TagEnd::CodeBlock
+                        | TagEnd::Item
+                        | TagEnd::List(_)
+                        | TagEnd::BlockQuote(_)
+                ) {
+                    blocks.end(pieces.iter().map(|p| p.text.len()).sum())?;
+                }
                 if tag == TagEnd::CodeBlock {
                     code = false;
                 }
@@ -412,5 +471,11 @@ pub fn parse(source: &str, limits: Limits) -> Result<Text, Error> {
             effects: p.effects.clone(),
         })
         .collect();
-    Text::from_runs(&runs, limits)
+    let text = Text::from_runs(&runs, limits)?;
+    let raw = pieces.iter().map(|p| p.text.as_str()).collect::<String>();
+    let mut blocks = blocks.finish(&text, &raw)?;
+    if blocks.len() == 1 && matches!(blocks[0].kind, crate::BlockKind::Paragraph) {
+        blocks.clear();
+    }
+    text.with_blocks(blocks)
 }

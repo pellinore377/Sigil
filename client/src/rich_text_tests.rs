@@ -19,6 +19,109 @@ fn count(client: &ClientStore, table: &str) -> i64 {
         .query_row(&format!("SELECT count(*) FROM {table}"), [], |r| r.get(0))
         .unwrap()
 }
+#[test]
+fn prepared_random_content_is_committed_once_before_send_and_restarts_without_reroll() {
+    let (dir, _fixture, mut alice, mut bob, now) = pair();
+    let (_, b) = trust(&mut alice, &mut bob);
+    let conversation = alice.direct_conversation(b).unwrap();
+    let request = || SigilTextDraft {
+        conversation,
+        message: [111; 32],
+        source: "roll::20d20; then pick::yesno;",
+        created_at: now,
+        timezone: Some("UTC"),
+        date_order: None,
+    };
+    alice.db.execute_batch("CREATE TRIGGER fail BEFORE INSERT ON structured_drafts BEGIN SELECT RAISE(ABORT,'synthetic'); END;").unwrap();
+    assert!(matches!(
+        alice.prepare_sigiltext(request()),
+        Err(Error::Storage(_))
+    ));
+    assert_eq!(count(&alice, "structured_drafts"), 0);
+    alice.db.execute_batch("DROP TRIGGER fail").unwrap();
+    let bytes = alice
+        .prepare_sigiltext(request())
+        .unwrap()
+        .to_bytes()
+        .unwrap();
+    assert_eq!(
+        bytes,
+        alice
+            .prepare_sigiltext(request())
+            .unwrap()
+            .to_bytes()
+            .unwrap()
+    );
+    let stored: Vec<u8> = alice
+        .db
+        .query_row("SELECT content FROM structured_drafts", [], |r| r.get(0))
+        .unwrap();
+    assert!(!stored.windows(4).any(|v| v == b"roll"));
+    drop(alice);
+    let mut alice = ClientStore::open(
+        &dir.path().join("alice.db"),
+        StorageKey::new(Secret32::from_bytes([9; 32])).unwrap(),
+    )
+    .unwrap();
+    let document = alice.prepare_sigiltext(request()).unwrap();
+    assert_eq!(bytes, document.to_bytes().unwrap());
+    assert!(matches!(
+        alice.prepare_sigiltext(SigilTextDraft {
+            source: "roll::d6;",
+            ..request()
+        }),
+        Err(Error::Conflict)
+    ));
+    let sigil_protocol::text::Document::Composition(value) = document else {
+        panic!();
+    };
+    alice.queue_peer_composition(b, &value, now).unwrap();
+    alice
+        .discard_sigiltext_draft(conversation, value.id)
+        .unwrap();
+    assert_eq!(count(&alice, "structured_drafts"), 0);
+    assert_eq!(count(&alice, "send_intents"), 1);
+}
+#[test]
+fn prepared_contact_bindings_do_not_follow_a_reassigned_handle() {
+    use sigil_protocol::text::{contact::Contact, Document};
+    let (_dir, _fixture, mut alice, mut bob, now) = pair();
+    let (_, peer) = trust(&mut alice, &mut bob);
+    let conversation = alice.direct_conversation(peer).unwrap();
+    let request = || SigilTextDraft {
+        conversation,
+        message: [141; 32],
+        source: "@::@user;",
+        created_at: now,
+        timezone: None,
+        date_order: None,
+    };
+    let mut known = Contact {
+        user_id: [1; 32],
+        address: "@user:example.org".into(),
+        display_name: Text::plain("Example", Default::default()).unwrap(),
+        avatar_url: None,
+    };
+    let first = alice
+        .prepare_sigiltext_with_contacts(request(), &[known.clone()])
+        .unwrap()
+        .to_bytes()
+        .unwrap();
+    known.user_id = [2; 32];
+    let Document::Composition(value) = alice
+        .prepare_sigiltext_with_contacts(request(), &[known])
+        .unwrap()
+    else {
+        panic!();
+    };
+    assert_eq!(value.to_bytes().unwrap(), first);
+    let sigil_protocol::text::structured::Construct::Contact(contact) =
+        &value.cards().next().unwrap().content
+    else {
+        panic!();
+    };
+    assert_eq!(contact.user_id, [1; 32]);
+}
 fn text() -> Text {
     parse(
         "bold::é 👩🏽‍💻; redact::SYNTHETIC_SECRET; blue::visible;",
@@ -160,7 +263,7 @@ fn canonical_direct_delivery_is_atomic_restartable_and_recoverable_on_a_fresh_de
             .db
             .query_row("PRAGMA user_version", [], |r| r.get::<_, i64>(0))
             .unwrap(),
-        55
+        68
     );
     assert!(retained(&reopened, id) == text);
 }
@@ -194,6 +297,7 @@ fn authenticated_but_invalid_rich_payload_does_not_commit_the_receiver_ratchet()
     };
     let before = state(&alice);
     let delivery = sigil_protocol::mailbox::Delivery {
+        origin: None,
         sequence: 200,
         sender_device: bob.connection_session().unwrap().unwrap().device_id,
         message_id: crate::transport::hex(&[71; 32]),
@@ -211,6 +315,7 @@ fn authenticated_but_invalid_rich_payload_does_not_commit_the_receiver_ratchet()
         .send_peer_sigiltext(a, [72; 32], &text, now, now)
         .unwrap();
     let good = sigil_protocol::mailbox::Delivery {
+        origin: None,
         sequence: 201,
         message_id: crate::transport::hex(&[72; 32]),
         payload: crate::transport::hex(&packet),
@@ -247,7 +352,7 @@ fn card(client: &mut ClientStore, message: Id, now: u64) -> sigil_protocol::text
     else {
         panic!()
     };
-    card
+    *card
 }
 #[test]
 fn direct_cards_bind_the_creator_and_survive_queued_restart_and_recovery_storage() {
@@ -307,7 +412,7 @@ fn direct_cards_bind_the_creator_and_survive_queued_restart_and_recovery_storage
             .db
             .query_row("PRAGMA user_version", [], |r| r.get::<_, i64>(0))
             .unwrap(),
-        55
+        68
     );
     alice.queue_peer_card(b, &card, now).unwrap();
 }
@@ -346,6 +451,7 @@ fn encrypted_cards_with_forged_origin_do_not_advance_receiver_state() {
         .unwrap();
         let packet = bob.send(received.session, id, &bytes).unwrap();
         let delivery = sigil_protocol::mailbox::Delivery {
+            origin: None,
             sequence: 300 + i64::from(case),
             sender_device: bob.connection_session().unwrap().unwrap().device_id,
             message_id: crate::transport::hex(&id),

@@ -290,6 +290,7 @@ fn resend_chain_stops_after_three_fresh_sessions() {
             .unwrap()
             .unwrap();
         let control = Delivery {
+            origin: None,
             sequence: i64::from(hop) + 10,
             sender_device: bob.connection_session().unwrap().unwrap().device_id,
             message_id: transport::hex(&id),
@@ -313,6 +314,7 @@ fn resend_chain_stops_after_three_fresh_sessions() {
         alice.claim_prekey_online(request.claim, now).unwrap();
         let (_, packet) = alice.resend_event(id, now).unwrap();
         failed = Delivery {
+            origin: None,
             sequence: i64::from(hop) + 20,
             sender_device: alice.connection_session().unwrap().unwrap().device_id,
             message_id: transport::hex(&id),
@@ -514,6 +516,7 @@ fn scheduler_bounds_work_and_persists_fair_scan_across_blocked_requests() {
             .unwrap()
             .unwrap();
         let control = sigil_protocol::mailbox::Delivery {
+            origin: None,
             sequence: 100 + i64::from(n),
             sender_device: bob.connection_session().unwrap().unwrap().device_id,
             message_id: transport::hex(&id),

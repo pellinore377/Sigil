@@ -66,10 +66,6 @@ impl Store {
         )? {
             return Err(StoreError::AlreadyExists);
         }
-        let quota = crate::store::read_configuration(&tx)?
-            .settings
-            .ok_or(StoreError::Unauthorized)?
-            .default_quota_bytes;
         if !active(&tx, &request.recipient_device)? {
             return Err(StoreError::NotFound);
         }
@@ -100,6 +96,7 @@ impl Store {
             |r| r.get(0),
         )?;
         let used = crate::recovery::used(&tx, &account, now)?;
+        let quota = crate::admin::quota(&tx, &account)?;
         let peer_pending: u32 = tx.query_row(
             "SELECT count(*) FROM mailbox WHERE recipient=?1 AND sender=?2 AND payload IS NOT NULL AND expires_at>?3",
             (&request.recipient_device, &sender, now as i64),
@@ -141,10 +138,20 @@ impl Store {
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
         let device = authorize(&tx, credential, now)?;
         let values = {
-            let mut statement = tx.prepare("SELECT sequence,sender,message_id,payload,expires_at FROM mailbox WHERE recipient=?1 AND sender IS NOT NULL AND payload IS NOT NULL AND expires_at>?2 AND sequence>?3 ORDER BY sequence LIMIT 16")?;
+            let mut statement = tx.prepare("SELECT sequence,coalesce(sender,remote_device),message_id,payload,expires_at,remote_server,remote_account FROM mailbox WHERE recipient=?1 AND payload IS NOT NULL AND expires_at>?2 AND sequence>?3 AND (sender IS NOT NULL OR (EXISTS(SELECT 1 FROM federation_senders s WHERE s.grant_id=mailbox.remote_grant) AND NOT EXISTS(SELECT 1 FROM federation_peers p WHERE p.server=mailbox.remote_server AND p.error='retired'))) ORDER BY sequence LIMIT 16")?;
             let rows = statement
                 .query_map((&device, now as i64, after), |r| {
                     Ok(Delivery {
+                        origin: r
+                            .get::<_, Option<String>>(5)?
+                            .map(|server| {
+                                Ok::<_, rusqlite::Error>(sigil_protocol::federation::RemoteSender {
+                                    server,
+                                    device: r.get(1)?,
+                                    account: r.get(6)?,
+                                })
+                            })
+                            .transpose()?,
                         sequence: r.get(0)?,
                         sender_device: r.get(1)?,
                         message_id: r.get(2)?,

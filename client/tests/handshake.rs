@@ -366,7 +366,7 @@ fn migration_and_prekey_limits_preserve_existing_sessions() {
     assert_eq!(
         db.query_row("PRAGMA user_version", [], |r| r.get::<_, i64>(0))
             .unwrap(),
-        55
+        68
     );
     for n in 0_u8..64 {
         store.create_prekey([n; 32], false).unwrap();
@@ -655,7 +655,7 @@ fn schema_two_migration_keeps_encrypted_identity_and_live_prekeys() {
     assert_eq!(
         db.query_row("PRAGMA user_version", [], |r| r.get::<_, i64>(0))
             .unwrap(),
-        55
+        68
     );
 }
 

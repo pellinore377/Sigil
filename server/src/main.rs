@@ -95,6 +95,10 @@ async fn run() -> Result<(), &'static str> {
         println!("Admin credential rotated.");
         return Ok(());
     }
+    if command == "serve" {
+        sigil_server::operations::activate_restore(&directory)
+            .map_err(|_| "staged restore activation failed; original data is preserved")?;
+    }
     let store = Store::open(&database).map_err(|_| "cannot open compatible server storage")?;
     if command == "backup" {
         store
@@ -109,7 +113,7 @@ async fn run() -> Result<(), &'static str> {
     let listener = tokio::net::TcpListener::bind(address)
         .await
         .map_err(|_| "cannot bind listener")?;
-    println!("Sigil control plane started. Admin credential is in the private data directory. Messaging is not enabled.");
+    println!("Sigil started. Bootstrap Admin credential is in the private data directory.");
     let (router, maintenance) = sigil_server::router_with_maintenance(store, token);
     tokio::select! {
         result = async { axum::serve(listener, router).with_graceful_shutdown(shutdown()).await } => result.map_err(|_| "server failed"),

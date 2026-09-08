@@ -232,6 +232,34 @@ fn retry_after_survives_expired_jobs_new_mail_and_configuration_races() {
 }
 
 #[test]
+fn repeated_fcm_throttling_backs_off_exponentially_across_restart() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("server.db");
+    let (mut store, alice, bob) = setup(&path);
+    let sender = store.session(&alice, NOW).unwrap().device_id;
+    let target = store.session(&bob, NOW).unwrap().device_id;
+    store.allow_sender(&bob, &sender, NOW).unwrap();
+    activate(&mut store, &bob, NOW);
+    store
+        .submit_message(&alice, message(&target, 1, NOW + 86400), NOW)
+        .unwrap();
+    let mut now = NOW;
+    for minimum in [60, 120, 240, 480, 960, 1920, 3600, 3600] {
+        let job = store.claim_push(now).unwrap().unwrap();
+        store
+            .finish_push(&job, Delivery::retry(now, 60, true), now)
+            .unwrap();
+        let due = push_config::read(&store.0).unwrap().fcm_not_before;
+        assert!((now + minimum..=now + minimum + minimum / 4).contains(&due));
+        drop(store);
+        store = Store::open(&path).unwrap();
+        assert!(store.claim_push(due - 1).unwrap().is_none());
+        now = due;
+    }
+    assert_eq!(store.mailbox(&bob, now).unwrap().len(), 1);
+}
+
+#[test]
 fn provider_confirmation_requires_device_echo_and_rollback_retains_slot_budget() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("server.db");
@@ -360,7 +388,7 @@ fn configuration_rotation_migration_and_restore_preserve_safe_retry_boundaries()
     assert!(restored.push_status(&alice, NOW + 2).is_err());
     assert_eq!(restored.0.query_row("SELECT count(*) FROM push_channels WHERE target IS NOT NULL OR proof IS NOT NULL OR proof_hash IS NOT NULL",[],|r|r.get::<_,i64>(0)).unwrap(),0);
     drop(store);
-    db.execute_batch("DROP TABLE private_group_nonces; DROP TABLE private_group_commits; DROP TABLE private_group_members; DROP TABLE private_groups; DROP TABLE group_credential_uids; DROP TABLE group_authority; DROP INDEX prekeys_available; DROP INDEX prekeys_remote_claim; ALTER TABLE prekeys DROP COLUMN remote_request; ALTER TABLE prekeys DROP COLUMN remote_device; ALTER TABLE prekeys DROP COLUMN remote_account; ALTER TABLE prekeys DROP COLUMN remote_server; CREATE INDEX prekeys_available ON prekeys(device_id,expires_at) WHERE bundle IS NOT NULL AND claimant IS NULL; DROP TABLE federation_outbox; DROP TABLE federation_revocations; DROP TABLE federation_senders; DROP TABLE federation_nonces; DROP TABLE federation_admission; DROP TABLE federation_usage; DROP TABLE federation_peers; DROP TABLE federation_configuration; DROP TABLE push_jobs;DROP TABLE push_channels;DROP TABLE push_configuration;PRAGMA user_version=13;CREATE TABLE push_jobs(synthetic INTEGER);").unwrap();
+    db.execute_batch("DROP TABLE operation_uploads; DROP TABLE operations; DROP TABLE operation_configuration; DROP TABLE oidc_grants; DROP TABLE oidc_bindings; DROP TABLE oidc_flows; DROP TABLE oidc_configuration; DROP TABLE registration_usage; DROP TABLE account_policy; DROP TABLE admin_policy; DROP TABLE call_connections; DROP TABLE calls; DROP TABLE call_configuration; DROP TABLE service_budgets; DROP TABLE service_configuration; DROP TABLE map_configuration; DROP TABLE private_group_invitations; DROP TABLE private_group_proposals; DROP TABLE private_group_nonces; DROP TABLE private_group_commits; DROP TABLE private_group_members; DROP TABLE private_groups; DROP TABLE group_credential_uids; DROP TABLE group_authority; DROP INDEX prekeys_available; DROP INDEX prekeys_remote_claim; ALTER TABLE prekeys DROP COLUMN remote_request; ALTER TABLE prekeys DROP COLUMN remote_device; ALTER TABLE prekeys DROP COLUMN remote_account; ALTER TABLE prekeys DROP COLUMN remote_server; CREATE INDEX prekeys_available ON prekeys(device_id,expires_at) WHERE bundle IS NOT NULL AND claimant IS NULL; DROP TABLE federation_outbox; DROP TABLE federation_revocations; DROP TABLE federation_senders; DROP TABLE federation_nonces; DROP TABLE federation_admission; DROP TABLE federation_usage; DROP TABLE federation_peers; DROP TABLE federation_configuration; DROP TABLE push_jobs;DROP TABLE push_channels;DROP TABLE push_configuration;PRAGMA user_version=13;CREATE TABLE push_jobs(synthetic INTEGER);").unwrap();
     assert!(Store::open(&path).is_err());
     assert_eq!(
         db.query_row("PRAGMA user_version", [], |r| r.get::<_, i64>(0))
@@ -382,7 +410,7 @@ fn configuration_rotation_migration_and_restore_preserve_safe_retry_boundaries()
     assert_eq!(
         db.query_row("PRAGMA user_version", [], |r| r.get::<_, i64>(0))
             .unwrap(),
-        19
+        26
     );
 }
 
@@ -525,7 +553,7 @@ async fn push_routes_enforce_admin_device_origin_and_body_boundaries() {
             .await
             .unwrap()
             .status(),
-        StatusCode::UNAUTHORIZED
+        StatusCode::FORBIDDEN
     );
     let public = app
         .clone()

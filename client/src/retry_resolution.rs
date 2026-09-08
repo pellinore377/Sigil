@@ -124,7 +124,7 @@ impl ClientStore {
             .map_err(|_| Error::InvalidStore)?
             .binding;
         let fingerprint = device_fingerprint(&own)?;
-        let peer = peers::reference(&binding.server, &decode_id(&failed.sender_device)?);
+        let peer = crate::federation::delivery_peer(&self.db, &self.key, &binding.server, failed)?;
         let message = decode_id(&failed.message_id)?;
         let digest = Sha256::digest(packet).into();
         let tx = self

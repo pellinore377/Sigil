@@ -7,10 +7,10 @@ const PREFIX: &[u8; 8] = b"SGGC\0\x01\0\0";
 const HEADER: usize = 44;
 const MAX: usize = codec::MAX_CHECKPOINT_BYTES + 1;
 
-pub(super) const fn sealed_limit(length: usize) -> usize {
+pub(crate) const fn sealed_limit(length: usize) -> usize {
     HEADER + length + length.div_ceil(MAX_RECORD) * 36
 }
-pub(super) fn seal_record(
+pub(crate) fn seal_record(
     key: &StorageKey,
     bytes: &[u8],
     context: &[u8],
@@ -31,7 +31,7 @@ pub(super) fn seal_record(
     }
     Ok(out)
 }
-pub(super) fn open_record(
+pub(crate) fn open_record(
     key: &StorageKey,
     bytes: &[u8],
     context: &[u8],

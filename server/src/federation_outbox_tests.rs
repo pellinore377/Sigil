@@ -202,10 +202,7 @@ fn ambiguous_delivery_restarts_without_reencrypting_and_receipt_failure_rolls_ba
     p.source
         .finish_federation_delivery(&job, outcome, status.not_before)
         .unwrap();
-    let delivered = p
-        .sink
-        .federated_mailbox(&p.bob, 0, status.not_before)
-        .unwrap();
+    let delivered = p.sink.mailbox_after(&p.bob, 0, status.not_before).unwrap();
     assert_eq!(delivered.len(), 1);
     let status = p
         .source
@@ -483,18 +480,21 @@ fn queued_signed_delivery_crosses_real_https_and_returns_the_bound_receipt() {
     assert_eq!(status.state, OutboundState::Accepted);
     let response = fixture
         .federation(
-            Request::get(fixture.uri("chat.example", "/client/v0/federation/mailbox"))
+            Request::get(fixture.uri("chat.example", "/client/v0/mailbox"))
                 .header("authorization", format!("Bearer {}", p.bob))
                 .body(&[][..])
                 .unwrap(),
         )
         .unwrap();
     assert_eq!(response.status, 200);
-    let deliveries: Vec<sigil_protocol::federation::Delivery> =
+    let deliveries: Vec<sigil_protocol::mailbox::Delivery> =
         serde_json::from_slice(&response.body).unwrap();
     assert_eq!(deliveries.len(), 1);
     assert_eq!(deliveries[0].sequence, status.receipt.unwrap().sequence);
-    assert_eq!(deliveries[0].sender.server, "remote.example");
+    assert_eq!(
+        deliveries[0].origin.as_ref().unwrap().server,
+        "remote.example"
+    );
     assert_eq!(deliveries[0].payload, p.request.payload);
 }
 #[tokio::test]
@@ -568,4 +568,32 @@ async fn queue_routes_require_local_credentials_and_reject_body_identity_spoofin
         .await
         .unwrap();
     assert_eq!(response.status(), 422);
+}
+
+#[test]
+fn retirement_fences_an_already_running_delivery_completion() {
+    let mut p = Pair::new(1000, "chat.example", "remote.example");
+    p.enqueue(1000);
+    let job = p.source.claim_federation_delivery(1000).unwrap().unwrap();
+    let outcome = transmit(&mut p.sink, &job, 1000);
+    let revision = p.source.federation_peer("remote.example").unwrap().revision;
+    p.source
+        .retire_federation_peer(
+            "remote.example",
+            federation_config::RetirePeer {
+                expected_revision: revision,
+            },
+        )
+        .unwrap();
+    assert!(!p
+        .source
+        .finish_federation_delivery(&job, outcome, 1001)
+        .unwrap());
+    assert_eq!(
+        p.source
+            .federated_outbound(&p.alice, &p.request.message_id, 1001)
+            .unwrap()
+            .state,
+        OutboundState::Revoked
+    );
 }

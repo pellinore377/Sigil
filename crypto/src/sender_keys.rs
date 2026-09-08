@@ -15,6 +15,7 @@ use zeroize::Zeroizing;
 type Id = [u8; 32];
 const PACKET: &[u8; 8] = b"SGKM\0\x01\0\0";
 const DISTRIBUTION: &[u8; 8] = b"SGKD\0\x01\0\0";
+const CURRENT_DISTRIBUTION: &[u8; 8] = b"SGKD\0\x02\0\0";
 const HEADER: usize = 188;
 pub const MAX_PACKET: usize = HEADER + MAX_PLAINTEXT + 16 + 64;
 pub const MAX_SKIPPED_KEYS: usize = crate::skipped::MAX;
@@ -62,39 +63,63 @@ pub struct Distribution {
     context: Context,
     chain: Secret32,
     public: Id,
+    counter: Option<u64>,
 }
 impl Distribution {
     pub fn context(&self) -> Context {
         self.context
     }
+    pub fn counter(&self) -> u64 {
+        self.counter.unwrap_or(0)
+    }
+    pub fn is_current(&self) -> bool {
+        self.counter.is_some()
+    }
     /// Sensitive plaintext: only authenticated pairwise encryption may carry it.
     pub fn to_bytes(&self) -> Result<Zeroizing<Vec<u8>>, Error> {
         let mut out = Writer::new();
-        out.put(DISTRIBUTION)?;
+        out.put(if self.is_current() {
+            CURRENT_DISTRIBUTION
+        } else {
+            DISTRIBUTION
+        })?;
         out.put(&self.context.bytes())?;
         out.put(self.chain.0.as_ref())?;
         out.put(&self.public)?;
+        if let Some(counter) = self.counter {
+            out.u64(counter)?;
+        }
         Ok(out.finish())
     }
     /// Parsing proves neither origin nor membership; the caller must validate
     /// those against the authenticated pairwise sender and committed group state.
     pub fn from_bytes(bytes: &[u8]) -> Result<Self, Error> {
-        if bytes.len() != 208 {
+        if bytes.len() != 208 && bytes.len() != 216 {
             return Err(Error::Encoding);
         }
         let mut reader = Reader::new(bytes)?;
-        if &reader.take::<8>()? != DISTRIBUTION {
+        let version = reader.take::<8>()?;
+        if &version != DISTRIBUTION && &version != CURRENT_DISTRIBUTION {
             return Err(Error::Encoding);
         }
         let context = Context::read(&mut reader)?;
         let chain = reader.secret()?;
         let public = reader.take()?;
         validate_public(&public)?;
+        let counter = if &version == CURRENT_DISTRIBUTION {
+            Some(reader.u64()?)
+        } else {
+            None
+        };
+        if counter == Some(u64::MAX) {
+            return Err(Error::Limit);
+        }
         reader.finish()?;
         Ok(Self {
             context,
             chain,
             public,
+            counter,
         })
     }
 }
@@ -200,6 +225,7 @@ impl Sender {
             context,
             chain: Secret32::from_bytes(*chain.0),
             public: signing.public_key(),
+            counter: None,
         };
         Ok((
             Self {
@@ -216,6 +242,18 @@ impl Sender {
     }
     pub fn counter(&self) -> u64 {
         self.counter
+    }
+    /// Export only the current chain position through authenticated encryption.
+    pub fn current_distribution(&self) -> Result<Distribution, Error> {
+        if self.counter == u64::MAX {
+            return Err(Error::Limit);
+        }
+        Ok(Distribution {
+            context: self.context,
+            chain: Secret32::from_bytes(*self.chain.0),
+            public: self.signing.public_key(),
+            counter: Some(self.counter),
+        })
     }
     /// The caller must durably freeze encrypted distribution before the first
     /// send, then commit each checkpoint and packet in one transaction.
@@ -291,11 +329,12 @@ impl Receiver {
         if distribution.context != expected {
             return Err(Error::Authentication);
         }
+        let counter = distribution.counter();
         Ok(Self {
             context: expected,
             chain: distribution.chain,
             public: distribution.public,
-            counter: 0,
+            counter,
             skipped: Skipped::new(),
         })
     }
@@ -304,6 +343,17 @@ impl Receiver {
     }
     pub fn counter(&self) -> u64 {
         self.counter
+    }
+    /// A fresh authenticated checkpoint may advance this exact chain, never rewind it.
+    pub fn refresh_authenticated(&mut self, distribution: Distribution) -> Result<(), Error> {
+        if distribution.context != self.context || distribution.public != self.public {
+            return Err(Error::Authentication);
+        }
+        if distribution.counter() > self.counter {
+            self.counter = distribution.counter();
+            self.chain = distribution.chain;
+        }
+        Ok(())
     }
     pub fn open(&mut self, packet: &Packet) -> Result<Vec<u8>, Error> {
         if packet.context != self.context {

@@ -1011,7 +1011,7 @@ fn restored_ancestor_proof_is_bounded_authenticated_and_migration_fails_closed()
     assert_eq!(
         db.query_row("PRAGMA user_version", [], |r| r.get::<_, i64>(0))
             .unwrap(),
-        55
+        68
     );
     // Migration cannot invent evidence for publications predating the ledger.
     assert!(store.reconcile_restored_recovery_head(&restored).is_err());

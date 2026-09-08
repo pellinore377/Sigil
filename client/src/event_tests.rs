@@ -50,6 +50,7 @@ fn altered_outer_id_and_authenticated_wrong_contexts_never_commit_plaintext_or_r
         content[offset] ^= 128;
         let packet = bob.send(incoming.session, message, &content).unwrap();
         let delivery = Delivery {
+            origin: None,
             sequence: 100 + n as i64,
             sender_device: bob.connection_session().unwrap().unwrap().device_id,
             message_id: transport::hex(&message),
@@ -82,6 +83,7 @@ fn altered_outer_id_and_authenticated_wrong_contexts_never_commit_plaintext_or_r
         .unwrap();
     let accepted = alice
         .accept_delivery(&Delivery {
+            origin: None,
             sequence: 200,
             sender_device: bob.connection_session().unwrap().unwrap().device_id,
             message_id: transport::hex(&[90; 32]),
@@ -269,6 +271,7 @@ fn logical_ids_cannot_be_redefined_by_fresh_authenticated_sessions() {
             .unwrap();
         let before = state(&bob);
         let delivery = Delivery {
+            origin: None,
             sequence: 900 + n as i64,
             sender_device: alice.connection_session().unwrap().unwrap().device_id,
             message_id: transport::hex(&[4; 32]),

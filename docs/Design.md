@@ -102,6 +102,8 @@ Collections remain optional and off by default under the product plan. Enabling 
 
 Messages are the visual center. Use clear message grouping, modest sender metadata, deliberate spacing, and distinct incoming/outgoing treatment. Preserve readable content width on larger windows.
 
+Emoji-only messages render without a bubble and play [Noto animated emoji](https://googlefonts.github.io/noto-emoji-animation/) (CC BY 4.0). Keep Unicode text as the encrypted message content; this is a client presentation rule, separate from reactions. Bundle assets locally with attribution, honor reduced motion, and use static emoji when animation is unavailable. Choose the asset format during UI implementation.
+
 The composer should feel like a writing space. Keep the main text entry and send action clear; disclose formatting, attachments, and structured-content builders progressively. Builders should preserve drafts and return naturally to writing. Avoid duplicated composers and layers of nested sheets.
 
 Structured cards belong to the same visual system as messages. Give them clear titles, content hierarchy, and obvious actions. Cap large inline content and provide expanded views, following SigilText.md. Composite-looking AI mockups do not authorize unsupported nested structured blocks or change message semantics.

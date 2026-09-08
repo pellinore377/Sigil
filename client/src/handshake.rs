@@ -244,7 +244,7 @@ pub(super) fn accept(
     }
     insert(tx, key, &session, &state)?;
     save_header(tx, key, &session, &initial.to_bytes(), &extra)?;
-    let content = key.seal(&groups::retained_payload(key, &plaintext)?, &aad)?;
+    let content = key.seal(&crate::retained_payload(key, &plaintext)?, &aad)?;
     tx.execute(
         "INSERT INTO inbox VALUES(?1,?2,?3,?4)",
         (

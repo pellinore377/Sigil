@@ -14,7 +14,7 @@ fn card(source: &str) -> Card {
     else {
         panic!("not a card")
     };
-    card
+    *card
 }
 #[test]
 fn cards_have_shared_builder_bytes_redacted_labels_and_authenticated_origins() {
@@ -136,7 +136,7 @@ fn poll_options_are_order_independent_and_repeat_warnings_do_not_change_content(
     let Parsed::Card(repeated) = repeated.content else {
         panic!()
     };
-    assert!(repeated == a);
+    assert!(*repeated == a);
     let Construct::Poll(defaults) = card("poll::Choose\n- One\n- Two;").content else {
         panic!()
     };

@@ -44,7 +44,7 @@ fn timestamp(value: u64) -> Result<Timestamp, Error> {
     Timestamp::from_second(i64::try_from(value).map_err(|_| Error::Invalid)?)
         .map_err(|_| Error::Invalid)
 }
-fn zone(name: &str) -> Result<TimeZone, Error> {
+pub(crate) fn zone(name: &str) -> Result<TimeZone, Error> {
     if jiff_tzdb::VERSION != Some(TZDB_VERSION) {
         return Err(Error::Version);
     }

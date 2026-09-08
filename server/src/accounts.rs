@@ -225,14 +225,22 @@ impl Store {
         let tx = self
             .0
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
-        let username: String = tx
+        let invitation: Option<String> = tx
             .query_row(
                 "SELECT username FROM invitations WHERE token_hash = ?1 AND expires_at > ?2",
                 (digest(&request.invitation).as_slice(), now as i64),
                 |r| r.get(0),
             )
-            .optional()?
-            .ok_or(StoreError::Unauthorized)?;
+            .optional()?;
+        let oidc: Option<(String,String,String,bool)> = tx.query_row("SELECT issuer,subject,username,reauthorize FROM oidc_grants WHERE token_hash=?1 AND expires>?2",(digest(&request.invitation).as_slice(),now as i64),|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?))).optional()?;
+        if oidc.as_ref().is_some_and(|v| v.3 != reauthorize) {
+            return Err(StoreError::Unauthorized);
+        }
+        let username = match (&invitation, &oidc) {
+            (Some(name), None) => name.clone(),
+            (None, Some((_, _, name, _))) => name.clone(),
+            _ => return Err(StoreError::Unauthorized),
+        };
         let duplicate: bool = tx.query_row(
             "SELECT EXISTS(SELECT 1 FROM devices WHERE token_hash = ?1)",
             [digest(&request.device_credential).as_slice()],
@@ -255,6 +263,7 @@ impl Store {
                 [&account_id],
             )?;
         } else {
+            crate::admin::register(&tx, now, oidc.is_some())?;
             let exists: bool = tx.query_row(
                 "SELECT EXISTS(SELECT 1 FROM accounts WHERE username=?1)",
                 [&username],
@@ -274,6 +283,13 @@ impl Store {
             "DELETE FROM invitations WHERE token_hash = ?1",
             [digest(&request.invitation).as_slice()],
         )?;
+        if let Some((issuer, subject, _, _)) = oidc {
+            crate::oidc::bind(&tx, &issuer, &subject, &account_id)?;
+            tx.execute(
+                "DELETE FROM oidc_grants WHERE token_hash=?1",
+                [digest(&request.invitation).as_slice()],
+            )?;
+        }
         tx.commit()?;
         Ok(Session {
             account_id,
@@ -348,6 +364,7 @@ impl Store {
         let tx = self
             .0
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        crate::admin::retain_administrator(&tx, account_id)?;
         if tx.execute(
             "UPDATE accounts SET disabled = 1 WHERE id = ?1",
             [account_id],

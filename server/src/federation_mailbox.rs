@@ -8,7 +8,7 @@ use axum::http::HeaderMap;
 use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior};
 use sigil_protocol::{
     accounts::valid_credential,
-    federation::{Delivery, Receipt, RemoteSender, Submit},
+    federation::{Receipt, RemoteSender, Submit},
     mailbox::MAX_PAYLOAD_HEX,
 };
 pub(crate) const METADATA: u64 = 2048;
@@ -149,21 +149,6 @@ impl Store {
             expires_at: request.expires_at,
         })
     }
-    pub fn federated_mailbox(
-        &mut self,
-        credential: &str,
-        after: i64,
-        now: u64,
-    ) -> Result<Vec<Delivery>, StoreError> {
-        if after < 0 {
-            return Err(StoreError::Invalid("invalid mailbox cursor"));
-        }
-        let tx = self.0.transaction()?;
-        let recipient = authorize(&tx, credential, now)?;
-        let result=tx.prepare("SELECT sequence,remote_server,remote_account,remote_device,message_id,payload,expires_at FROM mailbox WHERE recipient=?1 AND remote_server IS NOT NULL AND payload IS NOT NULL AND expires_at>?2 AND sequence>?3 AND EXISTS(SELECT 1 FROM federation_senders s WHERE s.grant_id=mailbox.remote_grant) ORDER BY sequence LIMIT 16")?.query_map((&recipient,sql(now)?,after),|r|Ok(Delivery{sequence:r.get(0)?,sender:RemoteSender{server:r.get(1)?,account:r.get(2)?,device:r.get(3)?},message_id:r.get(4)?,payload:r.get(5)?,expires_at:unsigned(r,6)?}))?.collect::<Result<_,_>>()?;
-        tx.commit()?;
-        Ok(result)
-    }
 }
 fn reserve_ingress(
     tx: &Transaction<'_>,
@@ -228,10 +213,7 @@ pub(crate) fn reserve_remote(
         [target],
         |r| r.get(0),
     )?;
-    let quota = crate::store::read_configuration(tx)?
-        .settings
-        .ok_or(StoreError::Forbidden)?
-        .default_quota_bytes;
+    let quota = crate::admin::quota(tx, &account)?;
     if crate::recovery::used(tx, &account, now)?.saturating_add(payload) > quota {
         return Err(StoreError::Busy);
     }

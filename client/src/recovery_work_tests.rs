@@ -51,6 +51,44 @@ fn run(store: &mut ClientStore, begin: u64, end: u64) -> ScheduledRecovery {
         .unwrap()
 }
 #[test]
+fn file_expiry_erases_local_keys_after_remote_retention() {
+    let (_dir, _fixture, mut store, _, now) = pair();
+    configure(&mut store);
+    store
+        .retain_recovery_record(&file(1, now, now + 172800))
+        .unwrap();
+    store
+        .set_recovery_policy(super::super::RecoveryPolicy {
+            history_days: Some(1),
+        })
+        .unwrap();
+    store.maintain_recovery(now + 86400).unwrap();
+    assert!(matches!(
+        store.recovery_record([1; 32]).unwrap().content,
+        Content::Omitted
+    ));
+    assert!(matches!(
+        store.retained_history_record([1; 32]).unwrap().content,
+        Content::File(_)
+    ));
+    store.maintain_recovery(now + 172800).unwrap();
+    assert!(matches!(
+        store.retained_history_record([1; 32]).unwrap().content,
+        Content::Deleted
+    ));
+    assert_eq!(
+        store
+            .db
+            .query_row(
+                "SELECT count(*) FROM archive_local WHERE id=?1",
+                [[1u8; 32].as_slice()],
+                |r| r.get::<_, i64>(0)
+            )
+            .unwrap(),
+        0
+    );
+}
+#[test]
 fn expiry_is_bounded_atomic_and_restart_safe_with_terminal_deletions() {
     let (dir, _fixture, mut store, _bob, now) = pair();
     configure(&mut store);
@@ -184,9 +222,13 @@ fn deletion_during_upload_gets_a_successor_and_idle_passes_do_not_republish() {
     assert_eq!(record.revision, 2);
     assert_eq!(
         run(&mut store, now + 2, now + 2).progress.unwrap().unwrap(),
+        RecoveryProgress::Cleanup(2)
+    );
+    assert_eq!(
+        run(&mut store, now + 3, now + 3).progress.unwrap().unwrap(),
         RecoveryProgress::Idle
     );
-    assert!(run(&mut store, now + 3, now + 3).progress.is_none());
+    assert!(run(&mut store, now + 4, now + 4).progress.is_none());
     assert_eq!(store.recovery_status().unwrap().anchor, Some(second));
     // The independent recovery scheduler did not create a messaging reservation.
     assert!(schedule::read(&store.db, &store.key, &[0; 32])
@@ -314,7 +356,7 @@ fn snapshot_expires_every_file_and_schema46_preserves_pending_edits_and_schedule
             .db
             .query_row("PRAGMA user_version", [], |r| r.get::<_, i64>(0))
             .unwrap(),
-        55
+        68
     );
     assert_eq!(
         schedule::read(&store.db, &store.key, &[8; 32]).unwrap().1,

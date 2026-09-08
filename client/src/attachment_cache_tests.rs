@@ -21,6 +21,29 @@ fn private_dir() -> tempfile::TempDir {
 }
 
 #[test]
+fn erased_cache_descriptor_is_removed_from_live_files() {
+    let dir = private_dir();
+    let path = dir.path().join("cache.db");
+    let mut cache = open(&path, BUDGET);
+    let file = cache.prepare_upload(5, metadata(), None).unwrap();
+    cache.stage_chunk(file, 0, b"12345").unwrap();
+    let old: Vec<u8> = cache
+        .db
+        .query_row("SELECT state FROM files", [], |r| r.get(0))
+        .unwrap();
+    cache.cancel(file).unwrap();
+    cache.cleanup(file).unwrap();
+    let bytes = std::fs::read(&path).unwrap();
+    assert!(!old
+        .as_chunks::<64>()
+        .0
+        .iter()
+        .skip(1)
+        .any(|chunk| bytes.windows(64).any(|v| v == chunk)));
+    assert!(!path.with_extension("db-wal").exists());
+}
+
+#[test]
 fn exact_staging_restarts_and_never_exposes_incomplete_descriptors() {
     let dir = private_dir();
     let path = dir.path().join("cache.db");
@@ -322,6 +345,7 @@ fn download_fixture(length: u64) -> (Descriptor, Vec<Vec<u8>>) {
     }
     (
         Descriptor {
+            source: None,
             bytes: key.descriptor(list.finish().unwrap()),
             access: Zeroizing::new("ab".repeat(32)),
             metadata: metadata(),
@@ -428,6 +452,7 @@ fn download_write_failure_and_conflicting_descriptor_preserve_frozen_state() {
     let mut cache = open(&dir.path().join("cache.db"), BUDGET);
     let (descriptor, parts) = download_fixture(5);
     let duplicate = Descriptor {
+        source: None,
         bytes: descriptor.bytes.clone(),
         access: descriptor.access.clone(),
         metadata: descriptor.metadata.clone(),
@@ -442,6 +467,7 @@ fn download_write_failure_and_conflicting_descriptor_preserve_frozen_state() {
     );
     let mut state = load(&cache.db, &cache.key, file).unwrap();
     let conflict = Descriptor {
+        source: None,
         bytes: state.descriptor.take().unwrap(),
         access: Zeroizing::new("cd".repeat(32)),
         metadata: metadata(),

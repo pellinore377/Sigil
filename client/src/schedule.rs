@@ -142,20 +142,29 @@ pub(super) fn clock() -> Result<u64, Error> {
 fn network_error(step: &SyncStep) -> Option<&network::Error> {
     let error = match step.failure.as_ref()? {
         SyncFailure::Receive(e)
+        | SyncFailure::Calls(e)
         | SyncFailure::Acknowledge(e)
         | SyncFailure::Prekeys(e)
         | SyncFailure::Recovery(e)
         | SyncFailure::Outbound(e)
         | SyncFailure::GroupOutbound(e)
+        | SyncFailure::Groups(e)
+        | SyncFailure::Invitations(e)
+        | SyncFailure::History(e)
         | SyncFailure::SendIntents(e)
         | SyncFailure::RetryControls(e)
         | SyncFailure::Maintenance(e)
+        | SyncFailure::Conversations(e)
         | SyncFailure::Structured(e) => Some(e),
         SyncFailure::PrekeyNetwork(i) => step.prekeys.get(*i)?.result.as_ref().err(),
+        SyncFailure::CallNetwork(i) => step.calls.get(*i)?.result.as_ref().err(),
         SyncFailure::PrekeySupplyNetwork => step.prekey_supply.as_ref()?.as_ref().err(),
         SyncFailure::RecoveryNetwork(i) => step.retries.get(*i)?.result.as_ref().err(),
         SyncFailure::OutboundNetwork(i) => step.outbound.get(*i)?.result.as_ref().err(),
         SyncFailure::GroupOutboundNetwork(i) => step.group_outbound.get(*i)?.result.as_ref().err(),
+        SyncFailure::GroupNetwork(i) => step.groups.get(*i)?.result.as_ref().err(),
+        SyncFailure::InvitationNetwork(i) => step.invitations.get(*i)?.result.as_ref().err(),
+        SyncFailure::HistoryNetwork(i) => step.history.get(*i)?.result.as_ref().err(),
         SyncFailure::SendIntentNetwork(i) => step.sends.get(*i)?.result.as_ref().err(),
         SyncFailure::RetryControlNetwork(i) => step.retry_controls.get(*i)?.result.as_ref().err(),
     }?;

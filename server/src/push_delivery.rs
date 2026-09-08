@@ -175,7 +175,12 @@ impl Store {
                 }
             }
             Outcome::Retry { not_before, .. } => {
-                let delay = (5u64 << job.attempts.min(10)).min(3600);
+                let base = if delivery.global_backoff && job.fcm() {
+                    60u64
+                } else {
+                    5
+                };
+                let delay = (base << job.attempts.min(10)).min(3600);
                 let mut random = [0u8; 2];
                 getrandom::fill(&mut random).map_err(|_| StoreError::InvalidData)?;
                 let jitter = u16::from_be_bytes(random) as u64 % (delay / 4 + 1);

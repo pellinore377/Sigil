@@ -1,5 +1,4 @@
-//! Experimental ordinary-retention text/file events inside authenticated encryption.
-//! Full SigilText, retention modes and compatibility negotiation remain unfinished.
+//! Canonical application frames inside authenticated direct/group encryption.
 const PREFIX: &[u8; 8] = b"SGEV\0\x01\0\0";
 const HEADER: usize = 150;
 pub const MAX_TEXT: usize = crate::initial::MAX_PLAINTEXT - HEADER;

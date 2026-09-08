@@ -48,6 +48,73 @@ fn recovery(client: &mut ClientStore) {
         .configure_recovery(&own.server, own.account, Secret32::from_bytes([7; 32]))
         .unwrap();
 }
+
+#[test]
+fn erased_group_journals_keep_delivery_receipts_and_reject_revival() {
+    use sigil_protocol::conversation::{Action, Body, Reference};
+    let (_dir, _fixture, mut a, mut b, now) = crate::claims::tests::pair();
+    let authority = IdentityKey::generate().unwrap();
+    let (group, peer) = setup(&mut a, &mut b, &authority, now);
+    distribution(&mut a, &mut b, group, peer, now);
+    let post = a
+        .conversation_operation(
+            [251; 32],
+            Action::Post {
+                body: Body::Text("synthetic group erasure".into()),
+                reply: None,
+                thread: None,
+                expires_at: None,
+                view_once: false,
+            },
+        )
+        .unwrap();
+    a.queue_group_operation(group, &post, now, now).unwrap();
+    for sent in a.resume_group_outbound_online(now).unwrap() {
+        sent.result.unwrap();
+    }
+    for incoming in b.receive_mailbox_online(now).unwrap() {
+        incoming.result.unwrap();
+    }
+    b.acknowledge_incoming_online().unwrap();
+    let author = a.account_reference().unwrap();
+    let delete = a
+        .conversation_operation(
+            [252; 32],
+            Action::Delete {
+                target: Reference {
+                    author,
+                    message: post.id,
+                },
+            },
+        )
+        .unwrap();
+    a.queue_group_operation(group, &delete, now, now).unwrap();
+    for sent in a.resume_group_outbound_online(now).unwrap() {
+        sent.result.unwrap();
+    }
+    for incoming in b.receive_mailbox_online(now).unwrap() {
+        incoming.result.unwrap();
+    }
+    b.acknowledge_incoming_online().unwrap();
+    for c in [&mut a, &mut b] {
+        c.maintain_history(now).unwrap();
+        assert!(c.erase_obsolete_journals(now).unwrap().erased > 0);
+        assert!(
+            c.conversation_message(
+                group,
+                Reference {
+                    author,
+                    message: post.id
+                },
+                now
+            )
+            .unwrap()
+            .deleted
+        );
+    }
+    assert!(a.queue_group_operation(group, &post, now, now).is_err());
+    assert_eq!(a.resume_group_outbound_online(now).unwrap().len(), 0);
+}
 fn distribution(alice: &mut ClientStore, bob: &mut ClientStore, group: Id, b: Id, now: u64) {
     alice.prepare_group_distribution(group, b, now).unwrap();
     alice.send_pending_online([3; 32], now).unwrap();
@@ -81,6 +148,69 @@ fn fingerprint_id(client: &ClientStore, peer: Id) -> Id {
     peers::known(&client.db, &client.key, &peer)
         .unwrap()
         .fingerprint
+}
+
+#[test]
+fn closing_group_stops_location_sampling_after_restart() {
+    use sigil_protocol::text::{
+        action::Reference,
+        location::{Duration, Point},
+        service::Coordinates,
+        Text,
+    };
+    let (dir, _fixture, mut alice, mut bob, now) = crate::claims::tests::pair();
+    let authority = IdentityKey::generate().unwrap();
+    let (group, b) = setup(&mut alice, &mut bob, &authority, now);
+    distribution(&mut alice, &mut bob, group, b, now);
+    let point = Point {
+        coordinates: Coordinates {
+            latitude_e6: 1,
+            longitude_e6: 2,
+        },
+        accuracy_cm: Some(100),
+        sampled_at: now,
+    };
+    let card = alice
+        .location_card(
+            [119; 32],
+            crate::LocationKind::Live(Duration::Hour),
+            point.clone(),
+            Text::plain("Synthetic location", Default::default()).unwrap(),
+            now,
+        )
+        .unwrap();
+    let reference = Reference::of(&card).unwrap();
+    alice.queue_group_card(group, &card, now).unwrap();
+    assert_eq!(alice.location_jobs(None, now).unwrap().jobs.len(), 1);
+    let before = alice.group_status(group).unwrap().state;
+    let proposal = alice.prepare_group_change(group, Change::Close).unwrap();
+    let receipt = crate::groups::Receipt::sign(
+        group,
+        before.head(),
+        before.proposal_from_bytes(&proposal).unwrap().head(),
+        before.revision() + 1,
+        &authority,
+    )
+    .unwrap()
+    .to_bytes();
+    alice
+        .commit_group_proposal(group, &proposal, &receipt)
+        .unwrap();
+    let jobs = alice.location_jobs(None, now + 1).unwrap();
+    assert!(jobs.jobs.is_empty());
+    assert_eq!(jobs.stops.len(), 1);
+    drop(alice);
+    let mut alice = open(&dir.path().join("alice.db"));
+    assert!(alice.location_jobs(None, now + 2).unwrap().jobs.is_empty());
+    assert_eq!(alice.location_jobs(None, now + 2).unwrap().stops.len(), 1);
+    let point = Point {
+        sampled_at: now + 20,
+        ..point
+    };
+    assert!(matches!(
+        alice.update_location(group, reference, point, now + 20),
+        Err(Error::Obsolete)
+    ));
 }
 
 #[test]
@@ -681,7 +811,7 @@ fn maximum_text_migrates_and_pending_capacity_is_reusable_without_counter_reset(
             .db
             .query_row("PRAGMA user_version", [], |r| r.get::<_, u32>(0))
             .unwrap(),
-        55
+        68
     );
     let max = "x".repeat(GroupText::MAX_BODY);
     alice
@@ -988,6 +1118,7 @@ fn group_cards_reject_authenticated_creator_forgery_then_accept_valid_skipped_co
     keys::save_sender(&tx, &alice.key, &a, &sender, true, None).unwrap();
     tx.commit().unwrap();
     let delivery = sigil_protocol::mailbox::Delivery {
+        origin: None,
         sequence: 400,
         sender_device: alice.connection_session().unwrap().unwrap().device_id,
         message_id: transport::hex(&transport_id(
@@ -1017,7 +1148,7 @@ fn group_cards_reject_authenticated_creator_forgery_then_accept_valid_skipped_co
     );
     let incoming = bob.accept_group_delivery(&next(&bob)).unwrap();
     let event = incoming.event().unwrap();
-    assert!(event.content.card().unwrap() == card);
+    assert!(event.content.card().unwrap() == *card);
     let id = group_event_history_id(&event);
     for client in [&alice, &bob] {
         let sigil_crypto::recovery::Content::Rich(bytes) =
@@ -1025,7 +1156,7 @@ fn group_cards_reject_authenticated_creator_forgery_then_accept_valid_skipped_co
         else {
             panic!()
         };
-        assert!(sigil_protocol::text::structured::Card::from_bytes(&bytes).unwrap() == card);
+        assert!(sigil_protocol::text::structured::Card::from_bytes(&bytes).unwrap() == *card);
     }
 }
 
@@ -1080,7 +1211,7 @@ fn group_list_actions(mode: u8) {
     crate::test_schema::rewind(&bob.db, 51);
     drop(bob);
     let mut bob = open(&dir.path().join("bob.db"));
-    assert!(bob.card_state(group, reference).unwrap().card == card);
+    assert!(bob.card_state(group, reference).unwrap().card == *card);
     let Construct::Checklist(list) = &card.content else {
         panic!()
     };
@@ -1089,6 +1220,7 @@ fn group_list_actions(mode: u8) {
         actor: alice.account_reference().unwrap(),
         created_at: now,
         previous: None,
+        revision: None,
         change: if mode == 2 {
             Change::RecurringCheck {
                 item: list.items[0].id,
@@ -1188,6 +1320,7 @@ fn group_list_actions(mode: u8) {
     let packet = sender.seal(message, &bytes).unwrap();
     tx.commit().unwrap();
     let forged = sigil_protocol::mailbox::Delivery {
+        origin: None,
         sequence: 999,
         sender_device: alice.connection_session().unwrap().unwrap().device_id,
         message_id: transport::hex(&transport_id(
@@ -1204,4 +1337,124 @@ fn group_list_actions(mode: u8) {
         Err(Error::InvalidEvent)
     ));
     assert_eq!(checkpoint(&bob, "group_receivers"), before);
+}
+
+#[test]
+fn conversation_operations_use_group_authentication_and_atomic_sender_keys() {
+    use crate::conversations::{Action, Body, Reference};
+    let (_dir, _fixture, mut alice, mut bob, now) = crate::claims::tests::pair();
+    let authority = IdentityKey::generate().unwrap();
+    let (group, b) = setup(&mut alice, &mut bob, &authority, now);
+    let (a, _) = trust(&mut alice, &mut bob);
+    distribution(&mut alice, &mut bob, group, b, now);
+    bob.prepare_group_distribution(group, a, now).unwrap();
+    for _ in 0..2 {
+        for sent in bob.resume_outbound_online(now).unwrap() {
+            assert!(sent.result.is_ok());
+        }
+    }
+    for received in alice.receive_mailbox_online(now).unwrap() {
+        assert!(received.result.is_ok());
+    }
+    alice.acknowledge_incoming_online().unwrap();
+    let author = crate::event::account(
+        &peers::parse(&alice.own_device_binding().unwrap())
+            .unwrap()
+            .binding,
+    );
+    let target = Reference {
+        author,
+        message: [200; 32],
+    };
+    let op = alice
+        .conversation_operation(
+            [200; 32],
+            Action::Post {
+                body: Body::Text("group root".into()),
+                reply: None,
+                thread: None,
+                expires_at: None,
+                view_once: false,
+            },
+        )
+        .unwrap();
+    alice.queue_group_operation(group, &op, now, now).unwrap();
+    assert!(alice.resume_group_outbound_online(now).unwrap()[0]
+        .result
+        .is_ok());
+    let delivery = next(&bob);
+    let before = checkpoint(&bob, "group_receivers");
+    bob.db.execute_batch("CREATE TRIGGER fail_conversation BEFORE INSERT ON conversation_ops BEGIN SELECT RAISE(ABORT,'synthetic failure'); END;").unwrap();
+    assert!(bob.accept_group_delivery(&delivery).is_err());
+    assert_eq!(checkpoint(&bob, "group_receivers"), before);
+    bob.db
+        .execute_batch("DROP TRIGGER fail_conversation;")
+        .unwrap();
+    bob.accept_group_delivery(&delivery).unwrap();
+    bob.acknowledge_incoming_online().unwrap();
+    for (n, action) in [
+        (
+            201,
+            Action::Pin {
+                target: target.clone(),
+                active: true,
+            },
+        ),
+        (
+            202,
+            Action::Reaction {
+                target: target.clone(),
+                emoji: "🖋️".into(),
+                active: true,
+            },
+        ),
+        (
+            203,
+            Action::Receipt {
+                target: target.clone(),
+                read: true,
+            },
+        ),
+    ] {
+        let op = bob.conversation_operation([n; 32], action).unwrap();
+        bob.queue_group_operation(group, &op, now, now).unwrap();
+        for _ in 0..2 {
+            bob.resume_group_outbound_online(now).unwrap();
+        }
+        for e in alice.receive_mailbox_online(now).unwrap() {
+            assert!(matches!(e.result, Ok(crate::MailboxEvent::Conversation)));
+        }
+        alice.acknowledge_incoming_online().unwrap();
+    }
+    let view = alice
+        .conversation_message(group, target.clone(), now)
+        .unwrap();
+    assert!(view.pinned);
+    assert_eq!(view.reactions.len(), 1);
+    assert_eq!(view.read.len(), 1);
+    let op = alice
+        .conversation_operation(
+            [204; 32],
+            Action::Delete {
+                target: target.clone(),
+            },
+        )
+        .unwrap();
+    alice.queue_group_operation(group, &op, now, now).unwrap();
+    for _ in 0..2 {
+        alice.resume_group_outbound_online(now).unwrap();
+    }
+    for e in bob.receive_mailbox_online(now).unwrap() {
+        assert!(e.result.is_ok());
+    }
+    bob.acknowledge_incoming_online().unwrap();
+    assert!(
+        bob.conversation_message(group, target, now)
+            .unwrap()
+            .deleted
+    );
+    assert!(matches!(
+        bob.group_message(group, fingerprint(&alice), [200; 32]),
+        Err(Error::Obsolete)
+    ));
 }

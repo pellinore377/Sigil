@@ -60,7 +60,37 @@ pub enum Content {
     /// Canonical SGFC retained file descriptor/metadata, never live ratchet state.
     File(Zeroizing<Vec<u8>>),
     Rich(Zeroizing<Vec<u8>>),
+    Conversation(Zeroizing<Vec<u8>>),
+    /// Independently encrypted media owned by this recovery account.
+    Media {
+        record: Id,
+        original: Id,
+        file: Zeroizing<Vec<u8>>,
+    },
+    /// Remote retention expiry. Existing local history remains usable.
+    Omitted,
+    Redacted {
+        snapshot: Zeroizing<Vec<u8>>,
+        original: Id,
+    },
+    HistoryLink {
+        record: Id,
+        author: Id,
+        message: Id,
+    },
     Deleted,
+}
+
+fn validate_redacted(bytes: &[u8]) -> Result<(), Error> {
+    use sigil_protocol::conversation::{Action, Body, Snapshot};
+    let snapshot = Snapshot::from_bytes(bytes).map_err(|_| Error::Encoding)?;
+    if matches!(&snapshot.operation.action,
+        Action::Post { body: Body::Text(text), .. } | Action::Edit { body: Body::Text(text), .. } if text == " ")
+    {
+        Ok(())
+    } else {
+        Err(Error::Encoding)
+    }
 }
 
 pub struct Record {
@@ -210,6 +240,39 @@ impl RecoveryKey {
             Direction::Outgoing => 1,
         })?;
         match &record.content {
+            Content::Redacted { snapshot, original } => {
+                validate_redacted(snapshot)?;
+                out.u8(8)?;
+                out.put(original)?;
+                out.blob(snapshot)?;
+            }
+            Content::HistoryLink {
+                record,
+                author,
+                message,
+            } => {
+                out.u8(7)?;
+                out.put(record)?;
+                out.put(author)?;
+                out.put(message)?;
+            }
+            Content::Media {
+                record,
+                original,
+                file,
+            } => {
+                sigil_protocol::file::File::from_bytes(file).map_err(|_| Error::Encoding)?;
+                out.u8(5)?;
+                out.put(record)?;
+                out.put(original)?;
+                out.blob(file)?;
+            }
+            Content::Conversation(bytes) => {
+                sigil_protocol::conversation::Snapshot::from_bytes(bytes)
+                    .map_err(|_| Error::Encoding)?;
+                out.u8(4)?;
+                out.blob(bytes)?;
+            }
             Content::Retained(bytes) => {
                 if bytes.len() > MAX_PLAINTEXT {
                     return Err(Error::Limit);
@@ -218,6 +281,7 @@ impl RecoveryKey {
                 out.blob(bytes)?;
             }
             Content::Deleted => out.u8(1)?,
+            Content::Omitted => out.u8(6)?,
             Content::File(bytes) => {
                 sigil_protocol::file::File::from_bytes(bytes).map_err(|_| Error::Encoding)?;
                 out.u8(2)?;
@@ -263,8 +327,40 @@ impl RecoveryKey {
             _ => return Err(Error::Encoding),
         };
         let content = match input.u8()? {
+            8 => {
+                let original = input.take()?;
+                let snapshot = input.blob(sigil_protocol::conversation::MAX_SNAPSHOT)?;
+                validate_redacted(snapshot)?;
+                Content::Redacted {
+                    snapshot: Zeroizing::new(snapshot.to_vec()),
+                    original,
+                }
+            }
+            7 => Content::HistoryLink {
+                record: input.take()?,
+                author: input.take()?,
+                message: input.take()?,
+            },
+            5 => {
+                let record = input.take()?;
+                let original = input.take()?;
+                let bytes = input.blob(sigil_protocol::file::MAX_CONTENT)?;
+                sigil_protocol::file::File::from_bytes(bytes).map_err(|_| Error::Encoding)?;
+                Content::Media {
+                    record,
+                    original,
+                    file: Zeroizing::new(bytes.to_vec()),
+                }
+            }
+            4 => {
+                let bytes = input.blob(sigil_protocol::conversation::MAX_SNAPSHOT)?;
+                sigil_protocol::conversation::Snapshot::from_bytes(bytes)
+                    .map_err(|_| Error::Encoding)?;
+                Content::Conversation(Zeroizing::new(bytes.to_vec()))
+            }
             0 => Content::Retained(Zeroizing::new(input.blob(MAX_PLAINTEXT)?.to_vec())),
             1 => Content::Deleted,
+            6 => Content::Omitted,
             2 => {
                 let bytes = input.blob(sigil_protocol::file::MAX_CONTENT)?;
                 sigil_protocol::file::File::from_bytes(bytes).map_err(|_| Error::Encoding)?;
@@ -500,7 +596,7 @@ mod tests {
             panic!("lost structured history kind")
         };
         assert_eq!(*restored, bytes);
-        assert!(sigil_protocol::text::structured::Card::from_bytes(&restored).unwrap() == card);
+        assert!(sigil_protocol::text::structured::Card::from_bytes(&restored).unwrap() == *card);
     }
     #[test]
     fn retained_file_keys_are_typed_and_strict_without_reinterpreting_text() {

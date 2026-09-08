@@ -45,7 +45,7 @@ pub(crate) fn open(path: &Path, bytes: u64) -> Result<Connection, Error> {
     let db = Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_WRITE)?;
     db.busy_timeout(Duration::from_secs(5))?;
     db.execute_batch(
-        "PRAGMA foreign_keys=ON; PRAGMA trusted_schema=OFF; PRAGMA synchronous=FULL;",
+        "PRAGMA foreign_keys=ON; PRAGMA trusted_schema=OFF; PRAGMA synchronous=EXTRA; PRAGMA secure_delete=ON;",
     )?;
     db.set_db_config(rusqlite::config::DbConfig::SQLITE_DBCONFIG_DEFENSIVE, true)?;
     let page_size: i64 = db.query_row("PRAGMA page_size", [], |r| r.get(0))?;
@@ -58,4 +58,20 @@ pub(crate) fn open(path: &Path, bytes: u64) -> Result<Connection, Error> {
         return Err(Error::Limit);
     }
     Ok(db)
+}
+
+pub(crate) const MIGRATION: &str = "CREATE TABLE IF NOT EXISTS storage_cleanup(id INTEGER PRIMARY KEY CHECK(id=1),pending INTEGER NOT NULL CHECK(pending IN(0,1))); INSERT INTO storage_cleanup VALUES(1,1) ON CONFLICT(id) DO UPDATE SET pending=1;";
+
+pub(crate) fn finish(db: &Connection) -> Result<(), Error> {
+    let mode: String = db.query_row("PRAGMA journal_mode=DELETE", [], |r| r.get(0))?;
+    if mode != "delete" {
+        return Err(Error::InvalidStore);
+    }
+    if db.query_row("SELECT pending FROM storage_cleanup WHERE id=1", [], |r| {
+        r.get::<_, bool>(0)
+    })? {
+        // Retry after interruption; older free pages may predate secure_delete.
+        db.execute_batch("VACUUM; UPDATE storage_cleanup SET pending=0 WHERE id=1;")?;
+    }
+    Ok(())
 }

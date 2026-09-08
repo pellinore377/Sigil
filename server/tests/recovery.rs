@@ -42,6 +42,33 @@ fn setup(path: &std::path::Path) -> (Store, String, String) {
 fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
+
+#[test]
+fn account_storage_reports_only_owned_usage_and_warning_thresholds() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut store, alice, bob) = setup(&dir.path().join("server.db"));
+    assert!(matches!(
+        store.account_storage(&random_secret().unwrap(), NOW),
+        Err(StoreError::Unauthorized)
+    ));
+    let before = store.account_storage(&alice, NOW).unwrap();
+    assert_eq!(before.quota_bytes, 1048576);
+    assert!(!before.nearly_full());
+    let other = store.account_storage(&bob, NOW).unwrap();
+    put(&mut store, &alice, 19, 50000);
+    let after = store.account_storage(&alice, NOW).unwrap();
+    assert_eq!(after.used_bytes, before.used_bytes + 50000);
+    assert_eq!(after.recovery_objects, before.recovery_objects + 1);
+    assert_eq!(store.account_storage(&bob, NOW).unwrap(), other);
+    let mut status = after;
+    status.used_bytes = status.quota_bytes * 9 / 10 + 1;
+    assert!(status.nearly_full() && !status.full());
+    status.used_bytes = status.quota_bytes;
+    assert!(status.full());
+    status.used_bytes = 0;
+    status.recovery_objects = status.recovery_object_limit;
+    assert!(status.full() && status.nearly_full());
+}
 fn object(byte: u8, length: usize) -> (String, PutObject) {
     let bytes = vec![byte; length];
     (

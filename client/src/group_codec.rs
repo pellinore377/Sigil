@@ -7,20 +7,20 @@ const PROPOSAL: &[u8; 8] = b"SGGP\0\x01\0\0";
 pub const MAX_PROPOSAL_BYTES: usize = 160 * 1024;
 pub(super) const MAX_CHECKPOINT_BYTES: usize = 560 * 1024;
 
-struct Reader<'a>(&'a [u8]);
+pub(super) struct Reader<'a>(pub(super) &'a [u8]);
 impl<'a> Reader<'a> {
-    fn take(&mut self, size: usize) -> Result<&'a [u8], Error> {
+    pub(super) fn take(&mut self, size: usize) -> Result<&'a [u8], Error> {
         let (value, rest) = self.0.split_at_checked(size).ok_or(Error::InvalidEvent)?;
         self.0 = rest;
         Ok(value)
     }
-    fn array<const N: usize>(&mut self) -> Result<[u8; N], Error> {
+    pub(super) fn array<const N: usize>(&mut self) -> Result<[u8; N], Error> {
         self.take(N)?.try_into().map_err(|_| Error::InvalidEvent)
     }
     fn byte(&mut self) -> Result<u8, Error> {
         Ok(self.array::<1>()?[0])
     }
-    fn count(&mut self, max: usize) -> Result<usize, Error> {
+    pub(super) fn count(&mut self, max: usize) -> Result<usize, Error> {
         let count = u16::from_be_bytes(self.array()?) as usize;
         if count > max {
             return Err(Error::Limit);
@@ -31,7 +31,7 @@ impl<'a> Reader<'a> {
         let size = self.count(sigil_protocol::device::MAX_BYTES)?;
         Ok(self.take(size)?.to_vec())
     }
-    fn role(&mut self) -> Result<Role, Error> {
+    pub(super) fn role(&mut self) -> Result<Role, Error> {
         match self.byte()? {
             0 => Ok(Role::Member),
             1 => Ok(Role::Admin),
@@ -281,6 +281,14 @@ impl Genesis {
     }
     /// Checks the pinned creator and all signatures before returning any state.
     pub fn from_bytes(bytes: &[u8], expected_creator: Id) -> Result<Self, Error> {
+        Self::decode(bytes, Some(expected_creator))
+    }
+    /// An independently verified inviter must authenticate the whole context
+    /// before this self-signed genesis can establish a group's identity.
+    pub(super) fn from_invitation(bytes: &[u8]) -> Result<Self, Error> {
+        Self::decode(bytes, None)
+    }
+    fn decode(bytes: &[u8], expected_creator: Option<Id>) -> Result<Self, Error> {
         if bytes.len() > 682 {
             return Err(Error::Limit);
         }
@@ -302,7 +310,7 @@ impl Genesis {
             creator,
             signature,
         };
-        genesis.accept(expected_creator)?;
+        genesis.accept(expected_creator.unwrap_or(genesis.creator))?;
         Ok(genesis)
     }
 }

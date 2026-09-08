@@ -1,7 +1,5 @@
 # Device linking, profile 1
 
-The backend and shared Rust client implement an experimental, durable linking flow. This is a Sigil protocol, not Signal interoperability or an independently audited protocol. The native capability is `device_link: [1]`; production camera, QR rendering and confirmation screens remain part of the paused UI work.
-
 ## Trust and user interaction
 
 Linking uses three direct, physical QR scans between the intended devices:
@@ -43,30 +41,15 @@ This provisioning channel is classical. It carries public bindings and consent s
 
 A complete proof has an exact bounded encoding: `SGLP 00 01 00 00`, transcript, two u16-length-prefixed signed bindings and two 64-byte signatures, at most 1,380 bytes. Parsing rejects truncation, malformed fields and trailing bytes.
 
-## Persistence and retries
 
-Native schema 42 retains the sealed link journal within the configurable database-page budget; there is no 256-record lifetime limit. Records remain bound to the installation and record purpose, including cancelled attempts and consent tombstones. Each sealed record is bounded to 32,768 bytes. Exhausted storage rejects new state without deleting replay evidence; raising the budget does not reset identities. Valid old client database snapshots remain outside universal rollback detection guarantees. See [SessionsDevices.md](SessionsDevices.md) for storage and turnover acceptance.
+## Durable authorization
 
-Offers, prospective bindings, challenges, exact encrypted QR frames and randomized signatures commit before exposure. Reusing an attempt with changed fields fails. Expiry cannot be renewed by retry. The joining installation pins one proposal per attempt. Confirmation methods require the exact independently checked digest.
+Freeze offers, challenges, encrypted frames and signatures before exposure. An attempt cannot change fields or extend expiry. The joining installation pins one proposal. Confirmation requires the full independently checked digest.
 
-The sponsor saves its proof before the network request, then commits the server receipt and verified joining peer atomically. The joining installation commits its connection, own signed binding, verified sponsor and completion state atomically. Lost local commits after server success recover using the same proof and credential, including after the original approval deadline: this recovers an already committed authorization and does not create a late grant. Completed cached receipts report past acceptance, not current authorization.
+The sponsor persists its proof before HTTPS; receipt and verified peer commit atomically. Joining connection/binding/trust/completion also share a transaction. Exact retries can recover already committed authorization after expiry but cannot create a late grant or revive revoked credentials.
 
-Provisioning secrets are logically removed after completion or cancellation. SQLite/WAL/filesystem snapshots can retain old ciphertext; this does not establish physical key erasure.
+`POST /client/v0/device-links` requires a live sponsor, matching published binding, both consents, account scope, distinct target keys/device and one-use challenges. `GET /client/v0/device-link` retrieves the joining proof. `DELETE /client/v0/device-links/{challenge}` durably cancels the sponsor-scoped challenge and revokes an already created device. Cancellation wins either ordering against authorization.
 
-## Server authorization and cancellation
+Link/cancellation proofs remain within storage quota; 256 active devices per account is not a lifetime link limit. Restore retains proofs while revoking credentials. Sponsor cancellation blocks local work before retrying remote revocation; joining cancellation cannot retract a signature already sent.
 
-Server schema 12 implements:
-
-- `POST /client/v0/device-links`: requires a live, enabled-account sponsor, its published matching signed binding and both valid consents. Checks account scope, new target identity/device, credential uniqueness, one-use sponsor/joining challenges and the 256-active-device account bound. Revoked/expired devices use storage rather than active slots. Device authorization, identity, binding, proof ledger and storage reservation commit together.
-- `GET /client/v0/device-link`: returns the authenticated joining device's proof.
-- `DELETE /client/v0/device-links/{challenge}`: durably cancels a sponsor-scoped challenge and revokes any device already created by it. Transactional ordering makes cancellation win either side of a race with authorization. Cancelled challenges remain retained within the account storage quota, without a 256-attempt lifetime limit.
-
-Exact authorization retries return the existing live target without renewing expiry, changing its credential or reviving revocation. Restore retains proof/cancellation ledgers while revoking credentials, so replay cannot revive a pre-restore grant. Routes retain native-only Origin policy, request bounds and existing authentication/rate limits.
-
-`cancel_sponsored_link_online` commits local cancellation, removes its provisioning secret and blocks any known child peer before attempting remote cancellation. An ambiguous network failure requires retry; local intent survives restart. Joining-side cancellation stops local completion and erases its pending secret, but cannot retract a signature already transmitted; remote grant cancellation belongs to the authenticated sponsor.
-
-`accept_linked_peer` permits a contact to accept a live, complete endorsement only from an already verified exact sponsor binding. An expired endorsement first encountered by an offline contact requires fresh endorsement or independent fingerprint verification. Server inventory alone never supplies encryption trust. Distributed device-roster synchronization and general fan-out remain separate work.
-
-## Acceptance
-
-Regression tests cover independent keys, three-step QR exchange, restart after every step, exact bytes, changed/malformed/expired proposals, incorrect confirmations, cross-attempt substitution, AEAD tampering, transaction rollback, ambiguous server success, fresh encrypted messages in both directions, forged proofs, wrong accounts, exact retry after expiry, revocation, cancellation/authorization races and server restore. These are implementation acceptance tests, not an independent security audit.
+A contact may accept an endorsement only from its already verified exact sponsor. Server inventory never transfers trust. Completion/cancellation removes provisioning secrets from live storage; [physical erasure limits](Security.md#erasure) still apply.

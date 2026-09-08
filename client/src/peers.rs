@@ -17,6 +17,12 @@ pub(super) fn verified(db: &Connection, key: &StorageKey, id: &Id) -> Result<Pee
 pub(super) fn known(db: &Connection, key: &StorageKey, id: &Id) -> Result<Peer, Error> {
     load(db, key, id)?.public()
 }
+pub(super) fn statement(db: &Connection, key: &StorageKey, id: &Id) -> Result<Vec<u8>, Error> {
+    load(db, key, id)?
+        .signed
+        .to_bytes()
+        .map_err(|_| Error::InvalidStore)
+}
 
 pub(crate) const MIGRATION: &str = "
 CREATE TABLE own_device_binding(id INTEGER PRIMARY KEY CHECK(id=1), state BLOB NOT NULL);
@@ -300,12 +306,6 @@ impl ClientStore {
     /// quarantined; replaying the original cannot clear the warning or transfer trust.
     pub fn observe_peer_binding(&mut self, bytes: &[u8]) -> Result<Peer, Error> {
         let signed = parse(bytes)?;
-        let own = self.connection_session()?.ok_or(Error::Unprepared)?;
-        if own.address.rsplit_once(':').map(|(_, server)| server)
-            != Some(signed.binding.server.as_str())
-        {
-            return Err(Error::UnsupportedSession);
-        }
         let id = peer_id(&signed.binding);
         let tx = self
             .db
@@ -432,7 +432,7 @@ impl ClientStore {
             request,
             record.signed.binding.device,
             record.signed.binding.identity,
-            Some(peer),
+            (Some(peer), None),
         )?;
         tx.commit()?;
         Ok(())
@@ -482,9 +482,6 @@ pub(super) fn block(
     let mut record = load(tx, key, id)?;
     record.blocked = blocked;
     save(tx, key, id, &record)
-}
-pub(super) fn identity(db: &Connection, key: &StorageKey, peer: &Id) -> Result<Id, Error> {
-    Ok(verified(db, key, peer)?.binding.identity)
 }
 pub(super) fn bind_session(
     tx: &Transaction<'_>,

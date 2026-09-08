@@ -1,5 +1,63 @@
 /// Reconstruct historical schemas from a fresh current synthetic database.
 pub fn rewind(db: &rusqlite::Connection, version: u32) {
+    if version < 67 {
+        db.execute_batch("DROP TABLE call_cursor; DROP TABLE call_jobs; DROP TABLE calls;")
+            .unwrap();
+    }
+    if version < 66 {
+        db.execute_batch("DROP TABLE service_queries;").unwrap();
+    }
+    if version < 65 {
+        db.execute_batch("DROP TABLE location_jobs;").unwrap();
+    }
+    if version < 64 {
+        db.execute_batch("DROP TABLE structured_alarm_cursor; DROP TABLE structured_alarms;")
+            .unwrap();
+        db.execute_batch("DROP TABLE structured_closed_pages; DROP TABLE structured_closed_voters; DROP TABLE structured_closed_totals; DROP TABLE structured_close_drafts; DROP TABLE structured_close_parts; DROP TABLE structured_close_tree;").unwrap();
+        db.execute_batch("DROP TABLE structured_dependencies; DROP TABLE structured_origins; DROP TABLE structured_drafts;
+ALTER TABLE structured_sources RENAME TO structured_sources_new;
+DROP INDEX structured_sources_card;
+CREATE TABLE structured_sources(record BLOB PRIMARY KEY,card BLOB NOT NULL REFERENCES structured_cards(id),live INTEGER NOT NULL CHECK(live IN(0,1)),content BLOB NOT NULL);
+INSERT INTO structured_sources SELECT * FROM structured_sources_new;
+DROP TABLE structured_sources_new;
+CREATE INDEX structured_sources_card ON structured_sources(card,live);").unwrap();
+    }
+    if version < 63 {
+        db.execute_batch("DROP TABLE conversation_archive_refs;")
+            .unwrap();
+        db.execute_batch("DROP TABLE archive_lifecycle; DROP TABLE archive_protected; DROP TABLE archive_remote; DROP TABLE archive_garbage; DROP TABLE archive_local; DROP TABLE archive_media_garbage; DROP TABLE archive_media_removed; DROP TABLE conversation_removed; DROP TABLE conversation_cleanup;").unwrap();
+    }
+    if version < 62 {
+        db.execute_batch(
+            "DROP TABLE conversation_receipts; DROP TABLE conversation_receipt_cursor;",
+        )
+        .unwrap();
+        db.execute_batch("DROP TABLE conversation_ops; DROP TABLE conversation_clock; DROP TABLE conversation_time; DROP TABLE conversation_operation_ids; DROP TABLE conversation_sync; DROP TABLE conversation_sync_deferred; DROP TABLE conversation_origins; DROP TABLE conversation_fragments; DROP TABLE conversation_cancelled;").unwrap();
+    }
+    if version < 61 {
+        db.execute_batch("DROP TABLE group_shared_history; DROP TABLE group_history_work;")
+            .unwrap();
+    }
+    if version < 60 {
+        db.execute_batch("DROP TABLE group_key_recovery;").unwrap();
+    }
+    if version < 59 {
+        db.execute_batch("DROP TABLE group_bootstrap;").unwrap();
+    }
+    if version < 58 {
+        db.execute_batch("DROP TABLE group_invitation_packets; DROP TABLE group_invitations;")
+            .unwrap();
+    }
+    if version < 57 {
+        db.execute_batch(
+            "DROP TABLE group_channels; DROP TABLE group_credentials; DROP TABLE group_work;",
+        )
+        .unwrap();
+    }
+    if version < 56 {
+        db.execute_batch("DROP TABLE group_envelopes; DROP TABLE group_routes;")
+            .unwrap();
+    }
     if version < 55 {
         db.execute_batch("DROP TABLE group_service_outbox; DROP TABLE group_service;")
             .unwrap();

@@ -303,13 +303,79 @@ fn membership_is_canonical_bounded_and_rejects_account_device_aliases() {
             Change::Add(alice.member(2, Role::Member))
         )
         .is_err());
-    // Reach the 256-member target with real signed bindings and approved joins.
+    // Exercise the full roster with independently signed device approvals.
     let mut full = state;
     for n in 2..=MAX_MEMBERS as u32 {
-        let device = Device::new(n, n);
-        full = add(&full, &alice, &device, n, Role::Member);
+        let devices = (0..4)
+            .map(|i| Device::new(n, n * 4 + i))
+            .collect::<Vec<_>>();
+        let member = Member::new(
+            id(n),
+            Role::Member,
+            &devices
+                .iter()
+                .map(|d| d.binding.clone())
+                .collect::<Vec<_>>(),
+        )
+        .unwrap();
+        let mut proposal = full
+            .propose(alice.fingerprint, Change::Add(member))
+            .unwrap();
+        alice.sign(&mut proposal);
+        for device in devices {
+            device.sign(&mut proposal);
+        }
+        full = full
+            .authorize(
+                &full
+                    .proposal_from_bytes(&proposal.to_bytes().unwrap())
+                    .unwrap(),
+            )
+            .unwrap();
+    }
+    for n in 2..=4 {
+        let device = Device::new(1, n);
+        let mut proposal = full
+            .propose(
+                alice.fingerprint,
+                Change::AddDevice {
+                    member: id(1),
+                    binding: device.binding.clone(),
+                },
+            )
+            .unwrap();
+        alice.sign(&mut proposal);
+        device.sign(&mut proposal);
+        full = full.authorize(&proposal).unwrap();
     }
     assert_eq!(full.members().len(), MAX_MEMBERS);
+    assert_eq!(
+        full.members()
+            .iter()
+            .map(|m| m.devices.len())
+            .sum::<usize>(),
+        MAX_DEVICES
+    );
+    let extra_device = Device::new(1, 9000);
+    assert!(matches!(
+        full.propose(
+            alice.fingerprint,
+            Change::AddDevice {
+                member: id(1),
+                binding: extra_device.binding
+            }
+        ),
+        Err(Error::Limit)
+    ));
+    let key = sigil_crypto::storage::StorageKey::new(sigil_crypto::Secret32::from_bytes([9; 32]))
+        .unwrap();
+    let bytes = full.checkpoint().unwrap();
+    let sealed = storage_record::seal_record(&key, &bytes, b"synthetic full roster").unwrap();
+    let restored = State::from_checkpoint(
+        &storage_record::open_record(&key, &sealed, b"synthetic full roster").unwrap(),
+    )
+    .unwrap();
+    assert_eq!(restored.head, full.head);
     let extra = Device::new(257, 257);
     assert!(matches!(
         full.propose(

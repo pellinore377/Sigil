@@ -78,6 +78,7 @@ pub(super) fn prepare(
         return Err(Error::Limit);
     }
     let state = State {
+        source: descriptor.source,
         file: file_key.shape().file,
         length: file_key.shape().length,
         phase: Phase::Downloading,
@@ -88,17 +89,20 @@ pub(super) fn prepare(
         expires_at: descriptor.expires_at,
         upload_deadline: None,
         managed,
+        recovery_parent: None,
     };
     state.validate()?;
     live(&state, now)?;
     match load(db, key, state.file) {
         Ok(mut prior) => {
             live(&prior, now)?;
-            if prior.descriptor != state.descriptor
+            if prior.source != state.source
+                || prior.descriptor != state.descriptor
                 || prior.access != state.access
                 || prior.metadata != state.metadata
                 || prior.expires_at != state.expires_at
-                || (prior.direction == Direction::Upload && prior.phase != Phase::Published)
+                || (prior.direction == Direction::Upload
+                    && !matches!(prior.phase, Phase::Published | Phase::Local))
             {
                 return Err(Error::Conflict);
             }
@@ -123,7 +127,7 @@ pub(super) fn completed(
     live(&state, now)?;
     if !matches!(
         state.phase,
-        Phase::Published | Phase::Complete | Phase::Restored
+        Phase::Published | Phase::Complete | Phase::Restored | Phase::Local
     ) {
         return Err(Error::Unprepared);
     }
@@ -207,7 +211,10 @@ impl ClientStore {
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
         let mut state = load(&tx, &cache.key, file)?;
         live(&state, now)?;
-        if matches!(state.phase, Phase::Complete | Phase::Published) {
+        if matches!(
+            state.phase,
+            Phase::Complete | Phase::Published | Phase::Local
+        ) {
             return Ok(DownloadStep::Complete);
         }
         if state.phase != Phase::Downloading {
@@ -232,7 +239,8 @@ impl ClientStore {
             finish(&tx, &cache.key, &mut state)?;
             DownloadStep::Complete
         } else {
-            let bytes = client.attachment_chunk(
+            let bytes = client.attachment_chunk_at(
+                state.source.as_deref(),
                 state.shape(),
                 index,
                 state.access.as_ref().ok_or(Error::InvalidStore)?,

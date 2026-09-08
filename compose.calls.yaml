@@ -1,0 +1,4 @@
+services:
+  sigil:
+    ports:
+      - "34780:34780/udp"

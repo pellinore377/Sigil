@@ -355,3 +355,37 @@ fn wire_effects_are_resolved_ordered_descriptors_with_theme_color_names() {
     )
     .is_err());
 }
+
+#[test]
+fn markdown_structure_survives_wire_roundtrip_without_raw_html() {
+    for (source, tags) in [
+        ("# Heading\n\nBody", vec!["<h1>Heading</h1>", "<p>Body</p>"]),
+        (
+            "3. First\n4. Second",
+            vec!["<ol start=\"3\">", "<li>First</li>"],
+        ),
+        (
+            "> Quote\n>\n> - Nested",
+            vec!["<blockquote>", "<ul>", "<li>Nested</li>"],
+        ),
+        (
+            "```rust\nlet x = 1;\n```",
+            vec!["<pre><code class=\"language-rust\">let x = 1;\n</code></pre>"],
+        ),
+    ] {
+        let text = parse(source, Default::default()).unwrap();
+        let html = text.html();
+        assert!(!html.contains("</li><br"), "{html}");
+        for tag in tags {
+            assert!(html.contains(tag), "{source}: {html}");
+        }
+        assert!(!text.blocks().is_empty());
+        assert!(Text::from_bytes(&text.to_bytes().unwrap()).unwrap() == text);
+        assert!(text.redact_range(0..0, Default::default()).unwrap() == text);
+    }
+    let text = parse("# <script>alert(1)</script>", Default::default()).unwrap();
+    assert!(!text.html().contains("<script>"));
+    let mut forged = text.blocks().to_vec();
+    forged[0].end = u32::MAX;
+    assert!(text.with_blocks(forged).is_err());
+}

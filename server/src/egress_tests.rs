@@ -38,12 +38,24 @@ impl axum::serve::Listener for Listener {
     }
 }
 pub(crate) struct Fixture {
+    ca: &'static [u8],
     pub(super) address: SocketAddr,
     stop: Option<tokio::sync::oneshot::Sender<()>>,
     worker: Option<std::thread::JoinHandle<()>>,
 }
 impl Fixture {
     pub(crate) fn new(router: Router) -> Self {
+        Self::start(router, CERT, KEY, CA)
+    }
+    pub(crate) fn local(router: Router) -> Self {
+        Self::start(
+            router,
+            include_bytes!("../tests/fixtures/provider-server.der"),
+            include_bytes!("../tests/fixtures/provider-key.der"),
+            include_bytes!("../tests/fixtures/provider-ca.der"),
+        )
+    }
+    fn start(router: Router, cert: &'static [u8], key: &'static [u8], ca: &'static [u8]) -> Self {
         let socket = TcpListener::bind("127.0.0.1:0").unwrap();
         socket.set_nonblocking(true).unwrap();
         let address = socket.local_addr().unwrap();
@@ -62,8 +74,8 @@ impl Fixture {
                 .unwrap()
                 .with_no_client_auth()
                 .with_single_cert(
-                    vec![CertificateDer::from(CERT.to_vec())],
-                    PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(KEY.to_vec())),
+                    vec![CertificateDer::from(cert.to_vec())],
+                    PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(key.to_vec())),
                 )
                 .unwrap();
                 let listener = Listener {
@@ -79,6 +91,7 @@ impl Fixture {
             });
         });
         Self {
+            ca,
             address,
             stop: Some(stop),
             worker: Some(worker),
@@ -92,7 +105,7 @@ impl Fixture {
             host: host.into(),
             port: self.address.port(),
             networks: vec!["127.0.0.1/32".into()],
-            root_ca: Some(CA.to_vec()),
+            root_ca: Some(self.ca.to_vec()),
         }
     }
     pub(crate) fn uri(&self, host: &str, path: &str) -> String {
@@ -343,4 +356,41 @@ fn timed_out_dns_jobs_keep_their_capacity_until_the_actual_lookup_finishes() {
         assert!(Instant::now() < deadline);
         std::thread::sleep(Duration::from_millis(5));
     }
+}
+
+#[test]
+fn only_lookup_responses_receive_the_bounded_chunk_body_allowance() {
+    let _serial = NETWORK.lock().unwrap();
+    let size = Arc::new(std::sync::atomic::AtomicUsize::new(LIMIT + 1));
+    let read = size.clone();
+    let fixture = Fixture::new(Router::new().fallback(post(move || {
+        let length = read.load(Ordering::Relaxed);
+        async move { vec![0u8; length] }
+    })));
+    let call = |path| {
+        fixture.federation(
+            Request::post(fixture.uri("chat.example", path))
+                .body(b"{}".as_slice())
+                .unwrap(),
+        )
+    };
+    assert_eq!(
+        call(sigil_protocol::federation::LOOKUP_PATH)
+            .unwrap()
+            .body
+            .len(),
+        LIMIT + 1
+    );
+    assert!(matches!(
+        call(sigil_protocol::federation::PING_PATH),
+        Err(Error::Limit)
+    ));
+    size.store(
+        sigil_protocol::federation::MAX_LOOKUP_RESPONSE + 8192 + 1,
+        Ordering::Relaxed,
+    );
+    assert!(matches!(
+        call(sigil_protocol::federation::LOOKUP_PATH),
+        Err(Error::Limit)
+    ));
 }

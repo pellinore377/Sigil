@@ -43,11 +43,26 @@ pub struct Action {
     pub created_at: u64,
     #[serde(with = "optional_id")]
     pub previous: Option<Id>,
+    #[serde(default, with = "optional_id", skip_serializing_if = "Option::is_none")]
+    pub revision: Option<Id>,
     pub change: Change,
 }
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Change {
+    StopLocation,
+    ClosePoll(crate::poll_close::Closure),
+    PollPage(crate::poll_close::Page),
+    Edit {
+        content: Construct,
+        #[serde(with = "optional_id")]
+        policy: Option<Id>,
+    },
+    Editors {
+        content: Construct,
+        #[serde(with = "ids")]
+        editors: Vec<Id>,
+    },
     Check {
         #[serde(with = "structured::id")]
         item: Id,
@@ -75,10 +90,15 @@ pub enum Change {
 }
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Register {
+    LocationStop,
     Item(Id),
     Ballot(Id),
     Completion(Id),
     Recurring(Id),
+    Definition(Id),
+    Policy,
+    PollClose,
+    PollPage(Id),
 }
 impl Register {
     pub fn recurring(item: Id, period: u64) -> Self {
@@ -121,6 +141,31 @@ impl Action {
             return Err(Error::Invalid);
         }
         match &self.change {
+            Change::StopLocation if self.previous.is_some() || self.revision.is_some() => {
+                Err(Error::Invalid)
+            }
+            Change::ClosePoll(_) | Change::PollPage(_)
+                if self.previous.is_some() || self.revision.is_some() =>
+            {
+                Err(Error::Invalid)
+            }
+            Change::ClosePoll(value) => value.validate(),
+            Change::PollPage(value) => value.validate(),
+            Change::Edit { policy, .. } if *policy == Some([0; 32]) || self.revision.is_some() => {
+                Err(Error::Invalid)
+            }
+            Change::Editors { editors, .. }
+                if self.revision.is_some()
+                    || editors.len() > 256
+                    || editors.contains(&[0; 32])
+                    || editors.windows(2).any(|pair| pair[0] >= pair[1]) =>
+            {
+                Err(Error::Invalid)
+            }
+            _ if self.revision == Some([0; 32]) => Err(Error::Invalid),
+            Change::Edit { content, .. } | Change::Editors { content, .. } => {
+                crate::editing::validate_shape(content, self.created_at)
+            }
             Change::Check { item, .. }
             | Change::Complete { item }
             | Change::Undo { item, .. }
@@ -152,11 +197,63 @@ impl Action {
     }
     /// Conversation membership/actor authentication is the caller's responsibility.
     pub fn validate_for(&self, card: &Card) -> Result<(), Error> {
+        self.validate_context(card, None, None, None)
+    }
+    /// Dependencies must already be authenticated and accepted for this card.
+    pub fn validate_context(
+        &self,
+        card: &Card,
+        revision: Option<&Action>,
+        policy: Option<&Action>,
+        parent: Option<&Action>,
+    ) -> Result<(), Error> {
         self.validate()?;
         if self.card != Reference::of(card)? {
             return Err(Error::Invalid);
         }
-        match (&card.content, &self.change) {
+        if self.change == Change::StopLocation {
+            return if self.actor == card.creator
+                && self.created_at >= card.created_at
+                && matches!(
+                    card.content,
+                    Construct::Location(crate::location::Share {
+                        mode: crate::location::Mode::Live { .. },
+                        ..
+                    })
+                ) {
+                Ok(())
+            } else {
+                Err(Error::Invalid)
+            };
+        }
+        if matches!(self.change, Change::ClosePoll(_) | Change::PollPage(_)) {
+            return if self.actor == card.creator && matches!(card.content, Construct::Poll(_)) {
+                Ok(())
+            } else {
+                Err(Error::Invalid)
+            };
+        }
+        if let Change::Edit {
+            content,
+            policy: policy_id,
+        } = &self.change
+        {
+            crate::editing::validate_edit(self, card, content, *policy_id, policy, parent)?;
+            return Ok(());
+        }
+        if let Change::Editors { content, .. } = &self.change {
+            if self.actor != card.creator {
+                return Err(Error::Invalid);
+            }
+            crate::editing::validate_content(card, content, self.created_at)?;
+            if !matches!(&card.content, Construct::Checklist(list) if matches!(list.mode, ListMode::Recurring(_)))
+            {
+                return Err(Error::Invalid);
+            }
+            return Ok(());
+        }
+        let definition = crate::editing::at_revision(self, card, revision)?;
+        match (&definition.content, &self.change) {
             (Construct::Checklist(list), Change::RecurringCheck { item, period }) => {
                 let ListMode::Recurring(rule) = &list.mode else {
                     return Err(Error::Invalid);
@@ -208,11 +305,26 @@ impl Action {
     }
     pub fn register(&self) -> Result<Register, Error> {
         Ok(match self.change {
+            Change::StopLocation => Register::LocationStop,
             Change::Check { item, .. } => Register::Item(item),
             Change::Vote { .. } => Register::Ballot(self.actor),
             Change::Complete { .. } => Register::Completion(self.id()?),
             Change::Undo { completion, .. } => Register::Completion(completion),
             Change::RecurringCheck { item, period } => Register::recurring(item, period),
+            Change::Edit { policy, .. } => Register::Definition(policy.unwrap_or([0; 32])),
+            Change::Editors { .. } => Register::Policy,
+            Change::ClosePoll(_) => Register::PollClose,
+            Change::PollPage(ref page) => Register::PollPage(
+                Sha256::digest(
+                    [
+                        b"Sigil/poll-page-register/v1".as_slice(),
+                        &page.closure,
+                        &page.index.to_be_bytes(),
+                    ]
+                    .concat(),
+                )
+                .into(),
+            ),
         })
     }
     /// Only pass a previously validated, authenticated stored parent's depth.
@@ -260,6 +372,7 @@ impl Action {
     pub fn body(&self) -> Result<&'static str, Error> {
         self.validate()?;
         Ok(match &self.change {
+            Change::StopLocation => "Live location stopped",
             Change::Check { checked: true, .. } => "Checklist item checked",
             Change::Check { checked: false, .. } => "Checklist item unchecked",
             Change::Vote { choices } if choices.is_empty() => "Poll vote withdrawn",
@@ -267,6 +380,10 @@ impl Action {
             Change::Complete { .. } => "Task completed",
             Change::Undo { .. } => "Task completion undone",
             Change::RecurringCheck { .. } => "Recurring checklist item checked",
+            Change::Edit { .. } => "Structured content edited",
+            Change::Editors { .. } => "Recurrence editing permissions updated",
+            Change::ClosePoll(_) => "Poll closed",
+            Change::PollPage(_) => "Closed poll ballots",
         })
     }
     pub fn to_bytes(&self) -> Result<Vec<u8>, Error> {
@@ -313,6 +430,23 @@ impl Action {
         }
         Ok(())
     }
+    pub fn dependencies(&self) -> Vec<Id> {
+        let mut ids: Vec<Id> = self.previous.into_iter().chain(self.revision).collect();
+        if let Change::Edit {
+            policy: Some(policy),
+            ..
+        } = self.change
+        {
+            ids.push(policy);
+        }
+        if let Change::PollPage(page) = &self.change {
+            ids.push(page.closure);
+            ids.extend(page.ballots.iter().map(|ballot| ballot.action));
+        }
+        ids.sort();
+        ids.dedup();
+        ids
+    }
 }
 mod optional_id {
     use super::*;
@@ -330,7 +464,7 @@ mod optional_id {
         Ok(Option::<Value>::deserialize(deserializer)?.map(|value| value.0))
     }
 }
-mod ids {
+pub(crate) mod ids {
     use super::*;
     #[derive(Serialize, Deserialize)]
     struct Value(#[serde(with = "structured::id")] Id);

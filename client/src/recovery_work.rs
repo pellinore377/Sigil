@@ -65,13 +65,25 @@ pub(super) fn reconciled(
     work.dirty = dirty;
     write(db, key, scope, &work)
 }
-pub(super) fn expire(record: &mut Record, now: u64) -> Result<bool, Error> {
-    if let Content::File(bytes) = &record.content {
+pub(super) fn expire(
+    db: &Connection,
+    key: &StorageKey,
+    record: &mut Record,
+    now: u64,
+) -> Result<bool, Error> {
+    let local;
+    let content = if matches!(record.content, Content::Omitted) {
+        local = local_record(db, key, record.id)?;
+        &local.content
+    } else {
+        &record.content
+    };
+    if let Some(bytes) = super::media::file_bytes(content)? {
         let file =
-            sigil_protocol::file::File::from_bytes(bytes).map_err(|_| Error::InvalidStore)?;
+            sigil_protocol::file::File::from_bytes(&bytes).map_err(|_| Error::InvalidStore)?;
         if file.expires_at.is_some_and(|expiry| expiry <= now) {
             record.revision = record.revision.checked_add(1).ok_or(Error::Limit)?;
-            record.content = Content::Deleted;
+            record.content = deletion_content(db, key, record.id)?;
             return Ok(true);
         }
     }
@@ -81,12 +93,14 @@ pub(super) fn expire(record: &mut Record, now: u64) -> Result<bool, Error> {
 pub struct RecoveryMaintenance {
     pub checked: usize,
     pub expired: usize,
+    pub backfilled: usize,
     /// An explicitly prepared import must finish/cancel before local edits.
     pub deferred: bool,
 }
 #[derive(Debug, PartialEq, Eq)]
 pub enum RecoveryProgress {
     Idle,
+    Cleanup(usize),
     Upload(Option<Head>),
     Import(Option<Head>),
 }
@@ -153,16 +167,33 @@ impl ClientStore {
                 ..Default::default()
             });
         }
+        let mut lifecycle = super::lifecycle::read(&tx, &self.key, &state.scope)?;
+        let policy = crate::conversations::recovery_policy(&tx, &self.key)?;
+        let backfilled = {
+            let (count, after) =
+                crate::conversations::backfill_recovery(&tx, &self.key, lifecycle.backfill)?;
+            lifecycle.backfill = after;
+            super::lifecycle::save(&tx, &self.key, &state.scope, &lifecycle)?;
+            work.dirty |= read(&tx, &self.key, &state.scope)?.dirty;
+            count
+        };
         let mut records = record_page(&tx, &work.cursor)?;
         if records.is_empty() && !work.cursor.is_empty() {
             records = record_page(&tx, &[])?;
         }
-        let mut result = RecoveryMaintenance::default();
+        let mut result = RecoveryMaintenance {
+            backfilled,
+            ..Default::default()
+        };
         work.cursor.clear();
-        for (reference, bytes) in records {
+        for (reference, _) in records {
+            let (reference, bytes) = existing(&tx, reference.id)?.ok_or(Error::InvalidStore)?;
             let mut record = state.key.open_record(&reference, &bytes)?;
             result.checked += 1;
-            if expire(&mut record, now)? {
+            if apply_tombstone(&tx, &self.key, &mut record, now)?
+                || expire(&tx, &self.key, &mut record, now)?
+                || expire_history(&mut record, policy, now)?
+            {
                 retain(&tx, &self.key, &state, &record)?;
                 result.expired += 1;
                 work.dirty = true;
@@ -185,7 +216,12 @@ impl ClientStore {
         }
         if state.status.pending.is_none() {
             if !read(&self.db, &self.key, &state.scope)?.dirty {
-                return Ok(RecoveryProgress::Idle);
+                let removed = self.cleanup_recovery_online()?;
+                return Ok(if removed == 0 {
+                    RecoveryProgress::Idle
+                } else {
+                    RecoveryProgress::Cleanup(removed)
+                });
             }
             self.prepare_recovery_upload(now)?;
         }
@@ -268,3 +304,40 @@ impl ClientStore {
 #[cfg(test)]
 #[path = "recovery_work_tests.rs"]
 mod tests;
+
+pub(super) fn expire_history(
+    record: &mut Record,
+    policy: RecoveryPolicy,
+    now: u64,
+) -> Result<bool, Error> {
+    if matches!(
+        record.content,
+        Content::Deleted
+            | Content::Omitted
+            | Content::Redacted { .. }
+            | Content::HistoryLink { .. }
+    ) {
+        return Ok(false);
+    }
+    let content = match &record.content {
+        Content::Conversation(raw) => matches!(
+            sigil_protocol::conversation::Snapshot::from_bytes(raw)
+                .map_err(|_| Error::InvalidStore)?
+                .operation
+                .action,
+            sigil_protocol::conversation::Action::Post { .. }
+                | sigil_protocol::conversation::Action::Edit { .. }
+        ),
+        _ => true,
+    };
+    if content
+        && policy
+            .history_days
+            .is_some_and(|days| record.created_at.saturating_add(days as u64 * 86400) <= now)
+    {
+        record.revision = record.revision.checked_add(1).ok_or(Error::Limit)?;
+        record.content = Content::Omitted;
+        return Ok(true);
+    }
+    Ok(false)
+}

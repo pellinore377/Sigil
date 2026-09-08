@@ -17,7 +17,7 @@ pub use intents::SendIntentAttempt;
 struct Context {
     own: Id,
     own_identity: Id,
-    own_account: Id,
+    own_server: String,
     own_reference: Id,
     recovery_scope: Id,
     peer: Peer,
@@ -38,18 +38,10 @@ pub(crate) fn account_reference(server: &str, account: &Id) -> Id {
     )
     .into()
 }
-fn context(db: &Connection, key: &StorageKey, own: &[u8], peer: &Id) -> Result<Context, Error> {
-    let own_fingerprint = device_fingerprint(own)?;
-    let own = SignedBinding::from_bytes(own)
-        .map_err(|_| Error::InvalidStore)?
-        .binding;
-    let peer = peers::known(db, key, peer)?;
-    if own.server != peer.binding.server {
-        return Err(Error::Unprepared);
-    }
-    let mut accounts = [account(&own), account(&peer.binding)];
+pub(crate) fn direct_reference(a: Id, b: Id) -> Id {
+    let mut accounts = [a, b];
     accounts.sort();
-    let conversation = Sha256::digest(
+    Sha256::digest(
         [
             b"Sigil/direct-conversation/v0".as_slice(),
             &accounts[0],
@@ -57,11 +49,19 @@ fn context(db: &Connection, key: &StorageKey, own: &[u8], peer: &Id) -> Result<C
         ]
         .concat(),
     )
-    .into();
+    .into()
+}
+fn context(db: &Connection, key: &StorageKey, own: &[u8], peer: &Id) -> Result<Context, Error> {
+    let own_fingerprint = device_fingerprint(own)?;
+    let own = SignedBinding::from_bytes(own)
+        .map_err(|_| Error::InvalidStore)?
+        .binding;
+    let peer = peers::known(db, key, peer)?;
+    let conversation = direct_reference(account(&own), account(&peer.binding));
     Ok(Context {
         own: own_fingerprint,
         own_identity: own.identity,
-        own_account: own.account,
+        own_server: own.server.clone(),
         own_reference: account(&own),
         recovery_scope: recovery::account_scope(&own.server, own.account)?,
         peer,
@@ -78,9 +78,14 @@ impl Context {
         if !self.peer.verified {
             return Err(Error::Unprepared);
         }
+        crate::conversations::validate(body, &message, &self.own)?;
+        crate::conversations::authorize_route(
+            body,
+            self.own_reference == account(&self.peer.binding),
+        )?;
         validate_content(
             body,
-            &self.peer.binding.server,
+            &self.own_server,
             &message,
             &self.own_reference,
             timestamp,
@@ -113,16 +118,36 @@ pub(super) fn validate_content(
             return Err(Error::InvalidEvent);
         }
     }
-    if let Content::Rich(bytes) = content {
-        match sigil_protocol::text::Document::from_bytes(bytes).map_err(|_| Error::InvalidEvent)? {
-            sigil_protocol::text::Document::Card(card) => card
-                .authorize_origin(message, creator, timestamp)
-                .map_err(|_| Error::InvalidEvent)?,
-            sigil_protocol::text::Document::Action(action) => action
-                .authorize_origin(message, creator, timestamp)
-                .map_err(|_| Error::InvalidEvent)?,
-            sigil_protocol::text::Document::Text(_) => {}
+    if let Content::Conversation(raw) = content {
+        use sigil_protocol::conversation::Action;
+        let op = sigil_protocol::conversation::Operation::from_bytes(raw)
+            .map_err(|_| Error::InvalidEvent)?;
+        match &op.action {
+            Action::Post { body, .. } => {
+                validate_content(body.content(), server, &op.id, creator, timestamp)?
+            }
+            Action::Edit { target, body } => {
+                if target.author != *creator {
+                    return Err(Error::InvalidEvent);
+                }
+                if let sigil_protocol::conversation::Body::File(raw) = body {
+                    if sigil_protocol::file::File::from_bytes(raw)
+                        .map_err(|_| Error::InvalidEvent)?
+                        .source
+                        != server
+                    {
+                        return Err(Error::InvalidEvent);
+                    }
+                }
+            }
+            _ => {}
         }
+    }
+    if let Content::Rich(bytes) = content {
+        sigil_protocol::text::Document::from_bytes(bytes)
+            .map_err(|_| Error::InvalidEvent)?
+            .authorize_origin(message, creator, timestamp)
+            .map_err(|_| Error::InvalidEvent)?;
     }
     Ok(())
 }
@@ -135,6 +160,12 @@ pub(super) fn validate(
     plaintext: &[u8],
     expires: u64,
 ) -> Result<(), Error> {
+    if groups::validate_invitation_receipt(db, key, own, peer, message, plaintext)? {
+        return Ok(());
+    }
+    if crate::calls::validate_receipt(db, key, own, peer, message, plaintext)? {
+        return Ok(());
+    }
     if groups::validate_distribution_receipt(db, key, own, peer, message, plaintext)? {
         return Ok(());
     }
@@ -154,6 +185,7 @@ pub(super) fn validate(
         return Err(Error::InvalidEvent);
     }
     if text.message != *message {
+        crate::conversations::validate(text.content, &text.message, &context.peer.fingerprint)?;
         retry::response_allowed(
             db,
             key,
@@ -297,6 +329,7 @@ fn send_content_in(
     let peer = session_peer(tx, &session)?.ok_or(Error::Unprepared)?;
     let context = context(tx, key, own, &peer)?;
     let plaintext = context.encode(message, body, timestamp)?;
+    crate::conversations::check_send(tx, key, &plaintext, now)?;
     let packet = send_in(tx, key, session, message, &plaintext)?;
     transport::prepare(
         tx,
@@ -321,6 +354,14 @@ pub(super) fn remember(
     session: &Id,
     plaintext: &[u8],
 ) -> Result<bool, Error> {
+    if let Some(message) = crate::calls::receipt_message(plaintext)? {
+        crate::calls::validate_receipt(tx, key, own, peer, &message, plaintext)?;
+        return Ok(true);
+    }
+    if let Some(message) = groups::invitation_receipt_message(plaintext)? {
+        groups::validate_invitation_receipt(tx, key, own, peer, &message, plaintext)?;
+        return Ok(true);
+    }
     if let Some(receipt) = groups::distribution_receipt(plaintext)? {
         groups::validate_distribution_receipt(tx, key, own, peer, &receipt.message, plaintext)?;
         return Ok(true);
@@ -390,6 +431,15 @@ pub(super) fn require_resend(
     } else {
         context.peer.binding.identity
     };
+    crate::conversations::require_live(
+        db,
+        key,
+        text.conversation,
+        text.sender,
+        text.message,
+        crate::conversations::now(),
+        true,
+    )?;
     recovery::require_resend(
         db,
         key,
@@ -407,6 +457,20 @@ pub(super) fn retain(
     plaintext: &[u8],
     outgoing: bool,
 ) -> Result<(), Error> {
+    if let Some(message) = crate::calls::receipt_message(plaintext)? {
+        if outgoing {
+            return Err(Error::InvalidEvent);
+        }
+        crate::calls::validate_receipt(tx, key, own, peer, &message, plaintext)?;
+        return Ok(());
+    }
+    if let Some(message) = groups::invitation_receipt_message(plaintext)? {
+        if outgoing {
+            return Err(Error::InvalidEvent);
+        }
+        groups::validate_invitation_receipt(tx, key, own, peer, &message, plaintext)?;
+        return Ok(());
+    }
     if let Some(receipt) = groups::distribution_receipt(plaintext)? {
         if outgoing {
             return Err(Error::InvalidEvent);
@@ -418,7 +482,11 @@ pub(super) fn retain(
     let text = Direct::from_bytes(plaintext).map_err(|_| Error::InvalidEvent)?;
     validate_content(
         text.content,
-        &context.peer.binding.server,
+        if outgoing {
+            &context.own_server
+        } else {
+            &context.peer.binding.server
+        },
         &text.message,
         &if outgoing {
             context.own_reference
@@ -433,6 +501,68 @@ pub(super) fn retain(
         context.peer.binding.identity
     };
     let id = event_history_id(&text, &author);
+    crate::conversations::native(
+        tx,
+        key,
+        text.conversation,
+        (
+            if outgoing {
+                context.own_reference
+            } else {
+                account(&context.peer.binding)
+            },
+            author,
+        ),
+        (text.sender, text.message, id),
+        text.timestamp,
+        text.content,
+    )?;
+    crate::conversations::validate(text.content, &text.message, &text.sender)?;
+    crate::conversations::authorize_route(
+        text.content,
+        context.own_reference == account(&context.peer.binding),
+    )?;
+    if outgoing {
+        if let Content::Conversation(raw) = text.content {
+            if matches!(
+                sigil_protocol::conversation::Operation::from_bytes(raw)
+                    .map_err(|_| Error::InvalidEvent)?
+                    .action,
+                sigil_protocol::conversation::Action::SyncPart { .. }
+            ) {
+                return Ok(());
+            }
+        }
+    }
+    if crate::conversations::retain(
+        tx,
+        key,
+        own,
+        text.conversation,
+        (
+            if outgoing {
+                context.own_reference
+            } else {
+                account(&context.peer.binding)
+            },
+            author,
+        ),
+        text.timestamp,
+        text.content,
+    )? {
+        if !outgoing {
+            crate::conversations::receipts::schedule(
+                tx,
+                key,
+                own,
+                crate::conversations::Destination::Peer(*peer),
+                text.conversation,
+                account(&context.peer.binding),
+                text.content,
+            )?;
+        }
+        return Ok(());
+    }
     if let Content::Rich(bytes) = text.content {
         if outgoing {
             if let sigil_protocol::text::Document::Action(action) =
@@ -465,7 +595,7 @@ pub(super) fn retain(
     }
     // Direction is relative to the owning account, so copies received on another
     // own device agree with the original sender's recovery record.
-    let direction = if outgoing || context.own_account == context.peer.binding.account {
+    let direction = if outgoing || context.own_reference == account(&context.peer.binding) {
         sigil_crypto::recovery::Direction::Outgoing
     } else {
         sigil_crypto::recovery::Direction::Incoming
@@ -491,6 +621,7 @@ pub(super) fn retain(
                 Content::Rich(bytes) => {
                     sigil_crypto::recovery::Content::Rich(Zeroizing::new(bytes.to_vec()))
                 }
+                Content::Conversation(_) => return Err(Error::InvalidEvent),
             },
         },
     )
@@ -515,6 +646,7 @@ pub fn event_history_id(event: &Direct<'_>, author: &Id) -> Id {
         Content::Text(_) => b"Sigil/direct-text-history/v0",
         Content::File(_) => b"Sigil/direct-file-history/v0",
         Content::Rich(_) => b"Sigil/direct-sigiltext-history/v0",
+        Content::Conversation(_) => b"Sigil/direct-conversation-history/v0",
     };
     Sha256::digest([domain, &event.conversation, author, &event.message].concat()).into()
 }
@@ -574,7 +706,11 @@ pub(crate) fn migrate_structured(tx: &Transaction<'_>, key: &StorageKey) -> Resu
                 || event.conversation != context.conversation
                 || validate_content(
                     event.content,
-                    &context.peer.binding.server,
+                    if outgoing {
+                        &context.own_server
+                    } else {
+                        &context.peer.binding.server
+                    },
                     &event.message,
                     &creator,
                     event.timestamp,

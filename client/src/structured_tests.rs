@@ -29,10 +29,73 @@ fn card(client: &ClientStore, source: &str, now: u64) -> Card {
     else {
         panic!()
     };
-    card
+    *card
 }
 fn poll(client: &ClientStore, now: u64) -> Card {
     card(client, "poll::closed::Choose\n- One\n- Two;", now)
+}
+
+#[test]
+fn erased_card_and_action_caches_do_not_reappear_on_replay_without_recovery() {
+    use sigil_protocol::conversation::{Action as CAction, Body, Reference as CReference};
+    let (_dir, _fixture, mut a, _b, now) = pair();
+    let card = poll(&a, now);
+    let post = a
+        .conversation_operation(
+            card.id,
+            CAction::Post {
+                body: Body::Rich(card.to_bytes().unwrap()),
+                reply: None,
+                thread: None,
+                expires_at: None,
+                view_once: false,
+            },
+        )
+        .unwrap();
+    let conversation = a.note_to_self(&post, now, now).unwrap();
+    let vote = action(&a, &card, None, 0, now);
+    let post_vote = a
+        .conversation_operation(
+            vote.id().unwrap(),
+            CAction::Post {
+                body: Body::Rich(vote.to_bytes().unwrap()),
+                reply: None,
+                thread: None,
+                expires_at: None,
+                view_once: false,
+            },
+        )
+        .unwrap();
+    a.note_to_self(&post_vote, now, now).unwrap();
+    let delete = a
+        .conversation_operation(
+            [245; 32],
+            CAction::Delete {
+                target: CReference {
+                    author: card.creator,
+                    message: card.id,
+                },
+            },
+        )
+        .unwrap();
+    a.note_to_self(&delete, now, now).unwrap();
+    a.maintain_history(now).unwrap();
+    a.erase_obsolete_journals(now).unwrap();
+    assert_eq!(
+        a.db.query_row("SELECT count(*) FROM structured_actions", [], |r| r
+            .get::<_, i64>(0))
+            .unwrap(),
+        0
+    );
+    assert!(matches!(
+        a.card_state(conversation, Reference::of(&card).unwrap()),
+        Err(Error::Obsolete)
+    ));
+    a.note_to_self(&post, now, now).unwrap();
+    assert!(matches!(
+        a.card_state(conversation, Reference::of(&card).unwrap()),
+        Err(Error::Obsolete)
+    ));
 }
 fn action(
     client: &ClientStore,
@@ -49,6 +112,7 @@ fn action(
         actor: client.account_reference().unwrap(),
         created_at: now,
         previous,
+        revision: None,
         change: Change::Vote {
             choices: vec![poll.options[choice].id],
         },
@@ -98,6 +162,460 @@ fn flush(client: &mut ClientStore, now: u64) -> Id {
         }
     }
     panic!("no send intent")
+}
+#[test]
+fn live_location_stop_survives_restart_and_delayed_encrypted_updates() {
+    use sigil_protocol::text::{
+        location::{Duration, Point},
+        service::Coordinates,
+        Text,
+    };
+    let (dir, _fixture, mut alice, mut bob, now) = pair();
+    let (_, b) = trust(&mut alice, &mut bob);
+    configure(&mut alice, 7);
+    configure(&mut bob, 8);
+    let point = |at| Point {
+        coordinates: Coordinates {
+            latitude_e6: 10_000_000,
+            longitude_e6: -20_000_000,
+        },
+        accuracy_cm: Some(250),
+        sampled_at: at,
+    };
+    let card = alice
+        .location_card(
+            [179; 32],
+            LocationKind::Live(Duration::FifteenMinutes),
+            point(now),
+            Text::plain("Synthetic", Default::default()).unwrap(),
+            now,
+        )
+        .unwrap();
+    let reference = Reference::of(&card).unwrap();
+    let conversation = alice.direct_conversation(b).unwrap();
+    alice.queue_peer_card(b, &card, now).unwrap();
+    flush(&mut alice, now);
+    bob.accept_delivery(&next(&bob)).unwrap();
+    bob.acknowledge_incoming_online().unwrap();
+    assert_eq!(alice.location_jobs(None, now).unwrap().jobs.len(), 1);
+    assert!(bob.location_jobs(None, now).unwrap().jobs.is_empty());
+    let mut delayed = Vec::new();
+    for elapsed in [10, 20] {
+        let update = alice
+            .update_location(conversation, reference, point(now + elapsed), now + elapsed)
+            .unwrap();
+        alice.queue_peer_action(b, &update, now + elapsed).unwrap();
+        flush(&mut alice, now + elapsed);
+        let delivery = bob
+            .connected_client()
+            .unwrap()
+            .mailbox()
+            .unwrap()
+            .into_iter()
+            .find(|v| v.message_id == crate::transport::hex(&update.id().unwrap()))
+            .unwrap();
+        delayed.push(delivery);
+    }
+    alice.db.execute_batch("CREATE TRIGGER fail BEFORE UPDATE ON location_jobs BEGIN SELECT RAISE(ABORT,'synthetic'); END;").unwrap();
+    assert!(matches!(
+        alice.stop_location(conversation, reference, now + 21),
+        Err(Error::Storage(_))
+    ));
+    alice.db.execute_batch("DROP TRIGGER fail").unwrap();
+    assert_eq!(alice.location_jobs(None, now + 21).unwrap().jobs.len(), 1);
+    let stop = alice
+        .stop_location(conversation, reference, now + 21)
+        .unwrap();
+    drop(alice);
+    let mut alice = open(&dir.path().join("alice.db"));
+    let batch = alice.location_jobs(None, now + 21).unwrap();
+    assert!(batch.jobs.is_empty());
+    assert_eq!(batch.stops.len(), 1);
+    assert!(batch.stops[0].1 == stop);
+    assert!(matches!(
+        alice.update_location(conversation, reference, point(now + 30), now + 30),
+        Err(Error::Obsolete)
+    ));
+    alice.queue_peer_action(b, &stop, now + 21).unwrap();
+    flush(&mut alice, now + 21);
+    let delivery = bob
+        .connected_client()
+        .unwrap()
+        .mailbox()
+        .unwrap()
+        .into_iter()
+        .find(|v| v.message_id == crate::transport::hex(&stop.id().unwrap()))
+        .unwrap();
+    bob.accept_delivery(&delivery).unwrap();
+    assert!(
+        bob.card_state(conversation, reference)
+            .unwrap()
+            .location
+            .unwrap()
+            .stopped
+    );
+    for delivery in delayed.into_iter().rev() {
+        bob.accept_delivery(&delivery).unwrap();
+        drain(&mut bob);
+        assert!(
+            bob.card_state(conversation, reference)
+                .unwrap()
+                .location
+                .unwrap()
+                .stopped
+        );
+    }
+    let state = bob.card_state(conversation, reference).unwrap();
+    assert_eq!(state.pending, 0);
+    assert_eq!(state.rejected, 0);
+    assert_eq!(state.location.unwrap().share.point.sampled_at, now + 20);
+    assert!(alice
+        .location_jobs(None, now + 22)
+        .unwrap()
+        .stops
+        .is_empty());
+    let card = alice
+        .location_card(
+            [178; 32],
+            LocationKind::Live(Duration::FifteenMinutes),
+            point(now + 22),
+            Text::plain("Expiry", Default::default()).unwrap(),
+            now + 22,
+        )
+        .unwrap();
+    alice.queue_peer_card(b, &card, now + 22).unwrap();
+    flush(&mut alice, now + 22);
+    assert_eq!(alice.location_jobs(None, now + 22).unwrap().jobs.len(), 1);
+    assert!(alice
+        .location_jobs(None, now + 922)
+        .unwrap()
+        .jobs
+        .is_empty());
+}
+#[test]
+fn mixed_cards_share_atomic_delivery_and_root_deletion_authority() {
+    use sigil_protocol::{
+        conversation::{Action as ConversationAction, Reference as MessageReference},
+        text::{composition, Document},
+    };
+    let (dir, _fixture, mut alice, mut bob, now) = pair();
+    let (a, b) = trust(&mut alice, &mut bob);
+    configure(&mut alice, 7);
+    configure(&mut bob, 8);
+    let conversation = alice.direct_conversation(b).unwrap();
+    let Document::Composition(value) = composition::parse(
+        "Before\npoll::open::Choose\n- One\n- Two;\nchecklist::Things\n- Water;\nAfter",
+        Origin {
+            message: [112; 32],
+            creator: alice.account_reference().unwrap(),
+            created_at: now,
+            timezone: None,
+        },
+        Default::default(),
+        None,
+    )
+    .unwrap()
+    .content
+    else {
+        panic!();
+    };
+    let cards: Vec<_> = value.cards().cloned().collect();
+    assert_eq!(cards.len(), 2);
+    alice.queue_peer_composition(b, &value, now).unwrap();
+    flush(&mut alice, now);
+    let delivery = next(&bob);
+    bob.db.execute_batch("CREATE TRIGGER fail BEFORE INSERT ON structured_origins WHEN (SELECT count(*) FROM structured_origins)>0 BEGIN SELECT RAISE(ABORT,'synthetic'); END;").unwrap();
+    assert!(matches!(
+        bob.accept_delivery(&delivery),
+        Err(Error::Storage(_))
+    ));
+    assert_eq!(
+        bob.db
+            .query_row("SELECT count(*) FROM structured_cards", [], |r| r
+                .get::<_, i64>(0))
+            .unwrap(),
+        0
+    );
+    bob.db.execute_batch("DROP TRIGGER fail").unwrap();
+    bob.accept_delivery(&delivery).unwrap();
+    bob.acknowledge_incoming_online().unwrap();
+    assert_eq!(
+        bob.db
+            .query_row("SELECT count(*) FROM structured_sources", [], |r| r
+                .get::<_, i64>(0))
+            .unwrap(),
+        2
+    );
+    let vote = action(&bob, &cards[0], None, 0, now + 1);
+    bob.queue_peer_action(a, &vote, now).unwrap();
+    flush(&mut bob, now);
+    alice.accept_delivery(&next(&alice)).unwrap();
+    for card in &cards {
+        assert!(alice
+            .card_state(conversation, Reference::of(card).unwrap())
+            .is_ok());
+    }
+    drop(bob);
+    let mut bob = open(&dir.path().join("bob.db"));
+    let deletion = alice
+        .conversation_operation(
+            [113; 32],
+            ConversationAction::Delete {
+                target: MessageReference {
+                    author: value.creator,
+                    message: value.id,
+                },
+            },
+        )
+        .unwrap();
+    alice
+        .queue_peer_operation(b, &deletion, now + 2, now)
+        .unwrap();
+    flush(&mut alice, now);
+    bob.accept_delivery(&next(&bob)).unwrap();
+    for card in &cards {
+        assert!(matches!(
+            bob.card_state(conversation, Reference::of(card).unwrap()),
+            Err(Error::Obsolete)
+        ));
+    }
+    assert!(matches!(
+        bob.queue_peer_action(a, &vote, now + 3),
+        Err(Error::Obsolete)
+    ));
+}
+#[test]
+fn closed_poll_pages_freeze_observed_ballots_and_recover_out_of_order_across_restart() {
+    let (dir, _fixture, mut alice, mut bob, now) = pair();
+    let card = poll(&alice, now);
+    let reference = Reference::of(&card).unwrap();
+    insert_card(&mut alice, &card);
+    insert_card(&mut bob, &card);
+    let mut votes = Vec::new();
+    for i in 1..=130u8 {
+        let mut vote = action(&alice, &card, None, usize::from(i % 2), now);
+        vote.actor = [i; 32];
+        insert(&mut alice, &vote);
+        votes.push(vote);
+    }
+    alice.db.execute_batch("CREATE TRIGGER fail BEFORE INSERT ON structured_close_tree BEGIN SELECT RAISE(ABORT,'synthetic'); END;").unwrap();
+    assert!(matches!(
+        alice.prepare_poll_close(CONVERSATION, reference, now),
+        Err(Error::Storage(_))
+    ));
+    assert_eq!(
+        alice
+            .db
+            .query_row("SELECT count(*) FROM structured_close_parts", [], |r| r
+                .get::<_, i64>(0))
+            .unwrap(),
+        0
+    );
+    alice.db.execute_batch("DROP TRIGGER fail").unwrap();
+    let close = alice
+        .prepare_poll_close(CONVERSATION, reference, now)
+        .unwrap();
+    let Change::ClosePoll(closure) = &close.change else {
+        panic!();
+    };
+    assert_eq!(closure.voters, 130);
+    assert_eq!(closure.pages(), 3);
+    let pages: Vec<_> = (0..3)
+        .map(|page| {
+            alice
+                .poll_close_page(CONVERSATION, reference, page)
+                .unwrap()
+        })
+        .collect();
+    drop(alice);
+    let mut alice = open(&dir.path().join("alice.db"));
+    assert!(
+        alice
+            .prepare_poll_close(CONVERSATION, reference, now)
+            .unwrap()
+            == close
+    );
+    assert!(alice.poll_close_page(CONVERSATION, reference, 1).unwrap() == pages[1]);
+    for page in pages.iter().rev() {
+        insert(&mut bob, page);
+    }
+    insert(&mut bob, &close);
+    drain(&mut bob);
+    let state = bob
+        .card_state(CONVERSATION, reference)
+        .unwrap()
+        .poll
+        .unwrap();
+    assert!(state.closed);
+    assert_eq!(state.pending_pages, 3);
+    assert!(state.counts.is_none());
+    drop(bob);
+    let mut bob = open(&dir.path().join("bob.db"));
+    for vote in votes.iter().rev() {
+        insert(&mut bob, vote);
+    }
+    drain(&mut bob);
+    let frozen = bob
+        .card_state(CONVERSATION, reference)
+        .unwrap()
+        .poll
+        .unwrap();
+    assert_eq!(frozen.pending_pages, 0);
+    assert_eq!(frozen.voters, Some(130));
+    assert_eq!(
+        frozen
+            .counts
+            .as_ref()
+            .unwrap()
+            .iter()
+            .map(|(_, count)| *count)
+            .collect::<Vec<_>>(),
+        vec![65, 65]
+    );
+    let mut late = votes[0].clone();
+    late.previous = Some(late.id().unwrap());
+    let Construct::Poll(poll) = &card.content else {
+        panic!();
+    };
+    late.change = Change::Vote {
+        choices: vec![poll.options[0].id],
+    };
+    insert(&mut bob, &late);
+    drain(&mut bob);
+    assert_eq!(
+        bob.card_state(CONVERSATION, reference)
+            .unwrap()
+            .poll
+            .unwrap()
+            .counts,
+        frozen.counts
+    );
+    assert!(matches!(
+        bob.require_action(CONVERSATION, &late),
+        Err(Error::InvalidEvent) | Err(Error::Obsolete)
+    ));
+    let mut forged = pages[0].clone();
+    let Change::PollPage(page) = &mut forged.change else {
+        panic!();
+    };
+    page.proof[0][0] ^= 1;
+    insert(&mut bob, &forged);
+    drain(&mut bob);
+    assert_eq!(bob.card_state(CONVERSATION, reference).unwrap().rejected, 1);
+    for page in &pages {
+        insert(&mut bob, page);
+    }
+    assert_eq!(
+        bob.card_state(CONVERSATION, reference)
+            .unwrap()
+            .poll
+            .unwrap()
+            .counts,
+        frozen.counts
+    );
+    alice.discard_poll_close(CONVERSATION, reference).unwrap();
+    assert_eq!(
+        alice
+            .db
+            .query_row("SELECT count(*) FROM structured_close_tree", [], |r| r
+                .get::<_, i64>(0))
+            .unwrap(),
+        0
+    );
+}
+
+#[test]
+fn empty_poll_closes_without_pages_and_other_members_cannot_close_it() {
+    let (_dir, _fixture, mut alice, mut bob, now) = pair();
+    let card = poll(&alice, now);
+    let reference = Reference::of(&card).unwrap();
+    insert_card(&mut alice, &card);
+    insert_card(&mut bob, &card);
+    assert!(matches!(
+        bob.prepare_poll_close(CONVERSATION, reference, now),
+        Err(Error::InvalidEvent)
+    ));
+    let close = alice
+        .prepare_poll_close(CONVERSATION, reference, now)
+        .unwrap();
+    insert(&mut alice, &close);
+    let state = alice
+        .card_state(CONVERSATION, reference)
+        .unwrap()
+        .poll
+        .unwrap();
+    assert!(state.closed);
+    assert_eq!(state.voters, Some(0));
+    assert_eq!(state.pending_pages, 0);
+    assert!(matches!(
+        alice.require_action(CONVERSATION, &action(&alice, &card, None, 0, now)),
+        Err(Error::Obsolete)
+    ));
+}
+#[test]
+fn poll_closure_uses_normal_encrypted_delivery_and_atomic_page_tallies() {
+    let (dir, _fixture, mut alice, mut bob, now) = pair();
+    let (a, b) = trust(&mut alice, &mut bob);
+    configure(&mut alice, 7);
+    configure(&mut bob, 8);
+    let card = poll(&alice, now);
+    let reference = Reference::of(&card).unwrap();
+    let conversation = alice.direct_conversation(b).unwrap();
+    alice.queue_peer_card(b, &card, now).unwrap();
+    flush(&mut alice, now);
+    bob.accept_delivery(&next(&bob)).unwrap();
+    bob.acknowledge_incoming_online().unwrap();
+    let vote = action(&bob, &card, None, 1, now);
+    bob.queue_peer_action(a, &vote, now).unwrap();
+    flush(&mut bob, now);
+    alice.accept_delivery(&next(&alice)).unwrap();
+    alice.acknowledge_incoming_online().unwrap();
+    let close = alice
+        .prepare_poll_close(conversation, reference, now)
+        .unwrap();
+    alice.queue_peer_action(b, &close, now).unwrap();
+    flush(&mut alice, now);
+    bob.accept_delivery(&next(&bob)).unwrap();
+    bob.acknowledge_incoming_online().unwrap();
+    let page = alice.poll_close_page(conversation, reference, 0).unwrap();
+    alice.queue_peer_action(b, &page, now).unwrap();
+    drop(alice);
+    let mut alice = open(&dir.path().join("alice.db"));
+    flush(&mut alice, now);
+    let delivery = next(&bob);
+    bob.db.execute_batch("CREATE TRIGGER fail BEFORE INSERT ON structured_closed_totals BEGIN SELECT RAISE(ABORT,'synthetic'); END;").unwrap();
+    assert!(matches!(
+        bob.accept_delivery(&delivery),
+        Err(Error::Storage(_))
+    ));
+    assert!(bob
+        .card_state(conversation, reference)
+        .unwrap()
+        .poll
+        .unwrap()
+        .counts
+        .is_none());
+    bob.db.execute_batch("DROP TRIGGER fail").unwrap();
+    bob.accept_delivery(&delivery).unwrap();
+    assert!(bob.accept_delivery(&delivery).unwrap().duplicate);
+    for client in [&alice, &bob] {
+        let state = client
+            .card_state(conversation, reference)
+            .unwrap()
+            .poll
+            .unwrap();
+        assert!(state.closed);
+        assert_eq!(state.voters, Some(1));
+        assert_eq!(
+            state
+                .counts
+                .unwrap()
+                .iter()
+                .map(|(_, count)| *count)
+                .collect::<Vec<_>>(),
+            vec![0, 1]
+        );
+    }
 }
 #[test]
 fn ballots_converge_across_order_restart_and_concurrent_same_account_devices() {
@@ -499,6 +1017,7 @@ fn concurrent_checklist_writers_do_not_lose_independent_items_or_double_apply() 
         actor: alice.account_reference().unwrap(),
         created_at: now,
         previous: None,
+        revision: None,
         change: Change::Check {
             item: list.items[0].id,
             checked: true,
@@ -595,6 +1114,7 @@ fn completion(client: &ClientStore, card: &Card, now: u64) -> Action {
         actor: client.account_reference().unwrap(),
         created_at: now,
         previous: None,
+        revision: None,
         change: Change::Complete {
             item: list.items[0].id,
         },
@@ -610,6 +1130,7 @@ fn undo(completion: &Action, now: u64) -> Action {
         actor: completion.actor,
         created_at: now,
         previous: Some(id),
+        revision: None,
         change: Change::Undo {
             item,
             completion: id,
@@ -826,7 +1347,7 @@ fn task_schema_52_upgrade_preserves_initial_completion_without_fabricated_undo()
             .db
             .query_row("PRAGMA user_version", [], |r| r.get::<_, i64>(0))
             .unwrap(),
-        55
+        68
     );
 }
 
@@ -846,6 +1367,156 @@ fn recurring_card(client: &ClientStore, now: u64) -> Card {
     list.items[0].persistent = true;
     card
 }
+#[test]
+fn edits_add_remove_reorder_items_and_wait_for_the_exact_definition() {
+    use sigil_protocol::text::{structured::ListItem, Text};
+    let (dir, _fixture, mut alice, mut bob, now) = pair();
+    let card = card(&alice, "checklist::Things\n- One\n- Two;", now);
+    insert_card(&mut alice, &card);
+    insert_card(&mut bob, &card);
+    let reference = Reference::of(&card).unwrap();
+    let mut content = card.content.clone();
+    let Construct::Checklist(list) = &mut content else {
+        panic!();
+    };
+    list.items.remove(0);
+    list.items.insert(
+        0,
+        ListItem {
+            id: [117; 32],
+            text: Text::plain("New item", Default::default()).unwrap(),
+            checked: false,
+            persistent: false,
+        },
+    );
+    let edit = alice
+        .edit_card(CONVERSATION, reference, content.clone(), now)
+        .unwrap();
+    let check = Action {
+        card: reference,
+        actor: bob.account_reference().unwrap(),
+        created_at: now,
+        previous: None,
+        revision: Some(edit.id().unwrap()),
+        change: Change::Check {
+            item: [117; 32],
+            checked: true,
+        },
+    };
+    insert(&mut bob, &check);
+    assert_eq!(bob.card_state(CONVERSATION, reference).unwrap().pending, 1);
+    drop(bob);
+    let mut bob = open(&dir.path().join("bob.db"));
+    insert(&mut bob, &edit);
+    drain(&mut bob);
+    let state = bob.card_state(CONVERSATION, reference).unwrap();
+    assert!(state.definition.content == content);
+    assert_eq!(state.checks[0].item, [117; 32]);
+    assert!(state.checks[0].checked);
+    assert_eq!(state.pending, 0);
+    assert_eq!(state.rejected, 0);
+    assert!(matches!(
+        bob.edit_card(CONVERSATION, reference, content.clone(), now),
+        Err(Error::InvalidEvent)
+    ));
+    let stale = Action {
+        revision: None,
+        ..check.clone()
+    };
+    assert!(matches!(
+        bob.require_action(CONVERSATION, &stale),
+        Err(Error::Obsolete)
+    ));
+    let forged = Action {
+        actor: bob.account_reference().unwrap(),
+        ..edit.clone()
+    };
+    insert(&mut alice, &forged);
+    drain(&mut alice);
+    assert_eq!(
+        alice.card_state(CONVERSATION, reference).unwrap().rejected,
+        1
+    );
+    insert(&mut alice, &edit);
+    insert(&mut alice, &check);
+    drain(&mut alice);
+    assert!(alice.card_state(CONVERSATION, reference).unwrap().checks[0].checked);
+}
+
+#[test]
+fn recurrence_revocation_dominates_a_delegates_later_branch_in_every_delivery_order() {
+    use sigil_protocol::text::{recurrence::Interval, structured::ListMode};
+    let (_dir, _fixture, mut alice, mut bob, now) = pair();
+    let card = recurring_card(&alice, now);
+    let reference = Reference::of(&card).unwrap();
+    insert_card(&mut alice, &card);
+    insert_card(&mut bob, &card);
+    let policy = alice
+        .set_recurrence_editors(
+            CONVERSATION,
+            reference,
+            vec![bob.account_reference().unwrap()],
+            now,
+        )
+        .unwrap();
+    insert(&mut alice, &policy);
+    insert(&mut bob, &policy);
+    let mut content = card.content.clone();
+    let Construct::Checklist(list) = &mut content else {
+        panic!();
+    };
+    let ListMode::Recurring(rule) = &mut list.mode else {
+        panic!();
+    };
+    rule.interval = Interval::Monthly;
+    let edit = bob
+        .edit_card(CONVERSATION, reference, content.clone(), now)
+        .unwrap();
+    insert(&mut bob, &edit);
+    let mut extra = content.clone();
+    let Construct::Checklist(list) = &mut extra else {
+        panic!();
+    };
+    list.items.reverse();
+    assert!(matches!(
+        bob.edit_card(CONVERSATION, reference, extra, now),
+        Err(Error::InvalidEvent)
+    ));
+    let revoked = alice
+        .set_recurrence_editors(CONVERSATION, reference, vec![], now)
+        .unwrap();
+    let later = bob
+        .edit_card(CONVERSATION, reference, content, now)
+        .unwrap();
+    insert(&mut bob, &later);
+    insert(&mut alice, &revoked);
+    insert(&mut alice, &later);
+    insert(&mut alice, &edit);
+    insert(&mut bob, &revoked);
+    drain(&mut alice);
+    drain(&mut bob);
+    for client in [&alice, &bob] {
+        let state = client.card_state(CONVERSATION, reference).unwrap();
+        assert_eq!(state.definition.policy, Some(revoked.id().unwrap()));
+        assert!(state.definition.content == card.content);
+        assert!(state.definition.editors.is_empty());
+        assert_eq!(state.pending, 0);
+        assert_eq!(state.rejected, 0);
+    }
+    assert!(matches!(
+        bob.require_action(CONVERSATION, &later),
+        Err(Error::Obsolete)
+    ));
+    assert!(matches!(
+        bob.set_recurrence_editors(
+            CONVERSATION,
+            reference,
+            vec![bob.account_reference().unwrap()],
+            now
+        ),
+        Err(Error::InvalidEvent)
+    ));
+}
 fn recurring_check(client: &ClientStore, card: &Card, item: usize, now: u64) -> Action {
     let Construct::Checklist(list) = &card.content else {
         panic!()
@@ -858,6 +1529,7 @@ fn recurring_check(client: &ClientStore, card: &Card, item: usize, now: u64) -> 
         actor: client.account_reference().unwrap(),
         created_at: now,
         previous: None,
+        revision: None,
         change: Change::RecurringCheck {
             item: list.items[item].id,
             period: rule.period_at(now).unwrap().start,

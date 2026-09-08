@@ -16,6 +16,10 @@ pub(crate) fn admin() -> Router<AppState> {
         )
         .route("/admin/v0/federation/peers", get(peers))
         .route(
+            "/admin/v0/federation/peers/{server}/retire",
+            axum::routing::post(retire_peer),
+        )
+        .route(
             "/admin/v0/federation/peers/{server}",
             get(peer).put(configure_peer),
         )
@@ -38,11 +42,15 @@ pub(crate) fn public() -> Router<AppState> {
         .route(sigil_protocol::federation::DISCOVERY_PATH, get(discovery))
         .route(
             sigil_protocol::federation::PING_PATH,
-            axum::routing::post(ping),
+            axum::routing::post(ping).layer(RequestBodyLimitLayer::new(
+                sigil_protocol::federation::MAX_BODY,
+            )),
         )
         .route(
             sigil_protocol::federation::DELIVER_PATH,
-            axum::routing::post(deliver),
+            axum::routing::post(deliver).layer(RequestBodyLimitLayer::new(
+                sigil_protocol::federation::MAX_BODY,
+            )),
         )
         .route(
             sigil_protocol::federation::LOOKUP_PATH,
@@ -51,7 +59,7 @@ pub(crate) fn public() -> Router<AppState> {
             )),
         )
         .layer(RequestBodyLimitLayer::new(
-            sigil_protocol::federation::MAX_BODY,
+            sigil_protocol::federation::MAX_LOOKUP_BODY,
         ))
 }
 pub(crate) fn client() -> Router<AppState> {
@@ -64,18 +72,22 @@ pub(crate) fn client() -> Router<AppState> {
             "/client/v0/federation/senders",
             get(senders).put(configure_sender),
         )
-        .route("/client/v0/federation/mailbox", get(mailbox))
         .route(
             "/client/v0/federation/lookup",
             axum::routing::post(proxy_lookup).layer(RequestBodyLimitLayer::new(
                 sigil_protocol::federation::MAX_LOOKUP_BODY,
             )),
         )
-        .route("/client/v0/federation/messages", axum::routing::post(queue))
+        .route(
+            "/client/v0/federation/messages",
+            axum::routing::post(queue).layer(RequestBodyLimitLayer::new(
+                sigil_protocol::federation::MAX_BODY,
+            )),
+        )
         .route("/client/v0/federation/messages/{id}", get(outbound))
         .route_layer(axum::middleware::from_fn(crate::enrollment::native_only))
         .layer(RequestBodyLimitLayer::new(
-            sigil_protocol::federation::MAX_BODY,
+            sigil_protocol::federation::MAX_LOOKUP_BODY,
         ))
 }
 async fn deliver(
@@ -104,30 +116,6 @@ async fn senders(State(state): State<AppState>, headers: axum::http::HeaderMap) 
         Err(e) => return store_error(e),
     };
     match with_store(state, move |s| s.federated_senders(&token, now()?)).await {
-        Ok(v) => Json(v).into_response(),
-        Err(e) => store_error(e),
-    }
-}
-async fn mailbox(
-    State(state): State<AppState>,
-    headers: axum::http::HeaderMap,
-    RawQuery(query): RawQuery,
-) -> Response {
-    let token = match crate::enrollment::bearer(&headers) {
-        Ok(v) => v,
-        Err(e) => return store_error(e),
-    };
-    let after = match query.as_deref() {
-        None | Some("") => Some(0),
-        Some(q) => q
-            .strip_prefix("after=")
-            .filter(|v| !v.is_empty() && v.len() <= 19 && v.bytes().all(|b| b.is_ascii_digit()))
-            .and_then(|v| v.parse::<i64>().ok()),
-    };
-    let Some(after) = after else {
-        return store_error(crate::store::StoreError::Invalid("invalid mailbox cursor"));
-    };
-    match with_store(state, move |s| s.federated_mailbox(&token, after, now()?)).await {
         Ok(v) => Json(v).into_response(),
         Err(e) => store_error(e),
     }
@@ -294,12 +282,15 @@ async fn queue(
         Ok(v) => v,
         Err(e) => return store_error(e),
     };
-    match with_store(state, move |s| {
+    match with_store(state.clone(), move |s| {
         s.queue_federated_message(&token, request, now()?)
     })
     .await
     {
-        Ok(v) => (axum::http::StatusCode::ACCEPTED, Json(v)).into_response(),
+        Ok(v) => {
+            state.federation_wake.notify_waiters();
+            (axum::http::StatusCode::ACCEPTED, Json(v)).into_response()
+        }
         Err(e) => store_error(e),
     }
 }
@@ -327,6 +318,17 @@ async fn lookup(
         return store_error(crate::store::StoreError::Invalid(
             "federation query is not supported",
         ));
+    }
+    if serde_json::from_slice::<sigil_protocol::federation::ServerLookup>(&body).is_ok_and(|v| {
+        matches!(
+            v.operation,
+            sigil_protocol::federation::Lookup::Service {
+                service: sigil_protocol::federation::Service::CallConnect { .. }
+                    | sigil_protocol::federation::Service::CallRelay { .. }
+            }
+        )
+    }) {
+        return crate::call_routes::federated(state, headers, body.to_vec()).await;
     }
     match with_store(state, move |s| {
         s.receive_federation_lookup(&body, &headers, now()?)
@@ -414,5 +416,16 @@ async fn proxy_lookup(
             }
             response
         }
+    }
+}
+
+async fn retire_peer(
+    State(state): State<AppState>,
+    Path(server): Path<String>,
+    Json(request): Json<federation_config::RetirePeer>,
+) -> Response {
+    match with_store(state, move |s| s.retire_federation_peer(&server, request)).await {
+        Ok(value) => Json(value).into_response(),
+        Err(error) => store_error(error),
     }
 }

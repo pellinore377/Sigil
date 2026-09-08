@@ -391,6 +391,13 @@ impl Store {
             ));
         }
         let old = peer(&tx, server)?;
+        if old
+            .as_ref()
+            .is_some_and(|p| p.error.as_deref() == Some("retired"))
+            && retirement::pending(&tx, server)?
+        {
+            return Err(StoreError::Busy);
+        }
         let revision = old.as_ref().map_or(0, |p| p.revision);
         if revision != request.expected_revision {
             if old.is_none() {
@@ -529,3 +536,7 @@ pub(crate) fn reset_after_restore(db: &Connection) -> Result<(), StoreError> {
 #[cfg(test)]
 #[path = "federation_config_tests.rs"]
 pub(crate) mod tests;
+
+#[path = "federation_retirement.rs"]
+mod retirement;
+pub use retirement::{PeerRetirement, RetirePeer};

@@ -102,6 +102,18 @@ impl Authority {
         Ok(value)
     }
 
+    pub fn from_pinned_bytes(bytes: &[u8], expected_authority: [u8; 32]) -> Result<Self, Error> {
+        let size = u16::from_be_bytes(
+            bytes
+                .get(8..10)
+                .ok_or(Error::Encoding)?
+                .try_into()
+                .map_err(|_| Error::Encoding)?,
+        ) as usize;
+        let server = std::str::from_utf8(bytes.get(10..10 + size).ok_or(Error::Encoding)?)
+            .map_err(|_| Error::Encoding)?;
+        Self::from_bytes(bytes, server, expected_authority)
+    }
     pub fn server(&self) -> &str {
         &self.server
     }
@@ -243,6 +255,11 @@ mod tests {
         let parsed = Authority::from_bytes(&bytes, "authority.example", pin).unwrap();
         assert_eq!(authority.id(), parsed.id());
         assert_eq!(
+            Authority::from_pinned_bytes(&bytes, pin).unwrap().id(),
+            authority.id()
+        );
+        assert!(Authority::from_pinned_bytes(&bytes, [0; 32]).is_err());
+        assert_eq!(
             authority.id(),
             Authority::sign("authority.example", 1, issuer.public(), &key)
                 .unwrap()
@@ -254,6 +271,8 @@ mod tests {
             let mut changed = bytes.clone();
             changed[i] ^= 1;
             assert!(Authority::from_bytes(&changed, "authority.example", pin).is_err());
+            assert!(Authority::from_pinned_bytes(&changed, pin).is_err());
+            assert!(Authority::from_pinned_bytes(&bytes[..i], pin).is_err());
             assert!(Authority::from_bytes(&bytes[..i], "authority.example", pin).is_err());
         }
         let device = IdentityKey::generate().unwrap();

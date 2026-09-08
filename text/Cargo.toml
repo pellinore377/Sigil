@@ -8,8 +8,11 @@ publish.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 pulldown-cmark = { version = "=0.13.4", default-features = false }
+pulldown-latex = { version = "=0.8.0", default-features = false }
 unicode-normalization = { version = "=0.1.25", default-features = false }
 unicode-segmentation = { version = "=1.13.3", default-features = false }
 sha2 = "=0.10.9"
 jiff = { version = "=0.2.35", default-features = false, features = ["std", "tzdb-bundle-always"] }
 jiff-tzdb = "=0.1.8"
+qrcode = { version = "=0.14.1", default-features = false }
+getrandom = "=0.4.3"

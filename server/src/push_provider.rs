@@ -433,7 +433,7 @@ pub fn classify(response: &egress::Response, fcm: bool, now: u64) -> Outcome {
     if !fcm && matches!(response.status, 404 | 410) {
         return Outcome::InvalidRegistration;
     }
-    if fcm && matches!(response.status, 403 | 404) && json(response) {
+    if fcm && matches!(response.status, 400 | 403 | 404) && json(response) {
         #[derive(Deserialize)]
         struct Body {
             error: Failure,
@@ -450,13 +450,23 @@ pub fn classify(response: &egress::Response, fcm: bool, now: u64) -> Outcome {
             code: Option<String>,
         }
         if let Ok(error) = serde_json::from_slice::<Body>(&response.body) {
-            if error.error.details.iter().any(|d| {
-                d.kind == "type.googleapis.com/google.firebase.fcm.v1.FcmError"
-                    && matches!(
-                        (response.status, d.code.as_deref()),
-                        (404, Some("UNREGISTERED")) | (403, Some("SENDER_ID_MISMATCH"))
-                    )
-            }) {
+            // Our payload fields are fixed and bounded; a typed FCM invalid argument
+            // identifies the token only when no payload field violation is reported.
+            if !error
+                .error
+                .details
+                .iter()
+                .any(|d| d.kind == "type.googleapis.com/google.rpc.BadRequest")
+                && error.error.details.iter().any(|d| {
+                    d.kind == "type.googleapis.com/google.firebase.fcm.v1.FcmError"
+                        && matches!(
+                            (response.status, d.code.as_deref()),
+                            (400, Some("INVALID_ARGUMENT"))
+                                | (404, Some("UNREGISTERED"))
+                                | (403, Some("SENDER_ID_MISMATCH"))
+                        )
+                })
+            {
                 return Outcome::InvalidRegistration;
             }
         }

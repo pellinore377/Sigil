@@ -20,10 +20,13 @@ pub enum Hint {
     InvalidStructure,
     TimezoneRequired,
     RepeatedOption,
+    ConfirmTime,
+    IdentityRequired,
+    AmbiguousIdentity,
 }
 pub enum Parsed {
     Text(Text),
-    Card(Card),
+    Card(Box<Card>),
 }
 pub struct Draft {
     pub content: Parsed,
@@ -70,26 +73,59 @@ fn literal(source: &str, limits: CardLimits, hint: Option<Hint>) -> Result<Draft
         hints: hint.into_iter().collect(),
     })
 }
-/// Parse a standalone note, checklist or poll. Incomplete/invalid syntax stays
-/// noninteractive, with redaction still applied. Mixed block messages remain text.
+/// Incomplete/invalid syntax stays literal, with redaction still applied.
 pub fn parse_card(source: &str, origin: Origin<'_>, limits: CardLimits) -> Result<Draft, Error> {
+    parse_card_with_dates(source, origin, limits, None)
+}
+pub fn parse_card_with_dates(
+    source: &str,
+    origin: Origin<'_>,
+    limits: CardLimits,
+    order: Option<crate::time::DateOrder>,
+) -> Result<Draft, Error> {
     limits.validate()?;
     if source.len() > limits.text.source_bytes {
         return Err(Error::Limit);
     }
     let trimmed = source.trim_end();
-    let recognized = ["checklist::", "poll::", "note::"]
-        .iter()
-        .any(|p| trimmed.starts_with(p));
+    if let Some(draft) = crate::contact::parse_card(source, origin, limits, &[])? {
+        return Ok(draft);
+    }
+    if let Some(query) = trimmed
+        .strip_prefix("help::")
+        .and_then(|s| s.strip_suffix(';'))
+    {
+        return match crate::help::sheet(query, limits.text) {
+            Ok(text) => Ok(Draft {
+                content: Parsed::Text(text),
+                hints: Vec::new(),
+            }),
+            Err(Error::Invalid) => literal(source, limits, Some(Hint::InvalidStructure)),
+            Err(error) => Err(error),
+        };
+    }
+    let recognized = crate::help::structured_prefix(trimmed);
     if !recognized {
         return literal(source, limits, None);
     }
+    parse_recognized(source, trimmed, origin, limits, order)
+}
+fn parse_recognized(
+    source: &str,
+    trimmed: &str,
+    origin: Origin<'_>,
+    limits: CardLimits,
+    order: Option<crate::time::DateOrder>,
+) -> Result<Draft, Error> {
     let mut lines: Vec<&str> = trimmed.lines().collect();
     if lines.is_empty() {
         return literal(source, limits, None);
     }
     let mut terminated = false;
     for (i, line) in lines.iter().enumerate() {
+        if trimmed.starts_with("art::") && i + 1 < lines.len() {
+            continue;
+        }
         let positions = terminators(line);
         for position in positions {
             if i + 1 == lines.len() && position + 1 == line.len() && !terminated {
@@ -111,6 +147,72 @@ pub fn parse_card(source: &str, origin: Origin<'_>, limits: CardLimits) -> Resul
             return literal(source, limits, Some(Hint::InvalidStructure));
         }
         Construct::Note(Note { text: label(text)? })
+    } else if [
+        "calc::",
+        "convert::",
+        "math::",
+        "art::",
+        "qr::",
+        "roll::",
+        "pick::",
+        "kbd::",
+        "rate::",
+        "progress::",
+        "quote::",
+        "swatch::",
+    ]
+    .iter()
+    .any(|p| lines[0].starts_with(p))
+    {
+        match crate::utility::parse(&lines, limits) {
+            Ok(value) => Construct::Utility(value),
+            Err(Error::Limit) => return Err(Error::Limit),
+            Err(_) => return literal(source, limits, Some(Hint::InvalidStructure)),
+        }
+    } else if ["chart::", "diagram::", "table::", "recipe::"]
+        .iter()
+        .any(|p| lines[0].starts_with(p))
+    {
+        match crate::data::parse(&lines, limits) {
+            Ok(value) => Construct::Data(value),
+            Err(Error::Limit) => return Err(Error::Limit),
+            Err(_) => return literal(source, limits, Some(Hint::InvalidStructure)),
+        }
+    } else if ["remind::", "timer::", "countdown::", "ago::"]
+        .iter()
+        .any(|p| lines[0].starts_with(p))
+    {
+        if lines.len() != 1 {
+            return literal(source, limits, Some(Hint::InvalidStructure));
+        }
+        let (kind, rest) = lines[0].split_once("::").ok_or(Error::Invalid)?;
+        let result = if kind == "timer" {
+            crate::time::duration(rest)
+                .and_then(|duration| crate::time::Timer::new(origin.created_at, duration))
+                .map(Construct::Timer)
+        } else {
+            let Some(zone) = origin.timezone else {
+                return literal(source, limits, Some(Hint::TimezoneRequired));
+            };
+            let Some((date, text)) = rest.split_once("::") else {
+                return literal(source, limits, Some(Hint::InvalidStructure));
+            };
+            crate::time::resolve_date(date, origin.created_at, zone, order)
+                .and_then(|at| crate::time::Dated::new(label(text)?, at, zone))
+                .map(|value| match kind {
+                    "remind" => Construct::Reminder(value),
+                    "countdown" => Construct::Countdown(value),
+                    _ => Construct::Ago(value),
+                })
+        };
+        match result {
+            Ok(content) => {
+                hints.push(Hint::ConfirmTime);
+                content
+            }
+            Err(Error::Limit) => return Err(Error::Limit),
+            Err(_) => return literal(source, limits, Some(Hint::InvalidStructure)),
+        }
     } else if let Some(mut title) = lines[0].strip_prefix("checklist::") {
         let mode = if let Some(rest) = title.strip_prefix("task::") {
             title = rest;
@@ -226,7 +328,7 @@ pub fn parse_card(source: &str, origin: Origin<'_>, limits: CardLimits) -> Resul
     };
     match card.validate(limits) {
         Ok(()) => Ok(Draft {
-            content: Parsed::Card(card),
+            content: Parsed::Card(Box::new(card)),
             hints,
         }),
         Err(Error::Invalid) => literal(source, limits, Some(Hint::InvalidStructure)),

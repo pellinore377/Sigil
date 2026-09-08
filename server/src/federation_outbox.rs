@@ -150,7 +150,7 @@ impl Store {
         Ok(result)
     }
 }
-fn terminal(
+pub(crate) fn terminal(
     tx: &Transaction<'_>,
     sender: &str,
     id: &str,
@@ -483,12 +483,18 @@ pub(crate) async fn run(state: AppState) {
 }
 async fn worker(state: AppState) {
     loop {
+        let wake = state.federation_wake.notified();
+        tokio::pin!(wake);
+        wake.as_mut().enable();
         let job = with_store(state.clone(), |s| {
             s.claim_federation_delivery(crate::enrollment::now()?)
         })
         .await;
         let Ok(Some(job)) = job else {
-            tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+            tokio::select! {
+                _ = wake => (),
+                _ = tokio::time::sleep(std::time::Duration::from_secs(1)) => (),
+            }
             continue;
         };
         let result = tokio::task::spawn_blocking(move || {

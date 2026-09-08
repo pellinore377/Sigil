@@ -86,22 +86,60 @@ impl HttpsClient {
         index: u32,
         access: &str,
     ) -> Result<Zeroizing<Vec<u8>>, Error> {
+        self.attachment_chunk_at(None, shape, index, access)
+    }
+    pub(crate) fn attachment_chunk_at(
+        &self,
+        source: Option<&str>,
+        shape: Shape,
+        index: u32,
+        access: &str,
+    ) -> Result<Zeroizing<Vec<u8>>, Error> {
         let length = shape
             .chunk_length(index)
             .map_err(|_| Error::Configuration)?
             + CHUNK_OVERHEAD;
-        let bytes = self.response_bytes(
-            self.request_bytes(
-                Method::GET,
-                &format!("{}/chunks/{index}", path(&shape.file)),
-                &[],
-                None,
-                Some(access),
-            )?,
-            200,
-            length,
-            "application/octet-stream",
-        )?;
+        let bytes = if let Some(source) = source.filter(|s| *s != self.server) {
+            let encoded = self.federated_service(
+                source,
+                sigil_protocol::federation::Service::AttachmentChunk {
+                    file: crate::transport::hex(&shape.file),
+                    index,
+                    access: access.into(),
+                },
+            )?;
+            if !valid_hex(&encoded, length * 2, length * 2) {
+                return Err(Error::InvalidResponse);
+            }
+            Zeroizing::new(
+                encoded
+                    .as_bytes()
+                    .as_chunks::<2>()
+                    .0
+                    .iter()
+                    .map(|p| {
+                        u8::from_str_radix(
+                            std::str::from_utf8(p).map_err(|_| Error::InvalidResponse)?,
+                            16,
+                        )
+                        .map_err(|_| Error::InvalidResponse)
+                    })
+                    .collect::<Result<Vec<_>, _>>()?,
+            )
+        } else {
+            self.response_bytes(
+                self.request_bytes(
+                    Method::GET,
+                    &format!("{}/chunks/{index}", path(&shape.file)),
+                    &[],
+                    None,
+                    Some(access),
+                )?,
+                200,
+                length,
+                "application/octet-stream",
+            )?
+        };
         if bytes.len() != length {
             return Err(Error::InvalidResponse);
         }

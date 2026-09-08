@@ -27,6 +27,16 @@ CREATE TABLE private_group_nonces(nonce BLOB PRIMARY KEY CHECK(length(nonce)=32)
 CREATE INDEX private_group_nonces_expiry ON private_group_nonces(expires_at);
 ";
 
+// One proposal per device. Winning submissions remain receipt-recovery evidence;
+// losing submissions expire on cutover. Old retries cannot recreate stale work.
+pub(crate) const RELAY_MIGRATION: &str = "
+CREATE TABLE private_group_proposals(group_id BLOB NOT NULL REFERENCES private_groups(id),author BLOB NOT NULL CHECK(length(author)=64),predecessor BLOB NOT NULL CHECK(length(predecessor)=32),head BLOB NOT NULL CHECK(length(head)=32),revision INTEGER NOT NULL,control BLOB NOT NULL,PRIMARY KEY(group_id,author));
+";
+pub(crate) const INVITATION_MIGRATION: &str = "
+CREATE TABLE private_group_invitations(group_id BLOB NOT NULL REFERENCES private_groups(id),id BLOB NOT NULL CHECK(length(id)=32),author BLOB NOT NULL CHECK(length(author)=64),target BLOB NOT NULL CHECK(length(target)=64),expires_at INTEGER NOT NULL,status INTEGER NOT NULL CHECK(status IN(0,1,2,3)),PRIMARY KEY(group_id,id));
+CREATE UNIQUE INDEX private_group_invited_target ON private_group_invitations(group_id,target) WHERE status=0;
+";
+
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Material {
@@ -155,6 +165,23 @@ pub(crate) fn reset_after_restore(tx: &Transaction<'_>) -> Result<(), StoreError
         [sql(next(revision)?)?],
     )?;
     tx.execute("UPDATE private_groups SET restored=1", [])?;
+    let released: u64 = tx.query_row(
+        "SELECT coalesce(sum(512+length(control)),0) FROM private_group_proposals",
+        [],
+        |r| unsigned(r, 0),
+    )?;
+    if tx.execute(
+        "UPDATE group_authority SET used=used-?1 WHERE id=1 AND used>=?1",
+        [sql(released)?],
+    )? != 1
+    {
+        return Err(StoreError::InvalidData);
+    }
+    tx.execute("DELETE FROM private_group_proposals", [])?;
+    tx.execute(
+        "UPDATE private_group_invitations SET status=2 WHERE status=0",
+        [],
+    )?;
     Ok(())
 }
 
@@ -247,50 +274,62 @@ impl Store {
             .0
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
         let device = authorize(&tx, credential, now)?;
-        let stored = read(&tx)?;
-        if !stored.enabled {
-            return Err(StoreError::Forbidden);
-        }
-        let authority = stored.authority.ok_or(StoreError::InvalidData)?;
-        if request.authority != hex(&authority.id()) {
-            return Err(StoreError::Conflict);
-        }
         let binding: Vec<u8> = tx.query_row("SELECT CASE WHEN length(statement)<=512 THEN statement END FROM device_bindings WHERE device=?1",[&device],|r|r.get(0)).optional()?.ok_or(StoreError::NotFound)?;
-        let issuance = authority.issuance(&binding, request.day).map_err(crypto)?;
-        let previous: Option<Vec<u8>> = tx
-            .query_row(
-                "SELECT fingerprint FROM group_credential_uids WHERE uid=?1",
-                [issuance.uid.as_slice()],
-                |r| r.get(0),
-            )
-            .optional()?;
-        if let Some(previous) = previous {
-            if previous != issuance.fingerprint {
-                return Err(StoreError::Conflict);
-            }
-        } else {
-            reserve(&tx, 512)?;
-            tx.execute(
-                "INSERT INTO group_credential_uids VALUES(?1,?2)",
-                (issuance.uid.as_slice(), issuance.fingerprint.as_slice()),
-            )?;
-        }
-        let response = stored
-            .issuer
-            .ok_or(StoreError::InvalidData)?
-            .issue(
-                &issuance.attributes().map_err(crypto)?,
-                issuance.day,
-                issuance.context(),
-            )
-            .map_err(crypto)?;
-        let result = CredentialResponse {
-            authority: hex(&authority.id()),
-            uid: hex(&issuance.uid),
-            day: issuance.day,
-            response: hex(&response),
-        };
+        let result = issue_in(&tx, &binding, request, now)?;
         tx.commit()?;
         Ok(result)
     }
+}
+pub(crate) fn issue_in(
+    tx: &Transaction<'_>,
+    binding: &[u8],
+    request: CredentialRequest,
+    now: u64,
+) -> Result<CredentialResponse, StoreError> {
+    if now == 0 || request.day as u64 != now / 86400 {
+        return Err(StoreError::Invalid("credential must be for today"));
+    }
+    let stored = read(tx)?;
+    if !stored.enabled {
+        return Err(StoreError::Forbidden);
+    }
+    let authority = stored.authority.ok_or(StoreError::InvalidData)?;
+    if request.authority != hex(&authority.id()) {
+        return Err(StoreError::Conflict);
+    }
+    let issuance = authority.issuance(binding, request.day).map_err(crypto)?;
+    let previous: Option<Vec<u8>> = tx
+        .query_row(
+            "SELECT fingerprint FROM group_credential_uids WHERE uid=?1",
+            [issuance.uid.as_slice()],
+            |r| r.get(0),
+        )
+        .optional()?;
+    if let Some(previous) = previous {
+        if previous != issuance.fingerprint {
+            return Err(StoreError::Conflict);
+        }
+    } else {
+        reserve(tx, 512)?;
+        tx.execute(
+            "INSERT INTO group_credential_uids VALUES(?1,?2)",
+            (issuance.uid.as_slice(), issuance.fingerprint.as_slice()),
+        )?;
+    }
+    let response = stored
+        .issuer
+        .ok_or(StoreError::InvalidData)?
+        .issue(
+            &issuance.attributes().map_err(crypto)?,
+            issuance.day,
+            issuance.context(),
+        )
+        .map_err(crypto)?;
+    let result = CredentialResponse {
+        authority: hex(&authority.id()),
+        uid: hex(&issuance.uid),
+        day: issuance.day,
+        response: hex(&response),
+    };
+    Ok(result)
 }

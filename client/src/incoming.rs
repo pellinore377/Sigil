@@ -22,6 +22,10 @@ pub struct Incoming {
     /// Already accepted logical content; transport bookkeeping may still be new.
     pub duplicate: bool,
 }
+enum DeliveryResult {
+    Accepted(Incoming),
+    Group(Id),
+}
 pub struct IncomingAttempt {
     pub sequence: i64,
     pub result: Result<MailboxEvent, Error>,
@@ -31,7 +35,11 @@ pub enum MailboxEvent {
     Text(Incoming),
     File(Incoming),
     SigilText(Incoming),
+    Conversation,
+    Call(Id),
     GroupDistribution(groups::DistributionReceipt),
+    GroupInvitation(Id),
+    GroupHistory(Id),
     GroupText(groups::GroupMessage),
     GroupFile(groups::GroupMessage),
     GroupSigilText(groups::GroupMessage),
@@ -65,11 +73,13 @@ impl Record {
             (self.session.as_slice(), self.message.as_slice()),
             |r| r.get(0),
         )?;
+        let plaintext = key.open(&content, &binding(2, &self.session, &self.message))?;
+        crate::erasure::require_retained(&plaintext)?;
         Ok(Incoming {
             peer: self.peer,
             session: self.session,
             message: self.message,
-            plaintext: key.open(&content, &binding(2, &self.session, &self.message))?,
+            plaintext,
             duplicate: true,
         })
     }
@@ -133,10 +143,40 @@ impl ClientStore {
         tx.commit()?;
         Ok(incoming)
     }
-    /// Route only through an explicitly verified device. At most eight bound
-    /// sessions are tried; failed candidate decryptions never change live state.
-    /// The returned content and acknowledgement journal commit atomically.
+    /// Direct messages require a verified device. An unverified device may only
+    /// install an initial distribution authorized by signed group membership.
+    /// At most eight bound direct sessions are tried. Content, key changes and
+    /// the acknowledgement journal commit atomically.
     pub fn accept_delivery(&mut self, delivery: &Delivery) -> Result<Incoming, Error> {
+        self.accept_delivery_at(delivery, crate::conversations::now())
+    }
+    pub fn accept_delivery_at(&mut self, delivery: &Delivery, now: u64) -> Result<Incoming, Error> {
+        match self.accept_delivery_inner(delivery, false, now)? {
+            DeliveryResult::Accepted(incoming) => Ok(incoming),
+            DeliveryResult::Group(_) => Err(Error::InvalidStore),
+        }
+    }
+    /// Authenticate a distribution in a rolled-back transaction, refresh its
+    /// pinned authority, then reauthenticate and commit against the new state.
+    pub fn accept_delivery_online(
+        &mut self,
+        delivery: &Delivery,
+        now: u64,
+    ) -> Result<Incoming, Error> {
+        match self.accept_delivery_inner(delivery, true, now)? {
+            DeliveryResult::Accepted(incoming) => Ok(incoming),
+            DeliveryResult::Group(group) => {
+                self.refresh_group_authority_for_send(group, now)?;
+                self.accept_delivery_at(delivery, now)
+            }
+        }
+    }
+    fn accept_delivery_inner(
+        &mut self,
+        delivery: &Delivery,
+        preflight: bool,
+        now: u64,
+    ) -> Result<DeliveryResult, Error> {
         if delivery.sequence <= 0
             || delivery.expires_at == 0
             || delivery.expires_at > i64::MAX as u64
@@ -157,7 +197,7 @@ impl ClientStore {
             .split_once(':')
             .ok_or(Error::InvalidStore)?
             .1;
-        let peer = peers::reference(server, &sender);
+        let peer = crate::federation::delivery_peer(&self.db, &self.key, server, delivery)?;
         let own_statement = self.own_device_binding()?;
         let packet: Vec<u8> = delivery
             .payload
@@ -188,8 +228,16 @@ impl ClientStore {
         )? {
             return Err(Error::Conflict);
         }
-        if peers::destination(&tx, &self.key, &peer)? != sender {
+        let known = peers::known(&tx, &self.key, &peer)?;
+        if known.binding.device != sender {
             return Err(Error::Conflict);
+        }
+        if known.blocked
+            || known.changed_fingerprint.is_some()
+            || known.replaced_by.is_some()
+            || (!known.verified && !initial)
+        {
+            return Err(Error::Unprepared);
         }
         if let Some(prior) = record(&tx, &self.key, &own, delivery.sequence)? {
             if prior.peer != peer
@@ -200,6 +248,9 @@ impl ClientStore {
                 return Err(Error::Conflict);
             }
             let incoming = prior.message(&tx, &self.key)?;
+            if !known.verified && incoming.distribution()?.is_none() {
+                return Err(Error::Unprepared);
+            }
             event::validate(
                 &tx,
                 &self.key,
@@ -218,7 +269,7 @@ impl ClientStore {
                 &incoming.plaintext,
             )?;
             tx.commit()?;
-            return Ok(incoming);
+            return Ok(DeliveryResult::Accepted(incoming));
         }
         let (session, mut plaintext, fresh) = if let Some(slot) = slot {
             let session: Id = Sha256::digest(
@@ -235,7 +286,7 @@ impl ClientStore {
                 .concat(),
             )
             .into();
-            let expected = peers::identity(&tx, &self.key, &peer)?;
+            let expected = known.binding.identity;
             let fresh = !tx.query_row(
                 "SELECT EXISTS(SELECT 1 FROM inbox WHERE session=?1 AND id=?2)",
                 (session.as_slice(), message.as_slice()),
@@ -243,7 +294,12 @@ impl ClientStore {
             )?;
             let plaintext =
                 handshake::accept(&tx, &self.key, slot, session, message, expected, &packet)?;
-            peers::bind_session(&tx, &self.key, &session, &peer)?;
+            if known.verified
+                && !groups::is_distribution_wire(&plaintext)
+                && groups::distribution_receipt(&plaintext)?.is_none()
+            {
+                peers::bind_session(&tx, &self.key, &session, &peer)?;
+            }
             (session, plaintext, fresh)
         } else {
             let parsed = Packet::from_bytes(&packet)?;
@@ -286,6 +342,19 @@ impl ClientStore {
             )?;
             (session, plaintext, true)
         };
+        // An unverified identity can authenticate a candidate initial packet,
+        // but only a distribution authorized by signed group membership may
+        // commit. Ordinary messages and channel selection remain direct-only.
+        if !known.verified
+            && !groups::is_distribution_wire(&plaintext)
+            && groups::distribution_receipt(&plaintext)?.is_none()
+        {
+            return Err(Error::Unprepared);
+        }
+        if preflight && groups::is_distribution_wire(&plaintext) {
+            let group = groups::distribution_group(&plaintext)?;
+            return Ok(DeliveryResult::Group(group));
+        }
         if let Some(marker) = groups::install_distribution(
             &tx,
             &self.key,
@@ -293,6 +362,29 @@ impl ClientStore {
             &peer,
             &message,
             &plaintext,
+            delivery.expires_at,
+        )? {
+            plaintext = Zeroizing::new(marker);
+        }
+        if let Some(marker) = groups::install_invitation(
+            &tx,
+            &self.key,
+            &own_statement,
+            &peer,
+            &message,
+            &plaintext,
+            delivery.expires_at,
+        )? {
+            plaintext = Zeroizing::new(marker);
+        }
+        if let Some(marker) = crate::calls::install(
+            &tx,
+            &self.key,
+            &own_statement,
+            &peer,
+            &message,
+            &plaintext,
+            now,
         )? {
             plaintext = Zeroizing::new(marker);
         }
@@ -308,7 +400,21 @@ impl ClientStore {
         let duplicate =
             event::remember(&tx, &self.key, &own_statement, &peer, &session, &plaintext)?;
         event::retain(&tx, &self.key, &own_statement, &peer, &plaintext, false)?;
-        if fresh {
+        let group_initial = initial
+            && session_peer(&tx, &session)?.is_none()
+            && groups::distribution_receipt(&plaintext)?.is_some();
+        if group_initial {
+            let receipt = groups::distribution_receipt(&plaintext)?.ok_or(Error::InvalidStore)?;
+            groups::mark_channel(
+                &tx,
+                &self.key,
+                &device_fingerprint(&own_statement)?,
+                &session,
+                &receipt.context.group,
+                &known.fingerprint,
+            )?;
+        }
+        if fresh && known.verified && !group_initial {
             if initial {
                 selection::activate(&tx, &self.key, &peer, &session)?;
             } else {
@@ -331,13 +437,13 @@ impl ClientStore {
             ),
         )?;
         tx.commit()?;
-        Ok(Incoming {
+        Ok(DeliveryResult::Accepted(Incoming {
             peer,
             session,
             message,
             plaintext,
             duplicate,
-        })
+        }))
     }
 
     /// One bounded fetch. A durable scan cursor moves past individual failures
@@ -366,42 +472,56 @@ impl ClientStore {
                     .is_some_and(|prefix| prefix.eq_ignore_ascii_case("53475252"))
                 {
                     self.route_retry(delivery, now, true)
-                } else if delivery
-                    .payload
-                    .get(..8)
-                    .is_some_and(|prefix| prefix.eq_ignore_ascii_case("53474b4d"))
+                } else if groups::is_envelope(&delivery.payload)
+                    || delivery
+                        .payload
+                        .get(..8)
+                        .is_some_and(|prefix| prefix.eq_ignore_ascii_case("53474b4d"))
                 {
-                    self.accept_group_delivery(delivery).and_then(|message| {
-                        match message.event()?.content {
-                            sigil_protocol::event::Content::File(_) => {
-                                Ok(MailboxEvent::GroupFile(message))
+                    self.accept_group_delivery_online(delivery, now)
+                        .and_then(|message| {
+                            match crate::conversations::require_payload(
+                                &self.db,
+                                &self.key,
+                                &message.plaintext,
+                                now,
+                                false,
+                            ) {
+                                Ok(()) => {}
+                                Err(Error::Obsolete) => return Ok(MailboxEvent::Conversation),
+                                Err(error) => return Err(error),
                             }
-                            sigil_protocol::event::Content::Rich(_) => {
-                                Ok(MailboxEvent::GroupSigilText(message))
+                            match message.event()?.content {
+                                sigil_protocol::event::Content::Conversation(_) => {
+                                    Ok(MailboxEvent::Conversation)
+                                }
+                                sigil_protocol::event::Content::File(_) => {
+                                    Ok(MailboxEvent::GroupFile(message))
+                                }
+                                sigil_protocol::event::Content::Rich(_) => {
+                                    Ok(MailboxEvent::GroupSigilText(message))
+                                }
+                                sigil_protocol::event::Content::Text(_) => {
+                                    Ok(MailboxEvent::GroupText(message))
+                                }
                             }
-                            sigil_protocol::event::Content::Text(_) => {
-                                Ok(MailboxEvent::GroupText(message))
+                        })
+                } else {
+                    match self.accept_delivery_online(delivery, now) {
+                        Ok(message) => {
+                            match crate::conversations::require_payload(
+                                &self.db,
+                                &self.key,
+                                &message.plaintext,
+                                now,
+                                false,
+                            ) {
+                                Ok(()) => ordinary_event(message),
+                                Err(Error::Obsolete) => Ok(MailboxEvent::Conversation),
+                                Err(error) => Err(error),
                             }
                         }
-                    })
-                } else {
-                    match self.accept_delivery(delivery) {
-                        Ok(message) => match message.distribution() {
-                            Ok(Some(receipt)) => Ok(MailboxEvent::GroupDistribution(receipt)),
-                            Ok(None) => match message.event().map(|event| event.content) {
-                                Ok(sigil_protocol::event::Content::File(_)) => {
-                                    Ok(MailboxEvent::File(message))
-                                }
-                                Ok(sigil_protocol::event::Content::Rich(_)) => {
-                                    Ok(MailboxEvent::SigilText(message))
-                                }
-                                Ok(sigil_protocol::event::Content::Text(_)) => {
-                                    Ok(MailboxEvent::Text(message))
-                                }
-                                Err(error) => Err(error),
-                            },
-                            Err(error) => Err(error),
-                        },
+                        Err(Error::Obsolete) => Ok(MailboxEvent::Conversation),
                         Err(error) => match self.resolve_failed_delivery(delivery) {
                             Ok(true) => {
                                 decode_id(&delivery.message_id).map(MailboxEvent::RecoveredDelivery)
@@ -525,4 +645,25 @@ fn cursor(db: &Connection, key: &StorageKey, own: &Id) -> Result<(i64, Option<Ve
         return Err(Error::InvalidStore);
     }
     Ok((value, sealed))
+}
+
+fn ordinary_event(message: Incoming) -> Result<MailboxEvent, Error> {
+    if let Some(id) = crate::calls::receipt_call(&message.plaintext)? {
+        return Ok(MailboxEvent::Call(id));
+    }
+    if let Some(id) = groups::invitation_reference(&message.plaintext)? {
+        return Ok(MailboxEvent::GroupInvitation(id));
+    }
+    if let Some(receipt) = message.distribution()? {
+        if let Some(id) = receipt.history_share() {
+            return Ok(MailboxEvent::GroupHistory(id));
+        }
+        return Ok(MailboxEvent::GroupDistribution(receipt));
+    }
+    Ok(match message.event()?.content {
+        sigil_protocol::event::Content::Conversation(_) => MailboxEvent::Conversation,
+        sigil_protocol::event::Content::File(_) => MailboxEvent::File(message),
+        sigil_protocol::event::Content::Rich(_) => MailboxEvent::SigilText(message),
+        sigil_protocol::event::Content::Text(_) => MailboxEvent::Text(message),
+    })
 }

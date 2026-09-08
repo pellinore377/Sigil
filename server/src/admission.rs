@@ -43,7 +43,7 @@ pub(crate) fn grant(db: &Connection, sender: &str, recipient: &str) -> Result<()
         [recipient],
         |r| r.get(0),
     )?;
-    if count >= 256 {
+    if count >= 4096 {
         return Err(StoreError::Busy);
     }
     db.execute(
@@ -116,7 +116,7 @@ impl Store {
         let recipient = authorize(&tx, credential, now)?;
         let values = {
             let mut stmt = tx.prepare(
-                "SELECT sender FROM allowed_senders WHERE recipient=?1 ORDER BY sender LIMIT 256",
+                "SELECT sender FROM allowed_senders WHERE recipient=?1 ORDER BY sender LIMIT 4096",
             )?;
             let rows = stmt
                 .query_map([recipient], |r| r.get(0))?

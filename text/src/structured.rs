@@ -7,6 +7,7 @@ pub type Id = [u8; 32];
 pub struct CardLimits {
     pub items: usize,
     pub options: usize,
+    pub dice_sides: u32,
     pub text: Limits,
 }
 impl Default for CardLimits {
@@ -14,6 +15,7 @@ impl Default for CardLimits {
         Self {
             items: 256,
             options: 64,
+            dice_sides: 1_000_000,
             text: Limits::default(),
         }
     }
@@ -21,7 +23,10 @@ impl Default for CardLimits {
 impl CardLimits {
     pub(crate) fn validate(self) -> Result<(), Error> {
         self.text.validate()?;
-        if !(1..=256).contains(&self.items) || !(2..=64).contains(&self.options) {
+        if !(1..=256).contains(&self.items)
+            || !(2..=64).contains(&self.options)
+            || !(2..=1_000_000).contains(&self.dice_sides)
+        {
             return Err(Error::Limit);
         }
         Ok(())
@@ -48,6 +53,15 @@ pub enum Construct {
     Checklist(Checklist),
     Poll(Poll),
     Note(Note),
+    Reminder(crate::time::Dated),
+    Countdown(crate::time::Dated),
+    Ago(crate::time::Dated),
+    Timer(crate::time::Timer),
+    Data(crate::data::Data),
+    Utility(crate::utility::Utility),
+    Contact(crate::contact::Contact),
+    Service(Box<crate::service::Snapshot>),
+    Location(crate::location::Share),
 }
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -163,6 +177,37 @@ impl Card {
             Ok(())
         };
         match &self.content {
+            Construct::Location(value) => {
+                value.validate(self.created_at)?;
+                add(&value.label)?;
+            }
+            Construct::Service(value) => {
+                value.validate(limits)?;
+                for text in value.texts() {
+                    add(text)?;
+                }
+            }
+            Construct::Contact(value) => {
+                value.validate()?;
+                add(&value.display_name)?;
+            }
+            Construct::Utility(value) => {
+                value.validate(limits)?;
+                for text in value.texts() {
+                    add(text)?;
+                }
+            }
+            Construct::Data(value) => {
+                value.validate(limits)?;
+                for text in value.texts() {
+                    add(text)?;
+                }
+            }
+            Construct::Reminder(value) | Construct::Countdown(value) | Construct::Ago(value) => {
+                value.validate()?;
+                add(&value.text)?;
+            }
+            Construct::Timer(value) => value.validate()?,
             Construct::Note(Note { text }) => {
                 label(text, limits.text.body_bytes)?;
                 add(text)?;
@@ -170,7 +215,10 @@ impl Card {
             Construct::Checklist(list) => {
                 label(&list.title, 512)?;
                 add(&list.title)?;
-                if list.items.is_empty() || list.items.len() > limits.items {
+                if list.items.is_empty() {
+                    return Err(Error::Invalid);
+                }
+                if list.items.len() > limits.items {
                     return Err(Error::Limit);
                 }
                 if let ListMode::Recurring(rule) = &list.mode {
@@ -194,7 +242,10 @@ impl Card {
             Construct::Poll(poll) => {
                 label(&poll.question, 512)?;
                 add(&poll.question)?;
-                if !(2..=limits.options).contains(&poll.options.len()) {
+                if poll.options.len() < 2 {
+                    return Err(Error::Invalid);
+                }
+                if poll.options.len() > limits.options {
                     return Err(Error::Limit);
                 }
                 if matches!(poll.selection,Selection::Capped(n) if n<2 || n as usize>poll.options.len())
@@ -216,6 +267,30 @@ impl Card {
     pub fn body(&self) -> Result<String, Error> {
         self.validate(Default::default())?;
         let body = match &self.content {
+            Construct::Service(value) => value.body()?,
+            Construct::Location(value) => value.body(),
+            Construct::Contact(value) => value.body()?,
+            Construct::Utility(value) => value.body()?,
+            Construct::Data(value) => value.body(),
+            Construct::Reminder(value) | Construct::Countdown(value) | Construct::Ago(value) => {
+                format!(
+                    "{}: {} · {} ({})",
+                    match self.content {
+                        Construct::Reminder(_) => "Reminder",
+                        Construct::Countdown(_) => "Countdown",
+                        _ => "Since",
+                    },
+                    value.text.body(),
+                    crate::time::timestamp(value.at)?,
+                    value.timezone
+                )
+            }
+            Construct::Timer(value) => format!(
+                "Timer: {} seconds · {} — {}",
+                value.ends_at - value.started_at,
+                crate::time::timestamp(value.started_at)?,
+                crate::time::timestamp(value.ends_at)?
+            ),
             Construct::Note(Note { text }) => format!("Note: {}", text.body()),
             Construct::Checklist(list) => {
                 let mut body = format!(
@@ -257,6 +332,19 @@ impl Card {
         self.validate(Default::default())?;
         let mut html = String::from("<div>");
         match &self.content {
+            Construct::Contact(value) => {
+                html.push_str(&Text::plain(&value.body()?, Limits::default())?.html())
+            }
+            Construct::Service(value) => html.push_str(&value.html()?),
+            Construct::Location(value) => html.push_str(&value.html()?),
+            Construct::Utility(value) => html.push_str(&value.html()?),
+            Construct::Data(value) => html.push_str(&value.html()?),
+            Construct::Reminder(_)
+            | Construct::Countdown(_)
+            | Construct::Ago(_)
+            | Construct::Timer(_) => {
+                html.push_str(&Text::plain(&self.body()?, Default::default())?.html())
+            }
             Construct::Note(Note { text }) => {
                 html.push_str("<p><strong>Note</strong></p>");
                 html.push_str(&text.html());
@@ -358,11 +446,17 @@ pub(crate) mod inline {
     struct Value {
         body: String,
         spans: Vec<Span>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        blocks: Vec<crate::Block>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        mentions: Vec<crate::contact::Mention>,
     }
     pub fn serialize<S: serde::Serializer>(text: &Text, serializer: S) -> Result<S::Ok, S::Error> {
         Value {
             body: text.body().into(),
             spans: text.spans().to_vec(),
+            blocks: text.blocks().to_vec(),
+            mentions: text.mentions().to_vec(),
         }
         .serialize(serializer)
     }
@@ -370,7 +464,10 @@ pub(crate) mod inline {
         deserializer: D,
     ) -> Result<Text, D::Error> {
         let value = Value::deserialize(deserializer)?;
-        Text::from_parts(value.body, value.spans).map_err(serde::de::Error::custom)
+        Text::from_parts(value.body, value.spans)
+            .and_then(|v| v.with_blocks(value.blocks))
+            .and_then(|v| v.with_mentions(value.mentions))
+            .map_err(serde::de::Error::custom)
     }
 }
 pub(crate) mod id {

@@ -222,7 +222,7 @@ impl Policy {
         if request.body().len() > LIMIT || request.method() != ureq::http::Method::POST {
             return Err(Error::Limit);
         }
-        self.exchange_with(request, lookup)
+        self.exchange_with(request, lookup, LIMIT, Duration::from_secs(15))
     }
     pub(crate) fn federation(&self, request: Request<&[u8]>) -> Result<Response, Error> {
         self.federation_with(request, |host, port| {
@@ -237,18 +237,50 @@ impl Policy {
         lookup: impl Fn(String, u16) -> std::io::Result<Vec<SocketAddr>> + Send + Sync + 'static,
     ) -> Result<Response, Error> {
         let method = request.method();
-        if request.body().len() > sigil_protocol::federation::MAX_BODY
+        if request.body().len()
+            > if request.uri().path() == sigil_protocol::federation::LOOKUP_PATH {
+                sigil_protocol::federation::MAX_LOOKUP_BODY
+            } else {
+                sigil_protocol::federation::MAX_BODY
+            }
             || !((method == ureq::http::Method::GET && request.body().is_empty())
                 || method == ureq::http::Method::POST)
         {
             return Err(Error::Limit);
         }
-        self.exchange_with(request, lookup)
+        let limit = if request.uri().path() == sigil_protocol::federation::LOOKUP_PATH {
+            sigil_protocol::federation::MAX_LOOKUP_RESPONSE + 8192
+        } else {
+            LIMIT
+        };
+        self.exchange_with(request, lookup, limit, Duration::from_secs(15))
+    }
+    pub(crate) fn service(&self, request: Request<&[u8]>) -> Result<Response, Error> {
+        if request.body().len() > sigil_protocol::services::MAX_BODY
+            || !matches!(
+                *request.method(),
+                ureq::http::Method::GET | ureq::http::Method::POST
+            )
+        {
+            return Err(Error::Limit);
+        }
+        self.exchange_with(
+            request,
+            |host, port| {
+                (host.as_str(), port)
+                    .to_socket_addrs()
+                    .map(|v| v.take(17).collect())
+            },
+            sigil_protocol::services::MAX_RESPONSE,
+            Duration::from_secs(3),
+        )
     }
     fn exchange_with(
         &self,
         request: Request<&[u8]>,
         lookup: impl Fn(String, u16) -> std::io::Result<Vec<SocketAddr>> + Send + Sync + 'static,
+        response_limit: usize,
+        timeout: Duration,
     ) -> Result<Response, Error> {
         let uri = endpoint(&request.uri().to_string())?;
         let roots = match self
@@ -264,7 +296,7 @@ impl Policy {
             .max_redirects(0)
             .http_status_as_error(false)
             .tls_config(TlsConfig::builder().root_certs(roots).build())
-            .timeout_global(Some(Duration::from_secs(15)))
+            .timeout_global(Some(timeout))
             .timeout_resolve(Some(Duration::from_secs(5)))
             .timeout_connect(Some(Duration::from_secs(5)))
             .timeout_recv_body(Some(Duration::from_secs(5)))
@@ -302,7 +334,7 @@ impl Policy {
                 v.to_str()
                     .ok()
                     .and_then(|s| s.parse::<u64>().ok())
-                    .is_none_or(|len| len > LIMIT as u64)
+                    .is_none_or(|len| len > response_limit as u64)
             })
         {
             return Err(Error::Limit);
@@ -327,7 +359,7 @@ impl Policy {
             response
                 .body_mut()
                 .with_config()
-                .limit(LIMIT as u64)
+                .limit(response_limit as u64)
                 .read_to_vec()
                 .map_err(|_| Error::InvalidResponse)?,
         );

@@ -103,7 +103,7 @@ fn save(
     )?;
     Ok(())
 }
-fn save_genesis(
+pub(super) fn save_genesis(
     tx: &Transaction<'_>,
     key: &StorageKey,
     own: &Id,
@@ -177,6 +177,19 @@ fn prepared(
 }
 
 impl ClientStore {
+    pub(super) fn group_commit_after(
+        &mut self,
+        group: Id,
+        predecessor: Id,
+    ) -> Result<Option<Zeroizing<Vec<u8>>>, Error> {
+        let own = device_fingerprint(&self.own_device_binding()?)?;
+        let tx = self.db.transaction()?;
+        load(&tx, &self.key, &own, &group)?;
+        let sealed: Option<Vec<u8>> = tx.query_row("SELECT CASE WHEN length(state)<=?3 THEN state END FROM group_commits WHERE group_id=?1 AND predecessor=?2", (group.as_slice(), predecessor.as_slice(), sealed_limit(MAX_PROPOSAL_BYTES + 208) as u32), |r| r.get(0)).optional()?;
+        sealed
+            .map(|v| open_record(&self.key, &v, &aad(42, &group, &own, &predecessor)))
+            .transpose()
+    }
     /// Creates local genesis. Pin its service context and prepare/submit genesis
     /// separately before sharing the group through the authority.
     pub fn create_group(&mut self, authority: Id) -> Result<Id, Error> {

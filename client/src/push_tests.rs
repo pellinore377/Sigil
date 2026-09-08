@@ -150,6 +150,106 @@ fn activate(dir: &tempfile::TempDir, client: &mut ClientStore, now: u64) {
 }
 
 #[test]
+fn invalid_registration_does_not_automatically_resubmit_the_same_token() {
+    let (dir, _fixture, mut client, now, _) = setup();
+    activate(&dir, &mut client, now);
+    let db = Connection::open(dir.path().join("server.db")).unwrap();
+    db.execute_batch("UPDATE push_channels SET state=3,target=NULL,proof=NULL,proof_hash=NULL,expires_at=NULL,last_change=last_change-60; DELETE FROM push_jobs;").unwrap();
+    assert!(matches!(
+        client.push_step(now + 86400).unwrap(),
+        Progress::Reconciled
+    ));
+    let revision = client.push_state().unwrap().remote.unwrap().revision;
+    for elapsed in [86401, 86402, 86460] {
+        assert!(matches!(
+            client.push_step(now + elapsed).unwrap(),
+            Progress::AwaitingRegistration
+        ));
+        assert_eq!(
+            client.push_state().unwrap().remote.unwrap().revision,
+            revision
+        );
+    }
+    drop(client);
+    let mut client = open(&dir.path().join("client.db"));
+    client
+        .set_fcm_push_token("synthetic-token", now + 86461)
+        .unwrap();
+    client.push_step(now + 86461).unwrap();
+    assert_eq!(
+        client.push_state().unwrap().remote.unwrap().revision,
+        revision
+    );
+    client
+        .set_fcm_push_token("synthetic-replacement", now + 86462)
+        .unwrap();
+    assert!(
+        matches!(client.push_step(now + 86462).unwrap(), Progress::Updated(s) if s.revision == revision + 1 && s.state == RemoteState::Pending)
+    );
+}
+
+#[test]
+fn renewal_requires_a_fresh_proof_and_repaired_configuration_needs_explicit_retry() {
+    let (dir, _fixture, mut client, now, _) = setup();
+    client.set_fcm_push_token("synthetic-token", now).unwrap();
+    register(&mut client, now);
+    let (old, _) = server_push(&dir, &client);
+    client
+        .receive_fcm_push(&B64::encode_string(&old), now)
+        .unwrap();
+    client.push_step(now).unwrap();
+    let db = Connection::open(dir.path().join("server.db")).unwrap();
+    db.execute(
+        "UPDATE push_channels SET expires_at=?1,last_change=last_change-60",
+        [(now + 86399) as i64],
+    )
+    .unwrap();
+    let scope = scope(&client.db, &client.key).unwrap();
+    let (mut local, before) = read(&client.db, &client.key, &scope).unwrap();
+    local.checked = now - 86400;
+    write(&client.db, &client.key, &scope, &local, before.as_deref()).unwrap();
+    assert!(matches!(
+        client.push_step(now).unwrap(),
+        Progress::Reconciled
+    ));
+    assert!(
+        matches!(client.push_step(now).unwrap(), Progress::Updated(s) if s.revision == 2 && s.state == RemoteState::Pending)
+    );
+    assert_eq!(
+        client
+            .receive_fcm_push(&B64::encode_string(&old), now)
+            .unwrap(),
+        ReceivedHint::Ignored
+    );
+    let (fresh, _) = server_push(&dir, &client);
+    drop(client);
+    let mut client = open(&dir.path().join("client.db"));
+    client
+        .receive_fcm_push(&B64::encode_string(&fresh), now)
+        .unwrap();
+    assert!(
+        matches!(client.push_step(now).unwrap(), Progress::Updated(s) if s.state == RemoteState::Active)
+    );
+    db.execute_batch("UPDATE push_channels SET state=3,target=NULL,proof=NULL,proof_hash=NULL,expires_at=NULL,last_change=last_change-60; DELETE FROM push_jobs;").unwrap();
+    let (mut local, before) = read(&client.db, &client.key, &scope).unwrap();
+    local.checked = now - 86400;
+    write(&client.db, &client.key, &scope, &local, before.as_deref()).unwrap();
+    client.push_step(now).unwrap();
+    assert!(matches!(
+        client.push_step(now).unwrap(),
+        Progress::AwaitingRegistration
+    ));
+    client.retry_push_registration(now).unwrap();
+    assert!(
+        matches!(client.push_step(now).unwrap(), Progress::Updated(s) if s.revision == 3 && s.state == RemoteState::Pending)
+    );
+    assert!(matches!(
+        client.retry_push_registration(now),
+        Err(Error::Obsolete)
+    ));
+}
+
+#[test]
 fn own_channel_proof_is_durable_and_disabling_cannot_confirm_an_old_target() {
     let (dir, _fixture, mut client, now, _) = setup();
     client.set_fcm_push_token("synthetic-token", now).unwrap();
@@ -431,6 +531,6 @@ fn scheduled_completion_failure_keeps_progress_and_scope_rebinding_fails() {
             .db
             .query_row("PRAGMA user_version", [], |r| r.get::<_, i64>(0))
             .unwrap(),
-        55
+        68
     );
 }

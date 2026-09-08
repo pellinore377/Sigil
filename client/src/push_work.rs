@@ -6,6 +6,7 @@ pub enum Progress {
     Idle,
     AwaitingEndpoint,
     AwaitingConfirmation,
+    AwaitingRegistration,
     Reconciled,
     Updated(RemoteStatus),
 }
@@ -18,12 +19,22 @@ enum Action {
     Read,
     Send(Operation),
 }
+fn rejected(state: &Local) -> bool {
+    state.applied == state.generation
+        && state
+            .status
+            .as_ref()
+            .is_some_and(|s| s.state == RemoteState::Invalid)
+}
 fn delay(state: &Local, now: u64) -> Result<u64, Error> {
     if !state.configured {
         return Ok(3600);
     }
     if state.reconcile || state.pending.is_some() {
         return Ok(1);
+    }
+    if rejected(state) {
+        return Ok(3600);
     }
     let desired = state.preference.target()?;
     if state.applied != state.generation {
@@ -171,6 +182,9 @@ impl ClientStore {
         } else if let Some(op) = &state.pending {
             Action::Send(op.clone())
         } else if let Some(status) = state.status.as_ref() {
+            if rejected(&state) {
+                return Ok(Progress::AwaitingRegistration);
+            }
             if state.applied == state.generation
                 && status.state == RemoteState::Disabled
                 && desired.is_none()

@@ -255,7 +255,12 @@ impl Request<'_> {
                 .path
                 .bytes()
                 .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || matches!(b, b'/' | b'-'))
-            || self.body.len() > sigil_protocol::federation::MAX_BODY
+            || self.body.len()
+                > if self.path == sigil_protocol::federation::LOOKUP_PATH {
+                    sigil_protocol::federation::MAX_LOOKUP_BODY
+                } else {
+                    sigil_protocol::federation::MAX_BODY
+                }
         {
             return Err(Error::Invalid);
         }

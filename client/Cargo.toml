@@ -6,7 +6,9 @@ publish.workspace = true
 
 [dependencies]
 sigil-crypto = { path = "../crypto" }
+sigil-calls = { path = "../calls" }
 sigil-protocol = { path = "../protocol" }
+sigil-media = { path = "../media", default-features = false }
 rusqlite = { version = "=0.40.2", default-features = false, features = ["bundled"] }
 zeroize = { version = "=1.9.0", features = ["serde"] }
 sha2 = "=0.10.9"
@@ -18,8 +20,12 @@ web-push-native = { version = "=0.5.0", default-features = false }
 base64ct = { version = "=1.8.3", features = ["alloc"] }
 
 [dev-dependencies]
+ring = "=0.17.14"
 tempfile = "=3.27.0"
 sigil-server = { path = "../server" }
 axum = { version = "=0.8.9", default-features = false, features = ["http1", "json", "tokio"] }
 tokio = { version = "=1.53.1", features = ["rt-multi-thread", "net", "sync", "time"] }
 tokio-rustls = { version = "=0.26.5", default-features = false, features = ["ring", "tls12"] }
+webrtc = "=0.20.5"
+rtc = "=0.20.5"
+async-trait = "=0.1.89"
