@@ -4,9 +4,32 @@ Self-hostable encrypted messaging under development. Rust owns backend/domain lo
 
 [Plan](docs/plan.md) · [Current status](docs/Status.md) · [Security boundaries](docs/Security.md) · [Design](docs/Design.md) · [SigilText](docs/SigilText.md) · [Maps/providers](docs/Integrations.md) · [Calling](docs/Calls.md)
 
-## Build and check
+## Run and configure
+
+Install Docker with the Compose plugin, download [compose.yaml](compose.yaml), and run the command below from its directory. Compose builds the pinned server and browser interface inside Docker; no Rust, Java, Node, or preview tools need installing on the host.
+
+```sh
+docker compose up --build -d
+```
+
+Compose publishes HTTP port 18080 (container port 8080), retains data in `sigil-data`, and includes the browser setup wizard and Admin dashboard. Point your HTTPS reverse proxy at that port, open your domain, and enter the one-time code from `docker compose logs sigil`. The wizard sets your password, immutable identity domain, and optional OIDC provider; no credentials belong in Compose.
+
+For identities such as `@you:example.com` with a service at `sigil.example.com`, add one proxy location on `example.com`: `/.well-known/sigil`, forwarded to the same backend. Clients and federation discover the service there without changing the identity domain. Preserve the path; no redirect is needed.
+
+For a native process, set `SIGIL_DATA_DIR` to a private directory outside the repository and run `target/release/sigil-server serve`. `SIGIL_LISTEN` defaults to `127.0.0.1:8080`. Directories/files require permissions 0700/0600.
+
+Scripted administration remains available through the revisioned API using `Authorization: Bearer <admin.token contents>`. Keep this installation token private.
+
+The homeserver name becomes immutable. `/healthz` reports liveness; `/readyz` reports configured availability, not product completion. `/versions` distinguishes opaque storage APIs from complete messaging support.
+
+Account roles, OIDC, discovery, configuration and guided maintenance APIs are
+described in [Administration.md](docs/Administration.md). Advanced service and maintenance configuration remains available through those APIs.
+
+## Developer checks
 
 Use Cargo.lock and the toolchain pinned in Dockerfile.
+
+Attachment preview tests require Bubblewrap, FFmpeg, LibreOffice and `heif-enc` on the test machine, then `bash media/tests/runtime.sh`. These are not server deployment dependencies. The test downloads checksum-pinned PDFium without V8/XFA into a temporary directory. Set `SIGIL_TEST_OFFICE_LIBRARIES` if LibreOffice is outside `/usr/lib`; `SIGIL_TEST_PDFIUM` selects an existing library. Preview isolation currently targets Linux; other platform adapters remain client acceptance work.
 
 ```sh
 cargo build --locked --release -p sigil-server
@@ -40,27 +63,6 @@ cargo audit
 ```
 
 Dependency advisories and mitigations are documented in [Security.md](docs/Security.md#metadata-and-dependencies); the audit is not advisory-free.
-
-## Run and configure
-
-Attachment acceptance: install Bubblewrap, FFmpeg, LibreOffice and `heif-enc`, then run `bash media/tests/runtime.sh`. It downloads checksum-pinned PDFium without V8/XFA into a temporary directory. Set `SIGIL_TEST_OFFICE_LIBRARIES` if LibreOffice is outside `/usr/lib`; `SIGIL_TEST_PDFIUM` selects an existing library. Preview isolation currently targets Linux; other platform adapters remain client acceptance work.
-
-```sh
-docker compose up --build -d
-```
-
-Compose publishes HTTP port 18080 (container port 8080), retains data in `sigil-data`, and includes the browser setup wizard and Admin dashboard. Point your HTTPS reverse proxy at that port, open your domain, and enter the one-time code from `docker compose logs sigil`. The wizard sets your password, immutable identity domain, and optional OIDC provider; no credentials belong in Compose.
-
-For identities such as `@you:example.com` with a service at `sigil.example.com`, add one proxy location on `example.com`: `/.well-known/sigil`, forwarded to the same backend. Clients and federation discover the service there without changing the identity domain. Preserve the path; no redirect is needed.
-
-For a native process, set `SIGIL_DATA_DIR` to a private directory outside the repository and run `target/release/sigil-server serve`. `SIGIL_LISTEN` defaults to `127.0.0.1:8080`. Directories/files require permissions 0700/0600.
-
-Scripted administration remains available through the revisioned API using `Authorization: Bearer <admin.token contents>`. Keep this installation token private.
-
-The homeserver name becomes immutable. `/healthz` reports liveness; `/readyz` reports configured availability, not product completion. `/versions` distinguishes opaque storage APIs from complete messaging support.
-
-Account roles, OIDC, discovery, configuration and guided maintenance APIs are
-described in [Administration.md](docs/Administration.md). Advanced service and maintenance configuration remains available through those APIs.
 
 ## Maintenance
 
