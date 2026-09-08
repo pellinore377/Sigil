@@ -47,6 +47,7 @@ pub struct Configuration {
     pub client_id: Option<String>,
     pub secret_configured: bool,
     pub redirect_uri: Option<String>,
+    pub exceptions: Vec<egress::Exception>,
 }
 #[derive(Clone, Deserialize, Serialize)]
 struct Stored {
@@ -155,6 +156,10 @@ impl Store {
             secret_configured: stored
                 .as_ref()
                 .is_some_and(|s| s.provider.client_secret.is_some()),
+            exceptions: stored
+                .as_ref()
+                .map(|s| s.provider.exceptions.clone())
+                .unwrap_or_default(),
             redirect_uri: stored.map(|s| s.redirect),
         })
     }

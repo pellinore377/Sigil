@@ -20,6 +20,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.serialization.json.*
 import org.w3c.xhr.XMLHttpRequest
+import org.w3c.dom.url.URL
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
 import org.jetbrains.compose.resources.painterResource
@@ -166,15 +167,44 @@ private fun IdentityPage(status: JsonElement, busy: Boolean, run: (suspend () ->
 private fun OidcForm(status: JsonElement, busy: Boolean, run: (suspend () -> Unit) -> Unit) {
     var unlinkPassword by remember { mutableStateOf("") }
     var issuer by remember { mutableStateOf("") }; var client by remember { mutableStateOf("") }; var secret by remember { mutableStateOf("") }
+    var configuration by remember { mutableStateOf<JsonElement?>(null) }
+    var networks by remember { mutableStateOf("") }
+    var networksEdited by remember { mutableStateOf(false) }
+    LaunchedEffect(Unit) { run {
+        val saved = api("/admin/v0/oidc")
+        configuration = saved; issuer = saved.text("issuer"); client = saved.text("client_id")
+        if (issuer.isNotEmpty()) {
+            val url = URL(issuer)
+            val rule = saved.jsonObject["exceptions"]?.jsonArray?.firstOrNull {
+                it.text("host") == url.hostname.removeSurrounding("[", "]") && it.text("port") == url.port.ifEmpty { "443" }
+            }
+            networks = rule?.jsonObject?.get("networks")?.jsonArray?.joinToString(", ") { it.jsonPrimitive.content }.orEmpty()
+        }
+    } }
     Text("Connect Pocket ID or another OpenID Connect provider.")
     Text("Add this callback URL to your provider:", style = MaterialTheme.typography.bodySmall)
     androidx.compose.foundation.text.selection.SelectionContainer { Text("${status.text("public_origin")}/auth/v0/oidc/callback", style = MaterialTheme.typography.bodyMedium) }
     Field("Issuer URL", issuer, { issuer = it }, enabled = !busy)
     Field("Client ID", client, { client = it }, enabled = !busy)
     Field("Client secret · empty for a public client", secret, { secret = it }, secret = true, enabled = !busy)
-    Action("Save identity provider", !busy && issuer.isNotBlank() && client.isNotBlank()) { run {
-        val old = api("/admin/v0/oidc")
-        api("/admin/v0/oidc", "PUT", obj("expected_revision" to old.jsonObject.getValue("revision"), "confirm" to JsonPrimitive(true), "provider" to obj("issuer" to str(issuer), "client_id" to str(client), "client_secret" to if (secret.isEmpty()) JsonNull else str(secret), "exceptions" to JsonArray(emptyList()))))
+    Field("Allowed provider IPs or networks · optional", networks, { networks = it; networksEdited = true }, enabled = !busy)
+    Text("For an internal provider, enter its IP address or CIDR network; separate multiple entries with commas. This allows only this issuer's host and port. HTTPS certificate checks still apply.", style = MaterialTheme.typography.bodySmall)
+    if (configuration?.flag("secret_configured") == true) Text("Re-enter the client secret when saving changes.", style = MaterialTheme.typography.bodySmall)
+    Action("Save identity provider", !busy && configuration != null && issuer.isNotBlank() && client.isNotBlank()) { run {
+        val old = checkNotNull(configuration)
+        val url = URL(issuer.trim())
+        val host = url.hostname.removeSurrounding("[", "]")
+        val port = url.port.ifEmpty { "443" }
+        val previous = old.jsonObject["exceptions"]?.jsonArray ?: JsonArray(emptyList())
+        val exceptions = if (!networksEdited && issuer.trim() == old.text("issuer")) previous else {
+            val matching = previous.firstOrNull { it.text("host") == host && it.text("port") == port }
+            val ranges = networks.split(',').map(String::trim).filter(String::isNotEmpty).map {
+                str(if ('/' in it) it else "$it/${if (':' in it) 128 else 32}")
+            }
+            if (ranges.isEmpty()) JsonArray(emptyList()) else JsonArray(listOf(obj("host" to str(host), "port" to JsonPrimitive(port.toInt()), "networks" to JsonArray(ranges), "root_ca" to (matching?.jsonObject?.get("root_ca") ?: JsonNull))))
+        }
+        configuration = api("/admin/v0/oidc", "PUT", obj("expected_revision" to old.jsonObject.getValue("revision"), "confirm" to JsonPrimitive(true), "provider" to obj("issuer" to str(issuer.trim()), "client_id" to str(client.trim()), "client_secret" to if (secret.isEmpty()) JsonNull else str(secret), "exceptions" to exceptions)))
+        networksEdited = false
         secret = ""
     } }
     if (status.flag("oidc_enabled")) Action(if (status.flag("oidc_linked")) "Verify identity again" else "Link my administrator identity", !busy) { run {

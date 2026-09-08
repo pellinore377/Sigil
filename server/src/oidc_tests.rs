@@ -138,6 +138,30 @@ fn authenticate(store: &mut Store, state: &str, now: u64) -> Option<String> {
         .map(|c| c.secret)
 }
 #[test]
+fn private_provider_requires_a_scoped_exception_and_returns_it_without_the_secret() {
+    let _guard = crate::egress::tests::NETWORK.lock().unwrap();
+    let idp = Idp::new();
+    let mut config = idp.configuration();
+    let allowed = config.provider.as_ref().unwrap().exceptions.clone();
+    config.provider.as_mut().unwrap().exceptions.clear();
+    assert!(check(&config).is_err());
+    config.provider.as_mut().unwrap().exceptions = allowed.clone();
+    config.provider.as_mut().unwrap().exceptions[0].networks = vec!["127.0.0.2/32".into()];
+    assert!(check(&config).is_err());
+    config.provider.as_mut().unwrap().exceptions = allowed.clone();
+    let metadata = check(&config).unwrap();
+    let (_dir, mut store, _, _, _) = crate::admin::tests::setup();
+    let mut policy = store.administration_policy().unwrap();
+    policy.public_origin = Some("https://sigil.example".into());
+    store.configure_administration(policy).unwrap();
+    let saved = store.oidc_install(config, metadata).unwrap();
+    assert_eq!(saved.exceptions, allowed);
+    let public = serde_json::to_string(&store.oidc_configuration().unwrap()).unwrap();
+    assert!(!public.contains("synthetic-secret"));
+    assert!(saved.secret_configured);
+}
+
+#[test]
 fn browser_authorization_cannot_be_polled_by_a_different_client() {
     let _guard = crate::egress::tests::NETWORK.lock().unwrap();
     let idp = Idp::new();

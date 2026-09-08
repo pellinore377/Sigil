@@ -18,7 +18,7 @@ Four AddressSanitizer fuzz targets completed approximately **17.9 million execut
 
 Container acceptance passes with the actual schema-27 binary upgraded to 28, downgrade rejection, abrupt restart, idempotent retries, offline/guided backup/import/restore and credential revocation. Compose uses a public, digest-pinned GHCR image; anonymous pull and deployment acceptance pass. Synthetic OIDC regressions cover signed claims, browser binding, replay rejection, configuration reverification and password-lockout prevention. Earlier separate acceptance covers two-server outages/history sharing/files/calls, the 1 GiB attachment lifecycle, isolated Linux previews and Coturn UDP/TCP/TLS.
 
-Chromium acceptance covers the local wizard, native password inputs, editing accessibility, confirmation navigation, domain discovery, saved settings, login/logout/reload and mobile dark appearance. Static HTML and API routes share the same anti-framing policy.
+Chromium acceptance covers the local wizard, native password inputs, editing accessibility, confirmation navigation, domain discovery, saved settings, login/logout/reload and mobile dark appearance. OIDC allows explicit issuer-scoped IP/CIDR exceptions in the wizard, with saved-rule reload and removal. Private-provider policy regressions and all 109 server unit tests pass. Static HTML and API routes share the same anti-framing policy.
 
 ## Backend measurements
 
@@ -35,3 +35,5 @@ Synthetic HTTPS with simulated 50 ms request RTT; established sessions:
 Formal composition, quantitative RaptorQ healing bounds and target-machine constant-time/erasure guarantees remain unproven. Unrecoverable gaps beyond the skipped-key budget can stall a session; automatic reset is refused. Local mailbox cursors expose aggregate activity, and group credential issuance trusts the user's homeserver. Dependency review retains three advisories and one build-tool maintenance warning with reachability/mitigation notes in [Security.md](Security.md); `cargo audit` is not clean.
 
 Hardware/client acceptance still covers platform key storage/destruction and backup exclusions, scheduling, native OIDC callbacks, recovery screens, live push providers, codecs/audio routing, call setup latency, GPS/maps/alarms, accessibility, battery and UI performance. Real Pocket ID login/profile claims remain untested. TURN TCP/TLS acceptance uses a test bridge. Linux preview isolation does not certify other platforms.
+
+Zen's unthemed Compose context menu is reproduced; context-menu paste remains unresolved.
