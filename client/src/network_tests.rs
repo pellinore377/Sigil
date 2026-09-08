@@ -488,3 +488,58 @@ fn revocation_requires_exact_success_and_does_not_hide_authorization_failure() {
         }
     }
 }
+
+#[test]
+fn delegation_resolves_without_disclosing_credentials_and_keeps_identity_domain() {
+    let target = Fixture::new(Router::new().route(
+        "/client/v0/session",
+        get(|| async { (StatusCode::UNAUTHORIZED, "synthetic") }),
+    ));
+    let origin = format!("https://chat.example:{}", target.port());
+    let authority = Fixture::new(Router::new().route(
+        sigil_protocol::discovery::PATH,
+        get(move |headers: axum::http::HeaderMap| {
+            let origin = origin.clone();
+            async move {
+                assert!(!headers.contains_key(header::AUTHORIZATION));
+                axum::Json(sigil_protocol::discovery::Discovery {
+                    server_name: "chat.example".into(),
+                    api_origin: origin,
+                })
+            }
+        }),
+    ));
+    let client =
+        HttpsClient::discover("chat.example", authority.port(), &token(), &[CA.to_vec()]).unwrap();
+    assert_eq!(client.server, "chat.example");
+    assert_eq!(
+        client.api_origin().unwrap(),
+        format!("https://chat.example:{}", target.port())
+    );
+    assert!(matches!(
+        client.request(Method::GET, "/client/v0/session", None::<&()>),
+        Err(Error::Status { code: 401, .. })
+    ));
+    let wrong = Fixture::new(Router::new().route(
+        sigil_protocol::discovery::PATH,
+        get(|| async {
+            axum::Json(sigil_protocol::discovery::Discovery {
+                server_name: "other.example".into(),
+                api_origin: "https://chat.example".into(),
+            })
+        }),
+    ));
+    assert!(matches!(
+        HttpsClient::discover("chat.example", wrong.port(), &token(), &[CA.to_vec()])
+            .unwrap()
+            .api_origin(),
+        Err(Error::InvalidResponse)
+    ));
+    let absent = Fixture::new(Router::new());
+    assert!(
+        HttpsClient::discover("chat.example", absent.port(), &token(), &[CA.to_vec()])
+            .unwrap()
+            .api_origin()
+            .is_ok()
+    );
+}

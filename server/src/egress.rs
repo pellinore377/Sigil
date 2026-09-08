@@ -224,7 +224,37 @@ impl Policy {
         }
         self.exchange_with(request, lookup, LIMIT, Duration::from_secs(15))
     }
-    pub(crate) fn federation(&self, request: Request<&[u8]>) -> Result<Response, Error> {
+    pub(crate) fn federation(&self, mut request: Request<&[u8]>) -> Result<Response, Error> {
+        let uri = request.uri();
+        let server = host(uri)?;
+        let url = format!(
+            "https://{}:{}{}",
+            server,
+            uri.port_u16().unwrap_or(443),
+            sigil_protocol::discovery::PATH
+        );
+        let discovery =
+            self.federation_direct(Request::get(url).body(&[][..]).map_err(|_| Error::Policy)?)?;
+        if discovery.status != 404 {
+            if discovery.status != 200
+                || discovery.body.len() > sigil_protocol::discovery::MAX_BODY
+                || discovery.content_type.as_deref() != Some("application/json")
+            {
+                return Err(Error::Policy);
+            }
+            let discovered: sigil_protocol::discovery::Discovery =
+                serde_json::from_slice(&discovery.body).map_err(|_| Error::Policy)?;
+            if !discovered.valid_for(&server) {
+                return Err(Error::Policy);
+            }
+            let path = uri.path_and_query().ok_or(Error::Policy)?;
+            *request.uri_mut() = format!("{}{path}", discovered.api_origin)
+                .parse()
+                .map_err(|_| Error::Policy)?;
+        }
+        self.federation_direct(request)
+    }
+    fn federation_direct(&self, request: Request<&[u8]>) -> Result<Response, Error> {
         self.federation_with(request, |host, port| {
             (host.as_str(), port)
                 .to_socket_addrs()

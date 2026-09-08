@@ -483,3 +483,226 @@ fn configuration_changes_expiry_revocation_and_restore_invalidate_pending_logins
         0
     );
 }
+
+#[test]
+fn administrator_oidc_binds_verified_subject_to_the_initiating_browser() {
+    let _guard = crate::egress::tests::NETWORK.lock().unwrap();
+    let idp = Idp::new();
+    let dir = tempfile::tempdir().unwrap();
+    let mut store = Store::open(&dir.path().join("sigil.db")).unwrap();
+    let now = crate::enrollment::now().unwrap();
+    let code = store.web_setup_code().unwrap().unwrap();
+    let browser = store
+        .web_claim(
+            crate::web_admin::Claim {
+                code: Zeroizing::new(code),
+                password: Zeroizing::new("a synthetic administrator passphrase".into()),
+                server_name: "chat.example".into(),
+                public_origin: "https://chat.example".into(),
+            },
+            now,
+        )
+        .unwrap();
+    enable(&mut store, &idp);
+    let (binding, started) = store.web_oidc_start(Some(&browser), now).unwrap();
+    assert_eq!(binding, browser);
+    let url = openidconnect::url::Url::parse(&started.authorization_url).unwrap();
+    let params = url
+        .query_pairs()
+        .collect::<std::collections::BTreeMap<_, _>>();
+    assert_eq!(params["scope"], "openid profile");
+    let state = params["state"].to_string();
+    assert!(store.web_oidc_browser(&state, None, now).is_err());
+    assert!(store
+        .web_oidc_browser(&state, Some(&random_secret().unwrap()), now)
+        .is_err());
+    assert!(store.web_oidc_browser(&state, Some(&browser), now).unwrap());
+    *idp.claims.lock().unwrap() = serde_json::json!({"iss":idp.fixture.uri("127.0.0.1",""),"sub":"admin-subject","aud":"sigil-synthetic","iat":now,"exp":now+600,"nonce":params["nonce"],"challenge":params["code_challenge"],"preferred_username":"admin","picture":"https://images.example/avatar.png"});
+    let callback = store.oidc_claim(&state, now).unwrap().unwrap();
+    let identity = callback.verify_profile("synthetic-code").unwrap();
+    assert_eq!(identity.username.as_deref(), Some("admin"));
+    let session = store
+        .web_oidc_verified(callback, Ok(identity), &browser, now)
+        .unwrap();
+    assert!(store.web_session(&browser, now).is_err());
+    assert!(store.oidc_claim(&state, now).is_err());
+    store.web_finish_setup(&session, "admin", now).unwrap();
+    store.web_password_policy(&session, false, now).unwrap();
+    let status = store.web_status(Some(&session), now).unwrap();
+    assert!(status.complete && status.oidc_linked && !status.password_login);
+    store.web_logout(&session).unwrap();
+    let (cookie, started) = store.web_oidc_start(None, now).unwrap();
+    assert!(store.web_session(&cookie, now).is_err());
+    let url = openidconnect::url::Url::parse(&started.authorization_url).unwrap();
+    let params = url
+        .query_pairs()
+        .collect::<std::collections::BTreeMap<_, _>>();
+    *idp.claims.lock().unwrap() = serde_json::json!({"iss":idp.fixture.uri("127.0.0.1",""),"sub":"different-subject","aud":"sigil-synthetic","iat":now,"exp":now+600,"nonce":params["nonce"],"challenge":params["code_challenge"]});
+    let callback = store.oidc_claim(&params["state"], now).unwrap().unwrap();
+    let identity = callback.verify_profile("synthetic-code");
+    assert!(matches!(
+        store.web_oidc_verified(callback, identity, &cookie, now),
+        Err(StoreError::Unauthorized)
+    ));
+    assert!(store.web_session(&cookie, now).is_err());
+}
+
+#[test]
+fn browser_callback_requires_its_cookie_before_consuming_the_authorization_code() {
+    use tower::ServiceExt;
+    let _guard = crate::egress::tests::NETWORK.lock().unwrap();
+    let idp = Idp::new();
+    let dir = tempfile::tempdir().unwrap();
+    let mut store = Store::open(&dir.path().join("sigil.db")).unwrap();
+    let now = crate::enrollment::now().unwrap();
+    let code = store.web_setup_code().unwrap().unwrap();
+    let token = store
+        .web_claim(
+            crate::web_admin::Claim {
+                code: Zeroizing::new(code),
+                password: Zeroizing::new("another synthetic admin passphrase".into()),
+                server_name: "chat.example".into(),
+                public_origin: "https://chat.example".into(),
+            },
+            now,
+        )
+        .unwrap();
+    enable(&mut store, &idp);
+    let (_, started) = store.web_oidc_start(Some(&token), now).unwrap();
+    let url = openidconnect::url::Url::parse(&started.authorization_url).unwrap();
+    let params = url
+        .query_pairs()
+        .collect::<std::collections::BTreeMap<_, _>>();
+    *idp.claims.lock().unwrap() = serde_json::json!({"iss":idp.fixture.uri("127.0.0.1",""),"sub":"admin-subject","aud":"sigil-synthetic","iat":now,"exp":now+600,"nonce":params["nonce"],"challenge":params["code_challenge"],"preferred_username":"admin"});
+    let path = format!(
+        "/auth/v0/oidc/callback?code=synthetic-code&state={}",
+        params["state"]
+    );
+    let app = crate::router(
+        store,
+        crate::auth::AdminToken::load_or_create(&dir.path().join("admin.token")).unwrap(),
+    );
+    tokio::runtime::Runtime::new().unwrap().block_on(async {
+        let request = || axum::http::Request::get(&path);
+        let missing = app
+            .clone()
+            .oneshot(request().body(axum::body::Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(missing.status(), axum::http::StatusCode::UNAUTHORIZED);
+        assert_eq!(idp.requests.load(Ordering::SeqCst), 0);
+        let response = app
+            .clone()
+            .oneshot(
+                request()
+                    .header("cookie", format!("__Host-sigil-admin={token}"))
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), axum::http::StatusCode::SEE_OTHER);
+        assert_eq!(response.headers()["location"], "/");
+        let cookie = response.headers()["set-cookie"]
+            .to_str()
+            .unwrap()
+            .split(';')
+            .next()
+            .unwrap()
+            .to_owned();
+        assert!(!cookie.ends_with(&token));
+        let response = app
+            .clone()
+            .oneshot(
+                axum::http::Request::get("/setup/v0/status")
+                    .header("cookie", cookie)
+                    .header("x-sigil-admin", "1")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let status: serde_json::Value = serde_json::from_slice(
+            &axum::body::to_bytes(response.into_body(), 4096)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(status["authenticated"], true);
+        assert_eq!(status["oidc_linked"], true);
+        let replay = app
+            .oneshot(
+                request()
+                    .header("cookie", format!("__Host-sigil-admin={token}"))
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(replay.status(), axum::http::StatusCode::UNAUTHORIZED);
+        assert_eq!(idp.requests.load(Ordering::SeqCst), 1);
+    });
+}
+
+#[test]
+fn changed_provider_requires_new_verified_login_before_passwords_can_be_disabled() {
+    let _guard = crate::egress::tests::NETWORK.lock().unwrap();
+    let idp = Idp::new();
+    let dir = tempfile::tempdir().unwrap();
+    let mut store = Store::open(&dir.path().join("sigil.db")).unwrap();
+    let now = crate::enrollment::now().unwrap();
+    let code = store.web_setup_code().unwrap().unwrap();
+    let token = store
+        .web_claim(
+            crate::web_admin::Claim {
+                code: Zeroizing::new(code),
+                password: Zeroizing::new("synthetic administrator passphrase".into()),
+                server_name: "chat.example".into(),
+                public_origin: "https://chat.example".into(),
+            },
+            now,
+        )
+        .unwrap();
+    enable(&mut store, &idp);
+    let authenticate = |store: &mut Store, cookie: Option<&str>| {
+        let (cookie, started) = store.web_oidc_start(cookie, now).unwrap();
+        let url = openidconnect::url::Url::parse(&started.authorization_url).unwrap();
+        let params = url
+            .query_pairs()
+            .collect::<std::collections::BTreeMap<_, _>>();
+        *idp.claims.lock().unwrap() = serde_json::json!({"iss":idp.fixture.uri("127.0.0.1",""),"sub":"admin-subject","aud":"sigil-synthetic","iat":now,"exp":now+600,"nonce":params["nonce"],"challenge":params["code_challenge"]});
+        let callback = store.oidc_claim(&params["state"], now).unwrap().unwrap();
+        let result = callback.verify_profile("synthetic-code");
+        store
+            .web_oidc_verified(callback, result, &cookie, now)
+            .unwrap()
+    };
+    let token = authenticate(&mut store, Some(&token));
+    store.web_finish_setup(&token, "admin", now).unwrap();
+    store.web_password_policy(&token, false, now).unwrap();
+    assert!(store
+        .web_unlink_oidc(&token, "synthetic administrator passphrase", now)
+        .is_err());
+    store.web_password_policy(&token, true, now).unwrap();
+    let mut config = idp.configuration();
+    config.expected_revision = store.oidc_configuration().unwrap().revision;
+    let metadata = check(&config).unwrap();
+    store.oidc_install(config, metadata).unwrap();
+    assert!(!store.web_status(None, now).unwrap().oidc_login);
+    assert!(store.web_password_policy(&token, false, now).is_err());
+    assert!(store.web_oidc_start(None, now).is_err());
+    let token = authenticate(&mut store, Some(&token));
+    store.web_password_policy(&token, false, now).unwrap();
+    store.web_logout(&token).unwrap();
+    let token = authenticate(&mut store, None);
+    assert!(store.web_status(Some(&token), now).unwrap().authenticated);
+    store.web_password_policy(&token, true, now).unwrap();
+    assert!(store
+        .web_unlink_oidc(&token, "wrong password", now)
+        .is_err());
+    store
+        .web_unlink_oidc(&token, "synthetic administrator passphrase", now)
+        .unwrap();
+    assert!(!store.web_status(None, now).unwrap().oidc_login);
+    assert!(store.web_password_policy(&token, false, now).is_err());
+}

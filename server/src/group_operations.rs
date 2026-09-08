@@ -120,6 +120,13 @@ pub(crate) fn request_in(
         return Err(StoreError::Invalid("invalid group request date"));
     }
     let group = id(&request.group)?;
+    if tx.query_row(
+        "SELECT EXISTS(SELECT 1 FROM private_groups WHERE id=?1 AND blocked=1)",
+        [group.as_slice()],
+        |r| r.get::<_, bool>(0),
+    )? {
+        return Err(StoreError::Forbidden);
+    }
     let nonce = id(&request.nonce)?;
     let proof = decode(&request.proof, 480)?;
     let operation_bytes =
@@ -406,7 +413,7 @@ pub(crate) fn request_in(
             }
             reserve(tx, 1536 + control.len() as u64)?;
             tx.execute(
-                "INSERT INTO private_groups VALUES(?1,?2,0,?3,0)",
+                "INSERT INTO private_groups(id,public,revision,head,restored) VALUES(?1,?2,0,?3,0)",
                 (group.as_slice(), public.as_slice(), head.as_slice()),
             )?;
             tx.execute(

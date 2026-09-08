@@ -49,20 +49,18 @@ Attachment acceptance: install Bubblewrap, FFmpeg, LibreOffice and `heif-enc`, t
 docker compose up --build -d
 ```
 
-Compose binds loopback port 8080 and retains data in the `sigil-data` volume. Remote access requires a trusted HTTPS reverse proxy. The Admin UI is unfinished.
+Compose publishes HTTP port 18080 (container port 8080), retains data in `sigil-data`, and includes the browser setup wizard and Admin dashboard. Point your HTTPS reverse proxy at that port, open your domain, and enter the one-time code from `docker compose logs sigil`. The wizard sets your password, immutable identity domain, and optional OIDC provider; no credentials belong in Compose.
+
+For identities such as `@you:example.com` with a service at `sigil.example.com`, add one proxy location on `example.com`: `/.well-known/sigil`, forwarded to the same backend. Clients and federation discover the service there without changing the identity domain. Preserve the path; no redirect is needed.
 
 For a native process, set `SIGIL_DATA_DIR` to a private directory outside the repository and run `target/release/sigil-server serve`. `SIGIL_LISTEN` defaults to `127.0.0.1:8080`. Directories/files require permissions 0700/0600.
 
-Admin requests use `Authorization: Bearer <admin.token contents>`. Keep this installation token private. `GET/PUT /admin/v0/configuration` uses revision checks; initial configuration can be:
-
-```json
-{"expected_revision":0,"settings":{"server_name":"chat.example","default_quota_bytes":10737418240,"max_attachment_bytes":1073741824}}
-```
+Scripted administration remains available through the revisioned API using `Authorization: Bearer <admin.token contents>`. Keep this installation token private.
 
 The homeserver name becomes immutable. `/healthz` reports liveness; `/readyz` reports configured availability, not product completion. `/versions` distinguishes opaque storage APIs from complete messaging support.
 
 Account roles, OIDC, discovery, configuration and guided maintenance APIs are
-described in [Administration.md](docs/Administration.md). The Admin UI is pending.
+described in [Administration.md](docs/Administration.md). Advanced service and maintenance configuration remains available through those APIs.
 
 ## Maintenance
 
@@ -71,8 +69,11 @@ The Admin maintenance API supports live snapshots and restore staging. Stop the 
 ```sh
 target/release/sigil-server backup /private/backup/server.db
 target/release/sigil-server rotate-admin-token
+target/release/sigil-server reset-admin-login
 SIGIL_DATA_DIR=/private/new-installation target/release/sigil-server restore /private/backup/server.db
 ```
+
+`reset-admin-login` revokes browser sessions and reopens password setup using a new code on the next start. It requires stopping the server and access to its private data directory. It does not recover encrypted messages.
 
 With Compose: stop `sigil`, run `docker compose run --rm --no-deps sigil backup /var/lib/sigil/backup.db`, export with `docker compose cp sigil:/var/lib/sigil/backup.db /private/backup/server.db`, then restart. Use a new private backup filename each time and store the export outside the repository on separate storage.
 

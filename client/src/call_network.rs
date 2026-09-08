@@ -62,7 +62,7 @@ impl HttpsClient {
         }
         let request = Request::builder()
             .method(Method::POST)
-            .uri(format!("{}{path}", self.origin))
+            .uri(format!("{}{path}", self.api_origin()?))
             .header(header::ACCEPT, "application/json")
             .header(header::ACCEPT_ENCODING, "identity")
             .header(header::CONTENT_TYPE, "application/json")

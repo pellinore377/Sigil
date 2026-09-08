@@ -27,6 +27,12 @@ impl Store {
             crate::federation_mailbox::release_payload(&tx, *sequence)?;
         }
         let mut changed = expired.len();
+        changed += tx.execute("UPDATE recovery_objects SET data=NULL WHERE rowid IN (SELECT r.rowid FROM recovery_objects r JOIN deleted_accounts d ON d.account=r.account_id WHERE r.data IS NOT NULL LIMIT 64)", [])?;
+        changed += tx.execute(
+            "DELETE FROM web_sessions WHERE expires<=?1 OR touched<=?2",
+            (now as i64, now.saturating_sub(1800) as i64),
+        )?;
+        changed += tx.execute("DELETE FROM web_oidc WHERE expires<=?1", [now as i64])?;
         // Release only the bytes physically removed in this same bounded batch.
         let released: Vec<(String, i64)> = tx.prepare("SELECT d.account_id,sum(length(p.bundle)) FROM prekeys p JOIN devices d ON d.id=p.device_id WHERE p.id IN (SELECT id FROM prekeys WHERE bundle IS NOT NULL AND expires_at<=?1 ORDER BY expires_at,id LIMIT ?2) GROUP BY d.account_id")?.query_map((now as i64,BATCH as i64), |r|Ok((r.get(0)?,r.get(1)?)))?.collect::<Result<_,_>>()?;
         for (account, bytes) in released {

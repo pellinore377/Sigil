@@ -361,7 +361,9 @@ mod tests {
             move |request: axum::extract::Request, next: axum::middleware::Next| {
                 let (reject, count) = (rejected.clone(), count.clone());
                 async move {
-                    count.fetch_add(1, Ordering::SeqCst);
+                    if request.uri().path() != sigil_protocol::discovery::PATH {
+                        count.fetch_add(1, Ordering::SeqCst);
+                    }
                     if request.uri().path() == "/client/v0/mailbox" && reject.load(Ordering::SeqCst)
                     {
                         return axum::http::Response::builder()

@@ -106,7 +106,11 @@ async fn unlink(
     })
     .await
 }
-async fn complete(State(state): State<AppState>, RawQuery(query): RawQuery) -> Response {
+async fn complete(
+    State(state): State<AppState>,
+    RawQuery(query): RawQuery,
+    headers: HeaderMap,
+) -> Response {
     let Some(query) = query.filter(|v| v.len() <= 8192) else {
         return store_error(StoreError::Unauthorized);
     };
@@ -131,6 +135,17 @@ async fn complete(State(state): State<AppState>, RawQuery(query): RawQuery) -> R
     let Some(csrf) = csrf else {
         return store_error(StoreError::Unauthorized);
     };
+    let browser_cookie = crate::web_routes::cookie(&headers).ok();
+    let browser = match with_store(state.clone(), {
+        let csrf = csrf.clone();
+        let cookie = browser_cookie.clone();
+        move |s| s.web_oidc_browser(&csrf, cookie.as_deref(), now()?)
+    })
+    .await
+    {
+        Ok(v) => v,
+        Err(e) => return store_error(e),
+    };
     let permit = match state.lookup_slots.clone().try_acquire_owned() {
         Ok(v) => v,
         Err(_) => return store_error(StoreError::Busy),
@@ -145,13 +160,29 @@ async fn complete(State(state): State<AppState>, RawQuery(query): RawQuery) -> R
         let result = if failure || issuer.as_deref().is_some_and(|i| i != callback.issuer()) {
             Err(StoreError::Unauthorized)
         } else {
-            callback.verify(code.as_deref().unwrap_or(""))
+            callback.verify_profile(code.as_deref().unwrap_or(""))
         };
         (callback, result)
     })
     .await;
     match result {
         Ok((callback, result)) => {
+            if browser {
+                return match with_store(state, move |s| {
+                    s.web_oidc_verified(
+                        callback,
+                        result,
+                        &browser_cookie.ok_or(StoreError::Unauthorized)?,
+                        now()?,
+                    )
+                })
+                .await
+                {
+                    Ok(token) => crate::web_routes::oidc_redirect(&token),
+                    Err(e) => store_error(e),
+                };
+            }
+            let result = result.map(|v| v.subject);
             match with_store(state, move |s| s.oidc_verified(callback, result, now()?)).await {
                 Ok(completion) => finished(completion),
                 Err(e) => store_error(e),

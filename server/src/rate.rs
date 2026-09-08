@@ -56,6 +56,7 @@ struct Device {
 pub(crate) struct Limiter {
     global: Bucket,
     enrollment: Bucket,
+    browser_auth: Bucket,
     devices: HashMap<String, Device>,
 }
 impl Limiter {
@@ -63,6 +64,7 @@ impl Limiter {
         Self {
             global: Bucket::new(100, 20, now),
             enrollment: Bucket::new(5, 5000, now),
+            browser_auth: Bucket::new(5, 2000, now),
             devices: HashMap::new(),
         }
     }
@@ -117,6 +119,20 @@ fn reject(reason: Rejection) -> Response {
 }
 
 pub(crate) async fn limit(State(state): State<AppState>, request: Request, next: Next) -> Response {
+    if matches!(
+        request.uri().path(),
+        "/setup/v0/claim" | "/auth/v0/admin/login" | "/auth/v0/admin/oidc"
+    ) {
+        let result = state
+            .rate
+            .lock()
+            .map_err(|_| Rejection::Capacity)
+            .and_then(|mut l| l.browser_auth.take(Instant::now()).map_err(Rejection::Rate));
+        return match result {
+            Ok(()) => next.run(request).await,
+            Err(e) => reject(e),
+        };
+    }
     let anonymous_group = request.uri().path().starts_with("/groups/v0/")
         || request.uri().path().starts_with("/calls/v0/");
     if !request.uri().path().starts_with("/client/v0/") && !anonymous_group {

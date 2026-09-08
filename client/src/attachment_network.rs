@@ -300,7 +300,7 @@ mod tests {
                 }),
             );
             let fixture = Fixture::new(app);
-            let client = HttpsClient::new(
+            let client = HttpsClient::discover(
                 "chat.example",
                 fixture.port(),
                 &"ab".repeat(32),
@@ -320,7 +320,7 @@ mod tests {
             }),
         );
         let fixture = Fixture::new(app);
-        let client = HttpsClient::new(
+        let client = HttpsClient::discover(
             "chat.example",
             fixture.port(),
             &"ab".repeat(32),

@@ -39,6 +39,8 @@ pub struct HttpsClient {
     origin: String,
     server: String,
     credential: Zeroizing<String>,
+    discover: bool,
+    resolved: std::sync::OnceLock<String>,
 }
 const SMALL: usize = 8192;
 #[path = "admin_network.rs"]
@@ -153,6 +155,48 @@ fn retry_after(response: &Response<Body>) -> Option<u64> {
 }
 
 impl HttpsClient {
+    pub fn discover(
+        server: &str,
+        port: u16,
+        credential: &str,
+        roots: &[Vec<u8>],
+    ) -> Result<Self, Error> {
+        let mut client = Self::new(server, port, credential, roots)?;
+        client.discover = true;
+        Ok(client)
+    }
+    fn api_origin(&self) -> Result<&str, Error> {
+        if !self.discover {
+            return Ok(&self.origin);
+        }
+        if self.resolved.get().is_none() {
+            let _ = self.resolved.set(self.resolve_origin()?);
+        }
+        self.resolved
+            .get()
+            .map(String::as_str)
+            .ok_or(Error::Configuration)
+    }
+    fn resolve_origin(&self) -> Result<String, Error> {
+        let request = Request::get(format!(
+            "{}{}",
+            self.origin,
+            sigil_protocol::discovery::PATH
+        ))
+        .header(header::ACCEPT, "application/json")
+        .body(&[][..])
+        .map_err(|_| Error::Configuration)?;
+        let response = match self.send(request) {
+            Err(Error::Status { code: 404, .. }) => return Ok(self.origin.clone()),
+            other => other?,
+        };
+        let discovery: sigil_protocol::discovery::Discovery =
+            self.json(response, 200, sigil_protocol::discovery::MAX_BODY)?;
+        if !discovery.valid_for(&self.server) {
+            return Err(Error::InvalidResponse);
+        }
+        Ok(discovery.api_origin)
+    }
     /// Names are canonical homeserver DNS names; schemes, paths, credentials and
     /// IP literals are rejected. Empty roots uses bundled WebPKI roots. Explicit
     /// DER roots replace them for a privately administered CA; verification stays on.
@@ -210,6 +254,8 @@ impl HttpsClient {
             origin: format!("https://{server}:{port}"),
             server: server.into(),
             credential: Zeroizing::new(credential.into()),
+            discover: false,
+            resolved: std::sync::OnceLock::new(),
         })
     }
 
@@ -246,7 +292,7 @@ impl HttpsClient {
         value.set_sensitive(true);
         let mut builder = Request::builder()
             .method(method)
-            .uri(format!("{}{path}", self.origin))
+            .uri(format!("{}{path}", self.api_origin()?))
             .header(header::AUTHORIZATION, value)
             .header(
                 header::ACCEPT,

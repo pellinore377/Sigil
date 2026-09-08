@@ -55,10 +55,18 @@ async fn run() -> Result<(), &'static str> {
         };
     }
     if command == "--help" {
-        println!("sigil-server [serve|backup DESTINATION|restore SOURCE|rotate-admin-token]\nSet SIGIL_DATA_DIR to a private storage directory.\nSIGIL_LISTEN defaults to 127.0.0.1:8080. Non-loopback HTTP requires a trusted TLS reverse proxy.\nBackup, restore, and token rotation require the server to be stopped.");
+        println!("sigil-server [serve|backup DESTINATION|restore SOURCE|rotate-admin-token|reset-admin-login]\nSet SIGIL_DATA_DIR to a private storage directory.\nSIGIL_LISTEN defaults to 127.0.0.1:8080. Non-loopback HTTP requires a trusted TLS reverse proxy.\nBackup, restore, and token rotation require the server to be stopped.");
         return Ok(());
     }
-    if !["serve", "backup", "restore", "rotate-admin-token"].contains(&command.as_str()) {
+    if ![
+        "serve",
+        "backup",
+        "restore",
+        "rotate-admin-token",
+        "reset-admin-login",
+    ]
+    .contains(&command.as_str())
+    {
         return Err("unknown command; use --help");
     }
     let operand = if command == "backup" || command == "restore" {
@@ -99,7 +107,16 @@ async fn run() -> Result<(), &'static str> {
         sigil_server::operations::activate_restore(&directory)
             .map_err(|_| "staged restore activation failed; original data is preserved")?;
     }
-    let store = Store::open(&database).map_err(|_| "cannot open compatible server storage")?;
+    let mut store = Store::open(&database).map_err(|_| "cannot open compatible server storage")?;
+    if command == "reset-admin-login" {
+        store
+            .web_reset_login()
+            .map_err(|_| "administrator login reset failed")?;
+        println!(
+            "Browser sessions revoked. Restart the server and use its new one-time setup code."
+        );
+        return Ok(());
+    }
     if command == "backup" {
         store
             .backup(operand.as_deref().ok_or("missing backup destination")?)
@@ -114,6 +131,12 @@ async fn run() -> Result<(), &'static str> {
         .await
         .map_err(|_| "cannot bind listener")?;
     println!("Sigil started. Bootstrap Admin credential is in the private data directory.");
+    if let Some(code) = store
+        .web_setup_code()
+        .map_err(|_| "cannot initialize browser setup")?
+    {
+        println!("One-time browser setup code: {code}");
+    }
     let (router, maintenance) = sigil_server::router_with_maintenance(store, token);
     tokio::select! {
         result = async { axum::serve(listener, router).with_graceful_shutdown(shutdown()).await } => result.map_err(|_| "server failed"),

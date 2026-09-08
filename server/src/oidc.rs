@@ -175,6 +175,13 @@ impl Store {
         if revision != update.expected_revision {
             return Err(StoreError::Conflict);
         }
+        let password_login: bool =
+            tx.query_row("SELECT password_login FROM web_owner", [], |r| r.get(0))?;
+        if !password_login {
+            return Err(StoreError::Invalid(
+                "Enable administrator password login before changing OIDC",
+            ));
+        }
         let stored = match update.provider {
             Some(provider) => Some(Stored {
                 provider,
@@ -198,6 +205,7 @@ impl Store {
         )?;
         tx.execute("DELETE FROM oidc_flows", [])?;
         tx.execute("DELETE FROM oidc_grants", [])?;
+        tx.execute("DELETE FROM web_oidc", [])?;
         tx.commit()?;
         self.oidc_configuration()
     }
@@ -206,6 +214,15 @@ impl Store {
         request: Start,
         link: Option<&str>,
         now: u64,
+    ) -> Result<Started, StoreError> {
+        self.oidc_begin(request, link, now, false)
+    }
+    pub(crate) fn oidc_begin(
+        &mut self,
+        request: Start,
+        link: Option<&str>,
+        now: u64,
+        profile: bool,
     ) -> Result<Started, StoreError> {
         if !valid_credential(&request.request_id)
             || !valid_credential(&request.secret)
@@ -283,6 +300,7 @@ impl Store {
             .set_pkce_challenge(PkceCodeChallenge::from_code_verifier_sha256(
                 &PkceCodeVerifier::new(verifier.to_string()),
             ))
+            .add_scopes(profile.then(|| openidconnect::Scope::new("profile".into())))
             .url();
         let authorization_url = url.to_string();
         let flow = Flow {
@@ -569,7 +587,20 @@ impl Callback {
     pub(crate) fn issuer(&self) -> &str {
         &self.stored.provider.issuer
     }
+    #[cfg(test)]
     pub(crate) fn verify(&self, code: &str) -> Result<String, StoreError> {
+        self.verify_profile(code).map(|v| v.subject)
+    }
+    pub(crate) fn id(&self) -> &str {
+        &self.id
+    }
+    pub(crate) fn revision(&self) -> u64 {
+        self.revision
+    }
+    pub(crate) fn verify_profile(
+        &self,
+        code: &str,
+    ) -> Result<crate::web_admin::Identity, StoreError> {
         if code.is_empty() || code.len() > 4096 || code.chars().any(char::is_control) {
             return Err(StoreError::Unauthorized);
         }
@@ -636,7 +667,14 @@ impl Callback {
         {
             return Err(StoreError::Unauthorized);
         }
-        Ok(subject.to_owned())
+        Ok(crate::web_admin::Identity {
+            subject: subject.to_owned(),
+            username: claims.preferred_username().map(|v| v.as_str().to_owned()),
+            picture: claims
+                .picture()
+                .and_then(|v| v.get(None))
+                .map(|v| v.as_str().to_owned()),
+        })
     }
 }
 
@@ -664,4 +702,20 @@ pub(crate) fn check(update: &Configure) -> Result<Option<CoreProviderMetadata>, 
             metadata(p)
         })
         .transpose()
+}
+
+impl Store {
+    pub(crate) fn web_picture_request(
+        &self,
+    ) -> Result<Option<(String, Vec<egress::Exception>)>, StoreError> {
+        let picture: Option<String> =
+            self.0
+                .query_row("SELECT picture FROM web_owner", [], |r| r.get(0))?;
+        let Some(picture) = picture else {
+            return Ok(None);
+        };
+        let (_, provider) = read(&self.0)?;
+        let provider = provider.ok_or(StoreError::NotFound)?;
+        Ok(Some((picture, provider.provider.exceptions)))
+    }
 }
