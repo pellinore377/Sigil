@@ -1,6 +1,8 @@
 services:
   sigil:
-    build: .
+    image: sigil-backend:f540c4b
+    build:
+      context: https://github.com/pellinore377/Sigil.git#f540c4b005dee8e80b0dc38d55ef203119cdca77
     platform: linux/amd64
     ports:
       - "18080:8080"
