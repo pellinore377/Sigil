@@ -16,7 +16,7 @@ Erasure tests cover superseded checkpoints, cache descriptors, deleted direct/gr
 
 Four AddressSanitizer fuzz targets completed approximately **17.9 million executions** without a product crash. Published-profile rejection tests and independent OpenSSL/libsodium PQXDH fixtures pass. Fuzzing is bounded evidence, not a proof of security.
 
-Container acceptance passes with the actual schema-27 binary upgraded to 28, downgrade rejection, abrupt restart, idempotent retries, offline/guided backup/import/restore and credential revocation. Synthetic OIDC regressions cover signed claims, browser binding, replay rejection, configuration reverification and password-lockout prevention. Earlier separate acceptance covers two-server outages/history sharing/files/calls, the 1 GiB attachment lifecycle, isolated Linux previews and Coturn UDP/TCP/TLS.
+Container acceptance passes with the actual schema-27 binary upgraded to 28, downgrade rejection, abrupt restart, idempotent retries, offline/guided backup/import/restore and credential revocation. Compose uses a public, digest-pinned GHCR image; anonymous pull and deployment acceptance pass. Synthetic OIDC regressions cover signed claims, browser binding, replay rejection, configuration reverification and password-lockout prevention. Earlier separate acceptance covers two-server outages/history sharing/files/calls, the 1 GiB attachment lifecycle, isolated Linux previews and Coturn UDP/TCP/TLS.
 
 Chromium acceptance covers the local wizard, native password inputs, editing accessibility, confirmation navigation, domain discovery, saved settings, login/logout/reload and mobile dark appearance. Static HTML and API routes share the same anti-framing policy.
 
