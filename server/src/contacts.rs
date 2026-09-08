@@ -80,6 +80,7 @@ impl Store {
         if total >= 4096 || pending >= 16 {
             return Err(StoreError::Busy);
         }
+        crate::storage_budget::for_device(&tx, &owner, crate::storage_budget::CONTACT, now)?;
         tx.execute(
             "INSERT INTO contact_invitations(id,owner,expires_at) VALUES(?1,?2,?3)",
             (&id, &owner, request.expires_at as i64),
@@ -122,8 +123,8 @@ impl Store {
             admission::check(&tx, &owner, &claimant)?;
             return Ok(ContactPeer { device_id: owner });
         }
-        admission::grant(&tx, &claimant, &owner)?;
-        admission::grant(&tx, &owner, &claimant)?;
+        admission::grant(&tx, &claimant, &owner, now)?;
+        admission::grant(&tx, &owner, &claimant, now)?;
         tx.execute(
             "UPDATE contact_invitations SET claimant=?1 WHERE id=?2",
             (&claimant, &id),

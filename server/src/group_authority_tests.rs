@@ -289,7 +289,7 @@ fn authority_schema_nineteen_upgrade_preserves_issuer_and_ordering() {
             .0
             .pragma_query_value(None, "user_version", |r| r.get::<_, u32>(0))
             .unwrap(),
-        26
+        27
     );
 }
 

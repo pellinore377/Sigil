@@ -11,7 +11,7 @@ These experimental profiles implement published designs independently; they are 
 | Pairwise messaging | `SGHI` 2, authenticated Triple Ratchet suite 2 | Classical sessions are history-only; reframing cannot select another suite |
 | Encrypted events | Exact canonical `SGEV`/group frames and `SGCO` 1 | Unknown framing/content/fields fail; never reinterpret as ordinary text |
 | History recovery | Authenticated `SGHR`, `SGHP`, `SGHM` 1 | Wrong scope, hash, key, lineage or version fails; no live-state import |
-| Local databases | Server 26, client 68, cache 5 | Validate identity/key/schema before use; newer schemas fail closed |
+| Local databases | Server 27, client 68, cache 5 | Validate identity/key/schema before use; newer schemas fail closed |
 
 `/versions` describes storage APIs. Empty messaging arrays do not certify unfinished interoperability. There is no opportunistic negotiation: future incompatible profiles need explicit versioned routes/framing and authenticated selection. An older binary must use a pre-upgrade server backup on separate storage, followed by restore sanitization; never open a migrated database or roll back live client state.
 
@@ -25,6 +25,6 @@ These guarantees concern accessible application files. They do not sanitize file
 
 ## Metadata and dependencies
 
-Homeservers observe account/device identifiers, peers, timestamps, sizes, queues, storage ownership and transport addresses. Private-group proofs conceal membership content, not all timing/correlation. Relays see call routing and encrypted packet sizes/timing. Push providers receive generic wake-ups and endpoint identifiers. Configured integrations see explicitly disclosed queries. Redacted diagnostics omit identifying payloads; they do not eliminate this metadata.
+Homeservers observe account/device identifiers, peers, timestamps, sizes, queues, storage ownership and transport addresses. Local mailbox users can infer aggregate activity from global cursor gaps; federation acceptance tokens disclose no such counter. Private-group proofs conceal membership content, not all timing/correlation. Credential issuance trusts the user's homeserver; identity-signed membership and endpoint-held Sender Keys remain separate requirements. Relays see call routing and encrypted packet sizes/timing. Push providers receive generic wake-ups and endpoint identifiers. Configured integrations see explicitly disclosed queries. Redacted diagnostics omit identifying payloads; they do not eliminate this metadata.
 
 Dependency advisories require reachability review. `rsa` is used by OIDC for public-key verification only; Sigil never uses its private-key operations implicated by [RUSTSEC-2023-0071](https://rustsec.org/advisories/RUSTSEC-2023-0071.html). The 3MF dependency pins older `quick-xml`: a patched parser preflight rejects excessive attributes, names and DTDs before entering it, and preview workers have process limits. The two XML advisories remain visible until the upstream dependency upgrades. The unmaintained `proc-macro-error2` dependency is build-time Hax tooling.

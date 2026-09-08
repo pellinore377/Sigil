@@ -264,8 +264,6 @@ mod tests {
             }
         }
         assert!(alice.pq.status().0 >= 4 && bob.pq.status().0 >= 4);
-        // Ct1Ack (4) is accepted by the decoder, but this sender emits the
-        // combined EkCt1Ack form (3).
         for kind in [0, 1, 2, 3, 5, 6] {
             assert!(
                 covered.iter().any(|(_, _, seen)| *seen == kind),

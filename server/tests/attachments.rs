@@ -542,7 +542,7 @@ fn chunk_listing_and_cleanup_are_bounded_and_schema_twelve_upgrades() {
     assert_eq!(
         db.query_row("PRAGMA user_version", [], |r| r.get::<_, i64>(0))
             .unwrap(),
-        26
+        27
     );
     let id = random_secret().unwrap();
     let request = Begin {

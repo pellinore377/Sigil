@@ -52,7 +52,7 @@ Initialize Braid authentication by updating zero root at epoch 1 with the SPQR s
 
 RaptorQ uses fixed objects of 96/1536/1408/192 bytes, one source block/sub-block, alignment one and 64-byte symbols. Fragments contain a four-byte RFC 6330 payload ID plus symbol. Send systematic then fresh repair symbols; 24-bit IDs never wrap. Decoders accept at most 64 distinct symbols, reject other blocks/conflicting duplicates, and never take parameters from the network. No Reed–Solomon-equivalent vulnerable-message-set bound is claimed.
 
-Each ratchet retains at most 128 skipped keys and derives at most 128 per packet. SPQR retains at most three nonempty chains and prunes keys more than two epochs behind. Cache eviction commits only after authentication; evicted late messages fail.
+Each ratchet retains at most 128 skipped keys and derives at most 128 per packet. Unrecoverable larger gaps can stall a session; capacity errors do not authorize automatic reset. SPQR retains at most three nonempty chains and skipped keys from `max(sending_epoch, receiving_epoch).saturating_sub(2)` onward. Successful local sends can prune receive keys; incoming eviction commits only after authentication. Evicted late messages fail.
 
 Triple headers: `SGTR 00 01 00 00`, EC DH[32], previous/current u32 counts, SPQR length[1], and SPQR header[17 or 85]. Braid contributes epoch[8], kind[1], optional fragment[68]; SPQR adds two u32 counts. Header size: 66/134 bytes. Plaintext maximum: 65,536 bytes.
 

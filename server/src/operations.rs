@@ -111,6 +111,92 @@ fn file(dir: &Path, id: &str, extension: &str) -> Result<PathBuf, StoreError> {
     }
     Ok(path)
 }
+fn artifact(name: &str) -> Option<(&str, bool)> {
+    let (id, extension) = name.split_once('.')?;
+    if !sigil_protocol::accounts::valid_credential(id) {
+        return None;
+    }
+    if extension == "db" {
+        return Some((id, false));
+    }
+    let stem = ["-journal", "-wal", "-shm"]
+        .into_iter()
+        .find_map(|suffix| extension.strip_suffix(suffix))
+        .unwrap_or(extension);
+    (matches!(stem, "part" | "backup" | "restore")
+        || extension == "marker"
+        || stem
+            .strip_prefix("restore-")
+            .is_some_and(sigil_protocol::accounts::valid_credential))
+    .then_some((id, true))
+}
+
+// Called under Store serialization. The worker's status protects its files
+// while filesystem work runs outside the Store lock.
+fn reclaim(db: &Connection, selected: Option<&str>) -> Result<(), StoreError> {
+    if selected.is_some_and(|id| !sigil_protocol::accounts::valid_credential(id)) {
+        return Err(invalid());
+    }
+    let dir = directory(db)?;
+    let mut protected = db.prepare("SELECT id FROM operations WHERE status IN (1,2) UNION SELECT json_extract(action,'$.file') FROM operations WHERE status IN (1,2) AND json_extract(action,'$.file') IS NOT NULL LIMIT 129")?
+        .query_map([], |r| r.get::<_, String>(0))?
+        .collect::<Result<std::collections::BTreeSet<_>, _>>()?;
+    if protected.len() > 128 {
+        return Err(invalid());
+    }
+    if selected.is_none() {
+        let uploads = db
+            .prepare("SELECT id FROM operation_uploads LIMIT 3")?
+            .query_map([], |r| r.get::<_, String>(0))?
+            .collect::<Result<Vec<_>, _>>()?;
+        if uploads.len() > 2 {
+            return Err(invalid());
+        }
+        protected.extend(uploads);
+    }
+    let marker = dir.parent().ok_or_else(invalid)?.join("restore.pending");
+    match fs::symlink_metadata(&marker) {
+        Ok(meta) => {
+            if !meta.is_file() || meta.len() != 64 || meta.permissions().mode() & 0o077 != 0 {
+                return Err(invalid());
+            }
+            let id = io(fs::read_to_string(marker))?;
+            if !sigil_protocol::accounts::valid_credential(&id) {
+                return Err(invalid());
+            }
+            protected.insert(id);
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(_) => return Err(invalid()),
+    }
+    if selected.is_some_and(|id| protected.contains(id)) {
+        return Err(StoreError::Busy);
+    }
+    let mut changed = false;
+    let mut entries = io(fs::read_dir(&dir))?;
+    for entry in entries.by_ref().take(256) {
+        let entry = io(entry)?;
+        let name = entry.file_name();
+        let Some((id, auxiliary)) = name.to_str().and_then(artifact) else {
+            continue;
+        };
+        if protected.contains(id) || selected.map_or(!auxiliary, |wanted| wanted != id) {
+            continue;
+        }
+        if !io(fs::symlink_metadata(entry.path()))?.is_file() {
+            return Err(invalid());
+        }
+        io(fs::remove_file(entry.path()))?;
+        changed = true;
+    }
+    if changed {
+        io(io(fs::File::open(dir))?.sync_all())?;
+    }
+    if selected.is_some() && entries.next().is_some() {
+        return Err(StoreError::Busy);
+    }
+    Ok(())
+}
 fn authorize(
     db: &Connection,
     actor: &[u8],
@@ -327,6 +413,7 @@ impl Store {
         self.0.query_row("SELECT bytes,sha256,received FROM operation_uploads WHERE id=?1",[id],|r|Ok(serde_json::json!({"bytes":unsigned(r,0)?,"sha256":r.get::<_,String>(1)?,"received":unsigned(r,2)?}))).optional()?.ok_or(StoreError::NotFound)
     }
     pub fn prepare_backup_upload(&mut self, upload: Upload) -> Result<String, StoreError> {
+        reclaim(&self.0, None)?;
         if io(fs::read_dir(directory(&self.0)?))?.take(120).count() >= 120 {
             return Err(StoreError::Busy);
         }
@@ -416,17 +503,7 @@ impl Store {
         Ok(end)
     }
     pub fn delete_backup(&mut self, id: &str) -> Result<(), StoreError> {
-        let busy:bool=self.0.query_row("SELECT EXISTS(SELECT 1 FROM operations WHERE status IN (1,2) AND (json_extract(action,'$.file')=?1 OR id=?1))",[id],|r|r.get(0))?;
-        if busy {
-            return Err(StoreError::Busy);
-        }
-        let dir = directory(&self.0)?;
-        for ext in ["db", "part"] {
-            let path = file(&dir, id, ext)?;
-            if path.exists() {
-                io(fs::remove_file(path))?;
-            }
-        }
+        reclaim(&self.0, Some(id))?;
         self.0
             .execute("DELETE FROM operation_uploads WHERE id=?1", [id])?;
         Ok(())
@@ -469,6 +546,7 @@ impl Store {
         Ok(bytes)
     }
     fn claim_operation(&mut self, root: &[u8], now: u64) -> Result<Option<Job>, StoreError> {
+        reclaim(&self.0, None)?;
         let directory = directory(&self.0)?;
         let source = io(fs::canonicalize(
             self.0.path().ok_or(StoreError::InvalidData)?,
@@ -820,7 +898,7 @@ pub fn activate_restore(directory: &Path) -> Result<(), StoreError> {
     if !previous.exists() {
         io(fs::rename(&current, &previous))?;
     }
-    for suffix in ["-wal", "-shm"] {
+    for suffix in ["-journal", "-wal", "-shm"] {
         let old = directory.join(format!("sigil.db{suffix}"));
         if old.exists() {
             io(fs::rename(
@@ -829,6 +907,9 @@ pub fn activate_restore(directory: &Path) -> Result<(), StoreError> {
             ))?;
         }
     }
+    io(fs::File::open(directory))?
+        .sync_all()
+        .map_err(|_| StoreError::InvalidData)?;
     if !current.exists() {
         io(fs::hard_link(&staged, &current))?;
     } else {

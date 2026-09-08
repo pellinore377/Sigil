@@ -41,6 +41,8 @@ pub struct Submit {
 #[serde(deny_unknown_fields)]
 pub struct Receipt {
     pub request_hash: String,
+    /// Opaque positive acceptance token, not a recipient cursor or ordering counter.
+    /// The full request_hash identifies the request; this token need not be unique.
     pub sequence: i64,
     pub expires_at: u64,
 }

@@ -109,7 +109,7 @@ fn schema_six_migration_preserves_payloads_until_expiry() {
     assert_eq!(
         db.query_row("PRAGMA user_version", [], |r| r.get::<_, u32>(0))
             .unwrap(),
-        26
+        27
     );
     assert_eq!(
         db.query_row(

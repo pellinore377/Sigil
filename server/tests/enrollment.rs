@@ -204,7 +204,7 @@ fn schema_one_migrates_and_credentials_are_never_stored_in_plaintext() {
     assert_eq!(
         db.query_row("PRAGMA user_version", [], |r| r.get::<_, i64>(0))
             .unwrap(),
-        26
+        27
     );
 }
 
@@ -1036,6 +1036,6 @@ fn device_inventory_migrates_schema_nine_without_changing_sessions() {
     assert_eq!(
         db.query_row("PRAGMA user_version", [], |r| r.get::<_, i64>(0))
             .unwrap(),
-        26
+        27
     );
 }

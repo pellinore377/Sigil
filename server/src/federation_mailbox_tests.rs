@@ -170,9 +170,11 @@ fn ingress_permissions_retry_restart_ack_and_failed_commit_are_atomic() {
     drop(s);
     let mut s = Store::open(&path).unwrap();
     assert_eq!(s.mailbox_after(&token, 0, 1000).unwrap(), delivered);
-    s.acknowledge_message(&token, first.sequence, 1000).unwrap();
+    s.acknowledge_message(&token, delivered[0].sequence, 1000)
+        .unwrap();
     assert_eq!(ingress(&s), METADATA as i64);
-    s.acknowledge_message(&token, first.sequence, 1000).unwrap();
+    s.acknowledge_message(&token, delivered[0].sequence, 1000)
+        .unwrap();
     assert_eq!(receive(&mut s, &key, &request, 1000, 3).unwrap(), first);
     assert!(s.mailbox_after(&token, 0, 1000).unwrap().is_empty());
     assert_eq!(ingress(&s), METADATA as i64);
@@ -191,7 +193,8 @@ fn origin_limits_do_not_reset_when_the_origin_invents_more_accounts() {
         let request = message(&target, &source, n as u64, 2000);
         let result = receive(&mut s, &key, &request, 1000 + n as u64, n as u64);
         if n == 1 {
-            first = result.unwrap().sequence;
+            assert!(result.unwrap().sequence > 0);
+            first = s.mailbox_after(&token, 0, 1001).unwrap()[0].sequence;
         } else if n == 65 {
             assert!(matches!(result, Err(StoreError::Busy)));
             s.acknowledge_message(&token, first, 1065).unwrap();
@@ -312,7 +315,10 @@ fn remote_mail_uses_the_existing_push_sequence_and_transaction() {
     assert!(retained[0].origin.is_none());
     s.0.execute_batch("DROP TRIGGER synthetic_failure").unwrap();
     let second = receive(&mut s, &key, &request, 1000, 1).unwrap();
-    assert!(second.sequence > first.sequence);
+    assert!(second.sequence > 0);
+    let page = s.mailbox_after(&recipient, first.sequence, 1000).unwrap();
+    assert_eq!(page.len(), 1);
+    assert!(page[0].sequence > first.sequence);
     let through: i64 =
         s.0.query_row(
             "SELECT through_sequence FROM push_jobs WHERE device=?1",
@@ -320,11 +326,10 @@ fn remote_mail_uses_the_existing_push_sequence_and_transaction() {
             |r| r.get(0),
         )
         .unwrap();
-    assert_eq!(through, second.sequence);
+    assert_eq!(through, page[0].sequence);
     assert_eq!(s.mailbox(&recipient, 1000).unwrap().len(), 2);
-    let page = s.mailbox_after(&recipient, first.sequence, 1000).unwrap();
-    assert_eq!(page.len(), 1);
-    assert_eq!(page[0].sequence, second.sequence);
+    assert_eq!(page[0].payload, request.payload);
+    assert_eq!(page[0].message_id, request.message_id);
     assert_eq!(page[0].origin.as_ref().unwrap(), &sender(1));
 }
 #[test]
@@ -393,7 +398,12 @@ fn schema_fifteen_upgrade_rolls_back_and_preserves_local_receipts() {
         1000,
     )
     .unwrap();
-    assert!(receive(&mut s, &key, &next, 1000, 1).unwrap().sequence > receipt.sequence);
+    assert!(receive(&mut s, &key, &next, 1000, 1).unwrap().sequence > 0);
+    let page = s.mailbox_after(&token, receipt.sequence, 1000).unwrap();
+    assert_eq!(page.len(), 1);
+    assert!(page[0].sequence > receipt.sequence);
+    assert_eq!(page[0].payload, next.payload);
+    assert_eq!(page[0].origin.as_ref().unwrap(), &sender(1));
     update.expected_revision = 2;
     update.allowed = false;
     s.configure_federation_peer("remote.example", update)
@@ -456,7 +466,10 @@ fn real_https_ingress_and_native_mailbox_enforce_authentication_and_body_limits(
         if expected == 200 {
             let values: Vec<Delivery> = serde_json::from_slice(&response.body).unwrap();
             assert_eq!(values.len(), 1);
-            assert_eq!(values[0].sequence, receipt.sequence);
+            assert!(values[0].sequence > 0 && receipt.sequence > 0);
+            assert_eq!(values[0].message_id, first.message_id);
+            assert_eq!(values[0].payload, first.payload);
+            assert_eq!(receipt.expires_at, first.expires_at);
             assert_eq!(values[0].origin.as_ref().unwrap(), &sender(1));
         }
     }
@@ -552,4 +565,56 @@ fn delayed_permission_retry_cannot_undo_a_newer_decision() {
         s.configure_federation_sender(&token, remove, 1006).unwrap(),
         removed
     );
+}
+
+#[test]
+fn remote_receipt_does_not_disclose_unrelated_local_mailbox_inserts() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("quiet.db");
+    let other_path = dir.path().join("active.db");
+    let (mut quiet, key) = trusted(&path);
+    let token = enroll(&mut quiet, "recipient", 1000);
+    let target = quiet.session(&token, 1000).unwrap().device_id;
+    let local = enroll(&mut quiet, "unrelated", 1000);
+    let local_device = quiet.session(&local, 1000).unwrap().device_id;
+    quiet
+        .allow_federated_sender(&token, sender(1), 1000)
+        .unwrap();
+    quiet.backup(&other_path).unwrap();
+    let mut active = Store::open(&other_path).unwrap();
+    active
+        .submit_message(
+            &local,
+            sigil_protocol::mailbox::Submit {
+                recipient_device: local_device,
+                message_id: "ee".repeat(32),
+                payload: "cd".repeat(32),
+                expires_at: 2000,
+            },
+            1000,
+        )
+        .unwrap();
+    let request = message(&target, &sender(1), 1, 2000);
+    let (body, headers) = signed(&key, &request, 1000, 1);
+    let a = quiet
+        .receive_federated_message(&body, &headers, 1000)
+        .unwrap();
+    let b = active
+        .receive_federated_message(&body, &headers, 1000)
+        .unwrap();
+    let quiet_delivery = quiet.mailbox_after(&token, 0, 1000).unwrap();
+    let active_delivery = active.mailbox_after(&token, 0, 1000).unwrap();
+    assert_eq!(quiet_delivery.len(), 1);
+    assert_eq!(active_delivery.len(), 1);
+    assert_eq!(quiet_delivery[0].payload, request.payload);
+    assert_eq!(active_delivery[0].payload, request.payload);
+    assert_ne!(quiet_delivery[0].sequence, active_delivery[0].sequence);
+    assert!(a.sequence > 0 && b.sequence > 0);
+    assert_eq!(
+        a, b,
+        "remote receipt must not reveal unrelated local insertion count"
+    );
+    drop(active);
+    let mut reopened = Store::open(&other_path).unwrap();
+    assert_eq!(receive(&mut reopened, &key, &request, 1000, 2).unwrap(), a);
 }

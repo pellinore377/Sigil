@@ -82,6 +82,56 @@ fn private_backup_resumable_import_restore_and_interrupted_activation() {
     assert!(store.operations().unwrap().is_empty());
     assert!(store.configuration().unwrap().settings.is_some());
 }
+
+#[test]
+fn restore_activation_keeps_hot_journal_with_previous_database() {
+    const CHILD_PATH: &str = "SIGIL_SYNTHETIC_RESTORE_JOURNAL";
+    if let Some(path) = std::env::var_os(CHILD_PATH) {
+        let store = Store::open(Path::new(&path)).unwrap();
+        store
+            .0
+            .execute_batch("BEGIN IMMEDIATE; UPDATE devices SET revoked=1,token_hash=NULL;")
+            .unwrap();
+        store.0.cache_flush().unwrap();
+        std::process::exit(0); // Leave an actual hot SQLite journal, without running destructors.
+    }
+    let (dir, mut store, alice, _, now) = crate::admin::tests::setup();
+    let root = "aa".repeat(32);
+    let backup = execute(&mut store, Action::Backup, &root, now);
+    let restore = execute(&mut store, Action::Restore { file: backup.id }, &root, now);
+    assert_eq!(restore.state, "complete");
+    drop(store);
+    let current = dir.path().join("sigil.db");
+    assert!(std::process::Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--exact",
+            "operations::tests::restore_activation_keeps_hot_journal_with_previous_database"
+        ])
+        .env(CHILD_PATH, &current)
+        .status()
+        .unwrap()
+        .success());
+    let journal = dir.path().join("sigil.db-journal");
+    let bytes = fs::read(&journal).unwrap();
+    assert_eq!(
+        &bytes[..8],
+        &[0xd9, 0xd5, 0x05, 0xf9, 0x20, 0xa1, 0x63, 0xd7]
+    );
+    activate_restore(dir.path()).unwrap();
+    let restored = Store::open(&current).unwrap();
+    assert!(
+        restored.session(&alice, now).is_err(),
+        "restore must not resurrect the pre-restore device credential"
+    );
+    let previous = dir
+        .path()
+        .join(format!("sigil.pre-restore-{}.db", restore.id));
+    let original = Store::open(&previous).unwrap();
+    assert!(
+        original.session(&alice, now).is_ok(),
+        "original must roll back its interrupted transaction"
+    );
+}
 #[test]
 fn jobs_require_confirmation_and_current_authorization_and_bound_resources() {
     let (dir, mut store, alice, bob, now) = crate::admin::tests::setup();
@@ -213,7 +263,7 @@ fn backup_retry_recovers_partial_files_and_a_failed_completion_commit() {
         version: env!("CARGO_PKG_VERSION").into(),
         image_digest: format!("sha256:{}", root),
         minimum_schema: 25,
-        target_schema: 26,
+        target_schema: 27,
     };
     validate_release(&current).unwrap();
     assert!(Action::Upgrade { release: current }.validate().is_err());
@@ -231,7 +281,7 @@ fn signed_updates_and_https_endpoint_check_use_configured_trust() {
         version: "0.2.0".into(),
         image_digest: format!("sha256:{}", "ab".repeat(32)),
         minimum_schema: 25,
-        target_schema: 26,
+        target_schema: 27,
     };
     let signature =
         crate::federation_auth::hex(key.sign(encode(&release).unwrap().as_bytes()).as_ref());
@@ -306,4 +356,156 @@ fn signed_updates_and_https_endpoint_check_use_configured_trust() {
         execute(&mut store, Action::CheckUpdate, &root, now).state,
         "failed"
     );
+}
+
+#[test]
+fn failed_restore_artifacts_can_be_deleted_without_touching_pending_restore() {
+    let (dir, mut store, _, _, now) = crate::admin::tests::setup();
+    let root = "aa".repeat(32);
+    let backup = execute(&mut store, Action::Backup, &root, now);
+    let first = execute(
+        &mut store,
+        Action::Restore {
+            file: backup.id.clone(),
+        },
+        &root,
+        now,
+    );
+    assert_eq!(first.state, "complete");
+    let second = execute(&mut store, Action::Restore { file: backup.id }, &root, now);
+    assert_eq!(second.state, "failed");
+    let maintenance = directory(&store.0).unwrap();
+    let failed_stage = file(&maintenance, &second.id, "restore").unwrap();
+    assert!(
+        failed_stage.exists(),
+        "fixture must reach the ordinary failed staging path"
+    );
+    assert!(store
+        .backup_files()
+        .unwrap()
+        .iter()
+        .any(|v| v["id"] == second.id));
+    store.delete_backup(&second.id).unwrap();
+    assert!(file(&maintenance, &first.id, "restore").unwrap().exists());
+    assert_eq!(
+        fs::read_to_string(dir.path().join("restore.pending")).unwrap(),
+        first.id
+    );
+    assert!(
+        !failed_stage.exists(),
+        "deleting the failed restore's backup leaves its hidden stage behind"
+    );
+}
+
+#[test]
+fn artifact_sweep_is_bounded_and_preserves_live_work_uploads_and_pending_restore() {
+    let (dir, mut store, _, _, now) = crate::admin::tests::setup();
+    let root = "aa".repeat(32);
+    let make_upload = || Upload {
+        bytes: 4096,
+        sha256: root.clone(),
+    };
+    let upload = store.prepare_backup_upload(make_upload()).unwrap();
+    store
+        .upload_backup_chunk(&upload, 0, &vec![0; 4096])
+        .unwrap();
+    let prepared = store
+        .prepare_operation(&root, true, Action::Backup, now)
+        .unwrap();
+    store.confirm_operation(&prepared.id, &root, now).unwrap();
+    let job = store.claim_operation(&digest(&root), now).unwrap().unwrap();
+    let source = "bb".repeat(32);
+    let queued = store
+        .prepare_operation(
+            &root,
+            true,
+            Action::Inspect {
+                file: source.clone(),
+            },
+            now,
+        )
+        .unwrap();
+    store.confirm_operation(&queued.id, &root, now).unwrap();
+    let maintenance = directory(&store.0).unwrap();
+    let pending = "cc".repeat(32);
+    let marker = dir.path().join("restore.pending");
+    private_file(&marker)
+        .unwrap()
+        .write_all(pending.as_bytes())
+        .unwrap();
+    let mut protected = Vec::new();
+    for (id, ext) in [
+        (&job.id, "backup"),
+        (&source, "restore"),
+        (&pending, "restore"),
+        (&upload, "part-wal"),
+    ] {
+        let path = file(&maintenance, id, ext).unwrap();
+        private_file(&path).unwrap();
+        protected.push(path);
+    }
+    let snapshot = file(&maintenance, &"dd".repeat(32), "db").unwrap();
+    private_file(&snapshot).unwrap();
+    protected.push(snapshot);
+    let orphan = "ee".repeat(32);
+    let temporary = format!("restore-{}", "ff".repeat(32));
+    let extensions = [
+        "backup",
+        "marker",
+        "restore",
+        "part",
+        "part-wal",
+        "part-shm",
+        "part-journal",
+        &temporary,
+    ];
+    for ext in extensions {
+        private_file(&file(&maintenance, &orphan, ext).unwrap()).unwrap();
+    }
+    // Model bounded crash leftovers at the admission threshold using empty files.
+    for n in 0..120 {
+        private_file(&file(&maintenance, &format!("{:064x}", n + 1), "backup").unwrap()).unwrap();
+    }
+    assert!(fs::read_dir(&maintenance).unwrap().count() >= 120);
+    store.prepare_backup_upload(make_upload()).unwrap();
+    for path in protected {
+        assert!(path.exists(), "live artifact or retained snapshot removed");
+    }
+    for ext in extensions {
+        assert!(!file(&maintenance, &orphan, ext).unwrap().exists());
+    }
+    assert!(fs::read_dir(&maintenance).unwrap().count() < 120);
+    for id in [&job.id, &source, &pending] {
+        assert!(matches!(store.delete_backup(id), Err(StoreError::Busy)));
+    }
+    store.delete_backup(&upload).unwrap();
+    assert!(matches!(
+        store.backup_upload(&upload),
+        Err(StoreError::NotFound)
+    ));
+    assert!(!file(&maintenance, &upload, "part-wal").unwrap().exists());
+    fs::write(&marker, b"invalid").unwrap();
+    let preserve = file(&maintenance, &orphan, "backup").unwrap();
+    private_file(&preserve).unwrap();
+    assert!(store.prepare_backup_upload(make_upload()).is_err());
+    assert!(
+        preserve.exists(),
+        "malformed restore marker must fail closed before cleanup"
+    );
+}
+
+#[test]
+fn selected_artifact_deletion_reports_partial_bounded_progress() {
+    let (_dir, mut store, _, _, _) = crate::admin::tests::setup();
+    let maintenance = directory(&store.0).unwrap();
+    let id = "aa".repeat(32);
+    // Synthetic accumulated crash temporaries for one retired operation.
+    for n in 0..300 {
+        let extension = format!("restore-{n:064x}");
+        private_file(&file(&maintenance, &id, &extension).unwrap()).unwrap();
+    }
+    assert!(matches!(store.delete_backup(&id), Err(StoreError::Busy)));
+    assert_eq!(fs::read_dir(&maintenance).unwrap().count(), 44);
+    store.delete_backup(&id).unwrap();
+    assert_eq!(fs::read_dir(&maintenance).unwrap().count(), 0);
 }

@@ -202,9 +202,12 @@ mod tests {
         decoder.add(&chunk).unwrap();
         chunk[4] ^= 1;
         assert_eq!(decoder.add(&chunk), Err(Error::Authentication));
-        encoder.next = MAX_SYMBOL_ID;
-        assert_eq!(encoder.next().unwrap()[..4], [0, 255, 255, 255]);
-        assert_eq!(encoder.next(), Err(Error::Limit));
+        for len in [96, 1536, 1408, 192] {
+            let mut encoder = Encoder::new(&vec![0; len]).unwrap();
+            encoder.next = MAX_SYMBOL_ID;
+            assert_eq!(encoder.next().unwrap()[..4], [0, 255, 255, 255]);
+            assert_eq!(encoder.next(), Err(Error::Limit));
+        }
         // Exercise the admission bound without invoking a large decoder matrix.
         decoder.received = (0..MAX_RECEIVED as u32)
             .map(|id| (id, [0; SYMBOL_LEN]))

@@ -9,7 +9,7 @@ use std::{
 };
 
 const APPLICATION_ID: i64 = 0x5349474c;
-pub(crate) const SCHEMA_VERSION: i64 = 26;
+pub(crate) const SCHEMA_VERSION: i64 = 27;
 
 #[derive(Debug)]
 pub enum StoreError {
@@ -149,7 +149,6 @@ impl Store {
         }
         if version < 12 {
             transaction.execute_batch(crate::storage_budget::MIGRATION)?;
-            crate::storage_budget::rebuild(&transaction)?;
         }
         if version < 13 {
             transaction.execute_batch(crate::attachments::MIGRATION)?;
@@ -195,6 +194,9 @@ impl Store {
         }
         if version < 26 {
             transaction.execute_batch("CREATE TABLE IF NOT EXISTS storage_cleanup(id INTEGER PRIMARY KEY CHECK(id=1),pending INTEGER NOT NULL CHECK(pending IN(0,1))); INSERT INTO storage_cleanup VALUES(1,1) ON CONFLICT(id) DO UPDATE SET pending=1;")?;
+        }
+        if version < 27 {
+            crate::storage_budget::rebuild(&transaction)?;
         }
         transaction.pragma_update(None, "user_version", SCHEMA_VERSION)?;
         transaction.commit()?;
