@@ -1,4 +1,5 @@
 Keep the codebase compact; remove unused and superseded implementations. No line-count target.
+Do not edit docs/plan.md. Keep comments and commit messages terse. Retain only necessary README instructions, specifications and license notices. docs/Status.md is the sole current work summary: update it in place, never append historical progress logs or duplicate status reports. Git history holds history.
 Do not import, vendor, copy, or port Signal implementation code, including libsignal, zkgroup and zkcredential, directly or through wrappers/forks. Implement published specifications independently using established non-Signal primitives. Relaxing the MIT requirement does not authorize Signal code. Project licensing remains unselected; review other dependencies individually.
 Rust owns shared domain logic; Kotlin is authorized for Compose UI and platform adapters. No handwritten JavaScript or Python application code. Browser JavaScript must be generated glue only.
 Use synthetic content only. Never include personal configuration, credentials, device identifiers, screenshots, or raw device logs in this repository.

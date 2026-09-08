@@ -206,6 +206,10 @@ fn release_packet(
         if job.status == GroupDeliveryStatus::Pending {
             return Ok(());
         }
+        tx.execute(
+            "DELETE FROM group_envelopes WHERE id=?1",
+            [job.id.as_slice()],
+        )?;
     }
     tx.execute(
         "UPDATE group_messages SET packet=NULL WHERE id=?1",
@@ -285,10 +289,6 @@ impl ClientStore {
     fn send_group_delivery(&mut self, id: Id, now: u64) -> Result<GroupDeliveryStatus, Error> {
         let network = self.connected_client()?;
         let own = device_fingerprint(&self.own_device_binding()?)?;
-        let before = read(&self.db, &self.key, &own, &id)?;
-        if before.status == GroupDeliveryStatus::Pending && before.expires > now {
-            self.refresh_group_authority_for_send(before.group, now)?;
-        }
         let tx = self
             .db
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
@@ -298,6 +298,17 @@ impl ClientStore {
         }
         let stored = load(&tx, &self.key, &own, &job.message)?.ok_or(Error::InvalidStore)?;
         validate_job(&job, &stored)?;
+        match crate::conversations::check_send(&tx, &self.key, &stored.message.plaintext, now) {
+            Ok(()) => {}
+            Err(Error::Obsolete) => {
+                job.status = GroupDeliveryStatus::Cancelled;
+                job.save(&tx, &self.key, &own)?;
+                release_packet(&tx, &self.key, &own, &job.message)?;
+                tx.commit()?;
+                return Ok(GroupDeliveryStatus::Cancelled);
+            }
+            Err(error) => return Err(error),
+        }
         let bytes = packet(&tx, &self.key, &own, &job.message, &stored)?;
         if job.expires <= now {
             job.status = GroupDeliveryStatus::Expired;
@@ -309,15 +320,18 @@ impl ClientStore {
         let state = keys::current(&tx, &self.key, &own, &job.group)?;
         keys::matches_state(&state, &stored.message.context)?;
         state.device(job.target.fingerprint)?;
-        let known = peers::verified(&tx, &self.key, &job.target.peer)?;
+        let known = keys::authorized_peer(&tx, &self.key, &state, &job.target.peer)?;
         if known.fingerprint != job.target.fingerprint || known.binding.device != job.target.device
         {
             return Err(Error::Conflict);
         }
-        let distribution_id =
-            super::super::control::message_id(&stored.message.context, &job.target.fingerprint);
-        let (session, receipt) = keys::job(&tx, &self.key, &own, &job.group, &distribution_id)?
-            .ok_or(Error::Unprepared)?;
+        let (distribution_id, session, receipt) = super::super::key_recovery::distribution_job(
+            &tx,
+            &self.key,
+            &own,
+            &stored.message.context,
+            &job.target.fingerprint,
+        )?;
         if receipt.context != stored.message.context || receipt.recipient != job.target.fingerprint
         {
             return Err(Error::InvalidStore);
@@ -325,14 +339,46 @@ impl ClientStore {
         if transport::receipt(&tx, &self.key, session, distribution_id)?.is_none() {
             return Err(Error::Unprepared);
         }
-        let request = Submit {
+        let mut request = Submit {
             recipient_device: transport::hex(&job.target.device),
             message_id: transport::hex(&id),
             payload: transport::hex(&bytes),
             expires_at: job.expires,
         };
         tx.commit()?;
-        let receipt = network.submit(&request)?;
+        self.wrap_group_request(job.group, job.target.fingerprint, &mut request)?;
+        let own_session = self.connection_session()?.ok_or(Error::Unprepared)?;
+        let result = crate::federation::submit(
+            &network,
+            &own_session,
+            &known.binding.server,
+            &request,
+            || {
+                self.refresh_group_authority_for_send(job.group, now)?;
+                crate::conversations::check_send(
+                    &self.db,
+                    &self.key,
+                    &stored.message.plaintext,
+                    now,
+                )?;
+                let tx = self.db.transaction()?;
+                if read(&tx, &self.key, &own, &id)?.status != GroupDeliveryStatus::Pending {
+                    return Err(Error::Cancelled);
+                }
+                let state = keys::current(&tx, &self.key, &own, &job.group)?;
+                keys::matches_state(&state, &stored.message.context)?;
+                keys::authorized_peer(&tx, &self.key, &state, &job.target.peer)?;
+                Ok(())
+            },
+        );
+        if matches!(&result, Err(Error::Cancelled))
+            && self.group_delivery_status(id)? == GroupDeliveryStatus::Cancelled
+        {
+            return Ok(GroupDeliveryStatus::Cancelled);
+        }
+        let Some(receipt) = result? else {
+            return Ok(GroupDeliveryStatus::Pending);
+        };
         self.accept_group_receipt(id, &receipt)?;
         Ok(GroupDeliveryStatus::Accepted)
     }
@@ -393,6 +439,40 @@ impl ClientStore {
         tx.commit()?;
         Ok(attempts)
     }
+}
+pub(in crate::groups) fn cancel_before(
+    tx: &Transaction<'_>,
+    key: &StorageKey,
+    own: &Id,
+    group: &Id,
+    target: &Id,
+    counter: u64,
+) -> Result<(), Error> {
+    let target_index = recipient_index(key, group, target)?;
+    let ids=tx.prepare("SELECT d.id FROM group_delivery d JOIN group_messages m ON m.id=d.message WHERE m.group_id=?1 AND d.recipient=?2 AND d.status=0 ORDER BY d.sequence LIMIT 17")?.query_map((group.as_slice(),target_index.as_slice()),|r|r.get::<_,Vec<u8>>(0))?.collect::<Result<Vec<_>,_>>()?;
+    if ids.len() > 16 {
+        return Err(Error::InvalidStore);
+    }
+    for id in ids {
+        let mut job = read(
+            tx,
+            key,
+            own,
+            &id.try_into().map_err(|_| Error::InvalidStore)?,
+        )?;
+        let stored = load(tx, key, own, &job.message)?.ok_or(Error::InvalidStore)?;
+        validate_job(&job, &stored)?;
+        if job.group != *group || job.target.fingerprint != *target {
+            return Err(Error::InvalidStore);
+        }
+        let raw = packet(tx, key, own, &job.message, &stored)?;
+        if sk::Packet::from_bytes(&raw)?.counter() < counter {
+            job.status = GroupDeliveryStatus::Cancelled;
+            job.save(tx, key, own)?;
+            release_packet(tx, key, own, &job.message)?;
+        }
+    }
+    Ok(())
 }
 
 struct Received {
@@ -480,6 +560,30 @@ impl ClientStore {
     /// Authenticate current membership, packet and logical content before
     /// committing receiver advancement, retained history and acknowledgement.
     pub fn accept_group_delivery(&mut self, delivery: &Delivery) -> Result<GroupMessage, Error> {
+        self.accept_group_delivery_inner(delivery, None)
+    }
+    /// The ordinary online receiver refreshes pinned membership before accepting
+    /// new group traffic. The local API remains available for offline fixtures.
+    pub fn accept_group_delivery_online(
+        &mut self,
+        delivery: &Delivery,
+        now: u64,
+    ) -> Result<GroupMessage, Error> {
+        self.accept_group_delivery_inner(delivery, Some(now))
+    }
+    fn accept_group_delivery_inner(
+        &mut self,
+        delivery: &Delivery,
+        now: Option<u64>,
+    ) -> Result<GroupMessage, Error> {
+        let unwrapped;
+        let wrapped = super::super::envelope::is_envelope(&delivery.payload);
+        let delivery = if wrapped {
+            unwrapped = self.unwrap_group_delivery(delivery)?.1;
+            &unwrapped
+        } else {
+            delivery
+        };
         if delivery.sequence <= 0
             || delivery.expires_at == 0
             || delivery.expires_at > i64::MAX as u64
@@ -496,7 +600,8 @@ impl ClientStore {
         let own_binding = self.own_device_binding()?;
         let own = device_fingerprint(&own_binding)?;
         let own_fields = peers::parse(&own_binding)?.binding;
-        let peer = peers::reference(&own_fields.server, &sender);
+        let peer =
+            crate::federation::delivery_peer(&self.db, &self.key, &own_fields.server, delivery)?;
         let bytes = delivery
             .payload
             .as_bytes()
@@ -513,6 +618,9 @@ impl ClientStore {
         if transport_id(&context, &packet.message(), &own) != transport_id_received {
             return Err(Error::Conflict);
         }
+        if let Some(now) = now {
+            self.refresh_group_authority_for_send(context.group, now)?;
+        }
         let digest: Id = Sha256::digest(&bytes).into();
         let tx = self
             .db
@@ -528,11 +636,27 @@ impl ClientStore {
             }
             return committed(&tx, &self.key, &own, &prior);
         }
-        let known = peers::verified(&tx, &self.key, &peer)?;
+        if !wrapped
+            && tx.query_row(
+                "SELECT EXISTS(SELECT 1 FROM group_service WHERE group_id=?1)",
+                [context.group.as_slice()],
+                |r| r.get::<_, bool>(0),
+            )?
+            && !super::super::envelope::legacy_allowed(
+                &tx,
+                &self.key,
+                &own,
+                &context.group,
+                context.epoch,
+            )?
+        {
+            return Err(Error::InvalidEvent);
+        }
+        let state = keys::current(&tx, &self.key, &own, &context.group)?;
+        let known = keys::authorized_peer(&tx, &self.key, &state, &peer)?;
         if known.fingerprint != context.sender || known.binding.device != sender {
             return Err(Error::Conflict);
         }
-        let state = keys::current(&tx, &self.key, &own, &context.group)?;
         keys::matches_state(&state, &context)?;
         let id = index(
             &self.key,
@@ -554,7 +678,7 @@ impl ClientStore {
             let text = Group::from_bytes(&plaintext).map_err(|_| Error::InvalidEvent)?;
             crate::event::validate_content(
                 text.content,
-                &own_fields.server,
+                &known.binding.server,
                 &text.message,
                 &crate::event::account(&known.binding),
                 text.timestamp,

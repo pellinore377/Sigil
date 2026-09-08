@@ -61,6 +61,18 @@ pub struct Span {
 pub struct Text {
     body: String,
     spans: Vec<Span>,
+    blocks: Vec<crate::Block>,
+    mentions: Vec<crate::contact::Mention>,
+}
+impl Serialize for Text {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        crate::structured::inline::serialize(self, serializer)
+    }
+}
+impl<'de> Deserialize<'de> for Text {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        crate::structured::inline::deserialize(deserializer)
+    }
 }
 /// Graphical creation uses the same normalization and resolved spans as parsing.
 pub struct Run<'a> {
@@ -81,8 +93,51 @@ struct Metadata {
     version: u8,
     unicode: String,
     text_spans: Vec<Span>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    blocks: Vec<crate::Block>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    mentions: Vec<crate::contact::Mention>,
 }
 impl Text {
+    pub fn mentions(&self) -> &[crate::contact::Mention] {
+        &self.mentions
+    }
+    pub fn with_mentions(mut self, mentions: Vec<crate::contact::Mention>) -> Result<Self, Error> {
+        crate::contact::validate_mentions(&self, &mentions)?;
+        self.mentions = mentions;
+        Ok(self)
+    }
+    pub fn bind_mention(
+        self,
+        range: std::ops::Range<u32>,
+        contact: &crate::contact::Contact,
+    ) -> Result<Self, Error> {
+        contact.validate()?;
+        let display: String = self
+            .body
+            .graphemes(true)
+            .skip(range.start as usize)
+            .take(range.end.saturating_sub(range.start) as usize)
+            .collect();
+        let mut mentions = self.mentions.clone();
+        mentions.push(crate::contact::Mention {
+            start: range.start,
+            end: range.end,
+            user_id: contact.user_id,
+            display,
+            address: contact.address.clone(),
+        });
+        mentions.sort_by_key(|mention| mention.start);
+        self.with_mentions(mentions)
+    }
+    pub fn blocks(&self) -> &[crate::Block] {
+        &self.blocks
+    }
+    pub fn with_blocks(mut self, blocks: Vec<crate::Block>) -> Result<Self, Error> {
+        crate::blocks::validate(&self, &blocks)?;
+        self.blocks = blocks;
+        Ok(self)
+    }
     pub fn body(&self) -> &str {
         &self.body
     }
@@ -102,7 +157,9 @@ impl Text {
         }
         if range.is_empty() {
             limits.validate()?;
-            return Self::from_runs(&self.runs(&offsets), limits);
+            return Self::from_runs(&self.runs(&offsets), limits)?
+                .with_blocks(self.blocks.clone())?
+                .with_mentions(self.mentions.clone());
         }
         let start = offsets[range.start as usize];
         let end = offsets[range.end as usize];
@@ -151,7 +208,41 @@ impl Text {
             }
             at = stop;
         }
-        Self::from_runs(&result, limits)
+        let result = Self::from_runs(&result, limits)?;
+        let delta = result.body.graphemes(true).count() as i64 - (offsets.len() - 1) as i64;
+        let shift = |index: u32| -> u32 { (i64::from(index) + delta) as u32 };
+        let mentions = self
+            .mentions
+            .iter()
+            .filter_map(|mention| {
+                if mention.start < range.end && range.start < mention.end {
+                    return None;
+                }
+                let mut mention = mention.clone();
+                if mention.start >= range.end {
+                    mention.start = shift(mention.start);
+                    mention.end = shift(mention.end);
+                }
+                Some(mention)
+            })
+            .collect();
+        let mut blocks = Vec::new();
+        let mut skip = false;
+        for block in &self.blocks {
+            if block.depth == 0 {
+                skip = block.start < range.end && range.start < block.end;
+            }
+            if skip {
+                continue;
+            }
+            let mut block = block.clone();
+            if block.start >= range.end {
+                block.start = shift(block.start);
+                block.end = shift(block.end);
+            }
+            blocks.push(block);
+        }
+        result.with_blocks(blocks)?.with_mentions(mentions)
     }
     fn runs(&self, offsets: &[usize]) -> Vec<Run<'_>> {
         let mut runs = Vec::with_capacity(self.spans.len() * 2 + 1);
@@ -258,7 +349,12 @@ impl Text {
                 }
             }
         }
-        Ok(Self { body, spans })
+        Ok(Self {
+            body,
+            spans,
+            blocks: Vec::new(),
+            mentions: Vec::new(),
+        })
     }
     pub fn to_bytes(&self) -> Result<Vec<u8>, Error> {
         if self.body.is_empty() {
@@ -272,6 +368,8 @@ impl Text {
                 version: 1,
                 unicode: "17.0.0".into(),
                 text_spans: self.spans.clone(),
+                blocks: self.blocks.clone(),
+                mentions: self.mentions.clone(),
             },
         })
         .map_err(|_| Error::Invalid)?;
@@ -291,7 +389,9 @@ impl Text {
         if wire.body.is_empty() || wire.format != "text/html" {
             return Err(Error::Invalid);
         }
-        let text = Self::from_parts(wire.body, wire.sigil.text_spans)?;
+        let text = Self::from_parts(wire.body, wire.sigil.text_spans)?
+            .with_blocks(wire.sigil.blocks)?
+            .with_mentions(wire.sigil.mentions)?;
         if text.html() != wire.formatted_body || text.to_bytes()?.as_slice() != bytes {
             return Err(Error::Invalid);
         }
@@ -326,19 +426,38 @@ impl Text {
             }
             previous = Some(span);
         }
-        Ok(Self { body, spans })
+        Ok(Self {
+            body,
+            spans,
+            blocks: Vec::new(),
+            mentions: Vec::new(),
+        })
     }
     pub fn html(&self) -> String {
-        let mut out = String::from("<p>");
+        if !self.blocks.is_empty() {
+            return crate::blocks::html(self, &self.blocks);
+        }
+        format!(
+            "<p>{}</p>",
+            self.html_inline(0..self.body.graphemes(true).count() as u32)
+        )
+    }
+    pub(crate) fn html_inline(&self, range: std::ops::Range<u32>) -> String {
+        let mut out = String::new();
         let boundaries: Vec<usize> = self
             .body
             .grapheme_indices(true)
             .map(|(i, _)| i)
             .chain(std::iter::once(self.body.len()))
             .collect();
-        let mut at = 0;
+        let mut at = boundaries[range.start as usize];
         for span in &self.spans {
-            escaped(&mut out, &self.body[at..boundaries[span.start as usize]]);
+            let start = span.start.max(range.start);
+            let end = span.end.min(range.end);
+            if start >= end {
+                continue;
+            }
+            escaped(&mut out, &self.body[at..boundaries[start as usize]]);
             let e = &span.effects;
             let mut closing = Vec::new();
             if let Some(url) = &e.link {
@@ -362,19 +481,18 @@ impl Text {
             }
             escaped(
                 &mut out,
-                &self.body[boundaries[span.start as usize]..boundaries[span.end as usize]],
+                &self.body[boundaries[start as usize]..boundaries[end as usize]],
             );
             for close in closing.into_iter().rev() {
                 out.push_str(close)
             }
-            at = boundaries[span.end as usize];
+            at = boundaries[end as usize];
         }
-        escaped(&mut out, &self.body[at..]);
-        out.push_str("</p>");
+        escaped(&mut out, &self.body[at..boundaries[range.end as usize]]);
         out
     }
 }
-fn attribute(out: &mut String, text: &str) {
+pub(crate) fn attribute(out: &mut String, text: &str) {
     for c in text.chars() {
         match c {
             '&' => out.push_str("&amp;"),

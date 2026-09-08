@@ -240,9 +240,10 @@ impl Store {
             return Err(StoreError::Invalid("attachment exceeds configured limit"));
         }
         storage_budget::reserve(&tx, &owner, FILE_METADATA, now)?;
+        let quota = crate::admin::quota(&tx, &owner)?;
         if crate::recovery::used(&tx, &owner, now)?
             .checked_add(charge)
-            .is_none_or(|v| v > settings.default_quota_bytes)
+            .is_none_or(|v| v > quota)
         {
             return Err(StoreError::Busy);
         }
@@ -434,27 +435,9 @@ impl Store {
         access: &str,
         now: u64,
     ) -> Result<Vec<u8>, StoreError> {
-        let file_id = id(file)?;
-        let hash = access_hash(&file_id, access)?;
         let tx = self.0.transaction()?;
         account(&tx, credential, now)?;
-        let record = read(&tx, file)?;
-        if record.effective(now) != State::Published
-            || record.restored
-            || !bool::from(record.access.ct_eq(&hash))
-        {
-            return Err(StoreError::NotFound);
-        }
-        let expected = record
-            .shape
-            .chunk_length(index)
-            .map_err(|_| StoreError::NotFound)?
-            + CHUNK_OVERHEAD;
-        let (bytes,hash):(Vec<u8>,Vec<u8>)=tx.query_row("SELECT CASE WHEN length(data)=?3 THEN data END,CASE WHEN length(hash)=32 THEN hash END FROM attachment_chunks WHERE file=?1 AND part=?2",(file,index,expected as u32),|r|Ok((r.get(0)?,r.get(1)?))).optional()?.ok_or(StoreError::InvalidData)?;
-        if Sha256::digest(&bytes).as_slice() != hash {
-            return Err(StoreError::InvalidData);
-        }
-        Ok(bytes)
+        chunk_in(&tx, file, index, access, now)
     }
     pub fn remove_attachment(
         &mut self,
@@ -554,3 +537,31 @@ pub(crate) fn cleanup(tx: &Transaction<'_>, now: u64) -> Result<usize, StoreErro
 #[path = "attachment_http.rs"]
 mod http;
 pub(crate) use http::routes;
+
+pub(crate) fn chunk_in(
+    tx: &Transaction<'_>,
+    file: &str,
+    index: u32,
+    access: &str,
+    now: u64,
+) -> Result<Vec<u8>, StoreError> {
+    let file_id = id(file)?;
+    let hash = access_hash(&file_id, access)?;
+    let record = read(tx, file)?;
+    if record.effective(now) != State::Published
+        || record.restored
+        || !bool::from(record.access.ct_eq(&hash))
+    {
+        return Err(StoreError::NotFound);
+    }
+    let expected = record
+        .shape
+        .chunk_length(index)
+        .map_err(|_| StoreError::NotFound)?
+        + CHUNK_OVERHEAD;
+    let (bytes,hash):(Vec<u8>,Vec<u8>)=tx.query_row("SELECT CASE WHEN length(data)=?3 THEN data END,CASE WHEN length(hash)=32 THEN hash END FROM attachment_chunks WHERE file=?1 AND part=?2",(file,index,expected as u32),|r|Ok((r.get(0)?,r.get(1)?))).optional()?.ok_or(StoreError::InvalidData)?;
+    if Sha256::digest(&bytes).as_slice() != hash {
+        return Err(StoreError::InvalidData);
+    }
+    Ok(bytes)
+}

@@ -198,6 +198,7 @@ fn bounds_and_counter_exhaustion_fail_without_key_advance_or_wraparound() {
     ));
     assert_eq!(*sender.chain.0, before);
     assert_eq!(sender.counter(), u64::MAX);
+    assert!(matches!(sender.current_distribution(), Err(Error::Limit)));
     let mut beyond = last;
     beyond.counter = u64::MAX;
     beyond.signature = sender.signing.sign(&beyond.statement()).unwrap();
@@ -258,4 +259,64 @@ fn packet_and_chain_agree_with_independent_openssl_sodium_fixtures() {
     assert_eq!(&receiver.chain.0[..], field(&fixture, "final_chain"));
     assert_eq!(sender.counter(), 3);
     assert_eq!(receiver.counter(), 3);
+    let mut current = encoded;
+    current[5] = 2;
+    current[144..176].copy_from_slice(&field(&fixture, "final_chain"));
+    current.extend_from_slice(&3u64.to_be_bytes());
+    assert_eq!(
+        sender
+            .current_distribution()
+            .unwrap()
+            .to_bytes()
+            .unwrap()
+            .as_slice(),
+        current
+    );
+}
+
+#[test]
+fn current_distribution_recovers_future_traffic_without_rewinding_or_exporting_history() {
+    let (mut sender, mut receiver) = pair();
+    let first = sender.seal([10; 32], b"retained skipped packet").unwrap();
+    let second = sender.seal([11; 32], b"second").unwrap();
+    receiver.open(&second).unwrap();
+    let stale = sender.current_distribution().unwrap().to_bytes().unwrap();
+    let unavailable = sender.seal([12; 32], b"missed before recovery").unwrap();
+    for _ in 0..300 {
+        sender.seal([13; 32], b"advance beyond skip bound").unwrap();
+    }
+    let current = sender.current_distribution().unwrap().to_bytes().unwrap();
+    assert_eq!(current.len(), 216);
+    for n in 0..current.len() {
+        assert!(Distribution::from_bytes(&current[..n]).is_err());
+    }
+    let restored = Distribution::from_bytes(&current).unwrap();
+    let mut fresh = Receiver::from_authenticated_distribution(restored, sender.context()).unwrap();
+    assert_eq!(fresh.counter(), sender.counter());
+    assert_eq!(fresh.open(&unavailable), Err(Error::Replay));
+    let next = sender.seal([14; 32], b"after recovery").unwrap();
+    assert_eq!(fresh.open(&next).unwrap(), b"after recovery");
+    receiver
+        .refresh_authenticated(Distribution::from_bytes(&current).unwrap())
+        .unwrap();
+    assert_eq!(receiver.open(&next).unwrap(), b"after recovery");
+    assert_eq!(receiver.open(&first).unwrap(), b"retained skipped packet");
+    let before = snapshot(&receiver);
+    receiver
+        .refresh_authenticated(Distribution::from_bytes(&stale).unwrap())
+        .unwrap();
+    assert_eq!(&*snapshot(&receiver), &*before);
+    let mut changed = Distribution::from_bytes(&current).unwrap();
+    changed.public = IdentityKey::generate().unwrap().public_key();
+    assert_eq!(
+        receiver.refresh_authenticated(changed),
+        Err(Error::Authentication)
+    );
+    assert_eq!(&*snapshot(&receiver), &*before);
+    let key = StorageKey::new(Secret32::from_bytes([19; 32])).unwrap();
+    let sealed = receiver.seal_checkpoint(&key, b"recovered").unwrap();
+    let mut restarted =
+        Receiver::open_checkpoint(&key, &sealed, sender.context(), b"recovered").unwrap();
+    let next = sender.seal([15; 32], b"restart").unwrap();
+    assert_eq!(restarted.open(&next).unwrap(), b"restart");
 }

@@ -1,5 +1,5 @@
 [workspace]
-members = ["core", "crypto", "protocol", "server", "client", "android", "text", "vendor/ece-native"]
+members = ["core", "crypto", "protocol", "server", "client", "android", "text", "media", "maps", "calls", "vendor/ece-native"]
 default-members = ["crypto", "protocol", "server", "client"]
 resolver = "2"
 

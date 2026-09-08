@@ -272,3 +272,184 @@ fn readiness_flag_rejects_malformed_or_missing_seed_state() {
         Err(Error::InvalidStore)
     ));
 }
+
+#[test]
+fn group_initial_channel_does_not_grant_direct_trust_and_survives_restart() {
+    let (dir, _fixture, mut alice, mut bob, now) = crate::claims::tests::pair();
+    let authority = IdentityKey::generate().unwrap();
+    let group = staged(&mut alice, &mut bob, &authority);
+    join(&mut alice, &mut bob, group, Role::Member, &authority);
+    // Membership has already been independently approved. Remove fixture-only
+    // contact verification before exercising the group-only transport.
+    alice.db.execute("DELETE FROM peers", []).unwrap();
+    bob.db.execute("DELETE FROM peers", []).unwrap();
+    let a = bob
+        .observe_peer_binding(&alice.own_device_binding().unwrap())
+        .unwrap();
+    let b = alice
+        .observe_peer_binding(&bob.own_device_binding().unwrap())
+        .unwrap();
+    assert!(!a.verified && !b.verified);
+    assert!(alice.prepare_peer_claim([91; 32], b.id).is_err());
+    let id = alice
+        .prepare_group_distribution_online(group, b.id, now)
+        .unwrap();
+    assert_eq!(
+        alice
+            .prepare_group_distribution_online(group, b.id, now)
+            .unwrap(),
+        id
+    );
+    assert_eq!(
+        alice
+            .db
+            .query_row(
+                "SELECT count(*) FROM sessions WHERE peer IS NOT NULL",
+                [],
+                |r| r.get::<_, i64>(0)
+            )
+            .unwrap(),
+        0
+    );
+    alice.block_peer(b.id, true).unwrap();
+    assert!(alice
+        .resume_outbound_online(now)
+        .unwrap()
+        .iter()
+        .all(|v| v.result.is_err()));
+    alice.block_peer(b.id, false).unwrap();
+    alice.db.execute_batch("CREATE TRIGGER fail BEFORE UPDATE ON deliveries BEGIN SELECT RAISE(ABORT,'synthetic lost receipt'); END;").unwrap();
+    alice.resume_outbound_online(now).unwrap(); // cursor wrap
+    assert!(alice
+        .resume_outbound_online(now)
+        .unwrap()
+        .iter()
+        .all(|v| v.result.is_err()));
+    let delivery = crate::incoming::tests::next(&bob);
+    alice.db.execute_batch("DROP TRIGGER fail").unwrap();
+    drop(alice);
+    let mut alice = open(&dir.path().join("alice.db"));
+    for _ in 0..2 {
+        alice.resume_outbound_online(now).unwrap();
+    }
+    assert_eq!(crate::incoming::tests::next(&bob).payload, delivery.payload);
+    bob.db.execute_batch("CREATE TRIGGER fail BEFORE INSERT ON group_controls BEGIN SELECT RAISE(ABORT,'synthetic key install failure'); END;").unwrap();
+    assert!(bob.accept_delivery_online(&delivery, now).is_err());
+    assert_eq!(count(&bob, "sessions"), 0);
+    assert_eq!(count(&bob, "incoming"), 0);
+    bob.db.execute_batch("DROP TRIGGER fail").unwrap();
+    let received = bob.accept_delivery_online(&delivery, now).unwrap();
+    assert_eq!(received.distribution().unwrap().unwrap().message, id);
+    assert_eq!(
+        bob.db
+            .query_row(
+                "SELECT count(*) FROM sessions WHERE peer IS NOT NULL",
+                [],
+                |r| r.get::<_, i64>(0)
+            )
+            .unwrap(),
+        0
+    );
+    assert!(!bob.peer(a.id).unwrap().verified);
+    assert!(bob.prepare_peer_claim([92; 32], a.id).is_err());
+    bob.acknowledge_incoming_online().unwrap();
+    assert!(
+        bob.accept_delivery_online(&delivery, now)
+            .unwrap()
+            .duplicate
+    );
+    alice
+        .queue_group_text(group, [93; 32], "group-only communication", now, now)
+        .unwrap();
+    assert!(alice
+        .resume_group_outbound_online(now)
+        .unwrap()
+        .iter()
+        .all(|v| v.result.is_ok()));
+    let incoming = bob.receive_mailbox_online(now).unwrap();
+    assert!(incoming
+        .iter()
+        .any(|v| matches!(&v.result, Ok(crate::MailboxEvent::GroupText(_)))));
+    assert!(!alice.peer(b.id).unwrap().verified && !bob.peer(a.id).unwrap().verified);
+}
+
+#[test]
+fn scoped_initial_sessions_retire_after_grace_and_reject_scope_transplants() {
+    let (_dir, _fixture, mut alice, mut bob, now) = crate::claims::tests::pair();
+    let authority = IdentityKey::generate().unwrap();
+    let group = staged(&mut alice, &mut bob, &authority);
+    join(&mut alice, &mut bob, group, Role::Member, &authority);
+    alice.db.execute("DELETE FROM peers", []).unwrap();
+    bob.db.execute("DELETE FROM peers", []).unwrap();
+    let b = alice
+        .observe_peer_binding(&bob.own_device_binding().unwrap())
+        .unwrap();
+    bob.observe_peer_binding(&alice.own_device_binding().unwrap())
+        .unwrap();
+    alice
+        .prepare_group_distribution_online(group, b.id, now)
+        .unwrap();
+    alice.resume_outbound_online(now).unwrap();
+    let delivery = crate::incoming::tests::next(&bob);
+    let incoming = bob.accept_delivery_online(&delivery, now).unwrap();
+    bob.acknowledge_incoming_online().unwrap();
+    let marker: Vec<u8> = alice
+        .db
+        .query_row("SELECT state FROM group_channels", [], |r| r.get(0))
+        .unwrap();
+    bob.db
+        .execute("UPDATE group_channels SET state=?1", [&marker])
+        .unwrap();
+    assert!(bob.maintain_sessions(now).is_err());
+    let own = device_fingerprint(&bob.own_device_binding().unwrap()).unwrap();
+    let peer = device_fingerprint(&alice.own_device_binding().unwrap()).unwrap();
+    bob.db.execute("DELETE FROM group_channels", []).unwrap();
+    let tx = bob.db.transaction().unwrap();
+    mark_channel(&tx, &bob.key, &own, &incoming.session, &group, &peer).unwrap();
+    tx.commit().unwrap();
+    for client in [&mut alice, &mut bob] {
+        for _ in 0..2 {
+            client.maintain_sessions(now).unwrap();
+        }
+        let mut retired = 0;
+        for _ in 0..2 {
+            retired += client
+                .maintain_sessions_online(now + crate::INACTIVE_GRACE_SECONDS)
+                .unwrap()
+                .retired;
+        }
+        assert_eq!(retired, 1);
+    }
+    assert!(
+        bob.accept_delivery_online(&delivery, now)
+            .unwrap()
+            .duplicate
+    );
+}
+
+#[test]
+fn verified_contacts_group_initials_do_not_consume_direct_session_slots() {
+    let (_dir, _fixture, mut alice, mut bob, now) = crate::claims::tests::pair();
+    let authority = IdentityKey::generate().unwrap();
+    let group = staged(&mut alice, &mut bob, &authority);
+    join(&mut alice, &mut bob, group, Role::Member, &authority);
+    let (a, b) = crate::incoming::tests::trust(&mut alice, &mut bob);
+    alice
+        .prepare_group_distribution_online(group, b, now)
+        .unwrap();
+    alice.resume_outbound_online(now).unwrap();
+    let received = bob
+        .accept_delivery_online(&crate::incoming::tests::next(&bob), now)
+        .unwrap();
+    assert!(received.distribution().unwrap().is_some());
+    assert_eq!(
+        crate::session_peer(&bob.db, &received.session).unwrap(),
+        None
+    );
+    assert!(bob.peer(a).unwrap().verified);
+    let tx = bob.db.transaction().unwrap();
+    assert!(crate::selection::record(&tx, &bob.key, &a)
+        .unwrap()
+        .is_none());
+    assert!(scoped_channel(&tx, &bob.key, &received.session).unwrap());
+}

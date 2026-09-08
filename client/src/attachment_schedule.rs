@@ -57,6 +57,38 @@ fn select(store: &ClientStore, cache: &mut Cache, now: u64) -> Result<Option<(Id
             .try_into()
             .map_err(|_| Error::InvalidStore)?;
         let mut state = load(&tx, &cache.key, file)?;
+        if state.phase == Phase::Published
+            && crate::recovery::media_removed(&archive, &store.key, file)?
+        {
+            state.phase = Phase::Local;
+            save(&tx, &cache.key, &state, false)?;
+        }
+        if let Some((parent, digest)) = state.recovery_parent {
+            let retained =
+                match crate::recovery::retained_file(&archive, &store.key, cache.scope, parent) {
+                    Ok(Some(raw)) => <Id>::from(Sha256::digest(&raw)) == digest,
+                    Ok(None) | Err(Error::Obsolete) => false,
+                    Err(error) => return Err(error),
+                };
+            if !retained
+                && !matches!(
+                    state.phase,
+                    Phase::Cancelled | Phase::Expired | Phase::Evicting | Phase::Cancelling
+                )
+            {
+                let phase = if matches!(state.phase, Phase::Staging | Phase::Ready) {
+                    Phase::Cancelled
+                } else {
+                    Phase::Cancelling
+                };
+                state.discard(phase);
+                save(&tx, &cache.key, &state, false)?;
+                tx.execute(
+                    "DELETE FROM recovery_transfers WHERE id=?1",
+                    [parent.as_slice()],
+                )?;
+            }
+        }
         if !matches!(
             state.phase,
             Phase::Cancelling | Phase::Cancelled | Phase::Expired | Phase::Evicting
@@ -69,7 +101,11 @@ fn select(store: &ClientStore, cache: &mut Cache, now: u64) -> Result<Option<(Id
         if state.managed
             && matches!(
                 state.phase,
-                Phase::Published | Phase::Restored | Phase::Downloading | Phase::Complete
+                Phase::Published
+                    | Phase::Restored
+                    | Phase::Downloading
+                    | Phase::Complete
+                    | Phase::Local
             )
             && !crate::recovery::references_file(
                 &archive,

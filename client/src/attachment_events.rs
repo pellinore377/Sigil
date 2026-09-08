@@ -1,6 +1,8 @@
 //! Handoffs between durable, authenticated events and private file transfer state.
 use super::*;
 use sigil_protocol::event::Content;
+#[path = "conversation_files.rs"]
+pub(super) mod conversation_files;
 
 pub(super) fn source(store: &ClientStore, cache: &Cache) -> Result<String, Error> {
     if store.connected_account_scope()? != cache.scope {
@@ -14,12 +16,10 @@ pub(super) fn source(store: &ClientStore, cache: &Cache) -> Result<String, Error
         .1
         .to_owned())
 }
-fn descriptor(bytes: &[u8], server: &str) -> Result<Descriptor, Error> {
+pub(super) fn descriptor(bytes: &[u8], server: &str) -> Result<Descriptor, Error> {
     let file = sigil_protocol::file::File::from_bytes(bytes).map_err(|_| Error::InvalidEvent)?;
-    if file.source != server {
-        return Err(Error::InvalidEvent);
-    }
     Ok(Descriptor {
+        source: (file.source != server).then(|| file.source.to_owned()),
         bytes: Zeroizing::new(file.descriptor.to_vec()),
         access: Zeroizing::new(crate::transport::hex(file.access)),
         metadata: Metadata {
@@ -36,7 +36,7 @@ pub(super) fn content(state: &State, server: &str) -> Result<Zeroizing<Vec<u8>>,
     )?);
     Ok(Zeroizing::new(
         sigil_protocol::file::File {
-            source: server,
+            source: state.source.as_deref().unwrap_or(server),
             name: &metadata.name,
             media_type: &metadata.media_type,
             expires_at: state.expires_at,
@@ -83,7 +83,16 @@ fn prepare(
         .db
         .transaction_with_behavior(TransactionBehavior::Immediate)?;
     let archive = rusqlite::Transaction::new_unchecked(&store.db, TransactionBehavior::Immediate)?;
-    let retained = crate::recovery::retained_file(&archive, &store.key, cache.scope, record)?;
+    let retained = if expected.is_none() {
+        Some(crate::recovery::recovery_file(
+            &archive,
+            &store.key,
+            cache.scope,
+            record,
+        )?)
+    } else {
+        crate::recovery::retained_file(&archive, &store.key, cache.scope, record)?
+    };
     let bytes = match expected {
         Some(expected) => {
             if retained
@@ -162,6 +171,27 @@ impl ClientStore {
             now,
         )
     }
+    pub fn prepare_shared_group_file(
+        &mut self,
+        cache: &mut Cache,
+        group: Id,
+        record: Id,
+        now: u64,
+    ) -> Result<Id, Error> {
+        let retained = self.shared_group_history_record(group, record)?;
+        let event = sigil_protocol::event::Group::from_bytes(&retained.plaintext)
+            .map_err(|_| Error::InvalidStore)?;
+        let Content::File(bytes) = event.content else {
+            return Err(Error::InvalidEvent);
+        };
+        prepare(
+            self,
+            cache,
+            crate::groups::group_event_history_id(&event),
+            Some(bytes),
+            now,
+        )
+    }
     /// Resolve a durable inbox journal entry, not a caller-constructed Incoming.
     /// No new peer verification is inferred from the file descriptor.
     pub fn prepare_received_file(
@@ -171,6 +201,13 @@ impl ClientStore {
         now: u64,
     ) -> Result<Id, Error> {
         let incoming = self.retained_incoming_event(sequence)?;
+        crate::conversations::require_payload(
+            &self.db,
+            &self.key,
+            &incoming.plaintext,
+            now,
+            false,
+        )?;
         let event = incoming.event()?;
         let Content::File(bytes) = event.content else {
             return Err(Error::InvalidEvent);
@@ -204,12 +241,23 @@ impl ClientStore {
         index: u32,
         now: u64,
     ) -> Result<Zeroizing<Vec<u8>>, Error> {
+        self.recovered_file_chunk_for(cache, record, (index, None), now)
+    }
+    pub(super) fn recovered_file_chunk_for(
+        &self,
+        cache: &Cache,
+        record: Id,
+        (index, expected): (u32, Option<&[u8]>),
+        now: u64,
+    ) -> Result<Zeroizing<Vec<u8>>, Error> {
         let server = source(self, cache)?;
         let tx = rusqlite::Transaction::new_unchecked(&cache.db, TransactionBehavior::Immediate)?;
         let archive =
             rusqlite::Transaction::new_unchecked(&self.db, TransactionBehavior::Immediate)?;
-        let bytes = crate::recovery::retained_file(&archive, &self.key, cache.scope, record)?
-            .ok_or(Error::NotFound)?;
+        let bytes = crate::recovery::recovery_file(&archive, &self.key, cache.scope, record)?;
+        if expected.is_some_and(|expected| expected != bytes.as_slice()) {
+            return Err(Error::Obsolete);
+        }
         let file =
             sigil_protocol::file::File::from_bytes(&bytes).map_err(|_| Error::InvalidStore)?;
         let id = sigil_protocol::file::KeyDescriptor::from_bytes(file.descriptor)

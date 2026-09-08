@@ -20,8 +20,10 @@ pub struct Receipt {
     pub expires_at: u64,
 }
 
-#[derive(Deserialize, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
 pub struct Delivery {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub origin: Option<crate::federation::RemoteSender>,
     pub sequence: i64,
     pub sender_device: String,
     pub message_id: String,

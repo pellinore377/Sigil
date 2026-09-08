@@ -15,7 +15,7 @@ CREATE TABLE group_service(group_id BLOB PRIMARY KEY REFERENCES groups(id),state
 CREATE TABLE group_service_outbox(group_id BLOB PRIMARY KEY REFERENCES group_service(group_id),state BLOB NOT NULL);
 PRAGMA user_version=55;";
 const MAX: usize = codec::MAX_CHECKPOINT_BYTES;
-fn aad(group: &Id, own: &Id, kind: &[u8]) -> Vec<u8> {
+pub(super) fn aad(group: &Id, own: &Id, kind: &[u8]) -> Vec<u8> {
     [
         b"Sigil/native/group-service/v0".as_slice(),
         group,
@@ -24,7 +24,7 @@ fn aad(group: &Id, own: &Id, kind: &[u8]) -> Vec<u8> {
     ]
     .concat()
 }
-fn decode(value: &str, limit: usize) -> Result<Vec<u8>, Error> {
+pub(super) fn decode(value: &str, limit: usize) -> Result<Vec<u8>, Error> {
     if value.len() > limit * 2
         || !value.len().is_multiple_of(2)
         || !value
@@ -49,37 +49,27 @@ fn id(value: &str) -> Result<Id, Error> {
         .try_into()
         .map_err(|_| Error::InvalidEvent)
 }
-struct Access {
-    profile: Authority,
-    key: GroupKey,
-    encryption: StorageKey,
+pub(super) struct Access {
+    pub(super) profile: Authority,
+    pub(super) key: GroupKey,
+    pub(super) encryption: StorageKey,
 }
-fn load(
+pub(super) fn load(
     db: &Connection,
     key: &StorageKey,
     group: &Id,
     own: &Id,
     authority: Id,
-    server: &str,
 ) -> Result<Access, Error> {
     let sealed:Vec<u8>=db.query_row("SELECT CASE WHEN length(state)<=512 THEN state END FROM group_service WHERE group_id=?1",[group.as_slice()],|r|r.get(0)).optional()?.ok_or(Error::Unprepared)?;
     let raw = key.open(&sealed, &aad(group, own, b"context"))?;
     let (master, profile) = raw.split_at_checked(32).ok_or(Error::InvalidStore)?;
     let master = Zeroizing::new(<Id>::try_from(master).map_err(|_| Error::InvalidStore)?);
     Ok(Access {
-        profile: Authority::from_bytes(profile, server, authority)?,
+        profile: Authority::from_pinned_bytes(profile, authority)?,
         key: GroupKey::from_master(Secret32::from_bytes(*master))?,
         encryption: StorageKey::new(Secret32::from_bytes(*master))?,
     })
-}
-fn server_name(store: &ClientStore) -> Result<String, Error> {
-    let session = store.connection_session()?.ok_or(Error::Unprepared)?;
-    Ok(session
-        .address
-        .split_once(':')
-        .ok_or(Error::InvalidStore)?
-        .1
-        .into())
 }
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -221,13 +211,210 @@ impl Access {
         )?;
         Ok((control, receipt))
     }
-    fn client(&self, store: &ClientStore) -> Result<HttpsClient, Error> {
+    pub(super) fn client(&self, store: &ClientStore) -> Result<HttpsClient, Error> {
         let client = store.connected_client()?;
-        client.group_authority(self.profile.fingerprint(), Some(self.profile.id()))?;
+        client.group_authority_at(
+            self.profile.server(),
+            self.profile.fingerprint(),
+            Some(self.profile.id()),
+        )?;
         Ok(client)
     }
 }
 impl ClientStore {
+    /// Relay a fully signed, durably prepared member proposal without advancing
+    /// the ordering head. Pending remains true until an ordered commit is seen.
+    /// False means awaiting an administrator; true means the receipt committed.
+    pub fn submit_group_relay_online(&mut self, group: Id, now: u64) -> Result<bool, Error> {
+        let binding = self.own_device_binding()?;
+        let own = device_fingerprint(&binding)?;
+        let status = self.group_status(group)?;
+        if status.frozen {
+            return Err(Error::Conflict);
+        }
+        let access = load(&self.db, &self.key, &group, &own, status.state.authority)?;
+        let mut job = pending(&self.db, &self.key, &group, &own)?.ok_or(Error::Unprepared)?;
+        match job.status {
+            Submission::Accepted => return Ok(true),
+            Submission::Superseded => return Err(Error::Obsolete),
+            Submission::Pending => {}
+        }
+        let raw = access.open(group, &job.operation)?;
+        let (_, previous, head, _) = fields(&job.operation)?;
+        if status.state.head == previous {
+            let proposal = status.state.proposal_from_bytes(&raw)?;
+            status.state.authorize(&proposal)?;
+            if proposal.author != own {
+                return Err(Error::Unprepared);
+            }
+        } else if status.state.head != head {
+            return Err(Error::Obsolete);
+        }
+        let Operation::Advance {
+            predecessor,
+            head,
+            revision,
+            control,
+            ..
+        } = job.operation.clone()
+        else {
+            return Err(Error::Unprepared);
+        };
+        let client = access.client(self)?;
+        let credential = self.cached_group_credential(&client, &access.profile, &binding, now)?;
+        let reply = client.group_request(
+            &access.profile,
+            &credential,
+            &access.key,
+            group,
+            &Operation::Relay {
+                predecessor,
+                head,
+                revision,
+                control,
+            },
+            now,
+        )?;
+        if reply.restored {
+            return Err(Error::Conflict);
+        }
+        if let Some(commit) = reply.commits.first() {
+            let (raw, receipt) = access.open_commit(group, commit)?;
+            if self.commit_group_proposal(group, &raw, &receipt)? == CommitResult::Frozen {
+                return Err(Error::Conflict);
+            }
+            let tx = self
+                .db
+                .transaction_with_behavior(TransactionBehavior::Immediate)?;
+            let current = pending(&tx, &self.key, &group, &own)?.ok_or(Error::Conflict)?;
+            if serde_json::to_vec(&current.operation).map_err(|_| Error::InvalidStore)?
+                != serde_json::to_vec(&job.operation).map_err(|_| Error::InvalidStore)?
+            {
+                return Err(Error::Conflict);
+            }
+            job.status = Submission::Accepted;
+            save_pending(&tx, &self.key, &group, &own, &job)?;
+            tx.commit()?;
+            return Ok(true);
+        }
+        if reply.head != hex(&status.state.head)
+            || reply.proposals[0].author
+                != hex(&access
+                    .key
+                    .ciphertext(&access.profile.issuance(&binding, 0)?.attributes()?))
+        {
+            return Err(Error::Conflict);
+        }
+        Ok(false)
+    }
+    /// Two opaque member submissions, ordered by the returned author cursor.
+    /// Each proposal still needs end-to-end validation before it can be ordered.
+    pub fn group_relay_proposals_online(
+        &mut self,
+        group: Id,
+        after: Option<String>,
+        now: u64,
+    ) -> Result<Vec<sigil_protocol::groups::Relayed>, Error> {
+        self.refresh_group_authority_for_send(group, now)?;
+        let binding = self.own_device_binding()?;
+        let own = device_fingerprint(&binding)?;
+        let status = self.group_status(group)?;
+        if status.state.device(own)?.0.role != Role::Admin {
+            return Err(Error::Unprepared);
+        }
+        let access = load(&self.db, &self.key, &group, &own, status.state.authority)?;
+        let client = access.client(self)?;
+        let credential = self.cached_group_credential(&client, &access.profile, &binding, now)?;
+        let reply = client.group_request(
+            &access.profile,
+            &credential,
+            &access.key,
+            group,
+            &Operation::Proposals { after },
+            now,
+        )?;
+        if reply.restored || reply.head != hex(&status.state.head) {
+            return Err(Error::Conflict);
+        }
+        Ok(reply.proposals)
+    }
+    /// An administrator validates a relayed member signature and freezes the
+    /// original ciphertext. Receiving arbitrary opaque bytes grants no approval.
+    pub fn prepare_group_relay_commit(
+        &mut self,
+        group: Id,
+        relay: &sigil_protocol::groups::Relayed,
+    ) -> Result<(), Error> {
+        let own = device_fingerprint(&self.own_device_binding()?)?;
+        let tx = self
+            .db
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let status = store::load(&tx, &self.key, &own, &group)?;
+        if status.frozen || status.state.device(own)?.0.role != Role::Admin {
+            return Err(Error::Unprepared);
+        }
+        let access = load(&tx, &self.key, &group, &own, status.state.authority)?;
+        if relay.predecessor != hex(&status.state.head)
+            || relay.revision != status.state.revision.checked_add(1).ok_or(Error::Limit)?
+        {
+            return Err(Error::Conflict);
+        }
+        let raw = storage_record::open_record(
+            &access.encryption,
+            &decode(&relay.control, sigil_protocol::groups::MAX_CONTROL)?,
+            &access.context(
+                group,
+                relay.revision,
+                id(&relay.predecessor)?,
+                id(&relay.head)?,
+            ),
+        )?;
+        let proposal = status.state.proposal_from_bytes(&raw)?;
+        let next = status.state.authorize(&proposal)?;
+        let author = status
+            .state
+            .members
+            .iter()
+            .flat_map(|m| &m.devices)
+            .find(|d| peers::fingerprint(&d.binding).ok() == Some(proposal.author))
+            .ok_or(Error::Unprepared)?;
+        let expected = access.key.ciphertext(
+            &access
+                .profile
+                .issuance(&author.to_bytes().map_err(|_| Error::InvalidEvent)?, 0)?
+                .attributes()?,
+        );
+        if relay.author != hex(&expected) || relay.head != hex(&next.head) {
+            return Err(Error::Conflict);
+        }
+        let operation = Operation::Advance {
+            predecessor: relay.predecessor.clone(),
+            head: relay.head.clone(),
+            revision: relay.revision,
+            control: relay.control.clone(),
+            members: access.roster(&next)?,
+        };
+        if let Some(previous) = pending(&tx, &self.key, &group, &own)? {
+            if previous.status == Submission::Pending
+                && serde_json::to_vec(&previous.operation).map_err(|_| Error::InvalidStore)?
+                    != serde_json::to_vec(&operation).map_err(|_| Error::InvalidStore)?
+            {
+                return Err(Error::Conflict);
+            }
+        }
+        save_pending(
+            &tx,
+            &self.key,
+            &group,
+            &own,
+            &Pending {
+                operation,
+                status: Submission::Pending,
+            },
+        )?;
+        tx.commit()?;
+        Ok(())
+    }
     pub(crate) fn refresh_group_authority_for_send(
         &mut self,
         group: Id,
@@ -252,7 +439,6 @@ impl ClientStore {
         master: Zeroizing<Id>,
     ) -> Result<(), Error> {
         let own = device_fingerprint(&self.own_device_binding()?)?;
-        let server = server_name(self)?;
         let tx = self
             .db
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
@@ -260,14 +446,14 @@ impl ClientStore {
         if status.frozen {
             return Err(Error::Conflict);
         }
-        let profile = Authority::from_bytes(profile, &server, status.state.authority)?;
+        let profile = Authority::from_pinned_bytes(profile, status.state.authority)?;
         let previous:Option<Vec<u8>>=tx.query_row("SELECT CASE WHEN length(state)<=512 THEN state END FROM group_service WHERE group_id=?1",[group.as_slice()],|r|r.get(0)).optional()?;
         if let Some(previous) = previous {
             let raw = self.key.open(&previous, &aad(&group, &own, b"context"))?;
             if raw.len() < 32 || raw[..32] != *master {
                 return Err(Error::Conflict);
             }
-            let old = Authority::from_bytes(&raw[32..], &server, status.state.authority)?;
+            let old = Authority::from_pinned_bytes(&raw[32..], status.state.authority)?;
             return if old.id() == profile.id() {
                 Ok(())
             } else {
@@ -284,6 +470,7 @@ impl ClientStore {
                 self.key.seal(&raw, &aad(&group, &own, b"context"))?,
             ),
         )?;
+        super::envelope::register(&tx, &self.key, group)?;
         tx.commit()?;
         Ok(())
     }
@@ -295,7 +482,6 @@ impl ClientStore {
         proposal: Option<&[u8]>,
     ) -> Result<(), Error> {
         let own = device_fingerprint(&self.own_device_binding()?)?;
-        let server = server_name(self)?;
         let genesis = if proposal.is_none() {
             Some(Zeroizing::new(self.group_genesis(group)?))
         } else {
@@ -311,14 +497,7 @@ impl ClientStore {
         if status.frozen {
             return Err(Error::Conflict);
         }
-        let access = load(
-            &tx,
-            &self.key,
-            &group,
-            &own,
-            status.state.authority,
-            &server,
-        )?;
+        let access = load(&tx, &self.key, &group, &own, status.state.authority)?;
         if let Some(previous) = pending(&tx, &self.key, &group, &own)? {
             if access.open(group, &previous.operation)?.as_slice() == raw {
                 return if previous.status == Submission::Superseded {
@@ -371,14 +550,7 @@ impl ClientStore {
         if status.frozen {
             return Err(Error::Conflict);
         }
-        let access = load(
-            &self.db,
-            &self.key,
-            &group,
-            &own,
-            status.state.authority,
-            &server_name(self)?,
-        )?;
+        let access = load(&self.db, &self.key, &group, &own, status.state.authority)?;
         let mut job = pending(&self.db, &self.key, &group, &own)?.ok_or(Error::Unprepared)?;
         match job.status {
             Submission::Accepted => return Ok(CommitResult::Duplicate),
@@ -386,7 +558,7 @@ impl ClientStore {
             Submission::Pending => {}
         }
         let client = access.client(self)?;
-        let credential = client.group_credential(&access.profile, &binding, now)?;
+        let credential = self.cached_group_credential(&client, &access.profile, &binding, now)?;
         let reply = client.group_request(
             &access.profile,
             &credential,
@@ -432,16 +604,9 @@ impl ClientStore {
         if status.frozen {
             return Err(Error::Conflict);
         }
-        let access = load(
-            &self.db,
-            &self.key,
-            &group,
-            &own,
-            status.state.authority,
-            &server_name(self)?,
-        )?;
+        let access = load(&self.db, &self.key, &group, &own, status.state.authority)?;
         let client = access.client(self)?;
-        let credential = client.group_credential(&access.profile, &binding, now)?;
+        let credential = self.cached_group_credential(&client, &access.profile, &binding, now)?;
         let mut next = status.state.revision.checked_add(1).ok_or(Error::Limit)?;
         if let Some(job) = pending(&self.db, &self.key, &group, &own)? {
             let (revision, ..) = fields(&job.operation)?;
@@ -496,4 +661,4 @@ impl ClientStore {
 
 #[cfg(test)]
 #[path = "group_service_tests.rs"]
-mod tests;
+pub(super) mod tests;

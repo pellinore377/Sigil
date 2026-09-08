@@ -317,7 +317,7 @@ fn schema_42_migration_preserves_existing_identity_and_creates_empty_group_journ
             .db
             .pragma_query_value(None, "user_version", |r| r.get::<_, u32>(0))
             .unwrap(),
-        55
+        68
     );
 }
 

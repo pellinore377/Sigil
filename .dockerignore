@@ -28,6 +28,18 @@
 !text/Cargo.toml
 !text/src/
 !text/src/**
+!media/
+!media/Cargo.toml
+!media/src/
+!media/src/**
+!maps/
+!maps/Cargo.toml
+!maps/src/
+!maps/src/**
+!calls/
+!calls/Cargo.toml
+!calls/src/
+!calls/src/**
 !server/
 !server/Cargo.toml
 !server/src/
@@ -37,3 +49,5 @@
 !licenses/Crypto-ThirdParty.txt
 !licenses/Client-ThirdParty.txt
 !licenses/Text-ThirdParty.txt
+!licenses/Integrations-ThirdParty.txt
+!licenses/Calls-ThirdParty.txt

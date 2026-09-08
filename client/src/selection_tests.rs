@@ -7,6 +7,7 @@ use sigil_protocol::mailbox::Delivery;
 
 fn delivery(sender: &ClientStore, sequence: i64, message: Id, packet: &[u8], now: u64) -> Delivery {
     Delivery {
+        origin: None,
         sequence,
         sender_device: sender.connection_session().unwrap().unwrap().device_id,
         message_id: transport::hex(&message),

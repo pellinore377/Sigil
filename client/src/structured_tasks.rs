@@ -116,10 +116,18 @@ impl ClientStore {
         item: Id,
         after: Option<Id>,
     ) -> Result<TaskPage, Error> {
+        observe_card_expiry(
+            &self.db,
+            &self.key,
+            conversation,
+            &reference,
+            crate::conversations::now(),
+        )?;
         let tx = self.db.unchecked_transaction()?;
         let (scope, _) = account_context(&tx, &self.key)?;
         let (index, card) = visible_card(&tx, &self.key, &scope, &conversation, &reference)?;
-        if !matches!(&card.content,Construct::Checklist(list) if list.mode == ListMode::Task && list.items.iter().any(|i|i.id==item))
+        let definition = definition(&tx, &self.key, &index, &card)?;
+        if !matches!(&definition.content,Construct::Checklist(list) if list.mode == ListMode::Task && list.items.iter().any(|i|i.id==item))
         {
             return Err(Error::InvalidEvent);
         }

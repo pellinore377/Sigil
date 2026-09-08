@@ -316,7 +316,11 @@ fn token_lifetimes_and_provider_failures_do_not_discard_valid_channels() {
             Outcome::Retry { .. }
         ));
     }
-    for (status, code) in [(404, "UNREGISTERED"), (403, "SENDER_ID_MISMATCH")] {
+    for (status, code) in [
+        (400, "INVALID_ARGUMENT"),
+        (404, "UNREGISTERED"),
+        (403, "SENDER_ID_MISMATCH"),
+    ] {
         let r = response(status, &serde_json::json!({"error":{"details":[{"@type":"type.googleapis.com/google.firebase.fcm.v1.FcmError","errorCode":code}]}}).to_string());
         assert_eq!(classify(&r, true, 1000), Outcome::InvalidRegistration);
         let forged = response(
@@ -329,6 +333,14 @@ fn token_lifetimes_and_provider_failures_do_not_discard_valid_channels() {
             Outcome::Retry { .. }
         ));
     }
+    let fields = response(
+        400,
+        r#"{"error":{"details":[{"@type":"type.googleapis.com/google.firebase.fcm.v1.FcmError","errorCode":"INVALID_ARGUMENT"},{"@type":"type.googleapis.com/google.rpc.BadRequest","fieldViolations":[{"field":"message.android.ttl"}]}]}}"#,
+    );
+    assert!(matches!(
+        classify(&fields, true, 1000),
+        Outcome::Retry { .. }
+    ));
     assert_eq!(
         classify(
             &response(200, r#"{"name":"projects/synthetic/messages/1"}"#),

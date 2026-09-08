@@ -277,6 +277,25 @@ pub enum ReceivedHint {
     ConfirmationQueued,
 }
 impl ClientStore {
+    /// Explicit retry after repairing provider setup; invalid targets never retry automatically.
+    pub fn retry_push_registration(&mut self, now: u64) -> Result<(), Error> {
+        let tx = self
+            .db
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let scope = scope(&tx, &self.key)?;
+        let (mut state, before) = read(&tx, &self.key, &scope)?;
+        if !state
+            .status
+            .as_ref()
+            .is_some_and(|s| s.state == RemoteState::Invalid)
+            || state.preference.target()?.is_none()
+        {
+            return Err(Error::Obsolete);
+        }
+        changed(&tx, &self.key, &scope, &mut state, before.as_deref(), now)?;
+        tx.commit()?;
+        Ok(())
+    }
     pub fn push_state(&self) -> Result<PushState, Error> {
         let scope = scope(&self.db, &self.key)?;
         let (state, _) = read(&self.db, &self.key, &scope)?;
@@ -561,3 +580,7 @@ fn receive(
 #[cfg(test)]
 #[path = "push_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "push_delivery_tests.rs"]
+mod delivery_tests;

@@ -69,11 +69,15 @@ impl ClientStore {
             Ok(v) => v,
             Err(_) => return RecoveryAdvice::Refused(RecoveryBlock::LocalState),
         };
-        let sender = match decode_id(&delivery.sender_device) {
-            Ok(v) => v,
-            Err(_) => return RecoveryAdvice::Refused(RecoveryBlock::InvalidTraffic),
+        let peer = match crate::federation::delivery_peer(
+            &self.db,
+            &self.key,
+            &own.binding.server,
+            delivery,
+        ) {
+            Ok(peer) => peer,
+            Err(_) => return RecoveryAdvice::Refused(RecoveryBlock::Trust),
         };
-        let peer = peers::reference(&own.binding.server, &sender);
         let known = match peers::known(&self.db, &self.key, &peer) {
             Ok(v) if v.verified => v,
             Ok(_) | Err(Error::NotFound | Error::Unprepared | Error::Conflict) => {
@@ -127,6 +131,7 @@ impl ClientStore {
         RecoveryAdvice::Offer(RecoveryAction {
             fingerprint: known.fingerprint,
             delivery: Delivery {
+                origin: delivery.origin.clone(),
                 sequence: delivery.sequence,
                 sender_device: delivery.sender_device.clone(),
                 message_id: delivery.message_id.clone(),

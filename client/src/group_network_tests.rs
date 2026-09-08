@@ -198,6 +198,8 @@ fn anonymous_https_omits_account_credentials_and_rejects_substituted_receipts() 
                         Receipt::sign([3; 32], [99; 32], id(&head).unwrap(), revision, &identity)
                             .unwrap();
                     Json(Reply {
+                        proposals: Vec::new(),
+                        invitation: None,
                         authority: profile_id,
                         group: hex(&[3; 32]),
                         revision,

@@ -19,9 +19,15 @@ pub struct SendProgress {
 #[path = "connection_tests.rs"]
 pub(crate) mod tests;
 
+#[cfg(test)]
+#[path = "oidc_tests.rs"]
+mod oidc_tests;
+
 #[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct Profile {
+    #[serde(default)]
+    oidc: Option<Oidc>,
     server: String,
     port: u16,
     credential: Zeroizing<String>,
@@ -32,12 +38,37 @@ struct Profile {
     session: Option<accounts::Session>,
     rotation: Option<Zeroizing<String>>,
 }
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct Oidc {
+    request_id: String,
+    username: Option<String>,
+    #[serde(default)]
+    completion: Option<Zeroizing<String>>,
+    #[serde(default)]
+    link_secret: Option<Zeroizing<String>>,
+}
 fn fresh_credential() -> Result<Zeroizing<String>, Error> {
     let mut bytes = Zeroizing::new([0; 32]);
     getrandom::fill(bytes.as_mut()).map_err(|_| sigil_crypto::Error::Entropy)?;
     Ok(Zeroizing::new(super::transport::hex(bytes.as_ref())))
 }
 fn validate(profile: &Profile) -> Result<(), Error> {
+    if profile.oidc.as_ref().is_some_and(|o| {
+        !accounts::valid_credential(&o.request_id)
+            || o.username
+                .as_ref()
+                .is_some_and(|u| !accounts::valid_username(u))
+            || profile.session.is_some() != o.link_secret.is_some()
+            || o.completion
+                .as_ref()
+                .is_some_and(|s| !accounts::valid_credential(s))
+            || o.link_secret
+                .as_ref()
+                .is_some_and(|s| !accounts::valid_credential(s) || o.username.is_some())
+    }) {
+        return Err(Error::InvalidStore);
+    }
     super::recovery::account_scope(&profile.server, [0; 32])?;
     if profile.port == 0
         || profile.roots > 16
@@ -170,6 +201,9 @@ impl ClientStore {
         }
         self.connected_client()
     }
+    pub fn account_storage_online(&self) -> Result<sigil_protocol::recovery::StorageStatus, Error> {
+        Ok(self.connected_client()?.account_storage()?)
+    }
     /// Explicit repair authorization using the connected account's authenticated
     /// head. Only the trusted checkpoint, exact pending successor or proven
     /// ancestor is eligible.
@@ -261,9 +295,178 @@ impl ClientStore {
         label: &str,
         reauthorize: bool,
     ) -> Result<(), Error> {
+        self.prepare_connection(server, port, roots, invitation, label, reauthorize, None)
+    }
+    pub fn prepare_oidc_enrollment(
+        &mut self,
+        server: &str,
+        port: u16,
+        roots: &[Vec<u8>],
+        username: Option<&str>,
+        label: &str,
+        replace_devices: bool,
+    ) -> Result<(), Error> {
+        let secret = fresh_credential()?;
+        self.prepare_connection(
+            server,
+            port,
+            roots,
+            &secret,
+            label,
+            replace_devices,
+            Some(Oidc {
+                request_id: fresh_credential()?.to_string(),
+                username: username.map(str::to_owned),
+                completion: None,
+                link_secret: None,
+            }),
+        )
+    }
+    pub fn start_oidc_online(&self) -> Result<sigil_protocol::oidc::Started, Error> {
+        let (profile, _) = load(&self.db, &self.key)?;
+        let oidc = profile.oidc.as_ref().ok_or(Error::Unprepared)?;
+        let network = client(&self.db, &self.key, &profile, &profile.credential)?;
+        let request = sigil_protocol::oidc::Start {
+            request_id: oidc.request_id.clone(),
+            secret: oidc
+                .link_secret
+                .as_ref()
+                .or(profile.invitation.as_ref())
+                .ok_or(Error::Unprepared)?
+                .to_string(),
+            username: oidc.username.clone(),
+            replace_devices: oidc.link_secret.is_none() && profile.reauthorize,
+        };
+        Ok(if oidc.link_secret.is_some() {
+            network.link_oidc(&request)?
+        } else {
+            network.start_oidc(&request)?
+        })
+    }
+    pub fn restart_oidc_enrollment(&mut self, username: Option<&str>) -> Result<(), Error> {
+        let (mut profile, expected) = load(&self.db, &self.key)?;
+        let oidc = profile.oidc.as_mut().ok_or(Error::Unprepared)?;
+        if oidc.link_secret.is_some() {
+            return Err(Error::Conflict);
+        }
+        oidc.request_id = fresh_credential()?.to_string();
+        oidc.username = username.map(str::to_owned);
+        oidc.completion = None;
+        profile.invitation = Some(fresh_credential()?);
+        profile.credential = fresh_credential()?;
+        save(&self.db, &self.key, &profile, Some(&expected))
+    }
+    pub fn accept_oidc_callback(
+        &mut self,
+        request_id: &str,
+        completion: &str,
+    ) -> Result<(), Error> {
+        let (mut profile, expected) = load(&self.db, &self.key)?;
+        let oidc = profile.oidc.as_mut().ok_or(Error::Unprepared)?;
+        if oidc.request_id != request_id
+            || !accounts::valid_credential(completion)
+            || oidc
+                .completion
+                .as_ref()
+                .is_some_and(|old| old.as_str() != completion)
+        {
+            return Err(Error::Conflict);
+        }
+        oidc.completion = Some(Zeroizing::new(completion.into()));
+        save(&self.db, &self.key, &profile, Some(&expected))
+    }
+    pub fn prepare_oidc_link(&mut self) -> Result<(), Error> {
+        self.connected_client()?;
+        let (mut profile, expected) = load(&self.db, &self.key)?;
+        if profile.oidc.is_some() {
+            return Err(Error::Conflict);
+        }
+        profile.oidc = Some(Oidc {
+            request_id: fresh_credential()?.to_string(),
+            username: None,
+            completion: None,
+            link_secret: Some(fresh_credential()?),
+        });
+        save(&self.db, &self.key, &profile, Some(&expected))
+    }
+    pub fn cancel_oidc_link(&mut self) -> Result<(), Error> {
+        let (mut profile, expected) = load(&self.db, &self.key)?;
+        if profile
+            .oidc
+            .as_ref()
+            .is_none_or(|o| o.link_secret.is_none())
+        {
+            return Err(Error::Unprepared);
+        }
+        profile.oidc = None;
+        save(&self.db, &self.key, &profile, Some(&expected))
+    }
+    pub fn finish_oidc_link_online(&mut self) -> Result<bool, Error> {
+        let (mut profile, expected) = load(&self.db, &self.key)?;
+        let oidc = profile.oidc.as_ref().ok_or(Error::Unprepared)?;
+        let secret = oidc.link_secret.as_ref().ok_or(Error::Unprepared)?;
+        let progress = self
+            .connected_client()?
+            .finish_oidc(&sigil_protocol::oidc::Finish {
+                request_id: oidc.request_id.clone(),
+                secret: secret.to_string(),
+                completion: oidc.completion.as_ref().map(|s| s.to_string()),
+            })?;
+        match progress {
+            sigil_protocol::oidc::Progress::Pending => return Ok(false),
+            sigil_protocol::oidc::Progress::Linked => {}
+            _ => return Err(Error::Cancelled),
+        }
+        profile.oidc = None;
+        save(&self.db, &self.key, &profile, Some(&expected))?;
+        Ok(true)
+    }
+    pub fn finish_oidc_online(&mut self) -> Result<Option<accounts::Session>, Error> {
+        let (mut profile, expected) = load(&self.db, &self.key)?;
+        if let Some(oidc) = &profile.oidc {
+            if oidc.link_secret.is_some() {
+                return Err(Error::Conflict);
+            }
+            let progress = client(&self.db, &self.key, &profile, &profile.credential)?
+                .finish_oidc(&sigil_protocol::oidc::Finish {
+                    request_id: oidc.request_id.clone(),
+                    completion: oidc.completion.as_ref().map(|s| s.to_string()),
+                    secret: profile
+                        .invitation
+                        .as_ref()
+                        .ok_or(Error::Unprepared)?
+                        .to_string(),
+                })?;
+            match progress {
+                sigil_protocol::oidc::Progress::Pending => return Ok(None),
+                sigil_protocol::oidc::Progress::Ready { reauthorize, .. }
+                    if reauthorize == profile.reauthorize => {}
+                _ => return Err(Error::Cancelled),
+            }
+            profile.oidc = None;
+            let tx = self
+                .db
+                .transaction_with_behavior(TransactionBehavior::Immediate)?;
+            save(&tx, &self.key, &profile, Some(&expected))?;
+            tx.commit()?;
+        }
+        self.enroll_online().map(Some)
+    }
+    #[allow(clippy::too_many_arguments)]
+    fn prepare_connection(
+        &mut self,
+        server: &str,
+        port: u16,
+        roots: &[Vec<u8>],
+        invitation: &str,
+        label: &str,
+        reauthorize: bool,
+        oidc: Option<Oidc>,
+    ) -> Result<(), Error> {
         let credential = fresh_credential()?;
         network::HttpsClient::new(server, port, &credential, roots)?;
         let profile = Profile {
+            oidc,
             server: server.into(),
             port,
             credential,
@@ -308,7 +511,7 @@ impl ClientStore {
     /// enrollment response, GET session recovers the original committed identity.
     pub fn enroll_online(&mut self) -> Result<accounts::Session, Error> {
         let (mut profile, expected) = load(&self.db, &self.key)?;
-        if profile.rotation.is_some() {
+        if profile.rotation.is_some() || profile.oidc.is_some() {
             return Err(Error::Conflict);
         }
         let network = client(&self.db, &self.key, &profile, &profile.credential)?;
@@ -408,9 +611,27 @@ impl ClientStore {
         for request in pending {
             super::load(&self.db, &self.key, &session)?;
             let id: Id = decode_id(&request.message_id)?;
-            self.check_retry_send(id, now)?;
-            self.check_group_distribution_send(session, id, now)?;
-            let receipt = network.submit(&request)?;
+            let destination = self.delivery_destination(session, id, &request.recipient_device)?;
+            let own = self.connection_session()?.ok_or(Error::Unprepared)?;
+            let Some(receipt) =
+                crate::federation::submit(&network, &own, &destination, &request, || {
+                    self.check_retry_send(id, now)?;
+                    self.check_group_distribution_send(session, id, now)?;
+                    self.check_group_invitation_send(session, id, now)?;
+                    let raw: Option<Vec<u8>> = self.db.query_row(
+                        "SELECT content FROM outbox WHERE session=?1 AND id=?2",
+                        (session.as_slice(), id.as_slice()),
+                        |r| r.get(0),
+                    )?;
+                    if let Some(raw) = raw {
+                        let raw = self.key.open(&raw, &binding(9, &session, &id))?;
+                        crate::conversations::check_send(&self.db, &self.key, &raw, now)?;
+                    }
+                    Ok(())
+                })?
+            else {
+                break;
+            };
             self.acknowledge_sent(session, id, &receipt)?;
             progress.accepted += 1;
         }
@@ -458,6 +679,7 @@ pub(super) fn install_linked_connection(
         .1
         .to_owned();
     let profile = Profile {
+        oidc: None,
         server,
         port,
         credential,

@@ -12,6 +12,9 @@ use subtle::ConstantTimeEq;
 pub struct AdminToken([u8; 32]);
 
 impl AdminToken {
+    pub(crate) fn fingerprint(&self) -> [u8; 32] {
+        self.0
+    }
     pub fn load_or_create(path: &Path) -> io::Result<Self> {
         if !path.exists() {
             Self::create(path)?;

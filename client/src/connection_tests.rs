@@ -348,7 +348,7 @@ fn archive_upload_rate_rejection_preserves_acknowledged_object_progress() {
         )
         .unwrap();
     let author = DhKey::generate().unwrap().public_key();
-    for number in 1..=32 {
+    for number in 1..=96 {
         store
             .retain_recovery_record(&Record {
                 id: [number; 32],
@@ -363,8 +363,14 @@ fn archive_upload_rate_rejection_preserves_acknowledged_object_progress() {
     }
     store.prepare_recovery_upload(now).unwrap();
     assert_eq!(store.upload_recovery_step().unwrap(), None);
+    let rejected = loop {
+        match store.upload_recovery_step() {
+            Ok(None) => (),
+            result => break result,
+        }
+    };
     assert!(matches!(
-        store.upload_recovery_step(),
+        rejected,
         Err(Error::Network(network::Error::Status {
             code: 429,
             retry_after_seconds: Some(_)
@@ -378,7 +384,7 @@ fn archive_upload_rate_rejection_preserves_acknowledged_object_progress() {
             |r| r.get(0),
         )
         .unwrap();
-    assert!((20..34).contains(&uploaded));
+    assert!((60..98).contains(&uploaded));
     assert_eq!(store.recovery_status().unwrap().anchor, None);
     drop(store);
     store = open(&path);

@@ -1,5 +1,4 @@
-//! Experimental group membership, local ordering and same-server message delivery.
-//! The private authority adapter is experimental; group-scoped channels remain open.
+//! Group membership, private authority ordering and encrypted message delivery.
 use crate::{device_fingerprint, peers, Error, Id};
 use sha2::{Digest, Sha256};
 use sigil_crypto::{verify_signature, IdentityKey};
@@ -456,12 +455,28 @@ pub use sigil_crypto::group_receipt::{authority_fingerprint, Receipt};
 #[path = "group_control.rs"]
 mod control;
 #[path = "group_storage_record.rs"]
-mod storage_record;
+pub(crate) mod storage_record;
 pub use control::DistributionReceipt;
-pub(crate) use control::{distribution_receipt, is_wire_control, retained_payload};
+pub(crate) use control::{
+    distribution_group, distribution_receipt, is_distribution_wire, is_wire_control,
+    retained_payload,
+};
+pub(crate) use messages::erase_journals;
+pub(crate) use messages::migrate_conversations;
+#[path = "group_history.rs"]
+mod history;
+#[path = "group_key_recovery.rs"]
+mod key_recovery;
+pub(crate) use history::sent as history_sent;
+pub use history::work::HistoryAttempt;
+pub(crate) use history::MIGRATION as HISTORY_MIGRATION;
+pub use history::{HistoryRange, HistoryShareStatus, SharedGroupHistory};
 #[path = "group_keys.rs"]
 mod keys;
+pub(crate) use key_recovery::cancelled_packet as cancelled_key_packet;
+pub(crate) use key_recovery::MIGRATION as KEY_RECOVERY_MIGRATION;
 pub(crate) use keys::MIGRATION as KEY_MIGRATION;
+pub(crate) use keys::{delivery_peer, mark_channel, scoped_channel};
 pub(crate) use keys::{install_distribution, validate_distribution_receipt};
 #[path = "group_messages.rs"]
 mod messages;
@@ -471,13 +486,65 @@ pub(crate) use messages::MIGRATION as MESSAGE_MIGRATION;
 pub use messages::{
     group_event_history_id, group_history_id, GroupDeliveryStatus, GroupMessage, GroupSendAttempt,
 };
+#[path = "group_envelope.rs"]
+mod envelope;
+#[path = "group_invitation.rs"]
+mod invitation;
 #[path = "group_service.rs"]
 mod service;
+pub(crate) use invitation::{
+    cancelled_packet as cancelled_invitation_packet, install as install_invitation,
+    receipt_message as invitation_receipt_message, reference as invitation_reference,
+    validate_receipt as validate_invitation_receipt, BOOTSTRAP_MIGRATION,
+    MIGRATION as INVITATION_MIGRATION,
+};
+pub use invitation::{InvitationAttempt, InvitationNotice, InvitationStatus};
+#[path = "group_work.rs"]
+mod work;
+pub(crate) use envelope::{
+    is_envelope, migrate as migrate_envelopes, MIGRATION as ENVELOPE_MIGRATION,
+};
+pub(crate) use work::MIGRATION as WORK_MIGRATION;
+pub use work::{GroupWork, GroupWorkAttempt};
 #[path = "group_store.rs"]
 mod store;
 pub(crate) use service::MIGRATION as SERVICE_MIGRATION;
 pub(crate) use store::MIGRATION;
 pub use store::{CommitResult, GroupStatus};
+pub(crate) fn location_allowed(
+    tx: &rusqlite::Transaction<'_>,
+    key: &sigil_crypto::storage::StorageKey,
+    conversation: Id,
+    creator: Id,
+    device: Id,
+) -> Result<bool, Error> {
+    if !tx.query_row(
+        "SELECT EXISTS(SELECT 1 FROM groups WHERE id=?1)",
+        [conversation.as_slice()],
+        |r| r.get::<_, bool>(0),
+    )? {
+        return Ok(true);
+    }
+    let own = device_fingerprint(&peers::own(tx, key)?)?;
+    let status = store::load(tx, key, &own, &conversation)?;
+    if status.frozen || status.state.closed {
+        return Ok(false);
+    }
+    match status.state.device(own) {
+        Ok(_) => (),
+        Err(Error::Unprepared) => return Ok(false),
+        Err(e) => return Err(e),
+    }
+    Ok(status
+        .state
+        .members
+        .iter()
+        .flat_map(|m| &m.devices)
+        .any(|d| {
+            d.binding.device == device
+                && crate::event::account_reference(&d.binding.server, &d.binding.account) == creator
+        }))
+}
 
 #[cfg(test)]
 #[path = "group_tests.rs"]

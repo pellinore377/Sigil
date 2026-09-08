@@ -5,7 +5,7 @@ impl ClientStore {
     /// Retire an obsolete session only after every queued packet is accepted or expired.
     /// Preserves message history, receipts and ID tombstones. Delayed new packets
     /// cannot decrypt afterward. Use maintain_sessions_online for the guarded grace
-    /// policy. WAL, filesystem snapshots and flash may retain prior ciphertext.
+    /// policy. Filesystem snapshots and flash may retain prior ciphertext.
     pub fn retire_session(&mut self, id: Id) -> Result<(), Error> {
         let tx = self
             .db
@@ -168,8 +168,8 @@ impl ClientStore {
                 selection::record(&tx, &self.key, &peer)?
                     .is_some_and(|(selected, _)| selected == id)
             } else {
-                true
-            }; // Unbound evaluation sessions have no automatic policy.
+                !groups::scoped_channel(&tx, &self.key, &id)?
+            }; // Only authenticated group scopes give unbound sessions a policy.
             let queued: Vec<Vec<u8>>=tx.prepare("SELECT o.id FROM outbox o JOIN deliveries d ON d.session=o.session AND d.id=o.id WHERE o.session=?1 AND o.packet IS NOT NULL ORDER BY o.rowid LIMIT 16")?
                 .query_map([raw],|r|r.get(0))?.collect::<Result<_,_>>()?;
             for message in queued {

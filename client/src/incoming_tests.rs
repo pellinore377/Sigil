@@ -235,6 +235,7 @@ fn routing_handles_eight_sessions_without_mutating_wrong_candidates_and_refuses_
             )
             .unwrap();
         replies.push(Delivery {
+            origin: None,
             sequence: 100 + i64::from(n),
             sender_device: bob.connection_session().unwrap().unwrap().device_id,
             message_id: transport::hex(&[n + 40; 32]),
@@ -428,6 +429,7 @@ fn lost_first_packet_recovers_over_https_and_only_peer_traffic_confirms() {
         (601, [51; 32], frozen.1, "queued before confirmation"),
     ] {
         let delivery = Delivery {
+            origin: None,
             sequence,
             sender_device: sender.clone(),
             message_id: transport::hex(&message),

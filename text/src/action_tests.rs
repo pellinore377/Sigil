@@ -15,7 +15,7 @@ fn card(source: &str) -> Card {
     else {
         panic!()
     };
-    card
+    *card
 }
 fn vote(card: &Card, actor: u8, previous: Option<Id>, choice: usize) -> Action {
     let Construct::Poll(poll) = &card.content else {
@@ -26,6 +26,7 @@ fn vote(card: &Card, actor: u8, previous: Option<Id>, choice: usize) -> Action {
         actor: [actor; 32],
         created_at: 1001,
         previous,
+        revision: None,
         change: Change::Vote {
             choices: vec![poll.options[choice].id],
         },
@@ -68,6 +69,7 @@ fn checklist_registers_are_independent_and_unsupported_task_mutations_fail() {
         actor: [3; 32],
         created_at: 1001,
         previous: None,
+        revision: None,
         change: Change::Check {
             item: list.items[0].id,
             checked: true,
@@ -155,6 +157,7 @@ fn task_undo_is_bound_to_the_exact_completion_author_item_and_window() {
         actor: [3; 32],
         created_at: 1001,
         previous: None,
+        revision: None,
         change: Change::Complete {
             item: list.items[0].id,
         },
@@ -167,6 +170,7 @@ fn task_undo_is_bound_to_the_exact_completion_author_item_and_window() {
         actor: first.actor,
         created_at: 1030,
         previous: Some(completion),
+        revision: None,
         change: Change::Undo {
             item: list.items[0].id,
             completion,
@@ -227,6 +231,7 @@ fn recurring_checks_are_period_bound_and_one_offs_cannot_return_after_reset() {
         actor: [3; 32],
         created_at: reset - 1,
         previous: None,
+        revision: None,
         change: Change::RecurringCheck {
             item: items[0],
             period: card.created_at,
@@ -274,6 +279,7 @@ fn recurring_checks_are_period_bound_and_one_offs_cannot_return_after_reset() {
     assert!(toggle.validate_for(&card).is_err());
     let chained = Action {
         previous: Some(initial.id().unwrap()),
+        revision: None,
         ..current
     };
     assert!(chained.validate().is_err());

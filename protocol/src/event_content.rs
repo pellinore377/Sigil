@@ -6,12 +6,13 @@ pub enum Content<'a> {
     Text(&'a str),
     File(&'a [u8]),
     Rich(&'a [u8]),
+    Conversation(&'a [u8]),
 }
 impl<'a> Content<'a> {
     pub fn bytes(self) -> &'a [u8] {
         match self {
             Self::Text(text) => text.as_bytes(),
-            Self::File(bytes) | Self::Rich(bytes) => bytes,
+            Self::File(bytes) | Self::Rich(bytes) | Self::Conversation(bytes) => bytes,
         }
     }
     pub fn text(self) -> Result<&'a str, &'static str> {
@@ -50,6 +51,9 @@ impl<'a> Content<'a> {
     }
     fn validate(self) -> Result<(), &'static str> {
         match self {
+            Self::Conversation(bytes) => {
+                crate::conversation::Operation::from_bytes(bytes).map(|_| ())
+            }
             Self::Text(text) if !text.is_empty() => Ok(()),
             Self::File(_) => self.file().map(|_| ()),
             Self::Rich(bytes) => crate::text::Document::from_bytes(bytes)
@@ -99,6 +103,8 @@ impl<'a> Frame<'a> {
             (false, Content::File(_)) => 4,
             (true, Content::Rich(_)) => 5,
             (false, Content::Rich(_)) => 6,
+            (true, Content::Conversation(_)) => 7,
+            (false, Content::Conversation(_)) => 8,
         };
         let mut bytes = Vec::with_capacity(header + self.content.bytes().len());
         bytes.extend_from_slice(PREFIX);
@@ -119,8 +125,8 @@ impl<'a> Frame<'a> {
         if !(header + 1..=crate::initial::MAX_PLAINTEXT).contains(&bytes.len())
             || &bytes[..8] != PREFIX
             || bytes[9] != 0
-            || (direct && !matches!(bytes[8], 1 | 3 | 5))
-            || (!direct && !matches!(bytes[8], 2 | 4 | 6))
+            || (direct && !matches!(bytes[8], 1 | 3 | 5 | 7))
+            || (!direct && !matches!(bytes[8], 2 | 4 | 6 | 8))
         {
             return Err("unsupported event");
         }
@@ -148,8 +154,10 @@ impl<'a> Frame<'a> {
             )
         } else if bytes[8] <= 4 {
             Content::File(&bytes[header..])
-        } else {
+        } else if bytes[8] <= 6 {
             Content::Rich(&bytes[header..])
+        } else {
+            Content::Conversation(&bytes[header..])
         };
         content.validate()?;
         Ok(Self {

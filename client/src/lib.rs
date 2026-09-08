@@ -10,20 +10,33 @@ use sigil_crypto::{
 };
 use std::path::Path;
 pub mod attachments;
+pub mod calls;
+mod erasure;
+#[cfg(test)]
+mod load_tests;
 mod private_db;
+pub use erasure::JournalErasure;
 use zeroize::Zeroizing;
 mod claims;
 mod connection;
 pub use connection::SendProgress;
+pub mod conversations;
 mod event;
 pub mod groups;
+mod notes;
 mod rich_text;
+pub mod services;
+pub use notes::{NoteCard, NoteEntry, NoteKind, NotesPage};
+pub use rich_text::SigilTextDraft;
 mod structured;
 pub use event::SendIntentAttempt;
 pub use event::{event_history_id, text_history_id};
+pub use structured::alarms::{AlarmBatch, AlarmJob, AlarmNotification};
 pub use structured::{
-    CardState, CheckState, PollState, RecurringState, TaskCompletion, TaskPage, TaskState,
+    CardDefinition, CardState, CheckState, LocationBatch, LocationJob, LocationKind, LocationState,
+    PollState, RecurringState, TaskCompletion, TaskPage, TaskState,
 };
+mod federation;
 mod handshake;
 mod incoming;
 pub use incoming::{Incoming, IncomingAttempt, MailboxEvent};
@@ -46,7 +59,7 @@ pub mod recovery;
 mod test_schema;
 mod transport;
 mod worker;
-pub use worker::{SyncFailure, SyncStep};
+pub use worker::{BackendWork, SyncFailure, SyncStep};
 mod schedule;
 pub use schedule::ScheduledSync;
 mod lifetime;
@@ -73,6 +86,12 @@ pub enum Error {
     UnsupportedSession,
     RetiredSession,
     Network(network::Error),
+    Preview(sigil_media::Error),
+}
+impl From<sigil_media::Error> for Error {
+    fn from(value: sigil_media::Error) -> Self {
+        Self::Preview(value)
+    }
 }
 impl From<rusqlite::Error> for Error {
     fn from(value: rusqlite::Error) -> Self {
@@ -116,7 +135,7 @@ impl ClientStore {
     /// Limit SQLite database pages, including retained history and replay evidence.
     /// Callers persist their chosen budget and supply it on every open. Raising
     /// the budget never requires replacing identities or resetting the database.
-    /// WAL/checkpoint files require additional filesystem space.
+    /// Rollback journals and migration vacuum require additional filesystem space.
     pub fn open_with_storage_limit(
         path: &Path,
         key: StorageKey,
@@ -148,7 +167,7 @@ impl ClientStore {
                 "INSERT INTO vault VALUES(1,?1)",
                 [key.seal(b"Sigil client storage", b"vault/v0")?],
             )?;
-        } else if !(1..=55).contains(&version) || app != 1397179212 {
+        } else if !(1..=68).contains(&version) || app != 1397179212 {
             return Err(Error::InvalidStore);
         }
         let verifier: Vec<u8> = tx.query_row(
@@ -326,11 +345,6 @@ impl ClientStore {
         }
         if version < 52 {
             tx.execute_batch(structured::MIGRATION)?;
-            if version >= 51 {
-                event::migrate_structured(&tx, &key)?;
-                groups::migrate_structured(&tx, &key)?;
-            }
-            recovery::migrate_structured(&tx, &key)?;
         }
         if version < 53 {
             tx.execute_batch(structured::tasks::MIGRATION)?;
@@ -342,11 +356,63 @@ impl ClientStore {
         if version < 55 {
             tx.execute_batch(groups::SERVICE_MIGRATION)?;
         }
-        tx.commit()?;
-        let mode: String = db.query_row("PRAGMA journal_mode=WAL", [], |r| r.get(0))?;
-        if mode != "wal" {
-            return Err(Error::InvalidStore);
+        if version < 56 {
+            tx.execute_batch(groups::ENVELOPE_MIGRATION)?;
+            groups::migrate_envelopes(&tx, &key)?;
         }
+        if version < 57 {
+            tx.execute_batch(groups::WORK_MIGRATION)?;
+        }
+        if version < 58 {
+            tx.execute_batch(groups::INVITATION_MIGRATION)?;
+        }
+        if version < 59 {
+            tx.execute_batch(groups::BOOTSTRAP_MIGRATION)?;
+        }
+        if version < 60 {
+            tx.execute_batch(groups::KEY_RECOVERY_MIGRATION)?;
+        }
+        if version < 61 {
+            tx.execute_batch(groups::HISTORY_MIGRATION)?;
+        }
+        if version < 62 {
+            tx.execute_batch(conversations::MIGRATION)?;
+        }
+        if version < 63 {
+            tx.execute_batch(recovery::LIFECYCLE_MIGRATION)?;
+        }
+        if version < 64 {
+            tx.execute_batch(structured::COMPOSITION_MIGRATION)?;
+            tx.execute_batch(structured::polls::MIGRATION)?;
+            tx.execute_batch(structured::alarms::MIGRATION)?;
+        }
+        if version < 65 {
+            tx.execute_batch(structured::locations::MIGRATION)?;
+        }
+        if version < 66 {
+            tx.execute_batch(services::MIGRATION)?;
+        }
+        if version < 67 {
+            tx.execute_batch(calls::MIGRATION)?;
+        }
+        if version < 68 {
+            tx.execute_batch(private_db::MIGRATION)?;
+            tx.execute_batch("CREATE TABLE IF NOT EXISTS erasure_cursor(kind INTEGER PRIMARY KEY,state BLOB NOT NULL);")?;
+            tx.execute_batch("CREATE TABLE IF NOT EXISTS conversation_transfer_origins(id BLOB PRIMARY KEY,state BLOB NOT NULL); CREATE TABLE IF NOT EXISTS conversation_transfer_parts(id BLOB NOT NULL,part INTEGER NOT NULL,state BLOB NOT NULL,PRIMARY KEY(id,part));")?;
+            tx.pragma_update(None, "user_version", 68)?;
+        }
+        if version < 52 {
+            if version >= 51 {
+                event::migrate_structured(&tx, &key)?;
+                groups::migrate_structured(&tx, &key)?;
+            }
+            recovery::migrate_structured(&tx, &key)?;
+        }
+        if version < 63 {
+            conversations::migrate(&tx, &key)?;
+        }
+        tx.commit()?;
+        private_db::finish(&db)?;
         Ok(Self { db, key })
     }
 
@@ -409,7 +475,9 @@ impl ClientStore {
             )
             .optional()?
             .ok_or(Error::NotFound)?;
-        Ok(self.key.open(&content, &binding(2, &session, &id))?)
+        let raw = self.key.open(&content, &binding(2, &session, &id))?;
+        conversations::require_payload(&self.db, &self.key, &raw, conversations::now(), false)?;
+        Ok(raw)
     }
 
     /// Locally retained outgoing text survives server acknowledgement. Earlier
@@ -418,7 +486,9 @@ impl ClientStore {
         let content: Vec<u8> = self.db.query_row(
             "SELECT content FROM outbox WHERE session=?1 AND id=?2 AND content IS NOT NULL AND length(content)<=65572",
             (session.as_slice(), id.as_slice()), |r| r.get(0)).optional()?.ok_or(Error::NotFound)?;
-        Ok(self.key.open(&content, &binding(9, &session, &id))?)
+        let raw = self.key.open(&content, &binding(9, &session, &id))?;
+        conversations::require_payload(&self.db, &self.key, &raw, conversations::now(), false)?;
+        Ok(raw)
     }
 
     /// Bounded restart queue. IDs determine retry identity, not UI ordering.
@@ -438,6 +508,15 @@ impl ClientStore {
     }
 }
 
+fn retained_payload<'a>(
+    key: &StorageKey,
+    plaintext: &'a [u8],
+) -> Result<std::borrow::Cow<'a, [u8]>, Error> {
+    match calls::retained(key, plaintext)? {
+        std::borrow::Cow::Owned(v) => Ok(std::borrow::Cow::Owned(v)),
+        std::borrow::Cow::Borrowed(v) => groups::retained_payload(key, v),
+    }
+}
 fn send_in(
     tx: &Transaction<'_>,
     key: &StorageKey,
@@ -480,7 +559,9 @@ fn receive_in(
         if old != tag {
             return Err(Error::Conflict);
         }
-        return Ok(key.open(&content, &aad)?);
+        let raw = key.open(&content, &aad)?;
+        erasure::require_retained(&raw)?;
+        return Ok(raw);
     }
     let mut state = load(tx, key, &session)?;
     let plaintext = Zeroizing::new(state.1.receive(parsed)?);
@@ -498,7 +579,7 @@ fn commit_received(
 ) -> Result<(), Error> {
     let aad = binding(2, &session, &id);
     let tag = key.commitment(&Sha256::digest(packet), &aad)?;
-    let content = key.seal(&groups::retained_payload(key, plaintext)?, &aad)?;
+    let content = key.seal(&retained_payload(key, plaintext)?, &aad)?;
     save(tx, key, &session, state.0, &state.1)?;
     tx.execute(
         "INSERT INTO inbox VALUES(?1,?2,?3,?4)",
@@ -617,6 +698,7 @@ fn retry_outgoing(
     }
     let packet = match packet {
         Some(packet) => packet,
+        None if conversations::cancelled(tx, key, session, id)? => return Err(Error::Cancelled),
         None if transport::expired(tx, key, session, id)? => return Err(Error::Expired),
         None => return Err(Error::AlreadyDelivered),
     };
@@ -644,10 +726,7 @@ fn queue(
     plaintext: &[u8],
 ) -> Result<(), Error> {
     let sealed = key.seal(packet, &binding(3, session, id))?;
-    let content = key.seal(
-        &groups::retained_payload(key, plaintext)?,
-        &binding(9, session, id),
-    )?;
+    let content = key.seal(&retained_payload(key, plaintext)?, &binding(9, session, id))?;
     tx.execute(
         "INSERT INTO outbox(session,id,tag,packet,content) VALUES(?1,?2,?3,?4,?5)",
         (

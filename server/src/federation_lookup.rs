@@ -10,7 +10,8 @@ use sha2::{Digest, Sha256};
 use sigil_protocol::{
     accounts::valid_credential,
     federation::{
-        Lookup, LookupReply, LookupValue, ProxyLookup, ServerLookup, LOOKUP_PATH, MAX_LOOKUP_BODY,
+        Lookup, LookupReply, LookupValue, ProxyLookup, ServerLookup, Service, LOOKUP_PATH,
+        MAX_LOOKUP_BODY,
     },
     prekeys::ClaimedPrekey,
 };
@@ -25,6 +26,39 @@ DROP INDEX prekeys_available;
 CREATE INDEX prekeys_available ON prekeys(device_id,expires_at) WHERE bundle IS NOT NULL AND claimant IS NULL AND remote_server IS NULL;
 ";
 impl Store {
+    pub(crate) fn admit_federation_call(
+        &mut self,
+        body: &[u8],
+        headers: &HeaderMap,
+        now: u64,
+    ) -> Result<(String, Service), StoreError> {
+        if body.len() > MAX_LOOKUP_BODY {
+            return Err(StoreError::Invalid("lookup request too large"));
+        }
+        let request: ServerLookup = serde_json::from_slice(body)
+            .map_err(|_| StoreError::Invalid("invalid federation lookup"))?;
+        if !request.sender_account.is_empty()
+            || !request.sender_device.is_empty()
+            || !request.operation.valid()
+        {
+            return Err(StoreError::Invalid("invalid call lookup"));
+        }
+        let Lookup::Service { service } = request.operation else {
+            return Err(StoreError::Invalid("invalid call lookup"));
+        };
+        if !matches!(
+            service,
+            Service::CallConnect { .. } | Service::CallRelay { .. }
+        ) {
+            return Err(StoreError::Invalid("invalid call lookup"));
+        }
+        let tx = self
+            .0
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let hash = federation_admission::admit(&tx, LOOKUP_PATH, body, headers, now)?;
+        tx.commit()?;
+        Ok((hash, service))
+    }
     pub fn receive_federation_lookup(
         &mut self,
         body: &[u8],
@@ -36,9 +70,11 @@ impl Store {
         }
         let request: ServerLookup = serde_json::from_slice(body)
             .map_err(|_| StoreError::Invalid("invalid federation lookup"))?;
-        if !valid_credential(&request.sender_account)
-            || !valid_credential(&request.sender_device)
-            || !request.operation.valid()
+        if (if request.operation.anonymous() {
+            !request.sender_account.is_empty() || !request.sender_device.is_empty()
+        } else {
+            !valid_credential(&request.sender_account) || !valid_credential(&request.sender_device)
+        }) || !request.operation.valid()
             || serde_json::to_vec(&request).map_err(|_| StoreError::InvalidData)? != body
         {
             return Err(StoreError::Invalid("invalid federation lookup"));
@@ -49,27 +85,87 @@ impl Store {
             .0
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
         let hash = federation_admission::admit(&tx, LOOKUP_PATH, body, headers, now)?;
-        let target = request.operation.device();
-        if !active(&tx, target)? {
-            return Err(StoreError::NotFound);
+        if let Some(target) = request.operation.device() {
+            if !active(&tx, target)? {
+                return Err(StoreError::NotFound);
+            }
+            crate::federation_mailbox::grant_for(
+                &tx,
+                origin,
+                &request.sender_account,
+                &request.sender_device,
+                target,
+            )?;
         }
-        crate::federation_mailbox::grant_for(
-            &tx,
-            origin,
-            &request.sender_account,
-            &request.sender_device,
-            target,
-        )?;
         let value = match &request.operation {
-            Lookup::Binding { .. } => {
+            Lookup::Account { username } => {
+                LookupValue::Account(crate::admin::discover(&tx, username, now)?)
+            }
+            Lookup::Service { service } => LookupValue::Service(match service {
+                Service::GroupAuthority => {
+                    let stored = crate::group_authority::read(&tx)?;
+                    if !stored.enabled {
+                        return Err(StoreError::Forbidden);
+                    }
+                    serde_json::to_string(&auth::hex(
+                        &stored.authority.ok_or(StoreError::InvalidData)?.to_bytes(),
+                    ))
+                    .map_err(|_| StoreError::InvalidData)?
+                }
+                Service::GroupCredential {
+                    authority,
+                    day,
+                    binding,
+                } => {
+                    let bytes = crate::group_authority::decode(binding, 512)?;
+                    let signed = sigil_protocol::device::SignedBinding::from_bytes(&bytes)
+                        .map_err(|_| StoreError::InvalidData)?;
+                    if signed.binding.server != origin
+                        || auth::hex(&signed.binding.account) != request.sender_account
+                        || auth::hex(&signed.binding.device) != request.sender_device
+                    {
+                        return Err(StoreError::Unauthorized);
+                    }
+                    let value = crate::group_authority::issue_in(
+                        &tx,
+                        &bytes,
+                        sigil_protocol::groups::CredentialRequest {
+                            authority: authority.clone(),
+                            day: *day,
+                        },
+                        now,
+                    )?;
+                    serde_json::to_string(&value).map_err(|_| StoreError::InvalidData)?
+                }
+                Service::GroupRequest { request } => {
+                    let request = serde_json::from_str(request)
+                        .map_err(|_| StoreError::Invalid("invalid group request"))?;
+                    let value = crate::group_operations::request_in(&tx, request, now)?;
+                    serde_json::to_string(&value).map_err(|_| StoreError::InvalidData)?
+                }
+                Service::CallConnect { .. } | Service::CallRelay { .. } => {
+                    return Err(StoreError::Invalid("calling requires the media runtime"))
+                }
+                Service::AttachmentChunk {
+                    file,
+                    index,
+                    access,
+                } => auth::hex(&crate::attachments::chunk_in(
+                    &tx, file, *index, access, now,
+                )?),
+            }),
+            Lookup::Binding { device: target } => {
                 let bytes:Vec<u8>=tx.query_row("SELECT CASE WHEN length(statement)<=512 THEN statement END FROM device_bindings WHERE device=?1",[target],|r|r.get(0)).optional()?.ok_or(StoreError::NotFound)?;
                 LookupValue::Binding(auth::hex(&bytes))
             }
-            Lookup::Claim { request_id, .. } => {
+            Lookup::Claim {
+                device: target,
+                request_id,
+            } => {
                 type Assignment = (String, String, String, Option<Vec<u8>>, u64);
                 let old:Option<Assignment>=tx.query_row("SELECT id,device_id,remote_account,bundle,expires_at FROM prekeys WHERE remote_server=?1 AND remote_device=?2 AND remote_request=?3",(origin,&request.sender_device,request_id),|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,unsigned(r,4)?))).optional()?;
                 let value = if let Some((id, device, account, bytes, expires)) = old {
-                    if device != target || account != request.sender_account {
+                    if device != *target || account != request.sender_account {
                         return Err(StoreError::AlreadyExists);
                     }
                     if expires <= now {
@@ -141,9 +237,33 @@ impl Store {
         {
             return Err(StoreError::Forbidden);
         }
+        if let Lookup::Service {
+            service: Service::GroupCredential { binding, .. },
+        } = &request.operation
+        {
+            let published: Vec<u8> = tx
+                .query_row(
+                    "SELECT statement FROM device_bindings WHERE device=?1",
+                    [&device],
+                    |r| r.get(0),
+                )
+                .optional()?
+                .ok_or(StoreError::NotFound)?;
+            if auth::hex(&published) != *binding {
+                return Err(StoreError::Forbidden);
+            }
+        }
         let wire = ServerLookup {
-            sender_account: account,
-            sender_device: device.clone(),
+            sender_account: if request.operation.anonymous() {
+                String::new()
+            } else {
+                account
+            },
+            sender_device: if request.operation.anonymous() {
+                String::new()
+            } else {
+                device.clone()
+            },
             operation: request.operation.clone(),
         };
         let body = Zeroizing::new(serde_json::to_vec(&wire).map_err(|_| StoreError::InvalidData)?);

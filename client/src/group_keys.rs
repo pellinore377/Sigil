@@ -1,5 +1,4 @@
-//! Durable sender-key setup over existing independently verified pairwise
-//! sessions. Group-scoped contact trust and fresh-channel scheduling remain open.
+//! Durable sender-key setup and authorization against signed group membership.
 use super::control::{context_bytes, context_from_bytes, message_id, parse_wire, wire};
 use super::*;
 use crate::{incoming::Incoming, selection, send_in, transport, ClientStore};
@@ -43,6 +42,117 @@ pub(super) fn matches_state(state: &State, context: &sk::Context) -> Result<(), 
     }
     state.device(context.sender)?;
     Ok(())
+}
+/// Group membership authorizes group traffic only. It never confirms a direct
+/// contact and cannot override a block, identity change or device replacement.
+pub(super) fn authorized_peer(
+    tx: &Transaction<'_>,
+    key: &StorageKey,
+    state: &State,
+    peer: &Id,
+) -> Result<peers::Peer, Error> {
+    let known = peers::known(tx, key, peer)?;
+    if known.blocked || known.changed_fingerprint.is_some() || known.replaced_by.is_some() {
+        return Err(Error::Unprepared);
+    }
+    let (member, identity) = state.device(known.fingerprint)?;
+    if identity != known.binding.identity
+        || !member.devices.iter().any(|v| v.binding == known.binding)
+    {
+        return Err(Error::Conflict);
+    }
+    Ok(known)
+}
+pub(crate) fn mark_channel(
+    tx: &Transaction<'_>,
+    key: &StorageKey,
+    own: &Id,
+    session: &Id,
+    group: &Id,
+    peer: &Id,
+) -> Result<(), Error> {
+    if crate::session_peer(tx, session)?.is_some() {
+        return Err(Error::Conflict);
+    }
+    let aad = crate::binding(59, own, session);
+    let raw = [group.as_slice(), peer].concat();
+    let previous: Option<Vec<u8>> = tx
+        .query_row(
+            "SELECT CASE WHEN length(state)=100 THEN state END FROM group_channels WHERE id=?1",
+            [session.as_slice()],
+            |r| r.get(0),
+        )
+        .optional()?;
+    if let Some(previous) = previous {
+        if key.open(&previous, &aad)?.as_slice() != raw {
+            return Err(Error::Conflict);
+        }
+    } else {
+        tx.execute(
+            "INSERT INTO group_channels VALUES(?1,?2)",
+            (session.as_slice(), key.seal(&raw, &aad)?),
+        )?;
+    }
+    Ok(())
+}
+pub(crate) fn scoped_channel(
+    db: &Transaction<'_>,
+    key: &StorageKey,
+    session: &Id,
+) -> Result<bool, Error> {
+    let sealed: Option<Vec<u8>> = db
+        .query_row(
+            "SELECT CASE WHEN length(state)=100 THEN state END FROM group_channels WHERE id=?1",
+            [session.as_slice()],
+            |r| r.get(0),
+        )
+        .optional()?;
+    if let Some(sealed) = sealed {
+        let own = device_fingerprint(&peers::own(db, key)?)?;
+        if key.open(&sealed, &crate::binding(59, &own, session))?.len() != 64
+            || crate::session_peer(db, session)?.is_some()
+        {
+            return Err(Error::InvalidStore);
+        }
+        return Ok(true);
+    }
+    Ok(false)
+}
+pub(crate) fn delivery_peer(
+    tx: &Transaction<'_>,
+    key: &StorageKey,
+    session: &Id,
+    message: &Id,
+) -> Result<Option<peers::Peer>, Error> {
+    let group: Option<Vec<u8>> = tx
+        .query_row(
+            "SELECT group_id FROM group_key_outbox WHERE id=?1",
+            [message.as_slice()],
+            |r| r.get(0),
+        )
+        .optional()?;
+    let Some(group) = group else {
+        return Ok(None);
+    };
+    let group: Id = group.try_into().map_err(|_| Error::InvalidStore)?;
+    let own = device_fingerprint(&peers::own(tx, key)?)?;
+    let (expected, receipt) = job(tx, key, &own, &group, message)?.ok_or(Error::InvalidStore)?;
+    if expected != *session {
+        return Err(Error::Conflict);
+    }
+    let state = current(tx, key, &own, &group)?;
+    let target = state
+        .members
+        .iter()
+        .flat_map(|m| &m.devices)
+        .find(|d| peers::fingerprint(&d.binding).ok() == Some(receipt.recipient))
+        .ok_or(Error::Unprepared)?;
+    Ok(Some(authorized_peer(
+        tx,
+        key,
+        &state,
+        &peers::reference(&target.binding.server, &target.binding.device),
+    )?))
 }
 type StoredSender = (sk::Sender, bool, Option<Vec<u8>>);
 pub(super) fn load_sender(
@@ -103,6 +213,26 @@ fn receiver_id(key: &StorageKey, group: &Id, sender: &Id) -> Result<Id, Error> {
         &[group.as_slice(), sender].concat(),
         b"Sigil/group-receiver-index/v0",
     )?)
+}
+fn ensure_sender(
+    tx: &Transaction<'_>,
+    key: &StorageKey,
+    own: &Id,
+    state: &State,
+) -> Result<StoredSender, Error> {
+    if let Some(sender) = load_sender(tx, key, own, state)? {
+        return Ok(sender);
+    }
+    let (sender, distribution) = sk::Sender::new(state.group, state.head, state.epoch, *own)?;
+    save_sender(
+        tx,
+        key,
+        own,
+        &sender,
+        false,
+        Some(&distribution.to_bytes()?),
+    )?;
+    load_sender(tx, key, own, state)?.ok_or(Error::InvalidStore)
 }
 pub(super) fn receiver(
     tx: &Transaction<'_>,
@@ -203,17 +333,11 @@ fn finish_setup(
         .flatten()
         .filter(|v| v != own)
         .collect();
-    let count: usize = tx.query_row(
-        "SELECT count(*) FROM group_key_outbox WHERE group_id=?1",
-        [state.group.as_slice()],
-        |r| r.get::<_, u32>(0),
-    )? as usize;
-    if count != targets.len() {
-        return Ok(());
-    }
     for target in targets {
         let id = message_id(&sender.context(), &target);
-        let (_, receipt) = job(tx, key, own, &state.group, &id)?.ok_or(Error::InvalidStore)?;
+        let Some((_, receipt)) = job(tx, key, own, &state.group, &id)? else {
+            return Ok(());
+        };
         if receipt.context != sender.context() || receipt.recipient != target {
             return Err(Error::InvalidStore);
         }
@@ -264,19 +388,20 @@ pub(crate) fn install_distribution(
     peer: &Id,
     message: &Id,
     plaintext: &[u8],
+    expires: u64,
 ) -> Result<Option<Vec<u8>>, Error> {
-    if !is_wire_control(plaintext) {
+    if !is_distribution_wire(plaintext) {
         return Ok(None);
     }
     let own = device_fingerprint(own_binding)?;
-    let known = peers::verified(tx, key, peer)?;
-    let (id, recipient, distribution) = parse_wire(plaintext)?;
-    let context = distribution.context();
+    let marker = retained_payload(key, plaintext)?.into_owned();
+    let receipt = distribution_receipt(&marker)?.ok_or(Error::InvalidStore)?;
+    let (id, recipient, context) = (receipt.message, receipt.recipient, receipt.context);
+    let state = current(tx, key, &own, &context.group)?;
+    let known = authorized_peer(tx, key, &state, peer)?;
     if id != *message || recipient != own || context.sender != known.fingerprint {
         return Err(Error::Conflict);
     }
-    let marker = retained_payload(key, plaintext)?.into_owned();
-    let receipt = distribution_receipt(&marker)?.ok_or(Error::InvalidStore)?;
     if tx.query_row(
         "SELECT EXISTS(SELECT 1 FROM group_controls WHERE id=?1)",
         [id.as_slice()],
@@ -285,18 +410,36 @@ pub(crate) fn install_distribution(
         validate_distribution_receipt(tx, key, own_binding, peer, message, &marker)?;
         return Ok(Some(marker));
     }
-    let state = current(tx, key, &own, &context.group)?;
     matches_state(&state, &context)?;
-    match receiver(tx, key, &own, &state, &context.sender)? {
-        Some((existing, tag)) if existing.context() == context && tag == receipt.tag => {}
-        Some(_) => return Err(Error::Conflict),
-        None => save_receiver(
-            tx,
-            key,
-            &own,
-            &sk::Receiver::from_authenticated_distribution(distribution, context)?,
-            &receipt.tag,
-        )?,
+    if receipt.kind == 3 {
+        history::install(tx, key, &own, &state, plaintext, expires)?;
+    } else if receipt.kind == 2 {
+        super::key_recovery::requested(tx, key, &own, &state, &known, id)?;
+    } else {
+        let distribution = parse_wire(plaintext)?.2;
+        match receiver(tx, key, &own, &state, &context.sender)? {
+            Some((mut existing, _)) if receipt.kind == 1 => {
+                existing.refresh_authenticated(distribution)?;
+                save_receiver(tx, key, &own, &existing, &receipt.tag)?;
+            }
+            Some((existing, tag)) if existing.context() == context && tag == receipt.tag => {}
+            // A delayed initial distribution cannot rewind a recovered receiver.
+            Some((mut existing, tag)) if receipt.kind == 0 && existing.context() == context => {
+                existing.refresh_authenticated(distribution)?;
+                save_receiver(tx, key, &own, &existing, &tag)?;
+            }
+            Some(_) => return Err(Error::Conflict),
+            None => save_receiver(
+                tx,
+                key,
+                &own,
+                &sk::Receiver::from_authenticated_distribution(distribution, context)?,
+                &receipt.tag,
+            )?,
+        }
+        if receipt.kind == 1 {
+            super::key_recovery::received(tx, key, &own, &state.group, &context.sender)?;
+        }
     }
     let sealed = key.seal(&marker, &aad(49, &own, &context.group, &id))?;
     tx.execute(
@@ -317,11 +460,11 @@ pub(super) fn retire(
     super::messages::retire(tx, key, own, group)?;
     let raw = tx
         .prepare("SELECT id FROM group_key_outbox WHERE group_id=?1 LIMIT ?2")?
-        .query_map((group.as_slice(), MAX_DEVICES as u32 + 1), |r| {
+        .query_map((group.as_slice(), 3 * MAX_DEVICES as u32 + 49), |r| {
             r.get::<_, Vec<u8>>(0)
         })?
         .collect::<Result<Vec<_>, _>>()?;
-    if raw.len() > MAX_DEVICES {
+    if raw.len() > 3 * MAX_DEVICES + 48 {
         return Err(Error::InvalidStore);
     }
     for raw in raw {
@@ -344,6 +487,10 @@ pub(super) fn retire(
         "DELETE FROM group_receivers WHERE group_id=?1",
         [group.as_slice()],
     )?;
+    tx.execute(
+        "DELETE FROM group_key_recovery WHERE group_id=?1",
+        [group.as_slice()],
+    )?;
     Ok(())
 }
 impl Incoming {
@@ -358,6 +505,11 @@ impl ClientStore {
         message: Id,
         now: u64,
     ) -> Result<(), Error> {
+        let tx = self.db.transaction()?;
+        if super::key_recovery::cancelled_packet(&tx, &self.key, &session, &message)? {
+            return Err(Error::Cancelled);
+        }
+        tx.commit()?;
         let group: Option<Vec<u8>> = self
             .db
             .query_row(
@@ -379,7 +531,20 @@ impl ClientStore {
         if session != expected {
             return Err(Error::Conflict);
         }
-        matches_state(&state, &receipt.context)
+        matches_state(&state, &receipt.context)?;
+        let target = state
+            .members
+            .iter()
+            .flat_map(|m| &m.devices)
+            .find(|d| peers::fingerprint(&d.binding).ok() == Some(receipt.recipient))
+            .ok_or(Error::Unprepared)?;
+        let peer = peers::reference(&target.binding.server, &target.binding.device);
+        authorized_peer(&tx, &self.key, &state, &peer)?;
+        if receipt.kind == 3 {
+            tx.commit()?;
+            self.check_history_send(receipt.context.chain, message, now)?;
+        }
+        Ok(())
     }
     /// Prepare one exact encrypted distribution through an existing verified
     /// session. No live key is returned or retained in user-message history.
@@ -389,36 +554,31 @@ impl ClientStore {
         peer: Id,
         now: u64,
     ) -> Result<Id, Error> {
+        self.prepare_group_distribution_in(group, peer, now, None)
+    }
+    fn prepare_group_distribution_in(
+        &mut self,
+        group: Id,
+        peer: Id,
+        now: u64,
+        claim: Option<(Id, Id)>,
+    ) -> Result<Id, Error> {
         let own_binding = self.own_device_binding()?;
         let own = device_fingerprint(&own_binding)?;
         let tx = self
             .db
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
         let state = current(&tx, &self.key, &own, &group)?;
-        let known = peers::verified(&tx, &self.key, &peer)?;
-        if peers::parse(&own_binding)?.binding.server != known.binding.server {
-            return Err(Error::Unprepared);
-        }
+        let known = authorized_peer(&tx, &self.key, &state, &peer)?;
         state.device(known.fingerprint)?;
         if known.fingerprint == own {
             return Err(Error::Unprepared);
         }
-        let (sender, ready, seed) = match load_sender(&tx, &self.key, &own, &state)? {
-            Some(v) => v,
-            None => {
-                let (sender, distribution) = sk::Sender::new(group, state.head, state.epoch, own)?;
-                save_sender(
-                    &tx,
-                    &self.key,
-                    &own,
-                    &sender,
-                    false,
-                    Some(&distribution.to_bytes()?),
-                )?;
-                load_sender(&tx, &self.key, &own, &state)?.ok_or(Error::InvalidStore)?
-            }
-        };
+        let (sender, ready, seed) = ensure_sender(&tx, &self.key, &own, &state)?;
         let id = message_id(&sender.context(), &known.fingerprint);
+        if claim.is_some_and(|(_, expected)| expected != id) {
+            return Err(Error::Obsolete);
+        }
         if job(&tx, &self.key, &own, &group, &id)?.is_some() {
             return Ok(id);
         }
@@ -434,12 +594,31 @@ impl ClientStore {
             return Err(Error::InvalidStore);
         }
         let control = wire(&distribution, &known.fingerprint)?;
-        let session = selection::for_send(&tx, &self.key, &peer, now)?;
-        if crate::session_peer(&tx, &session)? != Some(peer) {
-            return Err(Error::Conflict);
-        }
-        send_in(&tx, &self.key, session, id, &control)?;
-        transport::prepare(&tx, &self.key, session, id, known.binding.device, None, now)?;
+        let session = if let Some((claim, _)) = claim {
+            let session = digest(b"Sigil/group-distribution-session/v0", &[&id, &own]);
+            crate::claims::start_in(
+                &tx,
+                &self.key,
+                claim,
+                session,
+                id,
+                (&control, None, None),
+                now,
+            )?;
+            if crate::session_peer(&tx, &session)?.is_some() {
+                return Err(Error::Conflict);
+            }
+            mark_channel(&tx, &self.key, &own, &session, &group, &known.fingerprint)?;
+            session
+        } else {
+            let session = selection::for_send(&tx, &self.key, &peer, now)?;
+            if crate::session_peer(&tx, &session)? != Some(peer) {
+                return Err(Error::Conflict);
+            }
+            send_in(&tx, &self.key, session, id, &control)?;
+            transport::prepare(&tx, &self.key, session, id, known.binding.device, None, now)?;
+            session
+        };
         let mut record = session.to_vec();
         record.extend_from_slice(&retained_payload(&self.key, &control)?);
         let sealed = self.key.seal(&record, &aad(48, &own, &group, &id))?;
@@ -450,6 +629,54 @@ impl ClientStore {
         finish_setup(&tx, &self.key, &own, &state, &sender)?;
         tx.commit()?;
         Ok(id)
+    }
+    /// Freeze a recipient-only PQXDH initial distribution using identity from
+    /// signed group membership. Does not verify a direct contact or select a
+    /// direct session. Existing jobs retain their exact packet across retries.
+    pub fn prepare_group_distribution_online(
+        &mut self,
+        group: Id,
+        peer: Id,
+        now: u64,
+    ) -> Result<Id, Error> {
+        self.refresh_group_authority_for_send(group, now)?;
+        let binding = self.own_device_binding()?;
+        let own = device_fingerprint(&binding)?;
+        let identity = self.identity()?;
+        let tx = self
+            .db
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let state = current(&tx, &self.key, &own, &group)?;
+        let known = authorized_peer(&tx, &self.key, &state, &peer)?;
+        if known.fingerprint == own {
+            return Err(Error::Unprepared);
+        }
+        let (sender, _, _) = ensure_sender(&tx, &self.key, &own, &state)?;
+        let message = message_id(&sender.context(), &known.fingerprint);
+        if job(&tx, &self.key, &own, &group, &message)?.is_some() {
+            return Ok(message);
+        }
+        let claim = digest(b"Sigil/group-distribution-claim/v0", &[&message, &own]);
+        crate::claims::prepare(
+            &tx,
+            &self.key,
+            &identity,
+            claim,
+            known.binding.device,
+            known.binding.identity,
+            (None, Some(&known.binding.server)),
+        )?;
+        tx.commit()?;
+        self.claim_prekey_online(claim, now)?;
+        self.refresh_group_authority_for_send(group, now)?;
+        let tx = self.db.transaction()?;
+        let state = current(&tx, &self.key, &own, &group)?;
+        let (sender, _, _) = load_sender(&tx, &self.key, &own, &state)?.ok_or(Error::Obsolete)?;
+        if message_id(&sender.context(), &known.fingerprint) != message {
+            return Err(Error::Obsolete);
+        }
+        tx.commit()?;
+        self.prepare_group_distribution_in(group, peer, now, Some((claim, message)))
     }
     /// Ready means every recipient's ciphertext is locally frozen, not read or
     /// installed remotely. Expired/lost distributions require recovery work.

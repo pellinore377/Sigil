@@ -9,8 +9,18 @@ use sigil_protocol::text::{
 #[path = "structured_tasks.rs"]
 pub(crate) mod tasks;
 pub use tasks::{TaskCompletion, TaskPage, TaskState};
+#[path = "structured_alarms.rs"]
+pub(crate) mod alarms;
+#[path = "structured_locations.rs"]
+pub(crate) mod locations;
+pub use locations::{LocationBatch, LocationJob, LocationKind, LocationState};
+#[path = "structured_erasure.rs"]
+mod erasure;
+#[path = "structured_polls.rs"]
+pub(crate) mod polls;
 #[path = "structured_recurring.rs"]
 mod recurring;
+pub(crate) use erasure::{erase, forget_sources, require_content};
 pub use recurring::RecurringState;
 
 pub(crate) const MIGRATION:&str="
@@ -24,6 +34,19 @@ CREATE TABLE structured_totals(card BLOB PRIMARY KEY REFERENCES structured_cards
 CREATE TABLE structured_sources(record BLOB PRIMARY KEY,card BLOB NOT NULL REFERENCES structured_cards(id),live INTEGER NOT NULL CHECK(live IN(0,1)),content BLOB NOT NULL);
 CREATE INDEX structured_sources_card ON structured_sources(card,live);
 PRAGMA user_version=52;";
+pub(crate) const COMPOSITION_MIGRATION: &str = "
+ALTER TABLE structured_sources RENAME TO structured_sources_old;
+DROP INDEX structured_sources_card;
+CREATE TABLE structured_sources(record BLOB NOT NULL,card BLOB NOT NULL REFERENCES structured_cards(id),live INTEGER NOT NULL CHECK(live IN(0,1)),content BLOB NOT NULL,PRIMARY KEY(record,card));
+INSERT INTO structured_sources SELECT * FROM structured_sources_old;
+DROP TABLE structured_sources_old;
+CREATE INDEX structured_sources_card ON structured_sources(card,live);
+CREATE TABLE structured_origins(card BLOB PRIMARY KEY REFERENCES structured_cards(id),content BLOB NOT NULL);
+CREATE TABLE structured_drafts(id BLOB PRIMARY KEY,content BLOB NOT NULL);
+CREATE TABLE structured_dependencies(action BLOB NOT NULL REFERENCES structured_actions(id),dependency BLOB NOT NULL,PRIMARY KEY(action,dependency));
+CREATE INDEX structured_dependencies_target ON structured_dependencies(dependency,action);
+INSERT INTO structured_dependencies SELECT id,parent FROM structured_actions WHERE parent IS NOT NULL;
+PRAGMA user_version=64;";
 const BATCH: usize = 64;
 #[cfg(test)]
 #[path = "structured_tests.rs"]
@@ -57,10 +80,15 @@ fn op_index(key: &StorageKey, card: &Id, id: &Id) -> Result<Id, Error> {
 }
 fn register_index(key: &StorageKey, card: &Id, register: Register) -> Result<Id, Error> {
     let (kind, id) = match register {
+        Register::LocationStop => (8, [0; 32]),
         Register::Item(id) => (0u8, id),
         Register::Ballot(id) => (1, id),
         Register::Completion(id) => (2, id),
         Register::Recurring(id) => (3, id),
+        Register::Definition(id) => (4, id),
+        Register::Policy => (5, [0; 32]),
+        Register::PollClose => (6, [0; 32]),
+        Register::PollPage(id) => (7, id),
     };
     Ok(key.commitment(
         &[card.as_slice(), &[kind], &id].concat(),
@@ -74,7 +102,9 @@ fn load_card(db: &Connection, key: &StorageKey, index: &Id) -> Result<Option<Car
     let bytes:Option<Vec<u8>>=db.query_row("SELECT CASE WHEN length(content)<=61476 THEN content END FROM structured_cards WHERE id=?1",[index.as_slice()],|r|r.get(0)).optional()?;
     bytes
         .map(|bytes| {
-            Card::from_bytes(&key.open(&bytes, &aad(0, index))?).map_err(|_| Error::InvalidStore)
+            let raw = key.open(&bytes, &aad(0, index))?;
+            crate::erasure::require_retained(&raw)?;
+            Card::from_bytes(&raw).map_err(|_| Error::InvalidStore)
         })
         .transpose()
 }
@@ -93,7 +123,48 @@ fn visible_card(
     if !live(db, key, &index)? {
         return Err(Error::Obsolete);
     }
+    crate::conversations::require_reference(
+        db,
+        key,
+        *conversation,
+        crate::conversations::Reference {
+            author: card.creator,
+            message: origin(db, key, &index)?.unwrap_or(card.id),
+        },
+    )?;
     Ok((index, card))
+}
+fn observe_card_expiry(
+    db: &Connection,
+    key: &StorageKey,
+    conversation: Id,
+    reference: &Reference,
+    now: u64,
+) -> Result<(), Error> {
+    let (scope, _) = account_context(db, key)?;
+    let index = card_index(key, &scope, &conversation, reference)?;
+    crate::conversations::observe_expiry(
+        db,
+        key,
+        conversation,
+        crate::conversations::Reference {
+            author: reference.creator,
+            message: origin(db, key, &index)?.unwrap_or(reference.id),
+        },
+        now,
+    )
+}
+fn origin(db: &Connection, key: &StorageKey, card: &Id) -> Result<Option<Id>, Error> {
+    let bytes: Option<Vec<u8>> = db.query_row("SELECT CASE WHEN length(content)=68 THEN content END FROM structured_origins WHERE card=?1",
+        [card.as_slice()], |r| r.get(0)).optional()?;
+    bytes
+        .map(|bytes| {
+            key.open(&bytes, &aad(5, card))?
+                .as_slice()
+                .try_into()
+                .map_err(|_| Error::InvalidStore)
+        })
+        .transpose()
 }
 struct Node {
     action: Action,
@@ -215,8 +286,8 @@ fn source(
 ) -> Result<(), Error> {
     let old: Option<(Vec<u8>, bool, Vec<u8>)> = tx
         .query_row(
-            "SELECT card,live,content FROM structured_sources WHERE record=?1",
-            [record.as_slice()],
+            "SELECT card,live,content FROM structured_sources WHERE record=?1 AND card=?2",
+            (record.as_slice(), card.as_slice()),
             |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
         )
         .optional()?;
@@ -231,7 +302,11 @@ fn source(
             return Ok(());
         }
     }
-    tx.execute("INSERT INTO structured_sources VALUES(?1,?2,?3,?4) ON CONFLICT(record) DO UPDATE SET live=excluded.live,content=excluded.content",(record.as_slice(),card.as_slice(),live,key.seal(&[card.as_slice(),&[u8::from(live)]].concat(),&aad(4,record))?))?;
+    tx.execute("INSERT INTO structured_sources VALUES(?1,?2,?3,?4) ON CONFLICT(record,card) DO UPDATE SET live=excluded.live,content=excluded.content",(record.as_slice(),card.as_slice(),live,key.seal(&[card.as_slice(),&[u8::from(live)]].concat(),&aad(4,record))?))?;
+    if !live && !self::live(tx, key, card)? {
+        alarms::cancel(tx, key, card)?;
+        polls::discard(tx, card)?;
+    }
     Ok(())
 }
 fn live(db: &Connection, key: &StorageKey, card: &Id) -> Result<bool, Error> {
@@ -264,44 +339,18 @@ pub(crate) fn ingest(
     match invalid(Document::from_bytes(bytes))? {
         Document::Text(_) => return Ok(()),
         Document::Card(card) => {
-            let reference = invalid(Reference::of(&card))?;
-            let index = card_index(key, &scope, &conversation, &reference)?;
-            if let Some(prior) = load_card(tx, key, &index)? {
-                if prior != card {
-                    return Err(Error::Conflict);
-                }
-            } else {
-                tx.execute(
-                    "INSERT INTO structured_cards VALUES(?1,?2)",
-                    (index.as_slice(), key.seal(bytes, &aad(0, &index))?),
-                )?;
-                let pending: i64 = tx.query_row(
-                    "SELECT count(*) FROM structured_actions WHERE card=?1 AND status=0",
-                    [index.as_slice()],
-                    |r| r.get(0),
-                )?;
-                save_totals(
-                    tx,
-                    key,
-                    &index,
-                    &Totals {
-                        counts: vec![0; options(&card)],
-                        pending: pending as u64,
-                        ..Default::default()
-                    },
-                )?;
-                enqueue(tx, key, 0, &index)?;
+            ingest_card(tx, key, (scope, conversation, record), card.id, &card)?;
+        }
+        Document::Composition(value) => {
+            for card in value.cards() {
+                ingest_card(tx, key, (scope, conversation, record), value.id, card)?;
             }
-            source(
-                tx,
-                key,
-                &record,
-                &index,
-                !recovery::record_deleted(tx, key, scope, record)?,
-            )?;
         }
         Document::Action(action) => {
             let card = card_index(key, &scope, &conversation, &action.card)?;
+            if matches!(load_card(tx, key, &card), Err(Error::Obsolete)) {
+                return Ok(());
+            }
             let id = op_index(key, &card, &invalid(action.id())?)?;
             if let Some(prior) = load_node(tx, key, &id)? {
                 if prior.action != action || prior.card != card {
@@ -323,6 +372,12 @@ pub(crate) fn ingest(
                         node_bytes(key, &id, &action, 0, 0)?,
                     ),
                 )?;
+                for dependency in action.dependencies() {
+                    tx.execute(
+                        "INSERT INTO structured_dependencies VALUES(?1,?2)",
+                        (id.as_slice(), op_index(key, &card, &dependency)?.as_slice()),
+                    )?;
+                }
                 if let Some(object) = load_card(tx, key, &card)? {
                     let mut counts = totals(tx, key, &card, options(&object))?;
                     counts.pending = counts.pending.checked_add(1).ok_or(Error::Limit)?;
@@ -335,6 +390,63 @@ pub(crate) fn ingest(
     advance(tx, key, BATCH)?;
     Ok(())
 }
+fn ingest_card(
+    tx: &Transaction<'_>,
+    key: &StorageKey,
+    context: (Id, Id, Id),
+    message: Id,
+    card: &Card,
+) -> Result<(), Error> {
+    let (scope, conversation, record) = context;
+    let reference = invalid(Reference::of(card))?;
+    let index = card_index(key, &scope, &conversation, &reference)?;
+    let prior = match load_card(tx, key, &index) {
+        Err(Error::Obsolete) => return Ok(()),
+        other => other?,
+    };
+    if let Some(prior) = prior {
+        if prior != *card || origin(tx, key, &index)?.unwrap_or(card.id) != message {
+            return Err(Error::Conflict);
+        }
+    } else {
+        tx.execute(
+            "INSERT INTO structured_cards VALUES(?1,?2)",
+            (
+                index.as_slice(),
+                key.seal(&invalid(card.to_bytes())?, &aad(0, &index))?,
+            ),
+        )?;
+        tx.execute(
+            "INSERT INTO structured_origins VALUES(?1,?2)",
+            (index.as_slice(), key.seal(&message, &aad(5, &index))?),
+        )?;
+        let pending: i64 = tx.query_row(
+            "SELECT count(*) FROM structured_actions WHERE card=?1 AND status=0",
+            [index.as_slice()],
+            |r| r.get(0),
+        )?;
+        save_totals(
+            tx,
+            key,
+            &index,
+            &Totals {
+                counts: vec![0; options(card)],
+                pending: pending as u64,
+                ..Default::default()
+            },
+        )?;
+        enqueue(tx, key, 0, &index)?;
+    }
+    alarms::insert(tx, key, &index, conversation, message, card)?;
+    locations::insert(tx, key, &index, conversation, card)?;
+    source(
+        tx,
+        key,
+        &record,
+        &index,
+        !recovery::record_deleted(tx, key, scope, record)?,
+    )
+}
 pub(crate) fn archive(
     tx: &Transaction<'_>,
     key: &StorageKey,
@@ -345,15 +457,17 @@ pub(crate) fn archive(
         sigil_crypto::recovery::Content::Rich(bytes) => {
             ingest(tx, key, scope, record.conversation, record.id, bytes)
         }
-        sigil_crypto::recovery::Content::Deleted => {
-            let card: Option<Vec<u8>> = tx
-                .query_row(
-                    "SELECT card FROM structured_sources WHERE record=?1",
-                    [record.id.as_slice()],
-                    |r| r.get(0),
-                )
-                .optional()?;
-            if let Some(card) = card {
+        sigil_crypto::recovery::Content::Deleted
+        | sigil_crypto::recovery::Content::Redacted { .. } => {
+            let mut statement =
+                tx.prepare("SELECT card FROM structured_sources WHERE record=?1 LIMIT 65")?;
+            let cards = statement
+                .query_map([record.id.as_slice()], |r| r.get::<_, Vec<u8>>(0))?
+                .collect::<Result<Vec<_>, _>>()?;
+            if cards.len() > 64 {
+                return Err(Error::InvalidStore);
+            }
+            for card in cards {
                 source(
                     tx,
                     key,
@@ -372,7 +486,11 @@ fn apply(tx: &Transaction<'_>, key: &StorageKey, id: &Id) -> Result<(), Error> {
     if node.status != 0 {
         return Ok(());
     }
-    let Some(card) = load_card(tx, key, &node.card)? else {
+    let card = match load_card(tx, key, &node.card) {
+        Err(Error::Obsolete) => return Ok(()),
+        other => other?,
+    };
+    let Some(card) = card else {
         return Ok(());
     };
     let parent = node
@@ -383,13 +501,50 @@ fn apply(tx: &Transaction<'_>, key: &StorageKey, id: &Id) -> Result<(), Error> {
     if node.parent.is_some() && parent.as_ref().is_none_or(|p| p.status == 0) {
         return Ok(());
     }
-    let depth = node.action.validate_for(&card).and_then(|_| {
-        if parent.as_ref().is_some_and(|p| p.status != 1) {
-            return Err(sigil_protocol::text::Error::Invalid);
+    let mut dependencies = Vec::new();
+    for dependency in node.action.dependencies() {
+        let Some(value) = load_node(tx, key, &op_index(key, &node.card, &dependency)?)? else {
+            return Ok(());
+        };
+        if value.status == 0 {
+            return Ok(());
         }
-        node.action
-            .depth_after(parent.as_ref().map(|p| (&p.action, p.depth)))
-    });
+        dependencies.push((dependency, value));
+    }
+    let revision = node
+        .action
+        .revision
+        .and_then(|id| dependencies.iter().find(|(key, _)| *key == id))
+        .map(|(_, node)| &node.action);
+    let policy = if let Change::Edit {
+        policy: Some(id), ..
+    } = &node.action.change
+    {
+        dependencies
+            .iter()
+            .find(|(key, _)| key == id)
+            .map(|(_, node)| &node.action)
+    } else {
+        None
+    };
+    let valid_page = polls::validate(tx, key, &node, &card, &dependencies)?;
+    let depth = node
+        .action
+        .validate_context(&card, revision, policy, parent.as_ref().map(|p| &p.action))
+        .and_then(|_| {
+            if !valid_page
+                || dependencies
+                    .iter()
+                    .any(|(_, dependency)| dependency.status != 1 || dependency.card != node.card)
+            {
+                return Err(sigil_protocol::text::Error::Invalid);
+            }
+            if parent.as_ref().is_some_and(|p| p.status != 1) {
+                return Err(sigil_protocol::text::Error::Invalid);
+            }
+            node.action
+                .depth_after(parent.as_ref().map(|p| (&p.action, p.depth)))
+        });
     let (status, depth) = match depth {
         Ok(depth) => (1u8, depth),
         Err(_) => (2, 0),
@@ -415,6 +570,7 @@ fn apply(tx: &Transaction<'_>, key: &StorageKey, id: &Id) -> Result<(), Error> {
             .transpose()?
             .unwrap_or(true);
         if wins {
+            polls::apply(tx, key, &node, &card, &dependencies)?;
             tasks::apply(tx, key, &node, prior.as_ref())?;
             if let (Construct::Poll(poll), Change::Vote { choices }) =
                 (&card.content, &node.action.change)
@@ -451,6 +607,7 @@ fn apply(tx: &Transaction<'_>, key: &StorageKey, id: &Id) -> Result<(), Error> {
                 }
             }
             tx.execute("INSERT INTO structured_heads VALUES(?1,?2,?3) ON CONFLICT(card,register_id) DO UPDATE SET content=excluded.content",(node.card.as_slice(),node.register.as_slice(),key.seal(id,&aad(2,&node.register))?))?;
+            alarms::refresh(tx, key, &node.card, &card)?;
         }
     }
     save_totals(tx, key, &node.card, &counts)?;
@@ -504,7 +661,7 @@ fn advance(tx: &Transaction<'_>, key: &StorageKey, limit: usize) -> Result<usize
         let sql = if kind == 0 {
             "SELECT rowid,id FROM structured_actions WHERE card=?1 AND status=0 AND rowid>?2 ORDER BY rowid LIMIT ?3"
         } else {
-            "SELECT rowid,id FROM structured_actions WHERE parent=?1 AND status=0 AND rowid>?2 ORDER BY rowid LIMIT ?3"
+            "SELECT a.rowid,a.id FROM structured_actions a JOIN structured_dependencies d ON d.action=a.id WHERE d.dependency=?1 AND a.status=0 AND a.rowid>?2 ORDER BY a.rowid LIMIT ?3"
         };
         let mut statement = tx.prepare(sql)?;
         let rows: Vec<(i64, Vec<u8>)> = statement
@@ -546,18 +703,90 @@ pub struct CheckState {
     pub actor: Option<Id>,
 }
 pub struct PollState {
+    pub closed: bool,
+    pub pending_pages: u64,
     pub choices: Vec<Id>,
     pub operation: Option<Id>,
     pub counts: Option<Vec<(Id, u64)>>,
     pub voters: Option<u64>,
 }
 pub struct CardState {
+    pub location: Option<LocationState>,
     pub card: Card,
+    pub definition: CardDefinition,
     pub checks: Vec<CheckState>,
     pub tasks: Vec<TaskState>,
     pub poll: Option<PollState>,
     pub pending: u64,
     pub rejected: u64,
+}
+pub struct CardDefinition {
+    pub content: Construct,
+    pub revision: Option<Id>,
+    pub policy: Option<Id>,
+    pub editors: Vec<Id>,
+}
+fn definition(
+    db: &Connection,
+    key: &StorageKey,
+    index: &Id,
+    card: &Card,
+) -> Result<CardDefinition, Error> {
+    let policy = head(
+        db,
+        key,
+        index,
+        &register_index(key, index, Register::Policy)?,
+    )?;
+    let policy_id = policy
+        .as_ref()
+        .map(|p| invalid(p.action.id()))
+        .transpose()?;
+    let mut content = card.content.clone();
+    let mut editors = Vec::new();
+    if let Some(policy) = &policy {
+        let Change::Editors {
+            content: value,
+            editors: members,
+        } = &policy.action.change
+        else {
+            return Err(Error::InvalidStore);
+        };
+        content = value.clone();
+        editors = members.clone();
+    }
+    let revision = head(
+        db,
+        key,
+        index,
+        &register_index(
+            key,
+            index,
+            Register::Definition(policy_id.unwrap_or([0; 32])),
+        )?,
+    )?;
+    let revision_id = if let Some(revision) = revision {
+        let Change::Edit {
+            content: value,
+            policy: id,
+        } = &revision.action.change
+        else {
+            return Err(Error::InvalidStore);
+        };
+        if *id != policy_id {
+            return Err(Error::InvalidStore);
+        }
+        content = value.clone();
+        Some(invalid(revision.action.id())?)
+    } else {
+        policy_id
+    };
+    Ok(CardDefinition {
+        content,
+        revision: revision_id,
+        policy: policy_id,
+        editors,
+    })
 }
 pub(crate) fn account_context(db: &Connection, key: &StorageKey) -> Result<(Id, Id), Error> {
     let session = connection::session_in(db, key)?.ok_or(Error::Unprepared)?;
@@ -579,18 +808,28 @@ impl ClientStore {
         Ok(count)
     }
     pub fn card_state(&self, conversation: Id, reference: Reference) -> Result<CardState, Error> {
+        observe_card_expiry(
+            &self.db,
+            &self.key,
+            conversation,
+            &reference,
+            crate::conversations::now(),
+        )?;
         let tx = self.db.unchecked_transaction()?;
         let (scope, viewer) = account_context(&tx, &self.key)?;
         let (index, card) = visible_card(&tx, &self.key, &scope, &conversation, &reference)?;
+        let definition = definition(&tx, &self.key, &index, &card)?;
         let mut checks = Vec::new();
         let mut task_states = Vec::new();
         let mut poll_state = None;
         let counts = totals(&tx, &self.key, &index, options(&card))?;
-        match &card.content {
+        match &definition.content {
             Construct::Checklist(list)
                 if list.mode == sigil_protocol::text::structured::ListMode::Task =>
             {
-                task_states = tasks::states(&tx, &self.key, &index, &card)?;
+                let mut current = card.clone();
+                current.content = definition.content.clone();
+                task_states = tasks::states(&tx, &self.key, &index, &current)?;
             }
             Construct::Checklist(list)
                 if matches!(
@@ -639,6 +878,8 @@ impl ClientStore {
                 };
                 let show = poll.disclosure == Disclosure::Open || !choices.is_empty();
                 poll_state = Some(PollState {
+                    closed: false,
+                    pending_pages: 0,
                     choices,
                     operation,
                     counts: show.then(|| {
@@ -650,18 +891,85 @@ impl ClientStore {
                     }),
                     voters: show.then_some(counts.voters),
                 });
+                if let Some(closed) = polls::state(&tx, &self.key, &index, &card, &viewer)? {
+                    poll_state = Some(closed);
+                }
             }
-            Construct::Note(_) => {}
+            Construct::Note(_)
+            | Construct::Location(_)
+            | Construct::Reminder(_)
+            | Construct::Countdown(_)
+            | Construct::Ago(_)
+            | Construct::Data(_)
+            | Construct::Utility(_)
+            | Construct::Contact(_)
+            | Construct::Service(_)
+            | Construct::Timer(_) => {}
         }
+        let location = locations::state(&tx, &self.key, conversation, &index, &card, &definition)?;
         tx.commit()?;
         Ok(CardState {
+            location,
             card,
+            definition,
             checks,
             tasks: task_states,
             poll: poll_state,
             pending: counts.pending,
             rejected: counts.rejected,
         })
+    }
+    pub fn edit_card(
+        &self,
+        conversation: Id,
+        reference: Reference,
+        content: Construct,
+        created_at: u64,
+    ) -> Result<Action, Error> {
+        let (scope, actor) = account_context(&self.db, &self.key)?;
+        let (index, card) = visible_card(&self.db, &self.key, &scope, &conversation, &reference)?;
+        let definition = definition(&self.db, &self.key, &index, &card)?;
+        let action = Action {
+            card: reference,
+            actor,
+            created_at,
+            revision: None,
+            previous: definition
+                .revision
+                .filter(|id| Some(*id) != definition.policy),
+            change: Change::Edit {
+                content,
+                policy: definition.policy,
+            },
+        };
+        self.require_action(conversation, &action)?;
+        Ok(action)
+    }
+    pub fn set_recurrence_editors(
+        &self,
+        conversation: Id,
+        reference: Reference,
+        mut editors: Vec<Id>,
+        created_at: u64,
+    ) -> Result<Action, Error> {
+        let (scope, actor) = account_context(&self.db, &self.key)?;
+        let (index, card) = visible_card(&self.db, &self.key, &scope, &conversation, &reference)?;
+        let definition = definition(&self.db, &self.key, &index, &card)?;
+        editors.sort();
+        editors.dedup();
+        let action = Action {
+            card: reference,
+            actor,
+            created_at,
+            previous: definition.policy,
+            revision: None,
+            change: Change::Editors {
+                content: definition.content,
+                editors,
+            },
+        };
+        self.require_action(conversation, &action)?;
+        Ok(action)
     }
     pub(crate) fn require_action(&self, conversation: Id, action: &Action) -> Result<(), Error> {
         let (scope, actor) = account_context(&self.db, &self.key)?;
@@ -678,18 +986,81 @@ pub(crate) fn require_outgoing(
     conversation: Id,
     action: &Action,
 ) -> Result<(), Error> {
-    let index = card_index(key, &scope, &conversation, &action.card)?;
-    let card = load_card(db, key, &index)?.ok_or(Error::Unprepared)?;
-    if !live(db, key, &index)? {
-        return Err(Error::Obsolete);
-    }
-    invalid(action.validate_for(&card))?;
+    let (index, card) = visible_card(db, key, &scope, &conversation, &action.card)?;
+    let definition = definition(db, key, &index, &card)?;
     let parent = action
         .previous
         .map(|id| load_node(db, key, &op_index(key, &index, &id)?)?.ok_or(Error::Unprepared))
         .transpose()?;
     if parent.as_ref().is_some_and(|p| p.status != 1) {
         return Err(Error::Unprepared);
+    }
+    let mut dependencies = Vec::new();
+    for dependency in action.dependencies() {
+        let value =
+            load_node(db, key, &op_index(key, &index, &dependency)?)?.ok_or(Error::Unprepared)?;
+        if value.status != 1 || value.card != index {
+            return Err(Error::Unprepared);
+        }
+        dependencies.push((dependency, value));
+    }
+    let revision = action
+        .revision
+        .and_then(|id| dependencies.iter().find(|(key, _)| *key == id))
+        .map(|(_, node)| &node.action);
+    let policy = if let Change::Edit {
+        policy: Some(id), ..
+    } = &action.change
+    {
+        dependencies
+            .iter()
+            .find(|(key, _)| key == id)
+            .map(|(_, node)| &node.action)
+    } else {
+        None
+    };
+    match &action.change {
+        Change::StopLocation => (),
+        Change::Edit {
+            content: Construct::Location(_),
+            ..
+        } if locations::stopped(db, key, &index)?
+            || locations::locally_stopped(db, key, &index)? =>
+        {
+            return Err(Error::Obsolete)
+        }
+        Change::Vote { .. } if polls::closed(db, key, &index)?.is_some() => {
+            return Err(Error::Obsolete)
+        }
+        Change::ClosePoll(_)
+            if polls::closed(db, key, &index)?.is_some_and(|prior| prior.action != *action) =>
+        {
+            return Err(Error::Obsolete)
+        }
+        Change::Edit { policy, .. } if *policy != definition.policy => return Err(Error::Obsolete),
+        Change::Editors { .. } if action.previous != definition.policy => {
+            return Err(Error::Obsolete)
+        }
+        Change::Edit { .. } | Change::Editors { .. } => (),
+        _ if action.revision != definition.revision => return Err(Error::Obsolete),
+        _ => (),
+    }
+    invalid(action.validate_context(&card, revision, policy, parent.as_ref().map(|p| &p.action)))?;
+    if !polls::validate(
+        db,
+        key,
+        &Node {
+            action: action.clone(),
+            status: 0,
+            depth: 0,
+            card: index,
+            register: register_index(key, &index, invalid(action.register())?)?,
+            parent: None,
+        },
+        &card,
+        &dependencies,
+    )? {
+        return Err(Error::InvalidEvent);
     }
     invalid(action.depth_after(parent.as_ref().map(|p| (&p.action, p.depth))))?;
     Ok(())

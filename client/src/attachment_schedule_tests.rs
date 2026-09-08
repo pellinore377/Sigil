@@ -139,7 +139,7 @@ fn cursor_reaches_pending_files_expiry_clears_keys_and_schema_one_upgrades() {
     cache
         .db
         .execute_batch(
-            "DROP TABLE sync_schedule; DROP TABLE transfer_cursor; PRAGMA user_version=1",
+            "DROP TABLE sync_schedule; DROP TABLE transfer_cursor; DROP TABLE recovery_transfers; DROP TABLE recovery_cursor; PRAGMA user_version=1",
         )
         .unwrap();
     drop(cache);
@@ -149,7 +149,7 @@ fn cursor_reaches_pending_files_expiry_clears_keys_and_schema_one_upgrades() {
             .db
             .query_row("PRAGMA user_version", [], |r| r.get::<_, i64>(0))
             .unwrap(),
-        3
+        5
     );
     let mut time = now + 2;
     for _ in 0..30 {

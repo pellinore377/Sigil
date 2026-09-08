@@ -142,7 +142,7 @@ fn real_home_server_preserves_pending_status_and_revisioned_permissions() {
         client.configure_federation_sender(&allow),
         Err(Error::Status { code: 409, .. })
     ));
-    assert!(client.federated_mailbox_after(0).unwrap().is_empty());
+    assert!(client.mailbox_after(0).unwrap().is_empty());
 }
 #[test]
 fn status_is_bound_to_the_exact_request_owner_and_remote_receipt() {
@@ -239,13 +239,14 @@ fn status_is_bound_to_the_exact_request_owner_and_remote_receipt() {
 }
 #[test]
 fn mailbox_origin_order_and_maximum_envelopes_are_validated() {
-    let entry = Delivery {
+    let entry = mailbox::Delivery {
         sequence: 1,
-        sender: RemoteSender {
+        sender_device: "02".repeat(32),
+        origin: Some(RemoteSender {
             server: "remote.example".into(),
             account: "01".repeat(32),
             device: "02".repeat(32),
-        },
+        }),
         message_id: "03".repeat(32),
         payload: "ab".repeat(32),
         expires_at: 2000,
@@ -253,43 +254,31 @@ fn mailbox_origin_order_and_maximum_envelopes_are_validated() {
     let values = Arc::new(Mutex::new(vec![entry.clone()]));
     let captured = values.clone();
     let fixture = Fixture::new(Router::new().route(
-        "/client/v0/federation/mailbox",
+        "/client/v0/mailbox",
         get(move || {
             let values = captured.lock().unwrap().clone();
             async move { Json(values) }
         }),
     ));
     let client = client(&fixture, &"ab".repeat(32));
-    assert_eq!(
-        client.federated_mailbox_after(0).unwrap(),
-        vec![entry.clone()]
-    );
-    assert_eq!(
-        client.federated_mailbox_after(1),
-        Err(Error::InvalidResponse)
-    );
+    assert_eq!(client.mailbox_after(0).unwrap(), vec![entry.clone()]);
+    assert_eq!(client.mailbox_after(1), Err(Error::InvalidResponse));
     for n in 0..7 {
         let mut bad = entry.clone();
         match n {
-            0 => bad.sender.server = "chat.example".into(),
-            1 => bad.sender.server = "remote.example/path".into(),
-            2 => bad.sender.account = "zz".repeat(32),
-            3 => bad.sender.device = "00".repeat(31),
+            0 => bad.origin.as_mut().unwrap().server = "chat.example".into(),
+            1 => bad.origin.as_mut().unwrap().server = "remote.example/path".into(),
+            2 => bad.origin.as_mut().unwrap().account = "zz".repeat(32),
+            3 => bad.origin.as_mut().unwrap().device = "00".repeat(31),
             4 => bad.expires_at = 0,
             5 => bad.payload = "ab".into(),
             _ => bad.message_id = "ff".repeat(33),
         }
         *values.lock().unwrap() = vec![bad];
-        assert_eq!(
-            client.federated_mailbox_after(0),
-            Err(Error::InvalidResponse)
-        );
+        assert_eq!(client.mailbox_after(0), Err(Error::InvalidResponse));
     }
     *values.lock().unwrap() = vec![entry.clone(), entry.clone()];
-    assert_eq!(
-        client.federated_mailbox_after(0),
-        Err(Error::InvalidResponse)
-    );
+    assert_eq!(client.mailbox_after(0), Err(Error::InvalidResponse));
     let server = [
         "a".repeat(63),
         "b".repeat(63),
@@ -301,16 +290,16 @@ fn mailbox_origin_order_and_maximum_envelopes_are_validated() {
     for sequence in 1..=16 {
         let mut value = entry.clone();
         value.sequence = sequence;
-        value.sender.server = server.clone();
+        value.origin.as_mut().unwrap().server = server.clone();
         value.payload = "ab".repeat(mailbox::MAX_PAYLOAD_HEX / 2);
         maximum.push(value);
     }
     *values.lock().unwrap() = maximum.clone();
-    assert_eq!(client.federated_mailbox_after(0).unwrap(), maximum);
+    assert_eq!(client.mailbox_after(0).unwrap(), maximum);
     maximum.push(entry);
     *values.lock().unwrap() = maximum;
     assert!(matches!(
-        client.federated_mailbox_after(0),
+        client.mailbox_after(0),
         Err(Error::Limit | Error::InvalidResponse)
     ));
 }
@@ -388,5 +377,35 @@ fn lookup_binds_response_to_owner_request_and_remote_device() {
     assert_eq!(
         client.federated_lookup(&wrong, &request),
         Err(Error::Configuration)
+    );
+}
+
+#[test]
+fn anonymous_service_response_hash_omits_device_identifiers() {
+    use sigil_protocol::federation::{Lookup, Service};
+    let request = ProxyLookup {
+        destination: "remote.example".into(),
+        operation: Lookup::Service {
+            service: Service::GroupAuthority,
+        },
+    };
+    let raw = br#"{"sender_account":"","sender_device":"","operation":{"kind":"service","service":{"kind":"group_authority"}}}"#;
+    let reply = LookupReply {
+        request_hash: crate::transport::hex(&Sha256::digest(raw)),
+        value: LookupValue::Service("synthetic".into()),
+    };
+    let app = Router::new().route(
+        "/client/v0/federation/lookup",
+        post(move || {
+            let reply = reply.clone();
+            async move { Json(reply) }
+        }),
+    );
+    let fixture = Fixture::new(app);
+    assert_eq!(
+        client(&fixture, &"ab".repeat(32))
+            .federated_lookup(&own(), &request)
+            .unwrap(),
+        LookupValue::Service("synthetic".into())
     );
 }

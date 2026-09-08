@@ -97,7 +97,7 @@ fn existing(
         |r| r.get(0),
     )?;
     if key.open(&content, &binding(9, &session, &id))?.as_slice()
-        != crate::groups::retained_payload(key, text)?.as_ref()
+        != crate::retained_payload(key, text)?.as_ref()
     {
         return Err(Error::Conflict);
     }
@@ -187,12 +187,19 @@ impl ClientStore {
         if now == 0 || now > i64::MAX as u64 {
             return Err(Error::Expired);
         }
+        if matches!(body, Content::Conversation(_)) {
+            crate::conversations::time_floor(&self.db, &self.key, now)?;
+        }
         let own = self.own_device_binding()?;
         let fingerprint = device_fingerprint(&own)?;
         let tx = self
             .db
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
         let text = context(&tx, &self.key, &own, &peer)?.encode(id, body, timestamp)?;
+        if crate::conversations::cancelled(&tx, &self.key, &[0; 32], &id)? {
+            return Err(Error::Obsolete);
+        }
+        crate::conversations::check_send(&tx, &self.key, &text, now)?;
         if matches!(body, Content::File(_) | Content::Rich(_)) {
             super::require_resend(
                 &tx,
@@ -213,6 +220,9 @@ impl ClientStore {
             }
             Err(Error::NotFound) => {}
             Err(error) => return Err(error),
+        }
+        if matches!(body, Content::Conversation(_)) {
+            super::retain(&tx, &self.key, &own, &peer, &text, true)?;
         }
         if existing(&tx, &self.key, peer, id, &text, now)?.is_none() {
             if tx.query_row("SELECT count(*) FROM send_intents", [], |r| {
@@ -239,6 +249,24 @@ impl ClientStore {
         let own = self.own_device_binding()?;
         let fingerprint = device_fingerprint(&own)?;
         let (mut intent, mut expected) = read(&self.db, &self.key, &fingerprint, &id)?;
+        match crate::conversations::check_send(&self.db, &self.key, &intent.text, now) {
+            Ok(()) => {}
+            Err(Error::Obsolete) => {
+                let tx = self
+                    .db
+                    .transaction_with_behavior(TransactionBehavior::Immediate)?;
+                if tx.execute(
+                    "DELETE FROM send_intents WHERE id=?1 AND state=?2",
+                    (id.as_slice(), expected),
+                )? == 1
+                {
+                    crate::conversations::mark_cancelled(&tx, &self.key, &[0; 32], &id)?;
+                }
+                tx.commit()?;
+                return Err(Error::Obsolete);
+            }
+            Err(e) => return Err(e),
+        }
         if now < intent.started {
             return Err(Error::Expired);
         }

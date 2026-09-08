@@ -21,6 +21,7 @@ CREATE INDEX group_incoming_pending ON group_incoming(sequence) WHERE acknowledg
 CREATE TABLE group_delivery_cursor(id INTEGER PRIMARY KEY CHECK(id=1),state BLOB NOT NULL);
 PRAGMA user_version=45;
 ";
+pub(super) use delivery::cancel_before;
 const MAX_PENDING: u32 = 16;
 
 pub struct GroupMessage {
@@ -72,6 +73,7 @@ pub fn group_event_history_id(event: &Group<'_>) -> Id {
         Content::Text(_) => b"Sigil/group-text-history/v0",
         Content::File(_) => b"Sigil/group-file-history/v0",
         Content::Rich(_) => b"Sigil/group-sigiltext-history/v0",
+        Content::Conversation(_) => b"Sigil/group-conversation-history/v0",
     };
     digest(domain, &[&event.group, &event.sender, &event.message])
 }
@@ -84,6 +86,52 @@ fn retain(
     author: Id,
 ) -> Result<(), Error> {
     let own = peers::parse(own)?.binding;
+    let state = keys::current(tx, key, &peers::fingerprint(&own)?, &text.group)?;
+    let (member, _) = state.device(text.sender)?;
+    let source = crate::event::account(&member.devices.first().ok_or(Error::InvalidStore)?.binding);
+    crate::conversations::native(
+        tx,
+        key,
+        text.group,
+        (source, author),
+        (text.sender, text.message, group_event_history_id(text)),
+        text.timestamp,
+        text.content,
+    )?;
+    if let Content::Conversation(raw) = text.content {
+        let op = sigil_protocol::conversation::Operation::from_bytes(raw)
+            .map_err(|_| Error::InvalidEvent)?;
+        if matches!(
+            op.action,
+            sigil_protocol::conversation::Action::Private { .. }
+                | sigil_protocol::conversation::Action::SyncPart { .. }
+                | sigil_protocol::conversation::Action::Presence { .. }
+        ) {
+            return Err(Error::InvalidEvent);
+        }
+        crate::conversations::validate(text.content, &text.message, &text.sender)?;
+        crate::conversations::retain(
+            tx,
+            key,
+            &peers::own(tx, key)?,
+            text.group,
+            (source, author),
+            text.timestamp,
+            text.content,
+        )?;
+        if !outgoing {
+            crate::conversations::receipts::schedule(
+                tx,
+                key,
+                &peers::own(tx, key)?,
+                crate::conversations::Destination::Group(text.group),
+                text.group,
+                source,
+                text.content,
+            )?;
+        }
+        return Ok(());
+    }
     if let Content::Rich(bytes) = text.content {
         if outgoing {
             if let sigil_protocol::text::Document::Action(action) =
@@ -136,6 +184,7 @@ fn retain(
                 Content::Rich(bytes) => {
                     sigil_crypto::recovery::Content::Rich(Zeroizing::new(bytes.to_vec()))
                 }
+                Content::Conversation(_) => return Err(Error::InvalidEvent),
             },
         },
     )
@@ -155,6 +204,15 @@ fn load(db: &Connection, key: &StorageKey, own: &Id, id: &Id) -> Result<Option<S
         return Err(Error::InvalidStore);
     }
     let context = context_from_bytes(&bytes[1..137])?;
+    if let Some(message) = crate::erasure::erased(&bytes[169..]) {
+        if context.group.as_slice() != group
+            || (outgoing && context.sender != *own)
+            || index(key, &context.group, &context.sender, &message)? != *id
+        {
+            return Err(Error::InvalidStore);
+        }
+        return Err(Error::Obsolete);
+    }
     let digest = bytes[137..169]
         .try_into()
         .map_err(|_| Error::InvalidStore)?;
@@ -176,6 +234,19 @@ fn load(db: &Connection, key: &StorageKey, own: &Id, id: &Id) -> Result<Option<S
         },
         digest,
     }))
+}
+pub(super) fn history_content(
+    db: &Connection,
+    key: &StorageKey,
+    own: &Id,
+    group: &Id,
+    id: &Id,
+) -> Result<Zeroizing<Vec<u8>>, Error> {
+    let stored = load(db, key, own, id)?.ok_or(Error::NotFound)?;
+    if stored.message.context.group != *group {
+        return Err(Error::InvalidStore);
+    }
+    Ok(stored.message.plaintext)
 }
 fn save(
     tx: &Transaction<'_>,
@@ -277,6 +348,7 @@ impl ClientStore {
         let tx = self
             .db
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        crate::conversations::check_send(&tx, &self.key, &plaintext, now)?;
         if matches!(body, Content::File(_) | Content::Rich(_)) {
             recovery::require_resend(
                 &tx,
@@ -314,7 +386,6 @@ impl ClientStore {
             return Err(Error::Unprepared);
         }
         let mut recipients = Vec::new();
-        let own_server = &own_fields.server;
         for member in &state.members {
             for binding in &member.devices {
                 let fingerprint = peers::fingerprint(&binding.binding)?;
@@ -322,8 +393,8 @@ impl ClientStore {
                     continue;
                 }
                 let peer = peers::reference(&binding.binding.server, &binding.binding.device);
-                let known = peers::verified(&tx, &self.key, &peer)?;
-                if known.fingerprint != fingerprint || &known.binding.server != own_server {
+                let known = keys::authorized_peer(&tx, &self.key, &state, &peer)?;
+                if known.fingerprint != fingerprint {
                     return Err(Error::Unprepared);
                 }
                 let distribution_id = super::control::message_id(&sender.context(), &fingerprint);
@@ -391,12 +462,62 @@ impl ClientStore {
         let tx = self.db.transaction()?;
         let id = index(&self.key, &group, &author, &message)?;
         let stored = load(&tx, &self.key, &own, &id)?.ok_or(Error::NotFound)?;
+        let live = crate::conversations::require_payload(
+            &tx,
+            &self.key,
+            &stored.message.plaintext,
+            crate::conversations::now(),
+            false,
+        );
+        tx.commit()?;
+        live?;
         Ok(stored.message)
     }
 }
 
 pub(crate) use delivery::acknowledge;
 pub(super) use delivery::retire;
+
+pub(crate) fn erase_journals(
+    tx: &Transaction<'_>,
+    key: &StorageKey,
+    now: u64,
+    result: &mut crate::JournalErasure,
+) -> Result<(), Error> {
+    let own = device_fingerprint(&peers::own(tx, key)?)?;
+    let after = crate::erasure::cursor(tx, key, 2)?;
+    let rows = tx
+        .prepare("SELECT rowid,id FROM group_messages WHERE rowid>?1 ORDER BY rowid LIMIT 16")?
+        .query_map([after], |r| {
+            Ok((r.get::<_, i64>(0)?, r.get::<_, Vec<u8>>(1)?))
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+    let next = rows.last().map_or(0, |r| r.0);
+    for (_, raw_id) in rows {
+        result.checked += 1;
+        let id: Id = raw_id.try_into().map_err(|_| Error::InvalidStore)?;
+        let stored = match load(tx, key, &own, &id) {
+            Err(Error::Obsolete) => continue,
+            other => other?.ok_or(Error::InvalidStore)?,
+        };
+        match crate::conversations::require_payload(tx, key, &stored.message.plaintext, now, true) {
+            Err(Error::Obsolete) => (),
+            Ok(()) => continue,
+            Err(e) => return Err(e),
+        }
+        if tx.query_row("SELECT EXISTS(SELECT 1 FROM group_delivery WHERE message=?1 AND status=0) OR EXISTS(SELECT 1 FROM group_incoming WHERE acknowledged=0)", [id.as_slice()], |r| r.get::<_,bool>(0))? { continue; }
+        let mut bytes = Zeroizing::new(vec![u8::from(stored.message.outgoing)]);
+        bytes.extend_from_slice(&context_bytes(&stored.message.context));
+        bytes.extend_from_slice(&stored.digest);
+        bytes.extend_from_slice(&crate::erasure::marker(stored.message.event()?.message));
+        tx.execute(
+            "UPDATE group_messages SET content=?2,packet=NULL WHERE id=?1",
+            (id.as_slice(), key.seal(&bytes, &aad(50, &own, &id))?),
+        )?;
+        result.erased += 1;
+    }
+    crate::erasure::advance(tx, key, 2, next)
+}
 
 pub(crate) fn migrate_structured(tx: &Transaction<'_>, key: &StorageKey) -> Result<(), Error> {
     if !tx.query_row("SELECT EXISTS(SELECT 1 FROM own_device_binding)", [], |r| {
@@ -425,6 +546,35 @@ pub(crate) fn migrate_structured(tx: &Transaction<'_>, key: &StorageKey) -> Resu
                 bytes,
             )?;
         }
+    }
+    Ok(())
+}
+
+pub(crate) fn migrate_conversations(tx: &Transaction<'_>, key: &StorageKey) -> Result<(), Error> {
+    let own = peers::own(tx, key)?;
+    let fingerprint = device_fingerprint(&own)?;
+    let mut statement = tx.prepare("SELECT id FROM group_messages ORDER BY rowid")?;
+    let mut rows = statement.query([])?;
+    while let Some(row) = rows.next()? {
+        let id: Vec<u8> = row.get(0)?;
+        let stored = load(
+            tx,
+            key,
+            &fingerprint,
+            &id.try_into().map_err(|_| Error::InvalidStore)?,
+        )?
+        .ok_or(Error::InvalidStore)?;
+        let e = stored.message.event()?;
+        let source = crate::conversations::source_for_device(tx, key, &own, e.sender)?;
+        crate::conversations::native(
+            tx,
+            key,
+            e.group,
+            source,
+            (e.sender, e.message, group_event_history_id(&e)),
+            e.timestamp,
+            e.content,
+        )?;
     }
     Ok(())
 }

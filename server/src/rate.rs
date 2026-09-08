@@ -75,8 +75,8 @@ impl Limiter {
             }
         }
         let device = self.devices.entry(id).or_insert_with(|| Device {
-            all: Bucket::new(60, 500, now),
-            writes: Bucket::new(20, 2000, now),
+            all: Bucket::new(128, 500, now),
+            writes: Bucket::new(64, 2000, now),
             last: now,
         });
         device.last = device.last.max(now);
@@ -117,7 +117,8 @@ fn reject(reason: Rejection) -> Response {
 }
 
 pub(crate) async fn limit(State(state): State<AppState>, request: Request, next: Next) -> Response {
-    let anonymous_group = request.uri().path().starts_with("/groups/v0/");
+    let anonymous_group = request.uri().path().starts_with("/groups/v0/")
+        || request.uri().path().starts_with("/calls/v0/");
     if !request.uri().path().starts_with("/client/v0/") && !anonymous_group {
         return next.run(request).await;
     }
@@ -130,7 +131,7 @@ pub(crate) async fn limit(State(state): State<AppState>, request: Request, next:
     }
     let enrollment = matches!(
         request.uri().path(),
-        "/client/v0/enroll" | "/client/v0/reauthorize"
+        "/client/v0/enroll" | "/client/v0/reauthorize" | "/client/v0/oidc/start"
     );
     let instant = Instant::now();
     let result = {
@@ -149,7 +150,7 @@ pub(crate) async fn limit(State(state): State<AppState>, request: Request, next:
     if let Err(wait) = result {
         return reject(Rejection::Rate(wait));
     }
-    if enrollment || anonymous_group {
+    if enrollment || anonymous_group || request.uri().path() == "/client/v0/oidc/finish" {
         return next.run(request).await;
     }
     let credential = match bearer(request.headers()) {
@@ -166,10 +167,12 @@ pub(crate) async fn limit(State(state): State<AppState>, request: Request, next:
         Ok(value) => value,
         Err(value) => return store_error(value),
     };
-    let write = !matches!(
-        *request.method(),
-        Method::GET | Method::HEAD | Method::OPTIONS | Method::DELETE
-    );
+    // Proxy RPCs use read credit; remote peer admission still bounds their effects.
+    let write = request.uri().path() != "/client/v0/federation/lookup"
+        && !matches!(
+            *request.method(),
+            Method::GET | Method::HEAD | Method::OPTIONS | Method::DELETE
+        );
     let result = {
         let mut limiter = match state.rate.lock() {
             Ok(value) => value,
@@ -209,7 +212,7 @@ mod tests {
     fn device_budgets_are_isolated_and_reads_survive_write_exhaustion() {
         let start = Instant::now();
         let mut limiter = Limiter::new(start);
-        for _ in 0..20 {
+        for _ in 0..64 {
             assert!(limiter.device("alice".into(), true, start).is_ok());
         }
         assert!(matches!(

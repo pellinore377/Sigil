@@ -1,11 +1,21 @@
 //! Durable history archives. No operation in this module imports live sessions.
+#[path = "recovery_cleanup.rs"]
+mod cleanup;
+#[path = "recovery_media_cleanup.rs"]
+mod media_cleanup;
+pub(crate) use media_cleanup::removed as media_removed;
 #[path = "recovery_competition.rs"]
 mod competition;
+#[path = "recovery_lifecycle.rs"]
+mod lifecycle;
 #[path = "recovery_media.rs"]
 mod media;
 #[path = "recovery_work.rs"]
 mod work;
 use super::*;
+pub(crate) use lifecycle::MIGRATION as LIFECYCLE_MIGRATION;
+pub use lifecycle::{HistoryProgress, MediaCheckpoint, MediaCheckpointPage, RecoveryPolicy};
+pub(crate) use media::{copy_id, recovery_file};
 pub(super) use media::{migrate_media, references_file, retained_file};
 use sigil_crypto::{
     recovery::{
@@ -256,9 +266,45 @@ fn record_page(db: &Connection, after: &[u8]) -> Result<Vec<(Reference, Vec<u8>)
 fn same_content(a: &Content, b: &Content) -> bool {
     match (a, b) {
         (Content::Deleted, Content::Deleted) => true,
+        (Content::Omitted, Content::Omitted) => true,
+        (
+            Content::Redacted {
+                snapshot: a,
+                original: x,
+            },
+            Content::Redacted {
+                snapshot: b,
+                original: y,
+            },
+        ) => a == b && x == y,
+        (
+            Content::HistoryLink {
+                record: a,
+                author: b,
+                message: c,
+            },
+            Content::HistoryLink {
+                record: x,
+                author: y,
+                message: z,
+            },
+        ) => a == x && b == y && c == z,
         (Content::Retained(a), Content::Retained(b)) => a == b,
         (Content::File(a), Content::File(b)) => a == b,
         (Content::Rich(a), Content::Rich(b)) => a == b,
+        (Content::Conversation(a), Content::Conversation(b)) => a == b,
+        (
+            Content::Media {
+                record: a,
+                original: i,
+                file: x,
+            },
+            Content::Media {
+                record: b,
+                original: j,
+                file: y,
+            },
+        ) => a == b && i == j && x == y,
         _ => false,
     }
 }
@@ -277,6 +323,24 @@ fn merge(old: &Record, incoming: &Record) -> Result<bool, Error> {
         return Ok(false);
     }
     if incoming.revision == old.revision {
+        if matches!(
+            (&old.content, &incoming.content),
+            (
+                Content::Omitted,
+                Content::Deleted | Content::Redacted { .. }
+            ) | (Content::Redacted { .. }, Content::Deleted)
+        ) {
+            return Ok(true);
+        }
+        if matches!(
+            (&old.content, &incoming.content),
+            (
+                Content::Deleted,
+                Content::Omitted | Content::Redacted { .. }
+            ) | (Content::Redacted { .. }, Content::Omitted)
+        ) {
+            return Ok(false);
+        }
         return if same_content(&old.content, &incoming.content) {
             Ok(false)
         } else {
@@ -286,8 +350,26 @@ fn merge(old: &Record, incoming: &Record) -> Result<bool, Error> {
     if matches!(old.content, Content::Deleted) && !matches!(incoming.content, Content::Deleted) {
         return Err(Error::Conflict);
     }
-    if !matches!(incoming.content, Content::Deleted)
-        && std::mem::discriminant(&old.content) != std::mem::discriminant(&incoming.content)
+    if matches!(old.content, Content::Omitted)
+        && !matches!(
+            incoming.content,
+            Content::Deleted | Content::Omitted | Content::Redacted { .. }
+        )
+    {
+        return Err(Error::Conflict);
+    }
+    if matches!(old.content, Content::Redacted { .. })
+        && !matches!(
+            incoming.content,
+            Content::Deleted | Content::Redacted { .. }
+        )
+    {
+        return Err(Error::Conflict);
+    }
+    if !matches!(
+        incoming.content,
+        Content::Deleted | Content::Omitted | Content::Redacted { .. }
+    ) && std::mem::discriminant(&old.content) != std::mem::discriminant(&incoming.content)
     {
         return Err(Error::Conflict);
     }
@@ -508,6 +590,15 @@ fn retain(
     state: &State,
     record: &Record,
 ) -> Result<Reference, Error> {
+    retain_inner(tx, wrapping, state, record, true)
+}
+fn retain_inner(
+    tx: &Transaction<'_>,
+    wrapping: &StorageKey,
+    state: &State,
+    record: &Record,
+    propagate: bool,
+) -> Result<Reference, Error> {
     if matches!(state.status.pending, Some((Operation::Import, _))) {
         return Err(Error::Conflict);
     }
@@ -534,11 +625,58 @@ fn retain(
         }
     }
     let (reference, object) = state.key.seal_record(record)?;
+    preserve_local(tx, wrapping, state, record, reference.object)?;
     work::dirty(tx, wrapping, &state.scope)?;
     tx.execute("INSERT INTO archive_records VALUES(?1,?2,?3,?4) ON CONFLICT(id) DO UPDATE SET revision=excluded.revision,object=excluded.object,data=excluded.data", (reference.id.as_slice(), reference.revision as i64, reference.object.as_slice(), object.bytes()))?;
     media::index_media(tx, wrapping, record)?;
     crate::structured::archive(tx, wrapping, state.scope, record)?;
+    crate::conversations::restore(tx, wrapping, record)?;
+    if propagate {
+        propagate_media(tx, wrapping, state, record)?;
+    }
     Ok(reference)
+}
+fn propagate_media(
+    tx: &Transaction<'_>,
+    key: &StorageKey,
+    state: &State,
+    parent: &Record,
+) -> Result<bool, Error> {
+    if !matches!(
+        parent.content,
+        Content::Deleted | Content::Omitted | Content::Redacted { .. }
+    ) {
+        return Ok(false);
+    }
+    let Some((reference, raw)) = existing(tx, copy_id(parent.id))? else {
+        return Ok(false);
+    };
+    let mut copy = state.key.open_record(&reference, &raw)?;
+    if matches!(copy.content, Content::Deleted)
+        || (matches!(copy.content, Content::Omitted) && matches!(parent.content, Content::Omitted))
+    {
+        return Ok(false);
+    }
+    if copy.conversation != parent.conversation
+        || copy.author != parent.author
+        || copy.created_at != parent.created_at
+        || copy.direction != parent.direction
+    {
+        return Err(Error::InvalidStore);
+    }
+    if !matches!(copy.content, Content::Omitted)
+        && !matches!(copy.content,Content::Media { record, .. } if record==parent.id)
+    {
+        return Err(Error::InvalidStore);
+    }
+    copy.revision = copy.revision.checked_add(1).ok_or(Error::Limit)?;
+    copy.content = if matches!(parent.content, Content::Deleted | Content::Redacted { .. }) {
+        Content::Deleted
+    } else {
+        Content::Omitted
+    };
+    retain_inner(tx, key, state, &copy, false)?;
+    Ok(true)
 }
 impl ClientStore {
     pub(crate) fn recovery_scope(&self) -> Result<Id, Error> {
@@ -680,6 +818,7 @@ impl ClientStore {
             )?;
             media::index_media(&target, &destination.key, &record)?;
             crate::structured::archive(&target, &destination.key, state.scope, &record)?;
+            crate::conversations::restore(&target, &destination.key, &record)?;
         }
         drop(rows);
         drop(statement);
@@ -752,6 +891,10 @@ impl ClientStore {
         let (reference, bytes) = existing(&self.db, id)?.ok_or(Error::NotFound)?;
         Ok(state.key.open_record(&reference, &bytes)?)
     }
+    /// Includes locally retained content omitted from remote recovery by policy.
+    pub fn retained_history_record(&self, id: Id) -> Result<Record, Error> {
+        local_record(&self.db, &self.key, id)
+    }
     /// Read at most 16 authenticated committed records, including tombstones,
     /// in stable ID order. Staged imports are never exposed. Continue with the
     /// last returned ID; restart from None after archive changes. This is a
@@ -796,6 +939,7 @@ impl ClientStore {
         idle(&state)?;
         clear_pending(&tx)?;
         queue_checkpoint_proofs(&tx, &state)?;
+        let policy = crate::conversations::recovery_policy(&tx, &self.key)?;
         let mut pages = Vec::new();
         let mut references = Vec::with_capacity(MAX_PAGE_RECORDS);
         let mut after = Vec::new();
@@ -805,14 +949,19 @@ impl ClientStore {
             if records.is_empty() {
                 break;
             }
-            for (mut reference, mut bytes) in records {
+            for (reference, _) in records {
+                let (mut reference, mut bytes) =
+                    existing(&tx, reference.id)?.ok_or(Error::InvalidStore)?;
                 count += 1;
                 if count > MAX_RECORDS {
                     return Err(Error::Limit);
                 }
                 after = reference.id.to_vec();
                 let mut record = state.key.open_record(&reference, &bytes)?;
-                if work::expire(&mut record, created_at)? {
+                if apply_tombstone(&tx, &self.key, &mut record, created_at)?
+                    || work::expire(&tx, &self.key, &mut record, created_at)?
+                    || work::expire_history(&mut record, policy, created_at)?
+                {
                     reference = retain(&tx, &self.key, &state, &record)?;
                     bytes = existing(&tx, record.id)?.ok_or(Error::InvalidStore)?.1;
                 }
@@ -938,7 +1087,9 @@ impl ClientStore {
                 return Err(Error::Unprepared);
             }
             manifest(&tx, &state, Operation::Upload)?;
+            lifecycle::protect(&tx, &state, Operation::Upload)?;
             remember_checkpoint(&tx, &state, Operation::Upload)?;
+            cleanup::checkpoint(&tx, &self.key, &state, Operation::Upload)?;
             state.status.anchor = Some(head);
             state.status.pending = None;
             state.reconcile_restored = false;
@@ -1225,13 +1376,16 @@ impl ClientStore {
                 if let Some((old_reference, old_bytes)) = existing(&tx, reference.id)? {
                     let old = state.key.open_record(&old_reference, &old_bytes)?;
                     if !merge(&old, &incoming)? {
-                        needs_upload |= old.revision > incoming.revision;
+                        needs_upload |= old.revision > incoming.revision
+                            || !same_content(&old.content, &incoming.content);
                         continue;
                     }
                 }
+                preserve_local(&tx, &self.key, &state, &incoming, reference.object)?;
                 tx.execute("INSERT INTO archive_records VALUES(?1,?2,?3,?4) ON CONFLICT(id) DO UPDATE SET revision=excluded.revision,object=excluded.object,data=excluded.data", (reference.id.as_slice(), reference.revision as i64, reference.object.as_slice(), bytes))?;
                 media::index_media(&tx, &self.key, &incoming)?;
                 crate::structured::archive(&tx, &self.key, state.scope, &incoming)?;
+                crate::conversations::restore(&tx, &self.key, &incoming)?;
             }
         }
         if tx.query_row("SELECT count(*) FROM archive_import", [], |r| {
@@ -1247,7 +1401,65 @@ impl ClientStore {
             return Err(Error::Limit);
         }
         needs_upload |= retained_count != count as i64;
+        state.status.pending = None;
+        let mut after = Vec::new();
+        loop {
+            let records = record_page(&tx, &after)?;
+            if records.is_empty() {
+                break;
+            }
+            for (reference, _) in records {
+                after = reference.id.to_vec();
+                let (reference, raw) = existing(&tx, reference.id)?.ok_or(Error::InvalidStore)?;
+                let record = state.key.open_record(&reference, &raw)?;
+                needs_upload |= propagate_media(&tx, &self.key, &state, &record)?;
+                let mut normalized = record;
+                if apply_tombstone(&tx, &self.key, &mut normalized, crate::conversations::now())? {
+                    retain(&tx, &self.key, &state, &normalized)?;
+                    needs_upload = true;
+                }
+                let record = normalized;
+                if let Content::HistoryLink {
+                    record: legacy,
+                    author,
+                    message,
+                } = record.content
+                {
+                    let target: Id = Sha256::digest(
+                        [
+                            b"Sigil/conversation-history/v0".as_slice(),
+                            &record.conversation,
+                            &author,
+                            &message,
+                        ]
+                        .concat(),
+                    )
+                    .into();
+                    let target = read_record(&tx, &self.key, target)?;
+                    if target.conversation != record.conversation
+                        || target.author != record.author
+                        || target.created_at != record.created_at
+                    {
+                        return Err(Error::InvalidStore);
+                    }
+                    if matches!(target.content, Content::Deleted | Content::Redacted { .. }) {
+                        if let Some((reference, raw)) = existing(&tx, legacy)? {
+                            let mut old = state.key.open_record(&reference, &raw)?;
+                            if !matches!(old.content, Content::Deleted) {
+                                old.revision = old.revision.checked_add(1).ok_or(Error::Limit)?;
+                                old.content = Content::Deleted;
+                                retain(&tx, &self.key, &state, &old)?;
+                                needs_upload = true;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        state.status.pending = Some((Operation::Import, head));
+        lifecycle::protect(&tx, &state, Operation::Import)?;
         remember_checkpoint(&tx, &state, Operation::Import)?;
+        cleanup::checkpoint(&tx, &self.key, &state, Operation::Import)?;
         state.status.anchor = Some(head);
         state.status.pending = None;
         work::reconciled(&tx, &self.key, &state.scope, needs_upload)?;
@@ -1260,6 +1472,141 @@ impl ClientStore {
 
 pub(super) fn configured(db: &Connection) -> Result<bool, Error> {
     Ok(db.query_row("SELECT EXISTS(SELECT 1 FROM archive)", [], |r| r.get(0))?)
+}
+pub(crate) fn read_record(db: &Connection, key: &StorageKey, id: Id) -> Result<Record, Error> {
+    let state = load(db, key)?;
+    let (reference, raw) = existing(db, id)?.ok_or(Error::NotFound)?;
+    Ok(state.key.open_record(&reference, &raw)?)
+}
+fn apply_tombstone(
+    db: &Connection,
+    key: &StorageKey,
+    record: &mut Record,
+    now: u64,
+) -> Result<bool, Error> {
+    if let Some(mut content) = crate::conversations::archive_tombstone(db, key, record, now)? {
+        if matches!(content, Content::Deleted) {
+            content = deletion_content(db, key, record.id)?;
+        }
+        if std::mem::discriminant(&content) != std::mem::discriminant(&record.content) {
+            record.revision = record.revision.checked_add(1).ok_or(Error::Limit)?;
+            record.content = content;
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+fn deletion_content(db: &Connection, key: &StorageKey, id: Id) -> Result<Content, Error> {
+    let local = local_record(db, key, id)?;
+    let Content::Conversation(raw) = local.content else {
+        return Ok(Content::Deleted);
+    };
+    use sigil_protocol::conversation::{Action, Body, Snapshot};
+    let mut snapshot = Snapshot::from_bytes(&raw).map_err(|_| Error::InvalidStore)?;
+    let original = Sha256::digest(
+        snapshot
+            .operation
+            .to_bytes()
+            .map_err(|_| Error::InvalidStore)?,
+    )
+    .into();
+    match &mut snapshot.operation.action {
+        Action::Post { body, .. } | Action::Edit { body, .. } => *body = Body::Text(" ".into()),
+        _ => return Ok(Content::Deleted),
+    }
+    Ok(Content::Redacted {
+        snapshot: Zeroizing::new(snapshot.to_bytes().map_err(|_| Error::InvalidStore)?),
+        original,
+    })
+}
+fn preserve_local(
+    db: &Connection,
+    key: &StorageKey,
+    state: &State,
+    incoming: &Record,
+    object: Id,
+) -> Result<(), Error> {
+    media_cleanup::queue(db, key, incoming, object)?;
+    if matches!(
+        incoming.content,
+        Content::Deleted | Content::Redacted { .. }
+    ) {
+        db.execute(
+            "DELETE FROM archive_local WHERE id=?1",
+            [incoming.id.as_slice()],
+        )?;
+    } else if matches!(incoming.content, Content::Omitted) {
+        if let Some((reference, raw)) = existing(db, incoming.id)? {
+            let old = state.key.open_record(&reference, &raw)?;
+            if !matches!(
+                old.content,
+                Content::Deleted | Content::Omitted | Content::Redacted { .. }
+            ) {
+                let bytes = Zeroizing::new(
+                    [
+                        reference.revision.to_be_bytes().as_slice(),
+                        &reference.object,
+                        &raw,
+                    ]
+                    .concat(),
+                );
+                db.execute("INSERT INTO archive_local VALUES(?1,?2) ON CONFLICT(id) DO UPDATE SET state=excluded.state",
+                    (incoming.id.as_slice(), groups::storage_record::seal_record(key, &bytes, &binding(101,&incoming.id,b"retained local history"))?))?;
+            }
+        }
+    }
+    Ok(())
+}
+pub(crate) fn local_record(db: &Connection, key: &StorageKey, id: Id) -> Result<Record, Error> {
+    let record = read_record(db, key, id)?;
+    if !matches!(record.content, Content::Omitted) {
+        return Ok(record);
+    }
+    let raw: Option<Vec<u8>> = db
+        .query_row(
+            "SELECT CASE WHEN length(state)<=70000 THEN state END FROM archive_local WHERE id=?1",
+            [id.as_slice()],
+            |r| r.get(0),
+        )
+        .optional()?;
+    let Some(raw) = raw else {
+        return Ok(record);
+    };
+    let bytes = groups::storage_record::open_record(
+        key,
+        &raw,
+        &binding(101, &id, b"retained local history"),
+    )?;
+    if bytes.len() < 40 {
+        return Err(Error::InvalidStore);
+    }
+    let reference = Reference {
+        id,
+        revision: u64::from_be_bytes(bytes[..8].try_into().map_err(|_| Error::InvalidStore)?),
+        object: bytes[8..40].try_into().map_err(|_| Error::InvalidStore)?,
+    };
+    let old = load(db, key)?.key.open_record(&reference, &bytes[40..])?;
+    if !same_metadata(&record, &old) || old.revision >= record.revision {
+        return Err(Error::InvalidStore);
+    }
+    Ok(old)
+}
+pub(crate) fn forget_record(tx: &Transaction<'_>, key: &StorageKey, id: Id) -> Result<(), Error> {
+    if !configured(tx)? {
+        return Ok(());
+    }
+    let state = load(tx, key)?;
+    let Some((reference, raw)) = existing(tx, id)? else {
+        return Ok(());
+    };
+    let mut record = state.key.open_record(&reference, &raw)?;
+    if matches!(record.content, Content::Deleted | Content::Redacted { .. }) {
+        return Ok(());
+    }
+    record.revision = record.revision.checked_add(1).ok_or(Error::Limit)?;
+    record.content = deletion_content(tx, key, id)?;
+    retain(tx, key, &state, &record)?;
+    Ok(())
 }
 /// Initial capture only. Later archival edits/deletions are never overwritten by
 /// a delivery retry, and the archive must belong to the connected account.
@@ -1304,7 +1651,8 @@ pub(super) fn require_resend(
         return Err(Error::Conflict);
     }
     if let Some((reference, bytes)) = existing(db, id)? {
-        let record = state.key.open_record(&reference, &bytes)?;
+        state.key.open_record(&reference, &bytes)?;
+        let record = local_record(db, key, id)?;
         match (record.content, body) {
             (Content::Retained(current), sigil_protocol::event::Content::Text(text))
                 if current.as_slice() == text.as_bytes() => {}
@@ -1352,6 +1700,6 @@ pub(crate) fn record_deleted(
     };
     Ok(matches!(
         state.key.open_record(&reference, &bytes)?.content,
-        Content::Deleted
+        Content::Deleted | Content::Redacted { .. }
     ))
 }

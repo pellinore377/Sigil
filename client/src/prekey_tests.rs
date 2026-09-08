@@ -293,7 +293,7 @@ fn failed_public_metadata_commit_rolls_back_private_slot_and_migrates_schema_nin
             .db
             .pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
             .unwrap(),
-        55
+        68
     );
     store.db.execute_batch("CREATE TRIGGER fail BEFORE INSERT ON prekey_publications BEGIN SELECT RAISE(ABORT,'synthetic disk failure'); END;").unwrap();
     assert!(store.prepare_prekey_publication(SLOT, true, 3600).is_err());

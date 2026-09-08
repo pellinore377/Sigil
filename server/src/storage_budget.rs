@@ -1,7 +1,7 @@
 //! Storage reservations for retained protocol evidence, independent of live queues.
 //! Fixed reservations include row/index overhead; variable proof/bundle bytes are
 //! charged separately. No replay identifiers are discarded to reclaim a quota.
-use crate::store::{read_configuration, StoreError};
+use crate::store::StoreError;
 use rusqlite::{Connection, Transaction};
 
 pub(crate) const MAILBOX: u64 = 512;
@@ -62,10 +62,7 @@ pub(crate) fn reserve(
     bytes: u64,
     now: u64,
 ) -> Result<(), StoreError> {
-    let quota = read_configuration(tx)?
-        .settings
-        .ok_or(StoreError::Unauthorized)?
-        .default_quota_bytes;
+    let quota = crate::admin::quota(tx, account)?;
     if crate::recovery::used(tx, account, now)?
         .checked_add(bytes)
         .is_none_or(|used| used > quota)

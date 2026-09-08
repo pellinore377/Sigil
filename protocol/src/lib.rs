@@ -2,6 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 pub use sigil_text as text;
+pub mod admin;
 pub mod attachments;
 pub mod contacts;
 pub mod device;
@@ -12,10 +13,12 @@ pub mod groups;
 pub mod initial;
 pub mod link;
 pub mod mailbox;
+pub mod oidc;
 pub mod prekeys;
 pub mod push;
 pub mod recovery;
 pub mod retry;
+pub mod services;
 
 pub const ADMIN_VERSION: u16 = 0;
 pub const DEFAULT_QUOTA: u64 = 10 * 1024 * 1024 * 1024;
@@ -40,6 +43,8 @@ pub struct Capabilities {
     pub recovery_storage: &'static [u16],
     pub attachment_storage: &'static [u16],
     pub push: &'static [u16],
+    pub maps: &'static [u16],
+    pub services: &'static [u16],
 }
 
 pub const CAPABILITIES: Capabilities = Capabilities {
@@ -59,6 +64,8 @@ pub const CAPABILITIES: Capabilities = Capabilities {
     recovery_storage: &[0],
     attachment_storage: &[0],
     push: &[0],
+    maps: &[0],
+    services: &[0],
 };
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -168,3 +175,4 @@ mod tests {
 }
 
 pub mod accounts;
+pub mod conversation;

@@ -28,11 +28,89 @@ fn pair() -> (Session, Session) {
 }
 
 #[test]
+fn superseded_ratchet_checkpoint_leaves_no_live_file_copy() {
+    fn remains(path: &Path, old: &[u8]) -> bool {
+        let file = std::fs::read(path).unwrap();
+        old.as_chunks::<64>()
+            .0
+            .iter()
+            .skip(1)
+            .any(|chunk| file.windows(64).any(|v| v == chunk))
+    }
+    let dir = private_dir();
+    let path = dir.path().join("erasure.db");
+    let (alice, mut bob) = pair();
+    let mut store = open(&path);
+    store.insert_session(SESSION, alice).unwrap();
+    let db = rusqlite::Connection::open(&path).unwrap();
+    let old: Vec<u8> = db
+        .query_row("SELECT state FROM sessions", [], |r| r.get(0))
+        .unwrap();
+    assert!(remains(&path, &old));
+    let wire = store.send(SESSION, [3; 32], b"synthetic erasure").unwrap();
+    assert_eq!(
+        bob.receive(&Packet::from_bytes(&wire).unwrap()).unwrap(),
+        b"synthetic erasure"
+    );
+    assert!(!remains(&path, &old));
+    assert!(!path.with_extension("db-wal").exists());
+    assert!(!path.with_extension("db-journal").exists());
+    // Legacy WAL/free pages are purged before the migration is considered complete.
+    drop(store);
+    db.execute_batch("UPDATE outbox SET rowid=9001;").unwrap();
+    db.execute_batch("PRAGMA journal_mode=WAL; PRAGMA secure_delete=OFF; CREATE TABLE retired_synthetic(id BLOB PRIMARY KEY, content BLOB); INSERT INTO retired_synthetic VALUES(X'01',randomblob(8000));").unwrap();
+    let old: Vec<u8> = db
+        .query_row("SELECT content FROM retired_synthetic", [], |r| r.get(0))
+        .unwrap();
+    db.execute_batch("DELETE FROM retired_synthetic; PRAGMA wal_checkpoint(TRUNCATE); UPDATE storage_cleanup SET pending=1; PRAGMA user_version=67;").unwrap();
+    drop(db);
+    assert!(remains(&path, &old));
+    let store = open(&path);
+    assert!(!remains(&path, &old));
+    assert_eq!(store.pending(SESSION).unwrap().len(), 1);
+    let db = rusqlite::Connection::open(&path).unwrap();
+    assert_eq!(
+        db.query_row("SELECT rowid FROM outbox", [], |r| r.get::<_, i64>(0))
+            .unwrap(),
+        9001
+    );
+    drop(store);
+    db.execute_batch("UPDATE storage_cleanup SET pending=1; CREATE TRIGGER fail_cleanup BEFORE UPDATE ON storage_cleanup BEGIN SELECT RAISE(FAIL,'injected'); END;").unwrap();
+    assert!(ClientStore::open(&path, key()).is_err());
+    assert_eq!(
+        db.query_row("SELECT pending FROM storage_cleanup", [], |r| r
+            .get::<_, i64>(0))
+            .unwrap(),
+        1
+    );
+    db.execute_batch("DROP TRIGGER fail_cleanup;").unwrap();
+    drop(open(&path));
+    assert_eq!(
+        db.query_row("SELECT pending FROM storage_cleanup", [], |r| r
+            .get::<_, i64>(0))
+            .unwrap(),
+        0
+    );
+}
+
+#[test]
 fn storage_exhaustion_rolls_back_send_and_larger_budget_resumes_same_database() {
     let dir = private_dir();
     let path = dir.path().join("budget.db");
     let (alice, mut bob) = pair();
-    let mut store = ClientStore::open_with_storage_limit(&path, key(), 1024 * 1024).unwrap();
+    drop(open(&path));
+    let baseline: u64 = {
+        let db = rusqlite::Connection::open(&path).unwrap();
+        let pages: u32 = db
+            .pragma_query_value(None, "page_count", |r| r.get(0))
+            .unwrap();
+        let page_size: u32 = db
+            .pragma_query_value(None, "page_size", |r| r.get(0))
+            .unwrap();
+        u64::from(pages) * u64::from(page_size)
+    };
+    let budget = baseline + 256 * 1024;
+    let mut store = ClientStore::open_with_storage_limit(&path, key(), budget).unwrap();
     store.insert_session(SESSION, alice).unwrap();
     let body = vec![42; 60000];
     let failed = (1u32..100)
@@ -59,7 +137,8 @@ fn storage_exhaustion_rolls_back_send_and_larger_budget_resumes_same_database() 
         })
         .expect("database must enforce its page budget");
     drop(store);
-    let mut store = ClientStore::open_with_storage_limit(&path, key(), 2 * 1024 * 1024).unwrap();
+    let mut store =
+        ClientStore::open_with_storage_limit(&path, key(), budget + 1024 * 1024).unwrap();
     let mut id = [0; 32];
     id[..4].copy_from_slice(&failed.to_be_bytes());
     let packet = store.send(SESSION, id, &body).unwrap();
@@ -72,7 +151,7 @@ fn storage_exhaustion_rolls_back_send_and_larger_budget_resumes_same_database() 
     assert_eq!(store.send(SESSION, id, &body).unwrap(), packet);
     drop(store);
     assert!(matches!(
-        ClientStore::open_with_storage_limit(&path, key(), 1024 * 1024),
+        ClientStore::open_with_storage_limit(&path, key(), budget),
         Err(Error::Limit)
     ));
 }

@@ -1,9 +1,14 @@
 #![forbid(unsafe_code)]
 
 mod accounts;
+pub mod admin;
+mod admin_routes;
 mod admission;
 mod attachments;
 pub mod auth;
+pub mod call_config;
+mod call_routes;
+mod call_store;
 mod contacts;
 mod device;
 pub mod egress;
@@ -22,6 +27,12 @@ mod group_routes;
 mod link;
 mod mailbox;
 mod maintenance;
+mod map_routes;
+pub mod maps;
+pub mod oidc;
+mod oidc_routes;
+mod operation_routes;
+pub mod operations;
 mod prekeys;
 mod push;
 pub mod push_config;
@@ -30,6 +41,9 @@ pub mod push_provider;
 mod push_routes;
 mod rate;
 mod recovery;
+pub mod service_config;
+mod service_provider;
+mod service_routes;
 mod storage_budget;
 pub mod store;
 
@@ -53,6 +67,10 @@ use tower_http::{limit::RequestBodyLimitLayer, timeout::TimeoutLayer};
 
 #[derive(Clone)]
 struct AppState {
+    federation_wake: Arc<tokio::sync::Notify>,
+    calls: Arc<call_routes::Runtime>,
+    services: Arc<service_routes::Runtime>,
+    maps: Arc<map_routes::Runtime>,
     store: Arc<Mutex<Store>>,
     token: AdminToken,
     slots: Arc<Semaphore>,
@@ -75,8 +93,10 @@ pub fn router_with_maintenance(
     (router, async move {
         tokio::join!(
             maintenance::run(state.clone()),
+            operations::run(state.clone()),
             push_delivery::run(state.clone()),
             federation_routes::run(state.clone()),
+            call_routes::run(state.clone()),
             federation_outbox::run(state)
         );
     })
@@ -84,6 +104,10 @@ pub fn router_with_maintenance(
 
 fn application(store: Store, token: AdminToken) -> (Router, AppState) {
     let state = AppState {
+        federation_wake: Arc::new(tokio::sync::Notify::new()),
+        calls: Arc::new(call_routes::Runtime::default()),
+        services: Arc::new(service_routes::Runtime::default()),
+        maps: Arc::new(map_routes::Runtime::default()),
         store: Arc::new(Mutex::new(store)),
         token,
         slots: Arc::new(Semaphore::new(32)),
@@ -112,6 +136,34 @@ fn application(store: Store, token: AdminToken) -> (Router, AppState) {
         .route_layer(middleware::from_fn_with_state(state.clone(), authenticate));
     let router = Router::new()
         .merge(
+            admin_routes::admin()
+                .route_layer(middleware::from_fn_with_state(state.clone(), authenticate)),
+        )
+        .merge(
+            oidc_routes::admin()
+                .route_layer(middleware::from_fn_with_state(state.clone(), authenticate)),
+        )
+        .merge(
+            operation_routes::routes()
+                .route_layer(middleware::from_fn_with_state(state.clone(), authenticate)),
+        )
+        .merge(
+            call_routes::admin()
+                .route_layer(middleware::from_fn_with_state(state.clone(), authenticate)),
+        )
+        .merge(call_routes::client())
+        .merge(call_routes::public())
+        .merge(
+            service_routes::admin()
+                .route_layer(middleware::from_fn_with_state(state.clone(), authenticate)),
+        )
+        .merge(service_routes::client())
+        .merge(
+            map_routes::admin()
+                .route_layer(middleware::from_fn_with_state(state.clone(), authenticate)),
+        )
+        .merge(map_routes::client())
+        .merge(
             group_routes::admin()
                 .route_layer(middleware::from_fn_with_state(state.clone(), authenticate)),
         )
@@ -134,6 +186,10 @@ fn application(store: Store, token: AdminToken) -> (Router, AppState) {
         .merge(mailbox::routes())
         .merge(admission::routes())
         .merge(contacts::routes())
+        .merge(admin_routes::client())
+        .merge(oidc_routes::client())
+        .merge(oidc_routes::callback())
+        .merge(operation_routes::public())
         .merge(device::routes())
         .merge(recovery::routes())
         .merge(attachments::routes())
@@ -196,27 +252,65 @@ async fn bounded(State(state): State<AppState>, request: Request, next: Next) ->
 }
 
 async fn authenticate(State(state): State<AppState>, request: Request, next: Next) -> Response {
-    // Browser access waits for the Admin origin policy; no ambient credentials.
-    if request.headers().contains_key(header::ORIGIN) {
+    let bootstrap_origin = request.uri().path() == "/admin/v0/policy"
+        && enrollment::bearer(request.headers()).is_ok_and(|v| state.token.accepts(&v));
+    let origin = request
+        .headers()
+        .get(header::ORIGIN)
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_owned);
+    if request.headers().contains_key(header::ORIGIN)
+        && (origin.is_none()
+            || request.headers().get_all(header::ORIGIN).iter().count() != 1
+            || !matches!(
+                with_store(state.clone(), move |s| {
+                    let configured = s.administration_policy()?.public_origin;
+                    Ok(origin.as_ref().is_some_and(|v| {
+                        configured.as_ref() == Some(v)
+                            || (bootstrap_origin
+                                && configured.is_none()
+                                && admin::origin_url(v).is_ok())
+                    }))
+                })
+                .await,
+                Ok(true)
+            ))
+    {
         return error(
             StatusCode::FORBIDDEN,
             "origin_not_allowed",
             "Browser Admin access is not enabled",
         );
     }
-    let authorized = request
+    let credential = request
         .headers()
         .get_all(header::AUTHORIZATION)
         .iter()
         .count()
-        == 1
-        && request
-            .headers()
-            .get(header::AUTHORIZATION)
-            .and_then(|v| v.to_str().ok())
-            .and_then(|v| v.strip_prefix("Bearer "))
-            .is_some_and(|value| state.token.accepts(value));
-    if !authorized {
+        == 1;
+    let credential = credential
+        .then(|| {
+            request
+                .headers()
+                .get(header::AUTHORIZATION)
+                .and_then(|v| v.to_str().ok())
+                .and_then(|v| v.strip_prefix("Bearer "))
+                .map(str::to_owned)
+        })
+        .flatten();
+    let role = match credential {
+        Some(value) if state.token.accepts(&value) => {
+            Ok(sigil_protocol::admin::Role::Administrator)
+        }
+        Some(value) => {
+            with_store(state.clone(), move |s| {
+                s.admin_role(&value, enrollment::now()?)
+            })
+            .await
+        }
+        None => Err(StoreError::Unauthorized),
+    };
+    let Ok(role) = role else {
         let mut response = error(
             StatusCode::UNAUTHORIZED,
             "unauthorized",
@@ -227,6 +321,13 @@ async fn authenticate(State(state): State<AppState>, request: Request, next: Nex
             header::HeaderValue::from_static("Bearer"),
         );
         return response;
+    };
+    if !admin::allowed(role, request.method(), request.uri().path()) {
+        return error(
+            StatusCode::FORBIDDEN,
+            "permission_denied",
+            "Administrator permission required",
+        );
     }
     next.run(request).await
 }
@@ -238,7 +339,8 @@ async fn with_store<T: Send + 'static>(
     let permit = state
         .database_slot
         .clone()
-        .try_acquire_owned()
+        .acquire_owned()
+        .await
         .map_err(|_| StoreError::Busy)?;
     tokio::task::spawn_blocking(move || {
         let _permit = permit;
@@ -342,6 +444,10 @@ mod tests {
     async fn cancelled_request_keeps_its_blocking_work_bounded() {
         let directory = tempfile::tempdir().unwrap();
         let state = AppState {
+            federation_wake: Arc::new(tokio::sync::Notify::new()),
+            calls: Arc::new(call_routes::Runtime::default()),
+            services: Arc::new(service_routes::Runtime::default()),
+            maps: Arc::new(map_routes::Runtime::default()),
             store: Arc::new(Mutex::new(
                 Store::open(&directory.path().join("sigil.db")).unwrap(),
             )),
@@ -364,10 +470,12 @@ mod tests {
         });
         waiting.await.unwrap();
         request.abort();
-        assert!(matches!(
-            with_store(state.clone(), |_| Ok(())).await,
-            Err(StoreError::Busy)
-        ));
+        assert!(tokio::time::timeout(
+            Duration::from_millis(20),
+            with_store::<()>(state.clone(), |_| panic!("cancelled waiter ran")),
+        )
+        .await
+        .is_err());
         release.send(()).unwrap();
         let permit = tokio::time::timeout(Duration::from_secs(2), state.database_slot.acquire())
             .await

@@ -50,7 +50,7 @@ impl axum::serve::Listener for Listener {
 struct LocalResolver;
 static ENDPOINTS: std::sync::Mutex<std::collections::BTreeMap<u16, SocketAddr>> =
     std::sync::Mutex::new(std::collections::BTreeMap::new());
-pub(super) fn agent(config: ureq::config::Config) -> Agent {
+pub(crate) fn agent(config: ureq::config::Config) -> Agent {
     Agent::with_parts(config, DefaultConnector::default(), LocalResolver)
 }
 impl Resolver for LocalResolver {
@@ -60,7 +60,10 @@ impl Resolver for LocalResolver {
         _: &ureq::config::Config,
         _: NextTimeout,
     ) -> Result<ResolvedSocketAddrs, ureq::Error> {
-        if !matches!(uri.host(), Some("chat.example" | "other.example")) {
+        if !matches!(
+            uri.host(),
+            Some("chat.example" | "other.example" | "federated.example")
+        ) {
             return Err(ureq::Error::HostNotFound);
         }
         let address = *ENDPOINTS
@@ -79,8 +82,52 @@ pub(crate) struct Fixture {
     worker: Option<std::thread::JoinHandle<()>>,
 }
 impl Fixture {
+    pub(crate) fn local_provider(app: Router) -> Self {
+        Self::start(
+            app,
+            None,
+            include_bytes!("../../server/tests/fixtures/provider-server.der"),
+            include_bytes!("../../server/tests/fixtures/provider-key.der"),
+            0,
+        )
+    }
     pub(crate) fn new(app: Router) -> Self {
-        let socket = TcpListener::bind("127.0.0.1:0").unwrap();
+        Self::start(app, None, CERT, KEY, 0)
+    }
+    pub(crate) fn maintained_at(
+        app: Router,
+        maintenance: impl std::future::Future<Output = ()> + Send + 'static,
+        port: u16,
+    ) -> Self {
+        Self::start(app, Some(Box::pin(maintenance)), CERT, KEY, port)
+    }
+    pub(crate) fn federation(
+        app: Router,
+        maintenance: impl std::future::Future<Output = ()> + Send + 'static,
+    ) -> Self {
+        Self::federation_at(app, maintenance, 0)
+    }
+    pub(crate) fn federation_at(
+        app: Router,
+        maintenance: impl std::future::Future<Output = ()> + Send + 'static,
+        port: u16,
+    ) -> Self {
+        Self::start(
+            app,
+            Some(Box::pin(maintenance)),
+            include_bytes!("../tests/fixtures/federation-server.der"),
+            include_bytes!("../tests/fixtures/federation-server-key.der"),
+            port,
+        )
+    }
+    fn start(
+        app: Router,
+        maintenance: Option<std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>>>,
+        cert: &'static [u8],
+        key: &'static [u8],
+        port: u16,
+    ) -> Self {
+        let socket = TcpListener::bind(("127.0.0.1", port)).unwrap();
         socket.set_nonblocking(true).unwrap();
         let address = socket.local_addr().unwrap();
         ENDPOINTS.lock().unwrap().insert(address.port(), address);
@@ -99,14 +146,17 @@ impl Fixture {
                 .unwrap()
                 .with_no_client_auth()
                 .with_single_cert(
-                    vec![CertificateDer::from(CERT.to_vec())],
-                    PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(KEY.to_vec())),
+                    vec![CertificateDer::from(cert.to_vec())],
+                    PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(key.to_vec())),
                 )
                 .unwrap();
                 let listener = Listener {
                     socket: tokio::net::TcpListener::from_std(socket).unwrap(),
                     tls: TlsAcceptor::from(Arc::new(config)),
                 };
+                if let Some(maintenance) = maintenance {
+                    tokio::spawn(maintenance);
+                }
                 axum::serve(listener, app)
                     .with_graceful_shutdown(async {
                         let _ = stopped.await;

@@ -2,10 +2,10 @@
 //! receipts express transport acceptance, never end-to-end identity or decryption.
 use super::*;
 use sigil_protocol::federation::{
-    ConfigureSender, Delivery, LookupReply, LookupValue, Outbound, OutboundState, ProxyLookup,
-    Queue, RemoteSender, SenderPermission, ServerLookup, Submit,
+    ConfigureSender, LookupReply, LookupValue, Outbound, OutboundState, ProxyLookup, Queue,
+    RemoteSender, SenderPermission, ServerLookup, Submit,
 };
-fn sender_valid(sender: &RemoteSender, home: &str) -> bool {
+pub(super) fn sender_valid(sender: &RemoteSender, home: &str) -> bool {
     sigil_protocol::valid_server_name(&sender.server)
         && sender.server != home
         && accounts::valid_credential(&sender.account)
@@ -84,7 +84,11 @@ fn valid_outbound(value: &Outbound, request: &Queue, hash: &str) -> bool {
             value.receipt.is_none() && value.error.as_deref() == Some("expired")
         }
         OutboundState::Revoked => {
-            value.receipt.is_none() && value.error.as_deref() == Some("sender_revoked")
+            value.receipt.is_none()
+                && matches!(
+                    value.error.as_deref(),
+                    Some("sender_revoked" | "peer_retired")
+                )
         }
         OutboundState::Restored => {
             value.receipt.is_none() && value.error.as_deref() == Some("restored_no_replay")
@@ -109,16 +113,37 @@ impl HttpsClient {
             return Err(Error::Configuration);
         }
         let body = ServerLookup {
-            sender_account: own.account_id.clone(),
-            sender_device: own.device_id.clone(),
+            sender_account: if request.operation.anonymous() {
+                String::new()
+            } else {
+                own.account_id.clone()
+            },
+            sender_device: if request.operation.anonymous() {
+                String::new()
+            } else {
+                own.device_id.clone()
+            },
             operation: request.operation.clone(),
         };
-        let bytes = Zeroizing::new(serde_json::to_vec(&body).map_err(|_| Error::Configuration)?);
+        self.lookup_reply(request, &body)
+    }
+    fn lookup_reply(
+        &self,
+        request: &ProxyLookup,
+        body: &ServerLookup,
+    ) -> Result<LookupValue, Error> {
+        if !sigil_protocol::valid_server_name(&request.destination)
+            || request.destination == self.server
+            || !request.operation.valid()
+        {
+            return Err(Error::Configuration);
+        }
+        let bytes = Zeroizing::new(serde_json::to_vec(body).map_err(|_| Error::Configuration)?);
         let hash = crate::transport::hex(&Sha256::digest(&bytes));
         let reply: LookupReply = self.json(
             self.request(Method::POST, "/client/v0/federation/lookup", Some(request))?,
             200,
-            SMALL,
+            sigil_protocol::federation::MAX_LOOKUP_RESPONSE + 8192,
         )?;
         if reply.request_hash != hash
             || !reply
@@ -128,6 +153,43 @@ impl HttpsClient {
             return Err(Error::InvalidResponse);
         }
         Ok(reply.value)
+    }
+    pub(crate) fn federated_service(
+        &self,
+        destination: &str,
+        service: sigil_protocol::federation::Service,
+    ) -> Result<String, Error> {
+        let mut body = ServerLookup {
+            sender_account: String::new(),
+            sender_device: String::new(),
+            operation: sigil_protocol::federation::Lookup::Service { service },
+        };
+        if let sigil_protocol::federation::Lookup::Service {
+            service: sigil_protocol::federation::Service::GroupCredential { binding, .. },
+        } = &body.operation
+        {
+            let raw = sigil_protocol::device::Statement {
+                statement: binding.clone(),
+            }
+            .bytes()
+            .map_err(|_| Error::Configuration)?;
+            let binding = sigil_protocol::device::SignedBinding::from_bytes(&raw)
+                .map_err(|_| Error::Configuration)?
+                .binding;
+            if binding.server != self.server {
+                return Err(Error::Configuration);
+            }
+            body.sender_account = crate::transport::hex(&binding.account);
+            body.sender_device = crate::transport::hex(&binding.device);
+        }
+        let request = ProxyLookup {
+            destination: destination.into(),
+            operation: body.operation.clone(),
+        };
+        match self.lookup_reply(&request, &body)? {
+            LookupValue::Service(value) => Ok(value),
+            _ => Err(Error::InvalidResponse),
+        }
     }
     pub fn configure_federation_sender(
         &self,
@@ -222,34 +284,6 @@ impl HttpsClient {
         let response: Outbound =
             self.json(self.request(Method::GET, &path, None::<&()>)?, 200, SMALL)?;
         if !valid_outbound(&response, request, &hash) {
-            return Err(Error::InvalidResponse);
-        }
-        Ok(response)
-    }
-    pub fn federated_mailbox_after(&self, after: i64) -> Result<Vec<Delivery>, Error> {
-        if after < 0 {
-            return Err(Error::Configuration);
-        }
-        let path = if after == 0 {
-            "/client/v0/federation/mailbox".into()
-        } else {
-            format!("/client/v0/federation/mailbox?after={after}")
-        };
-        let response: Vec<Delivery> = self.json(
-            self.request(Method::GET, &path, None::<&()>)?,
-            200,
-            16 * (mailbox::MAX_PAYLOAD_HEX + 1024),
-        )?;
-        if response.len() > 16
-            || response.windows(2).any(|p| p[0].sequence >= p[1].sequence)
-            || response.iter().any(|d| {
-                d.sequence <= after
-                    || !sender_valid(&d.sender, &self.server)
-                    || !accounts::valid_credential(&d.message_id)
-                    || !valid_hex(&d.payload, 32, mailbox::MAX_PAYLOAD_HEX)
-                    || !valid_time(d.expires_at)
-            })
-        {
             return Err(Error::InvalidResponse);
         }
         Ok(response)

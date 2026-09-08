@@ -17,6 +17,8 @@ pub(crate) mod tests;
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Claim {
+    #[serde(default)]
+    route: Option<String>,
     recipient: Id,
     expected_identity: Id,
     #[serde(default)]
@@ -132,7 +134,7 @@ impl ClientStore {
             id,
             recipient,
             expected_identity,
-            None,
+            (None, None),
         )?;
         tx.commit()?;
         Ok(())
@@ -159,8 +161,33 @@ impl ClientStore {
             Phase::Abandoned => return Err(Error::AlreadyDelivered),
             Phase::Pending => {}
         }
-        let response =
-            client.claim_prekey(&transport::hex(&claim.recipient), &transport::hex(&id))?;
+        let server = match &claim.route {
+            Some(server) => Some(server.clone()),
+            None => claim
+                .peer
+                .map(|peer| peers::known(&self.db, &self.key, &peer).map(|p| p.binding.server))
+                .transpose()?,
+        };
+        let own = self.connection_session()?.ok_or(Error::Unprepared)?;
+        let home = own.address.split_once(':').ok_or(Error::InvalidStore)?.1;
+        let response = if let Some(server) = server.filter(|s| s != home) {
+            let value = client.federated_lookup(
+                &own,
+                &sigil_protocol::federation::ProxyLookup {
+                    destination: server,
+                    operation: sigil_protocol::federation::Lookup::Claim {
+                        device: transport::hex(&claim.recipient),
+                        request_id: transport::hex(&id),
+                    },
+                },
+            )?;
+            let sigil_protocol::federation::LookupValue::Prekey(response) = value else {
+                return Err(Error::InvalidStore);
+            };
+            response
+        } else {
+            client.claim_prekey(&transport::hex(&claim.recipient), &transport::hex(&id))?
+        };
         validate(&claim, &response)?;
         if response.expires_at <= now {
             return Err(Error::Expired);
@@ -309,13 +336,22 @@ pub(super) fn prepare(
     id: Id,
     recipient: Id,
     expected_identity: Id,
-    peer: Option<Id>,
+    authorization: (Option<Id>, Option<&str>),
 ) -> Result<(), Error> {
+    let (peer, route) = authorization;
+    let home = route
+        .map(|_| peers::own(tx, key).and_then(|v| peers::parse(&v).map(|b| b.binding.server)))
+        .transpose()?;
+    let route = route.filter(|server| Some(*server) != home.as_deref());
+    if route.is_some_and(|s| !sigil_protocol::valid_server_name(s)) {
+        return Err(Error::InvalidEvent);
+    }
     match load(tx, key, &id, identity) {
         Ok((prior, _)) => {
             if prior.recipient != recipient
                 || prior.expected_identity != expected_identity
                 || prior.peer != peer
+                || prior.route.as_deref() != route
             {
                 return Err(Error::Conflict);
             }
@@ -337,6 +373,7 @@ pub(super) fn prepare(
         return Err(Error::Limit);
     }
     let claim = Claim {
+        route: route.map(str::to_owned),
         recipient,
         expected_identity,
         peer,

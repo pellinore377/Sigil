@@ -22,11 +22,21 @@ pub enum SyncFailure {
     OutboundNetwork(usize),
     GroupOutbound(Error),
     GroupOutboundNetwork(usize),
+    Groups(Error),
+    GroupNetwork(usize),
+    Invitations(Error),
+    InvitationNetwork(usize),
+    History(Error),
+    HistoryNetwork(usize),
     Maintenance(Error),
     Structured(Error),
+    Conversations(Error),
+    Calls(Error),
+    CallNetwork(usize),
 }
 #[derive(Default)]
 pub struct SyncStep {
+    pub calls: Vec<calls::Attempt>,
     pub incoming: Vec<IncomingAttempt>,
     pub acknowledged: usize,
     pub prekeys: Vec<PrekeyAttempt>,
@@ -36,13 +46,42 @@ pub struct SyncStep {
     pub retries: Vec<RetryAttempt>,
     pub outbound: Vec<OutboundAttempt>,
     pub group_outbound: Vec<groups::GroupSendAttempt>,
+    pub groups: Vec<groups::GroupWorkAttempt>,
+    pub invitations: Vec<groups::InvitationAttempt>,
+    pub history: Vec<groups::HistoryAttempt>,
     pub maintenance: Option<SessionMaintenance>,
     pub structured: usize,
+    pub conversation_copies: usize,
+    pub delivery_receipts: usize,
     /// Reports stage failure; inspect per-item results even when this is None.
     /// A failed stage can have partial durable effects; retry uses its journals.
     pub failure: Option<SyncFailure>,
 }
 impl ClientStore {
+    /// A platform worker invokes this for the enabled backend services.
+    /// Each network lane preserves its own durable deadline and error report.
+    pub fn sync_backend_due_online(&mut self, cache: &mut attachments::Cache) -> BackendWork {
+        let cleanup = self.maintain_history(conversations::now());
+        let erasure = self.erase_obsolete_journals(conversations::now());
+        let messaging = self.sync_due_online();
+        let recovery = match recovery::configured(&self.db) {
+            Ok(true) => Some(self.sync_recovery_due_online()),
+            Ok(false) => None,
+            Err(error) => Some(Err(error)),
+        };
+        let media = self.prepare_recovery_media_step(cache, conversations::now());
+        let transfers = self.sync_attachments_due_online(cache);
+        let push = self.sync_push_due_online();
+        BackendWork {
+            erasure,
+            cleanup,
+            messaging,
+            recovery,
+            media,
+            transfers,
+            push,
+        }
+    }
     /// Receive, acknowledge durable results, resume prepared prekey publications, authorized recovery and queued
     /// outbound packets, then check retirement eligibility. Stops network work on a stage/network error;
     /// callers honor Retry-After and schedule the next pass. Individual receive
@@ -92,6 +131,66 @@ impl ClientStore {
             step.failure = Some(SyncFailure::PrekeySupplyNetwork);
             return step;
         }
+        match self.resume_calls_online(now) {
+            Ok(calls) => step.calls = calls,
+            Err(error) => {
+                step.failure = Some(SyncFailure::Calls(error));
+                return step;
+            }
+        }
+        if let Some(index) = step
+            .calls
+            .iter()
+            .position(|item| matches!(item.result, Err(Error::Network(_))))
+        {
+            step.failure = Some(SyncFailure::CallNetwork(index));
+            return step;
+        }
+        match self.resume_group_invitations_online(now) {
+            Ok(invitations) => step.invitations = invitations,
+            Err(error) => {
+                step.failure = Some(SyncFailure::Invitations(error));
+                return step;
+            }
+        }
+        if let Some(index) = step
+            .invitations
+            .iter()
+            .position(|v| matches!(v.result, Err(Error::Network(_))))
+        {
+            step.failure = Some(SyncFailure::InvitationNetwork(index));
+            return step;
+        }
+        match self.resume_groups_online(now) {
+            Ok(groups) => step.groups = groups,
+            Err(error) => {
+                step.failure = Some(SyncFailure::Groups(error));
+                return step;
+            }
+        }
+        if let Some(index) = step
+            .groups
+            .iter()
+            .position(|v| matches!(v.result, Err(Error::Network(_))))
+        {
+            step.failure = Some(SyncFailure::GroupNetwork(index));
+            return step;
+        }
+        match self.resume_group_history_online(now) {
+            Ok(history) => step.history = history,
+            Err(error) => {
+                step.failure = Some(SyncFailure::History(error));
+                return step;
+            }
+        }
+        if let Some(index) = step
+            .history
+            .iter()
+            .position(|v| matches!(v.result, Err(Error::Network(_))))
+        {
+            step.failure = Some(SyncFailure::HistoryNetwork(index));
+            return step;
+        }
         match self.resume_retry_controls_online(now) {
             Ok(controls) => step.retry_controls = controls,
             Err(error) => {
@@ -121,6 +220,20 @@ impl ClientStore {
         {
             step.failure = Some(SyncFailure::RecoveryNetwork(index));
             return step;
+        }
+        match self.resume_conversation_receipts(now) {
+            Ok(count) => step.delivery_receipts = count,
+            Err(error) => {
+                step.failure = Some(SyncFailure::Conversations(error));
+                return step;
+            }
+        }
+        match self.sync_conversation_devices(now) {
+            Ok(count) => step.conversation_copies = count,
+            Err(error) => {
+                step.failure = Some(SyncFailure::Conversations(error));
+                return step;
+            }
         }
         match self.resume_send_intents_online(now) {
             Ok(sends) => step.sends = sends,
@@ -173,6 +286,16 @@ impl ClientStore {
         }
         step
     }
+}
+
+pub struct BackendWork {
+    pub erasure: Result<JournalErasure, Error>,
+    pub push: Result<push::ScheduledPush, Error>,
+    pub cleanup: Result<conversations::HistoryCleanup, Error>,
+    pub messaging: Result<ScheduledSync, Error>,
+    pub recovery: Option<Result<recovery::ScheduledRecovery, Error>>,
+    pub media: Result<attachments::MediaRecovery, Error>,
+    pub transfers: Result<attachments::ScheduledTransfers, Error>,
 }
 
 #[cfg(test)]

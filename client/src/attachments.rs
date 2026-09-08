@@ -26,6 +26,13 @@ mod scheduling;
 pub use scheduling::{ScheduledTransfers, TransferAttempt, TransferProgress};
 #[path = "attachment_events.rs"]
 mod events;
+#[cfg(target_os = "linux")]
+#[path = "attachment_preview.rs"]
+mod preview;
+#[path = "recovery_transfer.rs"]
+mod recovery;
+pub use events::conversation_files::ViewOnceFile;
+pub use recovery::MediaRecovery;
 #[cfg(test)]
 #[path = "attachment_cache_tests.rs"]
 mod tests;
@@ -41,6 +48,7 @@ pub enum Phase {
     Checking,
     Restored,
     Published,
+    Local,
     Downloading,
     Complete,
     Evicting,
@@ -57,6 +65,8 @@ enum Direction {
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct State {
+    #[serde(default)]
+    source: Option<String>,
     file: Id,
     length: u64,
     phase: Phase,
@@ -68,6 +78,8 @@ struct State {
     upload_deadline: Option<u64>,
     #[serde(default)]
     managed: bool,
+    #[serde(default)]
+    recovery_parent: Option<(Id, Id)>,
 }
 impl State {
     fn discard(&mut self, phase: Phase) {
@@ -89,6 +101,13 @@ impl State {
     }
     fn validate(&self) -> Result<(), Error> {
         self.shape().chunks()?;
+        if self
+            .source
+            .as_ref()
+            .is_some_and(|s| !sigil_protocol::valid_server_name(s))
+        {
+            return Err(Error::InvalidStore);
+        }
         if (self.direction == Direction::Download
             && matches!(
                 self.phase,
@@ -155,6 +174,7 @@ struct Part {
 
 /// No Debug implementation: this value carries a file encryption key and capability.
 pub struct Descriptor {
+    pub source: Option<String>,
     pub bytes: Zeroizing<Vec<u8>>,
     pub access: Zeroizing<String>,
     pub metadata: Metadata,
@@ -292,7 +312,7 @@ fn committed_root(db: &Connection, key: &StorageKey, state: &State) -> Result<Id
 impl ClientStore {
     /// Supply a separate private path and persist this budget across launches.
     /// Two GiB accommodates the default one-GiB file plus SQLite overhead;
-    /// WAL/checkpoint files need additional filesystem space.
+    /// Rollback journals and migration vacuum need additional filesystem space.
     pub fn open_attachment_cache(&self, path: &Path, bytes: u64) -> Result<Cache, Error> {
         let scope = self.connected_account_scope()?;
         let master = Zeroizing::new(self.key.commitment(&scope, VAULT)?);
@@ -303,6 +323,77 @@ impl ClientStore {
             bytes,
         )
     }
+}
+fn upload_state(
+    length: u64,
+    metadata: Metadata,
+    expires_at: Option<u64>,
+    budget: u64,
+) -> Result<State, Error> {
+    metadata.validate().map_err(|_| Error::InvalidEvent)?;
+    if expires_at.is_some_and(|v| v == 0 || v > i64::MAX as u64) {
+        return Err(Error::InvalidEvent);
+    }
+    let file_key = FileKey::generate(length)?;
+    if file_key.shape().ciphertext_length()? > budget {
+        return Err(Error::Limit);
+    }
+    let mut access = Zeroizing::new([0; 32]);
+    getrandom::fill(access.as_mut()).map_err(|_| sigil_crypto::Error::Entropy)?;
+    Ok(State {
+        source: None,
+        file: file_key.shape().file,
+        length,
+        phase: Phase::Staging,
+        direction: Direction::Upload,
+        descriptor: Some(file_key.descriptor([0; 32])),
+        access: Some(Zeroizing::new(crate::transport::hex(access.as_ref()))),
+        metadata: Some(metadata),
+        expires_at,
+        upload_deadline: None,
+        managed: false,
+        recovery_parent: None,
+    })
+}
+fn stage(
+    db: &Connection,
+    key: &StorageKey,
+    state: &State,
+    index: u32,
+    plaintext: &[u8],
+) -> Result<Id, Error> {
+    let file = state.file;
+    if state.direction != Direction::Upload {
+        return Err(Error::Conflict);
+    }
+    let (file_key, _) = state.key()?;
+    if plaintext.len() != state.shape().chunk_length(index)? {
+        return Err(Error::InvalidEvent);
+    }
+    if let Some((record, data)) = part(db, key, state.shape(), index)? {
+        if file_key.open_chunk(index, &data)?.as_slice() != plaintext {
+            return Err(Error::Conflict);
+        }
+        return Ok(record.hash);
+    }
+    if state.phase != Phase::Staging {
+        return Err(Error::Conflict);
+    }
+    let data = file_key.seal_chunk(index, plaintext)?;
+    let hash = Sha256::digest(&data).into();
+    let record = key.seal(
+        &serde_json::to_vec(&Part {
+            hash,
+            uploaded: false,
+        })
+        .map_err(|_| Error::InvalidStore)?,
+        &aad(&file, Some(index)),
+    )?;
+    db.execute(
+        "INSERT INTO chunks(file,part,state,data) VALUES(?1,?2,?3,?4)",
+        (file.as_slice(), index, record, data),
+    )?;
+    Ok(hash)
 }
 impl Cache {
     fn open(path: &Path, key: StorageKey, scope: Id, budget: u64) -> Result<Self, Error> {
@@ -329,7 +420,7 @@ impl Cache {
                 PRAGMA user_version=1;")?;
             tx.pragma_update(None, "application_id", APP)?;
             tx.execute("INSERT INTO vault VALUES(1,?1)", [key.seal(&scope, VAULT)?])?;
-        } else if app != APP || !(1..=3).contains(&version) {
+        } else if app != APP || !(1..=5).contains(&version) {
             return Err(Error::InvalidStore);
         }
         let verifier: Vec<u8> = tx.query_row(
@@ -349,11 +440,15 @@ impl Cache {
             // Older adapters must not ignore archive-managed cache retention.
             tx.pragma_update(None, "user_version", 3)?;
         }
-        tx.commit()?;
-        let mode: String = db.query_row("PRAGMA journal_mode=WAL", [], |r| r.get(0))?;
-        if mode != "wal" {
-            return Err(Error::InvalidStore);
+        if version < 4 {
+            tx.execute_batch("CREATE TABLE recovery_transfers(id BLOB PRIMARY KEY,state BLOB NOT NULL); CREATE TABLE recovery_cursor(id INTEGER PRIMARY KEY CHECK(id=1),state BLOB NOT NULL); PRAGMA user_version=4;")?;
         }
+        if version < 5 {
+            tx.execute_batch(crate::private_db::MIGRATION)?;
+            tx.pragma_update(None, "user_version", 5)?;
+        }
+        tx.commit()?;
+        crate::private_db::finish(&db)?;
         Ok(Self {
             db,
             key,
@@ -367,28 +462,7 @@ impl Cache {
         metadata: Metadata,
         expires_at: Option<u64>,
     ) -> Result<Id, Error> {
-        metadata.validate().map_err(|_| Error::InvalidEvent)?;
-        if expires_at.is_some_and(|v| v == 0 || v > i64::MAX as u64) {
-            return Err(Error::InvalidEvent);
-        }
-        let file_key = FileKey::generate(length)?;
-        if file_key.shape().ciphertext_length()? > self.budget {
-            return Err(Error::Limit);
-        }
-        let mut access = Zeroizing::new([0; 32]);
-        getrandom::fill(access.as_mut()).map_err(|_| sigil_crypto::Error::Entropy)?;
-        let state = State {
-            file: file_key.shape().file,
-            length,
-            phase: Phase::Staging,
-            direction: Direction::Upload,
-            descriptor: Some(file_key.descriptor([0; 32])),
-            access: Some(Zeroizing::new(crate::transport::hex(access.as_ref()))),
-            metadata: Some(metadata),
-            expires_at,
-            upload_deadline: None,
-            managed: false,
-        };
+        let state = upload_state(length, metadata, expires_at, self.budget)?;
         let tx = self
             .db
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
@@ -405,36 +479,7 @@ impl Cache {
             .db
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
         let state = load(&tx, &self.key, file)?;
-        if state.direction != Direction::Upload {
-            return Err(Error::Conflict);
-        }
-        let (file_key, _) = state.key()?;
-        if plaintext.len() != state.shape().chunk_length(index)? {
-            return Err(Error::InvalidEvent);
-        }
-        if let Some((record, data)) = part(&tx, &self.key, state.shape(), index)? {
-            if file_key.open_chunk(index, &data)?.as_slice() != plaintext {
-                return Err(Error::Conflict);
-            }
-            return Ok(record.hash);
-        }
-        if state.phase != Phase::Staging {
-            return Err(Error::Conflict);
-        }
-        let data = file_key.seal_chunk(index, plaintext)?;
-        let hash = Sha256::digest(&data).into();
-        let record = self.key.seal(
-            &serde_json::to_vec(&Part {
-                hash,
-                uploaded: false,
-            })
-            .map_err(|_| Error::InvalidStore)?,
-            &aad(&file, Some(index)),
-        )?;
-        tx.execute(
-            "INSERT INTO chunks(file,part,state,data) VALUES(?1,?2,?3,?4)",
-            (file.as_slice(), index, record, data),
-        )?;
+        let hash = stage(&tx, &self.key, &state, index, plaintext)?;
         tx.commit()?;
         Ok(hash)
     }
@@ -465,6 +510,7 @@ impl Cache {
             return Err(Error::Unprepared);
         }
         Ok(Descriptor {
+            source: state.source.clone(),
             bytes: state.descriptor.ok_or(Error::InvalidStore)?,
             access: state.access.ok_or(Error::InvalidStore)?,
             metadata: state.metadata.ok_or(Error::InvalidStore)?,

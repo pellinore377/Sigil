@@ -65,15 +65,6 @@ pub struct SenderPermission {
     pub sender: RemoteSender,
     pub allowed: bool,
 }
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct Delivery {
-    pub sequence: i64,
-    pub sender: RemoteSender,
-    pub message_id: String,
-    pub payload: String,
-    pub expires_at: u64,
-}
 
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -109,25 +100,94 @@ pub struct Outbound {
 }
 
 pub const LOOKUP_PATH: &str = "/federation/v0/lookup";
-pub const MAX_LOOKUP_BODY: usize = 4096;
+pub const MAX_LOOKUP_BODY: usize = 2 * crate::groups::MAX_BODY + 8192;
+pub const MAX_LOOKUP_RESPONSE: usize = 2 * (1024 * 1024 + 84) + 8192;
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum Service {
+    GroupAuthority,
+    GroupCredential {
+        authority: String,
+        day: u32,
+        binding: String,
+    },
+    GroupRequest {
+        request: String,
+    },
+    CallConnect {
+        request: String,
+    },
+    CallRelay {
+        request: String,
+    },
+    AttachmentChunk {
+        file: String,
+        index: u32,
+        access: String,
+    },
+}
+impl Service {
+    pub fn valid(&self) -> bool {
+        match self {
+            Self::GroupAuthority => true,
+            Self::GroupCredential {
+                authority, binding, ..
+            } => {
+                crate::accounts::valid_credential(authority)
+                    && (crate::device::Statement {
+                        statement: binding.clone(),
+                    })
+                    .bytes()
+                    .is_ok()
+            }
+            Self::GroupRequest { request } => {
+                !request.is_empty() && request.len() <= crate::groups::MAX_BODY + 2048
+            }
+            Self::CallConnect { request } => !request.is_empty() && request.len() <= 100352,
+            Self::CallRelay { request } => !request.is_empty() && request.len() <= 2048,
+            Self::AttachmentChunk { file, access, .. } => {
+                crate::accounts::valid_credential(file) && crate::accounts::valid_credential(access)
+            }
+        }
+    }
+}
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Lookup {
+    Account { username: String },
+    Service { service: Service },
     Binding { device: String },
     Claim { device: String, request_id: String },
 }
 impl Lookup {
-    pub fn device(&self) -> &str {
+    pub fn anonymous(&self) -> bool {
+        matches!(
+            self,
+            Self::Service {
+                service: Service::GroupAuthority
+                    | Service::GroupRequest { .. }
+                    | Service::CallConnect { .. }
+                    | Service::CallRelay { .. }
+                    | Service::AttachmentChunk { .. }
+            }
+        )
+    }
+    pub fn device(&self) -> Option<&str> {
         match self {
-            Self::Binding { device } | Self::Claim { device, .. } => device,
+            Self::Binding { device } | Self::Claim { device, .. } => Some(device),
+            Self::Service { .. } | Self::Account { .. } => None,
         }
     }
     pub fn valid(&self) -> bool {
-        crate::accounts::valid_credential(self.device())
-            && match self {
-                Self::Binding { .. } => true,
-                Self::Claim { request_id, .. } => crate::accounts::valid_credential(request_id),
+        match self {
+            Self::Account { username } => crate::accounts::valid_username(username),
+            Self::Service { service } => service.valid(),
+            Self::Binding { device } => crate::accounts::valid_credential(device),
+            Self::Claim { device, request_id } => {
+                crate::accounts::valid_credential(device)
+                    && crate::accounts::valid_credential(request_id)
             }
+        }
     }
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -151,6 +211,8 @@ pub struct ServerLookup {
     deny_unknown_fields
 )]
 pub enum LookupValue {
+    Account(crate::admin::FoundAccount),
+    Service(String),
     Binding(String),
     Prekey(crate::prekeys::ClaimedPrekey),
 }
@@ -162,6 +224,10 @@ impl LookupValue {
             return false;
         }
         match (self, operation) {
+            (Self::Account(value), Lookup::Account { username }) => {
+                value.valid_for(username, server)
+            }
+            (Self::Service(value), Lookup::Service { .. }) => value.len() <= MAX_LOOKUP_RESPONSE,
             (Self::Binding(statement), Lookup::Binding { device }) => {
                 let Ok(bytes) = (crate::device::Statement {
                     statement: statement.clone(),

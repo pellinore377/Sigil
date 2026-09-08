@@ -9,7 +9,7 @@ use std::{
 };
 
 const APPLICATION_ID: i64 = 0x5349474c;
-const SCHEMA_VERSION: i64 = 19;
+pub(crate) const SCHEMA_VERSION: i64 = 26;
 
 #[derive(Debug)]
 pub enum StoreError {
@@ -66,7 +66,7 @@ pub fn lock_directory(path: &Path) -> io::Result<File> {
     Ok(file)
 }
 
-fn schema_guard(db: &Connection) -> Result<(), StoreError> {
+pub(crate) fn schema_guard(db: &Connection) -> Result<(), StoreError> {
     // No supported Sigil schema uses either feature. A backup trigger could
     // otherwise silently undo or skip restore-time credential invalidation.
     db.pragma_update(None, "trusted_schema", false)?;
@@ -98,6 +98,7 @@ impl Store {
         schema_guard(&db)?;
         db.busy_timeout(Duration::from_secs(2))?;
         db.pragma_update(None, "foreign_keys", true)?;
+        db.execute_batch("PRAGMA synchronous=EXTRA; PRAGMA secure_delete=ON;")?;
         let transaction = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let id: i64 = transaction.query_row("PRAGMA application_id", [], |r| r.get(0))?;
         let version: i64 = transaction.query_row("PRAGMA user_version", [], |r| r.get(0))?;
@@ -172,10 +173,40 @@ impl Store {
         if version < 19 {
             transaction.execute_batch(crate::group_authority::MIGRATION)?;
         }
+        if version < 20 {
+            transaction.execute_batch(crate::group_authority::RELAY_MIGRATION)?;
+        }
+        if version < 21 {
+            transaction.execute_batch(crate::group_authority::INVITATION_MIGRATION)?;
+        }
+        if version < 22 {
+            transaction.execute_batch(crate::maps::MIGRATION)?;
+        }
+        if version < 23 {
+            transaction.execute_batch(crate::service_config::MIGRATION)?;
+        }
+        if version < 24 {
+            transaction.execute_batch(crate::call_config::MIGRATION)?;
+        }
+        if version < 25 {
+            transaction.execute_batch(crate::admin::MIGRATION)?;
+            transaction.execute_batch(crate::oidc::MIGRATION)?;
+            transaction.execute_batch(crate::operations::MIGRATION)?;
+        }
+        if version < 26 {
+            transaction.execute_batch("CREATE TABLE IF NOT EXISTS storage_cleanup(id INTEGER PRIMARY KEY CHECK(id=1),pending INTEGER NOT NULL CHECK(pending IN(0,1))); INSERT INTO storage_cleanup VALUES(1,1) ON CONFLICT(id) DO UPDATE SET pending=1;")?;
+        }
         transaction.pragma_update(None, "user_version", SCHEMA_VERSION)?;
         transaction.commit()?;
-        db.pragma_update(None, "journal_mode", "WAL")?;
-        db.pragma_update(None, "synchronous", "FULL")?;
+        let mode: String = db.query_row("PRAGMA journal_mode=DELETE", [], |r| r.get(0))?;
+        if mode != "delete" {
+            return Err(StoreError::InvalidData);
+        }
+        if db.query_row("SELECT pending FROM storage_cleanup WHERE id=1", [], |r| {
+            r.get::<_, bool>(0)
+        })? {
+            db.execute_batch("VACUUM; UPDATE storage_cleanup SET pending=0 WHERE id=1;")?;
+        }
         let store = Self(db);
         store.configuration()?;
         Ok(store)
@@ -221,7 +252,19 @@ impl Store {
     }
 
     pub fn backup(&self, destination: &Path) -> Result<(), StoreError> {
+        self.backup_bounded(destination, u64::MAX)
+    }
+    pub(crate) fn backup_bounded(&self, destination: &Path, max: u64) -> Result<(), StoreError> {
         schema_guard(&self.0)?;
+        let page_size: u64 = self.0.query_row("PRAGMA page_size", [], |r| {
+            crate::push_config::unsigned(r, 0)
+        })?;
+        let pages: u64 = self.0.query_row("PRAGMA page_count", [], |r| {
+            crate::push_config::unsigned(r, 0)
+        })?;
+        if pages.saturating_mul(page_size) > max {
+            return Err(StoreError::Busy);
+        }
         private_file(destination).map_err(|_| StoreError::InvalidData)?;
         let result = (|| {
             let mut target =
@@ -233,11 +276,23 @@ impl Store {
                     return Err(StoreError::InvalidData);
                 }
                 match backup.step(64)? {
-                    rusqlite::backup::StepResult::Done => break,
+                    rusqlite::backup::StepResult::Done => {
+                        if fs::metadata(destination)
+                            .map_err(|_| StoreError::InvalidData)?
+                            .len()
+                            > max
+                        {
+                            return Err(StoreError::Busy);
+                        }
+                        break;
+                    }
                     rusqlite::backup::StepResult::Busy | rusqlite::backup::StepResult::Locked => {
                         std::thread::sleep(Duration::from_millis(10))
                     }
                     _ => {}
+                }
+                if (backup.progress().pagecount as u64).saturating_mul(page_size) > max {
+                    return Err(StoreError::Busy);
                 }
             }
             drop(backup);
@@ -264,6 +319,8 @@ impl Store {
 
     pub fn restore(source: &Path, destination: &Path) -> Result<(), StoreError> {
         let db = Connection::open_with_flags(source, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+        let deadline = Instant::now() + Duration::from_secs(30);
+        db.progress_handler(10000, Some(move || Instant::now() >= deadline))?;
         schema_guard(&db)?;
         let id: i64 = db.query_row("PRAGMA application_id", [], |r| r.get(0))?;
         let version: i64 = db.query_row("PRAGMA user_version", [], |r| r.get(0))?;
@@ -292,6 +349,8 @@ impl Store {
             )?;
             tx.execute_batch("DELETE FROM push_jobs; UPDATE push_channels SET state=3,target=NULL,proof=NULL,proof_hash=NULL,expires_at=NULL;")?;
             crate::push_config::reset_after_restore(&tx)?;
+            tx.execute_batch("DELETE FROM oidc_flows; DELETE FROM oidc_grants; UPDATE oidc_configuration SET revision=revision+1,value=NULL;")?;
+            tx.execute_batch("DELETE FROM operations; DELETE FROM operation_uploads; UPDATE operation_configuration SET value='{\"revision\":0,\"max_backup_bytes\":68719476736,\"release_url\":null,\"release_key\":null,\"exceptions\":[]}';")?;
             crate::group_authority::reset_after_restore(&tx)?;
             crate::federation_config::reset_after_restore(&tx)?;
             crate::federation_mailbox::rebuild(&tx)?;

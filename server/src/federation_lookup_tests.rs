@@ -1,6 +1,69 @@
 use super::*;
 use crate::federation_outbox::tests::Pair;
 use sigil_crypto::{handshake::Receiver, IdentityKey};
+#[test]
+fn exact_account_discovery_is_authenticated_and_respects_opt_out() {
+    let mut p = Pair::new(1000, "chat.example", "remote.example");
+    let request = ProxyLookup {
+        destination: p.request.destination.clone(),
+        operation: Lookup::Account {
+            username: "synthetic".into(),
+        },
+    };
+    let proxy = p
+        .source
+        .prepare_federation_lookup(&p.alice, request.clone(), 1000)
+        .unwrap();
+    let result = call(&mut p.sink, &proxy, 1000);
+    assert!(
+        matches!(result.value,LookupValue::Account(ref a) if a.valid_for("synthetic","remote.example"))
+    );
+    let pref = p.sink.discovery_preference(&p.bob, None, 1000).unwrap();
+    p.sink
+        .discovery_preference(
+            &p.bob,
+            Some(sigil_protocol::admin::DiscoveryPreference {
+                revision: pref.revision,
+                discoverable: false,
+            }),
+            1000,
+        )
+        .unwrap();
+    let proxy = p
+        .source
+        .prepare_federation_lookup(&p.alice, request, 1000)
+        .unwrap();
+    let result = proxy.send_with(
+        || Ok(1000),
+        |request| {
+            assert!(matches!(
+                p.sink
+                    .receive_federation_lookup(request.body(), request.headers(), 1000),
+                Err(StoreError::NotFound)
+            ));
+            Ok(crate::egress::Response {
+                status: 404,
+                retry_after: None,
+                content_type: None,
+                body: Zeroizing::new(Vec::new()),
+            })
+        },
+    );
+    assert!(result.is_err());
+    assert!(p
+        .source
+        .prepare_federation_lookup(
+            &"ab".repeat(32),
+            ProxyLookup {
+                destination: p.request.destination.clone(),
+                operation: Lookup::Account {
+                    username: "bob".into()
+                }
+            },
+            1000
+        )
+        .is_err());
+}
 fn publish(p: &mut Pair, identity: &IdentityKey, now: u64) -> String {
     let receiver = Receiver::generate(identity, true).unwrap();
     let bundle = receiver.bundle().unwrap();
@@ -453,4 +516,240 @@ async fn lookup_proxy_rejects_missing_credentials_browser_origin_and_spoofed_ide
         .await
         .unwrap();
     assert_eq!(result.status(), StatusCode::UNPROCESSABLE_ENTITY);
+}
+
+#[test]
+fn federated_services_bind_device_ownership_and_rollback_nonce_with_issuance() {
+    let mut p = Pair::new(1000, "chat.example", "remote.example");
+    let identity = IdentityKey::generate().unwrap();
+    let binding = statement(&mut p, &identity, 1000);
+    p.source
+        .configure_groups(sigil_protocol::groups::Configure {
+            expected_revision: 0,
+            enabled: true,
+            storage_limit_bytes: 1024 * 1024,
+        })
+        .unwrap();
+    let profile = crate::group_authority::read(&p.source.0)
+        .unwrap()
+        .authority
+        .unwrap();
+    let request = ProxyLookup {
+        destination: "chat.example".into(),
+        operation: Lookup::Service {
+            service: Service::GroupCredential {
+                authority: auth::hex(&profile.id()),
+                day: 0,
+                binding: binding.clone(),
+            },
+        },
+    };
+    let proxy = p
+        .sink
+        .prepare_federation_lookup(&p.bob, request.clone(), 1000)
+        .unwrap();
+    let wire: ServerLookup = serde_json::from_slice(&proxy.body).unwrap();
+    assert_eq!(wire.sender_device, p.request.recipient_device);
+    p.source.0.execute_batch("CREATE TRIGGER fail_uid BEFORE INSERT ON group_credential_uids BEGIN SELECT RAISE(ABORT,'synthetic uid failure'); END;").unwrap();
+    let before: u32 = p
+        .source
+        .0
+        .query_row("SELECT count(*) FROM federation_nonces", [], |r| r.get(0))
+        .unwrap();
+    let headers = auth::sign(
+        proxy.config.key.as_ref().unwrap(),
+        &auth::Request {
+            origin: "remote.example",
+            destination: "chat.example",
+            path: LOOKUP_PATH,
+            body: &proxy.body,
+        },
+        1000,
+        [71; 32],
+    )
+    .unwrap();
+    assert!(p
+        .source
+        .receive_federation_lookup(&proxy.body, &headers, 1000)
+        .is_err());
+    assert_eq!(
+        p.source
+            .0
+            .query_row("SELECT count(*) FROM federation_nonces", [], |r| r
+                .get::<_, u32>(0))
+            .unwrap(),
+        before
+    );
+    p.source.0.execute_batch("DROP TRIGGER fail_uid").unwrap();
+    let reply = p
+        .source
+        .receive_federation_lookup(&proxy.body, &headers, 1000)
+        .unwrap();
+    let LookupValue::Service(value) = reply.value else {
+        panic!("credential expected")
+    };
+    let value: sigil_protocol::groups::CredentialResponse = serde_json::from_str(&value).unwrap();
+    let raw = crate::group_authority::decode(&binding, 512).unwrap();
+    let issuance = profile.issuance(&raw, 0).unwrap();
+    assert_eq!(value.uid, auth::hex(&issuance.uid));
+    sigil_crypto::private_credentials::Credential::accept(
+        profile.issuer(),
+        issuance.attributes().unwrap(),
+        0,
+        issuance.context(),
+        &crate::group_authority::decode(&value.response, 352).unwrap(),
+    )
+    .unwrap();
+    assert!(matches!(
+        p.source
+            .receive_federation_lookup(&proxy.body, &headers, 1000),
+        Err(StoreError::Conflict)
+    ));
+    let mut forged = request;
+    let Lookup::Service {
+        service: Service::GroupCredential { binding, .. },
+    } = &mut forged.operation
+    else {
+        unreachable!()
+    };
+    let changed = if binding.ends_with('0') { "1" } else { "0" };
+    binding.replace_range(binding.len() - 1.., changed);
+    assert!(p
+        .sink
+        .prepare_federation_lookup(&p.bob, forged, 1000)
+        .is_err());
+    let proxy = p
+        .sink
+        .prepare_federation_lookup(
+            &p.bob,
+            ProxyLookup {
+                destination: "chat.example".into(),
+                operation: Lookup::Service {
+                    service: Service::GroupAuthority,
+                },
+            },
+            1001,
+        )
+        .unwrap();
+    let wire: ServerLookup = serde_json::from_slice(&proxy.body).unwrap();
+    assert!(wire.sender_account.is_empty() && wire.sender_device.is_empty());
+    let result = call(&mut p.source, &proxy, 1001);
+    assert_eq!(
+        result.value,
+        LookupValue::Service(serde_json::to_string(&auth::hex(&profile.to_bytes())).unwrap())
+    );
+    let invalid = p
+        .sink
+        .prepare_federation_lookup(
+            &p.bob,
+            ProxyLookup {
+                destination: "chat.example".into(),
+                operation: Lookup::Service {
+                    service: Service::GroupRequest {
+                        request: "{}".into(),
+                    },
+                },
+            },
+            1001,
+        )
+        .unwrap();
+    let before: u32 = p
+        .source
+        .0
+        .query_row("SELECT count(*) FROM federation_nonces", [], |r| r.get(0))
+        .unwrap();
+    let headers = auth::sign(
+        invalid.config.key.as_ref().unwrap(),
+        &auth::Request {
+            origin: "remote.example",
+            destination: "chat.example",
+            path: LOOKUP_PATH,
+            body: &invalid.body,
+        },
+        1001,
+        [72; 32],
+    )
+    .unwrap();
+    assert!(p
+        .source
+        .receive_federation_lookup(&invalid.body, &headers, 1001)
+        .is_err());
+    assert_eq!(
+        p.source
+            .0
+            .query_row("SELECT count(*) FROM federation_nonces", [], |r| r
+                .get::<_, u32>(0))
+            .unwrap(),
+        before
+    );
+}
+
+#[tokio::test]
+async fn proxy_lookup_keeps_its_read_budget_when_native_writes_are_exhausted() {
+    use axum::{
+        body::Body,
+        http::{Request, StatusCode},
+    };
+    use tower::ServiceExt;
+    let now = crate::enrollment::now().unwrap();
+    let mut p = Pair::new(now, "chat.example", "remote.example");
+    p.source
+        .configure_federation(
+            federation_config::Configure {
+                expected_revision: 1,
+                enabled: false,
+                exceptions: vec![],
+                peer_quota_bytes: 1024 * 1024,
+                rotate_key: false,
+            },
+            now,
+        )
+        .unwrap();
+    let token = crate::auth::AdminToken::load_or_create(&p.dir.path().join("admin")).unwrap();
+    let app = crate::router(p.source, token);
+    let request = |path: &str, body: Vec<u8>| {
+        Request::post(path)
+            .header("authorization", format!("Bearer {}", p.alice))
+            .header("content-type", "application/json")
+            .body(Body::from(body))
+            .unwrap()
+    };
+    for _ in 0..64 {
+        let response = app
+            .clone()
+            .oneshot(request(
+                "/client/v0/federation/messages",
+                serde_json::to_vec(&p.request).unwrap(),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    }
+    assert_eq!(
+        app.clone()
+            .oneshot(request(
+                "/client/v0/federation/messages",
+                serde_json::to_vec(&p.request).unwrap()
+            ))
+            .await
+            .unwrap()
+            .status(),
+        StatusCode::TOO_MANY_REQUESTS
+    );
+    let lookup = ProxyLookup {
+        destination: "remote.example".into(),
+        operation: Lookup::Service {
+            service: Service::GroupAuthority,
+        },
+    };
+    assert_eq!(
+        app.oneshot(request(
+            "/client/v0/federation/lookup",
+            serde_json::to_vec(&lookup).unwrap()
+        ))
+        .await
+        .unwrap()
+        .status(),
+        StatusCode::FORBIDDEN
+    );
 }

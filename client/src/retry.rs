@@ -301,27 +301,32 @@ fn inspect_evidence(
     }
     let content: Vec<u8> = db.query_row("SELECT content FROM outbox WHERE session=?1 AND id=?2 AND content IS NOT NULL AND length(content)<=65572", (session.as_slice(),request.message.as_slice()), |r| r.get(0)).optional()?.ok_or(Error::NotFound)?;
     let plaintext = key.open(&content, &binding(9, &session, &request.message))?;
-    let text =
-        sigil_protocol::event::Direct::from_bytes(&plaintext).map_err(|_| Error::InvalidEvent)?;
-    if text.sender != request.target || text.recipient != request.requester {
-        return Err(Error::Conflict);
-    }
+    let (logical, obsolete) = if let Some(logical) = crate::erasure::erased(&plaintext) {
+        (logical, true)
+    } else {
+        let text = sigil_protocol::event::Direct::from_bytes(&plaintext)
+            .map_err(|_| Error::InvalidEvent)?;
+        if text.sender != request.target || text.recipient != request.requester {
+            return Err(Error::Conflict);
+        }
+        let obsolete = match event::require_resend(db, key, own, &peer, &text, true) {
+            Ok(()) => false,
+            Err(Error::Obsolete) => true,
+            Err(error) => return Err(error),
+        };
+        (text.message, obsolete)
+    };
     if chain(
         db,
         key,
         "retry_requests",
         (&peer, &request.requester, &request.target),
         request.message,
-        text.message,
+        logical,
     )? >= 3
     {
         return Err(Error::Limit);
     }
-    let obsolete = match event::require_resend(db, key, own, &peer, &text, true) {
-        Ok(()) => false,
-        Err(Error::Obsolete) => true,
-        Err(error) => return Err(error),
-    };
     let id = id(request);
     let claim = Sha256::digest([b"Sigil/retry-claim/v0".as_slice(), &id].concat()).into();
     Ok((
@@ -366,7 +371,8 @@ impl ClientStore {
         }
         let own = SignedBinding::from_bytes(&self.own_device_binding()?)
             .map_err(|_| Error::InvalidStore)?;
-        let peer = peers::reference(&own.binding.server, &decode_id(&failed.sender_device)?);
+        let peer =
+            crate::federation::delivery_peer(&self.db, &self.key, &own.binding.server, failed)?;
         let tx = self
             .db
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
@@ -514,7 +520,8 @@ impl ClientStore {
         let binding = SignedBinding::from_bytes(&own)
             .map_err(|_| Error::InvalidStore)?
             .binding;
-        let peer = peers::reference(&binding.server, &decode_id(&delivery.sender_device)?);
+        let peer =
+            crate::federation::delivery_peer(&self.db, &self.key, &binding.server, delivery)?;
         let tx = self
             .db
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
@@ -570,7 +577,7 @@ impl ClientStore {
                 result.claim,
                 known.binding.device,
                 known.binding.identity,
-                Some(peer),
+                (Some(peer), None),
             )?;
         }
         save(

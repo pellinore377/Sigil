@@ -3,6 +3,7 @@
 set -euo pipefail
 umask 077
 image=${1:-sigil-backend:dev}
+previous=${2:-$image}
 script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 docker image inspect "$image" >/dev/null
 scratch=$(mktemp -d /tmp/sigil-container-test.XXXXXX)
@@ -21,7 +22,7 @@ original=$(docker volume create)
 restored=$(docker volume create)
 runtime=(--read-only --cap-drop ALL --security-opt no-new-privileges:true --memory 256m --cpus 2 --pids-limit 128)
 start() {
-    container=$(docker create "${runtime[@]}" --mount "source=$1,target=/var/lib/sigil" -p 127.0.0.1::8080 "$image")
+    container=$(docker create "${runtime[@]}" --mount "source=$1,target=/var/lib/sigil" -p 127.0.0.1::8080 "${2:-$image}")
     docker start "$container" >/dev/null
     endpoint="http://$(docker port "$container" 8080/tcp)"
     local deadline=$((SECONDS + 10))
@@ -52,13 +53,19 @@ request() {
         exit 1
     fi
 }
-start "$original"
+start "$original" "$previous"
 docker exec "$container" cat /var/lib/sigil/data/admin.token > "$scratch/admin"
 headers admin
 request 503 - GET /readyz
 printf '%s' '{"expected_revision":0,"settings":{"server_name":"chat.example"}}' > "$scratch/config.json"
 request 200 admin PUT /admin/v0/configuration config.json
 request 200 - GET /readyz
+request 200 admin GET /admin/v0/calls
+jq -e '.settings==null and .has_turn_secret==false' "$scratch/response.json" >/dev/null
+printf '%s' '{"expected_revision":0,"settings":{"bind":"0.0.0.0:34780","advertised":"127.0.0.1:34780","max_calls":1,"turn_urls":[]},"turn_secret":{"action":"clear"}}' > "$scratch/calls.json"
+request 200 admin PUT /admin/v0/calls calls.json
+request 200 admin GET /admin/v0/calls/status
+jq -e '.ready==true and .calls==0 and .participants==0 and .dropped_packets==0' "$scratch/response.json" >/dev/null
 request 200 admin GET /admin/v0/federation/status
 jq -e '.enabled==false and .peers==0 and .egress.reserved_bytes==0 and .ingress.reserved_bytes==0' "$scratch/response.json" >/dev/null
 printf '%s' '{"expected_revision":0,"unified_push":true,"contact":"mailto:operator@example.com","exceptions":[],"rotate_vapid":false,"fcm":{"action":"disable"}}' > "$scratch/push-config.json"
@@ -73,6 +80,8 @@ jq -n --slurpfile invitation "$scratch/invitation.json" --rawfile credential "$s
     '{invitation:$invitation[0].secret,device_credential:($credential|rtrimstr("\n")),device_label:"Synthetic deployment"}' > "$scratch/enroll.json"
 request 201 - POST /client/v0/enroll enroll.json
 cp "$scratch/response.json" "$scratch/session.json"
+request 200 device GET /client/v0/calls
+jq -e '.enabled==true and .max_participants==8' "$scratch/response.json" >/dev/null
 device=$(jq -r .device_id "$scratch/session.json")
 account=$(jq -r .account_id "$scratch/session.json")
 # A synthetic private endpoint is rejected by egress; no external provider receives this.
@@ -132,6 +141,12 @@ if docker run --rm "${runtime[@]}" --mount "source=$original,target=/var/lib/sig
     echo 'Backup unexpectedly bypassed the running server lock.' >&2; exit 1
 fi
 stop
+if [[ "$previous" != "$image" ]]; then
+    if docker run --rm "${runtime[@]}" --mount "source=$original,target=/var/lib/sigil" "$previous" backup /var/lib/sigil/downgrade.db > "$scratch/downgrade.log" 2>&1; then
+        echo 'An older binary unexpectedly opened the migrated database.' >&2; exit 1
+    fi
+    rg -q 'cannot open compatible server storage' "$scratch/downgrade.log"
+fi
 docker run --rm "${runtime[@]}" --mount "source=$original,target=/var/lib/sigil" "$image" backup /var/lib/sigil/backup.db > "$scratch/backup.log"
 docker run --rm "${runtime[@]}" --mount "source=$original,target=/backup,readonly" --mount "source=$restored,target=/var/lib/sigil" "$image" restore /backup/backup.db > "$scratch/restore.log"
 start "$restored"
@@ -173,5 +188,52 @@ request 200 replacement-download GET "/client/v0/attachments/$attachment/chunks/
 cmp "$scratch/response.json" "$scratch/attachment.bin"
 request 204 replacement DELETE "/client/v0/attachments/$attachment"
 request 404 replacement-download GET "/client/v0/attachments/$attachment/chunks/0"
+maintenance() {
+    request 200 admin POST /admin/v0/maintenance/prepare operation.json
+    operation_id=$(jq -er '.id' "$scratch/response.json")
+    jq -e '.state=="confirmation_required" and (.effect|length)>0' "$scratch/response.json" >/dev/null
+    printf '%s' '{"confirm":true}' > "$scratch/confirm.json"
+    request 200 admin POST "/admin/v0/maintenance/actions/$operation_id" confirm.json
+    local deadline=$((SECONDS + 30))
+    while true; do
+        request 200 admin GET "/admin/v0/maintenance/actions/$operation_id"
+        if jq -e '.state=="complete"' "$scratch/response.json" >/dev/null; then break; fi
+        if jq -e '.state=="failed"' "$scratch/response.json" >/dev/null || ((SECONDS >= deadline)); then
+            echo 'Guided maintenance failed or timed out.' >&2; exit 1
+        fi
+        sleep 0.2
+    done
+}
+request 200 admin GET /admin/v0/setup
+request 200 admin GET /admin/v0/diagnostics
+jq -e '.redacted==true and .schema==26' "$scratch/response.json" >/dev/null
+printf '%s' '{"kind":"backup"}' > "$scratch/operation.json"
+maintenance
+backup_id=$(jq -er '.result.file' "$scratch/response.json")
+request 200 admin GET "/admin/v0/maintenance/files/$backup_id/0"
+cp "$scratch/response.json" "$scratch/guided.db"
+backup_size=$(stat -c %s "$scratch/guided.db")
+test "$backup_size" -gt 8192
+test "$backup_size" -lt 4194304
+backup_hash=$(sha256sum "$scratch/guided.db" | cut -d ' ' -f 1)
+jq -n --argjson bytes "$backup_size" --arg sha256 "$backup_hash" '{bytes:$bytes,sha256:$sha256}' > "$scratch/upload.json"
+request 200 admin POST /admin/v0/maintenance/files upload.json
+upload_id=$(jq -er '.' "$scratch/response.json")
+request 200 admin PUT "/admin/v0/maintenance/files/$upload_id/0" guided.db application/octet-stream
+request 200 admin GET "/admin/v0/maintenance/files/$upload_id"
+jq -e --argjson bytes "$backup_size" '.received==$bytes' "$scratch/response.json" >/dev/null
+jq -n --arg file "$upload_id" '{kind:"import",file:$file}' > "$scratch/operation.json"
+maintenance
+jq -n --arg file "$upload_id" '{kind:"restore",file:$file}' > "$scratch/operation.json"
+maintenance
+jq -e '.result.restart_required==true' "$scratch/response.json" >/dev/null
+request 200 replacement GET /client/v0/session
 stop
-echo 'Container acceptance passed: restart, retries, resource limits, backup locking, restore revocation, recovery ciphertext, attachment access/repair/deletion and push restart/restore reset.'
+start "$restored"
+request 200 - GET /readyz
+request 401 replacement GET /client/v0/session
+request 200 admin GET /admin/v0/configuration
+request 200 admin GET /admin/v0/maintenance/actions
+jq -e 'length==0' "$scratch/response.json" >/dev/null
+stop
+echo 'Container acceptance passed: restart, retries, resource limits, offline and guided backup/import/restore, revocation, recovery ciphertext, attachment lifecycle and push reset.'

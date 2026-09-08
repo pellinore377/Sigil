@@ -2,6 +2,13 @@
 use super::*;
 use sigil_protocol::mailbox::{Receipt, Submit};
 
+fn cancelled(tx: &Transaction<'_>, key: &StorageKey, session: &Id, id: &Id) -> Result<bool, Error> {
+    Ok(retry::cancelled(tx, key, session, id)?
+        || crate::conversations::cancelled(tx, key, session, id)?
+        || groups::cancelled_key_packet(tx, key, session, id)?
+        || groups::cancelled_invitation_packet(tx, key, session, id)?)
+}
+
 pub(super) fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|byte| format!("{byte:02x}")).collect()
 }
@@ -132,6 +139,7 @@ impl ClientStore {
         let tx = self
             .db
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        crate::conversations::cancel_outgoing(&tx, &self.key, session, now)?;
         let (requests, expired) = batch(&tx, &self.key, session, now, true, limit)?;
         for id in &expired {
             expire_in(&tx, &self.key, session, *id, now)?;
@@ -174,7 +182,7 @@ pub(super) fn expire_in(
             Ok(false)
         };
     }
-    if retry::cancelled(tx, key, &session, &id)? {
+    if cancelled(tx, key, &session, &id)? {
         return if pending {
             Err(Error::InvalidStore)
         } else {
@@ -283,7 +291,7 @@ impl ClientStore {
         }
         if !pending
             && !expired(&tx, &self.key, &session, &id)?
-            && !retry::cancelled(&tx, &self.key, &session, &id)?
+            && !cancelled(&tx, &self.key, &session, &id)?
         {
             return Err(Error::AlreadyDelivered);
         }
@@ -300,6 +308,7 @@ impl ClientStore {
             (session.as_slice(), id.as_slice()),
         )?;
         retry::accepted(&tx, &self.key, &session, &id, receipt.expires_at)?;
+        groups::history_sent(&tx, &self.key, &session, &id)?;
         tx.commit()?;
         Ok(())
     }
@@ -368,7 +377,7 @@ pub(super) fn prepare(
     ).optional()?.ok_or(Error::NotFound)?;
     let packet = match packet {
         Some(packet) => packet,
-        None if retry::cancelled(tx, key, &session, &id)? => return Err(Error::Cancelled),
+        None if cancelled(tx, key, &session, &id)? => return Err(Error::Cancelled),
         None if expired(tx, key, &session, &id)? => return Err(Error::Expired),
         None => return Err(Error::AlreadyDelivered),
     };

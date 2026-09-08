@@ -3,6 +3,7 @@ use sigil_protocol::text::{recurrence::Period, structured::ListMode};
 
 pub struct RecurringState {
     pub card: Card,
+    pub definition: CardDefinition,
     pub as_of: u64,
     pub period: Period,
     /// Only current items: creation's one-offs disappear after the first reset.
@@ -17,10 +18,12 @@ impl ClientStore {
         reference: Reference,
         now: u64,
     ) -> Result<RecurringState, Error> {
+        observe_card_expiry(&self.db, &self.key, conversation, &reference, now)?;
         let tx = self.db.unchecked_transaction()?;
         let (scope, _) = account_context(&tx, &self.key)?;
         let (index, card) = visible_card(&tx, &self.key, &scope, &conversation, &reference)?;
-        let Construct::Checklist(list) = &card.content else {
+        let definition = definition(&tx, &self.key, &index, &card)?;
+        let Construct::Checklist(list) = &definition.content else {
             return Err(Error::InvalidEvent);
         };
         let ListMode::Recurring(rule) = &list.mode else {
@@ -68,6 +71,7 @@ impl ClientStore {
         tx.commit()?;
         Ok(RecurringState {
             card,
+            definition,
             as_of: now,
             period,
             checks,

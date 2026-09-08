@@ -65,6 +65,37 @@ pub enum Operation {
     Read {
         from_revision: u64,
     },
+    Relay {
+        predecessor: String,
+        head: String,
+        revision: u64,
+        control: String,
+    },
+    Proposals {
+        after: Option<String>,
+    },
+    /// Expiry zero cancels the exact invitation and retains its tombstone.
+    Invite {
+        id: String,
+        target: String,
+        expires_at: u64,
+    },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum InvitationState {
+    Pending,
+    Consumed,
+    Cancelled,
+    Expired,
+}
+
+#[derive(Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct Invitation {
+    pub id: String,
+    pub state: InvitationState,
 }
 
 #[derive(Clone, Deserialize, Serialize)]
@@ -97,4 +128,18 @@ pub struct Reply {
     pub head: String,
     pub restored: bool,
     pub commits: Vec<Commit>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub proposals: Vec<Relayed>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub invitation: Option<Invitation>,
+}
+
+#[derive(Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct Relayed {
+    pub author: String,
+    pub predecessor: String,
+    pub head: String,
+    pub revision: u64,
+    pub control: String,
 }

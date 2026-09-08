@@ -41,16 +41,24 @@ pub struct HttpsClient {
     credential: Zeroizing<String>,
 }
 const SMALL: usize = 8192;
-const MAILBOX_RESPONSE: usize = 16 * (mailbox::MAX_PAYLOAD_HEX + 512);
+#[path = "admin_network.rs"]
+mod admin;
+const MAILBOX_RESPONSE: usize = 16 * (mailbox::MAX_PAYLOAD_HEX + 1024);
 #[path = "attachment_network.rs"]
 mod attachments;
+#[path = "call_network.rs"]
+mod calls;
 #[path = "federation_network.rs"]
 mod federation;
 #[path = "group_network.rs"]
 mod groups;
 #[path = "push_network.rs"]
 mod push;
+#[path = "service_network.rs"]
+mod services;
+pub use calls::CallAvailability;
 pub(crate) use push::{target_fields as push_target_fields, valid_status as valid_push_status};
+pub use services::{MapAvailability, MapTile};
 static DNS_JOBS: AtomicUsize = AtomicUsize::new(0);
 struct DnsPermit;
 impl Drop for DnsPermit {
@@ -562,6 +570,10 @@ impl HttpsClient {
                 .any(|pair| pair[0].sequence >= pair[1].sequence)
             || deliveries.iter().any(|d| {
                 d.sequence <= after
+                    || d.origin.as_ref().is_some_and(|origin| {
+                        !federation::sender_valid(origin, &self.server)
+                            || origin.device != d.sender_device
+                    })
                     || !accounts::valid_credential(&d.sender_device)
                     || !accounts::valid_credential(&d.message_id)
                     || !valid_hex(&d.payload, 32, mailbox::MAX_PAYLOAD_HEX)
@@ -579,6 +591,16 @@ impl HttpsClient {
         self.empty(self.request(
             Method::DELETE,
             &format!("/client/v0/mailbox/{sequence}"),
+            None::<&()>,
+        )?)
+    }
+    pub fn allow_mailbox_sender(&self, device: &str) -> Result<(), Error> {
+        if !accounts::valid_credential(device) {
+            return Err(Error::Configuration);
+        }
+        self.empty(self.request(
+            Method::PUT,
+            &format!("/client/v0/mailbox/senders/{device}"),
             None::<&()>,
         )?)
     }
@@ -732,6 +754,39 @@ impl HttpsClient {
             return Err(Error::InvalidResponse);
         }
         Ok(head)
+    }
+    pub fn account_storage(&self) -> Result<recovery::StorageStatus, Error> {
+        let status: recovery::StorageStatus = self.json(
+            self.request(Method::GET, "/client/v0/storage", None::<&()>)?,
+            200,
+            SMALL,
+        )?;
+        if status.quota_bytes == 0
+            || status.recovery_object_limit == 0
+            || status.recovery_objects > status.recovery_object_limit
+        {
+            return Err(Error::InvalidResponse);
+        }
+        Ok(status)
+    }
+    pub fn delete_recovery_objects(&self, request: &recovery::DeleteObjects) -> Result<(), Error> {
+        if request.expected_generation == 0
+            || request.expected_generation > i64::MAX as u64
+            || !accounts::valid_credential(&request.expected_manifest)
+            || request.objects.is_empty()
+            || request.objects.len() > recovery::MAX_DELETE_OBJECTS
+            || request
+                .objects
+                .iter()
+                .any(|id| !accounts::valid_credential(id) || *id == request.expected_manifest)
+        {
+            return Err(Error::Configuration);
+        }
+        self.empty(self.request(
+            Method::POST,
+            "/client/v0/recovery/objects/delete",
+            Some(request),
+        )?)
     }
     pub fn publish_recovery_head(
         &self,

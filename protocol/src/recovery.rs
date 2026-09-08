@@ -4,6 +4,24 @@ pub const MAX_OBJECT_BYTES: usize = 67266;
 pub const MAX_BODY: usize = 140 * 1024;
 pub const MAX_DELETE_OBJECTS: usize = 64;
 
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct StorageStatus {
+    pub used_bytes: u64,
+    pub quota_bytes: u64,
+    pub recovery_objects: u64,
+    pub recovery_object_limit: u64,
+}
+impl StorageStatus {
+    pub fn nearly_full(&self) -> bool {
+        self.used_bytes as u128 * 10 >= self.quota_bytes as u128 * 9
+            || self.recovery_objects as u128 * 10 >= self.recovery_object_limit as u128 * 9
+    }
+    pub fn full(&self) -> bool {
+        self.used_bytes >= self.quota_bytes || self.recovery_objects >= self.recovery_object_limit
+    }
+}
+
 #[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct PutObject {

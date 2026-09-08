@@ -73,6 +73,7 @@ fn retained_sessions_and_messages_cross_old_limits_without_reset_or_replay() {
         };
         let receipt = server.submit_message(&sending, request, now).unwrap();
         let delivery = Delivery {
+            origin: None,
             sequence: receipt.sequence,
             sender_device: original.sender_device.clone(),
             message_id: submit.message_id,

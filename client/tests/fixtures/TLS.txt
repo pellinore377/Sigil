@@ -6,3 +6,6 @@ reserved DNS name chat.example. Certificates expire in September 2036. The CA
 signing key was discarded; the unencrypted DER server private key is deliberately
 public test material. Tests install the CA only in an explicitly configured
 test client and replace DNS resolution only inside cfg(test).
+
+The federation-* Ed25519 fixtures use a separate test CA for chat.example and
+federated.example. The two-server acceptance runs with isolated container DNS.
