@@ -1,8 +1,6 @@
 services:
   sigil:
-    image: sigil-backend:f540c4b
-    build:
-      context: https://github.com/pellinore377/Sigil.git#f540c4b005dee8e80b0dc38d55ef203119cdca77
+    image: ghcr.io/pellinore377/sigil:f540c4b@sha256:789c88d9205a964c27b6f68ab6c20b5dd137b856d29350a72c9500e5d0752802
     platform: linux/amd64
     ports:
       - "18080:8080"
