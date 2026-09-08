@@ -1,6 +1,7 @@
 services:
   sigil:
-    image: ghcr.io/pellinore377/sigil:56e0df5@sha256:624a7638c76d82bb66fce1485c2754add6238dc2d22fa63dab702aa6fc4276ab
+    image: ghcr.io/pellinore377/sigil:latest
+    pull_policy: always
     platform: linux/amd64
     ports:
       - "18080:8080"

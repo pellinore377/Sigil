@@ -6,12 +6,14 @@ Self-hostable encrypted messaging under development. Rust owns backend/domain lo
 
 ## Run and configure
 
-Install Docker with the Compose plugin, download [compose.yaml](compose.yaml), and run the commands below from its directory. Dockge users can paste the file into a new stack and deploy. Compose downloads the pinned Linux/amd64 image containing the server and browser interface; no build tools or registry login are required.
+Install Docker with the Compose plugin, download [compose.yaml](compose.yaml), and run the commands below from its directory. Dockge users can paste the file into a new stack and deploy. Compose downloads the public Linux/amd64 image containing the server and browser interface; no build tools or registry login are required.
 
 ```sh
 docker compose pull
 docker compose up -d
 ```
+
+`latest` tracks published builds; pull and redeploy to update a running server. Revision tags remain available for pinned deployments. Back up before upgrades; older images may reject upgraded databases.
 
 Compose publishes HTTP port 18080 (container port 8080), retains data in `sigil-data`, and includes the browser setup wizard and Admin dashboard. Point your HTTPS reverse proxy at that port, open your domain, and enter the one-time code from `docker compose logs sigil`. The wizard sets your password, immutable identity domain, and optional OIDC provider; no credentials belong in Compose.
 
