@@ -1,6 +1,6 @@
 services:
   sigil:
-    image: ghcr.io/pellinore377/sigil:f540c4b@sha256:789c88d9205a964c27b6f68ab6c20b5dd137b856d29350a72c9500e5d0752802
+    image: ghcr.io/pellinore377/sigil:56e0df5@sha256:624a7638c76d82bb66fce1485c2754add6238dc2d22fa63dab702aa6fc4276ab
     platform: linux/amd64
     ports:
       - "18080:8080"
