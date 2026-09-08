@@ -458,8 +458,12 @@ impl ClientStore {
         let pending = offer::pending(&self.db, &self.key, &own, &attempt)?;
         let credential = &pending.secrets.as_ref().ok_or(Error::Cancelled)?.1;
         let sponsor = peers::parse(&saved.sponsor)?;
-        let client =
-            crate::network::HttpsClient::new(&sponsor.binding.server, port, credential, roots)?;
+        let client = crate::network::HttpsClient::discover(
+            &sponsor.binding.server,
+            port,
+            credential,
+            roots,
+        )?;
         let session = client.session()?;
         let proof = client.own_device_link()?;
         if proof

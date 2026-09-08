@@ -55,7 +55,7 @@ impl HttpsClient {
             } else {
                 Method::GET
             })
-            .uri(format!("{}{path}", self.origin))
+            .uri(format!("{}{path}", self.api_origin()?))
             .header(header::ACCEPT, "application/json")
             .header(header::ACCEPT_ENCODING, "identity");
         if body.is_some() {

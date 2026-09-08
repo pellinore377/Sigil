@@ -45,6 +45,8 @@ pub struct Account {
     pub revision: u64,
     pub role: Role,
     pub disabled: bool,
+    #[serde(default)]
+    pub deleted: bool,
     pub discoverable: bool,
     pub quota_bytes: u64,
     pub used_bytes: u64,

@@ -263,7 +263,7 @@ fn backup_retry_recovers_partial_files_and_a_failed_completion_commit() {
         version: env!("CARGO_PKG_VERSION").into(),
         image_digest: format!("sha256:{}", root),
         minimum_schema: 25,
-        target_schema: 27,
+        target_schema: 28,
     };
     validate_release(&current).unwrap();
     assert!(Action::Upgrade { release: current }.validate().is_err());
@@ -281,7 +281,7 @@ fn signed_updates_and_https_endpoint_check_use_configured_trust() {
         version: "0.2.0".into(),
         image_digest: format!("sha256:{}", "ab".repeat(32)),
         minimum_schema: 25,
-        target_schema: 27,
+        target_schema: 28,
     };
     let signature =
         crate::federation_auth::hex(key.sign(encode(&release).unwrap().as_bytes()).as_ref());

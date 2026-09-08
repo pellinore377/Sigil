@@ -3,6 +3,7 @@
 mod accounts;
 pub mod admin;
 mod admin_routes;
+mod admin_storage;
 mod admission;
 mod attachments;
 pub mod auth;
@@ -46,6 +47,8 @@ mod service_provider;
 mod service_routes;
 mod storage_budget;
 pub mod store;
+pub mod web_admin;
+mod web_routes;
 
 use auth::AdminToken;
 use axum::{
@@ -135,6 +138,7 @@ fn application(store: Store, token: AdminToken) -> (Router, AppState) {
         )
         .route_layer(middleware::from_fn_with_state(state.clone(), authenticate));
     let router = Router::new()
+        .merge(web_routes::routes())
         .merge(
             admin_routes::admin()
                 .route_layer(middleware::from_fn_with_state(state.clone(), authenticate)),
@@ -222,12 +226,12 @@ fn application(store: Store, token: AdminToken) -> (Router, AppState) {
             Duration::from_secs(5),
         ))
         .layer(middleware::from_fn_with_state(state.clone(), bounded))
-        .layer(middleware::from_fn(no_store))
+        .layer(middleware::from_fn(security_headers))
         .with_state(state.clone());
     (router, state)
 }
 
-async fn no_store(request: Request, next: Next) -> Response {
+async fn security_headers(request: Request, next: Next) -> Response {
     let mut response = next.run(request).await;
     response.headers_mut().insert(
         header::CACHE_CONTROL,
@@ -236,6 +240,11 @@ async fn no_store(request: Request, next: Next) -> Response {
     response.headers_mut().insert(
         header::X_CONTENT_TYPE_OPTIONS,
         header::HeaderValue::from_static("nosniff"),
+    );
+    response.headers_mut().insert(header::CONTENT_SECURITY_POLICY, header::HeaderValue::from_static("default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; connect-src 'self'; worker-src 'self' blob:; object-src 'none'; base-uri 'self'; frame-ancestors 'none'; form-action 'self'"));
+    response.headers_mut().insert(
+        header::REFERRER_POLICY,
+        header::HeaderValue::from_static("no-referrer"),
     );
     response
 }
@@ -308,7 +317,7 @@ async fn authenticate(State(state): State<AppState>, request: Request, next: Nex
             })
             .await
         }
-        None => Err(StoreError::Unauthorized),
+        None => web_routes::authorize(&state, request.headers()).await,
     };
     let Ok(role) = role else {
         let mut response = error(

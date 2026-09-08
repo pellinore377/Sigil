@@ -1,10 +1,32 @@
 # Administration API
 
-Admin UI work remains separate. All `/admin/v0` routes require the installation
-bootstrap token or an unexpired device credential belonging to an authorized
-account. Browser requests additionally require the exact configured HTTPS
-`public_origin`; no cookies or cross-origin credential sharing are enabled.
+The bundled browser wizard claims ownership using a one-time container-log code,
+sets an Argon2id password (64 MiB, three passes, random 128-bit salt), and optionally
+links OIDC. Browser sessions use opaque, hashed tokens in Secure/HttpOnly/SameSite
+cookies, expire after eight hours or thirty idle minutes, and are revoked on restore.
+Mutations require the configured HTTPS origin and a custom request header.
+Changing OIDC configuration requires password login to remain enabled until the
+administrator verifies the new configuration. Replacing the linked identity
+requires an explicit password-authenticated unlink.
+
+All `/admin/v0` routes require the installation bootstrap token, an authorized
+device credential, or a browser administrator session. Cross-origin credential
+sharing is disabled. Advanced maintenance routes currently require bearer credentials.
 The bootstrap token can set the first origin through `/admin/v0/policy`.
+
+`GET /.well-known/sigil` returns `{server_name,api_origin}`. Discovery uses HTTPS
+without credentials; clients preserve the identity domain while connecting to the
+validated service origin. Only a missing (404) document permits direct-host fallback.
+Federation applies its existing destination and DNS policies to delegated endpoints.
+
+The dashboard controls accounts, encrypted group records, registration, OIDC and
+administrator login methods. `POST /admin/v0/accounts/{id}/delete` permanently
+disables an account and queues ciphertext cleanup; its username remains reserved.
+`GET /admin/v0/group-records` lists opaque references, not names or identities.
+`POST /admin/v0/group-records/{id}/delete` removes encrypted control/membership
+records and blocks recreation. Both deletions require `expected_revision` and
+`confirm:true`. Downloaded copies and other servers are outside these operations.
+Direct conversations have no server-readable chat directory.
 
 | Role | Permission |
 | --- | --- |
@@ -72,7 +94,7 @@ times; supported signature algorithms are RS256, ES256 and EdDSA. Provider keys
 are refreshed during exchange. Flows expire after ten minutes and provider
 configuration changes invalidate pending flows/grants.
 
-Successful browser authentication returns a separate completion proof through
+Successful native-client authentication returns a separate completion proof through
 `sigil://oidc/{request_id}/{completion}`. The platform adapter passes it to
 `accept_oidc_callback`; Rust accepts only its locally pending flow and persists
 the proof encrypted. `/finish` requires both proofs. Polling with the original

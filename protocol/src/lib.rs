@@ -6,6 +6,7 @@ pub mod admin;
 pub mod attachments;
 pub mod contacts;
 pub mod device;
+pub mod discovery;
 pub mod event;
 pub mod federation;
 pub mod file;

@@ -177,7 +177,7 @@ fn client(
         )?;
         roots.push(key.open(&sealed, &root_binding(profile, index)?)?.to_vec());
     }
-    Ok(network::HttpsClient::new(
+    Ok(network::HttpsClient::discover(
         &profile.server,
         profile.port,
         credential,

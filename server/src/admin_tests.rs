@@ -331,3 +331,107 @@ async fn roles_and_origins_are_enforced_on_existing_and_new_routes() {
         .unwrap();
     assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
 }
+
+#[test]
+fn permanent_account_deletion_cleans_recovery_in_bounded_batches_and_preserves_other_users() {
+    use sha2::{Digest, Sha256};
+    let (_dir, mut store, alice, bob, now) = setup();
+    let account = store.session(&alice, now).unwrap().account_id;
+    let other = store.session(&bob, now).unwrap().account_id;
+    for n in 0..130u8 {
+        let bytes = vec![n; 72];
+        let object = crate::federation_auth::hex(&Sha256::digest(&bytes));
+        store
+            .put_recovery_object(
+                &alice,
+                &object,
+                sigil_protocol::recovery::PutObject {
+                    ciphertext: crate::federation_auth::hex(&bytes),
+                },
+                now,
+            )
+            .unwrap();
+        if n == 0 {
+            store
+                .put_recovery_object(
+                    &bob,
+                    &object,
+                    sigil_protocol::recovery::PutObject {
+                        ciphertext: crate::federation_auth::hex(&bytes),
+                    },
+                    now,
+                )
+                .unwrap();
+        }
+    }
+    assert!(store
+        .admin_delete_account(
+            &account,
+            crate::admin_storage::Delete {
+                expected_revision: 0,
+                confirm: false
+            },
+            now
+        )
+        .is_err());
+    assert!(store.session(&alice, now).is_ok());
+    store
+        .admin_delete_account(
+            &account,
+            crate::admin_storage::Delete {
+                expected_revision: 0,
+                confirm: true,
+            },
+            now,
+        )
+        .unwrap();
+    assert!(store.session(&alice, now).is_err());
+    assert!(store.session(&bob, now).is_ok());
+    let retained = |s: &Store, id: &str| {
+        s.0.query_row(
+            "SELECT count(*) FROM recovery_objects WHERE account_id=?1 AND data IS NOT NULL",
+            [id],
+            |r| r.get::<_, i64>(0),
+        )
+        .unwrap()
+    };
+    store.expire_batch(now).unwrap();
+    assert_eq!(retained(&store, &account), 66);
+    store.expire_batch(now).unwrap();
+    assert_eq!(retained(&store, &account), 2);
+    store.expire_batch(now).unwrap();
+    assert_eq!(retained(&store, &account), 0);
+    assert_eq!(retained(&store, &other), 1);
+    assert!(store
+        .admin_update_account(
+            &account,
+            AccountUpdate {
+                expected_revision: 0,
+                role: Role::Member,
+                disabled: false,
+                quota_bytes: None,
+                confirm: true
+            },
+            now
+        )
+        .is_err());
+    assert!(store
+        .invite(
+            InviteRequest {
+                username: "alice".into(),
+                expires_in_seconds: 60
+            },
+            now
+        )
+        .is_err());
+    assert!(
+        store
+            .admin_accounts(None, now)
+            .unwrap()
+            .accounts
+            .into_iter()
+            .find(|a| a.id == account)
+            .unwrap()
+            .deleted
+    );
+}

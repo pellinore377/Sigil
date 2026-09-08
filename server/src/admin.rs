@@ -273,6 +273,9 @@ impl Store {
             .0
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
         let old = account(&tx, id, now)?;
+        if old.deleted {
+            return Err(StoreError::Forbidden);
+        }
         if old.revision != update.expected_revision {
             return Err(StoreError::Conflict);
         }
@@ -370,6 +373,11 @@ fn account(db: &Connection, id: &str, now: u64) -> Result<Account, StoreError> {
         id: id.into(),
         username,
         disabled,
+        deleted: db.query_row(
+            "SELECT EXISTS(SELECT 1 FROM deleted_accounts WHERE account=?1)",
+            [id],
+            |r| r.get(0),
+        )?,
         revision: preference.revision,
         discoverable: preference.discoverable,
         role: role(db, id)?,

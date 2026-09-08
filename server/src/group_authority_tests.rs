@@ -273,7 +273,7 @@ fn authority_schema_nineteen_upgrade_preserves_issuer_and_ordering() {
     let before = f.store.group_configuration().unwrap();
     f.store
         .0
-        .execute_batch("DROP TABLE operation_uploads; DROP TABLE operations; DROP TABLE operation_configuration; DROP TABLE oidc_grants; DROP TABLE oidc_bindings; DROP TABLE oidc_flows; DROP TABLE oidc_configuration; DROP TABLE registration_usage; DROP TABLE account_policy; DROP TABLE admin_policy; DROP TABLE call_connections; DROP TABLE calls; DROP TABLE call_configuration; DROP TABLE service_budgets; DROP TABLE service_configuration; DROP TABLE map_configuration; DROP TABLE private_group_invitations; DROP TABLE private_group_proposals; PRAGMA user_version=19;")
+        .execute_batch("ALTER TABLE private_groups DROP COLUMN blocked; DROP TABLE web_oidc; DROP TABLE web_sessions; DROP TABLE web_owner; DROP TABLE deleted_accounts; DROP TABLE operation_uploads; DROP TABLE operations; DROP TABLE operation_configuration; DROP TABLE oidc_grants; DROP TABLE oidc_bindings; DROP TABLE oidc_flows; DROP TABLE oidc_configuration; DROP TABLE registration_usage; DROP TABLE account_policy; DROP TABLE admin_policy; DROP TABLE call_connections; DROP TABLE calls; DROP TABLE call_configuration; DROP TABLE service_budgets; DROP TABLE service_configuration; DROP TABLE map_configuration; DROP TABLE private_group_invitations; DROP TABLE private_group_proposals; PRAGMA user_version=19;")
         .unwrap();
     f.store = Store::open(&f.dir.path().join("groups.db")).unwrap();
     let after = f.store.group_configuration().unwrap();
@@ -289,7 +289,7 @@ fn authority_schema_nineteen_upgrade_preserves_issuer_and_ordering() {
             .0
             .pragma_query_value(None, "user_version", |r| r.get::<_, u32>(0))
             .unwrap(),
-        27
+        28
     );
 }
 
@@ -896,7 +896,7 @@ fn invitation_nonce_failure_rolls_back_admission_and_schema_twenty_migrates() {
     let before = f.store.group_configuration().unwrap();
     f.store
         .0
-        .execute_batch("DROP TABLE operation_uploads; DROP TABLE operations; DROP TABLE operation_configuration; DROP TABLE oidc_grants; DROP TABLE oidc_bindings; DROP TABLE oidc_flows; DROP TABLE oidc_configuration; DROP TABLE registration_usage; DROP TABLE account_policy; DROP TABLE admin_policy; DROP TABLE call_connections; DROP TABLE calls; DROP TABLE call_configuration; DROP TABLE service_budgets; DROP TABLE service_configuration; DROP TABLE map_configuration; DROP TABLE private_group_invitations; PRAGMA user_version=20;")
+        .execute_batch("ALTER TABLE private_groups DROP COLUMN blocked; DROP TABLE web_oidc; DROP TABLE web_sessions; DROP TABLE web_owner; DROP TABLE deleted_accounts; DROP TABLE operation_uploads; DROP TABLE operations; DROP TABLE operation_configuration; DROP TABLE oidc_grants; DROP TABLE oidc_bindings; DROP TABLE oidc_flows; DROP TABLE oidc_configuration; DROP TABLE registration_usage; DROP TABLE account_policy; DROP TABLE admin_policy; DROP TABLE call_connections; DROP TABLE calls; DROP TABLE call_configuration; DROP TABLE service_budgets; DROP TABLE service_configuration; DROP TABLE map_configuration; DROP TABLE private_group_invitations; PRAGMA user_version=20;")
         .unwrap();
     f.store = Store::open(&f.dir.path().join("groups.db")).unwrap();
     assert_eq!(
@@ -1070,4 +1070,63 @@ fn inviter_losing_admin_role_revokes_its_pending_history_admission() {
             .state,
         InvitationState::Cancelled
     );
+}
+
+#[test]
+fn administrator_group_deletion_erases_records_retains_charge_and_blocks_recreation() {
+    let mut f = Fixture::new();
+    f.start();
+    let before = f.store.group_configuration().unwrap().used_bytes;
+    let id = hex(&[2; 32]);
+    assert!(f
+        .store
+        .admin_delete_group(
+            &id,
+            crate::admin_storage::Delete {
+                expected_revision: 1,
+                confirm: true
+            }
+        )
+        .is_err());
+    f.store
+        .admin_delete_group(
+            &id,
+            crate::admin_storage::Delete {
+                expected_revision: 0,
+                confirm: true,
+            },
+        )
+        .unwrap();
+    let after = f.store.group_configuration().unwrap().used_bytes;
+    assert!(after < before && after >= 512);
+    for table in [
+        "private_group_members",
+        "private_group_commits",
+        "private_group_proposals",
+        "private_group_invitations",
+    ] {
+        assert_eq!(
+            f.store
+                .0
+                .query_row(&format!("SELECT count(*) FROM {table}"), [], |r| r
+                    .get::<_, i64>(0))
+                .unwrap(),
+            0
+        );
+    }
+    f.store
+        .admin_delete_group(
+            &id,
+            crate::admin_storage::Delete {
+                expected_revision: 0,
+                confirm: true,
+            },
+        )
+        .unwrap();
+    assert_eq!(f.store.group_configuration().unwrap().used_bytes, after);
+    let recreate = f.request(&f.alice, f.create(), 2);
+    assert!(matches!(
+        f.store.group_request(recreate, NOW),
+        Err(StoreError::Forbidden)
+    ));
 }

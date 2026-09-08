@@ -18,6 +18,9 @@ pub(crate) fn admin() -> Router<AppState> {
     Router::new()
         .route("/admin/v0/policy", get(policy).put(configure))
         .route("/admin/v0/accounts", get(accounts))
+        .route("/admin/v0/accounts/{id}/delete", post(delete_account))
+        .route("/admin/v0/group-records", get(group_records))
+        .route("/admin/v0/group-records/{id}/delete", post(delete_group))
         .route("/admin/v0/accounts/{id}", axum::routing::put(update))
         .route("/admin/v0/invitations", get(invitations))
         .route("/admin/v0/accounts/{id}/devices", get(devices))
@@ -28,6 +31,30 @@ pub(crate) fn admin() -> Router<AppState> {
         .route("/admin/v0/diagnostics", get(diagnostics))
         .route("/admin/v0/setup", get(setup))
         .layer(tower_http::limit::RequestBodyLimitLayer::new(8192))
+}
+async fn group_records(State(state): State<AppState>, RawQuery(query): RawQuery) -> Response {
+    let after = match cursor(query.as_deref()) {
+        Ok(v) => v,
+        Err(e) => return store_error(e),
+    };
+    run(state, move |s| {
+        s.admin_groups(after.as_deref().unwrap_or(""))
+    })
+    .await
+}
+async fn delete_group(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Json(value): Json<crate::admin_storage::Delete>,
+) -> Response {
+    run(state, move |s| s.admin_delete_group(&id, value)).await
+}
+async fn delete_account(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Json(value): Json<crate::admin_storage::Delete>,
+) -> Response {
+    run(state, move |s| s.admin_delete_account(&id, value, now()?)).await
 }
 fn cursor(query: Option<&str>) -> Result<Option<String>, StoreError> {
     match query {
