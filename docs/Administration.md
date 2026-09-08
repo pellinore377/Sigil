@@ -80,6 +80,8 @@ Use `GET/PUT /admin/v0/oidc`. Updates require `expected_revision`, `confirm:true
 and `provider` (null disables). Provider fields: HTTPS `issuer`, `client_id`,
 `client_secret` (null for public clients), and explicit egress `exceptions` for
 private/self-hosted endpoints. Disable OIDC before changing the public origin.
+The browser wizard accepts allowed provider IPs or CIDRs, scoped to the issuer's
+host and port. Bare IPs allow only that address; TLS validation remains required.
 Secrets are write-only: resupply them when
 replacing provider configuration. Register the exact returned `redirect_uri`
 with Pocket ID or another standard authorization-code provider. Token,
