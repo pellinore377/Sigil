@@ -716,6 +716,47 @@ impl ClientStore {
     pub fn recovery_status(&self) -> Result<Status, Error> {
         Ok(load(&self.db, &self.key)?.status)
     }
+    /// Start a history-only import on a new device. Authenticate the remote
+    /// manifest before installing the key; commit key and import staging together.
+    pub fn begin_history_recovery_online(
+        &mut self,
+        secret: Secret32,
+        accept_unanchored: bool,
+    ) -> Result<(), Error> {
+        if !accept_unanchored {
+            return Err(Error::Conflict);
+        }
+        let scope = self.connected_account_scope()?;
+        let network = self.connected_client()?;
+        let response = network.recovery_head()?;
+        let head = server_head(&response)?;
+        let object = network.download_recovery_object(head.manifest)?;
+        let key = RecoveryKey::from_secret(secret, scope)?;
+        key.open_manifest(&head, object.bytes())?;
+        let tx = self
+            .db
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        if tx.query_row("SELECT EXISTS(SELECT 1 FROM archive)", [], |r| {
+            r.get::<_, bool>(0)
+        })? {
+            return Err(Error::Conflict);
+        }
+        let state = State {
+            scope,
+            key,
+            status: Status {
+                anchor: None,
+                pending: Some((Operation::Import, head)),
+            },
+            reconcile_restored: false,
+            restore_base: None,
+        };
+        queue(&tx, &object)?;
+        work::dirty(&tx, &self.key, &scope)?;
+        save(&tx, &self.key, &state)?;
+        tx.commit()?;
+        Ok(())
+    }
     /// Copy only authenticated committed history, recovery key and trusted head
     /// into a freshly enrolled client for the same account. Source is unchanged;
     /// destination publishes the entire handoff atomically under its storage key.

@@ -65,6 +65,10 @@ enum Command {
     SignOut {},
     Storage {},
     RecoveryGenerate {},
+    RecoveryRestore {
+        secret: Zeroizing<String>,
+        accept_unanchored: bool,
+    },
     RecoveryEnable {
         secret: Zeroizing<String>,
     },
@@ -514,6 +518,9 @@ impl ClientStore {
         timestamp: u64,
         action: Action,
     ) -> Result<Value, Error> {
+        if peer.starts_with("history:") {
+            return Err(Error::InvalidEvent);
+        }
         let operation = self.conversation_operation(id(request)?, action)?;
         if peer == "self" {
             self.note_to_self(&operation, timestamp, conversations::now())?;
@@ -585,6 +592,17 @@ impl ClientStore {
             }
             Command::Storage {} => self.mobile_storage(),
             Command::RecoveryGenerate {} => self.mobile_recovery_generate(),
+            Command::RecoveryRestore {
+                secret,
+                accept_unanchored,
+            } => {
+                let secret = Zeroizing::new(id(&secret)?);
+                self.begin_history_recovery_online(
+                    Secret32::from_bytes(*secret),
+                    accept_unanchored,
+                )?;
+                self.mobile_storage()
+            }
             Command::RecoveryEnable { secret } => {
                 let binding = peers::parse(&self.own_device_binding()?)?.binding;
                 let secret = Zeroizing::new(id(&secret)?);
@@ -1246,7 +1264,10 @@ impl ClientStore {
                     } else if !message.delivered.is_empty() {
                         "Delivered"
                     } else if mine {
-                        match if peer == "self" || peer.starts_with("group:") {
+                        match if peer == "self"
+                            || peer.starts_with("group:")
+                            || peer.starts_with("history:")
+                        {
                             Err(Error::NotFound)
                         } else {
                             self.operation_delivery_state(

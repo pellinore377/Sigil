@@ -55,6 +55,191 @@ mod tests {
     }
 
     #[test]
+    fn replacement_recovery_authenticates_key_before_install_and_resumes_without_live_keys() {
+        let (dir, fixture, mut source, mut bob, now) = pair();
+        let (_, peer) = crate::incoming::tests::trust(&mut source, &mut bob);
+        let self_op = source
+            .conversation_operation(
+                [17; 32],
+                Action::Post {
+                    body: Body::Text("Saved private notebook".into()),
+                    reply: None,
+                    thread: None,
+                    expires_at: None,
+                    view_once: false,
+                },
+            )
+            .unwrap();
+        source.note_to_self(&self_op, now, now).unwrap();
+        let dm = source
+            .conversation_operation(
+                [18; 32],
+                Action::Post {
+                    body: Body::Text("Saved correspondence".into()),
+                    reply: None,
+                    thread: None,
+                    expires_at: None,
+                    view_once: false,
+                },
+            )
+            .unwrap();
+        source.queue_peer_operation(peer, &dm, now, now).unwrap();
+        let original_identity = source.identity().unwrap();
+        let secret = source.enable_history_recovery().unwrap();
+        let work = |client: &mut ClientStore| {
+            let result: serde_json::Value =
+                serde_json::from_str(&client.mobile_command(r#"{"command":"file_work"}"#)).unwrap();
+            assert_eq!(result["ok"], true, "{result}");
+            assert!(result["value"]["issue"].is_null(), "{result}");
+        };
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+        while source.recovery_status().unwrap().anchor.is_none()
+            && std::time::Instant::now() < deadline
+        {
+            work(&mut source);
+            std::thread::sleep(std::time::Duration::from_millis(200));
+        }
+        let expected = source.recovery_status().unwrap().anchor.unwrap();
+        let mut server = sigil_server::store::Store::open(&dir.path().join("server.db")).unwrap();
+        let invitation = server
+            .invite_reauthorization(
+                &source.connection_session().unwrap().unwrap().account_id,
+                60,
+                now,
+            )
+            .unwrap();
+        let replacement_dir = tempfile::tempdir().unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(
+            replacement_dir.path(),
+            std::fs::Permissions::from_mode(0o700),
+        )
+        .unwrap();
+        let path = replacement_dir.path().join("client.db");
+        let open = || {
+            ClientStore::open(
+                &path,
+                StorageKey::new(Secret32::from_bytes([73; 32])).unwrap(),
+            )
+            .unwrap()
+        };
+        let mut replacement = open();
+        replacement
+            .prepare_enrollment(
+                "chat.example",
+                fixture.port(),
+                &[crate::network::tests::CA.to_vec()],
+                &invitation.secret,
+                "Replacement",
+                true,
+            )
+            .unwrap();
+        replacement.enroll_online().unwrap();
+        replacement.publish_device_binding_online().unwrap();
+        let identity = replacement.identity().unwrap();
+        assert_ne!(identity, original_identity);
+        assert!(source.devices_online(None).is_err());
+        assert!(bob.devices_online(None).is_ok());
+        assert!(replacement
+            .begin_history_recovery_online(Secret32::from_bytes(*secret), false)
+            .is_err());
+        assert!(replacement
+            .begin_history_recovery_online(Secret32::from_bytes([74; 32]), true)
+            .is_err());
+        assert!(matches!(
+            replacement.recovery_status(),
+            Err(Error::NotFound)
+        ));
+        replacement.db.execute_batch("CREATE TRIGGER fail BEFORE INSERT ON archive_objects BEGIN SELECT RAISE(ABORT,'synthetic'); END").unwrap();
+        assert!(replacement
+            .begin_history_recovery_online(Secret32::from_bytes(*secret), true)
+            .is_err());
+        assert!(matches!(
+            replacement.recovery_status(),
+            Err(Error::NotFound)
+        ));
+        replacement.db.execute_batch("DROP TRIGGER fail").unwrap();
+        replacement
+            .begin_history_recovery_online(Secret32::from_bytes(*secret), true)
+            .unwrap();
+        assert_eq!(
+            replacement.recovery_status().unwrap().pending,
+            Some((Operation::Import, expected))
+        );
+        assert!(replacement
+            .recent_search_conversations("Saved", None, now)
+            .unwrap()
+            .hits
+            .is_empty());
+        drop(replacement);
+        let mut replacement = open();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+        while replacement.recovery_status().unwrap().anchor.is_none()
+            && std::time::Instant::now() < deadline
+        {
+            work(&mut replacement);
+            std::thread::sleep(std::time::Duration::from_millis(200));
+        }
+        assert_eq!(
+            replacement.recovery_status().unwrap().anchor,
+            Some(expected)
+        );
+        assert_eq!(
+            replacement
+                .recent_search_conversations("Saved", None, now)
+                .unwrap()
+                .hits
+                .len(),
+            2
+        );
+        assert_eq!(replacement.identity().unwrap(), identity);
+        let search: serde_json::Value = serde_json::from_str(
+            &replacement
+                .mobile_command(r#"{"command":"search","query":"Saved","category":"History"}"#),
+        )
+        .unwrap();
+        assert_eq!(search["ok"], true);
+        let history = search["value"]["hits"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|hit| hit["text"] == "Saved correspondence")
+            .unwrap()["peer"]
+            .as_str()
+            .unwrap();
+        assert!(history.starts_with("history:"));
+        let timeline: serde_json::Value =
+            serde_json::from_str(&replacement.mobile_command(
+                &serde_json::json!({"command":"timeline","peer":history}).to_string(),
+            ))
+            .unwrap();
+        assert_eq!(timeline["ok"], true, "{timeline}");
+        assert_eq!(
+            timeline["value"]["messages"][0]["text"],
+            "Saved correspondence"
+        );
+        let send: serde_json::Value = serde_json::from_str(&replacement.mobile_command(&serde_json::json!({"command":"post","peer":history,"request":"79".repeat(32),"timestamp":now,"text":"Must not send into restored sessions"}).to_string())).unwrap();
+        assert_eq!(send["ok"], false);
+        assert_eq!(
+            replacement
+                .db
+                .query_row(
+                    "SELECT (SELECT count(*) FROM peers)+(SELECT count(*) FROM sessions)",
+                    [],
+                    |r| r.get::<_, i64>(0)
+                )
+                .unwrap(),
+            0
+        );
+        assert!(replacement
+            .begin_history_recovery_online(Secret32::from_bytes(*secret), true)
+            .is_err());
+        assert_eq!(
+            replacement.recovery_status().unwrap().anchor,
+            Some(expected)
+        );
+    }
+    #[test]
     fn backfill_retention_progress_and_remote_cleanup_survive_failed_commits() {
         let (dir, _fixture, mut a, _b, now) = pair();
         for id in 1..=19 {

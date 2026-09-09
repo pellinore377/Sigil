@@ -127,6 +127,27 @@ class MessagingUiTest {
             assertFalse(commands.any { it.first == "oidc" || it.first == "enroll" })
         }
     }
+    @Test fun historyRestoreRequiresTheKeyAndExplicitBackupReview() {
+        var received: String? = null
+        show { SigilApp(NativeCore::palette, NativeCore::analyze, MessengerState(phase = "connected"), { _, _ -> }, overlay = { RestoreRecoveryDialog(false, null, {}) { received = it } }) }
+        ui.onNodeWithText("Restore history").assertIsNotEnabled()
+        ui.onNodeWithText("Recovery key").performScrollTo().performTextInput("ABCD ".repeat(16))
+        ui.onNodeWithText("Restore history").assertIsNotEnabled()
+        ui.onNode(isToggleable()).performScrollTo().performClick()
+        ui.onNodeWithText("Restore history").performClick()
+        ui.runOnIdle { assertEquals("abcd".repeat(16), received) }
+    }
+    @Test fun savedHistoryDoesNotOfferLiveMessagingOrCallControls() {
+        val archived = chat.copy(id = "history:synthetic", displayName = "Saved conversation", archived = true)
+        show { SigilApp(NativeCore::palette, NativeCore::analyze, MessengerState(phase = "connected", chats = listOf(archived), selected = archived.id, messages = listOf(message("out", true))), { _, _ -> }) }
+        ui.onNodeWithText("Saved conversation").assertIsDisplayed()
+        ui.onNodeWithTag("composer").assertDoesNotExist()
+        ui.onNodeWithContentDescription("Start audio call").assertDoesNotExist()
+        ui.onNodeWithContentDescription("Restored encrypted message").assertDoesNotExist()
+        ui.onNodeWithText("See you tomorrow.").performClick()
+        ui.onNodeWithContentDescription("Restored encrypted message").assertIsDisplayed()
+        screenshot("saved-history")
+    }
     @Test fun switchingComposerPanelsKeepsTheComposerSteady() {
         show { SigilApp(NativeCore::palette, NativeCore::analyze, MessengerState(phase = "connected", chats = listOf(chat), selected = "peer", messages = listOf(message("out", true))), { _, _ -> }) }
         val initial = ui.onNodeWithTag("composer").fetchSemanticsNode().boundsInRoot.top
