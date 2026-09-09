@@ -28,6 +28,8 @@ mod mobile_groups;
 mod presentation_tests;
 #[path = "mobile_profile.rs"]
 pub(crate) mod profile;
+#[path = "mobile_push.rs"]
+mod push;
 #[path = "mobile_views.rs"]
 mod views;
 #[path = "mobile_wallpaper.rs"]
@@ -36,6 +38,13 @@ mod wallpaper;
 #[derive(Deserialize)]
 #[serde(tag = "command", rename_all = "snake_case", deny_unknown_fields)]
 enum Command {
+    Push {
+        action: String,
+        connection: Option<String>,
+        endpoint: Option<String>,
+        payload: Option<String>,
+        replace: Option<bool>,
+    },
     CancelLogin {},
     RecoverAccount {
         server: String,
@@ -542,6 +551,19 @@ impl ClientStore {
     }
     fn mobile_execute(&mut self, command: Command) -> Result<Value, Error> {
         match command {
+            Command::Push {
+                action,
+                connection,
+                endpoint,
+                payload,
+                replace,
+            } => self.mobile_push(
+                &action,
+                connection.as_deref(),
+                endpoint.as_deref(),
+                payload.as_deref(),
+                replace.unwrap_or(false),
+            ),
             Command::CancelLogin {} => {
                 self.cancel_unused_enrollment()?;
                 self.mobile_state()

@@ -26,6 +26,8 @@ data class ThreadTarget(val author: String, val id: String)
 data class AccountDevice(val id: String, val current: Boolean, val label: String? = null, val revoked: Boolean? = null, val expires: Long? = null, val fingerprint: String? = null, val verified: Boolean = false)
 data class StorageDetails(val database: Long, val media: Long, val mediaUsed: Long, val budget: Long, val recovery: Boolean, val checkpoint: String?, val unprotected: Long, val historyDays: Int? = null, val restoring: Boolean = false)
 data class NotificationSettings(val enabled: Boolean, val messages: Boolean, val calls: Boolean)
+data class PushDistributor(val id: String, val name: String)
+data class PushSettings(val enabled: Boolean, val status: String, val distributor: String?, val distributors: List<PushDistributor>)
 data class AccountAccess(val configuration: Long, val transition: Long, val issuer: String?, val linked: Boolean, val retiring: Boolean, val acknowledged: Boolean, val linkPending: Boolean)
 data class SearchHit(val peer: String, val id: String, val author: String, val text: String, val time: String,
     val pinned: Boolean = false, val noted: Boolean = false, val kind: String = "Text", val thread: Boolean = false, val threadTarget: ThreadTarget? = null)
@@ -40,5 +42,5 @@ data class MessengerState(val phase: String = "loading", val address: String = "
     val readReceipts: Boolean = true, val typingIndicators: Boolean = true, val presenceSharing: Boolean = false,
     val invitations: List<GroupInvitation> = emptyList(), val transfers: List<Transfer> = emptyList(), val voice: VoiceState = VoiceState(), val searchMore: Boolean = false, val historical: Boolean = false,
     val calls: List<CallSummary> = emptyList(), val call: ActiveCall? = null, val threadTarget: ThreadTarget? = null, val people: Map<String, String> = emptyMap(),
-    val allowRequests: Boolean? = null, val devices: List<AccountDevice> = emptyList(), val devicesNext: String? = null, val storage: StorageDetails? = null, val notifications: NotificationSettings? = null, val accountAccess: AccountAccess? = null)
+    val allowRequests: Boolean? = null, val devices: List<AccountDevice> = emptyList(), val devicesNext: String? = null, val storage: StorageDetails? = null, val notifications: NotificationSettings? = null, val accountAccess: AccountAccess? = null, val push: PushSettings? = null)
 data class LoginMethods(val server: String, val sso: Boolean, val password: Boolean, val invitation: Boolean)

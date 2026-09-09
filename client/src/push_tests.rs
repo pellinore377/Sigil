@@ -427,6 +427,9 @@ fn unifiedpush_uses_persisted_rust_keys_and_ignores_obsolete_connectors() {
         ReceivedHint::Wake
     );
     let replacement = client.prepare_unified_push(&vapid_key, true, now).unwrap();
+    let ignored: serde_json::Value = serde_json::from_str(&client.mobile_command(&serde_json::json!({"command":"push", "action":"unregistered", "connection":connector.connection}).to_string())).unwrap();
+    assert_eq!(ignored["ok"], true);
+    assert_eq!(ignored["value"]["connection"], replacement.connection);
     assert_ne!(replacement.connection, connector.connection);
     assert_eq!(
         client

@@ -40,6 +40,7 @@ dependencies {
     implementation("androidx.camera:camera-view:1.5.3")
     implementation("org.maplibre.gl:android-sdk:13.4.1")
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
+    implementation("org.unifiedpush.android:connector:3.3.5")
     implementation(project(":shared"))
     androidTestImplementation("androidx.test:runner:1.7.0")
     androidTestImplementation("androidx.test.espresso:espresso-core:3.7.0")

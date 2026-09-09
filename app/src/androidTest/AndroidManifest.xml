@@ -1,0 +1,11 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <application>
+        <activity android:name="org.sigil.compose.FixturePushActivity" android:exported="true" android:theme="@android:style/Theme.NoDisplay" />
+        <receiver android:name="org.sigil.compose.FixturePushDistributor" android:enabled="false" android:exported="true">
+            <intent-filter>
+                <action android:name="org.unifiedpush.android.distributor.REGISTER" />
+                <action android:name="org.unifiedpush.android.distributor.UNREGISTER" />
+            </intent-filter>
+        </receiver>
+    </application>
+</manifest>

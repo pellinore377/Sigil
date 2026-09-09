@@ -22,12 +22,57 @@ fn android_content_acceptance() {
     bytes.extend_from_slice(&tile);
     std::fs::write(&maps.archive, bytes).unwrap();
     let mut server = sigil_server::store::Store::open(&dir.path().join("server.db")).unwrap();
+    let delivered = export.clone();
+    let provider = crate::network::tests::Fixture::local_provider(axum::Router::new().route(
+        "/push",
+        axum::routing::post(move |body: axum::body::Bytes| {
+            let delivered = delivered.clone();
+            async move {
+                std::fs::write(delivered.join("push-sealed.tmp"), &body).unwrap();
+                std::fs::rename(
+                    delivered.join("push-sealed.tmp"),
+                    delivered.join("push-sealed"),
+                )
+                .unwrap();
+                axum::http::StatusCode::CREATED
+            }
+        }),
+    ));
+    server
+        .configure_push(sigil_server::push_config::Configure {
+            expected_revision: 0,
+            unified_push: true,
+            contact: Some("mailto:acceptance@example.com".into()),
+            rotate_vapid: false,
+            fcm: sigil_server::push_config::FcmUpdate::Disable,
+            exceptions: vec![sigil_server::egress::Exception {
+                host: "127.0.0.1".into(),
+                port: provider.port(),
+                networks: vec!["127.0.0.1/32".into()],
+                root_ca: Some(
+                    include_bytes!("../../server/tests/fixtures/provider-ca.der").to_vec(),
+                ),
+            }],
+        })
+        .unwrap();
     server
         .configure_maps(sigil_server::maps::Configure {
             expected_revision: 0,
             settings: Some(maps),
         })
         .unwrap();
+    let port = fixture.port();
+    drop(fixture);
+    let (router, maintenance) = sigil_server::router_with_maintenance(
+        sigil_server::store::Store::open(&dir.path().join("server.db")).unwrap(),
+        sigil_server::auth::AdminToken::load_or_create(&dir.path().join("admin.token")).unwrap(),
+    );
+    let fixture = crate::network::tests::Fixture::maintained_at(router, maintenance, port);
+    std::fs::write(
+        export.join("push-endpoint"),
+        format!("https://127.0.0.1:{}/push", provider.port()),
+    )
+    .unwrap();
     let (_, peer) = crate::incoming::tests::trust(&mut alice, &mut bob);
     let root = alice
         .conversation_operation(
@@ -56,10 +101,23 @@ fn android_content_acceptance() {
     std::fs::copy(dir.path().join("bob.db"), export.join("client.db")).unwrap();
     std::fs::write(export.join("port"), fixture.port().to_string()).unwrap();
     std::fs::write(export.join("ready"), b"ready").unwrap();
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(180);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(240);
     let mut received = false;
     while std::time::Instant::now() < deadline {
-        for item in alice.receive_mailbox_online(conversations::now()).unwrap() {
+        let incoming = match alice.receive_mailbox_online(conversations::now()) {
+            Ok(incoming) => incoming,
+            Err(Error::Network(network::Error::Status {
+                code: 429,
+                retry_after_seconds,
+            })) => {
+                std::thread::sleep(std::time::Duration::from_secs(
+                    retry_after_seconds.unwrap_or(1),
+                ));
+                continue;
+            }
+            Err(error) => panic!("{error:?}"),
+        };
+        for item in incoming {
             item.result.unwrap();
         }
         alice.acknowledge_incoming_online().unwrap();
@@ -164,7 +222,7 @@ fn android_content_acceptance() {
             );
             return;
         }
-        std::thread::sleep(std::time::Duration::from_millis(200));
+        std::thread::sleep(std::time::Duration::from_secs(1));
     }
     panic!("Android content acceptance timed out");
 }

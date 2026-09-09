@@ -11,6 +11,8 @@ cleanup() {
   if [[ -n "$port" ]]; then "$adb" reverse --remove "tcp:$port" >/dev/null 2>&1 || true; fi
   "$adb" shell rm -f /data/local/tmp/sigil-content-fixture.db >/dev/null 2>&1 || true
   "$adb" shell pm clear "$app_id" >/dev/null 2>&1 || true
+  "$adb" shell am start -n "$app_id.test/org.sigil.compose.FixturePushActivity" --ez enabled false >/dev/null 2>&1 || true
+  "$adb" shell rm -f /data/local/tmp/sigil-push-fixture >/dev/null 2>&1 || true
   rm -rf -- "$scratch"
 }
 trap cleanup EXIT
@@ -42,6 +44,18 @@ port=$(cat "$scratch/port")
 "$adb" shell run-as "$app_id" chmod 700 no_backup/native
 "$adb" shell run-as "$app_id" chmod 600 no_backup/native/client.db
 instrument ContentTest
+"$adb" push "$scratch/push-endpoint" /data/local/tmp/sigil-push-fixture >/dev/null
+"$adb" shell run-as "$app_id" cp /data/local/tmp/sigil-push-fixture cache/push-endpoint
+instrument 'PushTest#register'
+for attempt in $(seq 1 20); do
+  if [[ -s "$scratch/push-sealed" ]]; then break; fi
+  sleep 1
+done
+test -s "$scratch/push-sealed"
+"$adb" push "$scratch/push-sealed" /data/local/tmp/sigil-push-fixture >/dev/null
+"$adb" shell run-as "$app_id" cp /data/local/tmp/sigil-push-fixture cache/push-sealed
+"$adb" shell rm -f /data/local/tmp/sigil-push-fixture
+instrument 'PushTest#encryptedProofReachesRustThroughTheDistributorAndReceiver'
 "$adb" exec-out run-as "$app_id" cat cache/acceptance-recovery.key > "$scratch/recovery.key"
 "$adb" shell run-as "$app_id" rm cache/acceptance-recovery.key
 instrument MessagingUiTest

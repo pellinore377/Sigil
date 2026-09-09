@@ -233,6 +233,25 @@ impl ClientStore {
             }
             pending = true;
         }
+        if self.push_state()?.configured {
+            match self.sync_push_due_online() {
+                Ok(work) => {
+                    next = next.min(work.next_at);
+                    if let Some(error) = work
+                        .scheduling_error
+                        .as_ref()
+                        .or_else(|| work.progress.as_ref().and_then(|p| p.as_ref().err()))
+                    {
+                        issue.get_or_insert(error_message(error));
+                    }
+                    pending |= work.next_at <= now.saturating_add(900);
+                }
+                Err(error) => {
+                    issue.get_or_insert(error_message(&error));
+                    pending = true;
+                }
+            }
+        }
         Ok(json!({"next_at":next,"sent":sent,"issue":issue,"pending":pending}))
     }
     pub(super) fn mobile_file_get(
