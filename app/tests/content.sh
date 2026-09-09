@@ -43,6 +43,7 @@ port=$(cat "$scratch/port")
 "$adb" shell run-as "$app_id" chmod 600 no_backup/native/client.db
 instrument ContentTest
 instrument MessagingUiTest
+instrument DeviceLinkTest
 touch "$scratch/done"
 wait "$fixture_pid"
 fixture_pid=

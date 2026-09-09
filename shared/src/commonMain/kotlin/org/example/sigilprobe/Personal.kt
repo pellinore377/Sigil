@@ -86,6 +86,7 @@ internal fun PersonalPage(page: String, state: MessengerState, command: Command,
             when(page) {
                 "device" -> {
                     Text("Devices on your account", style = MaterialTheme.typography.titleLarge)
+                    Button({ command("device_link", mapOf("action" to "sponsor")) }, enabled = !state.busy) { Text("Link a new device") }
                     Text("Signing out stops server access. Verification is a separate check of a device’s encryption identity.")
                     TextButton({ command("devices", emptyMap()) }, enabled = !state.busy) { Text("Refresh") }
                     state.devices.forEach { device ->

@@ -139,6 +139,22 @@ pub fn offer_qr(offer: &Offer) -> Result<String, Error> {
 }
 
 impl ClientStore {
+    pub(crate) fn joining_link_approved(&mut self, attempt: Id) -> Result<bool, Error> {
+        let own = self.identity()?;
+        let id = journal::reference(&own, 5, &attempt);
+        Ok(load::<Joining>(&self.db, &self.key, &own, &id)?
+            .is_some_and(|value| value.response.is_some()))
+    }
+    pub(crate) fn joining_link_address(&mut self, attempt: Id) -> Result<String, Error> {
+        let own = self.identity()?;
+        let id = journal::reference(&own, 5, &attempt);
+        let saved = load::<Joining>(&self.db, &self.key, &own, &id)?.ok_or(Error::Unprepared)?;
+        let sponsor = peers::parse(&saved.sponsor)?;
+        Ok(format!(
+            "@{}:{}",
+            sponsor.binding.username, sponsor.binding.server
+        ))
+    }
     /// Scan only the QR displayed by the intended joining device.
     pub fn prepare_sponsored_link(
         &mut self,
@@ -398,6 +414,46 @@ impl ClientStore {
         tx.commit()?;
         Ok(proof)
     }
+}
+/// An unused installation may discard its offer before signing consent. Once
+/// consent exists, retain the credential to resolve possible server acceptance.
+pub(crate) fn discard_unapproved_offer(
+    tx: &rusqlite::Transaction<'_>,
+    key: &sigil_crypto::storage::StorageKey,
+    attempt: Id,
+) -> Result<(), Error> {
+    require_unconfigured(tx)?;
+    if tx.query_row("SELECT EXISTS(SELECT 1 FROM sessions) OR EXISTS(SELECT 1 FROM prekeys) OR EXISTS(SELECT 1 FROM peers) OR EXISTS(SELECT 1 FROM own_device_binding)", [], |r| r.get::<_, bool>(0))? { return Err(Error::Conflict); }
+    let own = crate::handshake::identity(tx, key)?.public_key();
+    let offer_id = journal::reference(&own, 3, &attempt);
+    let joining_id = journal::reference(&own, 5, &attempt);
+    if load::<Joining>(tx, key, &own, &joining_id)?.is_some_and(|value| value.response.is_some()) {
+        return Err(Error::Conflict);
+    }
+    let pending = match offer::pending(tx, key, &own, &attempt) {
+        Ok(value) => Some(value),
+        Err(Error::NotFound) => None,
+        Err(error) => return Err(error),
+    };
+    let binding_id = pending
+        .as_ref()
+        .map(|value| journal::reference(&own, 2, &value.offer.device));
+    let ids = tx
+        .prepare("SELECT id FROM device_link_records LIMIT 4")?
+        .query_map([], |r| r.get::<_, Vec<u8>>(0))?
+        .collect::<Result<Vec<_>, _>>()?;
+    if ids.iter().any(|id| {
+        id.as_slice() != offer_id
+            && id.as_slice() != joining_id
+            && binding_id
+                .as_ref()
+                .is_none_or(|binding| id.as_slice() != binding)
+    }) {
+        return Err(Error::Conflict);
+    }
+    tx.execute("DELETE FROM device_link_records", [])?;
+    tx.execute("DELETE FROM identity", [])?;
+    Ok(())
 }
 fn expected_sponsor(proof: &Proof) -> Result<Id, Error> {
     Ok(sigil_crypto::link::fingerprint(&proof.sponsor.binding)?)

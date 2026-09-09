@@ -11,6 +11,8 @@ use sigil_crypto::Secret32;
 mod account;
 #[path = "mobile_cards.rs"]
 mod cards;
+#[path = "mobile_link.rs"]
+mod device_link;
 #[path = "mobile_files.rs"]
 mod files;
 #[path = "mobile_maps.rs"]
@@ -30,6 +32,10 @@ mod wallpaper;
 #[derive(Deserialize)]
 #[serde(tag = "command", rename_all = "snake_case", deny_unknown_fields)]
 enum Command {
+    DeviceLink {
+        action: String,
+        qr: Option<String>,
+    },
     Devices {
         cursor: Option<String>,
     },
@@ -491,6 +497,7 @@ impl ClientStore {
                 Ok(json!({}))
             }
             Command::LeaveGroup { peer } => self.mobile_leave_group(&peer),
+            Command::DeviceLink { action, qr } => self.mobile_link(&action, qr.as_deref()),
             Command::Devices { cursor } => self.mobile_devices(cursor),
             Command::RevokeDevice { device } => {
                 let session = self.connection_session()?.ok_or(Error::Unprepared)?;
