@@ -235,7 +235,7 @@ impl ClientStore {
         if known.blocked
             || known.changed_fingerprint.is_some()
             || known.replaced_by.is_some()
-            || (!known.verified && !initial)
+            || (!known.trusted && !initial)
         {
             return Err(Error::Unprepared);
         }
@@ -248,7 +248,7 @@ impl ClientStore {
                 return Err(Error::Conflict);
             }
             let incoming = prior.message(&tx, &self.key)?;
-            if !known.verified
+            if !known.trusted
                 && incoming.distribution()?.is_none()
                 && calls::receipt_message(&incoming.plaintext)?.is_none()
             {
@@ -297,7 +297,7 @@ impl ClientStore {
             )?;
             let plaintext =
                 handshake::accept(&tx, &self.key, slot, session, message, expected, &packet)?;
-            if known.verified
+            if known.trusted
                 && !groups::is_distribution_wire(&plaintext)
                 && groups::distribution_receipt(&plaintext)?.is_none()
                 && !calls::scoped_wire(&plaintext)?
@@ -351,7 +351,7 @@ impl ClientStore {
         // An unverified identity can authenticate a candidate initial packet,
         // but only a distribution authorized by signed group membership may
         // commit. Ordinary messages and channel selection remain direct-only.
-        if !known.verified
+        if !known.trusted
             && !groups::is_distribution_wire(&plaintext)
             && groups::distribution_receipt(&plaintext)?.is_none()
             && !calls::scoped_wire(&plaintext)?
@@ -425,7 +425,7 @@ impl ClientStore {
         let call_initial = initial
             && session_peer(&tx, &session)?.is_none()
             && calls::receipt_message(&plaintext)?.is_some();
-        if fresh && known.verified && !group_initial && !call_initial {
+        if fresh && known.trusted && !group_initial && !call_initial {
             if initial {
                 selection::activate(&tx, &self.key, &peer, &session)?;
             } else {

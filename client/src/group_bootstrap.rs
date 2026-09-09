@@ -209,7 +209,7 @@ pub(super) fn install(
     let f = Frame::parse(bytes)?;
     let record = load(tx, key, own, &f.request)?;
     let capsule = Capsule::parse(&record.capsule)?;
-    let known = peers::verified(tx, key, peer)?;
+    let known = peers::trusted(tx, key, peer)?;
     same_account(&peers::own(tx, key)?, &known)?;
     if !capsule.device
         || record.peer != *peer
@@ -301,7 +301,7 @@ impl ClientStore {
         let own = device_fingerprint(&binding)?;
         let mut record = load(&self.db, &self.key, &own, &id)?;
         let capsule = Capsule::parse(&record.capsule)?;
-        let peer = peers::verified(&self.db, &self.key, &record.peer)?;
+        let peer = peers::trusted(&self.db, &self.key, &record.peer)?;
         same_account(&binding, &peer)?;
         if record.status == InvitationStatus::Cancelled {
             self.cancel_group_invitation(id)?;

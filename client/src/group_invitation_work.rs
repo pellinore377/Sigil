@@ -244,7 +244,7 @@ impl ClientStore {
         let tx = self
             .db
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
-        peers::verified(&tx, &self.key, &peer)?;
+        peers::trusted(&tx, &self.key, &peer)?;
         if load(&tx, &self.key, &own, &control.request)?.status == InvitationStatus::Cancelled {
             return Err(Error::Cancelled);
         }
@@ -272,7 +272,7 @@ impl ClientStore {
         let tx = self
             .db
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
-        let known = peers::verified(&tx, &self.key, &peer)?;
+        let known = peers::trusted(&tx, &self.key, &peer)?;
         let authorization = load(&tx, &self.key, &own, &control.request)?;
         if authorization.status == InvitationStatus::Cancelled {
             return Err(Error::Cancelled);
@@ -411,7 +411,7 @@ impl ClientStore {
         }
         if !record.outgoing {
             capsule.verify(
-                &peers::verified(&self.db, &self.key, &record.peer)?,
+                &peers::trusted(&self.db, &self.key, &record.peer)?,
                 &own,
                 now,
             )?;
@@ -446,7 +446,7 @@ impl ClientStore {
             return Err(Error::Unprepared);
         }
         if record.outgoing {
-            let target = peers::verified(&self.db, &self.key, &record.peer)?;
+            let target = peers::trusted(&self.db, &self.key, &record.peer)?;
             if target.fingerprint != capsule.target {
                 return Err(Error::Conflict);
             }

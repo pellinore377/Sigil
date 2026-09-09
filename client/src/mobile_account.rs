@@ -61,7 +61,7 @@ impl ClientStore {
             "revoked":device.inventory.as_ref().map(|entry| entry.revoked),
             "expires":device.inventory.as_ref().map(|entry| entry.expires_at),
             "fingerprint":device.peer.as_ref().map(|peer| transport::hex(&peer.fingerprint)),
-            "verified":device.peer.as_ref().is_some_and(|peer| peer.verified && !peer.blocked && peer.changed_fingerprint.is_none() && peer.replaced_by.is_none()),
+            "verified":device.peer.as_ref().is_some_and(|peer| peer.trusted && !peer.blocked && peer.changed_fingerprint.is_none() && peer.replaced_by.is_none()),
         })).collect::<Vec<_>>();
         Ok(
             json!({"devices":devices,"next":page.next.map(|cursor| serde_json::to_string(&cursor).map_err(|_| Error::InvalidStore)).transpose()?}),

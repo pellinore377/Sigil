@@ -199,4 +199,65 @@ class RevisionsTest {
         ui.onNodeWithText("Show my code").performClick()
         ui.onNodeWithContentDescription("Device linking QR code").assertIsDisplayed()
     }
+    @Test fun tabDirectionFollowsPositionAndSubpagesKeepTheHeader() {
+        show { SigilApp(NativeCore::palette, NativeCore::analyze, MessengerState(phase = "connected", chats = listOf(chat)), { _, _ -> }) }
+        val header = ui.onNodeWithTag("main-header").fetchSemanticsNode().id
+        for ((label, page, fromRight) in listOf(Triple("Calls", "calls", true), Triple("Settings", "settings", true), Triple("Calls", "calls", false), Triple("Messages", "inbox", false))) {
+            ui.mainClock.autoAdvance = false
+            ui.onNodeWithContentDescription(label).performClick()
+            ui.mainClock.advanceTimeBy(80)
+            val moving = ui.onNodeWithTag("main-page-$page").getUnclippedBoundsInRoot().left.value
+            assertTrue("$label entered from the wrong side: $moving", if (fromRight) moving > 0f else moving < 0f)
+            assertEquals(header, ui.onNodeWithTag("main-header").fetchSemanticsNode().id)
+            ui.mainClock.autoAdvance = true; ui.waitForIdle()
+        }
+        ui.onNodeWithContentDescription("Settings").performClick()
+        ui.onNodeWithText("Theme, typography, and layout").performScrollTo().performClick()
+        assertEquals(header, ui.onNodeWithTag("main-header").fetchSemanticsNode().id)
+        ui.onNodeWithTag("main-navigation").assertDoesNotExist()
+        ui.onNodeWithContentDescription("Back").performClick()
+        assertEquals(header, ui.onNodeWithTag("main-header").fetchSemanticsNode().id)
+        ui.onNodeWithTag("main-navigation").assertIsDisplayed()
+    }
+    @Test fun devicesHideFingerprintsAndOfferRemovalAndRenaming() {
+        val fingerprint = "abcd".repeat(16)
+        val state = MessengerState(phase = "connected", devices = listOf(AccountDevice("old-device", false, "Travel phone", false, fingerprint = fingerprint)))
+        val commands = mutableListOf<Pair<String, Map<String, Any?>>>()
+        show { SigilApp(NativeCore::palette, NativeCore::analyze, state, { name, fields -> commands += name to fields }) }
+        ui.onNodeWithContentDescription("Settings").performClick()
+        ui.onNodeWithText("Linked devices and verification").performScrollTo().performClick()
+        ui.onNodeWithText("Travel phone").assertIsDisplayed()
+        ui.onNodeWithText(fingerprint.chunked(4).joinToString(" ")).assertDoesNotExist()
+        ui.onNodeWithContentDescription("Rename Travel phone").performClick()
+        ui.onNode(hasSetTextAction()).performTextReplacement("Old Android")
+        ui.onNodeWithText("Save").performClick()
+        assertTrue(commands.any { it.first == "organize" })
+        ui.onNodeWithText("Remove device").performClick()
+        ui.onNodeWithText("Sign out device").performClick()
+        assertTrue(commands.any { it.first == "revoke_device" && it.second["device"] == "old-device" })
+    }
+    @Test fun accentColorsOutgoingBubblesButtonsAndDarkSelection() {
+        val state = mutableStateOf(MessengerState(phase = "connected", chats = listOf(chat), selected = "peer", messages = listOf(
+            ChatMessage("outgoing", "self", "A green letter", true, "9:33am", "Sent", false, emptyList(), emptyList(), null, true)
+        ), ui = mapOf("appearance" to "Newsreader|Dark|336644|false")))
+        var accent = androidx.compose.ui.graphics.Color.Unspecified
+        var handle = androidx.compose.ui.graphics.Color.Unspecified
+        show { SigilApp(NativeCore::palette, NativeCore::analyze, state.value, { _, _ -> }, overlay = {
+            accent = androidx.compose.material3.MaterialTheme.colorScheme.primary
+            handle = androidx.compose.foundation.text.selection.LocalTextSelectionColors.current.handleColor
+        }) }
+        assertEquals(accent, handle)
+        assertNotEquals(androidx.compose.ui.graphics.Color.Black, handle)
+        fun countAccent(node: SemanticsNodeInteraction): Int {
+            val pixels = node.captureToImage().toPixelMap()
+            return (0 until pixels.height).sumOf { y -> (0 until pixels.width).count { x -> pixels[x,y] == accent } }
+        }
+        assertTrue("Outgoing bubble does not use accent", countAccent(ui.onNodeWithTag("timeline")) > 100)
+        assertTrue("Voice button does not use accent", countAccent(ui.onNodeWithContentDescription("Voice message")) > 100)
+        ui.onNodeWithTag("composer").performClick().performTextInput("Visible caret")
+        // Sample across a blink cycle; text fields keep the accent caret in dark mode.
+        var caretPixels = 0
+        repeat(4) { ui.mainClock.advanceTimeBy(150); caretPixels = maxOf(caretPixels, countAccent(ui.onNodeWithTag("composer"))) }
+        assertTrue("Dark composer cursor has no accent pixels", caretPixels > 2)
+    }
 }

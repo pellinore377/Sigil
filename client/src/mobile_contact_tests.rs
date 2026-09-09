@@ -11,7 +11,7 @@ fn count(db: &rusqlite::Connection, table: &str) -> i64 {
         .unwrap()
 }
 #[test]
-fn unknown_contacts_require_acceptance_and_verification_after_restart() {
+fn directory_contacts_require_acceptance_and_preserve_trust_after_restart() {
     let (dir, _fixture, mut alice, mut bob, _) = crate::claims::tests::pair();
     let server = rusqlite::Connection::open(dir.path().join("server.db")).unwrap();
     server.execute("DELETE FROM allowed_senders", []).unwrap();
@@ -21,7 +21,7 @@ fn unknown_contacts_require_acceptance_and_verification_after_restart() {
     let target = found["chats"][0]["id"].as_str().unwrap().to_owned();
     assert!(target.starts_with("dm:"));
     assert_eq!(found["chats"][0]["contact_only"], true);
-    assert_eq!(found["chats"][0]["devices"], json!([]));
+    assert_eq!(found["chats"][0]["devices"].as_array().unwrap().len(), 1);
     let conversation = alice.mobile_conversation(&target).unwrap();
     assert!(alice
         .mobile_action(
@@ -53,7 +53,28 @@ fn unknown_contacts_require_acceptance_and_verification_after_restart() {
     assert_eq!(state["chats"][0]["contact_only"], false);
     assert_eq!(state["chats"][0]["verified"], false);
     assert_eq!(count(&server, "allowed_senders"), 0);
+    let declined = bob.mobile_request(&source, "decline").unwrap();
+    assert_eq!(declined["chats"][0]["request"], "declined_incoming");
+    assert_eq!(
+        alice.mobile_request(&target, "refresh").unwrap()["chats"][0]["request"],
+        "declined"
+    );
+    assert_eq!(
+        alice.mobile_request(&target, "send").unwrap()["chats"][0]["request"],
+        "declined"
+    );
+    assert_eq!(count(&server, "allowed_senders"), 0);
     // A failed intent write must have no server side effect.
+    let mut legacy = alice.contact_for(&target).unwrap();
+    legacy.work_at = waiting();
+    alice.save_contact(&legacy).unwrap();
+    alice
+        .db
+        .execute_batch("DROP TABLE mobile_contact_invite; PRAGMA user_version=75;")
+        .unwrap();
+    drop(alice);
+    let mut alice = open(&dir.path().join("alice.db"));
+    assert_eq!(alice.contact_for(&target).unwrap().work_at, 0);
     bob.db.execute_batch("CREATE TRIGGER fail_decision BEFORE UPDATE ON mobile_contacts WHEN (SELECT state FROM mobile_contacts WHERE id=OLD.id) != NEW.state AND (SELECT count(*) FROM mobile_contacts)>0 BEGIN SELECT RAISE(ABORT,'synthetic'); END").unwrap();
     assert!(bob.mobile_request(&source, "accept").is_err());
     assert_eq!(
@@ -61,7 +82,7 @@ fn unknown_contacts_require_acceptance_and_verification_after_restart() {
             .query_row("SELECT state FROM contact_requests", [], |r| r
                 .get::<_, i64>(0))
             .unwrap(),
-        0
+        2
     );
     bob.db.execute_batch("DROP TRIGGER fail_decision").unwrap();
     let mut contact = bob.contact_for(&source).unwrap();
@@ -75,27 +96,19 @@ fn unknown_contacts_require_acceptance_and_verification_after_restart() {
         bob.mobile_state().unwrap()["chats"][0]["request"],
         "accepted"
     );
-    assert_eq!(count(&server, "allowed_senders"), 0);
+    assert_eq!(count(&server, "allowed_senders"), 1);
     let peer = bob.peer(bob.mobile_peer(&source).unwrap()).unwrap();
-    bob.mobile_execute(Command::Confirm {
-        peer: transport::hex(&peer.id),
-        fingerprint: peer.fingerprint.map(|b| format!("{b:02x}")).concat(),
-    })
-    .unwrap();
-    alice.mobile_request(&target, "refresh").unwrap();
+    assert!(peer.trusted);
+    assert!(!peer.verified);
+    alice.mobile_contact_sync(true).unwrap();
     assert_eq!(alice.mobile_conversation(&target).unwrap(), conversation);
     let state = alice.mobile_state().unwrap();
     assert_eq!(state["chats"].as_array().unwrap().len(), 1);
     assert_eq!(state["chats"][0]["id"], target);
-    assert_eq!(state["chats"][0]["verified"], false);
+    assert_eq!(state["chats"][0]["verified"], true);
     let peer = alice.peer(alice.mobile_peer(&target).unwrap()).unwrap();
-    alice
-        .mobile_execute(Command::Confirm {
-            peer: transport::hex(&peer.id),
-            fingerprint: transport::hex(&peer.fingerprint),
-        })
-        .unwrap();
-    assert_eq!(alice.mobile_state().unwrap()["chats"][0]["verified"], true);
+    assert!(peer.trusted);
+    assert!(!peer.verified);
     assert_eq!(count(&server, "allowed_senders"), 2);
     let now = conversations::now();
     alice
@@ -235,7 +248,7 @@ fn acknowledged_decision_retries_after_its_local_commit_fails() {
     bob.mobile_request(&source, "refresh").unwrap();
     assert!(bob.contact_for(&source).unwrap().decision.is_none());
     assert_eq!(count(&bob.db, "peers"), 1);
-    assert!(!bob.mobile_state().unwrap()["chats"][0]["verified"]
+    assert!(bob.mobile_state().unwrap()["chats"][0]["verified"]
         .as_bool()
         .unwrap());
 }

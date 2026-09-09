@@ -706,7 +706,7 @@ fn background_group_work_grants_admission_installs_keys_and_orders_member_leave(
     assert_eq!(bob.group_status(group).unwrap().state.revision(), 1);
     assert!(alice.group_sender_ready(group).unwrap());
     assert!(bob.group_sender_ready(group).unwrap());
-    assert!(!alice.peer(b).unwrap().verified && !bob.peer(a).unwrap().verified);
+    assert!(!alice.peer(b).unwrap().trusted && !bob.peer(a).unwrap().trusted);
     assert_eq!(
         server
             .query_row("SELECT count(*) FROM allowed_senders", [], |r| r

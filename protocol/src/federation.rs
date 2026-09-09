@@ -107,6 +107,9 @@ pub const MAX_LOOKUP_RESPONSE: usize = 2 * (1024 * 1024 + 84) + 8192;
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Service {
+    ContactDirectory {
+        username: String,
+    },
     ContactProfile {
         account: String,
     },
@@ -147,6 +150,7 @@ pub enum Service {
 impl Service {
     pub fn valid(&self) -> bool {
         match self {
+            Self::ContactDirectory { username } => crate::accounts::valid_username(username),
             Self::ContactProfile { account } => crate::accounts::valid_credential(account),
             Self::ContactPhoto { account, hash } => {
                 crate::accounts::valid_credential(account)

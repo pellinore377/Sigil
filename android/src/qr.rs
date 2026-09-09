@@ -12,7 +12,9 @@ fn decode(width: usize, height: usize, bytes: &[u8]) -> Option<String> {
     let mut found = None;
     for grid in image.detect_grids().into_iter().take(16) {
         if let Ok((_, text)) = grid.decode() {
-            if text.len() <= 4400 && text.starts_with("sigil:link:v1:") {
+            if text.len() <= 4400
+                && (text.starts_with("sigil:link:v1:") || text.starts_with("sigil:contact:v1:"))
+            {
                 if found.is_some() {
                     return None;
                 }

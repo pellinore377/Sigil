@@ -20,7 +20,7 @@ import kotlin.math.*
 
 val LocalCallVideo = staticCompositionLocalOf<@Composable (String, Boolean, Modifier) -> Unit> { { _, _, modifier -> Box(modifier, contentAlignment = Alignment.Center) { Text("Waiting for video…") } } }
 @Composable
-internal fun CallPage(active: ActiveCall, contacts: List<ChatSummary>, command: Command, ownPhoto: String = "", minimize: () -> Unit) {
+internal fun CallPage(active: ActiveCall, contacts: List<ChatSummary>, command: Command, ownPhoto: String = "", panel: String, setPanel: (String) -> Unit) {
     val call = active.call
     val incoming = call.phase == "ringing"
     val others = call.participants.filter { !it.own }
@@ -31,58 +31,37 @@ internal fun CallPage(active: ActiveCall, contacts: List<ChatSummary>, command: 
     val speaking = call.participants.filter { it.audio }.maxByOrNull { active.levels[if (it.own) "self" else it.id] ?: 0f }
         ?.takeIf { (active.levels[if (it.own) "self" else it.id] ?: 0f) > .05f }?.id
     LaunchedEffect(speaking) { if (speaking != null) { kotlinx.coroutines.delay(600); speaker = speaking } }
-    var more by remember { mutableStateOf(false) }
-    var inviting by remember { mutableStateOf(false) }
-    var security by remember { mutableStateOf(false) }
-    if (security) AlertDialog({ security = false }, title = { Text("Call security") }, text = {
+    if (panel == "security") AlertDialog({ setPanel("") }, title = { Text("Call security") }, text = {
         Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(16.dp)) {
             Text("Audio, video, and screen sharing are end-to-end encrypted. Device verification helps confirm who is on the call.")
             call.participants.forEach { person ->
                 Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
                     Text(if (person.own) "You" else person.name, style = MaterialTheme.typography.titleMedium)
-                    Text(if (person.own) "This device" else if (person.verified) "Verified device" else "Device not yet verified", style = MaterialTheme.typography.bodySmall)
+                    Text(if (person.own) "This device" else if (person.verified) "Known contact device" else "Authenticated by the call host", style = MaterialTheme.typography.bodySmall)
                     androidx.compose.foundation.text.selection.SelectionContainer { Text(person.fingerprint.chunked(4).joinToString(" "), fontFamily = LocalCodeFont.current, style = MaterialTheme.typography.bodySmall) }
                 }
             }
-            if (others.any { !it.verified }) Text("Compare fingerprints through a trusted channel, then verify the device from that person's conversation.")
+            if (others.any { !it.verified }) Text("You can optionally compare fingerprints from that person's conversation settings.")
         }
-    }, confirmButton = { TextButton({ security = false }) { Text("Done") } })
-    if (inviting) {
+    }, confirmButton = { SigilTextButton({ setPanel("") }) { Text("Done") } })
+    if (panel == "invite") {
         var query by remember { mutableStateOf("") }
         val choices = contacts.filter { contact -> contact.id != "self" && !contact.group && contact.verified && contact.devices.none { it.blocked } && call.participants.none { it.peer == contact.id } && (contact.name.contains(query, true) || contact.address.contains(query, true)) }
-        AlertDialog({ inviting = false }, title = { Text("Invite to call") }, text = {
+        AlertDialog({ setPanel("") }, title = { Text("Invite to call") }, text = {
             Column {
                 OutlinedTextField(query, { query = it }, label = { Text("Search contacts") }, singleLine = true)
                 if (choices.isEmpty()) Text("No other verified contacts.", Modifier.padding(vertical = 16.dp))
                 androidx.compose.foundation.lazy.LazyColumn(Modifier.heightIn(max = 320.dp)) {
-                    items(choices.size) { index -> val person = choices[index]; SettingRow("person", person.name, person.address) { command("call_invite", mapOf("call" to call.id, "peer" to person.id)); inviting = false } }
+                    items(choices.size) { index -> val person = choices[index]; SettingRow("person", person.name, person.address) { command("call_invite", mapOf("call" to call.id, "peer" to person.id)); setPanel("") } }
                 }
             }
-        }, confirmButton = { TextButton({ inviting = false }) { Text("Done") } })
+        }, confirmButton = { SigilTextButton({ setPanel("") }) { Text("Done") } })
     }
     Column(Modifier.fillMaxSize()) {
-        Row(Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 14.dp), verticalAlignment = Alignment.CenterVertically) {
-            Symbol("chevron_left", "Minimize call", minimize)
-            Avatar(active.name, 42, directPhoto)
-            Column(Modifier.weight(1f).padding(start = 10.dp)) {
-                Row(verticalAlignment = Alignment.CenterVertically) { Text(active.name, Modifier.weight(1f, false), maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.titleLarge); Spacer(Modifier.width(6.dp)); Glyph("lock", 16, "End-to-end encrypted call") }
-                Text(if (incoming) "Incoming call" else if (call.phase == "joining") "Joining…" else if (call.direct && others.isEmpty()) "Calling…" else if (active.connection != "connected") active.connection.replaceFirstChar { it.uppercase() } + "…" else (if (call.direct) "" else "${call.participants.size} in call · ") + "${active.seconds / 60}:${(active.seconds % 60).toString().padStart(2, '0')}", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
-            }
-            if (!video) Symbol("videocam", "Turn camera on") { command("call_camera", emptyMap()) }
-            else if (call.canInvite) Symbol("person_add", "Add person") { inviting = true }
-            Box {
-                Symbol("more_vert", "Call options") { more = true }
-                DropdownMenu(more, { more = false }) {
-                    DropdownMenuItem({ Text("Call security") }, { more = false; security = true }, leadingIcon = { Glyph("lock") })
-                    DropdownMenuItem({ Text(if (active.screen) "Stop sharing screen" else "Share screen") }, { more = false; command("call_screen", emptyMap()) }, leadingIcon = { Glyph("present_to_all") })
-                    if (active.camera) DropdownMenuItem({ Text("Switch camera") }, { more = false; command("call_flip", emptyMap()) }, leadingIcon = { Glyph("cameraswitch") })
-                }
-            }
-        }
-        if (others.any { !it.verified }) TextButton({ security = true }, Modifier.padding(horizontal = 20.dp)) { Glyph("info", 18); Spacer(Modifier.width(8.dp)); Text("Some devices have not been verified") }
+        if (others.any { !it.verified }) SigilTextButton({ setPanel("security") }, Modifier.padding(horizontal = 20.dp)) { Glyph("info", 18); Spacer(Modifier.width(8.dp)); Text("Some participants are new to you") }
         if (active.screen) Row(Modifier.fillMaxWidth().padding(horizontal = 20.dp), verticalAlignment = Alignment.CenterVertically) {
             Glyph("present_to_all", 20); Spacer(Modifier.width(8.dp)); Text("Sharing your screen", Modifier.weight(1f))
-            TextButton({ command("call_screen", emptyMap()) }) { Text("Stop") }
+            SigilTextButton({ command("call_screen", emptyMap()) }) { Text("Stop") }
         }
         Box(Modifier.weight(1f).fillMaxWidth().padding(20.dp), contentAlignment = Alignment.Center) {
             if (call.direct && !video) Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(28.dp)) {
@@ -133,7 +112,7 @@ internal fun CallPage(active: ActiveCall, contacts: List<ChatSummary>, command: 
                 if (video) CallControl(if (active.camera) "videocam" else "videocam_off", "Camera", state = if (active.camera) "On" else "Off") { command("call_camera", emptyMap()) }
                 CallControl(if (active.speaker) "volume_up" else "hearing", if (active.speaker) "Earpiece" else "Speaker") { command("call_speaker", emptyMap()) }
                 if (video) CallControl(if (active.screen) "stop_screen_share" else "present_to_all", if (active.screen) "Stop share" else "Share") { command("call_screen", emptyMap()) }
-                else if (call.canInvite) CallControl("person_add", "Add person") { inviting = true }
+                else if (call.canInvite) CallControl("person_add", "Add person") { setPanel("invite") }
                 CallControl("call_end", if (call.direct) "End" else "Leave", true) { command("call_end", mapOf("call" to call.id)) }
             }
         }
@@ -159,4 +138,33 @@ private fun CallWave(level: Float, modifier: Modifier) {
             drawLine(color, Offset(x, center.y - height / 2), Offset(x, center.y + height / 2), 3.dp.toPx(), StrokeCap.Round)
         }
     }
+}
+
+@Composable
+internal fun CallHeader(active: ActiveCall, contacts: List<ChatSummary>, ownPhoto: String, command: Command, minimize: () -> Unit, panel: (String) -> Unit) {
+    val call = active.call
+    val incoming = call.phase == "ringing"
+    val others = call.participants.filter { !it.own }
+    val person = others.firstOrNull()
+    val directPhoto = if (call.direct) { if (person?.own == true) ownPhoto else contacts.firstOrNull { it.id == person?.peer }?.avatar.orEmpty() } else ""
+    val video = active.camera || active.screen || others.any { it.camera || it.screen }
+    var more by remember { mutableStateOf(false) }
+        Row(Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+            Symbol("chevron_left", "Minimize call", minimize)
+            Avatar(active.name, 42, directPhoto)
+            Column(Modifier.weight(1f).padding(start = 10.dp)) {
+                Row(verticalAlignment = Alignment.CenterVertically) { Text(active.name, Modifier.weight(1f, false), maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.titleLarge); Spacer(Modifier.width(6.dp)); Glyph("lock", 16, "End-to-end encrypted call") }
+                Text(if (incoming) "Incoming call" else if (call.phase == "joining") "Joining…" else if (call.direct && others.isEmpty()) "Calling…" else if (active.connection != "connected") active.connection.replaceFirstChar { it.uppercase() } + "…" else (if (call.direct) "" else "${call.participants.size} in call · ") + "${active.seconds / 60}:${(active.seconds % 60).toString().padStart(2, '0')}", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+            if (!video) Symbol("videocam", "Turn camera on") { command("call_camera", emptyMap()) }
+            else if (call.canInvite) Symbol("person_add", "Add person") { panel("invite") }
+            Box {
+                Symbol("more_vert", "Call options") { more = true }
+                DropdownMenu(more, { more = false }) {
+                    DropdownMenuItem({ Text("Call security") }, { more = false; panel("security") }, leadingIcon = { Glyph("lock") })
+                    DropdownMenuItem({ Text(if (active.screen) "Stop sharing screen" else "Share screen") }, { more = false; command("call_screen", emptyMap()) }, leadingIcon = { Glyph("present_to_all") })
+                    if (active.camera) DropdownMenuItem({ Text("Switch camera") }, { more = false; command("call_flip", emptyMap()) }, leadingIcon = { Glyph("cameraswitch") })
+                }
+            }
+        }
 }

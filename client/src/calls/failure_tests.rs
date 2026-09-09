@@ -6,7 +6,7 @@ fn expired_scoped_control_cannot_authorize_an_unverified_initial_without_a_call(
     let own = alice.own_device_binding().unwrap();
     let target = bob.own_device_binding().unwrap();
     let sender = bob.observe_peer_binding(&own).unwrap();
-    assert!(!sender.verified);
+    assert!(!sender.trusted);
     let binding = crate::peers::parse(&target).unwrap().binding;
     let claim = [71; 32];
     let session = [72; 32];
@@ -53,7 +53,7 @@ fn expired_scoped_control_cannot_authorize_an_unverified_initial_without_a_call(
             .unwrap(),
         0
     );
-    assert!(!bob.peer(sender.id).unwrap().verified);
+    assert!(!bob.peer(sender.id).unwrap().trusted);
 }
 #[test]
 fn call_control_commits_atomically_and_unanswered_ringing_expires() {

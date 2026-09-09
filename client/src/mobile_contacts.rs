@@ -20,8 +20,21 @@ struct Contact {
     work_at: u64,
     blocked: bool,
     block_pending: bool,
+    #[serde(default)]
+    review: Option<Id>,
+    #[serde(default)]
+    qr_fingerprint: Option<Id>,
 }
 impl Contact {
+    fn accepted(&self) -> bool {
+        self.receipt
+            .as_ref()
+            .is_some_and(|r| r.state == RequestState::Accepted)
+            || self
+                .incoming
+                .as_ref()
+                .is_some_and(|r| r.receipt.state == RequestState::Accepted)
+    }
     fn id(&self) -> Id {
         event::account_reference(&self.server, &self.account)
     }
@@ -46,33 +59,65 @@ fn request_id(origin: &str, account: &str, recipient: &str) -> String {
 fn aad(id: &Id) -> Vec<u8> {
     [b"Sigil/mobile-contact/v1".as_slice(), id].concat()
 }
+fn directory_error(error: network::Error) -> Error {
+    match error {
+        network::Error::Status {
+            code: 400 | 404 | 422,
+            ..
+        } => Error::DirectoryUnavailable,
+        other => other.into(),
+    }
+}
 fn waiting() -> u64 {
     i64::MAX as u64
 }
+pub(crate) fn migrate_work(tx: &rusqlite::Transaction<'_>, key: &StorageKey) -> Result<(), Error> {
+    let ids = tx
+        .prepare("SELECT id FROM mobile_contacts WHERE work_at=9223372036854775807")?
+        .query_map([], |r| r.get::<_, Vec<u8>>(0))?
+        .collect::<Result<Vec<_>, _>>()?;
+    for raw in ids {
+        let id: Id = raw.try_into().map_err(|_| Error::InvalidStore)?;
+        let mut contact = load_contact(tx, key, id)?;
+        if contact.blocked {
+            continue;
+        }
+        contact.work_at = 0;
+        let state = Zeroizing::new(serde_json::to_vec(&contact).map_err(|_| Error::InvalidStore)?);
+        tx.execute(
+            "UPDATE mobile_contacts SET work_at=0,state=?2 WHERE id=?1",
+            (id.as_slice(), key.seal(&state, &aad(&id))?),
+        )?;
+    }
+    Ok(())
+}
+fn load_contact(db: &rusqlite::Connection, key: &StorageKey, id: Id) -> Result<Contact, Error> {
+    let (at, bytes): (i64, Vec<u8>) = db
+        .query_row(
+            "SELECT work_at,state FROM mobile_contacts WHERE id=?1",
+            [id.as_slice()],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .optional()?
+        .ok_or(Error::NotFound)?;
+    if bytes.len() > 16384 {
+        return Err(Error::InvalidStore);
+    }
+    let value: Contact =
+        serde_json::from_slice(&key.open(&bytes, &aad(&id))?).map_err(|_| Error::InvalidStore)?;
+    if value.id() != id
+        || i64::try_from(value.work_at).ok() != Some(at)
+        || !sigil_protocol::valid_server_name(&value.server)
+        || !sigil_protocol::accounts::valid_username(&value.username)
+    {
+        return Err(Error::InvalidStore);
+    }
+    Ok(value)
+}
+
 impl ClientStore {
     fn contact(&self, id: Id) -> Result<Contact, Error> {
-        let (at, bytes): (i64, Vec<u8>) = self
-            .db
-            .query_row(
-                "SELECT work_at,state FROM mobile_contacts WHERE id=?1",
-                [id.as_slice()],
-                |r| Ok((r.get(0)?, r.get(1)?)),
-            )
-            .optional()?
-            .ok_or(Error::NotFound)?;
-        if bytes.len() > 16384 {
-            return Err(Error::InvalidStore);
-        }
-        let value: Contact = serde_json::from_slice(&self.key.open(&bytes, &aad(&id))?)
-            .map_err(|_| Error::InvalidStore)?;
-        if value.id() != id
-            || i64::try_from(value.work_at).ok() != Some(at)
-            || !sigil_protocol::valid_server_name(&value.server)
-            || !sigil_protocol::accounts::valid_username(&value.username)
-        {
-            return Err(Error::InvalidStore);
-        }
-        Ok(value)
+        load_contact(&self.db, &self.key, id)
     }
     fn save_contact(&mut self, value: &Contact) -> Result<(), Error> {
         let id = value.id();
@@ -115,6 +160,8 @@ impl ClientStore {
                 work_at: waiting(),
                 blocked: false,
                 block_pending: false,
+                review: None,
+                qr_fingerprint: None,
             }),
             Err(error) => Err(error),
         }
@@ -136,7 +183,8 @@ impl ClientStore {
         let contact = self.contact_for(peer)?;
         self.mobile_peers()?
             .into_iter()
-            .find(|p| p.binding.server == contact.server && p.binding.account == contact.account)
+            .filter(|p| p.binding.server == contact.server && p.binding.account == contact.account)
+            .max_by_key(|p| (p.active, p.trusted))
             .map(|p| p.id)
             .ok_or(Error::Unprepared)
     }
@@ -157,33 +205,59 @@ impl ClientStore {
             contact.id(),
         ))
     }
-    fn contact_peers(&mut self, contact: &Contact) -> Result<(), Error> {
-        let found =
-            self.discover_account_online(&format!("@{}:{}", contact.username, contact.server))?;
-        if found.account != transport::hex(&contact.account) {
-            return Err(Error::Conflict);
-        }
+    fn contact_peers(
+        &mut self,
+        contact: &mut Contact,
+        approval: Option<Id>,
+    ) -> Result<sigil_protocol::admin::ContactDirectory, Error> {
         let own = self.connection_session()?.ok_or(Error::Unprepared)?;
-        for device in &found.devices {
-            let result =
-                if own.address.split_once(':').ok_or(Error::InvalidStore)?.1 == contact.server {
-                    self.fetch_peer_online(id(device)?)
-                } else {
-                    self.fetch_remote_peer_online(&contact.server, id(device)?)
+        let network = self.connected_client()?;
+        let directory =
+            if own.address.split_once(':').ok_or(Error::InvalidStore)?.1 == contact.server {
+                network
+                    .contact_directory(&contact.username)
+                    .map_err(directory_error)?
+            } else {
+                let LookupValue::Service(raw) = network
+                    .federated_lookup(
+                        &own,
+                        &ProxyLookup {
+                            destination: contact.server.clone(),
+                            operation: Lookup::Service {
+                                service: Service::ContactDirectory {
+                                    username: contact.username.clone(),
+                                },
+                            },
+                        },
+                    )
+                    .map_err(directory_error)?
+                else {
+                    return Err(Error::InvalidStore);
                 };
-            let peer = match result {
-                Ok(peer) => peer,
-                Err(Error::Network(network::Error::Status { code: 403, .. })) => continue,
-                Err(error) => return Err(error),
+                serde_json::from_str(&raw).map_err(|_| Error::InvalidStore)?
             };
-            if peer.binding.username != contact.username
-                || peer.binding.server != contact.server
-                || peer.binding.account != contact.account
-            {
-                return Err(Error::Conflict);
+        contact.review = self.reconcile_contact_trust(
+            &directory,
+            (&contact.server, &contact.username, contact.account),
+            contact.accepted() && !contact.blocked,
+            approval,
+            conversations::now(),
+        )?;
+        self.save_contact(contact)?;
+        if contact.accepted() && contact.review.is_none() && !contact.blocked {
+            for peer in self.mobile_peers()?.into_iter().filter(|p| {
+                p.trusted
+                    && p.binding.server == contact.server
+                    && p.binding.account == contact.account
+            }) {
+                if contact.qr_fingerprint == Some(peer.fingerprint) && !peer.verified {
+                    self.confirm_peer(peer.id, peer.fingerprint)?;
+                }
+                self.allow_peer_sender_online(peer.id)?;
+                self.share_peer_profile(peer.id)?;
             }
         }
-        Ok(())
+        Ok(directory)
     }
     pub(super) fn mobile_find(&mut self, address: &str) -> Result<Value, Error> {
         let found = self.discover_account_online(address)?;
@@ -197,7 +271,7 @@ impl ClientStore {
             return Ok(json!({"open":"self"}));
         }
         let key = event::account_reference(server, &account);
-        let contact = match self.contact(key) {
+        let mut contact = match self.contact(key) {
             Ok(value) if value.username == username => value,
             Ok(_) => return Err(Error::Conflict),
             Err(Error::NotFound) => Contact {
@@ -212,11 +286,13 @@ impl ClientStore {
                 work_at: waiting(),
                 blocked: false,
                 block_pending: false,
+                review: None,
+                qr_fingerprint: None,
             },
             Err(error) => return Err(error),
         };
         self.save_contact(&contact)?;
-        self.contact_peers(&contact)?;
+        self.contact_peers(&mut contact, None)?;
         self.mobile_state()
     }
     pub(super) fn mobile_contact_chats(&mut self, chats: &mut Vec<Value>) -> Result<(), Error> {
@@ -242,7 +318,8 @@ impl ClientStore {
                     chats.len() - 1
                 }
             };
-            if contact.blocked {
+            chats[index]["identity_review"] = json!(contact.review.map(|v| transport::hex(&v)));
+            if contact.blocked || contact.review.is_some() {
                 chats[index]["verified"] = json!(false);
             }
             if contact.incoming.is_some() && !contact.blocked {
@@ -252,24 +329,28 @@ impl ClientStore {
                 "blocked"
             } else if contact.decision.is_some() {
                 "resolving"
+            } else if contact.accepted() {
+                "accepted"
             } else if let Some(incoming) = &contact.incoming {
                 match incoming.receipt.state {
-                    RequestState::Pending
+                    RequestState::Pending | RequestState::Declined
                         if incoming.receipt.expires_at <= conversations::now() =>
                     {
                         "expired"
                     }
                     RequestState::Pending => "incoming",
                     RequestState::Accepted => "accepted",
-                    RequestState::Declined | RequestState::Blocked => "declined",
+                    RequestState::Declined | RequestState::Blocked => "declined_incoming",
                 }
             } else if let Some(receipt) = &contact.receipt {
                 match receipt.state {
                     RequestState::Accepted => "accepted",
-                    RequestState::Declined | RequestState::Blocked => "declined",
-                    RequestState::Pending if receipt.expires_at <= conversations::now() => {
+                    RequestState::Pending | RequestState::Declined
+                        if receipt.expires_at <= conversations::now() =>
+                    {
                         "expired"
                     }
+                    RequestState::Declined | RequestState::Blocked => "declined",
                     _ => "pending",
                 }
             } else if contact.outgoing.is_some() {
@@ -279,6 +360,18 @@ impl ClientStore {
             });
         }
         Ok(())
+    }
+    pub(super) fn mobile_accept_identity(
+        &mut self,
+        peer: &str,
+        expected: Id,
+    ) -> Result<Value, Error> {
+        let mut contact = self.contact_for(peer)?;
+        if contact.review != Some(expected) || contact.blocked {
+            return Err(Error::Conflict);
+        }
+        self.contact_peers(&mut contact, Some(expected))?;
+        self.mobile_state()
     }
     pub(super) fn mobile_request(&mut self, peer: &str, action: &str) -> Result<Value, Error> {
         if action == "block" {
@@ -292,11 +385,20 @@ impl ClientStore {
         match action {
             "send" => {
                 if contact
+                    .incoming
+                    .as_ref()
+                    .is_some_and(|r| r.receipt.expires_at <= now)
+                {
+                    contact.incoming = None;
+                    contact.decision = None;
+                }
+                if contact
                     .outgoing
                     .as_ref()
                     .is_none_or(|r| r.expires_at <= now)
                 {
                     let mut request = RequestContact {
+                        invitation: None,
                         server: contact.server.clone(),
                         recipient: transport::hex(&contact.account),
                         expires_at: now.checked_add(604800).ok_or(Error::Limit)?,
@@ -317,7 +419,8 @@ impl ClientStore {
             }
             "accept" | "decline" | "block" => {
                 let incoming = contact.incoming.as_ref().ok_or(Error::NotFound)?;
-                if incoming.receipt.state != RequestState::Pending
+                if (incoming.receipt.state != RequestState::Pending
+                    && !(action == "accept" && incoming.receipt.state == RequestState::Declined))
                     || incoming.receipt.expires_at <= now
                 {
                     return Err(Error::Expired);
@@ -400,11 +503,12 @@ impl ClientStore {
             return self.save_contact(&contact);
         }
         if contact.decision.is_none() {
-            if let Some(incoming) = contact
-                .incoming
-                .as_mut()
-                .filter(|r| r.receipt.state == RequestState::Pending && r.receipt.expires_at > now)
-            {
+            if let Some(incoming) = contact.incoming.as_mut().filter(|r| {
+                matches!(
+                    r.receipt.state,
+                    RequestState::Pending | RequestState::Declined
+                ) && r.receipt.expires_at > now
+            }) {
                 match network.incoming_contact_status(&incoming.receipt.id, &incoming.signature) {
                     Ok(receipt) => {
                         if receipt.id != incoming.receipt.id
@@ -507,18 +611,19 @@ impl ClientStore {
                 .as_ref()
                 .is_some_and(|r| r.receipt.state == RequestState::Accepted);
         if accepted {
-            self.contact_peers(&contact)?;
+            self.contact_peers(&mut contact, None)?;
         }
         let pending = contact.incoming.as_ref().is_some_and(|r| {
-            r.receipt.state == RequestState::Pending && r.receipt.expires_at > now
+            matches!(
+                r.receipt.state,
+                RequestState::Pending | RequestState::Declined
+            ) && r.receipt.expires_at > now
+        }) || contact.receipt.as_ref().is_some_and(|r| {
+            matches!(r.state, RequestState::Pending | RequestState::Declined) && r.expires_at > now
         }) || contact
-            .receipt
+            .outgoing
             .as_ref()
-            .is_some_and(|r| r.state == RequestState::Pending && r.expires_at > now)
-            || contact
-                .outgoing
-                .as_ref()
-                .is_some_and(|r| contact.receipt.is_none() && r.expires_at > now);
+            .is_some_and(|r| contact.receipt.is_none() && r.expires_at > now);
         let need_keys = accepted
             && contact
                 .receipt
@@ -531,7 +636,7 @@ impl ClientStore {
                 .mobile_peer(&contact.display())
                 .and_then(|p| self.mobile_recipients(p))
                 .is_err();
-        if !pending && !need_keys {
+        if !pending && !need_keys && !accepted {
             contact.work_at = waiting();
         }
         self.save_contact(&contact)
@@ -540,6 +645,7 @@ impl ClientStore {
         let own = self.connection_session()?.ok_or(Error::Unprepared)?;
         let home = own.address.split_once(':').ok_or(Error::InvalidStore)?.1;
         let request = RequestContact {
+            invitation: incoming.invitation.clone(),
             server: home.into(),
             recipient: own.account_id.clone(),
             expires_at: incoming.receipt.expires_at,
@@ -589,6 +695,8 @@ impl ClientStore {
                 work_at: waiting(),
                 blocked: false,
                 block_pending: false,
+                review: None,
+                qr_fingerprint: None,
             },
             Err(error) => return Err(error),
         };
@@ -612,6 +720,10 @@ impl ClientStore {
         }
         if incoming.receipt.state == RequestState::Pending {
             contact.work_at = contact.work_at.min(now.saturating_add(60));
+        }
+        if self.contact_invite_matches(&incoming, now)? {
+            contact.decision = Some(RequestState::Accepted);
+            contact.work_at = now;
         }
         contact.incoming = Some(incoming);
         self.save_contact(&contact)
@@ -676,3 +788,6 @@ impl ClientStore {
 #[cfg(test)]
 #[path = "mobile_contact_tests.rs"]
 mod tests;
+
+#[path = "contact_qr.rs"]
+mod qr;

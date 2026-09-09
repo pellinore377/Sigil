@@ -52,18 +52,22 @@ import sigil.shared.generated.resources.*
 
 @Composable
 internal fun Symbol(name: String, label: String, action: () -> Unit) {
-    IconButton(action, Modifier.semantics { contentDescription = label }) {
+    SigilIconButton(action, Modifier.semantics { contentDescription = label }) {
         Glyph(name)
     }
 }
 internal fun Modifier.footerShadow() = drawWithContent {
     clipRect(top = -12.dp.toPx(), bottom = size.height) { this@drawWithContent.drawContent() }
 }.shadow(2.dp, RoundedCornerShape(topStart = 24.dp, topEnd = 24.dp), clip = false)
-internal fun Modifier.headerShadow(shape: Shape = RectangleShape) = drawWithContent {
+internal fun Modifier.headerShadow(shape: Shape = RectangleShape, elevation: androidx.compose.ui.unit.Dp = 2.dp) = drawWithContent {
     clipRect(top = 0f, bottom = size.height + 12.dp.toPx()) { this@drawWithContent.drawContent() }
-}.shadow(2.dp, shape, clip = false)
+}.shadow(elevation, shape, clip = false)
+@Composable
+internal fun pageHeaderHeight() = with(androidx.compose.ui.platform.LocalDensity.current) { maxOf(76.dp, MaterialTheme.typography.displaySmall.lineHeight.toDp() + 24.dp, MaterialTheme.typography.titleLarge.lineHeight.toDp() + MaterialTheme.typography.bodyMedium.lineHeight.toDp() + 16.dp) }
+internal val LocalPageHeader = staticCompositionLocalOf { false }
 @Composable
 internal fun Header(title: String, back: (() -> Unit)? = null, action: @Composable RowScope.() -> Unit = {}) {
+    if (LocalPageHeader.current) return
     Surface(Modifier.headerShadow(), color = MaterialTheme.colorScheme.surface) {
     Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 12.dp), verticalAlignment = Alignment.CenterVertically) {
         if (back != null) Symbol("arrow_back", "Back", back)
@@ -117,10 +121,10 @@ internal fun SignIn(state: MessengerState, command: (String, Map<String, Any?>) 
         state.discoveryIssue?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
         AnimatedVisibility(methods != null && state.phase == "new", enter = fadeIn() + expandVertically(), exit = fadeOut() + shrinkVertically()) {
             Column(verticalArrangement = Arrangement.spacedBy(16.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-                if (methods?.sso == true) Button({ command("oidc", mapOf("server" to methods.server, "username" to null, "label" to "Android", "replace_devices" to false)) },
+                if (methods?.sso == true) SigilButton({ command("oidc", mapOf("server" to methods.server, "username" to null, "label" to "Android", "replace_devices" to false)) },
                     enabled = !state.busy, modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(14.dp)) { Text("Sign in with SSO") }
-                if (methods?.password == true && !passwordForm) OutlinedButton({ method = "password" }, enabled = !state.busy, modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(14.dp)) { Text("Sign in with password") }
-                if (methods?.invitation == true && method != "invitation") TextButton({ method = "invitation" }, enabled = !state.busy) { Text("Use an invitation") }
+                if (methods?.password == true && !passwordForm) SigilOutlinedButton({ method = "password" }, enabled = !state.busy, modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(14.dp)) { Text("Sign in with password") }
+                if (methods?.invitation == true && method != "invitation") SigilTextButton({ method = "invitation" }, enabled = !state.busy) { Text("Use an invitation") }
                 if (methods != null && !methods.sso && !methods.password && !methods.invitation) Text("This server has no sign-in methods enabled.", style = MaterialTheme.typography.bodySmall)
             }
         }
@@ -129,26 +133,26 @@ internal fun SignIn(state: MessengerState, command: (String, Map<String, Any?>) 
                 OutlinedTextField(username, { username = it }, Modifier.fillMaxWidth(), label = { Text("Username") }, singleLine = true, enabled = !state.busy)
                 OutlinedTextField(password, { password = it }, Modifier.fillMaxWidth(), label = { Text("Password") }, singleLine = true, enabled = !state.busy,
                     visualTransformation = PasswordVisualTransformation(), keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done), keyboardActions = KeyboardActions(onDone = { submitPassword() }))
-                Button(submitPassword, enabled = ready, modifier = Modifier.fillMaxWidth()) { Text("Sign in") }
+                SigilButton(submitPassword, enabled = ready, modifier = Modifier.fillMaxWidth()) { Text("Sign in") }
             }
         }
         if (method == "invitation" && methods?.invitation == true) {
             OutlinedTextField(invitation, { invitation = it }, Modifier.fillMaxWidth(), label = { Text("Invitation") }, singleLine = true, enabled = !state.busy)
-            Button({ command("enroll", mapOf("server" to methods.server, "invitation" to invitation.trim(), "label" to "Android")) }, enabled = !state.busy && invitation.isNotBlank()) { Text("Continue") }
+            SigilButton({ command("enroll", mapOf("server" to methods.server, "invitation" to invitation.trim(), "label" to "Android")) }, enabled = !state.busy && invitation.isNotBlank()) { Text("Continue") }
         }
         if (state.phase == "username") {
             Text("Choose your Sigil username", style = MaterialTheme.typography.headlineSmall)
             Text("Your SSO account is verified. Choose an available name for this server.", style = MaterialTheme.typography.bodyMedium)
             OutlinedTextField(username, { username = it }, Modifier.fillMaxWidth(), label = { Text("Username") }, singleLine = true, enabled = !state.busy)
-            Button({ command("username", mapOf("username" to username.trim())) }, enabled = !state.busy && username.isNotBlank()) { Text("Continue") }
+            SigilButton({ command("username", mapOf("username" to username.trim())) }, enabled = !state.busy && username.isNotBlank()) { Text("Continue") }
         }
         if (state.phase !in listOf("new", "password", "username")) {
             Text("Finish signing in with your server.", style = MaterialTheme.typography.bodyMedium)
-            Button({ command("resume", emptyMap()) }, enabled = !state.busy) { Text("Continue sign-in") }
+            SigilButton({ command("resume", emptyMap()) }, enabled = !state.busy) { Text("Continue sign-in") }
         }
-        TextButton({ command("device_link", mapOf("action" to "join")) }, enabled = !state.busy) { Text("Link to an existing device") }
-        if (methods != null || state.phase != "new") TextButton({ command("recovery_account_open", emptyMap()) }, enabled = !state.busy) { Text("Recover a lost account") }
-        if (state.phase != "new") TextButton({ command("cancel_login", emptyMap()) }, enabled = !state.busy) { Text("Back to sign-in choices") }
+        SigilTextButton({ command("device_link", mapOf("action" to "join")) }, enabled = !state.busy) { Text("Link to an existing device") }
+        if (methods != null || state.phase != "new") SigilTextButton({ command("recovery_account_open", emptyMap()) }, enabled = !state.busy) { Text("Recover a lost account") }
+        if (state.phase != "new") SigilTextButton({ command("cancel_login", emptyMap()) }, enabled = !state.busy) { Text("Back to sign-in choices") }
     }
 }
 @Composable

@@ -30,6 +30,7 @@ pub(crate) fn request(
         )
         .unwrap();
     let mut request = RequestContact {
+        invitation: None,
         server: "chat.example".into(),
         recipient: recipient.into(),
         expires_at: now + 600,
@@ -394,7 +395,7 @@ fn recipient_capacity_pagination_and_expiry_are_bounded() {
     // Occupy the remaining recipient slots; all rows retain their storage charge.
     for index in 1..64 {
         let id = format!("{index:064x}");
-        store.0.execute("INSERT INTO contact_requests SELECT ?1,recipient,origin,?1,device,binding,signature,created_at,expires_at,state FROM contact_requests WHERE id=?2",(&id,&first.id)).unwrap();
+        store.0.execute("INSERT INTO contact_requests SELECT ?1,recipient,origin,?1,device,binding,signature,created_at,expires_at,state,invitation FROM contact_requests WHERE id=?2",(&id,&first.id)).unwrap();
         store
             .0
             .execute(
@@ -483,4 +484,50 @@ fn a_delayed_decision_cannot_accept_a_replacement_request() {
             .state,
         RequestState::Accepted
     );
+}
+
+#[test]
+fn directory_is_authenticated_and_schema_32_requests_remain_valid() {
+    let (dir, mut store, alice, bob, now) = crate::admin::tests::setup();
+    let account = store.session(&bob, now).unwrap().account_id;
+    let (_, request) = request(&mut store, &alice, &account, now);
+    let queued = store.request_contact(&alice, request.clone(), now).unwrap();
+    assert!(store
+        .contact_directory(&"00".repeat(32), "alice", now)
+        .is_err());
+    let directory = store.contact_directory(&bob, "alice", now).unwrap();
+    assert!(directory.account.valid_for("alice", "chat.example"));
+    assert_eq!(directory.bindings, vec![request.binding.clone()]);
+    assert!(directory.links.is_empty());
+    store
+        .discovery_preference(
+            &alice,
+            Some(sigil_protocol::admin::DiscoveryPreference {
+                revision: 0,
+                discoverable: false,
+            }),
+            now,
+        )
+        .unwrap();
+    assert!(matches!(
+        store.contact_directory(&bob, "alice", now),
+        Err(StoreError::NotFound)
+    ));
+    store
+        .0
+        .execute_batch(
+            "ALTER TABLE contact_requests DROP COLUMN invitation; PRAGMA user_version=32;",
+        )
+        .unwrap();
+    drop(store);
+    let mut store = Store::open(&dir.path().join("sigil.db")).unwrap();
+    assert_eq!(
+        store.contact_request_status(&alice, &account, now).unwrap(),
+        queued
+    );
+    assert!(store.contact_requests(&bob, None, now).unwrap().requests[0]
+        .invitation
+        .is_none());
+    let json = serde_json::to_string(&request).unwrap();
+    assert!(!json.contains("invitation"));
 }

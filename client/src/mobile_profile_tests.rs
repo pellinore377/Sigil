@@ -195,7 +195,7 @@ fn schema_74_photo_migration_preserves_pending_choices_and_rolls_back_on_failure
         .db
         .execute("UPDATE mobile_photo_upload SET state=?1", [&old_upload])
         .unwrap();
-    alice.db.execute_batch("PRAGMA user_version=74; CREATE TRIGGER fail_photo_migration BEFORE UPDATE ON mobile_photo_upload BEGIN SELECT RAISE(ABORT,'synthetic'); END").unwrap();
+    alice.db.execute_batch("DROP TABLE mobile_contact_invite; PRAGMA user_version=74; CREATE TRIGGER fail_photo_migration BEFORE UPDATE ON mobile_photo_upload BEGIN SELECT RAISE(ABORT,'synthetic'); END").unwrap();
     drop(alice);
     let path = dir.path().join("alice.db");
     let open = || {

@@ -312,7 +312,7 @@ impl ClientStore {
             .filter(|name| !name.is_empty()))
     }
     pub(super) fn share_peer_profile(&self, peer: Id) -> Result<(), Error> {
-        let peer = peers::verified(&self.db, &self.key, &peer)?;
+        let peer = peers::trusted(&self.db, &self.key, &peer)?;
         let own = self.connection_session()?.ok_or(Error::Unprepared)?;
         if own.account_id == transport::hex(&peer.binding.account)
             && own.address.split_once(':').ok_or(Error::InvalidStore)?.1 == peer.binding.server

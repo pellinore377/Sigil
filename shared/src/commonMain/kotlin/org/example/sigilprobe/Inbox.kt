@@ -26,14 +26,14 @@ import kotlinx.coroutines.delay
 @Composable
 internal fun InboxFab(visible: Boolean, modifier: Modifier, create: () -> Unit) {
     AnimatedVisibility(visible, modifier, enter = slideInVertically(tween(MotionMillis)) { it } + fadeIn(), exit = slideOutVertically(tween(MotionMillis)) { it } + fadeOut()) {
-        FloatingActionButton(create, Modifier.padding(20.dp), shape = RoundedCornerShape(18.dp), containerColor = MaterialTheme.colorScheme.inverseSurface, contentColor = MaterialTheme.colorScheme.inverseOnSurface) { Glyph("edit_square", 27, "New conversation") }
+        FloatingActionButton(create, Modifier.padding(20.dp), shape = RoundedCornerShape(18.dp), containerColor = MaterialTheme.colorScheme.primary, contentColor = MaterialTheme.colorScheme.onPrimary) { Glyph("edit_square", 27, "New conversation") }
     }
 }
 
 @Composable
 internal fun MainHeader(page: String, goingBack: Boolean, query: String, update: (String) -> Unit, selected: Set<String>, state: MessengerState, command: Command,
     clear: () -> Unit, collections: () -> Unit, search: () -> Unit, notes: () -> Unit, back: () -> Unit) {
-    val height = maxOf(76.dp, with(LocalDensity.current) { MaterialTheme.typography.displaySmall.lineHeight.toDp() } + 24.dp)
+    val height = pageHeaderHeight()
     Box(Modifier.fillMaxWidth().height(height).clipToBounds()) {
         AnimatedContent(if (page in listOf("calls", "settings")) page else "inbox", transitionSpec = {
             (slideInHorizontally(tween(160, delayMillis = 80)) { if (goingBack) -it else it } + fadeIn(tween(160, delayMillis = 80))) togetherWith
@@ -82,7 +82,7 @@ private fun InboxHeader(page: String, height: Dp, query: String, update: (String
             AnimatedVisibility(!opened, Modifier.align(Alignment.CenterEnd), enter = fadeIn(tween(MotionMillis)), exit = fadeOut(tween(120))) { Symbol("description", "Conversation notes", notes) }
             AnimatedVisibility(opened, Modifier.align(Alignment.CenterStart).padding(start = 56.dp, end = 8.dp).fillMaxWidth(), enter = fadeIn(tween(MotionMillis)), exit = fadeOut(tween(100))) {
               BasicTextField(query, update, Modifier.fillMaxWidth().focusRequester(focus),
-                singleLine = true, textStyle = MaterialTheme.typography.titleMedium.copy(color = MaterialTheme.colorScheme.onBackground),
+                cursorBrush = androidx.compose.ui.graphics.SolidColor(MaterialTheme.colorScheme.primary), singleLine = true, textStyle = MaterialTheme.typography.titleMedium.copy(color = MaterialTheme.colorScheme.onBackground),
                 decorationBox = { inner -> Box { if (query.isEmpty()) Text(if (page == "notes") "Search notes" else "Search all conversations", color = MaterialTheme.colorScheme.onSurfaceVariant, style = MaterialTheme.typography.titleMedium); inner() } })
             }
         }
@@ -97,8 +97,8 @@ internal fun Inbox(state: MessengerState, collection: String, choose: (String) -
                 items(listOf(CollectionItem("", "All", "apps")) + state.collections, key = { it.id }) { item ->
                     val active = item.id == collection
                     Surface(Modifier.widthIn(min = 64.dp).clickable { choose(item.id) }, shape = RoundedCornerShape(10.dp),
-                        color = if (active) MaterialTheme.colorScheme.inverseSurface else MaterialTheme.colorScheme.background,
-                        contentColor = if (active) MaterialTheme.colorScheme.inverseOnSurface else MaterialTheme.colorScheme.onSurfaceVariant,
+                        color = if (active) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.background,
+                        contentColor = if (active) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurfaceVariant,
                         border = if (active) null else BorderStroke(0.5.dp, MaterialTheme.colorScheme.outlineVariant)) {
                         Column(Modifier.padding(12.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(4.dp)) {
                             Glyph(item.icon, 25); if (read("collection_labels") != "false") Text(item.name, style = MaterialTheme.typography.bodyMedium)
@@ -121,16 +121,18 @@ internal fun Inbox(state: MessengerState, collection: String, choose: (String) -
 @Composable
 internal fun ChatRow(chat: ChatSummary, selected: Boolean = false, modifier: Modifier = Modifier, open: () -> Unit, hold: () -> Unit = {}) {
     Row(modifier.fillMaxWidth().combinedClickable(onClick = open, onLongClick = hold).padding(horizontal = 20.dp, vertical = 11.dp), verticalAlignment = Alignment.CenterVertically) {
-        if (selected) Surface(Modifier.size(48.dp), shape = CircleShape, color = MaterialTheme.colorScheme.inverseSurface, contentColor = MaterialTheme.colorScheme.inverseOnSurface) { Box(contentAlignment = Alignment.Center) { Glyph("check", 26) } }
+        if (selected) Surface(Modifier.size(48.dp), shape = CircleShape, color = MaterialTheme.colorScheme.primary, contentColor = MaterialTheme.colorScheme.onPrimary) { Box(contentAlignment = Alignment.Center) { Glyph("check", 26) } }
         else PresenceAvatar(chat)
         Column(Modifier.weight(1f).padding(horizontal = 12.dp), verticalArrangement = Arrangement.spacedBy(2.dp)) {
             Text(chat.name, style = MaterialTheme.typography.titleLarge, maxLines = 1, overflow = TextOverflow.Ellipsis)
             Text(if (chat.typing.isNotEmpty()) "Typing…" else chat.preview, maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
         Column(horizontalAlignment = Alignment.End, verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            if (chat.request == "incoming") RequestChip("Request")
+            else if (chat.request in listOf("pending", "sending")) RequestChip("Pending", "schedule")
             Text(chat.time, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                if (chat.unread > 0) Surface(shape = RoundedCornerShape(6.dp), color = MaterialTheme.colorScheme.inverseSurface, contentColor = MaterialTheme.colorScheme.inverseOnSurface) { Text(chat.unread.toString(), Modifier.padding(horizontal = 6.dp), style = MaterialTheme.typography.labelMedium) }
+                if (chat.unread > 0) Surface(shape = RoundedCornerShape(6.dp), color = MaterialTheme.colorScheme.primary, contentColor = MaterialTheme.colorScheme.onPrimary) { Text(chat.unread.toString(), Modifier.padding(horizontal = 6.dp), style = MaterialTheme.typography.labelMedium) }
                 if (chat.snoozed) Glyph("snooze", 17, "Snoozed")
                 if (chat.pinned) Glyph("push_pin", 17, "Pinned conversation")
             }
@@ -165,7 +167,7 @@ internal fun SearchPage(state: MessengerState, query: String, category: String, 
                     Column(Modifier.fillMaxWidth().padding(20.dp)) {
                         Text("Group invitation", style = MaterialTheme.typography.titleMedium)
                         Text("From ${state.chats.find { it.id == invitation.peer }?.name ?: "a contact"}")
-                        Row { TextButton({ command("group_invitation", mapOf("invitation" to invitation.id, "accept" to false)) }) { Text("Decline") }; Button({ command("group_invitation", mapOf("invitation" to invitation.id, "accept" to true)) }) { Text("Accept") } }
+                        Row { SigilTextButton({ command("group_invitation", mapOf("invitation" to invitation.id, "accept" to false)) }) { Text("Decline") }; SigilButton({ command("group_invitation", mapOf("invitation" to invitation.id, "accept" to true)) }) { Text("Accept") } }
                     }
                 }
                 if (category in listOf("", "Conversations", "Unread", "Pinned")) items(state.chats.filter { chat -> !chat.hidden && chat.name.contains(query, true) && when(category) { "Unread" -> chat.unread > 0; "Pinned" -> chat.pinned; else -> true } }, key = { "chat:${it.id}" }) { chat -> ChatRow(chat, open = { open(chat.id) }) }
@@ -175,7 +177,7 @@ internal fun SearchPage(state: MessengerState, query: String, category: String, 
                         Text(hit.text, maxLines = 3, overflow = TextOverflow.Ellipsis); Text(hit.time, style = MaterialTheme.typography.labelSmall)
                     }
                 }
-                if (state.searchMore) item { TextButton({ command("search_more", emptyMap()) }, Modifier.fillMaxWidth(), enabled = !state.searching) { Text("More results") } }
+                if (state.searchMore) item { SigilTextButton({ command("search_more", emptyMap()) }, Modifier.fillMaxWidth(), enabled = !state.searching) { Text("More results") } }
             }
         }
     }
@@ -197,7 +199,7 @@ internal fun NotesGrid(state: MessengerState, query: String, read: (String) -> S
                     }
                 }
             }
-            if (state.searchMore) item(span = { GridItemSpan(maxLineSpan) }) { TextButton({ command("search_more", emptyMap()) }, enabled = !state.searching) { Text("More notes") } }
+            if (state.searchMore) item(span = { GridItemSpan(maxLineSpan) }) { SigilTextButton({ command("search_more", emptyMap()) }, enabled = !state.searching) { Text("More notes") } }
         }
         if (chats.isEmpty()) Text(if (state.searching) "Finding notes…" else "Your conversation notes will appear here.", Modifier.align(Alignment.Center).padding(32.dp))
     }
@@ -209,12 +211,12 @@ internal fun CollectionSheet(state: MessengerState, selected: Set<String>, comma
         Text("Add to collection", Modifier.padding(horizontal = 24.dp), style = MaterialTheme.typography.headlineSmall)
         if (creating) Column(Modifier.padding(24.dp)) {
             OutlinedTextField(name, { name = it }, label = { Text("Collection name") }, singleLine = true)
-            LazyVerticalGrid(GridCells.Fixed(5), Modifier.height(160.dp)) { items(listOf("folder", "group", "work", "home", "menu_book", "favorite", "school", "music_note", "sports_esports", "pets")) { symbol -> IconButton({ icon = symbol }) { Glyph(symbol, 26) } } }
+            LazyVerticalGrid(GridCells.Fixed(5), Modifier.height(160.dp)) { items(listOf("folder", "group", "work", "home", "menu_book", "favorite", "school", "music_note", "sports_esports", "pets")) { symbol -> SigilIconButton({ icon = symbol }) { Glyph(symbol, 26) } } }
             OutlinedTextField(icon, { icon = it }, label = { Text("Icon or emoji") }, singleLine = true)
-            Button({ command("create_collection", mapOf("name" to name.trim(), "icon" to icon, "peers" to selected.toList())); close() }, enabled = name.isNotBlank()) { Text("Create collection") }
+            SigilButton({ command("create_collection", mapOf("name" to name.trim(), "icon" to icon, "peers" to selected.toList())); close() }, enabled = name.isNotBlank()) { Text("Create collection") }
         } else {
-            LazyVerticalGrid(GridCells.Fixed(3), Modifier.heightIn(max = 320.dp).padding(16.dp)) { items(state.collections) { c -> TextButton({ selected.forEach { command("organize", mapOf("peer" to it, "value" to mapOf("CollectionMember" to mapOf("id" to c.id, "present" to true)))) }; close() }) { Column(horizontalAlignment = Alignment.CenterHorizontally) { Glyph(c.icon, 28); Text(c.name) } } } }
-            TextButton({ creating = true }, Modifier.fillMaxWidth().padding(16.dp)) { Text("New collection") }
+            LazyVerticalGrid(GridCells.Fixed(3), Modifier.heightIn(max = 320.dp).padding(16.dp)) { items(state.collections) { c -> SigilTextButton({ selected.forEach { command("organize", mapOf("peer" to it, "value" to mapOf("CollectionMember" to mapOf("id" to c.id, "present" to true)))) }; close() }) { Column(horizontalAlignment = Alignment.CenterHorizontally) { Glyph(c.icon, 28); Text(c.name) } } } }
+            SigilTextButton({ creating = true }, Modifier.fillMaxWidth().padding(16.dp)) { Text("New collection") }
         }
     }
 }

@@ -149,7 +149,7 @@ fn retained_recovery_controls_journals_and_proofs_cross_old_limits() {
         .unwrap()
         .is_empty());
     assert!(bob.accept_delivery(&response).unwrap().duplicate);
-    assert!(bob.peer(a).unwrap().verified);
+    assert!(bob.peer(a).unwrap().trusted);
     let journal = alice.reclaim_retry_journals(now).unwrap();
     assert_eq!((journal.scanned, journal.reclaimed), (16, 15));
     let cleanup = alice.reclaim_accepted_retry_controls(now).unwrap();

@@ -72,7 +72,7 @@ mod outbound;
 pub use outbound::OutboundAttempt;
 
 pub type Id = [u8; 32];
-pub const DATABASE_VERSION: u32 = 75;
+pub const DATABASE_VERSION: u32 = 76;
 #[derive(Debug)]
 pub enum Error {
     Storage(rusqlite::Error),
@@ -89,6 +89,7 @@ pub enum Error {
     /// Authenticated retained content was deleted or superseded.
     Obsolete,
     Unprepared,
+    DirectoryUnavailable,
     UnsupportedSession,
     RetiredSession,
     Network(network::Error),
@@ -349,6 +350,7 @@ impl ClientStore {
             // Structured cards add authenticated account origins to rich content.
             tx.pragma_update(None, "user_version", 51)?;
         }
+
         if version < 52 {
             tx.execute_batch(structured::MIGRATION)?;
         }
@@ -438,6 +440,10 @@ impl ClientStore {
                 groups::migrate_structured(&tx, &key)?;
             }
             recovery::migrate_structured(&tx, &key)?;
+        }
+        if version < 76 {
+            tx.execute_batch("CREATE TABLE mobile_contact_invite(id INTEGER PRIMARY KEY CHECK(id=1),state BLOB NOT NULL); PRAGMA user_version=76;")?;
+            mobile::contacts::migrate_work(&tx, &key)?;
         }
         if version < 63 {
             conversations::migrate(&tx, &key)?;

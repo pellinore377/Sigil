@@ -92,3 +92,11 @@ impl FoundAccount {
                 .all(|d| crate::accounts::valid_credential(d))
     }
 }
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct ContactDirectory {
+    pub account: FoundAccount,
+    pub bindings: Vec<String>,
+    pub links: Vec<String>,
+}

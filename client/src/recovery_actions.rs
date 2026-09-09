@@ -79,7 +79,7 @@ impl ClientStore {
             Err(_) => return RecoveryAdvice::Refused(RecoveryBlock::Trust),
         };
         let known = match peers::known(&self.db, &self.key, &peer) {
-            Ok(v) if v.verified => v,
+            Ok(v) if v.trusted => v,
             Ok(_) | Err(Error::NotFound | Error::Unprepared | Error::Conflict) => {
                 return RecoveryAdvice::Refused(RecoveryBlock::Trust)
             }

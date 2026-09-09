@@ -75,7 +75,7 @@ impl Context {
         body: Content<'_>,
         timestamp: u64,
     ) -> Result<Zeroizing<Vec<u8>>, Error> {
-        if !self.peer.verified {
+        if !self.peer.trusted {
             return Err(Error::Unprepared);
         }
         crate::conversations::validate(body, &message, &self.own)?;

@@ -86,13 +86,13 @@ fun AdminApp() {
                     if (status?.flag("authenticated") == true) HeaderAccount(checkNotNull(status), busy,
                         { accountOpen = true; appearanceOpen = false },
                         { run { api("/auth/v0/admin/logout", "POST"); accountOpen = false; appearanceOpen = false } })
-                    else TextButton(onClick = { appearanceOpen = true }) { Text("Appearance") }
+                    else SigilTextButton(onClick = { appearanceOpen = true }) { Text("Appearance") }
                 }
                 HorizontalDivider(Modifier.padding(top = 18.dp, bottom = 32.dp))
                 if (error.isNotEmpty()) Text(error, color = MaterialTheme.colorScheme.error, modifier = Modifier.widthIn(max = 680.dp).padding(bottom = 24.dp))
                 val current = status
                 if (appearanceOpen) AdminAppearance(appearance, { appearanceOpen = false }) { appearance = it; window.localStorage.setItem("appearance", it.encode()) }
-                else if (current == null) { Text(if (busy) "Opening your server…" else "Your server is unavailable."); if (!busy) TextButton(onClick = { run {} }) { Text("Retry") } }
+                else if (current == null) { Text(if (busy) "Opening your server…" else "Your server is unavailable."); if (!busy) SigilTextButton(onClick = { run {} }) { Text("Retry") } }
                 else if (!current.flag("claimed")) ClaimPage(busy, run)
                 else if (!current.flag("authenticated")) LoginPage(current, busy, run)
                 else if (!current.flag("complete")) IdentityPage(current, busy, run)
@@ -115,7 +115,7 @@ private fun Page(title: String, subtitle: String, content: @Composable ColumnSco
 }
 @Composable
 private fun Action(label: String, enabled: Boolean, action: () -> Unit) {
-    Button(action, Modifier.heightIn(min = 48.dp), enabled = enabled, shape = RoundedCornerShape(10.dp)) { Text(label) }
+    SigilButton(action, Modifier.heightIn(min = 48.dp), enabled = enabled, shape = RoundedCornerShape(10.dp)) { Text(label) }
 }
 @Composable
 private fun ClaimPage(busy: Boolean, run: (suspend () -> Unit) -> Unit) {
@@ -162,7 +162,7 @@ private fun IdentityPage(status: JsonElement, busy: Boolean, run: (suspend () ->
         if (step != "local" && !status.flag("oidc_linked")) {
             if (step == "provider") {
                 OidcForm(status, busy, run, onSaved = { step = "choose" })
-                TextButton(enabled = !busy, onClick = { step = if (status.flag("oidc_enabled")) "choose" else "local" }) {
+                SigilTextButton(enabled = !busy, onClick = { step = if (status.flag("oidc_enabled")) "choose" else "local" }) {
                     Text(if (status.flag("oidc_enabled")) "Back to account options" else "Continue with a local administrator")
                 }
             } else {
@@ -178,7 +178,7 @@ private fun IdentityPage(status: JsonElement, busy: Boolean, run: (suspend () ->
                     if (maxWidth >= 560.dp) Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) { choices(Modifier.weight(1f)) }
                     else Column(verticalArrangement = Arrangement.spacedBy(16.dp)) { choices(Modifier.fillMaxWidth()) }
                 }
-                TextButton(enabled = !busy, onClick = { step = "provider" }) { Text("Edit identity provider") }
+                SigilTextButton(enabled = !busy, onClick = { step = "provider" }) { Text("Edit identity provider") }
             }
         } else {
             if (status.flag("oidc_linked")) Text("Your identity provider is linked. Confirm your Sigil username.")
@@ -187,7 +187,7 @@ private fun IdentityPage(status: JsonElement, busy: Boolean, run: (suspend () ->
             Field("Display name · optional", displayName, { displayName = it }, enabled = !busy, onSubmit = submit)
             Text("You can change your display name later. Your Sigil address stays the same.", style = MaterialTheme.typography.bodySmall)
             Action("Open my dashboard", ready, submit)
-            if (!status.flag("oidc_linked")) TextButton(enabled = !busy, onClick = { step = if (status.flag("oidc_enabled")) "choose" else "provider" }) { Text("Back") }
+            if (!status.flag("oidc_linked")) SigilTextButton(enabled = !busy, onClick = { step = if (status.flag("oidc_enabled")) "choose" else "provider" }) { Text("Back") }
         }
     }
 }
@@ -248,7 +248,7 @@ private fun OidcForm(status: JsonElement, busy: Boolean, run: (suspend () -> Uni
         Text("Identity provider saved.", style = MaterialTheme.typography.headlineSmall)
         Text(configuration?.text("issuer").orEmpty())
         Text(if (configuration?.flag("secret_configured") == true) "Client secret saved. It is never displayed again." else "Public client · no client secret.", style = MaterialTheme.typography.bodySmall)
-        TextButton(enabled = !busy, onClick = { editing = true }) { Text("Edit identity provider") }
+        SigilTextButton(enabled = !busy, onClick = { editing = true }) { Text("Edit identity provider") }
     }
     if (onSaved == null && status.flag("oidc_enabled") && !editing) Action(if (status.flag("oidc_linked")) "Verify identity again" else "Link my administrator identity", !busy) { run {
         val result = api("/auth/v0/admin/oidc", "POST"); window.location.assign(result.text("authorization_url"))
@@ -260,7 +260,7 @@ private fun OidcForm(status: JsonElement, busy: Boolean, run: (suspend () -> Uni
             api("/auth/v0/admin/oidc/unlink", "POST", obj("password" to str(unlinkPassword))); unlinkPassword = ""
         } }
         Field("Administrator password to unlink", unlinkPassword, { unlinkPassword = it }, secret = true, enabled = !busy, onSubmit = unlink)
-        TextButton(enabled = canUnlink, onClick = unlink) { Text("Unlink administrator identity") }
+        SigilTextButton(enabled = canUnlink, onClick = unlink) { Text("Unlink administrator identity") }
     }
     if (onSaved == null && status.flag("oidc_enabled")) transition?.let { current ->
         HorizontalDivider()
@@ -273,20 +273,20 @@ private fun OidcForm(status: JsonElement, busy: Boolean, run: (suspend () -> Uni
         if (current.flag("retiring")) {
             Text("Transition in progress. Each affected user must acknowledge administrator-assisted access from a signed-in device before OIDC can be removed or replaced.")
             for (user in current.jsonObject.getValue("pending").jsonArray) Text("${user.text("username")} · ${user.text("active_devices")} active devices", style = MaterialTheme.typography.bodySmall)
-            if (current.text("next_after").isNotEmpty()) TextButton(enabled = !busy, onClick = { run {
+            if (current.text("next_after").isNotEmpty()) SigilTextButton(enabled = !busy, onClick = { run {
                 val page = api("/admin/v0/oidc/transition?after=${current.text("next_after")}")
                 transition = JsonObject(page.jsonObject.toMutableMap().apply { put("pending", JsonArray(current.jsonObject.getValue("pending").jsonArray + page.jsonObject.getValue("pending").jsonArray)) })
             } }) { Text("Load more affected users") }
         }
-        TextButton(enabled = !busy && status.flag("password_login"), onClick = { run {
+        SigilTextButton(enabled = !busy && status.flag("password_login"), onClick = { run {
             transition = api("/admin/v0/oidc/transition", "PUT", obj("configuration_revision" to current.jsonObject.getValue("configuration_revision"), "revision" to current.jsonObject.getValue("revision"), "retiring" to JsonPrimitive(!current.flag("retiring")), "confirm" to JsonPrimitive(true)))
         } }) { Text(if (current.flag("retiring")) "Cancel transition" else "Prepare OIDC transition") }
-        TextButton(enabled = !busy, onClick = { run { transition = api("/admin/v0/oidc/transition"); configuration = api("/admin/v0/oidc") } }) { Text("Refresh access review") }
+        SigilTextButton(enabled = !busy, onClick = { run { transition = api("/admin/v0/oidc/transition"); configuration = api("/admin/v0/oidc") } }) { Text("Refresh access review") }
         var disabling by remember { mutableStateOf(false) }
-        TextButton(enabled = !busy && status.flag("password_login") && current.text("awaiting_acknowledgement") == "0", onClick = { disabling = true }) { Text("Disable OIDC") }
-        if (disabling) Confirmation(title = { Text("Disable identity-provider sign-in?") }, text = { Text("Existing devices remain signed in. New access will require device linking or an administrator-issued account invitation. Your administrator password remains available.") }, confirmButton = { TextButton(enabled = !busy, onClick = { run {
+        SigilTextButton(enabled = !busy && status.flag("password_login") && current.text("awaiting_acknowledgement") == "0", onClick = { disabling = true }) { Text("Disable OIDC") }
+        if (disabling) Confirmation(title = { Text("Disable identity-provider sign-in?") }, text = { Text("Existing devices remain signed in. New access will require device linking or an administrator-issued account invitation. Your administrator password remains available.") }, confirmButton = { SigilTextButton(enabled = !busy, onClick = { run {
             api("/admin/v0/oidc", "PUT", obj("expected_revision" to current.jsonObject.getValue("configuration_revision"), "provider" to JsonNull, "confirm" to JsonPrimitive(true))); disabling = false
-        } }) { Text("Disable OIDC") } }, dismissButton = { TextButton(enabled = !busy, onClick = { disabling = false }) { Text("Cancel") } })
+        } }) { Text("Disable OIDC") } }, dismissButton = { SigilTextButton(enabled = !busy, onClick = { disabling = false }) { Text("Cancel") } })
     }
 }
 @Composable
@@ -356,14 +356,14 @@ private fun Users(busy: Boolean, run: (suspend () -> Unit) -> Unit) {
         Row(Modifier.fillMaxWidth().padding(vertical = 10.dp), verticalAlignment = Alignment.CenterVertically) {
             Column(Modifier.weight(1f)) { Text(user.text("username"), style = MaterialTheme.typography.titleMedium); Text(if (user.flag("disabled")) "Disabled" else user.text("role"), style = MaterialTheme.typography.bodySmall) }
             if (user.flag("deleted")) Text("Deleted") else {
-                TextButton(enabled = !busy && !user.flag("disabled"), onClick = { access = user }) { Text("Account access") }
-                TextButton(enabled = !busy, onClick = { selected = user }) { Text(if (user.flag("disabled")) "Enable" else "Disable") }
-                TextButton(enabled = !busy, onClick = { deleting = user }) { Text("Delete") }
+                SigilTextButton(enabled = !busy && !user.flag("disabled"), onClick = { access = user }) { Text("Account access") }
+                SigilTextButton(enabled = !busy, onClick = { selected = user }) { Text(if (user.flag("disabled")) "Enable" else "Disable") }
+                SigilTextButton(enabled = !busy, onClick = { deleting = user }) { Text("Delete") }
             }
         }
         HorizontalDivider()
     }
-    if (next.isNotEmpty()) TextButton(enabled = !busy, onClick = { run { val result = api("/admin/v0/accounts?after=$next"); users = users + result.jsonObject.getValue("accounts").jsonArray; next = result.text("next_after") } }) { Text("Load more") }
+    if (next.isNotEmpty()) SigilTextButton(enabled = !busy, onClick = { run { val result = api("/admin/v0/accounts?after=$next"); users = users + result.jsonObject.getValue("accounts").jsonArray; next = result.text("next_after") } }) { Text("Load more") }
     }
     access?.let { user ->
         Text("Account access for ${user.text("username")}", style = MaterialTheme.typography.headlineMedium)
@@ -382,17 +382,17 @@ private fun Users(busy: Boolean, run: (suspend () -> Unit) -> Unit) {
         } else {
             Text("Share privately. This single-use invitation expires one hour after issue.")
             CopyableCallback(issued.text("secret"), "Copy account access invitation")
-            TextButton(enabled = !busy, onClick = { run { api("/admin/v0/invitations/${issued.text("id")}", "DELETE"); invitation = null; access = null } }) { Text("Revoke invitation") }
+            SigilTextButton(enabled = !busy, onClick = { run { api("/admin/v0/invitations/${issued.text("id")}", "DELETE"); invitation = null; access = null } }) { Text("Revoke invitation") }
         }
-        TextButton(enabled = !busy, onClick = { invitation = null; access = null }) { Text(if (issued == null) "Back to users" else "Done") }
+        SigilTextButton(enabled = !busy, onClick = { invitation = null; access = null }) { Text(if (issued == null) "Back to users" else "Done") }
     }
-    deleting?.let { user -> Confirmation(title = { Text("Delete ${user.text("username")}? ") }, text = { Text("Permanently disable this account and schedule removal of its stored messages, attachments and recovery data. The username stays reserved to prevent impersonation. Copies already delivered to other devices remain.") }, confirmButton = { TextButton(enabled = !busy, onClick = { run {
+    deleting?.let { user -> Confirmation(title = { Text("Delete ${user.text("username")}? ") }, text = { Text("Permanently disable this account and schedule removal of its stored messages, attachments and recovery data. The username stays reserved to prevent impersonation. Copies already delivered to other devices remain.") }, confirmButton = { SigilTextButton(enabled = !busy, onClick = { run {
         api("/admin/v0/accounts/${user.text("id")}/delete", "POST", obj("expected_revision" to user.jsonObject.getValue("revision"), "confirm" to JsonPrimitive(true))); deleting = null; refresh()
-    } }) { Text("Delete account") } }, dismissButton = { TextButton(enabled = !busy, onClick = { deleting = null }) { Text("Cancel") } }) }
-    selected?.let { user -> Confirmation(title = { Text("${if (user.flag("disabled")) "Enable" else "Disable"} ${user.text("username")}? ") }, text = { Text("Disabling an account revokes its devices. Existing downloaded messages remain on their recipients’ devices.") }, confirmButton = { TextButton(enabled = !busy, onClick = { run {
+    } }) { Text("Delete account") } }, dismissButton = { SigilTextButton(enabled = !busy, onClick = { deleting = null }) { Text("Cancel") } }) }
+    selected?.let { user -> Confirmation(title = { Text("${if (user.flag("disabled")) "Enable" else "Disable"} ${user.text("username")}? ") }, text = { Text("Disabling an account revokes its devices. Existing downloaded messages remain on their recipients’ devices.") }, confirmButton = { SigilTextButton(enabled = !busy, onClick = { run {
         api("/admin/v0/accounts/${user.text("id")}", "PUT", obj("expected_revision" to user.jsonObject.getValue("revision"), "role" to user.jsonObject.getValue("role"), "disabled" to JsonPrimitive(!user.flag("disabled")), "quota_bytes" to user.jsonObject.getValue("quota_bytes"), "confirm" to JsonPrimitive(true)))
         selected = null; refresh()
-    } }) { Text("Confirm") } }, dismissButton = { TextButton(enabled = !busy, onClick = { selected = null }) { Text("Cancel") } }) }
+    } }) { Text("Confirm") } }, dismissButton = { SigilTextButton(enabled = !busy, onClick = { selected = null }) { Text("Cancel") } }) }
 }
 @Composable
 private fun ServerSettings(busy: Boolean, run: (suspend () -> Unit) -> Unit) {
@@ -430,15 +430,15 @@ private fun GroupRecords(busy: Boolean, run: (suspend () -> Unit) -> Unit) {
                 androidx.compose.foundation.text.selection.SelectionContainer { Text(group.text("id"), style = MaterialTheme.typography.bodySmall, fontFamily = LocalCodeFont.current) }
                 Text(if (group.flag("blocked")) "Deleted · recreation blocked" else "Active", style = MaterialTheme.typography.bodySmall)
             }
-            TextButton(enabled = !busy && !group.flag("blocked"), onClick = { selected = group }) { Text("Delete") }
+            SigilTextButton(enabled = !busy && !group.flag("blocked"), onClick = { selected = group }) { Text("Delete") }
         }
         HorizontalDivider()
     }
-    if (groups.size >= 100 && groups.size % 100 == 0) TextButton(enabled = !busy, onClick = { run { groups = groups + api("/admin/v0/group-records?after=${groups.last().text("id")}").jsonArray } }) { Text("Load more") }
+    if (groups.size >= 100 && groups.size % 100 == 0) SigilTextButton(enabled = !busy, onClick = { run { groups = groups + api("/admin/v0/group-records?after=${groups.last().text("id")}").jsonArray } }) { Text("Load more") }
     }
-    selected?.let { group -> Confirmation(title = { Text("Delete this group record?") }, text = { Text("This permanently removes its encrypted membership and control records from this server and blocks the same group reference from returning. Downloaded messages and copies on other servers remain. This cannot be undone.") }, confirmButton = { TextButton(enabled = !busy, onClick = { run {
+    selected?.let { group -> Confirmation(title = { Text("Delete this group record?") }, text = { Text("This permanently removes its encrypted membership and control records from this server and blocks the same group reference from returning. Downloaded messages and copies on other servers remain. This cannot be undone.") }, confirmButton = { SigilTextButton(enabled = !busy, onClick = { run {
         api("/admin/v0/group-records/${group.text("id")}/delete", "POST", obj("expected_revision" to group.jsonObject.getValue("revision"), "confirm" to JsonPrimitive(true))); selected = null; refresh()
-    } }) { Text("Delete group record") } }, dismissButton = { TextButton(enabled = !busy, onClick = { selected = null }) { Text("Cancel") } }) }
+    } }) { Text("Delete group record") } }, dismissButton = { SigilTextButton(enabled = !busy, onClick = { selected = null }) { Text("Cancel") } }) }
 }
 
 @OptIn(ExperimentalEncodingApi::class)
@@ -466,7 +466,7 @@ private fun HeaderAccount(status: JsonElement, busy: Boolean, account: () -> Uni
     var anchor by remember { mutableStateOf(Offset.Zero) }
     val button = remember { FocusRequester() }
     var selected by remember { mutableStateOf(0) }
-    IconButton(onClick = { selected = if (status.flag("complete")) 0 else 1; open = !open }, enabled = !busy,
+    SigilIconButton(onClick = { selected = if (status.flag("complete")) 0 else 1; open = !open }, enabled = !busy,
         modifier = Modifier.focusRequester(button).onGloballyPositioned { anchor = it.positionInWindow() + Offset(it.size.width.toFloat(), it.size.height.toFloat()) }
             .semantics { contentDescription = "Your account menu" }) {
         AdminAvatar(status, Modifier.size(40.dp))
@@ -507,10 +507,10 @@ private fun AccountPage(status: JsonElement, busy: Boolean, run: (suspend () -> 
         Action("Save profile", ready, submit)
         if (saved) Text("Profile saved.")
         HorizontalDivider()
-        TextButton(onClick = appearance) { Text("Appearance") }
+        SigilTextButton(onClick = appearance) { Text("Appearance") }
         Text("Appearance is currently saved only in this browser.", style = MaterialTheme.typography.bodySmall)
         ChangePassword(busy, run)
-        TextButton(onClick = close) { Text("Back to Administration") }
+        SigilTextButton(onClick = close) { Text("Back to Administration") }
     }
 }
 @Composable
@@ -540,7 +540,7 @@ private fun AdminAppearance(appearance: Appearance, close: () -> Unit, change: (
             Text("Appearance")
             for (mode in listOf("System", "Light", "Dark")) Row(verticalAlignment = Alignment.CenterVertically) { RadioButton(appearance.mode == mode, { change(appearance.copy(mode = mode)) }, modifier = Modifier.semantics { contentDescription = mode }); Text(mode) }
             Field("Accent color · hex", accent, { accent = it; parseAccent(it)?.let { color -> change(appearance.copy(accent = color)) } }, onSubmit = close)
-            TextButton(onClick = { change(Appearance()); accent = accentText(Appearance().accent) }) { Text("Restore Sigil defaults") }
+            SigilTextButton(onClick = { change(Appearance()); accent = accentText(Appearance().accent) }) { Text("Restore Sigil defaults") }
         TimelinePreview()
         Action("Done", true, close)
     }

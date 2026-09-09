@@ -79,7 +79,7 @@ fn private_authority_https_issues_credentials_and_orders_a_real_signed_membershi
         members: vec![member(&own, true)],
     };
     https
-        .group_request(&profile, &credential, &key, group, &create, now)
+        .group_request(&profile, &credential, &key, group, &create, now - 61)
         .unwrap();
     let before = alice.group_status(group).unwrap().state;
     let change = alice

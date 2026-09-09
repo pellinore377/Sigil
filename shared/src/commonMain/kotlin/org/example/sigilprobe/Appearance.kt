@@ -22,12 +22,12 @@ internal fun AppearancePage(value: Appearance, analyze: (String) -> String, dyna
         AccentPicker(value.accent) { update(value.copy(accent = it, dynamic = false)) }
         if (dynamicAvailable) Toggle("Use Android wallpaper colors", value.dynamic) { update(value.copy(dynamic = it)) }
         var layout by remember { mutableStateOf(false) }
-        TextButton({ layout = !layout }, Modifier.fillMaxWidth()) { Text("Layout", Modifier.weight(1f), textAlign = TextAlign.Start); Glyph(if (layout) "expand_less" else "expand_more") }
+        SigilTextButton({ layout = !layout }, Modifier.fillMaxWidth()) { Text("Layout", Modifier.weight(1f), textAlign = TextAlign.Start); Glyph(if (layout) "expand_less" else "expand_more") }
         Expandable(layout) { Toggle("Collections", collections, setCollections); Expandable(collections) { Toggle("Show collection names", collectionLabels, setCollectionLabels) } }
         var advanced by remember { mutableStateOf(false) }
-        TextButton({ advanced = !advanced }, Modifier.fillMaxWidth()) { Text("Advanced", Modifier.weight(1f), textAlign = TextAlign.Start); Glyph(if (advanced) "expand_less" else "expand_more") }
+        SigilTextButton({ advanced = !advanced }, Modifier.fillMaxWidth()) { Text("Advanced", Modifier.weight(1f), textAlign = TextAlign.Start); Glyph(if (advanced) "expand_less" else "expand_more") }
         Expandable(advanced) { Toggle("Follow account appearance on this device", followAccount, setFollowAccount) }
-        OutlinedButton({ update(Appearance()) }, Modifier.fillMaxWidth(), shape = RoundedCornerShape(16.dp)) { Text("Reset app appearance") }
+        SigilOutlinedButton({ update(Appearance()) }, Modifier.fillMaxWidth(), shape = RoundedCornerShape(16.dp)) { Text("Reset app appearance") }
     }
 }
 
@@ -37,13 +37,13 @@ internal fun ChatAppearance(value: ChatTheme, analyze: (String) -> String, peer:
     AppearanceLayout("Conversation appearance", "Make this conversation feel like yours.\nThese settings are private to you.", back) {
         TimelinePreview(analyze, peer, value.gradient) { image = it }
         AccentPicker(value.accent) { update(value.copy(accent = it)) }
-        TextButton({ update(value.copy(accent = null)) }) { Text(if (value.accent == null) "Following app accent" else "Follow app accent") }
+        SigilTextButton({ update(value.copy(accent = null)) }) { Text(if (value.accent == null) "Following app accent" else "Follow app accent") }
         AppearanceChoices("Background", listOf("Solid" to "circle", "Gradient" to "gradient", "Image" to "image"), if (image) "Image" else if (value.gradient) "Gradient" else "Solid") {
             if (it == "Image") command("attachment_pick", mapOf("peer" to peer, "kind" to "Wallpaper"))
             else { update(value.copy(gradient = it == "Gradient")); command("wallpaper_remove", mapOf("peer" to peer)) }
         }
         Text("Background images stay on this device. Colors follow your account.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-        OutlinedButton({ update(ChatTheme()); command("wallpaper_remove", mapOf("peer" to peer)) }, Modifier.fillMaxWidth(), shape = RoundedCornerShape(16.dp)) { Text("Reset conversation appearance") }
+        SigilOutlinedButton({ update(ChatTheme()); command("wallpaper_remove", mapOf("peer" to peer)) }, Modifier.fillMaxWidth(), shape = RoundedCornerShape(16.dp)) { Text("Reset conversation appearance") }
     }
 }
 
@@ -68,8 +68,8 @@ internal fun AppearanceChoices(label: String, choices: List<Pair<String, String>
             choices.forEach { (name, icon) ->
                 val active = selected == name
                 Surface(Modifier.weight(1f).clip(RoundedCornerShape(16.dp)).selectableChoice(active) { update(name) }, shape = RoundedCornerShape(16.dp),
-                    color = if (active) MaterialTheme.colorScheme.inverseSurface else MaterialTheme.colorScheme.surfaceVariant,
-                    contentColor = if (active) MaterialTheme.colorScheme.inverseOnSurface else MaterialTheme.colorScheme.onSurface) {
+                    color = if (active) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surfaceVariant,
+                    contentColor = if (active) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurface) {
                     Row(Modifier.padding(horizontal = 8.dp, vertical = 14.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp, Alignment.CenterHorizontally)) {
                         Glyph(icon, 22); Text(name, Modifier.weight(1f, fill = false), style = MaterialTheme.typography.labelLarge, textAlign = TextAlign.Center)
                     }
@@ -107,7 +107,7 @@ private fun TimelinePreview(analyze: (String) -> String, peer: String? = null, g
                 ComposerBar {
                     Surface(shape = RoundedCornerShape(16.dp), color = scheme.surfaceVariant) { Symbol("add", "Preview attachments") {} }
                     Composer(remember { TextFieldState() }, analyze, Modifier.weight(1f), showTools = false, enabled = false)
-                    FilledIconButton({}, Modifier.size(48.dp), shape = RoundedCornerShape(16.dp), colors = IconButtonDefaults.filledIconButtonColors(containerColor = scheme.inverseSurface, contentColor = scheme.inverseOnSurface)) { Glyph("graphic_eq", 25) }
+                    FilledIconButton({}, Modifier.size(48.dp), shape = RoundedCornerShape(16.dp), colors = IconButtonDefaults.filledIconButtonColors(containerColor = scheme.primary, contentColor = scheme.onPrimary)) { Glyph("graphic_eq", 25) }
                 }
             }
         }

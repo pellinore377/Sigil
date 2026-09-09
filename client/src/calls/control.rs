@@ -157,7 +157,7 @@ pub(crate) fn install(
         return Err(Error::InvalidEvent);
     }
     let now = crate::conversations::time_floor(tx, key, now)?;
-    if !known.verified {
+    if !known.trusted {
         if !wire.scoped {
             return Err(Error::Unprepared);
         }
@@ -175,7 +175,7 @@ pub(crate) fn install(
     let mut record = match load(tx, key, &wire.call) {
         Ok(record) => record,
         Err(Error::NotFound) => {
-            if !known.verified {
+            if !known.trusted {
                 return Err(Error::Unprepared);
             }
             let (Body::Invite(state) | Body::DirectInvite(state)) = &wire.body else {
@@ -242,7 +242,7 @@ pub(crate) fn install(
         Err(e) => return Err(e),
     };
     channels::authorized(tx, key, &record, peer_id)?;
-    if !known.verified && !wire.scoped {
+    if !known.trusted && !wire.scoped {
         return Err(Error::Unprepared);
     }
     if !matches!(wire.body, Body::Invite(_) | Body::DirectInvite(_))

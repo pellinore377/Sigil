@@ -34,6 +34,8 @@ pub struct RequestContact {
     pub expires_at: u64,
     pub binding: String,
     pub signature: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub invitation: Option<String>,
 }
 impl RequestContact {
     pub fn valid(&self) -> bool {
@@ -42,6 +44,10 @@ impl RequestContact {
     pub fn signing_bytes(&self) -> Result<Vec<u8>, &'static str> {
         if !crate::valid_server_name(&self.server)
             || !crate::accounts::valid_credential(&self.recipient)
+            || self
+                .invitation
+                .as_ref()
+                .is_some_and(|v| !crate::accounts::valid_credential(v))
             || self.expires_at == 0
             || self.expires_at > i64::MAX as u64
         {
@@ -53,13 +59,18 @@ impl RequestContact {
         .bytes()?;
         crate::device::SignedBinding::from_bytes(&binding)?;
         Ok([
-            b"Sigil/contact-request/v1\0".as_slice(),
+            if self.invitation.is_some() {
+                b"Sigil/contact-request/v2\0".as_slice()
+            } else {
+                b"Sigil/contact-request/v1\0".as_slice()
+            },
             &(self.server.len() as u16).to_be_bytes(),
             self.server.as_bytes(),
             self.recipient.as_bytes(),
             &self.expires_at.to_be_bytes(),
             &(binding.len() as u16).to_be_bytes(),
             &binding,
+            self.invitation.as_deref().unwrap_or("").as_bytes(),
         ]
         .concat())
     }
@@ -104,6 +115,8 @@ pub struct IncomingRequest {
     pub device: String,
     pub binding: String,
     pub signature: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub invitation: Option<String>,
     pub created_at: u64,
 }
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]

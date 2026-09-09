@@ -1,5 +1,7 @@
 package org.sigil.compose
 
+import org.sigil.SigilTextButton
+
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.os.Handler
@@ -26,7 +28,7 @@ internal fun RecoveryDialog(secret: String, busy: Boolean, dismiss: () -> Unit, 
         text = { Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(12.dp)) {
             Text("Keep this in your password manager or write it down somewhere safe. Your server cannot replace it. Anyone with this key and access to your backup can read that history.")
             Text(secret.chunked(4).joinToString(" "), fontFamily = org.sigil.LocalCodeFont.current)
-            TextButton({
+            SigilTextButton({
                 val clipboard = context.getSystemService(ClipboardManager::class.java)
                 val clip = ClipData.newPlainText("Sigil recovery key", secret)
                 clip.description.extras = PersistableBundle().apply { putBoolean("android.content.extra.IS_SENSITIVE", true) }
@@ -38,8 +40,8 @@ internal fun RecoveryDialog(secret: String, busy: Boolean, dismiss: () -> Unit, 
             Row { Checkbox(saved, { saved = it }, enabled = !busy); Text("I saved my recovery key.", Modifier.padding(top = 12.dp)) }
             OutlinedTextField(check, { if (it.length <= 8) check = it }, label = { Text("Last 8 characters of your saved key") }, singleLine = true, enabled = !busy)
         } },
-        confirmButton = { TextButton(enable, enabled = saved && check == secret.takeLast(8) && !busy) { Text("Enable encrypted backups") } },
-        dismissButton = { TextButton(dismiss, enabled = !busy) { Text("Cancel") } })
+        confirmButton = { SigilTextButton(enable, enabled = saved && check == secret.takeLast(8) && !busy) { Text("Enable encrypted backups") } },
+        dismissButton = { SigilTextButton(dismiss, enabled = !busy) { Text("Cancel") } })
 }
 
 @Composable
@@ -58,8 +60,8 @@ internal fun RestoreRecoveryDialog(busy: Boolean, issue: String?, dismiss: () ->
             issue?.let { Text(it, color = MaterialTheme.colorScheme.error) }
             if (busy) LinearProgressIndicator(Modifier.fillMaxWidth())
         } },
-        confirmButton = { TextButton({ restore(secret) }, enabled = !busy && reviewed && secret.length == 64 && secret.all { it in '0'..'9' || it in 'a'..'f' }) { Text("Restore history") } },
-        dismissButton = { TextButton(dismiss, enabled = !busy) { Text("Cancel") } })
+        confirmButton = { SigilTextButton({ restore(secret) }, enabled = !busy && reviewed && secret.length == 64 && secret.all { it in '0'..'9' || it in 'a'..'f' }) { Text("Restore history") } },
+        dismissButton = { SigilTextButton(dismiss, enabled = !busy) { Text("Cancel") } })
 }
 
 @Composable
@@ -83,6 +85,6 @@ internal fun AccountRecoveryDialog(sso: Boolean, busy: Boolean, issue: String?, 
             issue?.let { Text(it, color = MaterialTheme.colorScheme.error) }
             if (busy) LinearProgressIndicator(Modifier.fillMaxWidth())
         } },
-        confirmButton = { TextButton({ recover(method, invitation.takeIf { method == "invitation" }) }, enabled = confirmed && !busy && (method == "sso" || invitation.length == 64 && invitation.all { it in '0'..'9' || it in 'a'..'f' })) { Text("Continue recovery") } },
-        dismissButton = { TextButton(dismiss, enabled = !busy) { Text("Cancel") } })
+        confirmButton = { SigilTextButton({ recover(method, invitation.takeIf { method == "invitation" }) }, enabled = confirmed && !busy && (method == "sso" || invitation.length == 64 && invitation.all { it in '0'..'9' || it in 'a'..'f' })) { Text("Continue recovery") } },
+        dismissButton = { SigilTextButton(dismiss, enabled = !busy) { Text("Cancel") } })
 }

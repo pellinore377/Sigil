@@ -248,7 +248,7 @@ impl ClientStore {
         let tx = self
             .db
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
-        let creator = peers::verified(&tx, &self.key, &creator_peer)?;
+        let creator = peers::trusted(&tx, &self.key, &creator_peer)?;
         let genesis = Genesis::from_bytes(bytes, creator.fingerprint)?;
         let group = save_genesis(&tx, &self.key, &own, &genesis)?;
         tx.commit()?;

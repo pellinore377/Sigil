@@ -144,7 +144,7 @@ impl ClientStore {
             return Ok(true);
         }
         let known = peers::known(&tx, &self.key, &peer)?;
-        if !known.verified {
+        if !known.trusted {
             return Err(Error::Unprepared);
         }
         let mut parent = message;

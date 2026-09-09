@@ -1,5 +1,7 @@
 package org.sigil.compose
 
+import org.sigil.SigilTextButton
+
 import android.app.ActivityManager
 import android.content.Context
 import androidx.compose.foundation.layout.*
@@ -38,6 +40,6 @@ internal fun SignOutDialog(stage: String, busy: Boolean, issue: String?, command
             issue?.let { Text(it, color = MaterialTheme.colorScheme.error) }
             if (busy) { LinearProgressIndicator(Modifier.fillMaxWidth()); Text("Signing out…") }
         } },
-        confirmButton = { TextButton({ command(if (confirming) "confirm" else if (stage == "confirmed" || localOnly) "erase" else "retry") }, enabled = !busy && (!confirming || saved)) { Text(if (confirming) "Sign out" else if (stage == "confirmed" || localOnly) "Remove local data" else "Retry revocation") } },
-        dismissButton = { if (confirming) TextButton({ command("cancel") }, enabled = !busy) { Text("Cancel") } })
+        confirmButton = { SigilTextButton({ command(if (confirming) "confirm" else if (stage == "confirmed" || localOnly) "erase" else "retry") }, enabled = !busy && (!confirming || saved)) { Text(if (confirming) "Sign out" else if (stage == "confirmed" || localOnly) "Remove local data" else "Retry revocation") } },
+        dismissButton = { if (confirming) SigilTextButton({ command("cancel") }, enabled = !busy) { Text("Cancel") } })
 }

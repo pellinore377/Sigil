@@ -356,6 +356,8 @@ fn two_servers_exchange_messages_groups_and_files_across_restart_and_outage() {
     }
     let mut alice = enroll(&mut a, &dir.path().join("alice.db"), "chat.example", &af);
     let mut bob = enroll(&mut b, &dir.path().join("bob.db"), "federated.example", &bf);
+    let alice_session = alice.connection_session().unwrap().unwrap();
+    let bob_session = bob.connection_session().unwrap().unwrap();
     let command = |client: &mut ClientStore, request: serde_json::Value| {
         let result: serde_json::Value =
             serde_json::from_str(&client.mobile_command(&request.to_string())).unwrap();
@@ -367,7 +369,8 @@ fn two_servers_exchange_messages_groups_and_files_across_restart_and_outage() {
         serde_json::json!({"command":"find","address":"@synthetic:federated.example"}),
     );
     let destination = found["chats"][0]["id"].as_str().unwrap().to_owned();
-    assert!(found["chats"][0]["devices"].as_array().unwrap().is_empty());
+    assert_eq!(found["chats"][0]["devices"].as_array().unwrap().len(), 1);
+    assert_eq!(found["chats"][0]["verified"], false);
     command(
         &mut alice,
         serde_json::json!({"command":"contact_request","peer":destination,"action":"send"}),
@@ -375,6 +378,7 @@ fn two_servers_exchange_messages_groups_and_files_across_restart_and_outage() {
     let incoming = command(&mut bob, serde_json::json!({"command":"contact_refresh"}));
     assert_eq!(incoming["chats"][0]["request"], "incoming");
     let source = incoming["chats"][0]["id"].as_str().unwrap().to_owned();
+    assert!(bob.connected_client().unwrap().contact_profile(&bob_session, "chat.example", &alice_session.account_id).is_err());
     command(
         &mut bob,
         serde_json::json!({"command":"contact_request","peer":source,"action":"accept"}),
@@ -393,13 +397,23 @@ fn two_servers_exchange_messages_groups_and_files_across_restart_and_outage() {
             .query_row("SELECT count(*) FROM federation_senders", [], |r| r
                 .get::<_, i64>(0))
             .unwrap(),
-        0
+        1
     );
-    let (pa, pb) = crate::incoming::tests::trust(&mut alice, &mut bob);
-    retry(|| alice.allow_peer_sender_online(pb));
-    retry(|| bob.allow_peer_sender_online(pa));
-    let alice_session = alice.connection_session().unwrap().unwrap();
-    let bob_session = bob.connection_session().unwrap().unwrap();
+    let accepted = command(
+        &mut alice,
+        serde_json::json!({"command":"contact_request","peer":destination,"action":"refresh"}),
+    );
+    assert_eq!(accepted["chats"][0]["verified"], true);
+    let binding_a = peers::parse(&alice.own_device_binding().unwrap())
+        .unwrap()
+        .binding;
+    let binding_b = peers::parse(&bob.own_device_binding().unwrap())
+        .unwrap()
+        .binding;
+    let pa = peers::reference(&binding_a.server, &binding_a.device);
+    let pb = peers::reference(&binding_b.server, &binding_b.device);
+    assert!(alice.peer(pb).unwrap().trusted && !alice.peer(pb).unwrap().verified);
+    assert!(bob.peer(pa).unwrap().trusted && !bob.peer(pa).unwrap().verified);
     let photo_request = sigil_protocol::profile::SetPhoto {
         revision: 0,
         photo: "ffd801020304ffd9".into(),
@@ -409,11 +423,6 @@ fn two_servers_exchange_messages_groups_and_files_across_restart_and_outage() {
         .unwrap()
         .set_profile_photo(&photo_request)
         .unwrap();
-    assert!(bob
-        .connected_client()
-        .unwrap()
-        .contact_profile(&bob_session, "chat.example", &alice_session.account_id)
-        .is_err());
     alice
         .connected_client()
         .unwrap()
@@ -858,7 +867,7 @@ fn two_servers_exchange_messages_groups_and_files_across_restart_and_outage() {
             Ok(_) => panic!("removed member received new group keys"),
         },
     );
-    assert!(alice.peer(pb).unwrap().verified && bob.peer(pa).unwrap().verified);
+    assert!(alice.peer(pb).unwrap().trusted && bob.peer(pa).unwrap().trusted);
     eprintln!("Exchanging encrypted call media across servers");
     calls::run(&mut alice, &mut bob, &mut a, pb);
 }

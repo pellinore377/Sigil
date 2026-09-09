@@ -70,7 +70,6 @@ internal fun ConversationPage(chat: ChatSummary, state: MessengerState, draft: T
     var selected by remember(chat.id) { mutableStateOf<Pair<ChatMessage, Rect>?>(null) }
     var returnBounds by remember(chat.id) { mutableStateOf(Rect.Zero) }
     var details by remember(chat.id) { mutableStateOf<Pair<String, String>?>(null) }
-    var verify by remember(chat.id) { mutableStateOf(false) }
     var submitted by remember { mutableStateOf<String?>(null) }
     var localQuery by remember(page) { mutableStateOf("") }
     val scheme = MaterialTheme.colorScheme
@@ -94,13 +93,22 @@ internal fun ConversationPage(chat: ChatSummary, state: MessengerState, draft: T
         selected = null
     }
     Box(Modifier.fillMaxSize()) {
-        LocalWallpaper.current(chat.id, Modifier.matchParentSize())
-        Column(Modifier.fillMaxSize().then(if (gradient) Modifier.background(Brush.verticalGradient(listOf(scheme.background.copy(alpha = .7f), scheme.primaryContainer.copy(alpha = .7f)))) else Modifier)) {
-            if (page == "Search") OutlinedTextField(localQuery, { localQuery = it }, Modifier.fillMaxWidth().padding(12.dp), placeholder = { Text("Search this conversation") }, singleLine = true)
-            if (!chat.group && (!chat.verified || chat.request == "incoming")) ContactRequestPanel(chat, state.busy, command) { verify = true }
+        if (LocalHeaderInset.current == 0.dp) LocalWallpaper.current(chat.id, Modifier.matchParentSize())
+        Column(Modifier.fillMaxSize().then(if (gradient && LocalHeaderInset.current == 0.dp) Modifier.background(Brush.verticalGradient(listOf(scheme.background.copy(alpha = .7f), scheme.primaryContainer.copy(alpha = .7f)))) else Modifier)) {
+            val motion = LocalPageMotion.current
+            val goingBack = LocalNavigationBack.current
+            val headerInset = LocalHeaderInset.current
+            val banner = !chat.group && (!chat.verified || chat.request == "incoming")
+            val controls = banner || page == "Search" || state.historical
+            val timelineMotion = if (motion == null) Modifier else with(motion) { Modifier.animateEnterExit(
+                enter = if (goingBack) fadeIn(tween(MotionMillis)) else slideInVertically(tween(MotionMillis)) { it }, exit = slideOutVertically(tween(MotionMillis)) { it }) }
+            Column(Modifier.weight(1f).fillMaxWidth().then(timelineMotion)) {
+            if (controls) Spacer(Modifier.height(headerInset))
+                if (page == "Search") OutlinedTextField(localQuery, { localQuery = it }, Modifier.fillMaxWidth().padding(12.dp), placeholder = { Text("Search this conversation") }, singleLine = true)
+            if (banner) ContactRequestPanel(chat, state.busy, command)
 
-            if (state.historical) TextButton({ command("latest", emptyMap()) }, Modifier.align(Alignment.CenterHorizontally)) { Text("Return to latest messages") }
-            LazyColumn(Modifier.weight(1f).fillMaxWidth().testTag("timeline"), state = list, reverseLayout = true, contentPadding = PaddingValues(horizontal = 16.dp, vertical = 12.dp)) {
+            if (state.historical) SigilTextButton({ command("latest", emptyMap()) }, Modifier.align(Alignment.CenterHorizontally)) { Text("Return to latest messages") }
+            LazyColumn(Modifier.weight(1f).fillMaxWidth().testTag("timeline"), state = list, reverseLayout = true, contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = (if (controls) 0.dp else headerInset) + 12.dp, bottom = 12.dp)) {
                 item("typing") { AnimatedVisibility(!threadsOverview && state.typing.isNotEmpty(), enter = expandVertically(tween(MotionMillis)) + fadeIn(), exit = shrinkVertically(tween(MotionMillis)) + fadeOut()) { TypingRow(state.typing.map { state.people[it] ?: if (chat.group) "Member" else chat.name }, chat.name, state.typing) } }
                 itemsIndexed(messages, key = { _, it -> it.author + it.id }) { index, message ->
                     if (threadsOverview) {
@@ -142,8 +150,13 @@ internal fun ConversationPage(chat: ChatSummary, state: MessengerState, draft: T
                         command("read", mapOf("peer" to chat.id, "author" to message.author, "message" to message.id))
                     }
                 }
-                if (state.more) item { TextButton({ command("older", emptyMap()) }, Modifier.fillMaxWidth(), enabled = !state.busy) { Text("Earlier messages") } }
+                if (state.more) item { SigilTextButton({ command("older", emptyMap()) }, Modifier.fillMaxWidth(), enabled = !state.busy) { Text("Earlier messages") } }
             }
+            }
+            val composerMotion = if (motion == null) Modifier else with(motion) { Modifier.animateEnterExit(
+                enter = if (goingBack) fadeIn(tween(MotionMillis)) else slideInHorizontally(tween(160, delayMillis = 80)) { it } + fadeIn(tween(160, delayMillis = 80)),
+                exit = slideOutHorizontally(tween(MotionMillis)) { it } + fadeOut(tween(160))) }
+            Column(Modifier.fillMaxWidth().then(composerMotion)) {
             val context = editing?.let { "Editing: ${it.text}" } ?: reply?.let { "Replying to ${it.text}" } ?: thread?.let { "Reply in thread" }
             state.transfers.filter { it.peer == chat.id }.forEach { transfer ->
                 Row(Modifier.fillMaxWidth().padding(start = 20.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -155,12 +168,13 @@ internal fun ConversationPage(chat: ChatSummary, state: MessengerState, draft: T
             val inputCommand: Command = { action, fields ->
                 command(action, if (action in listOf("attachment_pick", "record_start")) fields + mapOf("reply_author" to reply?.author, "reply_message" to reply?.id, "thread_author" to thread?.author, "thread_message" to thread?.id) else fields)
             }
-            if (!threadsOverview) ComposerPanel(draft, analyze, chat.verified && !state.busy, page == "Notes", inputCommand, chat.id, state.voice, state.sent, state.sentText, requestContact = if (!chat.verified && !chat.group && !state.busy && chat.request in listOf("none", "expired") && chat.devices.isEmpty()) ({ command("contact_request", mapOf("peer" to chat.id, "action" to "send")) }) else null) { text, rich ->
+            if (!threadsOverview) ComposerPanel(draft, analyze, chat.verified && !state.busy, page == "Notes", inputCommand, chat.id, state.voice, state.sent, state.sentText, requestContact = if (!chat.verified && !chat.group && !state.busy && chat.request in listOf("none", "expired")) ({ command("contact_request", mapOf("peer" to chat.id, "action" to "send")) }) else null) { text, rich ->
                 submitted = draft.text.toString()
                 if (editing != null) command("edit", mapOf("peer" to chat.id, "author" to editing!!.author, "message" to editing!!.id, "text" to text))
                 else command("post", mapOf("peer" to chat.id, "text" to text, "rich" to rich,
                     "reply_author" to reply?.author, "reply_message" to reply?.id, "thread_author" to thread?.author, "thread_message" to thread?.id))
             }
+        }
         }
         selected?.let { (message, bounds) ->
             val index = messages.indexOfFirst { it.id == message.id && it.author == message.author }
@@ -182,7 +196,6 @@ internal fun ConversationPage(chat: ChatSummary, state: MessengerState, draft: T
             LaunchedEffect(message.id) { focus.clearFocus(); keyboard?.hide() }
         }
     }
-    if (verify) VerificationDialog(chat, state.busy, command) { verify = false }
 }
 @Composable
 internal fun MessageBubble(message: ChatMessage, grouped: Boolean, followed: Boolean, analyze: (String) -> String, command: Command? = null) {
@@ -193,10 +206,10 @@ internal fun MessageBubble(message: ChatMessage, grouped: Boolean, followed: Boo
         else
         Surface(shape = RoundedCornerShape(topStart = if (!message.mine && grouped) 5.dp else 20.dp, topEnd = if (message.mine && grouped) 5.dp else 20.dp,
             bottomStart = if (!message.mine && followed) 5.dp else 20.dp, bottomEnd = if (message.mine && followed) 5.dp else 20.dp),
-            color = if (message.mine) scheme.inverseSurface else scheme.surfaceVariant, contentColor = if (message.mine) scheme.inverseOnSurface else scheme.onSurfaceVariant) {
-            CompositionLocalProvider(LocalMessageSurface provides if (message.mine) scheme.inverseSurface else scheme.surfaceVariant) {
+            color = if (message.mine) scheme.primary else scheme.surfaceVariant, contentColor = if (message.mine) scheme.onPrimary else scheme.onSurfaceVariant) {
+            CompositionLocalProvider(LocalMessageSurface provides if (message.mine) scheme.primary else scheme.surfaceVariant) {
             Column(Modifier.padding(horizontal = 14.dp, vertical = 10.dp)) {
-                message.reply?.let { Surface(shape = RoundedCornerShape(12.dp), color = (if (message.mine) scheme.inverseOnSurface else scheme.onSurface).copy(alpha = .09f)) { Text(it, Modifier.padding(9.dp), style = MaterialTheme.typography.bodySmall, maxLines = 2, overflow = TextOverflow.Ellipsis) }; Spacer(Modifier.height(6.dp)) }
+                message.reply?.let { Surface(shape = RoundedCornerShape(12.dp), color = (if (message.mine) scheme.onPrimary else scheme.onSurface).copy(alpha = .09f)) { Text(it, Modifier.padding(9.dp), style = MaterialTheme.typography.bodySmall, maxLines = 2, overflow = TextOverflow.Ellipsis) }; Spacer(Modifier.height(6.dp)) }
                 if (message.attachment != null) LocalAttachmentContent.current(message) else if (message.parts.isNotEmpty()) MessageCards(message, analyze, command) else MessageText(message.text, analyze)
             }
             }
@@ -268,7 +281,7 @@ private fun MessageMenu(message: ChatMessage, origin: Rect, returnTo: Rect, grou
             Column(Modifier.widthIn(max = 360.dp).fillMaxWidth().padding(16.dp).verticalScroll(rememberScrollState()), horizontalAlignment = if (message.mine) Alignment.End else Alignment.Start, verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 Surface(Modifier.alpha(progress.value), shape = RoundedCornerShape(28.dp), color = MaterialTheme.colorScheme.surfaceVariant) {
                     Row(Modifier.padding(horizontal = 4.dp), verticalAlignment = Alignment.CenterVertically) {
-                        listOf("👍", "❤️", "😂", "😮", "😢", "😡").forEach { e -> TextButton({ choose("react", e) }, Modifier.weight(1f), contentPadding = PaddingValues(0.dp)) { Text(e, fontSize = 22.sp) } }
+                        listOf("👍", "❤️", "😂", "😮", "😢", "😡").forEach { e -> SigilTextButton({ choose("react", e) }, Modifier.weight(1f), contentPadding = PaddingValues(0.dp)) { Text(e, fontSize = 22.sp) } }
                         Symbol("add_reaction", "Choose reaction") { emojiPicker = true }
                     }
                 }
@@ -289,18 +302,18 @@ private fun MessageMenu(message: ChatMessage, origin: Rect, returnTo: Rect, grou
             }
         }
     }
-    if (emojiPicker) AlertDialog({ emojiPicker = false }, title = { Text("React with an emoji") }, text = { OutlinedTextField(emoji, { emoji = it }, singleLine = true) }, confirmButton = { TextButton({ if (emoji.isNotBlank()) { emojiPicker = false; choose("react", emoji) } }) { Text("React") } })
+    if (emojiPicker) AlertDialog({ emojiPicker = false }, title = { Text("React with an emoji") }, text = { OutlinedTextField(emoji, { emoji = it }, singleLine = true) }, confirmButton = { SigilTextButton({ if (emoji.isNotBlank()) { emojiPicker = false; choose("react", emoji) } }) { Text("React") } })
 }
 @Composable
 internal fun VerificationDialog(chat: ChatSummary, busy: Boolean, command: Command, close: () -> Unit) {
     AlertDialog(close, title = { Text("Verify ${chat.name}'s devices") }, text = {
         Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(16.dp)) {
-            Text("Compare each fingerprint through a trusted channel. Your contact must also approve your device.")
+            Text("Optional: compare fingerprints in person or through another trusted channel. You can already chat after accepting a request.")
             chat.devices.forEach { device ->
                 SelectionContainer { Text(device.fingerprint.chunked(4).joinToString(" "), fontFamily = LocalCodeFont.current, style = MaterialTheme.typography.bodySmall) }
                 if (device.changed || device.blocked) Text("This device changed or is blocked. Review its identity before using it.")
-                else TextButton({ command("confirm", mapOf("peer" to device.id, "fingerprint" to device.fingerprint)) }, enabled = !busy) { Text(if (device.verified) "Re-apply sender permission" else "Fingerprints match · approve") }
+                else SigilTextButton({ command("confirm", mapOf("peer" to device.id, "fingerprint" to device.fingerprint)) }, enabled = !busy) { Text(if (device.verified) "Fingerprint verified" else "Fingerprints match · approve") }
             }
         }
-    }, confirmButton = { TextButton(close) { Text("Done") } })
+    }, confirmButton = { SigilTextButton(close) { Text("Done") } })
 }

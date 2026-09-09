@@ -283,7 +283,7 @@ fn inspect_evidence(
     request: &Request,
 ) -> Result<(RetryRequest, Peer, bool), Error> {
     let known = peers::known(db, key, &peer)?;
-    if !known.verified
+    if !known.trusted
         || request.requester != known.fingerprint
         || request.target != device_fingerprint(own)?
     {
@@ -380,7 +380,7 @@ impl ClientStore {
         if expected.is_some_and(|id| id != known.fingerprint) {
             return Err(Error::Conflict);
         }
-        if !known.verified {
+        if !known.trusted {
             return Err(Error::Unprepared);
         }
         let mut request = Request {
@@ -442,7 +442,7 @@ impl ClientStore {
         let record = read(&self.db, &self.key, "retry_outbox", &id)?.ok_or(Error::NotFound)?;
         let request = Request::from_bytes(&record.packet).map_err(|_| Error::InvalidStore)?;
         let peer = peers::known(&self.db, &self.key, &record.peer)?;
-        if !peer.verified
+        if !peer.trusted
             || request.target != peer.fingerprint
             || request.requester != device_fingerprint(&own)?
         {

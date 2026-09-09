@@ -62,7 +62,7 @@ pub(super) fn queue(
         record.state.roster.roster.expires
     };
     let raw = Zeroizing::new(
-        if known.verified {
+        if known.trusted {
             serde_json::to_vec(&(record.id(), peer, expires, &body))
         } else {
             serde_json::to_vec(&(record.id(), peer, expires, &body, true))
@@ -96,7 +96,7 @@ pub(super) fn queue(
                 sender: own,
                 recipient: known.fingerprint,
                 expires,
-                scoped: !known.verified,
+                scoped: !known.trusted,
                 body,
             },
             peer,
@@ -501,7 +501,7 @@ impl ClientStore {
                         Some(state.roster.roster.digest().map_err(failure)?);
                     state.roster.roster.revision += 1;
                     for proof in &current.joining {
-                        let known = crate::peers::verified(&tx, &self.key, &peer(proof)?)?;
+                        let known = crate::peers::trusted(&tx, &self.key, &peer(proof)?)?;
                         if known.fingerprint != proof.fingerprint().map_err(failure)? {
                             return Err(Error::Conflict);
                         }

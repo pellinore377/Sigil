@@ -182,6 +182,7 @@ impl HttpsClient {
         if !valid_time(now) {
             return Err(Error::Configuration);
         }
+        let now = now.max(crate::conversations::now());
         let (kind, predecessor) = match operation {
             Operation::Create { .. } => (Kind::Create, [0; 32]),
             Operation::Read { .. } | Operation::Proposals { .. } => (Kind::Read, [0; 32]),

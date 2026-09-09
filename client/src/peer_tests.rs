@@ -62,6 +62,8 @@ fn superseded_peer_history_turnover_preserves_approval_and_retained_text() {
             &alice.key,
             &reference,
             &Record {
+                trusted: true,
+                suspended: false,
                 signed,
                 candidate: None,
                 verified: true,
@@ -90,9 +92,9 @@ fn superseded_peer_history_turnover_preserves_approval_and_retained_text() {
         .unwrap();
     alice.observe_peer_binding(&old_bytes).unwrap();
     alice.block_peer(old.id, false).unwrap();
-    assert!(!alice.peer(old.id).unwrap().verified);
+    assert!(!alice.peer(old.id).unwrap().trusted);
     assert!(alice.confirm_peer(old.id, old.fingerprint).is_err());
-    assert!(alice.peer(new.id).unwrap().verified);
+    assert!(alice.peer(new.id).unwrap().trusted);
     assert_eq!(alice.outgoing_message([3; 32], [4; 32]).unwrap(), history);
     assert_eq!(
         alice
@@ -163,7 +165,7 @@ fn explicit_confirmation_and_key_change_quarantine_survive_restart() {
     client.enroll_online().unwrap();
     let bytes = client.own_device_binding().unwrap();
     let peer = client.observe_peer_binding(&bytes).unwrap();
-    assert!(!peer.verified);
+    assert!(!peer.trusted);
     assert!(client.prepare_peer_claim([1; 32], peer.id).is_err());
     assert!(matches!(
         client.confirm_peer(peer.id, [8; 32]),
@@ -178,13 +180,13 @@ fn explicit_confirmation_and_key_change_quarantine_survive_restart() {
         Err(Error::Conflict)
     ));
     client.block_peer(peer.id, true).unwrap();
-    assert!(!client.peer(peer.id).unwrap().verified);
+    assert!(!client.peer(peer.id).unwrap().trusted);
     assert!(client.claim_prekey_online([1; 32], 1000).is_err());
     client.block_peer(peer.id, false).unwrap();
-    assert!(client.peer(peer.id).unwrap().verified);
+    assert!(client.peer(peer.id).unwrap().trusted);
     let replacement = changed(&bytes, &IdentityKey::generate().unwrap());
     let changed = client.observe_peer_binding(&replacement).unwrap();
-    assert!(!changed.verified);
+    assert!(!changed.trusted);
     assert_eq!(changed.fingerprint, peer.fingerprint);
     assert_eq!(
         changed.changed_fingerprint,
@@ -201,7 +203,7 @@ fn explicit_confirmation_and_key_change_quarantine_survive_restart() {
     client.observe_peer_binding(&bytes).unwrap();
     drop(client);
     let client = open(&path);
-    assert!(!client.peer(peer.id).unwrap().verified);
+    assert!(!client.peer(peer.id).unwrap().trusted);
     assert!(client.peer(peer.id).unwrap().changed_fingerprint.is_some());
 }
 
@@ -226,7 +228,7 @@ fn confirmation_storage_failure_does_not_grant_trust_and_history_migration_inven
     let peer = client.observe_peer_binding(&bytes).unwrap();
     client.db.execute_batch("CREATE TRIGGER fail BEFORE UPDATE ON peers BEGIN SELECT RAISE(ABORT,'synthetic disk failure'); END;").unwrap();
     assert!(client.confirm_peer(peer.id, peer.fingerprint).is_err());
-    assert!(!client.peer(peer.id).unwrap().verified);
+    assert!(!client.peer(peer.id).unwrap().trusted);
     client.db.execute_batch("DROP TRIGGER fail;").unwrap();
     client.confirm_peer(peer.id, peer.fingerprint).unwrap();
     let mut signed = parse(&bytes).unwrap();
@@ -238,8 +240,8 @@ fn confirmation_storage_failure_does_not_grant_trust_and_history_migration_inven
         .observe_peer_binding(&signed.to_bytes().unwrap())
         .unwrap();
     assert_ne!(new.id, peer.id);
-    assert!(!new.verified);
-    assert!(client.peer(peer.id).unwrap().verified);
+    assert!(!new.trusted);
+    assert!(client.peer(peer.id).unwrap().trusted);
 }
 
 #[test]
@@ -255,7 +257,7 @@ fn two_peers_verify_from_independent_material_before_claiming_and_recheck_before
     let b = alice
         .fetch_peer_online(parse(&bob_bytes).unwrap().binding.device)
         .unwrap();
-    assert!(!a.verified && !b.verified);
+    assert!(!a.trusted && !b.trusted);
     assert!(alice.prepare_peer_claim([1; 32], b.id).is_err());
     alice
         .confirm_peer(b.id, device_fingerprint(&bob_bytes).unwrap())
@@ -358,10 +360,10 @@ fn concurrent_confirmation_and_key_change_cannot_leave_the_peer_verified() {
             store.observe_peer_binding(&replacement).unwrap()
         });
         let _ = confirm.join().unwrap();
-        assert!(!observe.join().unwrap().verified);
+        assert!(!observe.join().unwrap().trusted);
     });
     let current = open(&path).peer(peer.id).unwrap();
-    assert!(!current.verified);
+    assert!(!current.trusted);
     assert_eq!(
         current.changed_fingerprint,
         Some(device_fingerprint(&replacement).unwrap())
@@ -486,9 +488,9 @@ fn account_device_review_keeps_unknown_missing_blocked_and_changed_devices_disti
     assert_eq!(review.len(), 302);
     assert_eq!(review.iter().filter(|entry| entry.is_current).count(), 1);
     let entry = |n: u8| review.iter().find(|entry| entry.device == [n; 32]).unwrap();
-    assert!(entry(1).peer.as_ref().unwrap().verified);
+    assert!(entry(1).peer.as_ref().unwrap().trusted);
     assert!(entry(2).peer.as_ref().unwrap().blocked);
-    assert!(!entry(2).peer.as_ref().unwrap().verified);
+    assert!(!entry(2).peer.as_ref().unwrap().trusted);
     assert!(entry(3).inventory.as_ref().unwrap().revoked);
     assert!(entry(3)
         .peer
@@ -496,10 +498,10 @@ fn account_device_review_keeps_unknown_missing_blocked_and_changed_devices_disti
         .unwrap()
         .changed_fingerprint
         .is_some());
-    assert!(!entry(3).peer.as_ref().unwrap().verified);
+    assert!(!entry(3).peer.as_ref().unwrap().trusted);
     assert!(entry(4).peer.is_none());
     assert!(entry(40).inventory.is_none());
-    assert!(entry(40).peer.as_ref().unwrap().verified);
+    assert!(entry(40).peer.as_ref().unwrap().trusted);
     assert!(!review
         .iter()
         .any(|entry| entry.device == bob_peer.binding.device));
@@ -543,7 +545,7 @@ fn account_device_review_rejects_inventory_conflicting_with_verified_account_bin
         )
         .unwrap();
     assert!(matches!(review(&alice), Err(Error::Conflict)));
-    assert!(alice.peer(peer.id).unwrap().verified);
+    assert!(alice.peer(peer.id).unwrap().trusted);
     assert_eq!(alice.peer(peer.id).unwrap().fingerprint, peer.fingerprint);
 }
 
@@ -578,9 +580,9 @@ fn replacement_approval_is_atomic_and_old_trust_cannot_be_revived() {
         .db
         .execute_batch("DROP TRIGGER fail_replacement;")
         .unwrap();
-    assert!(alice.peer(old.id).unwrap().verified);
+    assert!(alice.peer(old.id).unwrap().trusted);
     assert_eq!(alice.active_session(old.id).unwrap(), Some([3; 32]));
-    assert!(!alice.peer(new.id).unwrap().verified);
+    assert!(!alice.peer(new.id).unwrap().trusted);
     alice
         .approve_peer_replacement(old.id, new.id, old.fingerprint, new.fingerprint)
         .unwrap();
@@ -589,11 +591,11 @@ fn replacement_approval_is_atomic_and_old_trust_cannot_be_revived() {
     alice
         .approve_peer_replacement(old.id, new.id, old.fingerprint, new.fingerprint)
         .unwrap();
-    assert!(alice.peer(new.id).unwrap().verified);
+    assert!(alice.peer(new.id).unwrap().trusted);
     assert_eq!(alice.peer(old.id).unwrap().replaced_by, Some(new.id));
     alice.observe_peer_binding(&old_bytes).unwrap();
     alice.block_peer(old.id, false).unwrap();
-    assert!(!alice.peer(old.id).unwrap().verified);
+    assert!(!alice.peer(old.id).unwrap().trusted);
     assert!(alice.confirm_peer(old.id, old.fingerprint).is_err());
     assert!(alice.prepare_peer_claim([99; 32], old.id).is_err());
     assert!(alice.send_pending_online(queued.0, now).is_err());
@@ -662,12 +664,12 @@ fn reviewed_link_endorsement_requires_existing_trust_and_preserves_quarantine() 
             .unwrap(),
         child
     );
-    assert!(contact.peer(child).unwrap().verified);
+    assert!(contact.peer(child).unwrap().trusted);
     contact.block_peer(child, true).unwrap();
     assert!(contact
         .accept_linked_peer(&proof, sponsor_peer.id, now)
         .is_err());
-    assert!(!contact.peer(child).unwrap().verified);
+    assert!(!contact.peer(child).unwrap().trusted);
     contact.block_peer(child, false).unwrap();
     contact.block_peer(sponsor_peer.id, true).unwrap();
     assert!(contact
@@ -686,4 +688,208 @@ fn reviewed_link_endorsement_requires_existing_trust_and_preserves_quarantine() 
     assert!(contact
         .accept_linked_peer(&proof, sponsor_peer.id, now)
         .is_err());
+}
+
+fn directory(bindings: &[Vec<u8>]) -> sigil_protocol::admin::ContactDirectory {
+    let parsed: Vec<_> = bindings.iter().map(|v| parse(v).unwrap()).collect();
+    let owner = &parsed[0].binding;
+    let mut devices: Vec<_> = parsed
+        .iter()
+        .map(|s| transport::hex(&s.binding.device))
+        .collect();
+    devices.sort();
+    sigil_protocol::admin::ContactDirectory {
+        account: sigil_protocol::admin::FoundAccount {
+            address: format!("@{}:{}", owner.username, owner.server),
+            account: transport::hex(&owner.account),
+            devices,
+        },
+        bindings: bindings.iter().map(|v| transport::hex(v)).collect(),
+        links: vec![],
+    }
+}
+#[test]
+fn directory_trust_is_not_manual_verification_and_replacements_require_exact_review() {
+    let (dir, _fixture, mut alice, mut bob, now) = crate::claims::tests::pair();
+    let original = bob.own_device_binding().unwrap();
+    let binding = parse(&original).unwrap().binding;
+    let first = directory(std::slice::from_ref(&original));
+    let apply = |store: &mut ClientStore,
+                 dir: &sigil_protocol::admin::ContactDirectory,
+                 accepted,
+                 approval| {
+        store.reconcile_contact_trust(
+            dir,
+            (&binding.server, &binding.username, binding.account),
+            accepted,
+            approval,
+            now,
+        )
+    };
+    assert_eq!(apply(&mut alice, &first, false, None).unwrap(), None);
+    let old = reference(&binding.server, &binding.device);
+    assert!(!alice.peer(old).unwrap().trusted);
+    apply(&mut alice, &first, true, None).unwrap();
+    assert!(alice.peer(old).unwrap().trusted);
+    assert!(!alice.peer(old).unwrap().verified);
+    crate::incoming::tests::start(&mut alice, old, now);
+    let queued = alice
+        .send_peer_text(old, [161; 32], "Retained synthetic draft", now, now)
+        .unwrap();
+    let history = alice.outgoing_message(queued.0, [161; 32]).unwrap();
+    let key = IdentityKey::generate().unwrap();
+    let mut signed = parse(&changed(&original, &key)).unwrap();
+    signed.binding.device = [162; 32];
+    signed.signature = key.sign(&signed.binding.signing_bytes().unwrap()).unwrap();
+    let replacement = directory(&[signed.to_bytes().unwrap()]);
+    let review = apply(&mut alice, &replacement, true, None)
+        .unwrap()
+        .unwrap();
+    assert!(!alice.peer(old).unwrap().trusted);
+    assert!(alice.send_pending_online(queued.0, now).is_err());
+    drop(alice);
+    let mut alice = open(&dir.path().join("alice.db"));
+    assert!(!alice.peer(old).unwrap().trusted);
+    assert!(apply(&mut alice, &replacement, true, Some([0; 32])).is_err());
+    apply(&mut alice, &replacement, true, Some(review)).unwrap();
+    let new = reference(&binding.server, &signed.binding.device);
+    assert!(alice.peer(new).unwrap().trusted);
+    assert!(!alice.peer(new).unwrap().verified);
+    assert_eq!(alice.peer(old).unwrap().replaced_by, Some(new));
+    assert_eq!(
+        alice.outgoing_message(queued.0, [161; 32]).unwrap(),
+        history
+    );
+    assert!(apply(&mut alice, &first, true, None).is_err());
+    alice.block_peer(new, true).unwrap();
+    apply(&mut alice, &replacement, true, None).unwrap();
+    assert!(!alice.peer(new).unwrap().trusted);
+}
+#[test]
+fn directory_link_endorsement_survives_consent_expiry_but_rejects_tampering() {
+    let (dir, _fixture, mut contact, mut sponsor, now) = crate::claims::tests::pair();
+    let mut joining = open(&dir.path().join("directory-child.db"));
+    let sponsor_bytes = sponsor.own_device_binding().unwrap();
+    let child_bytes = joining
+        .sign_joining_device_binding(&sponsor_bytes, [171; 32])
+        .unwrap();
+    let binding = parse(&sponsor_bytes).unwrap().binding;
+    let apply = |store: &mut ClientStore, dir: &sigil_protocol::admin::ContactDirectory| {
+        store.reconcile_contact_trust(
+            dir,
+            (&binding.server, &binding.username, binding.account),
+            true,
+            None,
+            now + 1000,
+        )
+    };
+    apply(
+        &mut contact,
+        &directory(std::slice::from_ref(&sponsor_bytes)),
+    )
+    .unwrap();
+    let transcript = sigil_protocol::link::Transcript {
+        sponsor: device_fingerprint(&sponsor_bytes).unwrap(),
+        joining: device_fingerprint(&child_bytes).unwrap(),
+        sponsor_challenge: [172; 32],
+        joining_challenge: [173; 32],
+        provisioning_key: sigil_crypto::DhKey::generate().unwrap().public_key(),
+        credential_commitment: [174; 32],
+        created_at: now,
+        expires_at: now + 600,
+    };
+    let digest = crate::link::confirmation(&transcript).unwrap();
+    let proof = sigil_protocol::link::Proof {
+        sponsor_signature: sponsor
+            .sign_device_link_consent(&transcript, &sponsor_bytes, &child_bytes, digest, now)
+            .unwrap(),
+        joining_signature: joining
+            .sign_device_link_consent(&transcript, &sponsor_bytes, &child_bytes, digest, now)
+            .unwrap(),
+        transcript,
+        sponsor: parse(&sponsor_bytes).unwrap(),
+        joining: parse(&child_bytes).unwrap(),
+    };
+    let mut next = directory(&[child_bytes]);
+    let mut tampered = proof.clone();
+    tampered.sponsor_signature[0] ^= 1;
+    next.links = vec![transport::hex(&tampered.to_bytes().unwrap())];
+    assert!(apply(&mut contact, &next).is_err());
+    next.links = vec![transport::hex(&proof.to_bytes().unwrap())];
+    assert_eq!(apply(&mut contact, &next).unwrap(), None);
+    let child = contact
+        .peer(reference(&binding.server, &[171; 32]))
+        .unwrap();
+    assert!(child.trusted);
+    assert!(!child.verified);
+    assert!(
+        !contact
+            .peer(reference(&binding.server, &binding.device))
+            .unwrap()
+            .active
+    );
+}
+
+#[test]
+fn recycled_username_requires_approval_and_cannot_restore_the_old_account() {
+    let (_dir, _fixture, mut alice, mut bob, now) = crate::claims::tests::pair();
+    let original = bob.own_device_binding().unwrap();
+    let old = parse(&original).unwrap().binding;
+    let first = directory(&[original]);
+    alice
+        .reconcile_contact_trust(
+            &first,
+            (&old.server, &old.username, old.account),
+            true,
+            None,
+            now,
+        )
+        .unwrap();
+    let key = IdentityKey::generate().unwrap();
+    let mut binding = old.clone();
+    binding.account = [181; 32];
+    binding.device = [182; 32];
+    binding.identity = key.public_key();
+    let signature = key.sign(&binding.signing_bytes().unwrap()).unwrap();
+    let next = directory(&[SignedBinding {
+        binding: binding.clone(),
+        signature,
+    }
+    .to_bytes()
+    .unwrap()]);
+    let review = alice
+        .reconcile_contact_trust(
+            &next,
+            (&binding.server, &binding.username, binding.account),
+            true,
+            None,
+            now,
+        )
+        .unwrap()
+        .unwrap();
+    let old_id = reference(&old.server, &old.device);
+    assert!(!alice.peer(old_id).unwrap().trusted);
+    alice
+        .reconcile_contact_trust(
+            &next,
+            (&binding.server, &binding.username, binding.account),
+            true,
+            Some(review),
+            now,
+        )
+        .unwrap();
+    let new_id = reference(&binding.server, &binding.device);
+    assert!(alice.peer(new_id).unwrap().trusted);
+    assert!(!alice.peer(new_id).unwrap().verified);
+    assert_eq!(alice.peer(old_id).unwrap().replaced_by, Some(new_id));
+    assert!(alice
+        .reconcile_contact_trust(
+            &first,
+            (&old.server, &old.username, old.account),
+            true,
+            None,
+            now
+        )
+        .is_err());
+    assert!(alice.peer(new_id).unwrap().trusted);
 }
