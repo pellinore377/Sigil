@@ -5,7 +5,7 @@ plugins {
 }
 android {
     namespace = "org.sigil.compose"
-    compileSdk = 35
+    compileSdk = 36
     defaultConfig {
         applicationId = "org.sigil.compose"
         minSdk = 26
@@ -25,6 +25,7 @@ android {
 kotlin { compilerOptions { jvmTarget.set(org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_17) } }
 dependencies {
     implementation("androidx.activity:activity-compose:1.9.3")
+    implementation("androidx.browser:browser:1.9.0")
     implementation("androidx.compose.material3:material3:1.4.0")
     implementation("androidx.graphics:graphics-path:1.1.0")
     implementation(project(":shared"))

@@ -8,6 +8,7 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.browser.auth.AuthTabIntent
 import androidx.compose.material3.dynamicLightColorScheme
 import androidx.compose.runtime.*
 import androidx.compose.ui.graphics.toArgb
@@ -17,6 +18,10 @@ import org.sigil.SigilApp
 
 class MainActivity : ComponentActivity() {
     private lateinit var messenger: Messenger
+    private val signIn = AuthTabIntent.registerActivityResultLauncher(this) { result ->
+        if (result.resultCode == AuthTabIntent.RESULT_OK) messenger.callback(result.resultUri)
+    }
+    internal fun openSignIn(uri: Uri) = AuthTabIntent.Builder().build().launch(signIn, uri, "sigil")
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
@@ -31,7 +36,7 @@ class MainActivity : ComponentActivity() {
             val dynamicAccent = if (Build.VERSION.SDK_INT >= 31) dynamicLightColorScheme(this).primary.toArgb() and 0xffffff else null
             LaunchedEffect(messenger.authorizationUrl) {
                 messenger.authorizationUrl?.let { url ->
-                    try { startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url))) }
+                    try { openSignIn(Uri.parse(url)) }
                     catch (_: android.content.ActivityNotFoundException) { }
                     finally { messenger.browserOpened() }
                 }

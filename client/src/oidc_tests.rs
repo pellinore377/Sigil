@@ -48,6 +48,7 @@ fn native_oidc_https_enrollment_survives_restarts_and_local_commit_failure() {
             .tls_config(tls)
             .proxy(None)
             .http_status_as_error(false)
+            .max_redirects(0)
             .build(),
     );
     let admin = std::fs::read_to_string(dir.path().join("admin.token")).unwrap();
@@ -102,21 +103,18 @@ fn native_oidc_https_enrollment_survives_restarts_and_local_commit_failure() {
         std::future::pending(),
         port,
     );
-    let mut response = agent
+    let response = agent
         .get(format!(
             "{server_origin}/auth/v0/oidc/callback?state={csrf}&code=synthetic-code"
         ))
         .call()
         .unwrap();
-    assert_eq!(response.status(), 200);
-    let body = response.body_mut().read_to_string().unwrap();
-    let (request_id, completion) = body
-        .split_once("sigil://oidc/")
+    assert_eq!(response.status(), 303);
+    let (request_id, completion) = response.headers()["location"]
+        .to_str()
         .unwrap()
-        .1
-        .split_once('"')
+        .strip_prefix("sigil://oidc/")
         .unwrap()
-        .0
         .split_once('/')
         .unwrap();
     let mut client = open();
@@ -154,22 +152,19 @@ fn native_oidc_https_enrollment_survives_restarts_and_local_commit_failure() {
     let started = client.start_oidc_online().unwrap();
     let query = started.authorization_url.split_once('?').unwrap().1;
     *claims.lock().unwrap() = json!({"iss":provider_origin,"sub":"synthetic-subject","aud":"synthetic","iat":now,"exp":now+600,"nonce":parameter(query,"nonce"),"challenge":parameter(query,"code_challenge")});
-    let mut response = agent
+    let response = agent
         .get(format!(
             "{server_origin}/auth/v0/oidc/callback?state={}&code=synthetic-code",
             parameter(query, "state")
         ))
         .call()
         .unwrap();
-    assert_eq!(response.status(), 200);
-    let body = response.body_mut().read_to_string().unwrap();
-    let (request_id, completion) = body
-        .split_once("sigil://oidc/")
+    assert_eq!(response.status(), 303);
+    let (request_id, completion) = response.headers()["location"]
+        .to_str()
         .unwrap()
-        .1
-        .split_once('"')
+        .strip_prefix("sigil://oidc/")
         .unwrap()
-        .0
         .split_once('/')
         .unwrap();
     assert!(!client.finish_oidc_link_online().unwrap());
