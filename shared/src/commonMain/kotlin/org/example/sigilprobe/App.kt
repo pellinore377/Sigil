@@ -36,6 +36,7 @@ import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.RectangleShape
 import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.graphics.drawscope.clipRect
+import androidx.compose.ui.graphics.drawscope.clipPath
 import org.jetbrains.compose.resources.Font
 import org.jetbrains.compose.resources.painterResource
 import androidx.compose.animation.AnimatedVisibility
@@ -56,9 +57,14 @@ internal fun Symbol(name: String, label: String, action: () -> Unit) {
         Glyph(name)
     }
 }
-internal fun Modifier.footerShadow() = drawWithContent {
-    clipRect(top = -12.dp.toPx(), bottom = size.height) { this@drawWithContent.drawContent() }
-}.shadow(2.dp, RoundedCornerShape(topStart = 24.dp, topEnd = 24.dp), clip = false)
+internal fun Modifier.behindFooter(topFromBottom: androidx.compose.ui.unit.Dp) = drawWithContent {
+    val top = size.height + topFromBottom.toPx()
+    val radius = androidx.compose.ui.geometry.CornerRadius(24.dp.toPx())
+    val cover = androidx.compose.ui.graphics.Path().apply {
+        addRoundRect(androidx.compose.ui.geometry.RoundRect(0f, top, size.width, maxOf(top, size.height) + size.height, topLeftCornerRadius = radius, topRightCornerRadius = radius))
+    }
+    clipPath(cover, androidx.compose.ui.graphics.ClipOp.Difference) { this@drawWithContent.drawContent() }
+}
 internal fun Modifier.headerShadow(shape: Shape = RectangleShape, elevation: androidx.compose.ui.unit.Dp = 2.dp) = drawWithContent {
     clipRect(top = 0f, bottom = size.height + 12.dp.toPx()) { this@drawWithContent.drawContent() }
 }.shadow(elevation, shape, clip = false)

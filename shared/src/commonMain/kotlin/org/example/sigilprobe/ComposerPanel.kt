@@ -83,7 +83,7 @@ internal fun ComposerPanel(draft: TextFieldState, analyze: (String) -> String, e
     val voiceReady = voice.peer == peer && voice.phase in listOf("Ready", "Sending")
     LaunchedEffect(voice.phase) { if (voiceReady) change("") }
     val footerHeight = LocalFooterHeight.current
-    Surface(if (footerHeight == null) Modifier.footerShadow() else Modifier.onSizeChanged { footerHeight(with(density) { it.height.toDp() }) },
+    Surface(if (footerHeight == null) Modifier else Modifier.onSizeChanged { footerHeight(with(density) { it.height.toDp() }) },
         shape = RoundedCornerShape(topStart = 24.dp, topEnd = 24.dp), color = if (footerHeight == null) MaterialTheme.colorScheme.surface else androidx.compose.ui.graphics.Color.Transparent) {
         Column {
             ComposerBar {
