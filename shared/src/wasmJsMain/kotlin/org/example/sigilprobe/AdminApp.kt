@@ -12,6 +12,8 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.contentDescription
 import kotlinx.browser.window
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.serialization.json.*
 import org.w3c.xhr.XMLHttpRequest
@@ -140,29 +142,72 @@ private fun LoginPage(status: JsonElement, busy: Boolean, run: (suspend () -> Un
 }
 @Composable
 private fun IdentityPage(status: JsonElement, busy: Boolean, run: (suspend () -> Unit) -> Unit) {
-    var local by remember { mutableStateOf(false) }
+    var step by remember { mutableStateOf(if (status.flag("oidc_enabled")) "choose" else "provider") }
     var username by remember(status.text("suggested_username")) { mutableStateOf(status.text("suggested_username")) }
     val ready = !busy && username.isNotBlank()
     val submit: () -> Unit = { if (ready) run { api("/auth/v0/admin/finish", "POST", obj("username" to str(username))) } }
     Page("Your administrator account.", "Choose how you’ll sign in to administer this server.") {
         Text("2 / 3   ·   Your identity", style = MaterialTheme.typography.labelLarge)
-        if (!local && !status.flag("oidc_linked")) {
-            OidcForm(status, busy, run)
-            TextButton(enabled = !busy, onClick = { local = true }) { Text("Continue with a local administrator") }
+        if (step != "local" && !status.flag("oidc_linked")) {
+            if (step == "provider") {
+                OidcForm(status, busy, run, onSaved = { step = "choose" })
+                TextButton(enabled = !busy, onClick = { step = if (status.flag("oidc_enabled")) "choose" else "local" }) {
+                    Text(if (status.flag("oidc_enabled")) "Back to account options" else "Continue with a local administrator")
+                }
+            } else {
+                Text("Identity provider saved.", style = MaterialTheme.typography.headlineSmall)
+                Text("Choose your administrator’s sign-in method. You can change it later in Authentication settings.")
+                BoxWithConstraints(Modifier.fillMaxWidth()) {
+                    val choices: @Composable (Modifier) -> Unit = { modifier ->
+                        IdentityChoice("Link admin account", "Sign in with your provider to link your identity and profile. Your administrator password stays available until you disable password login.", modifier, !busy) {
+                            run { val result = api("/auth/v0/admin/oidc", "POST"); window.location.assign(result.text("authorization_url")) }
+                        }
+                        IdentityChoice("Create local admin account", "Choose a Sigil username and use the password you already set. Your identity provider remains configured without linking this administrator.", modifier, !busy) { step = "local" }
+                    }
+                    if (maxWidth >= 560.dp) Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) { choices(Modifier.weight(1f)) }
+                    else Column(verticalArrangement = Arrangement.spacedBy(16.dp)) { choices(Modifier.fillMaxWidth()) }
+                }
+                TextButton(enabled = !busy, onClick = { step = "provider" }) { Text("Edit identity provider") }
+            }
         } else {
             if (status.flag("oidc_linked")) Text("Your identity provider is linked. Confirm your Sigil username.")
             Field("Username", username, { username = it }, enabled = !busy, onSubmit = submit)
             Text("@$username:${status.text("server_name")}")
             Action("Open my dashboard", ready, submit)
+            if (!status.flag("oidc_linked")) TextButton(enabled = !busy, onClick = { step = if (status.flag("oidc_enabled")) "choose" else "provider" }) { Text("Back") }
         }
     }
 }
 @Composable
-private fun OidcForm(status: JsonElement, busy: Boolean, run: (suspend () -> Unit) -> Unit) {
+private fun IdentityChoice(title: String, description: String, modifier: Modifier, enabled: Boolean, action: () -> Unit) {
+    OutlinedCard(modifier) {
+        Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
+            Text(title, style = MaterialTheme.typography.headlineSmall)
+            Text(description)
+            Action(title, enabled, action)
+        }
+    }
+}
+@Composable
+private fun CopyableCallback(url: String) {
+    var feedback by remember(url) { mutableStateOf("") }
+    val scope = rememberCoroutineScope()
+    Text(url, Modifier.clickable(onClickLabel = "Copy callback URL", role = androidx.compose.ui.semantics.Role.Button) {
+        scope.launch(start = CoroutineStart.UNDISPATCHED) {
+            try { writeClipboard(url); feedback = "Copied." }
+            catch (e: CancellationException) { throw e }
+            catch (_: Exception) { feedback = "Could not copy. Clipboard access was not granted." }
+        }
+    }.padding(vertical = 8.dp), style = MaterialTheme.typography.bodyMedium)
+    Text(feedback.ifEmpty { "Click to copy." }, style = MaterialTheme.typography.bodySmall)
+}
+@Composable
+private fun OidcForm(status: JsonElement, busy: Boolean, run: (suspend () -> Unit) -> Unit, onSaved: (() -> Unit)? = null) {
     var unlinkPassword by remember { mutableStateOf("") }
     var issuer by remember { mutableStateOf("") }; var client by remember { mutableStateOf("") }; var secret by remember { mutableStateOf("") }
     var configuration by remember { mutableStateOf<JsonElement?>(null) }
-    LaunchedEffect(Unit) { run {
+    var editing by remember(status.flag("oidc_enabled")) { mutableStateOf(onSaved != null || !status.flag("oidc_enabled")) }
+    LaunchedEffect(status.flag("oidc_enabled")) { run {
         val saved = api("/admin/v0/oidc")
         configuration = saved; issuer = saved.text("issuer"); client = saved.text("client_id")
     } }
@@ -172,16 +217,24 @@ private fun OidcForm(status: JsonElement, busy: Boolean, run: (suspend () -> Uni
         val exceptions = if (issuer.trim() == old.text("issuer")) old.jsonObject["exceptions"] ?: JsonArray(emptyList()) else JsonArray(emptyList())
         configuration = api("/admin/v0/oidc", "PUT", obj("expected_revision" to old.jsonObject.getValue("revision"), "confirm" to JsonPrimitive(true), "provider" to obj("issuer" to str(issuer.trim()), "client_id" to str(client.trim()), "client_secret" to if (secret.isEmpty()) JsonNull else str(secret), "exceptions" to exceptions)))
         secret = ""
+        if (onSaved != null) onSaved() else editing = false
     } }
-    Text("Connect Pocket ID or another OpenID Connect provider.")
-    Text("Add this callback URL to your provider:", style = MaterialTheme.typography.bodySmall)
-    Field("Callback URL", "${status.text("public_origin")}/auth/v0/oidc/callback", {}, readOnly = true)
-    Field("Issuer URL", issuer, { issuer = it }, enabled = !busy)
-    Field("Client ID", client, { client = it }, enabled = !busy)
-    Field("Client secret · empty for a public client", secret, { secret = it }, secret = true, enabled = !busy, onSubmit = submit)
-    if (configuration?.flag("secret_configured") == true) Text("Re-enter the client secret when saving changes.", style = MaterialTheme.typography.bodySmall)
-    Action("Save identity provider", ready, submit)
-    if (status.flag("oidc_enabled")) Action(if (status.flag("oidc_linked")) "Verify identity again" else "Link my administrator identity", !busy) { run {
+    if (editing) {
+        Text("Connect Pocket ID or another OpenID Connect provider.")
+        Text("Add this callback URL to your provider:", style = MaterialTheme.typography.bodySmall)
+        CopyableCallback("${status.text("public_origin")}/auth/v0/oidc/callback")
+        Field("Issuer URL", issuer, { issuer = it }, enabled = !busy)
+        Field("Client ID", client, { client = it }, enabled = !busy)
+        Field("Client secret · empty for a public client", secret, { secret = it }, secret = true, enabled = !busy, onSubmit = submit)
+        if (configuration?.flag("secret_configured") == true) Text("Re-enter the client secret when saving changes.", style = MaterialTheme.typography.bodySmall)
+        Action("Save identity provider", ready, submit)
+    } else {
+        Text("Identity provider saved.", style = MaterialTheme.typography.headlineSmall)
+        Text(configuration?.text("issuer").orEmpty())
+        Text(if (configuration?.flag("secret_configured") == true) "Client secret saved. It is never displayed again." else "Public client · no client secret.", style = MaterialTheme.typography.bodySmall)
+        TextButton(enabled = !busy, onClick = { editing = true }) { Text("Edit identity provider") }
+    }
+    if (onSaved == null && status.flag("oidc_enabled") && !editing) Action(if (status.flag("oidc_linked")) "Verify identity again" else "Link my administrator identity", !busy) { run {
         val result = api("/auth/v0/admin/oidc", "POST"); window.location.assign(result.text("authorization_url"))
     } }
     if (status.flag("oidc_linked")) {

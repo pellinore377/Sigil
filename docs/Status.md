@@ -20,7 +20,7 @@ Container acceptance passes with the actual schema-27 binary upgraded to 28, dow
 
 Chromium acceptance covers the local wizard, native password inputs, editing accessibility, confirmation navigation, domain discovery, saved settings, login/logout/reload and mobile dark appearance. OIDC automatically permits private addresses for the configured issuer; Docker discovery/JWKS checks pass across address changes without IP configuration. Cross-origin provider requests are rejected before fetching. All 111 server unit tests and server Clippy pass. Static HTML and API routes share the same anti-framing policy.
 
-Admin fields use themed editing menus and Enter navigation/submission. Zen clipboard checks include accepting its browser-owned Paste prompt; browser clipboard permissions remain enforced.
+Admin fields use themed editing menus and Enter navigation/submission. Zen checks cover accepting and cancelling its Paste prompt, then typing and navigation. Clipboard rejection resumes without freezing the UI. Chromium checks cover callback text copy/rejection/retry, saved-provider account choices, edit/back, provider navigation and local setup. Synthetic OIDC callbacks accept response extensions while rejecting duplicate credentials, missing browser cookies and replay.
 
 ## Backend measurements
 
