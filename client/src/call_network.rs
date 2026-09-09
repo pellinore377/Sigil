@@ -1,6 +1,11 @@
 use super::*;
 use sigil_calls::{Answer, Relay, RelayRequest, SignedConnect, SignedRoster};
 use sigil_protocol::federation::Service;
+enum Operation {
+    Connect,
+    Relay,
+    Update,
+}
 #[derive(serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct CallAvailability {
@@ -22,6 +27,20 @@ impl HttpsClient {
     }
     pub fn publish_call(&self, roster: &SignedRoster) -> Result<(), Error> {
         roster.verify().map_err(|_| Error::Configuration)?;
+        if roster.roster.version == 2 && roster.roster.revision > 0 {
+            let reply: SignedRoster = self.call_request(
+                &roster.roster.server,
+                "/calls/v0/roster",
+                roster,
+                Operation::Update,
+            )?;
+            reply.verify().map_err(|_| Error::InvalidResponse)?;
+            return if *roster == reply {
+                Ok(())
+            } else {
+                Err(Error::InvalidResponse)
+            };
+        }
         if roster.roster.server != self.server {
             return Err(Error::Configuration);
         }
@@ -41,18 +60,24 @@ impl HttpsClient {
         server: &str,
         path: &str,
         body: &impl Serialize,
-        relay: bool,
+        operation: Operation,
     ) -> Result<T, Error> {
         let bytes = Zeroizing::new(serde_json::to_vec(body).map_err(|_| Error::Configuration)?);
-        if bytes.len() > if relay { 2048 } else { 100352 } {
+        if bytes.len()
+            > match operation {
+                Operation::Relay => 2048,
+                Operation::Connect => 100352,
+                Operation::Update => 16384,
+            }
+        {
             return Err(Error::Limit);
         }
         if server != self.server {
             let request = String::from_utf8(bytes.to_vec()).map_err(|_| Error::Configuration)?;
-            let service = if relay {
-                Service::CallRelay { request }
-            } else {
-                Service::CallConnect { request }
+            let service = match operation {
+                Operation::Relay => Service::CallRelay { request },
+                Operation::Connect => Service::CallConnect { request },
+                Operation::Update => Service::CallUpdate { request },
             };
             let reply = self.federated_service(server, service)?;
             if reply.len() > 98304 {
@@ -80,8 +105,12 @@ impl HttpsClient {
         proof
             .verify(&roster.roster, now)
             .map_err(|_| Error::Configuration)?;
-        let answer: Answer =
-            self.call_request(&roster.roster.server, "/calls/v0/connect", proof, false)?;
+        let answer: Answer = self.call_request(
+            &roster.roster.server,
+            "/calls/v0/connect",
+            proof,
+            Operation::Connect,
+        )?;
         if answer.sequence != proof.request.sequence
             || answer.roster != proof.request.roster
             || answer.participant != proof.request.participant
@@ -113,8 +142,12 @@ impl HttpsClient {
         proof
             .verify(&roster.roster, now)
             .map_err(|_| Error::Configuration)?;
-        let reply: Option<Relay> =
-            self.call_request(&roster.roster.server, "/calls/v0/relay", proof, true)?;
+        let reply: Option<Relay> = self.call_request(
+            &roster.roster.server,
+            "/calls/v0/relay",
+            proof,
+            Operation::Relay,
+        )?;
         if let Some(value) = &reply {
             if value.urls.is_empty()
                 || value.urls.len() > 4

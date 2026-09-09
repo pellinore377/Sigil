@@ -58,16 +58,17 @@ class StorageKeyTest {
         val provider = provider("concurrent")
         provider.withKey { directory, key -> assertTrue(NativeStorage.checkStore(directory.path, key)) }
         val failures = java.util.concurrent.atomic.AtomicInteger()
-        provider.withKey { _, _ ->
+        val completed = java.util.concurrent.atomic.AtomicInteger()
+        provider.withKey { _, outer ->
             val worker = Thread {
-                try { provider.withKey { _, _ -> failures.incrementAndGet() } }
-                catch (_: java.nio.channels.OverlappingFileLockException) { /* Safe retry after lock owner exits. */ }
+                try { provider.withKey { directory, inner -> assertArrayEquals(outer, inner); assertNotSame(outer, inner); assertTrue(NativeStorage.checkStore(directory.path, inner)); completed.incrementAndGet() } }
                 catch (_: Throwable) { failures.incrementAndGet() }
             }
             worker.start(); worker.join(3000)
             assertFalse(worker.isAlive)
         }
         assertEquals(0, failures.get())
+        assertEquals(1, completed.get())
         provider.withKey { directory, key -> assertTrue(NativeStorage.checkStore(directory.path, key)) }
     }
 

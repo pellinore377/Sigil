@@ -356,7 +356,7 @@ fn snapshot_expires_every_file_and_schema46_preserves_pending_edits_and_schedule
             .db
             .query_row("PRAGMA user_version", [], |r| r.get::<_, i64>(0))
             .unwrap(),
-        68
+        i64::from(crate::DATABASE_VERSION)
     );
     assert_eq!(
         schedule::read(&store.db, &store.key, &[8; 32]).unwrap().1,

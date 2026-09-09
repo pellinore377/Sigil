@@ -4,6 +4,10 @@ version.workspace = true
 edition.workspace = true
 publish.workspace = true
 
+[features]
+rtc-client = ["dep:webrtc", "dep:rtc", "dep:tokio", "dep:async-trait", "dep:tokio-rustls", "dep:webpki-roots"]
+test-loopback = []
+
 [dependencies]
 sigil-crypto = { path = "../crypto" }
 sigil-calls = { path = "../calls" }
@@ -18,6 +22,12 @@ ureq = { version = "=3.4.0", default-features = false, features = ["rustls"] }
 getrandom = "=0.4.3"
 web-push-native = { version = "=0.5.0", default-features = false }
 base64ct = { version = "=1.8.3", features = ["alloc"] }
+webrtc = { version = "=0.20.5", optional = true }
+rtc = { version = "=0.20.5", optional = true }
+tokio = { version = "=1.53.1", features = ["rt-multi-thread", "net", "sync", "time", "io-util", "macros"], optional = true }
+async-trait = { version = "=0.1.89", optional = true }
+tokio-rustls = { version = "=0.26.5", default-features = false, features = ["ring", "tls12"], optional = true }
+webpki-roots = { version = "=1.0.9", optional = true }
 
 [dev-dependencies]
 ring = "=0.17.14"

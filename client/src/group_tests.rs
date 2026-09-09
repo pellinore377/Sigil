@@ -43,6 +43,41 @@ fn start(creator: &Device, nonce: u32) -> State {
         .accept(creator.fingerprint)
         .unwrap()
 }
+#[test]
+fn group_profiles_require_admin_approval_and_preserve_old_checkpoints() {
+    let alice = Device::new(1, 1);
+    let bob = Device::new(2, 2);
+    let initial = start(&alice, 123);
+    let old = initial.checkpoint().unwrap();
+    assert!(State::from_checkpoint(&old).unwrap().profile().is_none());
+    let state = add(&initial, &alice, &bob, 2, Role::Member);
+    let profile = GroupProfile {
+        name: "Study circle".into(),
+        description: "Notes and conversation".into(),
+    };
+    assert!(state
+        .propose(bob.fingerprint, Change::Profile(profile.clone()))
+        .is_err());
+    let mut change = state
+        .propose(alice.fingerprint, Change::Profile(profile.clone()))
+        .unwrap();
+    assert!(state.authorize(&change).is_err());
+    alice.sign(&mut change);
+    let wire = change.to_bytes().unwrap();
+    let parsed = state.proposal_from_bytes(&wire).unwrap();
+    let next = state.authorize(&parsed).unwrap();
+    assert!(next.profile() == Some(&profile));
+    let restored = State::from_checkpoint(&next.checkpoint().unwrap()).unwrap();
+    assert_eq!(restored.head(), next.head());
+    assert!(restored.profile() == Some(&profile));
+    let mut changed = wire;
+    let at = changed
+        .windows(profile.name.len())
+        .position(|v| v == profile.name.as_bytes())
+        .unwrap();
+    changed[at] = b'X';
+    assert!(state.proposal_from_bytes(&changed).is_err());
+}
 fn add(state: &State, admin: &Device, device: &Device, member: u32, role: Role) -> State {
     let mut proposal = state
         .propose(admin.fingerprint, Change::Add(device.member(member, role)))

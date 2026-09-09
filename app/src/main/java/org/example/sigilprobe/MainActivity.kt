@@ -8,6 +8,7 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.browser.auth.AuthTabIntent
 import androidx.compose.material3.dynamicLightColorScheme
 import androidx.compose.runtime.*
@@ -18,6 +19,19 @@ import org.sigil.SigilApp
 
 class MainActivity : ComponentActivity() {
     private lateinit var messenger: Messenger
+    private var pickerPeer: Map<String, Any?>? = null
+    private var projectionCall: String? = null
+    private val projection = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
+        messenger.calls.projectionResult(projectionCall, result.data.takeIf { result.resultCode == RESULT_OK }); projectionCall = null
+    }
+    private val filePicker = registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        val peer = pickerPeer
+        pickerPeer = null
+        if (uri != null && peer != null) messenger.importFile(peer, uri)
+    }
+    private val microphone = registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted -> messenger.microphoneResult(granted) }
+    private val notifications = registerForActivityResult(ActivityResultContracts.RequestPermission()) { messenger.notificationPermissionResult() }
+    private val callPermissions = registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { result -> messenger.calls.permissionResult(result.values.all { it }) }
     private val signIn = AuthTabIntent.registerActivityResultLauncher(this) { result ->
         if (result.resultCode == AuthTabIntent.RESULT_OK) messenger.callback(result.resultUri)
     }
@@ -26,10 +40,13 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
         messenger = ViewModelProvider(this)[Messenger::class.java]
+        savedInstanceState?.getBundle("attachment_target")?.let { saved -> pickerPeer = saved.keySet().associateWith { saved.getString(it) } }
         messenger.callback(intent.data)
         intent.data = null
         val preferences = getSharedPreferences("appearance", MODE_PRIVATE)
         setContent {
+            var cameraPeer by remember { mutableStateOf<Map<String, Any?>?>(null) }
+            var placePeer by remember { mutableStateOf<Map<String, Any?>?>(null) }
             var backAvailable by remember { mutableStateOf(false) }
             var goBack by remember { mutableStateOf<() -> Unit>({}) }
             BackHandler(backAvailable) { goBack() }
@@ -41,12 +58,39 @@ class MainActivity : ComponentActivity() {
                     finally { messenger.browserOpened() }
                 }
             }
+            LaunchedEffect(messenger.picker) {
+                messenger.picker?.let { (peer, kind) ->
+                    if (kind == "Camera") cameraPeer = peer
+                    else if (kind == "Place") placePeer = peer
+                    else {
+                        pickerPeer = if (kind == "Wallpaper") peer + ("wallpaper" to "true") else peer
+                        filePicker.launch(when (kind) { "Wallpaper" -> arrayOf("image/*"); "Photos" -> arrayOf("image/*", "video/*"); else -> arrayOf("*/*") })
+                    }
+                    messenger.pickerOpened()
+                }
+            }
+            LaunchedEffect(messenger.microphoneRequest) { if (messenger.microphoneRequest != null) microphone.launch(android.Manifest.permission.RECORD_AUDIO) }
+            LaunchedEffect(messenger.notificationPermission) { if (messenger.notificationPermission && Build.VERSION.SDK_INT >= 33) notifications.launch(android.Manifest.permission.POST_NOTIFICATIONS) }
+            LaunchedEffect(messenger.calls.permissions) { messenger.calls.permissions?.let { (_, fields) -> callPermissions.launch(if (fields["video"] == true) arrayOf(android.Manifest.permission.RECORD_AUDIO, android.Manifest.permission.CAMERA) else arrayOf(android.Manifest.permission.RECORD_AUDIO)) } }
+            LaunchedEffect(messenger.calls.projectionRequest) { messenger.calls.projectionRequest?.let { id -> projectionCall = id; projection.launch(getSystemService(android.media.projection.MediaProjectionManager::class.java).createScreenCaptureIntent()) } }
+            CompositionLocalProvider(org.sigil.LocalWallpaper provides { peer, modifier -> Wallpaper(peer, messenger.wallpaperRevision, modifier) }, org.sigil.LocalCallVideo provides { member, screen, modifier -> CallVideoView(messenger.calls, member, screen, modifier) }, org.sigil.LocalAttachmentContent provides { message -> AndroidAttachment(message) }, org.sigil.LocalLocationContent provides { part -> LocationCard(part) }) {
             SigilApp(NativeCore::palette, NativeCore::analyze, messenger.state, messenger::command,
                 read = { preferences.getString(it, null) }, write = { key, value -> preferences.edit().putString(key, value).apply() },
-                dynamicAccent = dynamicAccent, onBackAvailable = { available, action -> backAvailable = available; goBack = action })
+                dynamicAccent = dynamicAccent, onBackAvailable = { available, action -> backAvailable = available; goBack = action },
+                overlay = {
+                    messenger.recoveryKey?.let { secret -> RecoveryDialog(secret, messenger.state.busy, messenger::dismissRecovery) { messenger.command("recovery_enable", mapOf("secret" to secret)) } }
+                    cameraPeer?.let { peer -> CameraSheet({ cameraPeer = null }) { bytes -> messenger.importPhoto(peer, bytes); cameraPeer = null } }
+                    placePeer?.let { peer -> PlaceSheet({ placePeer = null }) { fields -> messenger.command("place", fields + peer); placePeer = null } }
+                })
+            }
         }
     }
     override fun onNewIntent(intent: Intent) { super.onNewIntent(intent); messenger.callback(intent.data); intent.data = null }
+    override fun onSaveInstanceState(outState: Bundle) {
+        pickerPeer?.let { target -> outState.putBundle("attachment_target", Bundle().apply { target.forEach { (key, value) -> putString(key, value as? String) } }) }
+        super.onSaveInstanceState(outState)
+    }
     override fun onStart() { super.onStart(); messenger.foreground(true) }
+    override fun onUserInteraction() { super.onUserInteraction(); NativeSync.interaction() }
     override fun onStop() { messenger.foreground(false); super.onStop() }
 }

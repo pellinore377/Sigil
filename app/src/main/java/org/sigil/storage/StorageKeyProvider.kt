@@ -24,6 +24,7 @@ import javax.crypto.spec.GCMParameterSpec
 
 /** Hardware wrapping only; Rust owns database and messaging behavior. */
 class StorageKeyProvider(context: Context, name: String = "native") {
+    companion object { private val wrappingLock = Any() }
     private val app = context.applicationContext
     internal val directory: File
     internal val alias: String
@@ -48,7 +49,7 @@ class StorageKeyProvider(context: Context, name: String = "native") {
     /** The callback must not retain key bytes; the supplied array is cleared. */
     fun <T> withKey(block: (File, ByteArray) -> T): T {
         val lockFile = File(directory, "key.lock")
-        RandomAccessFile(lockFile, "rw").use { lock ->
+        val key = synchronized(wrappingLock) { RandomAccessFile(lockFile, "rw").use { lock ->
             Os.chmod(lockFile.path, 384)
             lock.channel.lock().use {
                 val atomic = AtomicFile(File(directory, "storage.key"))
@@ -61,13 +62,13 @@ class StorageKeyProvider(context: Context, name: String = "native") {
                     generate()
                 }
                 requireHardware(wrapping)
-                val key = if (exists) unwrap(wrapping, read(atomic)) else {
+                if (exists) unwrap(wrapping, read(atomic)) else {
                     check(!File(directory, "client.db").exists()) { "Wrapped storage key missing" }
                     create(wrapping, atomic)
                 }
-                try { check(key.size == 32); return block(directory, key) } finally { key.fill(0) }
             }
-        }
+        } }
+        try { check(key.size == 32); return block(directory, key) } finally { key.fill(0) }
     }
 
     private fun generate(): SecretKey {

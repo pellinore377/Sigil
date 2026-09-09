@@ -105,6 +105,12 @@ impl Resolver for BoundedResolver {
     ) -> Result<ResolvedSocketAddrs, ureq::Error> {
         let host = uri.host().ok_or(ureq::Error::HostNotFound)?.to_owned();
         let port = uri.port_u16().unwrap_or(443);
+        #[cfg(feature = "test-loopback")]
+        if host == "chat.example" {
+            let mut result = self.empty();
+            result.push(SocketAddr::from(([127, 0, 0, 1], port)));
+            return Ok(result);
+        }
         let addresses = lookup(timeout, move || {
             (host.as_str(), port)
                 .to_socket_addrs()

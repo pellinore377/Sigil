@@ -4,8 +4,8 @@ use super::*;
 mod tests;
 use std::collections::BTreeMap;
 pub struct Media {
-    call: Id,
-    lease: Id,
+    pub(super) call: Id,
+    pub(super) lease: Id,
     state: Option<Id>,
     sender: Option<sigil_calls::Sender>,
     receivers: BTreeMap<Id, (u64, sigil_calls::Receiver)>,

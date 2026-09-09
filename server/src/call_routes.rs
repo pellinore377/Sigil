@@ -96,6 +96,10 @@ pub(crate) fn public() -> Router<AppState> {
     Router::new()
         .route("/calls/v0/connect", post(connect))
         .route(
+            "/calls/v0/roster",
+            post(advance).layer(RequestBodyLimitLayer::new(16384)),
+        )
+        .route(
             "/calls/v0/relay",
             post(relay_credentials).layer(RequestBodyLimitLayer::new(2048)),
         )
@@ -189,6 +193,41 @@ async fn connect(
         Err(e) => store_error(e),
     }
 }
+async fn advance(
+    State(state): State<AppState>,
+    RawQuery(query): RawQuery,
+    headers: HeaderMap,
+    Json(roster): Json<SignedRoster>,
+) -> Response {
+    if query.is_some() || headers.contains_key(axum::http::header::AUTHORIZATION) {
+        return store_error(StoreError::Invalid(
+            "call proofs must not include account credentials or queries",
+        ));
+    }
+    match advance_roster(state, roster).await {
+        Ok(value) => Json(value).into_response(),
+        Err(error) => store_error(error),
+    }
+}
+async fn advance_roster(state: AppState, roster: SignedRoster) -> Result<SignedRoster, StoreError> {
+    let mut current = state.calls.inner.lock().await;
+    let result = with_store(state.clone(), move |store| {
+        store.advance_call(roster, now()?)
+    })
+    .await;
+    let snapshot = match with_store(state.clone(), |store| store.call_snapshot(now()?)).await {
+        Ok(snapshot) => snapshot,
+        Err(error) => {
+            current.fail();
+            return Err(error);
+        }
+    };
+    if let Err(error) = current.synchronize(&snapshot).await {
+        current.fail();
+        return Err(error);
+    }
+    result
+}
 async fn answer(state: AppState, proof: SignedConnect) -> Result<sigil_calls::Answer, StoreError> {
     let mut current = state.calls.inner.lock().await;
     let copied = proof.clone();
@@ -253,6 +292,12 @@ pub(crate) async fn federated(state: AppState, headers: HeaderMap, body: Vec<u8>
                 .await
                 .and_then(|v| serde_json::to_string(&v).map_err(|_| StoreError::InvalidData)),
             Err(_) => Err(StoreError::Invalid("invalid relay proof")),
+        },
+        Service::CallUpdate { request } => match serde_json::from_str(&request) {
+            Ok(proof) => advance_roster(state, proof).await.and_then(|value| {
+                serde_json::to_string(&value).map_err(|_| StoreError::InvalidData)
+            }),
+            Err(_) => Err(StoreError::Invalid("invalid call roster")),
         },
         _ => Err(StoreError::InvalidData),
     };

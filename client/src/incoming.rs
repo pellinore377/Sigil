@@ -248,7 +248,10 @@ impl ClientStore {
                 return Err(Error::Conflict);
             }
             let incoming = prior.message(&tx, &self.key)?;
-            if !known.verified && incoming.distribution()?.is_none() {
+            if !known.verified
+                && incoming.distribution()?.is_none()
+                && calls::receipt_message(&incoming.plaintext)?.is_none()
+            {
                 return Err(Error::Unprepared);
             }
             event::validate(
@@ -297,6 +300,9 @@ impl ClientStore {
             if known.verified
                 && !groups::is_distribution_wire(&plaintext)
                 && groups::distribution_receipt(&plaintext)?.is_none()
+                && !calls::scoped_wire(&plaintext)?
+                && (calls::receipt_message(&plaintext)?.is_none()
+                    || session_peer(&tx, &session)?.is_some())
             {
                 peers::bind_session(&tx, &self.key, &session, &peer)?;
             }
@@ -348,6 +354,8 @@ impl ClientStore {
         if !known.verified
             && !groups::is_distribution_wire(&plaintext)
             && groups::distribution_receipt(&plaintext)?.is_none()
+            && !calls::scoped_wire(&plaintext)?
+            && calls::receipt_message(&plaintext)?.is_none()
         {
             return Err(Error::Unprepared);
         }
@@ -414,7 +422,10 @@ impl ClientStore {
                 &known.fingerprint,
             )?;
         }
-        if fresh && known.verified && !group_initial {
+        let call_initial = initial
+            && session_peer(&tx, &session)?.is_none()
+            && calls::receipt_message(&plaintext)?.is_some();
+        if fresh && known.verified && !group_initial && !call_initial {
             if initial {
                 selection::activate(&tx, &self.key, &peer, &session)?;
             } else {

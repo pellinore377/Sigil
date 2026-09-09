@@ -118,6 +118,16 @@ fn prepare(
     Ok(file)
 }
 impl ClientStore {
+    pub(crate) fn with_published_file(
+        &mut self,
+        cache: &mut Cache,
+        file: Id,
+        now: u64,
+        queue: impl FnOnce(&mut Self, &[u8]) -> Result<(), Error>,
+    ) -> Result<(), Error> {
+        let server = source(self, cache)?;
+        handoff(cache, file, &server, now, |body| queue(self, body.bytes()))
+    }
     /// Freeze a published file into the ordinary verified-peer send queue. The
     /// cache lock prevents local cancellation during this descriptor handoff;
     /// the messaging transaction owns the durable event before that lock releases.

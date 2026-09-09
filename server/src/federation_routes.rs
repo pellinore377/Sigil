@@ -325,6 +325,7 @@ async fn lookup(
             sigil_protocol::federation::Lookup::Service {
                 service: sigil_protocol::federation::Service::CallConnect { .. }
                     | sigil_protocol::federation::Service::CallRelay { .. }
+                    | sigil_protocol::federation::Service::CallUpdate { .. }
             }
         )
     }) {

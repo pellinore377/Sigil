@@ -21,6 +21,7 @@ async fn encrypted_forwarding_authenticates_tracks_and_removal_revokes_all_old_t
     let mut sorted = members.clone();
     sorted.sort_by_key(|m| m.id);
     let roster = Roster {
+        controller: None,
         version: 1,
         call: [21; 32],
         server: "chat.example".into(),

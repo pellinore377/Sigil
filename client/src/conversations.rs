@@ -50,9 +50,16 @@ fn target(action: &Action, author: Id, message: Id) -> Reference {
         | Action::Note { target, .. }
         | Action::Receipt { target, .. } => target.clone(),
         Action::Private {
-            value: Private::Consumed(target),
+            value: Private::Consumed(target) | Private::Seen(target),
             ..
         } => target.clone(),
+        Action::Private {
+            value: Private::Clear { .. },
+            ..
+        } => Reference {
+            author: [0; 32],
+            message: [0; 32],
+        },
         _ => Reference { author, message },
     }
 }
@@ -238,6 +245,16 @@ fn ingest_only(tx: &Transaction<'_>, key: &StorageKey, entry: &Entry) -> Result<
     }
     let target = target(&entry.operation.action, entry.author, entry.operation.id);
     let kind = match entry.operation.action {
+        Action::Post {
+            body: Body::Rich(ref bytes),
+            ..
+        } if matches!(
+            sigil_protocol::text::Document::from_bytes(bytes).map_err(|_| Error::InvalidEvent)?,
+            sigil_protocol::text::Document::Action(_)
+        ) =>
+        {
+            3
+        }
         Action::Post { .. } => 0,
         Action::Private { .. } => 1,
         Action::Typing { .. } | Action::Presence { .. } => 2,
@@ -339,6 +356,7 @@ pub struct Message {
     pub noted: bool,
     pub delivered: Vec<Id>,
     pub read: Vec<Id>,
+    pub seen: bool,
 }
 pub(crate) fn message(
     db: &Connection,
@@ -347,6 +365,43 @@ pub(crate) fn message(
     reference: Reference,
     now: u64,
     own: Id,
+) -> Result<Message, Error> {
+    let cleared = clear_context(db, key, conversation, own)?;
+    message_after_clear(db, key, conversation, reference, now, own, &cleared)
+}
+fn clear_context(
+    db: &Connection,
+    key: &StorageKey,
+    conversation: Id,
+    own: Id,
+) -> Result<std::collections::BTreeMap<Id, u64>, Error> {
+    let mut result: std::collections::BTreeMap<Id, u64> = std::collections::BTreeMap::new();
+    let at = target_index(
+        key,
+        &conversation,
+        &Reference {
+            author: [0; 32],
+            message: [0; 32],
+        },
+    )?;
+    visit(db, key, "SELECT id,CASE WHEN length(state)<=574000 THEN state END FROM conversation_ops WHERE target=?1 AND kind=1 ORDER BY id", &at, |entry| {
+        if entry.conversation != conversation || entry.author != own { return Err(Error::InvalidStore); }
+        if let Action::Private { value: Private::Clear { observed }, .. } = entry.operation.action {
+            for version in observed { let prior = result.entry(version.device).or_default(); *prior = (*prior).max(version.counter); }
+        }
+        Ok(())
+    })?;
+    Ok(result)
+}
+#[allow(clippy::too_many_arguments)]
+fn message_after_clear(
+    db: &Connection,
+    key: &StorageKey,
+    conversation: Id,
+    reference: Reference,
+    now: u64,
+    own: Id,
+    cleared: &std::collections::BTreeMap<Id, u64>,
 ) -> Result<Message, Error> {
     if now == 0 || now > i64::MAX as u64 {
         return Err(Error::Expired);
@@ -375,13 +430,19 @@ pub(crate) fn message(
         thread: thread.clone(),
         expires_at: *expires_at,
         view_once: *view_once,
-        deleted: expires_at.is_some_and(|v| now >= v)
+        deleted: original.operation.version.counter
+            <= cleared
+                .get(&original.operation.version.device)
+                .copied()
+                .unwrap_or(0)
+            || expires_at.is_some_and(|v| now >= v)
             || retention::removed(db, key, &entry_id(key, &original)?)?.is_some(),
         reactions: Vec::new(),
         pinned: false,
         noted: false,
         delivered: Vec::new(),
         read: Vec::new(),
+        seen: false,
     };
     let mut edit = None;
     let mut pin = None;
@@ -395,6 +456,7 @@ pub(crate) fn message(
         match &entry.operation.action {
             Action::Delete{..} if entry.author==reference.author=>view.deleted=true,
             Action::Private{value:Private::Consumed(_),..} if entry.author==own && *view_once=>view.deleted=true,
+            Action::Private{value:Private::Seen(_),..} if entry.author==own=>view.seen=true,
             Action::Edit{body:replacement,..} if entry.author==reference.author && edit.as_ref().is_none_or(|v|rank>*v) && body.editable()=>{view.body=Some(replacement.clone());edit=Some(rank);}
             Action::Reaction{emoji,active,..}=>{let value=active.then(||emoji.clone());let v=reactions.entry(entry.author).or_insert((rank.clone(),value.clone()));if rank>v.0 {*v=(rank,value);}}
             Action::Pin{active,..}=>{if pin.as_ref().is_none_or(|(v,_)|rank>*v){pin=Some((rank,*active));}}
@@ -427,50 +489,81 @@ impl ClientStore {
         let tx = self
             .db
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
-        let prior:Option<Vec<u8>>=tx.query_row("SELECT CASE WHEN length(state)=76 THEN state END FROM conversation_operation_ids WHERE id=?1",[id.as_slice()],|r|r.get(0)).optional()?;
-        let prior = prior
-            .map(|v| self.key.open(&v, &binding(95, &own, &id)))
-            .transpose()?;
-        let counter = if let Some(v) = &prior {
-            if v.len() != 40 {
-                return Err(Error::InvalidStore);
-            }
-            u64::from_be_bytes(v[..8].try_into().map_err(|_| Error::InvalidStore)?)
-        } else {
-            clock(&tx, &self.key)?
-                .checked_add(1)
-                .filter(|v| *v <= i64::MAX as u64)
-                .ok_or(Error::Limit)?
-        };
-        let operation = Operation {
-            id,
-            version: Version {
-                device: own,
-                counter,
-            },
-            action,
-        };
-        let bytes = operation.to_bytes().map_err(|_| Error::InvalidEvent)?;
-        let tag = self.key.commitment(&bytes, &binding(95, &own, &id))?;
-        if let Some(v) = prior {
-            if v[8..] != tag {
-                return Err(Error::Conflict);
-            }
-        } else {
-            tx.execute(
-                "INSERT INTO conversation_operation_ids VALUES(?1,?2)",
-                (
-                    id.as_slice(),
-                    self.key.seal(
-                        &[counter.to_be_bytes().as_slice(), &tag].concat(),
-                        &binding(95, &own, &id),
-                    )?,
-                ),
-            )?;
-        }
-        observe(&tx, &self.key, counter)?;
+        let operation = new_operation(&tx, &self.key, own, id, action)?;
         tx.commit()?;
         Ok(operation)
+    }
+    pub fn clear_conversation(
+        &mut self,
+        conversation: Id,
+        request: Id,
+        timestamp: u64,
+    ) -> Result<(), Error> {
+        let binding_bytes = self.own_device_binding()?;
+        let own = device_fingerprint(&binding_bytes)?;
+        let binding = peers::parse(&binding_bytes)?.binding;
+        let author = event::account(&binding);
+        let tx = self
+            .db
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let batch_id = |index: u64| -> Id {
+            Sha256::digest(
+                [
+                    b"Sigil/clear-conversation/v1".as_slice(),
+                    &conversation,
+                    &request,
+                    &index.to_be_bytes(),
+                ]
+                .concat(),
+            )
+            .into()
+        };
+        if tx.query_row(
+            "SELECT EXISTS(SELECT 1 FROM conversation_operation_ids WHERE id=?1)",
+            [batch_id(0).as_slice()],
+            |row| row.get::<_, bool>(0),
+        )? {
+            return Ok(());
+        }
+        let mut observed: std::collections::BTreeMap<Id, u64> = std::collections::BTreeMap::new();
+        visit(&tx, &self.key, "SELECT id,CASE WHEN length(state)<=574000 THEN state END FROM conversation_ops WHERE scope=?1 ORDER BY id", &scope(&self.key, &conversation)?, |entry| {
+            if entry.conversation != conversation { return Err(Error::InvalidStore); }
+            let version = entry.operation.version;
+            let prior = observed.entry(version.device).or_default();
+            *prior = (*prior).max(version.counter);
+            Ok(())
+        })?;
+        // Include this device even when clearing an empty conversation.
+        observed.insert(own, clock(&tx, &self.key)?.max(1));
+        let observed: Vec<_> = observed
+            .into_iter()
+            .map(|(device, counter)| Version { device, counter })
+            .collect();
+        for (index, chunk) in observed.chunks(128).enumerate() {
+            let operation = new_operation(
+                &tx,
+                &self.key,
+                own,
+                batch_id(index as u64),
+                Action::Private {
+                    conversation,
+                    value: Private::Clear {
+                        observed: chunk.to_vec(),
+                    },
+                },
+            )?;
+            retain(
+                &tx,
+                &self.key,
+                &binding_bytes,
+                [0; 32],
+                (author, binding.identity),
+                timestamp,
+                Content::Conversation(&operation.to_bytes().map_err(|_| Error::InvalidEvent)?),
+            )?;
+        }
+        tx.commit()?;
+        Ok(())
     }
     pub fn queue_peer_operation(
         &mut self,
@@ -481,6 +574,59 @@ impl ClientStore {
     ) -> Result<(), Error> {
         self.queue_direct_operation(&[peer], operation, timestamp, now)
     }
+}
+fn new_operation(
+    tx: &Transaction<'_>,
+    key: &StorageKey,
+    own: Id,
+    id: Id,
+    action: Action,
+) -> Result<Operation, Error> {
+    let prior:Option<Vec<u8>>=tx.query_row("SELECT CASE WHEN length(state)=76 THEN state END FROM conversation_operation_ids WHERE id=?1",[id.as_slice()],|r|r.get(0)).optional()?;
+    let prior = prior
+        .map(|v| key.open(&v, &binding(95, &own, &id)))
+        .transpose()?;
+    let counter = if let Some(v) = &prior {
+        if v.len() != 40 {
+            return Err(Error::InvalidStore);
+        }
+        u64::from_be_bytes(v[..8].try_into().map_err(|_| Error::InvalidStore)?)
+    } else {
+        clock(tx, key)?
+            .checked_add(1)
+            .filter(|v| *v <= i64::MAX as u64)
+            .ok_or(Error::Limit)?
+    };
+    let operation = Operation {
+        id,
+        version: Version {
+            device: own,
+            counter,
+        },
+        action,
+    };
+    let bytes = operation.to_bytes().map_err(|_| Error::InvalidEvent)?;
+    let tag = key.commitment(&bytes, &binding(95, &own, &id))?;
+    if let Some(v) = prior {
+        if v[8..] != tag {
+            return Err(Error::Conflict);
+        }
+    } else {
+        tx.execute(
+            "INSERT INTO conversation_operation_ids VALUES(?1,?2)",
+            (
+                id.as_slice(),
+                key.seal(
+                    &[counter.to_be_bytes().as_slice(), &tag].concat(),
+                    &binding(95, &own, &id),
+                )?,
+            ),
+        )?;
+    }
+    observe(tx, key, counter)?;
+    Ok(operation)
+}
+impl ClientStore {
     /// Atomically queues the same operation to the selected devices of one account.
     pub fn queue_direct_operation(
         &mut self,
@@ -595,6 +741,7 @@ pub struct Draft {
     pub text: String,
 }
 pub struct Preferences {
+    pub cleared: std::collections::BTreeMap<Id, u64>,
     pub pinned: bool,
     pub unread: bool,
     pub snoozed_until: Option<u64>,
@@ -607,6 +754,7 @@ pub struct Preferences {
     pub collections: Vec<(Id, String)>,
     pub collection_members: Vec<Id>,
     pub drafts: Vec<Draft>,
+    pub ui: std::collections::BTreeMap<String, String>,
 }
 fn preferences(
     db: &Connection,
@@ -615,6 +763,7 @@ fn preferences(
     own: Id,
 ) -> Result<Preferences, Error> {
     let mut result = Preferences {
+        cleared: std::collections::BTreeMap::new(),
         pinned: false,
         unread: false,
         snoozed_until: None,
@@ -627,6 +776,7 @@ fn preferences(
         collections: Vec::new(),
         collection_members: Vec::new(),
         drafts: Vec::new(),
+        ui: std::collections::BTreeMap::new(),
     };
     let mut latest = std::collections::BTreeMap::new();
     let mut drafts: std::collections::BTreeMap<Id, (Version, String)> =
@@ -645,6 +795,7 @@ fn preferences(
             let rank=(e.conversation!=[0;32],order(&e.operation));
             let Action::Private{value,..}=e.operation.action else{return Ok(())};
             let tag=match &value {
+                Private::Clear{observed} if conv==conversation=>{for version in observed {let prior=result.cleared.entry(version.device).or_default();*prior=(*prior).max(version.counter);}return Ok(());}
                 Private::Draft{text,observed:seen} if conv==conversation=>{
                     let version=e.operation.version;
                     let prior=drafts.entry(version.device).or_insert((version.clone(),text.clone()));
@@ -663,6 +814,7 @@ fn preferences(
                 Private::RecoveryRetention(_) if conv==[0;32]=>(10,[0;32]),
                 Private::Collection{id,..}=>(8,*id),
                 Private::CollectionMember{id,..} if conv==conversation=>(9,*id),
+                Private::UiSetting{key,..}=>(11,Sha256::digest(key.as_bytes()).into()),
                 _=>return Ok(()),
             };
             let prior=latest.entry(tag).or_insert((rank.clone(),value.clone()));
@@ -681,6 +833,12 @@ fn preferences(
             Private::TypingIndicators(v) => result.typing_indicators = v,
             Private::PresenceSharing(v) => result.presence_sharing = v,
             Private::RecoveryRetention(v) => result.recovery_history_days = v,
+            Private::UiSetting {
+                key,
+                value: Some(value),
+            } => {
+                result.ui.insert(key, value);
+            }
             Private::Collection {
                 id,
                 name,
@@ -693,7 +851,8 @@ fn preferences(
     result.drafts = drafts
         .into_values()
         .filter_map(|(version, text)| {
-            (observed.get(&version.device).copied().unwrap_or(0) < version.counter)
+            (version.counter > result.cleared.get(&version.device).copied().unwrap_or(0)
+                && observed.get(&version.device).copied().unwrap_or(0) < version.counter)
                 .then_some(Draft { version, text })
         })
         .collect();
@@ -703,6 +862,7 @@ pub struct Activity {
     pub author: Id,
     pub typing: bool,
     pub online: bool,
+    pub status: Option<sigil_protocol::conversation::Presence>,
 }
 impl ClientStore {
     pub fn conversation_preferences(&mut self, conversation: Id) -> Result<Preferences, Error> {
@@ -718,24 +878,26 @@ impl ClientStore {
         let mut latest = std::collections::BTreeMap::new();
         visit(&self.db,&self.key,"SELECT id,CASE WHEN length(state)<=574000 THEN state END FROM conversation_ops WHERE scope=?1 AND kind=2 ORDER BY id",&scope(&self.key,&conversation)?,|e|{
             if e.conversation!=conversation {return Err(Error::InvalidStore);}
-            let (kind,active,until)=match e.operation.action {Action::Typing{active,until}=>(0,active,until),Action::Presence{online,until}=>(1,online,until),_=>return Ok(())};
+            let (kind,active,until,status)=match e.operation.action {Action::Typing{active,until}=>(0,active,until,None),Action::Presence{online,until,activity}=>(1,online,until,activity),_=>return Ok(())};
             let rank=order(&e.operation);
             let active=active && now<until && now<e.seen.saturating_add(if kind==0 {30}else{120});
-            let v=latest.entry((e.author,kind)).or_insert((rank.clone(),active));
-            if rank>v.0 {*v=(rank,active);}
+            let v=latest.entry((e.author,kind)).or_insert((rank.clone(),active,status));
+            if rank>v.0 {*v=(rank,active,status);}
             Ok(())
         })?;
         let mut result = std::collections::BTreeMap::new();
-        for ((author, kind), (_, active)) in latest {
+        for ((author, kind), (_, active, status)) in latest {
             let v = result.entry(author).or_insert(Activity {
                 author,
                 typing: false,
                 online: false,
+                status: None,
             });
             if kind == 0 {
                 v.typing = active
             } else {
-                v.online = active
+                v.online = active;
+                v.status = status.filter(|_| active);
             };
         }
         Ok(result.into_values().collect())
@@ -1099,6 +1261,32 @@ impl ClientStore {
     ) -> Result<SearchPage, Error> {
         self.scan_conversations(None, after, None, Some(query), now, false)
     }
+    pub fn recent_search_conversations(
+        &mut self,
+        query: &str,
+        before: Option<i64>,
+        now: u64,
+    ) -> Result<SearchPage, Error> {
+        self.scan_conversations(None, before, None, Some(query), now, true)
+    }
+    pub fn conversation_position(
+        &self,
+        conversation: Id,
+        reference: &Reference,
+    ) -> Result<i64, Error> {
+        let entry =
+            original(&self.db, &self.key, &conversation, reference)?.ok_or(Error::NotFound)?;
+        if !matches!(entry.operation.action, Action::Post { .. }) {
+            return Err(Error::InvalidEvent);
+        }
+        self.db
+            .query_row(
+                "SELECT rowid FROM conversation_ops WHERE id=?1",
+                [entry_id(&self.key, &entry)?.as_slice()],
+                |r| r.get(0),
+            )
+            .map_err(Into::into)
+    }
     /// Newest first, with a cursor over candidates including deleted messages.
     pub fn recent_conversation_page(
         &mut self,
@@ -1107,6 +1295,20 @@ impl ClientStore {
         now: u64,
     ) -> Result<Page, Error> {
         let page = self.scan_conversations(Some(conversation), before, None, None, now, true)?;
+        Ok(Page {
+            messages: page.hits.into_iter().map(|v| v.message).collect(),
+            next: page.next,
+        })
+    }
+    pub fn recent_conversation_search(
+        &mut self,
+        conversation: Id,
+        before: Option<i64>,
+        query: &str,
+        now: u64,
+    ) -> Result<Page, Error> {
+        let page =
+            self.scan_conversations(Some(conversation), before, None, Some(query), now, true)?;
         Ok(Page {
             messages: page.hits.into_iter().map(|v| v.message).collect(),
             next: page.next,
@@ -1128,7 +1330,10 @@ impl ClientStore {
         let now = time_floor(&self.db, &self.key, now)?;
         let (_, own) = crate::structured::account_context(&self.db, &self.key)?;
         let query = search.map(str::to_lowercase);
-        let sql = if newest {
+        let mut clears = std::collections::BTreeMap::new();
+        let sql = if newest && conversation.is_none() {
+            "SELECT rowid,id,CASE WHEN length(state)<=574000 THEN state END FROM conversation_ops WHERE ?1 IS NULL AND kind=0 AND rowid<?2 ORDER BY rowid DESC LIMIT 64"
+        } else if newest {
             "SELECT rowid,id,CASE WHEN length(state)<=574000 THEN state END FROM conversation_ops WHERE scope=?1 AND kind=0 AND rowid<?2 ORDER BY rowid DESC LIMIT 64"
         } else if conversation.is_some() {
             "SELECT rowid,id,CASE WHEN length(state)<=574000 THEN state END FROM conversation_ops WHERE scope=?1 AND kind=0 AND rowid>?2 ORDER BY rowid LIMIT 64"
@@ -1161,7 +1366,24 @@ impl ClientStore {
             if !matches!(e.operation.action, Action::Post { .. }) {
                 continue;
             }
-            let mut view = message(
+            if let Action::Post {
+                body: Body::Rich(bytes),
+                ..
+            } = &e.operation.action
+            {
+                if matches!(
+                    sigil_protocol::text::Document::from_bytes(bytes)
+                        .map_err(|_| Error::InvalidStore)?,
+                    sigil_protocol::text::Document::Action(_)
+                ) {
+                    continue;
+                }
+            }
+            if let std::collections::btree_map::Entry::Vacant(entry) = clears.entry(e.conversation)
+            {
+                entry.insert(clear_context(&self.db, &self.key, e.conversation, own)?);
+            }
+            let mut view = message_after_clear(
                 &self.db,
                 &self.key,
                 e.conversation,
@@ -1171,6 +1393,7 @@ impl ClientStore {
                 },
                 now,
                 own,
+                &clears[&e.conversation],
             )?;
             if view.deleted || thread.is_some_and(|t| view.thread.as_ref() != Some(t)) {
                 continue;

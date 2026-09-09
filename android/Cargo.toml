@@ -4,11 +4,17 @@ version.workspace = true
 edition.workspace = true
 publish.workspace = true
 
+[features]
+test-fixture = ["sigil-client/test-loopback"]
+
 [lib]
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-sigil-client = { path = "../client" }
+sigil-client = { path = "../client", features = ["rtc-client"] }
+sigil-calls = { path = "../calls" }
 sigil-crypto = { path = "../crypto" }
 jni = "=0.21.1"
 zeroize = "=1.9.0"
+tokio = { version = "=1.53.1", features = ["rt-multi-thread", "time", "net", "sync"] }
+getrandom = "=0.4.3"

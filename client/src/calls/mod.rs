@@ -4,7 +4,13 @@ use serde::{Deserialize, Serialize};
 use sigil_calls::{Attestation, Member, Ready, Roster, Share, SignedRoster, State, Tracks};
 use sigil_crypto::{storage::StorageKey, IdentityKey};
 use zeroize::Zeroizing;
+mod channels;
 mod control;
+mod history;
+pub(crate) use channels::scoped as scoped_channel;
+pub(crate) use history::MIGRATION as HISTORY_MIGRATION;
+pub use history::{History, HistoryPerson};
+pub(crate) use jobs::delivery_peer;
 #[cfg(test)]
 mod failure_tests;
 #[cfg(test)]
@@ -13,10 +19,16 @@ mod jobs;
 mod media;
 #[cfg(test)]
 pub(crate) mod network_tests;
+#[cfg(feature = "rtc-client")]
+mod rtc_transport;
 mod signaling;
+#[cfg(feature = "rtc-client")]
+pub use rtc_transport::{ReceivedFrame, RtcCall};
 #[cfg(test)]
 mod tests;
-pub(crate) use control::{install, receipt_call, receipt_message, retained, validate_receipt};
+pub(crate) use control::{
+    install, receipt_call, receipt_message, retained, scoped_wire, validate_receipt,
+};
 pub(crate) use jobs::check_retained;
 pub use jobs::Attempt;
 pub use media::Media;
@@ -49,6 +61,12 @@ struct Invite {
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Record {
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    direct: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    transfer: Option<sigil_calls::Delegation>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    control_grants: Vec<Id>,
     state: State,
     owner_peer: Option<Id>,
     own: Option<Attestation>,
@@ -81,6 +99,9 @@ pub struct Call {
     pub expires: u64,
     pub ring_until: Option<u64>,
     pub participants: Vec<Participant>,
+    pub direct: bool,
+    pub created: u64,
+    pub own: Option<Id>,
 }
 fn aad(id: &Id) -> Vec<u8> {
     [b"Sigil/native-call/v1".as_slice(), id].concat()
@@ -112,6 +133,7 @@ fn load_index(db: &Connection, key: &StorageKey, row: &Id) -> Result<Record, Err
         || record.shares.len() > 8
         || record.commits.len() > 16
         || record.notify.len() > 256
+        || record.control_grants.len() > 8
     {
         return Err(Error::InvalidStore);
     }
@@ -124,6 +146,12 @@ fn load_index(db: &Connection, key: &StorageKey, row: &Id) -> Result<Record, Err
     Ok(record)
 }
 fn save(db: &Connection, key: &StorageKey, record: &Record) -> Result<(), Error> {
+    if db.is_autocommit() {
+        let tx = db.unchecked_transaction()?;
+        save(&tx, key, record)?;
+        tx.commit()?;
+        return Ok(());
+    }
     let id = record.state.roster.roster.call;
     let raw = Zeroizing::new(serde_json::to_vec(record).map_err(|_| Error::InvalidStore)?);
     if raw.len() > 262144 {
@@ -134,6 +162,7 @@ fn save(db: &Connection, key: &StorageKey, record: &Record) -> Result<(), Error>
         "INSERT INTO calls VALUES(?1,?2) ON CONFLICT(id) DO UPDATE SET content=excluded.content",
         (row.as_slice(), key.seal(&raw, &aad(&row))?),
     )?;
+    history::retain(db, key, record)?;
     Ok(())
 }
 fn peer(proof: &Attestation) -> Result<Id, Error> {
@@ -183,6 +212,9 @@ impl Record {
     }
     fn authorize(&self, db: &Connection, key: &StorageKey, now: u64) -> Result<(), Error> {
         self.active(now)?;
+        if self.transfer.is_some() {
+            return Err(Error::Unprepared);
+        }
         for proof in &self.state.participants {
             if self
                 .own
@@ -286,15 +318,48 @@ impl Record {
         Ok(Call {
             id: self.id(),
             phase: self.phase,
-            owner: self.state.roster.roster.owner,
+            owner: self.state.roster.roster.controller(),
             expires: self.state.roster.roster.expires,
             ring_until: self.ring_until,
             participants,
+            direct: self.direct,
+            created: self.state.roster.roster.created,
+            own: self.own.as_ref().map(|v| v.member.id),
         })
     }
 }
 impl ClientStore {
     pub fn create_call(&mut self, id: Id, now: u64, lifetime: u32) -> Result<Call, Error> {
+        self.create_call_kind(id, now, lifetime, false, false, &[])
+    }
+    pub fn create_direct_call(&mut self, id: Id, now: u64, lifetime: u32) -> Result<Call, Error> {
+        self.create_call_kind(id, now, lifetime, true, false, &[])
+    }
+    pub fn create_group_call(&mut self, id: Id, now: u64, lifetime: u32) -> Result<Call, Error> {
+        self.create_call_kind(id, now, lifetime, false, true, &[])
+    }
+    pub(crate) fn start_call(
+        &mut self,
+        id: Id,
+        now: u64,
+        direct: bool,
+        recipients: &[Id],
+    ) -> Result<Call, Error> {
+        if recipients.is_empty() || recipients.len() > 7 || direct && recipients.len() != 1 {
+            return Err(Error::Limit);
+        }
+        self.create_call_kind(id, now, 86400, direct, !direct, recipients)
+    }
+    #[allow(clippy::too_many_arguments)]
+    fn create_call_kind(
+        &mut self,
+        id: Id,
+        now: u64,
+        lifetime: u32,
+        direct: bool,
+        continuation: bool,
+        recipients: &[Id],
+    ) -> Result<Call, Error> {
         if !(60..=86400).contains(&lifetime) {
             return Err(Error::InvalidEvent);
         }
@@ -315,7 +380,8 @@ impl ClientStore {
         let identity = crate::handshake::identity(&tx, &self.key)?;
         let secret = IdentityKey::generate()?;
         let roster = Roster {
-            version: 1,
+            controller: continuation.then(|| secret.public_key()),
+            version: if continuation { 2 } else { 1 },
             call: id,
             server: binding.binding.server,
             owner: secret.public_key(),
@@ -344,7 +410,10 @@ impl ClientStore {
         }
         .sign(&secret)
         .map_err(failure)?;
-        let record = Record {
+        let mut record = Record {
+            direct,
+            transfer: None,
+            control_grants: Vec::new(),
             state,
             owner_peer: None,
             own: Some(proof.clone()),
@@ -366,6 +435,9 @@ impl ClientStore {
             shares: Vec::new(),
             connect_sequence: 0,
         };
+        for recipient in recipients {
+            invite(&tx, &self.key, &mut record, *recipient, now)?;
+        }
         save(&tx, &self.key, &record)?;
         let view = record.view(&tx, &self.key)?;
         tx.commit()?;
@@ -390,40 +462,7 @@ impl ClientStore {
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
         let now = crate::conversations::time_floor(&tx, &self.key, now)?;
         let mut record = load(&tx, &self.key, &id)?;
-        record.active(now)?;
-        if record.owner_peer.is_some() {
-            return Err(Error::Unprepared);
-        }
-        let known = crate::peers::verified(&tx, &self.key, &recipient)?;
-        if record
-            .state
-            .participants
-            .iter()
-            .any(|p| p.fingerprint().ok() == Some(known.fingerprint))
-        {
-            return Ok(());
-        }
-        record.invites.retain(|i| i.until > now);
-        if !record.invites.iter().any(|i| i.peer == recipient) {
-            if record.invites.len() >= 32 {
-                return Err(Error::Limit);
-            }
-            record.invites.push(Invite {
-                peer: recipient,
-                fingerprint: known.fingerprint,
-                until: now
-                    .saturating_add(60)
-                    .min(record.state.roster.roster.expires),
-            });
-        }
-        jobs::queue(
-            &tx,
-            &self.key,
-            &record,
-            recipient,
-            control::Body::Invite(record.state.clone()),
-            now,
-        )?;
+        invite(&tx, &self.key, &mut record, recipient, now)?;
         save(&tx, &self.key, &record)?;
         tx.commit()?;
         Ok(())
@@ -492,17 +531,68 @@ impl ClientStore {
             jobs::leave(&tx, &self.key, &record, owner, now)?;
         } else {
             record.active(now)?;
-            let mut state = record.state.clone();
-            state.roster.roster.previous = Some(state.roster.roster.digest().map_err(failure)?);
-            state.roster.roster.revision += 1;
-            state.roster.roster.closed = true;
-            state.roster = state
-                .roster
-                .roster
-                .sign(&record.key(&self.key)?)
-                .map_err(failure)?;
-            record.change(&self.key, state)?;
-            record.finish(Phase::Ended);
+            if !record.direct
+                && record.state.roster.roster.version == 2
+                && record.state.participants.len() > 1
+            {
+                let successor = record
+                    .state
+                    .participants
+                    .iter()
+                    .filter(|p| p.member.id != record.own_id().unwrap_or([0; 32]))
+                    .filter(|p| {
+                        peer(p).is_ok_and(|id| {
+                            channels::authorized(&tx, &self.key, &record, &id).is_ok()
+                        })
+                    })
+                    .min_by_key(|p| {
+                        (
+                            !record.state.ready.iter().any(|r| r.member == p.member.id),
+                            p.member.id,
+                        )
+                    });
+                if let Some(successor) = successor {
+                    let proof = record
+                        .state
+                        .roster
+                        .delegate(successor.member.key, &record.key(&self.key)?)
+                        .map_err(failure)?;
+                    for participant in &record.state.participants {
+                        let peer = peer(participant)?;
+                        if participant.member.id != record.own_id()?
+                            && channels::authorized(&tx, &self.key, &record, &peer).is_ok()
+                        {
+                            jobs::queue(
+                                &tx,
+                                &self.key,
+                                &record,
+                                peer,
+                                control::Body::Handoff {
+                                    state: record.state.clone(),
+                                    proof: proof.clone(),
+                                },
+                                now,
+                            )?;
+                        }
+                    }
+                    for peer in pending_peers(&record)? {
+                        jobs::queue(
+                            &tx,
+                            &self.key,
+                            &record,
+                            peer,
+                            control::Body::CancelInvite,
+                            now,
+                        )?;
+                    }
+                    record.transfer = Some(proof);
+                    record.finish(Phase::Left);
+                } else {
+                    end(&self.key, &mut record)?;
+                }
+            } else {
+                end(&self.key, &mut record)?;
+            }
         }
         save(&tx, &self.key, &record)?;
         tx.commit()?;
@@ -524,6 +614,102 @@ impl ClientStore {
         Ok(())
     }
 }
+fn invite(
+    tx: &Transaction<'_>,
+    key: &StorageKey,
+    record: &mut Record,
+    recipient: Id,
+    now: u64,
+) -> Result<(), Error> {
+    record.active(now)?;
+    if record.owner_peer.is_some() {
+        return Err(Error::Unprepared);
+    }
+    let known = crate::peers::verified(tx, key, &recipient)?;
+    if record
+        .state
+        .participants
+        .iter()
+        .any(|p| p.fingerprint().ok() == Some(known.fingerprint))
+    {
+        return Ok(());
+    }
+    record.invites.retain(|i| i.until > now);
+    if record.direct
+        && (record.state.participants.len() > 1
+            || record.invites.iter().any(|v| v.peer != recipient)
+            || record
+                .joining
+                .iter()
+                .any(|v| v.fingerprint().ok() != Some(known.fingerprint)))
+    {
+        return Err(Error::Conflict);
+    }
+    if !record.invites.iter().any(|i| i.peer == recipient) {
+        if record.invites.len() >= 32 {
+            return Err(Error::Limit);
+        }
+        record.invites.push(Invite {
+            peer: recipient,
+            fingerprint: known.fingerprint,
+            until: now
+                .saturating_add(60)
+                .min(record.state.roster.roster.expires),
+        });
+    }
+    jobs::queue(
+        tx,
+        key,
+        record,
+        recipient,
+        if record.direct {
+            control::Body::DirectInvite(record.state.clone())
+        } else {
+            control::Body::Invite(record.state.clone())
+        },
+        now,
+    )
+}
+fn end(key: &StorageKey, record: &mut Record) -> Result<(), Error> {
+    for peer in pending_peers(record)? {
+        if !record.notify.contains(&peer) {
+            if record.notify.len() == 256 {
+                return Err(Error::Limit);
+            }
+            record.notify.push(peer);
+        }
+    }
+    let mut state = record.state.clone();
+    state.roster.roster.previous = Some(state.roster.roster.digest().map_err(failure)?);
+    state.roster.roster.revision = state
+        .roster
+        .roster
+        .revision
+        .checked_add(1)
+        .ok_or(Error::Limit)?;
+    state.roster.roster.closed = true;
+    state.roster = record
+        .state
+        .roster
+        .update(state.roster.roster, &record.key(key)?)
+        .map_err(failure)?;
+    record.change(key, state)?;
+    record.finish(Phase::Ended);
+    Ok(())
+}
+fn pending_peers(record: &Record) -> Result<Vec<Id>, Error> {
+    let mut peers = record
+        .invites
+        .iter()
+        .map(|invite| invite.peer)
+        .collect::<Vec<_>>();
+    for proof in &record.joining {
+        peers.push(peer(proof)?);
+    }
+    peers.sort();
+    peers.dedup();
+    Ok(peers)
+}
 fn remove(key: &StorageKey, record: &mut Record, member: Id) -> Result<(), Error> {
     record.state.roster.roster.member(member).map_err(failure)?;
     let mut state = record.state.clone();
@@ -532,10 +718,10 @@ fn remove(key: &StorageKey, record: &mut Record, member: Id) -> Result<(), Error
     state.roster.roster.members.retain(|m| m.id != member);
     state.participants.retain(|m| m.member.id != member);
     state.ready.retain(|m| m.member != member);
-    state.roster = state
+    state.roster = record
+        .state
         .roster
-        .roster
-        .sign(&record.key(key)?)
+        .update(state.roster.roster, &record.key(key)?)
         .map_err(failure)?;
     record.change(key, state)
 }

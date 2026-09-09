@@ -72,7 +72,7 @@ impl Forwarder {
             if old.roster.roster == roster.roster {
                 return Ok(());
             }
-            old.roster.roster.successor(&roster.roster, false)?;
+            old.roster.successor(&roster, false)?;
         }
         if roster.roster.closed || roster.roster.expires <= now {
             self.rooms.remove(&call);

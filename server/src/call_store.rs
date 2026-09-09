@@ -89,6 +89,50 @@ fn snapshot(db: &Connection, now: u64) -> Result<Snapshot, StoreError> {
     })
 }
 impl Store {
+    pub(crate) fn advance_call(
+        &mut self,
+        value: SignedRoster,
+        now: u64,
+    ) -> Result<SignedRoster, StoreError> {
+        let tx = self
+            .0
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let now = clock(&tx, now)?;
+        cleanup(&tx, now)?;
+        call_config::read(&tx)?
+            .settings
+            .ok_or(StoreError::NotFound)?;
+        value.verify().map_err(failure)?;
+        if value.roster.version != 2 || value.roster.revision == 0 {
+            return Err(StoreError::Forbidden);
+        }
+        let (_, closed, old) = roster(&tx, value.roster.call)?;
+        if old == value && closed == value.roster.closed {
+            tx.commit()?;
+            return Ok(value);
+        }
+        if closed {
+            return Err(StoreError::Conflict);
+        }
+        old.successor(&value, true).map_err(failure)?;
+        if now >= value.roster.expires {
+            return Err(StoreError::NotFound);
+        }
+        tx.execute(
+            "UPDATE calls SET roster=?1,closed=?2 WHERE id=?3",
+            (
+                value.to_bytes().map_err(failure)?,
+                value.roster.closed,
+                value.roster.call.as_slice(),
+            ),
+        )?;
+        tx.execute(
+            "DELETE FROM call_connections WHERE call=?1",
+            [value.roster.call.as_slice()],
+        )?;
+        tx.commit()?;
+        Ok(value)
+    }
     pub(crate) fn call_relay(
         &mut self,
         proof: &sigil_calls::RelayRequest,
@@ -146,7 +190,7 @@ impl Store {
                 if closed {
                     return Err(StoreError::Conflict);
                 }
-                old.roster.successor(&value.roster, true).map_err(failure)?;
+                old.successor(&value, true).map_err(failure)?;
                 if now >= value.roster.expires {
                     return Err(StoreError::NotFound);
                 }

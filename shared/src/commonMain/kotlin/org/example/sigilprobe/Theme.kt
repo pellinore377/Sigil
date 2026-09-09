@@ -13,7 +13,7 @@ import sigil.shared.generated.resources.*
 data class Appearance(val font: String = "Newsreader", val mode: String = "System", val accent: Int = 0x555555, val dynamic: Boolean = false)
 data class ChatTheme(val accent: Int? = null, val gradient: Boolean = false)
 
-internal val LocalCodeFont = staticCompositionLocalOf<FontFamily> { FontFamily.Monospace }
+val LocalCodeFont = staticCompositionLocalOf<FontFamily> { FontFamily.Monospace }
 
 internal fun parseAccent(text: String): Int? = text.removePrefix("#").takeIf { it.length == 6 }?.toIntOrNull(16)?.takeIf { it in 0..0xffffff }
 internal fun accentText(color: Int) = color.toString(16).padStart(6, '0').uppercase()

@@ -6,11 +6,168 @@ use crate::{
 };
 use serde::Deserialize;
 use serde_json::{json, Value};
+use sigil_crypto::Secret32;
+#[path = "mobile_account.rs"]
+mod account;
+#[path = "mobile_cards.rs"]
+mod cards;
+#[path = "mobile_files.rs"]
+mod files;
+#[path = "mobile_maps.rs"]
+mod maps;
+#[path = "mobile_calls.rs"]
+mod mobile_calls;
+#[path = "mobile_groups.rs"]
+mod mobile_groups;
+#[cfg(test)]
+#[path = "mobile_tests.rs"]
+mod presentation_tests;
+#[path = "mobile_views.rs"]
+mod views;
+#[path = "mobile_wallpaper.rs"]
+mod wallpaper;
 
 #[derive(Deserialize)]
 #[serde(tag = "command", rename_all = "snake_case", deny_unknown_fields)]
 enum Command {
+    Devices {
+        cursor: Option<String>,
+    },
+    RevokeDevice {
+        device: String,
+    },
+    Storage {},
+    RecoveryGenerate {},
+    RecoveryEnable {
+        secret: Zeroizing<String>,
+    },
+    RecoveryPolicy {
+        days: Option<u32>,
+    },
+    Notifications {},
+    Presence {
+        status: String,
+    },
+    ClearConversation {
+        peer: String,
+        request: String,
+        timestamp: u64,
+    },
+    LeaveGroup {
+        peer: String,
+    },
+    CallStart {
+        peer: String,
+        request: String,
+        timestamp: u64,
+    },
+    CallRedial {
+        call: String,
+        request: String,
+        timestamp: u64,
+    },
+    CallAnswer {
+        call: String,
+        accept: bool,
+    },
+    CallLeave {
+        call: String,
+    },
+    CallInvite {
+        call: String,
+        peer: String,
+    },
+    Calls {},
+    Place {
+        peer: String,
+        request: String,
+        timestamp: u64,
+        latitude_e6: i32,
+        longitude_e6: i32,
+        accuracy_cm: Option<u32>,
+        sampled_at: u64,
+        label: String,
+        pin: bool,
+        reply_author: Option<String>,
+        reply_message: Option<String>,
+        thread_author: Option<String>,
+        thread_message: Option<String>,
+    },
+    CardAction {
+        peer: String,
+        author: String,
+        message: String,
+        card: String,
+        item: Option<String>,
+        checked: Option<bool>,
+        choices: Option<Vec<String>>,
+        timestamp: u64,
+    },
+    FileBegin {
+        peer: String,
+        request: String,
+        timestamp: u64,
+        length: u64,
+        name: String,
+        media_type: String,
+        reply_author: Option<String>,
+        reply_message: Option<String>,
+        thread_author: Option<String>,
+        thread_message: Option<String>,
+    },
+    FileFinish {
+        request: String,
+    },
+    FileCancel {
+        request: String,
+    },
+    Files {},
+    FileWork {},
+    FileGet {
+        peer: String,
+        author: String,
+        message: String,
+    },
+    GroupCreate {
+        request: String,
+        timestamp: u64,
+        name: String,
+        description: String,
+        peers: Vec<String>,
+    },
+    GroupInvitation {
+        invitation: String,
+        accept: bool,
+    },
     State {},
+    MarkRead {
+        peer: String,
+        request: String,
+        timestamp: u64,
+    },
+    Snooze {
+        peer: String,
+        request: String,
+        timestamp: u64,
+        seconds: Option<u64>,
+    },
+    Forward {
+        source: String,
+        peer: String,
+        author: String,
+        message: String,
+        request: String,
+        timestamp: u64,
+    },
+    PostStatus {
+        peer: String,
+        request: String,
+    },
+    Profile {},
+    SetProfile {
+        revision: u64,
+        name: String,
+    },
     Discover {
         server: String,
     },
@@ -38,7 +195,9 @@ enum Command {
         request_id: String,
         completion: String,
     },
-    Sync {},
+    Sync {
+        interactive: Option<bool>,
+    },
     Publish {},
     Find {
         address: String,
@@ -50,6 +209,62 @@ enum Command {
     Timeline {
         peer: String,
         before: Option<i64>,
+        author: Option<String>,
+        message: Option<String>,
+        category: Option<String>,
+        query: Option<String>,
+        thread_author: Option<String>,
+        thread_message: Option<String>,
+    },
+    Search {
+        query: String,
+        after: Option<i64>,
+        category: Option<String>,
+    },
+    Draft {
+        peer: String,
+        request: String,
+        timestamp: u64,
+        text: String,
+    },
+    Organize {
+        peer: Option<String>,
+        request: String,
+        timestamp: u64,
+        value: Value,
+    },
+    Block {
+        peer: String,
+        active: bool,
+    },
+    Edit {
+        peer: String,
+        request: String,
+        timestamp: u64,
+        author: String,
+        message: String,
+        text: String,
+    },
+    Delete {
+        peer: String,
+        request: String,
+        timestamp: u64,
+        author: String,
+        message: String,
+    },
+    Note {
+        peer: String,
+        request: String,
+        timestamp: u64,
+        author: String,
+        message: String,
+        active: bool,
+    },
+    Typing {
+        peer: String,
+        request: String,
+        timestamp: u64,
+        active: bool,
     },
     Post {
         peer: String,
@@ -58,6 +273,11 @@ enum Command {
         text: String,
         reply_author: Option<String>,
         reply_message: Option<String>,
+        thread_author: Option<String>,
+        thread_message: Option<String>,
+        #[serde(default)]
+        rich: bool,
+        timezone: Option<String>,
     },
     React {
         peer: String,
@@ -89,6 +309,16 @@ fn reference(author: &str, message: &str) -> Result<Reference, Error> {
         author: id(author)?,
         message: id(message)?,
     })
+}
+fn optional_reference(
+    author: Option<String>,
+    message: Option<String>,
+) -> Result<Option<Reference>, Error> {
+    match (author, message) {
+        (None, None) => Ok(None),
+        (Some(author), Some(message)) => Ok(Some(reference(&author, &message)?)),
+        _ => Err(Error::InvalidEvent),
+    }
 }
 fn login_server(input: &str) -> Result<String, Error> {
     let input = input.trim();
@@ -173,16 +403,9 @@ impl ClientStore {
             if !seen.insert(conversation) {
                 continue;
             }
-            let page = self.recent_conversation_page(conversation, None, conversations::now())?;
-            let message = page.messages.first();
-            let preview = message
-                .and_then(|m| m.body.as_ref())
-                .map(body_text)
-                .transpose()?
-                .unwrap_or_default();
             let mut chat = public_peer(peer);
-            chat["preview"] = json!(preview);
-            chat["timestamp"] = json!(message.map(|v| v.timestamp).unwrap_or(0));
+            chat["preview"] = json!("");
+            chat["timestamp"] = json!(0);
             let same: Vec<_> = peers
                 .iter()
                 .filter(|p| {
@@ -194,11 +417,29 @@ impl ClientStore {
             chat["verified"] = json!(same
                 .iter()
                 .all(|p| p.verified && !p.blocked && p.changed_fingerprint.is_none()));
+            self.mobile_summary(&transport::hex(&peer.id), &mut chat)?;
+            chat["contact_only"] =
+                json!(chat["latest_message"].is_null() && chat["ui"]["opened"] != "true");
             chats.push(chat);
         }
-        chats.sort_by_key(|v| std::cmp::Reverse(v["timestamp"].as_u64().unwrap_or(0)));
+        let mut chat = json!({"id":"self","address":session.address,"name":"Note to Self","self":true,"verified":true,"devices":[], "timestamp":0,"preview":""});
+        self.mobile_summary("self", &mut chat)?;
+        if !chat["latest_message"].is_null() {
+            chats.push(chat);
+        }
+        chats.extend(self.mobile_groups()?);
+        let invitations = self.mobile_group_invitations()?;
+        chats.sort_by_key(|v| {
+            (
+                std::cmp::Reverse(v["pinned"].as_bool().unwrap_or(false)),
+                std::cmp::Reverse(v["timestamp"].as_u64().unwrap_or(0)),
+            )
+        });
+        let prefs = self.conversation_preferences([0; 32])?;
         Ok(
-            json!({"phase":phase,"address":session.address,"device":session.device_id,"fingerprint":transport::hex(&fingerprint),"chats":chats}),
+            json!({"phase":phase,"address":session.address,"device":session.device_id,"fingerprint":transport::hex(&fingerprint),"chats":chats,"invitations":invitations,
+                "read_receipts":prefs.read_receipts,"typing_indicators":prefs.typing_indicators,"presence_sharing":prefs.presence_sharing,
+                "collections_enabled":prefs.collections_enabled,"ui":prefs.ui,"collections":prefs.collections.iter().map(|(id,name)|json!({"id":transport::hex(id),"name":name,"icon":prefs.ui.get(&format!("collection_icon.{}",transport::hex(id))).map(String::as_str).unwrap_or("folder")})).collect::<Vec<_>>()}),
         )
     }
     fn mobile_recipients(&self, peer: Id) -> Result<Vec<Id>, Error> {
@@ -226,14 +467,496 @@ impl ClientStore {
         timestamp: u64,
         action: Action,
     ) -> Result<Value, Error> {
-        let peers = self.mobile_recipients(id(peer)?)?;
         let operation = self.conversation_operation(id(request)?, action)?;
-        self.queue_direct_operation(&peers, &operation, timestamp, conversations::now())?;
+        if peer == "self" {
+            self.note_to_self(&operation, timestamp, conversations::now())?;
+        } else if let Some(group) = peer.strip_prefix("group:") {
+            self.queue_group_operation(id(group)?, &operation, timestamp, conversations::now())?;
+        } else {
+            let peers = self.mobile_recipients(id(peer)?)?;
+            self.queue_direct_operation(&peers, &operation, timestamp, conversations::now())?;
+        }
         Ok(json!({"queued":request}))
     }
     fn mobile_execute(&mut self, command: Command) -> Result<Value, Error> {
         match command {
+            Command::Presence { status } => self.mobile_presence(&status),
+            Command::ClearConversation {
+                peer,
+                request,
+                timestamp,
+            } => {
+                let conversation = self.mobile_conversation(&peer)?;
+                self.clear_conversation(conversation, id(&request)?, timestamp)?;
+                Ok(json!({}))
+            }
+            Command::LeaveGroup { peer } => self.mobile_leave_group(&peer),
+            Command::Devices { cursor } => self.mobile_devices(cursor),
+            Command::RevokeDevice { device } => {
+                let session = self.connection_session()?.ok_or(Error::Unprepared)?;
+                if device == session.device_id {
+                    return Err(Error::InvalidEvent);
+                }
+                self.revoke_device_online(&device)?;
+                self.mobile_devices(None)
+            }
+            Command::Storage {} => self.mobile_storage(),
+            Command::RecoveryGenerate {} => self.mobile_recovery_generate(),
+            Command::RecoveryEnable { secret } => {
+                let binding = peers::parse(&self.own_device_binding()?)?.binding;
+                let secret = Zeroizing::new(id(&secret)?);
+                if *secret == [0; 32] {
+                    return Err(Error::InvalidEvent);
+                }
+                self.configure_recovery(
+                    &binding.server,
+                    binding.account,
+                    Secret32::from_bytes(*secret),
+                )?;
+                self.mobile_storage()
+            }
+            Command::RecoveryPolicy { days } => {
+                self.set_recovery_policy(recovery::RecoveryPolicy { history_days: days })?;
+                self.mobile_storage()
+            }
+            Command::Notifications {} => {
+                let state = self.mobile_state()?;
+                let eligible = state["chats"]
+                    .as_array()
+                    .map(|chats| {
+                        chats
+                            .iter()
+                            .filter(|chat| {
+                                chat["snoozed"] != true
+                                    && chat["hidden"] != true
+                                    && chat["blocked"] != true
+                                    && chat["unread"].as_u64().unwrap_or(0) > 0
+                            })
+                            .collect::<Vec<_>>()
+                    })
+                    .unwrap_or_default();
+                let unread = eligible
+                    .iter()
+                    .map(|chat| chat["unread"].as_u64().unwrap_or(0))
+                    .sum::<u64>();
+                let stamp = eligible
+                    .iter()
+                    .map(|chat| {
+                        (
+                            &chat["conversation"],
+                            &chat["unread"],
+                            &chat["latest_message"],
+                        )
+                    })
+                    .collect::<Vec<_>>();
+                let revision = self.key.commitment(
+                    &serde_json::to_vec(&stamp).map_err(|_| Error::InvalidStore)?,
+                    b"Sigil/notification-revision/v1",
+                )?;
+                let now = conversations::now();
+                let calls = self
+                    .calls(now)?
+                    .into_iter()
+                    .filter(|call| call.phase == calls::Phase::Ringing)
+                    .map(|call| json!({"id":transport::hex(&call.id),"until":call.ring_until}))
+                    .collect::<Vec<_>>();
+                Ok(json!({"unread":unread,"calls":calls,"revision":transport::hex(&revision)}))
+            }
+            Command::Place {
+                peer,
+                request,
+                timestamp,
+                latitude_e6,
+                longitude_e6,
+                accuracy_cm,
+                sampled_at,
+                label,
+                pin,
+                reply_author,
+                reply_message,
+                thread_author,
+                thread_message,
+            } => {
+                let point = sigil_protocol::text::location::Point {
+                    coordinates: sigil_protocol::text::service::Coordinates {
+                        latitude_e6,
+                        longitude_e6,
+                    },
+                    accuracy_cm,
+                    sampled_at,
+                };
+                let card = self.location_card(
+                    id(&request)?,
+                    if pin {
+                        structured::LocationKind::Pin
+                    } else {
+                        structured::LocationKind::Once
+                    },
+                    point,
+                    sigil_protocol::text::Text::plain(&label, Default::default())
+                        .map_err(|_| Error::InvalidEvent)?,
+                    timestamp,
+                )?;
+                self.mobile_action(
+                    &peer,
+                    &request,
+                    timestamp,
+                    Action::Post {
+                        body: Body::Rich(card.to_bytes().map_err(|_| Error::InvalidEvent)?),
+                        reply: optional_reference(reply_author, reply_message)?,
+                        thread: optional_reference(thread_author, thread_message)?,
+                        expires_at: None,
+                        view_once: false,
+                    },
+                )
+            }
+            Command::CardAction {
+                peer,
+                author,
+                message,
+                card,
+                item,
+                checked,
+                choices,
+                timestamp,
+            } => self.mobile_card_action(
+                &peer,
+                reference(&author, &message)?,
+                id(&card)?,
+                item.as_deref().map(id).transpose()?,
+                checked,
+                choices
+                    .map(|v| v.iter().map(|s| id(s)).collect())
+                    .transpose()?,
+                timestamp,
+            ),
+            Command::FileBegin {
+                peer,
+                request,
+                timestamp,
+                length,
+                name,
+                media_type,
+                reply_author,
+                reply_message,
+                thread_author,
+                thread_message,
+            } => self.mobile_file_begin(files::Upload {
+                peer,
+                request: id(&request)?,
+                timestamp,
+                length,
+                name,
+                media_type,
+                file: [0; 32],
+                reply: optional_reference(reply_author, reply_message)?,
+                thread: optional_reference(thread_author, thread_message)?,
+            }),
+            Command::FileFinish { request } => {
+                let upload = self.mobile_upload(id(&request)?)?;
+                self.mobile_cache()?.finish_staging(upload.file)?;
+                Ok(json!({}))
+            }
+            Command::FileCancel { request } => {
+                let request = id(&request)?;
+                let upload = self.mobile_upload(request)?;
+                self.mobile_cache()?.cancel(upload.file)?;
+                self.db.execute(
+                    "DELETE FROM mobile_uploads WHERE id=?1",
+                    [request.as_slice()],
+                )?;
+                Ok(json!({}))
+            }
+            Command::Files {} => self.mobile_files(),
+            Command::FileWork {} => self.mobile_file_work(),
+            Command::FileGet {
+                peer,
+                author,
+                message,
+            } => self.mobile_file_get(&peer, reference(&author, &message)?),
+            Command::GroupCreate {
+                request,
+                timestamp,
+                name,
+                description,
+                peers,
+            } => self.mobile_create_group(id(&request)?, timestamp, name, description, peers),
+            Command::GroupInvitation { invitation, accept } => {
+                if accept {
+                    self.accept_group_invitation(id(&invitation)?, conversations::now())?;
+                } else {
+                    self.cancel_group_invitation(id(&invitation)?)?;
+                }
+                Ok(json!({}))
+            }
             Command::State {} => self.mobile_state(),
+            Command::Snooze {
+                peer,
+                request,
+                timestamp,
+                seconds,
+            } => {
+                let until = seconds
+                    .map(|v| conversations::now().checked_add(v).ok_or(Error::Limit))
+                    .transpose()?;
+                self.mobile_execute(Command::Organize {
+                    peer: Some(peer),
+                    request,
+                    timestamp,
+                    value: json!({"Snooze":until}),
+                })
+            }
+            Command::MarkRead {
+                peer,
+                request,
+                timestamp,
+            } => {
+                let conversation = self.mobile_conversation(&peer)?;
+                let (_, own) = structured::account_context(&self.db, &self.key)?;
+                let mut before = None;
+                loop {
+                    let page =
+                        self.recent_conversation_page(conversation, before, conversations::now())?;
+                    for message in page.messages {
+                        if message.reference.author == own || message.seen || message.view_once {
+                            continue;
+                        }
+                        let token: Id = Sha256::digest(
+                            [
+                                b"Sigil/mobile-read-all/v1".as_slice(),
+                                &id(&request)?,
+                                &message.reference.author,
+                                &message.reference.message,
+                            ]
+                            .concat(),
+                        )
+                        .into();
+                        self.mobile_execute(Command::Read {
+                            peer: peer.clone(),
+                            request: transport::hex(&token),
+                            timestamp,
+                            author: transport::hex(&message.reference.author),
+                            message: transport::hex(&message.reference.message),
+                        })?;
+                    }
+                    before = page.next;
+                    if before.is_none() {
+                        break;
+                    }
+                }
+                self.mobile_execute(Command::Organize {
+                    peer: Some(peer),
+                    request,
+                    timestamp,
+                    value: json!({"Unread":false}),
+                })
+            }
+            Command::Forward {
+                source,
+                peer,
+                author,
+                message,
+                request,
+                timestamp,
+            } => {
+                let conversation = self.mobile_conversation(&source)?;
+                let original = self.conversation_message(
+                    conversation,
+                    reference(&author, &message)?,
+                    conversations::now(),
+                )?;
+                if original.deleted || original.view_once {
+                    return Err(Error::Unprepared);
+                }
+                let body = original.body.ok_or(Error::Unprepared)?;
+                if matches!(body, Body::File(_)) {
+                    return Err(Error::Unprepared);
+                }
+                let rich = matches!(body, Body::Rich(_));
+                self.mobile_execute(Command::Post {
+                    peer,
+                    request,
+                    timestamp,
+                    text: body_text(&body)?,
+                    rich,
+                    timezone: None,
+                    reply_author: None,
+                    reply_message: None,
+                    thread_author: None,
+                    thread_message: None,
+                })
+            }
+            Command::PostStatus { peer, request } => {
+                let conversation = self.mobile_conversation(&peer)?;
+                let (_, author) = structured::account_context(&self.db, &self.key)?;
+                let queued = match self.conversation_message(
+                    conversation,
+                    Reference {
+                        author,
+                        message: id(&request)?,
+                    },
+                    conversations::now(),
+                ) {
+                    Ok(_) => true,
+                    Err(Error::NotFound) => false,
+                    Err(error) => return Err(error),
+                };
+                Ok(json!({"queued":queued}))
+            }
+            Command::Profile {} => Ok(serde_json::to_value(self.connected_client()?.profile()?)
+                .map_err(|_| Error::InvalidStore)?),
+            Command::SetProfile { revision, name } => Ok(serde_json::to_value(
+                self.connected_client()?
+                    .set_profile(&sigil_protocol::profile::Profile {
+                        revision,
+                        display_name: name,
+                    })?,
+            )
+            .map_err(|_| Error::InvalidStore)?),
+            Command::Search {
+                query,
+                after,
+                category,
+            } => self.mobile_search(&query, after, category.as_deref()),
+            Command::Draft {
+                peer,
+                request,
+                timestamp,
+                text,
+            } => {
+                let conversation = self.mobile_conversation(&peer)?;
+                let prefs = self.conversation_preferences(conversation)?;
+                let device = device_fingerprint(&self.own_device_binding()?)?;
+                if prefs
+                    .drafts
+                    .iter()
+                    .any(|v| v.version.device == device && v.text == text)
+                {
+                    return Ok(json!({}));
+                }
+                let operation = self.conversation_operation(
+                    id(&request)?,
+                    Action::Private {
+                        conversation,
+                        value: conversations::Private::Draft {
+                            text,
+                            observed: Vec::new(),
+                        },
+                    },
+                )?;
+                self.apply_private_operation(&operation, timestamp)?;
+                Ok(json!({}))
+            }
+            Command::Organize {
+                peer,
+                request,
+                timestamp,
+                mut value,
+            } => {
+                for kind in ["Collection", "CollectionMember"] {
+                    if let Some(collection) = value.get_mut(kind) {
+                        if let Some(raw) = collection["id"].as_str() {
+                            collection["id"] = json!(id(raw)?);
+                        }
+                    }
+                }
+                let value = serde_json::from_value(value).map_err(|_| Error::InvalidEvent)?;
+                let conversation = peer
+                    .as_deref()
+                    .map(|p| self.mobile_conversation(p))
+                    .transpose()?
+                    .unwrap_or([0; 32]);
+                let operation = self.conversation_operation(
+                    id(&request)?,
+                    Action::Private {
+                        conversation,
+                        value,
+                    },
+                )?;
+                self.apply_private_operation(&operation, timestamp)?;
+                Ok(json!({}))
+            }
+            Command::Block { peer, active } => {
+                let chosen = self.peer(id(&peer)?)?;
+                for device in self.mobile_peers()? {
+                    if device.binding.account == chosen.binding.account
+                        && device.binding.server == chosen.binding.server
+                    {
+                        self.block_peer(device.id, active)?;
+                    }
+                }
+                Ok(json!({}))
+            }
+            Command::Edit {
+                peer,
+                request,
+                timestamp,
+                author,
+                message,
+                text,
+            } => self.mobile_action(
+                &peer,
+                &request,
+                timestamp,
+                Action::Edit {
+                    target: reference(&author, &message)?,
+                    body: Body::Text(text),
+                },
+            ),
+            Command::Delete {
+                peer,
+                request,
+                timestamp,
+                author,
+                message,
+            } => self.mobile_action(
+                &peer,
+                &request,
+                timestamp,
+                Action::Delete {
+                    target: reference(&author, &message)?,
+                },
+            ),
+            Command::Note {
+                peer,
+                request,
+                timestamp,
+                author,
+                message,
+                active,
+            } => self.mobile_action(
+                &peer,
+                &request,
+                timestamp,
+                Action::Note {
+                    target: reference(&author, &message)?,
+                    active,
+                },
+            ),
+            Command::Typing {
+                peer,
+                request,
+                timestamp,
+                active,
+            } => {
+                let conversation = self.mobile_conversation(&peer)?;
+                if !self
+                    .conversation_preferences(conversation)?
+                    .typing_indicators
+                    || peer == "self"
+                {
+                    return Ok(json!({}));
+                }
+                self.mobile_action(
+                    &peer,
+                    &request,
+                    timestamp,
+                    Action::Typing {
+                        active,
+                        until: conversations::now().saturating_add(20),
+                    },
+                )
+            }
             Command::Username { username } => {
                 self.choose_registration_username(&username)?;
                 if self.enrollment_kind()? == "connected" {
@@ -308,8 +1031,39 @@ impl ClientStore {
                 self.publish_device_binding_online()?;
                 self.mobile_state()
             }
-            Command::Sync {} => {
-                let result = self.sync_due_online()?;
+            Command::CallStart {
+                peer,
+                request,
+                timestamp,
+            } => self.mobile_call_start(&peer, id(&request)?, timestamp),
+            Command::CallRedial {
+                call,
+                request,
+                timestamp,
+            } => self.mobile_call_redial(id(&call)?, id(&request)?, timestamp),
+            Command::CallAnswer { call, accept } => {
+                self.answer_call(id(&call)?, accept, conversations::now())?;
+                self.mobile_calls()
+            }
+            Command::CallLeave { call } => {
+                self.leave_call(id(&call)?, conversations::now())?;
+                self.mobile_calls()
+            }
+            Command::CallInvite { call, peer } => {
+                let call = id(&call)?;
+                if self.call(call, conversations::now())?.direct {
+                    return Err(Error::InvalidEvent);
+                }
+                self.invite_to_call(call, id(&peer)?, conversations::now())?;
+                self.mobile_calls()
+            }
+            Command::Calls {} => self.mobile_calls(),
+            Command::Sync { interactive } => {
+                let result = if interactive == Some(true) {
+                    self.sync_foreground_online()?
+                } else {
+                    self.sync_due_online()?
+                };
                 let mut issue = result.scheduling_error.as_ref().map(error_message);
                 if let Some(step) = &result.step {
                     if step.failure.is_some() {
@@ -319,7 +1073,15 @@ impl ClientStore {
                         issue = Some("A received message needs device verification or recovery.");
                     }
                 }
-                Ok(json!({"next_at":result.next_at,"ran":result.step.is_some(),"issue":issue}))
+                let pending: bool = self.db.query_row("SELECT EXISTS(SELECT 1 FROM send_intents) OR EXISTS(SELECT 1 FROM outbox o JOIN sessions s ON s.id=o.session WHERE o.packet IS NOT NULL AND s.retired=0) OR EXISTS(SELECT 1 FROM group_delivery WHERE status=0) OR EXISTS(SELECT 1 FROM call_jobs)", [], |row| row.get(0))?;
+                let generated = result.step.as_ref().is_some_and(|step| {
+                    step.conversation_copies > 0
+                        || step.delivery_receipts > 0
+                        || step.structured > 0
+                });
+                Ok(
+                    json!({"next_at":result.next_at,"ran":result.step.is_some(),"pending":pending || generated,"issue":issue}),
+                )
             }
             Command::Publish {} => {
                 self.publish_device_binding_online()?;
@@ -354,15 +1116,60 @@ impl ClientStore {
                 self.allow_peer_sender_online(peer)?;
                 self.mobile_state()
             }
-            Command::Timeline { peer, before } => {
-                let peer = id(&peer)?;
-                let conversation = self.direct_conversation(peer)?;
+            Command::Timeline {
+                peer,
+                before,
+                author,
+                message,
+                category,
+                query,
+                thread_author,
+                thread_message,
+            } => {
+                let conversation = self.mobile_conversation(&peer)?;
+                let before = match (before, author, message) {
+                    (None, Some(author), Some(message)) => Some(
+                        self.conversation_position(conversation, &reference(&author, &message)?)?
+                            .checked_add(1)
+                            .ok_or(Error::Limit)?,
+                    ),
+                    (before, None, None) => before,
+                    _ => return Err(Error::InvalidEvent),
+                };
                 let (_, own) = structured::account_context(&self.db, &self.key)?;
-                let receipts = self.conversation_preferences(conversation)?.read_receipts;
-                let page =
-                    self.recent_conversation_page(conversation, before, conversations::now())?;
+                let thread = match (thread_author, thread_message) {
+                    (Some(a), Some(m)) => Some(reference(&a, &m)?),
+                    (None, None) => None,
+                    _ => return Err(Error::InvalidEvent),
+                };
+                let page = if let Some(query) = query {
+                    self.recent_conversation_search(
+                        conversation,
+                        before,
+                        &query,
+                        conversations::now(),
+                    )?
+                } else {
+                    self.recent_conversation_page(conversation, before, conversations::now())?
+                };
                 let mut messages = Vec::new();
                 for message in page.messages {
+                    if if let Some(thread) = &thread {
+                        &message.reference != thread && message.thread.as_ref() != Some(thread)
+                    } else {
+                        match category.as_deref() {
+                            Some("Notes") => {
+                                peer != "self" && !self.mobile_is_note(conversation, &message)?
+                            }
+                            Some("Pins") => !message.pinned,
+                            Some("Threads") => message.thread.is_none(),
+                            Some("Timeline") => message.thread.is_some(),
+                            Some("Search") | None => false,
+                            _ => return Err(Error::InvalidEvent),
+                        }
+                    } {
+                        continue;
+                    }
                     let mine = message.reference.author == own;
                     let delivery = if !mine {
                         ""
@@ -371,7 +1178,11 @@ impl ClientStore {
                     } else if !message.delivered.is_empty() {
                         "Delivered"
                     } else if mine {
-                        match self.operation_delivery_state(peer, message.reference.message) {
+                        match if peer == "self" || peer.starts_with("group:") {
+                            Err(Error::NotFound)
+                        } else {
+                            self.operation_delivery_state(id(&peer)?, message.reference.message)
+                        } {
                             Ok(DeliveryState::ServerAccepted) => "Sent",
                             Ok(DeliveryState::Expired) => "Expired",
                             Ok(DeliveryState::Cancelled) => "Cancelled",
@@ -382,37 +1193,42 @@ impl ClientStore {
                     } else {
                         ""
                     };
-                    let reply = message
-                        .reply
-                        .as_ref()
-                        .map(|target| {
-                            match self.conversation_message(
-                                conversation,
-                                target.clone(),
-                                conversations::now(),
-                            ) {
-                                Ok(m) if m.view_once || m.deleted => Ok("Earlier message".into()),
-                                Ok(m) => m
-                                    .body
-                                    .as_ref()
-                                    .map(body_text)
-                                    .transpose()
-                                    .map(|v| v.unwrap_or_else(|| "Earlier message".into())),
-                                Err(Error::NotFound | Error::Obsolete) => {
-                                    Ok("Earlier message".into())
-                                }
-                                Err(e) => Err(e),
-                            }
-                        })
-                        .transpose()?;
+                    let mut preview = |target: &Reference| match self.conversation_message(
+                        conversation,
+                        target.clone(),
+                        conversations::now(),
+                    ) {
+                        Ok(m) if m.view_once || m.deleted => Ok("Earlier message".into()),
+                        Ok(m) => m
+                            .body
+                            .as_ref()
+                            .map(body_text)
+                            .transpose()
+                            .map(|v| v.unwrap_or_else(|| "Earlier message".into())),
+                        Err(Error::NotFound | Error::Obsolete) => Ok("Earlier message".into()),
+                        Err(e) => Err(e),
+                    };
+                    let reply = message.reply.as_ref().map(&mut preview).transpose()?;
+                    let thread_preview = message.thread.as_ref().map(&mut preview).transpose()?;
                     messages.push(json!({"id":transport::hex(&message.reference.message),"author":transport::hex(&message.reference.author),
                         "text":message.body.as_ref().map(body_text).transpose()?.unwrap_or_else(||"View-once message".into()),
-                        "mine":mine,"timestamp":message.timestamp,"delivery":delivery,"pinned":message.pinned,
+                        "mine":mine,"timestamp":message.timestamp,"delivery":delivery,"pinned":message.pinned,"attachment":files::metadata(message.body.as_ref())?,
                         "reactions":message.reactions.iter().map(|(_,emoji)|emoji).collect::<Vec<_>>(),
                         "my_reactions":message.reactions.iter().filter(|(actor,_)| *actor == own).map(|(_,emoji)|emoji).collect::<Vec<_>>(),
-                        "read_by_me": !receipts || message.view_once || message.read.contains(&own), "reply":reply}));
+                        "read_by_me": message.seen || message.view_once || message.read.contains(&own), "reply":reply,
+                        "readers":message.read.iter().map(|v|transport::hex(v)).collect::<Vec<_>>(),
+                        "noted":message.noted || self.mobile_is_note(conversation, &message)?,
+                        "thread_author":message.thread.as_ref().map(|v|transport::hex(&v.author)),
+                        "thread_message":message.thread.as_ref().map(|v|transport::hex(&v.message)),
+                        "thread_preview":thread_preview,
+                        "editable":message.body.as_ref().is_some_and(Body::editable),
+                        "kind":views::body_kind(message.body.as_ref()), "parts":self.mobile_parts(conversation, message.body.as_ref())?}));
                 }
-                Ok(json!({"peer":transport::hex(&peer),"messages":messages,"next":page.next}))
+                let activity = self.conversation_activity(conversation, conversations::now())?;
+                Ok(
+                    json!({"peer":peer,"messages":messages,"next":page.next,"people":self.mobile_names(&peer)?,
+                    "typing":activity.iter().filter(|v|v.typing && v.author != own).map(|v|transport::hex(&v.author)).collect::<Vec<_>>()}),
+                )
             }
             Command::Post {
                 peer,
@@ -421,24 +1237,48 @@ impl ClientStore {
                 text,
                 reply_author,
                 reply_message,
+                thread_author,
+                thread_message,
+                rich,
+                timezone,
             } => {
-                let reply = match (reply_author, reply_message) {
-                    (None, None) => None,
-                    (Some(a), Some(m)) => Some(reference(&a, &m)?),
-                    _ => return Err(Error::InvalidEvent),
+                let reply = optional_reference(reply_author, reply_message)?;
+                let thread = optional_reference(thread_author, thread_message)?;
+                let body = if rich {
+                    let conversation = self.mobile_conversation(&peer)?;
+                    let doc = self.prepare_sigiltext(crate::rich_text::SigilTextDraft {
+                        conversation,
+                        message: id(&request)?,
+                        source: &text,
+                        created_at: timestamp,
+                        timezone: timezone.as_deref(),
+                        date_order: None,
+                    })?;
+                    if matches!(doc, sigil_protocol::text::Document::Text(_)) {
+                        self.discard_sigiltext_draft(conversation, id(&request)?)?;
+                        return Err(Error::InvalidEvent);
+                    }
+                    Body::Rich(doc.to_bytes().map_err(|_| Error::InvalidEvent)?)
+                } else {
+                    Body::Text(text)
                 };
-                self.mobile_action(
+                let result = self.mobile_action(
                     &peer,
                     &request,
                     timestamp,
                     Action::Post {
-                        body: Body::Text(text),
+                        body,
                         reply,
-                        thread: None,
+                        thread,
                         expires_at: None,
                         view_once: false,
                     },
-                )
+                )?;
+                if rich {
+                    let conversation = self.mobile_conversation(&peer)?;
+                    self.discard_sigiltext_draft(conversation, id(&request)?)?;
+                }
+                Ok(result)
             }
             Command::React {
                 peer,
@@ -480,15 +1320,36 @@ impl ClientStore {
                 timestamp,
                 author,
                 message,
-            } => self.mobile_action(
-                &peer,
-                &request,
-                timestamp,
-                Action::Receipt {
-                    target: reference(&author, &message)?,
-                    read: true,
-                },
-            ),
+            } => {
+                let conversation = self.mobile_conversation(&peer)?;
+                let target = reference(&author, &message)?;
+                let original =
+                    self.conversation_message(conversation, target.clone(), conversations::now())?;
+                if !original.seen {
+                    let local_id = Sha256::digest(
+                        [b"Sigil/mobile-seen/v1".as_slice(), &id(&request)?].concat(),
+                    )
+                    .into();
+                    let local = self.conversation_operation(
+                        local_id,
+                        Action::Private {
+                            conversation,
+                            value: conversations::Private::Seen(target.clone()),
+                        },
+                    )?;
+                    self.apply_private_operation(&local, timestamp)?;
+                }
+                if self.conversation_preferences(conversation)?.read_receipts && peer != "self" {
+                    self.mobile_action(
+                        &peer,
+                        &request,
+                        timestamp,
+                        Action::Receipt { target, read: true },
+                    )
+                } else {
+                    Ok(json!({}))
+                }
+            }
         }
     }
 }
@@ -501,6 +1362,12 @@ fn body_text(body: &Body) -> Result<String, Error> {
                 .map_err(|_| Error::InvalidStore)?
             {
                 sigil_protocol::text::Document::Text(v) => v.body().to_owned(),
+                sigil_protocol::text::Document::Card(c) => {
+                    c.body().map_err(|_| Error::InvalidStore)?
+                }
+                sigil_protocol::text::Document::Composition(c) => {
+                    c.body().map_err(|_| Error::InvalidStore)?
+                }
                 _ => "Structured message".into(),
             }
         }

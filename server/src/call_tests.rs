@@ -56,6 +56,7 @@ fn config(revision: u64) -> Configure {
 }
 fn roster(owner: &IdentityKey, call: u8) -> SignedRoster {
     Roster {
+        controller: None,
         version: 1,
         call: [call; 32],
         server: "chat.example".into(),
@@ -69,6 +70,55 @@ fn roster(owner: &IdentityKey, call: u8) -> SignedRoster {
     }
     .sign(owner)
     .unwrap()
+}
+#[test]
+fn controller_updates_require_an_existing_call_and_the_pinned_delegation_chain() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut store, alice, _) = setup(&dir.path().join("calls.db"));
+    let owner = IdentityKey::generate().unwrap();
+    let successor = IdentityKey::generate().unwrap();
+    let mut group = roster(&owner, 91).roster;
+    group.version = 2;
+    group.controller = Some(owner.public_key());
+    group.members.push(Member::new(successor.public_key()));
+    group.members.sort_by_key(|p| p.id);
+    let group = group.sign(&owner).unwrap();
+    let next = group
+        .transfer(
+            group.delegate(successor.public_key(), &owner).unwrap(),
+            &successor,
+        )
+        .unwrap();
+    assert!(store.advance_call(next.clone(), 1000).is_err());
+    assert!(store.advance_call(group.clone(), 1000).is_err());
+    store.publish_call(&alice, group.clone(), 1000).unwrap();
+    assert!(store.advance_call(next.clone(), 1001).unwrap() == next);
+    assert!(store.advance_call(next.clone(), 1001).unwrap() == next);
+    let mut retake = next.roster.clone();
+    retake.previous = Some(retake.digest().unwrap());
+    retake.revision += 1;
+    retake.controller = Some(owner.public_key());
+    retake.members.push(Member::new(owner.public_key()));
+    retake.members.sort_by_key(|p| p.id);
+    assert!(store
+        .advance_call(retake.sign(&owner).unwrap(), 1002)
+        .is_err());
+    let mut closed = next.roster.clone();
+    closed.previous = Some(closed.digest().unwrap());
+    closed.revision += 1;
+    closed.closed = true;
+    let closed = next.update(closed, &successor).unwrap();
+    assert!(store.advance_call(closed.clone(), 1002).unwrap() == closed);
+    assert!(store.advance_call(next, 1002).is_err());
+    let legacy = roster(&owner, 92);
+    store.publish_call(&alice, legacy.clone(), 1003).unwrap();
+    let mut update = legacy.roster.clone();
+    update.previous = Some(update.digest().unwrap());
+    update.revision += 1;
+    update.closed = true;
+    assert!(store
+        .advance_call(update.sign(&owner).unwrap(), 1003)
+        .is_err());
 }
 fn join(roster: &Roster, owner: &IdentityKey, sequence: u64) -> SignedConnect {
     Connect {

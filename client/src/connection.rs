@@ -172,6 +172,15 @@ fn client(
     profile: &Profile,
     credential: &str,
 ) -> Result<network::HttpsClient, Error> {
+    let roots = roots(db, key, profile)?;
+    Ok(network::HttpsClient::discover(
+        &profile.server,
+        profile.port,
+        credential,
+        &roots,
+    )?)
+}
+fn roots(db: &Connection, key: &StorageKey, profile: &Profile) -> Result<Vec<Vec<u8>>, Error> {
     let mut roots = Vec::new();
     for index in 0..profile.roots {
         let sealed: Vec<u8> = db.query_row(
@@ -181,15 +190,15 @@ fn client(
         )?;
         roots.push(key.open(&sealed, &root_binding(profile, index)?)?.to_vec());
     }
-    Ok(network::HttpsClient::discover(
-        &profile.server,
-        profile.port,
-        credential,
-        &roots,
-    )?)
+    Ok(roots)
 }
 
 impl ClientStore {
+    #[cfg(feature = "rtc-client")]
+    pub(crate) fn connection_roots(&self) -> Result<Vec<Vec<u8>>, Error> {
+        let (profile, _) = load(&self.db, &self.key)?;
+        roots(&self.db, &self.key, &profile)
+    }
     pub(crate) fn connected_account_scope(&self) -> Result<super::Id, Error> {
         let (profile, _) = load(&self.db, &self.key)?;
         let session = profile.session.as_ref().ok_or(Error::Unprepared)?;
