@@ -47,7 +47,11 @@ class Messenger(application: Application) : AndroidViewModel(application) {
         private set
     var restoringRecovery by mutableStateOf(false)
         private set
-    fun dismissRestoreRecovery() { if (!state.busy) restoringRecovery = false }
+    private fun recoveryPreference(value: Boolean) { getApplication<Application>().getSharedPreferences("recovery", 0).edit().putBoolean("requested", value).apply() }
+    fun dismissRestoreRecovery() { if (!state.busy) { restoringRecovery = false; recoveryPreference(false) } }
+    var recoveringAccount by mutableStateOf(false)
+        private set
+    fun dismissAccountRecovery() { if (!state.busy) recoveringAccount = false }
     fun dismissRecovery() { recoveryKey = null }
     var deviceLink by mutableStateOf<JSONObject?>(null)
         private set
@@ -143,6 +147,8 @@ class Messenger(application: Application) : AndroidViewModel(application) {
         if (NativeSignOut.pending(getApplication())) return
         if (name.startsWith("call_")) { calls.command(name, fields + ("name" to (fields["peer"] as? String)?.let { peer -> state.chats.find { it.id == peer }?.name })); return }
         when (name) {
+            "recovery_account_open" -> { recoveringAccount = true; return }
+            "recover_account" -> recoveringAccount = false
             "recovery_restore_open" -> { restoringRecovery = true; return }
             "sign_out" -> {
                 if (state.call != null || calls.occupied) { state = state.copy(issue = "End or leave your call before signing out."); return }
@@ -213,7 +219,9 @@ class Messenger(application: Application) : AndroidViewModel(application) {
                         if (name == "group_create") groupCreate = fields.toMap() to it
                     }
                     val alreadyQueued = retry && execute("post_status", mapOf("peer" to fields["peer"], "request" to JSONObject(raw).getString("request"))).getBoolean("queued")
+                    if (name == "recover_account") recoveryPreference(true)
                     val result = if (alreadyQueued) JSONObject() else native(raw)
+                    if (name == "cancel_login") recoveryPreference(false)
                     accountAccess(result)
                     if (name == "oidc_account") nextAccess = 0
                     result.optional("open")?.let { state = state.copy(selected = it); groupCreate = null; pages = 1 }
@@ -233,7 +241,7 @@ class Messenger(application: Application) : AndroidViewModel(application) {
                     if (name == "recovery_generate") recoveryKey = result.getString("secret")
                     if (name in listOf("storage", "recovery_enable", "recovery_policy", "recovery_restore")) {
                         storage(result)
-                        if (name in listOf("recovery_enable", "recovery_restore")) { dismissRecovery(); restoringRecovery = false; NativeSync.enqueue(getApplication()) }
+                        if (name in listOf("recovery_enable", "recovery_restore")) { dismissRecovery(); restoringRecovery = false; recoveryPreference(false); NativeSync.enqueue(getApplication()) }
                     }
                     result.optional("authorization_url")?.let { authorizationUrl = it }
                     if (name in listOf("post", "edit")) { post = null; state = state.copy(sent = state.sent + 1, sentText = fields["text"] as? String) }
@@ -349,6 +357,7 @@ class Messenger(application: Application) : AndroidViewModel(application) {
         val phase = value.getString("phase")
         files.enabled = foreground && phase == "connected"
         if (phase != "connected") { state = state.copy(phase = phase, loginAddress = if (phase == "new") state.loginAddress else value.optional("server") ?: state.loginAddress); return }
+        if (value.optBoolean("recover_history") && getApplication<Application>().getSharedPreferences("recovery", 0).getBoolean("requested", false)) restoringRecovery = true
         if (state.storage != null) storage(execute("storage"))
         if (android.os.SystemClock.elapsedRealtime() >= nextAccess) {
             nextAccess = android.os.SystemClock.elapsedRealtime() + 300_000

@@ -366,6 +366,18 @@ impl ClientStore {
         })
     }
     pub fn restart_oidc_enrollment(&mut self, username: Option<&str>) -> Result<(), Error> {
+        self.restart_oidc_enrollment_mode(username, false)
+    }
+    pub(crate) fn restart_oidc_recovery(&mut self) -> Result<(), Error> {
+        let (profile, _) = load(&self.db, &self.key)?;
+        let username = profile.oidc.as_ref().and_then(|flow| flow.username.clone());
+        self.restart_oidc_enrollment_mode(username.as_deref(), true)
+    }
+    fn restart_oidc_enrollment_mode(
+        &mut self,
+        username: Option<&str>,
+        replace: bool,
+    ) -> Result<(), Error> {
         let (mut profile, expected) = load(&self.db, &self.key)?;
         let oidc = profile.oidc.as_mut().ok_or(Error::Unprepared)?;
         if oidc.link_secret.is_some() {
@@ -376,7 +388,34 @@ impl ClientStore {
         oidc.completion = None;
         profile.invitation = Some(fresh_credential()?);
         profile.credential = fresh_credential()?;
+        profile.reauthorize |= replace;
         save(&self.db, &self.key, &profile, Some(&expected))
+    }
+    /// Callers serialize enrollment requests. Never discard a live/uncertain
+    /// credential, a committed session, or a device with local messaging keys.
+    pub(crate) fn cancel_unused_enrollment(&mut self) -> Result<(), Error> {
+        if self.enrollment_kind()? == "new" {
+            return Ok(());
+        }
+        let (profile, expected) = load(&self.db, &self.key)?;
+        if profile.session.is_some() || profile.rotation.is_some() || self.db.query_row("SELECT EXISTS(SELECT 1 FROM identity) OR EXISTS(SELECT 1 FROM archive) OR EXISTS(SELECT 1 FROM sessions) OR EXISTS(SELECT 1 FROM prekeys)", [], |r| r.get::<_,bool>(0))? { return Err(Error::Conflict); }
+        match client(&self.db, &self.key, &profile, &profile.credential)?.session() {
+            Err(network::Error::Status { code: 401, .. }) => (),
+            Ok(_) => return Err(Error::Conflict),
+            Err(error) => return Err(error.into()),
+        }
+        let tx = self
+            .db
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        if load(&tx, &self.key)?.1 != expected || tx.query_row("SELECT EXISTS(SELECT 1 FROM identity) OR EXISTS(SELECT 1 FROM archive) OR EXISTS(SELECT 1 FROM sessions) OR EXISTS(SELECT 1 FROM prekeys)", [], |r| r.get::<_,bool>(0))? { return Err(Error::Conflict); }
+        tx.execute("DELETE FROM connection_roots", [])?;
+        tx.execute("DELETE FROM connection", [])?;
+        tx.commit()?;
+        Ok(())
+    }
+    pub(crate) fn needs_history_recovery(&self) -> Result<bool, Error> {
+        let (profile, _) = load(&self.db, &self.key)?;
+        Ok(profile.reauthorize && profile.session.is_some() && !recovery::configured(&self.db)?)
     }
     pub fn accept_oidc_callback(
         &mut self,

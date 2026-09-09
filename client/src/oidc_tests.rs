@@ -261,4 +261,72 @@ fn native_oidc_https_enrollment_survives_restarts_and_local_commit_failure() {
     }
     assert_eq!(client.connection_session().unwrap(), session);
     assert_eq!(client.own_device_binding().unwrap(), identity);
+    assert!(client.restart_oidc_recovery().is_err());
+    let mut replacement = ClientStore::open(
+        &dir.path().join("replacement.db"),
+        StorageKey::new(sigil_crypto::Secret32::from_bytes([39; 32])).unwrap(),
+    )
+    .unwrap();
+    replacement
+        .prepare_oidc_enrollment(
+            "chat.example",
+            port,
+            &[CA.to_vec()],
+            None,
+            "Replacement",
+            false,
+        )
+        .unwrap();
+    let before = load(&replacement.db, &replacement.key).unwrap().1;
+    let denied: serde_json::Value = serde_json::from_str(&replacement.mobile_command(r#"{"command":"recover_account","server":"chat.example","method":"sso","confirm_replacement":false}"#)).unwrap();
+    assert_eq!(denied["ok"], false);
+    assert_eq!(load(&replacement.db, &replacement.key).unwrap().1, before);
+    let started = mobile(
+        &mut replacement,
+        json!({"command":"recover_account","server":"chat.example","method":"sso","confirm_replacement":true}),
+    );
+    let query = started["authorization_url"]
+        .as_str()
+        .unwrap()
+        .split_once('?')
+        .unwrap()
+        .1;
+    *claims.lock().unwrap() = json!({"iss":provider_origin,"sub":"synthetic-subject","aud":"synthetic","iat":now,"exp":now+600,"nonce":parameter(query,"nonce"),"challenge":parameter(query,"code_challenge")});
+    let response = agent
+        .get(format!(
+            "{server_origin}/auth/v0/oidc/callback?state={}&code=synthetic-code",
+            parameter(query, "state")
+        ))
+        .call()
+        .unwrap();
+    assert_eq!(response.status(), 303);
+    let (request, completion) = response.headers()["location"]
+        .to_str()
+        .unwrap()
+        .strip_prefix("sigil://oidc/")
+        .unwrap()
+        .split_once('/')
+        .unwrap();
+    let recovered = mobile(
+        &mut replacement,
+        json!({"command":"callback","request_id":request,"completion":completion}),
+    );
+    assert_eq!(recovered["phase"], "connected");
+    assert_eq!(recovered["recover_history"], true);
+    let recovered_session = replacement.connection_session().unwrap().unwrap();
+    assert_eq!(
+        recovered_session.account_id,
+        session.as_ref().unwrap().account_id
+    );
+    assert_ne!(
+        recovered_session.device_id,
+        session.as_ref().unwrap().device_id
+    );
+    assert_ne!(replacement.own_device_binding().unwrap(), identity);
+    let inventory = replacement.devices_online(None).unwrap();
+    assert!(inventory
+        .devices
+        .iter()
+        .any(|device| device.id == session.as_ref().unwrap().device_id && device.revoked));
+    assert!(client.connected_client().unwrap().session().is_err());
 }

@@ -92,7 +92,6 @@ internal fun SignIn(state: MessengerState, command: (String, Map<String, Any?>) 
         horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(24.dp, Alignment.CenterVertically)) {
         Icon(painterResource(Res.drawable.sigil_mark), null, Modifier.height(100.dp).width(60.dp), tint = MaterialTheme.colorScheme.onBackground)
         Text("Sigil", style = MaterialTheme.typography.displayLarge)
-        if (state.phase == "new") TextButton({ command("device_link", mapOf("action" to "join")) }, enabled = !state.busy) { Text("Link to an existing device") }
         Spacer(Modifier.height(8.dp))
         OutlinedTextField(state.loginAddress, { command("server_changed", mapOf("server" to it)) }, Modifier.fillMaxWidth().testTag("server-address"),
             label = { Text("Server address") }, singleLine = true, enabled = !state.busy && state.phase == "new",
@@ -131,6 +130,9 @@ internal fun SignIn(state: MessengerState, command: (String, Map<String, Any?>) 
             Text("Finish signing in with your server.", style = MaterialTheme.typography.bodyMedium)
             Button({ command("resume", emptyMap()) }, enabled = !state.busy) { Text("Continue sign-in") }
         }
+        TextButton({ command("device_link", mapOf("action" to "join")) }, enabled = !state.busy) { Text("Link to an existing device") }
+        if (methods != null || state.phase != "new") TextButton({ command("recovery_account_open", emptyMap()) }, enabled = !state.busy) { Text("Recover a lost account") }
+        if (state.phase != "new") TextButton({ command("cancel_login", emptyMap()) }, enabled = !state.busy) { Text("Back to sign-in choices") }
     }
 }
 @Composable

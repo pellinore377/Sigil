@@ -73,7 +73,7 @@ impl ClientStore {
                     row.get::<_, bool>(0)
                 })?
             {
-                return Err(Error::Conflict);
+                self.cancel_unused_enrollment()?;
             }
             let mut attempt = [0; 32];
             self.identity()?;

@@ -148,6 +148,19 @@ class MessagingUiTest {
         ui.onNodeWithContentDescription("Restored encrypted message").assertIsDisplayed()
         screenshot("saved-history")
     }
+    @Test fun replacingDevicesRequiresExplicitConfirmationAndARecoveryMethod() {
+        val actions = mutableListOf<Pair<String, String?>>()
+        show { SigilApp(NativeCore::palette, NativeCore::analyze, MessengerState(phase = "new"), { _, _ -> }, overlay = { AccountRecoveryDialog(true, false, null, {}) { method, invitation -> actions += method to invitation } }) }
+        ui.onNodeWithText("Continue recovery").assertIsNotEnabled()
+        ui.onNode(isToggleable()).performScrollTo().performClick()
+        ui.onNodeWithText("Continue recovery").performClick()
+        ui.runOnIdle { assertEquals(listOf("sso" to null), actions) }
+        ui.onAllNodes(isSelectable())[1].performScrollTo().performClick()
+        ui.onNodeWithText("Continue recovery").assertIsNotEnabled()
+        ui.onNodeWithText("Recovery invitation").performScrollTo().performTextInput("ab".repeat(32))
+        ui.onNodeWithText("Continue recovery").performClick()
+        ui.runOnIdle { assertEquals("invitation" to "ab".repeat(32), actions.last()) }
+    }
     @Test fun switchingComposerPanelsKeepsTheComposerSteady() {
         show { SigilApp(NativeCore::palette, NativeCore::analyze, MessengerState(phase = "connected", chats = listOf(chat), selected = "peer", messages = listOf(message("out", true))), { _, _ -> }) }
         val initial = ui.onNodeWithTag("composer").fetchSemanticsNode().boundsInRoot.top
