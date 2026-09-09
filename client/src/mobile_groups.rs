@@ -48,7 +48,7 @@ impl ClientStore {
             .ok_or(Error::Expired)?;
         let mut recipients = std::collections::BTreeSet::new();
         for peer in peers {
-            let peers = self.mobile_recipients(id(&peer)?)?;
+            let peers = self.mobile_recipients(self.mobile_peer(&peer)?)?;
             let peer = *peers.first().ok_or(Error::Unprepared)?;
             if !recipients.insert(peer) {
                 return Err(Error::Conflict);

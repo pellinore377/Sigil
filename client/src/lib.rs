@@ -71,7 +71,7 @@ mod outbound;
 pub use outbound::OutboundAttempt;
 
 pub type Id = [u8; 32];
-pub const DATABASE_VERSION: u32 = 72;
+pub const DATABASE_VERSION: u32 = 73;
 #[derive(Debug)]
 pub enum Error {
     Storage(rusqlite::Error),
@@ -417,6 +417,9 @@ impl ClientStore {
         }
         if version < 72 {
             tx.execute_batch("CREATE TABLE mobile_link(id INTEGER PRIMARY KEY CHECK(id=1),state BLOB NOT NULL); PRAGMA user_version=72;")?;
+        }
+        if version < 73 {
+            tx.execute_batch("CREATE TABLE mobile_contacts(id BLOB PRIMARY KEY CHECK(length(id)=32),work_at INTEGER NOT NULL,state BLOB NOT NULL); CREATE INDEX mobile_contacts_work ON mobile_contacts(work_at,id); CREATE TABLE mobile_contact_poll(id INTEGER PRIMARY KEY CHECK(id=1),next_at INTEGER NOT NULL); INSERT INTO mobile_contact_poll VALUES(1,0); PRAGMA user_version=73;")?;
         }
         if version < 52 {
             if version >= 51 {

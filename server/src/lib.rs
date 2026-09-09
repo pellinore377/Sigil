@@ -11,6 +11,8 @@ pub mod call_config;
 mod call_routes;
 mod call_store;
 mod ciphertext_log;
+mod contact_request_routes;
+mod contact_requests;
 mod contacts;
 mod device;
 pub mod egress;
@@ -209,6 +211,7 @@ fn application_with_log(
         .merge(mailbox::routes())
         .merge(admission::routes())
         .merge(contacts::routes())
+        .merge(contact_request_routes::routes())
         .merge(admin_routes::client())
         .merge(oidc_routes::client())
         .merge(oidc_routes::callback())

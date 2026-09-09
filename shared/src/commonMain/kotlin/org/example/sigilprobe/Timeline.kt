@@ -100,7 +100,8 @@ internal fun ConversationPage(chat: ChatSummary, state: MessengerState, draft: T
                 }
             }
             if (page == "Search") OutlinedTextField(localQuery, { localQuery = it }, Modifier.fillMaxWidth().padding(12.dp), placeholder = { Text("Search this conversation") }, singleLine = true)
-            if (!chat.verified) TextButton({ verify = true }, Modifier.align(Alignment.CenterHorizontally)) { Text("Compare and approve devices") }
+            if (!chat.group && (!chat.verified || chat.request == "incoming")) ContactRequestPanel(chat, state.busy, command) { verify = true }
+
             if (state.historical) TextButton({ command("latest", emptyMap()) }, Modifier.align(Alignment.CenterHorizontally)) { Text("Return to latest messages") }
             LazyColumn(Modifier.weight(1f).fillMaxWidth(), state = list, reverseLayout = true, contentPadding = PaddingValues(horizontal = 16.dp, vertical = 12.dp)) {
                 item("typing") { AnimatedVisibility(!threadsOverview && state.typing.isNotEmpty(), enter = expandVertically(tween(MotionMillis)) + fadeIn(), exit = shrinkVertically(tween(MotionMillis)) + fadeOut()) { TypingRow(state.typing.map { state.people[it] ?: if (chat.group) "Member" else chat.name }, chat.name) } }
@@ -157,7 +158,7 @@ internal fun ConversationPage(chat: ChatSummary, state: MessengerState, draft: T
             val inputCommand: Command = { action, fields ->
                 command(action, if (action in listOf("attachment_pick", "record_start")) fields + mapOf("reply_author" to reply?.author, "reply_message" to reply?.id, "thread_author" to thread?.author, "thread_message" to thread?.id) else fields)
             }
-            if (!threadsOverview) Box(composerMotion) { ComposerPanel(draft, analyze, chat.verified && !state.busy, page == "Notes", inputCommand, chat.id, state.voice, state.sent, state.sentText) { text, rich ->
+            if (!threadsOverview) Box(composerMotion) { ComposerPanel(draft, analyze, chat.verified && !state.busy, page == "Notes", inputCommand, chat.id, state.voice, state.sent, state.sentText, requestContact = if (!chat.verified && !chat.group && !state.busy && chat.request in listOf("none", "expired") && chat.devices.isEmpty()) ({ command("contact_request", mapOf("peer" to chat.id, "action" to "send")) }) else null) { text, rich ->
                 submitted = draft.text.toString()
                 if (editing != null) command("edit", mapOf("peer" to chat.id, "author" to editing!!.author, "message" to editing!!.id, "text" to text))
                 else command("post", mapOf("peer" to chat.id, "text" to text, "rich" to rich,

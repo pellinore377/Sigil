@@ -24,12 +24,15 @@ internal fun NewConversation(state: MessengerState, command: Command, back: () -
     LaunchedEffect(query) { if (query.startsWith("@") && query.contains(':')) { delay(650); command("find", mapOf("address" to query.trim())) } }
     Column(Modifier.fillMaxSize().imePadding()) {
         Header(if (creatingGroup) "New group" else "New conversation", { if (creatingGroup) creatingGroup = false else back() })
-        if (creatingGroup) Column(Modifier.padding(24.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
+        if (creatingGroup) Column(Modifier.weight(1f).verticalScroll(rememberScrollState()).padding(24.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
             OutlinedTextField(title, { title = it }, Modifier.fillMaxWidth(), label = { Text("Group name") })
             OutlinedTextField(description, { description = it }, Modifier.fillMaxWidth(), label = { Text("Description · optional") })
             Text("${selected.size} people will receive an invitation.")
             val unverified = state.chats.filter { it.id in selected && !it.verified }
-            unverified.forEach { person -> TextButton({ verifying = person }) { Text("Verify ${person.name}'s devices") } }
+            unverified.forEach { person ->
+                Text(person.name, style = MaterialTheme.typography.titleMedium)
+                ContactRequestPanel(person, state.busy, command) { verifying = person }
+            }
             Button({ command("group_create", mapOf("name" to title.trim(), "description" to description, "peers" to selected)) }, enabled = title.isNotBlank() && unverified.isEmpty() && !state.busy) { Text("Create group") }
         } else {
             if (selected.isNotEmpty()) LazyRow(contentPadding = PaddingValues(horizontal = 20.dp), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
@@ -74,7 +77,7 @@ private fun SettingsSection(title: String, body: @Composable () -> Unit) {
 }
 @Composable
 internal fun PersonalPage(page: String, state: MessengerState, command: Command, back: () -> Unit) {
-    LaunchedEffect(page) { when (page) { "profile" -> command("profile", emptyMap()); "device" -> command("devices", emptyMap()); "storage" -> command("storage", emptyMap()); "notifications" -> command("notification_settings", emptyMap()) } }
+    LaunchedEffect(page) { when (page) { "privacy" -> command("contact_policy", emptyMap()); "profile" -> command("profile", emptyMap()); "device" -> command("devices", emptyMap()); "storage" -> command("storage", emptyMap()); "notifications" -> command("notification_settings", emptyMap()) } }
     var revoking by remember { mutableStateOf<AccountDevice?>(null) }
     revoking?.let { device -> AlertDialog(onDismissRequest = { revoking = null }, title = { Text("Sign out this device?") },
         text = { Text("${device.label ?: "This device"} will lose access to the server. Messages already stored there remain on that device.") },
@@ -101,6 +104,7 @@ internal fun PersonalPage(page: String, state: MessengerState, command: Command,
                 "profile" -> { var name by remember(state.profileRevision) { mutableStateOf(state.profileName) }; OutlinedTextField(name, { name = it }, label = { Text("Display name") }); Text(state.address); Button({ command("set_profile", mapOf("revision" to state.profileRevision, "name" to name.trim())) }, enabled = !state.busy && state.profileRevision != null) { Text("Save") } }
                 "privacy" -> {
                     Text("These preferences apply across your account. Conversations can have their own overrides.")
+                    state.allowRequests?.let { enabled -> Toggle("Allow message requests", enabled) { command("contact_policy", mapOf("enabled" to it)) } }
                     Toggle("Read receipts", state.readReceipts) { command("organize", mapOf("peer" to null, "value" to mapOf("ReadReceipts" to it))) }
                     Toggle("Typing indicators", state.typingIndicators) { command("organize", mapOf("peer" to null, "value" to mapOf("TypingIndicators" to it))) }
                     Toggle("Share activity status", state.presenceSharing) { command("organize", mapOf("peer" to null, "value" to mapOf("PresenceSharing" to it))) }

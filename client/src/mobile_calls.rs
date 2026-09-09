@@ -74,7 +74,8 @@ impl ClientStore {
             peers.into_iter().map(|p| p.id).collect::<Vec<_>>()
         } else {
             // A direct call targets the selected device; accepting more than one would be a group call.
-            let peer = id(peer)?;
+            let peer = self.mobile_peer(peer)?;
+            self.mobile_recipients(peer)?;
             peers::verified(&self.db, &self.key, &peer)?;
             vec![peer]
         };
@@ -103,7 +104,12 @@ impl ClientStore {
             for member in &call.participants {
                 let device = peers::parse(&member.device)?;
                 let peer = peers::reference(&device.binding.server, &device.binding.device);
-                participants.push(json!({"member":transport::hex(&member.member),"peer":transport::hex(&peer),"name":device.binding.username,
+                let display = match self.peer(peer) {
+                    Ok(peer) => self.mobile_peer_display(&peer)?,
+                    Err(Error::NotFound) => transport::hex(&peer),
+                    Err(error) => return Err(error),
+                };
+                participants.push(json!({"member":transport::hex(&member.member),"peer":display,"name":device.binding.username,
                     "address":format!("@{}:{}", device.binding.username, device.binding.server),"own":call.own == Some(member.member),"verified":member.verified,"fingerprint":transport::hex(&device_fingerprint(&member.device)?),
                     "audio":member.tracks.is_some_and(|t|t.audio),"camera":member.tracks.is_some_and(|t|t.camera),"screen":member.tracks.is_some_and(|t|t.screen)}));
             }

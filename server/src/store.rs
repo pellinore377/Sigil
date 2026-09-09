@@ -9,7 +9,7 @@ use std::{
 };
 
 const APPLICATION_ID: i64 = 0x5349474c;
-pub(crate) const SCHEMA_VERSION: i64 = 30;
+pub const SCHEMA_VERSION: i64 = 31;
 
 #[derive(Debug)]
 pub enum StoreError {
@@ -210,6 +210,9 @@ impl Store {
         if version < 30 {
             transaction.execute_batch(crate::password_login::MIGRATION)?;
         }
+        if version < 31 {
+            transaction.execute_batch(crate::contact_requests::MIGRATION)?;
+        }
         transaction.pragma_update(None, "user_version", SCHEMA_VERSION)?;
         transaction.commit()?;
         let mode: String = db.query_row("PRAGMA journal_mode=DELETE", [], |r| r.get(0))?;
@@ -366,6 +369,7 @@ impl Store {
             tx.execute_batch("DELETE FROM oidc_flows; DELETE FROM oidc_grants; UPDATE oidc_configuration SET revision=revision+1,value=NULL;")?;
             crate::oidc_transition::reset(&tx)?;
             tx.execute_batch("DELETE FROM account_passwords; UPDATE password_policy SET enabled=0,revision=revision+1,login_after=0;")?;
+            tx.execute_batch("DELETE FROM contact_requests WHERE state!=3;")?;
             tx.execute_batch("DELETE FROM web_sessions; DELETE FROM web_oidc; UPDATE web_owner SET password=NULL,setup_hash=NULL,issuer=NULL,subject=NULL,picture=NULL,suggested=NULL,suggested_name=NULL,oidc_revision=NULL,password_login=1;")?;
             tx.execute_batch("DELETE FROM operations; DELETE FROM operation_uploads; UPDATE operation_configuration SET value='{\"revision\":0,\"max_backup_bytes\":68719476736,\"release_url\":null,\"release_key\":null,\"exceptions\":[]}';")?;
             crate::group_authority::reset_after_restore(&tx)?;

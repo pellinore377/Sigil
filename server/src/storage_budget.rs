@@ -57,6 +57,13 @@ pub(crate) fn rebuild(db: &Connection) -> Result<(), StoreError> {
     )? {
         db.execute("UPDATE retained_storage SET bytes=bytes+(SELECT count(*) FROM prekeys p JOIN devices d ON d.id=p.device_id WHERE p.remote_server IS NOT NULL AND d.account_id=retained_storage.account_id)*?1",[crate::federation_mailbox::METADATA as i64])?;
     }
+    if db.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE type='table' AND name='contact_requests')",
+        [],
+        |r| r.get::<_, bool>(0),
+    )? {
+        db.execute("UPDATE retained_storage SET bytes=bytes+(SELECT count(*) FROM contact_requests WHERE recipient=retained_storage.account_id)*?1",[crate::contact_requests::BYTES as i64])?;
+    }
     Ok(())
 }
 

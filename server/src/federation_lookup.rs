@@ -102,6 +102,27 @@ impl Store {
                 LookupValue::Account(crate::admin::discover(&tx, username, now)?)
             }
             Lookup::Service { service } => LookupValue::Service(match service {
+                Service::ContactRequest { request: contact } => {
+                    let value = crate::contact_requests::request_in(
+                        &tx,
+                        origin,
+                        &request.sender_account,
+                        &request.sender_device,
+                        contact,
+                        now,
+                    )?;
+                    serde_json::to_string(&value).map_err(|_| StoreError::InvalidData)?
+                }
+                Service::ContactStatus { recipient } => {
+                    let value = crate::contact_requests::status_in(
+                        &tx,
+                        origin,
+                        &request.sender_account,
+                        recipient,
+                        now,
+                    )?;
+                    serde_json::to_string(&value).map_err(|_| StoreError::InvalidData)?
+                }
                 Service::GroupAuthority => {
                     let stored = crate::group_authority::read(&tx)?;
                     if !stored.enabled {
@@ -252,6 +273,22 @@ impl Store {
                 .optional()?
                 .ok_or(StoreError::NotFound)?;
             if auth::hex(&published) != *binding {
+                return Err(StoreError::Forbidden);
+            }
+        }
+        if let Lookup::Service {
+            service: Service::ContactRequest { request: contact },
+        } = &request.operation
+        {
+            let published: Vec<u8> = tx
+                .query_row(
+                    "SELECT statement FROM device_bindings WHERE device=?1",
+                    [&device],
+                    |r| r.get(0),
+                )
+                .optional()?
+                .ok_or(StoreError::NotFound)?;
+            if contact.server != request.destination || auth::hex(&published) != contact.binding {
                 return Err(StoreError::Forbidden);
             }
         }

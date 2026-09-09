@@ -20,7 +20,7 @@ import kotlinx.coroutines.flow.*
 
 private val createItems = listOf("Note" to "description", "Checklist" to "checklist", "Poll" to "ballot", "Reminder" to "notifications_active", "Task" to "assignment", "Timer" to "timer")
 @Composable
-internal fun ComposerPanel(draft: TextFieldState, analyze: (String) -> String, enabled: Boolean, notes: Boolean, command: Command, peer: String, voice: VoiceState, sent: Long, sentText: String?, send: (String, Boolean) -> Unit) {
+internal fun ComposerPanel(draft: TextFieldState, analyze: (String) -> String, enabled: Boolean, notes: Boolean, command: Command, peer: String, voice: VoiceState, sent: Long, sentText: String?, requestContact: (() -> Unit)? = null, send: (String, Boolean) -> Unit) {
     var panel by remember(peer) { mutableStateOf("") }
     val builders = rememberSaveableStateHolder()
     var pendingBuilder by remember(peer) { mutableStateOf<Pair<String, String>?>(null) }
@@ -62,10 +62,10 @@ internal fun ComposerPanel(draft: TextFieldState, analyze: (String) -> String, e
                 command("typing", mapOf("peer" to peer, "active" to true)); lastSent = now
             }
             if (text.isNotBlank()) kotlinx.coroutines.delay(2500)
-            command("typing", mapOf("peer" to peer, "active" to false)); lastSent = 0L
+            if (canType || lastSent != 0L) command("typing", mapOf("peer" to peer, "active" to false)); lastSent = 0L
         }
     }
-    DisposableEffect(peer) { onDispose { command("typing", mapOf("peer" to peer, "active" to false)) } }
+    DisposableEffect(peer) { onDispose { if (canType) command("typing", mapOf("peer" to peer, "active" to false)) } }
     Surface(shape = RoundedCornerShape(topStart = 24.dp, topEnd = 24.dp), color = MaterialTheme.colorScheme.background,
         border = BorderStroke(0.5.dp, MaterialTheme.colorScheme.outlineVariant)) {
         Column {
@@ -78,10 +78,10 @@ internal fun ComposerPanel(draft: TextFieldState, analyze: (String) -> String, e
                 Spacer(Modifier.width(8.dp))
                 Composer(draft, analyze, Modifier.weight(1f), showTools = false, focusRequester = editor, onFocus = { if (panel.isNotEmpty()) keyboardPending = true; panel = "" })
                 Spacer(Modifier.width(8.dp))
-                FilledIconButton({ if (draft.text.isNotBlank()) send(if (notes) "note::${escapeField(draft.text.toString())};" else draft.text.toString(), notes) else change("Voice") },
-                    Modifier.size(48.dp), enabled = if (draft.text.isNotBlank()) enabled else true, shape = RoundedCornerShape(16.dp),
+                FilledIconButton({ if (draft.text.isNotBlank() && requestContact != null) requestContact() else if (draft.text.isNotBlank()) send(if (notes) "note::${escapeField(draft.text.toString())};" else draft.text.toString(), notes) else change("Voice") },
+                    Modifier.size(48.dp), enabled = if (draft.text.isNotBlank()) enabled || requestContact != null else true, shape = RoundedCornerShape(16.dp),
                     colors = IconButtonDefaults.filledIconButtonColors(containerColor = MaterialTheme.colorScheme.inverseSurface, contentColor = MaterialTheme.colorScheme.inverseOnSurface)) {
-                    Glyph(if (draft.text.isNotBlank()) "arrow_upward" else "graphic_eq", 25, if (draft.text.isNotBlank()) "Send message" else "Voice message")
+                    Glyph(if (draft.text.isNotBlank()) "arrow_upward" else "graphic_eq", 25, if (draft.text.isNotBlank()) if (requestContact != null) "Send request" else "Send message" else "Voice message")
                 }
             }
             Box(Modifier.fillMaxWidth().height(panelHeight)) {

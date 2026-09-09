@@ -71,7 +71,7 @@ impl ClientStore {
     pub(super) fn mobile_file_begin(&mut self, mut upload: Upload) -> Result<Value, Error> {
         self.mobile_conversation(&upload.peer)?;
         if upload.peer != "self" && !upload.peer.starts_with("group:") {
-            self.mobile_recipients(id(&upload.peer)?)?;
+            self.mobile_recipients(self.mobile_peer(&upload.peer)?)?;
         }
         let metadata = sigil_protocol::file::Metadata {
             name: upload.name.clone(),

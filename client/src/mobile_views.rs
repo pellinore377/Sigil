@@ -109,6 +109,8 @@ impl ClientStore {
         if peer == "self" {
             let (_, own) = structured::account_context(&self.db, &self.key)?;
             Ok(Sha256::digest([b"Sigil/note-to-self/v0".as_slice(), &own].concat()).into())
+        } else if peer.starts_with("dm:") {
+            self.mobile_contact_conversation(peer)
         } else if let Some(group) = peer.strip_prefix("group:") {
             let group = id(group)?;
             self.group_status(group)?;
@@ -225,7 +227,10 @@ impl ClientStore {
         let page = self.recent_search_conversations(query, after, now)?;
         let mut peers = std::collections::BTreeMap::new();
         for peer in self.mobile_peers()? {
-            peers.insert(self.direct_conversation(peer.id)?, transport::hex(&peer.id));
+            peers.insert(
+                self.direct_conversation(peer.id)?,
+                self.mobile_peer_display(&peer)?,
+            );
         }
         peers.insert(self.mobile_conversation("self")?, "self".into());
         let mut hits = Vec::new();

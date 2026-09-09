@@ -11,7 +11,14 @@ Identity verification, account authorization and group membership are separate. 
 - Automatic session/prekey retirement requires a fresh empty mailbox check from sequence zero and seven-day observed inactivity grace. Active selections and pending packets remain protected. Offline maintenance cannot infer absence of delayed traffic.
 - Replacement requires explicit old/new fingerprint approval for distinct devices of the same account. Server inventory, unblock and reauthorization cannot revive superseded trust.
 
+## Contact requests
+
+A request is signed metadata, separate from message delivery and device trust. It binds the target server/account, expiry and sender's signed device binding. Decisions bind the exact request signature, preventing delayed approval of a renewed introduction. Acceptance never grants mailbox/prekey access; fingerprint verification remains explicit. Android retains the draft until verification and persists requests/decisions before network work.
+
+Native APIs use `/client/v0/contact-requests`: GET/POST collection, GET/PUT `policy`, PUT `blocked`, GET `outgoing/{recipient}`, and GET/PUT `{id}`. The incoming GET requires `signature`; PUT takes `state` and `signature`. Federation carries authenticated `contact_request` and `contact_status` services. Requests expire within seven days; blocks survive expiry/restore. Limits: 64 incoming pending requests, 32 outgoing per account, 128 pending per foreign origin, 4,096 recipient records and 65,536 server records. Each retained row charges 2,048 bytes. Restore discards requests while preserving blocks and opt-out.
+
 ## Capacity and persistence
+
 
 Retained sessions/messages, consumed prekeys, completed controls and link tombstones use storage budgets rather than fixed lifetime event counters. Exhaustion rejects writes; it never authorizes deleting history or replay evidence.
 
