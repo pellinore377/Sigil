@@ -61,3 +61,28 @@ internal fun RestoreRecoveryDialog(busy: Boolean, issue: String?, dismiss: () ->
         confirmButton = { TextButton({ restore(secret) }, enabled = !busy && reviewed && secret.length == 64 && secret.all { it in '0'..'9' || it in 'a'..'f' }) { Text("Restore history") } },
         dismissButton = { TextButton(dismiss, enabled = !busy) { Text("Cancel") } })
 }
+
+@Composable
+internal fun AccountRecoveryDialog(sso: Boolean, busy: Boolean, issue: String?, dismiss: () -> Unit, recover: (String, String?) -> Unit) {
+    var method by remember { mutableStateOf(if (sso) "sso" else "invitation") }
+    var invitation by remember { mutableStateOf("") }
+    var confirmed by remember { mutableStateOf(false) }
+    AlertDialog(onDismissRequest = { if (!busy) dismiss() }, properties = DialogProperties(securePolicy = SecureFlagPolicy.SecureOn),
+        title = { Text("Recover a lost account") },
+        text = { Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            Text("Recovery signs out all previous devices and creates a new encryption identity on this phone. Your contacts will need to verify it. Your recovery key restores backed-up history after sign-in.")
+            Text("If you still have a signed-in device, you can use device linking instead.", style = MaterialTheme.typography.bodySmall)
+            if (sso) Row { RadioButton(method == "sso", { method = "sso" }, enabled = !busy); Text("Sign in with SSO", Modifier.padding(top = 12.dp)) }
+            Row { RadioButton(method == "invitation", { method = "invitation" }, enabled = !busy); Text("Administrator recovery invitation", Modifier.padding(top = 12.dp)) }
+            if (method == "invitation") {
+                Text("Ask your administrator for a recovery invitation for your existing account.", style = MaterialTheme.typography.bodySmall)
+                OutlinedTextField(invitation, { if (it.length <= 256) invitation = it.trim() }, label = { Text("Recovery invitation") }, singleLine = true, enabled = !busy,
+                    visualTransformation = androidx.compose.ui.text.input.PasswordVisualTransformation(), keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(autoCorrectEnabled = false, keyboardType = androidx.compose.ui.text.input.KeyboardType.Password))
+            }
+            Row { Checkbox(confirmed, { confirmed = it }, enabled = !busy); Text("Sign out my previous devices and recover this account.", Modifier.padding(top = 12.dp)) }
+            issue?.let { Text(it, color = MaterialTheme.colorScheme.error) }
+            if (busy) LinearProgressIndicator(Modifier.fillMaxWidth())
+        } },
+        confirmButton = { TextButton({ recover(method, invitation.takeIf { method == "invitation" }) }, enabled = confirmed && !busy && (method == "sso" || invitation.length == 64 && invitation.all { it in '0'..'9' || it in 'a'..'f' })) { Text("Continue recovery") } },
+        dismissButton = { TextButton(dismiss, enabled = !busy) { Text("Cancel") } })
+}

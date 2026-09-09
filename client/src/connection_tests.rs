@@ -75,6 +75,8 @@ fn enrollment_commit_failure_recovers_the_original_session_after_restart() {
     assert_eq!(load(&store.db, &store.key).unwrap().1, before);
     let server = Store::open(&dir.path().join("server.db")).unwrap();
     let enrolled = server.session(&profile.credential, now).unwrap();
+    assert!(store.cancel_unused_enrollment().is_err());
+    assert_eq!(load(&store.db, &store.key).unwrap().1, before);
     store
         .db
         .execute_batch("DROP TRIGGER fail_enrollment;")
@@ -87,6 +89,36 @@ fn enrollment_commit_failure_recovers_the_original_session_after_restart() {
     assert_eq!(profile.credential, after.credential);
     assert!(after.invitation.is_none());
     assert!(store.connected_client().unwrap().session().is_ok());
+}
+
+#[test]
+fn cancelling_unused_login_preserves_uncertain_credentials_and_existing_keys() {
+    let (dir, fixture, invitation, _) = setup();
+    let mut empty = open(&dir.path().join("unused.db"));
+    prepare(&mut empty, &fixture, &invitation.secret);
+    empty.cancel_unused_enrollment().unwrap();
+    assert_eq!(empty.enrollment_kind().unwrap(), "new");
+    empty.cancel_unused_enrollment().unwrap();
+    assert_eq!(
+        empty
+            .db
+            .query_row("SELECT count(*) FROM connection_roots", [], |r| r
+                .get::<_, i64>(0))
+            .unwrap(),
+        0
+    );
+    prepare(&mut empty, &fixture, &invitation.secret);
+    let before = load(&empty.db, &empty.key).unwrap().1;
+    let identity = empty.identity().unwrap();
+    assert!(empty.cancel_unused_enrollment().is_err());
+    assert_eq!(empty.identity().unwrap(), identity);
+    assert_eq!(load(&empty.db, &empty.key).unwrap().1, before);
+    let mut offline = open(&dir.path().join("offline.db"));
+    prepare(&mut offline, &fixture, &invitation.secret);
+    let before = load(&offline.db, &offline.key).unwrap().1;
+    drop(fixture);
+    assert!(offline.cancel_unused_enrollment().is_err());
+    assert_eq!(load(&offline.db, &offline.key).unwrap().1, before);
 }
 
 #[test]

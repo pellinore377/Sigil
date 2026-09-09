@@ -79,6 +79,7 @@ class MainActivity : ComponentActivity() {
                     messenger.deviceLink?.let { flow -> DeviceLinkDialog(flow, messenger.state.busy, messenger.state.issue) { action, qr -> messenger.command("device_link", mapOf("action" to action, "qr" to qr)) } }
                     messenger.recoveryKey?.let { secret -> RecoveryDialog(secret, messenger.state.busy, messenger::dismissRecovery) { messenger.command("recovery_enable", mapOf("secret" to secret)) } }
                     if (messenger.restoringRecovery) RestoreRecoveryDialog(messenger.state.busy, messenger.state.issue, messenger::dismissRestoreRecovery) { secret -> messenger.command("recovery_restore", mapOf("secret" to secret, "accept_unanchored" to true)) }
+                    if (messenger.recoveringAccount) AccountRecoveryDialog(messenger.state.loginMethods?.sso == true || messenger.state.phase == "oidc", messenger.state.busy, messenger.state.issue, messenger::dismissAccountRecovery) { method, invitation -> messenger.command("recover_account", mapOf("server" to (messenger.state.loginMethods?.server ?: messenger.state.loginAddress), "method" to method, "invitation" to invitation, "confirm_replacement" to true)) }
                     cameraPeer?.let { peer -> CameraSheet({ cameraPeer = null }) { bytes -> messenger.importPhoto(peer, bytes); cameraPeer = null } }
                     placePeer?.let { peer -> PlaceSheet({ placePeer = null }) { fields -> messenger.command("place", fields + peer); placePeer = null } }
                 })

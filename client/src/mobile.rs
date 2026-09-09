@@ -36,6 +36,13 @@ mod wallpaper;
 #[derive(Deserialize)]
 #[serde(tag = "command", rename_all = "snake_case", deny_unknown_fields)]
 enum Command {
+    CancelLogin {},
+    RecoverAccount {
+        server: String,
+        method: String,
+        invitation: Option<Zeroizing<String>>,
+        confirm_replacement: bool,
+    },
     AccountAccess {},
     AcknowledgeAccess {
         configuration_revision: u64,
@@ -374,7 +381,7 @@ fn public_peer(peer: &Peer) -> Value {
 }
 fn error_message(error: &Error) -> &'static str {
     match error {
-        Error::Network(network::Error::Status { code:428,.. }) => "This account already has a device. Device linking or recovery is required; those screens are still being integrated.",
+        Error::Network(network::Error::Status { code:428,.. }) => "This account already has a device. Link another device, or recover the account if your devices are lost.",
         Error::Network(network::Error::Status { code: 401, .. }) => {
             "Sign-in expired or access was revoked."
         }
@@ -486,6 +493,7 @@ impl ClientStore {
         Ok(
             json!({"phase":phase,"address":session.address,"device":session.device_id,"fingerprint":transport::hex(&fingerprint),"chats":chats,"invitations":invitations,
                 "profile_avatar":avatar,"photo_pending":self.photo_upload_pending()?,
+                "recover_history":self.needs_history_recovery()?,
                 "read_receipts":prefs.read_receipts,"typing_indicators":prefs.typing_indicators,"presence_sharing":prefs.presence_sharing,
                 "collections_enabled":prefs.collections_enabled,"ui":prefs.ui,"collections":prefs.collections.iter().map(|(id,name)|json!({"id":transport::hex(id),"name":name,"icon":prefs.ui.get(&format!("collection_icon.{}",transport::hex(id))).map(String::as_str).unwrap_or("folder")})).collect::<Vec<_>>()}),
         )
@@ -534,6 +542,45 @@ impl ClientStore {
     }
     fn mobile_execute(&mut self, command: Command) -> Result<Value, Error> {
         match command {
+            Command::CancelLogin {} => {
+                self.cancel_unused_enrollment()?;
+                self.mobile_state()
+            }
+            Command::RecoverAccount {
+                server,
+                method,
+                invitation,
+                confirm_replacement,
+            } => {
+                if !confirm_replacement {
+                    return Err(Error::InvalidEvent);
+                }
+                let server = login_server(&server)?;
+                if self.enrollment_server()?.is_some_and(|old| old != server) {
+                    return Err(Error::Conflict);
+                }
+                if method == "sso" {
+                    if self.enrollment_kind()? == "oidc" {
+                        self.restart_oidc_recovery()?;
+                    } else {
+                        self.cancel_unused_enrollment()?;
+                        self.prepare_oidc_enrollment(&server, 443, &[], None, "Android", true)?;
+                    }
+                    serde_json::to_value(self.start_oidc_online()?).map_err(|_| Error::InvalidStore)
+                } else if method == "invitation" {
+                    let invitation = invitation.ok_or(Error::InvalidEvent)?;
+                    if !sigil_protocol::accounts::valid_credential(&invitation) {
+                        return Err(Error::InvalidEvent);
+                    }
+                    self.cancel_unused_enrollment()?;
+                    self.prepare_enrollment(&server, 443, &[], &invitation, "Android", true)?;
+                    self.enroll_online()?;
+                    self.publish_device_binding_online()?;
+                    self.mobile_state()
+                } else {
+                    Err(Error::InvalidEvent)
+                }
+            }
             Command::AccountAccess {} => self.mobile_account_access(),
             Command::AcknowledgeAccess {
                 configuration_revision,
