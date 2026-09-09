@@ -15,11 +15,11 @@ import androidx.compose.ui.unit.dp
 internal fun MessageCards(message: ChatMessage, analyze: (String) -> String, command: Command?) {
     Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
         message.parts.forEach { part ->
-            if (part.kind == "text") MessageText(part.text, analyze)
+            if (part.kind == "text") { if (part.rich != null) RichMessageText(part.rich) else MessageText(part.text, analyze) }
             else Column(Modifier.widthIn(min = 180.dp, max = 280.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                 val icon = when (part.kind) { "note" -> "description"; "checklist" -> "checklist"; "task" -> "assignment"; "poll" -> "ballot"; "reminder" -> "notifications_active"; "timer", "countdown", "ago" -> "timer"; else -> "article" }
                 Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) { Glyph(icon, 18); Text(part.kind.replaceFirstChar { it.uppercase() }, style = MaterialTheme.typography.labelMedium) }
-                MessageText(part.text, analyze)
+                if (part.rich != null) RichMessageText(part.rich) else MessageText(part.text, analyze)
                 if (part.kind == "location") LocalLocationContent.current(part)
                 if (part.date.isNotEmpty()) Text(part.date, style = MaterialTheme.typography.bodySmall)
                 part.items.forEach { item ->
@@ -34,7 +34,8 @@ internal fun MessageCards(message: ChatMessage, analyze: (String) -> String, com
                         .semantics { if (part.kind == "poll" && !part.multiple) selected = item.checked else toggleableState = ToggleableState(item.checked) }
                         .padding(horizontal = 8.dp, vertical = 6.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         Glyph(if (part.kind == "poll" && !part.multiple) if (item.checked) "radio_button_checked" else "radio_button_unchecked" else if (item.checked) "check_box" else "check_box_outline_blank", 20)
-                        Text(item.text, Modifier.weight(1f), style = MaterialTheme.typography.bodyMedium)
+                        if (item.rich != null) RichMessageText(item.rich, Modifier.weight(1f), MaterialTheme.typography.bodyMedium)
+                        else Text(item.text, Modifier.weight(1f), style = MaterialTheme.typography.bodyMedium)
                         item.count?.let { Text(it.toString(), style = MaterialTheme.typography.labelMedium) }
                     }
                 }

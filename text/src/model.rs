@@ -79,6 +79,12 @@ pub struct Run<'a> {
     pub text: &'a str,
     pub effects: Effects,
 }
+#[derive(Serialize)]
+pub struct Presentation<'a> {
+    pub text: &'a str,
+    pub spans: Vec<Span>,
+    pub blocks: Vec<crate::Block>,
+}
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Wire {
@@ -143,6 +149,31 @@ impl Text {
     }
     pub fn spans(&self) -> &[Span] {
         &self.spans
+    }
+    /// Platform text layouts use UTF-16; canonical ranges remain grapheme-based.
+    pub fn presentation(&self) -> Presentation<'_> {
+        let mut at = 0;
+        let mut offsets = Vec::new();
+        for g in self.body.graphemes(true) {
+            offsets.push(at);
+            at += g.encode_utf16().count() as u32;
+        }
+        offsets.push(at);
+        let mut spans = self.spans.clone();
+        let mut blocks = self.blocks.clone();
+        for span in &mut spans {
+            span.start = offsets[span.start as usize];
+            span.end = offsets[span.end as usize];
+        }
+        for block in &mut blocks {
+            block.start = offsets[block.start as usize];
+            block.end = offsets[block.end as usize];
+        }
+        Presentation {
+            text: &self.body,
+            spans,
+            blocks,
+        }
     }
     /// Selection indices use the same graphemes as effects, never UTF-16 units.
     pub fn redact_range(&self, range: std::ops::Range<u32>, limits: Limits) -> Result<Self, Error> {

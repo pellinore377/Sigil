@@ -358,6 +358,67 @@ fn filtered_history_advances_and_search_opens_the_original_message() {
     assert_eq!(root["messages"][0]["text"], "Letter 1");
 }
 #[test]
+fn mobile_preserves_canonical_formatting_without_reparsing_or_losing_unicode_ranges() {
+    let (_dir, _server, mut alice, _bob, now) = crate::claims::tests::pair();
+    let text = sigil_protocol::text::parse(
+        "👩🏽‍💻 **bold** `**literal**` ||🙈|| redact::never-keep-this;",
+        Default::default(),
+    )
+    .unwrap();
+    alice
+        .mobile_action(
+            "self",
+            &"95".repeat(32),
+            now,
+            Action::Post {
+                body: Body::Rich(text.to_bytes().unwrap()),
+                reply: None,
+                thread: None,
+                expires_at: None,
+                view_once: false,
+            },
+        )
+        .unwrap();
+    let timeline = run(&mut alice, json!({"command":"timeline","peer":"self"}));
+    let rich = &timeline["messages"][0]["parts"][0]["rich"];
+    assert_eq!(rich["text"], "👩🏽‍💻 bold **literal** 🙈 [REDACTED]");
+    assert!(!timeline.to_string().contains("never-keep-this"));
+    let text: Vec<u16> = rich["text"].as_str().unwrap().encode_utf16().collect();
+    let spans = rich["spans"].as_array().unwrap();
+    let find = |kind: &str| {
+        spans
+            .iter()
+            .find(|s| {
+                s["effects"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|e| e["kind"] == kind)
+            })
+            .unwrap()
+    };
+    let body = |span: &Value| {
+        String::from_utf16(
+            &text[span["start"].as_u64().unwrap() as usize..span["end"].as_u64().unwrap() as usize],
+        )
+        .unwrap()
+    };
+    assert_eq!(find("emphasis")["start"], 8);
+    assert_eq!(body(find("emphasis")), "bold");
+    assert_eq!(body(find("code")), "**literal**");
+    assert_eq!(body(find("reveal")), "🙈");
+    run(
+        &mut alice,
+        json!({"command":"post","peer":"self","request":"96".repeat(32),"timestamp":now,"rich":true,
+        "text":"note::**Title** and `literal`;"}),
+    );
+    let timeline = run(&mut alice, json!({"command":"timeline","peer":"self"}));
+    let note = &timeline["messages"][0]["parts"][0];
+    assert_eq!(note["kind"], "note");
+    assert_eq!(note["rich"]["text"], "Title and literal");
+    assert!(!note["rich"]["spans"].as_array().unwrap().is_empty());
+}
+#[test]
 fn mobile_task_undo_is_available_only_for_our_recent_completion() {
     let (_dir, _server, mut alice, _bob, now) = crate::claims::tests::pair();
     let request = "83".repeat(32);
