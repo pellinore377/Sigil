@@ -139,8 +139,8 @@ pub(super) fn clock() -> Result<u64, Error> {
         .map(|d| d.as_secs())
         .map_err(|_| Error::Expired)
 }
-fn network_error(step: &SyncStep) -> Option<&network::Error> {
-    let error = match step.failure.as_ref()? {
+pub(super) fn failure_error(step: &SyncStep) -> Option<&Error> {
+    match step.failure.as_ref()? {
         SyncFailure::Receive(e)
         | SyncFailure::Calls(e)
         | SyncFailure::Acknowledge(e)
@@ -167,8 +167,10 @@ fn network_error(step: &SyncStep) -> Option<&network::Error> {
         SyncFailure::HistoryNetwork(i) => step.history.get(*i)?.result.as_ref().err(),
         SyncFailure::SendIntentNetwork(i) => step.sends.get(*i)?.result.as_ref().err(),
         SyncFailure::RetryControlNetwork(i) => step.retry_controls.get(*i)?.result.as_ref().err(),
-    }?;
-    if let Error::Network(e) = error {
+    }
+}
+fn network_error(step: &SyncStep) -> Option<&network::Error> {
+    if let Error::Network(e) = failure_error(step)? {
         Some(e)
     } else {
         None

@@ -26,6 +26,31 @@ class ContentTest {
     @get:Rule val ui = createAndroidComposeRule<ComponentActivity>()
     private val context get() = InstrumentationRegistry.getInstrumentation().targetContext
     @Before fun isolated() { Assume.assumeTrue(context.packageName.endsWith(".acceptance")) }
+    @Test fun timelineReadsDoNotWaitForTheNetworkCommandQueue() = runBlocking {
+        lateinit var messenger: Messenger
+        val store = androidx.lifecycle.ViewModelStore()
+        ui.runOnIdle { messenger = Messenger(context.applicationContext as Application); store.put("timeline", messenger) }
+        try {
+            ui.waitUntil(10_000) { messenger.state.phase == "connected" && messenger.state.chats.any { it.id != "self" } }
+            val field = Messenger::class.java.getDeclaredField("mutex").apply { isAccessible = true }
+            val queue = field.get(messenger) as kotlinx.coroutines.sync.Mutex
+            withTimeout(10_000) { queue.lock() }
+            try {
+                val peer = messenger.state.chats.first { it.id != "self" }.id
+                var start = 0L
+                InstrumentationRegistry.getInstrumentation().runOnMainSync {
+                    start = SystemClock.elapsedRealtime(); messenger.command("open", mapOf("peer" to peer))
+                }
+                withTimeout(3000) {
+                    while (!withContext(Dispatchers.Main) { messenger.state.messages.any { it.text == "Attachment acceptance" } }) delay(5)
+                }
+                assertTrue("The command queue was released before the local read finished", queue.isLocked)
+                InstrumentationRegistry.getInstrumentation().sendStatus(0, android.os.Bundle().apply {
+                    putString("stream", "\nSIGIL_LOCAL_TIMELINE_MS=${SystemClock.elapsedRealtime() - start}\n")
+                })
+            } finally { queue.unlock() }
+        } finally { ui.runOnIdle { store.clear() } }
+    }
     @Test fun cancellingAnImportStopsItsPreparationAndClearsStaging() = runBlocking {
         val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
         val started = CompletableDeferred<Unit>()

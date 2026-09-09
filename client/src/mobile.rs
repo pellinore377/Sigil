@@ -398,7 +398,7 @@ fn public_peer(peer: &Peer) -> Value {
         "fingerprint":transport::hex(&peer.fingerprint), "verified":peer.trusted, "identity_verified":peer.verified,
         "blocked":peer.blocked, "changed":peer.changed_fingerprint.is_some(), "device":transport::hex(&peer.binding.device)})
 }
-fn error_message(error: &Error) -> &'static str {
+fn error_message(error: &Error) -> String {
     match error {
         Error::Network(network::Error::Status { code:428,.. }) => "This account already has a device. Link another device, or recover the account if your devices are lost.",
         Error::Network(network::Error::Status { code: 401, .. }) => {
@@ -413,6 +413,9 @@ fn error_message(error: &Error) -> &'static str {
         Error::Network(network::Error::Status { code: 429, .. }) => {
             "The server asked us to wait. Queued messages will retry."
         }
+        Error::Network(network::Error::Status { code, .. }) => return format!("Server request failed (HTTP {code})."),
+        Error::Network(network::Error::InvalidResponse) => "The server returned an invalid response.",
+        Error::Network(network::Error::Configuration) => "The server address or connection configuration is invalid.",
         Error::Network(_) => "Cannot reach or verify the server. Check the address and connection.",
         Error::DirectoryUnavailable => "The contact directory is unavailable. Update the server or check account discovery.",
         Error::Unprepared => "This action isn't ready. Check sign-in, request acceptance, or any identity-change notice.",
@@ -423,7 +426,7 @@ fn error_message(error: &Error) -> &'static str {
             "This operation expired or its message is no longer available."
         }
         _ => "The operation could not complete. Your stored keys have not been reset.",
-    }
+    }.to_owned()
 }
 impl ClientStore {
     pub fn mobile_command(&mut self, request: &str) -> String {
@@ -1266,15 +1269,17 @@ impl ClientStore {
                     self.sync_due_online()?
                 };
                 let mut issue = result.scheduling_error.as_ref().map(error_message);
-                if self.mobile_contact_sync(false).is_err() {
-                    issue = Some("Contact requests could not refresh. Messaging sync continues independently.");
+                if let Err(error) = self.mobile_contact_sync(false) {
+                    issue = Some(format!("Contact sync: {}", error_message(&error)));
                 }
                 if let Some(step) = &result.step {
-                    if step.failure.is_some() {
-                        issue = Some("Sync incomplete. Saved messages remain queued for retry.");
+                    if let Some(error) = schedule::failure_error(step) {
+                        issue = Some(format!("Sync: {}", error_message(error)));
                     }
                     if step.incoming.iter().any(|v| v.result.is_err()) {
-                        issue = Some("A received message needs device verification or recovery.");
+                        issue = Some(
+                            "A received message needs device verification or recovery.".into(),
+                        );
                     }
                 }
                 let pending: bool = self.db.query_row("SELECT EXISTS(SELECT 1 FROM send_intents) OR EXISTS(SELECT 1 FROM outbox o JOIN sessions s ON s.id=o.session WHERE o.packet IS NOT NULL AND s.retired=0) OR EXISTS(SELECT 1 FROM group_delivery WHERE status=0) OR EXISTS(SELECT 1 FROM call_jobs)", [], |row| row.get(0))?;

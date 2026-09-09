@@ -139,16 +139,19 @@ fun SigilApp(palette: (Int, Boolean) -> String, analyze: (String) -> String, sta
                         if (state.accountAccess?.let { it.linked && it.retiring && !it.acknowledged } == true && page != "profile" && state.call == null) SigilTextButton({ command("close", emptyMap()); conversationPage = ""; navigate("profile") }, Modifier.fillMaxWidth()) { Text("Your server’s sign-in is changing · Review") }
                         val destination = when { state.call != null && !callMinimized -> "call"; chat?.archived == true -> "saved-conversation"; chat != null -> when (conversationPage) { "Chat theme" -> "theme"; "Settings" -> "chat-settings"; else -> "conversation" }; page in listOf("inbox", "search", "notes", "calls", "settings") -> "home"; else -> page }
                         if (state.call != null && callMinimized) SigilTextButton({ callMinimized = false }, Modifier.fillMaxWidth()) { Glyph("call", 18); Spacer(Modifier.width(8.dp)); Text("Return to call") }
-                        val headerHeight = pageHeaderHeight()
+                        val headerBase = pageHeaderHeight()
+                        val headerTransition = updateTransition(Screen(destination, page, chat, conversationPage, state, newTitle, thread?.id), label = "Header")
+                        val headerHeight by headerTransition.animateDp(transitionSpec = { tween(MotionMillis) }, label = "Header height") { headerBase + if (it.destination == "conversation") 12.dp else 0.dp }
                         val conversation = destination == "conversation"
                         var composerHeight by remember { mutableStateOf(72.dp) }
                         val footerTransition = updateTransition(conversation, label = "Footer")
-                        val footerHeight by footerTransition.animateDp(transitionSpec = { if (initialState == targetState) snap() else tween(MotionMillis) }, label = "Footer height") { if (it) composerHeight else 64.dp }
+                        val footerProgress by footerTransition.animateFloat(transitionSpec = { tween(MotionMillis) }, label = "Footer expansion") { if (it) 1f else 0f }
+                        val footerHeight = 64.dp + (composerHeight - 64.dp) * footerProgress
                         val hasFooter = conversation || (destination == "home" && page in MainTabs)
                         val navigationInset = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
                         val footerOffset by animateDpAsState(if (hasFooter) 0.dp else footerHeight + navigationInset, tween(MotionMillis), label = "Footer position")
                         val tint = LocalChatTint.current
-                        val radius by animateDpAsState(if (conversation) 24.dp else 0.dp, tween(MotionMillis), label = "Header corners")
+                        val radius by headerTransition.animateDp(transitionSpec = { tween(MotionMillis) }, label = "Header corners") { if (it.destination == "conversation") 24.dp else 0.dp }
                         val shape = RoundedCornerShape(bottomStart = radius, bottomEnd = radius)
                         Box(Modifier.weight(1f).fillMaxWidth().background(MaterialTheme.colorScheme.background)) {
                             if (chat != null) {
@@ -156,7 +159,7 @@ fun SigilApp(palette: (Int, Boolean) -> String, analyze: (String) -> String, sta
                                 if (chatTheme.gradient) Spacer(Modifier.matchParentSize().background(Brush.verticalGradient(listOf(MaterialTheme.colorScheme.background.copy(alpha = .7f), MaterialTheme.colorScheme.primaryContainer.copy(alpha = .7f)))))
                             }
                             Surface(Modifier.align(Alignment.BottomCenter).fillMaxWidth().height(footerHeight + navigationInset).offset(y = footerOffset + navigationInset).testTag("footer-surface"), shape = RoundedCornerShape(topStart = 24.dp, topEnd = 24.dp)) {}
-                        AnimatedContent(Screen(destination, page, chat, conversationPage, state, newTitle, thread?.id), Modifier.fillMaxSize(), contentKey = { it.destination }, transitionSpec = {
+                        AnimatedContent(Screen(destination, page, chat, conversationPage, state, newTitle, thread?.id), Modifier.fillMaxSize().then(if (!conversation) Modifier.behindFooter(footerOffset - footerHeight) else Modifier), contentKey = { it.destination }, transitionSpec = {
                             val enter = if (targetState.destination == "conversation") EnterTransition.None
                                 else if (goingBack) fadeIn(tween(MotionMillis)) else slideInVertically(tween(MotionMillis)) { it } + fadeIn(tween(MotionMillis))
                             val exit = if (initialState.destination == "conversation") ExitTransition.None
@@ -212,10 +215,10 @@ fun SigilApp(palette: (Int, Boolean) -> String, analyze: (String) -> String, sta
                             }
                                 Surface(Modifier.fillMaxWidth().height(headerHeight).zIndex(1f).testTag("main-header"), shape = shape,
                                     color = if (conversation) lerp(MaterialTheme.colorScheme.background, MaterialTheme.colorScheme.surface, tint) else MaterialTheme.colorScheme.background) {
-                                    AnimatedContent(Screen(destination, page, chat, conversationPage, state, newTitle, thread?.id), contentKey = { if (it.destination == "home") "home" else it.destination + if (it.destination == "conversation") it.detail + (it.thread ?: "") else if (it.destination == "new") it.title else "" }, transitionSpec = {
-                                        (slideInHorizontally(tween(160, delayMillis = 80)) { if (goingBack) -48 else 48 } + fadeIn(tween(160, delayMillis = 80))) togetherWith
-                                            (if (goingBack) slideOutHorizontally(tween(MotionMillis)) { 48 } + fadeOut(tween(100)) else fadeOut(tween(100)))
-                                    }, label = "Header items") { screen ->
+                                    headerTransition.AnimatedContent(contentKey = { if (it.destination == "home") "home" else it.destination + if (it.destination == "conversation") it.detail + (it.thread ?: "") else if (it.destination == "new") it.title else "" }, transitionSpec = {
+                                        (slideInHorizontally(tween(160, delayMillis = 80)) { if (goingBack) -it else it } + fadeIn(tween(160, delayMillis = 80))) togetherWith
+                                            (slideOutHorizontally(tween(160)) { if (goingBack) it else -it } + fadeOut(tween(120)))
+                                    }) { screen ->
                                         when (screen.destination) {
                                             "call" -> screen.state.call?.let { CallHeader(it, screen.state.chats, screen.state.profileAvatar, dispatch, { callMinimized = true }) { callPanel = it } }
                                             "home" -> MainHeader(screen.page, goingBack, query, { query = it }, selected, screen.state, dispatch, { selected = emptySet() },
