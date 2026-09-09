@@ -32,7 +32,8 @@ import kotlin.math.*
 
 @Composable
 fun Glyph(name: String, size: Int = 24, label: String? = null) {
-    Text(name, fontFamily = if (name.any { it.code > 127 }) null else FontFamily(Font(Res.font.material_symbols)), fontSize = size.sp, lineHeight = size.sp, maxLines = 1,
+    val glyphSize = with(LocalDensity.current) { size.dp.toSp() }
+    Text(name, fontFamily = if (name.any { it.code > 127 }) null else FontFamily(Font(Res.font.material_symbols)), fontSize = glyphSize, lineHeight = glyphSize, maxLines = 1,
         modifier = Modifier.clearAndSetSemantics { if (label != null) contentDescription = label })
 }
 internal fun showsReceipt(index: Int, messages: List<ChatMessage>) = index == 0 && messages.firstOrNull()?.mine == true

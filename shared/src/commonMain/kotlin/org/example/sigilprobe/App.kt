@@ -59,15 +59,16 @@ internal fun Header(title: String, back: (() -> Unit)? = null, action: @Composab
 }
 @Composable
 internal fun Avatar(name: String, size: Int = 48, photo: String = "") {
-    Surface(Modifier.size(size.dp), shape = CircleShape, color = MaterialTheme.colorScheme.surfaceVariant) {
-        Box(contentAlignment = Alignment.Center) { Text(name.take(1).uppercase(), fontSize = (size * .43f).sp); if (photo.isNotEmpty()) LocalProfilePhoto.current(photo, Modifier.matchParentSize()) }
+    val initialSize = with(androidx.compose.ui.platform.LocalDensity.current) { (size * .43f).dp.toSp() }
+    Surface(Modifier.size(size.dp).clearAndSetSemantics { contentDescription = name }, shape = CircleShape, color = MaterialTheme.colorScheme.surfaceVariant) {
+        Box(contentAlignment = Alignment.Center) { Text(name.take(1).uppercase(), fontSize = initialSize, lineHeight = initialSize, maxLines = 1); if (photo.isNotEmpty()) LocalProfilePhoto.current(photo, Modifier.matchParentSize()) }
     }
 }
 val LocalProfilePhoto = staticCompositionLocalOf<@Composable (String, Modifier) -> Unit> { { _, _ -> } }
 @Composable
 internal fun SettingRow(icon: String, title: String, detail: String, click: () -> Unit) {
     Row(Modifier.fillMaxWidth().clickable(onClick = click).padding(horizontal = 20.dp, vertical = 16.dp), verticalAlignment = Alignment.CenterVertically) {
-        Text(icon, fontFamily = FontFamily(Font(Res.font.material_symbols)), fontSize = 24.sp, modifier = Modifier.clearAndSetSemantics { })
+        Glyph(icon)
         Column(Modifier.weight(1f).padding(horizontal = 16.dp)) { Text(title, style = MaterialTheme.typography.titleMedium); Text(detail, style = MaterialTheme.typography.bodySmall) }
         Text("›")
     }

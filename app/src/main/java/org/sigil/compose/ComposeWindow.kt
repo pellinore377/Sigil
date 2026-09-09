@@ -9,6 +9,8 @@ import androidx.compose.foundation.layout.ime
 import androidx.compose.runtime.*
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalView
+import androidx.core.view.WindowCompat
+import org.sigil.LocalSystemAppearance
 
 internal fun ComponentActivity.setSigilContent(content: @Composable () -> Unit) {
     enableEdgeToEdge()
@@ -19,6 +21,11 @@ internal fun ComponentActivity.setSigilContent(content: @Composable () -> Unit) 
             // Older Android retains its window pan until it rechecks the focused field's bounds.
             LaunchedEffect(ime) { withFrameNanos { }; view.rootView.requestLayout() }
         }
-        content()
+        CompositionLocalProvider(LocalSystemAppearance provides { dark ->
+            WindowCompat.getInsetsController(window, window.decorView).apply {
+                isAppearanceLightStatusBars = !dark
+                isAppearanceLightNavigationBars = !dark
+            }
+        }) { content() }
     }
 }
