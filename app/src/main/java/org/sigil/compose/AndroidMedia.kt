@@ -29,11 +29,12 @@ import org.sigil.storage.NativeStorage
 import org.sigil.storage.StorageKeyProvider
 import java.nio.ByteBuffer
 
-internal class EncryptedMedia(private val context: android.content.Context, private val message: ChatMessage) : MediaDataSource() {
+internal class EncryptedMedia(private val context: android.content.Context, private val peer: String, private val author: String, private val message: String, private val length: Long) : MediaDataSource() {
+    constructor(context: android.content.Context, message: ChatMessage) : this(context, message.peer, message.author, message.id, message.attachment!!.bytes)
     private var part = -1
     private var bytes = ByteArray(0)
     private var closed = false
-    override fun getSize() = message.attachment!!.bytes
+    override fun getSize() = length
     @Synchronized override fun readAt(position: Long, buffer: ByteArray, offset: Int, size: Int): Int {
         check(!closed)
         require(position >= 0 && offset >= 0 && size >= 0 && offset <= buffer.size - size)
@@ -42,7 +43,7 @@ internal class EncryptedMedia(private val context: android.content.Context, priv
         val index = (position / (1024 * 1024)).toInt()
         if (part != index) {
             bytes.fill(0)
-            bytes = StorageKeyProvider(context).withKey { directory, key -> NativeStorage.readFileChunk(directory.path, key, message.peer, message.author, message.id, index) } ?: throw java.io.IOException("Attachment unavailable")
+            bytes = StorageKeyProvider(context).withKey { directory, key -> NativeStorage.readFileChunk(directory.path, key, peer, author, message, index) } ?: throw java.io.IOException("Attachment unavailable")
             part = index
         }
         val within = (position % (1024 * 1024)).toInt()

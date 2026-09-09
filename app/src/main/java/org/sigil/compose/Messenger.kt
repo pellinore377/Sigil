@@ -244,6 +244,7 @@ class Messenger(application: Application) : AndroidViewModel(application) {
                     val result = if (alreadyQueued) JSONObject() else native(raw)
                     if (name == "cancel_login") recoveryPreference(false)
                     accountAccess(result)
+                    result.optJSONObject("forward_file")?.let { files.forward(fields, it) }
                     if (name == "oidc_account") nextAccess = 0
                     result.optional("open")?.let { state = state.copy(selected = it); groupCreate = null; pages = 1 }
                     if (name in listOf("profile", "set_profile")) state = state.copy(profileName = result.getString("display_name"), profileRevision = result.getLong("revision"))

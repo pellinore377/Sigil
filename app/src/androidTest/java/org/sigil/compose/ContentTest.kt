@@ -26,6 +26,20 @@ class ContentTest {
     @get:Rule val ui = createAndroidComposeRule<ComponentActivity>()
     private val context get() = InstrumentationRegistry.getInstrumentation().targetContext
     @Before fun isolated() { Assume.assumeTrue(context.packageName.endsWith(".acceptance")) }
+    @Test fun cancellingAnImportStopsItsPreparationAndClearsStaging() = runBlocking {
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+        val started = CompletableDeferred<Unit>()
+        val files = NativeFiles(context.applicationContext as Application, scope, { _, _ -> }, { fail(it) })
+        try {
+            val task = scope.launch { byteArrayOf(1).inputStream().use { stream -> files.stage(mapOf("peer" to "self"), "Synthetic cancellation", "application/octet-stream", 1, stream) { started.complete(Unit); awaitCancellation() } } }
+            withTimeout(5000) { started.await() }
+            val request = native("files").getJSONArray("uploads").getJSONObject(0).getString("request")
+            files.cancel(request)
+            withTimeout(5000) { task.join() }
+            assertTrue(task.isCancelled)
+            assertEquals(0, native("files").getJSONArray("uploads").length())
+        } finally { scope.cancel() }
+    }
     @Test fun enabledRecoveryPublishesThroughTheAndroidWorker() = runBlocking {
         val secret = native("recovery_generate").getString("secret")
         native("recovery_enable", mapOf("secret" to secret))
@@ -180,9 +194,27 @@ class ContentTest {
                 ui.onNodeWithTag("media-seek").performSemanticsAction(SemanticsActions.SetProgress) { it(2200f) }
                 ui.waitUntil(3000) { ui.onAllNodesWithText("0:02 / 0:03").fetchSemanticsNodes().isNotEmpty() }
             } finally { ui.runOnUiThread { ui.activity.setContentView(android.widget.FrameLayout(ui.activity)) }; audio.setStreamVolume(AudioManager.STREAM_MUSIC, volume, 0) }
+            val forward = mapOf("source" to peer, "peer" to "self", "author" to message.author, "message" to message.id)
+            val prepared = native("forward", forward + mapOf("request" to "78".repeat(32), "timestamp" to System.currentTimeMillis() / 1000))
+            files.forward(forward, prepared.getJSONObject("forward_file"))
+            var copy: JSONObject? = null
+            withTimeout(60_000) {
+                while (copy == null) {
+                    NativeSync.files(context)
+                    val timeline = native("timeline", mapOf("peer" to "self")).getJSONArray("messages")
+                    copy = (0 until timeline.length()).map(timeline::getJSONObject).firstOrNull { !it.isNull("attachment") }
+                    delay(250)
+                }
+            }
             native("clear_conversation", mapOf("peer" to peer, "request" to "79".repeat(32), "timestamp" to System.currentTimeMillis() / 1000))
             val chunk = StorageKeyProvider(context).withKey { directory, key -> NativeStorage.readFileChunk(directory.path, key, peer, message.author, message.id, 0) }
             assertNull(chunk)
+            EncryptedMedia(context, "self", copy!!.getString("author"), copy!!.getString("id"), bytes.size.toLong()).use { media ->
+                val read = ByteArray(bytes.size)
+                assertEquals(bytes.size, media.readAt(0, read, 0, read.size))
+                assertArrayEquals(bytes, read)
+                read.fill(0)
+            }
         } finally { scope.cancel(); bytes.fill(0) }
     }
 }

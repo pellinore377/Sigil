@@ -61,6 +61,8 @@ instrument 'PushTest#encryptedProofReachesRustThroughTheDistributorAndReceiver'
 instrument MessagingUiTest
 instrument RichTextTest
 instrument LayoutTest
+instrument TimelinePerformanceTest
+instrument RealTimelinePerformanceTest
 instrument DeviceLinkTest
 "$adb" shell am instrument -w -e class 'org.sigil.compose.SignOutTest#revokeAndRemoveSyntheticAppData' "$app_id.test/androidx.test.runner.AndroidJUnitRunner" > "$scratch/sign-out.log" 2>&1 || true
 rg -q 'SIGIL_SIGN_OUT_REVOKED' "$scratch/sign-out.log"

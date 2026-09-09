@@ -104,7 +104,7 @@ internal fun ConversationPage(chat: ChatSummary, state: MessengerState, draft: T
             if (!chat.group && (!chat.verified || chat.request == "incoming")) ContactRequestPanel(chat, state.busy, command) { verify = true }
 
             if (state.historical) TextButton({ command("latest", emptyMap()) }, Modifier.align(Alignment.CenterHorizontally)) { Text("Return to latest messages") }
-            LazyColumn(Modifier.weight(1f).fillMaxWidth(), state = list, reverseLayout = true, contentPadding = PaddingValues(horizontal = 16.dp, vertical = 12.dp)) {
+            LazyColumn(Modifier.weight(1f).fillMaxWidth().testTag("timeline"), state = list, reverseLayout = true, contentPadding = PaddingValues(horizontal = 16.dp, vertical = 12.dp)) {
                 item("typing") { AnimatedVisibility(!threadsOverview && state.typing.isNotEmpty(), enter = expandVertically(tween(MotionMillis)) + fadeIn(), exit = shrinkVertically(tween(MotionMillis)) + fadeOut()) { TypingRow(state.typing.map { state.people[it] ?: if (chat.group) "Member" else chat.name }, chat.name, state.typing) } }
                 itemsIndexed(messages, key = { _, it -> it.author + it.id }) { index, message ->
                     if (threadsOverview) {
