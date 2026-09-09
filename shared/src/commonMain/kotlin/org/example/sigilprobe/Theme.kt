@@ -14,6 +14,7 @@ data class Appearance(val font: String = "Newsreader", val mode: String = "Syste
 data class ChatTheme(val accent: Int? = null, val gradient: Boolean = false)
 
 val LocalCodeFont = staticCompositionLocalOf<FontFamily> { FontFamily.Monospace }
+val LocalSystemAppearance = staticCompositionLocalOf<(Boolean) -> Unit> { {} }
 
 internal fun parseAccent(text: String): Int? = text.removePrefix("#").takeIf { it.length == 6 }?.toIntOrNull(16)?.takeIf { it in 0..0xffffff }
 internal fun accentText(color: Int) = color.toString(16).padStart(6, '0').uppercase()
@@ -38,6 +39,8 @@ internal fun ChatTheme.encode() = "${accent?.let(::accentText) ?: ""}|$gradient"
 internal fun SigilTheme(appearance: Appearance, chat: ChatTheme? = null, dynamicAccent: Int? = null,
     palette: (Int, Boolean) -> String, content: @Composable () -> Unit) {
     val dark = when (appearance.mode) { "Dark" -> true; "Light" -> false; else -> isSystemInDarkTheme() }
+    val systemAppearance = LocalSystemAppearance.current
+    SideEffect { systemAppearance(dark) }
     val seed = chat?.accent ?: if (appearance.dynamic) dynamicAccent ?: appearance.accent else appearance.accent
     val colors = remember(seed, dark) { palette(seed, dark).split(',').map { Color(0xff000000L or it.toLong(16)) } }
     val base = if (dark) darkColorScheme() else lightColorScheme()

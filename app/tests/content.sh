@@ -45,6 +45,7 @@ instrument ContentTest
 "$adb" exec-out run-as "$app_id" cat cache/acceptance-recovery.key > "$scratch/recovery.key"
 "$adb" shell run-as "$app_id" rm cache/acceptance-recovery.key
 instrument MessagingUiTest
+instrument LayoutTest
 instrument DeviceLinkTest
 "$adb" shell am instrument -w -e class 'org.sigil.compose.SignOutTest#revokeAndRemoveSyntheticAppData' "$app_id.test/androidx.test.runner.AndroidJUnitRunner" > "$scratch/sign-out.log" 2>&1 || true
 rg -q 'SIGIL_SIGN_OUT_REVOKED' "$scratch/sign-out.log"

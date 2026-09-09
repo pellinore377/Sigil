@@ -3,6 +3,8 @@ package org.sigil
 import androidx.compose.animation.core.*
 import androidx.compose.foundation.*
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.grid.*
 import androidx.compose.foundation.shape.*
 import androidx.compose.material3.*
@@ -25,6 +27,10 @@ internal fun CallPage(active: ActiveCall, contacts: List<ChatSummary>, command: 
     fun photo(person: CallParticipant?): String = if (person?.own == true) ownPhoto else contacts.firstOrNull { it.id == person?.peer }?.avatar.orEmpty()
     val directPhoto = if (call.direct) photo(others.firstOrNull()) else ""
     val video = active.camera || active.screen || others.any { it.camera || it.screen }
+    var speaker by remember(call.id) { mutableStateOf<String?>(null) }
+    val speaking = call.participants.filter { it.audio }.maxByOrNull { active.levels[if (it.own) "self" else it.id] ?: 0f }
+        ?.takeIf { (active.levels[if (it.own) "self" else it.id] ?: 0f) > .05f }?.id
+    LaunchedEffect(speaking) { if (speaking != null) { kotlinx.coroutines.delay(600); speaker = speaking } }
     var more by remember { mutableStateOf(false) }
     var inviting by remember { mutableStateOf(false) }
     var security by remember { mutableStateOf(false) }
@@ -60,9 +66,10 @@ internal fun CallPage(active: ActiveCall, contacts: List<ChatSummary>, command: 
             Avatar(active.name, 42, directPhoto)
             Column(Modifier.weight(1f).padding(start = 10.dp)) {
                 Row(verticalAlignment = Alignment.CenterVertically) { Text(active.name, Modifier.weight(1f, false), maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.titleLarge); Spacer(Modifier.width(6.dp)); Glyph("lock", 16, "End-to-end encrypted call") }
-                Text(if (incoming) "Incoming call" else if (call.phase == "joining") "Joining…" else if (call.direct && others.isEmpty()) "Calling…" else if (active.connection != "connected") active.connection.replaceFirstChar { it.uppercase() } + "…" else "${active.seconds / 60}:${(active.seconds % 60).toString().padStart(2, '0')}", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Text(if (incoming) "Incoming call" else if (call.phase == "joining") "Joining…" else if (call.direct && others.isEmpty()) "Calling…" else if (active.connection != "connected") active.connection.replaceFirstChar { it.uppercase() } + "…" else (if (call.direct) "" else "${call.participants.size} in call · ") + "${active.seconds / 60}:${(active.seconds % 60).toString().padStart(2, '0')}", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
-            Symbol(if (active.camera) "videocam_off" else "videocam", if (active.camera) "Turn camera off" else "Turn camera on") { command("call_camera", emptyMap()) }
+            if (!video) Symbol("videocam", "Turn camera on") { command("call_camera", emptyMap()) }
+            else if (call.canInvite) Symbol("person_add", "Add person") { inviting = true }
             Box {
                 Symbol("more_vert", "Call options") { more = true }
                 DropdownMenu(more, { more = false }) {
@@ -82,6 +89,23 @@ internal fun CallPage(active: ActiveCall, contacts: List<ChatSummary>, command: 
                 Box(Modifier.sizeIn(maxWidth = 270.dp, maxHeight = 270.dp).fillMaxWidth(.8f).aspectRatio(1f).border(5.dp, MaterialTheme.colorScheme.surfaceVariant, CircleShape), contentAlignment = Alignment.Center) { Avatar(active.name, 236, directPhoto) }
                 CallWave(others.maxOfOrNull { active.levels[it.id] ?: 0f } ?: 0f, Modifier.fillMaxWidth(.72f).height(56.dp))
                 Text(if (incoming) "Incoming call" else "Audio call", style = MaterialTheme.typography.titleMedium)
+            } else if (!video) {
+                val featured = call.participants.find { it.id == speaker } ?: others.firstOrNull() ?: call.participants.firstOrNull()
+                Column(Modifier.fillMaxWidth().verticalScroll(rememberScrollState()), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(24.dp)) {
+                    featured?.let { person ->
+                        Avatar(person.name, 196, photo(person))
+                        Text(if (person.own) "You" else person.name, style = MaterialTheme.typography.headlineSmall)
+                        CallWave(active.levels[if (person.own) "self" else person.id] ?: 0f, Modifier.fillMaxWidth(.72f).height(48.dp))
+                    }
+                    LazyRow(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(20.dp, Alignment.CenterHorizontally), contentPadding = PaddingValues(vertical = 12.dp)) {
+                        items(call.participants.filter { it.id != featured?.id }, key = { it.id }) { person ->
+                            Column(Modifier.width(84.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                                Box { Avatar(person.name, 64, photo(person)); if (!person.audio) Box(Modifier.align(Alignment.BottomEnd).background(MaterialTheme.colorScheme.background, CircleShape).padding(2.dp)) { Glyph("mic_off", 16, "Microphone off") } }
+                                Text(if (person.own) "You" else person.name, style = MaterialTheme.typography.bodyMedium, textAlign = androidx.compose.ui.text.style.TextAlign.Center, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                            }
+                        }
+                    }
+                }
             } else if (call.direct) {
                 val remote = others.firstOrNull()
                 if (remote != null && (remote.camera || remote.screen)) LocalCallVideo.current(remote.id, remote.screen, Modifier.fillMaxSize().clip(RoundedCornerShape(24.dp)))
@@ -89,11 +113,12 @@ internal fun CallPage(active: ActiveCall, contacts: List<ChatSummary>, command: 
                 if (active.camera || active.screen) Box(Modifier.align(Alignment.BottomEnd).width(112.dp).height(168.dp).clip(RoundedCornerShape(20.dp))) { LocalCallVideo.current("self", active.screen, Modifier.fillMaxSize()) }
             } else LazyVerticalGrid(GridCells.Fixed(if (call.participants.size <= 2) 1 else 2), horizontalArrangement = Arrangement.spacedBy(10.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 items(call.participants, key = { it.id }) { person ->
-                    Surface(shape = RoundedCornerShape(22.dp), color = MaterialTheme.colorScheme.surfaceVariant) {
+                    val level = active.levels[if (person.own) "self" else person.id] ?: 0f
+                    Surface(shape = RoundedCornerShape(22.dp), color = MaterialTheme.colorScheme.surfaceVariant, border = if (person.audio && level > .05f) BorderStroke(2.dp, MaterialTheme.colorScheme.primary) else null) {
                         Box(Modifier.fillMaxWidth().aspectRatio(.85f)) {
                             if (person.camera || person.screen) LocalCallVideo.current(if (person.own) "self" else person.id, person.screen, Modifier.fillMaxSize())
                             else Column(Modifier.align(Alignment.Center), horizontalAlignment = Alignment.CenterHorizontally) { Avatar(person.name, 74, photo(person)); Spacer(Modifier.height(16.dp)); CallWave(active.levels[if (person.own) "self" else person.id] ?: 0f, Modifier.width(90.dp).height(32.dp)) }
-                            Row(Modifier.align(Alignment.BottomStart).fillMaxWidth().background(MaterialTheme.colorScheme.background.copy(alpha = .8f)).padding(10.dp), verticalAlignment = Alignment.CenterVertically) { Text(if (person.own) "You" else person.name, Modifier.weight(1f), style = MaterialTheme.typography.bodyMedium); if (!person.audio) Glyph("mic_off", 18) }
+                            Row(Modifier.align(Alignment.BottomStart).fillMaxWidth().background(MaterialTheme.colorScheme.background.copy(alpha = .8f)).padding(10.dp), verticalAlignment = Alignment.CenterVertically) { Text(if (person.own) "You" else person.name, Modifier.weight(1f), style = MaterialTheme.typography.bodyMedium); if (!person.audio) Glyph("mic_off", 18, "Microphone off") else CallWave(level, Modifier.width(24.dp).height(18.dp)) }
                         }
                     }
                 }
@@ -105,19 +130,21 @@ internal fun CallPage(active: ActiveCall, contacts: List<ChatSummary>, command: 
                 CallControl("call", "Answer") { command("call_answer", mapOf("call" to call.id)) }
             } else {
                 CallControl(if (active.muted) "mic_off" else "mic", if (active.muted) "Unmute" else "Mute") { command("call_mute", emptyMap()) }
+                if (video) CallControl(if (active.camera) "videocam" else "videocam_off", "Camera", state = if (active.camera) "On" else "Off") { command("call_camera", emptyMap()) }
                 CallControl(if (active.speaker) "volume_up" else "hearing", if (active.speaker) "Earpiece" else "Speaker") { command("call_speaker", emptyMap()) }
-                if (call.canInvite) CallControl("person_add", "Add person") { inviting = true }
+                if (video) CallControl(if (active.screen) "stop_screen_share" else "present_to_all", if (active.screen) "Stop share" else "Share") { command("call_screen", emptyMap()) }
+                else if (call.canInvite) CallControl("person_add", "Add person") { inviting = true }
                 CallControl("call_end", if (call.direct) "End" else "Leave", true) { command("call_end", mapOf("call" to call.id)) }
             }
         }
     }
 }
 @Composable
-private fun CallControl(icon: String, label: String, destructive: Boolean = false, action: () -> Unit) {
-    Column(Modifier.clip(RoundedCornerShape(22.dp)).clickable(role = Role.Button, onClickLabel = label, onClick = action), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(8.dp)) {
+private fun RowScope.CallControl(icon: String, label: String, destructive: Boolean = false, state: String? = null, action: () -> Unit) {
+    Column(Modifier.weight(1f).padding(horizontal = 4.dp).clip(RoundedCornerShape(22.dp)).clickable(role = Role.Button, onClickLabel = label, onClick = action).semantics { state?.let { stateDescription = it } }, horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(8.dp)) {
         Surface(Modifier.size(64.dp), shape = RoundedCornerShape(22.dp),
             color = if (destructive) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.surfaceVariant, contentColor = if (destructive) MaterialTheme.colorScheme.onError else MaterialTheme.colorScheme.onSurface) { Box(contentAlignment = Alignment.Center) { Glyph(icon, 30) } }
-        Text(label, style = MaterialTheme.typography.bodyMedium)
+        Text(label, style = MaterialTheme.typography.bodyMedium, textAlign = androidx.compose.ui.text.style.TextAlign.Center)
     }
 }
 @Composable

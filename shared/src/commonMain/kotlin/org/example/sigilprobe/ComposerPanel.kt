@@ -152,12 +152,13 @@ private fun StructuredBuilder(kind: String, enabled: Boolean, back: () -> Unit, 
         }, enabled = enabled && (if (kind == "Timer") whenText.isNotBlank() else title.isNotBlank()) && (kind !in listOf("Poll", "Checklist", "Task") || entries.lines().count { it.isNotBlank() } >= if (kind == "Poll") 2 else 1), modifier = Modifier.align(Alignment.End)) { Text(if (kind == "Poll") "Send poll" else "Send") }
     }
 }
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun VoicePanel(command: Command, peer: String, voice: VoiceState, enabled: Boolean, close: () -> Unit) {
     val recording = voice.peer == peer && voice.phase == "Recording"
     val ready = voice.peer == peer && voice.phase == "Ready"
     val color = MaterialTheme.colorScheme.onBackground
-    Column(Modifier.fillMaxSize().padding(20.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.SpaceBetween) {
+    Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(20.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(12.dp)) {
         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) { Text("Voice message", Modifier.weight(1f), style = MaterialTheme.typography.titleMedium); Symbol("close", "Close voice panel", close) }
         Canvas(Modifier.fillMaxWidth().height(64.dp)) {
             val levels = voice.levels.takeIf { voice.peer == peer }.orEmpty()
@@ -165,7 +166,7 @@ private fun VoicePanel(command: Command, peer: String, voice: VoiceState, enable
             else levels.forEachIndexed { index, level -> val x = size.width * (index + .5f) / levels.size; val amplitude = size.height * level.coerceIn(.02f, 1f) / 2f; drawLine(color, androidx.compose.ui.geometry.Offset(x, center.y - amplitude), androidx.compose.ui.geometry.Offset(x, center.y + amplitude), 3.dp.toPx(), androidx.compose.ui.graphics.StrokeCap.Round) }
         }
         Text(if (recording || ready) "${voice.seconds / 60}:${(voice.seconds % 60).toString().padStart(2, '0')}" else "Ready to record", style = MaterialTheme.typography.titleMedium)
-        Row(horizontalArrangement = Arrangement.spacedBy(20.dp)) {
+        FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.CenterHorizontally), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             OutlinedButton({ command("record_cancel", emptyMap()) }) { Text("Discard") }
             Button({ command(if (recording) "record_stop" else "record_start", mapOf("peer" to peer)) }) { Glyph(if (recording) "stop" else "mic", 20); Text(if (recording) "Stop" else if (ready) "Record again" else "Record") }
             OutlinedButton({ command("record_send", mapOf("peer" to peer)) }, enabled = enabled && ready) { Text("Send") }
