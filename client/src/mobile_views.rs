@@ -116,6 +116,9 @@ impl ClientStore {
         if peer == "self" {
             let (_, own) = structured::account_context(&self.db, &self.key)?;
             Ok(Sha256::digest([b"Sigil/note-to-self/v0".as_slice(), &own].concat()).into())
+        } else if let Some(history) = peer.strip_prefix("history:") {
+            self.connected_account_scope()?;
+            id(history)
         } else if peer.starts_with("dm:") {
             self.mobile_contact_conversation(peer)
         } else if let Some(group) = peer.strip_prefix("group:") {
@@ -240,6 +243,13 @@ impl ClientStore {
             );
         }
         peers.insert(self.mobile_conversation("self")?, "self".into());
+        for group in self.mobile_groups()? {
+            let peer = group["id"].as_str().ok_or(Error::InvalidStore)?;
+            peers.insert(
+                id(peer.strip_prefix("group:").ok_or(Error::InvalidStore)?)?,
+                peer.to_owned(),
+            );
+        }
         let mut hits = Vec::new();
         for hit in page.hits {
             let m = &hit.message;
@@ -260,7 +270,7 @@ impl ClientStore {
             } {
                 continue;
             }
-            hits.push(json!({"peer":peers.get(&hit.conversation).cloned().unwrap_or_else(||format!("group:{}",transport::hex(&hit.conversation))),
+            hits.push(json!({"peer":peers.get(&hit.conversation).cloned().unwrap_or_else(||format!("history:{}",transport::hex(&hit.conversation))),
                 "id":transport::hex(&m.reference.message),"author":transport::hex(&m.reference.author),
                 "text":m.body.as_ref().map(body_text).transpose()?.unwrap_or_default().chars().take(512).collect::<String>(),"timestamp":m.timestamp,
                 "pinned":m.pinned,"noted":noted || peers.get(&hit.conversation).is_some_and(|p|p=="self"),"kind":body_kind(m.body.as_ref()),

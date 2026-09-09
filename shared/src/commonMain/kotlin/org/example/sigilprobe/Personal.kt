@@ -144,23 +144,26 @@ internal fun PersonalPage(page: String, state: MessengerState, command: Command,
                         Text("${storageBytes(storage.media)} allocated on disk", style = MaterialTheme.typography.bodySmall)
                         HorizontalDivider()
                         Text("Encrypted history recovery", style = MaterialTheme.typography.titleMedium)
-                        Text(if (!storage.recovery) "Not enabled" else storage.checkpoint?.let { "Last backup · $it" } ?: "Waiting for the first backup")
+                        Text(if (storage.restoring) "Restoring encrypted history…" else if (!storage.recovery) "Not enabled" else storage.checkpoint?.let { "Last backup · $it" } ?: "Waiting for the first backup")
+                        if (storage.restoring) { LinearProgressIndicator(Modifier.fillMaxWidth()); Text("You can leave this page. The import resumes after interruptions.", style = MaterialTheme.typography.bodySmall) }
                         if (storage.recovery && storage.unprotected > 0) Text("${storage.unprotected} records waiting for backup", style = MaterialTheme.typography.bodySmall)
                         if (!storage.recovery) {
                             Text("Keep a recovery key to restore your encrypted history after signing in on a replacement device.")
                             Button({ command("recovery_generate", emptyMap()) }, enabled = !state.busy) { Text("Set up recovery") }
+                            TextButton({ command("recovery_restore_open", emptyMap()) }, enabled = !state.busy) { Text("Restore with a recovery key") }
                         } else {
                             Text("Keep backed-up history", style = MaterialTheme.typography.titleSmall)
                             Text("This controls your encrypted backup. It does not delete messages on this device.", style = MaterialTheme.typography.bodySmall)
                             listOf(null to "Until I delete it", 30 to "30 days", 90 to "90 days", 365 to "One year").forEach { (days, label) ->
                                 Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                                    RadioButton(storage.historyDays == days, { command("recovery_policy", mapOf("days" to days)) }, enabled = !state.busy)
+                                    RadioButton(storage.historyDays == days, { command("recovery_policy", mapOf("days" to days)) }, enabled = !state.busy && !storage.restoring)
                                     Text(label)
                                 }
                             }
                         }
                     }
                     TextButton({ command("storage", emptyMap()) }, enabled = !state.busy) { Text("Refresh") }
+                    TextButton({ command("history_open", emptyMap()) }) { Text("Browse saved history") }
                     state.transfers.forEach { transfer -> SettingRow("upload_file", transfer.name, transfer.phase) { command("file_cancel", mapOf("request" to transfer.request)) } }
                 }
                 else -> { Text("Sigil", style = MaterialTheme.typography.displayMedium); Text("Modern correspondence."); Text("Development build · 0.1"); Text("Newsreader, Google Sans Flex, Google Sans Code, and Material Symbols."); Text("Animated Noto Emoji by Google · CC BY 4.0. Lottie by Airbnb · Apache 2.0."); androidx.compose.foundation.text.selection.SelectionContainer { Text("https://googlefonts.github.io/noto-emoji-animation/\nhttps://creativecommons.org/licenses/by/4.0/", style = MaterialTheme.typography.bodySmall) } }

@@ -41,3 +41,23 @@ internal fun RecoveryDialog(secret: String, busy: Boolean, dismiss: () -> Unit, 
         confirmButton = { TextButton(enable, enabled = saved && check == secret.takeLast(8) && !busy) { Text("Enable encrypted backups") } },
         dismissButton = { TextButton(dismiss, enabled = !busy) { Text("Cancel") } })
 }
+
+@Composable
+internal fun RestoreRecoveryDialog(busy: Boolean, issue: String?, dismiss: () -> Unit, restore: (String) -> Unit) {
+    var secret by remember { mutableStateOf("") }
+    var reviewed by remember { mutableStateOf(false) }
+    AlertDialog(onDismissRequest = { if (!busy) dismiss() }, properties = DialogProperties(securePolicy = SecureFlagPolicy.SecureOn),
+        title = { Text("Restore encrypted history") },
+        text = { Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            Text("Enter the recovery key you saved for this account. It stays on this device and is never sent to the server.")
+            OutlinedTextField(secret, { value -> if (value.length <= 256) secret = value.filterNot { it.isWhitespace() }.lowercase() }, label = { Text("Recovery key") }, enabled = !busy, singleLine = true,
+                visualTransformation = androidx.compose.ui.text.input.PasswordVisualTransformation(), keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(autoCorrectEnabled = false, keyboardType = androidx.compose.ui.text.input.KeyboardType.Password))
+            Text("This device can verify the backup’s integrity, but cannot independently confirm that the server supplied the newest backup. Restore only from a server you trust.")
+            Row { Checkbox(reviewed, { reviewed = it }, enabled = !busy); Text("I understand and want to restore this backup.", Modifier.padding(top = 12.dp)) }
+            Text("Restoring history does not approve contacts or copy a previous device’s messaging keys.", style = MaterialTheme.typography.bodySmall)
+            issue?.let { Text(it, color = MaterialTheme.colorScheme.error) }
+            if (busy) LinearProgressIndicator(Modifier.fillMaxWidth())
+        } },
+        confirmButton = { TextButton({ restore(secret) }, enabled = !busy && reviewed && secret.length == 64 && secret.all { it in '0'..'9' || it in 'a'..'f' }) { Text("Restore history") } },
+        dismissButton = { TextButton(dismiss, enabled = !busy) { Text("Cancel") } })
+}

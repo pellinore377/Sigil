@@ -26,6 +26,21 @@ class ContentTest {
     @get:Rule val ui = createAndroidComposeRule<ComponentActivity>()
     private val context get() = InstrumentationRegistry.getInstrumentation().targetContext
     @Before fun isolated() { Assume.assumeTrue(context.packageName.endsWith(".acceptance")) }
+    @Test fun enabledRecoveryPublishesThroughTheAndroidWorker() = runBlocking {
+        val secret = native("recovery_generate").getString("secret")
+        native("recovery_enable", mapOf("secret" to secret))
+        native("post", mapOf("peer" to "self", "request" to "64".repeat(32), "timestamp" to System.currentTimeMillis() / 1000, "text" to "Synthetic backup acceptance"))
+        withTimeout(60_000) {
+            while (true) {
+                val work = NativeSync.files(context)
+                assertTrue(work.toString(), work.isNull("issue"))
+                val progress = native("storage").getJSONObject("recovery")
+                if (!progress.isNull("last") && progress.getLong("pending") == 0L) break
+                delay(250)
+            }
+        }
+        java.io.File(context.cacheDir, "acceptance-recovery.key").writeText(secret)
+    }
     @Test fun profilePhotoIsBoundedPublishedAndRemoved() = runBlocking {
         val source = java.io.File(context.cacheDir, "synthetic-profile.png")
         val bitmap = android.graphics.Bitmap.createBitmap(1024, 1024, android.graphics.Bitmap.Config.ARGB_8888)
@@ -123,7 +138,8 @@ class ContentTest {
     }
     @Test fun encryptedAttachmentPublishesPlaysSeeksAndRejectsReadsAfterDeletion() = runBlocking {
         val state = native("state")
-        val chat = state.getJSONArray("chats").getJSONObject(0)
+        val chats = state.getJSONArray("chats")
+        val chat = (0 until chats.length()).map { chats.getJSONObject(it) }.single { it.getString("id") != "self" && !it.optBoolean("group") }
         val peer = chat.getString("id")
         val root = native("timeline", mapOf("peer" to peer)).getJSONArray("messages").getJSONObject(0)
         val pcm = 48000 * 2 * 3

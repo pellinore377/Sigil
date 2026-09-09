@@ -72,7 +72,11 @@ impl ClientStore {
         let (media, media_used, budget) = self.mobile_cache()?.storage_usage()?;
         let recovery = match self.history_recovery_progress() {
             Ok(value) => {
-                json!({"enabled":true,"last":value.last_checkpoint_at,"pending":value.unprotected_records,"records":value.committed_records,"days":self.recovery_policy()?.history_days})
+                let restoring = matches!(
+                    self.recovery_status()?.pending,
+                    Some((recovery::Operation::Import, _))
+                ) || self.recovery_competition()?.is_some();
+                json!({"enabled":true,"restoring":restoring,"last":value.last_checkpoint_at,"pending":value.unprotected_records,"records":value.committed_records,"days":self.recovery_policy()?.history_days})
             }
             Err(Error::Unprepared | Error::NotFound) => json!({"enabled":false}),
             Err(error) => return Err(error),

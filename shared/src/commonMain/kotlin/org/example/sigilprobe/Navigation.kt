@@ -59,7 +59,8 @@ fun SigilApp(palette: (Int, Boolean) -> String, analyze: (String) -> String, sta
     var actionSheet by remember { mutableStateOf("") }
     var actionFields by remember { mutableStateOf(emptyMap<String, Any?>()) }
     val dispatch: Command = { name, fields ->
-        if (name in listOf("snooze_picker", "forward_picker", "block_picker", "delete_picker")) { actionSheet = name; actionFields = fields }
+        if (name == "history_open") page = "history"
+        else if (name in listOf("snooze_picker", "forward_picker", "block_picker", "delete_picker")) { actionSheet = name; actionFields = fields }
         else command(name, fields)
     }
     val drafts = remember { mutableMapOf<String, TextFieldState>() }
@@ -78,6 +79,7 @@ fun SigilApp(palette: (Int, Boolean) -> String, analyze: (String) -> String, sta
             conversationPage.isNotEmpty() -> conversationPage = ""
             page in listOf("appearance", "device", "profile", "privacy", "notifications", "storage", "about") -> navigate("settings")
             chat != null -> { command("close", emptyMap()); conversationPage = "" }
+            page == "history" -> navigate("storage")
             page != "inbox" -> navigate("inbox")
         }
     }
@@ -106,7 +108,7 @@ fun SigilApp(palette: (Int, Boolean) -> String, analyze: (String) -> String, sta
                     state.phase != "connected" -> Box(Modifier.imePadding()) { SignIn(state, command) }
                     else -> {
                         if (state.accountAccess?.let { it.linked && it.retiring && !it.acknowledged } == true && page != "profile" && state.call == null) TextButton({ command("close", emptyMap()); conversationPage = ""; navigate("profile") }, Modifier.fillMaxWidth()) { Text("Your server’s sign-in is changing · Review") }
-                        val destination = when { state.call != null && !callMinimized -> "call"; chat != null -> when (conversationPage) { "Chat theme" -> "theme"; "Settings" -> "chat-settings"; else -> "conversation" }; page in listOf("inbox", "search", "notes") -> "home"; else -> page }
+                        val destination = when { state.call != null && !callMinimized -> "call"; chat?.archived == true -> "saved-conversation"; chat != null -> when (conversationPage) { "Chat theme" -> "theme"; "Settings" -> "chat-settings"; else -> "conversation" }; page in listOf("inbox", "search", "notes") -> "home"; else -> page }
                         if (state.call != null && callMinimized) TextButton({ callMinimized = false }, Modifier.fillMaxWidth()) { Glyph("call", 18); Spacer(Modifier.width(8.dp)); Text("Return to call") }
                         AnimatedContent(destination, Modifier.weight(1f), transitionSpec = {
                             (fadeIn(tween(MotionMillis)) + slideInVertically(tween(MotionMillis)) { it / 14 }) togetherWith fadeOut(tween(120))
@@ -122,7 +124,9 @@ fun SigilApp(palette: (Int, Boolean) -> String, analyze: (String) -> String, sta
                                     { enabled -> command("organize", mapOf("peer" to null, "value" to mapOf("CollectionsEnabled" to enabled))) },
                                     sharedRead("collection_labels") != "false", { sharedWrite("collection_labels", it.toString()) }, followAccount,
                                     { if (!it) write("device_appearance", appearance.encode()); followAccount = it; write("follow_account_theme", it.toString()) }) { appearance = it; if (followAccount) sharedWrite("appearance", it.encode()) else write("device_appearance", it.encode()) }
-                                "device", "profile", "privacy", "notifications", "storage", "about" -> PersonalPage(target, state, command, back)
+                                "device", "profile", "privacy", "notifications", "storage", "about" -> PersonalPage(target, state, dispatch, back)
+                                "history" -> SavedHistoryPage(state, command, back, open)
+                                "saved-conversation" -> SavedConversationPage(state, analyze, command, back)
                                 "new" -> NewConversation(state, command, back, open)
                                 "calls" -> CallHistoryPage(state, command, back)
                                 else -> Column(Modifier.fillMaxSize()) {

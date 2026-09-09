@@ -202,7 +202,38 @@ impl ClientStore {
                 _ => pending = true,
             }
         }
-        Ok(json!({"next_at":result.next_at,"sent":sent,"issue":issue,"pending":pending}))
+        let now = conversations::now();
+        let mut next = result.next_at.min(now.saturating_add(30));
+        let background = (|| -> Result<(), Error> {
+            self.maintain_history(now)?;
+            self.erase_obsolete_journals(now)?;
+            if recovery::configured(&self.db)? {
+                let work = self.sync_recovery_due_online()?;
+                next = next.min(work.next_at);
+                if let Some(error) = work.scheduling_error {
+                    return Err(error);
+                }
+                if let Some(progress) = work.progress {
+                    pending |= !matches!(progress?, recovery::RecoveryProgress::Idle);
+                }
+                pending |= self.recovery_status()?.pending.is_some();
+                pending |= self.history_recovery_progress()?.unprotected_records > 0;
+            }
+            pending |= matches!(
+                self.prepare_recovery_media_step(&mut cache, now)?,
+                attachments::MediaRecovery::Download(_)
+                    | attachments::MediaRecovery::Staged(_, _)
+                    | attachments::MediaRecovery::Upload(_)
+            );
+            Ok(())
+        })();
+        if let Err(error) = background {
+            if issue.is_none() {
+                issue = Some(error_message(&error));
+            }
+            pending = true;
+        }
+        Ok(json!({"next_at":next,"sent":sent,"issue":issue,"pending":pending}))
     }
     pub(super) fn mobile_file_get(
         &mut self,

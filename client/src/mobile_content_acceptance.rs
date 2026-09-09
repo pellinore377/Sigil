@@ -51,6 +51,7 @@ fn android_content_acceptance() {
     }
     bob.acknowledge_incoming_online().unwrap();
     let conversation = alice.direct_conversation(peer).unwrap();
+    let account = bob.connection_session().unwrap().unwrap().account_id;
     drop(bob);
     std::fs::copy(dir.path().join("bob.db"), export.join("client.db")).unwrap();
     std::fs::write(export.join("port"), fixture.port().to_string()).unwrap();
@@ -102,6 +103,64 @@ fn android_content_acceptance() {
             assert!(
                 received,
                 "The phone attachment never reached the other client"
+            );
+            let secret =
+                Zeroizing::new(std::fs::read_to_string(export.join("recovery.key")).unwrap());
+            let mut server =
+                sigil_server::store::Store::open(&dir.path().join("server.db")).unwrap();
+            let invitation = server
+                .invite_reauthorization(&account, 60, conversations::now())
+                .unwrap();
+            let mut replacement = ClientStore::open(
+                &dir.path().join("replacement.db"),
+                sigil_crypto::storage::StorageKey::new(sigil_crypto::Secret32::from_bytes(
+                    [94; 32],
+                ))
+                .unwrap(),
+            )
+            .unwrap();
+            replacement
+                .prepare_enrollment(
+                    "chat.example",
+                    fixture.port(),
+                    &[crate::network::tests::CA.to_vec()],
+                    &invitation.secret,
+                    "Replacement",
+                    true,
+                )
+                .unwrap();
+            replacement.enroll_online().unwrap();
+            replacement.publish_device_binding_online().unwrap();
+            replacement
+                .begin_history_recovery_online(
+                    sigil_crypto::Secret32::from_bytes(id(&secret).unwrap()),
+                    true,
+                )
+                .unwrap();
+            for _ in 0..100 {
+                if replacement.download_recovery_step(false).unwrap().is_some() {
+                    break;
+                }
+            }
+            assert!(replacement.recovery_status().unwrap().pending.is_none());
+            assert_eq!(
+                replacement
+                    .recent_search_conversations(
+                        "Synthetic backup acceptance",
+                        None,
+                        conversations::now()
+                    )
+                    .unwrap()
+                    .hits
+                    .len(),
+                1
+            );
+            assert_eq!(
+                replacement
+                    .db
+                    .query_row("SELECT count(*) FROM sessions", [], |r| r.get::<_, i64>(0))
+                    .unwrap(),
+                0
             );
             return;
         }

@@ -5,7 +5,7 @@ data class ChatSummary(val id: String, val address: String, val preview: String,
     val displayName: String = "", val unread: Int = 0, val pinned: Boolean = false, val snoozed: Boolean = false,
     val hidden: Boolean = false, val presence: String = "inactive", val collections: List<String> = emptyList(),
     val typing: List<String> = emptyList(), val draft: String = "", val group: Boolean = false, val avatar: String = "", val ui: Map<String, String> = emptyMap(), val contactOnly: Boolean = false,
-    val readReceipts: Boolean = true, val typingIndicators: Boolean = true, val presenceSharing: Boolean = false, val request: String = "none") {
+    val readReceipts: Boolean = true, val typingIndicators: Boolean = true, val presenceSharing: Boolean = false, val request: String = "none", val archived: Boolean = false) {
     val name get() = displayName.ifEmpty { address.removePrefix("@").substringBefore(':') }
 }
 data class ChatMessage(val id: String, val author: String, val text: String, val mine: Boolean, val time: String,
@@ -24,7 +24,7 @@ data class CallSummary(val id: String, val phase: String, val direct: Boolean, v
 data class ActiveCall(val call: CallSummary, val name: String, val connection: String = "connecting", val seconds: Long = 0, val muted: Boolean = false, val speaker: Boolean = false, val camera: Boolean = false, val screen: Boolean = false, val levels: Map<String, Float> = emptyMap())
 data class ThreadTarget(val author: String, val id: String)
 data class AccountDevice(val id: String, val current: Boolean, val label: String? = null, val revoked: Boolean? = null, val expires: Long? = null, val fingerprint: String? = null, val verified: Boolean = false)
-data class StorageDetails(val database: Long, val media: Long, val mediaUsed: Long, val budget: Long, val recovery: Boolean, val checkpoint: String?, val unprotected: Long, val historyDays: Int? = null)
+data class StorageDetails(val database: Long, val media: Long, val mediaUsed: Long, val budget: Long, val recovery: Boolean, val checkpoint: String?, val unprotected: Long, val historyDays: Int? = null, val restoring: Boolean = false)
 data class NotificationSettings(val enabled: Boolean, val messages: Boolean, val calls: Boolean)
 data class AccountAccess(val configuration: Long, val transition: Long, val issuer: String?, val linked: Boolean, val retiring: Boolean, val acknowledged: Boolean, val linkPending: Boolean)
 data class SearchHit(val peer: String, val id: String, val author: String, val text: String, val time: String,
