@@ -119,6 +119,7 @@ impl Store {
         tx.execute("UPDATE attachments SET state=2,reserved_bytes=0,restored_checkpoint=0 WHERE account_id=?1",[id])?;
         tx.execute("DELETE FROM oidc_bindings WHERE account=?1", [id])?;
         tx.execute("DELETE FROM account_profiles WHERE account=?1", [id])?;
+        tx.execute("DELETE FROM account_passwords WHERE account=?1", [id])?;
         tx.execute("DELETE FROM oidc_fallback_ack WHERE account=?1", [id])?;
         tx.execute(
             "DELETE FROM invitations WHERE username=(SELECT username FROM accounts WHERE id=?1)",

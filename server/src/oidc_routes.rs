@@ -27,6 +27,7 @@ pub(crate) fn client() -> Router<AppState> {
         .route("/client/v0/oidc/start", post(start))
         .route("/client/v0/oidc/link", post(link))
         .route("/client/v0/oidc/finish", post(finish))
+        .route("/client/v0/oidc/username", post(registration_name))
         .route("/client/v0/oidc/bindings", get(bindings).delete(unlink))
         .route(
             "/client/v0/oidc/access",
@@ -122,6 +123,12 @@ async fn link(
 }
 async fn finish(State(state): State<AppState>, Json(request): Json<Finish>) -> Response {
     run(state, move |s| s.oidc_finish(request, now()?)).await
+}
+async fn registration_name(
+    State(state): State<AppState>,
+    Json(request): Json<sigil_protocol::oidc::RegistrationName>,
+) -> Response {
+    run(state, move |s| s.oidc_registration_name(request, now()?)).await
 }
 async fn bindings(State(state): State<AppState>, headers: HeaderMap) -> Response {
     let token = match bearer(&headers) {
@@ -229,8 +236,11 @@ async fn complete(
                     Err(e) => store_error(e),
                 };
             }
-            let result = result.map(|v| v.subject);
-            match with_store(state, move |s| s.oidc_verified(callback, result, now()?)).await {
+            match with_store(state, move |s| {
+                s.oidc_verified_profile(callback, result, now()?)
+            })
+            .await
+            {
                 Ok(completion) => finished(completion),
                 Err(e) => store_error(e),
             }

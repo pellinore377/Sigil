@@ -147,7 +147,10 @@ pub(crate) async fn limit(State(state): State<AppState>, request: Request, next:
     }
     let enrollment = matches!(
         request.uri().path(),
-        "/client/v0/enroll" | "/client/v0/reauthorize" | "/client/v0/oidc/start"
+        "/client/v0/enroll"
+            | "/client/v0/reauthorize"
+            | "/client/v0/oidc/start"
+            | "/client/v0/login/password"
     );
     let instant = Instant::now();
     let result = {
@@ -166,7 +169,13 @@ pub(crate) async fn limit(State(state): State<AppState>, request: Request, next:
     if let Err(wait) = result {
         return reject(Rejection::Rate(wait));
     }
-    if enrollment || anonymous_group || request.uri().path() == "/client/v0/oidc/finish" {
+    if enrollment
+        || anonymous_group
+        || matches!(
+            request.uri().path(),
+            "/client/v0/oidc/finish" | "/client/v0/oidc/username" | "/client/v0/login"
+        )
+    {
         return next.run(request).await;
     }
     let credential = match bearer(request.headers()) {

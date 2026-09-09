@@ -27,6 +27,7 @@ mod group_authority;
 mod group_operations;
 mod group_routes;
 mod link;
+mod login_routes;
 mod mailbox;
 mod maintenance;
 mod map_routes;
@@ -36,6 +37,7 @@ mod oidc_routes;
 pub mod oidc_transition;
 mod operation_routes;
 pub mod operations;
+pub mod password_login;
 mod prekeys;
 mod profile;
 mod push;
@@ -151,6 +153,11 @@ fn application_with_log(
         .route_layer(middleware::from_fn_with_state(state.clone(), authenticate));
     let router = Router::new()
         .merge(web_routes::routes())
+        .merge(login_routes::public())
+        .merge(
+            login_routes::admin()
+                .route_layer(middleware::from_fn_with_state(state.clone(), authenticate)),
+        )
         .merge(
             admin_routes::admin()
                 .route_layer(middleware::from_fn_with_state(state.clone(), authenticate)),
@@ -415,6 +422,11 @@ async fn readiness(State(state): State<AppState>) -> Response {
 
 fn store_error(value: StoreError) -> Response {
     match value {
+        StoreError::DeviceLinkRequired => error(
+            StatusCode::PRECONDITION_REQUIRED,
+            "device_link_required",
+            "Link an existing device or use recovery before adding this device",
+        ),
         StoreError::Forbidden => error(
             StatusCode::FORBIDDEN,
             "sender_not_allowed",

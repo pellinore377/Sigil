@@ -236,6 +236,13 @@ impl Store {
         if oidc.as_ref().is_some_and(|v| v.3 != reauthorize) {
             return Err(StoreError::Unauthorized);
         }
+        let replacement_allowed: Option<bool> = tx
+            .query_row(
+                "SELECT replace_devices FROM oidc_grants WHERE token_hash=?1 AND expires>?2",
+                (digest(&request.invitation).as_slice(), now as i64),
+                |r| r.get(0),
+            )
+            .optional()?;
         let username = match (&invitation, &oidc) {
             (Some(name), None) => name.clone(),
             (None, Some((_, _, name, _))) => name.clone(),
@@ -258,6 +265,12 @@ impl Store {
                 )
                 .optional()?
                 .ok_or(StoreError::Unauthorized)?;
+            if replacement_allowed == Some(false) {
+                let active: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM devices WHERE account_id=?1 AND revoked=0 AND expires_at>?2)", (&account_id,now as i64), |r|r.get(0))?;
+                if active {
+                    return Err(StoreError::Conflict);
+                }
+            }
             tx.execute(
                 "UPDATE devices SET revoked=1,token_hash=NULL WHERE account_id=?1",
                 [&account_id],

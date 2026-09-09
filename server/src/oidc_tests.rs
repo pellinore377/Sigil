@@ -118,7 +118,14 @@ impl Idp {
             .query_pairs()
             .collect::<std::collections::BTreeMap<_, _>>();
         assert_eq!(params["code_challenge_method"], "S256");
-        assert_eq!(params["scope"], "openid");
+        assert_eq!(
+            params["scope"],
+            if username.is_none() && link.is_none() {
+                "openid profile"
+            } else {
+                "openid"
+            }
+        );
         *self.claims.lock().unwrap() = serde_json::json!({"iss":self.fixture.uri("127.0.0.1",""),"sub":"synthetic-subject","aud":"sigil-synthetic","iat":now,"exp":now+600,"nonce":params["nonce"],"challenge":params["code_challenge"]});
         (request, params["state"].to_string())
     }
@@ -430,12 +437,25 @@ fn issuer_audience_nonce_signature_time_and_username_substitution_are_rejected()
     }
     let (request, state) = idp.start(&mut store, None, Some("alice"), false, now);
     let completion = authenticate(&mut store, &state, now);
+    assert!(matches!(
+        store
+            .oidc_finish(
+                Finish {
+                    completion: completion.clone(),
+                    request_id: request.request_id,
+                    secret: request.secret.clone()
+                },
+                now
+            )
+            .unwrap(),
+        Progress::UsernameRequired
+    ));
     assert!(store
-        .oidc_finish(
-            Finish {
-                completion: completion.clone(),
-                request_id: request.request_id,
-                secret: request.secret
+        .enroll(
+            sigil_protocol::accounts::Enrollment {
+                invitation: request.secret,
+                device_credential: "ed".repeat(32),
+                device_label: "Test".into()
             },
             now
         )
@@ -1116,4 +1136,122 @@ fn retirement_review_is_paginated_and_excludes_disabled_users_and_password_owner
             .unwrap(),
         0
     );
+}
+
+#[test]
+fn sso_uses_verified_profile_and_bound_account_without_revoking_devices() {
+    let _guard = crate::egress::tests::NETWORK.lock().unwrap();
+    let idp = Idp::new();
+    let (_dir, mut store, alice, _, now) = crate::admin::tests::setup();
+    enable(&mut store, &idp);
+    let old = store.session(&alice, now).unwrap();
+    bind(
+        &store.0,
+        &idp.fixture.uri("127.0.0.1", ""),
+        "synthetic-subject",
+        &old.account_id,
+    )
+    .unwrap();
+    let (request, state) = idp.start(&mut store, None, None, false, now);
+    idp.claims.lock().unwrap()["preferred_username"] = serde_json::json!("different_provider_name");
+    let callback = store.oidc_claim(&state, now).unwrap().unwrap();
+    let result = callback.verify_profile("synthetic-code");
+    let completion = store
+        .oidc_verified_profile(callback, result, now)
+        .unwrap()
+        .unwrap();
+    let finish = || Finish {
+        request_id: request.request_id.clone(),
+        secret: request.secret.clone(),
+        completion: Some(completion.secret.clone()),
+    };
+    assert!(store.oidc_finish(finish(), now).is_err());
+    assert_eq!(store.session(&alice, now).unwrap(), old);
+    store
+        .0
+        .execute(
+            "UPDATE devices SET revoked=1,token_hash=NULL WHERE account_id=?1",
+            [&old.account_id],
+        )
+        .unwrap();
+    assert!(matches!(
+        store.oidc_finish(finish(), now).unwrap(),
+        Progress::Access { .. }
+    ));
+    // A device appearing after authentication must not be revoked by grant redemption.
+    store
+        .0
+        .execute(
+            "UPDATE devices SET revoked=0,token_hash=?2 WHERE id=?1",
+            (&old.device_id, digest(&alice).as_slice()),
+        )
+        .unwrap();
+    let enroll = || sigil_protocol::accounts::Enrollment {
+        invitation: request.secret.clone(),
+        device_credential: "cd".repeat(32),
+        device_label: "New phone".into(),
+    };
+    assert!(store.reauthorize(enroll(), now).is_err());
+    assert_eq!(store.session(&alice, now).unwrap(), old);
+    store
+        .0
+        .execute(
+            "UPDATE devices SET revoked=1,token_hash=NULL WHERE account_id=?1",
+            [&old.account_id],
+        )
+        .unwrap();
+    let session = store.reauthorize(enroll(), now).unwrap();
+    assert_eq!(session.account_id, old.account_id);
+    assert_eq!(session.address, old.address);
+}
+
+#[test]
+fn sso_registration_name_requires_callback_proof_and_retries_without_duplicate_accounts() {
+    let _guard = crate::egress::tests::NETWORK.lock().unwrap();
+    let idp = Idp::new();
+    let (_dir, mut store, _, _, now) = crate::admin::tests::setup();
+    enable(&mut store, &idp);
+    let (start, state) = idp.start(&mut store, None, None, false, now);
+    let callback = store.oidc_claim(&state, now).unwrap().unwrap();
+    let profile = callback.verify_profile("synthetic-code");
+    let completion = store
+        .oidc_verified_profile(callback, profile, now)
+        .unwrap()
+        .unwrap();
+    let finish = Finish {
+        request_id: start.request_id.clone(),
+        secret: start.secret.clone(),
+        completion: Some(completion.secret),
+    };
+    assert!(matches!(
+        store.oidc_finish(finish.clone(), now).unwrap(),
+        Progress::UsernameRequired
+    ));
+    let request = RegistrationName {
+        finish: finish.clone(),
+        username: "carol".into(),
+    };
+    let mut invalid = request.clone();
+    invalid.finish.completion = None;
+    assert!(store.oidc_registration_name(invalid, now).is_err());
+    store.oidc_registration_name(request.clone(), now).unwrap();
+    store.oidc_registration_name(request, now).unwrap();
+    assert!(matches!(
+        store.oidc_finish(finish, now).unwrap(),
+        Progress::Ready {
+            reauthorize: false,
+            ..
+        }
+    ));
+    let session = store
+        .enroll(
+            sigil_protocol::accounts::Enrollment {
+                invitation: start.secret,
+                device_credential: "fe".repeat(32),
+                device_label: "Test".into(),
+            },
+            now,
+        )
+        .unwrap();
+    assert_eq!(session.address, "@carol:chat.example");
 }

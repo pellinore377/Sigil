@@ -27,7 +27,16 @@ pub enum Progress {
     Pending,
     Failed,
     Linked,
+    UsernameRequired,
+    Access { expires_at: u64 },
     Ready { reauthorize: bool, expires_at: u64 },
+}
+
+#[derive(Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct RegistrationName {
+    pub finish: Finish,
+    pub username: String,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]

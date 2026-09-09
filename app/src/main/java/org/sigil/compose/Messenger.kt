@@ -30,6 +30,7 @@ class Messenger(application: Application) : AndroidViewModel(application) {
     private var syncIssue: String? = null
     private var pages = 1
     private var post: Pair<Map<String, Any?>, String>? = null
+    private var discoveryGeneration = 0L
     var authorizationUrl by mutableStateOf<String?>(null)
         private set
 
@@ -66,6 +67,13 @@ class Messenger(application: Application) : AndroidViewModel(application) {
     }
     fun command(name: String, fields: Map<String, Any?>) {
         when (name) {
+            "server_changed" -> {
+                if (state.phase != "new") return
+                discoveryGeneration++
+                state = state.copy(loginAddress = fields["server"] as String, loginMethods = null, discovering = false, discoveryIssue = null, issue = null)
+                return
+            }
+            "discover" -> { discover(fields["server"] as String); return }
             "dismiss" -> { state = state.copy(issue = null); return }
             "close" -> { state = state.copy(selected = null, messages = emptyList()); pages = 1; return }
             "open" -> { state = state.copy(selected = fields["peer"] as String, messages = emptyList()); pages = 1 }
@@ -86,11 +94,29 @@ class Messenger(application: Application) : AndroidViewModel(application) {
             }
         }
     }
+    private fun discover(address: String) {
+        if (state.phase != "new" || state.loginAddress != address || state.discovering) return
+        val generation = ++discoveryGeneration
+        state = state.copy(discovering = true, loginMethods = null, discoveryIssue = null)
+        scope.launch {
+            try {
+                val result = mutex.withLock { execute("discover", mapOf("server" to address)) }
+                if (generation == discoveryGeneration && state.phase == "new") state = state.copy(discovering = false,
+                    loginMethods = LoginMethods(result.getString("server_name"), result.getBoolean("sso"), result.getBoolean("password"), result.getBoolean("invitation")))
+            } catch (cancelled: CancellationException) { throw cancelled }
+            catch (_: Exception) {
+                if (generation == discoveryGeneration) state = state.copy(discovering = false, discoveryIssue = "Couldn't verify this server. Check its address and your connection.")
+            }
+        }
+    }
     private suspend fun serialized(progress: Boolean, work: suspend () -> Unit) = mutex.withLock {
         if (progress) state = state.copy(busy = true, issue = null)
         try { work() } catch (cancelled: CancellationException) { throw cancelled }
         catch (error: Exception) {
             val issue = if (error is NativeFailure) error.message else "Cannot access this device's storage. Stored keys have not been reset."
+            if (progress) {
+                try { refresh() } catch (cancelled: CancellationException) { throw cancelled } catch (_: Exception) { }
+            }
             if (!progress) syncIssue = issue
             state = state.copy(issue = issue)
         } finally { if (progress) state = state.copy(busy = false) }
@@ -116,7 +142,7 @@ class Messenger(application: Application) : AndroidViewModel(application) {
     private suspend fun refresh() {
         val value = execute("state")
         val phase = value.getString("phase")
-        if (phase != "connected") { state = state.copy(phase = phase); return }
+        if (phase != "connected") { state = state.copy(phase = phase, loginAddress = if (phase == "new") state.loginAddress else value.optional("server") ?: state.loginAddress); return }
         val chats = value.getJSONArray("chats").objects().map { chat ->
             ChatSummary(chat.getString("id"), chat.getString("address"), chat.getString("preview"), clock(chat.getLong("timestamp")), chat.getBoolean("verified"),
                 chat.getJSONArray("devices").objects().map { device -> ChatDevice(device.getString("id"), device.getString("fingerprint"), device.getBoolean("verified"), device.getBoolean("blocked"), device.getBoolean("changed")) })

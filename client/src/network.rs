@@ -155,6 +155,66 @@ fn retry_after(response: &Response<Body>) -> Option<u64> {
 }
 
 impl HttpsClient {
+    pub fn login_methods(
+        server: &str,
+        port: u16,
+        roots: &[Vec<u8>],
+    ) -> Result<sigil_protocol::login::Methods, Error> {
+        let client = Self::new(server, port, &"0".repeat(64), roots)?;
+        let response = client.send(
+            Request::get(format!(
+                "{}{}",
+                client.origin,
+                sigil_protocol::discovery::PATH
+            ))
+            .body(&[][..])
+            .map_err(|_| Error::Configuration)?,
+        )?;
+        let discovered: sigil_protocol::discovery::Discovery =
+            client.json(response, 200, sigil_protocol::discovery::MAX_BODY)?;
+        if !discovered.valid_for(&discovered.server_name) {
+            return Err(Error::InvalidResponse);
+        }
+        // A service address may suggest an identity domain; that domain must independently delegate back.
+        let canonical = Self::discover(
+            &discovered.server_name,
+            if discovered.server_name == server {
+                port
+            } else {
+                443
+            },
+            &"0".repeat(64),
+            roots,
+        )?;
+        if canonical.api_origin()? != discovered.api_origin {
+            return Err(Error::InvalidResponse);
+        }
+        if server != discovered.server_name && client.origin != discovered.api_origin {
+            return Err(Error::InvalidResponse);
+        }
+        let response = canonical.request(Method::GET, "/client/v0/login", None::<&()>)?;
+        let methods: sigil_protocol::login::Methods = canonical.json(response, 200, SMALL)?;
+        if methods.server_name != discovered.server_name {
+            return Err(Error::InvalidResponse);
+        }
+        Ok(methods)
+    }
+    pub fn password_sign_in(
+        &self,
+        username: &str,
+        password: &str,
+        label: &str,
+    ) -> Result<accounts::Session, Error> {
+        let bytes = Zeroizing::new(serde_json::to_vec(&serde_json::json!({"username":username,"password":password,"device_credential":self.credential.as_str(),"device_label":label})).map_err(|_|Error::Configuration)?);
+        let response = self.request_bytes(
+            Method::POST,
+            "/client/v0/login/password",
+            &bytes,
+            Some("application/json"),
+            None,
+        )?;
+        self.json(response, 200, SMALL)
+    }
     pub fn discover(
         server: &str,
         port: u16,

@@ -59,7 +59,7 @@ fn argon() -> Result<Argon2<'static>, StoreError> {
         Params::new(65536, 3, 1, Some(32)).map_err(|_| StoreError::InvalidData)?,
     ))
 }
-fn hash_password(password: &str) -> Result<String, StoreError> {
+pub(crate) fn hash_password(password: &str) -> Result<String, StoreError> {
     if password.chars().count() < 15
         || password.len() > 1024
         || password.chars().any(char::is_control)
@@ -76,7 +76,7 @@ fn hash_password(password: &str) -> Result<String, StoreError> {
         .map(|v| v.to_string())
         .map_err(|_| StoreError::InvalidData)
 }
-fn verify_password(hash: &str, password: &str) -> Result<bool, StoreError> {
+pub(crate) fn verify_password(hash: &str, password: &str) -> Result<bool, StoreError> {
     if hash.len() > 256 || !hash.starts_with("$argon2id$v=19$m=65536,t=3,p=1$") {
         return Err(StoreError::InvalidData);
     }
