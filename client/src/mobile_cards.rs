@@ -12,7 +12,8 @@ fn parts(body: Option<&Body>) -> Result<Vec<Part>, Error> {
     };
     Ok(
         match Document::from_bytes(bytes).map_err(|_| Error::InvalidStore)? {
-            Document::Text(_) | Document::Action(_) => Vec::new(),
+            Document::Text(text) => vec![Part::Text(text)],
+            Document::Action(_) => Vec::new(),
             Document::Card(card) => vec![Part::Card(Box::new(card))],
             Document::Composition(value) => value.parts,
         },
@@ -51,7 +52,9 @@ impl ClientStore {
         parts(body)?
             .into_iter()
             .map(|part| match part {
-                Part::Text(text) => Ok(json!({"kind":"text", "text":text.body()})),
+                Part::Text(text) => {
+                    Ok(json!({"kind":"text", "text":text.body(), "rich":text.presentation()}))
+                }
                 Part::Card(card) => self.mobile_card(conversation, &card),
             })
             .collect()
@@ -64,6 +67,7 @@ impl ClientStore {
             Construct::Note(note) => {
                 value["kind"] = json!("note");
                 value["text"] = json!(note.text.body());
+                value["rich"] = json!(note.text.presentation());
             }
             Construct::Checklist(list) => {
                 value["kind"] = json!(if list.mode == ListMode::Task {
@@ -72,22 +76,24 @@ impl ClientStore {
                     "checklist"
                 });
                 value["text"] = json!(list.title.body());
+                value["rich"] = json!(list.title.presentation());
                 value["items"] = json!(list.items.iter().map(|item| -> Result<Value, Error> {
                     let check = state.checks.iter().find(|s| s.item == item.id);
                     let task = state.tasks.iter().find(|s| s.item == item.id);
                     let undo = if task.is_some_and(|t| t.completed && !t.initially_completed) { self.mobile_task_undo(conversation, reference, item.id)?.is_some() } else { false };
-                    Ok(json!({"id":transport::hex(&item.id), "text":item.text.body(), "checked":check.map(|s| s.checked).or_else(||task.map(|s|s.completed)).unwrap_or(item.checked), "enabled":check.is_some() || task.is_some_and(|s| !s.completed) || undo}))
+                    Ok(json!({"id":transport::hex(&item.id), "text":item.text.body(), "rich":item.text.presentation(), "checked":check.map(|s| s.checked).or_else(||task.map(|s|s.completed)).unwrap_or(item.checked), "enabled":check.is_some() || task.is_some_and(|s| !s.completed) || undo}))
                 }).collect::<Result<Vec<_>,_>>()?);
             }
             Construct::Poll(poll) => {
                 let current = state.poll.as_ref().ok_or(Error::InvalidStore)?;
                 value["kind"] = json!("poll");
                 value["text"] = json!(poll.question.body());
+                value["rich"] = json!(poll.question.presentation());
                 value["multiple"] =
                     json!(poll.selection != sigil_protocol::text::structured::Selection::Single);
                 value["closed"] = json!(current.closed);
                 value["voters"] = json!(current.voters);
-                value["items"] = json!(poll.options.iter().map(|item| json!({"id":transport::hex(&item.id), "text":item.text.body(), "checked":current.choices.contains(&item.id), "enabled":!current.closed, "count":current.counts.as_ref().and_then(|v|v.iter().find(|(id,_)|id==&item.id).map(|(_,n)|n))})).collect::<Vec<_>>());
+                value["items"] = json!(poll.options.iter().map(|item| json!({"id":transport::hex(&item.id), "text":item.text.body(), "rich":item.text.presentation(), "checked":current.choices.contains(&item.id), "enabled":!current.closed, "count":current.counts.as_ref().and_then(|v|v.iter().find(|(id,_)|id==&item.id).map(|(_,n)|n))})).collect::<Vec<_>>());
             }
             Construct::Reminder(d) | Construct::Countdown(d) | Construct::Ago(d) => {
                 value["kind"] = json!(match state.definition.content {
@@ -96,6 +102,7 @@ impl ClientStore {
                     _ => "ago",
                 });
                 value["text"] = json!(d.text.body());
+                value["rich"] = json!(d.text.presentation());
                 value["at"] = json!(d.at);
             }
             Construct::Timer(timer) => {
@@ -107,6 +114,7 @@ impl ClientStore {
                 let location = state.location.as_ref().ok_or(Error::InvalidStore)?;
                 value["kind"] = json!("location");
                 value["text"] = json!(location.share.label.body());
+                value["rich"] = json!(location.share.label.presentation());
                 value["latitude_e6"] = json!(location.share.point.coordinates.latitude_e6);
                 value["longitude_e6"] = json!(location.share.point.coordinates.longitude_e6);
             }

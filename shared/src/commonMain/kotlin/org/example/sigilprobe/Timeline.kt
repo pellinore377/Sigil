@@ -191,16 +191,18 @@ internal fun ConversationPage(chat: ChatSummary, state: MessengerState, draft: T
 @Composable
 internal fun MessageBubble(message: ChatMessage, grouped: Boolean, followed: Boolean, analyze: (String) -> String, command: Command? = null) {
     val scheme = MaterialTheme.colorScheme
-    val emoji = remember(message.text, message.kind, message.reply) { if (message.kind == "Text" && message.reply == null) animatedEmoji(message.text) else null }
+    val emoji = remember(message.text, message.kind, message.reply, message.parts) { if (message.kind == "Text" && message.reply == null && message.parts.all { it.kind == "text" && it.rich?.spans.orEmpty().isEmpty() }) animatedEmoji(message.text) else null }
     Box(Modifier.padding(top = if (message.reactions.isNotEmpty() || message.pinned) 8.dp else 0.dp)) {
         if (emoji != null) EmojiMessage(emoji)
         else
         Surface(shape = RoundedCornerShape(topStart = if (!message.mine && grouped) 5.dp else 20.dp, topEnd = if (message.mine && grouped) 5.dp else 20.dp,
             bottomStart = if (!message.mine && followed) 5.dp else 20.dp, bottomEnd = if (message.mine && followed) 5.dp else 20.dp),
             color = if (message.mine) scheme.inverseSurface else scheme.surfaceVariant, contentColor = if (message.mine) scheme.inverseOnSurface else scheme.onSurfaceVariant) {
+            CompositionLocalProvider(LocalMessageSurface provides if (message.mine) scheme.inverseSurface else scheme.surfaceVariant) {
             Column(Modifier.padding(horizontal = 14.dp, vertical = 10.dp)) {
                 message.reply?.let { Surface(shape = RoundedCornerShape(12.dp), color = (if (message.mine) scheme.inverseOnSurface else scheme.onSurface).copy(alpha = .09f)) { Text(it, Modifier.padding(9.dp), style = MaterialTheme.typography.bodySmall, maxLines = 2, overflow = TextOverflow.Ellipsis) }; Spacer(Modifier.height(6.dp)) }
                 if (message.attachment != null) LocalAttachmentContent.current(message) else if (message.parts.isNotEmpty()) MessageCards(message, analyze, command) else MessageText(message.text, analyze)
+            }
             }
         }
         if (message.reactions.isNotEmpty()) Text(message.reactions.distinct().joinToString(""), Modifier.align(if (message.mine) Alignment.TopStart else Alignment.TopEnd).offset(y = (-10).dp), fontSize = 20.sp)
