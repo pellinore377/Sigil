@@ -94,7 +94,7 @@ fun SigilApp(palette: (Int, Boolean) -> String, analyze: (String) -> String, sta
     val open: (String) -> Unit = { peer -> focus.clearFocus(); keyboard?.hide(); command("open", mapOf("peer" to peer)) }
     SigilTheme(appearance, if (chat != null) chatTheme else null, dynamicAccent, palette) {
       CompositionLocalProvider(LocalBackActions provides backActions) {
-        Surface(color = MaterialTheme.colorScheme.background) {
+        Surface(color = MaterialTheme.colorScheme.surface) {
             Column(Modifier.fillMaxSize().windowInsetsPadding(WindowInsets.systemBars.union(WindowInsets.displayCutout)).onPreviewKeyEvent {
                 if (it.type == KeyEventType.KeyDown && it.key == Key.Escape) { back(); true } else false
             }) {
@@ -110,7 +110,7 @@ fun SigilApp(palette: (Int, Boolean) -> String, analyze: (String) -> String, sta
                         if (state.accountAccess?.let { it.linked && it.retiring && !it.acknowledged } == true && page != "profile" && state.call == null) TextButton({ command("close", emptyMap()); conversationPage = ""; navigate("profile") }, Modifier.fillMaxWidth()) { Text("Your server’s sign-in is changing · Review") }
                         val destination = when { state.call != null && !callMinimized -> "call"; chat?.archived == true -> "saved-conversation"; chat != null -> when (conversationPage) { "Chat theme" -> "theme"; "Settings" -> "chat-settings"; else -> "conversation" }; page in listOf("inbox", "search", "notes") -> "home"; else -> page }
                         if (state.call != null && callMinimized) TextButton({ callMinimized = false }, Modifier.fillMaxWidth()) { Glyph("call", 18); Spacer(Modifier.width(8.dp)); Text("Return to call") }
-                        AnimatedContent(destination, Modifier.weight(1f), transitionSpec = {
+                        AnimatedContent(destination, Modifier.weight(1f).background(MaterialTheme.colorScheme.background), transitionSpec = {
                             (fadeIn(tween(MotionMillis)) + slideInVertically(tween(MotionMillis)) { it / 14 }) togetherWith fadeOut(tween(120))
                         }, label = "Page") { target ->
                             when (target) {
@@ -148,12 +148,13 @@ fun SigilApp(palette: (Int, Boolean) -> String, analyze: (String) -> String, sta
                                 }
                             }
                         }
-                        AnimatedVisibility(chat == null && page == "inbox" && (state.call == null || callMinimized), enter = slideInVertically(tween(MotionMillis)) { it } + fadeIn(), exit = slideOutVertically(tween(MotionMillis)) { it } + fadeOut()) {
-                            Surface(shape = RoundedCornerShape(topStart = 24.dp, topEnd = 24.dp), border = BorderStroke(0.5.dp, MaterialTheme.colorScheme.outlineVariant)) {
+                        AnimatedVisibility(chat == null && page in listOf("inbox", "calls", "settings") && (state.call == null || callMinimized), enter = slideInVertically(tween(MotionMillis)) { it } + fadeIn(), exit = slideOutVertically(tween(MotionMillis)) { it } + fadeOut()) {
+                            Surface(Modifier.footerShadow(), shape = RoundedCornerShape(topStart = 24.dp, topEnd = 24.dp)) {
                                 Row(Modifier.fillMaxWidth().padding(vertical = 8.dp), horizontalArrangement = Arrangement.SpaceEvenly) {
-                                    Surface(shape = RoundedCornerShape(16.dp), color = MaterialTheme.colorScheme.inverseSurface, contentColor = MaterialTheme.colorScheme.inverseOnSurface) { Symbol("chat_bubble", "Messages") { navigate("inbox") } }
-                                    Symbol("call", "Calls") { navigate("calls") }
-                                    Symbol("settings", "Settings") { navigate("settings") }
+                                    listOf(Triple("inbox", "chat_bubble", "Messages"), Triple("calls", "call", "Calls"), Triple("settings", "settings", "Settings")).forEach { (tab, icon, label) ->
+                                        Surface(shape = RoundedCornerShape(16.dp), color = if (page == tab) MaterialTheme.colorScheme.inverseSurface else MaterialTheme.colorScheme.surface,
+                                            contentColor = if (page == tab) MaterialTheme.colorScheme.inverseOnSurface else MaterialTheme.colorScheme.onSurfaceVariant) { Symbol(icon, label) { navigate(tab) } }
+                                    }
                                 }
                             }
                         }

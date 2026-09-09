@@ -17,6 +17,8 @@ To inspect encrypted messages in Dockge's container logs, set `SIGIL_LOG_CIPHERT
 
 `latest` tracks published builds; pull and redeploy to update a running server. Revision tags remain available for pinned deployments. Back up before upgrades; older images may reject upgraded databases.
 
+When updating Android, check its release notes for a matching server update. Updating the APK does not update the server image.
+
 Compose publishes HTTP port 18080 (container port 8080), retains data in `sigil-data`, and includes the browser setup wizard and Admin dashboard. Point your HTTPS reverse proxy at that port, open your domain, and enter the one-time code from `docker compose logs sigil`. The wizard sets your password, immutable identity domain, and optional OIDC provider; no credentials belong in Compose.
 
 For identities such as `@you:example.com` with a service at `sigil.example.com`, add one proxy location on `example.com`: `/.well-known/sigil`, forwarded to the same backend. Clients and federation discover the service there without changing the identity domain. Preserve the path; no redirect is needed.

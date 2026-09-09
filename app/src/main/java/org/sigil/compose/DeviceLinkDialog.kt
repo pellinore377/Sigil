@@ -14,12 +14,15 @@ import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.*
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size as DrawSize
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
@@ -42,11 +45,12 @@ internal fun DeviceLinkDialog(flow: JSONObject, busy: Boolean, issue: String?, c
     val close = { if (!busy) command(if (stage == "done") "close" else if (canCancel) "cancel" else "pause", null) }
     Dialog(close, DialogProperties(usePlatformDefaultWidth = false, securePolicy = SecureFlagPolicy.SecureOn)) {
         Surface(Modifier.fillMaxSize()) {
-            Column(Modifier.fillMaxSize().systemBarsPadding().verticalScroll(rememberScrollState()).padding(24.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(20.dp)) {
+            Column(Modifier.fillMaxSize().systemBarsPadding().padding(24.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(16.dp)) {
                 Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                     Text("Link a device", Modifier.weight(1f), style = MaterialTheme.typography.headlineMedium)
                     TextButton(close, enabled = !busy) { Text(if (stage == "done") "Done" else if (canCancel) "Cancel" else "Finish later") }
                 }
+                Column(Modifier.weight(1f).verticalScroll(rememberScrollState()), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(20.dp)) {
                 Text(when (stage) {
                     "show_offer" -> "On your existing device, open Settings → Devices → Link a new device. Scan this code with that device."
                     "scan_offer" -> "Scan the code shown by your new device. Keep both devices with you throughout setup."
@@ -74,6 +78,7 @@ internal fun DeviceLinkDialog(flow: JSONObject, busy: Boolean, issue: String?, c
                 if (flow.has("account")) Text(flow.getString("account"), style = MaterialTheme.typography.titleMedium)
                 issue?.let { Text(it, color = MaterialTheme.colorScheme.error) }
                 if (busy) CircularProgressIndicator(Modifier.size(24.dp))
+                }
                 when (stage) {
                     "scan_offer", "show_offer", "show_proposal" -> if (!scanning) Button({ scanning = true }, enabled = !busy) { Text("Scan the other device") }
                     "confirm_join", "confirm_sponsor" -> {
@@ -98,7 +103,11 @@ private fun LinkScanner(found: (String) -> Unit) {
     var granted by remember { mutableStateOf(context.checkSelfPermission(Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED) }
     val permission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted = it }
     var issue by remember { mutableStateOf<String?>(null) }
-    val preview = remember { PreviewView(context).apply { implementationMode = PreviewView.ImplementationMode.COMPATIBLE } }
+    val preview = remember { PreviewView(context).apply {
+        implementationMode = PreviewView.ImplementationMode.COMPATIBLE
+        layoutParams = android.view.ViewGroup.LayoutParams(android.view.ViewGroup.LayoutParams.MATCH_PARENT, android.view.ViewGroup.LayoutParams.MATCH_PARENT)
+        clipChildren = true; clipToPadding = true
+    } }
     DisposableEffect(granted, lifecycle) {
         val active = AtomicBoolean(true)
         val delivered = AtomicBoolean(false)
@@ -135,7 +144,9 @@ private fun LinkScanner(found: (String) -> Unit) {
         }
         onDispose { active.set(false); analysis?.clearAnalyzer(); feed?.let { provider?.unbind(it) }; analysis?.let { provider?.unbind(it) }; executor.shutdown() }
     }
-    if (granted) AndroidView({ preview }, Modifier.fillMaxWidth().aspectRatio(1f))
+    if (granted) Box(Modifier.fillMaxWidth().aspectRatio(1f).clip(RoundedCornerShape(24.dp)).testTag("link-viewfinder")) {
+        AndroidView({ preview }, Modifier.matchParentSize())
+    }
     else Button({ permission.launch(Manifest.permission.CAMERA) }) { Text("Allow camera to scan") }
     issue?.let { Text(it) }
 }

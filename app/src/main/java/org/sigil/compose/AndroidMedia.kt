@@ -54,7 +54,7 @@ internal class EncryptedMedia(private val context: android.content.Context, priv
     }
     @Synchronized override fun close() { closed = true; bytes.fill(0); bytes = ByteArray(0) }
 }
-private fun prepare(context: android.content.Context, message: ChatMessage): Boolean {
+internal fun prepare(context: android.content.Context, message: ChatMessage): Boolean {
     val command = JSONObject().put("command", "file_get").put("peer", message.peer).put("author", message.author).put("message", message.id)
     val result = StorageKeyProvider(context).withKey { directory, key -> JSONObject(NativeStorage.execute(directory.path, key, command.toString())) }
     check(result.getBoolean("ok"))
@@ -87,9 +87,10 @@ private fun bitmap(context: android.content.Context, message: ChatMessage): Bitm
 @Composable
 internal fun AndroidAttachment(message: ChatMessage) {
     val file = message.attachment ?: return
+    if (file.mediaType.startsWith("audio/")) { AudioMessage(message); return }
     val context = LocalContext.current
     val image = file.mediaType.startsWith("image/") && file.bytes <= 16 * 1024 * 1024
-    val playable = file.mediaType.startsWith("audio/") || file.mediaType.startsWith("video/")
+    val playable = file.mediaType.startsWith("video/")
     var requested by remember(message.id) { mutableStateOf(image) }
     var ready by remember(message.id) { mutableStateOf(false) }
     var failed by remember(message.id) { mutableStateOf(false) }
@@ -120,12 +121,12 @@ internal fun AndroidAttachment(message: ChatMessage) {
     }
     if (opened) {
         if (image && bitmap != null) Dialog({ opened = false }) { Image(bitmap!!.asImageBitmap(), file.name, Modifier.fillMaxWidth(), contentScale = ContentScale.Fit) }
-        else if (playable) MediaDialog(message) { opened = false }
+        else if (playable) VideoDialog(message) { opened = false }
         else LaunchedEffect(message.id) { NativeFileProvider.open(context, message); opened = false }
     }
 }
 @Composable
-internal fun MediaDialog(message: ChatMessage, close: () -> Unit) {
+internal fun VideoDialog(message: ChatMessage, close: () -> Unit) {
     val context = LocalContext.current
     val media = remember(message.id) { EncryptedMedia(context, message) }
     val player = remember(message.id) { MediaPlayer() }
@@ -138,7 +139,6 @@ internal fun MediaDialog(message: ChatMessage, close: () -> Unit) {
     var ratio by remember { mutableFloatStateOf(16f / 9f) }
     var prepared by remember { mutableStateOf(false) }
     var released by remember { mutableStateOf(false) }
-    val video = message.attachment!!.mediaType.startsWith("video/")
     val lifecycle = androidx.lifecycle.compose.LocalLifecycleOwner.current
     DisposableEffect(lifecycle, player) {
         val observer = androidx.lifecycle.LifecycleEventObserver { _, event ->
@@ -156,14 +156,13 @@ internal fun MediaDialog(message: ChatMessage, close: () -> Unit) {
         player.setOnVideoSizeChangedListener { _, width, height -> if (width > 0 && height > 0) ratio = width.toFloat() / height }
         player.setOnCompletionListener { playing = false }
         player.setOnErrorListener { _, _, _ -> failed = true; playing = false; true }
-        if (!video) player.prepareAsync()
         onDispose { released = true; player.release(); media.close() }
     }
     Dialog(close) {
         Surface(shape = androidx.compose.foundation.shape.RoundedCornerShape(24.dp)) {
             Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 Text(message.attachment!!.name, style = MaterialTheme.typography.titleMedium)
-                if (video) AndroidView(factory = { context -> TextureView(context).apply {
+                AndroidView(factory = { context -> TextureView(context).apply {
                     surfaceTextureListener = object : TextureView.SurfaceTextureListener {
                         private var surface: Surface? = null
                         override fun onSurfaceTextureAvailable(texture: android.graphics.SurfaceTexture, width: Int, height: Int) { surface = Surface(texture); player.setSurface(surface); if (!prepared) { prepared = true; player.prepareAsync() } }

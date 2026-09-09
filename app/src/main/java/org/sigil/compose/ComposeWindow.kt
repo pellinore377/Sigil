@@ -11,6 +11,8 @@ import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalView
 import androidx.core.view.WindowCompat
 import org.sigil.LocalSystemAppearance
+import org.sigil.LocalTextPlatformStyle
+import androidx.compose.ui.text.PlatformTextStyle
 
 internal fun ComponentActivity.setSigilContent(content: @Composable () -> Unit) {
     enableEdgeToEdge()
@@ -21,7 +23,7 @@ internal fun ComponentActivity.setSigilContent(content: @Composable () -> Unit) 
             // Older Android retains its window pan until it rechecks the focused field's bounds.
             LaunchedEffect(ime) { withFrameNanos { }; view.rootView.requestLayout() }
         }
-        CompositionLocalProvider(LocalSystemAppearance provides { dark ->
+        CompositionLocalProvider(LocalTextPlatformStyle provides PlatformTextStyle(includeFontPadding = false), LocalSystemAppearance provides { dark ->
             WindowCompat.getInsetsController(window, window.decorView).apply {
                 isAppearanceLightStatusBars = !dark
                 isAppearanceLightNavigationBars = !dark

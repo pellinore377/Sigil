@@ -16,7 +16,7 @@ import androidx.compose.ui.semantics.*
 import androidx.compose.ui.unit.dp
 import kotlin.math.*
 
-private val accents = listOf("Ink" to 0x555555, "Slate" to 0x48658c, "Plum" to 0x786181, "Rose" to 0xa66f72, "Amber" to 0x9c7749, "Olive" to 0x71795a, "Teal" to 0x4f7981, "Graphite" to 0x75727d)
+private val accents = listOf("Ink" to 0x555555, "Slate" to 0x8999a8, "Rose" to 0xb69795, "Sand" to 0xb29b7e, "Moss" to 0x919d90, "Dusk" to 0x808ca3, "Lavender" to 0xa296ad)
 private fun hsv(color: Int): FloatArray {
     val r = (color shr 16 and 255) / 255f; val g = (color shr 8 and 255) / 255f; val b = (color and 255) / 255f
     val maximum = maxOf(r, g, b); val minimum = minOf(r, g, b); val delta = maximum - minimum
@@ -28,11 +28,16 @@ private fun hsv(color: Int): FloatArray {
 internal fun AccentPicker(value: Int?, update: (Int) -> Unit) {
     var custom by remember { mutableStateOf(false) }
     Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-        Text("Accent color", style = MaterialTheme.typography.titleMedium)
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+            Text("Accent color", style = MaterialTheme.typography.titleLarge)
+            Text(accents.find { it.second == value }?.first ?: if (value == null) "App default" else "Custom", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
         FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
             accents.forEach { (name, color) ->
-                Box(Modifier.size(44.dp).semantics { contentDescription = name; selected = value == color; role = Role.RadioButton }.clickable { update(color) }.padding(4.dp)
-                    .border(if (value == color) 2.dp else 0.dp, MaterialTheme.colorScheme.onSurface, CircleShape).padding(3.dp).background(Color(0xff000000L or color.toLong()), CircleShape))
+                Box(Modifier.size(44.dp).semantics { contentDescription = name; selected = value == color; role = Role.RadioButton }.clickable { update(color) }.padding(2.dp)
+                    .then(if (value == color) Modifier.border(1.dp, MaterialTheme.colorScheme.onSurface, RoundedCornerShape(13.dp)) else Modifier).padding(3.dp).background(Color(0xff000000L or color.toLong()), RoundedCornerShape(10.dp)), contentAlignment = Alignment.Center) {
+                    if (value == color) CompositionLocalProvider(LocalContentColor provides if (Color(0xff000000L or color.toLong()).luminance() > .18f) Color.Black else Color.White) { Glyph("check", 20) }
+                }
             }
         }
         TextButton({ custom = true }) { Glyph("palette", 20); Spacer(Modifier.width(8.dp)); Text("Custom color") }

@@ -12,11 +12,15 @@ import androidx.camera.core.resolutionselector.*
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.camera.view.PreviewView
 import androidx.compose.foundation.Image
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.*
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
@@ -26,6 +30,7 @@ import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import kotlinx.coroutines.*
 import java.io.ByteArrayOutputStream
+import org.sigil.Glyph
 
 @Composable
 internal fun CameraSheet(close: () -> Unit, send: (ByteArray) -> Unit) {
@@ -40,7 +45,11 @@ internal fun CameraSheet(close: () -> Unit, send: (ByteArray) -> Unit) {
     var taking by remember { mutableStateOf(false) }
     var ready by remember { mutableStateOf(false) }
     var closed by remember { mutableStateOf(false) }
-    val preview = remember { PreviewView(context).apply { implementationMode = PreviewView.ImplementationMode.COMPATIBLE } }
+    val preview = remember { PreviewView(context).apply {
+        implementationMode = PreviewView.ImplementationMode.COMPATIBLE
+        layoutParams = android.view.ViewGroup.LayoutParams(android.view.ViewGroup.LayoutParams.MATCH_PARENT, android.view.ViewGroup.LayoutParams.MATCH_PARENT)
+        clipChildren = true; clipToPadding = true
+    } }
     val capture = remember { ImageCapture.Builder().setResolutionSelector(ResolutionSelector.Builder().setResolutionStrategy(ResolutionStrategy(Size(1920, 1440), ResolutionStrategy.FALLBACK_RULE_CLOSEST_LOWER_THEN_HIGHER)).build()).build() }
     DisposableEffect(granted, front, photo) {
         var disposed = false
@@ -64,18 +73,22 @@ internal fun CameraSheet(close: () -> Unit, send: (ByteArray) -> Unit) {
     Dialog(close, DialogProperties(usePlatformDefaultWidth = false)) {
         Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
             Column(Modifier.fillMaxSize().systemBarsPadding().padding(16.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) { TextButton(close) { Text("Cancel") }; Text("Camera", style = MaterialTheme.typography.titleLarge); TextButton({ front = !front }, enabled = photo == null && !taking) { Text("Flip") } }
-                Box(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
+                Row(Modifier.fillMaxWidth().padding(bottom = 12.dp), verticalAlignment = Alignment.CenterVertically) {
+                    IconButton(close) { Glyph("close", 24, "Cancel") }
+                    Text("Camera", Modifier.weight(1f).padding(start = 8.dp), style = MaterialTheme.typography.titleLarge)
+                    IconButton({ front = !front }, enabled = photo == null && !taking) { Glyph("flip_camera_android", 24, "Switch camera") }
+                }
+                Box(Modifier.weight(1f).fillMaxWidth().clip(RoundedCornerShape(28.dp)), contentAlignment = Alignment.Center) {
                     val bitmap = photo
                     if (bitmap != null) Image(bitmap.asImageBitmap(), "Photo preview", Modifier.fillMaxSize())
-                    else if (granted) AndroidView({ preview }, Modifier.fillMaxSize())
+                    else if (granted) AndroidView({ preview }, Modifier.matchParentSize())
                     else Button({ permission.launch(Manifest.permission.CAMERA) }) { Text("Allow camera") }
                 }
                 issue?.let { Text(it, Modifier.padding(8.dp)) }
                 Row(Modifier.padding(16.dp), horizontalArrangement = Arrangement.spacedBy(16.dp)) {
                     val bitmap = photo
                     if (bitmap != null) {
-                        OutlinedButton({ photo = null; bitmap.recycle() }, enabled = !taking) { Text("Retake") }
+                        OutlinedButton({ photo = null; bitmap.recycle() }, enabled = !taking, shape = RoundedCornerShape(16.dp)) { Text("Retake") }
                         Button({ taking = true; scope.launch {
                             try {
                                 val bytes = withContext(Dispatchers.Default) {
@@ -84,7 +97,7 @@ internal fun CameraSheet(close: () -> Unit, send: (ByteArray) -> Unit) {
                                 }
                                 send(bytes)
                             } finally { taking = false }
-                        } }, enabled = !taking) { Text("Send photo") }
+                        } }, enabled = !taking, shape = RoundedCornerShape(16.dp)) { Glyph("arrow_upward", 22); Spacer(Modifier.width(8.dp)); Text("Send photo") }
                     } else Button({
                         taking = true; issue = null
                         capture.targetRotation = preview.display?.rotation ?: android.view.Surface.ROTATION_0
@@ -105,7 +118,8 @@ internal fun CameraSheet(close: () -> Unit, send: (ByteArray) -> Unit) {
                             }
                             override fun onError(error: ImageCaptureException) { taking = false; issue = "Could not take this photo. Try again." }
                         })
-                    }, enabled = ready && !taking) { Text("Take photo") }
+                    }, modifier = Modifier.size(76.dp), enabled = ready && !taking, shape = CircleShape, contentPadding = PaddingValues(0.dp),
+                        border = BorderStroke(3.dp, MaterialTheme.colorScheme.outlineVariant), colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.inverseSurface, contentColor = MaterialTheme.colorScheme.inverseOnSurface)) { Glyph("photo_camera", 32, "Take photo") }
                 }
             }
         }

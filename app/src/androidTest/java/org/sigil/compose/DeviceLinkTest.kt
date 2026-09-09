@@ -43,8 +43,8 @@ class DeviceLinkTest {
         val busy = androidx.compose.runtime.mutableStateOf(false)
         ui.setContent { SigilApp(NativeCore::palette, NativeCore::analyze, MessengerState(phase = "connected"), { _, _ -> }, overlay = { DeviceLinkDialog(flow, busy.value, null) { action, _ -> confirmed = action == "confirm"; busy.value = true } }) }
         ui.onNodeWithText("Approve this device").assertIsNotEnabled()
-        ui.onNode(isToggleable()).performScrollTo().performClick()
-        ui.onNodeWithText("Approve this device").performScrollTo().performClick()
+        ui.onNode(isToggleable()).assertIsDisplayed().performClick()
+        ui.onNodeWithText("Approve this device").assertIsDisplayed().performClick()
         ui.runOnIdle { assertTrue(confirmed) }
         ui.onNodeWithText("Approve this device").assertIsNotEnabled()
         ui.onNodeWithText("Cancel").assertIsNotEnabled()

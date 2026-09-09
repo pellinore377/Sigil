@@ -32,6 +32,10 @@ import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.Color
 import org.jetbrains.compose.resources.Font
 import org.jetbrains.compose.resources.painterResource
 import androidx.compose.animation.AnimatedVisibility
@@ -49,12 +53,18 @@ internal fun Symbol(name: String, label: String, action: () -> Unit) {
         Glyph(name)
     }
 }
+internal fun Modifier.footerShadow() = drawBehind {
+    val height = 5.dp.toPx()
+    drawRect(Brush.verticalGradient(listOf(Color.Transparent, Color.Black.copy(alpha = .12f)), startY = -height, endY = 0f), Offset(0f, -height), Size(size.width, height))
+}
 @Composable
 internal fun Header(title: String, back: (() -> Unit)? = null, action: @Composable RowScope.() -> Unit = {}) {
+    Surface(color = MaterialTheme.colorScheme.surface, shadowElevation = 2.dp) {
     Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 12.dp), verticalAlignment = Alignment.CenterVertically) {
         if (back != null) Symbol("arrow_back", "Back", back)
         Text(title, Modifier.weight(1f).padding(start = 8.dp), style = MaterialTheme.typography.headlineMedium)
         action()
+    }
     }
 }
 @Composable
@@ -69,8 +79,8 @@ val LocalProfilePhoto = staticCompositionLocalOf<@Composable (String, Modifier) 
 internal fun SettingRow(icon: String, title: String, detail: String, click: () -> Unit) {
     Row(Modifier.fillMaxWidth().clickable(onClick = click).padding(horizontal = 20.dp, vertical = 16.dp), verticalAlignment = Alignment.CenterVertically) {
         Glyph(icon)
-        Column(Modifier.weight(1f).padding(horizontal = 16.dp)) { Text(title, style = MaterialTheme.typography.titleMedium); Text(detail, style = MaterialTheme.typography.bodySmall) }
-        Text("›")
+        Column(Modifier.weight(1f).padding(horizontal = 16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) { Text(title, style = MaterialTheme.typography.titleMedium); Text(detail, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant) }
+        Glyph("chevron_right", 20)
     }
 }
 @Composable
@@ -157,61 +167,6 @@ internal fun MessageText(source: String, analyze: (String) -> String) {
     }
     Text(text, style = MaterialTheme.typography.bodyLarge)
 }
-@Composable
-internal fun AppearancePage(value: Appearance, dynamicAvailable: Boolean, back: () -> Unit, collections: Boolean = false, setCollections: (Boolean) -> Unit = {}, collectionLabels: Boolean = true, setCollectionLabels: (Boolean) -> Unit = {}, followAccount: Boolean = true, setFollowAccount: (Boolean) -> Unit = {}, update: (Appearance) -> Unit) {
-    Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(bottom = 24.dp)) {
-        Header("Appearance", back)
-        Column(Modifier.widthIn(max = 680.dp).padding(horizontal = 24.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
-            Text("Your ink. Your paper.", style = MaterialTheme.typography.headlineLarge)
-            Text(if (followAccount) "Your appearance follows you across linked devices." else "Appearance for this device.")
-            Choices("Typeface", listOf("Newsreader", "Google Sans Flex"), value.font) { update(value.copy(font = it)) }
-            Choices("Appearance mode", listOf("System", "Light", "Dark"), value.mode) { update(value.copy(mode = it)) }
-            if (dynamicAvailable) Toggle("Use Android wallpaper colors", value.dynamic) { update(value.copy(dynamic = it)) }
-            AccentPicker(value.accent) { update(value.copy(accent = it, dynamic = false)) }
-            Preview()
-            Text("Layout", style = MaterialTheme.typography.titleLarge)
-            Toggle("Collections", collections, setCollections)
-            if (collections) Toggle("Show collection names", collectionLabels, setCollectionLabels)
-            var advanced by remember { mutableStateOf(false) }
-            TextButton({ advanced = !advanced }) { Text(if (advanced) "Hide advanced" else "Advanced") }
-            if (advanced) Toggle("Follow account appearance on this device", followAccount, setFollowAccount)
-            TextButton({ update(Appearance()) }) { Text("Reset app appearance") }
-        }
-    }
-}
-
-@Composable
-internal fun ChatAppearance(value: ChatTheme, peer: String, command: Command, back: () -> Unit, update: (ChatTheme) -> Unit) {
-    Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(bottom = 24.dp)) {
-        Header("Chat appearance", back)
-        Column(Modifier.widthIn(max = 680.dp).padding(horizontal = 24.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
-            Text("Only for you", style = MaterialTheme.typography.headlineLarge)
-            Text("Your accent colors the whole conversation. Other participants keep their own theme.")
-            Text(if (value.accent == null) "Accent follows the app" else "Custom conversation accent", style = MaterialTheme.typography.bodyMedium)
-            AccentPicker(value.accent) { update(value.copy(accent = it)) }
-            TextButton({ update(value.copy(accent = null)) }) { Text("Follow app accent") }
-            Toggle("Gradient background", value.gradient) { update(value.copy(gradient = it)) }
-            Text("Background image", style = MaterialTheme.typography.titleMedium)
-            Text("Your image stays on this device. Accent and gradient settings follow your account.", style = MaterialTheme.typography.bodySmall)
-            Row { TextButton({ command("attachment_pick", mapOf("peer" to peer, "kind" to "Wallpaper")) }) { Text("Choose image") }; TextButton({ command("wallpaper_remove", mapOf("peer" to peer)) }) { Text("Remove image") } }
-            Box(Modifier.clip(RoundedCornerShape(20.dp))) { LocalWallpaper.current(peer, Modifier.matchParentSize()); Preview(false) }
-            TextButton({ update(ChatTheme()); command("wallpaper_remove", mapOf("peer" to peer)) }) { Text("Reset conversation appearance") }
-        }
-    }
-}
-
-@Composable
-internal fun Choices(label: String, choices: List<String>, selected: String, update: (String) -> Unit) {
-    Column {
-        Text(label, style = MaterialTheme.typography.titleMedium)
-        choices.forEach { choice ->
-            Row(Modifier.fillMaxWidth().selectableChoice(choice == selected) { update(choice) }, verticalAlignment = Alignment.CenterVertically) {
-                RadioButton(choice == selected, null)
-                Text(choice, Modifier.padding(12.dp))
-            }
-        }
-    }
-}
 internal fun Modifier.selectableChoice(selected: Boolean, action: () -> Unit) = this
     .semantics { this.selected = selected; role = Role.RadioButton }.clickable(onClick = action).heightIn(min = 48.dp)
 
@@ -220,18 +175,5 @@ internal fun Toggle(label: String, checked: Boolean, update: (Boolean) -> Unit) 
     Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
         Text(label, Modifier.weight(1f))
         Switch(checked, update, Modifier.semantics { contentDescription = label })
-    }
-}
-
-
-@Composable
-internal fun Preview(background: Boolean = true) {
-    Column(Modifier.fillMaxWidth().then(if (background) Modifier.background(MaterialTheme.colorScheme.background, RoundedCornerShape(20.dp)) else Modifier).padding(16.dp),
-        verticalArrangement = Arrangement.spacedBy(12.dp)) {
-        Text("A little correspondence", style = MaterialTheme.typography.titleLarge)
-        Surface(shape = RoundedCornerShape(14.dp), color = MaterialTheme.colorScheme.surface) { Text("Room for a thought.", Modifier.padding(14.dp)) }
-        Surface(Modifier.align(Alignment.End), shape = RoundedCornerShape(14.dp), color = MaterialTheme.colorScheme.primaryContainer,
-            contentColor = MaterialTheme.colorScheme.onPrimaryContainer) { Text("And a thoughtful reply.", Modifier.padding(14.dp)) }
-        Text("let thought = \"hello\";", fontFamily = LocalCodeFont.current, style = MaterialTheme.typography.bodyMedium)
     }
 }

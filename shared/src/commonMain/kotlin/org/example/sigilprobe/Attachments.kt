@@ -10,4 +10,4 @@ val LocalAttachmentContent = staticCompositionLocalOf<@Composable (ChatMessage) 
 val LocalLocationContent = staticCompositionLocalOf<@Composable (MessagePart) -> Unit> {
     { part -> Text("${part.latitude}, ${part.longitude}") }
 }
-val LocalWallpaper = staticCompositionLocalOf<@Composable (String, Modifier) -> Unit> { { _, _ -> } }
+val LocalWallpaper = staticCompositionLocalOf<@Composable (String, Modifier) -> Boolean> { { _, _ -> false } }

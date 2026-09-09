@@ -125,6 +125,14 @@ docker kill "$container" >/dev/null
 docker rm "$container" >/dev/null
 container=
 start "$original"
+request 200 - GET /versions
+jq -e '.contact_requests==[0]' "$scratch/response.json" >/dev/null
+request 200 device GET /client/v0/contact-requests
+jq -e '.requests==[] and .next==null' "$scratch/response.json" >/dev/null
+request 200 device GET /client/v0/contact-requests/policy
+jq -e '.enabled==true' "$scratch/response.json" >/dev/null
+printf '%s' '{}' > "$scratch/invalid-contact.json"
+request 422 device POST /client/v0/contact-requests invalid-contact.json
 request 200 - GET /client/v0/login
 jq -e '.server_name=="chat.example" and .password==false and .sso==false' "$scratch/response.json" >/dev/null
 printf '%s' '{"revision":0,"enabled":true}' > "$scratch/password-policy.json"
