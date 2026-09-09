@@ -144,6 +144,7 @@ fn public(ip: IpAddr) -> bool {
 #[derive(Clone, Default)]
 pub struct Policy {
     exceptions: Vec<(Exception, Vec<Network>)>,
+    private_origin: Option<(String, u16)>,
 }
 impl Policy {
     pub fn new(exceptions: Vec<Exception>) -> Result<Self, Error> {
@@ -178,7 +179,17 @@ impl Policy {
                 .collect::<Result<Vec<_>, _>>()?;
             parsed.push((exception, networks));
         }
-        Ok(Self { exceptions: parsed })
+        Ok(Self {
+            exceptions: parsed,
+            private_origin: None,
+        })
+    }
+    /// Only administrator-configured OIDC providers receive implicit LAN access.
+    pub(crate) fn oidc(issuer: &str, exceptions: Vec<Exception>) -> Result<Self, Error> {
+        let uri = endpoint(issuer)?;
+        let mut policy = Self::new(exceptions)?;
+        policy.private_origin = Some((host(&uri)?, uri.port_u16().unwrap_or(443)));
+        Ok(policy)
     }
     fn exception(&self, uri: &Uri) -> Result<Option<&(Exception, Vec<Network>)>, Error> {
         let host = host(uri)?;
@@ -194,12 +205,25 @@ impl Policy {
         }
         let port = uri.port_u16().unwrap_or(443);
         let rule = self.exception(uri)?;
+        let provider = self
+            .private_origin
+            .as_ref()
+            .is_some_and(|(name, expected_port)| {
+                host(uri).is_ok_and(|value| value == *name) && port == *expected_port
+            });
         if addresses.iter().any(|address| {
             address.port() != port
                 || match rule {
                     Some((_, networks)) => !networks
                         .iter()
                         .any(|network| network.contains(address.ip())),
+                    None if provider => {
+                        !(public(address.ip())
+                            || match address.ip() {
+                                IpAddr::V4(ip) => ip.is_private(),
+                                IpAddr::V6(ip) => ip.is_unique_local(),
+                            })
+                    }
                     None => port != 443 || !public(address.ip()),
                 }
         }) {

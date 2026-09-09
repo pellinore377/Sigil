@@ -311,8 +311,8 @@ async fn avatar(State(state): State<AppState>, headers: HeaderMap) -> Response {
     match tokio::task::spawn_blocking(move || {
         use base64ct::{Base64, Encoding};
         let _permit = permit;
-        let response = crate::egress::Policy::new(request.1)
-            .map_err(|_| StoreError::Forbidden)?
+        let response = request
+            .1
             .service(
                 ureq::http::Request::get(request.0)
                     .body(&[][..])

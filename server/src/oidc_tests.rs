@@ -22,6 +22,9 @@ impl Idp {
         Self::with_post(false)
     }
     fn with_post(body_auth: bool) -> Self {
+        Self::with_metadata(body_auth, None)
+    }
+    fn with_metadata(body_auth: bool, jwks_override: Option<String>) -> Self {
         let pem = include_str!("../tests/fixtures/synthetic-fcm-key.pem");
         let encoded = pem
             .lines()
@@ -61,7 +64,7 @@ impl Idp {
         let values = claims.clone();
         let requests = Arc::new(AtomicUsize::new(0));
         let count = requests.clone();
-        let app=Router::new().route("/.well-known/openid-configuration",get(move || {let issuer=issuer.lock().unwrap().clone();async move {Json(serde_json::json!({"issuer":issuer,"authorization_endpoint":format!("{issuer}/authorize"),"token_endpoint":format!("{issuer}/token"),"jwks_uri":format!("{issuer}/jwks"),"response_types_supported":["code"],"subject_types_supported":["public"],"id_token_signing_alg_values_supported":["RS256"],"code_challenge_methods_supported":["S256"],"token_endpoint_auth_methods_supported":[if body_auth {"client_secret_post"} else {"client_secret_basic"}]}))}}))
+        let app=Router::new().route("/.well-known/openid-configuration",get(move || {let issuer=issuer.lock().unwrap().clone();let jwks_uri=jwks_override.clone().unwrap_or_else(||format!("{issuer}/jwks"));async move {Json(serde_json::json!({"issuer":issuer,"authorization_endpoint":format!("{issuer}/authorize"),"token_endpoint":format!("{issuer}/token"),"jwks_uri":jwks_uri,"response_types_supported":["code"],"subject_types_supported":["public"],"id_token_signing_alg_values_supported":["RS256"],"code_challenge_methods_supported":["S256"],"token_endpoint_auth_methods_supported":[if body_auth {"client_secret_post"} else {"client_secret_basic"}]}))}}))
             .route("/jwks",get(move ||{let jwks=jwks.clone();async move {Json(jwks)}}))
             .route("/token",post(move |headers:axum::http::HeaderMap,body:Bytes|{let values=values.clone();let key=key.clone();let count=count.clone();async move {
                 count.fetch_add(1,Ordering::SeqCst);
@@ -138,7 +141,7 @@ fn authenticate(store: &mut Store, state: &str, now: u64) -> Option<String> {
         .map(|c| c.secret)
 }
 #[test]
-fn private_provider_requires_a_scoped_exception_and_returns_it_without_the_secret() {
+fn loopback_provider_requires_a_scoped_exception_and_returns_it_without_the_secret() {
     let _guard = crate::egress::tests::NETWORK.lock().unwrap();
     let idp = Idp::new();
     let mut config = idp.configuration();
@@ -159,6 +162,40 @@ fn private_provider_requires_a_scoped_exception_and_returns_it_without_the_secre
     let public = serde_json::to_string(&store.oidc_configuration().unwrap()).unwrap();
     assert!(!public.contains("synthetic-secret"));
     assert!(saved.secret_configured);
+}
+
+#[test]
+fn provider_requests_cannot_leave_the_issuer_origin_even_with_an_exception() {
+    let _guard = crate::egress::tests::NETWORK.lock().unwrap();
+    let hits = Arc::new(AtomicUsize::new(0));
+    let count = hits.clone();
+    let other = crate::egress::tests::Fixture::local(Router::new().route(
+        "/jwks",
+        get(move || {
+            count.fetch_add(1, Ordering::SeqCst);
+            async { "{}" }
+        }),
+    ));
+    let idp = Idp::with_metadata(false, Some(other.uri("127.0.0.1", "/jwks")));
+    let mut provider = idp.configuration().provider.unwrap();
+    provider.exceptions.push(other.exception("127.0.0.1"));
+    assert!(metadata(&provider).is_err());
+    assert_eq!(hits.load(Ordering::SeqCst), 0);
+    let request = ureq::http::Request::get(other.uri("127.0.0.1", "/jwks"))
+        .body(vec![])
+        .unwrap();
+    assert!(http(&provider, request).is_err());
+    assert_eq!(hits.load(Ordering::SeqCst), 0);
+    provider.exceptions.clear();
+    let request = ureq::http::Request::get(idp.fixture.uri("127.0.0.1", "/jwks"))
+        .body(vec![])
+        .unwrap();
+    assert!(http(&provider, request).is_err());
+    let serialized = serde_json::json!({"issuer":"https://idp.example", "client_id":"sigil-synthetic", "client_secret":null});
+    assert!(serde_json::from_value::<Provider>(serialized)
+        .unwrap()
+        .exceptions
+        .is_empty());
 }
 
 #[test]
