@@ -31,6 +31,7 @@ pub(crate) fn routes() -> Router<AppState> {
         .route("/auth/v0/admin/password-login", post(password_policy))
         .route("/auth/v0/admin/password", post(change_password))
         .route("/auth/v0/admin/avatar", get(avatar))
+        .route("/auth/v0/admin/profile", get(profile).put(update_profile))
         .route("/auth/v0/admin/oidc", post(oidc_start))
         .route("/auth/v0/admin/oidc/unlink", post(oidc_unlink))
         .layer(RequestBodyLimitLayer::new(16384))
@@ -200,6 +201,8 @@ async fn logout(State(state): State<AppState>, headers: HeaderMap) -> Response {
 #[serde(deny_unknown_fields)]
 struct Finish {
     username: String,
+    #[serde(default)]
+    display_name: Option<String>,
 }
 async fn finish(
     State(state): State<AppState>,
@@ -213,7 +216,12 @@ async fn finish(
         return store_error(StoreError::Unauthorized);
     };
     match with_store(state, move |s| {
-        s.web_finish_setup(&token, &value.username, now()?)
+        s.web_finish_setup(
+            &token,
+            &value.username,
+            value.display_name.as_deref(),
+            now()?,
+        )
     })
     .await
     {
@@ -257,6 +265,36 @@ async fn oidc_start(State(state): State<AppState>, headers: HeaderMap) -> Respon
             *response.body_mut() = axum::body::Body::from(serde_json::to_vec(&started).unwrap());
             response
         }
+        Err(e) => store_error(e),
+    }
+}
+async fn profile(State(state): State<AppState>, headers: HeaderMap) -> Response {
+    if let Err(e) = authorize(&state, &headers).await {
+        return store_error(e);
+    }
+    let token = match cookie(&headers) {
+        Ok(v) => v,
+        Err(e) => return store_error(e),
+    };
+    match with_store(state, move |s| s.web_profile(&token, now()?)).await {
+        Ok(v) => Json(v).into_response(),
+        Err(e) => store_error(e),
+    }
+}
+async fn update_profile(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(value): Json<sigil_protocol::profile::Profile>,
+) -> Response {
+    if let Err(e) = same_origin(&state, &headers).await {
+        return store_error(e);
+    }
+    let token = match cookie(&headers) {
+        Ok(v) => v,
+        Err(e) => return store_error(e),
+    };
+    match with_store(state, move |s| s.web_update_profile(&token, value, now()?)).await {
+        Ok(v) => Json(v).into_response(),
         Err(e) => store_error(e),
     }
 }

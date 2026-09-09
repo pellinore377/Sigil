@@ -51,8 +51,8 @@ pub struct Configuration {
     pub exceptions: Vec<egress::Exception>,
 }
 #[derive(Clone, Deserialize, Serialize)]
-struct Stored {
-    provider: Provider,
+pub(crate) struct Stored {
+    pub(crate) provider: Provider,
     metadata: CoreProviderMetadata,
     redirect: String,
 }
@@ -73,7 +73,7 @@ fn encode<T: Serialize>(value: &T) -> Result<Zeroizing<String>, StoreError> {
         .map(Zeroizing::new)
         .map_err(|_| StoreError::InvalidData)
 }
-fn read(db: &Connection) -> Result<(u64, Option<Stored>), StoreError> {
+pub(crate) fn read(db: &Connection) -> Result<(u64, Option<Stored>), StoreError> {
     let (revision, value): (u64, Option<String>) = db.query_row(
         "SELECT revision,value FROM oidc_configuration WHERE id=1",
         [],
@@ -186,7 +186,7 @@ impl Store {
         let tx = self
             .0
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
-        let (revision, _) = read(&tx)?;
+        let (revision, previous) = read(&tx)?;
         if revision != update.expected_revision {
             return Err(StoreError::Conflict);
         }
@@ -196,6 +196,13 @@ impl Store {
             return Err(StoreError::Invalid(
                 "Enable administrator password login before changing OIDC",
             ));
+        }
+        if let Some(previous) = previous {
+            if update.provider.as_ref().is_none_or(|p| {
+                p.issuer != previous.provider.issuer || p.client_id != previous.provider.client_id
+            }) {
+                crate::oidc_transition::guard_retirement(&tx, &previous.provider.issuer)?;
+            }
         }
         let stored = match update.provider {
             Some(provider) => Some(Stored {
@@ -221,6 +228,7 @@ impl Store {
         tx.execute("DELETE FROM oidc_flows", [])?;
         tx.execute("DELETE FROM oidc_grants", [])?;
         tx.execute("DELETE FROM web_oidc", [])?;
+        crate::oidc_transition::reset(&tx)?;
         tx.commit()?;
         self.oidc_configuration()
     }
@@ -470,8 +478,9 @@ impl Store {
                 (name, true)
             }
             Some(_) => return Err(StoreError::Forbidden),
-            None if crate::admin::policy(&tx)?.registration
-                == sigil_protocol::admin::Registration::Oidc =>
+            None if !crate::oidc_transition::state(&tx)?.1
+                && crate::admin::policy(&tx)?.registration
+                    == sigil_protocol::admin::Registration::Oidc =>
             {
                 (
                     flow.username
@@ -685,6 +694,10 @@ impl Callback {
         Ok(crate::web_admin::Identity {
             subject: subject.to_owned(),
             username: claims.preferred_username().map(|v| v.as_str().to_owned()),
+            name: claims
+                .name()
+                .and_then(|v| v.get(None))
+                .map(|v| v.as_str().to_owned()),
             picture: claims
                 .picture()
                 .and_then(|v| v.get(None))

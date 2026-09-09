@@ -46,6 +46,8 @@ pub struct Status {
     pub oidc_linked: bool,
     pub password_login: bool,
     pub suggested_username: Option<String>,
+    pub display_name: Option<String>,
+    pub suggested_display_name: Option<String>,
 }
 fn random() -> Result<String, StoreError> {
     random_secret().map_err(|_| StoreError::InvalidData)
@@ -180,6 +182,20 @@ impl Store {
             claimed,
             authenticated,
             complete: claimed && account.is_some(),
+            display_name: if authenticated {
+                account
+                    .as_ref()
+                    .map(|id| crate::profile::read(&self.0, id).map(|p| p.display_name))
+                    .transpose()?
+            } else {
+                None
+            },
+            suggested_display_name: if authenticated {
+                self.0
+                    .query_row("SELECT suggested_name FROM web_owner", [], |r| r.get(0))?
+            } else {
+                None
+            },
             username,
             server_name: configuration.settings.map(|s| s.server_name),
             public_origin: self.administration_policy()?.public_origin,
@@ -285,11 +301,17 @@ impl Store {
         &mut self,
         token: &str,
         username: &str,
+        display_name: Option<&str>,
         now: u64,
     ) -> Result<(), StoreError> {
         self.web_session(token, now)?;
         if !valid_username(username) {
             return Err(StoreError::Invalid("Choose a valid lowercase username"));
+        }
+        if display_name.is_some_and(|name| !sigil_protocol::profile::valid_name(name)) {
+            return Err(StoreError::Invalid(
+                "Choose a display name of up to 128 characters without control characters",
+            ));
         }
         let tx = self
             .0
@@ -319,6 +341,9 @@ impl Store {
             ),
         )?;
         tx.execute("UPDATE web_owner SET account=?1", [&id])?;
+        if let Some(name) = display_name {
+            tx.execute("INSERT INTO account_profiles VALUES(?1,1,?2)", (&id, name))?;
+        }
         let binding: (Option<String>, Option<String>) =
             tx.query_row("SELECT issuer,subject FROM web_owner", [], |r| {
                 Ok((r.get(0)?, r.get(1)?))
@@ -365,6 +390,7 @@ pub(crate) struct Identity {
     pub subject: String,
     pub username: Option<String>,
     pub picture: Option<String>,
+    pub name: Option<String>,
 }
 impl Store {
     pub(crate) fn web_oidc_start(
@@ -480,7 +506,7 @@ impl Store {
                 crate::oidc::bind(&tx, callback.issuer(), &identity.subject, account)?;
             }
             tx.execute(
-                "UPDATE web_owner SET issuer=?1,subject=?2,picture=?3,suggested=?4,oidc_revision=?5",
+                "UPDATE web_owner SET issuer=?1,subject=?2,picture=?3,suggested=?4,oidc_revision=?5,suggested_name=?6",
                 (
                     callback.issuer(),
                     &identity.subject,
@@ -489,6 +515,7 @@ impl Store {
                         .filter(|p| p.len() <= 2048 && crate::egress::endpoint(p).is_ok()),
                     identity.username.filter(|u| valid_username(u)),
                     sql(callback.revision())?,
+                    identity.name.filter(|name| sigil_protocol::profile::valid_name(name)),
                 ),
             )?;
         } else if issuer.as_deref() != Some(callback.issuer())
@@ -582,7 +609,7 @@ impl Store {
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
         tx.execute("DELETE FROM oidc_bindings WHERE account=(SELECT account FROM web_owner) AND issuer=(SELECT issuer FROM web_owner)",[])?;
         tx.execute(
-            "UPDATE web_owner SET issuer=NULL,subject=NULL,picture=NULL,suggested=NULL,oidc_revision=NULL",
+            "UPDATE web_owner SET issuer=NULL,subject=NULL,picture=NULL,suggested=NULL,suggested_name=NULL,oidc_revision=NULL",
             [],
         )?;
         tx.execute("DELETE FROM web_oidc", [])?;

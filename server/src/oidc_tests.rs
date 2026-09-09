@@ -578,16 +578,31 @@ fn administrator_oidc_binds_verified_subject_to_the_initiating_browser() {
         .web_oidc_browser(&state, Some(&random_secret().unwrap()), now)
         .is_err());
     assert!(store.web_oidc_browser(&state, Some(&browser), now).unwrap());
-    *idp.claims.lock().unwrap() = serde_json::json!({"iss":idp.fixture.uri("127.0.0.1",""),"sub":"admin-subject","aud":"sigil-synthetic","iat":now,"exp":now+600,"nonce":params["nonce"],"challenge":params["code_challenge"],"preferred_username":"admin","picture":"https://images.example/avatar.png"});
+    *idp.claims.lock().unwrap() = serde_json::json!({"iss":idp.fixture.uri("127.0.0.1",""),"sub":"admin-subject","aud":"sigil-synthetic","iat":now,"exp":now+600,"nonce":params["nonce"],"challenge":params["code_challenge"],"preferred_username":"admin","name":"Suggested name","picture":"https://images.example/avatar.png"});
     let callback = store.oidc_claim(&state, now).unwrap().unwrap();
     let identity = callback.verify_profile("synthetic-code").unwrap();
     assert_eq!(identity.username.as_deref(), Some("admin"));
+    assert_eq!(identity.name.as_deref(), Some("Suggested name"));
     let session = store
         .web_oidc_verified(callback, Ok(identity), &browser, now)
         .unwrap();
     assert!(store.web_session(&browser, now).is_err());
     assert!(store.oidc_claim(&state, now).is_err());
-    store.web_finish_setup(&session, "admin", now).unwrap();
+    assert_eq!(
+        store
+            .web_status(Some(&session), now)
+            .unwrap()
+            .suggested_display_name
+            .as_deref(),
+        Some("Suggested name")
+    );
+    store
+        .web_finish_setup(&session, "admin", Some("Chosen name"), now)
+        .unwrap();
+    assert_eq!(
+        store.web_profile(&session, now).unwrap().display_name,
+        "Chosen name"
+    );
     store.web_password_policy(&session, false, now).unwrap();
     let status = store.web_status(Some(&session), now).unwrap();
     assert!(status.complete && status.oidc_linked && !status.password_login);
@@ -757,7 +772,7 @@ fn changed_provider_requires_new_verified_login_before_passwords_can_be_disabled
             .unwrap()
     };
     let token = authenticate(&mut store, Some(&token));
-    store.web_finish_setup(&token, "admin", now).unwrap();
+    store.web_finish_setup(&token, "admin", None, now).unwrap();
     store.web_password_policy(&token, false, now).unwrap();
     assert!(store
         .web_unlink_oidc(&token, "synthetic administrator passphrase", now)
@@ -784,4 +799,321 @@ fn changed_provider_requires_new_verified_login_before_passwords_can_be_disabled
         .unwrap();
     assert!(!store.web_status(None, now).unwrap().oidc_login);
     assert!(store.web_password_policy(&token, false, now).is_err());
+}
+
+fn finish_flow(
+    store: &mut Store,
+    idp: &Idp,
+    token: Option<&str>,
+    name: Option<&str>,
+    subject: &str,
+    replace: bool,
+    now: u64,
+) -> Result<Progress, StoreError> {
+    let (request, state) = idp.start(store, token, name, replace, now);
+    idp.claims.lock().unwrap()["sub"] = serde_json::json!(subject);
+    let completion = authenticate(store, &state, now);
+    store.oidc_finish(
+        Finish {
+            completion,
+            request_id: request.request_id,
+            secret: request.secret,
+        },
+        now,
+    )
+}
+fn prepare_retirement(
+    store: &mut Store,
+    retiring: bool,
+    now: u64,
+) -> crate::oidc_transition::Transition {
+    let current = store.oidc_transition(None, now).unwrap();
+    store
+        .prepare_oidc_retirement(
+            crate::oidc_transition::Prepare {
+                configuration_revision: current.configuration_revision,
+                revision: current.revision,
+                retiring,
+                confirm: true,
+            },
+            now,
+        )
+        .unwrap()
+}
+fn acknowledge(
+    store: &mut Store,
+    token: &str,
+    now: u64,
+) -> sigil_protocol::oidc::AcknowledgeFallback {
+    let current = store.oidc_access(token, now).unwrap();
+    let request = sigil_protocol::oidc::AcknowledgeFallback {
+        configuration_revision: current.configuration_revision,
+        transition_revision: current.transition_revision,
+        confirm_invitation_fallback: true,
+    };
+    store
+        .acknowledge_oidc_fallback(token, request.clone(), now)
+        .unwrap();
+    request
+}
+#[test]
+fn oidc_retirement_preserves_accounts_and_requires_current_user_acknowledgements() {
+    let _guard = crate::egress::tests::NETWORK.lock().unwrap();
+    let idp = Idp::new();
+    let (dir, mut store, alice, bob, now) = crate::admin::tests::setup();
+    enable(&mut store, &idp);
+    let a = store.session(&alice, now).unwrap();
+    assert!(matches!(
+        finish_flow(
+            &mut store,
+            &idp,
+            Some(&alice),
+            None,
+            "alice-sub",
+            false,
+            now
+        )
+        .unwrap(),
+        Progress::Linked
+    ));
+    let disable = || Configure {
+        expected_revision: 1,
+        provider: None,
+        confirm: true,
+    };
+    assert!(store.oidc_install(disable(), None).is_err());
+    let transition = prepare_retirement(&mut store, true, now);
+    assert_eq!(transition.awaiting_acknowledgement, 1);
+    assert_eq!(transition.pending[0].id, a.account_id);
+    assert!(finish_flow(
+        &mut store,
+        &idp,
+        None,
+        Some("new_user"),
+        "new-sub",
+        false,
+        now
+    )
+    .is_err());
+    assert!(matches!(
+        finish_flow(&mut store, &idp, None, None, "alice-sub", true, now).unwrap(),
+        Progress::Ready {
+            reauthorize: true,
+            ..
+        }
+    ));
+    let request = sigil_protocol::oidc::AcknowledgeFallback {
+        configuration_revision: transition.configuration_revision,
+        transition_revision: transition.revision,
+        confirm_invitation_fallback: true,
+    };
+    assert!(store
+        .acknowledge_oidc_fallback(&bob, request.clone(), now)
+        .is_err());
+    let mut denied = request.clone();
+    denied.confirm_invitation_fallback = false;
+    assert!(store
+        .acknowledge_oidc_fallback(&alice, denied, now)
+        .is_err());
+    acknowledge(&mut store, &alice, now);
+    assert_eq!(
+        store
+            .oidc_transition(None, now)
+            .unwrap()
+            .awaiting_acknowledgement,
+        0
+    );
+    prepare_retirement(&mut store, false, now);
+    prepare_retirement(&mut store, true, now);
+    assert!(matches!(
+        store.acknowledge_oidc_fallback(&alice, request, now),
+        Err(StoreError::Conflict)
+    ));
+    acknowledge(&mut store, &alice, now);
+    assert!(matches!(
+        finish_flow(&mut store, &idp, Some(&bob), None, "bob-sub", false, now).unwrap(),
+        Progress::Linked
+    ));
+    assert!(store.oidc_install(disable(), None).is_err());
+    acknowledge(&mut store, &bob, now);
+    drop(store);
+    let mut store = Store::open(&dir.path().join("sigil.db")).unwrap();
+    assert!(
+        store
+            .oidc_access(&alice, now)
+            .unwrap()
+            .invitation_fallback_acknowledged
+    );
+    store.oidc_install(disable(), None).unwrap();
+    assert_eq!(store.session(&alice, now).unwrap().account_id, a.account_id);
+    assert!(!store.oidc_access(&alice, now).unwrap().retiring);
+    let invitation = store
+        .invite_reauthorization(&a.account_id, 600, now)
+        .unwrap();
+    let replacement = random_secret().unwrap();
+    let new = store
+        .reauthorize(
+            sigil_protocol::accounts::Enrollment {
+                invitation: invitation.secret,
+                device_credential: replacement.clone(),
+                device_label: "Fallback".into(),
+            },
+            now,
+        )
+        .unwrap();
+    assert_eq!(new.account_id, a.account_id);
+    assert_eq!(new.address, a.address);
+    assert_ne!(new.device_id, a.device_id);
+    assert!(store.session(&alice, now).is_err());
+    assert_eq!(
+        store
+            .0
+            .query_row("SELECT count(*) FROM accounts", [], |r| r.get::<_, u32>(0))
+            .unwrap(),
+        2
+    );
+    assert_eq!(
+        store
+            .0
+            .query_row(
+                "SELECT count(*) FROM device_bindings WHERE device=?1",
+                [&new.device_id],
+                |r| r.get::<_, u32>(0)
+            )
+            .unwrap(),
+        0
+    );
+}
+#[test]
+fn replacing_provider_identity_requires_retirement_but_secret_rotation_does_not() {
+    let _guard = crate::egress::tests::NETWORK.lock().unwrap();
+    let idp = Idp::new();
+    let (_dir, mut store, alice, _, now) = crate::admin::tests::setup();
+    enable(&mut store, &idp);
+    finish_flow(
+        &mut store,
+        &idp,
+        Some(&alice),
+        None,
+        "alice-sub",
+        false,
+        now,
+    )
+    .unwrap();
+    let mut config = idp.configuration();
+    config.expected_revision = 1;
+    let metadata = check(&config).unwrap();
+    config.provider.as_mut().unwrap().client_id = "replacement-client".into();
+    assert!(store
+        .oidc_install(config.clone(), metadata.clone())
+        .is_err());
+    config.provider.as_mut().unwrap().client_id = "sigil-synthetic".into();
+    config.provider.as_mut().unwrap().issuer = "https://new.example".into();
+    assert!(store.oidc_install(config, metadata).is_err());
+    prepare_retirement(&mut store, true, now);
+    let stale = acknowledge(&mut store, &alice, now);
+    let mut config = idp.configuration();
+    config.expected_revision = 1;
+    let metadata = check(&config).unwrap();
+    store.oidc_install(config, metadata).unwrap();
+    assert!(!store.oidc_access(&alice, now).unwrap().retiring);
+    prepare_retirement(&mut store, true, now);
+    assert!(matches!(
+        store.acknowledge_oidc_fallback(&alice, stale, now),
+        Err(StoreError::Conflict)
+    ));
+    acknowledge(&mut store, &alice, now);
+    let mut config = idp.configuration();
+    config.expected_revision = 2;
+    config.provider.as_mut().unwrap().client_id = "replacement-client".into();
+    let metadata = check(&config).unwrap();
+    store.oidc_install(config, metadata).unwrap();
+    assert_eq!(
+        store.session(&alice, now).unwrap().address,
+        "@alice:chat.example"
+    );
+}
+#[test]
+fn retirement_review_is_paginated_and_excludes_disabled_users_and_password_owner() {
+    let _guard = crate::egress::tests::NETWORK.lock().unwrap();
+    let idp = Idp::new();
+    let (dir, mut store, alice, bob, now) = crate::admin::tests::setup();
+    enable(&mut store, &idp);
+    let issuer = idp.configuration().provider.unwrap().issuer;
+    for token in [&alice, &bob] {
+        let account = store.session(token, now).unwrap().account_id;
+        bind(&store.0, &issuer, token, &account).unwrap();
+    }
+    let owner = store.session(&alice, now).unwrap().account_id;
+    store
+        .0
+        .execute("UPDATE web_owner SET account=?1", [&owner])
+        .unwrap();
+    for i in 0..51 {
+        let account = format!("{i:064x}");
+        store
+            .0
+            .execute(
+                "INSERT INTO accounts VALUES(?1,?2,0)",
+                (&account, format!("fixture_{i}")),
+            )
+            .unwrap();
+        bind(&store.0, &issuer, &account, &account).unwrap();
+    }
+    let current = prepare_retirement(&mut store, true, now);
+    assert_eq!(current.linked_accounts, 52);
+    assert_eq!(current.pending.len(), 50);
+    assert!(!current.pending.iter().any(|p| p.id == owner));
+    let page = store
+        .oidc_transition(current.next_after.as_deref(), now)
+        .unwrap();
+    assert_eq!(page.pending.len(), 2);
+    assert!(page.next_after.is_none());
+    assert!(page
+        .pending
+        .iter()
+        .all(|p| p.id > current.next_after.clone().unwrap()));
+    let stale = acknowledge(&mut store, &bob, now);
+    store
+        .0
+        .execute("UPDATE web_owner SET password_login=0", [])
+        .unwrap();
+    assert!(store
+        .prepare_oidc_retirement(
+            crate::oidc_transition::Prepare {
+                configuration_revision: current.configuration_revision,
+                revision: current.revision,
+                retiring: false,
+                confirm: true
+            },
+            now
+        )
+        .is_err());
+    let b = store.session(&bob, now).unwrap();
+    store
+        .0
+        .execute(
+            "UPDATE accounts SET disabled=1 WHERE id=?1",
+            [&b.account_id],
+        )
+        .unwrap();
+    assert!(store.acknowledge_oidc_fallback(&bob, stale, now).is_err());
+    assert_eq!(
+        store.oidc_transition(None, now).unwrap().linked_accounts,
+        51
+    );
+    let backup = dir.path().join("backup.db");
+    store.backup(&backup).unwrap();
+    let restored = dir.path().join("restored.db");
+    Store::restore(&backup, &restored).unwrap();
+    let restored = Store::open(&restored).unwrap();
+    assert!(!restored.oidc_transition(None, now).unwrap().retiring);
+    assert_eq!(
+        restored
+            .0
+            .query_row("SELECT count(*) FROM oidc_fallback_ack", [], |r| r
+                .get::<_, u32>(0))
+            .unwrap(),
+        0
+    );
 }
