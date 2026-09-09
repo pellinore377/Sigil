@@ -11,6 +11,8 @@ use sigil_crypto::Secret32;
 mod account;
 #[path = "mobile_cards.rs"]
 mod cards;
+#[path = "mobile_contacts.rs"]
+mod contacts;
 #[path = "mobile_link.rs"]
 mod device_link;
 #[path = "mobile_files.rs"]
@@ -32,6 +34,14 @@ mod wallpaper;
 #[derive(Deserialize)]
 #[serde(tag = "command", rename_all = "snake_case", deny_unknown_fields)]
 enum Command {
+    ContactRequest {
+        peer: String,
+        action: String,
+    },
+    ContactRefresh {},
+    ContactPolicy {
+        enabled: Option<bool>,
+    },
     DeviceLink {
         action: String,
         qr: Option<String>,
@@ -410,6 +420,8 @@ impl ClientStore {
                 continue;
             }
             let mut chat = public_peer(peer);
+            let display = self.mobile_peer_display(peer)?;
+            chat["id"] = json!(display);
             chat["preview"] = json!("");
             chat["timestamp"] = json!(0);
             let same: Vec<_> = peers
@@ -423,11 +435,12 @@ impl ClientStore {
             chat["verified"] = json!(same
                 .iter()
                 .all(|p| p.verified && !p.blocked && p.changed_fingerprint.is_none()));
-            self.mobile_summary(&transport::hex(&peer.id), &mut chat)?;
+            self.mobile_summary(&display, &mut chat)?;
             chat["contact_only"] =
                 json!(chat["latest_message"].is_null() && chat["ui"]["opened"] != "true");
             chats.push(chat);
         }
+        self.mobile_contact_chats(&mut chats)?;
         let mut chat = json!({"id":"self","address":session.address,"name":"Note to Self","self":true,"verified":true,"devices":[], "timestamp":0,"preview":""});
         self.mobile_summary("self", &mut chat)?;
         if !chat["latest_message"].is_null() {
@@ -450,6 +463,9 @@ impl ClientStore {
     }
     fn mobile_recipients(&self, peer: Id) -> Result<Vec<Id>, Error> {
         let chosen = self.peer(peer)?;
+        if self.mobile_contact_blocked(&chosen)? {
+            return Err(Error::Unprepared);
+        }
         let peers = self.mobile_peers()?;
         let same: Vec<_> = peers
             .into_iter()
@@ -479,13 +495,28 @@ impl ClientStore {
         } else if let Some(group) = peer.strip_prefix("group:") {
             self.queue_group_operation(id(group)?, &operation, timestamp, conversations::now())?;
         } else {
-            let peers = self.mobile_recipients(id(peer)?)?;
+            let peers = self.mobile_recipients(self.mobile_peer(peer)?)?;
             self.queue_direct_operation(&peers, &operation, timestamp, conversations::now())?;
         }
         Ok(json!({"queued":request}))
     }
     fn mobile_execute(&mut self, command: Command) -> Result<Value, Error> {
         match command {
+            Command::ContactRequest { peer, action } => self.mobile_request(&peer, &action),
+            Command::ContactRefresh {} => {
+                self.mobile_contact_sync(true)?;
+                self.mobile_state()
+            }
+            Command::ContactPolicy { enabled } => {
+                let policy =
+                    enabled.map(|enabled| sigil_protocol::contacts::RequestPolicy { enabled });
+                Ok(serde_json::to_value(
+                    self.connected_client()?
+                        .contact_request_policy(policy.as_ref())?,
+                )
+                .map_err(|_| Error::InvalidStore)?)
+            }
+
             Command::Presence { status } => self.mobile_presence(&status),
             Command::ClearConversation {
                 peer,
@@ -883,17 +914,7 @@ impl ClientStore {
                 self.apply_private_operation(&operation, timestamp)?;
                 Ok(json!({}))
             }
-            Command::Block { peer, active } => {
-                let chosen = self.peer(id(&peer)?)?;
-                for device in self.mobile_peers()? {
-                    if device.binding.account == chosen.binding.account
-                        && device.binding.server == chosen.binding.server
-                    {
-                        self.block_peer(device.id, active)?;
-                    }
-                }
-                Ok(json!({}))
-            }
+            Command::Block { peer, active } => self.mobile_block(&peer, active),
             Command::Edit {
                 peer,
                 request,
@@ -1061,7 +1082,7 @@ impl ClientStore {
                 if self.call(call, conversations::now())?.direct {
                     return Err(Error::InvalidEvent);
                 }
-                self.invite_to_call(call, id(&peer)?, conversations::now())?;
+                self.invite_to_call(call, self.mobile_peer(&peer)?, conversations::now())?;
                 self.mobile_calls()
             }
             Command::Calls {} => self.mobile_calls(),
@@ -1072,6 +1093,9 @@ impl ClientStore {
                     self.sync_due_online()?
                 };
                 let mut issue = result.scheduling_error.as_ref().map(error_message);
+                if self.mobile_contact_sync(false).is_err() {
+                    issue = Some("Contact requests could not refresh. Messaging sync continues independently.");
+                }
                 if let Some(step) = &result.step {
                     if step.failure.is_some() {
                         issue = Some("Sync incomplete. Saved messages remain queued for retry.");
@@ -1094,29 +1118,7 @@ impl ClientStore {
                 self.publish_device_binding_online()?;
                 Ok(json!({}))
             }
-            Command::Find { address } => {
-                let found = self.discover_account_online(&address)?;
-                let (username, server) = address
-                    .strip_prefix('@')
-                    .and_then(|v| v.split_once(':'))
-                    .ok_or(Error::InvalidEvent)?;
-                let own = self.connection_session()?.ok_or(Error::Unprepared)?;
-                for device in &found.devices {
-                    let peer =
-                        if own.address.split_once(':').ok_or(Error::InvalidStore)?.1 == server {
-                            self.fetch_peer_online(id(device)?)?
-                        } else {
-                            self.fetch_remote_peer_online(server, id(device)?)?
-                        };
-                    if peer.binding.username != username
-                        || peer.binding.server != server
-                        || transport::hex(&peer.binding.account) != found.account
-                    {
-                        return Err(Error::Conflict);
-                    }
-                }
-                self.mobile_state()
-            }
+            Command::Find { address } => self.mobile_find(&address),
             Command::Confirm { peer, fingerprint } => {
                 let peer = id(&peer)?;
                 self.confirm_peer(peer, id(&fingerprint)?)?;
@@ -1188,7 +1190,10 @@ impl ClientStore {
                         match if peer == "self" || peer.starts_with("group:") {
                             Err(Error::NotFound)
                         } else {
-                            self.operation_delivery_state(id(&peer)?, message.reference.message)
+                            self.operation_delivery_state(
+                                self.mobile_peer(&peer)?,
+                                message.reference.message,
+                            )
                         } {
                             Ok(DeliveryState::ServerAccepted) => "Sent",
                             Ok(DeliveryState::Expired) => "Expired",

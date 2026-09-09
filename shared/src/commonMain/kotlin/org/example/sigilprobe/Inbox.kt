@@ -132,6 +132,7 @@ internal fun PresenceAvatar(chat: ChatSummary, size: Int = 48, presence: Boolean
 private val searchCategories = listOf("Unread" to "mark_chat_unread", "Conversations" to "chat", "Requests" to "person_add", "Pinned" to "push_pin", "Images" to "image", "Videos" to "movie", "Places" to "location_on", "Links" to "link")
 @Composable
 internal fun SearchPage(state: MessengerState, query: String, category: String, choose: (String) -> Unit, open: (String) -> Unit, command: Command) {
+    LaunchedEffect(category) { if (category == "Requests") command("contact_refresh", emptyMap()) }
     Column(Modifier.fillMaxSize()) {
         if (query.isEmpty() && category.isEmpty()) LazyVerticalGrid(GridCells.Fixed(2), contentPadding = PaddingValues(20.dp), horizontalArrangement = Arrangement.spacedBy(12.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
             items(searchCategories) { (label, icon) -> Surface(Modifier.clickable { choose(label) }, shape = RoundedCornerShape(16.dp), color = MaterialTheme.colorScheme.surfaceVariant) {
@@ -141,6 +142,7 @@ internal fun SearchPage(state: MessengerState, query: String, category: String, 
             if (category.isNotEmpty()) InputChip(true, { choose("") }, { Text(category) }, Modifier.padding(horizontal = 20.dp), trailingIcon = { Glyph("close", 16) })
             if (state.searching) LinearProgressIndicator(Modifier.fillMaxWidth())
             LazyColumn(contentPadding = PaddingValues(bottom = 16.dp)) {
+                if (category == "Requests") items(state.chats.filter { it.request == "incoming" && (it.name.contains(query, true) || it.address.contains(query, true)) }, key = { "request:${it.id}" }) { chat -> ChatRow(chat, open = { open(chat.id) }) }
                 if (category == "Requests") items(state.invitations, key = { "invite:${it.id}" }) { invitation ->
                     Column(Modifier.fillMaxWidth().padding(20.dp)) {
                         Text("Group invitation", style = MaterialTheme.typography.titleMedium)

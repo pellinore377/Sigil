@@ -5,7 +5,7 @@ data class ChatSummary(val id: String, val address: String, val preview: String,
     val displayName: String = "", val unread: Int = 0, val pinned: Boolean = false, val snoozed: Boolean = false,
     val hidden: Boolean = false, val presence: String = "inactive", val collections: List<String> = emptyList(),
     val typing: List<String> = emptyList(), val draft: String = "", val group: Boolean = false, val avatar: String = "", val ui: Map<String, String> = emptyMap(), val contactOnly: Boolean = false,
-    val readReceipts: Boolean = true, val typingIndicators: Boolean = true, val presenceSharing: Boolean = false) {
+    val readReceipts: Boolean = true, val typingIndicators: Boolean = true, val presenceSharing: Boolean = false, val request: String = "none") {
     val name get() = displayName.ifEmpty { address.removePrefix("@").substringBefore(':') }
 }
 data class ChatMessage(val id: String, val author: String, val text: String, val mine: Boolean, val time: String,
@@ -39,5 +39,5 @@ data class MessengerState(val phase: String = "loading", val address: String = "
     val readReceipts: Boolean = true, val typingIndicators: Boolean = true, val presenceSharing: Boolean = false,
     val invitations: List<GroupInvitation> = emptyList(), val transfers: List<Transfer> = emptyList(), val voice: VoiceState = VoiceState(), val searchMore: Boolean = false, val historical: Boolean = false,
     val calls: List<CallSummary> = emptyList(), val call: ActiveCall? = null, val threadTarget: ThreadTarget? = null, val people: Map<String, String> = emptyMap(),
-    val devices: List<AccountDevice> = emptyList(), val devicesNext: String? = null, val storage: StorageDetails? = null, val notifications: NotificationSettings? = null)
+    val allowRequests: Boolean? = null, val devices: List<AccountDevice> = emptyList(), val devicesNext: String? = null, val storage: StorageDetails? = null, val notifications: NotificationSettings? = null)
 data class LoginMethods(val server: String, val sso: Boolean, val password: Boolean, val invitation: Boolean)

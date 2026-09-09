@@ -30,6 +30,43 @@ class MessagingUiTest {
         File(ui.activity.cacheDir, "ui-$name.png").outputStream().use { bitmap.compress(Bitmap.CompressFormat.PNG, 100, it) }
         bitmap.recycle()
     }
+    @Test fun firstContactRequestKeepsTheDraftAndNeverSendsBeforeVerification() {
+        val state = mutableStateOf(MessengerState(phase = "connected", chats = listOf(chat.copy(verified = false)), selected = "peer"))
+        val commands = mutableListOf<Pair<String, Map<String, Any?>>>()
+        ui.setContent { SigilApp(NativeCore::palette, NativeCore::analyze, state.value, { name, fields -> commands += name to fields }) }
+        ui.onNodeWithTag("composer").performTextInput("A synthetic first letter")
+        ui.onNodeWithContentDescription("Send request").performClick()
+        ui.runOnIdle {
+            assertTrue(commands.any { it.first == "contact_request" && it.second["action"] == "send" })
+            assertFalse(commands.any { it.first == "post" || it.first == "confirm" || it.first == "typing" })
+            state.value = state.value.copy(chats = listOf(chat.copy(verified = false, request = "pending")))
+        }
+        ui.onNodeWithTag("composer").assertTextContains("A synthetic first letter")
+        ui.onNodeWithContentDescription("Send message").assertIsNotEnabled()
+        ui.onNodeWithText("Sam").assertIsDisplayed()
+        ui.onNodeWithText("Request sent. Waiting for Sam to accept and verify your device.").assertIsDisplayed()
+        ui.mainClock.advanceTimeBy(500)
+        ui.waitForIdle()
+        Thread.sleep(250)
+        screenshot("request-pending")
+    }
+    @Test fun acceptingARequestDoesNotApproveItsEncryptionIdentity() {
+        val contact = chat.copy(verified = false, request = "incoming", devices = listOf(ChatDevice("device", "0123".repeat(16), false, false, false)))
+        val state = mutableStateOf(MessengerState(phase = "connected", chats = listOf(contact), selected = "peer"))
+        val commands = mutableListOf<Pair<String, Map<String, Any?>>>()
+        ui.setContent { SigilApp(NativeCore::palette, NativeCore::analyze, state.value, { name, fields -> commands += name to fields }) }
+        ui.onNodeWithText("Verify devices").assertDoesNotExist()
+        screenshot("request-incoming")
+        ui.onNodeWithText("Accept").performClick()
+        ui.runOnIdle {
+            assertTrue(commands.any { it.first == "contact_request" && it.second["action"] == "accept" })
+            assertFalse(commands.any { it.first == "confirm" })
+            state.value = state.value.copy(chats = listOf(contact.copy(request = "accepted")))
+        }
+        ui.onNodeWithText("Verify devices").performClick()
+        ui.onNodeWithText("Fingerprints match · approve").performClick()
+        ui.runOnIdle { assertTrue(commands.any { it.first == "confirm" && it.second["peer"] == "device" }) }
+    }
     @Test fun recoveryRequiresASavedKeyAndProtectsItsWindow() {
         var enabled = false
         val secret = "abcde012".repeat(8)

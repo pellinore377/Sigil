@@ -50,6 +50,8 @@ const MAILBOX_RESPONSE: usize = 16 * (mailbox::MAX_PAYLOAD_HEX + 1024);
 mod attachments;
 #[path = "call_network.rs"]
 mod calls;
+#[path = "contact_network.rs"]
+mod contacts;
 #[path = "federation_network.rs"]
 mod federation;
 #[path = "group_network.rs"]

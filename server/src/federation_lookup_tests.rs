@@ -753,3 +753,99 @@ async fn proxy_lookup_keeps_its_read_budget_when_native_writes_are_exhausted() {
         StatusCode::FORBIDDEN
     );
 }
+
+#[test]
+fn contact_requests_cross_servers_without_opening_mailbox_access() {
+    use sigil_protocol::contacts::{RequestReceipt, RequestState};
+    let mut p = Pair::new(1000, "chat.example", "remote.example");
+    let a = p.source.session(&p.alice, 1000).unwrap();
+    let b = p.sink.session(&p.bob, 1000).unwrap();
+    let permission = p
+        .sink
+        .federation_sender_permission(&p.bob, "chat.example", &a.device_id, 1000)
+        .unwrap();
+    p.sink
+        .configure_federation_sender(
+            &p.bob,
+            sigil_protocol::federation::ConfigureSender {
+                expected_revision: permission.revision,
+                sender: permission.sender,
+                allowed: false,
+            },
+            1000,
+        )
+        .unwrap();
+    let (key, mut request) =
+        crate::contact_requests::tests::request(&mut p.source, &p.alice, &b.account_id, 1000);
+    request.server = "remote.example".into();
+    request.signature = auth::hex(&key.sign(&request.signing_bytes().unwrap()).unwrap());
+    let op = ProxyLookup {
+        destination: "remote.example".into(),
+        operation: Lookup::Service {
+            service: Service::ContactRequest {
+                request: request.clone(),
+            },
+        },
+    };
+    assert!(!op.operation.anonymous());
+    let proxy = p
+        .source
+        .prepare_federation_lookup(&p.alice, op.clone(), 1000)
+        .unwrap();
+    let reply = call(&mut p.sink, &proxy, 1000);
+    let LookupValue::Service(value) = reply.value else {
+        panic!("request receipt expected")
+    };
+    let receipt: RequestReceipt = serde_json::from_str(&value).unwrap();
+    assert_eq!(receipt.state, RequestState::Pending);
+    let again = p
+        .source
+        .prepare_federation_lookup(&p.alice, op, 1000)
+        .unwrap();
+    assert_eq!(
+        call(&mut p.sink, &again, 1000).value,
+        LookupValue::Service(value)
+    );
+    let incoming = p.sink.contact_requests(&p.bob, None, 1000).unwrap();
+    assert_eq!(incoming.requests.len(), 1);
+    assert_eq!(incoming.requests[0].account, a.account_id);
+    p.sink
+        .resolve_contact_request(
+            &p.bob,
+            &receipt.id,
+            RequestState::Accepted,
+            &request.signature,
+            1000,
+        )
+        .unwrap();
+    let status = p
+        .source
+        .prepare_federation_lookup(
+            &p.alice,
+            ProxyLookup {
+                destination: "remote.example".into(),
+                operation: Lookup::Service {
+                    service: Service::ContactStatus {
+                        recipient: b.account_id,
+                    },
+                },
+            },
+            1000,
+        )
+        .unwrap();
+    let LookupValue::Service(value) = call(&mut p.sink, &status, 1000).value else {
+        panic!("request status expected")
+    };
+    assert_eq!(
+        serde_json::from_str::<RequestReceipt>(&value)
+            .unwrap()
+            .state,
+        RequestState::Accepted
+    );
+    assert!(
+        !p.sink
+            .federation_sender_permission(&p.bob, "chat.example", &a.device_id, 1000)
+            .unwrap()
+            .allowed
+    );
+}

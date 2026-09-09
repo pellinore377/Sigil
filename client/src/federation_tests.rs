@@ -356,6 +356,45 @@ fn two_servers_exchange_messages_groups_and_files_across_restart_and_outage() {
     }
     let mut alice = enroll(&mut a, &dir.path().join("alice.db"), "chat.example", &af);
     let mut bob = enroll(&mut b, &dir.path().join("bob.db"), "federated.example", &bf);
+    let command = |client: &mut ClientStore, request: serde_json::Value| {
+        let result: serde_json::Value =
+            serde_json::from_str(&client.mobile_command(&request.to_string())).unwrap();
+        assert_eq!(result["ok"], true, "{result}");
+        result["value"].clone()
+    };
+    let found = command(
+        &mut alice,
+        serde_json::json!({"command":"find","address":"@synthetic:federated.example"}),
+    );
+    let destination = found["chats"][0]["id"].as_str().unwrap().to_owned();
+    assert!(found["chats"][0]["devices"].as_array().unwrap().is_empty());
+    command(
+        &mut alice,
+        serde_json::json!({"command":"contact_request","peer":destination,"action":"send"}),
+    );
+    let incoming = command(&mut bob, serde_json::json!({"command":"contact_refresh"}));
+    assert_eq!(incoming["chats"][0]["request"], "incoming");
+    let source = incoming["chats"][0]["id"].as_str().unwrap().to_owned();
+    command(
+        &mut bob,
+        serde_json::json!({"command":"contact_request","peer":source,"action":"accept"}),
+    );
+    assert_eq!(
+        Connection::open(&apath)
+            .unwrap()
+            .query_row("SELECT count(*) FROM federation_senders", [], |r| r
+                .get::<_, i64>(0))
+            .unwrap(),
+        0
+    );
+    assert_eq!(
+        Connection::open(&bpath)
+            .unwrap()
+            .query_row("SELECT count(*) FROM federation_senders", [], |r| r
+                .get::<_, i64>(0))
+            .unwrap(),
+        0
+    );
     let (pa, pb) = crate::incoming::tests::trust(&mut alice, &mut bob);
     retry(|| alice.allow_peer_sender_online(pb));
     retry(|| bob.allow_peer_sender_online(pa));
