@@ -167,6 +167,103 @@ fn directory_contacts_require_acceptance_and_preserve_trust_after_restart() {
         .is_ok());
 }
 #[test]
+fn denied_first_message_survives_until_recipient_repairs_acceptance() {
+    let (dir, _fixture, mut alice, mut bob, _) = crate::claims::tests::pair();
+    let server = rusqlite::Connection::open(dir.path().join("server.db")).unwrap();
+    server.execute("DELETE FROM allowed_senders", []).unwrap();
+    alice.publish_device_binding_online().unwrap();
+    bob.publish_device_binding_online().unwrap();
+    let found = alice.mobile_find("@bob:chat.example").unwrap();
+    let target = found["chats"][0]["id"].as_str().unwrap().to_owned();
+    alice.mobile_request(&target, "send").unwrap();
+    bob.mobile_contact_sync(true).unwrap();
+    let source = bob.mobile_state().unwrap()["chats"][0]["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    server.execute_batch("CREATE TRIGGER deny_permission BEFORE INSERT ON allowed_senders BEGIN SELECT RAISE(ABORT,'synthetic permission write failure'); END;").unwrap();
+    assert!(bob.mobile_request(&source, "accept").is_err());
+    assert!(bob.contact_for(&source).unwrap().accepted());
+    server
+        .execute_batch("DROP TRIGGER deny_permission")
+        .unwrap();
+    alice.mobile_request(&target, "refresh").unwrap();
+    let message = "Synthetic queued letter";
+    let now = conversations::now();
+    alice
+        .mobile_action(
+            &target,
+            &"31".repeat(32),
+            now,
+            Action::Post {
+                body: Body::Text(message.into()),
+                reply: None,
+                thread: None,
+                expires_at: None,
+                view_once: false,
+            },
+        )
+        .unwrap();
+    let attempt = alice.resume_send_intents_online(now).unwrap().remove(0);
+    assert!(
+        matches!(
+            attempt.result,
+            Err(Error::Network(network::Error::Status { code: 403, .. }))
+        ),
+        "{:?}",
+        attempt.result
+    );
+    assert_eq!(count(&alice.db, "send_intents"), 1);
+    assert_eq!(count(&server, "mailbox"), 0);
+    let mut contact = bob.contact_for(&source).unwrap();
+    contact.work_at = 0;
+    bob.save_contact(&contact).unwrap();
+    bob.db
+        .execute("UPDATE mobile_contact_poll SET next_at=0", [])
+        .unwrap();
+    drop(bob);
+    let mut bob = open(&dir.path().join("bob.db"));
+    let fingerprint = device_fingerprint(&bob.own_device_binding().unwrap()).unwrap();
+    let (mut schedule, _) = crate::schedule::read(&bob.db, &bob.key, &fingerprint).unwrap();
+    schedule.last = conversations::now();
+    schedule.next = schedule.last + 300;
+    schedule.failures = 7;
+    let tx = bob.db.transaction().unwrap();
+    crate::schedule::write(&tx, &bob.key, &fingerprint, &schedule).unwrap();
+    tx.commit().unwrap();
+    let result: Value =
+        serde_json::from_str(&bob.mobile_command(r#"{"command":"sync","interactive":true}"#))
+            .unwrap();
+    assert_eq!(result["ok"], true);
+    assert_eq!(result["value"]["ran"], false);
+    assert!(result["value"]["next_at"].as_u64().unwrap() <= conversations::now() + 60);
+    assert_eq!(
+        crate::schedule::read(&bob.db, &bob.key, &fingerprint)
+            .unwrap()
+            .0
+            .next,
+        schedule.next
+    );
+    for _ in 0..2 {
+        for attempt in alice.resume_send_intents_online(now).unwrap() {
+            alice
+                .send_pending_online(attempt.result.unwrap(), now)
+                .unwrap();
+        }
+    }
+    assert_eq!(count(&alice.db, "send_intents"), 0);
+    for incoming in bob.receive_mailbox_online(now).unwrap() {
+        incoming.result.unwrap();
+    }
+    let conversation = bob.mobile_conversation(&source).unwrap();
+    assert!(bob
+        .recent_conversation_page(conversation, None, now)
+        .unwrap()
+        .messages
+        .iter()
+        .any(|value| value.body == Some(Body::Text(message.into()))));
+}
+#[test]
 fn altered_requests_never_create_peers_or_transfer_trust() {
     let (dir, _fixture, mut alice, mut bob, _) = crate::claims::tests::pair();
     alice.publish_device_binding_online().unwrap();
@@ -268,8 +365,38 @@ fn requests_preserve_existing_conversation_references_and_cached_decisions_refre
     let found = bob.mobile_find("@alice:chat.example").unwrap();
     bob.mobile_request(found["chats"][0]["id"].as_str().unwrap(), "send")
         .unwrap();
+    assert_eq!(
+        bob.mobile_state().unwrap()["chats"][0]["request"],
+        "pending"
+    );
+    assert_eq!(bob.mobile_state().unwrap()["chats"][0]["verified"], false);
     alice.mobile_contact_sync(true).unwrap();
     assert_eq!(alice.mobile_state().unwrap()["chats"][0]["id"], display);
+    assert_eq!(
+        alice.mobile_state().unwrap()["chats"][0]["request"],
+        "incoming"
+    );
+    assert_eq!(alice.mobile_state().unwrap()["chats"][0]["verified"], false);
+    assert!(matches!(
+        alice.mobile_recipients(peer),
+        Err(Error::Unprepared)
+    ));
+    assert!(matches!(
+        alice.mobile_action(
+            &display,
+            &"72".repeat(32),
+            conversations::now(),
+            Action::Post {
+                body: Body::Text("Must remain unsent".into()),
+                reply: None,
+                thread: None,
+                expires_at: None,
+                view_once: false,
+            }
+        ),
+        Err(Error::Unprepared)
+    ));
+    assert_eq!(count(&alice.db, "send_intents"), 0);
     let incoming = alice.contact_for(&display).unwrap().incoming.unwrap();
     alice
         .connected_client()

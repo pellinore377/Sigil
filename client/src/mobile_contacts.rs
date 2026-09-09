@@ -166,13 +166,16 @@ impl ClientStore {
             Err(error) => Err(error),
         }
     }
-    pub(super) fn mobile_contact_blocked(&self, peer: &Peer) -> Result<bool, Error> {
+    pub(super) fn mobile_contact_sendable(&self, peer: &Peer) -> Result<bool, Error> {
         match self.contact(event::account_reference(
             &peer.binding.server,
             &peer.binding.account,
         )) {
-            Ok(contact) => Ok(contact.blocked),
-            Err(Error::NotFound) => Ok(false),
+            Ok(contact) => Ok(contact.accepted()
+                && !contact.blocked
+                && contact.decision.is_none()
+                && contact.review.is_none()),
+            Err(Error::NotFound) => Ok(true),
             Err(error) => Err(error),
         }
     }
@@ -442,7 +445,13 @@ impl ClientStore {
     pub(super) fn mobile_block(&mut self, peer: &str, active: bool) -> Result<Value, Error> {
         let mut contact = self.contact_for(peer)?;
         if contact.blocked && !active {
-            contact.incoming = None;
+            if !contact
+                .incoming
+                .as_ref()
+                .is_some_and(|incoming| incoming.receipt.state == RequestState::Accepted)
+            {
+                contact.incoming = None;
+            }
             contact.decision = None;
         }
         contact.blocked = active;

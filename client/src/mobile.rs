@@ -483,12 +483,13 @@ impl ClientStore {
                 .collect();
             chat["devices"] = json!(same.iter().map(|p| public_peer(p)).collect::<Vec<_>>());
             chat["verified"] = json!(
-                !same.is_empty()
+                self.mobile_contact_sendable(peer)?
+                    && !same.is_empty()
                     && same
                         .iter()
                         .all(|p| p.trusted && !p.blocked && p.changed_fingerprint.is_none())
             );
-            if chat["verified"] == true && !self.mobile_contact_blocked(peer)? {
+            if chat["verified"] == true {
                 let account = event::account_reference(&peer.binding.server, &peer.binding.account);
                 chat["avatar"] = json!(transport::hex(&account));
                 if let Some(name) = self.mobile_profile_name(account)? {
@@ -527,7 +528,7 @@ impl ClientStore {
     }
     fn mobile_recipients(&self, peer: Id) -> Result<Vec<Id>, Error> {
         let chosen = self.peer(peer)?;
-        if self.mobile_contact_blocked(&chosen)? {
+        if !self.mobile_contact_sendable(&chosen)? {
             return Err(Error::Unprepared);
         }
         let peers = self.mobile_peers()?;
@@ -1269,12 +1270,20 @@ impl ClientStore {
                     self.sync_due_online()?
                 };
                 let mut issue = result.scheduling_error.as_ref().map(error_message);
-                if let Err(error) = self.mobile_contact_sync(false) {
-                    issue = Some(format!("Contact sync: {}", error_message(&error)));
-                }
+                let contact_issue = self
+                    .mobile_contact_sync(false)
+                    .err()
+                    .map(|error| format!("Contact sync: {}", error_message(&error)));
                 if let Some(step) = &result.step {
                     if let Some(error) = schedule::failure_error(step) {
-                        issue = Some(format!("Sync: {}", error_message(error)));
+                        issue = Some(format!(
+                            "Sync: {} — {}",
+                            step.failure
+                                .as_ref()
+                                .map(SyncFailure::stage)
+                                .unwrap_or("working"),
+                            error_message(error)
+                        ));
                     }
                     if step.incoming.iter().any(|v| v.result.is_err()) {
                         issue = Some(
@@ -1282,14 +1291,26 @@ impl ClientStore {
                         );
                     }
                 }
+                if let Some(contact_issue) = contact_issue {
+                    issue = Some(issue.map_or_else(
+                        || contact_issue.clone(),
+                        |issue| format!("{issue}\n{contact_issue}"),
+                    ));
+                }
                 let pending: bool = self.db.query_row("SELECT EXISTS(SELECT 1 FROM send_intents) OR EXISTS(SELECT 1 FROM outbox o JOIN sessions s ON s.id=o.session WHERE o.packet IS NOT NULL AND s.retired=0) OR EXISTS(SELECT 1 FROM group_delivery WHERE status=0) OR EXISTS(SELECT 1 FROM call_jobs)", [], |row| row.get(0))?;
                 let generated = result.step.as_ref().is_some_and(|step| {
                     step.conversation_copies > 0
                         || step.delivery_receipts > 0
                         || step.structured > 0
                 });
+                let contact_next: i64 = self.db.query_row(
+                    "SELECT next_at FROM mobile_contact_poll WHERE id=1",
+                    [],
+                    |row| row.get(0),
+                )?;
+                let contact_next = u64::try_from(contact_next).map_err(|_| Error::InvalidStore)?;
                 Ok(
-                    json!({"next_at":result.next_at,"ran":result.step.is_some(),"pending":pending || generated,"issue":issue}),
+                    json!({"next_at":result.next_at.min(contact_next),"ran":result.step.is_some(),"pending":pending || generated,"issue":issue}),
                 )
             }
             Command::Publish {} => {

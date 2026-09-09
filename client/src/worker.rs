@@ -34,6 +34,29 @@ pub enum SyncFailure {
     Calls(Error),
     CallNetwork(usize),
 }
+impl SyncFailure {
+    pub(crate) fn stage(&self) -> &'static str {
+        match self {
+            Self::Receive(_) => "receiving messages",
+            Self::Acknowledge(_) => "acknowledging messages",
+            Self::Prekeys(_) | Self::PrekeyNetwork(_) | Self::PrekeySupplyNetwork => {
+                "publishing keys"
+            }
+            Self::SendIntents(_) | Self::SendIntentNetwork(_) => "starting conversations",
+            Self::RetryControls(_) | Self::RetryControlNetwork(_) => "sending retry controls",
+            Self::Recovery(_) | Self::RecoveryNetwork(_) => "recovering sessions",
+            Self::Outbound(_) | Self::OutboundNetwork(_) => "sending messages",
+            Self::GroupOutbound(_) | Self::GroupOutboundNetwork(_) => "sending group messages",
+            Self::Groups(_) | Self::GroupNetwork(_) => "updating groups",
+            Self::Invitations(_) | Self::InvitationNetwork(_) => "updating invitations",
+            Self::History(_) | Self::HistoryNetwork(_) => "sharing history",
+            Self::Maintenance(_) => "maintaining sessions",
+            Self::Structured(_) => "updating structured content",
+            Self::Conversations(_) => "synchronizing conversations",
+            Self::Calls(_) | Self::CallNetwork(_) => "updating calls",
+        }
+    }
+}
 #[derive(Default)]
 pub struct SyncStep {
     pub calls: Vec<calls::Attempt>,
