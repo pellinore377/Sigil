@@ -128,8 +128,8 @@ async fn complete(
             "state" if csrf.is_none() => csrf = Some(value.into_owned()),
             "error" if !failure => failure = true,
             "iss" => issuer = Some(value.into_owned()),
-            "error_description" | "error_uri" => {}
-            _ => return store_error(StoreError::Unauthorized),
+            // OAuth response extensions (for example scope/session_state) are not credentials.
+            _ => {}
         }
     }
     let Some(csrf) = csrf else {

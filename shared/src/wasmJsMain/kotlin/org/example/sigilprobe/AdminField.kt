@@ -1,5 +1,3 @@
-@file:OptIn(kotlin.js.ExperimentalWasmJsInterop::class)
-
 package org.sigil
 
 import androidx.compose.foundation.layout.*
@@ -23,20 +21,12 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.input.*
 import androidx.compose.ui.unit.dp
-import kotlinx.browser.window
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineStart
-import kotlinx.coroutines.await
 import kotlinx.coroutines.launch
-import org.w3c.dom.clipboard.Clipboard
-import kotlin.js.JsAny
-import kotlin.js.JsString
-import kotlin.js.unsafeCast
-
-private external interface ClipboardNavigator : JsAny { val clipboard: Clipboard }
 
 @Composable
-internal fun Field(label: String, value: String, change: (String) -> Unit, secret: Boolean = false, enabled: Boolean = true, readOnly: Boolean = false, onSubmit: (() -> Unit)? = null) {
+internal fun Field(label: String, value: String, change: (String) -> Unit, secret: Boolean = false, enabled: Boolean = true, onSubmit: (() -> Unit)? = null) {
     var editing by remember { mutableStateOf(TextFieldValue(value)) }
     if (editing.text != value) editing = TextFieldValue(value, editing.selection)
     var focused by remember { mutableStateOf(false) }
@@ -60,12 +50,11 @@ internal fun Field(label: String, value: String, change: (String) -> Unit, secre
         focus.requestFocus()
         scope.launch(start = CoroutineStart.UNDISPATCHED) {
             try {
-                val clipboard = window.navigator.unsafeCast<ClipboardNavigator>().clipboard
-                val replacement = if (action == "Paste") clipboard.readText().await<JsString>().toString() else {
-                    clipboard.writeText(selected.text.substring(selected.selection.min, selected.selection.max)).await<JsAny?>()
+                val replacement = if (action == "Paste") readClipboard() else {
+                    writeClipboard(selected.text.substring(selected.selection.min, selected.selection.max))
                     ""
                 }
-                if (currentEnabled.value && !readOnly && editing.text == selected.text && action != "Copy") {
+                if (currentEnabled.value && editing.text == selected.text && action != "Copy") {
                     val plain = replacement.replace('\n', ' ').replace('\r', ' ')
                     update(TextFieldValue(selected.text.replaceRange(selected.selection.min, selected.selection.max, plain), TextRange(selected.selection.min + plain.length)))
                 }
@@ -74,8 +63,8 @@ internal fun Field(label: String, value: String, change: (String) -> Unit, secre
         }
     }
     val items = buildList {
-        if (!secret && !(menuSelection ?: editing).selection.collapsed) { if (!readOnly) add("Cut"); add("Copy") }
-        if (!readOnly) add("Paste")
+        if (!secret && !(menuSelection ?: editing).selection.collapsed) { add("Cut"); add("Copy") }
+        add("Paste")
         add("Select all")
     }
     fun choose(item: String) {
@@ -113,7 +102,7 @@ internal fun Field(label: String, value: String, change: (String) -> Unit, secre
             }
         }) {
             OutlinedTextField(editing, { update(it) }, Modifier.fillMaxWidth().focusRequester(focus).onFocusChanged { focused = it.isFocused }.semantics { contentDescription = label },
-                label = { Text(label) }, singleLine = true, enabled = enabled, readOnly = readOnly,
+                label = { Text(label) }, singleLine = true, enabled = enabled,
                 keyboardOptions = KeyboardOptions(keyboardType = if (secret) KeyboardType.Password else KeyboardType.Text, autoCorrectEnabled = false, imeAction = if (onSubmit == null) ImeAction.Next else ImeAction.Done),
                 keyboardActions = KeyboardActions(onNext = { enter() }, onDone = { enter() }),
                 shape = RoundedCornerShape(10.dp), visualTransformation = if (secret) PasswordVisualTransformation() else VisualTransformation.None)

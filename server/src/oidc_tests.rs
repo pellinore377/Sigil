@@ -636,7 +636,7 @@ fn browser_callback_requires_its_cookie_before_consuming_the_authorization_code(
         .collect::<std::collections::BTreeMap<_, _>>();
     *idp.claims.lock().unwrap() = serde_json::json!({"iss":idp.fixture.uri("127.0.0.1",""),"sub":"admin-subject","aud":"sigil-synthetic","iat":now,"exp":now+600,"nonce":params["nonce"],"challenge":params["code_challenge"],"preferred_username":"admin"});
     let path = format!(
-        "/auth/v0/oidc/callback?code=synthetic-code&state={}",
+        "/auth/v0/oidc/callback?code=synthetic-code&scope=openid+profile&session_state=provider-session&state={}",
         params["state"]
     );
     let app = crate::router(
@@ -645,6 +645,24 @@ fn browser_callback_requires_its_cookie_before_consuming_the_authorization_code(
     );
     tokio::runtime::Runtime::new().unwrap().block_on(async {
         let request = || axum::http::Request::get(&path);
+        for extra in [
+            "&state=other",
+            "&code=other",
+            "&iss=https%3A%2F%2Fone.example&iss=https%3A%2F%2Ftwo.example",
+        ] {
+            let response = app
+                .clone()
+                .oneshot(
+                    axum::http::Request::get(format!("{path}{extra}"))
+                        .header("cookie", format!("__Host-sigil-admin={token}"))
+                        .body(axum::body::Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), axum::http::StatusCode::UNAUTHORIZED);
+            assert_eq!(idp.requests.load(Ordering::SeqCst), 0);
+        }
         let missing = app
             .clone()
             .oneshot(request().body(axum::body::Body::empty()).unwrap())
