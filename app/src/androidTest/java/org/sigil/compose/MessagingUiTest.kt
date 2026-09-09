@@ -18,7 +18,9 @@ class MessagingUiTest {
     @get:Rule val ui = createAndroidComposeRule<ComponentActivity>()
     private val chat = ChatSummary("peer", "@sam:example.com", "A little correspondence", "9:33am", true, emptyList(), displayName = "Sam", unread = 2, pinned = true)
     private fun message(id: String, mine: Boolean) = ChatMessage(id, if (mine) "me" else "sam", if (mine) "See you tomorrow." else "A little correspondence", mine, "9:33am", if (mine) "Delivered" else "", false, emptyList(), emptyList(), null, true, timestamp = 1000, separator = "Today, 9:33am")
+    @OptIn(androidx.compose.ui.ExperimentalComposeUiApi::class)
     @Before fun windowInsetsMatchTheApplication() {
+        androidx.compose.ui.ComposeUiFlags.isSemanticAutofillEnabled = false
         androidx.test.platform.app.InstrumentationRegistry.getInstrumentation().runOnMainSync {
             ui.activity.enableEdgeToEdge()
             ui.activity.window.setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE)
@@ -47,7 +49,7 @@ class MessagingUiTest {
         ui.onNodeWithContentDescription("Send message").assertIsNotEnabled()
         ui.waitUntil(5000) { ui.onNodeWithText("Sam").isDisplayed() }
         ui.onNodeWithText("Sam").assertIsDisplayed()
-        ui.onNodeWithText("Request sent. Waiting for Sam to accept and verify your device.").assertIsDisplayed()
+        ui.onNodeWithText("Request sent. Waiting for Sam to accept.").assertIsDisplayed()
         ui.mainClock.advanceTimeBy(500)
         ui.waitForIdle()
         Thread.sleep(250)

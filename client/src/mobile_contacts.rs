@@ -245,6 +245,9 @@ impl ClientStore {
             if contact.blocked {
                 chats[index]["verified"] = json!(false);
             }
+            if contact.incoming.is_some() && !contact.blocked {
+                chats[index]["contact_only"] = json!(false);
+            }
             chats[index]["request"] = json!(if contact.blocked {
                 "blocked"
             } else if contact.decision.is_some() {

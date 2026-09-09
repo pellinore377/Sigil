@@ -50,9 +50,8 @@ internal fun NewConversation(state: MessengerState, command: Command, back: () -
     }
 }
 @Composable
-internal fun SettingsPage(state: MessengerState, navigate: (String) -> Unit, back: () -> Unit) {
+internal fun SettingsPage(state: MessengerState, navigate: (String) -> Unit) {
     Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState())) {
-        Header("Settings", back)
         Row(Modifier.fillMaxWidth().clickable { navigate("profile") }.padding(24.dp), verticalAlignment = Alignment.CenterVertically) {
             Avatar(state.profileName.ifEmpty { state.address.removePrefix("@") }, 64, state.profileAvatar)
             Column(Modifier.padding(start = 16.dp)) { Text(state.profileName.ifEmpty { state.address.substringBefore(':').removePrefix("@") }, style = MaterialTheme.typography.headlineSmall); Text(state.address, style = MaterialTheme.typography.bodySmall) }
@@ -185,9 +184,8 @@ internal fun PersonalPage(page: String, state: MessengerState, command: Command,
 }
 private fun storageBytes(bytes: Long): String = when { bytes < 1024 -> "$bytes B"; bytes < 1024 * 1024 -> "${(bytes + 1023) / 1024} KiB"; else -> "${(bytes + 1024 * 1024 - 1) / (1024 * 1024)} MiB" }
 @Composable
-internal fun CallHistoryPage(state: MessengerState, command: Command, back: () -> Unit) {
+internal fun CallHistoryPage(state: MessengerState, command: Command) {
     Column(Modifier.fillMaxSize()) {
-        Header("Calls", back)
         if (state.calls.isEmpty()) Box(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) { Text("Your calls will appear here.", style = MaterialTheme.typography.bodyLarge) }
         else LazyColumn { items(state.calls, key = { it.id }) { call ->
             val other = call.participants.filter { !it.own }

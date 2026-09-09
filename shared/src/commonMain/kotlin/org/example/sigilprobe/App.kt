@@ -18,7 +18,6 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.semantics.*
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
@@ -32,10 +31,11 @@ import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.compose.ui.draw.drawBehind
-import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.geometry.Size
-import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.draw.drawWithContent
+import androidx.compose.ui.draw.shadow
+import androidx.compose.ui.graphics.RectangleShape
+import androidx.compose.ui.graphics.Shape
+import androidx.compose.ui.graphics.drawscope.clipRect
 import org.jetbrains.compose.resources.Font
 import org.jetbrains.compose.resources.painterResource
 import androidx.compose.animation.AnimatedVisibility
@@ -43,6 +43,9 @@ import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.expandVertically
 import androidx.compose.animation.shrinkVertically
+import androidx.compose.animation.slideInHorizontally
+import androidx.compose.animation.slideOutHorizontally
+import androidx.compose.animation.core.tween
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import kotlinx.coroutines.delay
 import sigil.shared.generated.resources.*
@@ -53,13 +56,15 @@ internal fun Symbol(name: String, label: String, action: () -> Unit) {
         Glyph(name)
     }
 }
-internal fun Modifier.footerShadow() = drawBehind {
-    val height = 5.dp.toPx()
-    drawRect(Brush.verticalGradient(listOf(Color.Transparent, Color.Black.copy(alpha = .12f)), startY = -height, endY = 0f), Offset(0f, -height), Size(size.width, height))
-}
+internal fun Modifier.footerShadow() = drawWithContent {
+    clipRect(top = -12.dp.toPx(), bottom = size.height) { this@drawWithContent.drawContent() }
+}.shadow(2.dp, RoundedCornerShape(topStart = 24.dp, topEnd = 24.dp), clip = false)
+internal fun Modifier.headerShadow(shape: Shape = RectangleShape) = drawWithContent {
+    clipRect(top = 0f, bottom = size.height + 12.dp.toPx()) { this@drawWithContent.drawContent() }
+}.shadow(2.dp, shape, clip = false)
 @Composable
 internal fun Header(title: String, back: (() -> Unit)? = null, action: @Composable RowScope.() -> Unit = {}) {
-    Surface(color = MaterialTheme.colorScheme.surface, shadowElevation = 2.dp) {
+    Surface(Modifier.headerShadow(), color = MaterialTheme.colorScheme.surface) {
     Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 12.dp), verticalAlignment = Alignment.CenterVertically) {
         if (back != null) Symbol("arrow_back", "Back", back)
         Text(title, Modifier.weight(1f).padding(start = 8.dp), style = MaterialTheme.typography.headlineMedium)
@@ -176,4 +181,9 @@ internal fun Toggle(label: String, checked: Boolean, update: (Boolean) -> Unit) 
         Text(label, Modifier.weight(1f))
         Switch(checked, update, Modifier.semantics { contentDescription = label })
     }
+}
+@Composable
+internal fun Expandable(visible: Boolean, content: @Composable ColumnScope.() -> Unit) {
+    AnimatedVisibility(visible, enter = expandVertically(tween(MotionMillis), expandFrom = Alignment.Top) + slideInHorizontally(tween(MotionMillis)) { it } + fadeIn(tween(MotionMillis)),
+        exit = shrinkVertically(tween(MotionMillis), shrinkTowards = Alignment.Top) + slideOutHorizontally(tween(MotionMillis)) { it } + fadeOut(tween(120))) { Column(content = content) }
 }

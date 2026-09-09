@@ -104,7 +104,7 @@ internal fun TextFieldState.format(marker: String, range: TextRange = selection)
 }
 
 @Composable
-fun Composer(state: TextFieldState, analyze: (String) -> String, modifier: Modifier = Modifier, showTools: Boolean = true, focusRequester: FocusRequester? = null, onFocus: () -> Unit = {}) {
+fun Composer(state: TextFieldState, analyze: (String) -> String, modifier: Modifier = Modifier, showTools: Boolean = true, focusRequester: FocusRequester? = null, onFocus: () -> Unit = {}, enabled: Boolean = true) {
     var sourceMode by remember { mutableStateOf(false) }
     var editorFocused by remember { mutableStateOf(false) }
     var formattingSelection by remember { mutableStateOf(state.selection) }
@@ -136,7 +136,7 @@ fun Composer(state: TextFieldState, analyze: (String) -> String, modifier: Modif
         Text(if (active.isEmpty()) "Composer" else "Formatting: ${active.joinToString()}")
         }
         LocalComposerInput.current(sourceMode) {
-        BasicTextField(state,
+        BasicTextField(state, enabled = enabled,
             modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp, max = 144.dp).testTag("composer")
                 .semantics { contentDescription = "Message" }
                 .focusRequester(editorFocus).onFocusChanged { editorFocused = it.isFocused; if (it.isFocused) onFocus() }
