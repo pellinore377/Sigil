@@ -10,6 +10,7 @@ pub mod auth;
 pub mod call_config;
 mod call_routes;
 mod call_store;
+mod ciphertext_log;
 mod contacts;
 mod device;
 pub mod egress;
@@ -72,6 +73,7 @@ use tower_http::{limit::RequestBodyLimitLayer, timeout::TimeoutLayer};
 
 #[derive(Clone)]
 struct AppState {
+    ciphertext_log: ciphertext_log::CiphertextLog,
     federation_wake: Arc<tokio::sync::Notify>,
     calls: Arc<call_routes::Runtime>,
     services: Arc<service_routes::Runtime>,
@@ -108,7 +110,15 @@ pub fn router_with_maintenance(
 }
 
 fn application(store: Store, token: AdminToken) -> (Router, AppState) {
+    application_with_log(store, token, ciphertext_log::CiphertextLog::from_env())
+}
+fn application_with_log(
+    store: Store,
+    token: AdminToken,
+    ciphertext_log: ciphertext_log::CiphertextLog,
+) -> (Router, AppState) {
     let state = AppState {
+        ciphertext_log,
         federation_wake: Arc::new(tokio::sync::Notify::new()),
         calls: Arc::new(call_routes::Runtime::default()),
         services: Arc::new(service_routes::Runtime::default()),
@@ -455,6 +465,7 @@ mod tests {
     async fn cancelled_request_keeps_its_blocking_work_bounded() {
         let directory = tempfile::tempdir().unwrap();
         let state = AppState {
+            ciphertext_log: ciphertext_log::CiphertextLog::default(),
             federation_wake: Arc::new(tokio::sync::Notify::new()),
             calls: Arc::new(call_routes::Runtime::default()),
             services: Arc::new(service_routes::Runtime::default()),

@@ -13,6 +13,8 @@ docker compose pull
 docker compose up -d
 ```
 
+To inspect encrypted messages in Dockge's container logs, set `SIGIL_LOG_CIPHERTEXT: "true"` under the service's `environment` and redeploy. Accepted local message envelopes appear as `sigil.encrypted_message` JSON records with their exact `payload_hex` (public protocol headers plus ciphertext). This does not log decrypted text, credentials or private keys. Disable it after testing: container logs retain these copies independently of message deletion. Logging is bounded and may drop diagnostic records under load; message delivery does not wait for the log writer.
+
 `latest` tracks published builds; pull and redeploy to update a running server. Revision tags remain available for pinned deployments. Back up before upgrades; older images may reject upgraded databases.
 
 Compose publishes HTTP port 18080 (container port 8080), retains data in `sigil-data`, and includes the browser setup wizard and Admin dashboard. Point your HTTPS reverse proxy at that port, open your domain, and enter the one-time code from `docker compose logs sigil`. The wizard sets your password, immutable identity domain, and optional OIDC provider; no credentials belong in Compose.
