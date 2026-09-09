@@ -84,7 +84,7 @@ internal fun ComposerPanel(draft: TextFieldState, analyze: (String) -> String, e
                     Glyph(if (draft.text.isNotBlank()) "arrow_upward" else "graphic_eq", 25, if (draft.text.isNotBlank()) if (requestContact != null) "Send request" else "Send message" else "Voice message")
                 }
             }
-            Box(Modifier.fillMaxWidth().height(panelHeight)) {
+            Box(Modifier.fillMaxWidth().then(if (panel.isEmpty() && !keyboardPending) Modifier.windowInsetsBottomHeight(WindowInsets.ime) else Modifier.height(panelHeight))) {
                 AnimatedContent(panel, transitionSpec = { (slideInHorizontally(tween(MotionMillis)) { -it } + fadeIn()) togetherWith (slideOutHorizontally(tween(MotionMillis)) { it } + fadeOut()) }, label = "Composer panel") { shown ->
                     when (shown) {
                         "" -> Unit

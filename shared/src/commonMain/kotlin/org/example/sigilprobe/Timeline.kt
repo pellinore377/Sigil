@@ -104,7 +104,7 @@ internal fun ConversationPage(chat: ChatSummary, state: MessengerState, draft: T
 
             if (state.historical) TextButton({ command("latest", emptyMap()) }, Modifier.align(Alignment.CenterHorizontally)) { Text("Return to latest messages") }
             LazyColumn(Modifier.weight(1f).fillMaxWidth(), state = list, reverseLayout = true, contentPadding = PaddingValues(horizontal = 16.dp, vertical = 12.dp)) {
-                item("typing") { AnimatedVisibility(!threadsOverview && state.typing.isNotEmpty(), enter = expandVertically(tween(MotionMillis)) + fadeIn(), exit = shrinkVertically(tween(MotionMillis)) + fadeOut()) { TypingRow(state.typing.map { state.people[it] ?: if (chat.group) "Member" else chat.name }, chat.name) } }
+                item("typing") { AnimatedVisibility(!threadsOverview && state.typing.isNotEmpty(), enter = expandVertically(tween(MotionMillis)) + fadeIn(), exit = shrinkVertically(tween(MotionMillis)) + fadeOut()) { TypingRow(state.typing.map { state.people[it] ?: if (chat.group) "Member" else chat.name }, chat.name, state.typing) } }
                 itemsIndexed(messages, key = { _, it -> it.author + it.id }) { index, message ->
                     if (threadsOverview) {
                         Surface(Modifier.fillMaxWidth().padding(vertical = 6.dp).clip(RoundedCornerShape(20.dp)).clickable { thread = ThreadTarget(message.threadAuthor!!, message.threadMessage!!) }, shape = RoundedCornerShape(20.dp), color = scheme.surfaceVariant) {
@@ -124,7 +124,7 @@ internal fun ConversationPage(chat: ChatSummary, state: MessengerState, draft: T
                     val density = LocalDensity.current
                     Column(Modifier.fillMaxWidth().animateItem().padding(top = if (grouped) 3.dp else 12.dp)) {
                         if (showSeparator(message, older)) Text(message.separator.ifEmpty { message.time }, Modifier.align(Alignment.CenterHorizontally).padding(top = 6.dp, bottom = 14.dp), style = MaterialTheme.typography.labelMedium, color = scheme.onSurfaceVariant)
-                        if (chat.group && !message.mine && !grouped) Row(Modifier.padding(bottom = 4.dp), verticalAlignment = Alignment.CenterVertically) { val name = state.people[message.author] ?: "Former member"; Avatar(name, 20); Text(name, Modifier.padding(start = 6.dp), style = MaterialTheme.typography.bodySmall) }
+                        if (chat.group && !message.mine && !grouped) Row(Modifier.padding(bottom = 4.dp), verticalAlignment = Alignment.CenterVertically) { val name = state.people[message.author] ?: "Former member"; Avatar(name, 20, message.author); Text(name, Modifier.padding(start = 6.dp), style = MaterialTheme.typography.bodySmall) }
                         Row(Modifier.fillMaxWidth().combinedClickable(interactionSource = remember { androidx.compose.foundation.interaction.MutableInteractionSource() }, indication = null, onClick = { details = message.author to message.id }, onLongClick = { selected = message to bounds })
                             .pointerInput(message.id, message.mine) { detectHorizontalDragGestures(onDragEnd = {
                                 if (abs(drag) > with(density) { 52.dp.toPx() }) respond(message, swipeAction(message.mine, drag) == "thread")
@@ -221,7 +221,7 @@ private fun MessageDetails(message: ChatMessage, expanded: Boolean, receipt: Boo
 }
 @Composable
 private fun DeliveryReceipt(message: ChatMessage, chat: ChatSummary, people: Map<String, String>) {
-    if (message.delivery == "Read") AvatarStack(message.readers.map { people[it] ?: if (chat.group) "Member" else chat.name }.ifEmpty { listOf(chat.name) }, 17)
+    if (message.delivery == "Read") AvatarStack(message.readers.map { people[it] ?: if (chat.group) "Member" else chat.name }.ifEmpty { listOf(chat.name) }, 17, message.readers.ifEmpty { listOf(chat.avatar) })
     else if (message.delivery in listOf("Queued", "Sending")) {
         val transition = rememberInfiniteTransition(label = "Sending")
         val angle by transition.animateFloat(0f, 360f, infiniteRepeatable(tween(900, easing = LinearEasing)), label = "Sending dots")
@@ -234,17 +234,17 @@ private fun DeliveryReceipt(message: ChatMessage, chat: ChatSummary, people: Map
         contentColor = MaterialTheme.colorScheme.background) { Box(contentAlignment = Alignment.Center) { Glyph(if (message.delivery in listOf("Failed", "Expired", "Cancelled")) "priority_high" else "check", 12) } }
 }
 @Composable
-internal fun AvatarStack(people: List<String>, size: Int = 22) {
+internal fun AvatarStack(people: List<String>, size: Int = 22, photos: List<String> = emptyList()) {
     Box(Modifier.width((size + (people.take(5).size - 1).coerceAtLeast(0) * size * .7f).dp).height(size.dp)) {
-        people.take(5).forEachIndexed { i, name -> Box(Modifier.offset(x = (i * size * .7f).dp).border(1.dp, MaterialTheme.colorScheme.background, CircleShape)) { Avatar(name, size) } }
+        people.take(5).forEachIndexed { i, name -> Box(Modifier.offset(x = (i * size * .7f).dp).border(1.dp, MaterialTheme.colorScheme.background, CircleShape)) { Avatar(name, size, photos.getOrElse(i) { "" }) } }
     }
 }
 @Composable
-private fun TypingRow(people: List<String>, name: String) {
+private fun TypingRow(people: List<String>, name: String, photos: List<String>) {
     val animation = rememberInfiniteTransition(label = "Typing")
     val phase by animation.animateFloat(0f, 2f * PI.toFloat(), infiniteRepeatable(tween(1000, easing = LinearEasing)), label = "Typing dots")
     Row(Modifier.padding(top = 8.dp, bottom = 4.dp).semantics { contentDescription = "$name is typing" }, verticalAlignment = Alignment.CenterVertically) {
-        AvatarStack(people, 22); Spacer(Modifier.width(10.dp))
+        AvatarStack(people, 22, photos); Spacer(Modifier.width(10.dp))
         repeat(3) { i -> Box(Modifier.padding(horizontal = 3.dp).offset(y = (-3 * max(0f, sin(phase - i * .8f))).dp).size(5.dp).background(MaterialTheme.colorScheme.onSurfaceVariant, CircleShape)) }
     }
 }

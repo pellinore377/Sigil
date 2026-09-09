@@ -94,7 +94,7 @@ fn policy_password_checks_and_retry_preserve_account_and_devices() {
 fn migration_defaults_closed_and_keeps_existing_sessions() {
     let (dir, s, alice, _, now) = crate::admin::tests::setup();
     let prior = s.session(&alice, now).unwrap();
-    s.0.execute_batch("DROP TABLE contact_requests; DROP TABLE contact_request_policy; DROP TABLE account_passwords; DROP TABLE password_policy; ALTER TABLE oidc_grants DROP COLUMN replace_devices; PRAGMA user_version=29;").unwrap();
+    s.0.execute_batch("DROP TABLE profile_shares; DROP TABLE profile_photos; DROP TABLE contact_requests; DROP TABLE contact_request_policy; DROP TABLE account_passwords; DROP TABLE password_policy; ALTER TABLE oidc_grants DROP COLUMN replace_devices; PRAGMA user_version=29;").unwrap();
     drop(s);
     let s = Store::open(&dir.path().join("sigil.db")).unwrap();
     assert!(!s.user_password_policy().unwrap().enabled);

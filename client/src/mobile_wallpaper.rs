@@ -1,7 +1,6 @@
 use super::*;
 
 const LIMIT: usize = 2 * 1024 * 1024;
-const CHUNK: usize = 64 * 1024;
 const DOMAIN: &[u8] = b"Sigil/device-wallpaper/v1";
 
 impl ClientStore {
@@ -20,20 +19,11 @@ impl ClientStore {
             return Err(Error::Limit);
         }
         let id = self.wallpaper_id(peer)?;
-        let mut framed = Vec::new();
-        if !bytes.is_empty() {
-            let mut revision = [0; 32];
-            getrandom::fill(&mut revision).map_err(|_| sigil_crypto::Error::Entropy)?;
-            framed.extend_from_slice(&revision);
-            framed.extend_from_slice(&(bytes.len() as u64).to_be_bytes());
-            let context = [DOMAIN, &id, framed.as_slice()].concat();
-            for (index, chunk) in bytes.chunks(CHUNK).enumerate() {
-                framed.extend_from_slice(&self.key.seal(
-                    chunk,
-                    &[context.as_slice(), &(index as u32).to_be_bytes()].concat(),
-                )?);
-            }
-        }
+        let framed = if bytes.is_empty() {
+            Vec::new()
+        } else {
+            storage_blob::seal(&self.key, &[DOMAIN, &id].concat(), bytes)?
+        };
         let tx = self
             .db
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
@@ -59,28 +49,7 @@ impl ClientStore {
         let Some(framed) = framed else {
             return Ok(None);
         };
-        let header = framed.get(..40).ok_or(Error::InvalidStore)?;
-        let length = usize::try_from(u64::from_be_bytes(
-            header[32..40].try_into().map_err(|_| Error::InvalidStore)?,
-        ))
-        .map_err(|_| Error::InvalidStore)?;
-        if length == 0
-            || length > LIMIT
-            || framed.len() != 40 + length + length.div_ceil(CHUNK) * 36
-        {
-            return Err(Error::InvalidStore);
-        }
-        let context = [DOMAIN, &id, header].concat();
-        let mut bytes = Zeroizing::new(Vec::with_capacity(length));
-        for (index, chunk) in framed[40..].chunks(CHUNK + 36).enumerate() {
-            bytes.extend_from_slice(&self.key.open(
-                chunk,
-                &[context.as_slice(), &(index as u32).to_be_bytes()].concat(),
-            )?);
-        }
-        if bytes.len() != length {
-            return Err(Error::InvalidStore);
-        }
+        let bytes = storage_blob::open(&self.key, &[DOMAIN, &id].concat(), &framed, LIMIT)?;
         Ok(Some(bytes))
     }
 }

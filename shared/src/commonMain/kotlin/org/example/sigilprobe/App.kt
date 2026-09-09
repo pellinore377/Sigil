@@ -58,11 +58,12 @@ internal fun Header(title: String, back: (() -> Unit)? = null, action: @Composab
     }
 }
 @Composable
-internal fun Avatar(name: String, size: Int = 48) {
+internal fun Avatar(name: String, size: Int = 48, photo: String = "") {
     Surface(Modifier.size(size.dp), shape = CircleShape, color = MaterialTheme.colorScheme.surfaceVariant) {
-        Box(contentAlignment = Alignment.Center) { Text(name.take(1).uppercase(), fontSize = (size * .43f).sp) }
+        Box(contentAlignment = Alignment.Center) { Text(name.take(1).uppercase(), fontSize = (size * .43f).sp); if (photo.isNotEmpty()) LocalProfilePhoto.current(photo, Modifier.matchParentSize()) }
     }
 }
+val LocalProfilePhoto = staticCompositionLocalOf<@Composable (String, Modifier) -> Unit> { { _, _ -> } }
 @Composable
 internal fun SettingRow(icon: String, title: String, detail: String, click: () -> Unit) {
     Row(Modifier.fillMaxWidth().clickable(onClick = click).padding(horizontal = 20.dp, vertical = 16.dp), verticalAlignment = Alignment.CenterVertically) {

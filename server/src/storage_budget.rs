@@ -64,6 +64,13 @@ pub(crate) fn rebuild(db: &Connection) -> Result<(), StoreError> {
     )? {
         db.execute("UPDATE retained_storage SET bytes=bytes+(SELECT count(*) FROM contact_requests WHERE recipient=retained_storage.account_id)*?1",[crate::contact_requests::BYTES as i64])?;
     }
+    if db.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE type='table' AND name='profile_photos')",
+        [],
+        |r| r.get::<_, bool>(0),
+    )? {
+        db.execute("UPDATE retained_storage SET bytes=bytes+(SELECT coalesce(sum(?1+length(image)),0) FROM profile_photos WHERE account=retained_storage.account_id)+(SELECT count(*)*?1 FROM profile_shares WHERE owner=retained_storage.account_id)",[crate::profile_photos::RESERVATION as i64])?;
+    }
     Ok(())
 }
 

@@ -218,7 +218,7 @@ maintenance() {
 }
 request 200 admin GET /admin/v0/setup
 request 200 admin GET /admin/v0/diagnostics
-jq -e '.redacted==true and .schema==31' "$scratch/response.json" >/dev/null
+jq -e '.redacted==true and .schema==32' "$scratch/response.json" >/dev/null
 printf '%s' '{"kind":"backup"}' > "$scratch/operation.json"
 maintenance
 backup_id=$(jq -er '.result.file' "$scratch/response.json")

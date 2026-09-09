@@ -120,6 +120,7 @@ impl Store {
         tx.execute("DELETE FROM oidc_bindings WHERE account=?1", [id])?;
         tx.execute("DELETE FROM account_profiles WHERE account=?1", [id])?;
         crate::contact_requests::delete_account(&tx, id)?;
+        crate::profile_photos::delete_account(&tx, id)?;
         tx.execute("DELETE FROM account_passwords WHERE account=?1", [id])?;
         tx.execute("DELETE FROM oidc_fallback_ack WHERE account=?1", [id])?;
         tx.execute(

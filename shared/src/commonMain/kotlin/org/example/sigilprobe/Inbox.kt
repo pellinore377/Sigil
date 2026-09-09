@@ -122,7 +122,7 @@ internal fun ChatRow(chat: ChatSummary, selected: Boolean = false, modifier: Mod
 @Composable
 internal fun PresenceAvatar(chat: ChatSummary, size: Int = 48, presence: Boolean = true) {
     Box {
-        Avatar(chat.name, size)
+        Avatar(chat.name, size, chat.avatar)
         if (presence && !chat.group && chat.id != "self") Box(Modifier.align(Alignment.BottomEnd).size((size / 4 + 2).dp)
             .background(MaterialTheme.colorScheme.background, CircleShape).padding(2.dp)
             .background(when (chat.presence) { "active" -> Color(0xff4dba50); "away" -> Color(0xffe7ab37); "busy" -> Color(0xffce4545); else -> Color.Gray }, CircleShape)

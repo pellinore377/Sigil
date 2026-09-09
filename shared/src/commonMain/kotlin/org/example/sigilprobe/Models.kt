@@ -35,7 +35,7 @@ data class MessengerState(val phase: String = "loading", val address: String = "
     val collectionsEnabled: Boolean = false, val collections: List<CollectionItem> = emptyList(),
     val searchHits: List<SearchHit> = emptyList(), val searching: Boolean = false, val searchQuery: String = "",
     val typing: List<String> = emptyList(), val ui: Map<String, String> = emptyMap(),
-    val profileName: String = "", val profileRevision: Long? = null,
+    val profileName: String = "", val profileRevision: Long? = null, val profileAvatar: String = "", val photoPending: Boolean = false,
     val readReceipts: Boolean = true, val typingIndicators: Boolean = true, val presenceSharing: Boolean = false,
     val invitations: List<GroupInvitation> = emptyList(), val transfers: List<Transfer> = emptyList(), val voice: VoiceState = VoiceState(), val searchMore: Boolean = false, val historical: Boolean = false,
     val calls: List<CallSummary> = emptyList(), val call: ActiveCall? = null, val threadTarget: ThreadTarget? = null, val people: Map<String, String> = emptyMap(),

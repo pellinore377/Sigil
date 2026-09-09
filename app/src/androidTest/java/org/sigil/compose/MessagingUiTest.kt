@@ -24,6 +24,7 @@ class MessagingUiTest {
             ui.activity.window.setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE)
         }
     }
+    private fun show(content: @androidx.compose.runtime.Composable () -> Unit) { ui.runOnUiThread { ui.activity.setSigilContent(content) }; ui.waitForIdle() }
     private fun screenshot(name: String) {
         ui.waitForIdle()
         val bitmap = androidx.test.platform.app.InstrumentationRegistry.getInstrumentation().uiAutomation.takeScreenshot()
@@ -33,7 +34,8 @@ class MessagingUiTest {
     @Test fun firstContactRequestKeepsTheDraftAndNeverSendsBeforeVerification() {
         val state = mutableStateOf(MessengerState(phase = "connected", chats = listOf(chat.copy(verified = false)), selected = "peer"))
         val commands = mutableListOf<Pair<String, Map<String, Any?>>>()
-        ui.setContent { SigilApp(NativeCore::palette, NativeCore::analyze, state.value, { name, fields -> commands += name to fields }) }
+        show { SigilApp(NativeCore::palette, NativeCore::analyze, state.value, { name, fields -> commands += name to fields }) }
+        ui.onNodeWithText("Sam").assertIsDisplayed()
         ui.onNodeWithTag("composer").performTextInput("A synthetic first letter")
         ui.onNodeWithContentDescription("Send request").performClick()
         ui.runOnIdle {
@@ -43,6 +45,7 @@ class MessagingUiTest {
         }
         ui.onNodeWithTag("composer").assertTextContains("A synthetic first letter")
         ui.onNodeWithContentDescription("Send message").assertIsNotEnabled()
+        ui.waitUntil(5000) { ui.onNodeWithText("Sam").isDisplayed() }
         ui.onNodeWithText("Sam").assertIsDisplayed()
         ui.onNodeWithText("Request sent. Waiting for Sam to accept and verify your device.").assertIsDisplayed()
         ui.mainClock.advanceTimeBy(500)
@@ -54,7 +57,7 @@ class MessagingUiTest {
         val contact = chat.copy(verified = false, request = "incoming", devices = listOf(ChatDevice("device", "0123".repeat(16), false, false, false)))
         val state = mutableStateOf(MessengerState(phase = "connected", chats = listOf(contact), selected = "peer"))
         val commands = mutableListOf<Pair<String, Map<String, Any?>>>()
-        ui.setContent { SigilApp(NativeCore::palette, NativeCore::analyze, state.value, { name, fields -> commands += name to fields }) }
+        show { SigilApp(NativeCore::palette, NativeCore::analyze, state.value, { name, fields -> commands += name to fields }) }
         ui.onNodeWithText("Verify devices").assertDoesNotExist()
         screenshot("request-incoming")
         ui.onNodeWithText("Accept").performClick()
@@ -70,7 +73,7 @@ class MessagingUiTest {
     @Test fun recoveryRequiresASavedKeyAndProtectsItsWindow() {
         var enabled = false
         val secret = "abcde012".repeat(8)
-        ui.setContent { SigilApp(NativeCore::palette, NativeCore::analyze, MessengerState(phase = "connected"), { _, _ -> }, overlay = { RecoveryDialog(secret, false, {}) { enabled = true } }) }
+        show { SigilApp(NativeCore::palette, NativeCore::analyze, MessengerState(phase = "connected"), { _, _ -> }, overlay = { RecoveryDialog(secret, false, {}) { enabled = true } }) }
         ui.onNodeWithText("Enable encrypted backups").assertIsNotEnabled()
         ui.onNode(isToggleable()).performScrollTo().performClick()
         ui.onNodeWithText("Last 8 characters of your saved key").performScrollTo().performTextInput("00000000")
@@ -85,10 +88,11 @@ class MessagingUiTest {
         ui.runOnIdle { assertTrue(enabled) }
     }
     @Test fun switchingComposerPanelsKeepsTheComposerSteady() {
-        ui.setContent { SigilApp(NativeCore::palette, NativeCore::analyze, MessengerState(phase = "connected", chats = listOf(chat), selected = "peer", messages = listOf(message("out", true))), { _, _ -> }) }
+        show { SigilApp(NativeCore::palette, NativeCore::analyze, MessengerState(phase = "connected", chats = listOf(chat), selected = "peer", messages = listOf(message("out", true))), { _, _ -> }) }
         val initial = ui.onNodeWithTag("composer").fetchSemanticsNode().boundsInRoot.top
         ui.onNodeWithTag("composer").performClick()
         try { ui.waitUntil(5000) { ui.onNodeWithTag("composer").fetchSemanticsNode().boundsInRoot.top < initial - 100 } } finally { screenshot("keyboard") }
+        ui.waitUntil(5000) { ui.onNodeWithText("Sam").isDisplayed() }
         val keyboard = ui.onNodeWithTag("composer").fetchSemanticsNode().boundsInRoot.top
         ui.onNodeWithContentDescription("Attachments").performClick()
         ui.onNodeWithText("Photos").assertIsDisplayed()
@@ -105,7 +109,7 @@ class MessagingUiTest {
     }
     @Test fun messageDetailsStartHiddenAndReceiptsFollowTheLastTimelineMessage() {
         val state = mutableStateOf(MessengerState(phase = "connected", chats = listOf(chat), selected = "peer", messages = listOf(message("out", true), message("in", false))))
-        ui.setContent { SigilApp(NativeCore::palette, NativeCore::analyze, state.value, { _, _ -> }) }
+        show { SigilApp(NativeCore::palette, NativeCore::analyze, state.value, { _, _ -> }) }
         ui.onNodeWithContentDescription("Delivered").assertExists()
         ui.onNodeWithContentDescription("Encrypted message").assertDoesNotExist()
         ui.onNodeWithText("See you tomorrow.").performClick()
@@ -115,7 +119,7 @@ class MessagingUiTest {
         ui.onNodeWithContentDescription("Delivered").assertDoesNotExist()
     }
     @Test fun longPressOpensTheReactionBubbleActionSandwich() {
-        ui.setContent { SigilApp(NativeCore::palette, NativeCore::analyze, MessengerState(phase = "connected", chats = listOf(chat), selected = "peer", messages = listOf(message("out", true))), { _, _ -> }) }
+        show { SigilApp(NativeCore::palette, NativeCore::analyze, MessengerState(phase = "connected", chats = listOf(chat), selected = "peer", messages = listOf(message("out", true))), { _, _ -> }) }
         ui.onNodeWithText("See you tomorrow.").performTouchInput { longClick() }
         ui.onNodeWithText("Reply in thread").assertIsDisplayed()
         ui.onNodeWithText("Copy").assertIsDisplayed()
@@ -123,7 +127,7 @@ class MessagingUiTest {
         screenshot("message-menu")
     }
     @Test fun searchOffersTheEightCategoriesAndNotesExcludesEmptyConversations() {
-        ui.setContent { SigilApp(NativeCore::palette, NativeCore::analyze, MessengerState(phase = "connected", chats = listOf(chat)), { _, _ -> }) }
+        show { SigilApp(NativeCore::palette, NativeCore::analyze, MessengerState(phase = "connected", chats = listOf(chat)), { _, _ -> }) }
         screenshot("inbox")
         ui.onNodeWithContentDescription("Search conversations").performClick()
         listOf("Unread", "Conversations", "Requests", "Pinned", "Images", "Videos", "Places", "Links").forEach { ui.onNodeWithText(it).assertExists() }
@@ -133,7 +137,7 @@ class MessagingUiTest {
         ui.onNodeWithText("Your conversation notes will appear here.").assertExists()
     }
     @Test fun emojiOnlyMessagesUseTheBundledAnimatedArtwork() {
-        ui.setContent { SigilApp(NativeCore::palette, NativeCore::analyze, MessengerState(phase = "connected", chats = listOf(chat), selected = "peer", messages = listOf(message("emoji", true).copy(text = "😀"))), { _, _ -> }) }
+        show { SigilApp(NativeCore::palette, NativeCore::analyze, MessengerState(phase = "connected", chats = listOf(chat), selected = "peer", messages = listOf(message("emoji", true).copy(text = "😀"))), { _, _ -> }) }
         ui.waitUntil(10000) { ui.onAllNodesWithTag("animated-emoji:1f600").fetchSemanticsNodes().isNotEmpty() }
         screenshot("emoji")
     }
