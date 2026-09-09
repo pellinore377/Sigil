@@ -105,6 +105,7 @@ async fn revoke_device(
 pub(crate) fn client() -> Router<AppState> {
     Router::new()
         .route("/client/v0/discovery", post(discover))
+        .route("/client/v0/contact-directory", post(directory))
         .route(
             "/client/v0/discovery/preference",
             get(preference).put(set_preference),
@@ -194,4 +195,19 @@ async fn setup(State(state): State<AppState>) -> Response {
         "storage_path_change":"mount a private persistent data directory and restart",
         "https":"configure public_origin, terminate TLS at the reverse proxy, then run the endpoint check"
     }))).await
+}
+
+async fn directory(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(value): Json<Lookup>,
+) -> Response {
+    let token = match bearer(&headers) {
+        Ok(v) => v,
+        Err(e) => return store_error(e),
+    };
+    run(state, move |s| {
+        s.contact_directory(&token, &value.username, now()?)
+    })
+    .await
 }

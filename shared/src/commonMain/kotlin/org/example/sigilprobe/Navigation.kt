@@ -11,6 +11,9 @@ import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.*
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.zIndex
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.input.key.*
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalFocusManager
@@ -19,6 +22,12 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.unit.dp
 
 internal const val MotionMillis = 240
+internal val MainTabs = listOf("inbox", "calls", "settings")
+internal fun tabGoesBack(from: String, to: String) = from in MainTabs && to in MainTabs && MainTabs.indexOf(to) < MainTabs.indexOf(from)
+private data class Screen(val destination: String, val page: String, val chat: ChatSummary?, val detail: String, val state: MessengerState, val title: String = "", val thread: String? = null)
+internal val LocalNavigationBack = staticCompositionLocalOf { false }
+internal val LocalPageMotion = staticCompositionLocalOf<AnimatedContentScope?> { null }
+internal val LocalHeaderInset = staticCompositionLocalOf { 0.dp }
 internal typealias Command = (String, Map<String, Any?>) -> Unit
 private val LocalBackActions = staticCompositionLocalOf<androidx.compose.runtime.snapshots.SnapshotStateList<() -> Unit>?> { null }
 @Composable
@@ -55,9 +64,11 @@ fun SigilApp(palette: (Int, Boolean) -> String, analyze: (String) -> String, sta
     }
     var page by rememberSaveable { mutableStateOf("inbox") }
     var goingBack by remember { mutableStateOf(false) }
+    var callPanel by remember(state.call?.call?.id) { mutableStateOf("") }
     var callMinimized by remember(state.call?.call?.id) { mutableStateOf(false) }
     var chatTheme by remember { mutableStateOf(ChatTheme()) }
     var pendingChatTheme by remember { mutableStateOf<Pair<String, String>?>(null) }
+    var newTitle by remember { mutableStateOf("New conversation") }
     var conversationPage by rememberSaveable { mutableStateOf("") }
     var selected by remember { mutableStateOf(setOf<String>()) }
     var query by rememberSaveable { mutableStateOf("") }
@@ -77,8 +88,10 @@ fun SigilApp(palette: (Int, Boolean) -> String, analyze: (String) -> String, sta
     val focus = LocalFocusManager.current
     val keyboard = LocalSoftwareKeyboardController.current
     val backActions = remember { mutableStateListOf<() -> Unit>() }
-    val navigate: (String) -> Unit = { target ->
-        goingBack = false; focus.clearFocus(); keyboard?.hide(); selected = emptySet(); page = target; query = ""; category = ""
+    val navigate: (String) -> Unit = navigate@{ target ->
+        if (target == "contact-code") { command("contact_qr", mapOf("action" to "show")); return@navigate }
+        if (target == "new") newTitle = "New conversation"
+        goingBack = tabGoesBack(page, target); focus.clearFocus(); keyboard?.hide(); selected = emptySet(); page = target; query = ""; category = ""
     }
     val back: () -> Unit = {
         when {
@@ -105,10 +118,10 @@ fun SigilApp(palette: (Int, Boolean) -> String, analyze: (String) -> String, sta
         }
     }
     val open: (String) -> Unit = { peer -> goingBack = false; focus.clearFocus(); keyboard?.hide(); command("open", mapOf("peer" to peer)) }
-    SigilTheme(appearance, if (chat != null) chatTheme else null, dynamicAccent, palette) {
+    SigilTheme(appearance, if (chat != null) chatTheme else null, dynamicAccent, palette, chatKey = chat?.id) {
       CompositionLocalProvider(LocalBackActions provides backActions) {
         val mainHeader = chat == null && (state.call == null || callMinimized) && page in listOf("inbox", "calls", "settings", "search", "notes")
-        Surface(color = if (mainHeader) MaterialTheme.colorScheme.background else MaterialTheme.colorScheme.surface) {
+        Surface(color = if (mainHeader || chat == null) MaterialTheme.colorScheme.background else lerp(MaterialTheme.colorScheme.background, MaterialTheme.colorScheme.surface, LocalChatTint.current)) {
             Box(Modifier.fillMaxSize(), contentAlignment = Alignment.BottomCenter) {
                 Spacer(Modifier.fillMaxWidth().windowInsetsBottomHeight(WindowInsets.navigationBars).background(MaterialTheme.colorScheme.surface))
             }
@@ -124,31 +137,36 @@ fun SigilApp(palette: (Int, Boolean) -> String, analyze: (String) -> String, sta
                     state.phase == "unavailable" -> Box(Modifier.fillMaxSize().padding(32.dp), contentAlignment = Alignment.Center) { Text("Connected messaging is currently available in the Android development build.") }
                     state.phase != "connected" -> Box(Modifier.imePadding()) { SignIn(state, command) }
                     else -> {
-                        if (state.accountAccess?.let { it.linked && it.retiring && !it.acknowledged } == true && page != "profile" && state.call == null) TextButton({ command("close", emptyMap()); conversationPage = ""; navigate("profile") }, Modifier.fillMaxWidth()) { Text("Your server’s sign-in is changing · Review") }
+                        if (state.accountAccess?.let { it.linked && it.retiring && !it.acknowledged } == true && page != "profile" && state.call == null) SigilTextButton({ command("close", emptyMap()); conversationPage = ""; navigate("profile") }, Modifier.fillMaxWidth()) { Text("Your server’s sign-in is changing · Review") }
                         val destination = when { state.call != null && !callMinimized -> "call"; chat?.archived == true -> "saved-conversation"; chat != null -> when (conversationPage) { "Chat theme" -> "theme"; "Settings" -> "chat-settings"; else -> "conversation" }; page in listOf("inbox", "search", "notes", "calls", "settings") -> "home"; else -> page }
-                        if (state.call != null && callMinimized) TextButton({ callMinimized = false }, Modifier.fillMaxWidth()) { Glyph("call", 18); Spacer(Modifier.width(8.dp)); Text("Return to call") }
-                        if (destination in listOf("home", "conversation")) {
-                            val radius by animateDpAsState(if (chat == null) 0.dp else 24.dp, tween(MotionMillis), label = "Header corners")
-                            val color by animateColorAsState(if (chat == null) MaterialTheme.colorScheme.background else MaterialTheme.colorScheme.surface, tween(MotionMillis), label = "Header surface")
-                            val shape = RoundedCornerShape(bottomStart = radius, bottomEnd = radius)
-                            val height = maxOf(76.dp, with(LocalDensity.current) { MaterialTheme.typography.displaySmall.lineHeight.toDp() } + 24.dp)
-                            Surface(Modifier.fillMaxWidth().height(height).testTag("main-header").then(if (chat != null) Modifier.headerShadow(shape) else Modifier), shape = shape, color = color) {
-                                AnimatedContent(chat, contentKey = { it?.id }, transitionSpec = {
-                                    (slideInHorizontally(tween(160, delayMillis = 80)) { if (goingBack) -it else it } + fadeIn(tween(160, delayMillis = 80))) togetherWith fadeOut(tween(100))
-                                }, label = "Header items") { current ->
-                                    if (current == null) MainHeader(page, goingBack, query, { query = it }, selected, state, dispatch, { selected = emptySet() },
-                                        { collectionSheet = true }, { navigate("search") }, { navigate("notes") }, back)
-                                    else ConversationHeader(current, conversationPage, thread != null, dispatch, back) { goingBack = false; conversationPage = it }
-                                }
+                        if (state.call != null && callMinimized) SigilTextButton({ callMinimized = false }, Modifier.fillMaxWidth()) { Glyph("call", 18); Spacer(Modifier.width(8.dp)); Text("Return to call") }
+                        val headerHeight = pageHeaderHeight()
+                        val conversation = destination == "conversation"
+                        val tint = LocalChatTint.current
+                        val radius by animateDpAsState(if (conversation) 24.dp else 0.dp, tween(MotionMillis), label = "Header corners")
+                        val shape = RoundedCornerShape(bottomStart = radius, bottomEnd = radius)
+                        Box(Modifier.weight(1f).fillMaxWidth().background(MaterialTheme.colorScheme.background)) {
+                            if (chat != null) {
+                                LocalWallpaper.current(chat.id, Modifier.matchParentSize())
+                                if (chatTheme.gradient) Spacer(Modifier.matchParentSize().background(Brush.verticalGradient(listOf(MaterialTheme.colorScheme.background.copy(alpha = .7f), MaterialTheme.colorScheme.primaryContainer.copy(alpha = .7f)))))
                             }
-                        }
-                        AnimatedContent(destination, Modifier.weight(1f).background(MaterialTheme.colorScheme.background), transitionSpec = {
-                            (fadeIn(tween(MotionMillis)) + slideInHorizontally(tween(MotionMillis)) { if (goingBack) -it else it }) togetherWith
-                                (slideOutHorizontally(tween(MotionMillis)) { if (goingBack) it else -it } + fadeOut(tween(120)))
-                        }, label = "Page") { target ->
+                        AnimatedContent(Screen(destination, page, chat, conversationPage, state, newTitle, thread?.id), Modifier.fillMaxSize(), contentKey = { it.destination }, transitionSpec = {
+                            val enter = if (targetState.destination == "conversation") fadeIn(tween(MotionMillis))
+                                else if (goingBack) fadeIn(tween(MotionMillis)) else slideInVertically(tween(MotionMillis)) { it } + fadeIn(tween(MotionMillis))
+                            val exit = if (initialState.destination == "conversation") fadeOut(tween(MotionMillis))
+                                else if (goingBack) slideOutVertically(tween(MotionMillis)) { it } + fadeOut(tween(MotionMillis)) else fadeOut(tween(MotionMillis))
+                            enter togetherWith exit
+                            }, label = "Page") { screen ->
+                                val target = screen.destination
+                                val page = screen.page
+                                val chat = screen.chat
+                                val state = screen.state
+                                val detail = screen.detail
+                                CompositionLocalProvider(LocalPageHeader provides true, LocalPageMotion provides this, LocalNavigationBack provides goingBack, LocalHeaderInset provides if (target == "conversation") headerHeight else 0.dp) {
+                                Box(Modifier.fillMaxSize().then(if (target != "conversation") Modifier.padding(top = headerHeight, bottom = if (target == "home" && page in MainTabs) 64.dp else 0.dp).background(MaterialTheme.colorScheme.background) else Modifier)) {
                             when (target) {
-                                "call" -> state.call?.let { CallPage(it, state.chats, dispatch, state.profileAvatar) { callMinimized = true } }
-                                "conversation" -> chat?.let { ConversationPage(it, state, drafts.getOrPut(it.id) { TextFieldState(it.draft) }, analyze, dispatch, conversationPage, chatTheme.gradient, thread, { thread = it }) }
+                                "call" -> state.call?.let { CallPage(it, state.chats, dispatch, state.profileAvatar, callPanel) { callPanel = it } }
+                                "conversation" -> chat?.let { ConversationPage(it, state, drafts.getOrPut(it.id) { TextFieldState(it.draft) }, analyze, dispatch, detail, chatTheme.gradient, thread, { thread = it }) }
                                 "theme" -> chat?.let { current -> ChatAppearance(chatTheme, analyze, current.id, command, { goingBack = true; conversationPage = "" }) { chatTheme = it; pendingChatTheme = current.id to it.encode(); write("chat.${current.id}", it.encode()); command("organize", mapOf("peer" to current.id, "value" to mapOf("UiSetting" to mapOf("key" to "chat_theme", "value" to it.encode())))) } }
                                 "chat-settings" -> chat?.let { ConversationSettings(it, state.busy, dispatch, back) }
                                 "appearance" -> AppearancePage(appearance, analyze, dynamicAccent != null, back, state.collectionsEnabled,
@@ -158,13 +176,19 @@ fun SigilApp(palette: (Int, Boolean) -> String, analyze: (String) -> String, sta
                                 "device", "profile", "privacy", "notifications", "storage", "about" -> PersonalPage(target, state, dispatch, back)
                                 "history" -> SavedHistoryPage(state, command, back, open)
                                 "saved-conversation" -> SavedConversationPage(state, analyze, command, back)
-                                "new" -> NewConversation(state, command, back, open)
+                                "new" -> NewConversation(state, command, back, open) { newTitle = it }
                                 else -> Column(Modifier.fillMaxSize()) {
                                     Box(Modifier.weight(1f)) {
                                       AnimatedContent(page, transitionSpec = {
-                                          (slideInHorizontally(tween(MotionMillis)) { if (goingBack) -it else it } + fadeIn(tween(MotionMillis))) togetherWith
-                                              (slideOutHorizontally(tween(MotionMillis)) { if (goingBack) it else -it } + fadeOut(tween(120)))
+                                          if (initialState in MainTabs && targetState in MainTabs) {
+                                              (slideInHorizontally(tween(MotionMillis)) { if (goingBack) -it else it } + fadeIn(tween(MotionMillis))) togetherWith
+                                                  (slideOutHorizontally(tween(MotionMillis)) { if (goingBack) it else -it } + fadeOut(tween(120)))
+                                          } else {
+                                              (if (goingBack) fadeIn(tween(MotionMillis)) else slideInVertically(tween(MotionMillis)) { it } + fadeIn(tween(MotionMillis))) togetherWith
+                                                  (if (goingBack) slideOutVertically(tween(MotionMillis)) { it } + fadeOut(tween(MotionMillis)) else fadeOut(tween(MotionMillis)))
+                                          }
                                       }, label = "Inbox panel") { panel ->
+                                        Box(Modifier.fillMaxSize().testTag("main-page-$panel")) {
                                         when (panel) {
                                             "settings" -> SettingsPage(state, navigate)
                                             "calls" -> CallHistoryPage(state, command)
@@ -173,21 +197,48 @@ fun SigilApp(palette: (Int, Boolean) -> String, analyze: (String) -> String, sta
                                             else -> Inbox(state, collection, { collection = it }, selected, { id -> selected = if (id in selected) selected - id else selected + id }, open, sharedRead)
                                         }
                                       }
+                                      }
                                       InboxFab(page == "inbox", Modifier.align(Alignment.BottomEnd)) { navigate("new") }
                                     }
                                 }
                             }
                         }
-                        AnimatedVisibility(chat == null && page in listOf("inbox", "calls", "settings") && (state.call == null || callMinimized), enter = slideInVertically(tween(MotionMillis)) { it } + fadeIn(), exit = slideOutVertically(tween(MotionMillis)) { it } + fadeOut()) {
+                            }
+                            }
+                                Surface(Modifier.fillMaxWidth().height(headerHeight).zIndex(1f).testTag("main-header").headerShadow(shape, if (conversation) (2f * tint).dp else 0.dp), shape = shape,
+                                    color = if (conversation) lerp(MaterialTheme.colorScheme.background, MaterialTheme.colorScheme.surface, tint) else MaterialTheme.colorScheme.background) {
+                                    AnimatedContent(Screen(destination, page, chat, conversationPage, state, newTitle, thread?.id), contentKey = { if (it.destination == "home") "home" else it.destination + if (it.destination == "conversation") it.detail + (it.thread ?: "") else if (it.destination == "new") it.title else "" }, transitionSpec = {
+                                        (slideInHorizontally(tween(160, delayMillis = 80)) { if (goingBack) -it else it } + fadeIn(tween(160, delayMillis = 80))) togetherWith
+                                            (if (goingBack) slideOutHorizontally(tween(MotionMillis)) { it } + fadeOut(tween(100)) else fadeOut(tween(100)))
+                                    }, label = "Header items") { screen ->
+                                        when (screen.destination) {
+                                            "call" -> screen.state.call?.let { CallHeader(it, screen.state.chats, screen.state.profileAvatar, dispatch, { callMinimized = true }) { callPanel = it } }
+                                            "home" -> MainHeader(screen.page, goingBack, query, { query = it }, selected, screen.state, dispatch, { selected = emptySet() },
+                                                { collectionSheet = true }, { navigate("search") }, { navigate("notes") }, back)
+                                            "conversation" -> screen.chat?.let { ConversationHeader(it, screen.detail, screen.thread != null, dispatch, back) { goingBack = false; conversationPage = it } }
+                                            else -> Row(Modifier.fillMaxSize().padding(horizontal = 12.dp), verticalAlignment = Alignment.CenterVertically) {
+                                                Symbol("chevron_left", "Back", back)
+                                                Text(when (screen.destination) {
+                                                    "appearance" -> "Appearance"; "theme" -> "Conversation appearance"; "chat-settings" -> "Conversation settings"
+                                                    "device" -> "Devices"; "profile" -> "Profile"; "privacy" -> "Privacy"; "notifications" -> "Notifications"
+                                                    "storage" -> "Data and storage"; "history" -> "Saved history"; "saved-conversation" -> "Saved conversation"
+                                                    "new" -> screen.title; else -> "About"
+                                                }, Modifier.padding(start = 8.dp), style = MaterialTheme.typography.headlineMedium)
+                                            }
+                                        }
+                                    }
+                                }
+                        androidx.compose.animation.AnimatedVisibility(chat == null && page in listOf("inbox", "calls", "settings") && (state.call == null || callMinimized), modifier = Modifier.align(Alignment.BottomCenter).zIndex(2f), enter = slideInVertically(tween(MotionMillis)) { it } + fadeIn(), exit = slideOutVertically(tween(MotionMillis)) { it } + fadeOut()) {
                             Surface(Modifier.footerShadow().testTag("main-navigation"), shape = RoundedCornerShape(topStart = 24.dp, topEnd = 24.dp)) {
                                 Row(Modifier.fillMaxWidth().padding(vertical = 8.dp), horizontalArrangement = Arrangement.SpaceEvenly) {
                                     listOf(Triple("inbox", "chat_bubble", "Messages"), Triple("calls", "call", "Calls"), Triple("settings", "settings", "Settings")).forEach { (tab, icon, label) ->
-                                        Surface(shape = RoundedCornerShape(16.dp), color = if (page == tab) MaterialTheme.colorScheme.inverseSurface else MaterialTheme.colorScheme.surface,
-                                            contentColor = if (page == tab) MaterialTheme.colorScheme.inverseOnSurface else MaterialTheme.colorScheme.onSurfaceVariant) { Symbol(icon, label) { navigate(tab) } }
+                                        Surface(shape = RoundedCornerShape(16.dp), color = if (page == tab) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surface,
+                                            contentColor = if (page == tab) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurfaceVariant) { Symbol(icon, label) { navigate(tab) } }
                                     }
                                 }
                             }
                         }
+                    }
                     }
                 }
             }

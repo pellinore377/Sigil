@@ -10,7 +10,7 @@ pub(super) fn authorized(
     if known.blocked || known.changed_fingerprint.is_some() || known.replaced_by.is_some() {
         return Err(Error::Unprepared);
     }
-    if !known.verified
+    if !known.trusted
         && !record.state.participants.iter().any(|proof| {
             peer(proof).ok() == Some(*peer_id)
                 && proof.fingerprint().ok() == Some(known.fingerprint)

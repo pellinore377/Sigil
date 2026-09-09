@@ -1,4 +1,4 @@
-//! Explicit peer verification. A server-supplied signature alone is not trust.
+//! Cached contact trust and independently checked device identities.
 use super::*;
 use crate::connection::decode_id as id;
 use sigil_crypto::verify_signature;
@@ -7,9 +7,9 @@ use sigil_protocol::device::{Binding, SignedBinding, Statement};
 mod device_review;
 pub use device_review::{DeviceReview, DeviceReviewCursor, DeviceReviewPage};
 pub(super) const MAX_SESSIONS: usize = 8;
-pub(super) fn verified(db: &Connection, key: &StorageKey, id: &Id) -> Result<Peer, Error> {
+pub(super) fn trusted(db: &Connection, key: &StorageKey, id: &Id) -> Result<Peer, Error> {
     let peer = known(db, key, id)?;
-    if !peer.verified {
+    if !peer.trusted {
         return Err(Error::Unprepared);
     }
     Ok(peer)
@@ -36,6 +36,8 @@ pub struct Peer {
     pub id: Id,
     pub binding: Binding,
     pub fingerprint: Id,
+    pub active: bool,
+    pub trusted: bool,
     pub verified: bool,
     pub blocked: bool,
     pub changed_fingerprint: Option<Id>,
@@ -44,7 +46,9 @@ pub struct Peer {
 struct Record {
     signed: SignedBinding,
     candidate: Option<SignedBinding>,
+    trusted: bool,
     verified: bool,
+    suspended: bool,
     blocked: bool,
     replacement: Option<(Id, Id)>,
 }
@@ -87,7 +91,15 @@ impl Record {
             id: peer_id(&self.signed.binding),
             binding: self.signed.binding.clone(),
             fingerprint: fingerprint(&self.signed.binding)?,
+            active: !self.suspended && self.replacement.is_none(),
+            trusted: self.trusted
+                && !self.suspended
+                && !self.blocked
+                && self.candidate.is_none()
+                && self.replacement.is_none(),
             verified: self.verified
+                && self.trusted
+                && !self.suspended
                 && !self.blocked
                 && self.candidate.is_none()
                 && self.replacement.is_none(),
@@ -123,7 +135,7 @@ fn decode_record(db: &Connection, key: &StorageKey, id: &Id) -> Result<Record, E
         .optional()?
         .ok_or(Error::NotFound)?;
     let bytes = key.open(&sealed, &binding(15, id, b"peer"))?;
-    if bytes.len() < 4 || bytes[0] > 3 || bytes[1] > 1 {
+    if bytes.len() < 4 || bytes[0] > 15 || bytes[1] > 1 {
         return Err(Error::InvalidStore);
     }
     let size =
@@ -167,7 +179,9 @@ fn decode_record(db: &Connection, key: &StorageKey, id: &Id) -> Result<Record, E
     Ok(Record {
         signed,
         candidate,
+        trusted: bytes[0] & 5 != 0,
         verified: bytes[0] & 1 != 0,
+        suspended: bytes[0] & 8 != 0,
         blocked: bytes[1] == 1,
         replacement,
     })
@@ -175,7 +189,10 @@ fn decode_record(db: &Connection, key: &StorageKey, id: &Id) -> Result<Record, E
 fn save(db: &Connection, key: &StorageKey, id: &Id, record: &Record) -> Result<(), Error> {
     let raw = record.signed.to_bytes().map_err(|_| Error::InvalidStore)?;
     let mut bytes = Zeroizing::new(vec![
-        u8::from(record.verified) | if record.replacement.is_some() { 2 } else { 0 },
+        u8::from(record.verified)
+            | if record.trusted { 4 } else { 0 }
+            | if record.replacement.is_some() { 2 } else { 0 }
+            | if record.suspended { 8 } else { 0 },
         u8::from(record.blocked),
     ]);
     bytes.extend_from_slice(&(raw.len() as u16).to_be_bytes());
@@ -216,7 +233,7 @@ pub(super) fn require(
     identity: &Id,
 ) -> Result<(), Error> {
     let record = load(db, key, peer)?;
-    if !record.public()?.verified {
+    if !record.public()?.trusted {
         return Err(Error::Unprepared);
     }
     if record.signed.binding.device != *recipient || record.signed.binding.identity != *identity {
@@ -331,7 +348,9 @@ pub(crate) fn observe(tx: &Transaction<'_>, key: &StorageKey, bytes: &[u8]) -> R
             Record {
                 signed: signed.clone(),
                 candidate: None,
+                trusted: false,
                 verified: false,
+                suspended: false,
                 blocked: false,
                 replacement: None,
             }
@@ -358,6 +377,7 @@ impl ClientStore {
         {
             return Err(Error::Conflict);
         }
+        record.trusted = true;
         record.verified = true;
         save(&tx, &self.key, &id, &record)?;
         tx.commit()?;
@@ -414,6 +434,7 @@ impl ClientStore {
             selection::retire(&tx, &self.key, &old, &session)?;
         }
         previous.replacement = Some((new, expected_new));
+        next.trusted = true;
         next.verified = true;
         save(&tx, &self.key, &old, &previous)?;
         save(&tx, &self.key, &new, &next)?;
@@ -427,7 +448,7 @@ impl ClientStore {
             .db
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
         let record = load(&tx, &self.key, &peer)?;
-        if !record.public()?.verified {
+        if !record.public()?.trusted {
             return Err(Error::Unprepared);
         }
         claims::prepare(
@@ -454,7 +475,7 @@ impl ClientStore {
             .db
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
         let record = load(&tx, &self.key, &peer)?;
-        if !record.public()?.verified {
+        if !record.public()?.trusted {
             return Err(Error::Unprepared);
         }
         let plaintext = handshake::accept(
@@ -476,7 +497,7 @@ impl ClientStore {
 }
 
 pub(super) fn destination(db: &Connection, key: &StorageKey, peer: &Id) -> Result<Id, Error> {
-    Ok(verified(db, key, peer)?.binding.device)
+    Ok(trusted(db, key, peer)?.binding.device)
 }
 pub(super) fn block(
     tx: &Transaction<'_>,
@@ -545,7 +566,9 @@ pub(super) fn link_trust(
             Record {
                 signed: signed.clone(),
                 candidate: None,
+                trusted: false,
                 verified: false,
+                suspended: false,
                 blocked: false,
                 replacement: None,
             }
@@ -559,12 +582,13 @@ pub(super) fn link_trust(
     {
         return Err(Error::Conflict);
     }
+    record.trusted = true;
     record.verified = true;
     save(tx, key, &id, &record)?;
     Ok(id)
 }
 impl ClientStore {
-    /// Apply an endorsement from an already independently verified sponsor, never
+    /// Apply an endorsement from an already trusted sponsor, never
     /// from an account directory alone. Only the exact approved child gains trust.
     pub fn accept_linked_peer(
         &mut self,
@@ -575,7 +599,7 @@ impl ClientStore {
         let tx = self
             .db
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
-        let trusted = verified(&tx, &self.key, &sponsor)?;
+        let trusted = trusted(&tx, &self.key, &sponsor)?;
         if trusted.binding != proof.sponsor.binding {
             return Err(Error::Conflict);
         }
@@ -586,7 +610,189 @@ impl ClientStore {
             proof.joining.clone(),
             proof.transcript.joining,
         )?;
+        let mut child = load(&tx, &self.key, &id)?;
+        child.verified = trusted.verified;
+        save(&tx, &self.key, &id, &child)?;
         tx.commit()?;
         Ok(id)
+    }
+}
+impl ClientStore {
+    pub(super) fn reconcile_contact_trust(
+        &mut self,
+        directory: &sigil_protocol::admin::ContactDirectory,
+        address: (&str, &str, Id),
+        accepted: bool,
+        approval: Option<Id>,
+        now: u64,
+    ) -> Result<Option<Id>, Error> {
+        use std::collections::BTreeMap;
+        let (server, username, account) = address;
+        if !directory.account.valid_for(username, server)
+            || directory.account.account != transport::hex(&account)
+            || directory.bindings.len() > 64
+            || directory.links.len() > 128
+        {
+            return Err(Error::Conflict);
+        }
+        let mut current = BTreeMap::new();
+        for raw in &directory.bindings {
+            let bytes = Statement {
+                statement: raw.clone(),
+            }
+            .bytes()
+            .map_err(|_| Error::InvalidStore)?;
+            let signed = parse(&bytes)?;
+            let b = &signed.binding;
+            if b.server != server
+                || b.username != username
+                || b.account != account
+                || !directory
+                    .account
+                    .devices
+                    .contains(&transport::hex(&b.device))
+                || current.insert(peer_id(b), signed.clone()).is_some()
+            {
+                return Err(Error::Conflict);
+            }
+        }
+        let mut proofs = Vec::new();
+        for raw in &directory.links {
+            let proof = sigil_protocol::link::Authorization { proof: raw.clone() }
+                .parse()
+                .map_err(|_| Error::InvalidStore)?;
+            let b = &proof.sponsor.binding;
+            if b.server != server
+                || b.username != username
+                || b.account != account
+                || proof.transcript.created_at > now
+            {
+                return Err(Error::Conflict);
+            }
+            // Enrollment expiry limits consent use, not the lifetime of its endorsement.
+            sigil_crypto::link::verify(&proof, fingerprint(b)?, proof.transcript.created_at)?;
+            proofs.push(proof);
+        }
+        let digest: Id = Sha256::digest(
+            [
+                b"Sigil/contact-identity-review/v1\0".as_slice(),
+                server.as_bytes(),
+                &account,
+                &current
+                    .values()
+                    .map(|s| fingerprint(&s.binding))
+                    .collect::<Result<Vec<_>, _>>()?
+                    .concat(),
+            ]
+            .concat(),
+        )
+        .into();
+        if approval.is_some_and(|expected| expected != digest)
+            || (approval.is_some() && (current.is_empty() || !accepted))
+        {
+            return Err(Error::Conflict);
+        }
+        let tx = self
+            .db
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let ids = tx
+            .prepare("SELECT id FROM peers WHERE obsolete=0")?
+            .query_map([], |r| r.get::<_, Vec<u8>>(0))?
+            .collect::<Result<Vec<_>, _>>()?;
+        let mut records = BTreeMap::new();
+        let mut former_account = Vec::new();
+        for raw in ids {
+            let id: Id = raw.try_into().map_err(|_| Error::InvalidStore)?;
+            let record = load(&tx, &self.key, &id)?;
+            let b = &record.signed.binding;
+            if b.server == server && b.account == account {
+                records.insert(id, record);
+            } else if b.server == server && b.username == username && record.trusted {
+                former_account.push((id, record));
+            }
+        }
+        let mut anchors = BTreeMap::new();
+        for record in records
+            .values()
+            .filter(|r| r.trusted && !r.blocked && r.candidate.is_none())
+        {
+            anchors.insert(fingerprint(&record.signed.binding)?, record.verified);
+        }
+        let established = !former_account.is_empty()
+            || !anchors.is_empty()
+            || records.values().any(|r| r.trusted);
+        for _ in 0..proofs.len() {
+            let mut progress = false;
+            for proof in &proofs {
+                if let Some(verified) = anchors.get(&proof.transcript.sponsor).copied() {
+                    if let std::collections::btree_map::Entry::Vacant(entry) =
+                        anchors.entry(proof.transcript.joining)
+                    {
+                        entry.insert(verified);
+                        progress = true;
+                    }
+                }
+            }
+            if !progress {
+                break;
+            }
+        }
+        let changed = established
+            && current
+                .values()
+                .any(|s| fingerprint(&s.binding).is_ok_and(|fp| !anchors.contains_key(&fp)));
+        let paused = changed && approval.is_none();
+        for (id, record) in &mut former_account {
+            record.suspended = true;
+            if approval.is_some() {
+                if let Some((session, _)) = selection::record(&tx, &self.key, id)? {
+                    selection::retire(&tx, &self.key, id, &session)?;
+                }
+                let (next, signed) = current.first_key_value().ok_or(Error::Conflict)?;
+                record.replacement = Some((*next, fingerprint(&signed.binding)?));
+            }
+            save(&tx, &self.key, id, record)?;
+        }
+        for (id, signed) in &current {
+            let raw = signed.to_bytes().map_err(|_| Error::InvalidStore)?;
+            observe(&tx, &self.key, &raw)?;
+            let mut record = load(&tx, &self.key, id)?;
+            if record.replacement.is_some() {
+                return Err(Error::Conflict);
+            }
+            if record.candidate.is_some() && approval.is_some() {
+                if let Some((session, _)) = selection::record(&tx, &self.key, id)? {
+                    selection::retire(&tx, &self.key, id, &session)?;
+                }
+                record.signed = signed.clone();
+                record.candidate = None;
+                record.verified = false;
+            }
+            if accepted
+                && (!established
+                    || approval.is_some()
+                    || anchors.contains_key(&fingerprint(&signed.binding)?))
+            {
+                record.trusted = true;
+                record.verified |= anchors
+                    .get(&fingerprint(&signed.binding)?)
+                    .copied()
+                    .unwrap_or(false);
+            }
+            records.insert(*id, record);
+        }
+        for (id, record) in &mut records {
+            record.suspended = paused || !current.contains_key(id);
+            if approval.is_some() && !current.contains_key(id) {
+                if let Some((session, _)) = selection::record(&tx, &self.key, id)? {
+                    selection::retire(&tx, &self.key, id, &session)?;
+                }
+                let (next, signed) = current.first_key_value().ok_or(Error::Conflict)?;
+                record.replacement = Some((*next, fingerprint(&signed.binding)?));
+            }
+            save(&tx, &self.key, id, record)?;
+        }
+        tx.commit()?;
+        Ok(paused.then_some(digest))
     }
 }

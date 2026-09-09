@@ -121,7 +121,7 @@ impl ClientStore {
         )
     }
     pub fn allow_peer_sender_online(&self, peer: Id) -> Result<(), Error> {
-        self.allow_known_sender_online(&peers::verified(&self.db, &self.key, &peer)?)
+        self.allow_known_sender_online(&peers::trusted(&self.db, &self.key, &peer)?)
     }
     pub(crate) fn allow_known_sender_online(&self, peer: &Peer) -> Result<(), Error> {
         let network = self.connected_client()?;
@@ -164,7 +164,7 @@ impl ClientStore {
         let own = self.own_device_binding()?;
         let tx = self.db.transaction()?;
         let peer = if let Some(peer) = session_peer(&tx, &session)? {
-            Some(peers::verified(&tx, &self.key, &peer)?)
+            Some(peers::trusted(&tx, &self.key, &peer)?)
         } else {
             match groups::delivery_peer(&tx, &self.key, &session, &id)? {
                 Some(peer) => Some(peer),

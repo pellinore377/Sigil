@@ -1,5 +1,7 @@
 package org.sigil.compose
 
+import org.sigil.SigilIconButton
+
 import android.media.MediaPlayer
 import androidx.compose.foundation.layout.*
 import androidx.compose.material3.*
@@ -33,7 +35,7 @@ internal fun AudioMessage(message: ChatMessage) {
     Column(Modifier.widthIn(min = 220.dp, max = 300.dp).testTag("audio-message")) {
         if (ready) InlineAudio(message)
         else Row(verticalAlignment = Alignment.CenterVertically) {
-            IconButton({ requested = true }, enabled = !requested) { Glyph(if (failed) "refresh" else "play_arrow", 28, if (failed) "Retry audio" else "Play audio message") }
+            SigilIconButton({ requested = true }, enabled = !requested) { Glyph(if (failed) "refresh" else "play_arrow", 28, if (failed) "Retry audio" else "Play audio message") }
             Column(Modifier.weight(1f)) {
                 Text(if (message.attachment!!.name == "Voice message.aac") "Voice message" else message.attachment!!.name, style = MaterialTheme.typography.bodyMedium, maxLines = 2)
                 if (requested) LinearProgressIndicator(Modifier.fillMaxWidth().padding(top = 8.dp))
@@ -69,7 +71,7 @@ private fun InlineAudio(message: ChatMessage) {
     }
     LaunchedEffect(ready, playing, failed) { while (ready && playing && !failed) { if (!seeking) position = player.currentPosition.toLong(); delay(150) } }
     Row(verticalAlignment = Alignment.CenterVertically) {
-        IconButton({
+        SigilIconButton({
             if (playing) player.pause() else { if (position >= duration) { player.seekTo(0); position = 0 }; player.start() }
             playing = !playing
         }, enabled = ready && !failed) { Glyph(if (playing) "pause" else "play_arrow", 28, if (playing) "Pause audio message" else "Play audio message") }

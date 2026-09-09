@@ -144,7 +144,7 @@ fn qr_linking_survives_each_restart_and_lost_local_commits_then_exchanges_encryp
     );
     let a = peers::reference(&proof.sponsor.binding.server, &proof.sponsor.binding.device);
     let b = peers::reference(&proof.joining.binding.server, &proof.joining.binding.device);
-    assert!(sponsor.peer(b).unwrap().verified && joining.peer(a).unwrap().verified);
+    assert!(sponsor.peer(b).unwrap().trusted && joining.peer(a).unwrap().trusted);
     assert_ne!(sponsor.identity().unwrap(), joining.identity().unwrap());
     joining
         .prepare_prekey_publication([40; 32], true, 3600)
@@ -169,7 +169,7 @@ fn qr_linking_survives_each_restart_and_lost_local_commits_then_exchanges_encryp
     sponsor.cancel_sponsored_link_online([2; 32]).unwrap();
     sponsor.cancel_sponsored_link_online([2; 32]).unwrap();
     assert!(sponsor.authorize_sponsored_link_online([2; 32]).is_err());
-    assert!(!sponsor.peer(b).unwrap().verified);
+    assert!(!sponsor.peer(b).unwrap().trusted);
     assert!(server
         .authorize_device_link(&credential(&sponsor), request(), now)
         .is_err());

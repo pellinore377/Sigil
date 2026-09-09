@@ -1,5 +1,9 @@
 package org.sigil.compose
 
+import org.sigil.SigilButton
+import org.sigil.SigilOutlinedButton
+import org.sigil.SigilIconButton
+
 import android.Manifest
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
@@ -14,7 +18,6 @@ import androidx.camera.view.PreviewView
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -74,22 +77,22 @@ internal fun CameraSheet(close: () -> Unit, send: (ByteArray) -> Unit) {
         Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
             Column(Modifier.fillMaxSize().systemBarsPadding().padding(16.dp), horizontalAlignment = Alignment.CenterHorizontally) {
                 Row(Modifier.fillMaxWidth().padding(bottom = 12.dp), verticalAlignment = Alignment.CenterVertically) {
-                    IconButton(close) { Glyph("close", 24, "Cancel") }
+                    SigilIconButton(close) { Glyph("close", 24, "Cancel") }
                     Text("Camera", Modifier.weight(1f).padding(start = 8.dp), style = MaterialTheme.typography.titleLarge)
-                    IconButton({ front = !front }, enabled = photo == null && !taking) { Glyph("flip_camera_android", 24, "Switch camera") }
+                    SigilIconButton({ front = !front }, enabled = photo == null && !taking) { Glyph("flip_camera_android", 24, "Switch camera") }
                 }
                 Box(Modifier.weight(1f).fillMaxWidth().clip(RoundedCornerShape(28.dp)), contentAlignment = Alignment.Center) {
                     val bitmap = photo
                     if (bitmap != null) Image(bitmap.asImageBitmap(), "Photo preview", Modifier.fillMaxSize())
                     else if (granted) AndroidView({ preview }, Modifier.matchParentSize())
-                    else Button({ permission.launch(Manifest.permission.CAMERA) }) { Text("Allow camera") }
+                    else SigilButton({ permission.launch(Manifest.permission.CAMERA) }) { Text("Allow camera") }
                 }
                 issue?.let { Text(it, Modifier.padding(8.dp)) }
                 Row(Modifier.padding(16.dp), horizontalArrangement = Arrangement.spacedBy(16.dp)) {
                     val bitmap = photo
                     if (bitmap != null) {
-                        OutlinedButton({ photo = null; bitmap.recycle() }, enabled = !taking, shape = RoundedCornerShape(16.dp)) { Text("Retake") }
-                        Button({ taking = true; scope.launch {
+                        SigilOutlinedButton({ photo = null; bitmap.recycle() }, enabled = !taking, shape = RoundedCornerShape(16.dp)) { Text("Retake") }
+                        SigilButton({ taking = true; scope.launch {
                             try {
                                 val bytes = withContext(Dispatchers.Default) {
                                     val output = object : ByteArrayOutputStream() { fun erase() { buf.fill(0); reset() } }
@@ -98,7 +101,7 @@ internal fun CameraSheet(close: () -> Unit, send: (ByteArray) -> Unit) {
                                 send(bytes)
                             } finally { taking = false }
                         } }, enabled = !taking, shape = RoundedCornerShape(16.dp)) { Glyph("arrow_upward", 22); Spacer(Modifier.width(8.dp)); Text("Send photo") }
-                    } else Button({
+                    } else SigilButton({
                         taking = true; issue = null
                         capture.targetRotation = preview.display?.rotation ?: android.view.Surface.ROTATION_0
                         capture.takePicture(ContextCompat.getMainExecutor(context), object : ImageCapture.OnImageCapturedCallback() {
@@ -118,7 +121,7 @@ internal fun CameraSheet(close: () -> Unit, send: (ByteArray) -> Unit) {
                             }
                             override fun onError(error: ImageCaptureException) { taking = false; issue = "Could not take this photo. Try again." }
                         })
-                    }, modifier = Modifier.size(76.dp), enabled = ready && !taking, shape = CircleShape, contentPadding = PaddingValues(0.dp),
+                    }, modifier = Modifier.size(76.dp), enabled = ready && !taking, shape = RoundedCornerShape(24.dp), contentPadding = PaddingValues(0.dp),
                         border = BorderStroke(3.dp, MaterialTheme.colorScheme.outlineVariant), colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.inverseSurface, contentColor = MaterialTheme.colorScheme.inverseOnSurface)) { Glyph("photo_camera", 32, "Take photo") }
                 }
             }

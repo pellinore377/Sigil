@@ -20,8 +20,8 @@ internal fun ConversationActionSheet(kind: String, fields: Map<String, Any?>, st
                     else "Delete existing history for your account, including linked devices. Other participants keep their copies. New messages can reopen the conversation.")
                 if (!blocking && chats.any { it.group }) Toggle("Also leave selected groups", leave) { leave = it }
             }
-        }, dismissButton = { TextButton(close) { Text("Cancel") } }, confirmButton = {
-            TextButton({
+        }, dismissButton = { SigilTextButton(close) { Text("Cancel") } }, confirmButton = {
+            SigilTextButton({
                 if (blocking) chats.filter { !it.group && it.id != "self" }.forEach { command("block", mapOf("peer" to it.id, "active" to true)) }
                 else chats.forEach { command("delete_conversation", mapOf("peer" to it.id, "leave" to (leave && it.group))) }
                 close()
@@ -33,7 +33,7 @@ internal fun ConversationActionSheet(kind: String, fields: Map<String, Any?>, st
         Text(if (kind == "snooze_picker") "Snooze notifications" else "Forward to", Modifier.padding(24.dp), style = MaterialTheme.typography.headlineSmall)
         if (kind == "snooze_picker") {
             listOf("Resume notifications" to null, "For one hour" to 3600L, "For eight hours" to 28800L, "For one day" to 86400L, "For one week" to 604800L).forEach { (label, seconds) ->
-                TextButton({ (fields["peers"] as? List<*>)?.filterIsInstance<String>()?.forEach { command("snooze", mapOf("peer" to it, "seconds" to seconds)) }; close() }, Modifier.fillMaxWidth()) { Text(label) }
+                SigilTextButton({ (fields["peers"] as? List<*>)?.filterIsInstance<String>()?.forEach { command("snooze", mapOf("peer" to it, "seconds" to seconds)) }; close() }, Modifier.fillMaxWidth()) { Text(label) }
             }
         } else {
             Text("Send a copy. Interactive cards and mixed messages are sent as text snapshots.", Modifier.padding(horizontal = 24.dp, vertical = 8.dp), style = MaterialTheme.typography.bodySmall)

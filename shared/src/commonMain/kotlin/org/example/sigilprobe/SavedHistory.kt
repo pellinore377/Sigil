@@ -26,7 +26,7 @@ internal fun SavedHistoryPage(state: MessengerState, command: Command, back: () 
                 HorizontalDivider()
             }
             if (state.searching) item { LinearProgressIndicator(Modifier.fillMaxWidth()) }
-            else if (state.searchMore) item { TextButton({ command("search_more", emptyMap()) }) { Text("Load older history") } }
+            else if (state.searchMore) item { SigilTextButton({ command("search_more", emptyMap()) }) { Text("Load older history") } }
             else if (state.searchHits.isEmpty()) item { Text("No saved history yet.", Modifier.padding(vertical = 24.dp)) }
         }
     }
@@ -49,7 +49,7 @@ internal fun SavedConversationPage(state: MessengerState, analyze: (String) -> S
                     if (details == message.author + message.id) Row(Modifier.align(if (message.mine) Alignment.End else Alignment.Start).padding(6.dp), horizontalArrangement = Arrangement.spacedBy(6.dp)) { Text(message.time, style = MaterialTheme.typography.labelSmall); Glyph("lock", 12, "Restored encrypted message") }
                 }
             }
-            if (state.more) item { TextButton({ command("older", emptyMap()) }) { Text("Load older messages") } }
+            if (state.more) item { SigilTextButton({ command("older", emptyMap()) }) { Text("Load older messages") } }
         }
     }
 }

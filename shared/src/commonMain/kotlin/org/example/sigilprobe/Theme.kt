@@ -1,6 +1,12 @@
 package org.sigil
 
+import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.tween
+import kotlinx.coroutines.delay
 import androidx.compose.foundation.isSystemInDarkTheme
+import androidx.compose.foundation.text.selection.LocalTextSelectionColors
+import androidx.compose.foundation.text.selection.TextSelectionColors
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.graphics.Color
@@ -16,6 +22,7 @@ import sigil.shared.generated.resources.*
 data class Appearance(val font: String = "Newsreader", val mode: String = "System", val accent: Int = 0x555555, val dynamic: Boolean = false)
 data class ChatTheme(val accent: Int? = null, val gradient: Boolean = false)
 
+internal val LocalChatTint = staticCompositionLocalOf { 0f }
 val LocalCodeFont = staticCompositionLocalOf<FontFamily> { FontFamily.Monospace }
 val LocalSystemAppearance = staticCompositionLocalOf<(Boolean) -> Unit> { {} }
 val LocalTextPlatformStyle = staticCompositionLocalOf<PlatformTextStyle?> { null }
@@ -41,12 +48,17 @@ internal fun ChatTheme.encode() = "${accent?.let(::accentText) ?: ""}|$gradient"
 
 @Composable
 internal fun SigilTheme(appearance: Appearance, chat: ChatTheme? = null, dynamicAccent: Int? = null,
-    palette: (Int, Boolean) -> String, content: @Composable () -> Unit) {
+    palette: (Int, Boolean) -> String, chatKey: String? = null, content: @Composable () -> Unit) {
     val dark = when (appearance.mode) { "Dark" -> true; "Light" -> false; else -> isSystemInDarkTheme() }
     val systemAppearance = LocalSystemAppearance.current
     SideEffect { systemAppearance(dark) }
-    val seed = chat?.accent ?: if (appearance.dynamic) dynamicAccent ?: appearance.accent else appearance.accent
-    val colors = remember(seed, dark) { palette(seed, dark).split(',').map { Color(0xff000000L or it.toLong(16)) } }
+    var settledChat by remember { mutableStateOf<String?>(null) }
+    LaunchedEffect(chatKey) { if (chatKey != null) delay(MotionMillis.toLong()); settledChat = chatKey }
+    val chatReady = chatKey == null || settledChat == chatKey
+    val tint by animateFloatAsState(if (chat != null && chatReady) 1f else 0f, tween(180), label = "Conversation tint")
+    val seed = chat?.takeIf { chatReady }?.accent ?: if (appearance.dynamic) dynamicAccent ?: appearance.accent else appearance.accent
+    val targets = remember(seed, dark) { palette(seed, dark).split(',').map { Color(0xff000000L or it.toLong(16)) } }
+    val colors = targets.map { animateColorAsState(it, tween(180), label = "Theme color").value }
     val base = if (dark) darkColorScheme() else lightColorScheme()
     val scheme = base.copy(
         background = lerp(colors[0], Color.Black, if (dark) .12f else .025f), onBackground = colors[1], surface = colors[0], onSurface = colors[1],
@@ -71,7 +83,9 @@ internal fun SigilTheme(appearance: Appearance, chat: ChatTheme? = null, dynamic
         bodyLarge = style(18, 26), bodyMedium = style(16, 23), bodySmall = style(14, 20),
         labelLarge = style(16, 22), labelMedium = style(14, 20), labelSmall = style(12, 18),
     )
-    CompositionLocalProvider(LocalCodeFont provides FontFamily(Font(Res.font.google_sans_code))) {
-        MaterialTheme(colorScheme = scheme, typography = typography, content = content)
+    CompositionLocalProvider(LocalCodeFont provides FontFamily(Font(Res.font.google_sans_code)), LocalChatTint provides tint) {
+        MaterialTheme(colorScheme = scheme, typography = typography) {
+            CompositionLocalProvider(LocalTextSelectionColors provides TextSelectionColors(scheme.primary, scheme.primary.copy(alpha = .3f)), content = content)
+        }
     }
 }

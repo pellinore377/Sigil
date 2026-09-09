@@ -368,7 +368,7 @@ impl ClientStore {
             let peer: Id = id.try_into().map_err(|_| Error::InvalidStore)?;
             last = peer;
             let known = peers::known(&self.db, &self.key, &peer)?;
-            if !known.verified
+            if !known.trusted
                 || known.fingerprint == device
                 || event::account(&known.binding) != account
             {

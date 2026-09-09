@@ -422,3 +422,49 @@ pub(crate) fn origin_url(origin: &str) -> Result<(), StoreError> {
 #[cfg(test)]
 #[path = "admin_tests.rs"]
 pub(crate) mod tests;
+
+pub(crate) fn contact_directory(
+    db: &Connection,
+    username: &str,
+    now: u64,
+) -> Result<ContactDirectory, StoreError> {
+    let account = discover(db, username, now)?;
+    let mut bindings = Vec::new();
+    let mut links = Vec::new();
+    let mut seen = std::collections::BTreeSet::new();
+    for device in &account.devices {
+        let bytes: Option<Vec<u8>> = db.query_row("SELECT CASE WHEN length(statement)<=512 THEN statement END FROM device_bindings WHERE device=?1", [device], |r| r.get(0)).optional()?;
+        if let Some(bytes) = bytes {
+            bindings.push(crate::federation_auth::hex(&bytes));
+        }
+        let mut target = device.clone();
+        while seen.insert(target.clone()) {
+            if seen.len() > 128 {
+                return Err(StoreError::Busy);
+            }
+            let row: Option<(String, Vec<u8>)> = db.query_row("SELECT sponsor,CASE WHEN length(proof)<=1380 THEN proof END FROM device_links WHERE target=?1", [&target], |r| Ok((r.get(0)?,r.get(1)?))).optional()?;
+            let Some((sponsor, proof)) = row else {
+                break;
+            };
+            links.push(crate::federation_auth::hex(&proof));
+            target = sponsor;
+        }
+    }
+    Ok(ContactDirectory {
+        account,
+        bindings,
+        links,
+    })
+}
+impl Store {
+    pub fn contact_directory(
+        &mut self,
+        credential: &str,
+        username: &str,
+        now: u64,
+    ) -> Result<ContactDirectory, StoreError> {
+        let tx = self.0.transaction()?;
+        authorize(&tx, credential, now)?;
+        contact_directory(&tx, username, now)
+    }
+}

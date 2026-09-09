@@ -9,7 +9,7 @@ use std::{
 };
 
 const APPLICATION_ID: i64 = 0x5349474c;
-pub const SCHEMA_VERSION: i64 = 32;
+pub const SCHEMA_VERSION: i64 = 33;
 
 #[derive(Debug)]
 pub enum StoreError {
@@ -215,6 +215,10 @@ impl Store {
         }
         if version < 32 {
             transaction.execute_batch(crate::profile_photos::MIGRATION)?;
+        }
+        if version < 33 {
+            transaction
+                .execute_batch("ALTER TABLE contact_requests ADD COLUMN invitation TEXT;")?;
         }
         transaction.pragma_update(None, "user_version", SCHEMA_VERSION)?;
         transaction.commit()?;

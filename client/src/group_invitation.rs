@@ -118,7 +118,7 @@ impl Capsule {
         Ok(value)
     }
     fn verify(&self, peer: &peers::Peer, target: &Id, now: u64) -> Result<(), Error> {
-        if !peer.verified || peer.fingerprint != self.sender || *target != self.target {
+        if !peer.trusted || peer.fingerprint != self.sender || *target != self.target {
             return Err(Error::Unprepared);
         }
         if now != 0 && (self.expires <= now || self.expires > now.saturating_add(604800)) {
@@ -342,7 +342,7 @@ pub(crate) fn install(
     if !is_wire(bytes) {
         return Ok(None);
     }
-    let known = peers::verified(tx, key, peer)?;
+    let known = peers::trusted(tx, key, peer)?;
     let own = device_fingerprint(own_binding)?;
     let marker = retained(key, bytes)?.ok_or(Error::InvalidEvent)?;
     let receipt = ControlReceipt::parse(&marker)?.ok_or(Error::InvalidStore)?;
@@ -486,7 +486,7 @@ impl ClientStore {
         if role.is_some() && member.role != Role::Admin {
             return Err(Error::Unprepared);
         }
-        let target = peers::verified(&tx, &self.key, &peer)?;
+        let target = peers::trusted(&tx, &self.key, &peer)?;
         if target.fingerprint == own
             || state.device(target.fingerprint).is_ok()
             || (role.is_none()
@@ -565,7 +565,7 @@ impl ClientStore {
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
         let mut record = load(&tx, &self.key, &own, &id)?;
         let capsule = Capsule::parse(&record.capsule)?;
-        capsule.verify(&peers::verified(&tx, &self.key, &record.peer)?, &own, now)?;
+        capsule.verify(&peers::trusted(&tx, &self.key, &record.peer)?, &own, now)?;
         if record.status == InvitationStatus::Cancelled {
             return Err(Error::Cancelled);
         }

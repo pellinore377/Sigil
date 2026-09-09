@@ -585,7 +585,7 @@ mod tests {
             }
             let received = bob.receive_mailbox_online(now).unwrap();
             assert!(received.iter().any(|a|matches!(&a.result,Ok(crate::MailboxEvent::GroupText(m)) if m.text().unwrap().body=="after recovery")));
-            assert!(!alice.peer(b).unwrap().verified && !bob.peer(a).unwrap().verified);
+            assert!(!alice.peer(b).unwrap().trusted && !bob.peer(a).unwrap().trusted);
             // A delayed original seed is harmless after current-position recovery.
             if !expired {
                 deliver(&mut alice, &mut bob, now);

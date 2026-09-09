@@ -95,7 +95,7 @@ internal fun ComposerPanel(draft: TextFieldState, analyze: (String) -> String, e
 
                 FilledIconButton({ if (voiceReady) command("record_send", mapOf("peer" to peer)) else if (draft.text.isNotBlank() && requestContact != null) requestContact() else if (draft.text.isNotBlank()) send(if (notes) "note::${escapeField(draft.text.toString())};" else draft.text.toString(), notes) else change("Voice") },
                     Modifier.size(48.dp), enabled = if (voiceReady) enabled && voice.phase == "Ready" else if (draft.text.isNotBlank()) enabled || requestContact != null else true, shape = RoundedCornerShape(16.dp),
-                    colors = IconButtonDefaults.filledIconButtonColors(containerColor = MaterialTheme.colorScheme.inverseSurface, contentColor = MaterialTheme.colorScheme.inverseOnSurface)) {
+                    colors = IconButtonDefaults.filledIconButtonColors(containerColor = MaterialTheme.colorScheme.primary, contentColor = MaterialTheme.colorScheme.onPrimary)) {
                     Glyph(if (voiceReady || draft.text.isNotBlank()) "arrow_upward" else "graphic_eq", 25, if (voiceReady) "Send voice message" else if (draft.text.isNotBlank()) if (requestContact != null) "Send request" else "Send message" else "Voice message")
                 }
             }
@@ -133,9 +133,9 @@ internal fun ComposerPanel(draft: TextFieldState, analyze: (String) -> String, e
                             StructuredBuilder(shown, enabled, { change("Create") }) { source -> pendingBuilder = "$peer:$shown" to source; send(source, true) }
                         }
                         "Format" -> Column(Modifier.padding(16.dp)) {
-                            Header("Formatting", { change("Attachments") })
-                            Row { listOf("Bold" to "**", "Italic" to "*", "Strike" to "~~", "Code" to "`").forEach { (name, marker) -> TextButton({ draft.format(marker) }) { Text(name) } } }
-                            TextButton({ showKeyboard() }) { Text("Continue writing") }
+                            CompositionLocalProvider(LocalPageHeader provides false) { Header("Formatting", { change("Attachments") }) }
+                            Row { listOf("Bold" to "**", "Italic" to "*", "Strike" to "~~", "Code" to "`").forEach { (name, marker) -> SigilTextButton({ draft.format(marker) }) { Text(name) } } }
+                            SigilTextButton({ showKeyboard() }) { Text("Continue writing") }
                         }
                     }
                 }
@@ -170,10 +170,10 @@ private fun StructuredBuilder(kind: String, enabled: Boolean, back: () -> Unit, 
         }
         if (kind in listOf("Reminder", "Timer")) OutlinedTextField(whenText, { whenText = it }, Modifier.fillMaxWidth(), label = { Text(if (kind == "Timer") "Duration, e.g. 5m" else "When") })
         if (kind == "Poll") {
-            TextButton({ advanced = !advanced }) { Text(if (advanced) "Hide advanced" else "Advanced") }
+            SigilTextButton({ advanced = !advanced }) { Text(if (advanced) "Hide advanced" else "Advanced") }
             Expandable(advanced) { Toggle("Allow multiple choices", multi) { multi = it }; Toggle("Hide results until voting", hidden) { hidden = it } }
         }
-        Button({
+        SigilButton({
             val heading = escapeField(title)
             val items = entries.filter { it.isNotBlank() }.joinToString("\n") { "- ${escapeField(it.trim())}" }
             val source = when (kind) {
@@ -199,9 +199,9 @@ private fun VoicePanel(command: Command, peer: String, voice: VoiceState, close:
             Text("${voice.seconds / 60}:${(voice.seconds % 60).toString().padStart(2, '0')}", style = MaterialTheme.typography.titleMedium, fontFamily = LocalCodeFont.current)
         } else Text("Listen before you send.", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
         FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.CenterHorizontally), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            TextButton(close) { Text("Cancel") }
-            Button({ command(if (recording) "record_stop" else "record_start", mapOf("peer" to peer)) }, shape = RoundedCornerShape(18.dp), contentPadding = PaddingValues(horizontal = 24.dp, vertical = 16.dp),
-                colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.inverseSurface, contentColor = MaterialTheme.colorScheme.inverseOnSurface)) { Glyph(if (recording) "check" else "mic", 24); Spacer(Modifier.width(8.dp)); Text(if (recording) "Done" else "Record") }
+            SigilTextButton(close) { Text("Cancel") }
+            SigilButton({ command(if (recording) "record_stop" else "record_start", mapOf("peer" to peer)) }, shape = RoundedCornerShape(18.dp), contentPadding = PaddingValues(horizontal = 24.dp, vertical = 16.dp),
+                colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary, contentColor = MaterialTheme.colorScheme.onPrimary)) { Glyph(if (recording) "check" else "mic", 24); Spacer(Modifier.width(8.dp)); Text(if (recording) "Done" else "Record") }
         }
     }
 }

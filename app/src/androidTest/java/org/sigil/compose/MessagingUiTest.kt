@@ -33,7 +33,7 @@ class MessagingUiTest {
         File(ui.activity.cacheDir, "ui-$name.png").outputStream().use { bitmap.compress(Bitmap.CompressFormat.PNG, 100, it) }
         bitmap.recycle()
     }
-    @Test fun firstContactRequestKeepsTheDraftAndNeverSendsBeforeVerification() {
+    @Test fun firstContactRequestKeepsTheDraftUntilAcceptance() {
         val state = mutableStateOf(MessengerState(phase = "connected", chats = listOf(chat.copy(verified = false)), selected = "peer"))
         val commands = mutableListOf<Pair<String, Map<String, Any?>>>()
         show { SigilApp(NativeCore::palette, NativeCore::analyze, state.value, { name, fields -> commands += name to fields }) }
@@ -49,13 +49,30 @@ class MessagingUiTest {
         ui.onNodeWithContentDescription("Send message").assertIsNotEnabled()
         ui.waitUntil(5000) { ui.onNodeWithText("Sam").isDisplayed() }
         ui.onNodeWithText("Sam").assertIsDisplayed()
-        ui.onNodeWithText("Request sent. Waiting for Sam to accept.").assertIsDisplayed()
+        ui.onNodeWithText("Waiting for Sam to accept your request.").assertIsDisplayed()
         ui.mainClock.advanceTimeBy(500)
         ui.waitForIdle()
         Thread.sleep(250)
         screenshot("request-pending")
     }
-    @Test fun acceptingARequestDoesNotApproveItsEncryptionIdentity() {
+    @Test fun incomingRequestChipAndAccidentalDeclineCanBeReopened() {
+        val contact = chat.copy(verified = false, request = "incoming", unread = 0, pinned = false)
+        val state = mutableStateOf(MessengerState(phase = "connected", chats = listOf(contact)))
+        val commands = mutableListOf<Pair<String, Map<String, Any?>>>()
+        show { SigilApp(NativeCore::palette, NativeCore::analyze, state.value, { name, fields -> commands += name to fields }) }
+        ui.onNodeWithText("Request").assertIsDisplayed()
+        screenshot("request-list")
+        ui.runOnIdle { state.value = state.value.copy(selected = "peer") }
+        ui.onNodeWithText("Decline").performClick()
+        ui.runOnIdle {
+            assertTrue(commands.any { it.first == "contact_request" && it.second["action"] == "decline" })
+            state.value = state.value.copy(chats = listOf(contact.copy(request = "declined_incoming")))
+        }
+        ui.onNodeWithText("Accept").assertDoesNotExist()
+        ui.onNodeWithText("Accept instead").performClick()
+        ui.runOnIdle { assertTrue(commands.any { it.first == "contact_request" && it.second["action"] == "accept" }) }
+    }
+    @Test fun acceptanceEnablesChatWithoutClaimingManualVerification() {
         val contact = chat.copy(verified = false, request = "incoming", devices = listOf(ChatDevice("device", "0123".repeat(16), false, false, false)))
         val state = mutableStateOf(MessengerState(phase = "connected", chats = listOf(contact), selected = "peer"))
         val commands = mutableListOf<Pair<String, Map<String, Any?>>>()
@@ -66,11 +83,12 @@ class MessagingUiTest {
         ui.runOnIdle {
             assertTrue(commands.any { it.first == "contact_request" && it.second["action"] == "accept" })
             assertFalse(commands.any { it.first == "confirm" })
-            state.value = state.value.copy(chats = listOf(contact.copy(request = "accepted")))
+            state.value = state.value.copy(chats = listOf(contact.copy(request = "accepted", verified = true)))
         }
-        ui.onNodeWithText("Verify devices").performClick()
-        ui.onNodeWithText("Fingerprints match · approve").performClick()
-        ui.runOnIdle { assertTrue(commands.any { it.first == "confirm" && it.second["peer"] == "device" }) }
+        ui.onNodeWithText("Verify devices").assertDoesNotExist()
+        ui.onNodeWithTag("composer").performTextInput("A letter after acceptance")
+        ui.onNodeWithContentDescription("Send message").assertIsEnabled().performClick()
+        ui.runOnIdle { assertTrue(commands.any { it.first == "post" }); assertFalse(commands.any { it.first == "confirm" }) }
     }
     @Test fun recoveryRequiresASavedKeyAndProtectsItsWindow() {
         var enabled = false

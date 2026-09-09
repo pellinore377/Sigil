@@ -126,7 +126,11 @@ docker rm "$container" >/dev/null
 container=
 start "$original"
 request 200 - GET /versions
-jq -e '.contact_requests==[0]' "$scratch/response.json" >/dev/null
+jq -e '.contact_requests==[0,1] and .contact_directory==[0]' "$scratch/response.json" >/dev/null
+printf '%s' '{"username":"synthetic"}' > "$scratch/directory.json"
+request 401 - POST /client/v0/contact-directory directory.json
+request 200 device POST /client/v0/contact-directory directory.json
+jq -e '.account.address=="@synthetic:chat.example" and .bindings==[] and .links==[]' "$scratch/response.json" >/dev/null
 request 200 device GET /client/v0/contact-requests
 jq -e '.requests==[] and .next==null' "$scratch/response.json" >/dev/null
 request 200 device GET /client/v0/contact-requests/policy
@@ -226,7 +230,7 @@ maintenance() {
 }
 request 200 admin GET /admin/v0/setup
 request 200 admin GET /admin/v0/diagnostics
-jq -e '.redacted==true and .schema==32' "$scratch/response.json" >/dev/null
+jq -e '.redacted==true and .schema==33' "$scratch/response.json" >/dev/null
 printf '%s' '{"kind":"backup"}' > "$scratch/operation.json"
 maintenance
 backup_id=$(jq -er '.result.file' "$scratch/response.json")

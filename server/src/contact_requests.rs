@@ -168,7 +168,13 @@ pub(crate) fn request_in(
         remove(tx, &id, &request.recipient)?;
     }
     match receipt(tx, &id) {
-        Ok(value) => return Ok(value),
+        Ok(value) => {
+            if value.state == RequestState::Pending && request.invitation.is_some() {
+                tx.execute("UPDATE contact_requests SET device=?2,binding=?3,signature=?4,created_at=?5,expires_at=?6,invitation=?7 WHERE id=?1 AND state=0 AND signature!=?4", (&id, device, &raw, &request.signature, sql(now)?, sql(request.expires_at)?, &request.invitation))?;
+                return receipt(tx, &id);
+            }
+            return Ok(value);
+        }
         Err(StoreError::NotFound) => (),
         Err(e) => return Err(e),
     }
@@ -183,7 +189,7 @@ pub(crate) fn request_in(
     }
     crate::storage_budget::reserve(tx, &request.recipient, BYTES, now)?;
     tx.execute(
-        "INSERT INTO contact_requests VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,0)",
+        "INSERT INTO contact_requests VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,0,?10)",
         (
             &id,
             &request.recipient,
@@ -194,6 +200,7 @@ pub(crate) fn request_in(
             &request.signature,
             sql(now)?,
             sql(request.expires_at)?,
+            &request.invitation,
         ),
     )?;
     receipt(tx, &id)
@@ -269,7 +276,7 @@ impl Store {
         }
         let tx = self.0.transaction()?;
         let (account, _) = own(&tx, credential, now)?;
-        let rows=tx.prepare("SELECT id,origin,account,device,binding,signature,created_at,expires_at FROM contact_requests WHERE recipient=?1 AND state=0 AND expires_at>?2 AND id>?3 ORDER BY id LIMIT 33")?.query_map((&account,sql(now)?,after.unwrap_or("")),|r|Ok(IncomingRequest{receipt:RequestReceipt{id:r.get(0)?,state:RequestState::Pending,expires_at:unsigned(r,7)?},origin:r.get(1)?,account:r.get(2)?,device:r.get(3)?,binding:hex(&r.get::<_,Vec<u8>>(4)?),signature:r.get(5)?,created_at:unsigned(r,6)?}))?.collect::<Result<Vec<_>,_>>()?;
+        let rows=tx.prepare("SELECT id,origin,account,device,binding,signature,created_at,expires_at,invitation FROM contact_requests WHERE recipient=?1 AND state=0 AND expires_at>?2 AND id>?3 ORDER BY id LIMIT 33")?.query_map((&account,sql(now)?,after.unwrap_or("")),|r|Ok(IncomingRequest{receipt:RequestReceipt{id:r.get(0)?,state:RequestState::Pending,expires_at:unsigned(r,7)?},origin:r.get(1)?,account:r.get(2)?,device:r.get(3)?,binding:hex(&r.get::<_,Vec<u8>>(4)?),signature:r.get(5)?,invitation:r.get(8)?,created_at:unsigned(r,6)?}))?.collect::<Result<Vec<_>,_>>()?;
         let next = if rows.len() > 32 {
             Some(rows[31].receipt.id.clone())
         } else {
@@ -336,7 +343,7 @@ impl Store {
             )?;
             crate::profile_photos::unshare(&tx, &account, &origin, &peer)?;
         }
-        if old != 0 && old != value && value != 3 {
+        if old != 0 && old != value && value != 3 && !(old == 2 && value == 1) {
             return Err(StoreError::Conflict);
         }
         tx.execute(
@@ -429,7 +436,7 @@ impl Store {
                 }
                 crate::storage_budget::reserve(&tx, &account, BYTES, now)?;
                 tx.execute(
-                    "INSERT INTO contact_requests VALUES(?1,?2,?3,?4,'',X'','',?5,?5,3)",
+                    "INSERT INTO contact_requests VALUES(?1,?2,?3,?4,'',X'','',?5,?5,3,NULL)",
                     (&id, &account, &request.server, &request.account, sql(now)?),
                 )?;
             } else {

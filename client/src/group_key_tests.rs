@@ -289,7 +289,7 @@ fn group_initial_channel_does_not_grant_direct_trust_and_survives_restart() {
     let b = alice
         .observe_peer_binding(&bob.own_device_binding().unwrap())
         .unwrap();
-    assert!(!a.verified && !b.verified);
+    assert!(!a.trusted && !b.trusted);
     assert!(alice.prepare_peer_claim([91; 32], b.id).is_err());
     let id = alice
         .prepare_group_distribution_online(group, b.id, now)
@@ -350,7 +350,7 @@ fn group_initial_channel_does_not_grant_direct_trust_and_survives_restart() {
             .unwrap(),
         0
     );
-    assert!(!bob.peer(a.id).unwrap().verified);
+    assert!(!bob.peer(a.id).unwrap().trusted);
     assert!(bob.prepare_peer_claim([92; 32], a.id).is_err());
     bob.acknowledge_incoming_online().unwrap();
     assert!(
@@ -370,7 +370,7 @@ fn group_initial_channel_does_not_grant_direct_trust_and_survives_restart() {
     assert!(incoming
         .iter()
         .any(|v| matches!(&v.result, Ok(crate::MailboxEvent::GroupText(_)))));
-    assert!(!alice.peer(b.id).unwrap().verified && !bob.peer(a.id).unwrap().verified);
+    assert!(!alice.peer(b.id).unwrap().trusted && !bob.peer(a.id).unwrap().trusted);
 }
 
 #[test]
@@ -446,7 +446,7 @@ fn verified_contacts_group_initials_do_not_consume_direct_session_slots() {
         crate::session_peer(&bob.db, &received.session).unwrap(),
         None
     );
-    assert!(bob.peer(a).unwrap().verified);
+    assert!(bob.peer(a).unwrap().trusted);
     let tx = bob.db.transaction().unwrap();
     assert!(crate::selection::record(&tx, &bob.key, &a)
         .unwrap()

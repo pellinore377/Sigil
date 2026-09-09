@@ -176,14 +176,15 @@ fn trust(db: &Connection, key: &StorageKey, proof: &Attestation) -> Result<bool,
     let id = peer(proof)?;
     match crate::peers::known(db, key, &id) {
         Ok(known) => {
-            if known.blocked
+            if !known.active
+                || known.blocked
                 || known.fingerprint != proof.fingerprint().map_err(failure)?
                 || known.changed_fingerprint.is_some()
                 || known.replaced_by.is_some()
             {
                 return Err(Error::Conflict);
             }
-            Ok(known.verified)
+            Ok(known.trusted)
         }
         Err(Error::NotFound) => Ok(false),
         Err(e) => Err(e),
@@ -477,7 +478,7 @@ impl ClientStore {
         record.state.roster.roster.active(now).map_err(failure)?;
         let owner = record.owner_peer.ok_or(Error::Unprepared)?;
         if accept {
-            crate::peers::verified(&tx, &self.key, &owner)?;
+            crate::peers::trusted(&tx, &self.key, &owner)?;
         }
         if record.ring_until.is_some_and(|until| now >= until) {
             return Err(Error::Expired);
@@ -625,7 +626,7 @@ fn invite(
     if record.owner_peer.is_some() {
         return Err(Error::Unprepared);
     }
-    let known = crate::peers::verified(tx, key, &recipient)?;
+    let known = crate::peers::trusted(tx, key, &recipient)?;
     if record
         .state
         .participants

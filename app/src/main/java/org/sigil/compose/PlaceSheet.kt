@@ -1,5 +1,9 @@
 package org.sigil.compose
 
+import org.sigil.SigilButton
+import org.sigil.SigilTextButton
+import org.sigil.SigilIconButton
+
 import android.Manifest
 import android.content.pm.PackageManager
 import android.location.Location
@@ -63,18 +67,18 @@ internal fun PlaceSheet(close: () -> Unit, send: (Map<String, Any?>) -> Unit) {
     Dialog(close, DialogProperties(usePlatformDefaultWidth = false)) {
         Surface(Modifier.fillMaxSize()) {
             Column(Modifier.fillMaxSize().systemBarsPadding().imePadding().padding(20.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
-                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) { IconButton(close) { Glyph("close", 24, "Cancel") }; Text("Share a place", Modifier.padding(start = 8.dp), style = MaterialTheme.typography.titleLarge) }
+                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) { SigilIconButton(close) { Glyph("close", 24, "Cancel") }; Text("Share a place", Modifier.padding(start = 8.dp), style = MaterialTheme.typography.titleLarge) }
                 Box(Modifier.weight(1f).fillMaxWidth().clip(RoundedCornerShape(24.dp))) {
                     ServerMap(Modifier.fillMaxSize(), point?.first ?: 0.0, point?.second ?: 0.0, chosen = { lat, lon -> point = lat to lon; sample = null }, failure = { issue = "Maps are unavailable. You can still share your current location." })
                 }
                 issue?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
                 OutlinedTextField(label, { label = it.take(256) }, Modifier.fillMaxWidth(), shape = RoundedCornerShape(16.dp), singleLine = true, label = { Text("Place name · optional") })
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                    TextButton({
+                    SigilTextButton({
                         if (context.checkSelfPermission(Manifest.permission.ACCESS_COARSE_LOCATION) == PackageManager.PERMISSION_GRANTED) locating = true
                         else permission.launch(arrayOf(Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION))
                     }, enabled = !locating) { Glyph("my_location", 20); Spacer(Modifier.width(6.dp)); Text(if (locating) "Locating…" else "My location") }
-                    Button({ point?.let { (lat, lon) -> send(mapOf("latitude_e6" to (lat * 1_000_000).roundToInt(), "longitude_e6" to (lon * 1_000_000).roundToInt(), "accuracy_cm" to sample?.let { (it.accuracy * 100).roundToInt().coerceAtLeast(0) }, "sampled_at" to (sample?.time?.div(1000) ?: System.currentTimeMillis() / 1000), "label" to label.ifBlank { "Shared place" }, "pin" to (sample == null))) } }, enabled = point != null && !locating) { Text("Send place") }
+                    SigilButton({ point?.let { (lat, lon) -> send(mapOf("latitude_e6" to (lat * 1_000_000).roundToInt(), "longitude_e6" to (lon * 1_000_000).roundToInt(), "accuracy_cm" to sample?.let { (it.accuracy * 100).roundToInt().coerceAtLeast(0) }, "sampled_at" to (sample?.time?.div(1000) ?: System.currentTimeMillis() / 1000), "label" to label.ifBlank { "Shared place" }, "pin" to (sample == null))) } }, enabled = point != null && !locating) { Text("Send place") }
                 }
             }
         }
@@ -84,12 +88,12 @@ internal fun PlaceSheet(close: () -> Unit, send: (Map<String, Any?>) -> Unit) {
 @Composable
 internal fun LocationCard(part: org.sigil.MessagePart) {
     var opened by remember(part.id) { mutableStateOf(false) }
-    TextButton({ opened = true }) { org.sigil.Glyph("location_on", 22); Text("Open map") }
+    SigilTextButton({ opened = true }) { org.sigil.Glyph("location_on", 22); Text("Open map") }
     if (opened) Dialog({ opened = false }, DialogProperties(usePlatformDefaultWidth = false)) {
         Surface(Modifier.fillMaxSize()) { Column(Modifier.systemBarsPadding().padding(16.dp)) {
             Text(part.text, style = MaterialTheme.typography.titleLarge)
             ServerMap(Modifier.weight(1f).fillMaxWidth(), part.latitude, part.longitude)
-            TextButton({ opened = false }) { Text("Close") }
+            SigilTextButton({ opened = false }) { Text("Close") }
         } }
     }
 }

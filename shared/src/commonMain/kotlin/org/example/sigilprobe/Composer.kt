@@ -121,7 +121,7 @@ fun Composer(state: TextFieldState, analyze: (String) -> String, modifier: Modif
         if (showTools) {
         Row {
             listOf("B" to "**", "I" to "*", "Strike" to "~~", "Code" to "`").forEach { (label, marker) ->
-                TextButton({ state.format(marker, formattingSelection); editorFocus.requestFocus() }) {
+                SigilTextButton({ state.format(marker, formattingSelection); editorFocus.requestFocus() }) {
                     Text(label, Modifier.clearAndSetSemantics {
                         contentDescription = when (label) { "B" -> "Bold"; "I" -> "Italic"; else -> label }
                     })
@@ -129,14 +129,14 @@ fun Composer(state: TextFieldState, analyze: (String) -> String, modifier: Modif
             }
         }
         Row {
-            TextButton({ state.undoState.undo() }, enabled = state.undoState.canUndo) { Text("Undo") }
-            TextButton({ state.undoState.redo() }, enabled = state.undoState.canRedo) { Text("Redo") }
-            TextButton({ sourceMode = !sourceMode }) { Text(if (sourceMode) "Formatted" else "Source") }
+            SigilTextButton({ state.undoState.undo() }, enabled = state.undoState.canUndo) { Text("Undo") }
+            SigilTextButton({ state.undoState.redo() }, enabled = state.undoState.canRedo) { Text("Redo") }
+            SigilTextButton({ sourceMode = !sourceMode }) { Text(if (sourceMode) "Formatted" else "Source") }
         }
         Text(if (active.isEmpty()) "Composer" else "Formatting: ${active.joinToString()}")
         }
         LocalComposerInput.current(sourceMode) {
-        BasicTextField(state, enabled = enabled,
+        BasicTextField(state, enabled = enabled, cursorBrush = androidx.compose.ui.graphics.SolidColor(MaterialTheme.colorScheme.primary),
             modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp, max = 144.dp).testTag("composer")
                 .semantics { contentDescription = "Message" }
                 .focusRequester(editorFocus).onFocusChanged { editorFocused = it.isFocused; if (it.isFocused) onFocus() }

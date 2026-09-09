@@ -1,5 +1,8 @@
 package org.sigil.compose
 
+import org.sigil.SigilButton
+import org.sigil.SigilTextButton
+
 import android.Manifest
 import android.content.pm.PackageManager
 import android.os.SystemClock
@@ -48,7 +51,7 @@ internal fun DeviceLinkDialog(flow: JSONObject, busy: Boolean, issue: String?, c
             Column(Modifier.fillMaxSize().systemBarsPadding().padding(24.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(16.dp)) {
                 Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                     Text("Link a device", Modifier.weight(1f), style = MaterialTheme.typography.headlineMedium)
-                    TextButton(close, enabled = !busy) { Text(if (stage == "done") "Done" else if (canCancel) "Cancel" else "Finish later") }
+                    SigilTextButton(close, enabled = !busy) { Text(if (stage == "done") "Done" else if (canCancel) "Cancel" else "Finish later") }
                 }
                 Column(Modifier.weight(1f).verticalScroll(rememberScrollState()), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(20.dp)) {
                 Text(when (stage) {
@@ -62,15 +65,9 @@ internal fun DeviceLinkDialog(flow: JSONObject, busy: Boolean, issue: String?, c
                     "done" -> "Your device is linked."
                     else -> "Preparing a secure link…"
                 })
-                if (scanning && !busy) LinkScanner { qr -> scanning = false; command("scan", qr) }
+                if (scanning && !busy) QrScanner { qr -> scanning = false; command("scan", qr) }
                 else if (flow.has("cells")) {
-                    val width = flow.getInt("width"); val cells = flow.getString("cells")
-                    Canvas(Modifier.fillMaxWidth().aspectRatio(1f).semantics { contentDescription = "Device linking QR code" }) {
-                        drawRect(Color.White)
-                        val unit = kotlin.math.floor(size.minDimension / (width + 8))
-                        val origin = Offset((size.width - unit * width) / 2, (size.height - unit * width) / 2)
-                        cells.forEachIndexed { index, cell -> if (cell == '1') drawRect(Color.Black, origin + Offset(index % width * unit, index / width * unit), DrawSize(unit, unit)) }
-                    }
+                    QrCanvas(flow, "Device linking QR code")
                 }
                 flow.optJSONArray("emoji")?.let { emoji ->
                     Text((0 until emoji.length()).joinToString(" ") { emoji.getString(it) }, style = MaterialTheme.typography.headlineMedium)
@@ -80,23 +77,23 @@ internal fun DeviceLinkDialog(flow: JSONObject, busy: Boolean, issue: String?, c
                 if (busy) CircularProgressIndicator(Modifier.size(24.dp))
                 }
                 when (stage) {
-                    "scan_offer", "show_offer", "show_proposal" -> if (!scanning) Button({ scanning = true }, enabled = !busy) { Text("Scan the other device") }
+                    "scan_offer", "show_offer", "show_proposal" -> if (!scanning) SigilButton({ scanning = true }, enabled = !busy) { Text("Scan the other device") }
                     "confirm_join", "confirm_sponsor" -> {
                         Row(verticalAlignment = Alignment.CenterVertically) { Checkbox(matched, { matched = it }, enabled = !busy); Text("The symbols match on both devices.", Modifier.weight(1f)) }
-                        Button({ command("confirm", null) }, enabled = matched && !busy) { Text("Approve this device") }
+                        SigilButton({ command("confirm", null) }, enabled = matched && !busy) { Text("Approve this device") }
                     }
-                    "show_response" -> Button({ command("finish", null) }, enabled = !busy) { Text("Finish linking") }
-                    "prepare_offer", "authorize", "cancelling" -> Button({ command("retry", null) }, enabled = !busy) { Text("Retry") }
-                    "done" -> Button(close, enabled = !busy) { Text("Continue") }
+                    "show_response" -> SigilButton({ command("finish", null) }, enabled = !busy) { Text("Finish linking") }
+                    "prepare_offer", "authorize", "cancelling" -> SigilButton({ command("retry", null) }, enabled = !busy) { Text("Retry") }
+                    "done" -> SigilButton(close, enabled = !busy) { Text("Continue") }
                 }
-                if (scanning && stage != "scan_offer") TextButton({ scanning = false }) { Text("Show my code") }
+                if (scanning && stage != "scan_offer") SigilTextButton({ scanning = false }) { Text("Show my code") }
             }
         }
     }
 }
 
 @Composable
-private fun LinkScanner(found: (String) -> Unit) {
+internal fun QrScanner(found: (String) -> Unit) {
     val context = LocalContext.current
     val lifecycle = LocalLifecycleOwner.current
     val onFound by rememberUpdatedState(found)
@@ -147,6 +144,43 @@ private fun LinkScanner(found: (String) -> Unit) {
     if (granted) Box(Modifier.fillMaxWidth().aspectRatio(1f).clip(RoundedCornerShape(24.dp)).testTag("link-viewfinder")) {
         AndroidView({ preview }, Modifier.matchParentSize())
     }
-    else Button({ permission.launch(Manifest.permission.CAMERA) }) { Text("Allow camera to scan") }
+    else SigilButton({ permission.launch(Manifest.permission.CAMERA) }) { Text("Allow camera to scan") }
     issue?.let { Text(it) }
+}
+
+@Composable
+internal fun QrCanvas(flow: JSONObject, label: String) {
+    val width = flow.getInt("width"); val cells = flow.getString("cells")
+    Canvas(Modifier.fillMaxWidth().aspectRatio(1f).semantics { contentDescription = label }) {
+        drawRect(Color.White)
+        val unit = kotlin.math.floor(size.minDimension / (width + 8))
+        val origin = Offset((size.width - unit * width) / 2, (size.height - unit * width) / 2)
+        cells.forEachIndexed { index, cell -> if (cell == '1') drawRect(Color.Black, origin + Offset(index % width * unit, index / width * unit), DrawSize(unit, unit)) }
+    }
+}
+
+@Composable
+internal fun ContactQrDialog(flow: JSONObject, busy: Boolean, issue: String?, command: (String, String?) -> Unit) {
+    val stage = flow.getString("stage")
+    val close = { if (!busy) command("close", null) }
+    Dialog(close, DialogProperties(usePlatformDefaultWidth = false, securePolicy = SecureFlagPolicy.SecureOn)) {
+        Surface(Modifier.fillMaxSize()) {
+            Column(Modifier.fillMaxSize().systemBarsPadding().padding(24.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(16.dp)) {
+                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                    Text(if (flow.has("review")) "Confirm identity" else "Connect in person", Modifier.weight(1f), style = MaterialTheme.typography.headlineMedium)
+                    SigilTextButton(close, enabled = !busy) { Text("Close") }
+                }
+                Column(Modifier.weight(1f).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(16.dp)) {
+                    Text(if (stage == "scan") "Scan the contact code on the other person’s screen." else "Have the other person scan this code to connect. One person can use it, within ten minutes.")
+                    if (busy) CircularProgressIndicator()
+                    else if (stage == "scan") QrScanner { command("scan", it) }
+                    else if (flow.optBoolean("consumed")) Text("Code scanned. You can close this screen.")
+                    else if (flow.optBoolean("expired")) Text("This code expired. Show a new code to connect.")
+                    else if (flow.has("cells")) QrCanvas(flow, "Contact QR code")
+                    issue?.let { Text(it, color = MaterialTheme.colorScheme.error) }
+                }
+                if (!flow.has("review")) SigilButton({ command(if (stage == "scan" || flow.optBoolean("expired") || flow.optBoolean("consumed")) "show" else "scan", null) }, enabled = !busy) { Text(if (stage == "scan" || flow.optBoolean("expired") || flow.optBoolean("consumed")) "Show my code" else "Scan a code") }
+            }
+        }
+    }
 }

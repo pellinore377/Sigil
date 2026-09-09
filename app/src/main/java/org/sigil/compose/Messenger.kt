@@ -53,6 +53,21 @@ class Messenger(application: Application) : AndroidViewModel(application) {
         private set
     fun dismissAccountRecovery() { if (!state.busy) recoveringAccount = false }
     fun dismissRecovery() { recoveryKey = null }
+    var contactQr by mutableStateOf<JSONObject?>(null)
+        private set
+    private fun contactQr(fields: Map<String, Any?>) {
+        val context = mapOf("peer" to (fields["peer"] ?: contactQr?.optional("peer")), "review" to (fields["review"] ?: contactQr?.optional("review")))
+        if (fields["action"] == "scan" && fields["qr"] == null) {
+            contactQr = JSONObject().put("stage", "scan"); context.forEach { (k,v) -> if (v != null) contactQr!!.put(k,v) }; return
+        }
+        scope.launch { serialized(true) {
+            val result = execute("contact_qr", fields + context)
+            result.optional("open")?.let { state = state.copy(selected = it); pages = 1 }
+            contactQr = result.takeUnless { it.getString("stage") in listOf("done", "none") }
+            context.forEach { (k,v) -> if (v != null) contactQr?.put(k,v) }
+            refresh()
+        } }
+    }
     var deviceLink by mutableStateOf<JSONObject?>(null)
         private set
     private fun linkResult(value: JSONObject) { deviceLink = value.takeUnless { it.getString("stage") == "none" } }
@@ -159,6 +174,7 @@ class Messenger(application: Application) : AndroidViewModel(application) {
             }
             "photo_choose" -> { picker = emptyMap<String, Any?>() to "Profile photo"; return }
             "photo_remove" -> { changeProfilePhoto(null); return }
+            "contact_qr" -> { contactQr(fields); return }
             "device_link" -> { deviceLink(fields); return }
             "wallpaper_remove" -> { changeWallpaper(fields["peer"] as String, null); return }
             "notification_settings" -> { notificationPermissionResult(); scope.launch { serialized(true) { state = state.copy(push = withContext(Dispatchers.IO) { NativePush.settings(getApplication()) }) } }; return }
@@ -261,7 +277,7 @@ class Messenger(application: Application) : AndroidViewModel(application) {
                         val merged = (if (fields["cursor"] != null) state.devices else emptyList()).associateBy { it.id }.toMutableMap()
                         result.getJSONArray("devices").objects().forEach { value ->
                             val id = value.getString("id"); val prior = merged[id]
-                            merged[id] = AccountDevice(id, value.getBoolean("current"), value.optional("label") ?: prior?.label,
+                            merged[id] = AccountDevice(id, value.getBoolean("current"), if (value.getBoolean("current")) android.os.Build.MODEL else value.optional("label") ?: prior?.label,
                                 if (value.isNull("revoked")) prior?.revoked else value.getBoolean("revoked"), if (value.isNull("expires")) prior?.expires else value.getLong("expires"),
                                 value.optional("fingerprint") ?: prior?.fingerprint, if (value.isNull("fingerprint")) prior?.verified == true else value.getBoolean("verified"))
                         }
@@ -366,6 +382,7 @@ class Messenger(application: Application) : AndroidViewModel(application) {
     private fun request(name: String, fields: Map<String, Any?> = emptyMap()): String {
         val value = JSONObject().put("command", name)
         fields.forEach { (key, item) -> value.put(key, JSONObject.wrap(item)) }
+        if (name in listOf("oidc", "enroll")) value.put("label", android.os.Build.MODEL.take(60))
         if (name == "card_action") value.put("timestamp", System.currentTimeMillis() / 1000)
         if (name in listOf("post", "place", "group_create", "react", "pin", "read", "mark_read", "snooze", "forward", "organize", "edit", "delete", "clear_conversation", "note", "typing", "draft")) {
             val bytes = ByteArray(32).also { SecureRandom().nextBytes(it) }
@@ -391,6 +408,7 @@ class Messenger(application: Application) : AndroidViewModel(application) {
         val phase = value.getString("phase")
         files.enabled = foreground && phase == "connected"
         if (phase != "connected") { state = state.copy(phase = phase, loginAddress = if (phase == "new") state.loginAddress else value.optional("server") ?: state.loginAddress); return }
+        if (contactQr?.optString("stage") == "show") { val status = execute("contact_qr", mapOf("action" to "status")); contactQr = JSONObject(contactQr.toString()).put("consumed", status.getBoolean("consumed")).put("expired", status.getBoolean("expired")) }
         NativePush.resume(getApplication())
         if (state.push != null && android.os.SystemClock.elapsedRealtime() >= nextPushStatus) {
             state = state.copy(push = withContext(Dispatchers.IO) { NativePush.settings(getApplication()) })
@@ -408,7 +426,7 @@ class Messenger(application: Application) : AndroidViewModel(application) {
         state = state.copy(readReceipts = value.getBoolean("read_receipts"), typingIndicators = value.getBoolean("typing_indicators"), presenceSharing = value.getBoolean("presence_sharing"), invitations = value.getJSONArray("invitations").objects().map { GroupInvitation(it.getString("id"), it.getString("peer"), it.getString("group")) })
         val chats = value.getJSONArray("chats").objects().map { chat ->
             ChatSummary(chat.getString("id"), chat.getString("address"), chat.getString("preview"), clock(chat.getLong("timestamp")), chat.getBoolean("verified"),
-                chat.getJSONArray("devices").objects().map { device -> ChatDevice(device.getString("id"), device.getString("fingerprint"), device.getBoolean("verified"), device.getBoolean("blocked"), device.getBoolean("changed")) }, chat.optString("name"), chat.optInt("unread"), chat.optBoolean("pinned"), chat.optBoolean("snoozed"), chat.optBoolean("hidden"), chat.optString("presence", "inactive"), chat.optJSONArray("collections")?.strings().orEmpty(), chat.optJSONArray("typing")?.strings().orEmpty(), chat.optional("draft").orEmpty(), chat.optBoolean("group"), avatar = chat.optString("avatar"), ui = pendingUi(chat.getString("id"), chat.optJSONObject("ui")?.stringMap().orEmpty()), contactOnly = chat.optBoolean("contact_only"), readReceipts = chat.optBoolean("read_receipts", true), typingIndicators = chat.optBoolean("typing_indicators", true), presenceSharing = chat.optBoolean("presence_sharing"), request = chat.optString("request", "none"))
+                chat.getJSONArray("devices").objects().map { device -> ChatDevice(device.getString("id"), device.getString("fingerprint"), device.optBoolean("identity_verified"), device.getBoolean("blocked"), device.getBoolean("changed")) }, chat.optString("name"), chat.optInt("unread"), chat.optBoolean("pinned"), chat.optBoolean("snoozed"), chat.optBoolean("hidden"), chat.optString("presence", "inactive"), chat.optJSONArray("collections")?.strings().orEmpty(), chat.optJSONArray("typing")?.strings().orEmpty(), chat.optional("draft").orEmpty(), chat.optBoolean("group"), avatar = chat.optString("avatar"), ui = pendingUi(chat.getString("id"), chat.optJSONObject("ui")?.stringMap().orEmpty()), contactOnly = chat.optBoolean("contact_only"), readReceipts = chat.optBoolean("read_receipts", true), typingIndicators = chat.optBoolean("typing_indicators", true), presenceSharing = chat.optBoolean("presence_sharing"), request = chat.optString("request", "none"), identityReview = chat.optString("identity_review").takeIf { it.isNotEmpty() && it != "null" })
         }
         state = state.copy(profileAvatar = value.optString("profile_avatar"), photoPending = value.optBoolean("photo_pending"), phase = phase, address = value.getString("address"), device = value.getString("device"), fingerprint = value.getString("fingerprint"), chats = chats, collectionsEnabled = value.optBoolean("collections_enabled"), collections = value.optJSONArray("collections")?.objects()?.map { CollectionItem(it.getString("id"), it.getString("name"), it.optString("icon", "folder")) }.orEmpty(), ui = pendingUi(null, value.optJSONObject("ui")?.stringMap().orEmpty()))
         val peer = state.selected ?: return

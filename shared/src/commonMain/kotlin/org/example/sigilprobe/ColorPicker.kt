@@ -42,7 +42,7 @@ internal fun AccentPicker(value: Int?, update: (Int) -> Unit) {
                 }
             }
         }
-        TextButton({ custom = true }) { Glyph("palette", 20); Spacer(Modifier.width(8.dp)); Text("Custom color") }
+        SigilTextButton({ custom = true }) { Glyph("palette", 20); Spacer(Modifier.width(8.dp)); Text("Custom color") }
     }
     if (custom) CustomColor(value ?: 0x555555, { custom = false }) { update(it); custom = false }
 }
@@ -56,7 +56,7 @@ private fun CustomColor(initial: Int, close: () -> Unit, apply: (Int) -> Unit) {
     fun select(value: Int) { val v = hsv(value); hue = v[0]; saturation = v[1]; brightness = v[2] }
     AlertDialog(close, title = { Text("Your accent") }, text = {
         Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-            Row { TextButton({ advanced = false }) { Text("Color") }; TextButton({ advanced = true }) { Text("Advanced") } }
+            Row { SigilTextButton({ advanced = false }) { Text("Color") }; SigilTextButton({ advanced = true }) { Text("Advanced") } }
             AnimatedContent(advanced, transitionSpec = {
                 (slideInHorizontally(tween(MotionMillis)) { if (targetState) it else -it } + fadeIn()) togetherWith
                     (slideOutHorizontally(tween(MotionMillis)) { if (targetState) -it else it } + fadeOut())
@@ -74,7 +74,7 @@ private fun CustomColor(initial: Int, close: () -> Unit, apply: (Int) -> Unit) {
                     Slider(hue, { hue = it }, valueRange = 0f..359.99f, modifier = Modifier.semantics { contentDescription = "Hue" }, colors = SliderDefaults.colors(activeTrackColor = Color.Transparent, inactiveTrackColor = Color.Transparent, thumbColor = color))
                 }
                 Text("Suggested", style = MaterialTheme.typography.labelMedium)
-                Row(horizontalArrangement = Arrangement.SpaceEvenly, modifier = Modifier.fillMaxWidth()) { accents.forEach { (name, value) -> Box(Modifier.size(28.dp).clip(CircleShape).background(Color(0xff000000L or value.toLong()), CircleShape).semantics { contentDescription = name }.clickable { select(value) }) } }
+                Row(horizontalArrangement = Arrangement.SpaceEvenly, modifier = Modifier.fillMaxWidth()) { accents.forEach { (name, value) -> Box(Modifier.size(28.dp).clip(RoundedCornerShape(8.dp)).background(Color(0xff000000L or value.toLong()), RoundedCornerShape(8.dp)).semantics { contentDescription = name }.clickable { select(value) }) } }
             } else {
                 var text by remember(rgb) { mutableStateOf(accentText(rgb)) }
                 OutlinedTextField(text, { text = it.take(7); parseAccent(it)?.let(::select) }, singleLine = true, label = { Text("Hex") }, prefix = { Text("#") }, isError = parseAccent(text) == null)
@@ -89,5 +89,5 @@ private fun CustomColor(initial: Int, close: () -> Unit, apply: (Int) -> Unit) {
             } }
             Surface(Modifier.fillMaxWidth().height(28.dp), color = color, shape = RoundedCornerShape(8.dp)) {}
         }
-    }, confirmButton = { TextButton({ apply(rgb) }) { Text("Apply color") } }, dismissButton = { TextButton(close) { Text("Cancel") } })
+    }, confirmButton = { SigilTextButton({ apply(rgb) }) { Text("Apply color") } }, dismissButton = { SigilTextButton(close) { Text("Cancel") } })
 }

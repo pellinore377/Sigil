@@ -44,12 +44,13 @@ class MessengerTest {
         ui.onNodeWithText("Keep this thought").assertDoesNotExist()
     }
 
-    @Test fun unverified_device_cannot_send_even_with_a_draft() {
+    @Test fun unaccepted_contact_cannot_send_even_with_a_draft() {
         val commands = mutableListOf<String>()
         ui.setContent { SigilApp(NativeCore::palette, NativeCore::analyze,
             MessengerState(phase = "connected", chats = listOf(chat(false)), selected = "peer"), { name, _ -> commands += name }) }
         ui.onNodeWithTag("composer").performTextInput("hello")
-        ui.onNodeWithContentDescription("Send message").assertIsNotEnabled()
+        ui.onNodeWithContentDescription("Send message").assertDoesNotExist()
+        ui.onNodeWithText("Send request").assertExists()
         ui.runOnIdle { assertEquals(emptyList(), commands.filter { it in listOf("post", "edit", "card_action") }) }
     }
     @Test fun send_preserves_draft_on_failure_and_clears_after_durable_success() {

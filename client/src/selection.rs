@@ -30,7 +30,7 @@ pub(super) fn record(
 }
 pub(super) fn selected(db: &Connection, key: &StorageKey, peer: &Id) -> Result<Option<Id>, Error> {
     let known = peers::known(db, key, peer)?;
-    if !known.verified {
+    if !known.trusted {
         return Err(Error::Unprepared);
     }
     let Some((session, fingerprint)) = record(db, key, peer)? else {
@@ -49,7 +49,7 @@ pub(super) fn activate(
     session: &Id,
 ) -> Result<(), Error> {
     let known = peers::known(tx, key, peer)?;
-    if !known.verified || session_peer(tx, session)? != Some(*peer) {
+    if !known.trusted || session_peer(tx, session)? != Some(*peer) {
         return Err(Error::Unprepared);
     }
     load(tx, key, session)?;

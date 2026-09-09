@@ -127,7 +127,7 @@ fn invitation_requires_explicit_consent_and_survives_initial_queue_failure_and_a
     assert_eq!(bob.group_status(group).unwrap().state.members().len(), 2);
     assert!(alice.recovery_records(None).unwrap().is_empty());
     assert!(bob.recovery_records(None).unwrap().is_empty());
-    assert!(alice.peer(b).unwrap().verified && bob.peer(a).unwrap().verified);
+    assert!(alice.peer(b).unwrap().trusted && bob.peer(a).unwrap().trusted);
 }
 
 #[test]
@@ -412,7 +412,7 @@ fn invitation_context_is_bound_to_inviter_recipient_and_signed_policy() {
     let own = device_fingerprint(&alice.own_device_binding().unwrap()).unwrap();
     let record = load(&alice.db, &alice.key, &own, &id).unwrap();
     let recipient = device_fingerprint(&bob.own_device_binding().unwrap()).unwrap();
-    let peer = peers::verified(&bob.db, &bob.key, &a).unwrap();
+    let peer = peers::trusted(&bob.db, &bob.key, &a).unwrap();
     let capsule = Capsule::parse(&record.capsule).unwrap();
     capsule.verify(&peer, &recipient, now).unwrap();
     assert!(capsule.verify(&peer, &[0; 32], now).is_err());

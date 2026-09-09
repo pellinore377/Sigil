@@ -51,6 +51,20 @@ impl HttpsClient {
         }
         Ok(updated)
     }
+    pub fn contact_directory(&self, username: &str) -> Result<ContactDirectory, Error> {
+        if !accounts::valid_username(username) {
+            return Err(Error::Configuration);
+        }
+        self.json(
+            self.request(
+                Method::POST,
+                "/client/v0/contact-directory",
+                Some(&serde_json::json!({"username":username})),
+            )?,
+            200,
+            524288,
+        )
+    }
     pub fn discover_account(&self, username: &str) -> Result<FoundAccount, Error> {
         if !accounts::valid_username(username) {
             return Err(Error::Configuration);

@@ -1,5 +1,7 @@
 package org.sigil.compose
 
+import org.sigil.SigilTextButton
+
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.ImageDecoder
@@ -113,7 +115,7 @@ internal fun AndroidAttachment(message: ChatMessage) {
             Text(file.name, maxLines = 2)
             Text(if (file.bytes >= 1024 * 1024) "${file.bytes / (1024 * 1024)} MB" else "${file.bytes / 1024} KB", style = MaterialTheme.typography.labelSmall)
             if (requested && !ready) LinearProgressIndicator(Modifier.fillMaxWidth())
-            TextButton({ if (!ready) requested = true else opened = true }, enabled = !requested || ready) {
+            SigilTextButton({ if (!ready) requested = true else opened = true }, enabled = !requested || ready) {
                 Glyph(if (ready && playable) "play_arrow" else if (ready) "open_in_new" else "download", 22)
                 Text(if (failed) "Retry" else if (ready && playable) "Play" else if (ready) "Open" else "Download")
             }
@@ -176,7 +178,7 @@ internal fun VideoDialog(message: ChatMessage, close: () -> Unit) {
                     Slider(position.toFloat().coerceIn(0f, duration.toFloat()), { seeking = true; position = it.toLong() }, Modifier.testTag("media-seek"), valueRange = 0f..duration.toFloat(), onValueChangeFinished = { player.seekTo(position, MediaPlayer.SEEK_CLOSEST); seeking = false })
                     Text("${mediaTime(position)} / ${mediaTime(duration)}", style = MaterialTheme.typography.labelSmall)
                 }
-                Row { TextButton({ if (playing) player.pause() else player.start(); playing = !playing }, enabled = ready && !failed) { Glyph(if (playing) "pause" else "play_arrow", 24); Text(if (playing) "Pause" else "Play") }; TextButton(close) { Text("Close") } }
+                Row { SigilTextButton({ if (playing) player.pause() else player.start(); playing = !playing }, enabled = ready && !failed) { Glyph(if (playing) "pause" else "play_arrow", 24); Text(if (playing) "Pause" else "Play") }; SigilTextButton(close) { Text("Close") } }
             }
         }
     }

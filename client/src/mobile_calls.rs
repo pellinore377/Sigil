@@ -26,7 +26,7 @@ impl ClientStore {
             return Err(Error::Limit);
         }
         for peer in &recipients {
-            peers::verified(&self.db, &self.key, peer)?;
+            peers::trusted(&self.db, &self.key, peer)?;
         }
         self.start_call(request, now, history.direct, &recipients)?;
         Ok(json!({"call":transport::hex(&request)}))
@@ -66,7 +66,7 @@ impl ClientStore {
                 .collect();
             if peers
                 .iter()
-                .any(|p| !p.verified || p.blocked || p.changed_fingerprint.is_some())
+                .any(|p| !p.trusted || p.blocked || p.changed_fingerprint.is_some())
                 || peers.len() + 1 != members.len()
             {
                 return Err(Error::Unprepared);
@@ -76,7 +76,7 @@ impl ClientStore {
             // A direct call targets the selected device; accepting more than one would be a group call.
             let peer = self.mobile_peer(peer)?;
             self.mobile_recipients(peer)?;
-            peers::verified(&self.db, &self.key, &peer)?;
+            peers::trusted(&self.db, &self.key, &peer)?;
             vec![peer]
         };
         if recipients.is_empty() || recipients.len() > 7 {

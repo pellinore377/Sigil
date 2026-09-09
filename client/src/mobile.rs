@@ -12,7 +12,7 @@ mod account;
 #[path = "mobile_cards.rs"]
 mod cards;
 #[path = "mobile_contacts.rs"]
-mod contacts;
+pub(crate) mod contacts;
 #[path = "mobile_link.rs"]
 mod device_link;
 #[path = "mobile_files.rs"]
@@ -63,6 +63,16 @@ enum Command {
     ContactRequest {
         peer: String,
         action: String,
+    },
+    IdentityAccept {
+        peer: String,
+        review: String,
+    },
+    ContactQr {
+        action: String,
+        qr: Option<String>,
+        peer: Option<String>,
+        review: Option<String>,
     },
     ContactRefresh {},
     ContactPolicy {
@@ -385,7 +395,7 @@ fn login_server(input: &str) -> Result<String, Error> {
 }
 fn public_peer(peer: &Peer) -> Value {
     json!({"id":transport::hex(&peer.id), "address":format!("@{}:{}",peer.binding.username,peer.binding.server),
-        "fingerprint":transport::hex(&peer.fingerprint), "verified":peer.verified,
+        "fingerprint":transport::hex(&peer.fingerprint), "verified":peer.trusted, "identity_verified":peer.verified,
         "blocked":peer.blocked, "changed":peer.changed_fingerprint.is_some(), "device":transport::hex(&peer.binding.device)})
 }
 fn error_message(error: &Error) -> &'static str {
@@ -395,7 +405,7 @@ fn error_message(error: &Error) -> &'static str {
             "Sign-in expired or access was revoked."
         }
         Error::Network(network::Error::Status { code: 403, .. }) => {
-            "Access denied. Both people must approve each other's device before messaging."
+            "Access denied. Check the request status and account permissions."
         }
         Error::Network(network::Error::Status { code: 404, .. }) => {
             "Not found. Check the address and that account discovery is enabled."
@@ -404,7 +414,8 @@ fn error_message(error: &Error) -> &'static str {
             "The server asked us to wait. Queued messages will retry."
         }
         Error::Network(_) => "Cannot reach or verify the server. Check the address and connection.",
-        Error::Unprepared => "Complete sign-in and device verification first.",
+        Error::DirectoryUnavailable => "The contact directory is unavailable. Update the server or check account discovery.",
+        Error::Unprepared => "This action isn't ready. Check sign-in, request acceptance, or any identity-change notice.",
         Error::Conflict => "State changed or verification does not match. Refresh before retrying.",
         Error::Limit => "A size or capacity limit was reached.",
         Error::InvalidEvent => "Invalid request or message.",
@@ -462,14 +473,18 @@ impl ClientStore {
             let same: Vec<_> = peers
                 .iter()
                 .filter(|p| {
-                    p.binding.account == peer.binding.account
+                    p.active
+                        && p.binding.account == peer.binding.account
                         && p.binding.server == peer.binding.server
                 })
                 .collect();
             chat["devices"] = json!(same.iter().map(|p| public_peer(p)).collect::<Vec<_>>());
-            chat["verified"] = json!(same
-                .iter()
-                .all(|p| p.verified && !p.blocked && p.changed_fingerprint.is_none()));
+            chat["verified"] = json!(
+                !same.is_empty()
+                    && same
+                        .iter()
+                        .all(|p| p.trusted && !p.blocked && p.changed_fingerprint.is_none())
+            );
             if chat["verified"] == true && !self.mobile_contact_blocked(peer)? {
                 let account = event::account_reference(&peer.binding.server, &peer.binding.account);
                 chat["avatar"] = json!(transport::hex(&account));
@@ -516,13 +531,15 @@ impl ClientStore {
         let same: Vec<_> = peers
             .into_iter()
             .filter(|p| {
-                p.binding.account == chosen.binding.account
+                p.active
+                    && p.binding.account == chosen.binding.account
                     && p.binding.server == chosen.binding.server
             })
             .collect();
-        if same
-            .iter()
-            .any(|p| !p.verified || p.blocked || p.changed_fingerprint.is_some())
+        if same.is_empty()
+            || same
+                .iter()
+                .any(|p| !p.trusted || p.blocked || p.changed_fingerprint.is_some())
         {
             return Err(Error::Unprepared);
         }
@@ -618,6 +635,15 @@ impl ClientStore {
                 self.mobile_account_access()
             }
             Command::OidcAccount { action } => self.mobile_oidc_account(&action),
+            Command::ContactQr {
+                action,
+                qr,
+                peer,
+                review,
+            } => self.mobile_contact_qr(&action, qr.as_deref(), peer.as_deref(), review.as_deref()),
+            Command::IdentityAccept { peer, review } => {
+                self.mobile_accept_identity(&peer, id(&review)?)
+            }
             Command::ContactRequest { peer, action } => self.mobile_request(&peer, &action),
             Command::ContactRefresh {} => {
                 self.mobile_contact_sync(true)?;

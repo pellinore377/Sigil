@@ -45,7 +45,7 @@ impl ClientStore {
             if peer.binding.server == own.server && peer.binding.account == own.account {
                 continue;
             }
-            if !peer.verified || peer.blocked || peer.changed_fingerprint.is_some() {
+            if !peer.trusted || peer.blocked || peer.changed_fingerprint.is_some() {
                 continue;
             }
             let conversation = self.direct_conversation(peer.id)?;

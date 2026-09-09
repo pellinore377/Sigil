@@ -123,9 +123,47 @@ pub fn open(
     )
 }
 
+fn contact_mac(secret: &Secret32, request: &[u8]) -> Result<hmac::Hmac<sha2::Sha256>, Error> {
+    use hmac::Mac;
+    if request.len() > 2048 {
+        return Err(Error::Limit);
+    }
+    let mut mac = <hmac::Hmac<sha2::Sha256> as hmac::KeyInit>::new_from_slice(secret.0.as_ref())
+        .map_err(|_| Error::InvalidKey)?;
+    mac.update(b"Sigil/contact-code-claim/v1\0");
+    mac.update(request);
+    Ok(mac)
+}
+pub fn contact_claim(secret: &Secret32, request: &[u8]) -> Result<[u8; 32], Error> {
+    use hmac::Mac;
+    Ok(contact_mac(secret, request)?.finalize().into_bytes().into())
+}
+pub fn verify_contact_claim(
+    secret: &Secret32,
+    request: &[u8],
+    tag: &[u8; 32],
+) -> Result<(), Error> {
+    use hmac::Mac;
+    contact_mac(secret, request)?
+        .verify_slice(tag)
+        .map_err(|_| Error::Authentication)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn contact_claim_binds_the_request_and_requires_the_scanned_secret() {
+        let secret = Secret32::from_bytes([19; 32]);
+        let tag = contact_claim(&secret, b"synthetic request").unwrap();
+        verify_contact_claim(&secret, b"synthetic request", &tag).unwrap();
+        assert!(verify_contact_claim(&secret, b"another request", &tag).is_err());
+        assert!(
+            verify_contact_claim(&Secret32::from_bytes([20; 32]), b"synthetic request", &tag)
+                .is_err()
+        );
+        assert!(contact_claim(&secret, &[0; 2049]).is_err());
+    }
     #[test]
     fn provisioning_frames_bind_keys_context_role_and_every_ciphertext_byte() {
         let a = IdentityKey::generate().unwrap();
