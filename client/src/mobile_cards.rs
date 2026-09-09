@@ -20,6 +20,100 @@ fn parts(body: Option<&Body>) -> Result<Vec<Part>, Error> {
     )
 }
 impl ClientStore {
+    pub(super) fn mobile_forward_body(
+        &self,
+        conversation: Id,
+        body: Body,
+        message: Id,
+        timestamp: u64,
+    ) -> Result<Body, Error> {
+        let Body::Rich(bytes) = body else {
+            return Ok(body);
+        };
+        let document = Document::from_bytes(&bytes).map_err(|_| Error::InvalidStore)?;
+        let document = match document {
+            Document::Composition(value) if value.parts.len() == 1 => {
+                match value.parts.into_iter().next().ok_or(Error::InvalidStore)? {
+                    Part::Text(text) => Document::Text(text),
+                    Part::Card(card) => Document::Card(*card),
+                }
+            }
+            other => other,
+        };
+        let snapshot = |card: &Card| -> Result<String, Error> {
+            let state = self.card_state(
+                conversation,
+                CardReference::of(card).map_err(|_| Error::InvalidStore)?,
+            )?;
+            let mut card = state.card;
+            card.content = state.definition.content;
+            match &mut card.content {
+                Construct::Checklist(list) => {
+                    for item in &mut list.items {
+                        item.checked = state
+                            .checks
+                            .iter()
+                            .find(|c| c.item == item.id)
+                            .map(|c| c.checked)
+                            .or_else(|| {
+                                state
+                                    .tasks
+                                    .iter()
+                                    .find(|t| t.item == item.id)
+                                    .map(|t| t.completed)
+                            })
+                            .unwrap_or(item.checked);
+                    }
+                }
+                Construct::Location(share) => {
+                    if let Some(location) = state.location {
+                        *share = location.share;
+                    }
+                }
+                _ => (),
+            }
+            card.body().map_err(|_| Error::InvalidStore)
+        };
+        let forwarded = match document {
+            Document::Text(text) => Document::Text(text),
+            Document::Card(mut card) if matches!(card.content, Construct::Note(_)) => {
+                card.content = self
+                    .card_state(
+                        conversation,
+                        CardReference::of(&card).map_err(|_| Error::InvalidStore)?,
+                    )?
+                    .definition
+                    .content;
+                card.id = message;
+                card.creator = self.account_reference()?;
+                card.created_at = timestamp;
+                Document::Card(card)
+            }
+            Document::Card(card) => Document::Text(
+                sigil_protocol::text::Text::plain(&snapshot(&card)?, Default::default())
+                    .map_err(|_| Error::Limit)?,
+            ),
+            Document::Composition(value) => {
+                let body = value
+                    .parts
+                    .iter()
+                    .map(|part| match part {
+                        Part::Text(text) => Ok(text.body().to_owned()),
+                        Part::Card(card) => snapshot(card),
+                    })
+                    .collect::<Result<Vec<_>, _>>()?
+                    .join("\n");
+                Document::Text(
+                    sigil_protocol::text::Text::plain(&body, Default::default())
+                        .map_err(|_| Error::Limit)?,
+                )
+            }
+            Document::Action(_) => return Err(Error::InvalidEvent),
+        };
+        Ok(Body::Rich(
+            forwarded.to_bytes().map_err(|_| Error::InvalidEvent)?,
+        ))
+    }
     fn mobile_task_undo(
         &self,
         conversation: Id,

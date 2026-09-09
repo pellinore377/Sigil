@@ -16,6 +16,7 @@ import java.security.SecureRandom
 internal class NativeFiles(private val app: Application, private val scope: CoroutineScope,
     private val update: (List<Transfer>, Boolean) -> Unit, private val issue: (String) -> Unit) {
     private val mutex = Mutex()
+    private val staging = java.util.concurrent.ConcurrentHashMap<String, Job>()
     @Volatile var enabled = false
     private var next = 0L
     init {
@@ -52,7 +53,7 @@ internal class NativeFiles(private val app: Application, private val scope: Coro
         withContext(Dispatchers.Main) { update(files, sent) }
     }
     fun cancel(request: String) { scope.launch(Dispatchers.IO) { mutex.withLock {
-        try { execute("file_cancel", mapOf("request" to request)); publish() }
+        try { execute("file_cancel", mapOf("request" to request)); staging[request]?.cancel(); publish() }
         catch (_: Exception) { withContext(Dispatchers.Main) { issue("The attachment could not be cancelled. It may already have been sent.") } }
     } } }
     fun import(target: Map<String, Any?>, uri: Uri) { scope.launch(Dispatchers.IO) {
@@ -74,10 +75,38 @@ internal class NativeFiles(private val app: Application, private val scope: Coro
         } catch (cancelled: CancellationException) { throw cancelled }
         catch (_: Exception) { withContext(Dispatchers.Main) { issue("Could not import this file. Check access, available storage, and its size.") } }
     } }
-    suspend fun stage(target: Map<String, Any?>, name: String, type: String, size: Long, stream: InputStream) {
-        val request = ByteArray(32).also { SecureRandom().nextBytes(it) }.joinToString("") { "%02x".format(it) }
-        mutex.withLock { execute("file_begin", target + mapOf("request" to request, "timestamp" to System.currentTimeMillis() / 1000, "length" to size, "name" to name, "media_type" to type)); publish() }
+    fun forward(fields: Map<String, Any?>, metadata: JSONObject) { scope.launch(Dispatchers.IO) {
         try {
+            val source = fields["source"] as String
+            val author = fields["author"] as String
+            val message = fields["message"] as String
+            val size = metadata.getLong("length")
+            EncryptedMedia(app, source, author, message, size).use { media ->
+                val stream = object : InputStream() {
+                    var position = 0L
+                    override fun read(): Int { val b = ByteArray(1); return if (read(b, 0, 1) == -1) -1 else b[0].toInt() and 255 }
+                    override fun read(buffer: ByteArray, offset: Int, length: Int): Int = media.readAt(position, buffer, offset, length).also { if (it > 0) position += it }
+                }
+                stage(mapOf("peer" to fields["peer"]), metadata.getString("name"), metadata.getString("media_type"), size, stream) {
+                    NativeSync.enqueue(app)
+                    withTimeout(120_000) {
+                        while (true) {
+                            check(!NativeSignOut.pending(app))
+                            val file = execute("file_get", mapOf("peer" to source, "author" to author, "message" to message))
+                            if (file.getString("phase") in listOf("Complete", "Published", "Restored")) break
+                            delay(1000)
+                        }
+                    }
+                }
+            }
+        } catch (cancelled: CancellationException) { if (cancelled !is TimeoutCancellationException) throw cancelled; withContext(Dispatchers.Main) { issue("The attachment download timed out. You can retry forwarding it.") } }
+        catch (_: Exception) { withContext(Dispatchers.Main) { issue("Could not forward this attachment. Check its availability and your connection.") } }
+    } }
+    suspend fun stage(target: Map<String, Any?>, name: String, type: String, size: Long, stream: InputStream, prepare: suspend () -> Unit = {}) {
+        val request = ByteArray(32).also { SecureRandom().nextBytes(it) }.joinToString("") { "%02x".format(it) }
+        try {
+            mutex.withLock { execute("file_begin", target + mapOf("request" to request, "timestamp" to System.currentTimeMillis() / 1000, "length" to size, "name" to name, "media_type" to type)); staging[request] = currentCoroutineContext().job; publish() }
+            prepare()
             var total = 0L
             var index = 0
             while (total < size) {
@@ -96,7 +125,7 @@ internal class NativeFiles(private val app: Application, private val scope: Coro
         } catch (error: Exception) {
             withContext(NonCancellable) { mutex.withLock { runCatching { execute("file_cancel", mapOf("request" to request)) }; publish() } }
             throw error
-        }
+        } finally { staging.remove(request) }
     }
 }
 

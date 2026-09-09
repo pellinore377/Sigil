@@ -940,21 +940,23 @@ impl ClientStore {
                 }
                 let body = original.body.ok_or(Error::Unprepared)?;
                 if matches!(body, Body::File(_)) {
-                    return Err(Error::Unprepared);
+                    let file = self.mobile_file_get(&source, reference(&author, &message)?)?;
+                    return Ok(json!({"forward_file":file}));
                 }
-                let rich = matches!(body, Body::Rich(_));
-                self.mobile_execute(Command::Post {
-                    peer,
-                    request,
+                let body =
+                    self.mobile_forward_body(conversation, body, id(&request)?, timestamp)?;
+                self.mobile_action(
+                    &peer,
+                    &request,
                     timestamp,
-                    text: body_text(&body)?,
-                    rich,
-                    timezone: None,
-                    reply_author: None,
-                    reply_message: None,
-                    thread_author: None,
-                    thread_message: None,
-                })
+                    Action::Post {
+                        body,
+                        reply: None,
+                        thread: None,
+                        expires_at: None,
+                        view_once: false,
+                    },
+                )
             }
             Command::PostStatus { peer, request } => {
                 let conversation = self.mobile_conversation(&peer)?;

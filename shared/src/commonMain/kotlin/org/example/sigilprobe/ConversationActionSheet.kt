@@ -36,6 +36,7 @@ internal fun ConversationActionSheet(kind: String, fields: Map<String, Any?>, st
                 TextButton({ (fields["peers"] as? List<*>)?.filterIsInstance<String>()?.forEach { command("snooze", mapOf("peer" to it, "seconds" to seconds)) }; close() }, Modifier.fillMaxWidth()) { Text(label) }
             }
         } else {
+            Text("Send a copy. Interactive cards and mixed messages are sent as text snapshots.", Modifier.padding(horizontal = 24.dp, vertical = 8.dp), style = MaterialTheme.typography.bodySmall)
             LazyColumn(Modifier.heightIn(max = 440.dp)) {
                 item { SettingRow("edit_note", "Note to Self", "") { command("forward", mapOf("source" to fields["peer"], "peer" to "self", "author" to fields["author"], "message" to fields["message"])); close() } }
                 items(state.chats.filter { it.verified && !it.hidden && it.id != "self" }, key = { it.id }) { chat -> ChatRow(chat, open = {

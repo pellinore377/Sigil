@@ -419,6 +419,86 @@ fn mobile_preserves_canonical_formatting_without_reparsing_or_losing_unicode_ran
     assert!(!note["rich"]["spans"].as_array().unwrap().is_empty());
 }
 #[test]
+fn forwarding_preserves_text_and_notes_and_snapshots_current_checklist_state() {
+    let (_dir, _server, mut alice, _bob, now) = crate::claims::tests::pair();
+    let author = transport::hex(&alice.account_reference().unwrap());
+    let text =
+        sigil_protocol::text::parse("**A letter** `**literal**`", Default::default()).unwrap();
+    let bytes = text.to_bytes().unwrap();
+    alice
+        .mobile_action(
+            "self",
+            &"91".repeat(32),
+            now,
+            Action::Post {
+                body: Body::Rich(bytes.clone()),
+                reply: None,
+                thread: None,
+                expires_at: None,
+                view_once: false,
+            },
+        )
+        .unwrap();
+    run(
+        &mut alice,
+        json!({"command":"forward","source":"self","peer":"self","author":author,"message":"91".repeat(32),"request":"92".repeat(32),"timestamp":now}),
+    );
+    let conversation = alice.mobile_conversation("self").unwrap();
+    let forwarded = alice
+        .conversation_message(
+            conversation,
+            Reference {
+                author: id(&author).unwrap(),
+                message: [0x92; 32],
+            },
+            now,
+        )
+        .unwrap();
+    assert!(forwarded.body == Some(Body::Rich(bytes)));
+    run(
+        &mut alice,
+        json!({"command":"post","peer":"self","request":"93".repeat(32),"timestamp":now,"rich":true,"text":"note::**Keep** this;"}),
+    );
+    run(
+        &mut alice,
+        json!({"command":"forward","source":"self","peer":"self","author":author,"message":"93".repeat(32),"request":"94".repeat(32),"timestamp":now}),
+    );
+    let timeline = run(&mut alice, json!({"command":"timeline","peer":"self"}));
+    let note = timeline["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|m| m["id"] == "94".repeat(32))
+        .unwrap();
+    assert_eq!(note["parts"][0]["id"], "94".repeat(32));
+    assert_eq!(note["parts"][0]["kind"], "note");
+    assert_eq!(note["parts"][0]["rich"]["text"], "Keep this");
+    run(
+        &mut alice,
+        json!({"command":"post","peer":"self","request":"95".repeat(32),"timestamp":now,"rich":true,"text":"checklist::Letters\n- Sent;"}),
+    );
+    let timeline = run(&mut alice, json!({"command":"timeline","peer":"self"}));
+    let card = &timeline["messages"][0]["parts"][0];
+    run(
+        &mut alice,
+        json!({"command":"card_action","peer":"self","author":author,"message":"95".repeat(32),"card":card["id"],"item":card["items"][0]["id"],"checked":true,"timestamp":now}),
+    );
+    run(
+        &mut alice,
+        json!({"command":"forward","source":"self","peer":"self","author":author,"message":"95".repeat(32),"request":"96".repeat(32),"timestamp":now}),
+    );
+    let timeline = run(&mut alice, json!({"command":"timeline","peer":"self"}));
+    let copy = &timeline["messages"][0];
+    assert_eq!(copy["parts"][0]["kind"], "text");
+    assert!(copy["text"].as_str().unwrap().contains("[x] Sent"));
+    run(
+        &mut alice,
+        json!({"command":"delete","peer":"self","author":author,"message":"95".repeat(32),"request":"97".repeat(32),"timestamp":now}),
+    );
+    let rejected: Value = serde_json::from_str(&alice.mobile_command(&json!({"command":"forward","source":"self","peer":"self","author":author,"message":"95".repeat(32),"request":"98".repeat(32),"timestamp":now}).to_string())).unwrap();
+    assert_eq!(rejected["ok"], false);
+}
+#[test]
 fn mobile_task_undo_is_available_only_for_our_recent_completion() {
     let (_dir, _server, mut alice, _bob, now) = crate::claims::tests::pair();
     let request = "83".repeat(32);
