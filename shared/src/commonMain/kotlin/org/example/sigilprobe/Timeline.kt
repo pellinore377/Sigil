@@ -102,8 +102,7 @@ internal fun ConversationPage(chat: ChatSummary, state: MessengerState, draft: T
             val controls = page == "Search" || state.historical
             val timelineMotion = if (motion == null) Modifier else with(motion) { Modifier.animateEnterExit(
                 enter = if (goingBack) fadeIn(tween(MotionMillis)) else slideInVertically(tween(MotionMillis)) { it }, exit = slideOutVertically(tween(MotionMillis)) { it }) }
-            Box(Modifier.weight(1f).fillMaxWidth().behindFooter(LocalFooterCover.current)) {
-            Column(Modifier.fillMaxSize().then(timelineMotion).testTag("timeline-body")) {
+            Column(Modifier.weight(1f).fillMaxWidth().then(timelineMotion).testTag("timeline-body")) {
             if (controls) Spacer(Modifier.height(headerInset))
                 if (page == "Search") OutlinedTextField(localQuery, { localQuery = it }, Modifier.fillMaxWidth().padding(12.dp), placeholder = { Text("Search this conversation") }, singleLine = true)
             if (state.historical) SigilTextButton({ command("latest", emptyMap()) }, Modifier.align(Alignment.CenterHorizontally)) { Text("Return to latest messages") }
@@ -153,10 +152,10 @@ internal fun ConversationPage(chat: ChatSummary, state: MessengerState, draft: T
             }
             if (banner) ContactRequestPanel(chat, state.busy, command)
             }
-            }
             val composerMotion = if (motion == null) Modifier else with(motion) { Modifier.animateEnterExit(
                 enter = if (goingBack) fadeIn(tween(MotionMillis)) else slideInHorizontally(tween(160, delayMillis = 80)) { it } + fadeIn(tween(160, delayMillis = 80)),
                 exit = slideOutHorizontally(tween(MotionMillis)) { it } + fadeOut(tween(160))) }
+            FooterContent {
             Column(Modifier.fillMaxWidth().then(composerMotion)) {
             val context = editing?.let { "Editing: ${it.text}" } ?: reply?.let { "Replying to ${it.text}" } ?: thread?.let { "Reply in thread" }
             state.transfers.filter { it.peer == chat.id }.forEach { transfer ->
@@ -175,6 +174,7 @@ internal fun ConversationPage(chat: ChatSummary, state: MessengerState, draft: T
                 else command("post", mapOf("peer" to chat.id, "text" to text, "rich" to rich,
                     "reply_author" to reply?.author, "reply_message" to reply?.id, "thread_author" to thread?.author, "thread_message" to thread?.id))
             }
+        }
         }
         }
         selected?.let { (message, bounds) ->

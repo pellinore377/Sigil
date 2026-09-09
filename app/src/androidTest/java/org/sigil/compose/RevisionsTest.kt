@@ -51,6 +51,8 @@ class RevisionsTest {
         ui.onNodeWithText("Theme, typography, and layout").performScrollTo().performClick()
         ui.mainClock.advanceTimeBy(80)
         capture("appearance-opening")
+        ui.mainClock.advanceTimeBy(80)
+        capture("appearance-opening-160")
         ui.mainClock.autoAdvance = true; ui.waitForIdle()
         ui.onNodeWithText("Dinner still on for tonight?").assertIsDisplayed()
         capture("appearance")
@@ -224,7 +226,7 @@ class RevisionsTest {
         ui.onNodeWithTag("main-navigation").assertIsDisplayed()
     }
     @Test fun conversationMovesContentInsideStationarySurfaces() {
-        val state = mutableStateOf(MessengerState(phase = "connected", chats = listOf(chat.copy(ui = mapOf("chat_theme" to "287C54|false")))))
+        val state = mutableStateOf(MessengerState(phase = "connected", ui = mapOf("appearance" to "Newsreader|Dark|555555|false"), chats = listOf(chat.copy(ui = mapOf("chat_theme" to "287C54|false")))))
         show { SigilApp(NativeCore::palette, NativeCore::analyze, state.value, { name, _ -> if (name == "close") state.value = state.value.copy(selected = null) }) }
         val header = ui.onNodeWithTag("main-header").fetchSemanticsNode().id
         val footer = ui.onNodeWithTag("footer-surface").fetchSemanticsNode().id
@@ -242,8 +244,7 @@ class RevisionsTest {
         val first = ui.onNodeWithTag("timeline-body").getUnclippedBoundsInRoot().top
         assertTrue("Timeline did not enter from below", first.value > 100f)
         assertEquals(header, ui.onNodeWithTag("main-header").fetchSemanticsNode().id)
-        val growingHeaderHeight = ui.onNodeWithTag("main-header").getUnclippedBoundsInRoot().let { it.bottom - it.top }
-        assertTrue("Header did not grow", growingHeaderHeight > initialHeaderHeight)
+        assertEquals(initialHeaderHeight, ui.onNodeWithTag("main-header").getUnclippedBoundsInRoot().let { it.bottom - it.top })
         assertTrue("Main header elements did not slide away", ui.onNodeWithText("Sigil").getUnclippedBoundsInRoot().left.value < 0f)
         assertEquals(footer, ui.onNodeWithTag("footer-surface").fetchSemanticsNode().id)
         assertEquals(footerBottom, ui.onNodeWithTag("footer-surface").getUnclippedBoundsInRoot().bottom)
@@ -257,16 +258,24 @@ class RevisionsTest {
         ui.mainClock.advanceTimeBy(64)
         assertTrue("Floating button stopped above the gesture area", ui.onNodeWithContentDescription("New conversation").getUnclippedBoundsInRoot().top > footerBottom)
         capture("opening-208")
-        ui.mainClock.advanceTimeBy(64)
+        ui.mainClock.advanceTimeBy(96)
         val earlyTint = headerColor()
-        ui.mainClock.advanceTimeBy(64)
+        val growingHeaderHeight = ui.onNodeWithTag("main-header").getUnclippedBoundsInRoot().let { it.bottom - it.top }
+        assertTrue("Header did not grow with its tint", growingHeaderHeight > initialHeaderHeight)
+        ui.runOnIdle { state.value = state.value.copy(busy = true) }
+        ui.mainClock.advanceTimeBy(48)
         val laterTint = headerColor()
+        val label = ui.onNodeWithText("Sam").captureToImage().toPixelMap()
+        assertTrue("Header foreground became dark during its tint", (0 until label.height).sumOf { y -> (0 until label.width).count { x -> label[x, y].red > .6f && label[x, y].green > .6f && label[x, y].blue > .6f } } > 20)
+        capture("opening-352")
         ui.mainClock.autoAdvance = true; ui.waitForIdle()
         assertTrue("Header jumped to its final height", growingHeaderHeight < ui.onNodeWithTag("main-header").getUnclippedBoundsInRoot().let { it.bottom - it.top })
         assertTrue("Footer height jumped to its final size", growingHeight < ui.onNodeWithTag("footer-surface").getUnclippedBoundsInRoot().let { it.bottom - it.top })
         val settled = headerColor()
         assertNotEquals("Header tint did not animate", earlyTint, laterTint)
+        ui.runOnIdle { state.value = state.value.copy(busy = false, messages = state.value.messages.map { it.copy(delivery = "Delivered") }) }
         ui.mainClock.advanceTimeBy(500)
+        assertEquals(header, ui.onNodeWithTag("main-header").fetchSemanticsNode().id)
         assertEquals("Header changed after settling", settled, headerColor())
         ui.onNodeWithText("A letter arriving from below").assertIsDisplayed()
         ui.onNodeWithContentDescription("Back").performClick()

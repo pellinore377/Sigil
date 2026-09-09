@@ -10,11 +10,11 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.*
-import androidx.compose.ui.draw.clip
 import androidx.compose.ui.zIndex
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.input.key.*
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
@@ -28,8 +28,23 @@ private data class Screen(val destination: String, val page: String, val chat: C
 internal val LocalNavigationBack = staticCompositionLocalOf { false }
 internal val LocalPageMotion = staticCompositionLocalOf<AnimatedContentScope?> { null }
 internal val LocalHeaderInset = staticCompositionLocalOf { 0.dp }
-internal val LocalFooterCover = staticCompositionLocalOf { 0.dp }
-internal val LocalFooterHeight = staticCompositionLocalOf<((androidx.compose.ui.unit.Dp) -> Unit)?> { null }
+internal class FooterHost {
+    var content: (@Composable () -> Unit)? by mutableStateOf(null)
+    var height by mutableStateOf(68.dp)
+}
+internal val LocalFooterHost = staticCompositionLocalOf<FooterHost?> { null }
+@Composable
+internal fun FooterContent(content: @Composable () -> Unit) {
+    val host = LocalFooterHost.current
+    if (host == null) { content(); return }
+    val current by rememberUpdatedState(content)
+    val slot = remember { movableContentOf { current() } }
+    DisposableEffect(host) {
+        host.content = slot
+        onDispose { if (host.content === slot) host.content = null }
+    }
+    Spacer(Modifier.height(host.height))
+}
 internal typealias Command = (String, Map<String, Any?>) -> Unit
 private val LocalBackActions = staticCompositionLocalOf<androidx.compose.runtime.snapshots.SnapshotStateList<() -> Unit>?> { null }
 @Composable
@@ -121,9 +136,10 @@ fun SigilApp(palette: (Int, Boolean) -> String, analyze: (String) -> String, sta
     }
     val open: (String) -> Unit = { peer -> goingBack = false; focus.clearFocus(); keyboard?.hide(); command("open", mapOf("peer" to peer)) }
     SigilTheme(appearance, if (chat != null) chatTheme else null, dynamicAccent, palette, chatKey = chat?.id) {
-      CompositionLocalProvider(LocalBackActions provides backActions) {
+      val footer = remember { FooterHost() }
+      CompositionLocalProvider(LocalBackActions provides backActions, LocalFooterHost provides footer) {
         val mainHeader = chat == null && (state.call == null || callMinimized) && page in listOf("inbox", "calls", "settings", "search", "notes")
-        Surface(color = if (mainHeader || chat == null) MaterialTheme.colorScheme.background else lerp(MaterialTheme.colorScheme.background, MaterialTheme.colorScheme.surface, LocalChatTint.current)) {
+        Surface(color = if (mainHeader || chat == null) MaterialTheme.colorScheme.background else lerp(MaterialTheme.colorScheme.background, MaterialTheme.colorScheme.surface, LocalChatTint.current), contentColor = MaterialTheme.colorScheme.onBackground) {
             Column(Modifier.fillMaxSize().windowInsetsPadding(WindowInsets.systemBars.union(WindowInsets.displayCutout)).onPreviewKeyEvent {
                 if (it.type == KeyEventType.KeyDown && it.key == Key.Escape) { back(); true } else false
             }) {
@@ -140,26 +156,27 @@ fun SigilApp(palette: (Int, Boolean) -> String, analyze: (String) -> String, sta
                         val destination = when { state.call != null && !callMinimized -> "call"; chat?.archived == true -> "saved-conversation"; chat != null -> when (conversationPage) { "Chat theme" -> "theme"; "Settings" -> "chat-settings"; else -> "conversation" }; page in listOf("inbox", "search", "notes", "calls", "settings") -> "home"; else -> page }
                         if (state.call != null && callMinimized) SigilTextButton({ callMinimized = false }, Modifier.fillMaxWidth()) { Glyph("call", 18); Spacer(Modifier.width(8.dp)); Text("Return to call") }
                         val headerBase = pageHeaderHeight()
-                        val headerTransition = updateTransition(Screen(destination, page, chat, conversationPage, state, newTitle, thread?.id), label = "Header")
-                        val headerHeight by headerTransition.animateDp(transitionSpec = { tween(MotionMillis) }, label = "Header height") { headerBase + if (it.destination == "conversation") 12.dp else 0.dp }
+                        val headerScreen = Screen(destination, page, chat, conversationPage, state, newTitle, thread?.id)
+                        val headerKey = if (destination == "home") "home" else destination + if (destination == "conversation") conversationPage + (thread?.id ?: "") else if (destination == "new") newTitle else ""
+                        val headerTransition = updateTransition(headerKey, label = "Header")
+                        val headerHeight by headerTransition.animateDp(transitionSpec = { tween(180, if (targetState.startsWith("conversation")) MotionMillis else 0) }, label = "Header height") { headerBase + if (it.startsWith("conversation")) 24.dp else 0.dp }
                         val conversation = destination == "conversation"
-                        var composerHeight by remember { mutableStateOf(72.dp) }
                         val footerTransition = updateTransition(conversation, label = "Footer")
                         val footerProgress by footerTransition.animateFloat(transitionSpec = { tween(MotionMillis) }, label = "Footer expansion") { if (it) 1f else 0f }
-                        val footerHeight = 64.dp + (composerHeight - 64.dp) * footerProgress
+                        val footerHeight = 64.dp + (footer.height - 64.dp) * footerProgress
                         val hasFooter = conversation || (destination == "home" && page in MainTabs)
                         val navigationInset = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
                         val footerOffset by animateDpAsState(if (hasFooter) 0.dp else footerHeight + navigationInset, tween(MotionMillis), label = "Footer position")
                         val tint = LocalChatTint.current
-                        val radius by headerTransition.animateDp(transitionSpec = { tween(MotionMillis) }, label = "Header corners") { if (it.destination == "conversation") 24.dp else 0.dp }
+                        val radius by headerTransition.animateDp(transitionSpec = { tween(180, if (targetState.startsWith("conversation")) MotionMillis else 0) }, label = "Header corners") { if (it.startsWith("conversation")) 24.dp else 0.dp }
                         val shape = RoundedCornerShape(bottomStart = radius, bottomEnd = radius)
                         Box(Modifier.weight(1f).fillMaxWidth().background(MaterialTheme.colorScheme.background)) {
                             if (chat != null) {
                                 LocalWallpaper.current(chat.id, Modifier.matchParentSize())
                                 if (chatTheme.gradient) Spacer(Modifier.matchParentSize().background(Brush.verticalGradient(listOf(MaterialTheme.colorScheme.background.copy(alpha = .7f), MaterialTheme.colorScheme.primaryContainer.copy(alpha = .7f)))))
                             }
-                            Surface(Modifier.align(Alignment.BottomCenter).fillMaxWidth().height(footerHeight + navigationInset).offset(y = footerOffset + navigationInset).testTag("footer-surface"), shape = RoundedCornerShape(topStart = 24.dp, topEnd = 24.dp)) {}
-                        AnimatedContent(Screen(destination, page, chat, conversationPage, state, newTitle, thread?.id), Modifier.fillMaxSize().then(if (!conversation) Modifier.behindFooter(footerOffset - footerHeight) else Modifier), contentKey = { it.destination }, transitionSpec = {
+                            Surface(Modifier.align(Alignment.BottomCenter).fillMaxWidth().height(footerHeight + navigationInset).offset(y = footerOffset + navigationInset).zIndex(2f).testTag("footer-surface"), shape = RoundedCornerShape(topStart = 24.dp, topEnd = 24.dp)) {}
+                        AnimatedContent(Screen(destination, page, chat, conversationPage, state, newTitle, thread?.id), Modifier.fillMaxSize(), contentKey = { it.destination }, transitionSpec = {
                             val enter = if (targetState.destination == "conversation") EnterTransition.None
                                 else if (goingBack) fadeIn(tween(MotionMillis)) else slideInVertically(tween(MotionMillis)) { it } + fadeIn(tween(MotionMillis))
                             val exit = if (initialState.destination == "conversation") ExitTransition.None
@@ -171,7 +188,7 @@ fun SigilApp(palette: (Int, Boolean) -> String, analyze: (String) -> String, sta
                                 val chat = screen.chat
                                 val state = screen.state
                                 val detail = screen.detail
-                                CompositionLocalProvider(LocalPageHeader provides true, LocalPageMotion provides this, LocalNavigationBack provides goingBack, LocalHeaderInset provides if (target == "conversation") headerHeight else 0.dp, LocalFooterCover provides composerHeight - footerHeight + footerOffset, LocalFooterHeight provides if (target == "conversation") ({ composerHeight = it }) else null) {
+                                CompositionLocalProvider(LocalPageHeader provides true, LocalPageMotion provides this, LocalNavigationBack provides goingBack, LocalHeaderInset provides if (target == "conversation") headerHeight else 0.dp) {
                                 Box(Modifier.fillMaxSize().then(if (target != "conversation") Modifier.padding(top = headerHeight, bottom = if (target == "home" && page in MainTabs) 64.dp else 0.dp) else Modifier)) {
                             when (target) {
                                 "call" -> state.call?.let { CallPage(it, state.chats, dispatch, state.profileAvatar, callPanel) { callPanel = it } }
@@ -213,12 +230,16 @@ fun SigilApp(palette: (Int, Boolean) -> String, analyze: (String) -> String, sta
                         }
                             }
                             }
-                                Surface(Modifier.fillMaxWidth().height(headerHeight).zIndex(1f).testTag("main-header"), shape = shape,
-                                    color = if (conversation) lerp(MaterialTheme.colorScheme.background, MaterialTheme.colorScheme.surface, tint) else MaterialTheme.colorScheme.background) {
-                                    headerTransition.AnimatedContent(contentKey = { if (it.destination == "home") "home" else it.destination + if (it.destination == "conversation") it.detail + (it.thread ?: "") else if (it.destination == "new") it.title else "" }, transitionSpec = {
+                                Surface(Modifier.fillMaxWidth().height(headerHeight).zIndex(4f).testTag("main-header"), shape = shape,
+                                    color = if (conversation) lerp(MaterialTheme.colorScheme.background, MaterialTheme.colorScheme.surface, tint) else MaterialTheme.colorScheme.background,
+                                    contentColor = MaterialTheme.colorScheme.onSurface) {
+                                    headerTransition.AnimatedContent(transitionSpec = {
                                         (slideInHorizontally(tween(160, delayMillis = 80)) { if (goingBack) -it else it } + fadeIn(tween(160, delayMillis = 80))) togetherWith
                                             (slideOutHorizontally(tween(160)) { if (goingBack) it else -it } + fadeOut(tween(120)))
-                                    }) { screen ->
+                                    }) { key ->
+                                        var retained by remember { mutableStateOf(headerScreen) }
+                                        SideEffect { if (key == headerKey) retained = headerScreen }
+                                        val screen = if (key == headerKey) headerScreen else retained
                                         when (screen.destination) {
                                             "call" -> screen.state.call?.let { CallHeader(it, screen.state.chats, screen.state.profileAvatar, dispatch, { callMinimized = true }) { callPanel = it } }
                                             "home" -> MainHeader(screen.page, goingBack, query, { query = it }, selected, screen.state, dispatch, { selected = emptySet() },
@@ -236,7 +257,7 @@ fun SigilApp(palette: (Int, Boolean) -> String, analyze: (String) -> String, sta
                                         }
                                     }
                                 }
-                        androidx.compose.animation.AnimatedVisibility(chat == null && page in listOf("inbox", "calls", "settings") && (state.call == null || callMinimized), modifier = Modifier.align(Alignment.BottomCenter).zIndex(2f), enter = slideInVertically(tween(MotionMillis)) { it } + fadeIn(), exit = slideOutVertically(tween(MotionMillis)) { it } + fadeOut()) {
+                        androidx.compose.animation.AnimatedVisibility(chat == null && page in listOf("inbox", "calls", "settings") && (state.call == null || callMinimized), modifier = Modifier.align(Alignment.BottomCenter).zIndex(3f), enter = slideInVertically(tween(MotionMillis)) { it } + fadeIn(), exit = slideOutVertically(tween(MotionMillis)) { it } + fadeOut()) {
                                 Row(Modifier.fillMaxWidth().padding(vertical = 8.dp).testTag("main-navigation"), horizontalArrangement = Arrangement.SpaceEvenly) {
                                     listOf(Triple("inbox", "chat_bubble", "Messages"), Triple("calls", "call", "Calls"), Triple("settings", "settings", "Settings")).forEach { (tab, icon, label) ->
                                         Surface(shape = RoundedCornerShape(16.dp), color = if (page == tab) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surface,
@@ -244,9 +265,9 @@ fun SigilApp(palette: (Int, Boolean) -> String, analyze: (String) -> String, sta
                                     }
                                 }
                         }
-                        Box(Modifier.matchParentSize().zIndex(3f).behindFooter(footerOffset - footerHeight)) {
-                            InboxFab(destination == "home" && page == "inbox", Modifier.align(Alignment.BottomEnd).padding(bottom = 64.dp)) { navigate("new") }
-                        }
+                        InboxFab(destination == "home" && page == "inbox", Modifier.align(Alignment.BottomEnd).padding(bottom = 64.dp).zIndex(1f)) { navigate("new") }
+                        val density = LocalDensity.current
+                        Box(Modifier.align(Alignment.BottomCenter).fillMaxWidth().zIndex(3f).onSizeChanged { if (footer.content != null) footer.height = with(density) { it.height.toDp() } }) { footer.content?.invoke() }
                     }
                     }
                 }

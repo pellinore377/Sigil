@@ -15,7 +15,6 @@ import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.*
 import androidx.compose.ui.*
 import androidx.compose.ui.focus.*
-import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.*
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.text.input.ImeAction
@@ -82,9 +81,7 @@ internal fun ComposerPanel(draft: TextFieldState, analyze: (String) -> String, e
     DisposableEffect(peer) { onDispose { if (canType) command("typing", mapOf("peer" to peer, "active" to false)) } }
     val voiceReady = voice.peer == peer && voice.phase in listOf("Ready", "Sending")
     LaunchedEffect(voice.phase) { if (voiceReady) change("") }
-    val footerHeight = LocalFooterHeight.current
-    Surface(if (footerHeight == null) Modifier else Modifier.onSizeChanged { footerHeight(with(density) { it.height.toDp() }) },
-        shape = RoundedCornerShape(topStart = 24.dp, topEnd = 24.dp), color = if (footerHeight == null) MaterialTheme.colorScheme.surface else androidx.compose.ui.graphics.Color.Transparent) {
+    Surface(shape = RoundedCornerShape(topStart = 24.dp, topEnd = 24.dp), color = if (LocalFooterHost.current == null) MaterialTheme.colorScheme.surface else androidx.compose.ui.graphics.Color.Transparent) {
         Column {
             ComposerBar {
                 Surface(shape = RoundedCornerShape(16.dp), color = MaterialTheme.colorScheme.surfaceVariant) {
