@@ -36,6 +36,14 @@ mod wallpaper;
 #[derive(Deserialize)]
 #[serde(tag = "command", rename_all = "snake_case", deny_unknown_fields)]
 enum Command {
+    AccountAccess {},
+    AcknowledgeAccess {
+        configuration_revision: u64,
+        transition_revision: u64,
+    },
+    OidcAccount {
+        action: String,
+    },
     ContactRequest {
         peer: String,
         action: String,
@@ -519,6 +527,21 @@ impl ClientStore {
     }
     fn mobile_execute(&mut self, command: Command) -> Result<Value, Error> {
         match command {
+            Command::AccountAccess {} => self.mobile_account_access(),
+            Command::AcknowledgeAccess {
+                configuration_revision,
+                transition_revision,
+            } => {
+                self.connected_client()?.acknowledge_oidc_fallback(
+                    &sigil_protocol::oidc::AcknowledgeFallback {
+                        configuration_revision,
+                        transition_revision,
+                        confirm_invitation_fallback: true,
+                    },
+                )?;
+                self.mobile_account_access()
+            }
+            Command::OidcAccount { action } => self.mobile_oidc_account(&action),
             Command::ContactRequest { peer, action } => self.mobile_request(&peer, &action),
             Command::ContactRefresh {} => {
                 self.mobile_contact_sync(true)?;
@@ -1082,6 +1105,11 @@ impl ClientStore {
                 request_id,
                 completion,
             } => {
+                if self.oidc_link_pending()? {
+                    self.accept_oidc_callback(&request_id, &completion)?;
+                    self.finish_oidc_link_online()?;
+                    return self.mobile_account_access();
+                }
                 self.accept_oidc_callback(&request_id, &completion)?;
                 if self.finish_oidc_online()?.is_none() {
                     return self.mobile_state();
