@@ -16,6 +16,7 @@ import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.semantics.*
@@ -30,6 +31,14 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import org.jetbrains.compose.resources.Font
+import org.jetbrains.compose.resources.painterResource
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.expandVertically
+import androidx.compose.animation.shrinkVertically
+import androidx.compose.ui.text.input.PasswordVisualTransformation
+import kotlinx.coroutines.delay
 import sigil.shared.generated.resources.*
 
 data class ChatDevice(val id: String, val fingerprint: String, val verified: Boolean, val blocked: Boolean, val changed: Boolean)
@@ -40,7 +49,9 @@ data class ChatMessage(val id: String, val author: String, val text: String, val
     val delivery: String, val pinned: Boolean, val reactions: List<String>, val myReactions: List<String>, val reply: String?, val readByMe: Boolean)
 data class MessengerState(val phase: String = "loading", val address: String = "", val fingerprint: String = "", val device: String = "",
     val chats: List<ChatSummary> = emptyList(), val selected: String? = null, val messages: List<ChatMessage> = emptyList(),
-    val more: Boolean = false, val busy: Boolean = false, val issue: String? = null, val sent: Long = 0)
+    val more: Boolean = false, val busy: Boolean = false, val issue: String? = null, val sent: Long = 0,
+    val loginAddress: String = "", val loginMethods: LoginMethods? = null, val discovering: Boolean = false, val discoveryIssue: String? = null)
+data class LoginMethods(val server: String, val sso: Boolean, val password: Boolean, val invitation: Boolean)
 
 @Composable
 fun SigilApp(palette: (Int, Boolean) -> String, analyze: (String) -> String, state: MessengerState, command: (String, Map<String, Any?>) -> Unit,
@@ -136,39 +147,62 @@ private fun SettingRow(icon: String, title: String, detail: String, click: () ->
 }
 @Composable
 private fun SignIn(state: MessengerState, command: (String, Map<String, Any?>) -> Unit) {
-    var server by rememberSaveable { mutableStateOf("") }
+    var method by remember(state.loginAddress) { mutableStateOf("") }
+    var username by remember { mutableStateOf("") }
+    var password by remember(state.loginAddress) { mutableStateOf("") }
     var invitation by remember { mutableStateOf("") }
-    var username by rememberSaveable { mutableStateOf("") }
-    var useInvitation by rememberSaveable { mutableStateOf(false) }
-    var replacement by rememberSaveable { mutableStateOf(false) }
-    val submit = {
-        if (useInvitation) command("enroll", mapOf("server" to server.trim(), "invitation" to invitation.trim(), "label" to "Android"))
-        else command("oidc", mapOf("server" to server.trim(), "username" to username.trim().ifBlank { null }, "label" to "Android", "replace_devices" to replacement))
+    LaunchedEffect(state.loginAddress, state.phase) {
+        if (state.phase == "new" && state.loginAddress.isNotBlank()) {
+            delay(650)
+            command("discover", mapOf("server" to state.loginAddress))
+        }
     }
-    Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(28.dp), verticalArrangement = Arrangement.spacedBy(20.dp)) {
-        Spacer(Modifier.height(32.dp))
+    val methods = state.loginMethods
+    val passwordForm = method == "password" || state.phase == "password"
+    val ready = !state.busy && username.isNotBlank() && password.isNotEmpty()
+    val submitPassword = { if (ready) command("password", mapOf("server" to (methods?.server ?: state.loginAddress), "username" to username.trim(), "password" to password)) }
+    Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal = 32.dp, vertical = 48.dp),
+        horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(24.dp, Alignment.CenterVertically)) {
+        Icon(painterResource(Res.drawable.sigil_mark), null, Modifier.height(100.dp).width(60.dp), tint = MaterialTheme.colorScheme.onBackground)
         Text("Sigil", style = MaterialTheme.typography.displayLarge)
-        Text("A little room for correspondence.", style = MaterialTheme.typography.headlineSmall)
-        if (state.phase == "new") {
-            OutlinedTextField(server, { server = it }, Modifier.fillMaxWidth(), label = { Text("Account domain") },
-                placeholder = { Text("example.com") }, singleLine = true, keyboardOptions = KeyboardOptions(imeAction = ImeAction.Next))
-            Text("Use the domain after the colon in your Sigil address.", style = MaterialTheme.typography.bodySmall)
-            if (useInvitation) OutlinedTextField(invitation, { invitation = it }, Modifier.fillMaxWidth(), label = { Text("Access invitation") },
-                singleLine = true, keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done), keyboardActions = KeyboardActions(onDone = { if (!state.busy && server.isNotBlank() && invitation.isNotBlank()) submit() }))
-            else {
-                OutlinedTextField(username, { username = it }, Modifier.fillMaxWidth(), label = { Text("Username (if registering)") }, singleLine = true)
-                Toggle("Replace existing devices on this account", replacement) { replacement = it }
-                if (replacement) Text("This access flow replaces existing devices. Their encryption keys and history are not transferred. Device linking and recovery screens are still being integrated.", style = MaterialTheme.typography.bodySmall)
+        Spacer(Modifier.height(8.dp))
+        OutlinedTextField(state.loginAddress, { command("server_changed", mapOf("server" to it)) }, Modifier.fillMaxWidth().testTag("server-address"),
+            label = { Text("Server address") }, singleLine = true, enabled = !state.busy && state.phase == "new",
+            shape = RoundedCornerShape(14.dp), keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
+            keyboardActions = KeyboardActions(onDone = { if (state.loginAddress.isNotBlank()) command("discover", mapOf("server" to state.loginAddress)) }))
+        if (state.discovering) CircularProgressIndicator(Modifier.size(22.dp), strokeWidth = 2.dp)
+        state.discoveryIssue?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
+        AnimatedVisibility(methods != null && state.phase == "new", enter = fadeIn() + expandVertically(), exit = fadeOut() + shrinkVertically()) {
+            Column(verticalArrangement = Arrangement.spacedBy(16.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+                if (methods?.sso == true) Button({ command("oidc", mapOf("server" to methods.server, "username" to null, "label" to "Android", "replace_devices" to false)) },
+                    enabled = !state.busy, modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(14.dp)) { Text("Sign in with SSO") }
+                if (methods?.password == true && !passwordForm) OutlinedButton({ method = "password" }, enabled = !state.busy, modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(14.dp)) { Text("Sign in with password") }
+                if (methods?.invitation == true && method != "invitation") TextButton({ method = "invitation" }, enabled = !state.busy) { Text("Use an invitation") }
+                if (methods != null && !methods.sso && !methods.password && !methods.invitation) Text("This server has no sign-in methods enabled.", style = MaterialTheme.typography.bodySmall)
             }
-            Button(submit, enabled = !state.busy && server.isNotBlank() && (!useInvitation || invitation.isNotBlank()), modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(14.dp)) {
-                Text(if (useInvitation) "Use invitation" else "Continue with identity provider")
+        }
+        AnimatedVisibility(passwordForm) {
+            Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
+                OutlinedTextField(username, { username = it }, Modifier.fillMaxWidth(), label = { Text("Username") }, singleLine = true, enabled = !state.busy)
+                OutlinedTextField(password, { password = it }, Modifier.fillMaxWidth(), label = { Text("Password") }, singleLine = true, enabled = !state.busy,
+                    visualTransformation = PasswordVisualTransformation(), keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done), keyboardActions = KeyboardActions(onDone = { submitPassword() }))
+                Button(submitPassword, enabled = ready, modifier = Modifier.fillMaxWidth()) { Text("Sign in") }
             }
-            TextButton({ useInvitation = !useInvitation }) { Text(if (useInvitation) "Use identity provider" else "Use an access invitation") }
-        } else {
-            Text("Your sign-in is saved on this device. Continue to finish it.")
+        }
+        if (method == "invitation" && methods?.invitation == true) {
+            OutlinedTextField(invitation, { invitation = it }, Modifier.fillMaxWidth(), label = { Text("Invitation") }, singleLine = true, enabled = !state.busy)
+            Button({ command("enroll", mapOf("server" to methods.server, "invitation" to invitation.trim(), "label" to "Android")) }, enabled = !state.busy && invitation.isNotBlank()) { Text("Continue") }
+        }
+        if (state.phase == "username") {
+            Text("Choose your Sigil username", style = MaterialTheme.typography.headlineSmall)
+            Text("Your SSO account is verified. Choose an available name for this server.", style = MaterialTheme.typography.bodyMedium)
+            OutlinedTextField(username, { username = it }, Modifier.fillMaxWidth(), label = { Text("Username") }, singleLine = true, enabled = !state.busy)
+            Button({ command("username", mapOf("username" to username.trim())) }, enabled = !state.busy && username.isNotBlank()) { Text("Continue") }
+        }
+        if (state.phase !in listOf("new", "password", "username")) {
+            Text("Finish signing in with your server.", style = MaterialTheme.typography.bodyMedium)
             Button({ command("resume", emptyMap()) }, enabled = !state.busy) { Text("Continue sign-in") }
         }
-        Text("Development build", style = MaterialTheme.typography.bodySmall)
     }
 }
 @Composable

@@ -13,6 +13,7 @@ pub mod file;
 pub mod groups;
 pub mod initial;
 pub mod link;
+pub mod login;
 pub mod mailbox;
 pub mod oidc;
 pub mod prekeys;

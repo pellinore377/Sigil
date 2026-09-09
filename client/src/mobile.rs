@@ -11,6 +11,17 @@ use serde_json::{json, Value};
 #[serde(tag = "command", rename_all = "snake_case", deny_unknown_fields)]
 enum Command {
     State {},
+    Discover {
+        server: String,
+    },
+    Username {
+        username: String,
+    },
+    Password {
+        server: String,
+        username: String,
+        password: Zeroizing<String>,
+    },
     Enroll {
         server: String,
         invitation: String,
@@ -79,6 +90,18 @@ fn reference(author: &str, message: &str) -> Result<Reference, Error> {
         message: id(message)?,
     })
 }
+fn login_server(input: &str) -> Result<String, Error> {
+    let input = input.trim();
+    let host = input
+        .strip_prefix("https://")
+        .unwrap_or(input)
+        .trim_end_matches('/')
+        .to_ascii_lowercase();
+    if !sigil_protocol::valid_server_name(&host) {
+        return Err(Error::InvalidEvent);
+    }
+    Ok(host)
+}
 fn public_peer(peer: &Peer) -> Value {
     json!({"id":transport::hex(&peer.id), "address":format!("@{}:{}",peer.binding.username,peer.binding.server),
         "fingerprint":transport::hex(&peer.fingerprint), "verified":peer.verified,
@@ -86,6 +109,7 @@ fn public_peer(peer: &Peer) -> Value {
 }
 fn error_message(error: &Error) -> &'static str {
     match error {
+        Error::Network(network::Error::Status { code:428,.. }) => "This account already has a device. Device linking or recovery is required; those screens are still being integrated.",
         Error::Network(network::Error::Status { code: 401, .. }) => {
             "Sign-in expired or access was revoked."
         }
@@ -137,7 +161,7 @@ impl ClientStore {
     fn mobile_state(&mut self) -> Result<Value, Error> {
         let phase = self.enrollment_kind()?;
         if phase != "connected" {
-            return Ok(json!({"phase":phase}));
+            return Ok(json!({"phase":phase,"server":self.enrollment_server()?}));
         }
         let session = self.connection_session()?.ok_or(Error::Unprepared)?;
         let fingerprint = device_fingerprint(&self.own_device_binding()?)?;
@@ -210,6 +234,27 @@ impl ClientStore {
     fn mobile_execute(&mut self, command: Command) -> Result<Value, Error> {
         match command {
             Command::State {} => self.mobile_state(),
+            Command::Username { username } => {
+                self.choose_registration_username(&username)?;
+                if self.enrollment_kind()? == "connected" {
+                    self.publish_device_binding_online()?;
+                }
+                self.mobile_state()
+            }
+            Command::Discover { server } => {
+                let server = login_server(&server)?;
+                serde_json::to_value(network::HttpsClient::login_methods(&server, 443, &[])?)
+                    .map_err(|_| Error::InvalidEvent)
+            }
+            Command::Password {
+                server,
+                username,
+                password,
+            } => {
+                self.sign_in_password_online(&server, 443, &[], &username, &password)?;
+                self.publish_device_binding_online()?;
+                self.mobile_state()
+            }
             Command::Enroll {
                 server,
                 invitation,
@@ -240,6 +285,9 @@ impl ClientStore {
             Command::Resume {} => {
                 if self.enrollment_kind()? == "oidc" {
                     if self.finish_oidc_online()?.is_none() {
+                        if self.enrollment_kind()? == "username" {
+                            return self.mobile_state();
+                        }
                         return serde_json::to_value(self.start_oidc_online()?)
                             .map_err(|_| Error::InvalidStore);
                     }
@@ -254,7 +302,9 @@ impl ClientStore {
                 completion,
             } => {
                 self.accept_oidc_callback(&request_id, &completion)?;
-                self.finish_oidc_online()?.ok_or(Error::Unprepared)?;
+                if self.finish_oidc_online()?.is_none() {
+                    return self.mobile_state();
+                }
                 self.publish_device_binding_online()?;
                 self.mobile_state()
             }

@@ -245,7 +245,7 @@ fn schema26_rebuild_counts_retained_contacts_and_recipient_grants_once_including
         [&account],
     )
     .unwrap();
-    db.execute_batch("DROP TABLE web_oidc; DROP TABLE web_sessions; DROP TABLE oidc_fallback_ack; DROP TABLE oidc_transition; DROP TABLE account_profiles; DROP TABLE web_owner; DROP TABLE deleted_accounts; ALTER TABLE private_groups DROP COLUMN blocked;").unwrap();
+    db.execute_batch("DROP TABLE account_passwords; DROP TABLE password_policy; DROP TABLE web_oidc; DROP TABLE web_sessions; DROP TABLE oidc_fallback_ack; DROP TABLE oidc_transition; DROP TABLE account_profiles; DROP TABLE web_owner; DROP TABLE deleted_accounts; ALTER TABLE private_groups DROP COLUMN blocked;").unwrap();
     db.pragma_update(None, "user_version", 26).unwrap();
     drop(db);
     let mut store = Store::open(&path).unwrap();
@@ -261,7 +261,7 @@ fn schema26_rebuild_counts_retained_contacts_and_recipient_grants_once_including
     assert_eq!(
         db.query_row("PRAGMA user_version", [], |r| r.get::<_, i64>(0))
             .unwrap(),
-        29
+        30
     );
     assert_eq!(
         db.query_row(

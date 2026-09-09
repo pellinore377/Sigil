@@ -27,6 +27,8 @@ mod oidc_tests;
 #[serde(deny_unknown_fields)]
 struct Profile {
     #[serde(default)]
+    password: bool,
+    #[serde(default)]
     oidc: Option<Oidc>,
     server: String,
     port: u16,
@@ -41,6 +43,8 @@ struct Profile {
 #[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct Oidc {
+    #[serde(default)]
+    username_needed: bool,
     request_id: String,
     username: Option<String>,
     #[serde(default)]
@@ -315,6 +319,7 @@ impl ClientStore {
             label,
             replace_devices,
             Some(Oidc {
+                username_needed: false,
                 request_id: fresh_credential()?.to_string(),
                 username: username.map(str::to_owned),
                 completion: None,
@@ -382,6 +387,7 @@ impl ClientStore {
             return Err(Error::Conflict);
         }
         profile.oidc = Some(Oidc {
+            username_needed: false,
             request_id: fresh_credential()?.to_string(),
             username: None,
             completion: None,
@@ -439,6 +445,18 @@ impl ClientStore {
                 })?;
             match progress {
                 sigil_protocol::oidc::Progress::Pending => return Ok(None),
+                sigil_protocol::oidc::Progress::UsernameRequired => {
+                    profile
+                        .oidc
+                        .as_mut()
+                        .ok_or(Error::Unprepared)?
+                        .username_needed = true;
+                    save(&self.db, &self.key, &profile, Some(&expected))?;
+                    return Ok(None);
+                }
+                sigil_protocol::oidc::Progress::Access { .. } => {
+                    profile.reauthorize = true;
+                }
                 sigil_protocol::oidc::Progress::Ready { reauthorize, .. }
                     if reauthorize == profile.reauthorize => {}
                 _ => return Err(Error::Cancelled),
@@ -466,6 +484,7 @@ impl ClientStore {
         let credential = fresh_credential()?;
         network::HttpsClient::new(server, port, &credential, roots)?;
         let profile = Profile {
+            password: false,
             oidc,
             server: server.into(),
             port,
@@ -502,14 +521,89 @@ impl ClientStore {
         match load(&self.db, &self.key) {
             Ok((p, _)) => Ok(if p.session.is_some() {
                 "connected"
+            } else if p.oidc.as_ref().is_some_and(|o| o.username_needed) {
+                "username"
             } else if p.oidc.is_some() {
                 "oidc"
+            } else if p.password {
+                "password"
             } else {
                 "invitation"
             }),
             Err(Error::NotFound) => Ok("new"),
             Err(e) => Err(e),
         }
+    }
+    pub(crate) fn enrollment_server(&self) -> Result<Option<String>, Error> {
+        match load(&self.db, &self.key) {
+            Ok((p, _)) => Ok(Some(p.server)),
+            Err(Error::NotFound) => Ok(None),
+            Err(e) => Err(e),
+        }
+    }
+    pub fn choose_registration_username(&mut self, username: &str) -> Result<(), Error> {
+        let (mut p, expected) = load(&self.db, &self.key)?;
+        let oidc = p.oidc.as_ref().ok_or(Error::Unprepared)?;
+        if !oidc.username_needed {
+            return Err(Error::Conflict);
+        }
+        client(&self.db, &self.key, &p, &p.credential)?.oidc_registration_name(
+            &sigil_protocol::oidc::RegistrationName {
+                finish: sigil_protocol::oidc::Finish {
+                    request_id: oidc.request_id.clone(),
+                    secret: p.invitation.as_ref().ok_or(Error::Unprepared)?.to_string(),
+                    completion: oidc.completion.as_ref().map(|s| s.to_string()),
+                },
+                username: username.into(),
+            },
+        )?;
+        p.oidc.as_mut().ok_or(Error::Unprepared)?.username_needed = false;
+        save(&self.db, &self.key, &p, Some(&expected))?;
+        self.finish_oidc_online()?;
+        Ok(())
+    }
+    pub fn sign_in_password_online(
+        &mut self,
+        server: &str,
+        port: u16,
+        roots: &[Vec<u8>],
+        username: &str,
+        password: &str,
+    ) -> Result<accounts::Session, Error> {
+        if self.enrollment_kind()? == "new" {
+            self.prepare_connection(
+                server,
+                port,
+                roots,
+                &fresh_credential()?,
+                "Android",
+                true,
+                None,
+            )?;
+            let (mut p, expected) = load(&self.db, &self.key)?;
+            p.password = true;
+            save(&self.db, &self.key, &p, Some(&expected))?;
+        }
+        let (mut p, expected) = load(&self.db, &self.key)?;
+        if !p.password || p.server != server || p.port != port {
+            return Err(Error::Conflict);
+        }
+        let network = client(&self.db, &self.key, &p, &p.credential)?;
+        let session = match network.session() {
+            Ok(s) => s,
+            Err(network::Error::Status { code: 401, .. }) => {
+                network.password_sign_in(username, password, &p.label)?
+            }
+            Err(e) => return Err(e.into()),
+        };
+        validate_session(&p, &session)?;
+        if session.address != format!("@{username}:{server}") {
+            return Err(Error::Conflict);
+        }
+        p.session = Some(session.clone());
+        p.invitation = None;
+        save(&self.db, &self.key, &p, Some(&expected))?;
+        Ok(session)
     }
     /// Exposes transport only for the durably bound account. Returns Unprepared
     /// while enrollment or credential rotation still needs reconciliation.
@@ -692,6 +786,7 @@ pub(super) fn install_linked_connection(
         .1
         .to_owned();
     let profile = Profile {
+        password: false,
         oidc: None,
         server,
         port,

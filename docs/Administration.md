@@ -19,6 +19,25 @@ without credentials; clients preserve the identity domain while connecting to th
 validated service origin. Only a missing (404) document permits direct-host fallback.
 Federation applies its existing destination and DNS policies to delegated endpoints.
 
+`GET /client/v0/login` advertises the identity domain and SSO/password/invitation
+methods. Android accepts the identity domain or its verified service address.
+`GET/PUT /admin/v0/password-login` controls user passwords independently of browser
+administrator login; updates send `{revision,enabled}` and default to disabled.
+Administrators set existing users' passwords through Users → Account access or
+`PUT /admin/v0/accounts/{id}/password` with `{password}`. Hashing uses the same
+Argon2id parameters as setup. The owner's administrator password also works when
+both password policies allow it. Passwords never recover encryption keys.
+`POST /client/v0/login/password` accepts `{username,password,device_credential,device_label}`;
+retries with the same credential preserve the enrolled device. Active devices
+require linking/recovery instead of automatic replacement. Restore removes user
+passwords and disables password sign-in until the administrator configures it again.
+
+SSO uses verified provider names for new registration; existing issuer/subject
+bindings preserve the account. Missing or occupied names produce `username_required`
+after authentication. `/client/v0/oidc/username` accepts `{finish,username}` using the
+same callback proof as finish. `access` grants for accounts without active devices
+recheck that condition at redemption, without authorizing device replacement.
+
 The dashboard controls accounts, encrypted group records, registration, OIDC and
 administrator login methods. `POST /admin/v0/accounts/{id}/delete` permanently
 disables an account and queues ciphertext cleanup; its username remains reserved.

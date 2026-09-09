@@ -543,3 +543,45 @@ fn delegation_resolves_without_disclosing_credentials_and_keeps_identity_domain(
             .is_ok()
     );
 }
+
+#[test]
+fn login_discovery_uses_delegated_methods_and_rejects_wrong_identity() {
+    let target = Fixture::new(Router::new().route(
+        "/client/v0/login",
+        get(|| async {
+            axum::Json(sigil_protocol::login::Methods {
+                server_name: "chat.example".into(),
+                sso: true,
+                password: false,
+                invitation: false,
+            })
+        }),
+    ));
+    let origin = format!("https://chat.example:{}", target.port());
+    let authority = Fixture::new(Router::new().route(
+        sigil_protocol::discovery::PATH,
+        get(move |headers: axum::http::HeaderMap| {
+            let origin = origin.clone();
+            async move {
+                assert!(!headers.contains_key(header::AUTHORIZATION));
+                axum::Json(sigil_protocol::discovery::Discovery {
+                    server_name: "chat.example".into(),
+                    api_origin: origin,
+                })
+            }
+        }),
+    ));
+    let methods =
+        HttpsClient::login_methods("chat.example", authority.port(), &[CA.to_vec()]).unwrap();
+    assert!(methods.sso && !methods.password);
+    let wrong = Fixture::new(Router::new().route(
+        sigil_protocol::discovery::PATH,
+        get(|| async {
+            axum::Json(sigil_protocol::discovery::Discovery {
+                server_name: "other.example".into(),
+                api_origin: "https://attacker.example".into(),
+            })
+        }),
+    ));
+    assert!(HttpsClient::login_methods("chat.example", wrong.port(), &[CA.to_vec()]).is_err());
+}

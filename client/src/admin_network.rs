@@ -119,6 +119,13 @@ impl HttpsClient {
             SMALL,
         )
     }
+    pub fn oidc_registration_name(&self, request: &oidc::RegistrationName) -> Result<(), Error> {
+        self.json(
+            self.request(Method::POST, "/client/v0/oidc/username", Some(request))?,
+            200,
+            SMALL,
+        )
+    }
     pub fn link_oidc(&self, request: &oidc::Start) -> Result<oidc::Started, Error> {
         self.json(
             self.request(Method::POST, "/client/v0/oidc/link", Some(request))?,

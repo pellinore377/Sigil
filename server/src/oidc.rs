@@ -59,6 +59,8 @@ pub(crate) struct Stored {
 #[derive(Deserialize, Serialize)]
 struct Flow {
     username: Option<String>,
+    #[serde(default)]
+    suggested_username: Option<String>,
     replace_devices: bool,
     link_device: Option<String>,
     nonce: Zeroizing<String>,
@@ -238,7 +240,8 @@ impl Store {
         link: Option<&str>,
         now: u64,
     ) -> Result<Started, StoreError> {
-        self.oidc_begin(request, link, now, false)
+        let profile = request.username.is_none() && link.is_none();
+        self.oidc_begin(request, link, now, profile)
     }
     pub(crate) fn oidc_begin(
         &mut self,
@@ -327,6 +330,7 @@ impl Store {
             .url();
         let authorization_url = url.to_string();
         let flow = Flow {
+            suggested_username: None,
             username: request.username,
             replace_devices: request.replace_devices,
             link_device,
@@ -408,6 +412,20 @@ impl Store {
         tx.commit()?;
         Ok(completion)
     }
+    pub(crate) fn oidc_verified_profile(
+        &mut self,
+        mut callback: Callback,
+        identity: Result<crate::web_admin::Identity, StoreError>,
+        now: u64,
+    ) -> Result<Option<Completion>, StoreError> {
+        callback.flow.suggested_username = identity
+            .as_ref()
+            .ok()
+            .and_then(|i| i.username.as_ref())
+            .filter(|u| sigil_protocol::accounts::valid_username(u))
+            .cloned();
+        self.oidc_verified(callback, identity.map(|i| i.subject), now)
+    }
     pub fn oidc_finish(&mut self, request: Finish, now: u64) -> Result<Progress, StoreError> {
         if !valid_credential(&request.request_id) || !valid_credential(&request.secret) {
             return Err(StoreError::Unauthorized);
@@ -472,9 +490,13 @@ impl Store {
         }
         let bound:Option<(String,bool)>=tx.query_row("SELECT a.username,a.disabled FROM oidc_bindings b JOIN accounts a ON a.id=b.account WHERE b.issuer=?1 AND b.subject=?2",(&issuer,&subject),|r|Ok((r.get(0)?,r.get(1)?))).optional()?;
         let (username, reauthorize) = match bound {
-            Some((name, false))
-                if flow.replace_devices && flow.username.as_ref().is_none_or(|u| u == &name) =>
-            {
+            Some((name, false)) if flow.username.as_ref().is_none_or(|u| u == &name) => {
+                if !flow.replace_devices {
+                    let active: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM devices d JOIN accounts a ON a.id=d.account_id WHERE a.username=?1 AND d.revoked=0 AND d.expires_at>?2)", (&name,sql(now)?), |r|r.get(0))?;
+                    if active {
+                        return Err(StoreError::DeviceLinkRequired);
+                    }
+                }
                 (name, true)
             }
             Some(_) => return Err(StoreError::Forbidden),
@@ -482,11 +504,19 @@ impl Store {
                 && crate::admin::policy(&tx)?.registration
                     == sigil_protocol::admin::Registration::Oidc =>
             {
-                (
-                    flow.username
-                        .ok_or(StoreError::Invalid("choose a username for registration"))?,
-                    false,
-                )
+                let Some(name) = flow.username.or(flow.suggested_username) else {
+                    return Ok(Progress::UsernameRequired);
+                };
+                if status == 1
+                    && tx.query_row(
+                        "SELECT EXISTS(SELECT 1 FROM accounts WHERE username=?1)",
+                        [&name],
+                        |r| r.get::<_, bool>(0),
+                    )?
+                {
+                    return Ok(Progress::UsernameRequired);
+                }
+                (name, false)
             }
             None => return Err(StoreError::Forbidden),
         };
@@ -501,7 +531,7 @@ impl Store {
             }
             tx.execute("DELETE FROM oidc_grants WHERE expires<=?1", [sql(now)?])?;
             tx.execute(
-                "INSERT INTO oidc_grants VALUES(?1,?2,?3,?4,?5,?6)",
+                "INSERT INTO oidc_grants VALUES(?1,?2,?3,?4,?5,?6,?7)",
                 (
                     digest(&request.secret).as_slice(),
                     issuer,
@@ -509,6 +539,7 @@ impl Store {
                     username,
                     reauthorize,
                     sql(expires)?,
+                    flow.replace_devices,
                 ),
             )?;
             tx.execute(
@@ -517,10 +548,50 @@ impl Store {
             )?;
         }
         tx.commit()?;
+        if reauthorize && !flow.replace_devices {
+            return Ok(Progress::Access {
+                expires_at: expires,
+            });
+        }
         Ok(Progress::Ready {
             reauthorize,
             expires_at: expires,
         })
+    }
+    pub fn oidc_registration_name(
+        &mut self,
+        request: RegistrationName,
+        now: u64,
+    ) -> Result<(), StoreError> {
+        if !sigil_protocol::accounts::valid_username(&request.username) {
+            return Err(StoreError::Invalid("invalid username"));
+        }
+        let progress = self.oidc_finish(request.finish.clone(), now)?;
+        let value: String = self.0.query_row(
+            "SELECT value FROM oidc_flows WHERE id=?1",
+            [&request.finish.request_id],
+            |r| r.get(0),
+        )?;
+        let mut flow: Flow = decode(&value)?;
+        if matches!(
+            progress,
+            Progress::Ready {
+                reauthorize: false,
+                ..
+            }
+        ) && flow.username.as_ref() == Some(&request.username)
+        {
+            return Ok(());
+        }
+        if !matches!(progress, Progress::UsernameRequired) {
+            return Err(StoreError::Conflict);
+        }
+        flow.username = Some(request.username);
+        self.0.execute(
+            "UPDATE oidc_flows SET value=?2 WHERE id=?1 AND status=1",
+            (&request.finish.request_id, encode(&flow)?.as_str()),
+        )?;
+        Ok(())
     }
     pub fn oidc_bindings(&self, credential: &str, now: u64) -> Result<Vec<String>, StoreError> {
         let account = self.session(credential, now)?.account_id;

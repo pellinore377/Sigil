@@ -159,7 +159,7 @@ mod tests {
     fn schema_28_migrates_without_changing_existing_accounts() {
         let (dir, store, alice, _, now) = crate::admin::tests::setup();
         let before = store.session(&alice, now).unwrap();
-        store.0.execute_batch("DROP TABLE account_profiles; DROP TABLE oidc_fallback_ack; DROP TABLE oidc_transition; ALTER TABLE web_owner DROP COLUMN suggested_name; PRAGMA user_version=28;").unwrap();
+        store.0.execute_batch("DROP TABLE account_passwords; DROP TABLE password_policy; ALTER TABLE oidc_grants DROP COLUMN replace_devices; DROP TABLE account_profiles; DROP TABLE oidc_fallback_ack; DROP TABLE oidc_transition; ALTER TABLE web_owner DROP COLUMN suggested_name; PRAGMA user_version=28;").unwrap();
         drop(store);
         let store = Store::open(&dir.path().join("sigil.db")).unwrap();
         assert_eq!(store.session(&alice, now).unwrap(), before);
@@ -170,7 +170,7 @@ mod tests {
                 .0
                 .query_row("PRAGMA user_version", [], |r| r.get::<_, u32>(0))
                 .unwrap(),
-            29
+            30
         );
     }
 }

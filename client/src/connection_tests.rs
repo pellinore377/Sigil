@@ -1158,3 +1158,59 @@ fn device_revocation_over_https_is_scoped_retryable_and_preserves_local_state() 
     assert!(alice.devices_online(None).is_err());
     assert_eq!(load(&alice.db, &alice.key).unwrap().1, before);
 }
+
+#[test]
+fn password_enrollment_reopens_the_same_account_without_storing_password() {
+    let (dir, fixture, invite, now) = setup();
+    let mut server = Store::open(&dir.path().join("server.db")).unwrap();
+    let original = server
+        .enroll(
+            accounts::Enrollment {
+                invitation: invite.secret,
+                device_credential: "ab".repeat(32),
+                device_label: "Original".into(),
+            },
+            now,
+        )
+        .unwrap();
+    let password = "a synthetic password for native login";
+    server
+        .set_user_password(
+            &original.account_id,
+            sigil_server::password_login::SetPassword {
+                password: Zeroizing::new(password.into()),
+            },
+        )
+        .unwrap();
+    server
+        .configure_user_passwords(sigil_protocol::login::PasswordPolicy {
+            revision: 0,
+            enabled: true,
+        })
+        .unwrap();
+    server
+        .revoke_device(&"ab".repeat(32), &original.device_id, now)
+        .unwrap();
+    let path = dir.path().join("password-client.db");
+    let mut client = open(&path);
+    let session = client
+        .sign_in_password_online(
+            "chat.example",
+            fixture.port(),
+            &[CA.to_vec()],
+            "alice",
+            password,
+        )
+        .unwrap();
+    assert_eq!(session.account_id, original.account_id);
+    assert_eq!(session.address, original.address);
+    let (profile, _) = load(&client.db, &client.key).unwrap();
+    assert!(!serde_json::to_string(&profile).unwrap().contains(password));
+    drop(client);
+    let client = open(&path);
+    assert_eq!(client.connection_session().unwrap(), Some(session.clone()));
+    assert_eq!(
+        client.connected_client().unwrap().session().unwrap(),
+        session
+    );
+}

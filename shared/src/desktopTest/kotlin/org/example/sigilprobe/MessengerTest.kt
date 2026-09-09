@@ -39,3 +39,29 @@ class MessengerTest {
         ui.onNodeWithText("Send locally").assertDoesNotExist()
     }
 }
+
+class SignInTest {
+    @get:Rule val ui = createComposeRule()
+    @Test fun methods_appear_only_after_discovery_and_sso_does_not_request_replacement() {
+        val state = mutableStateOf(MessengerState(phase = "new"))
+        val commands = mutableListOf<Pair<String, Map<String, Any?>>>()
+        ui.setContent { SigilApp(NativeCore::palette, NativeCore::analyze, state.value, { name, fields -> commands += name to fields }) }
+        ui.onNodeWithText("Server address").assertExists()
+        ui.onNodeWithText("Sign in with SSO").assertDoesNotExist()
+        ui.onNodeWithText("Username (if registering)").assertDoesNotExist()
+        ui.runOnIdle { state.value = state.value.copy(loginAddress = "example.test", loginMethods = LoginMethods("example.test", true, false, false)) }
+        ui.onNodeWithText("Sign in with SSO").assertExists().performClick()
+        ui.onNodeWithText("Sign in with password").assertDoesNotExist()
+        ui.runOnIdle { val fields = commands.first { it.first == "oidc" }.second; assertEquals(false, fields["replace_devices"]); assertEquals(null, fields["username"]) }
+        ui.runOnIdle { state.value = state.value.copy(loginAddress = "different.test", loginMethods = null) }
+        ui.mainClock.advanceTimeBy(1000)
+        ui.onNodeWithText("Sign in with SSO").assertDoesNotExist()
+    }
+    @Test fun password_fields_are_disclosed_only_when_requested() {
+        ui.setContent { SigilApp(NativeCore::palette, NativeCore::analyze, MessengerState(phase = "new", loginAddress = "example.test", loginMethods = LoginMethods("example.test", true, true, false)), { _, _ -> }) }
+        ui.onNodeWithText("Password").assertDoesNotExist()
+        ui.onNodeWithText("Sign in with password").performClick()
+        ui.onNodeWithText("Password").assertExists()
+        ui.onNodeWithText("Sign in with SSO").assertExists()
+    }
+}

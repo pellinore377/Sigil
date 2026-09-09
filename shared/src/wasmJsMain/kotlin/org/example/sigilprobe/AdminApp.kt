@@ -304,6 +304,7 @@ private fun Dashboard(status: JsonElement, busy: Boolean, run: (suspend () -> Un
             "Authentication" -> Column(Modifier.widthIn(max = 680.dp), verticalArrangement = Arrangement.spacedBy(18.dp)) {
                 Text("Sign-in methods", style = MaterialTheme.typography.headlineMedium)
                 OidcForm(status, busy, run)
+                UserPasswordPolicy(busy, run)
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Switch(status.flag("password_login"), modifier = Modifier.semantics { contentDescription = "Allow administrator password login" }, enabled = !busy, onCheckedChange = { enabled -> run { api("/auth/v0/admin/password-login", "POST", obj("enabled" to JsonPrimitive(enabled))) } })
                     Text("Allow administrator password login", Modifier.padding(start = 12.dp))
@@ -312,6 +313,19 @@ private fun Dashboard(status: JsonElement, busy: Boolean, run: (suspend () -> Un
             "Server" -> ServerSettings(busy, run)
         }
     }
+}
+@Composable
+private fun UserPasswordPolicy(busy: Boolean, run: (suspend () -> Unit) -> Unit) {
+    var policy by remember { mutableStateOf<JsonElement?>(null) }
+    LaunchedEffect(Unit) { run { policy = api("/admin/v0/password-login") } }
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Switch(policy?.flag("enabled") == true, enabled = !busy && policy != null,
+            modifier = Modifier.semantics { contentDescription = "Allow user password sign-in" }, onCheckedChange = { enabled -> run {
+                policy = api("/admin/v0/password-login", "PUT", obj("revision" to policy!!.jsonObject.getValue("revision"), "enabled" to JsonPrimitive(enabled)))
+            } })
+        Text("Allow user password sign-in", Modifier.padding(start = 12.dp))
+    }
+    Text("Users with a password can sign in even when SSO is enabled. Set passwords under Users → Account access. Disabling this leaves existing devices signed in.", style = MaterialTheme.typography.bodySmall)
 }
 @Composable
 private fun Overview(run: (suspend () -> Unit) -> Unit) {
@@ -353,6 +367,14 @@ private fun Users(busy: Boolean, run: (suspend () -> Unit) -> Unit) {
     }
     access?.let { user ->
         Text("Account access for ${user.text("username")}", style = MaterialTheme.typography.headlineMedium)
+        var password by remember(user.text("id")) { mutableStateOf("") }
+        var saved by remember(user.text("id")) { mutableStateOf(false) }
+        Field("Sign-in password · at least 15 characters", password, { password = it; saved = false }, secret = true, enabled = !busy)
+        Action("Set sign-in password", !busy && password.length >= 15) { run {
+            api("/admin/v0/accounts/${user.text("id")}/password", "PUT", obj("password" to str(password)))
+            password = ""; saved = true
+        } }
+        if (saved) Text("Password saved. User password sign-in must also be enabled in Authentication.")
         Text("Verify the person's identity before sharing an invitation. It grants access to this existing account and revokes its current devices when redeemed. It does not recover encryption keys or message history.")
         val issued = invitation
         if (issued == null) {
