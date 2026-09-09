@@ -163,6 +163,9 @@ class MessagingUiTest {
     }
     @Test fun switchingComposerPanelsKeepsTheComposerSteady() {
         show { SigilApp(NativeCore::palette, NativeCore::analyze, MessengerState(phase = "connected", chats = listOf(chat), selected = "peer", messages = listOf(message("out", true))), { _, _ -> }) }
+        ui.runOnUiThread { androidx.core.view.WindowCompat.getInsetsController(ui.activity.window, ui.activity.window.decorView).hide(androidx.core.view.WindowInsetsCompat.Type.ime()) }
+        ui.waitUntil(5000) { androidx.core.view.WindowInsetsCompat.toWindowInsetsCompat(ui.activity.window.decorView.rootWindowInsets).getInsets(androidx.core.view.WindowInsetsCompat.Type.ime()).bottom == 0 }
+        ui.waitForIdle()
         val initial = ui.onNodeWithTag("composer").fetchSemanticsNode().boundsInRoot.top
         ui.onNodeWithTag("composer").performClick()
         try { ui.waitUntil(5000) { ui.onNodeWithTag("composer").fetchSemanticsNode().boundsInRoot.top < initial - 100 } } finally { screenshot("keyboard") }
@@ -175,7 +178,7 @@ class MessagingUiTest {
         ui.onNodeWithContentDescription("Voice message").performClick()
         ui.onNodeWithText("Record").assertIsDisplayed()
         assertEquals(keyboard, ui.onNodeWithTag("composer").fetchSemanticsNode().boundsInRoot.top, 3f)
-        ui.onNodeWithContentDescription("Show keyboard").performClick()
+        ui.onNodeWithTag("composer").performClick()
         repeat(8) {
             ui.mainClock.advanceTimeBy(32)
             assertEquals(keyboard, ui.onNodeWithTag("composer").fetchSemanticsNode().boundsInRoot.top, 3f)

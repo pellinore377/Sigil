@@ -7,6 +7,7 @@ import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.activity.result.PickVisualMediaRequest
 import androidx.browser.auth.AuthTabIntent
 import androidx.compose.material3.dynamicLightColorScheme
 import androidx.compose.runtime.*
@@ -25,6 +26,10 @@ class MainActivity : ComponentActivity() {
     private val filePicker = registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         val peer = pickerPeer
         pickerPeer = null
+        if (uri != null && peer != null) messenger.importFile(peer, uri)
+    }
+    private val photos = registerForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri ->
+        val peer = pickerPeer; pickerPeer = null
         if (uri != null && peer != null) messenger.importFile(peer, uri)
     }
     private val microphone = registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted -> messenger.microphoneResult(granted) }
@@ -61,7 +66,8 @@ class MainActivity : ComponentActivity() {
                     else if (kind == "Place") placePeer = peer
                     else {
                         pickerPeer = when (kind) { "Wallpaper" -> peer + ("wallpaper" to "true"); "Profile photo" -> peer + ("profile_photo" to "true"); else -> peer }
-                        filePicker.launch(when (kind) { "Wallpaper", "Profile photo" -> arrayOf("image/*"); "Photos" -> arrayOf("image/*", "video/*"); else -> arrayOf("*/*") })
+                        if (kind in listOf("Photos", "Wallpaper", "Profile photo")) photos.launch(PickVisualMediaRequest(if (kind == "Photos") ActivityResultContracts.PickVisualMedia.ImageAndVideo else ActivityResultContracts.PickVisualMedia.ImageOnly))
+                        else filePicker.launch(arrayOf("*/*"))
                     }
                     messenger.pickerOpened()
                 }

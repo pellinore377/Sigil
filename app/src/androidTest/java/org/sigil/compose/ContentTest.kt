@@ -188,10 +188,14 @@ class ContentTest {
             val volume = audio.getStreamVolume(AudioManager.STREAM_MUSIC)
             audio.setStreamVolume(AudioManager.STREAM_MUSIC, 0, 0)
             try {
-                ui.setContent { SigilApp(NativeCore::palette, NativeCore::analyze, MessengerState(phase = "connected"), { _, _ -> }, overlay = { MediaDialog(message) { } }) }
+                ui.setContent { androidx.compose.runtime.CompositionLocalProvider(LocalAttachmentContent provides { AndroidAttachment(it) }) {
+                    SigilApp(NativeCore::palette, NativeCore::analyze, MessengerState(phase = "connected", selected = peer,
+                        chats = listOf(ChatSummary(peer, "@sam:example.com", "", "", true, emptyList(), displayName = "Sam")), messages = listOf(message)), { _, _ -> })
+                } }
+                ui.onNodeWithContentDescription("Play audio message").performClick()
                 ui.waitUntil(10000) { ui.onAllNodesWithText("0:01 / 0:03").fetchSemanticsNodes().isNotEmpty() }
-                ui.onNodeWithText("Pause").performClick()
-                ui.onNodeWithTag("media-seek").performSemanticsAction(SemanticsActions.SetProgress) { it(2200f) }
+                ui.onNodeWithContentDescription("Pause audio message").performClick()
+                ui.onNodeWithTag("audio-seek").performSemanticsAction(SemanticsActions.SetProgress) { it(2200f) }
                 ui.waitUntil(3000) { ui.onAllNodesWithText("0:02 / 0:03").fetchSemanticsNodes().isNotEmpty() }
             } finally { ui.runOnUiThread { ui.activity.setContentView(android.widget.FrameLayout(ui.activity)) }; audio.setStreamVolume(AudioManager.STREAM_MUSIC, volume, 0) }
             val forward = mapOf("source" to peer, "peer" to "self", "author" to message.author, "message" to message.id)

@@ -59,6 +59,7 @@ instrument 'PushTest#encryptedProofReachesRustThroughTheDistributorAndReceiver'
 "$adb" exec-out run-as "$app_id" cat cache/acceptance-recovery.key > "$scratch/recovery.key"
 "$adb" shell run-as "$app_id" rm cache/acceptance-recovery.key
 instrument MessagingUiTest
+instrument RevisionsTest
 instrument RichTextTest
 instrument LayoutTest
 instrument TimelinePerformanceTest

@@ -134,7 +134,7 @@ class Messenger(application: Application) : AndroidViewModel(application) {
         foreground = value; files.enabled = value && state.phase == "connected"
         NativeSync.enable(getApplication(), state.phase == "connected")
         if (value) { nextSync = 0; published = false }
-        else { if (state.voice.phase == "Recording") voice.stop(); if (state.phase == "connected") NativeSync.enqueue(getApplication()) }
+        else { if (state.voice.phase == "Recording") voice.stop(); voice.pausePreview(); if (state.phase == "connected") NativeSync.enqueue(getApplication()) }
         if (state.phase == "connected") scope.launch { try { NativeSync.presence(getApplication(), state.call?.call?.phase in listOf("active", "joining")) } catch (cancelled: CancellationException) { throw cancelled } catch (_: Exception) { } }
     }
     fun browserOpened() { authorizationUrl = null }
@@ -188,6 +188,7 @@ class Messenger(application: Application) : AndroidViewModel(application) {
             "record_stop" -> { voice.stop(); return }
             "record_cancel" -> { voice.discard(); return }
             "record_send" -> { voice.send(); return }
+            "record_preview" -> { voice.playPreview(); return }
             "attachment_pick" -> { picker = fields.filterKeys { it != "kind" } to (fields["kind"] as String); return }
             "delete_conversation" -> {
                 scope.launch { serialized(true) {

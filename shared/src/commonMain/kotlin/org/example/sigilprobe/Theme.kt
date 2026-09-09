@@ -5,6 +5,9 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.PlatformTextStyle
+import androidx.compose.ui.text.style.LineHeightStyle
+import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.text.font.*
 import androidx.compose.ui.unit.sp
 import org.jetbrains.compose.resources.Font
@@ -15,6 +18,7 @@ data class ChatTheme(val accent: Int? = null, val gradient: Boolean = false)
 
 val LocalCodeFont = staticCompositionLocalOf<FontFamily> { FontFamily.Monospace }
 val LocalSystemAppearance = staticCompositionLocalOf<(Boolean) -> Unit> { {} }
+val LocalTextPlatformStyle = staticCompositionLocalOf<PlatformTextStyle?> { null }
 
 internal fun parseAccent(text: String): Int? = text.removePrefix("#").takeIf { it.length == 6 }?.toIntOrNull(16)?.takeIf { it in 0..0xffffff }
 internal fun accentText(color: Int) = color.toString(16).padStart(6, '0').uppercase()
@@ -45,7 +49,7 @@ internal fun SigilTheme(appearance: Appearance, chat: ChatTheme? = null, dynamic
     val colors = remember(seed, dark) { palette(seed, dark).split(',').map { Color(0xff000000L or it.toLong(16)) } }
     val base = if (dark) darkColorScheme() else lightColorScheme()
     val scheme = base.copy(
-        background = colors[0], onBackground = colors[1], surface = colors[2], onSurface = colors[3],
+        background = lerp(colors[0], Color.Black, if (dark) .12f else .025f), onBackground = colors[1], surface = colors[0], onSurface = colors[1],
         primary = colors[4], onPrimary = colors[5], primaryContainer = colors[6], onPrimaryContainer = colors[7],
         secondary = colors[4], onSecondary = colors[5], secondaryContainer = colors[6], onSecondaryContainer = colors[7],
         tertiary = colors[4], onTertiary = colors[5], tertiaryContainer = colors[6], onTertiaryContainer = colors[7],
@@ -57,7 +61,9 @@ internal fun SigilTheme(appearance: Appearance, chat: ChatTheme? = null, dynamic
     val family = if (appearance.font == "Newsreader") FontFamily(
         Font(Res.font.newsreader), Font(Res.font.newsreader_italic, style = FontStyle.Italic)
     ) else FontFamily(Font(Res.font.google_sans_flex), Font(Res.font.google_sans_flex_semibold, FontWeight.SemiBold))
-    fun style(size: Int, line: Int, weight: FontWeight = FontWeight.Normal) = TextStyle(fontFamily = family, fontSize = size.sp, lineHeight = line.sp, fontWeight = weight)
+    val textPlatformStyle = LocalTextPlatformStyle.current
+    fun style(size: Int, line: Int, weight: FontWeight = FontWeight.Normal) = TextStyle(fontFamily = family, fontSize = size.sp, lineHeight = line.sp, fontWeight = weight,
+        platformStyle = textPlatformStyle, lineHeightStyle = LineHeightStyle(LineHeightStyle.Alignment.Center, LineHeightStyle.Trim.Both))
     val typography = Typography(
         displayLarge = style(52, 60), displayMedium = style(44, 52), displaySmall = style(36, 44),
         headlineLarge = style(34, 42), headlineMedium = style(28, 36), headlineSmall = style(24, 32),

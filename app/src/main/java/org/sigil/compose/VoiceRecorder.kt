@@ -1,6 +1,8 @@
 package org.sigil.compose
 
 import android.media.MediaRecorder
+import android.media.MediaPlayer
+import android.media.MediaDataSource
 import android.os.ParcelFileDescriptor
 import android.os.SystemClock
 import kotlinx.coroutines.*
@@ -30,8 +32,46 @@ internal class VoiceRecorder(private val scope: CoroutineScope, private val stag
     private var started = 0L
     private var levels = emptyList<Float>()
     private var elapsed = 0L
+    private var preview: MediaPlayer? = null
+    private var previewSource: MediaDataSource? = null
+    private fun clearPreview() { preview?.release(); preview = null; previewSource?.close(); previewSource = null }
+    fun playPreview() { scope.launch(Dispatchers.IO) { mutex.withLock {
+        if (closed.get() || recorder != null || bytes.size() == 0) return@withLock
+        try {
+            val current = preview
+            if (current != null) { if (current.isPlaying) current.pause() else current.start() }
+            else {
+                val audio = bytes.toByteArray()
+                val source = object : MediaDataSource() {
+                    override fun getSize() = audio.size.toLong()
+                    @Synchronized override fun readAt(position: Long, buffer: ByteArray, offset: Int, size: Int): Int {
+                        require(position >= 0 && offset >= 0 && size >= 0 && offset <= buffer.size - size)
+                        if (size == 0) return 0
+                        if (position >= audio.size) return -1
+                        val count = minOf(size, audio.size - position.toInt())
+                        audio.copyInto(buffer, offset, position.toInt(), position.toInt() + count)
+                        return count
+                    }
+                    @Synchronized override fun close() { audio.fill(0) }
+                }
+                previewSource = source
+                val player = MediaPlayer(); preview = player
+                player.setDataSource(source); player.prepare()
+                player.setOnCompletionListener { scope.launch(Dispatchers.IO) { mutex.withLock {
+                    if (preview === player) { clearPreview(); withContext(Dispatchers.Main) { update(VoiceState("Ready", peer, elapsed, levels)) } }
+                } } }
+                player.start()
+            }
+            withContext(Dispatchers.Main) { update(VoiceState("Ready", peer, elapsed, levels, preview?.isPlaying == true)) }
+        } catch (_: Exception) { clearPreview(); withContext(Dispatchers.Main) { issue("Could not play this recording."); update(VoiceState("Ready", peer, elapsed, levels)) } }
+    } } }
+    fun pausePreview() { scope.launch(Dispatchers.IO) { mutex.withLock {
+        if (preview != null) { clearPreview(); withContext(Dispatchers.Main) { update(VoiceState("Ready", peer, elapsed, levels)) } }
+    } } }
     fun start(peer: String, target: Map<String, Any?> = emptyMap()) { scope.launch(Dispatchers.IO) { mutex.withLock {
         if (closed.get() || recorder != null) return@withLock
+        if (bytes.size() > 0) { withContext(Dispatchers.Main) { issue("Send or discard your recording before starting another.") }; return@withLock }
+        clearPreview()
         bytes.clear(); this@VoiceRecorder.peer = peer; this@VoiceRecorder.target = target.toMap(); levels = emptyList()
         val descriptors = ParcelFileDescriptor.createPipe()
         pipe = descriptors[0]
@@ -88,10 +128,13 @@ internal class VoiceRecorder(private val scope: CoroutineScope, private val stag
         withContext(Dispatchers.Main) { update(if (ready) VoiceState("Ready", peer, elapsed, levels) else VoiceState()) }
     } } }
     fun discard() { scope.launch(Dispatchers.IO) { mutex.withLock {
+        clearPreview()
         finish(); bytes.clear(); withContext(Dispatchers.Main) { update(VoiceState()) }
     } } }
     fun send() { scope.launch(Dispatchers.IO) { mutex.withLock {
+        clearPreview()
         if (!finish()) return@withLock
+        withContext(Dispatchers.Main) { update(VoiceState("Sending", peer, elapsed, levels)) }
         val audio = bytes.toByteArray()
         try {
             stage(peer, audio, target)
@@ -103,6 +146,6 @@ internal class VoiceRecorder(private val scope: CoroutineScope, private val stag
     } } }
     fun close() {
         if (!closed.compareAndSet(false, true)) return
-        scope.launch(NonCancellable + Dispatchers.IO) { mutex.withLock { finish(); runCatching { pipe?.close() }; bytes.clear() } }
+        scope.launch(NonCancellable + Dispatchers.IO) { mutex.withLock { clearPreview(); finish(); runCatching { pipe?.close() }; bytes.clear() } }
     }
 }

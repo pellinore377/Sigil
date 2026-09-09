@@ -36,6 +36,7 @@ internal fun InboxHeader(page: String, query: String, update: (String) -> Unit, 
     val focus = remember { FocusRequester() }
     val keyboard = LocalSoftwareKeyboardController.current
     LaunchedEffect(page) { if (page == "search") { delay(MotionMillis.toLong()); focus.requestFocus(); keyboard?.show() } }
+    Surface(color = MaterialTheme.colorScheme.surface, shadowElevation = 2.dp) {
     AnimatedContent(selected.isNotEmpty(), transitionSpec = {
         (slideInHorizontally(tween(MotionMillis)) { it } + fadeIn()) togetherWith (slideOutHorizontally(tween(MotionMillis)) { -it } + fadeOut())
     }, label = "Selection toolbar") { selecting ->
@@ -68,6 +69,7 @@ internal fun InboxHeader(page: String, query: String, update: (String) -> Unit, 
                 decorationBox = { inner -> Box { if (query.isEmpty()) Text(if (page == "notes") "Search notes" else "Search all conversations", color = MaterialTheme.colorScheme.onSurfaceVariant, style = MaterialTheme.typography.titleMedium); inner() } })
             }
         }
+    }
     }
 }
 @Composable

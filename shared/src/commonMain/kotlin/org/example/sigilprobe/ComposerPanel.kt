@@ -1,4 +1,4 @@
-@file:OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class, kotlinx.coroutines.FlowPreview::class, kotlinx.coroutines.ExperimentalCoroutinesApi::class)
+@file:OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class, androidx.compose.material3.ExperimentalMaterial3Api::class, kotlinx.coroutines.FlowPreview::class, kotlinx.coroutines.ExperimentalCoroutinesApi::class)
 package org.sigil
 
 import androidx.compose.animation.*
@@ -8,6 +8,8 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.grid.*
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.input.TextFieldState
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.*
@@ -15,6 +17,7 @@ import androidx.compose.ui.*
 import androidx.compose.ui.focus.*
 import androidx.compose.ui.platform.*
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.semantics.*
 import kotlinx.coroutines.flow.*
 
@@ -22,9 +25,10 @@ private val createItems = listOf("Note" to "description", "Checklist" to "checkl
 @Composable
 internal fun ComposerPanel(draft: TextFieldState, analyze: (String) -> String, enabled: Boolean, notes: Boolean, command: Command, peer: String, voice: VoiceState, sent: Long, sentText: String?, requestContact: (() -> Unit)? = null, send: (String, Boolean) -> Unit) {
     var panel by remember(peer) { mutableStateOf("") }
+    var builder by remember(peer) { mutableStateOf("") }
     val builders = rememberSaveableStateHolder()
     var pendingBuilder by remember(peer) { mutableStateOf<Pair<String, String>?>(null) }
-    LaunchedEffect(sent) { pendingBuilder?.takeIf { it.second == sentText }?.let { builders.removeState(it.first); pendingBuilder = null; if ("$peer:$panel" == it.first) panel = "" } }
+    LaunchedEffect(sent) { pendingBuilder?.takeIf { it.second == sentText }?.let { builders.removeState(it.first); pendingBuilder = null; builder = ""; panel = "" } }
     val keyboard = LocalSoftwareKeyboardController.current
     val focus = LocalFocusManager.current
     val editor = remember { FocusRequester() }
@@ -40,7 +44,7 @@ internal fun ComposerPanel(draft: TextFieldState, analyze: (String) -> String, e
     LaunchedEffect(keyboardPending) { if (keyboardPending) { kotlinx.coroutines.delay(1500); keyboardPending = false } }
     LaunchedEffect(measured, keyboardPending) { if (keyboardPending && measured >= keyboardHeight - 2.dp) keyboardPending = false }
     fun change(value: String) { keyboardPending = false; focus.clearFocus(); panel = value; keyboard?.hide() }
-    fun showKeyboard() { keyboardPending = panel.isNotEmpty(); panel = ""; editor.requestFocus(); keyboard?.show() }
+    fun showKeyboard() { if (panel == "Voice") command("record_stop", emptyMap()); keyboardPending = panel.isNotEmpty(); panel = ""; editor.requestFocus(); keyboard?.show() }
     BackAction(panel.isNotEmpty()) {
         when (panel) {
             "Create", "Format" -> change("Attachments")
@@ -66,22 +70,24 @@ internal fun ComposerPanel(draft: TextFieldState, analyze: (String) -> String, e
         }
     }
     DisposableEffect(peer) { onDispose { if (canType) command("typing", mapOf("peer" to peer, "active" to false)) } }
-    Surface(shape = RoundedCornerShape(topStart = 24.dp, topEnd = 24.dp), color = MaterialTheme.colorScheme.background,
-        border = BorderStroke(0.5.dp, MaterialTheme.colorScheme.outlineVariant)) {
+    val voiceReady = voice.peer == peer && voice.phase in listOf("Ready", "Sending")
+    LaunchedEffect(voice.phase) { if (voiceReady) change("") }
+    Surface(Modifier.footerShadow(), shape = RoundedCornerShape(topStart = 24.dp, topEnd = 24.dp), color = MaterialTheme.colorScheme.surface) {
         Column {
             Row(Modifier.fillMaxWidth().padding(horizontal = 10.dp, vertical = 10.dp), verticalAlignment = Alignment.Bottom) {
                 Surface(shape = RoundedCornerShape(16.dp), color = MaterialTheme.colorScheme.surfaceVariant) {
-                    Symbol(if (panel.isEmpty()) "add" else "keyboard", if (panel.isEmpty()) "Attachments" else "Show keyboard") {
-                        if (panel.isEmpty()) change("Attachments") else showKeyboard()
+                    Symbol(if (voiceReady) "delete" else if (panel.isEmpty()) "add" else "close", if (voiceReady) "Discard voice message" else if (panel.isEmpty()) "Attachments" else "Close attachment panel") {
+                        if (voiceReady) command("record_cancel", emptyMap()) else if (panel.isEmpty()) change("Attachments") else { if (panel == "Voice") command("record_stop", emptyMap()); change("") }
                     }
                 }
                 Spacer(Modifier.width(8.dp))
-                Composer(draft, analyze, Modifier.weight(1f), showTools = false, focusRequester = editor, onFocus = { if (panel.isNotEmpty()) keyboardPending = true; panel = "" })
+                if (voiceReady) VoiceDraft(voice, Modifier.weight(1f)) { command("record_preview", emptyMap()) }
+                else Composer(draft, analyze, Modifier.weight(1f), showTools = false, focusRequester = editor, onFocus = { if (panel == "Voice") command("record_stop", emptyMap()); if (panel.isNotEmpty()) keyboardPending = true; panel = "" })
                 Spacer(Modifier.width(8.dp))
-                FilledIconButton({ if (draft.text.isNotBlank() && requestContact != null) requestContact() else if (draft.text.isNotBlank()) send(if (notes) "note::${escapeField(draft.text.toString())};" else draft.text.toString(), notes) else change("Voice") },
-                    Modifier.size(48.dp), enabled = if (draft.text.isNotBlank()) enabled || requestContact != null else true, shape = RoundedCornerShape(16.dp),
+                FilledIconButton({ if (voiceReady) command("record_send", mapOf("peer" to peer)) else if (draft.text.isNotBlank() && requestContact != null) requestContact() else if (draft.text.isNotBlank()) send(if (notes) "note::${escapeField(draft.text.toString())};" else draft.text.toString(), notes) else change("Voice") },
+                    Modifier.size(48.dp), enabled = if (voiceReady) enabled && voice.phase == "Ready" else if (draft.text.isNotBlank()) enabled || requestContact != null else true, shape = RoundedCornerShape(16.dp),
                     colors = IconButtonDefaults.filledIconButtonColors(containerColor = MaterialTheme.colorScheme.inverseSurface, contentColor = MaterialTheme.colorScheme.inverseOnSurface)) {
-                    Glyph(if (draft.text.isNotBlank()) "arrow_upward" else "graphic_eq", 25, if (draft.text.isNotBlank()) if (requestContact != null) "Send request" else "Send message" else "Voice message")
+                    Glyph(if (voiceReady || draft.text.isNotBlank()) "arrow_upward" else "graphic_eq", 25, if (voiceReady) "Send voice message" else if (draft.text.isNotBlank()) if (requestContact != null) "Send request" else "Send message" else "Voice message")
                 }
             }
             Box(Modifier.fillMaxWidth().then(if (panel.isEmpty() && !keyboardPending) Modifier.windowInsetsBottomHeight(WindowInsets.ime) else Modifier.height(panelHeight))) {
@@ -89,12 +95,13 @@ internal fun ComposerPanel(draft: TextFieldState, analyze: (String) -> String, e
                     when (shown) {
                         "" -> Unit
                         "Attachments", "Create" -> Column {
-                            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) { if (shown == "Create") Symbol("chevron_left", "Back to attachments") { change("Attachments") }; Text(shown, Modifier.weight(1f).padding(start = 20.dp), style = MaterialTheme.typography.titleMedium); Symbol("close", "Close attachment panel") { panel = "" } }
+                            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) { if (shown == "Create") Symbol("chevron_left", "Back to attachments") { change("Attachments") }; Text(shown, Modifier.weight(1f).padding(start = 20.dp), style = MaterialTheme.typography.titleMedium) }
                             val items = if (shown == "Create") createItems else listOf("Photos" to "image", "Camera" to "photo_camera", "Files" to "attach_file", "Place" to "location_on", "Create" to "add_notes", "Format" to "text_format")
                             LazyVerticalGrid(GridCells.Fixed(3), contentPadding = PaddingValues(horizontal = 20.dp, vertical = 8.dp), verticalArrangement = Arrangement.spacedBy(16.dp), horizontalArrangement = Arrangement.spacedBy(16.dp)) {
                                 items(items) { (name, icon) -> Column(Modifier.clickable {
                                     when (name) {
                                         "Photos", "Camera", "Files", "Place" -> command("attachment_pick", mapOf("peer" to peer, "kind" to name))
+                                        in createItems.map { it.first } -> builder = name
                                         else -> change(name)
                                     }
                                 }.semanticsButton(name), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(6.dp)) {
@@ -103,18 +110,20 @@ internal fun ComposerPanel(draft: TextFieldState, analyze: (String) -> String, e
                                 } }
                             }
                         }
-                        "Voice" -> VoicePanel(command, peer, voice, enabled) { command("record_cancel", emptyMap()); panel = "" }
+                        "Voice" -> VoicePanel(command, peer, voice) { command("record_cancel", emptyMap()); panel = "" }
                         "Format" -> Column(Modifier.padding(16.dp)) {
                             Header("Formatting", { change("Attachments") })
                             Row { listOf("Bold" to "**", "Italic" to "*", "Strike" to "~~", "Code" to "`").forEach { (name, marker) -> TextButton({ draft.format(marker) }) { Text(name) } } }
                             TextButton({ showKeyboard() }) { Text("Continue writing") }
                         }
-                        else -> builders.SaveableStateProvider("$peer:$shown") {
-                            StructuredBuilder(shown, enabled, { change("Create") }) { source -> pendingBuilder = "$peer:$shown" to source; send(source, true) }
-                        }
                     }
                 }
             }
+        }
+    }
+    if (builder.isNotEmpty()) ModalBottomSheet({ builder = "" }, sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true), containerColor = MaterialTheme.colorScheme.surface) {
+        builders.SaveableStateProvider("$peer:$builder") {
+            StructuredBuilder(builder, enabled, { builder = "" }) { source -> pendingBuilder = "$peer:$builder" to source; send(source, true) }
         }
     }
 }
@@ -123,15 +132,21 @@ internal fun escapeField(value: String) = value.replace("\\", "\\\\").replace(";
 @Composable
 private fun StructuredBuilder(kind: String, enabled: Boolean, back: () -> Unit, send: (String) -> Unit) {
     var title by rememberSaveable(kind) { mutableStateOf("") }
-    var entries by rememberSaveable(kind) { mutableStateOf("") }
+    var entries by rememberSaveable(kind) { mutableStateOf(listOf("")) }
     var advanced by rememberSaveable(kind) { mutableStateOf(false) }
     var multi by rememberSaveable(kind) { mutableStateOf(false) }
     var hidden by rememberSaveable(kind) { mutableStateOf(false) }
     var whenText by rememberSaveable(kind) { mutableStateOf(if (kind == "Timer") "5m" else "tomorrow 9am") }
-    Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal = 20.dp, vertical = 8.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+    val focus = LocalFocusManager.current
+    Column(Modifier.fillMaxWidth().heightIn(max = 560.dp).imePadding().verticalScroll(rememberScrollState()).padding(horizontal = 24.dp, vertical = 12.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically) { Symbol("chevron_left", "Back to create", back); Text(kind, Modifier.weight(1f), style = MaterialTheme.typography.titleLarge) }
-        if (kind != "Timer") OutlinedTextField(title, { title = it }, Modifier.fillMaxWidth(), label = { Text(if (kind == "Poll") "Question" else if (kind == "Note") "Your note" else "Title") }, minLines = if (kind == "Note") 2 else 1)
-        if (kind in listOf("Poll", "Checklist", "Task")) OutlinedTextField(entries, { entries = it }, Modifier.fillMaxWidth(), label = { Text(if (kind == "Poll") "Options · one per line" else "Items · one per line") }, minLines = 2)
+        if (kind != "Timer") OutlinedTextField(title, { title = it }, Modifier.fillMaxWidth(), shape = RoundedCornerShape(16.dp), label = { Text(if (kind == "Poll") "Question" else if (kind == "Note") "Your note" else "Title") }, minLines = if (kind == "Note") 3 else 1)
+        if (kind in listOf("Poll", "Checklist", "Task")) entries.forEachIndexed { index, entry ->
+            OutlinedTextField(entry, { value -> entries = entries.toMutableList().also { it[index] = value; if (index == it.lastIndex && value.isNotBlank()) it.add("") } }, Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(16.dp), singleLine = true, label = { Text("${if (kind == "Poll") "Option" else "Item"} ${index + 1}") },
+                leadingIcon = { Glyph(if (kind == "Poll") "radio_button_unchecked" else "check_box_outline_blank", 20, filled = false) },
+                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Next), keyboardActions = KeyboardActions(onNext = { focus.moveFocus(FocusDirection.Next) }))
+        }
         if (kind in listOf("Reminder", "Timer")) OutlinedTextField(whenText, { whenText = it }, Modifier.fillMaxWidth(), label = { Text(if (kind == "Timer") "Duration, e.g. 5m" else "When") })
         if (kind == "Poll") {
             TextButton({ advanced = !advanced }) { Text(if (advanced) "Hide advanced" else "Advanced") }
@@ -139,7 +154,7 @@ private fun StructuredBuilder(kind: String, enabled: Boolean, back: () -> Unit, 
         }
         Button({
             val heading = escapeField(title)
-            val items = entries.lines().filter { it.isNotBlank() }.joinToString("\n") { "- ${escapeField(it.trim())}" }
+            val items = entries.filter { it.isNotBlank() }.joinToString("\n") { "- ${escapeField(it.trim())}" }
             val source = when (kind) {
                 "Note" -> "note::$heading;"
                 "Poll" -> "poll::${if (multi) "multi::" else ""}${if (hidden) "closed::" else ""}$heading\n$items;"
@@ -149,27 +164,44 @@ private fun StructuredBuilder(kind: String, enabled: Boolean, back: () -> Unit, 
                 else -> "timer::${escapeField(whenText)};"
             }
             send(source)
-        }, enabled = enabled && (if (kind == "Timer") whenText.isNotBlank() else title.isNotBlank()) && (kind !in listOf("Poll", "Checklist", "Task") || entries.lines().count { it.isNotBlank() } >= if (kind == "Poll") 2 else 1), modifier = Modifier.align(Alignment.End)) { Text(if (kind == "Poll") "Send poll" else "Send") }
+        }, enabled = enabled && (if (kind == "Timer") whenText.isNotBlank() else title.isNotBlank()) && (kind !in listOf("Poll", "Checklist", "Task") || entries.count { it.isNotBlank() } >= if (kind == "Poll") 2 else 1), modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(16.dp)) { Text(if (kind == "Poll") "Send poll" else "Send") }
     }
 }
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
-private fun VoicePanel(command: Command, peer: String, voice: VoiceState, enabled: Boolean, close: () -> Unit) {
+private fun VoicePanel(command: Command, peer: String, voice: VoiceState, close: () -> Unit) {
     val recording = voice.peer == peer && voice.phase == "Recording"
-    val ready = voice.peer == peer && voice.phase == "Ready"
-    val color = MaterialTheme.colorScheme.onBackground
-    Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(20.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(12.dp)) {
-        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) { Text("Voice message", Modifier.weight(1f), style = MaterialTheme.typography.titleMedium); Symbol("close", "Close voice panel", close) }
-        Canvas(Modifier.fillMaxWidth().height(64.dp)) {
-            val levels = voice.levels.takeIf { voice.peer == peer }.orEmpty()
-            if (levels.isEmpty()) drawLine(color.copy(alpha = .3f), androidx.compose.ui.geometry.Offset(0f, center.y), androidx.compose.ui.geometry.Offset(size.width, center.y), 1.dp.toPx())
-            else levels.forEachIndexed { index, level -> val x = size.width * (index + .5f) / levels.size; val amplitude = size.height * level.coerceIn(.02f, 1f) / 2f; drawLine(color, androidx.compose.ui.geometry.Offset(x, center.y - amplitude), androidx.compose.ui.geometry.Offset(x, center.y + amplitude), 3.dp.toPx(), androidx.compose.ui.graphics.StrokeCap.Round) }
-        }
-        Text(if (recording || ready) "${voice.seconds / 60}:${(voice.seconds % 60).toString().padStart(2, '0')}" else "Ready to record", style = MaterialTheme.typography.titleMedium)
+    Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(24.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(20.dp, Alignment.CenterVertically)) {
+        Text(if (recording) "Recording" else "Voice message", style = MaterialTheme.typography.titleMedium)
+        if (recording) {
+            VoiceWaveform(voice.levels, Modifier.fillMaxWidth().height(48.dp))
+            Text("${voice.seconds / 60}:${(voice.seconds % 60).toString().padStart(2, '0')}", style = MaterialTheme.typography.titleMedium, fontFamily = LocalCodeFont.current)
+        } else Text("Listen before you send.", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
         FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.CenterHorizontally), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            OutlinedButton({ command("record_cancel", emptyMap()) }) { Text("Discard") }
-            Button({ command(if (recording) "record_stop" else "record_start", mapOf("peer" to peer)) }) { Glyph(if (recording) "stop" else "mic", 20); Text(if (recording) "Stop" else if (ready) "Record again" else "Record") }
-            OutlinedButton({ command("record_send", mapOf("peer" to peer)) }, enabled = enabled && ready) { Text("Send") }
+            TextButton(close) { Text("Cancel") }
+            Button({ command(if (recording) "record_stop" else "record_start", mapOf("peer" to peer)) }, shape = RoundedCornerShape(18.dp), contentPadding = PaddingValues(horizontal = 24.dp, vertical = 16.dp),
+                colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.inverseSurface, contentColor = MaterialTheme.colorScheme.inverseOnSurface)) { Glyph(if (recording) "check" else "mic", 24); Spacer(Modifier.width(8.dp)); Text(if (recording) "Done" else "Record") }
         }
     }
+}
+
+@Composable
+private fun VoiceDraft(voice: VoiceState, modifier: Modifier, play: () -> Unit) {
+    Surface(modifier, shape = RoundedCornerShape(16.dp), color = MaterialTheme.colorScheme.background) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Symbol(if (voice.playing) "pause" else "play_arrow", if (voice.playing) "Pause voice preview" else "Play voice preview", play)
+            VoiceWaveform(voice.levels, Modifier.weight(1f).height(32.dp))
+            Text("${voice.seconds / 60}:${(voice.seconds % 60).toString().padStart(2, '0')}", Modifier.padding(horizontal = 8.dp), style = MaterialTheme.typography.labelSmall)
+        }
+    }
+}
+
+@Composable
+private fun VoiceWaveform(levels: List<Float>, modifier: Modifier) {
+    val ink = LocalContentColor.current
+    Canvas(modifier) { levels.forEachIndexed { i, level ->
+        val x = size.width * (i + .5f) / levels.size
+        val height = size.height * level.coerceIn(.08f, 1f) / 2f
+        drawLine(ink, androidx.compose.ui.geometry.Offset(x, center.y - height), androidx.compose.ui.geometry.Offset(x, center.y + height), 2.dp.toPx(), androidx.compose.ui.graphics.StrokeCap.Round)
+    } }
 }

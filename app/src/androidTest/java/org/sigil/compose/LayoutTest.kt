@@ -70,9 +70,9 @@ class LayoutTest {
         capture("large-timeline")
         ui.onNodeWithContentDescription("Voice message").performClick()
         ui.onNodeWithText("Record").performScrollTo().assertIsDisplayed()
-        ui.onNodeWithText("Send", substring = false).performScrollTo().assertIsDisplayed()
+        ui.onNodeWithText("Cancel", substring = false).performScrollTo().assertIsDisplayed()
         val layouts = mutableListOf<androidx.compose.ui.text.TextLayoutResult>()
-        ui.onNodeWithText("Send", substring = false).performSemanticsAction(androidx.compose.ui.semantics.SemanticsActions.GetTextLayoutResult) { it(layouts) }
+        ui.onNodeWithText("Cancel", substring = false).performSemanticsAction(androidx.compose.ui.semantics.SemanticsActions.GetTextLayoutResult) { it(layouts) }
         capture("large-voice")
         val layout = layouts.single()
         assertEquals(1, layout.lineCount)

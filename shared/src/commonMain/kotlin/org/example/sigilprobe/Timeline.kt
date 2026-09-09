@@ -31,9 +31,9 @@ import kotlinx.coroutines.launch
 import kotlin.math.*
 
 @Composable
-fun Glyph(name: String, size: Int = 24, label: String? = null) {
+fun Glyph(name: String, size: Int = 24, label: String? = null, filled: Boolean = true) {
     val glyphSize = with(LocalDensity.current) { size.dp.toSp() }
-    Text(name, fontFamily = if (name.any { it.code > 127 }) null else FontFamily(Font(Res.font.material_symbols)), fontSize = glyphSize, lineHeight = glyphSize, maxLines = 1,
+    Text(name, fontFamily = if (name.any { it.code > 127 }) null else FontFamily(Font(if (filled) Res.font.material_symbols else Res.font.material_symbols_outline)), fontSize = glyphSize, lineHeight = glyphSize, maxLines = 1,
         modifier = Modifier.clearAndSetSemantics { if (label != null) contentDescription = label })
 }
 internal fun showsReceipt(index: Int, messages: List<ChatMessage>) = index == 0 && messages.firstOrNull()?.mine == true
@@ -79,8 +79,7 @@ internal fun ConversationPage(chat: ChatSummary, state: MessengerState, draft: T
     Box(Modifier.fillMaxSize()) {
         LocalWallpaper.current(chat.id, Modifier.matchParentSize())
         Column(Modifier.fillMaxSize().then(if (gradient) Modifier.background(Brush.verticalGradient(listOf(scheme.background.copy(alpha = .7f), scheme.primaryContainer.copy(alpha = .7f)))) else Modifier)) {
-            Surface(shape = RoundedCornerShape(bottomStart = 24.dp, bottomEnd = 24.dp), color = scheme.background,
-                border = BorderStroke(0.5.dp, scheme.outlineVariant)) {
+            Surface(shape = RoundedCornerShape(bottomStart = 24.dp, bottomEnd = 24.dp), color = scheme.surface, shadowElevation = 2.dp) {
                 Row(Modifier.fillMaxWidth().heightIn(min = 76.dp).then(headerMotion).padding(horizontal = 8.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
                     Symbol("chevron_left", "Back") { if (thread != null) thread = null else back() }
                     PresenceAvatar(chat, 42)

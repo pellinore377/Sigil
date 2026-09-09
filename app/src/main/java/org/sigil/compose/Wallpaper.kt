@@ -49,7 +49,7 @@ internal suspend fun saveWallpaper(context: Context, peer: String, uri: Uri?) = 
 }
 
 @Composable
-internal fun Wallpaper(peer: String, revision: Long, modifier: Modifier) {
+internal fun Wallpaper(peer: String, revision: Long, modifier: Modifier): Boolean {
     val context = LocalContext.current
     val image by produceState<Bitmap?>(null, peer, revision) {
         val decoded = withContext(Dispatchers.IO) {
@@ -68,4 +68,5 @@ internal fun Wallpaper(peer: String, revision: Long, modifier: Modifier) {
         Image(bitmap.asImageBitmap(), null, Modifier.matchParentSize(), contentScale = ContentScale.Crop)
         Box(Modifier.matchParentSize().background(MaterialTheme.colorScheme.background.copy(alpha = .24f)))
     } }
+    return image != null
 }

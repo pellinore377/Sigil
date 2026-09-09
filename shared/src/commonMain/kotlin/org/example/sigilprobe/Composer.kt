@@ -2,7 +2,7 @@
 
 package org.sigil
 
-import androidx.compose.foundation.border
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.input.*
@@ -137,10 +137,10 @@ fun Composer(state: TextFieldState, analyze: (String) -> String, modifier: Modif
         }
         LocalComposerInput.current(sourceMode) {
         BasicTextField(state,
-            modifier = Modifier.fillMaxWidth().heightIn(min = 52.dp, max = 144.dp).testTag("composer")
+            modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp, max = 144.dp).testTag("composer")
                 .semantics { contentDescription = "Message" }
                 .focusRequester(editorFocus).onFocusChanged { editorFocused = it.isFocused; if (it.isFocused) onFocus() }
-                .border(1.dp, MaterialTheme.colorScheme.outlineVariant, androidx.compose.foundation.shape.RoundedCornerShape(24.dp)).padding(horizontal = 16.dp, vertical = 12.dp)
+                .background(MaterialTheme.colorScheme.background, androidx.compose.foundation.shape.RoundedCornerShape(16.dp)).padding(horizontal = 14.dp, vertical = 12.dp)
                 .onPreviewKeyEvent {
                     if (it.type != KeyEventType.KeyDown) false
                     else if (it.key == Key.Tab && !it.isCtrlPressed && !it.isAltPressed && !it.isMetaPressed) {
@@ -158,7 +158,7 @@ fun Composer(state: TextFieldState, analyze: (String) -> String, modifier: Modif
             inputTransformation = if (sourceMode) InputTransformation.maxLength(16_384)
                 else preserveBoundaries(analyze).then(InputTransformation.maxLength(16_384)),
             outputTransformation = if (sourceMode) null else output,
-            decorator = { inner -> Box { if (source.isEmpty()) Text("Message", color = MaterialTheme.colorScheme.onSurfaceVariant); inner() } },
+            decorator = { inner -> Box(contentAlignment = androidx.compose.ui.Alignment.CenterStart) { if (source.isEmpty()) Text("Message", color = MaterialTheme.colorScheme.onSurfaceVariant, style = MaterialTheme.typography.bodyLarge); inner() } },
             textStyle = MaterialTheme.typography.bodyLarge.copy(color = MaterialTheme.colorScheme.onSurface),
             lineLimits = TextFieldLineLimits.MultiLine(maxHeightInLines = 4))
         }

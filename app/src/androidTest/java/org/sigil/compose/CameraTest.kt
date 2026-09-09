@@ -17,9 +17,9 @@ class CameraTest {
             try { assertTrue(bytes.size > 100); assertEquals(255, bytes[0].toInt() and 255); assertEquals(216, bytes[1].toInt() and 255); sent = true }
             finally { bytes.fill(0) }
         } }
-        ui.waitUntil(10000) { ui.onAllNodesWithText("Take photo").filter(isEnabled()).fetchSemanticsNodes().isNotEmpty() }
+        ui.waitUntil(10000) { ui.onAllNodesWithContentDescription("Take photo").filter(isEnabled()).fetchSemanticsNodes().isNotEmpty() }
         assertFalse(sent)
-        ui.onNodeWithText("Take photo").performClick()
+        ui.onNodeWithContentDescription("Take photo").performClick()
         ui.waitUntil(10000) { ui.onAllNodesWithText("Send photo").fetchSemanticsNodes().isNotEmpty() }
         assertFalse(sent)
         ui.onNodeWithText("Send photo").performClick()
