@@ -220,11 +220,12 @@ class RevisionsTest {
         ui.onNodeWithTag("main-navigation").assertIsDisplayed()
     }
     @Test fun conversationMovesContentInsideStationarySurfaces() {
-        val state = mutableStateOf(MessengerState(phase = "connected", chats = listOf(chat)))
+        val state = mutableStateOf(MessengerState(phase = "connected", chats = listOf(chat.copy(ui = mapOf("chat_theme" to "287C54|false")))))
         show { SigilApp(NativeCore::palette, NativeCore::analyze, state.value, { name, _ -> if (name == "close") state.value = state.value.copy(selected = null) }) }
         val header = ui.onNodeWithTag("main-header").fetchSemanticsNode().id
         val footer = ui.onNodeWithTag("footer-surface").fetchSemanticsNode().id
         val footerBottom = ui.onNodeWithTag("footer-surface").getUnclippedBoundsInRoot().bottom
+        val initialHeight = ui.onNodeWithTag("footer-surface").getUnclippedBoundsInRoot().let { it.bottom - it.top }
         fun headerColor(): androidx.compose.ui.graphics.Color {
             val pixels = ui.onNodeWithTag("main-header").captureToImage().toPixelMap()
             return pixels[pixels.width / 2, pixels.height - 4]
@@ -238,13 +239,26 @@ class RevisionsTest {
         assertEquals(header, ui.onNodeWithTag("main-header").fetchSemanticsNode().id)
         assertEquals(footer, ui.onNodeWithTag("footer-surface").fetchSemanticsNode().id)
         assertEquals(footerBottom, ui.onNodeWithTag("footer-surface").getUnclippedBoundsInRoot().bottom)
+        val growingHeight = ui.onNodeWithTag("footer-surface").getUnclippedBoundsInRoot().let { it.bottom - it.top }
+        assertTrue("Footer height did not start growing", growingHeight > initialHeight)
         assertEquals("Header color changed before the movement finished", background, headerColor())
+        capture("opening-64")
         ui.mainClock.advanceTimeBy(80)
         assertTrue(ui.onNodeWithTag("timeline-body").getUnclippedBoundsInRoot().top < first)
         assertEquals(background, headerColor())
         ui.mainClock.advanceTimeBy(64)
         assertTrue("Floating button stopped above the gesture area", ui.onNodeWithContentDescription("New conversation").getUnclippedBoundsInRoot().top > footerBottom)
+        capture("opening-208")
+        ui.mainClock.advanceTimeBy(64)
+        val earlyTint = headerColor()
+        ui.mainClock.advanceTimeBy(64)
+        val laterTint = headerColor()
         ui.mainClock.autoAdvance = true; ui.waitForIdle()
+        assertTrue("Footer height jumped to its final size", growingHeight < ui.onNodeWithTag("footer-surface").getUnclippedBoundsInRoot().let { it.bottom - it.top })
+        val settled = headerColor()
+        assertNotEquals("Header tint did not animate", earlyTint, laterTint)
+        ui.mainClock.advanceTimeBy(500)
+        assertEquals("Header changed after settling", settled, headerColor())
         ui.onNodeWithText("A letter arriving from below").assertIsDisplayed()
         ui.onNodeWithContentDescription("Back").performClick()
         assertEquals(header, ui.onNodeWithTag("main-header").fetchSemanticsNode().id)

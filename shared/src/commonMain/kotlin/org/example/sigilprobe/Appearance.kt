@@ -103,7 +103,7 @@ private fun TimelinePreview(analyze: (String) -> String, peer: String? = null, g
                     }
                 }
             }
-            Surface(Modifier.footerShadow().testTag("preview-footer"), shape = RoundedCornerShape(topStart = 24.dp, topEnd = 24.dp), color = scheme.surface) {
+            Surface(Modifier.testTag("preview-footer"), shape = RoundedCornerShape(topStart = 24.dp, topEnd = 24.dp), color = scheme.surface) {
                 ComposerBar {
                     Surface(shape = RoundedCornerShape(16.dp), color = scheme.surfaceVariant) { Symbol("add", "Preview attachments") {} }
                     Composer(remember { TextFieldState() }, analyze, Modifier.weight(1f), showTools = false, enabled = false)
