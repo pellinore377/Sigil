@@ -87,6 +87,24 @@ class MessagingUiTest {
         ui.onNodeWithText("Enable encrypted backups").performClick()
         ui.runOnIdle { assertTrue(enabled) }
     }
+    @Test fun signOutRequiresAcknowledgingLocalLossAndDoesNotAssumeRevocation() {
+        val stage = mutableStateOf("confirm")
+        val commands = mutableListOf<String>()
+        show { SigilApp(NativeCore::palette, NativeCore::analyze, MessengerState(phase = "connected"), { _, _ -> }, overlay = { SignOutDialog(stage.value, false, null) { commands += it } }) }
+        ui.onNodeWithText("Sign out").assertIsNotEnabled()
+        ui.onNodeWithText("Cancel").performClick()
+        ui.runOnIdle { assertEquals(listOf("cancel"), commands) }
+        ui.onNode(isToggleable()).performScrollTo().performClick()
+        ui.onNodeWithText("Sign out").performClick()
+        ui.runOnIdle { assertEquals(listOf("cancel", "confirm"), commands); stage.value = "pending" }
+        ui.onNodeWithText("Cancel").assertDoesNotExist()
+        ui.onNodeWithText("Remove local data").assertDoesNotExist()
+        ui.onNodeWithText("Retry revocation").performClick()
+        ui.runOnIdle { assertEquals("retry", commands.last()) }
+        ui.onNode(isToggleable()).performScrollTo().performClick()
+        ui.onNodeWithText("Remove local data").performClick()
+        ui.runOnIdle { assertEquals("erase", commands.last()) }
+    }
     @Test fun switchingComposerPanelsKeepsTheComposerSteady() {
         show { SigilApp(NativeCore::palette, NativeCore::analyze, MessengerState(phase = "connected", chats = listOf(chat), selected = "peer", messages = listOf(message("out", true))), { _, _ -> }) }
         val initial = ui.onNodeWithTag("composer").fetchSemanticsNode().boundsInRoot.top

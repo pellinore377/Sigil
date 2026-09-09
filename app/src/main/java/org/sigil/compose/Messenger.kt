@@ -24,6 +24,12 @@ class Messenger(application: Application) : AndroidViewModel(application) {
         private set
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private val mutex = Mutex()
+    var signOutStage by mutableStateOf(NativeSignOut.stage(application))
+        private set
+    var signOutBusy by mutableStateOf(false)
+        private set
+    var signOutIssue by mutableStateOf<String?>(null)
+        private set
     internal val calls = NativeCalls(application, { history, active -> state = state.copy(calls = history, call = active) }, { state = state.copy(issue = it) })
     private val files = NativeFiles(application, scope, { uploads, sent ->
         state = state.copy(transfers = uploads)
@@ -56,6 +62,7 @@ class Messenger(application: Application) : AndroidViewModel(application) {
     var photoRevision by mutableStateOf(0L)
         private set
     fun importFile(target: Map<String, Any?>, uri: Uri) {
+        if (NativeSignOut.pending(getApplication())) return
         when { target["profile_photo"] == "true" -> changeProfilePhoto(uri); target["wallpaper"] == "true" -> changeWallpaper(target["peer"] as String, uri); else -> files.import(target, uri) }
     }
     private fun changeProfilePhoto(uri: Uri?) { scope.launch { serialized(true) {
@@ -86,11 +93,12 @@ class Messenger(application: Application) : AndroidViewModel(application) {
         private set
 
     init {
-        scope.launch { serialized(false) { refresh(); linkResult(execute("device_link", mapOf("action" to "status"))) } }
+        if (signOutStage.isEmpty()) scope.launch { serialized(false) { refresh(); linkResult(execute("device_link", mapOf("action" to "status"))) } }
+        else NativeSync.enable(application, false)
         scope.launch {
             while (isActive) {
                 delay(1000)
-                if (foreground && state.phase == "connected" && System.currentTimeMillis() / 1000 >= nextSync) {
+                if (signOutStage.isEmpty() && foreground && state.phase == "connected" && System.currentTimeMillis() / 1000 >= nextSync) {
                     serialized(false) {
                         if (!published) { execute("publish"); published = true }
                         val result = execute("sync", mapOf("interactive" to true))
@@ -110,6 +118,7 @@ class Messenger(application: Application) : AndroidViewModel(application) {
         }
     }
     fun foreground(value: Boolean) {
+        if (NativeSignOut.pending(getApplication())) { foreground = false; files.enabled = false; NativeSync.enable(getApplication(), false); return }
         NativeSync.foreground(value)
         NativeNotifications.foreground(getApplication(), value)
         if (value) state = state.copy(notifications = NativeNotifications.settings(getApplication()))
@@ -127,8 +136,14 @@ class Messenger(application: Application) : AndroidViewModel(application) {
         command("callback", mapOf("request_id" to parts[0], "completion" to parts[1]))
     }
     fun command(name: String, fields: Map<String, Any?>) {
+        if (NativeSignOut.pending(getApplication())) return
         if (name.startsWith("call_")) { calls.command(name, fields + ("name" to (fields["peer"] as? String)?.let { peer -> state.chats.find { it.id == peer }?.name })); return }
         when (name) {
+            "sign_out" -> {
+                if (state.call != null || calls.occupied) { state = state.copy(issue = "End or leave your call before signing out."); return }
+                if (state.voice.phase != "Idle") { state = state.copy(issue = "Send or discard your voice recording before signing out."); return }
+                signOutStage = "confirm"; signOutIssue = null; return
+            }
             "photo_choose" -> { picker = emptyMap<String, Any?>() to "Profile photo"; return }
             "photo_remove" -> { changeProfilePhoto(null); return }
             "device_link" -> { deviceLink(fields); return }
@@ -262,7 +277,37 @@ class Messenger(application: Application) : AndroidViewModel(application) {
             }
         }
     }
+    fun signOut(action: String) {
+        if (signOutBusy) return
+        if (action == "cancel") { if (signOutStage == "confirm") signOutStage = ""; return }
+        if (action !in listOf("confirm", "retry", "erase") || signOutStage.isEmpty()) return
+        signOutBusy = true; signOutIssue = null
+        scope.launch { mutex.withLock {
+            try {
+                if (action == "confirm") {
+                    check(signOutStage == "confirm" && state.call == null && !calls.occupied)
+                    NativeSignOut.save(getApplication(), "pending"); signOutStage = "pending"
+                    files.enabled = false; NativeSync.enable(getApplication(), false)
+                }
+                if (action != "erase") {
+                    check(signOutStage == "pending")
+                    check(execute("sign_out").getBoolean("revoked"))
+                    NativeSignOut.save(getApplication(), "confirmed"); signOutStage = "confirmed"
+                }
+                check(signOutStage in listOf("pending", "confirmed"))
+                check(NativeSignOut.erase(getApplication()))
+            } catch (cancelled: CancellationException) { throw cancelled }
+            catch (_: Exception) {
+                NativeSignOut.stage(getApplication()).takeIf { it.isNotEmpty() }?.let { signOutStage = it }
+                signOutIssue = if (signOutStage == "confirmed") "Android could not remove the app’s data. Try again, or clear Sigil’s storage in Android settings."
+                    else if (signOutStage == "confirm") "Could not save the sign-out request. Nothing has been removed."
+                    else "Could not confirm revocation. Local data has been kept."
+                signOutBusy = false
+            }
+        } }
+    }
     private suspend fun serialized(progress: Boolean, work: suspend () -> Unit) = mutex.withLock {
+        if (NativeSignOut.pending(getApplication())) return@withLock
         if (progress) state = state.copy(busy = true, issue = null)
         try { work() } catch (cancelled: CancellationException) { throw cancelled }
         catch (error: Exception) {
