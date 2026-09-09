@@ -6,6 +6,8 @@ Android development UI connects to Rust enrollment, explicit device verification
 
 The published container supports opt-in `SIGIL_LOG_CIPHERTEXT=true` diagnostics for accepted local message envelopes. Logging defaults off, uses a bounded queue and excludes plaintext, credentials and private keys. Container acceptance verifies enabled/disabled behavior and exact payload bytes; anonymous GHCR pull succeeds.
 
+Discovery compares HTTPS origins with the default port normalized; distinct hosts and nondefault ports remain distinct. Ten native transport tests pass, including delegated service-address discovery. The operator confirms service-address discovery on Android. The address field requests URL input without autocorrection.
+
 Codex reviewed all eight backend areas in [Audit.md](Audit.md); Claude completed four independent source-review batches. Confirmed restore-journal, quota, maintenance-artifact and federation-counter defects are corrected. That independent audit predates the browser additions; those have received self-review and regression testing.
 
 Claude ran through `claudex-loop` with requested/observed Fable 5.1; usage also reported auxiliary Haiku. Review coverage is bounded, not proof that every line received independent review. No confirmed ratchet encryption defect was found. Unused production handshake interfaces and an unused Braid wire kind were removed; independent legacy fixtures remain test-only. This is not security certification.

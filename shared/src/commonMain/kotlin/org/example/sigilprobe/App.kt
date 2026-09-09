@@ -27,6 +27,8 @@ import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -168,7 +170,7 @@ private fun SignIn(state: MessengerState, command: (String, Map<String, Any?>) -
         Spacer(Modifier.height(8.dp))
         OutlinedTextField(state.loginAddress, { command("server_changed", mapOf("server" to it)) }, Modifier.fillMaxWidth().testTag("server-address"),
             label = { Text("Server address") }, singleLine = true, enabled = !state.busy && state.phase == "new",
-            shape = RoundedCornerShape(14.dp), keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
+            shape = RoundedCornerShape(14.dp), keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done, keyboardType = KeyboardType.Uri, capitalization = KeyboardCapitalization.None, autoCorrectEnabled = false),
             keyboardActions = KeyboardActions(onDone = { if (state.loginAddress.isNotBlank()) command("discover", mapOf("server" to state.loginAddress)) }))
         if (state.discovering) CircularProgressIndicator(Modifier.size(22.dp), strokeWidth = 2.dp)
         state.discoveryIssue?.let { Text(it, style = MaterialTheme.typography.bodySmall) }

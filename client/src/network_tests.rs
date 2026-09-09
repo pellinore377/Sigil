@@ -69,7 +69,7 @@ impl Resolver for LocalResolver {
         let address = *ENDPOINTS
             .lock()
             .unwrap()
-            .get(&uri.port_u16().ok_or(ureq::Error::HostNotFound)?)
+            .get(&uri.port_u16().unwrap_or(443))
             .ok_or(ureq::Error::HostNotFound)?;
         let mut values = self.empty();
         values.push(address);
@@ -584,4 +584,67 @@ fn login_discovery_uses_delegated_methods_and_rejects_wrong_identity() {
         }),
     ));
     assert!(HttpsClient::login_methods("chat.example", wrong.port(), &[CA.to_vec()]).is_err());
+}
+
+#[test]
+fn service_address_discovery_accepts_the_default_https_port_without_weakening_origin_checks() {
+    assert!(same_https_origin(
+        "https://chat.example:443",
+        "https://chat.example"
+    ));
+    for other in [
+        "https://other.example",
+        "https://chat.example:8443",
+        "http://chat.example",
+        "https://chat.example@other.example",
+        "https://chat.example/path",
+    ] {
+        assert!(!same_https_origin("https://chat.example:443", other));
+    }
+    let fixture = Fixture::federation(
+        Router::new()
+            .route(
+                sigil_protocol::discovery::PATH,
+                get(|| async {
+                    axum::Json(sigil_protocol::discovery::Discovery {
+                        server_name: "federated.example".into(),
+                        api_origin: "https://chat.example".into(),
+                    })
+                }),
+            )
+            .route(
+                "/client/v0/login",
+                get(|| async {
+                    axum::Json(sigil_protocol::login::Methods {
+                        server_name: "federated.example".into(),
+                        sso: true,
+                        password: false,
+                        invitation: false,
+                    })
+                }),
+            ),
+        async {},
+    );
+    struct DefaultPort;
+    impl Drop for DefaultPort {
+        fn drop(&mut self) {
+            ENDPOINTS.lock().unwrap().remove(&443);
+        }
+    }
+    assert!(ENDPOINTS
+        .lock()
+        .unwrap()
+        .insert(443, fixture.address)
+        .is_none());
+    let _mapping = DefaultPort;
+    for server in ["chat.example", "federated.example"] {
+        let methods = HttpsClient::login_methods(
+            server,
+            443,
+            &[include_bytes!("../tests/fixtures/federation-ca.der").to_vec()],
+        )
+        .unwrap();
+        assert_eq!(methods.server_name, "federated.example");
+        assert!(methods.sso);
+    }
 }
