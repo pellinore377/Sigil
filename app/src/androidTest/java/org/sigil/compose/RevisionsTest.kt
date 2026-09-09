@@ -47,7 +47,11 @@ class RevisionsTest {
             assertNotEquals(footer[2, 2], footer[footer.width / 2, 2])
         }
         capture("settings")
+        ui.mainClock.autoAdvance = false
         ui.onNodeWithText("Theme, typography, and layout").performScrollTo().performClick()
+        ui.mainClock.advanceTimeBy(80)
+        capture("appearance-opening")
+        ui.mainClock.autoAdvance = true; ui.waitForIdle()
         ui.onNodeWithText("Dinner still on for tonight?").assertIsDisplayed()
         capture("appearance")
     }
@@ -224,6 +228,7 @@ class RevisionsTest {
         show { SigilApp(NativeCore::palette, NativeCore::analyze, state.value, { name, _ -> if (name == "close") state.value = state.value.copy(selected = null) }) }
         val header = ui.onNodeWithTag("main-header").fetchSemanticsNode().id
         val footer = ui.onNodeWithTag("footer-surface").fetchSemanticsNode().id
+        val initialHeaderHeight = ui.onNodeWithTag("main-header").getUnclippedBoundsInRoot().let { it.bottom - it.top }
         val footerBottom = ui.onNodeWithTag("footer-surface").getUnclippedBoundsInRoot().bottom
         val initialHeight = ui.onNodeWithTag("footer-surface").getUnclippedBoundsInRoot().let { it.bottom - it.top }
         fun headerColor(): androidx.compose.ui.graphics.Color {
@@ -237,6 +242,9 @@ class RevisionsTest {
         val first = ui.onNodeWithTag("timeline-body").getUnclippedBoundsInRoot().top
         assertTrue("Timeline did not enter from below", first.value > 100f)
         assertEquals(header, ui.onNodeWithTag("main-header").fetchSemanticsNode().id)
+        val growingHeaderHeight = ui.onNodeWithTag("main-header").getUnclippedBoundsInRoot().let { it.bottom - it.top }
+        assertTrue("Header did not grow", growingHeaderHeight > initialHeaderHeight)
+        assertTrue("Main header elements did not slide away", ui.onNodeWithText("Sigil").getUnclippedBoundsInRoot().left.value < 0f)
         assertEquals(footer, ui.onNodeWithTag("footer-surface").fetchSemanticsNode().id)
         assertEquals(footerBottom, ui.onNodeWithTag("footer-surface").getUnclippedBoundsInRoot().bottom)
         val growingHeight = ui.onNodeWithTag("footer-surface").getUnclippedBoundsInRoot().let { it.bottom - it.top }
@@ -254,6 +262,7 @@ class RevisionsTest {
         ui.mainClock.advanceTimeBy(64)
         val laterTint = headerColor()
         ui.mainClock.autoAdvance = true; ui.waitForIdle()
+        assertTrue("Header jumped to its final height", growingHeaderHeight < ui.onNodeWithTag("main-header").getUnclippedBoundsInRoot().let { it.bottom - it.top })
         assertTrue("Footer height jumped to its final size", growingHeight < ui.onNodeWithTag("footer-surface").getUnclippedBoundsInRoot().let { it.bottom - it.top })
         val settled = headerColor()
         assertNotEquals("Header tint did not animate", earlyTint, laterTint)
