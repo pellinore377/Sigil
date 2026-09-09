@@ -219,6 +219,38 @@ class RevisionsTest {
         assertEquals(header, ui.onNodeWithTag("main-header").fetchSemanticsNode().id)
         ui.onNodeWithTag("main-navigation").assertIsDisplayed()
     }
+    @Test fun conversationMovesContentInsideStationarySurfaces() {
+        val state = mutableStateOf(MessengerState(phase = "connected", chats = listOf(chat)))
+        show { SigilApp(NativeCore::palette, NativeCore::analyze, state.value, { name, _ -> if (name == "close") state.value = state.value.copy(selected = null) }) }
+        val header = ui.onNodeWithTag("main-header").fetchSemanticsNode().id
+        val footer = ui.onNodeWithTag("footer-surface").fetchSemanticsNode().id
+        val footerBottom = ui.onNodeWithTag("footer-surface").getUnclippedBoundsInRoot().bottom
+        fun headerColor(): androidx.compose.ui.graphics.Color {
+            val pixels = ui.onNodeWithTag("main-header").captureToImage().toPixelMap()
+            return pixels[pixels.width / 2, pixels.height - 4]
+        }
+        val background = headerColor()
+        ui.mainClock.autoAdvance = false
+        ui.runOnIdle { state.value = state.value.copy(selected = "peer", messages = listOf(ChatMessage("motion", "sam", "A letter arriving from below", false, "9:33am", "", false, emptyList(), emptyList(), null, true))) }
+        ui.mainClock.advanceTimeBy(64)
+        val first = ui.onNodeWithTag("timeline-body").getUnclippedBoundsInRoot().top
+        assertTrue("Timeline did not enter from below", first.value > 100f)
+        assertEquals(header, ui.onNodeWithTag("main-header").fetchSemanticsNode().id)
+        assertEquals(footer, ui.onNodeWithTag("footer-surface").fetchSemanticsNode().id)
+        assertEquals(footerBottom, ui.onNodeWithTag("footer-surface").getUnclippedBoundsInRoot().bottom)
+        assertEquals("Header color changed before the movement finished", background, headerColor())
+        ui.mainClock.advanceTimeBy(80)
+        assertTrue(ui.onNodeWithTag("timeline-body").getUnclippedBoundsInRoot().top < first)
+        assertEquals(background, headerColor())
+        ui.mainClock.advanceTimeBy(64)
+        assertTrue("Floating button stopped above the gesture area", ui.onNodeWithContentDescription("New conversation").getUnclippedBoundsInRoot().top > footerBottom)
+        ui.mainClock.autoAdvance = true; ui.waitForIdle()
+        ui.onNodeWithText("A letter arriving from below").assertIsDisplayed()
+        ui.onNodeWithContentDescription("Back").performClick()
+        assertEquals(header, ui.onNodeWithTag("main-header").fetchSemanticsNode().id)
+        assertEquals(footer, ui.onNodeWithTag("footer-surface").fetchSemanticsNode().id)
+        ui.onNodeWithTag("main-navigation").assertIsDisplayed()
+    }
     @Test fun devicesHideFingerprintsAndOfferRemovalAndRenaming() {
         val fingerprint = "abcd".repeat(16)
         val state = MessengerState(phase = "connected", devices = listOf(AccountDevice("old-device", false, "Travel phone", false, fingerprint = fingerprint)))

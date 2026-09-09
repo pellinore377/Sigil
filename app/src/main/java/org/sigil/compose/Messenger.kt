@@ -114,6 +114,7 @@ class Messenger(application: Application) : AndroidViewModel(application) {
     private var nextPushStatus = 0L
     private val pendingUiSettings = mutableMapOf<Pair<String?, String>, Any?>()
     private var timelineFilter: Map<String, Any?> = emptyMap()
+    private var pendingOpen: String? = null
     var authorizationUrl by mutableStateOf<String?>(null)
         private set
 
@@ -236,14 +237,19 @@ class Messenger(application: Application) : AndroidViewModel(application) {
                 return
             }
             "dismiss" -> { state = state.copy(issue = null); return }
-            "close" -> { state = state.copy(selected = null, messages = emptyList(), historical = false); anchor = null; pages = 1; return }
+            "close" -> { pendingOpen = null; state = state.copy(selected = null, messages = emptyList(), historical = false); anchor = null; pages = 1; return }
             "open" -> {
                 anchor = (fields["author"] as? String)?.let { author -> (fields["message"] as? String)?.let { author to it } }
                 val target = (fields["thread_author"] as? String)?.let { author -> (fields["thread_message"] as? String)?.let { ThreadTarget(author, it) } }
-                timelineFilter = if (target == null) emptyMap() else mapOf("category" to "Timeline", "thread_author" to target.author, "thread_message" to target.id)
-                state = state.copy(selected = fields["peer"] as String, messages = emptyList(), historical = anchor != null, threadTarget = target); pages = 1
+                timelineFilter = if (target == null) emptyMap() else mapOf("thread_author" to target.author, "thread_message" to target.id)
+                pendingOpen = fields["peer"] as String
+                state = state.copy(historical = anchor != null, threadTarget = target); pages = 1
             }
-            "timeline_filter" -> { if (timelineFilter == fields) return; timelineFilter = fields.toMap(); pages = 1; state = state.copy(messages = emptyList()) }
+            "timeline_filter" -> {
+                val filter = fields.filter { (key, value) -> key != "peer" && value != null && !(key == "category" && value == "Timeline") }
+                if (timelineFilter == filter) return
+                timelineFilter = filter; pages = 1; state = state.copy(messages = emptyList())
+            }
             "latest" -> { anchor = null; state = state.copy(historical = false); pages = 1 }
             "older" -> pages++
             "read" -> if (!foreground) return
@@ -292,7 +298,7 @@ class Messenger(application: Application) : AndroidViewModel(application) {
                     result.optional("authorization_url")?.let { authorizationUrl = it }
                     if (name in listOf("post", "edit")) { post = null; state = state.copy(sent = state.sent + 1, sentText = fields["text"] as? String) }
                 }
-                refresh()
+                refresh(if (name == "open") fields["peer"] as String else null)
                 if (preference != null && pendingUiSettings[preference] == setting?.get("value")) pendingUiSettings.remove(preference)
             }
         }
@@ -403,7 +409,7 @@ class Messenger(application: Application) : AndroidViewModel(application) {
     private fun pendingUi(peer: String?, stored: Map<String, String>) = stored + pendingUiSettings.mapNotNull { (key, value) ->
         if (key.first == peer && value is String) key.second to value else null
     }
-    private suspend fun refresh() {
+    private suspend fun refresh(opening: String? = null) {
         val value = execute("state")
         val phase = value.getString("phase")
         files.enabled = foreground && phase == "connected"
@@ -429,7 +435,8 @@ class Messenger(application: Application) : AndroidViewModel(application) {
                 chat.getJSONArray("devices").objects().map { device -> ChatDevice(device.getString("id"), device.getString("fingerprint"), device.optBoolean("identity_verified"), device.getBoolean("blocked"), device.getBoolean("changed")) }, chat.optString("name"), chat.optInt("unread"), chat.optBoolean("pinned"), chat.optBoolean("snoozed"), chat.optBoolean("hidden"), chat.optString("presence", "inactive"), chat.optJSONArray("collections")?.strings().orEmpty(), chat.optJSONArray("typing")?.strings().orEmpty(), chat.optional("draft").orEmpty(), chat.optBoolean("group"), avatar = chat.optString("avatar"), ui = pendingUi(chat.getString("id"), chat.optJSONObject("ui")?.stringMap().orEmpty()), contactOnly = chat.optBoolean("contact_only"), readReceipts = chat.optBoolean("read_receipts", true), typingIndicators = chat.optBoolean("typing_indicators", true), presenceSharing = chat.optBoolean("presence_sharing"), request = chat.optString("request", "none"), identityReview = chat.optString("identity_review").takeIf { it.isNotEmpty() && it != "null" })
         }
         state = state.copy(profileAvatar = value.optString("profile_avatar"), photoPending = value.optBoolean("photo_pending"), phase = phase, address = value.getString("address"), device = value.getString("device"), fingerprint = value.getString("fingerprint"), chats = chats, collectionsEnabled = value.optBoolean("collections_enabled"), collections = value.optJSONArray("collections")?.objects()?.map { CollectionItem(it.getString("id"), it.getString("name"), it.optString("icon", "folder")) }.orEmpty(), ui = pendingUi(null, value.optJSONObject("ui")?.stringMap().orEmpty()))
-        val peer = state.selected ?: return
+        if (opening != null && pendingOpen != opening) return
+        val peer = opening ?: state.selected ?: return
         if (peer.startsWith("history:") && state.chats.none { it.id == peer }) state = state.copy(chats = state.chats + ChatSummary(peer, "", "", "", false, emptyList(), displayName = "Saved conversation", archived = true))
         if (peer == "self" && state.chats.none { it.id == "self" }) state = state.copy(chats = state.chats + ChatSummary("self", state.address, "", "", true, emptyList(), displayName = "Note to Self"))
         val messages = mutableListOf<ChatMessage>()
@@ -439,8 +446,8 @@ class Messenger(application: Application) : AndroidViewModel(application) {
         var before: Long? = null
         do {
             val timeline = execute("timeline", filter + mapOf("peer" to peer, "before" to before, "author" to if (before == null) initialAnchor?.first else null, "message" to if (before == null) initialAnchor?.second else null))
-            if (state.selected != peer || timelineFilter != filter || anchor != initialAnchor) return
-            if (before == null && state.selected == peer) state = state.copy(typing = timeline.optJSONArray("typing")?.strings().orEmpty())
+            if ((if (opening == null) state.selected != peer else pendingOpen != opening) || timelineFilter != filter || anchor != initialAnchor) return
+            if (before == null) state = state.copy(typing = timeline.optJSONArray("typing")?.strings().orEmpty())
             state = state.copy(people = timeline.getJSONObject("people").stringMap())
             messages += timeline.getJSONArray("messages").objects().map { message ->
                 ChatMessage(message.getString("id"), message.getString("author"), message.getString("text"), message.getBoolean("mine"), clock(message.getLong("timestamp")),
@@ -449,6 +456,11 @@ class Messenger(application: Application) : AndroidViewModel(application) {
                     message.optJSONArray("parts")?.objects()?.map { part -> MessagePart(part.optString("id"), part.getString("kind"), part.getString("text"), part.optJSONArray("items")?.objects()?.map { item -> CardItem(item.getString("id"), item.getString("text"), item.getBoolean("checked"), item.getBoolean("enabled"), if (item.isNull("count")) null else item.getLong("count"), item.richText()) }.orEmpty(), part.optBoolean("multiple"), part.optBoolean("closed"), if (part.isNull("voters")) null else part.getLong("voters"), if (part.has("at")) separator(part.getLong("at")) else "", part.optInt("latitude_e6") / 1_000_000.0, part.optInt("longitude_e6") / 1_000_000.0, part.richText()) }.orEmpty(), message.optional("thread_preview"))
             }
             before = if (timeline.isNull("next")) null else timeline.getLong("next")
+            if (opening != null && (messages.isNotEmpty() || before == null)) {
+                pendingOpen = null
+                state = state.copy(selected = peer, messages = messages.toList(), more = before != null)
+                return
+            }
             if (before == null) {
                 if (state.selected == peer) state = state.copy(messages = messages, more = false)
                 return

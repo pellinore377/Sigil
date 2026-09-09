@@ -83,7 +83,7 @@ internal fun SigilTheme(appearance: Appearance, chat: ChatTheme? = null, dynamic
         bodyLarge = style(18, 26), bodyMedium = style(16, 23), bodySmall = style(14, 20),
         labelLarge = style(16, 22), labelMedium = style(14, 20), labelSmall = style(12, 18),
     )
-    CompositionLocalProvider(LocalCodeFont provides FontFamily(Font(Res.font.google_sans_code)), LocalChatTint provides tint) {
+    CompositionLocalProvider(LocalCodeFont provides FontFamily(Font(Res.font.google_sans_code)), LocalChatTint provides if (chatReady) tint else 0f) {
         MaterialTheme(colorScheme = scheme, typography = typography) {
             CompositionLocalProvider(LocalTextSelectionColors provides TextSelectionColors(scheme.primary, scheme.primary.copy(alpha = .3f)), content = content)
         }
