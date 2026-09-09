@@ -16,6 +16,8 @@ import androidx.compose.ui.draw.*
 import androidx.compose.ui.focus.*
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.*
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.*
@@ -29,19 +31,34 @@ internal fun InboxFab(visible: Boolean, modifier: Modifier, create: () -> Unit) 
 }
 
 @Composable
-internal fun InboxHeader(page: String, query: String, update: (String) -> Unit, selected: Set<String>, state: MessengerState, command: Command,
+internal fun MainHeader(page: String, goingBack: Boolean, query: String, update: (String) -> Unit, selected: Set<String>, state: MessengerState, command: Command,
+    clear: () -> Unit, collections: () -> Unit, search: () -> Unit, notes: () -> Unit, back: () -> Unit) {
+    val height = maxOf(76.dp, with(LocalDensity.current) { MaterialTheme.typography.displaySmall.lineHeight.toDp() } + 24.dp)
+    Box(Modifier.fillMaxWidth().height(height).clipToBounds()) {
+        AnimatedContent(if (page in listOf("calls", "settings")) page else "inbox", transitionSpec = {
+            (slideInHorizontally(tween(160, delayMillis = 80)) { if (goingBack) -it else it } + fadeIn(tween(160, delayMillis = 80))) togetherWith
+                (if (goingBack) slideOutHorizontally(tween(MotionMillis)) { it } + fadeOut(tween(100)) else fadeOut(tween(100)))
+        }, label = "Main header items") { tab ->
+            if (tab == "inbox") InboxHeader(page, height, query, update, selected, state, command, clear, collections, search, notes, back)
+            else Box(Modifier.fillMaxWidth().height(height).padding(horizontal = 20.dp), contentAlignment = Alignment.CenterStart) {
+                Text(if (tab == "calls") "Calls" else "Settings", style = MaterialTheme.typography.displaySmall)
+            }
+        }
+    }
+}
+@Composable
+private fun InboxHeader(page: String, height: Dp, query: String, update: (String) -> Unit, selected: Set<String>, state: MessengerState, command: Command,
     clear: () -> Unit, collections: () -> Unit, search: () -> Unit, notes: () -> Unit, back: () -> Unit) {
     val opened = page in listOf("search", "notes")
     val progress by animateFloatAsState(if (opened) 1f else 0f, tween(MotionMillis), label = "Header transformation")
     val focus = remember { FocusRequester() }
     val keyboard = LocalSoftwareKeyboardController.current
     LaunchedEffect(page) { if (page == "search") { delay(MotionMillis.toLong()); focus.requestFocus(); keyboard?.show() } }
-    Surface(color = MaterialTheme.colorScheme.surface, shadowElevation = 2.dp) {
     AnimatedContent(selected.isNotEmpty(), transitionSpec = {
         (slideInHorizontally(tween(MotionMillis)) { it } + fadeIn()) togetherWith (slideOutHorizontally(tween(MotionMillis)) { -it } + fadeOut())
     }, label = "Selection toolbar") { selecting ->
         if (selecting) {
-            Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+            Row(Modifier.fillMaxWidth().height(height).horizontalScroll(rememberScrollState()).padding(vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
                 Symbol("close", "Cancel selection", clear); Text(selected.size.toString(), Modifier.padding(end = 8.dp))
                 fun change(value: Map<String, Any?>) { selected.forEach { command("organize", mapOf("peer" to it, "value" to value)) }; clear() }
                 Symbol("push_pin", "Pin or unpin conversations") { change(mapOf("ConversationPin" to !state.chats.filter { it.id in selected }.all { it.pinned })) }
@@ -54,7 +71,7 @@ internal fun InboxHeader(page: String, query: String, update: (String) -> Unit, 
                 if (state.chats.any { it.id in selected && !it.group && it.id != "self" }) Symbol("block", "Block selected contacts") { command("block_picker", mapOf("peers" to selected.toList())) }
                 Symbol("delete", "Delete conversations") { command("delete_picker", mapOf("peers" to selected.toList())) }
             }
-        } else BoxWithConstraints(Modifier.fillMaxWidth().height(76.dp).padding(horizontal = 12.dp)) {
+        } else BoxWithConstraints(Modifier.fillMaxWidth().height(height).padding(horizontal = 12.dp)) {
             Text("Sigil", Modifier.align(Alignment.CenterStart).padding(start = 8.dp).alpha(1f - progress), style = MaterialTheme.typography.displaySmall)
             val x = (maxWidth - 96.dp) * (1f - progress)
             Box(Modifier.offset(x = x).align(Alignment.CenterStart)) {
@@ -69,7 +86,6 @@ internal fun InboxHeader(page: String, query: String, update: (String) -> Unit, 
                 decorationBox = { inner -> Box { if (query.isEmpty()) Text(if (page == "notes") "Search notes" else "Search all conversations", color = MaterialTheme.colorScheme.onSurfaceVariant, style = MaterialTheme.typography.titleMedium); inner() } })
             }
         }
-    }
     }
 }
 @Composable

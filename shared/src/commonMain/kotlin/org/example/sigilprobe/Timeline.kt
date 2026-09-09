@@ -41,22 +41,39 @@ internal fun showSeparator(message: ChatMessage, older: ChatMessage?) = older ==
 internal fun swipeAction(mine: Boolean, horizontal: Float) = if ((horizontal > 0) != mine) "reply" else "thread"
 
 @Composable
+internal fun ConversationHeader(chat: ChatSummary, page: String, threaded: Boolean, command: Command, back: () -> Unit, navigate: (String) -> Unit) {
+    var menu by remember(chat.id) { mutableStateOf(false) }
+    Row(Modifier.fillMaxSize().padding(horizontal = 8.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+        Symbol("chevron_left", "Back", back)
+        PresenceAvatar(chat, 42)
+        Column(Modifier.weight(1f).padding(start = 10.dp)) {
+            Text(if (threaded) "Thread" else chat.name, style = MaterialTheme.typography.titleLarge, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            if (page.isNotEmpty()) Text(page, style = MaterialTheme.typography.labelSmall)
+        }
+        Symbol("call", "Start audio call") { command("call_start", mapOf("peer" to chat.id, "video" to false)) }
+        Symbol("videocam", "Start video call") { command("call_start", mapOf("peer" to chat.id, "video" to true)) }
+        Box {
+            Symbol("more_vert", "Conversation menu") { menu = true }
+            DropdownMenu(menu, { menu = false }) {
+                listOf("Search" to "search", "Notes" to "description", "Threads" to "forum", "Pins" to "push_pin", "Chat theme" to "palette", "Settings" to "settings").forEach { (label, icon) ->
+                    DropdownMenuItem({ Text(label) }, { menu = false; navigate(label) }, leadingIcon = { Glyph(icon) })
+                }
+            }
+        }
+    }
+}
+@Composable
 internal fun ConversationPage(chat: ChatSummary, state: MessengerState, draft: TextFieldState, analyze: (String) -> String, command: Command,
-    back: () -> Unit, page: String, navigate: (String) -> Unit, gradient: Boolean) {
+    page: String, gradient: Boolean, thread: ThreadTarget?, setThread: (ThreadTarget?) -> Unit) {
     var reply by remember(chat.id) { mutableStateOf<ChatMessage?>(null) }
-    var thread by remember(chat.id) { mutableStateOf(state.threadTarget) }
     var editing by remember(chat.id) { mutableStateOf<ChatMessage?>(null) }
     var selected by remember(chat.id) { mutableStateOf<Pair<ChatMessage, Rect>?>(null) }
     var returnBounds by remember(chat.id) { mutableStateOf(Rect.Zero) }
     var details by remember(chat.id) { mutableStateOf<Pair<String, String>?>(null) }
     var verify by remember(chat.id) { mutableStateOf(false) }
-    var menu by remember { mutableStateOf(false) }
     var submitted by remember { mutableStateOf<String?>(null) }
     var localQuery by remember(page) { mutableStateOf("") }
     val scheme = MaterialTheme.colorScheme
-    val motion = LocalPageMotion.current
-    val headerMotion = motion?.run { Modifier.animateEnterExit(enter = slideInHorizontally(tween(MotionMillis)) { -it / 4 } + fadeIn(tween(MotionMillis)), exit = slideOutHorizontally(tween(MotionMillis)) { -it / 4 } + fadeOut(tween(120))) } ?: Modifier
-    val composerMotion = motion?.run { Modifier.animateEnterExit(enter = slideInHorizontally(tween(MotionMillis)) { it }, exit = slideOutHorizontally(tween(MotionMillis)) { it }) } ?: Modifier
     val list = rememberLazyListState()
     val clipboard = LocalClipboardManager.current
     val keyboard = LocalSoftwareKeyboardController.current
@@ -71,34 +88,14 @@ internal fun ConversationPage(chat: ChatSummary, state: MessengerState, draft: T
     }
     val threadsOverview = page == "Threads" && thread == null
     val messages = if (threadsOverview) state.messages.filter { it.threadAuthor != null && it.threadMessage != null }.distinctBy { it.threadAuthor to it.threadMessage } else state.messages
-    BackAction(thread != null) { thread = null; if (state.historical) command("latest", emptyMap()) }
+    BackAction(thread != null) { setThread(null); if (state.historical) command("latest", emptyMap()) }
     fun respond(message: ChatMessage, threaded: Boolean) {
-        if (threaded) { thread = ThreadTarget(message.threadAuthor ?: message.author, message.threadMessage ?: message.id); reply = null } else reply = message
+        if (threaded) { setThread(ThreadTarget(message.threadAuthor ?: message.author, message.threadMessage ?: message.id)); reply = null } else reply = message
         selected = null
     }
     Box(Modifier.fillMaxSize()) {
         LocalWallpaper.current(chat.id, Modifier.matchParentSize())
         Column(Modifier.fillMaxSize().then(if (gradient) Modifier.background(Brush.verticalGradient(listOf(scheme.background.copy(alpha = .7f), scheme.primaryContainer.copy(alpha = .7f)))) else Modifier)) {
-            Surface(shape = RoundedCornerShape(bottomStart = 24.dp, bottomEnd = 24.dp), color = scheme.surface, shadowElevation = 2.dp) {
-                Row(Modifier.fillMaxWidth().heightIn(min = 76.dp).then(headerMotion).padding(horizontal = 8.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
-                    Symbol("chevron_left", "Back") { if (thread != null) thread = null else back() }
-                    PresenceAvatar(chat, 42)
-                    Column(Modifier.weight(1f).padding(start = 10.dp)) {
-                        Text(if (thread != null) "Thread" else chat.name, style = MaterialTheme.typography.titleLarge, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                        if (page.isNotEmpty()) Text(page, style = MaterialTheme.typography.labelSmall)
-                    }
-                    Symbol("call", "Start audio call") { command("call_start", mapOf("peer" to chat.id, "video" to false)) }
-                    Symbol("videocam", "Start video call") { command("call_start", mapOf("peer" to chat.id, "video" to true)) }
-                    Box {
-                        Symbol("more_vert", "Conversation menu") { menu = true }
-                        DropdownMenu(menu, { menu = false }) {
-                            listOf("Search" to "search", "Notes" to "description", "Threads" to "forum", "Pins" to "push_pin", "Chat theme" to "palette", "Settings" to "settings").forEach { (label, icon) ->
-                                DropdownMenuItem({ Text(label) }, { menu = false; navigate(label) }, leadingIcon = { Glyph(icon) })
-                            }
-                        }
-                    }
-                }
-            }
             if (page == "Search") OutlinedTextField(localQuery, { localQuery = it }, Modifier.fillMaxWidth().padding(12.dp), placeholder = { Text("Search this conversation") }, singleLine = true)
             if (!chat.group && (!chat.verified || chat.request == "incoming")) ContactRequestPanel(chat, state.busy, command) { verify = true }
 
@@ -107,7 +104,7 @@ internal fun ConversationPage(chat: ChatSummary, state: MessengerState, draft: T
                 item("typing") { AnimatedVisibility(!threadsOverview && state.typing.isNotEmpty(), enter = expandVertically(tween(MotionMillis)) + fadeIn(), exit = shrinkVertically(tween(MotionMillis)) + fadeOut()) { TypingRow(state.typing.map { state.people[it] ?: if (chat.group) "Member" else chat.name }, chat.name, state.typing) } }
                 itemsIndexed(messages, key = { _, it -> it.author + it.id }) { index, message ->
                     if (threadsOverview) {
-                        Surface(Modifier.fillMaxWidth().padding(vertical = 6.dp).clip(RoundedCornerShape(20.dp)).clickable { thread = ThreadTarget(message.threadAuthor!!, message.threadMessage!!) }, shape = RoundedCornerShape(20.dp), color = scheme.surfaceVariant) {
+                        Surface(Modifier.fillMaxWidth().padding(vertical = 6.dp).clip(RoundedCornerShape(20.dp)).clickable { setThread(ThreadTarget(message.threadAuthor!!, message.threadMessage!!)) }, shape = RoundedCornerShape(20.dp), color = scheme.surfaceVariant) {
                             Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
                                 Text(message.threadPreview ?: "Earlier message", maxLines = 3, overflow = TextOverflow.Ellipsis)
                                 Row(verticalAlignment = Alignment.CenterVertically) { Glyph("forum", 18); Spacer(Modifier.width(8.dp)); Text(message.text, Modifier.weight(1f), maxLines = 2, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.bodySmall); Glyph("chevron_right", 20) }
@@ -154,16 +151,16 @@ internal fun ConversationPage(chat: ChatSummary, state: MessengerState, draft: T
                     Symbol("close", "Cancel attachment") { command("file_cancel", mapOf("request" to transfer.request)) }
                 }
             }
-            context?.let { Row(Modifier.fillMaxWidth().padding(start = 20.dp), verticalAlignment = Alignment.CenterVertically) { Text(it, Modifier.weight(1f), maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.bodySmall); Symbol("close", "Cancel reply or edit") { reply = null; editing = null; thread = null } } }
+            context?.let { Row(Modifier.fillMaxWidth().padding(start = 20.dp), verticalAlignment = Alignment.CenterVertically) { Text(it, Modifier.weight(1f), maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.bodySmall); Symbol("close", "Cancel reply or edit") { reply = null; editing = null; setThread(null) } } }
             val inputCommand: Command = { action, fields ->
                 command(action, if (action in listOf("attachment_pick", "record_start")) fields + mapOf("reply_author" to reply?.author, "reply_message" to reply?.id, "thread_author" to thread?.author, "thread_message" to thread?.id) else fields)
             }
-            if (!threadsOverview) Box(composerMotion) { ComposerPanel(draft, analyze, chat.verified && !state.busy, page == "Notes", inputCommand, chat.id, state.voice, state.sent, state.sentText, requestContact = if (!chat.verified && !chat.group && !state.busy && chat.request in listOf("none", "expired") && chat.devices.isEmpty()) ({ command("contact_request", mapOf("peer" to chat.id, "action" to "send")) }) else null) { text, rich ->
+            if (!threadsOverview) ComposerPanel(draft, analyze, chat.verified && !state.busy, page == "Notes", inputCommand, chat.id, state.voice, state.sent, state.sentText, requestContact = if (!chat.verified && !chat.group && !state.busy && chat.request in listOf("none", "expired") && chat.devices.isEmpty()) ({ command("contact_request", mapOf("peer" to chat.id, "action" to "send")) }) else null) { text, rich ->
                 submitted = draft.text.toString()
                 if (editing != null) command("edit", mapOf("peer" to chat.id, "author" to editing!!.author, "message" to editing!!.id, "text" to text))
                 else command("post", mapOf("peer" to chat.id, "text" to text, "rich" to rich,
                     "reply_author" to reply?.author, "reply_message" to reply?.id, "thread_author" to thread?.author, "thread_message" to thread?.id))
-            } }
+            }
         }
         selected?.let { (message, bounds) ->
             val index = messages.indexOfFirst { it.id == message.id && it.author == message.author }
@@ -209,8 +206,8 @@ internal fun MessageBubble(message: ChatMessage, grouped: Boolean, followed: Boo
     }
 }
 @Composable
-private fun MessageDetails(message: ChatMessage, expanded: Boolean, receipt: Boolean, chat: ChatSummary, people: Map<String, String>) {
-    Row(Modifier.padding(top = 4.dp).animateContentSize(tween(MotionMillis)), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(5.dp)) {
+internal fun MessageDetails(message: ChatMessage, expanded: Boolean, receipt: Boolean, chat: ChatSummary, people: Map<String, String>) {
+    Row(Modifier.animateContentSize(tween(MotionMillis)).padding(top = if (expanded || receipt) 4.dp else 0.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(5.dp)) {
         if (receipt) DeliveryReceipt(message, chat, people)
         AnimatedVisibility(expanded, enter = fadeIn(tween(180)) + expandHorizontally(tween(MotionMillis), expandFrom = Alignment.End), exit = fadeOut(tween(100)) + shrinkHorizontally(tween(MotionMillis))) {
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(5.dp)) {

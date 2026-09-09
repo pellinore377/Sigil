@@ -13,7 +13,7 @@ internal fun ContactRequestPanel(chat: ChatSummary, busy: Boolean, command: Comm
         Text(when(chat.request) {
             "incoming" -> "${chat.name} would like to connect. Accept, then compare device fingerprints before messaging."
             "sending" -> "Your request is saved and waiting to reach the server. Your message stays in your drafts."
-            "pending" -> "Request sent. Waiting for ${chat.name} to accept and verify your device."
+            "pending" -> "Request sent. Waiting for ${chat.name} to accept."
             "resolving" -> "Your decision is saved and waiting for the server."
             "blocked" -> "This contact is blocked."
             "declined" -> "This request was declined."

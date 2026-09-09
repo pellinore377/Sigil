@@ -1,5 +1,7 @@
 package org.sigil
 
+import androidx.compose.animation.*
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.*
 import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
@@ -34,7 +36,7 @@ internal fun AccentPicker(value: Int?, update: (Int) -> Unit) {
         }
         FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
             accents.forEach { (name, color) ->
-                Box(Modifier.size(44.dp).semantics { contentDescription = name; selected = value == color; role = Role.RadioButton }.clickable { update(color) }.padding(2.dp)
+                Box(Modifier.size(44.dp).clip(RoundedCornerShape(15.dp)).semantics { contentDescription = name; selected = value == color; role = Role.RadioButton }.clickable { update(color) }.padding(2.dp)
                     .then(if (value == color) Modifier.border(1.dp, MaterialTheme.colorScheme.onSurface, RoundedCornerShape(13.dp)) else Modifier).padding(3.dp).background(Color(0xff000000L or color.toLong()), RoundedCornerShape(10.dp)), contentAlignment = Alignment.Center) {
                     if (value == color) CompositionLocalProvider(LocalContentColor provides if (Color(0xff000000L or color.toLong()).luminance() > .18f) Color.Black else Color.White) { Glyph("check", 20) }
                 }
@@ -55,7 +57,11 @@ private fun CustomColor(initial: Int, close: () -> Unit, apply: (Int) -> Unit) {
     AlertDialog(close, title = { Text("Your accent") }, text = {
         Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
             Row { TextButton({ advanced = false }) { Text("Color") }; TextButton({ advanced = true }) { Text("Advanced") } }
-            if (!advanced) {
+            AnimatedContent(advanced, transitionSpec = {
+                (slideInHorizontally(tween(MotionMillis)) { if (targetState) it else -it } + fadeIn()) togetherWith
+                    (slideOutHorizontally(tween(MotionMillis)) { if (targetState) -it else it } + fadeOut())
+            }, label = "Color controls") { detailed -> Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            if (!detailed) {
                 Canvas(Modifier.fillMaxWidth().height(160.dp).clip(RoundedCornerShape(16.dp))
                     .pointerInput(Unit) { detectTapGestures { point -> saturation = (point.x / size.width).coerceIn(0f, 1f); brightness = (1 - point.y / size.height).coerceIn(0f, 1f) } }
                     .pointerInput(Unit) { detectDragGestures { change, _ -> change.consume(); saturation = (change.position.x / size.width).coerceIn(0f, 1f); brightness = (1 - change.position.y / size.height).coerceIn(0f, 1f) } }) {
@@ -68,7 +74,7 @@ private fun CustomColor(initial: Int, close: () -> Unit, apply: (Int) -> Unit) {
                     Slider(hue, { hue = it }, valueRange = 0f..359.99f, modifier = Modifier.semantics { contentDescription = "Hue" }, colors = SliderDefaults.colors(activeTrackColor = Color.Transparent, inactiveTrackColor = Color.Transparent, thumbColor = color))
                 }
                 Text("Suggested", style = MaterialTheme.typography.labelMedium)
-                Row(horizontalArrangement = Arrangement.SpaceEvenly, modifier = Modifier.fillMaxWidth()) { accents.forEach { (name, value) -> Box(Modifier.size(28.dp).background(Color(0xff000000L or value.toLong()), CircleShape).semantics { contentDescription = name }.clickable { select(value) }) } }
+                Row(horizontalArrangement = Arrangement.SpaceEvenly, modifier = Modifier.fillMaxWidth()) { accents.forEach { (name, value) -> Box(Modifier.size(28.dp).clip(CircleShape).background(Color(0xff000000L or value.toLong()), CircleShape).semantics { contentDescription = name }.clickable { select(value) }) } }
             } else {
                 var text by remember(rgb) { mutableStateOf(accentText(rgb)) }
                 OutlinedTextField(text, { text = it.take(7); parseAccent(it)?.let(::select) }, singleLine = true, label = { Text("Hex") }, prefix = { Text("#") }, isError = parseAccent(text) == null)
@@ -80,6 +86,7 @@ private fun CustomColor(initial: Int, close: () -> Unit, apply: (Int) -> Unit) {
                     }
                 }
             }
+            } }
             Surface(Modifier.fillMaxWidth().height(28.dp), color = color, shape = RoundedCornerShape(8.dp)) {}
         }
     }, confirmButton = { TextButton({ apply(rgb) }) { Text("Apply color") } }, dismissButton = { TextButton(close) { Text("Cancel") } })

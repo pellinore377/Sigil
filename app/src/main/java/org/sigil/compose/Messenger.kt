@@ -97,6 +97,7 @@ class Messenger(application: Application) : AndroidViewModel(application) {
     private var searchCategory = ""
     private var anchor: Pair<String, String>? = null
     private var nextPushStatus = 0L
+    private val pendingUiSettings = mutableMapOf<Pair<String?, String>, Any?>()
     private var timelineFilter: Map<String, Any?> = emptyMap()
     var authorizationUrl by mutableStateOf<String?>(null)
         private set
@@ -231,8 +232,14 @@ class Messenger(application: Application) : AndroidViewModel(application) {
             "older" -> pages++
             "read" -> if (!foreground) return
         }
+        val setting = (fields["value"] as? Map<*, *>)?.get("UiSetting") as? Map<*, *>
+        val preference = if (name == "organize") (setting?.get("key") as? String)?.let { (fields["peer"] as? String) to it } else null
+        if (preference != null) pendingUiSettings[preference] = setting?.get("value")
         scope.launch {
-            serialized(name !in listOf("read", "typing", "draft")) {
+            serialized(preference == null && name !in listOf("read", "typing", "draft")) {
+                if (preference != null) {
+                    if (pendingUiSettings[preference] != setting?.get("value")) return@serialized
+                }
                 if (name == "open" && !(fields["peer"] as String).let { it == "self" || it.startsWith("group:") || it.startsWith("history:") }) execute("organize", mapOf("peer" to fields["peer"], "value" to mapOf("UiSetting" to mapOf("key" to "opened", "value" to "true"))))
                 if (name !in listOf("open", "older", "latest", "timeline_filter")) {
                     val retry = name == "post" && post?.first == fields
@@ -270,6 +277,7 @@ class Messenger(application: Application) : AndroidViewModel(application) {
                     if (name in listOf("post", "edit")) { post = null; state = state.copy(sent = state.sent + 1, sentText = fields["text"] as? String) }
                 }
                 refresh()
+                if (preference != null && pendingUiSettings[preference] == setting?.get("value")) pendingUiSettings.remove(preference)
             }
         }
     }
@@ -375,6 +383,9 @@ class Messenger(application: Application) : AndroidViewModel(application) {
         if (!result.getBoolean("ok")) throw NativeFailure(result.getString("error"))
         result.getJSONObject("value")
     }
+    private fun pendingUi(peer: String?, stored: Map<String, String>) = stored + pendingUiSettings.mapNotNull { (key, value) ->
+        if (key.first == peer && value is String) key.second to value else null
+    }
     private suspend fun refresh() {
         val value = execute("state")
         val phase = value.getString("phase")
@@ -397,9 +408,9 @@ class Messenger(application: Application) : AndroidViewModel(application) {
         state = state.copy(readReceipts = value.getBoolean("read_receipts"), typingIndicators = value.getBoolean("typing_indicators"), presenceSharing = value.getBoolean("presence_sharing"), invitations = value.getJSONArray("invitations").objects().map { GroupInvitation(it.getString("id"), it.getString("peer"), it.getString("group")) })
         val chats = value.getJSONArray("chats").objects().map { chat ->
             ChatSummary(chat.getString("id"), chat.getString("address"), chat.getString("preview"), clock(chat.getLong("timestamp")), chat.getBoolean("verified"),
-                chat.getJSONArray("devices").objects().map { device -> ChatDevice(device.getString("id"), device.getString("fingerprint"), device.getBoolean("verified"), device.getBoolean("blocked"), device.getBoolean("changed")) }, chat.optString("name"), chat.optInt("unread"), chat.optBoolean("pinned"), chat.optBoolean("snoozed"), chat.optBoolean("hidden"), chat.optString("presence", "inactive"), chat.optJSONArray("collections")?.strings().orEmpty(), chat.optJSONArray("typing")?.strings().orEmpty(), chat.optional("draft").orEmpty(), chat.optBoolean("group"), avatar = chat.optString("avatar"), ui = chat.optJSONObject("ui")?.stringMap().orEmpty(), contactOnly = chat.optBoolean("contact_only"), readReceipts = chat.optBoolean("read_receipts", true), typingIndicators = chat.optBoolean("typing_indicators", true), presenceSharing = chat.optBoolean("presence_sharing"), request = chat.optString("request", "none"))
+                chat.getJSONArray("devices").objects().map { device -> ChatDevice(device.getString("id"), device.getString("fingerprint"), device.getBoolean("verified"), device.getBoolean("blocked"), device.getBoolean("changed")) }, chat.optString("name"), chat.optInt("unread"), chat.optBoolean("pinned"), chat.optBoolean("snoozed"), chat.optBoolean("hidden"), chat.optString("presence", "inactive"), chat.optJSONArray("collections")?.strings().orEmpty(), chat.optJSONArray("typing")?.strings().orEmpty(), chat.optional("draft").orEmpty(), chat.optBoolean("group"), avatar = chat.optString("avatar"), ui = pendingUi(chat.getString("id"), chat.optJSONObject("ui")?.stringMap().orEmpty()), contactOnly = chat.optBoolean("contact_only"), readReceipts = chat.optBoolean("read_receipts", true), typingIndicators = chat.optBoolean("typing_indicators", true), presenceSharing = chat.optBoolean("presence_sharing"), request = chat.optString("request", "none"))
         }
-        state = state.copy(profileAvatar = value.optString("profile_avatar"), photoPending = value.optBoolean("photo_pending"), phase = phase, address = value.getString("address"), device = value.getString("device"), fingerprint = value.getString("fingerprint"), chats = chats, collectionsEnabled = value.optBoolean("collections_enabled"), collections = value.optJSONArray("collections")?.objects()?.map { CollectionItem(it.getString("id"), it.getString("name"), it.optString("icon", "folder")) }.orEmpty(), ui = value.optJSONObject("ui")?.stringMap().orEmpty())
+        state = state.copy(profileAvatar = value.optString("profile_avatar"), photoPending = value.optBoolean("photo_pending"), phase = phase, address = value.getString("address"), device = value.getString("device"), fingerprint = value.getString("fingerprint"), chats = chats, collectionsEnabled = value.optBoolean("collections_enabled"), collections = value.optJSONArray("collections")?.objects()?.map { CollectionItem(it.getString("id"), it.getString("name"), it.optString("icon", "folder")) }.orEmpty(), ui = pendingUi(null, value.optJSONObject("ui")?.stringMap().orEmpty()))
         val peer = state.selected ?: return
         if (peer.startsWith("history:") && state.chats.none { it.id == peer }) state = state.copy(chats = state.chats + ChatSummary(peer, "", "", "", false, emptyList(), displayName = "Saved conversation", archived = true))
         if (peer == "self" && state.chats.none { it.id == "self" }) state = state.copy(chats = state.chats + ChatSummary("self", state.address, "", "", true, emptyList(), displayName = "Note to Self"))

@@ -50,6 +50,7 @@ fn unknown_contacts_require_acceptance_and_verification_after_restart() {
     let state = bob.mobile_state().unwrap();
     let source = state["chats"][0]["id"].as_str().unwrap().to_owned();
     assert_eq!(state["chats"][0]["request"], "incoming");
+    assert_eq!(state["chats"][0]["contact_only"], false);
     assert_eq!(state["chats"][0]["verified"], false);
     assert_eq!(count(&server, "allowed_senders"), 0);
     // A failed intent write must have no server side effect.
