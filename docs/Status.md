@@ -1,6 +1,6 @@
 # Current work
 
-Android `0.1.0-alpha.1` is built with release optimization and a dedicated signing key, separate from the development app. Signature, 16 KiB APK alignment, non-debuggable installation and startup checks pass on a physical phone. The launcher uses the dark SVG logo on charcoal. APK, checksum and SVG release assets are ready; GitHub publication awaits renewed CLI authentication. Obtainium setup and update signing are in the README.
+Android `0.1.0-alpha.1` is published as a GitHub prerelease with release optimization and a dedicated signing key, separate from the development app. Signature, 16 KiB APK alignment, non-debuggable installation and startup checks pass on a physical phone. The launcher uses the dark SVG logo on charcoal. APK, checksum and SVG assets are attached to the release. Obtainium setup and update signing are in the README.
 
 The Android pass against the twelve mockups is installed and ready for visual review. Inbox/search/notes, collections, timeline receipts/menus/swipes, account appearance, private chat themes, attachments, interactive cards and native audio/video/screen calls are connected. Signed contact requests preserve drafts until explicit device verification. Profile names/photos use separate account/origin sharing permissions; they are server-visible metadata, not encryption identity. Photo upload/retry/removal, encrypted caching and block/restore revocation are implemented. Android 11 keyboard positioning preserves the header and composer.
 
