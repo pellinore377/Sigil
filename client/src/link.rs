@@ -9,6 +9,7 @@ mod exchange;
 mod journal;
 #[path = "link_offer.rs"]
 mod offer;
+pub(crate) use exchange::discard_unapproved_offer;
 pub use exchange::{emoji_confirmation, offer_qr};
 
 /// Full confirmation digest. The emoji string is supplementary; authentication

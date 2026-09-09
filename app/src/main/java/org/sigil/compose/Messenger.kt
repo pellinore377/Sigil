@@ -40,6 +40,15 @@ class Messenger(application: Application) : AndroidViewModel(application) {
     var recoveryKey by mutableStateOf<String?>(null)
         private set
     fun dismissRecovery() { recoveryKey = null }
+    var deviceLink by mutableStateOf<JSONObject?>(null)
+        private set
+    private fun linkResult(value: JSONObject) { deviceLink = value.takeUnless { it.getString("stage") == "none" } }
+    private fun deviceLink(fields: Map<String, Any?>) {
+        if (fields["action"] == "pause") { deviceLink = null; return }
+        scope.launch { serialized(true) {
+        try { linkResult(execute("device_link", fields)); refresh(); NativeSync.enable(getApplication(), state.phase == "connected") }
+        finally { linkResult(execute("device_link", mapOf("action" to "status"))) }
+    } } }
     fun notificationPermissionResult() { notificationPermission = false; state = state.copy(notifications = NativeNotifications.settings(getApplication())) }
     fun pickerOpened() { picker = null }
     var wallpaperRevision by mutableStateOf(0L)
@@ -71,7 +80,7 @@ class Messenger(application: Application) : AndroidViewModel(application) {
         private set
 
     init {
-        scope.launch { serialized(false) { refresh() } }
+        scope.launch { serialized(false) { refresh(); linkResult(execute("device_link", mapOf("action" to "status"))) } }
         scope.launch {
             while (isActive) {
                 delay(1000)
@@ -114,6 +123,7 @@ class Messenger(application: Application) : AndroidViewModel(application) {
     fun command(name: String, fields: Map<String, Any?>) {
         if (name.startsWith("call_")) { calls.command(name, fields + ("name" to (fields["peer"] as? String)?.let { peer -> state.chats.find { it.id == peer }?.name })); return }
         when (name) {
+            "device_link" -> { deviceLink(fields); return }
             "wallpaper_remove" -> { changeWallpaper(fields["peer"] as String, null); return }
             "notification_settings" -> { notificationPermissionResult(); return }
             "notification_permission" -> { if (android.os.Build.VERSION.SDK_INT >= 33) notificationPermission = true else NativeNotifications.systemSettings(getApplication()); return }

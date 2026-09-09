@@ -78,6 +78,7 @@ class MainActivity : ComponentActivity() {
                 read = { preferences.getString(it, null) }, write = { key, value -> preferences.edit().putString(key, value).apply() },
                 dynamicAccent = dynamicAccent, onBackAvailable = { available, action -> backAvailable = available; goBack = action },
                 overlay = {
+                    messenger.deviceLink?.let { flow -> DeviceLinkDialog(flow, messenger.state.busy, messenger.state.issue) { action, qr -> messenger.command("device_link", mapOf("action" to action, "qr" to qr)) } }
                     messenger.recoveryKey?.let { secret -> RecoveryDialog(secret, messenger.state.busy, messenger::dismissRecovery) { messenger.command("recovery_enable", mapOf("secret" to secret)) } }
                     cameraPeer?.let { peer -> CameraSheet({ cameraPeer = null }) { bytes -> messenger.importPhoto(peer, bytes); cameraPeer = null } }
                     placePeer?.let { peer -> PlaceSheet({ placePeer = null }) { fields -> messenger.command("place", fields + peer); placePeer = null } }

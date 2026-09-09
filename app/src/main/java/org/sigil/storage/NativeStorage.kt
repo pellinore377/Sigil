@@ -1,6 +1,7 @@
 package org.sigil.storage
 
 object NativeStorage {
+    external fun scanLinkQr(width: Int, height: Int, bytes: ByteArray): String?
     // Positive handle, negative retry delay in seconds, or zero on failure.
     external fun openCall(directory: String, key: ByteArray, call: ByteArray, tracks: Int): Long
     external fun closeCall(token: Long)
