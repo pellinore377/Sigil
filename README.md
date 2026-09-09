@@ -71,7 +71,7 @@ Dependency advisories and mitigations are documented in [Security.md](docs/Secur
 
 Physical Android call acceptance: set `ANDROID_HOME`, `ANDROID_NDK_HOME`, `JAVA_HOME` (JDK 21), and optionally `GRADLE`; run `bash app/tests/calls.sh` with an unlocked device, Docker, OpenSSL and jq. It installs/clears only `org.sigil.compose.acceptance`, uses synthetic accounts and loopback TURN/TLS through ADB, and leaves the regular app's data untouched. The test-only resolver is confined to the acceptance native library.
 
-With the same Android environment, `bash app/tests/content.sh` checks authenticated map rendering and encrypted attachment delivery/playback against a second Rust client. It also uses only the isolated acceptance app and synthetic content.
+With the same Android environment, `bash app/tests/content.sh` checks authenticated maps, encrypted attachments, history backup/recovery and UnifiedPush proof delivery through a synthetic Android distributor. It uses only the isolated acceptance app and synthetic content. Live push requires an installed UnifiedPush distributor and server push configuration; select it under Notifications.
 
 ## Maintenance
 

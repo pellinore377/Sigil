@@ -59,7 +59,7 @@ fn background_delivery_retries_after_restart_and_wakes_authenticated_decryption(
             }
         }),
     ));
-    let (dir, fixture, mut alice, mut bob, now) = pair();
+    let (dir, fixture, mut alice, mut bob, _) = pair();
     let (_, peer) = trust(&mut alice, &mut bob);
     let port = fixture.port();
     let mut server = Store::open(&dir.path().join("server.db")).unwrap();
@@ -83,15 +83,24 @@ fn background_delivery_retries_after_restart_and_wakes_authenticated_decryption(
     drop(server);
     drop(fixture);
     let fixture = maintained(dir.path(), port);
-    let connector = bob
-        .prepare_unified_push(&configured.vapid_public_key.unwrap(), false, now)
-        .unwrap();
-    bob.set_unified_push_endpoint(
-        &connector.connection,
-        &format!("https://127.0.0.1:{}/push", provider.port()),
-        now,
-    )
-    .unwrap();
+    fn mobile(client: &mut ClientStore, value: serde_json::Value) -> serde_json::Value {
+        let result: serde_json::Value =
+            serde_json::from_str(&client.mobile_command(&value.to_string())).unwrap();
+        assert_eq!(result["ok"], true, "{result}");
+        result["value"].clone()
+    }
+    let registration = mobile(
+        &mut bob,
+        serde_json::json!({"command":"push","action":"prepare"}),
+    );
+    assert_eq!(registration["vapid"], configured.vapid_public_key.unwrap());
+    assert_eq!(registration["pending"], true);
+    let connector = bob.unified_push_registration().unwrap().unwrap();
+    mobile(
+        &mut bob,
+        serde_json::json!({"command":"push","action":"endpoint","connection":connector.connection,"endpoint":format!("https://127.0.0.1:{}/push", provider.port())}),
+    );
+    let now = crate::schedule::clock().unwrap();
     assert!(matches!(bob.push_step(now).unwrap(), Progress::Reconciled));
     assert!(
         matches!(bob.push_step(now).unwrap(), Progress::Updated(s) if s.state == RemoteState::Pending)
@@ -122,17 +131,26 @@ fn background_delivery_retries_after_restart_and_wakes_authenticated_decryption(
     assert!(!headers.contains_key("topic"));
     let now = crate::schedule::clock().unwrap();
     assert_eq!(
-        bob.receive_unified_push(&connector.connection, &challenge, now)
-            .unwrap(),
-        ReceivedHint::ConfirmationQueued
+        mobile(
+            &mut bob,
+            serde_json::json!({"command":"push","action":"receive","connection":connector.connection,"payload":B64::encode_string(&challenge)})
+        )["accepted"],
+        true
+    );
+    let files = mobile(&mut bob, serde_json::json!({"command":"file_work"}));
+    assert!(files["issue"].is_null(), "{files}");
+    assert_eq!(
+        mobile(
+            &mut bob,
+            serde_json::json!({"command":"push","action":"status"})
+        )["remote"],
+        "active"
     );
     let mut cache = bob
         .open_attachment_cache(&dir.path().join("cache"), 8 * 1024 * 1024)
         .unwrap();
     let work = bob.sync_backend_due_online(&mut cache);
-    assert!(
-        matches!(work.push.unwrap().progress.unwrap().unwrap(), Progress::Updated(s) if s.state == RemoteState::Active)
-    );
+    assert!(work.push.unwrap().scheduling_error.is_none());
     let messaging = work.messaging.unwrap();
     assert!(messaging.scheduling_error.is_none());
     assert!(messaging.step.unwrap().failure.is_none());
@@ -140,13 +158,11 @@ fn background_delivery_retries_after_restart_and_wakes_authenticated_decryption(
     let (headers, wake) = received.recv_timeout(Duration::from_secs(15)).unwrap();
     assert_eq!(headers["topic"], "sigil-wake-v0");
     assert_eq!(
-        bob.receive_unified_push(
-            &connector.connection,
-            &wake,
-            crate::schedule::clock().unwrap()
-        )
-        .unwrap(),
-        ReceivedHint::Wake
+        mobile(
+            &mut bob,
+            serde_json::json!({"command":"push","action":"receive","connection":connector.connection,"payload":B64::encode_string(&wake)})
+        )["accepted"],
+        true
     );
     // Receipt of a hint neither imports plaintext nor acknowledges the mailbox.
     assert_eq!(bob.connected_client().unwrap().mailbox().unwrap().len(), 1);
@@ -185,7 +201,10 @@ fn background_delivery_retries_after_restart_and_wakes_authenticated_decryption(
         .mailbox()
         .unwrap()
         .is_empty());
-    bob.disable_push(crate::schedule::clock().unwrap()).unwrap();
+    mobile(
+        &mut bob,
+        serde_json::json!({"command":"push","action":"disable"}),
+    );
     assert!(
         matches!(bob.sync_backend_due_online(&mut cache).push.unwrap().progress.unwrap().unwrap(), Progress::Updated(s) if s.state == RemoteState::Disabled)
     );

@@ -134,6 +134,18 @@ internal fun PersonalPage(page: String, state: MessengerState, command: Command,
                         Toggle("Incoming call notifications", settings.calls) { command("notification_change", mapOf("key" to "incoming", "enabled" to it)) }
                     }
                     TextButton({ command("notification_system_settings", emptyMap()) }) { Text("Sounds and Android notification settings") }
+                    HorizontalDivider()
+                    Text("Background delivery", style = MaterialTheme.typography.titleLarge)
+                    state.push?.let { push ->
+                        Text(push.status)
+                        Text("Push wakes Sigil to check for messages. It does not contain your messages or contact names. Without push, Android checks periodically and incoming calls can be delayed.", style = MaterialTheme.typography.bodySmall)
+                        if (push.distributors.isEmpty()) Text("For instant delivery, install a UnifiedPush service and enable UnifiedPush on your server.", style = MaterialTheme.typography.bodySmall)
+                        push.distributors.forEach { service ->
+                            TextButton({ command("push_select", mapOf("distributor" to service.id)) }, enabled = !state.busy) { Text(if (push.enabled && push.distributor == service.id) "Reconnect ${service.name}" else "Use ${service.name}") }
+                        }
+                        if (push.enabled) TextButton({ command("push_disable", emptyMap()) }, enabled = !state.busy) { Text("Use periodic sync instead") }
+                    }
+                    TextButton({ command("notification_settings", emptyMap()) }, enabled = !state.busy) { Text("Refresh delivery status") }
                 }
                 "storage" -> {
                     Text("This device", style = MaterialTheme.typography.titleLarge)

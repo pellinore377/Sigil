@@ -96,6 +96,7 @@ class Messenger(application: Application) : AndroidViewModel(application) {
     private var searchAfter: Long? = null
     private var searchCategory = ""
     private var anchor: Pair<String, String>? = null
+    private var nextPushStatus = 0L
     private var timelineFilter: Map<String, Any?> = emptyMap()
     var authorizationUrl by mutableStateOf<String?>(null)
         private set
@@ -159,7 +160,27 @@ class Messenger(application: Application) : AndroidViewModel(application) {
             "photo_remove" -> { changeProfilePhoto(null); return }
             "device_link" -> { deviceLink(fields); return }
             "wallpaper_remove" -> { changeWallpaper(fields["peer"] as String, null); return }
-            "notification_settings" -> { notificationPermissionResult(); return }
+            "notification_settings" -> { notificationPermissionResult(); scope.launch { serialized(true) { state = state.copy(push = withContext(Dispatchers.IO) { NativePush.settings(getApplication()) }) } }; return }
+            "push_select", "push_disable" -> {
+                scope.launch { serialized(true) {
+                    val old = execute("push", mapOf("action" to "status")).optional("connection")
+                    if (name == "push_disable") {
+                        execute("push", mapOf("action" to "disable"))
+                        withContext(Dispatchers.IO) { NativePush.unregister(getApplication(), old) }
+                    } else {
+                        val distributor = fields["distributor"] as String
+                        val registration = execute("push", mapOf("action" to "prepare", "replace" to (distributor != NativePush.selected(getApplication()))))
+                        if (registration.optBoolean("unavailable")) { state = state.copy(issue = "Your server has not enabled UnifiedPush. Ask its administrator to enable push delivery."); return@serialized }
+                        if (registration.optString("remote") == "invalid" && !registration.getBoolean("awaiting_endpoint")) execute("push", mapOf("action" to "retry"))
+                        withContext(Dispatchers.IO) {
+                            NativePush.register(getApplication(), distributor, registration)
+                            if (old != registration.getString("connection")) NativePush.unregister(getApplication(), old)
+                        }
+                    }
+                    state = state.copy(push = withContext(Dispatchers.IO) { NativePush.settings(getApplication()) })
+                } }
+                return
+            }
             "notification_permission" -> { if (android.os.Build.VERSION.SDK_INT >= 33) notificationPermission = true else NativeNotifications.systemSettings(getApplication()); return }
             "notification_system_settings" -> { NativeNotifications.systemSettings(getApplication()); return }
             "notification_change" -> { NativeNotifications.change(getApplication(), fields["key"] as String, fields["enabled"] as Boolean); notificationPermissionResult(); return }
@@ -357,6 +378,11 @@ class Messenger(application: Application) : AndroidViewModel(application) {
         val phase = value.getString("phase")
         files.enabled = foreground && phase == "connected"
         if (phase != "connected") { state = state.copy(phase = phase, loginAddress = if (phase == "new") state.loginAddress else value.optional("server") ?: state.loginAddress); return }
+        NativePush.resume(getApplication())
+        if (state.push != null && android.os.SystemClock.elapsedRealtime() >= nextPushStatus) {
+            state = state.copy(push = withContext(Dispatchers.IO) { NativePush.settings(getApplication()) })
+            nextPushStatus = android.os.SystemClock.elapsedRealtime() + 10_000
+        }
         if (value.optBoolean("recover_history") && getApplication<Application>().getSharedPreferences("recovery", 0).getBoolean("requested", false)) restoringRecovery = true
         if (state.storage != null) storage(execute("storage"))
         if (android.os.SystemClock.elapsedRealtime() >= nextAccess) {

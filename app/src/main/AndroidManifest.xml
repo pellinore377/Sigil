@@ -17,6 +17,15 @@
     <application android:label="@string/app_name" android:allowBackup="false" android:theme="@android:style/Theme.Material.Light.NoActionBar">
         <service android:name=".SyncService" android:permission="android.permission.BIND_JOB_SERVICE" android:exported="true" />
         <receiver android:name=".CallNotificationReceiver" android:exported="false" />
+        <receiver android:name=".SigilPushReceiver" android:exported="true">
+            <intent-filter>
+                <action android:name="org.unifiedpush.android.connector.MESSAGE" />
+                <action android:name="org.unifiedpush.android.connector.NEW_ENDPOINT" />
+                <action android:name="org.unifiedpush.android.connector.UNREGISTERED" />
+                <action android:name="org.unifiedpush.android.connector.REGISTRATION_FAILED" />
+                <action android:name="org.unifiedpush.android.connector.TEMP_UNAVAILABLE" />
+            </intent-filter>
+        </receiver>
         <service android:name=".CallService" android:exported="false" android:foregroundServiceType="microphone|camera|mediaProjection" />
         <provider android:name=".NativeFileProvider" android:authorities="${applicationId}.files" android:exported="false" android:grantUriPermissions="true" />
         <activity android:name=".MainActivity" android:exported="true" android:launchMode="singleTask" android:windowSoftInputMode="adjustResize">

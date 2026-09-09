@@ -269,6 +269,7 @@ pub struct PushState {
     pub awaiting_endpoint: bool,
     pub remote: Option<RemoteStatus>,
     pub pending: bool,
+    pub updating: bool,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ReceivedHint {
@@ -313,6 +314,7 @@ impl ClientStore {
             ),
             remote: state.status.clone(),
             pending: state.pending.is_some(),
+            updating: state.reconcile || state.applied != state.generation,
         })
     }
     pub fn set_fcm_push_token(&mut self, token: &str, now: u64) -> Result<(), Error> {
@@ -389,6 +391,19 @@ impl ClientStore {
         Ok(UnifiedRegistration {
             connection: crate::transport::hex(&connector),
             vapid_key: vapid_key.into(),
+        })
+    }
+    pub fn unified_push_registration(&self) -> Result<Option<UnifiedRegistration>, Error> {
+        let scope = scope(&self.db, &self.key)?;
+        let (state, _) = read(&self.db, &self.key, &scope)?;
+        Ok(match &state.preference {
+            Preference::Unified {
+                connector, vapid, ..
+            } => Some(UnifiedRegistration {
+                connection: crate::transport::hex(connector),
+                vapid_key: vapid.clone(),
+            }),
+            _ => None,
         })
     }
     pub fn set_unified_push_endpoint(
