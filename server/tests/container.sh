@@ -125,6 +125,16 @@ docker kill "$container" >/dev/null
 docker rm "$container" >/dev/null
 container=
 start "$original"
+request 200 - GET /client/v0/login
+jq -e '.server_name=="chat.example" and .password==false and .sso==false' "$scratch/response.json" >/dev/null
+printf '%s' '{"revision":0,"enabled":true}' > "$scratch/password-policy.json"
+request 200 admin PUT /admin/v0/password-login password-policy.json
+request 200 - GET /client/v0/login
+jq -e '.password==true' "$scratch/response.json" >/dev/null
+printf '%s' '{"password":"a synthetic long container password"}' > "$scratch/password.json"
+request 200 admin PUT "/admin/v0/accounts/$(jq -r .account_id "$scratch/session.json")/password" password.json
+jq -n '{username:"synthetic",password:"a synthetic long container password",device_credential:("ac"*32),device_label:"Synthetic phone"}' > "$scratch/password-login.json"
+request 428 - POST /client/v0/login/password password-login.json
 request 200 device GET /client/v0/push
 cmp "$scratch/response.json" "$scratch/push-pending.json"
 request 200 device GET /client/v0/session
@@ -150,6 +160,8 @@ fi
 docker run --rm "${runtime[@]}" --mount "source=$original,target=/var/lib/sigil" "$image" backup /var/lib/sigil/backup.db > "$scratch/backup.log"
 docker run --rm "${runtime[@]}" --mount "source=$original,target=/backup,readonly" --mount "source=$restored,target=/var/lib/sigil" "$image" restore /backup/backup.db > "$scratch/restore.log"
 start "$restored"
+request 200 - GET /client/v0/login
+jq -e '.password==false' "$scratch/response.json" >/dev/null
 request 200 - GET /readyz
 request 401 admin GET /admin/v0/configuration
 request 401 device GET /client/v0/session

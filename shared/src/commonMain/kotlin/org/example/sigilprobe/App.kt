@@ -161,7 +161,7 @@ private fun SignIn(state: MessengerState, command: (String, Map<String, Any?>) -
     val passwordForm = method == "password" || state.phase == "password"
     val ready = !state.busy && username.isNotBlank() && password.isNotEmpty()
     val submitPassword = { if (ready) command("password", mapOf("server" to (methods?.server ?: state.loginAddress), "username" to username.trim(), "password" to password)) }
-    Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal = 32.dp, vertical = 48.dp),
+    Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(start = 32.dp, end = 32.dp, top = 48.dp, bottom = 144.dp),
         horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(24.dp, Alignment.CenterVertically)) {
         Icon(painterResource(Res.drawable.sigil_mark), null, Modifier.height(100.dp).width(60.dp), tint = MaterialTheme.colorScheme.onBackground)
         Text("Sigil", style = MaterialTheme.typography.displayLarge)
