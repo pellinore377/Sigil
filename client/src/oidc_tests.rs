@@ -16,6 +16,12 @@ fn parameter<'a>(text: &'a str, key: &str) -> &'a str {
         .unwrap()
         .1
 }
+fn mobile(client: &mut ClientStore, request: serde_json::Value) -> serde_json::Value {
+    let result: serde_json::Value =
+        serde_json::from_str(&client.mobile_command(&request.to_string())).unwrap();
+    assert_eq!(result["ok"], true, "{result}");
+    result["value"].clone()
+}
 #[test]
 fn native_oidc_https_enrollment_survives_restarts_and_local_commit_failure() {
     let claims = Arc::new(Mutex::new(json!({})));
@@ -148,9 +154,27 @@ fn native_oidc_https_enrollment_survives_restarts_and_local_commit_failure() {
         .oidc_bindings()
         .unwrap()
         .is_empty());
-    client.prepare_oidc_link().unwrap();
-    let started = client.start_oidc_online().unwrap();
-    let query = started.authorization_url.split_once('?').unwrap().1;
+    client.publish_device_binding_online().unwrap();
+    let identity = client.own_device_binding().unwrap();
+    let session = client.connection_session().unwrap();
+    assert_eq!(
+        mobile(&mut client, json!({"command":"account_access"}))["access"]["linked"],
+        false
+    );
+    let started = mobile(
+        &mut client,
+        json!({"command":"oidc_account","action":"start"}),
+    );
+    assert_eq!(
+        mobile(&mut client, json!({"command":"account_access"}))["link_pending"],
+        true
+    );
+    let query = started["authorization_url"]
+        .as_str()
+        .unwrap()
+        .split_once('?')
+        .unwrap()
+        .1;
     *claims.lock().unwrap() = json!({"iss":provider_origin,"sub":"synthetic-subject","aud":"synthetic","iat":now,"exp":now+600,"nonce":parameter(query,"nonce"),"challenge":parameter(query,"code_challenge")});
     let response = agent
         .get(format!(
@@ -170,8 +194,14 @@ fn native_oidc_https_enrollment_survives_restarts_and_local_commit_failure() {
     assert!(!client.finish_oidc_link_online().unwrap());
     drop(client);
     let mut client = open();
-    client.accept_oidc_callback(request_id, completion).unwrap();
-    assert!(client.finish_oidc_link_online().unwrap());
+    let linked = mobile(
+        &mut client,
+        json!({"command":"callback","request_id":request_id,"completion":completion}),
+    );
+    assert_eq!(linked["access"]["linked"], true);
+    assert_eq!(linked["link_pending"], false);
+    assert_eq!(client.connection_session().unwrap(), session);
+    assert_eq!(client.own_device_binding().unwrap(), identity);
     assert!(client
         .connected_client()
         .unwrap()
@@ -196,4 +226,39 @@ fn native_oidc_https_enrollment_survives_restarts_and_local_commit_failure() {
     assert!(network.discover_account("carol").is_err());
     assert!(network.discover_account("car").is_err());
     assert!(client.restart_oidc_enrollment(None).is_err());
+    let access = mobile(&mut client, json!({"command":"account_access"}))["access"].clone();
+    let mut revision = access["transition_revision"].as_u64().unwrap();
+    let mut first = None;
+    for retiring in [true, false, true] {
+        let body = json!({"configuration_revision":access["configuration_revision"],"revision":revision,"retiring":retiring,"confirm":true});
+        let response = agent
+            .put(format!("{server_origin}/admin/v0/oidc/transition"))
+            .header("authorization", format!("Bearer {}", admin.trim()))
+            .header("content-type", "application/json")
+            .send(serde_json::to_vec(&body).unwrap())
+            .unwrap();
+        assert_eq!(response.status(), 200);
+        let current = mobile(&mut client, json!({"command":"account_access"}))["access"].clone();
+        revision = current["transition_revision"].as_u64().unwrap();
+        assert_eq!(current["retiring"], retiring);
+        assert_eq!(current["invitation_fallback_acknowledged"], false);
+        if retiring {
+            if let Some(prior) = first.as_ref() {
+                let denied: serde_json::Value = serde_json::from_str(
+                    &client.mobile_command(&serde_json::to_string(prior).unwrap()),
+                )
+                .unwrap();
+                assert_eq!(denied["ok"], false);
+            }
+            let ack = json!({"command":"acknowledge_access","configuration_revision":current["configuration_revision"],"transition_revision":revision});
+            let acknowledged = mobile(&mut client, ack.clone());
+            assert_eq!(
+                acknowledged["access"]["invitation_fallback_acknowledged"],
+                true
+            );
+            first = Some(ack);
+        }
+    }
+    assert_eq!(client.connection_session().unwrap(), session);
+    assert_eq!(client.own_device_binding().unwrap(), identity);
 }

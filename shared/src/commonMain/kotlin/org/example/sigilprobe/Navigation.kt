@@ -105,6 +105,7 @@ fun SigilApp(palette: (Int, Boolean) -> String, analyze: (String) -> String, sta
                     state.phase == "unavailable" -> Box(Modifier.fillMaxSize().padding(32.dp), contentAlignment = Alignment.Center) { Text("Connected messaging is currently available in the Android development build.") }
                     state.phase != "connected" -> Box(Modifier.imePadding()) { SignIn(state, command) }
                     else -> {
+                        if (state.accountAccess?.let { it.linked && it.retiring && !it.acknowledged } == true && page != "profile" && state.call == null) TextButton({ command("close", emptyMap()); conversationPage = ""; navigate("profile") }, Modifier.fillMaxWidth()) { Text("Your server’s sign-in is changing · Review") }
                         val destination = when { state.call != null && !callMinimized -> "call"; chat != null -> when (conversationPage) { "Chat theme" -> "theme"; "Settings" -> "chat-settings"; else -> "conversation" }; page in listOf("inbox", "search", "notes") -> "home"; else -> page }
                         if (state.call != null && callMinimized) TextButton({ callMinimized = false }, Modifier.fillMaxWidth()) { Glyph("call", 18); Spacer(Modifier.width(8.dp)); Text("Return to call") }
                         AnimatedContent(destination, Modifier.weight(1f), transitionSpec = {

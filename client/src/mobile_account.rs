@@ -1,6 +1,39 @@
 use super::*;
 
 impl ClientStore {
+    pub(super) fn mobile_account_access(&self) -> Result<Value, Error> {
+        Ok(
+            json!({"access": self.connected_client()?.oidc_access()?, "link_pending": self.oidc_link_pending()?}),
+        )
+    }
+    pub(super) fn mobile_oidc_account(&mut self, action: &str) -> Result<Value, Error> {
+        self.connected_client()?;
+        match action {
+            "start" => {
+                let access = self.connected_client()?.oidc_access()?;
+                if access.linked || access.retiring || access.issuer.is_none() {
+                    return Err(Error::Conflict);
+                }
+                if !self.oidc_link_pending()? {
+                    self.prepare_oidc_link()?;
+                }
+                Ok(serde_json::to_value(self.start_oidc_online()?)
+                    .map_err(|_| Error::InvalidStore)?)
+            }
+            "resume" => {
+                if self.finish_oidc_link_online()? {
+                    return self.mobile_account_access();
+                }
+                Ok(serde_json::to_value(self.start_oidc_online()?)
+                    .map_err(|_| Error::InvalidStore)?)
+            }
+            "cancel" => {
+                self.cancel_oidc_link()?;
+                self.mobile_account_access()
+            }
+            _ => Err(Error::InvalidEvent),
+        }
+    }
     pub(super) fn mobile_recovery_generate(&self) -> Result<Value, Error> {
         self.connected_client()?;
         match self.recovery_status() {

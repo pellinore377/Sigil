@@ -114,6 +114,8 @@ internal fun PersonalPage(page: String, state: MessengerState, command: Command,
                     Text(state.address)
                     Button({ command("set_profile", mapOf("revision" to state.profileRevision, "name" to name.trim())) }, enabled = !state.busy && state.profileRevision != null) { Text("Save name") }
                     HorizontalDivider()
+                    AccountAccessSection(state.accountAccess, state.busy, command)
+                    HorizontalDivider()
                     TextButton({ command("sign_out", emptyMap()) }, enabled = !state.busy) { Text("Sign out of this device") }
                 }
                 "privacy" -> {

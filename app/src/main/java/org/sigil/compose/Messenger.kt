@@ -78,6 +78,7 @@ class Messenger(application: Application) : AndroidViewModel(application) {
     } }
     private var foreground = false
     private var nextSync = 0L
+    private var nextAccess = 0L
     private var published = false
     private var syncIssue: String? = null
     private var pages = 1
@@ -209,6 +210,8 @@ class Messenger(application: Application) : AndroidViewModel(application) {
                     }
                     val alreadyQueued = retry && execute("post_status", mapOf("peer" to fields["peer"], "request" to JSONObject(raw).getString("request"))).getBoolean("queued")
                     val result = if (alreadyQueued) JSONObject() else native(raw)
+                    accountAccess(result)
+                    if (name == "oidc_account") nextAccess = 0
                     result.optional("open")?.let { state = state.copy(selected = it); groupCreate = null; pages = 1 }
                     if (name in listOf("profile", "set_profile")) state = state.copy(profileName = result.getString("display_name"), profileRevision = result.getLong("revision"))
                     if (name in listOf("photo_publish", "photo_retry", "photo_cancel")) photoRevision++
@@ -344,6 +347,12 @@ class Messenger(application: Application) : AndroidViewModel(application) {
         val phase = value.getString("phase")
         files.enabled = foreground && phase == "connected"
         if (phase != "connected") { state = state.copy(phase = phase, loginAddress = if (phase == "new") state.loginAddress else value.optional("server") ?: state.loginAddress); return }
+        if (android.os.SystemClock.elapsedRealtime() >= nextAccess) {
+            nextAccess = android.os.SystemClock.elapsedRealtime() + 300_000
+            try { accountAccess(execute("account_access")) }
+            catch (cancelled: CancellationException) { throw cancelled }
+            catch (_: Exception) { }
+        }
         calls.refresh(execute("calls"))
         state = state.copy(readReceipts = value.getBoolean("read_receipts"), typingIndicators = value.getBoolean("typing_indicators"), presenceSharing = value.getBoolean("presence_sharing"), invitations = value.getJSONArray("invitations").objects().map { GroupInvitation(it.getString("id"), it.getString("peer"), it.getString("group")) })
         val chats = value.getJSONArray("chats").objects().map { chat ->
@@ -378,6 +387,9 @@ class Messenger(application: Application) : AndroidViewModel(application) {
             yield()
         } while (messages.size < wanted)
         if (state.selected == peer) state = state.copy(messages = messages, more = true)
+    }
+    private fun accountAccess(result: JSONObject) {
+        result.optJSONObject("access")?.let { access -> state = state.copy(accountAccess = AccountAccess(access.getLong("configuration_revision"), access.getLong("transition_revision"), access.optional("issuer"), access.getBoolean("linked"), access.getBoolean("retiring"), access.getBoolean("invitation_fallback_acknowledged"), result.getBoolean("link_pending"))) }
     }
     override fun onCleared() { calls.close(); voice.close(); scope.cancel() }
     private class NativeFailure(message: String) : Exception(message)

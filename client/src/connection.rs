@@ -412,6 +412,10 @@ impl ClientStore {
         });
         save(&self.db, &self.key, &profile, Some(&expected))
     }
+    pub(crate) fn oidc_link_pending(&self) -> Result<bool, Error> {
+        let (profile, _) = load(&self.db, &self.key)?;
+        Ok(profile.oidc.is_some_and(|flow| flow.link_secret.is_some()))
+    }
     pub fn cancel_oidc_link(&mut self) -> Result<(), Error> {
         let (mut profile, expected) = load(&self.db, &self.key)?;
         if profile

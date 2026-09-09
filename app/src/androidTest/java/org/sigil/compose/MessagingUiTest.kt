@@ -105,6 +105,28 @@ class MessagingUiTest {
         ui.onNodeWithText("Remove local data").performClick()
         ui.runOnIdle { assertEquals("erase", commands.last()) }
     }
+    @Test fun signInChangesRequireReviewOfTheCurrentConfiguration() {
+        val access = AccountAccess(3, 8, "https://identity.example", true, true, false, false)
+        val state = mutableStateOf(MessengerState(phase = "connected", address = "@sam:example.com", profileName = "Sam", profileRevision = 0, accountAccess = access))
+        val commands = mutableListOf<Pair<String, Map<String, Any?>>>()
+        show { SigilApp(NativeCore::palette, NativeCore::analyze, state.value, { name, fields -> commands += name to fields }) }
+        ui.onNodeWithText("Your server’s sign-in is changing · Review").performClick()
+        ui.onNodeWithText("Acknowledge sign-in change").performScrollTo().assertIsNotEnabled()
+        ui.onNode(isToggleable()).performScrollTo().performClick()
+        ui.runOnIdle { state.value = state.value.copy(accountAccess = access.copy(transition = 9)) }
+        ui.onNodeWithText("Acknowledge sign-in change").performScrollTo().assertIsNotEnabled()
+        ui.onNode(isToggleable()).performScrollTo().performClick()
+        ui.onNodeWithText("Acknowledge sign-in change").performScrollTo().performClick()
+        ui.runOnIdle {
+            assertEquals(listOf("acknowledge_access" to mapOf("configuration_revision" to 3L, "transition_revision" to 9L)), commands.filter { it.first == "acknowledge_access" })
+            state.value = state.value.copy(accountAccess = access.copy(linked = false, retiring = false))
+        }
+        ui.onNodeWithText("Link SSO account").performScrollTo().performClick()
+        ui.runOnIdle {
+            assertTrue(commands.any { it.first == "oidc_account" && it.second["action"] == "start" })
+            assertFalse(commands.any { it.first == "oidc" || it.first == "enroll" })
+        }
+    }
     @Test fun switchingComposerPanelsKeepsTheComposerSteady() {
         show { SigilApp(NativeCore::palette, NativeCore::analyze, MessengerState(phase = "connected", chats = listOf(chat), selected = "peer", messages = listOf(message("out", true))), { _, _ -> }) }
         val initial = ui.onNodeWithTag("composer").fetchSemanticsNode().boundsInRoot.top
