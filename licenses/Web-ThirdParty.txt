@@ -1,9 +1,11 @@
-Sigil browser dependency notices
+Sigil UI dependency notices
 
 Compose Multiplatform 1.9.3, Kotlin 2.2.20, kotlinx.coroutines,
 kotlinx.serialization 1.9.0, kotlinx-browser 0.3 and Skiko 0.9.22.2
 are distributed under Apache-2.0. Copyright their respective JetBrains,
 Android Open Source Project and other upstream contributors.
+AndroidX Browser 1.9.0 is distributed under Apache-2.0, copyright The Android
+Open Source Project. It supplies Android authentication tabs.
 Generated Kotlin and Rust browser bindings are bundled with the application.
 Font and icon notices accompany this file. Rust notices are in Text-ThirdParty.txt
 and the workspace dependency notices.

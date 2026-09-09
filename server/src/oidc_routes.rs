@@ -6,7 +6,7 @@ use crate::{
 };
 use axum::{
     extract::{RawQuery, State},
-    http::HeaderMap,
+    http::{header, HeaderMap, StatusCode},
     middleware,
     response::{Html, IntoResponse, Response},
     routing::{get, post},
@@ -249,11 +249,21 @@ async fn complete(
     }
 }
 fn finished(completion: Option<oidc::Completion>) -> Response {
-    let body=match completion {
-        Some(value)=>format!("<!doctype html><title>Sigil</title><p>Continue only on the device where you started signing in.</p><a href=\"sigil://oidc/{}/{}\">Return to Sigil</a><p>If this page is closed before returning, start sign-in again.</p>",value.request_id,value.secret),
+    let redirect = completion
+        .as_ref()
+        .map(|value| format!("sigil://oidc/{}/{}", value.request_id, value.secret));
+    let body=match &redirect {
+        Some(uri)=>format!("<!doctype html><title>Sigil</title><p>Continue only on the device where you started signing in.</p><a href=\"{uri}\">Return to Sigil</a><p>If this page is closed before returning, start sign-in again.</p>"),
         None=>"<!doctype html><title>Sigil</title><p>Authentication was not completed or this callback was already used. Return to Sigil to restart sign-in.</p>".into()
     };
     let mut response = Html(body).into_response();
+    if let Some(redirect) = redirect {
+        let Ok(location) = redirect.parse() else {
+            return store_error(StoreError::InvalidData);
+        };
+        *response.status_mut() = StatusCode::SEE_OTHER;
+        response.headers_mut().insert(header::LOCATION, location);
+    }
     response.headers_mut().insert(
         "content-security-policy",
         "default-src 'none'; frame-ancestors 'none'; base-uri 'none'"
@@ -264,4 +274,37 @@ fn finished(completion: Option<oidc::Completion>) -> Response {
         .headers_mut()
         .insert("referrer-policy", "no-referrer".parse().unwrap());
     response
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[tokio::test]
+    async fn only_successful_native_callbacks_redirect_to_the_bound_completion() {
+        let id = "ab".repeat(32);
+        let secret = "cd".repeat(32);
+        let response = finished(Some(oidc::Completion {
+            request_id: id.clone(),
+            secret: secret.clone(),
+        }));
+        assert_eq!(response.status(), StatusCode::SEE_OTHER);
+        assert_eq!(
+            response.headers()[header::LOCATION],
+            format!("sigil://oidc/{id}/{secret}")
+        );
+        assert_eq!(response.headers()["referrer-policy"], "no-referrer");
+        let body = axum::body::to_bytes(response.into_body(), 4096)
+            .await
+            .unwrap();
+        assert!(std::str::from_utf8(&body)
+            .unwrap()
+            .contains("Return to Sigil"));
+        let response = finished(None);
+        assert_eq!(response.status(), StatusCode::OK);
+        assert!(!response.headers().contains_key(header::LOCATION));
+        let body = axum::body::to_bytes(response.into_body(), 4096)
+            .await
+            .unwrap();
+        assert!(!std::str::from_utf8(&body).unwrap().contains("sigil://"));
+    }
 }
