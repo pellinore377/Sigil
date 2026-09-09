@@ -24,6 +24,7 @@ internal class NativeCalls(private val app: Application, private val update: (Li
     private var video = false
     private var cameraReady = false
     private var starting = false
+    val occupied get() = starting || desired != null || ending?.isActive == true || permissions != null
     private var closing = false
     private var muted = false
     private var loud = false
@@ -87,6 +88,7 @@ internal class NativeCalls(private val app: Application, private val update: (Li
     }
     private fun emit() { update(history, visible) }
     fun command(action: String, fields: Map<String, Any?>) {
+        if (NativeSignOut.pending(app)) return
         when (action) {
             "call_start", "call_redial", "call_answer", "call_resume" -> {
                 val needsCamera = fields["video"] == true

@@ -38,13 +38,13 @@ internal object NativeNotifications {
         }
     }
     fun update(context: Context) {
-        if (visible || Build.VERSION.SDK_INT >= 33 && context.checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) return
+        if (NativeSignOut.pending(context) || visible || Build.VERSION.SDK_INT >= 33 && context.checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) return
         val state = StorageKeyProvider(context).withKey { directory, key -> JSONObject(NativeStorage.execute(directory.path, key, "{\"command\":\"notifications\"}")) }
         if (!state.getBoolean("ok") || visible) return
         show(context, state.getJSONObject("value"))
     }
     internal fun show(context: Context, value: JSONObject) {
-        if (visible) return
+        if (visible || NativeSignOut.pending(context)) return
         val manager = context.getSystemService(NotificationManager::class.java)
         manager.createNotificationChannel(NotificationChannel("messages", "Messages", NotificationManager.IMPORTANCE_DEFAULT))
         manager.createNotificationChannel(NotificationChannel("incoming_calls", "Incoming calls", NotificationManager.IMPORTANCE_HIGH).apply {
@@ -74,6 +74,7 @@ internal object NativeNotifications {
 
 class CallNotificationReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
+        if (NativeSignOut.pending(context)) return
         val id = intent.getStringExtra("call")?.takeIf { it.length == 64 && it.all { ch -> ch in '0'..'9' || ch in 'a'..'f' } } ?: return
         val pending = goAsync()
         CoroutineScope(Dispatchers.IO).launch {

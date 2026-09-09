@@ -235,6 +235,30 @@ fn call_history_survives_expiry_and_redial_preserves_group_kind_and_trust() {
     assert!(!sealed.windows(12).any(|part| part == b"\"name\":\"bob\""));
 }
 #[test]
+fn sign_out_confirms_only_success_and_preserves_local_history_until_platform_removal() {
+    let (_dir, _server, mut alice, mut bob, now) = crate::claims::tests::pair();
+    let request = "71".repeat(32);
+    run(
+        &mut alice,
+        json!({"command":"post","peer":"self","request":request,"timestamp":now,"text":"A private saved letter"}),
+    );
+    assert_eq!(
+        run(&mut alice, json!({"command":"sign_out"}))["revoked"],
+        true
+    );
+    let retry: Value =
+        serde_json::from_str(&alice.mobile_command(r#"{"command":"sign_out"}"#)).unwrap();
+    assert_eq!(retry["ok"], false);
+    assert!(retry["value"].is_null());
+    assert!(alice.devices_online(None).is_err());
+    assert!(!run(&mut bob, json!({"command":"devices"}))["devices"]
+        .as_array()
+        .unwrap()
+        .is_empty());
+    let timeline = run(&mut alice, json!({"command":"timeline","peer":"self"}));
+    assert_eq!(timeline["messages"][0]["text"], "A private saved letter");
+}
+#[test]
 fn settings_show_real_device_inventory_without_granting_trust_or_revoking_other_accounts() {
     let (_dir, _server, mut alice, bob, _) = crate::claims::tests::pair();
     let own = alice.connection_session().unwrap().unwrap().device_id;

@@ -44,6 +44,17 @@ port=$(cat "$scratch/port")
 instrument ContentTest
 instrument MessagingUiTest
 instrument DeviceLinkTest
+"$adb" shell am instrument -w -e class 'org.sigil.compose.SignOutTest#revokeAndRemoveSyntheticAppData' "$app_id.test/androidx.test.runner.AndroidJUnitRunner" > "$scratch/sign-out.log" 2>&1 || true
+rg -q 'SIGIL_SIGN_OUT_REVOKED' "$scratch/sign-out.log"
+for attempt in $(seq 1 20); do
+  if ! "$adb" shell run-as "$app_id" test -e no_backup/native/client.db; then break; fi
+  sleep 1
+done
+"$adb" shell run-as "$app_id" test ! -e no_backup/native/client.db
+"$adb" shell run-as "$app_id" test ! -e shared_prefs/sign_out.xml
+"$adb" shell run-as "$app_id" test ! -e no_backup/native/storage.key
+instrument 'SignOutTest#removalClearedKeysAndBackgroundWork'
+echo 'Device revocation and Android app-data removal passed.'
 touch "$scratch/done"
 wait "$fixture_pid"
 fixture_pid=

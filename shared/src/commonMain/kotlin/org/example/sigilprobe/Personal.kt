@@ -113,6 +113,8 @@ internal fun PersonalPage(page: String, state: MessengerState, command: Command,
                     OutlinedTextField(name, { name = it }, label = { Text("Display name") })
                     Text(state.address)
                     Button({ command("set_profile", mapOf("revision" to state.profileRevision, "name" to name.trim())) }, enabled = !state.busy && state.profileRevision != null) { Text("Save name") }
+                    HorizontalDivider()
+                    TextButton({ command("sign_out", emptyMap()) }, enabled = !state.busy) { Text("Sign out of this device") }
                 }
                 "privacy" -> {
                     Text("These preferences apply across your account. Conversations can have their own overrides.")

@@ -27,6 +27,7 @@ internal object NativeSync {
     fun interaction() { interaction = android.os.SystemClock.elapsedRealtime() }
     suspend fun presence(context: Context, inCall: Boolean) = withContext(Dispatchers.IO) {
         presence.withLock {
+            if (NativeSignOut.pending(context)) return@withLock
             val now = android.os.SystemClock.elapsedRealtime()
             val status = if (inCall) "busy" else if (!foreground) "inactive" else if (now - interaction >= 300_000) "away" else "active"
             if (status == presenceStatus && now - presenceAt < 40_000) return@withLock
@@ -40,12 +41,14 @@ internal object NativeSync {
     }
     suspend fun files(context: Context): JSONObject = withContext(Dispatchers.IO) {
         transfers.withLock {
+            check(!NativeSignOut.pending(context))
             val result = StorageKeyProvider(context).withKey { directory, key -> JSONObject(NativeStorage.execute(directory.path, key, "{\"command\":\"file_work\"}")) }
             check(result.getBoolean("ok")); result.getJSONObject("value")
         }
     }
     suspend fun run(context: Context, interactive: Boolean = false): JSONObject = withContext(Dispatchers.IO) {
         sync.withLock {
+            check(!NativeSignOut.pending(context))
             val request = JSONObject().put("command", "sync").put("interactive", interactive).toString()
             val result = StorageKeyProvider(context).withKey { directory, key -> JSONObject(NativeStorage.execute(directory.path, key, request)) }
             check(result.getBoolean("ok")); result.getJSONObject("value")
@@ -53,10 +56,11 @@ internal object NativeSync {
     }
     fun enable(context: Context, enabled: Boolean) {
         val jobs = context.getSystemService(JobScheduler::class.java)
-        if (!enabled) { jobs.cancel(PERIODIC); jobs.cancel(PENDING); return }
+        if (!enabled || NativeSignOut.pending(context)) { jobs.cancel(PERIODIC); jobs.cancel(PENDING); return }
         if (jobs.getPendingJob(PERIODIC) == null) jobs.schedule(base(context, PERIODIC).setPeriodic(15 * 60_000L).build())
     }
     fun enqueue(context: Context, delay: Long = 0) {
+        if (NativeSignOut.pending(context)) return
         context.getSystemService(JobScheduler::class.java).schedule(base(context, PENDING).setMinimumLatency(delay.coerceAtLeast(0)).build())
     }
     private fun base(context: Context, id: Int) = JobInfo.Builder(id, ComponentName(context, SyncService::class.java)).setRequiredNetworkType(JobInfo.NETWORK_TYPE_ANY).setPersisted(true).setBackoffCriteria(10_000L, JobInfo.BACKOFF_POLICY_EXPONENTIAL)
@@ -70,7 +74,7 @@ class SyncService : JobService() {
         work[params.jobId] = scope.launch {
             var retry = false
             try {
-                if (File(noBackupFilesDir, "native/client.db").isFile) {
+                if (!NativeSignOut.pending(this@SyncService) && File(noBackupFilesDir, "native/client.db").isFile) {
                     val value = NativeSync.run(this@SyncService)
                     retry = !value.isNull("issue")
                     val files = NativeSync.files(this@SyncService)
@@ -80,7 +84,7 @@ class SyncService : JobService() {
                     NativeNotifications.update(this@SyncService)
                 }
             } catch (cancelled: CancellationException) { throw cancelled }
-            catch (_: Exception) { retry = true }
+            catch (_: Exception) { retry = !NativeSignOut.pending(this@SyncService) }
             val current = coroutineContext.job
             main.post { if (work[params.jobId] === current) { work.remove(params.jobId); if (!current.isCancelled) jobFinished(params, retry) } }
         }

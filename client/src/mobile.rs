@@ -54,6 +54,7 @@ enum Command {
     RevokeDevice {
         device: String,
     },
+    SignOut {},
     Storage {},
     RecoveryGenerate {},
     RecoveryEnable {
@@ -546,6 +547,11 @@ impl ClientStore {
             Command::LeaveGroup { peer } => self.mobile_leave_group(&peer),
             Command::DeviceLink { action, qr } => self.mobile_link(&action, qr.as_deref()),
             Command::Devices { cursor } => self.mobile_devices(cursor),
+            Command::SignOut {} => {
+                let session = self.connection_session()?.ok_or(Error::Unprepared)?;
+                self.revoke_device_online(&session.device_id)?;
+                Ok(json!({"revoked": true}))
+            }
             Command::RevokeDevice { device } => {
                 let session = self.connection_session()?.ok_or(Error::Unprepared)?;
                 if device == session.device_id {
