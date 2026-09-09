@@ -6,8 +6,6 @@ import android.os.Build
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
-import androidx.activity.compose.setContent
-import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.browser.auth.AuthTabIntent
 import androidx.compose.material3.dynamicLightColorScheme
@@ -38,13 +36,12 @@ class MainActivity : ComponentActivity() {
     internal fun openSignIn(uri: Uri) = AuthTabIntent.Builder().build().launch(signIn, uri, "sigil")
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        enableEdgeToEdge()
         messenger = ViewModelProvider(this)[Messenger::class.java]
         savedInstanceState?.getBundle("attachment_target")?.let { saved -> pickerPeer = saved.keySet().associateWith { saved.getString(it) } }
         messenger.callback(intent.data)
         intent.data = null
         val preferences = getSharedPreferences("appearance", MODE_PRIVATE)
-        setContent {
+        setSigilContent {
             var cameraPeer by remember { mutableStateOf<Map<String, Any?>?>(null) }
             var placePeer by remember { mutableStateOf<Map<String, Any?>?>(null) }
             var backAvailable by remember { mutableStateOf(false) }
@@ -63,8 +60,8 @@ class MainActivity : ComponentActivity() {
                     if (kind == "Camera") cameraPeer = peer
                     else if (kind == "Place") placePeer = peer
                     else {
-                        pickerPeer = if (kind == "Wallpaper") peer + ("wallpaper" to "true") else peer
-                        filePicker.launch(when (kind) { "Wallpaper" -> arrayOf("image/*"); "Photos" -> arrayOf("image/*", "video/*"); else -> arrayOf("*/*") })
+                        pickerPeer = when (kind) { "Wallpaper" -> peer + ("wallpaper" to "true"); "Profile photo" -> peer + ("profile_photo" to "true"); else -> peer }
+                        filePicker.launch(when (kind) { "Wallpaper", "Profile photo" -> arrayOf("image/*"); "Photos" -> arrayOf("image/*", "video/*"); else -> arrayOf("*/*") })
                     }
                     messenger.pickerOpened()
                 }
@@ -73,7 +70,7 @@ class MainActivity : ComponentActivity() {
             LaunchedEffect(messenger.notificationPermission) { if (messenger.notificationPermission && Build.VERSION.SDK_INT >= 33) notifications.launch(android.Manifest.permission.POST_NOTIFICATIONS) }
             LaunchedEffect(messenger.calls.permissions) { messenger.calls.permissions?.let { (_, fields) -> callPermissions.launch(if (fields["video"] == true) arrayOf(android.Manifest.permission.RECORD_AUDIO, android.Manifest.permission.CAMERA) else arrayOf(android.Manifest.permission.RECORD_AUDIO)) } }
             LaunchedEffect(messenger.calls.projectionRequest) { messenger.calls.projectionRequest?.let { id -> projectionCall = id; projection.launch(getSystemService(android.media.projection.MediaProjectionManager::class.java).createScreenCaptureIntent()) } }
-            CompositionLocalProvider(org.sigil.LocalWallpaper provides { peer, modifier -> Wallpaper(peer, messenger.wallpaperRevision, modifier) }, org.sigil.LocalCallVideo provides { member, screen, modifier -> CallVideoView(messenger.calls, member, screen, modifier) }, org.sigil.LocalAttachmentContent provides { message -> AndroidAttachment(message) }, org.sigil.LocalLocationContent provides { part -> LocationCard(part) }) {
+            CompositionLocalProvider(org.sigil.LocalProfilePhoto provides { reference, modifier -> ProfilePhoto(reference, messenger.photoRevision, modifier) }, org.sigil.LocalWallpaper provides { peer, modifier -> Wallpaper(peer, messenger.wallpaperRevision, modifier) }, org.sigil.LocalCallVideo provides { member, screen, modifier -> CallVideoView(messenger.calls, member, screen, modifier) }, org.sigil.LocalAttachmentContent provides { message -> AndroidAttachment(message) }, org.sigil.LocalLocationContent provides { part -> LocationCard(part) }) {
             SigilApp(NativeCore::palette, NativeCore::analyze, messenger.state, messenger::command,
                 read = { preferences.getString(it, null) }, write = { key, value -> preferences.edit().putString(key, value).apply() },
                 dynamicAccent = dynamicAccent, onBackAvailable = { available, action -> backAvailable = available; goBack = action },

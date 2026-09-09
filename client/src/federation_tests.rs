@@ -398,6 +398,68 @@ fn two_servers_exchange_messages_groups_and_files_across_restart_and_outage() {
     let (pa, pb) = crate::incoming::tests::trust(&mut alice, &mut bob);
     retry(|| alice.allow_peer_sender_online(pb));
     retry(|| bob.allow_peer_sender_online(pa));
+    let alice_session = alice.connection_session().unwrap().unwrap();
+    let bob_session = bob.connection_session().unwrap().unwrap();
+    let photo_request = sigil_protocol::profile::SetPhoto {
+        revision: 0,
+        photo: "ffd801020304ffd9".into(),
+    };
+    let photo = alice
+        .connected_client()
+        .unwrap()
+        .set_profile_photo(&photo_request)
+        .unwrap();
+    assert!(bob
+        .connected_client()
+        .unwrap()
+        .contact_profile(&bob_session, "chat.example", &alice_session.account_id)
+        .is_err());
+    alice
+        .connected_client()
+        .unwrap()
+        .share_profile(&sigil_protocol::profile::ShareProfile {
+            server: "federated.example".into(),
+            account: bob_session.account_id.clone(),
+            allowed: true,
+        })
+        .unwrap();
+    let profile = retry(|| {
+        Ok(bob.connected_client().unwrap().contact_profile(
+            &bob_session,
+            "chat.example",
+            &alice_session.account_id,
+        )?)
+    });
+    assert_eq!(profile.photo, photo);
+    assert_eq!(
+        retry(|| Ok(bob.connected_client().unwrap().contact_photo(
+            &bob_session,
+            "chat.example",
+            &alice_session.account_id,
+            &photo
+        )?))
+        .as_slice(),
+        &[255, 216, 1, 2, 3, 4, 255, 217]
+    );
+    alice
+        .connected_client()
+        .unwrap()
+        .share_profile(&sigil_protocol::profile::ShareProfile {
+            server: "federated.example".into(),
+            account: bob_session.account_id.clone(),
+            allowed: false,
+        })
+        .unwrap();
+    assert!(bob
+        .connected_client()
+        .unwrap()
+        .contact_photo(
+            &bob_session,
+            "chat.example",
+            &alice_session.account_id,
+            &photo
+        )
+        .is_err());
     let remote = retry(|| {
         alice.fetch_remote_peer_online(
             "federated.example",

@@ -54,7 +54,7 @@ internal fun SettingsPage(state: MessengerState, navigate: (String) -> Unit, bac
     Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState())) {
         Header("Settings", back)
         Row(Modifier.fillMaxWidth().clickable { navigate("profile") }.padding(24.dp), verticalAlignment = Alignment.CenterVertically) {
-            Avatar(state.address.removePrefix("@"), 64)
+            Avatar(state.profileName.ifEmpty { state.address.removePrefix("@") }, 64, state.profileAvatar)
             Column(Modifier.padding(start = 16.dp)) { Text(state.profileName.ifEmpty { state.address.substringBefore(':').removePrefix("@") }, style = MaterialTheme.typography.headlineSmall); Text(state.address, style = MaterialTheme.typography.bodySmall) }
         }
         SettingsSection("Account") {
@@ -101,7 +101,19 @@ internal fun PersonalPage(page: String, state: MessengerState, command: Command,
                     }
                     state.devicesNext?.let { cursor -> TextButton({ command("devices", mapOf("cursor" to cursor)) }, enabled = !state.busy) { Text("Load more devices") } }
                 }
-                "profile" -> { var name by remember(state.profileRevision) { mutableStateOf(state.profileName) }; OutlinedTextField(name, { name = it }, label = { Text("Display name") }); Text(state.address); Button({ command("set_profile", mapOf("revision" to state.profileRevision, "name" to name.trim())) }, enabled = !state.busy && state.profileRevision != null) { Text("Save") } }
+                "profile" -> {
+                    Avatar(state.profileName.ifEmpty { state.address.removePrefix("@") }, 88, state.profileAvatar)
+                    Row { TextButton({ command("photo_choose", emptyMap()) }, enabled = !state.busy) { Text("Change photo") }; TextButton({ command("photo_remove", emptyMap()) }, enabled = !state.busy) { Text("Remove photo") } }
+                    Text("Your name and photo are shared with approved contacts and are visible to your server. They do not change your encryption identity.", style = MaterialTheme.typography.bodySmall)
+                    if (state.photoPending) {
+                        Text("Photo change waiting to upload")
+                        Row { TextButton({ command("photo_retry", emptyMap()) }, enabled = !state.busy) { Text("Retry upload") }; TextButton({ command("photo_cancel", emptyMap()) }, enabled = !state.busy) { Text("Discard change") } }
+                    }
+                    var name by remember(state.profileRevision) { mutableStateOf(state.profileName) }
+                    OutlinedTextField(name, { name = it }, label = { Text("Display name") })
+                    Text(state.address)
+                    Button({ command("set_profile", mapOf("revision" to state.profileRevision, "name" to name.trim())) }, enabled = !state.busy && state.profileRevision != null) { Text("Save name") }
+                }
                 "privacy" -> {
                     Text("These preferences apply across your account. Conversations can have their own overrides.")
                     state.allowRequests?.let { enabled -> Toggle("Allow message requests", enabled) { command("contact_policy", mapOf("enabled" to it)) } }

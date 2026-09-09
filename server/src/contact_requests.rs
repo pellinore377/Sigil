@@ -328,6 +328,14 @@ impl Store {
             RequestState::Blocked => 3,
             _ => unreachable!(),
         };
+        if value == 3 {
+            let (origin, peer): (String, String) = tx.query_row(
+                "SELECT origin,account FROM contact_requests WHERE id=?1",
+                [id],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )?;
+            crate::profile_photos::unshare(&tx, &account, &origin, &peer)?;
+        }
         if old != 0 && old != value && value != 3 {
             return Err(StoreError::Conflict);
         }
@@ -413,6 +421,7 @@ impl Store {
             )
             .optional()?;
         if request.blocked {
+            crate::profile_photos::unshare(&tx, &account, &request.server, &request.account)?;
             if old.is_none() {
                 let (total,own):(u64,u64)=tx.query_row("SELECT (SELECT count(*) FROM contact_requests),(SELECT count(*) FROM contact_requests WHERE recipient=?1)",[&account],|r|Ok((unsigned(r,0)?,unsigned(r,1)?)))?;
                 if total >= 65536 || own >= 4096 {

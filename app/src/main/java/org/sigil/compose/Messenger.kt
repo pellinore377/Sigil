@@ -53,9 +53,15 @@ class Messenger(application: Application) : AndroidViewModel(application) {
     fun pickerOpened() { picker = null }
     var wallpaperRevision by mutableStateOf(0L)
         private set
+    var photoRevision by mutableStateOf(0L)
+        private set
     fun importFile(target: Map<String, Any?>, uri: Uri) {
-        if (target["wallpaper"] == "true") changeWallpaper(target["peer"] as String, uri) else files.import(target, uri)
+        when { target["profile_photo"] == "true" -> changeProfilePhoto(uri); target["wallpaper"] == "true" -> changeWallpaper(target["peer"] as String, uri); else -> files.import(target, uri) }
     }
+    private fun changeProfilePhoto(uri: Uri?) { scope.launch { serialized(true) {
+        stageProfilePhoto(getApplication(), uri); photoRevision++; state = state.copy(photoPending = true)
+        execute("photo_publish"); photoRevision++; refresh()
+    } } }
     private fun changeWallpaper(peer: String, uri: Uri?) { scope.launch { serialized(true) { saveWallpaper(getApplication(), peer, uri); wallpaperRevision++ } } }
     fun importPhoto(target: Map<String, Any?>, bytes: ByteArray) { scope.launch(Dispatchers.IO) {
         try { bytes.inputStream().use { files.stage(target, "Photo.jpg", "image/jpeg", bytes.size.toLong(), it) } }
@@ -123,6 +129,8 @@ class Messenger(application: Application) : AndroidViewModel(application) {
     fun command(name: String, fields: Map<String, Any?>) {
         if (name.startsWith("call_")) { calls.command(name, fields + ("name" to (fields["peer"] as? String)?.let { peer -> state.chats.find { it.id == peer }?.name })); return }
         when (name) {
+            "photo_choose" -> { picker = emptyMap<String, Any?>() to "Profile photo"; return }
+            "photo_remove" -> { changeProfilePhoto(null); return }
             "device_link" -> { deviceLink(fields); return }
             "wallpaper_remove" -> { changeWallpaper(fields["peer"] as String, null); return }
             "notification_settings" -> { notificationPermissionResult(); return }
@@ -188,6 +196,7 @@ class Messenger(application: Application) : AndroidViewModel(application) {
                     val result = if (alreadyQueued) JSONObject() else native(raw)
                     result.optional("open")?.let { state = state.copy(selected = it); groupCreate = null; pages = 1 }
                     if (name in listOf("profile", "set_profile")) state = state.copy(profileName = result.getString("display_name"), profileRevision = result.getLong("revision"))
+                    if (name in listOf("photo_publish", "photo_retry", "photo_cancel")) photoRevision++
                     if (name in listOf("devices", "revoke_device")) {
                         val merged = (if (fields["cursor"] != null) state.devices else emptyList()).associateBy { it.id }.toMutableMap()
                         result.getJSONArray("devices").objects().forEach { value ->
@@ -294,9 +303,9 @@ class Messenger(application: Application) : AndroidViewModel(application) {
         state = state.copy(readReceipts = value.getBoolean("read_receipts"), typingIndicators = value.getBoolean("typing_indicators"), presenceSharing = value.getBoolean("presence_sharing"), invitations = value.getJSONArray("invitations").objects().map { GroupInvitation(it.getString("id"), it.getString("peer"), it.getString("group")) })
         val chats = value.getJSONArray("chats").objects().map { chat ->
             ChatSummary(chat.getString("id"), chat.getString("address"), chat.getString("preview"), clock(chat.getLong("timestamp")), chat.getBoolean("verified"),
-                chat.getJSONArray("devices").objects().map { device -> ChatDevice(device.getString("id"), device.getString("fingerprint"), device.getBoolean("verified"), device.getBoolean("blocked"), device.getBoolean("changed")) }, chat.optString("name"), chat.optInt("unread"), chat.optBoolean("pinned"), chat.optBoolean("snoozed"), chat.optBoolean("hidden"), chat.optString("presence", "inactive"), chat.optJSONArray("collections")?.strings().orEmpty(), chat.optJSONArray("typing")?.strings().orEmpty(), chat.optional("draft").orEmpty(), chat.optBoolean("group"), ui = chat.optJSONObject("ui")?.stringMap().orEmpty(), contactOnly = chat.optBoolean("contact_only"), readReceipts = chat.optBoolean("read_receipts", true), typingIndicators = chat.optBoolean("typing_indicators", true), presenceSharing = chat.optBoolean("presence_sharing"), request = chat.optString("request", "none"))
+                chat.getJSONArray("devices").objects().map { device -> ChatDevice(device.getString("id"), device.getString("fingerprint"), device.getBoolean("verified"), device.getBoolean("blocked"), device.getBoolean("changed")) }, chat.optString("name"), chat.optInt("unread"), chat.optBoolean("pinned"), chat.optBoolean("snoozed"), chat.optBoolean("hidden"), chat.optString("presence", "inactive"), chat.optJSONArray("collections")?.strings().orEmpty(), chat.optJSONArray("typing")?.strings().orEmpty(), chat.optional("draft").orEmpty(), chat.optBoolean("group"), avatar = chat.optString("avatar"), ui = chat.optJSONObject("ui")?.stringMap().orEmpty(), contactOnly = chat.optBoolean("contact_only"), readReceipts = chat.optBoolean("read_receipts", true), typingIndicators = chat.optBoolean("typing_indicators", true), presenceSharing = chat.optBoolean("presence_sharing"), request = chat.optString("request", "none"))
         }
-        state = state.copy(phase = phase, address = value.getString("address"), device = value.getString("device"), fingerprint = value.getString("fingerprint"), chats = chats, collectionsEnabled = value.optBoolean("collections_enabled"), collections = value.optJSONArray("collections")?.objects()?.map { CollectionItem(it.getString("id"), it.getString("name"), it.optString("icon", "folder")) }.orEmpty(), ui = value.optJSONObject("ui")?.stringMap().orEmpty())
+        state = state.copy(profileAvatar = value.optString("profile_avatar"), photoPending = value.optBoolean("photo_pending"), phase = phase, address = value.getString("address"), device = value.getString("device"), fingerprint = value.getString("fingerprint"), chats = chats, collectionsEnabled = value.optBoolean("collections_enabled"), collections = value.optJSONArray("collections")?.objects()?.map { CollectionItem(it.getString("id"), it.getString("name"), it.optString("icon", "folder")) }.orEmpty(), ui = value.optJSONObject("ui")?.stringMap().orEmpty())
         val peer = state.selected ?: return
         if (peer == "self" && state.chats.none { it.id == "self" }) state = state.copy(chats = state.chats + ChatSummary("self", state.address, "", "", true, emptyList(), displayName = "Note to Self"))
         val messages = mutableListOf<ChatMessage>()

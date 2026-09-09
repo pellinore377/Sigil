@@ -26,6 +26,48 @@ class ContentTest {
     @get:Rule val ui = createAndroidComposeRule<ComponentActivity>()
     private val context get() = InstrumentationRegistry.getInstrumentation().targetContext
     @Before fun isolated() { Assume.assumeTrue(context.packageName.endsWith(".acceptance")) }
+    @Test fun profilePhotoIsBoundedPublishedAndRemoved() = runBlocking {
+        val source = java.io.File(context.cacheDir, "synthetic-profile.png")
+        val bitmap = android.graphics.Bitmap.createBitmap(1024, 1024, android.graphics.Bitmap.Config.ARGB_8888)
+        val random = java.util.Random(7)
+        val colors = IntArray(512 * 512) { if (it % 512 in 224..287 && it / 512 in 224..287) Color.rgb(25, 115, 185) else 0xff000000.toInt() or random.nextInt(1 shl 24) }
+        bitmap.setPixels(IntArray(1024 * 1024) { colors[(it / 1024 / 2) * 512 + it % 1024 / 2] }, 0, 1024, 0, 0, 1024, 1024)
+        source.outputStream().use { bitmap.compress(android.graphics.Bitmap.CompressFormat.PNG, 100, it) }
+        bitmap.recycle()
+        try { stageProfilePhoto(context, android.net.Uri.fromFile(source)) } finally { source.delete() }
+        val status = native("photo_status")
+        assertTrue(status.getBoolean("pending"))
+        val reference = status.getString("avatar")
+        val bytes = StorageKeyProvider(context).withKey { directory, key -> NativeStorage.profilePhoto(directory.path, key, reference) }!!
+        try {
+            assertTrue(bytes.size <= 128 * 1024)
+            assertTrue("The fixture must exercise more than one encrypted storage chunk", bytes.size > 65536)
+            val bounds = android.graphics.BitmapFactory.Options().apply { inJustDecodeBounds = true }
+            android.graphics.BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
+            assertEquals(bounds.outWidth, bounds.outHeight)
+            assertTrue(bounds.outWidth in 1..512)
+        } finally { bytes.fill(0) }
+        val published = native("photo_publish")
+        assertFalse(published.getBoolean("pending"))
+        assertTrue(published.getJSONObject("photo").getInt("bytes") > 0)
+        val revision = androidx.compose.runtime.mutableLongStateOf(0)
+        ui.setContent { androidx.compose.material3.Surface(Modifier.fillMaxSize()) { ProfilePhoto(reference, revision.longValue, Modifier.fillMaxSize()) } }
+        fun blue(): Boolean {
+            ui.waitForIdle()
+            val screenshot = InstrumentationRegistry.getInstrumentation().uiAutomation.takeScreenshot()
+            try { val color = screenshot.getPixel(screenshot.width / 2, screenshot.height / 2); return Color.blue(color) - Color.red(color) > 80 }
+            finally { screenshot.recycle() }
+        }
+        val deadline = SystemClock.elapsedRealtime() + 8000
+        while (!blue() && SystemClock.elapsedRealtime() < deadline) delay(100)
+        assertTrue("The published profile photo was not rendered", blue())
+        stageProfilePhoto(context, null)
+        assertTrue(native("photo_publish").getJSONObject("photo").isNull("hash"))
+        ui.runOnIdle { revision.longValue++ }
+        val removed = SystemClock.elapsedRealtime() + 8000
+        while (blue() && SystemClock.elapsedRealtime() < removed) delay(100)
+        assertFalse("The removed profile photo was still rendered", blue())
+    }
     private fun native(command: String, fields: Map<String, Any?> = emptyMap()): JSONObject {
         val request = JSONObject().put("command", command); fields.forEach { (k, v) -> request.put(k, JSONObject.wrap(v)) }
         val result = StorageKeyProvider(context).withKey { dir, key -> JSONObject(NativeStorage.execute(dir.path, key, request.toString())) }

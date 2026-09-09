@@ -111,7 +111,7 @@ fun SigilApp(palette: (Int, Boolean) -> String, analyze: (String) -> String, sta
                             (fadeIn(tween(MotionMillis)) + slideInVertically(tween(MotionMillis)) { it / 14 }) togetherWith fadeOut(tween(120))
                         }, label = "Page") { target ->
                             when (target) {
-                                "call" -> state.call?.let { CallPage(it, state.chats, dispatch) { callMinimized = true } }
+                                "call" -> state.call?.let { CallPage(it, state.chats, dispatch, state.profileAvatar) { callMinimized = true } }
                                 "conversation" -> CompositionLocalProvider(LocalPageMotion provides this) { chat?.let { ConversationPage(it, state, drafts.getOrPut(it.id) { TextFieldState(it.draft) }, analyze, dispatch, back,
                                     conversationPage, { conversationPage = it }, chatTheme.gradient) } }
                                 "theme" -> chat?.let { current -> ChatAppearance(chatTheme, current.id, command, { conversationPage = "" }) { chatTheme = it; write("chat.${current.id}", it.encode()); command("organize", mapOf("peer" to current.id, "value" to mapOf("UiSetting" to mapOf("key" to "chat_theme", "value" to it.encode())))) } }

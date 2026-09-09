@@ -82,12 +82,19 @@ impl ClientStore {
     ) -> Result<std::collections::BTreeMap<String, String>, Error> {
         let mut names = std::collections::BTreeMap::new();
         for peer in self.mobile_peers()? {
+            let account =
+                crate::event::account_reference(&peer.binding.server, &peer.binding.account);
+            let name = if self.mobile_recipients(peer.id).is_ok() {
+                self.mobile_profile_name(account)?
+            } else {
+                None
+            };
             names.insert(
                 transport::hex(&crate::event::account_reference(
                     &peer.binding.server,
                     &peer.binding.account,
                 )),
-                peer.binding.username,
+                name.unwrap_or(peer.binding.username),
             );
         }
         if let Some(group) = peer.strip_prefix("group:") {

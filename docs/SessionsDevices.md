@@ -17,8 +17,11 @@ A request is signed metadata, separate from message delivery and device trust. I
 
 Native APIs use `/client/v0/contact-requests`: GET/POST collection, GET/PUT `policy`, PUT `blocked`, GET `outgoing/{recipient}`, and GET/PUT `{id}`. The incoming GET requires `signature`; PUT takes `state` and `signature`. Federation carries authenticated `contact_request` and `contact_status` services. Requests expire within seven days; blocks survive expiry/restore. Limits: 64 incoming pending requests, 32 outgoing per account, 128 pending per foreign origin, 4,096 recipient records and 65,536 server records. Each retained row charges 2,048 bytes. Restore discards requests while preserving blocks and opt-out.
 
-## Capacity and persistence
+## Profiles
 
+Profile names/photos are server-visible account metadata, separate from encryption identity. Photos require explicit account/origin shares; mailbox and call grants do not grant profile access. Blocking revokes sharing atomically; restore clears shares. Native verification enables reciprocal profile sharing. `/client/v0/profile/photo` uses revisioned JPEG uploads (128 KiB maximum); `/profile/shares` controls access; `/profiles/{account}` and `/profiles/{account}/photo/{hash}` read authorized metadata/bytes. Federation authenticates the requesting origin/account. Android crops to at most 512px and removes metadata. Its encrypted photo cache is limited to 16 MiB/4,096 entries; a newer staged upload cannot be replaced or deleted by an older acknowledgement.
+
+## Capacity and persistence
 
 Retained sessions/messages, consumed prekeys, completed controls and link tombstones use storage budgets rather than fixed lifetime event counters. Exhaustion rejects writes; it never authorizes deleting history or replay evidence.
 

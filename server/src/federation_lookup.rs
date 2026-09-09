@@ -102,6 +102,24 @@ impl Store {
                 LookupValue::Account(crate::admin::discover(&tx, username, now)?)
             }
             Lookup::Service { service } => LookupValue::Service(match service {
+                Service::ContactProfile { account } => {
+                    let value = crate::profile_photos::contact(
+                        &tx,
+                        account,
+                        origin,
+                        &request.sender_account,
+                    )?;
+                    serde_json::to_string(&value).map_err(|_| StoreError::InvalidData)?
+                }
+                Service::ContactPhoto { account, hash } => {
+                    auth::hex(&crate::profile_photos::image(
+                        &tx,
+                        account,
+                        origin,
+                        &request.sender_account,
+                        hash,
+                    )?)
+                }
                 Service::ContactRequest { request: contact } => {
                     let value = crate::contact_requests::request_in(
                         &tx,

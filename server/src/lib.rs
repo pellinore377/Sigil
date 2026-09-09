@@ -42,6 +42,8 @@ pub mod operations;
 pub mod password_login;
 mod prekeys;
 mod profile;
+mod profile_photo_routes;
+mod profile_photos;
 mod push;
 pub mod push_config;
 mod push_delivery;
@@ -212,6 +214,7 @@ fn application_with_log(
         .merge(admission::routes())
         .merge(contacts::routes())
         .merge(contact_request_routes::routes())
+        .merge(profile_photo_routes::routes())
         .merge(admin_routes::client())
         .merge(oidc_routes::client())
         .merge(oidc_routes::callback())

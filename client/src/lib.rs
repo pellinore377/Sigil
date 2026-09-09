@@ -15,6 +15,7 @@ mod erasure;
 #[cfg(test)]
 mod load_tests;
 mod private_db;
+mod storage_blob;
 pub use erasure::JournalErasure;
 use zeroize::Zeroizing;
 mod claims;
@@ -71,7 +72,7 @@ mod outbound;
 pub use outbound::OutboundAttempt;
 
 pub type Id = [u8; 32];
-pub const DATABASE_VERSION: u32 = 73;
+pub const DATABASE_VERSION: u32 = 75;
 #[derive(Debug)]
 pub enum Error {
     Storage(rusqlite::Error),
@@ -421,6 +422,16 @@ impl ClientStore {
         if version < 73 {
             tx.execute_batch("CREATE TABLE mobile_contacts(id BLOB PRIMARY KEY CHECK(length(id)=32),work_at INTEGER NOT NULL,state BLOB NOT NULL); CREATE INDEX mobile_contacts_work ON mobile_contacts(work_at,id); CREATE TABLE mobile_contact_poll(id INTEGER PRIMARY KEY CHECK(id=1),next_at INTEGER NOT NULL); INSERT INTO mobile_contact_poll VALUES(1,0); PRAGMA user_version=73;")?;
         }
+        if version < 74 {
+            tx.execute_batch("CREATE TABLE mobile_profiles(id BLOB PRIMARY KEY CHECK(length(id)=32),metadata BLOB NOT NULL,image BLOB,touched INTEGER NOT NULL); CREATE INDEX mobile_profiles_lru ON mobile_profiles(touched,id); CREATE TABLE mobile_photo_upload(id INTEGER PRIMARY KEY CHECK(id=1),state BLOB NOT NULL); PRAGMA user_version=74;")?;
+        }
+        if version < 75 {
+            if version == 74 {
+                mobile::profile::migrate(&tx, &key)?;
+            }
+            tx.pragma_update(None, "user_version", 75)?;
+        }
+
         if version < 52 {
             if version >= 51 {
                 event::migrate_structured(&tx, &key)?;

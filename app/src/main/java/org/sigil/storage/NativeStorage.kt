@@ -1,6 +1,8 @@
 package org.sigil.storage
 
 object NativeStorage {
+    external fun stageProfilePhoto(directory: String, key: ByteArray, bytes: ByteArray): Boolean
+    external fun profilePhoto(directory: String, key: ByteArray, reference: String): ByteArray?
     external fun scanLinkQr(width: Int, height: Int, bytes: ByteArray): String?
     // Positive handle, negative retry delay in seconds, or zero on failure.
     external fun openCall(directory: String, key: ByteArray, call: ByteArray, tracks: Int): Long

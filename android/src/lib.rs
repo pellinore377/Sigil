@@ -12,6 +12,58 @@ mod calls;
 mod qr;
 
 #[no_mangle]
+pub extern "system" fn Java_org_sigil_storage_NativeStorage_stageProfilePhoto(
+    mut env: JNIEnv,
+    _: JObject,
+    directory: JString,
+    key: JByteArray,
+    data: JByteArray,
+) -> jboolean {
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| -> Option<()> {
+        if env.get_array_length(&data).ok()? > 128 * 1024 {
+            return None;
+        }
+        let bytes = Zeroizing::new(env.convert_byte_array(&data).ok()?);
+        open(&mut env, &directory, &key)?
+            .mobile_stage_photo(&bytes)
+            .ok()
+    }));
+    if result.ok().flatten().is_some() {
+        JNI_TRUE
+    } else {
+        JNI_FALSE
+    }
+}
+
+#[no_mangle]
+pub extern "system" fn Java_org_sigil_storage_NativeStorage_profilePhoto(
+    mut env: JNIEnv,
+    _: JObject,
+    directory: JString,
+    key: JByteArray,
+    reference: JString,
+) -> jbyteArray {
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(
+        || -> Option<Zeroizing<Vec<u8>>> {
+            let reference = String::from(env.get_string(&reference).ok()?);
+            if reference.len() != 64 {
+                return None;
+            }
+            open(&mut env, &directory, &key)?
+                .mobile_profile_image(&reference)
+                .ok()
+                .flatten()
+        },
+    ));
+    result
+        .ok()
+        .flatten()
+        .and_then(|bytes| env.byte_array_from_slice(&bytes).ok())
+        .map(|v| v.into_raw())
+        .unwrap_or(std::ptr::null_mut())
+}
+
+#[no_mangle]
 pub extern "system" fn Java_org_sigil_storage_NativeStorage_setWallpaper(
     mut env: JNIEnv,
     _: JObject,

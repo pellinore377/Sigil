@@ -26,6 +26,8 @@ mod mobile_groups;
 #[cfg(test)]
 #[path = "mobile_tests.rs"]
 mod presentation_tests;
+#[path = "mobile_profile.rs"]
+pub(crate) mod profile;
 #[path = "mobile_views.rs"]
 mod views;
 #[path = "mobile_wallpaper.rs"]
@@ -179,6 +181,10 @@ enum Command {
         peer: String,
         request: String,
     },
+    PhotoPublish {},
+    PhotoRetry {},
+    PhotoStatus {},
+    PhotoCancel {},
     Profile {},
     SetProfile {
         revision: u64,
@@ -435,6 +441,13 @@ impl ClientStore {
             chat["verified"] = json!(same
                 .iter()
                 .all(|p| p.verified && !p.blocked && p.changed_fingerprint.is_none()));
+            if chat["verified"] == true && !self.mobile_contact_blocked(peer)? {
+                let account = event::account_reference(&peer.binding.server, &peer.binding.account);
+                chat["avatar"] = json!(transport::hex(&account));
+                if let Some(name) = self.mobile_profile_name(account)? {
+                    chat["name"] = json!(name);
+                }
+            }
             self.mobile_summary(&display, &mut chat)?;
             chat["contact_only"] =
                 json!(chat["latest_message"].is_null() && chat["ui"]["opened"] != "true");
@@ -442,6 +455,8 @@ impl ClientStore {
         }
         self.mobile_contact_chats(&mut chats)?;
         let mut chat = json!({"id":"self","address":session.address,"name":"Note to Self","self":true,"verified":true,"devices":[], "timestamp":0,"preview":""});
+        let avatar = transport::hex(&self.account_reference()?);
+        chat["avatar"] = json!(avatar);
         self.mobile_summary("self", &mut chat)?;
         if !chat["latest_message"].is_null() {
             chats.push(chat);
@@ -457,6 +472,7 @@ impl ClientStore {
         let prefs = self.conversation_preferences([0; 32])?;
         Ok(
             json!({"phase":phase,"address":session.address,"device":session.device_id,"fingerprint":transport::hex(&fingerprint),"chats":chats,"invitations":invitations,
+                "profile_avatar":avatar,"photo_pending":self.photo_upload_pending()?,
                 "read_receipts":prefs.read_receipts,"typing_indicators":prefs.typing_indicators,"presence_sharing":prefs.presence_sharing,
                 "collections_enabled":prefs.collections_enabled,"ui":prefs.ui,"collections":prefs.collections.iter().map(|(id,name)|json!({"id":transport::hex(id),"name":name,"icon":prefs.ui.get(&format!("collection_icon.{}",transport::hex(id))).map(String::as_str).unwrap_or("folder")})).collect::<Vec<_>>()}),
         )
@@ -841,6 +857,14 @@ impl ClientStore {
                 };
                 Ok(json!({"queued":queued}))
             }
+            Command::PhotoPublish {} => self.mobile_photo_publish(),
+            Command::PhotoRetry {} => self.mobile_photo_retry(),
+            Command::PhotoStatus {} => self.mobile_photo_status(),
+            Command::PhotoCancel {} => {
+                self.db
+                    .execute("DELETE FROM mobile_photo_upload WHERE id=1", [])?;
+                self.mobile_photo_status()
+            }
             Command::Profile {} => Ok(serde_json::to_value(self.connected_client()?.profile()?)
                 .map_err(|_| Error::InvalidStore)?),
             Command::SetProfile { revision, name } => Ok(serde_json::to_value(
@@ -1123,6 +1147,7 @@ impl ClientStore {
                 let peer = id(&peer)?;
                 self.confirm_peer(peer, id(&fingerprint)?)?;
                 self.allow_peer_sender_online(peer)?;
+                self.share_peer_profile(peer)?;
                 self.mobile_state()
             }
             Command::Timeline {

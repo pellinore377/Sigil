@@ -18,10 +18,12 @@ import kotlin.math.*
 
 val LocalCallVideo = staticCompositionLocalOf<@Composable (String, Boolean, Modifier) -> Unit> { { _, _, modifier -> Box(modifier, contentAlignment = Alignment.Center) { Text("Waiting for video…") } } }
 @Composable
-internal fun CallPage(active: ActiveCall, contacts: List<ChatSummary>, command: Command, minimize: () -> Unit) {
+internal fun CallPage(active: ActiveCall, contacts: List<ChatSummary>, command: Command, ownPhoto: String = "", minimize: () -> Unit) {
     val call = active.call
     val incoming = call.phase == "ringing"
     val others = call.participants.filter { !it.own }
+    fun photo(person: CallParticipant?): String = if (person?.own == true) ownPhoto else contacts.firstOrNull { it.id == person?.peer }?.avatar.orEmpty()
+    val directPhoto = if (call.direct) photo(others.firstOrNull()) else ""
     val video = active.camera || active.screen || others.any { it.camera || it.screen }
     var more by remember { mutableStateOf(false) }
     var inviting by remember { mutableStateOf(false) }
@@ -55,7 +57,7 @@ internal fun CallPage(active: ActiveCall, contacts: List<ChatSummary>, command: 
     Column(Modifier.fillMaxSize()) {
         Row(Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 14.dp), verticalAlignment = Alignment.CenterVertically) {
             Symbol("chevron_left", "Minimize call", minimize)
-            Avatar(active.name, 42)
+            Avatar(active.name, 42, directPhoto)
             Column(Modifier.weight(1f).padding(start = 10.dp)) {
                 Row(verticalAlignment = Alignment.CenterVertically) { Text(active.name, Modifier.weight(1f, false), maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.titleLarge); Spacer(Modifier.width(6.dp)); Glyph("lock", 16, "End-to-end encrypted call") }
                 Text(if (incoming) "Incoming call" else if (call.phase == "joining") "Joining…" else if (call.direct && others.isEmpty()) "Calling…" else if (active.connection != "connected") active.connection.replaceFirstChar { it.uppercase() } + "…" else "${active.seconds / 60}:${(active.seconds % 60).toString().padStart(2, '0')}", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -77,20 +79,20 @@ internal fun CallPage(active: ActiveCall, contacts: List<ChatSummary>, command: 
         }
         Box(Modifier.weight(1f).fillMaxWidth().padding(20.dp), contentAlignment = Alignment.Center) {
             if (call.direct && !video) Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(28.dp)) {
-                Box(Modifier.sizeIn(maxWidth = 270.dp, maxHeight = 270.dp).fillMaxWidth(.8f).aspectRatio(1f).border(5.dp, MaterialTheme.colorScheme.surfaceVariant, CircleShape), contentAlignment = Alignment.Center) { Avatar(active.name, 236) }
+                Box(Modifier.sizeIn(maxWidth = 270.dp, maxHeight = 270.dp).fillMaxWidth(.8f).aspectRatio(1f).border(5.dp, MaterialTheme.colorScheme.surfaceVariant, CircleShape), contentAlignment = Alignment.Center) { Avatar(active.name, 236, directPhoto) }
                 CallWave(others.maxOfOrNull { active.levels[it.id] ?: 0f } ?: 0f, Modifier.fillMaxWidth(.72f).height(56.dp))
                 Text(if (incoming) "Incoming call" else "Audio call", style = MaterialTheme.typography.titleMedium)
             } else if (call.direct) {
                 val remote = others.firstOrNull()
                 if (remote != null && (remote.camera || remote.screen)) LocalCallVideo.current(remote.id, remote.screen, Modifier.fillMaxSize().clip(RoundedCornerShape(24.dp)))
-                else Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { Avatar(active.name, 120) }
+                else Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { Avatar(active.name, 120, directPhoto) }
                 if (active.camera || active.screen) Box(Modifier.align(Alignment.BottomEnd).width(112.dp).height(168.dp).clip(RoundedCornerShape(20.dp))) { LocalCallVideo.current("self", active.screen, Modifier.fillMaxSize()) }
             } else LazyVerticalGrid(GridCells.Fixed(if (call.participants.size <= 2) 1 else 2), horizontalArrangement = Arrangement.spacedBy(10.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 items(call.participants, key = { it.id }) { person ->
                     Surface(shape = RoundedCornerShape(22.dp), color = MaterialTheme.colorScheme.surfaceVariant) {
                         Box(Modifier.fillMaxWidth().aspectRatio(.85f)) {
                             if (person.camera || person.screen) LocalCallVideo.current(if (person.own) "self" else person.id, person.screen, Modifier.fillMaxSize())
-                            else Column(Modifier.align(Alignment.Center), horizontalAlignment = Alignment.CenterHorizontally) { Avatar(person.name, 74); Spacer(Modifier.height(16.dp)); CallWave(active.levels[if (person.own) "self" else person.id] ?: 0f, Modifier.width(90.dp).height(32.dp)) }
+                            else Column(Modifier.align(Alignment.Center), horizontalAlignment = Alignment.CenterHorizontally) { Avatar(person.name, 74, photo(person)); Spacer(Modifier.height(16.dp)); CallWave(active.levels[if (person.own) "self" else person.id] ?: 0f, Modifier.width(90.dp).height(32.dp)) }
                             Row(Modifier.align(Alignment.BottomStart).fillMaxWidth().background(MaterialTheme.colorScheme.background.copy(alpha = .8f)).padding(10.dp), verticalAlignment = Alignment.CenterVertically) { Text(if (person.own) "You" else person.name, Modifier.weight(1f), style = MaterialTheme.typography.bodyMedium); if (!person.audio) Glyph("mic_off", 18) }
                         }
                     }

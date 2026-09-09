@@ -193,6 +193,14 @@ fn roots(db: &Connection, key: &StorageKey, profile: &Profile) -> Result<Vec<Vec
     Ok(roots)
 }
 
+pub(crate) fn persisted_account_scope(
+    db: &Connection,
+    key: &StorageKey,
+) -> Result<super::Id, Error> {
+    let (profile, _) = load(db, key)?;
+    let session = profile.session.as_ref().ok_or(Error::Unprepared)?;
+    super::recovery::account_scope(&profile.server, decode_id(&session.account_id)?)
+}
 impl ClientStore {
     #[cfg(feature = "rtc-client")]
     pub(crate) fn connection_roots(&self) -> Result<Vec<Vec<u8>>, Error> {
