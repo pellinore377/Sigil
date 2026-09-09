@@ -154,6 +154,21 @@ fn retry_after(response: &Response<Body>) -> Option<u64> {
     value.parse::<u64>().ok().filter(|value| *value <= 86400)
 }
 
+fn same_https_origin(left: &str, right: &str) -> bool {
+    let parse = |value: &str| {
+        sigil_protocol::discovery::valid_origin(value)
+            .then(|| value.parse::<ureq::http::Uri>().ok())
+            .flatten()
+    };
+    match (parse(left), parse(right)) {
+        (Some(left), Some(right)) => {
+            left.host() == right.host()
+                && left.port_u16().unwrap_or(443) == right.port_u16().unwrap_or(443)
+        }
+        _ => false,
+    }
+}
+
 impl HttpsClient {
     pub fn login_methods(
         server: &str,
@@ -186,10 +201,12 @@ impl HttpsClient {
             &"0".repeat(64),
             roots,
         )?;
-        if canonical.api_origin()? != discovered.api_origin {
+        if !same_https_origin(canonical.api_origin()?, &discovered.api_origin) {
             return Err(Error::InvalidResponse);
         }
-        if server != discovered.server_name && client.origin != discovered.api_origin {
+        if server != discovered.server_name
+            && !same_https_origin(&client.origin, &discovered.api_origin)
+        {
             return Err(Error::InvalidResponse);
         }
         let response = canonical.request(Method::GET, "/client/v0/login", None::<&()>)?;
