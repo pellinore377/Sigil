@@ -15,6 +15,8 @@ pub struct DeviceReviewPage {
     pub devices: Vec<DeviceReview>,
     pub next: Option<DeviceReviewCursor>,
 }
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct DeviceReviewCursor {
     session: sigil_protocol::accounts::Session,
     local: bool,

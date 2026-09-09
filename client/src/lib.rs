@@ -54,6 +54,9 @@ pub use retry::{ControlCleanup, JournalCleanup, RetryAttempt, RetryRequest};
 pub use retry::{RecoveryAction, RecoveryAdvice, RecoveryBlock};
 mod selection;
 pub use peers::{device_fingerprint, DeviceReview, DeviceReviewCursor, DeviceReviewPage, Peer};
+#[cfg(test)]
+#[path = "../../server/tests/fixtures/maps.rs"]
+mod map_fixture;
 pub mod recovery;
 #[cfg(test)]
 #[path = "../tests/common/mod.rs"]
@@ -68,6 +71,7 @@ mod outbound;
 pub use outbound::OutboundAttempt;
 
 pub type Id = [u8; 32];
+pub const DATABASE_VERSION: u32 = 71;
 #[derive(Debug)]
 pub enum Error {
     Storage(rusqlite::Error),
@@ -168,7 +172,7 @@ impl ClientStore {
                 "INSERT INTO vault VALUES(1,?1)",
                 [key.seal(b"Sigil client storage", b"vault/v0")?],
             )?;
-        } else if !(1..=68).contains(&version) || app != 1397179212 {
+        } else if !(1..=i64::from(DATABASE_VERSION)).contains(&version) || app != 1397179212 {
             return Err(Error::InvalidStore);
         }
         let verifier: Vec<u8> = tx.query_row(
@@ -401,6 +405,15 @@ impl ClientStore {
             tx.execute_batch("CREATE TABLE IF NOT EXISTS erasure_cursor(kind INTEGER PRIMARY KEY,state BLOB NOT NULL);")?;
             tx.execute_batch("CREATE TABLE IF NOT EXISTS conversation_transfer_origins(id BLOB PRIMARY KEY,state BLOB NOT NULL); CREATE TABLE IF NOT EXISTS conversation_transfer_parts(id BLOB NOT NULL,part INTEGER NOT NULL,state BLOB NOT NULL,PRIMARY KEY(id,part));")?;
             tx.pragma_update(None, "user_version", 68)?;
+        }
+        if version < 69 {
+            tx.execute_batch("CREATE TABLE mobile_uploads(id BLOB PRIMARY KEY,state BLOB NOT NULL); PRAGMA user_version=69;")?;
+        }
+        if version < 70 {
+            tx.execute_batch(calls::HISTORY_MIGRATION)?;
+        }
+        if version < 71 {
+            tx.execute_batch("CREATE TABLE mobile_wallpapers(id BLOB PRIMARY KEY,state BLOB NOT NULL); PRAGMA user_version=71;")?;
         }
         if version < 52 {
             if version >= 51 {

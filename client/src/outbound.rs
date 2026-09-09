@@ -43,7 +43,7 @@ impl ClientStore {
         let own = device_fingerprint(&self.own_device_binding()?)?;
         let (after, expected) = cursor(&self.db, &self.key, &own)?;
         let ids: Vec<Vec<u8>> = self.db.prepare(
-            "SELECT DISTINCT o.session FROM outbox o JOIN sessions s ON s.id=o.session WHERE o.packet IS NOT NULL AND o.session>?1 AND (s.peer IS NOT NULL OR EXISTS(SELECT 1 FROM group_key_outbox g WHERE g.id=o.id)) AND s.suite=2 AND s.retired=0 ORDER BY o.session LIMIT 16"
+            "SELECT DISTINCT o.session FROM outbox o JOIN sessions s ON s.id=o.session WHERE o.packet IS NOT NULL AND o.session>?1 AND (s.peer IS NOT NULL OR EXISTS(SELECT 1 FROM group_key_outbox g WHERE g.id=o.id) OR EXISTS(SELECT 1 FROM call_jobs c WHERE c.id=o.id)) AND s.suite=2 AND s.retired=0 ORDER BY o.session LIMIT 16"
         )?.query_map([after], |r| r.get(0))?.collect::<Result<_, _>>()?;
         let mut attempts = Vec::new();
         let mut next = Vec::new();

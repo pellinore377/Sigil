@@ -122,6 +122,9 @@ pub enum Service {
     CallRelay {
         request: String,
     },
+    CallUpdate {
+        request: String,
+    },
     AttachmentChunk {
         file: String,
         index: u32,
@@ -147,6 +150,7 @@ impl Service {
             }
             Self::CallConnect { request } => !request.is_empty() && request.len() <= 100352,
             Self::CallRelay { request } => !request.is_empty() && request.len() <= 2048,
+            Self::CallUpdate { request } => !request.is_empty() && request.len() <= 16384,
             Self::AttachmentChunk { file, access, .. } => {
                 crate::accounts::valid_credential(file) && crate::accounts::valid_credential(access)
             }
@@ -170,6 +174,7 @@ impl Lookup {
                     | Service::GroupRequest { .. }
                     | Service::CallConnect { .. }
                     | Service::CallRelay { .. }
+                    | Service::CallUpdate { .. }
                     | Service::AttachmentChunk { .. }
             }
         )

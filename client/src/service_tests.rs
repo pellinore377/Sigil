@@ -1,4 +1,5 @@
 use super::*;
+use crate::map_fixture;
 use crate::{
     claims::tests::pair,
     incoming::tests::{next, trust},
@@ -16,8 +17,6 @@ use sigil_server::{
     store::Store,
 };
 use std::sync::{atomic::AtomicUsize, Arc};
-#[path = "../../server/tests/fixtures/maps.rs"]
-mod map_fixture;
 
 #[test]
 fn native_https_maps_return_local_tiles_and_assets() {
@@ -47,6 +46,22 @@ fn native_https_maps_return_local_tiles_and_assets() {
     let tile = client.map_tile(0, 0, 0).unwrap().unwrap();
     assert_eq!(&*tile.bytes, &[0x1a, 0]);
     assert!(tile.encoding.is_none());
+    let map = alice
+        .mobile_map_resource("/client/v0/maps/style.json")
+        .unwrap();
+    let style: Value =
+        serde_json::from_slice(map.splitn(4, |b| *b == b'\n').nth(3).unwrap()).unwrap();
+    assert_eq!(
+        style["sources"]["local"]["url"],
+        "https://sigil-map.invalid/client/v0/maps/tiles.json"
+    );
+    assert!(alice.mobile_map_resource("https://example.com/").is_err());
+    assert!(alice
+        .mobile_map_resource("/client/v0/maps/assets/../style.json")
+        .is_err());
+    assert!(alice
+        .mobile_map_resource("/client/v0/maps/tiles/27/0/0")
+        .is_err());
     assert!(client.map_tile(1, 0, 0).unwrap().is_none());
     store
         .configure_maps(sigil_server::maps::Configure {

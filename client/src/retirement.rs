@@ -169,7 +169,8 @@ impl ClientStore {
                     .is_some_and(|(selected, _)| selected == id)
             } else {
                 !groups::scoped_channel(&tx, &self.key, &id)?
-            }; // Only authenticated group scopes give unbound sessions a policy.
+                    && !calls::scoped_channel(&tx, &self.key, &id)?
+            };
             let queued: Vec<Vec<u8>>=tx.prepare("SELECT o.id FROM outbox o JOIN deliveries d ON d.session=o.session AND d.id=o.id WHERE o.session=?1 AND o.packet IS NOT NULL ORDER BY o.rowid LIMIT 16")?
                 .query_map([raw],|r|r.get(0))?.collect::<Result<_,_>>()?;
             for message in queued {

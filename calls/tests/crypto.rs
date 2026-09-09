@@ -52,6 +52,7 @@ fn roster_signatures_bind_membership_and_cannot_change_call_identity_or_move_bac
     let owner = IdentityKey::generate().unwrap();
     let member = Member::new(owner.public_key());
     let first = Roster {
+        controller: None,
         version: 1,
         call: [1; 32],
         server: "chat.example".into(),

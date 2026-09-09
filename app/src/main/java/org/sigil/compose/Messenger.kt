@@ -24,13 +24,49 @@ class Messenger(application: Application) : AndroidViewModel(application) {
         private set
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private val mutex = Mutex()
+    internal val calls = NativeCalls(application, { history, active -> state = state.copy(calls = history, call = active) }, { state = state.copy(issue = it) })
+    private val files = NativeFiles(application, scope, { uploads, sent ->
+        state = state.copy(transfers = uploads)
+        if (sent) scope.launch { serialized(false) { refresh() } }
+    }, { state = state.copy(issue = it) })
+    private val voice = VoiceRecorder(scope, { peer, bytes, target -> bytes.inputStream().use { files.stage(target + ("peer" to peer), "Voice message.aac", "audio/aac", bytes.size.toLong(), it) } }, { state = state.copy(voice = it) }, { state = state.copy(issue = it) })
+    var microphoneRequest by mutableStateOf<Pair<String, Map<String, Any?>>?>(null)
+        private set
+    fun microphoneResult(granted: Boolean) { val target = microphoneRequest; microphoneRequest = null; if (granted && target != null) voice.start(target.first, target.second) else if (!granted) state = state.copy(issue = "Microphone permission is needed to record a voice message.") }
+    var picker by mutableStateOf<Pair<Map<String, Any?>, String>?>(null)
+        private set
+    var notificationPermission by mutableStateOf(false)
+        private set
+    var recoveryKey by mutableStateOf<String?>(null)
+        private set
+    fun dismissRecovery() { recoveryKey = null }
+    fun notificationPermissionResult() { notificationPermission = false; state = state.copy(notifications = NativeNotifications.settings(getApplication())) }
+    fun pickerOpened() { picker = null }
+    var wallpaperRevision by mutableStateOf(0L)
+        private set
+    fun importFile(target: Map<String, Any?>, uri: Uri) {
+        if (target["wallpaper"] == "true") changeWallpaper(target["peer"] as String, uri) else files.import(target, uri)
+    }
+    private fun changeWallpaper(peer: String, uri: Uri?) { scope.launch { serialized(true) { saveWallpaper(getApplication(), peer, uri); wallpaperRevision++ } } }
+    fun importPhoto(target: Map<String, Any?>, bytes: ByteArray) { scope.launch(Dispatchers.IO) {
+        try { bytes.inputStream().use { files.stage(target, "Photo.jpg", "image/jpeg", bytes.size.toLong(), it) } }
+        catch (cancelled: CancellationException) { throw cancelled }
+        catch (_: Exception) { withContext(Dispatchers.Main) { state = state.copy(issue = "Could not queue this photo.") } }
+        finally { bytes.fill(0) }
+    } }
     private var foreground = false
     private var nextSync = 0L
     private var published = false
     private var syncIssue: String? = null
     private var pages = 1
     private var post: Pair<Map<String, Any?>, String>? = null
+    private var groupCreate: Pair<Map<String, Any?>, String>? = null
     private var discoveryGeneration = 0L
+    private var searchGeneration = 0L
+    private var searchAfter: Long? = null
+    private var searchCategory = ""
+    private var anchor: Pair<String, String>? = null
+    private var timelineFilter: Map<String, Any?> = emptyMap()
     var authorizationUrl by mutableStateOf<String?>(null)
         private set
 
@@ -42,7 +78,7 @@ class Messenger(application: Application) : AndroidViewModel(application) {
                 if (foreground && state.phase == "connected" && System.currentTimeMillis() / 1000 >= nextSync) {
                     serialized(false) {
                         if (!published) { execute("publish"); published = true }
-                        val result = execute("sync")
+                        val result = execute("sync", mapOf("interactive" to true))
                         nextSync = result.getLong("next_at")
                         val issue = result.optional("issue")
                         if (result.getBoolean("ran")) {
@@ -50,14 +86,24 @@ class Messenger(application: Application) : AndroidViewModel(application) {
                             syncIssue = issue
                         }
                         refresh()
+                        NativeSync.presence(getApplication(), state.call?.call?.phase in listOf("active", "joining"))
                     }
                     // Rust also persists backoff; an IO failure must not create a busy loop.
-                    nextSync = maxOf(nextSync, System.currentTimeMillis() / 1000 + 5)
+                    nextSync = maxOf(nextSync, System.currentTimeMillis() / 1000 + 1)
                 }
             }
         }
     }
-    fun foreground(value: Boolean) { foreground = value; if (value) { nextSync = 0; published = false } }
+    fun foreground(value: Boolean) {
+        NativeSync.foreground(value)
+        NativeNotifications.foreground(getApplication(), value)
+        if (value) state = state.copy(notifications = NativeNotifications.settings(getApplication()))
+        foreground = value; files.enabled = value && state.phase == "connected"
+        NativeSync.enable(getApplication(), state.phase == "connected")
+        if (value) { nextSync = 0; published = false }
+        else { if (state.voice.phase == "Recording") voice.stop(); if (state.phase == "connected") NativeSync.enqueue(getApplication()) }
+        if (state.phase == "connected") scope.launch { try { NativeSync.presence(getApplication(), state.call?.call?.phase in listOf("active", "joining")) } catch (cancelled: CancellationException) { throw cancelled } catch (_: Exception) { } }
+    }
     fun browserOpened() { authorizationUrl = null }
     fun callback(uri: Uri?) {
         if (uri == null || uri.scheme != "sigil" || uri.host != "oidc" || uri.query != null || uri.fragment != null) return
@@ -66,7 +112,29 @@ class Messenger(application: Application) : AndroidViewModel(application) {
         command("callback", mapOf("request_id" to parts[0], "completion" to parts[1]))
     }
     fun command(name: String, fields: Map<String, Any?>) {
+        if (name.startsWith("call_")) { calls.command(name, fields + ("name" to (fields["peer"] as? String)?.let { peer -> state.chats.find { it.id == peer }?.name })); return }
         when (name) {
+            "wallpaper_remove" -> { changeWallpaper(fields["peer"] as String, null); return }
+            "notification_settings" -> { notificationPermissionResult(); return }
+            "notification_permission" -> { if (android.os.Build.VERSION.SDK_INT >= 33) notificationPermission = true else NativeNotifications.systemSettings(getApplication()); return }
+            "notification_system_settings" -> { NativeNotifications.systemSettings(getApplication()); return }
+            "notification_change" -> { NativeNotifications.change(getApplication(), fields["key"] as String, fields["enabled"] as Boolean); notificationPermissionResult(); return }
+            "record_start" -> { val peer = fields["peer"] as String; if (getApplication<Application>().checkSelfPermission(android.Manifest.permission.RECORD_AUDIO) == android.content.pm.PackageManager.PERMISSION_GRANTED) voice.start(peer, fields) else microphoneRequest = peer to fields.toMap(); return }
+            "record_stop" -> { voice.stop(); return }
+            "record_cancel" -> { voice.discard(); return }
+            "record_send" -> { voice.send(); return }
+            "attachment_pick" -> { picker = fields.filterKeys { it != "kind" } to (fields["kind"] as String); return }
+            "delete_conversation" -> {
+                scope.launch { serialized(true) {
+                    if (fields["leave"] == true) execute("leave_group", mapOf("peer" to fields["peer"]))
+                    execute("clear_conversation", mapOf("peer" to fields["peer"]))
+                    if (state.selected == fields["peer"]) { state = state.copy(selected = null, messages = emptyList()); anchor = null; pages = 1 }
+                    refresh()
+                    NativeSync.enqueue(getApplication())
+                } }
+                return
+            }
+            "file_cancel" -> { files.cancel(fields["request"] as String); return }
             "server_changed" -> {
                 if (state.phase != "new") return
                 discoveryGeneration++
@@ -74,24 +142,89 @@ class Messenger(application: Application) : AndroidViewModel(application) {
                 return
             }
             "discover" -> { discover(fields["server"] as String); return }
+            "search" -> { search(fields["query"] as String, fields["category"] as? String ?: ""); return }
+            "search_more" -> { if (!state.searching && state.searchMore) search(state.searchQuery, searchCategory, true); return }
+            "create_collection" -> {
+                val bytes = ByteArray(32).also { SecureRandom().nextBytes(it) }
+                val id = bytes.joinToString("") { "%02x".format(it) }
+                command("organize", mapOf("peer" to null, "value" to mapOf("Collection" to mapOf("id" to id, "name" to fields["name"], "present" to true))))
+                command("organize", mapOf("peer" to null, "value" to mapOf("UiSetting" to mapOf("key" to "collection_icon.$id", "value" to fields["icon"]))))
+                (fields["peers"] as? List<*>)?.filterIsInstance<String>()?.forEach { command("organize", mapOf("peer" to it, "value" to mapOf("CollectionMember" to mapOf("id" to id, "present" to true)))) }
+                return
+            }
             "dismiss" -> { state = state.copy(issue = null); return }
-            "close" -> { state = state.copy(selected = null, messages = emptyList()); pages = 1; return }
-            "open" -> { state = state.copy(selected = fields["peer"] as String, messages = emptyList()); pages = 1 }
+            "close" -> { state = state.copy(selected = null, messages = emptyList(), historical = false); anchor = null; pages = 1; return }
+            "open" -> {
+                anchor = (fields["author"] as? String)?.let { author -> (fields["message"] as? String)?.let { author to it } }
+                val target = (fields["thread_author"] as? String)?.let { author -> (fields["thread_message"] as? String)?.let { ThreadTarget(author, it) } }
+                timelineFilter = if (target == null) emptyMap() else mapOf("category" to "Timeline", "thread_author" to target.author, "thread_message" to target.id)
+                state = state.copy(selected = fields["peer"] as String, messages = emptyList(), historical = anchor != null, threadTarget = target); pages = 1
+            }
+            "timeline_filter" -> { if (timelineFilter == fields) return; timelineFilter = fields.toMap(); pages = 1; state = state.copy(messages = emptyList()) }
+            "latest" -> { anchor = null; state = state.copy(historical = false); pages = 1 }
             "older" -> pages++
             "read" -> if (!foreground) return
         }
         scope.launch {
-            serialized(name != "read") {
-                if (name !in listOf("open", "older")) {
-                    val raw = if (name == "post" && post?.first == fields) post!!.second else request(name, fields).also {
+            serialized(name !in listOf("read", "typing", "draft")) {
+                if (name == "open" && !(fields["peer"] as String).let { it == "self" || it.startsWith("group:") }) execute("organize", mapOf("peer" to fields["peer"], "value" to mapOf("UiSetting" to mapOf("key" to "opened", "value" to "true"))))
+                if (name !in listOf("open", "older", "latest", "timeline_filter")) {
+                    val retry = name == "post" && post?.first == fields
+                    val raw = if (retry) post!!.second else if (name == "group_create" && groupCreate?.first == fields) groupCreate!!.second else request(name, fields).also {
                         if (name == "post") post = fields.toMap() to it
+                        if (name == "group_create") groupCreate = fields.toMap() to it
                     }
-                    val result = native(raw)
+                    val alreadyQueued = retry && execute("post_status", mapOf("peer" to fields["peer"], "request" to JSONObject(raw).getString("request"))).getBoolean("queued")
+                    val result = if (alreadyQueued) JSONObject() else native(raw)
+                    result.optional("open")?.let { state = state.copy(selected = it); groupCreate = null; pages = 1 }
+                    if (name in listOf("profile", "set_profile")) state = state.copy(profileName = result.getString("display_name"), profileRevision = result.getLong("revision"))
+                    if (name in listOf("devices", "revoke_device")) {
+                        val merged = (if (fields["cursor"] != null) state.devices else emptyList()).associateBy { it.id }.toMutableMap()
+                        result.getJSONArray("devices").objects().forEach { value ->
+                            val id = value.getString("id"); val prior = merged[id]
+                            merged[id] = AccountDevice(id, value.getBoolean("current"), value.optional("label") ?: prior?.label,
+                                if (value.isNull("revoked")) prior?.revoked else value.getBoolean("revoked"), if (value.isNull("expires")) prior?.expires else value.getLong("expires"),
+                                value.optional("fingerprint") ?: prior?.fingerprint, if (value.isNull("fingerprint")) prior?.verified == true else value.getBoolean("verified"))
+                        }
+                        state = state.copy(devices = merged.values.sortedByDescending { it.current }, devicesNext = result.optional("next"))
+                    }
+                    if (name == "recovery_generate") recoveryKey = result.getString("secret")
+                    if (name in listOf("storage", "recovery_enable", "recovery_policy")) {
+                        val recovery = result.getJSONObject("recovery")
+                        state = state.copy(storage = StorageDetails(result.getLong("database"), result.getLong("media"), result.getLong("media_used"), result.getLong("budget"), recovery.getBoolean("enabled"),
+                            if (recovery.isNull("last")) null else separator(recovery.getLong("last")), recovery.optLong("pending"), if (recovery.isNull("days")) null else recovery.getInt("days")))
+                        if (name == "recovery_enable") { dismissRecovery(); NativeSync.enqueue(getApplication()) }
+                    }
                     result.optional("authorization_url")?.let { authorizationUrl = it }
-                    if (name == "post") { post = null; state = state.copy(sent = state.sent + 1) }
+                    if (name in listOf("post", "edit")) { post = null; state = state.copy(sent = state.sent + 1, sentText = fields["text"] as? String) }
                 }
                 refresh()
             }
+        }
+    }
+    private fun search(query: String, category: String, more: Boolean = false) {
+        val generation = ++searchGeneration
+        if (!more) searchAfter = null
+        searchCategory = category
+        state = state.copy(searchQuery = query, searchHits = if (more) state.searchHits else emptyList(), searching = true)
+        scope.launch {
+            try {
+                var after = searchAfter
+                val hits = state.searchHits.toMutableList()
+                val initialSize = hits.size
+                do {
+                    val result = mutex.withLock { execute("search", mapOf("query" to query, "after" to after, "category" to category)) }
+                    if (generation != searchGeneration) return@launch
+                    hits += result.getJSONArray("hits").objects().map { hit -> SearchHit(hit.getString("peer"), hit.getString("id"), hit.getString("author"), hit.getString("text"), clock(hit.getLong("timestamp")), hit.getBoolean("pinned"), hit.getBoolean("noted"), hit.getString("kind"), hit.getBoolean("thread"), hit.optional("thread_author")?.let { author -> hit.optional("thread_message")?.let { ThreadTarget(author, it) } }) }
+                    after = if (result.isNull("next")) null else result.getLong("next")
+                    searchAfter = after
+                    state = state.copy(searchHits = hits.toList(), searchMore = after != null, searching = after != null && hits.size - initialSize < 64)
+                    yield()
+                } while (after != null && hits.size - initialSize < 64)
+                searchAfter = after
+                state = state.copy(searching = false, searchMore = after != null)
+            } catch (cancelled: CancellationException) { throw cancelled }
+            catch (error: Exception) { if (generation == searchGeneration) state = state.copy(searching = false, issue = "Search could not finish.") }
         }
     }
     private fun discover(address: String) {
@@ -123,15 +256,17 @@ class Messenger(application: Application) : AndroidViewModel(application) {
     }
     private fun request(name: String, fields: Map<String, Any?> = emptyMap()): String {
         val value = JSONObject().put("command", name)
-        fields.forEach { (key, item) -> value.put(key, item ?: JSONObject.NULL) }
-        if (name in listOf("post", "react", "pin", "read")) {
+        fields.forEach { (key, item) -> value.put(key, JSONObject.wrap(item)) }
+        if (name == "card_action") value.put("timestamp", System.currentTimeMillis() / 1000)
+        if (name in listOf("post", "place", "group_create", "react", "pin", "read", "mark_read", "snooze", "forward", "organize", "edit", "delete", "clear_conversation", "note", "typing", "draft")) {
             val bytes = ByteArray(32).also { SecureRandom().nextBytes(it) }
             value.put("request", bytes.joinToString("") { "%02x".format(it) })
             value.put("timestamp", System.currentTimeMillis() / 1000)
+            if (name == "post") value.put("timezone", java.util.TimeZone.getDefault().id)
         }
         return value.toString()
     }
-    private suspend fun execute(name: String, fields: Map<String, Any?> = emptyMap()) = native(request(name, fields))
+    private suspend fun execute(name: String, fields: Map<String, Any?> = emptyMap()) = if (name == "sync") NativeSync.run(getApplication(), fields["interactive"] == true) else native(request(name, fields))
     private suspend fun native(raw: String): JSONObject = withContext(Dispatchers.IO) {
         val result = StorageKeyProvider(getApplication()).withKey { directory, key ->
             JSONObject(NativeStorage.execute(directory.path, key, raw))
@@ -142,33 +277,60 @@ class Messenger(application: Application) : AndroidViewModel(application) {
     private suspend fun refresh() {
         val value = execute("state")
         val phase = value.getString("phase")
+        files.enabled = foreground && phase == "connected"
         if (phase != "connected") { state = state.copy(phase = phase, loginAddress = if (phase == "new") state.loginAddress else value.optional("server") ?: state.loginAddress); return }
+        calls.refresh(execute("calls"))
+        state = state.copy(readReceipts = value.getBoolean("read_receipts"), typingIndicators = value.getBoolean("typing_indicators"), presenceSharing = value.getBoolean("presence_sharing"), invitations = value.getJSONArray("invitations").objects().map { GroupInvitation(it.getString("id"), it.getString("peer"), it.getString("group")) })
         val chats = value.getJSONArray("chats").objects().map { chat ->
             ChatSummary(chat.getString("id"), chat.getString("address"), chat.getString("preview"), clock(chat.getLong("timestamp")), chat.getBoolean("verified"),
-                chat.getJSONArray("devices").objects().map { device -> ChatDevice(device.getString("id"), device.getString("fingerprint"), device.getBoolean("verified"), device.getBoolean("blocked"), device.getBoolean("changed")) })
+                chat.getJSONArray("devices").objects().map { device -> ChatDevice(device.getString("id"), device.getString("fingerprint"), device.getBoolean("verified"), device.getBoolean("blocked"), device.getBoolean("changed")) }, chat.optString("name"), chat.optInt("unread"), chat.optBoolean("pinned"), chat.optBoolean("snoozed"), chat.optBoolean("hidden"), chat.optString("presence", "inactive"), chat.optJSONArray("collections")?.strings().orEmpty(), chat.optJSONArray("typing")?.strings().orEmpty(), chat.optional("draft").orEmpty(), chat.optBoolean("group"), ui = chat.optJSONObject("ui")?.stringMap().orEmpty(), contactOnly = chat.optBoolean("contact_only"), readReceipts = chat.optBoolean("read_receipts", true), typingIndicators = chat.optBoolean("typing_indicators", true), presenceSharing = chat.optBoolean("presence_sharing"))
         }
-        state = state.copy(phase = phase, address = value.getString("address"), device = value.getString("device"), fingerprint = value.getString("fingerprint"), chats = chats)
+        state = state.copy(phase = phase, address = value.getString("address"), device = value.getString("device"), fingerprint = value.getString("fingerprint"), chats = chats, collectionsEnabled = value.optBoolean("collections_enabled"), collections = value.optJSONArray("collections")?.objects()?.map { CollectionItem(it.getString("id"), it.getString("name"), it.optString("icon", "folder")) }.orEmpty(), ui = value.optJSONObject("ui")?.stringMap().orEmpty())
         val peer = state.selected ?: return
+        if (peer == "self" && state.chats.none { it.id == "self" }) state = state.copy(chats = state.chats + ChatSummary("self", state.address, "", "", true, emptyList(), displayName = "Note to Self"))
         val messages = mutableListOf<ChatMessage>()
+        val filter = timelineFilter
+        val initialAnchor = anchor
+        val wanted = pages * 64
         var before: Long? = null
-        repeat(pages) {
-            val timeline = execute("timeline", mapOf("peer" to peer, "before" to before))
+        do {
+            val timeline = execute("timeline", filter + mapOf("peer" to peer, "before" to before, "author" to if (before == null) initialAnchor?.first else null, "message" to if (before == null) initialAnchor?.second else null))
+            if (state.selected != peer || timelineFilter != filter || anchor != initialAnchor) return
+            if (before == null && state.selected == peer) state = state.copy(typing = timeline.optJSONArray("typing")?.strings().orEmpty())
+            state = state.copy(people = timeline.getJSONObject("people").stringMap())
             messages += timeline.getJSONArray("messages").objects().map { message ->
                 ChatMessage(message.getString("id"), message.getString("author"), message.getString("text"), message.getBoolean("mine"), clock(message.getLong("timestamp")),
-                    message.getString("delivery"), message.getBoolean("pinned"), message.getJSONArray("reactions").strings(), message.getJSONArray("my_reactions").strings(), message.optional("reply"), message.getBoolean("read_by_me"))
+                    message.getString("delivery"), message.getBoolean("pinned"), message.getJSONArray("reactions").strings(), message.getJSONArray("my_reactions").strings(), message.optional("reply"), message.getBoolean("read_by_me"), message.getLong("timestamp"), separator(message.getLong("timestamp")), message.optJSONArray("readers")?.strings().orEmpty(), message.optBoolean("noted"), message.optional("thread_author"), message.optional("thread_message"), message.optBoolean("editable", true), message.optString("kind", "Text"), peer,
+                    message.optJSONObject("attachment")?.let { AttachmentDetails(it.getString("name"), it.getString("media_type"), it.getLong("length")) },
+                    message.optJSONArray("parts")?.objects()?.map { part -> MessagePart(part.optString("id"), part.getString("kind"), part.getString("text"), part.optJSONArray("items")?.objects()?.map { item -> CardItem(item.getString("id"), item.getString("text"), item.getBoolean("checked"), item.getBoolean("enabled"), if (item.isNull("count")) null else item.getLong("count")) }.orEmpty(), part.optBoolean("multiple"), part.optBoolean("closed"), if (part.isNull("voters")) null else part.getLong("voters"), if (part.has("at")) separator(part.getLong("at")) else "", part.optInt("latitude_e6") / 1_000_000.0, part.optInt("longitude_e6") / 1_000_000.0) }.orEmpty(), message.optional("thread_preview"))
             }
             before = if (timeline.isNull("next")) null else timeline.getLong("next")
             if (before == null) {
                 if (state.selected == peer) state = state.copy(messages = messages, more = false)
                 return
             }
-        }
-        if (state.selected == peer) state = state.copy(messages = messages, more = before != null)
+            if (messages.isNotEmpty()) state = state.copy(messages = messages.toList(), more = true)
+            yield()
+        } while (messages.size < wanted)
+        if (state.selected == peer) state = state.copy(messages = messages, more = true)
     }
-    override fun onCleared() { scope.cancel() }
+    override fun onCleared() { calls.close(); voice.close(); scope.cancel() }
     private class NativeFailure(message: String) : Exception(message)
 }
 private fun JSONObject.optional(key: String): String? = if (isNull(key)) null else optString(key).ifEmpty { null }
 private fun JSONArray.objects() = (0 until length()).map { getJSONObject(it) }
 private fun JSONArray.strings() = (0 until length()).map { getString(it) }
 private fun clock(seconds: Long): String = if (seconds == 0L) "" else DateFormat.getTimeInstance(DateFormat.SHORT).format(Date(seconds * 1000))
+private fun separator(seconds: Long): String {
+    if (seconds == 0L) return ""
+    val time = java.time.Instant.ofEpochSecond(seconds).atZone(java.time.ZoneId.systemDefault())
+    val today = java.time.LocalDate.now()
+    val day = when (time.toLocalDate()) {
+        today -> "Today"
+        today.minusDays(1) -> "Yesterday"
+        else -> time.format(java.time.format.DateTimeFormatter.ofPattern(if (time.year == today.year) "MMMM d" else "MMMM d, yyyy"))
+    }
+    return "$day, ${clock(seconds)}"
+}
+
+private fun JSONObject.stringMap() = keys().asSequence().associateWith { getString(it) }

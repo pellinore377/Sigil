@@ -49,9 +49,9 @@ pub(super) fn queue(
     body: Body,
     now: u64,
 ) -> Result<(), Error> {
-    let known = crate::peers::verified(tx, key, &peer)?;
+    let known = channels::authorized(tx, key, record, &peer)?;
     let own = crate::device_fingerprint(&crate::peers::own(tx, key)?)?;
-    let expires = if matches!(body, Body::Invite(_)) {
+    let expires = if matches!(body, Body::Invite(_) | Body::DirectInvite(_)) {
         record
             .invites
             .iter()
@@ -62,8 +62,12 @@ pub(super) fn queue(
         record.state.roster.roster.expires
     };
     let raw = Zeroizing::new(
-        serde_json::to_vec(&(record.id(), peer, expires, &body))
-            .map_err(|_| Error::InvalidStore)?,
+        if known.verified {
+            serde_json::to_vec(&(record.id(), peer, expires, &body))
+        } else {
+            serde_json::to_vec(&(record.id(), peer, expires, &body, true))
+        }
+        .map_err(|_| Error::InvalidStore)?,
     );
     let id = key.commitment(&raw, b"Sigil/call-job-id/v1")?;
     match read(tx, key, &id) {
@@ -92,6 +96,7 @@ pub(super) fn queue(
                 sender: own,
                 recipient: known.fingerprint,
                 expires,
+                scoped: !known.verified,
                 body,
             },
             peer,
@@ -110,7 +115,7 @@ fn current(db: &Connection, key: &StorageKey, job: &Job, now: u64) -> Result<(),
         Err(Error::NotFound) => return Err(Error::Obsolete),
         Err(e) => return Err(e),
     };
-    let known = match crate::peers::verified(db, key, &job.peer) {
+    let known = match channels::authorized(db, key, &record, &job.peer) {
         Ok(value) => value,
         Err(Error::Unprepared | Error::NotFound) => return Err(Error::Obsolete),
         Err(e) => return Err(e),
@@ -119,7 +124,7 @@ fn current(db: &Connection, key: &StorageKey, job: &Job, now: u64) -> Result<(),
         return Err(Error::Obsolete);
     }
     let permitted = match &job.wire.body {
-        Body::Invite(_) => {
+        Body::Invite(_) | Body::DirectInvite(_) => {
             record.phase == Phase::Active
                 && record.invites.iter().any(|v| {
                     v.peer == job.peer
@@ -163,6 +168,12 @@ fn current(db: &Connection, key: &StorageKey, job: &Job, now: u64) -> Result<(),
                     || share_digest(shares)? == share_digest(&record.shares)?)
         }
         Body::Leave => matches!(record.phase, Phase::Declined | Phase::Left),
+        Body::Handoff { state, proof } => {
+            record.phase == Phase::Left
+                && record.transfer.as_ref() == Some(proof)
+                && state.digest().map_err(failure)? == record.state.digest().map_err(failure)?
+        }
+        Body::CancelInvite => record.phase == Phase::Left && record.transfer.is_some(),
     };
     if permitted {
         if matches!(job.wire.body, Body::Shares(_)) {
@@ -177,6 +188,27 @@ fn current(db: &Connection, key: &StorageKey, job: &Job, now: u64) -> Result<(),
     } else {
         Err(Error::Obsolete)
     }
+}
+pub(crate) fn delivery_peer(
+    tx: &Transaction<'_>,
+    key: &StorageKey,
+    session: &Id,
+    message: &Id,
+) -> Result<Option<crate::Peer>, Error> {
+    let job = match read(tx, key, message) {
+        Ok(job) => job,
+        Err(Error::NotFound) => return Ok(None),
+        Err(error) => return Err(error),
+    };
+    if !job.wire.scoped {
+        return Ok(None);
+    }
+    if !job.queued || job.session != *session {
+        return Err(Error::Conflict);
+    }
+    current(tx, key, &job, crate::conversations::now())?;
+    let record = load(tx, key, &job.wire.call)?;
+    Ok(Some(channels::authorized(tx, key, &record, &job.peer)?))
 }
 pub(super) fn leave(
     tx: &Transaction<'_>,
@@ -249,6 +281,46 @@ fn share_digest(shares: &[Share]) -> Result<Id, Error> {
     Ok(Sha256::digest(serde_json::to_vec(&values).map_err(|_| Error::InvalidStore)?).into())
 }
 impl ClientStore {
+    fn allow_call_controls(&mut self, id: Id) -> Result<(), Error> {
+        let record = load(&self.db, &self.key, &id)?;
+        if record.phase != Phase::Active
+            || record.transfer.is_none() && record.state.roster.delegations.is_empty()
+        {
+            return Ok(());
+        }
+        let recipients: Vec<_> = record
+            .state
+            .participants
+            .iter()
+            .filter(|p| Some(p.member.id) != record.own.as_ref().map(|own| own.member.id))
+            .map(peer)
+            .collect::<Result<_, _>>()?;
+        for recipient in &recipients {
+            if record.owner_peer.is_some_and(|owner| owner != *recipient)
+                || record.control_grants.contains(recipient)
+            {
+                continue;
+            }
+            let known = channels::authorized(&self.db, &self.key, &record, recipient)?;
+            self.allow_known_sender_online(&known)?;
+            let tx = self
+                .db
+                .transaction_with_behavior(TransactionBehavior::Immediate)?;
+            let mut current = load(&tx, &self.key, &id)?;
+            if current.state.digest().map_err(failure)? != record.state.digest().map_err(failure)?
+                || current.phase != Phase::Active
+            {
+                return Err(Error::Conflict);
+            }
+            current.control_grants.retain(|p| recipients.contains(p));
+            if !current.control_grants.contains(recipient) {
+                current.control_grants.push(*recipient);
+            }
+            super::save(&tx, &self.key, &current)?;
+            tx.commit()?;
+        }
+        Ok(())
+    }
     fn prepare_call_job_online(&mut self, id: Id, now: u64) -> Result<(), Error> {
         let mut job = read(&self.db, &self.key, &id)?;
         if let Err(error) = current(&self.db, &self.key, &job, now) {
@@ -272,13 +344,17 @@ impl ClientStore {
         let tx = self
             .db
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
-        let selection = crate::selection::for_send(&tx, &self.key, &job.peer, now);
+        let selection = if job.wire.scoped {
+            Err(Error::Unprepared)
+        } else {
+            crate::selection::for_send(&tx, &self.key, &job.peer, now)
+        };
         match selection {
             Ok(session) => {
                 let raw = job.wire.bytes()?;
                 crate::send_in(&tx, &self.key, session, id, &raw)?;
                 let destination = crate::peers::destination(&tx, &self.key, &job.peer)?;
-                crate::transport::prepare(
+                let prepared = crate::transport::prepare(
                     &tx,
                     &self.key,
                     session,
@@ -286,19 +362,52 @@ impl ClientStore {
                     destination,
                     Some(job.wire.expires),
                     now,
-                )?;
-                job.session = session;
-                job.queued = true;
-                save(&tx, &self.key, &job)?;
-                tx.commit()?;
-                return Ok(());
+                );
+                match prepared {
+                    Ok(_) => {
+                        job.session = session;
+                        job.queued = true;
+                        save(&tx, &self.key, &job)?;
+                        tx.commit()?;
+                        return Ok(());
+                    }
+                    Err(Error::Expired) => tx.rollback()?,
+                    Err(error) => return Err(error),
+                }
             }
-            Err(Error::Unprepared | Error::Expired) => {}
+            Err(Error::Unprepared | Error::Expired) => tx.commit()?,
             Err(e) => return Err(e),
         }
+        let tx = self
+            .db
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let record = load(&tx, &self.key, &job.wire.call)?;
+        let known = channels::authorized(&tx, &self.key, &record, &job.peer)?;
+        crate::claims::prepare(
+            &tx,
+            &self.key,
+            &crate::handshake::identity(&tx, &self.key)?.public_key(),
+            job.claim,
+            known.binding.device,
+            known.binding.identity,
+            (
+                (!job.wire.scoped).then_some(job.peer),
+                Some(&known.binding.server),
+            ),
+        )?;
         tx.commit()?;
-        self.prepare_peer_claim(job.claim, job.peer)?;
         if let Err(error) = self.claim_prekey_online(job.claim, now) {
+            if job.wire.scoped
+                && matches!(
+                    error,
+                    Error::Network(crate::network::Error::Status {
+                        code: 403 | 404,
+                        ..
+                    })
+                )
+            {
+                return Ok(());
+            }
             if matches!(error, Error::Expired) {
                 let tx = self
                     .db
@@ -360,6 +469,13 @@ impl ClientStore {
             if record.expire(now) {
                 super::save(&self.db, &self.key, &record)?;
             }
+            if let Err(error) = self.allow_call_controls(record.id()) {
+                attempts.push(Attempt {
+                    id: record.id(),
+                    result: Err(error),
+                });
+                continue;
+            }
             if record.owner_peer.is_some() {
                 continue;
             }
@@ -369,6 +485,16 @@ impl ClientStore {
                     .db
                     .transaction_with_behavior(TransactionBehavior::Immediate)?;
                 let mut current = load(&tx, &self.key, &id)?;
+                if current.direct
+                    && current.phase == Phase::Active
+                    && current.state.participants.len() == 1
+                    && current.joining.is_empty()
+                    && !current.invites.is_empty()
+                    && current.invites.iter().all(|v| now >= v.until)
+                {
+                    end(&self.key, &mut current)?;
+                    super::save(&tx, &self.key, &current)?;
+                }
                 if !current.joining.is_empty() {
                     let mut state = current.state.clone();
                     state.roster.roster.previous =
@@ -384,10 +510,10 @@ impl ClientStore {
                     }
                     state.roster.roster.members.sort_by_key(|m| m.id);
                     state.participants.sort_by_key(|p| p.member.id);
-                    state.roster = state
+                    state.roster = current
+                        .state
                         .roster
-                        .roster
-                        .sign(&current.key(&self.key)?)
+                        .update(state.roster.roster, &current.key(&self.key)?)
                         .map_err(failure)?;
                     current.change(&self.key, state)?;
                     current.joining.clear();
@@ -419,7 +545,8 @@ impl ClientStore {
                 if current.commits.is_empty() && current.announced != Some(digest) {
                     let own = crate::device_fingerprint(&crate::peers::own(&tx, &self.key)?)?;
                     for recipient in &current.notify {
-                        let known = match crate::peers::verified(&tx, &self.key, recipient) {
+                        let known = match channels::authorized(&tx, &self.key, &current, recipient)
+                        {
                             Ok(value) => value,
                             Err(Error::Unprepared | Error::NotFound)
                                 if current.state.roster.roster.closed

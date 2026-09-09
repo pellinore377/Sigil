@@ -1,0 +1,6 @@
+Animated Noto Emoji — Google LLC
+https://googlefonts.github.io/noto-emoji-animation/
+Licensed under Creative Commons Attribution 4.0 International:
+https://creativecommons.org/licenses/by/4.0/legalcode
+
+Unmodified Lottie assets are bundled for offline playback.

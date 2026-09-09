@@ -12,6 +12,123 @@ fn post(text: &str) -> Action {
 }
 
 #[test]
+fn clear_history_is_private_atomic_and_cannot_revive_on_replay_or_clear_retry() {
+    let (dir, _server, mut alice, mut bob, now) = pair();
+    let (_, peer) = trust(&mut alice, &mut bob);
+    let remote = bob
+        .observe_peer_binding(&alice.own_device_binding().unwrap())
+        .unwrap()
+        .id;
+    let original = alice
+        .conversation_operation([180; 32], post("My old letter"))
+        .unwrap();
+    deliver(&mut alice, &mut bob, peer, &original, now);
+    let mut response = bob
+        .conversation_operation([181; 32], post("Their old letter"))
+        .unwrap();
+    response.version.counter = 500;
+    deliver(&mut bob, &mut alice, remote, &response, now);
+    let conversation = alice.direct_conversation(peer).unwrap();
+    let alice_author = account(&mut alice);
+    let bob_author = account(&mut bob);
+    let target = Reference {
+        author: alice_author,
+        message: original.id,
+    };
+    let reply = Reference {
+        author: bob_author,
+        message: response.id,
+    };
+    alice.db.execute_batch("CREATE TRIGGER fail_clear BEFORE INSERT ON conversation_ops WHEN NEW.kind=1 BEGIN SELECT RAISE(ABORT,'synthetic'); END").unwrap();
+    assert!(matches!(
+        alice.clear_conversation(conversation, [182; 32], now),
+        Err(Error::Storage(_))
+    ));
+    assert!(
+        !alice
+            .conversation_message(conversation, target.clone(), now)
+            .unwrap()
+            .deleted
+    );
+    alice.db.execute_batch("DROP TRIGGER fail_clear").unwrap();
+    alice
+        .clear_conversation(conversation, [182; 32], now)
+        .unwrap();
+    for reference in [target.clone(), reply] {
+        assert!(
+            alice
+                .conversation_message(conversation, reference.clone(), now)
+                .unwrap()
+                .deleted
+        );
+        assert!(
+            !bob.conversation_message(conversation, reference, now)
+                .unwrap()
+                .deleted
+        );
+    }
+    let forged = bob
+        .conversation_operation(
+            [183; 32],
+            Action::Private {
+                conversation,
+                value: Private::Clear {
+                    observed: vec![Version {
+                        device: original.version.device,
+                        counter: 999,
+                    }],
+                },
+            },
+        )
+        .unwrap();
+    assert!(matches!(
+        bob.queue_peer_operation(remote, &forged, now, now),
+        Err(Error::InvalidEvent)
+    ));
+    assert_eq!(alice.maintain_history(now).unwrap().redacted, 2);
+    assert!(alice.erase_obsolete_journals(now).unwrap().erased > 0);
+    let later = alice
+        .conversation_operation([184; 32], post("New letter"))
+        .unwrap();
+    deliver(&mut alice, &mut bob, peer, &later, now);
+    alice
+        .clear_conversation(conversation, [182; 32], now)
+        .unwrap();
+    assert_eq!(
+        alice
+            .conversation_page(conversation, None, None, None, now)
+            .unwrap()
+            .messages
+            .len(),
+        1
+    );
+    assert!(matches!(
+        alice.queue_peer_operation(peer, &original, now, now),
+        Err(Error::Obsolete)
+    ));
+    drop(alice);
+    let mut alice = ClientStore::open(
+        &dir.path().join("alice.db"),
+        StorageKey::new(sigil_crypto::Secret32::from_bytes([9; 32])).unwrap(),
+    )
+    .unwrap();
+    assert!(
+        alice
+            .conversation_message(conversation, target, now)
+            .unwrap()
+            .deleted
+    );
+    assert_eq!(
+        alice
+            .conversation_page(conversation, None, None, None, now)
+            .unwrap()
+            .messages
+            .len(),
+        1
+    );
+}
+
+#[test]
 fn deleted_bodies_are_compacted_without_reviving_on_replay() {
     let (_dir, _fixture, mut a, _b, now) = pair();
     a.enable_history_recovery().unwrap();
@@ -462,6 +579,35 @@ fn pump(from: &mut ClientStore, to: &mut ClientStore, now: u64) {
         assert!(item.result.is_ok(), "{:?}", item.result.err());
     }
     to.acknowledge_incoming_online().unwrap();
+}
+
+#[test]
+fn clear_context_syncs_to_linked_devices_without_erasing_their_concurrent_posts() {
+    let (_dir, _fixture, mut a, mut b, _, _, now) = linked();
+    let original = a
+        .conversation_operation([185; 32], post("Old note"))
+        .unwrap();
+    let conversation = a.note_to_self(&original, now, now).unwrap();
+    for _ in 0..3 {
+        pump(&mut a, &mut b, now);
+    }
+    let concurrent = b
+        .conversation_operation([186; 32], post("Concurrent offline note"))
+        .unwrap();
+    b.note_to_self(&concurrent, now, now).unwrap();
+    a.clear_conversation(conversation, [187; 32], now).unwrap();
+    for _ in 0..3 {
+        pump(&mut a, &mut b, now);
+        pump(&mut b, &mut a, now);
+    }
+    for client in [&mut a, &mut b] {
+        let page = client
+            .conversation_page(conversation, None, None, None, now)
+            .unwrap();
+        assert_eq!(page.messages.len(), 1);
+        assert_eq!(page.messages[0].reference.message, concurrent.id);
+        client.maintain_history(now).unwrap();
+    }
 }
 
 #[test]

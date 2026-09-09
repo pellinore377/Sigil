@@ -531,6 +531,6 @@ fn scheduled_completion_failure_keeps_progress_and_scope_rebinding_fails() {
             .db
             .query_row("PRAGMA user_version", [], |r| r.get::<_, i64>(0))
             .unwrap(),
-        68
+        i64::from(crate::DATABASE_VERSION)
     );
 }

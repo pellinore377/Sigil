@@ -22,6 +22,7 @@ kotlin {
         }
         val jvmSharedMain by creating { dependsOn(commonMain.get()) }
         androidMain.get().dependsOn(jvmSharedMain)
+        androidMain.dependencies { implementation("com.airbnb.android:lottie:6.7.1") }
         val desktopMain by getting {
             dependsOn(jvmSharedMain)
             dependencies { implementation(compose.desktop.currentOs) }
@@ -75,8 +76,9 @@ val trimUnusedBrowserImport by tasks.registering {
 tasks.named("wasmJsBrowserProductionWebpack") { dependsOn(trimUnusedBrowserImport) }
 android {
     namespace = "org.sigil.shared"
-    compileSdk = 35
+    compileSdk = 36
     defaultConfig { minSdk = 26 }
+    sourceSets["main"].assets.srcDir(rootProject.file("licenses"))
     compileOptions { sourceCompatibility = JavaVersion.VERSION_17; targetCompatibility = JavaVersion.VERSION_17 }
 }
 compose.desktop {

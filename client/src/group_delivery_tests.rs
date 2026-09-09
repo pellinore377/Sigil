@@ -811,7 +811,7 @@ fn maximum_text_migrates_and_pending_capacity_is_reusable_without_counter_reset(
             .db
             .query_row("PRAGMA user_version", [], |r| r.get::<_, u32>(0))
             .unwrap(),
-        68
+        crate::DATABASE_VERSION
     );
     let max = "x".repeat(GroupText::MAX_BODY);
     alice

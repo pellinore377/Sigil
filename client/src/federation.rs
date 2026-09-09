@@ -166,7 +166,10 @@ impl ClientStore {
         let peer = if let Some(peer) = session_peer(&tx, &session)? {
             Some(peers::verified(&tx, &self.key, &peer)?)
         } else {
-            groups::delivery_peer(&tx, &self.key, &session, &id)?
+            match groups::delivery_peer(&tx, &self.key, &session, &id)? {
+                Some(peer) => Some(peer),
+                None => calls::delivery_peer(&tx, &self.key, &session, &id)?,
+            }
         };
         match peer {
             Some(peer) if transport::hex(&peer.binding.device) == recipient => {

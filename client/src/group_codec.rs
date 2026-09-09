@@ -69,6 +69,19 @@ impl<'a> Reader<'a> {
             }),
             6 => Change::Close,
             7 => Change::RefreshKeys,
+            8 => {
+                let size = self.count(512)?;
+                let name = std::str::from_utf8(self.take(size)?)
+                    .map_err(|_| Error::InvalidEvent)?
+                    .to_owned();
+                let size = self.count(4096)?;
+                let description = std::str::from_utf8(self.take(size)?)
+                    .map_err(|_| Error::InvalidEvent)?
+                    .to_owned();
+                let profile = GroupProfile { name, description };
+                profile.validate()?;
+                Change::Profile(profile)
+            }
             _ => return Err(Error::InvalidEvent),
         })
     }
@@ -122,6 +135,16 @@ fn change(bytes: &mut Vec<u8>, value: &Change) -> Result<(), Error> {
         }
         Change::Close => bytes.push(6),
         Change::RefreshKeys => bytes.push(7),
+        Change::Profile(value) => profile(bytes, value)?,
+    }
+    Ok(())
+}
+pub(super) fn profile(bytes: &mut Vec<u8>, value: &GroupProfile) -> Result<(), Error> {
+    value.validate()?;
+    bytes.push(8);
+    for text in [&value.name, &value.description] {
+        bytes.extend_from_slice(&(text.len() as u16).to_be_bytes());
+        bytes.extend_from_slice(text.as_bytes());
     }
     Ok(())
 }
@@ -178,6 +201,9 @@ impl State {
         for member in &self.members {
             change(&mut bytes, &Change::Add(member.clone()))?;
         }
+        if let Some(value) = &self.profile {
+            profile(&mut bytes, value)?;
+        }
         if bytes.len() > MAX_CHECKPOINT_BYTES {
             return Err(Error::Limit);
         }
@@ -215,6 +241,14 @@ impl State {
             }
             members.push(member);
         }
+        let profile = if reader.0.is_empty() {
+            None
+        } else {
+            let Change::Profile(value) = reader.change()? else {
+                return Err(Error::InvalidStore);
+            };
+            Some(value)
+        };
         let mut state = Self {
             group,
             head,
@@ -224,6 +258,7 @@ impl State {
             members,
             earlier_history: flags[0] == 1,
             closed: flags[1] == 1,
+            profile,
         };
         state.validate()?;
         if !reader.0.is_empty() || state.checkpoint()? != bytes {

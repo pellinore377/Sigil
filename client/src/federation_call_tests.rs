@@ -76,4 +76,26 @@ pub(super) fn run(alice: &mut ClientStore, bob: &mut ClientStore, server: &mut S
         bob.call(id, now()).is_ok_and(|c| c.phase == Phase::Ended)
     });
     assert!(bob.call_relay_online(id, now()).is_err());
+    let id = [212; 32];
+    alice.create_group_call(id, now(), 3600).unwrap();
+    alice.invite_to_call(id, pb, now()).unwrap();
+    until(alice, bob, |_, bob| {
+        bob.call(id, now())
+            .is_ok_and(|call| call.phase == Phase::Ringing)
+    });
+    bob.answer_call(id, true, now()).unwrap();
+    until(alice, bob, |_, bob| {
+        bob.call(id, now())
+            .is_ok_and(|call| call.phase == Phase::Active)
+    });
+    alice.leave_call(id, now()).unwrap();
+    until(alice, bob, |_, bob| {
+        bob.call(id, now())
+            .is_ok_and(|call| call.phase == Phase::Active && call.participants.len() == 1)
+            && bob.call_relay_online(id, now()).is_ok()
+    });
+    assert!(alice.call(id, now()).unwrap().phase == Phase::Left);
+    bob.leave_call(id, now()).unwrap();
+    step(bob, alice);
+    assert!(bob.call(id, now()).unwrap().phase == Phase::Ended);
 }

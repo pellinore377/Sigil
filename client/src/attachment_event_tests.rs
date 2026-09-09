@@ -359,7 +359,7 @@ fn published_file_uses_normal_claim_delivery_and_typed_atomic_recovery() {
         bob.db
             .query_row("PRAGMA user_version", [], |r| r.get::<_, i64>(0))
             .unwrap(),
-        68
+        i64::from(crate::DATABASE_VERSION)
     );
 }
 

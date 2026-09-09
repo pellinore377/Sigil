@@ -4486,9 +4486,12 @@ checksum = "f8fadd59c855ef2080decdef8ff161eb6661b86933c9d82e5ba29dc602a55aba"
 name = "sigil-android"
 version = "0.1.0"
 dependencies = [
+ "getrandom 0.4.3",
  "jni 0.21.1",
+ "sigil-calls",
  "sigil-client",
  "sigil-crypto",
+ "tokio",
  "zeroize",
 ]
 
@@ -4537,6 +4540,7 @@ dependencies = [
  "tokio-rustls",
  "ureq",
  "web-push-native",
+ "webpki-roots",
  "webrtc",
  "zeroize",
 ]

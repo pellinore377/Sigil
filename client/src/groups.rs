@@ -51,6 +51,9 @@ impl Member {
     pub fn role(&self) -> Role {
         self.role
     }
+    pub(crate) fn account_binding(&self) -> &sigil_protocol::device::Binding {
+        &self.devices[0].binding
+    }
     pub fn device_fingerprints(&self) -> Result<Vec<Id>, Error> {
         self.devices
             .iter()
@@ -61,6 +64,7 @@ impl Member {
 
 #[derive(Clone)]
 pub enum Change {
+    Profile(GroupProfile),
     Add(Member),
     Remove(Id),
     SetRole { member: Id, role: Role },
@@ -69,6 +73,27 @@ pub enum Change {
     EarlierHistory(bool),
     RefreshKeys,
     Close,
+}
+
+#[derive(Clone, PartialEq, Eq)]
+pub struct GroupProfile {
+    pub name: String,
+    pub description: String,
+}
+impl GroupProfile {
+    pub(crate) fn validate(&self) -> Result<(), Error> {
+        if self.name.is_empty()
+            || !sigil_protocol::profile::valid_name(&self.name)
+            || self.description.len() > 4096
+            || self
+                .description
+                .chars()
+                .any(|c| c.is_control() && c != '\n')
+        {
+            return Err(Error::InvalidEvent);
+        }
+        Ok(())
+    }
 }
 
 // Plaintext membership deliberately does not implement Debug.
@@ -82,6 +107,7 @@ pub struct State {
     members: Vec<Member>,
     earlier_history: bool,
     closed: bool,
+    profile: Option<GroupProfile>,
 }
 
 pub struct Genesis {
@@ -143,9 +169,15 @@ impl State {
                 bytes.extend_from_slice(&binding);
             }
         }
+        if let Some(profile) = &self.profile {
+            codec::profile(&mut bytes, profile)?;
+        }
         Ok(bytes)
     }
     fn validate(&mut self) -> Result<(), Error> {
+        if let Some(profile) = &self.profile {
+            profile.validate()?;
+        }
         if self.members.is_empty()
             || self.members.len() > MAX_MEMBERS
             || self.members.iter().map(|m| m.devices.len()).sum::<usize>() > MAX_DEVICES
@@ -178,6 +210,9 @@ impl State {
     }
     pub fn group(&self) -> Id {
         self.group
+    }
+    pub fn profile(&self) -> Option<&GroupProfile> {
+        self.profile.as_ref()
     }
     pub fn head(&self) -> Id {
         self.head
@@ -226,6 +261,13 @@ impl State {
         let mut approvals = vec![vec![(author, identity)]];
         let frozen_change = change.clone();
         match change {
+            Change::Profile(profile) => {
+                profile.validate()?;
+                if next.profile.as_ref() == Some(&profile) {
+                    return Err(Error::Conflict);
+                }
+                next.profile = Some(profile);
+            }
             Change::Add(member) => {
                 // All invited devices consent to this specific group/state.
                 for signer in signers(&member)? {
@@ -423,6 +465,7 @@ impl Genesis {
             members: vec![creator],
             earlier_history: false,
             closed: false,
+            profile: None,
         };
         state.validate()?;
         state.head = digest(b"Sigil/group-genesis-state/v0", &[&state.canonical()?]);

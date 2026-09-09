@@ -48,7 +48,7 @@ impl Store {
         };
         if !matches!(
             service,
-            Service::CallConnect { .. } | Service::CallRelay { .. }
+            Service::CallConnect { .. } | Service::CallRelay { .. } | Service::CallUpdate { .. }
         ) {
             return Err(StoreError::Invalid("invalid call lookup"));
         }
@@ -143,7 +143,9 @@ impl Store {
                     let value = crate::group_operations::request_in(&tx, request, now)?;
                     serde_json::to_string(&value).map_err(|_| StoreError::InvalidData)?
                 }
-                Service::CallConnect { .. } | Service::CallRelay { .. } => {
+                Service::CallConnect { .. }
+                | Service::CallRelay { .. }
+                | Service::CallUpdate { .. } => {
                     return Err(StoreError::Invalid("calling requires the media runtime"))
                 }
                 Service::AttachmentChunk {

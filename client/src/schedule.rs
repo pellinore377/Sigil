@@ -184,10 +184,20 @@ impl ClientStore {
     pub fn sync_due_online(&mut self) -> Result<ScheduledSync, Error> {
         self.sync_with_clock(clock)
     }
+    pub fn sync_foreground_online(&mut self) -> Result<ScheduledSync, Error> {
+        self.sync_with_poll(clock, 1)
+    }
 
     fn sync_with_clock(
         &mut self,
+        clock: impl FnMut() -> Result<u64, Error>,
+    ) -> Result<ScheduledSync, Error> {
+        self.sync_with_poll(clock, POLL_SECONDS)
+    }
+    fn sync_with_poll(
+        &mut self,
         mut clock: impl FnMut() -> Result<u64, Error>,
+        poll: u64,
     ) -> Result<ScheduledSync, Error> {
         let now = clock()?;
         if now == 0 || now > i64::MAX as u64 - RESERVATION_SECONDS {
@@ -213,9 +223,17 @@ impl ClientStore {
         let reserved = write(&tx, &self.key, &own, &state)?;
         tx.commit()?;
         let step = self.sync_step_online(now);
-        let (next_at, scheduling_error) = match clock()
-            .and_then(|finished| self.finish_schedule(&own, &reserved, &state, finished, &step))
-        {
+        let (next_at, scheduling_error) = match clock().and_then(|finished| {
+            complete(
+                &mut self.db,
+                &self.key,
+                &own,
+                (&state, &reserved),
+                finished,
+                (step.failure.is_some(), network_error(&step)),
+                poll,
+            )
+        }) {
             Ok(next) => (next, None),
             Err(error) => (state.next, Some(error)),
         };
@@ -226,6 +244,7 @@ impl ClientStore {
         })
     }
 
+    #[cfg(test)]
     fn finish_schedule(
         &mut self,
         own: &Id,
@@ -386,6 +405,28 @@ mod tests {
     fn run(store: &mut ClientStore, begin: u64, end: u64) -> Result<ScheduledSync, Error> {
         let mut times = [begin, end].into_iter();
         store.sync_with_clock(|| Ok(times.next().unwrap()))
+    }
+    #[test]
+    fn foreground_polling_preserves_server_backoff_and_only_shortens_success_delay() {
+        let (_dir, _fixture, mut store, reject, hits, now) = setup(120);
+        let mut times = [now, now + 1].into_iter();
+        let failed = store
+            .sync_with_poll(|| Ok(times.next().unwrap()), 1)
+            .unwrap();
+        assert_eq!(failed.next_at, now + 121);
+        assert!(store
+            .sync_with_poll(|| Ok(now + 120), 1)
+            .unwrap()
+            .step
+            .is_none());
+        assert_eq!(hits.load(Ordering::SeqCst), 1);
+        reject.store(false, Ordering::SeqCst);
+        let mut times = [now + 121, now + 122].into_iter();
+        let success = store
+            .sync_with_poll(|| Ok(times.next().unwrap()), 1)
+            .unwrap();
+        assert!(success.step.unwrap().failure.is_none());
+        assert_eq!(success.next_at, now + 123);
     }
     #[test]
     fn retry_after_starts_at_completion_survives_restart_and_success_resets_backoff() {

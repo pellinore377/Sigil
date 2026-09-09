@@ -104,11 +104,11 @@ internal fun TextFieldState.format(marker: String, range: TextRange = selection)
 }
 
 @Composable
-fun Composer(state: TextFieldState, analyze: (String) -> String, modifier: Modifier = Modifier, showTools: Boolean = true) {
+fun Composer(state: TextFieldState, analyze: (String) -> String, modifier: Modifier = Modifier, showTools: Boolean = true, focusRequester: FocusRequester? = null, onFocus: () -> Unit = {}) {
     var sourceMode by remember { mutableStateOf(false) }
     var editorFocused by remember { mutableStateOf(false) }
     var formattingSelection by remember { mutableStateOf(state.selection) }
-    val editorFocus = remember { FocusRequester() }
+    val editorFocus = focusRequester ?: remember { FocusRequester() }
     val focusManager = LocalFocusManager.current
     SideEffect { if (editorFocused) formattingSelection = state.selection }
     val source = state.text.toString()
@@ -139,7 +139,7 @@ fun Composer(state: TextFieldState, analyze: (String) -> String, modifier: Modif
         BasicTextField(state,
             modifier = Modifier.fillMaxWidth().heightIn(min = 52.dp, max = 144.dp).testTag("composer")
                 .semantics { contentDescription = "Message" }
-                .focusRequester(editorFocus).onFocusChanged { editorFocused = it.isFocused }
+                .focusRequester(editorFocus).onFocusChanged { editorFocused = it.isFocused; if (it.isFocused) onFocus() }
                 .border(1.dp, MaterialTheme.colorScheme.outlineVariant, androidx.compose.foundation.shape.RoundedCornerShape(24.dp)).padding(horizontal = 16.dp, vertical = 12.dp)
                 .onPreviewKeyEvent {
                     if (it.type != KeyEventType.KeyDown) false

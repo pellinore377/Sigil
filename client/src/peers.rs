@@ -305,41 +305,46 @@ impl ClientStore {
     /// Records a candidate only. Changed bindings for an existing device remain
     /// quarantined; replaying the original cannot clear the warning or transfer trust.
     pub fn observe_peer_binding(&mut self, bytes: &[u8]) -> Result<Peer, Error> {
-        let signed = parse(bytes)?;
-        let id = peer_id(&signed.binding);
         let tx = self
             .db
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
-        let mut record = match load(&tx, &self.key, &id) {
-            Ok(record) => record,
-            Err(Error::NotFound) => {
-                if tx.query_row("SELECT count(*) FROM peers WHERE obsolete=0", [], |r| {
-                    r.get::<_, i64>(0)
-                })? >= 4096
-                {
-                    return Err(Error::Limit);
-                }
-                Record {
-                    signed: signed.clone(),
-                    candidate: None,
-                    verified: false,
-                    blocked: false,
-                    replacement: None,
-                }
-            }
-            Err(error) => return Err(error),
-        };
-        if record.signed.binding != signed.binding {
-            record.candidate = Some(signed);
-        }
-        save(&tx, &self.key, &id, &record)?;
-        let result = record.public()?;
+        let result = observe(&tx, &self.key, bytes)?;
         tx.commit()?;
         Ok(result)
     }
     pub fn peer(&self, id: Id) -> Result<Peer, Error> {
         load(&self.db, &self.key, &id)?.public()
     }
+}
+pub(crate) fn observe(tx: &Transaction<'_>, key: &StorageKey, bytes: &[u8]) -> Result<Peer, Error> {
+    let signed = parse(bytes)?;
+    let id = peer_id(&signed.binding);
+    let mut record = match load(tx, key, &id) {
+        Ok(record) => record,
+        Err(Error::NotFound) => {
+            if tx.query_row("SELECT count(*) FROM peers WHERE obsolete=0", [], |r| {
+                r.get::<_, i64>(0)
+            })? >= 4096
+            {
+                return Err(Error::Limit);
+            }
+            Record {
+                signed: signed.clone(),
+                candidate: None,
+                verified: false,
+                blocked: false,
+                replacement: None,
+            }
+        }
+        Err(error) => return Err(error),
+    };
+    if record.signed.binding != signed.binding {
+        record.candidate = Some(signed);
+    }
+    save(tx, key, &id, &record)?;
+    record.public()
+}
+impl ClientStore {
     /// The full fingerprint must be independently compared or scanned from the
     /// intended peer. Network acquisition alone never authorizes this call.
     pub fn confirm_peer(&mut self, id: Id, expected_fingerprint: Id) -> Result<(), Error> {

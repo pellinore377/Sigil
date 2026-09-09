@@ -396,6 +396,28 @@ fn stage(
     Ok(hash)
 }
 impl Cache {
+    pub fn storage_usage(&self) -> Result<(u64, u64, u64), Error> {
+        let page_size = u64::from(
+            self.db
+                .query_row("PRAGMA page_size", [], |row| row.get::<_, u32>(0))?,
+        );
+        let pages = u64::from(
+            self.db
+                .query_row("PRAGMA page_count", [], |row| row.get::<_, u32>(0))?,
+        );
+        let free = u64::from(
+            self.db
+                .query_row("PRAGMA freelist_count", [], |row| row.get::<_, u32>(0))?,
+        );
+        Ok((
+            pages.checked_mul(page_size).ok_or(Error::Limit)?,
+            pages
+                .saturating_sub(free)
+                .checked_mul(page_size)
+                .ok_or(Error::Limit)?,
+            self.budget,
+        ))
+    }
     fn open(path: &Path, key: StorageKey, scope: Id, budget: u64) -> Result<Self, Error> {
         let mut db = crate::private_db::open(path, budget)?;
         let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;

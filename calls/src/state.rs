@@ -169,20 +169,31 @@ impl State {
         {
             return Err(Error::Limit);
         }
-        let bytes = serde_json::to_vec(&(
+        let mut bytes = serde_json::to_vec(&(
             &self.roster.roster,
             self.epoch,
             &self.participants,
             &self.ready,
         ))
         .map_err(|_| Error::Invalid)?;
+        if self.roster.roster.version == 2 {
+            let chain = serde_json::to_vec(&self.roster.delegations).map_err(|_| Error::Invalid)?;
+            bytes = [&(bytes.len() as u64).to_be_bytes()[..], &bytes, &chain].concat();
+        }
         if bytes.len() > 49152 {
             return Err(Error::Limit);
         }
-        Ok(hash(b"Sigil/call-state/v1", &bytes))
+        Ok(hash(
+            if self.roster.roster.version == 2 {
+                b"Sigil/call-state/v2"
+            } else {
+                b"Sigil/call-state/v1"
+            },
+            &bytes,
+        ))
     }
     pub fn sign(mut self, owner: &IdentityKey) -> Result<Self, Error> {
-        if owner.public_key() != self.roster.roster.owner {
+        if owner.public_key() != self.roster.roster.controller() {
             return Err(Error::Authentication);
         }
         self.signature = owner
@@ -194,8 +205,12 @@ impl State {
     }
     pub fn verify(&self) -> Result<(), Error> {
         self.roster.verify()?;
-        verify_signature(&self.roster.roster.owner, &self.digest()?, &self.signature)
-            .map_err(|_| Error::Authentication)?;
+        verify_signature(
+            &self.roster.roster.controller(),
+            &self.digest()?,
+            &self.signature,
+        )
+        .map_err(|_| Error::Authentication)?;
         if self.participants.len() != self.roster.roster.members.len() {
             return Err(Error::Invalid);
         }
@@ -221,8 +236,8 @@ impl State {
         if next.epoch <= self.epoch || self.roster.roster.closed {
             return Err(Error::Conflict);
         }
-        if self.roster.roster != next.roster.roster {
-            self.roster.roster.successor(&next.roster.roster, false)?;
+        if self.roster != next.roster {
+            self.roster.successor(&next.roster, false)?;
         }
         for old in &self.participants {
             if next.participants.iter().any(|new| {

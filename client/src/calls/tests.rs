@@ -37,6 +37,99 @@ pub(super) fn pump(a: &mut ClientStore, b: &mut ClientStore, now: u64) {
     }
 }
 #[test]
+fn caller_hangup_cancels_ringing_and_an_answer_in_flight() {
+    for answer in [false, true] {
+        let (dir, _fixture, mut alice, mut bob, now) = pair();
+        configure(dir.path());
+        let (_, peer) = trust(&mut alice, &mut bob);
+        let id = [96; 32];
+        alice.create_direct_call(id, now, 3600).unwrap();
+        alice.invite_to_call(id, peer, now).unwrap();
+        pump(&mut alice, &mut bob, now);
+        if answer {
+            bob.answer_call(id, true, now).unwrap();
+        }
+        bob.replenish_prekey_online().unwrap();
+        alice.leave_call(id, now).unwrap();
+        pump(&mut alice, &mut bob, now);
+        assert!(
+            bob.call(id, now).unwrap().phase == Phase::Ended,
+            "answer in flight: {answer}"
+        );
+        let record = load(&bob.db, &bob.key, &id).unwrap();
+        assert!(record.secret.is_none() && record.shares.is_empty());
+    }
+}
+#[test]
+fn unanswered_direct_call_expires_without_leaving_the_caller_active() {
+    let (dir, _fixture, mut alice, mut bob, now) = pair();
+    configure(dir.path());
+    let (_, peer) = trust(&mut alice, &mut bob);
+    let id = [94; 32];
+    alice.create_direct_call(id, now, 3600).unwrap();
+    alice.invite_to_call(id, peer, now).unwrap();
+    pump(&mut alice, &mut bob, now);
+    let mut media = alice
+        .start_call_media(
+            id,
+            Tracks {
+                audio: true,
+                ..Default::default()
+            },
+            now,
+        )
+        .unwrap();
+    bob.replenish_prekey_online().unwrap();
+    for attempt in alice.resume_calls_online(now + 60).unwrap() {
+        attempt.result.unwrap();
+    }
+    assert!(alice.call(id, now + 60).unwrap().phase == Phase::Ended);
+    assert!(bob.call(id, now + 60).unwrap().phase == Phase::Declined);
+    assert!(alice.refresh_call_media(&mut media, now + 60).is_err());
+}
+#[test]
+fn direct_callee_hangup_closes_the_call_and_erases_both_media_leases() {
+    let (dir, _fixture, mut alice, mut bob, now) = pair();
+    configure(dir.path());
+    let (_, peer) = trust(&mut alice, &mut bob);
+    let id = [95; 32];
+    alice.create_direct_call(id, now, 3600).unwrap();
+    alice.invite_to_call(id, peer, now).unwrap();
+    pump(&mut alice, &mut bob, now);
+    assert!(bob.call(id, now).unwrap().direct);
+    bob.answer_call(id, true, now).unwrap();
+    pump(&mut bob, &mut alice, now);
+    let mut media = alice
+        .start_call_media(
+            id,
+            Tracks {
+                audio: true,
+                ..Default::default()
+            },
+            now,
+        )
+        .unwrap();
+    bob.leave_call(id, now).unwrap();
+    pump(&mut bob, &mut alice, now);
+    assert!(alice.call(id, now).unwrap().phase == Phase::Ended);
+    for store in [&mut alice, &mut bob] {
+        let record = load(&store.db, &store.key, &id).unwrap();
+        assert!(record.secret.is_none());
+        assert!(record.shares.is_empty());
+        assert_eq!(record.lease, [0; 32]);
+    }
+    assert!(alice
+        .seal_call_frame(
+            &mut media,
+            sigil_calls::MediaKind::Audio,
+            0,
+            false,
+            b"no",
+            now
+        )
+        .is_err());
+}
+#[test]
 fn authenticated_call_control_keys_replay_and_new_receiver_handle() {
     let (dir, _fixture, mut alice, mut bob, now) = pair();
     configure(dir.path());

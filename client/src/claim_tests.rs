@@ -16,6 +16,11 @@ fn open(path: &Path) -> ClientStore {
     .unwrap()
 }
 pub(crate) fn pair() -> (tempfile::TempDir, Fixture, ClientStore, ClientStore, u64) {
+    pair_with_bob_key([9; 32])
+}
+pub(crate) fn pair_with_bob_key(
+    bob_key: Id,
+) -> (tempfile::TempDir, Fixture, ClientStore, ClientStore, u64) {
     let (dir, fixture, invitation, now) = setup();
     let mut alice = open(&dir.path().join("alice.db"));
     prepare(&mut alice, &fixture, &invitation.secret);
@@ -30,7 +35,11 @@ pub(crate) fn pair() -> (tempfile::TempDir, Fixture, ClientStore, ClientStore, u
             now,
         )
         .unwrap();
-    let mut bob = open(&dir.path().join("bob.db"));
+    let mut bob = ClientStore::open(
+        &dir.path().join("bob.db"),
+        StorageKey::new(Secret32::from_bytes(bob_key)).unwrap(),
+    )
+    .unwrap();
     prepare(&mut bob, &fixture, &invitation.secret);
     bob.enroll_online().unwrap();
     server

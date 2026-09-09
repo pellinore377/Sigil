@@ -193,10 +193,20 @@ impl ClientStore {
     /// Creates local genesis. Pin its service context and prepare/submit genesis
     /// separately before sharing the group through the authority.
     pub fn create_group(&mut self, authority: Id) -> Result<Id, Error> {
-        let own_binding = self.own_device_binding()?;
-        let own = device_fingerprint(&own_binding)?;
         let mut nonce = [0; 32];
         getrandom::fill(&mut nonce).map_err(|_| Error::Crypto(sigil_crypto::Error::Entropy))?;
+        self.create_group_with_nonce(authority, nonce)
+    }
+    pub(crate) fn create_group_with_nonce(
+        &mut self,
+        authority: Id,
+        nonce: Id,
+    ) -> Result<Id, Error> {
+        if nonce == [0; 32] {
+            return Err(Error::InvalidEvent);
+        }
+        let own_binding = self.own_device_binding()?;
+        let own = device_fingerprint(&own_binding)?;
         let tx = self
             .db
             .transaction_with_behavior(TransactionBehavior::Immediate)?;

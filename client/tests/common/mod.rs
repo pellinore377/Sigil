@@ -1,5 +1,17 @@
 /// Reconstruct historical schemas from a fresh current synthetic database.
 pub fn rewind(db: &rusqlite::Connection, version: u32) {
+    if version < 71 {
+        db.execute_batch("DROP TABLE IF EXISTS mobile_wallpapers;")
+            .unwrap();
+    }
+    if version < 70 {
+        db.execute_batch("DROP TABLE IF EXISTS call_history;")
+            .unwrap();
+    }
+    if version < 69 {
+        db.execute_batch("DROP TABLE IF EXISTS mobile_uploads;")
+            .unwrap();
+    }
     if version < 67 {
         db.execute_batch("DROP TABLE call_cursor; DROP TABLE call_jobs; DROP TABLE calls;")
             .unwrap();

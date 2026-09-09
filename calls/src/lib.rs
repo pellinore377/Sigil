@@ -1,6 +1,6 @@
 #![forbid(unsafe_code)]
 mod roster;
-pub use roster::{Member, Roster, SignedRoster};
+pub use roster::{Delegation, Member, Roster, SignedRoster};
 mod connect;
 pub use connect::{
     validate_turn_url, Answer, Connect, Downstream, Layout, Relay, RelayRequest, SignedConnect,

@@ -87,6 +87,8 @@ pub enum Action {
     Presence {
         online: bool,
         until: u64,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        activity: Option<Presence>,
     },
     Private {
         conversation: Id,
@@ -100,6 +102,11 @@ pub enum Action {
         payload: String,
     },
 }
+#[derive(Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+pub enum Presence {
+    Away,
+    Busy,
+}
 #[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub enum Private {
@@ -111,6 +118,9 @@ pub enum Private {
     Unread(bool),
     Snooze(Option<u64>),
     Hidden(bool),
+    Clear {
+        observed: Vec<Version>,
+    },
     Collection {
         id: Id,
         name: String,
@@ -124,8 +134,13 @@ pub enum Private {
     ReadReceipts(bool),
     TypingIndicators(bool),
     PresenceSharing(bool),
+    UiSetting {
+        key: String,
+        value: Option<String>,
+    },
     RecoveryRetention(Option<u32>),
     Consumed(Reference),
+    Seen(Reference),
 }
 #[derive(Clone, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
 #[serde(deny_unknown_fields)]
@@ -191,12 +206,27 @@ impl Operation {
             {
                 return Err("invalid reaction")
             }
+            Action::Presence {
+                online: false,
+                activity: Some(_),
+                ..
+            } => return Err("inactive presence has no activity"),
             Action::Typing { until, .. } | Action::Presence { until, .. }
                 if *until == 0 || *until > i64::MAX as u64 =>
             {
                 return Err("invalid ephemeral deadline")
             }
             Action::Private { value, .. } => match value {
+                Private::Clear { observed }
+                    if observed.is_empty()
+                        || observed.len() > 128
+                        || observed
+                            .iter()
+                            .any(|v| v.counter == 0 || v.counter > i64::MAX as u64)
+                        || observed.windows(2).any(|v| v[0].device >= v[1].device) =>
+                {
+                    return Err("invalid clear context")
+                }
                 Private::Draft { text, observed } => {
                     if text.len() > 32768
                         || observed.len() > 64
@@ -218,6 +248,16 @@ impl Operation {
                     return Err("invalid snooze")
                 }
                 Private::RecoveryRetention(Some(0)) => return Err("invalid recovery retention"),
+                Private::UiSetting { key, value }
+                    if key.is_empty()
+                        || key.len() > 96
+                        || !key
+                            .bytes()
+                            .all(|b| b.is_ascii_alphanumeric() || b"._-".contains(&b))
+                        || value.as_ref().is_some_and(|v| v.len() > 4096) =>
+                {
+                    return Err("invalid UI preference")
+                }
                 _ => {}
             },
             _ => {}

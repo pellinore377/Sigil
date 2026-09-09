@@ -1347,7 +1347,7 @@ fn task_schema_52_upgrade_preserves_initial_completion_without_fabricated_undo()
             .db
             .query_row("PRAGMA user_version", [], |r| r.get::<_, i64>(0))
             .unwrap(),
-        68
+        i64::from(crate::DATABASE_VERSION)
     );
 }
 

@@ -263,7 +263,7 @@ fn canonical_direct_delivery_is_atomic_restartable_and_recoverable_on_a_fresh_de
             .db
             .query_row("PRAGMA user_version", [], |r| r.get::<_, i64>(0))
             .unwrap(),
-        68
+        i64::from(crate::DATABASE_VERSION)
     );
     assert!(retained(&reopened, id) == text);
 }
@@ -412,7 +412,7 @@ fn direct_cards_bind_the_creator_and_survive_queued_restart_and_recovery_storage
             .db
             .query_row("PRAGMA user_version", [], |r| r.get::<_, i64>(0))
             .unwrap(),
-        68
+        i64::from(crate::DATABASE_VERSION)
     );
     alice.queue_peer_card(b, &card, now).unwrap();
 }

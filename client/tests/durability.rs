@@ -57,12 +57,13 @@ fn superseded_ratchet_checkpoint_leaves_no_live_file_copy() {
     assert!(!path.with_extension("db-journal").exists());
     // Legacy WAL/free pages are purged before the migration is considered complete.
     drop(store);
+    common::rewind(&db, 67);
     db.execute_batch("UPDATE outbox SET rowid=9001;").unwrap();
     db.execute_batch("PRAGMA journal_mode=WAL; PRAGMA secure_delete=OFF; CREATE TABLE retired_synthetic(id BLOB PRIMARY KEY, content BLOB); INSERT INTO retired_synthetic VALUES(X'01',randomblob(8000));").unwrap();
     let old: Vec<u8> = db
         .query_row("SELECT content FROM retired_synthetic", [], |r| r.get(0))
         .unwrap();
-    db.execute_batch("DELETE FROM retired_synthetic; PRAGMA wal_checkpoint(TRUNCATE); UPDATE storage_cleanup SET pending=1; PRAGMA user_version=67;").unwrap();
+    db.execute_batch("DELETE FROM retired_synthetic; PRAGMA wal_checkpoint(TRUNCATE); UPDATE storage_cleanup SET pending=1;").unwrap();
     drop(db);
     assert!(remains(&path, &old));
     let store = open(&path);

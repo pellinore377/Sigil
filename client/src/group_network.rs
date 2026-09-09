@@ -67,8 +67,28 @@ impl HttpsClient {
                 .map_err(|_| Error::Configuration)?,
         )
     }
-    /// The caller obtains the signing fingerprint through authenticated group
-    /// context and persists the accepted profile ID to reject issuer forks.
+    /// Bootstrap a new group's authority from this account's authenticated server.
+    pub fn bootstrap_group_authority(&self) -> Result<Authority, Error> {
+        let encoded: String = self.json(
+            self.anonymous_group("/groups/v0/authority", None::<&()>)?,
+            200,
+            SMALL,
+        )?;
+        let bytes = decode(&encoded, 431)?;
+        let end = bytes.len().checked_sub(96).ok_or(Error::InvalidResponse)?;
+        let signing = bytes
+            .get(end..end + 32)
+            .ok_or(Error::InvalidResponse)?
+            .try_into()
+            .map_err(|_| Error::InvalidResponse)?;
+        Authority::from_bytes(
+            &bytes,
+            &self.server,
+            sigil_crypto::private_group::authority_fingerprint(signing),
+        )
+        .map_err(|_| Error::InvalidResponse)
+    }
+    /// Existing groups pin their signing fingerprint and accepted profile ID.
     pub fn group_authority(
         &self,
         fingerprint: [u8; 32],

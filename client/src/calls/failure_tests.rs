@@ -1,6 +1,61 @@
 use super::*;
 use crate::{claims::tests::pair, incoming::tests::trust};
 #[test]
+fn expired_scoped_control_cannot_authorize_an_unverified_initial_without_a_call() {
+    let (_dir, _fixture, mut alice, mut bob, now) = pair();
+    let own = alice.own_device_binding().unwrap();
+    let target = bob.own_device_binding().unwrap();
+    let sender = bob.observe_peer_binding(&own).unwrap();
+    assert!(!sender.verified);
+    let binding = crate::peers::parse(&target).unwrap().binding;
+    let claim = [71; 32];
+    let session = [72; 32];
+    let message = [73; 32];
+    alice
+        .prepare_prekey_claim(claim, binding.device, binding.identity)
+        .unwrap();
+    alice.claim_prekey_online(claim, now).unwrap();
+    let body = control::Wire {
+        message,
+        call: [74; 32],
+        sender: crate::device_fingerprint(&own).unwrap(),
+        recipient: crate::device_fingerprint(&target).unwrap(),
+        expires: now - 1,
+        scoped: true,
+        body: control::Body::Leave,
+    }
+    .bytes()
+    .unwrap();
+    let packet = alice
+        .start_claimed_initial(claim, session, message, &body, now)
+        .unwrap();
+    alice
+        .connected_client()
+        .unwrap()
+        .submit(&sigil_protocol::mailbox::Submit {
+            recipient_device: crate::transport::hex(&binding.device),
+            message_id: crate::transport::hex(&message),
+            payload: crate::transport::hex(&packet),
+            expires_at: now + 600,
+        })
+        .unwrap();
+    let delivery = bob.connected_client().unwrap().mailbox().unwrap().remove(0);
+    assert!(bob.accept_delivery_at(&delivery, now).is_err());
+    assert_eq!(
+        bob.db
+            .query_row("SELECT count(*) FROM sessions", [], |r| r.get::<_, i64>(0))
+            .unwrap(),
+        0
+    );
+    assert_eq!(
+        bob.db
+            .query_row("SELECT count(*) FROM inbox", [], |r| r.get::<_, i64>(0))
+            .unwrap(),
+        0
+    );
+    assert!(!bob.peer(sender.id).unwrap().verified);
+}
+#[test]
 fn call_control_commits_atomically_and_unanswered_ringing_expires() {
     let (dir, _fixture, mut alice, mut bob, now) = pair();
     super::tests::configure(dir.path());
