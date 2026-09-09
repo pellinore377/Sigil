@@ -498,6 +498,19 @@ impl ClientStore {
     pub fn connection_session(&self) -> Result<Option<accounts::Session>, Error> {
         session_in(&self.db, &self.key)
     }
+    pub(crate) fn enrollment_kind(&self) -> Result<&'static str, Error> {
+        match load(&self.db, &self.key) {
+            Ok((p, _)) => Ok(if p.session.is_some() {
+                "connected"
+            } else if p.oidc.is_some() {
+                "oidc"
+            } else {
+                "invitation"
+            }),
+            Err(Error::NotFound) => Ok("new"),
+            Err(e) => Err(e),
+        }
+    }
     /// Exposes transport only for the durably bound account. Returns Unprepared
     /// while enrollment or credential rotation still needs reconciliation.
     pub fn connected_client(&self) -> Result<network::HttpsClient, Error> {

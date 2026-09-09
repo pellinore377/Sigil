@@ -8,7 +8,7 @@ cargo build --release --manifest-path core/Cargo.toml
 export CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android26-clang"
 export CC_aarch64_linux_android="$CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER"
 export AR_aarch64_linux_android="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ar"
-cargo build --release --target aarch64-linux-android -p sigil-core -p sigil-android
+RUSTFLAGS="$RUSTFLAGS -C link-arg=-Wl,-z,max-page-size=16384 -C link-arg=-Wl,-z,common-page-size=16384" cargo build --release --target aarch64-linux-android -p sigil-core -p sigil-android
 mkdir -p app/build/rust/arm64-v8a
 cp target/aarch64-linux-android/release/libsigil_core.so app/build/rust/arm64-v8a/
 cp target/aarch64-linux-android/release/libsigil_android.so app/build/rust/arm64-v8a/
