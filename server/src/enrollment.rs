@@ -18,6 +18,7 @@ pub(crate) fn routes() -> Router<AppState> {
         .route("/client/v0/enroll", post(enroll))
         .route("/client/v0/reauthorize", post(reauthorize))
         .route("/client/v0/session", get(session).put(rotate))
+        .route("/client/v0/profile", get(profile).put(update_profile))
         .route("/client/v0/devices", get(devices))
         .route("/client/v0/devices/{id}", delete(revoke_device))
         .route("/client/v0/prekeys", get(prekey_inventory))
@@ -27,6 +28,30 @@ pub(crate) fn routes() -> Router<AppState> {
         )
         .route("/client/v0/devices/{id}/prekeys/claim", post(claim_prekey))
         .route_layer(middleware::from_fn(native_only))
+}
+async fn profile(State(state): State<AppState>, headers: HeaderMap) -> Response {
+    let token = match bearer(&headers) {
+        Ok(v) => v,
+        Err(e) => return store_error(e),
+    };
+    match with_store(state, move |s| s.profile(&token, now()?)).await {
+        Ok(v) => Json(v).into_response(),
+        Err(e) => store_error(e),
+    }
+}
+async fn update_profile(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(value): Json<sigil_protocol::profile::Profile>,
+) -> Response {
+    let token = match bearer(&headers) {
+        Ok(v) => v,
+        Err(e) => return store_error(e),
+    };
+    match with_store(state, move |s| s.update_profile(&token, value, now()?)).await {
+        Ok(v) => Json(v).into_response(),
+        Err(e) => store_error(e),
+    }
 }
 async fn devices(
     State(state): State<AppState>,

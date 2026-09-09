@@ -64,7 +64,7 @@ fn ownership_is_atomic_and_password_sessions_expire() {
             .unwrap();
     assert!(hash.starts_with("$argon2id$v=19$m=65536,t=3,p=1$"));
     assert!(!hash.contains("passphrase"));
-    s.web_finish_setup(&session, "admin", 10002).unwrap();
+    s.web_finish_setup(&session, "admin", None, 10002).unwrap();
     assert_eq!(
         s.web_status(Some(&session), 10003)
             .unwrap()
@@ -110,7 +110,7 @@ fn restore_revokes_browser_access_and_reopens_local_claim() {
     let dir = tempfile::tempdir().unwrap();
     let mut s = Store::open(&dir.path().join("source.db")).unwrap();
     let token = setup(&mut s, 10000);
-    s.web_finish_setup(&token, "admin", 10001).unwrap();
+    s.web_finish_setup(&token, "admin", None, 10001).unwrap();
     s.backup(&dir.path().join("backup.db")).unwrap();
     Store::restore(
         &dir.path().join("backup.db"),
@@ -216,4 +216,99 @@ async fn browser_routes_require_ownership_origin_and_session_proof() {
             .status(),
         StatusCode::UNAUTHORIZED
     );
+}
+
+#[tokio::test]
+async fn personal_profile_requires_own_session_and_same_origin_writes() {
+    use sigil_protocol::profile::Profile;
+    let dir = tempfile::tempdir().unwrap();
+    let mut store = Store::open(&dir.path().join("sigil.db")).unwrap();
+    let now = crate::enrollment::now().unwrap();
+    let session = setup(&mut store, now);
+    assert!(store.web_profile(&session, now).is_err());
+    assert!(store
+        .web_finish_setup(&session, "admin", Some("bad\nname"), now)
+        .is_err());
+    assert!(!store.web_status(Some(&session), now).unwrap().complete);
+    store
+        .web_finish_setup(&session, "admin", Some("The Administrator"), now)
+        .unwrap();
+    assert_eq!(
+        store.web_profile(&session, now).unwrap(),
+        Profile {
+            revision: 1,
+            display_name: "The Administrator".into()
+        }
+    );
+    assert!(store.web_status(None, now).unwrap().display_name.is_none());
+    let admin = AdminToken::load_or_create(&dir.path().join("admin.token")).unwrap();
+    let app = router(store, admin);
+    for (cookie, origin, expected) in [
+        (
+            false,
+            Some("https://sigil.example.test"),
+            StatusCode::UNAUTHORIZED,
+        ),
+        (true, None, StatusCode::FORBIDDEN),
+        (true, Some("https://evil.example"), StatusCode::FORBIDDEN),
+        (true, Some("https://sigil.example.test"), StatusCode::OK),
+        (
+            true,
+            Some("https://sigil.example.test"),
+            StatusCode::CONFLICT,
+        ),
+    ] {
+        let mut request = Request::put("/auth/v0/admin/profile")
+            .header("content-type", "application/json")
+            .header("x-sigil-admin", "1");
+        if cookie {
+            request = request.header("cookie", format!("__Host-sigil-admin={session}"));
+        }
+        if let Some(origin) = origin {
+            request = request.header("origin", origin);
+        }
+        let response = app
+            .clone()
+            .oneshot(
+                request
+                    .body(Body::from(r#"{"revision":1,"display_name":"New name"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), expected);
+    }
+    for path in [
+        "/client/v0/profile",
+        "/client/v0/oidc/access",
+        "/admin/v0/oidc/transition",
+    ] {
+        assert_eq!(
+            app.clone()
+                .oneshot(Request::get(path).body(Body::empty()).unwrap())
+                .await
+                .unwrap()
+                .status(),
+            StatusCode::UNAUTHORIZED
+        );
+    }
+    let response = app
+        .oneshot(
+            Request::get("/auth/v0/admin/profile")
+                .header("cookie", format!("__Host-sigil-admin={session}"))
+                .header("x-sigil-admin", "1")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let profile: Profile = serde_json::from_slice(
+        &axum::body::to_bytes(response.into_body(), 4096)
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(profile.display_name, "New name");
+    assert_eq!(profile.revision, 2);
 }

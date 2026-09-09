@@ -29,3 +29,21 @@ pub enum Progress {
     Linked,
     Ready { reauthorize: bool, expires_at: u64 },
 }
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct Access {
+    pub configuration_revision: u64,
+    pub transition_revision: u64,
+    pub issuer: Option<String>,
+    pub linked: bool,
+    pub retiring: bool,
+    pub invitation_fallback_acknowledged: bool,
+}
+#[derive(Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct AcknowledgeFallback {
+    pub configuration_revision: u64,
+    pub transition_revision: u64,
+    pub confirm_invitation_fallback: bool,
+}

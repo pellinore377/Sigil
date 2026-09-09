@@ -16,6 +16,10 @@ use sigil_protocol::oidc::{Finish, Start};
 pub(crate) fn admin() -> Router<AppState> {
     Router::new()
         .route("/admin/v0/oidc", get(configuration).put(configure))
+        .route(
+            "/admin/v0/oidc/transition",
+            get(transition).put(prepare_transition),
+        )
         .layer(tower_http::limit::RequestBodyLimitLayer::new(65536))
 }
 pub(crate) fn client() -> Router<AppState> {
@@ -24,6 +28,10 @@ pub(crate) fn client() -> Router<AppState> {
         .route("/client/v0/oidc/link", post(link))
         .route("/client/v0/oidc/finish", post(finish))
         .route("/client/v0/oidc/bindings", get(bindings).delete(unlink))
+        .route(
+            "/client/v0/oidc/access",
+            get(access).post(acknowledge_fallback),
+        )
         .route_layer(middleware::from_fn(native_only))
         .layer(tower_http::limit::RequestBodyLimitLayer::new(8192))
 }
@@ -41,6 +49,45 @@ async fn run<T: serde::Serialize + Send + 'static>(
 }
 async fn configuration(State(state): State<AppState>) -> Response {
     run(state, |s| s.oidc_configuration()).await
+}
+async fn transition(State(state): State<AppState>, RawQuery(query): RawQuery) -> Response {
+    let after = match query.as_deref() {
+        None | Some("") => None,
+        Some(value) => match value.strip_prefix("after=") {
+            Some(value) if sigil_protocol::accounts::valid_credential(value) => {
+                Some(value.to_owned())
+            }
+            _ => return store_error(StoreError::InvalidData),
+        },
+    };
+    run(state, move |s| s.oidc_transition(after.as_deref(), now()?)).await
+}
+async fn prepare_transition(
+    State(state): State<AppState>,
+    Json(value): Json<crate::oidc_transition::Prepare>,
+) -> Response {
+    run(state, move |s| s.prepare_oidc_retirement(value, now()?)).await
+}
+async fn access(State(state): State<AppState>, headers: HeaderMap) -> Response {
+    let token = match bearer(&headers) {
+        Ok(v) => v,
+        Err(e) => return store_error(e),
+    };
+    run(state, move |s| s.oidc_access(&token, now()?)).await
+}
+async fn acknowledge_fallback(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(value): Json<sigil_protocol::oidc::AcknowledgeFallback>,
+) -> Response {
+    let token = match bearer(&headers) {
+        Ok(v) => v,
+        Err(e) => return store_error(e),
+    };
+    run(state, move |s| {
+        s.acknowledge_oidc_fallback(&token, value, now()?)
+    })
+    .await
 }
 async fn configure(State(state): State<AppState>, Json(update): Json<oidc::Configure>) -> Response {
     let permit = match state.lookup_slots.clone().try_acquire_owned() {

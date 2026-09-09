@@ -24,6 +24,11 @@ import sigil.shared.generated.resources.*
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.toComposeImageBitmap
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.layout.positionInWindow
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import kotlin.io.encoding.Base64
 import kotlin.io.encoding.ExperimentalEncodingApi
 
@@ -40,7 +45,8 @@ private suspend fun api(path: String, method: String = "GET", body: JsonElement?
     request.onload = {
         if (c.isActive) {
             val parsed = runCatching { Json.parseToJsonElement(request.responseText) }.getOrNull()
-            if (request.status.toInt() in 200..299 && parsed != null) c.resume(parsed)
+            if (request.status.toInt() == 204) c.resume(JsonNull)
+            else if (request.status.toInt() in 200..299 && parsed != null) c.resume(parsed)
             else c.resumeWithException(IllegalStateException(parsed?.text("message")?.takeIf { it.isNotEmpty() } ?: "Request failed (${request.status}). Please try again."))
         }
     }
@@ -54,6 +60,7 @@ private suspend fun api(path: String, method: String = "GET", body: JsonElement?
 fun AdminApp() {
     var appearance by remember { mutableStateOf(decodeAppearance(window.localStorage.getItem("appearance"))) }
     var appearanceOpen by remember { mutableStateOf(false) }
+    var accountOpen by remember { mutableStateOf(false) }
     var status by remember { mutableStateOf<JsonElement?>(null) }
     var error by remember { mutableStateOf("") }
     var busy by remember { mutableStateOf(false) }
@@ -76,8 +83,10 @@ fun AdminApp() {
                     Spacer(Modifier.width(12.dp))
                     Text("Sigil", style = MaterialTheme.typography.headlineLarge)
                     Spacer(Modifier.weight(1f))
-                    TextButton(onClick = { appearanceOpen = true }) { Text("Appearance") }
-                    if (status?.flag("authenticated") == true) TextButton(enabled = !busy, onClick = { run { api("/auth/v0/admin/logout", "POST") } }) { Text("Sign out") }
+                    if (status?.flag("authenticated") == true) HeaderAccount(checkNotNull(status), busy,
+                        { accountOpen = true; appearanceOpen = false },
+                        { run { api("/auth/v0/admin/logout", "POST"); accountOpen = false; appearanceOpen = false } })
+                    else TextButton(onClick = { appearanceOpen = true }) { Text("Appearance") }
                 }
                 HorizontalDivider(Modifier.padding(top = 18.dp, bottom = 32.dp))
                 if (error.isNotEmpty()) Text(error, color = MaterialTheme.colorScheme.error, modifier = Modifier.widthIn(max = 680.dp).padding(bottom = 24.dp))
@@ -87,6 +96,7 @@ fun AdminApp() {
                 else if (!current.flag("claimed")) ClaimPage(busy, run)
                 else if (!current.flag("authenticated")) LoginPage(current, busy, run)
                 else if (!current.flag("complete")) IdentityPage(current, busy, run)
+                else if (accountOpen) AccountPage(current, busy, run, { accountOpen = false }, { appearanceOpen = true })
                 else Dashboard(current, busy, run)
                 if (busy) LinearProgressIndicator(Modifier.widthIn(max = 680.dp).fillMaxWidth().padding(top = 20.dp))
             }
@@ -144,8 +154,9 @@ private fun LoginPage(status: JsonElement, busy: Boolean, run: (suspend () -> Un
 private fun IdentityPage(status: JsonElement, busy: Boolean, run: (suspend () -> Unit) -> Unit) {
     var step by remember { mutableStateOf(if (status.flag("oidc_enabled")) "choose" else "provider") }
     var username by remember(status.text("suggested_username")) { mutableStateOf(status.text("suggested_username")) }
+    var displayName by remember(status.text("suggested_display_name")) { mutableStateOf(status.text("suggested_display_name")) }
     val ready = !busy && username.isNotBlank()
-    val submit: () -> Unit = { if (ready) run { api("/auth/v0/admin/finish", "POST", obj("username" to str(username))) } }
+    val submit: () -> Unit = { if (ready) run { api("/auth/v0/admin/finish", "POST", obj("username" to str(username), "display_name" to str(displayName.trim()))) } }
     Page("Your administrator account.", "Choose how you’ll sign in to administer this server.") {
         Text("2 / 3   ·   Your identity", style = MaterialTheme.typography.labelLarge)
         if (step != "local" && !status.flag("oidc_linked")) {
@@ -171,8 +182,10 @@ private fun IdentityPage(status: JsonElement, busy: Boolean, run: (suspend () ->
             }
         } else {
             if (status.flag("oidc_linked")) Text("Your identity provider is linked. Confirm your Sigil username.")
-            Field("Username", username, { username = it }, enabled = !busy, onSubmit = submit)
+            Field("Username", username, { username = it }, enabled = !busy)
             Text("@$username:${status.text("server_name")}")
+            Field("Display name · optional", displayName, { displayName = it }, enabled = !busy, onSubmit = submit)
+            Text("You can change your display name later. Your Sigil address stays the same.", style = MaterialTheme.typography.bodySmall)
             Action("Open my dashboard", ready, submit)
             if (!status.flag("oidc_linked")) TextButton(enabled = !busy, onClick = { step = if (status.flag("oidc_enabled")) "choose" else "provider" }) { Text("Back") }
         }
@@ -189,10 +202,10 @@ private fun IdentityChoice(title: String, description: String, modifier: Modifie
     }
 }
 @Composable
-private fun CopyableCallback(url: String) {
+private fun CopyableCallback(url: String, label: String = "Copy callback URL") {
     var feedback by remember(url) { mutableStateOf("") }
     val scope = rememberCoroutineScope()
-    Text(url, Modifier.clickable(onClickLabel = "Copy callback URL", role = androidx.compose.ui.semantics.Role.Button) {
+    Text(url, Modifier.clickable(onClickLabel = label, role = androidx.compose.ui.semantics.Role.Button) {
         scope.launch(start = CoroutineStart.UNDISPATCHED) {
             try { writeClipboard(url); feedback = "Copied." }
             catch (e: CancellationException) { throw e }
@@ -206,10 +219,12 @@ private fun OidcForm(status: JsonElement, busy: Boolean, run: (suspend () -> Uni
     var unlinkPassword by remember { mutableStateOf("") }
     var issuer by remember { mutableStateOf("") }; var client by remember { mutableStateOf("") }; var secret by remember { mutableStateOf("") }
     var configuration by remember { mutableStateOf<JsonElement?>(null) }
+    var transition by remember { mutableStateOf<JsonElement?>(null) }
     var editing by remember(status.flag("oidc_enabled")) { mutableStateOf(onSaved != null || !status.flag("oidc_enabled")) }
     LaunchedEffect(status.flag("oidc_enabled")) { run {
         val saved = api("/admin/v0/oidc")
         configuration = saved; issuer = saved.text("issuer"); client = saved.text("client_id")
+        if (onSaved == null) transition = api("/admin/v0/oidc/transition")
     } }
     val ready = !busy && configuration != null && issuer.isNotBlank() && client.isNotBlank()
     val submit: () -> Unit = { if (ready) run {
@@ -217,6 +232,7 @@ private fun OidcForm(status: JsonElement, busy: Boolean, run: (suspend () -> Uni
         val exceptions = if (issuer.trim() == old.text("issuer")) old.jsonObject["exceptions"] ?: JsonArray(emptyList()) else JsonArray(emptyList())
         configuration = api("/admin/v0/oidc", "PUT", obj("expected_revision" to old.jsonObject.getValue("revision"), "confirm" to JsonPrimitive(true), "provider" to obj("issuer" to str(issuer.trim()), "client_id" to str(client.trim()), "client_secret" to if (secret.isEmpty()) JsonNull else str(secret), "exceptions" to exceptions)))
         secret = ""
+        if (onSaved == null) transition = api("/admin/v0/oidc/transition")
         if (onSaved != null) onSaved() else editing = false
     } }
     if (editing) {
@@ -246,16 +262,40 @@ private fun OidcForm(status: JsonElement, busy: Boolean, run: (suspend () -> Uni
         Field("Administrator password to unlink", unlinkPassword, { unlinkPassword = it }, secret = true, enabled = !busy, onSubmit = unlink)
         TextButton(enabled = canUnlink, onClick = unlink) { Text("Unlink administrator identity") }
     }
+    if (onSaved == null && status.flag("oidc_enabled")) transition?.let { current ->
+        HorizontalDivider()
+        Text("Changing sign-in access", style = MaterialTheme.typography.headlineSmall)
+        Text("Existing users link their provider while signed in to their existing Sigil account. Matching names or email addresses never merge accounts automatically.")
+        Text("Before disabling OIDC or replacing its issuer or client ID, prepare the transition. New OIDC registrations pause; existing sign-ins and account linking continue.")
+        Text("Users keep their account and can link another device from an existing one. If they lose access, an administrator can issue account access from Users. This does not recover encryption keys or message history.")
+        Text("${current.text("linked_accounts")} linked accounts · ${current.text("awaiting_acknowledgement")} awaiting acknowledgement")
+        if (!status.flag("password_login")) Text("Enable administrator password login below before preparing a transition.")
+        if (current.flag("retiring")) {
+            Text("Transition in progress. Each affected user must acknowledge administrator-assisted access from a signed-in device before OIDC can be removed or replaced.")
+            for (user in current.jsonObject.getValue("pending").jsonArray) Text("${user.text("username")} · ${user.text("active_devices")} active devices", style = MaterialTheme.typography.bodySmall)
+            if (current.text("next_after").isNotEmpty()) TextButton(enabled = !busy, onClick = { run {
+                val page = api("/admin/v0/oidc/transition?after=${current.text("next_after")}")
+                transition = JsonObject(page.jsonObject.toMutableMap().apply { put("pending", JsonArray(current.jsonObject.getValue("pending").jsonArray + page.jsonObject.getValue("pending").jsonArray)) })
+            } }) { Text("Load more affected users") }
+        }
+        TextButton(enabled = !busy && status.flag("password_login"), onClick = { run {
+            transition = api("/admin/v0/oidc/transition", "PUT", obj("configuration_revision" to current.jsonObject.getValue("configuration_revision"), "revision" to current.jsonObject.getValue("revision"), "retiring" to JsonPrimitive(!current.flag("retiring")), "confirm" to JsonPrimitive(true)))
+        } }) { Text(if (current.flag("retiring")) "Cancel transition" else "Prepare OIDC transition") }
+        TextButton(enabled = !busy, onClick = { run { transition = api("/admin/v0/oidc/transition"); configuration = api("/admin/v0/oidc") } }) { Text("Refresh access review") }
+        var disabling by remember { mutableStateOf(false) }
+        TextButton(enabled = !busy && status.flag("password_login") && current.text("awaiting_acknowledgement") == "0", onClick = { disabling = true }) { Text("Disable OIDC") }
+        if (disabling) Confirmation(title = { Text("Disable identity-provider sign-in?") }, text = { Text("Existing devices remain signed in. New access will require device linking or an administrator-issued account invitation. Your administrator password remains available.") }, confirmButton = { TextButton(enabled = !busy, onClick = { run {
+            api("/admin/v0/oidc", "PUT", obj("expected_revision" to current.jsonObject.getValue("configuration_revision"), "provider" to JsonNull, "confirm" to JsonPrimitive(true))); disabling = false
+        } }) { Text("Disable OIDC") } }, dismissButton = { TextButton(enabled = !busy, onClick = { disabling = false }) { Text("Cancel") } })
+    }
 }
 @Composable
 private fun Dashboard(status: JsonElement, busy: Boolean, run: (suspend () -> Unit) -> Unit) {
     var page by remember { mutableStateOf("Overview") }
     Column(Modifier.widthIn(max = 1100.dp).fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(24.dp)) {
         Text("Your server, at a glance.", style = MaterialTheme.typography.displaySmall)
-        AdminAvatar()
-        Text("@${status.text("username")}:${status.text("server_name")}", color = MaterialTheme.colorScheme.onSurfaceVariant)
         Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            for (tab in listOf("Overview", "Users", "Groups", "Authentication", "Server")) FilterChip(page == tab, { page = tab }, { Text(tab) }, enabled = !busy)
+            for (tab in listOf("Overview", "Users", "Groups", "Authentication", "Server")) AdminTab(tab, page == tab, !busy) { page = tab }
         }
         when (page) {
             "Overview" -> Overview(run)
@@ -268,10 +308,6 @@ private fun Dashboard(status: JsonElement, busy: Boolean, run: (suspend () -> Un
                     Switch(status.flag("password_login"), modifier = Modifier.semantics { contentDescription = "Allow administrator password login" }, enabled = !busy, onCheckedChange = { enabled -> run { api("/auth/v0/admin/password-login", "POST", obj("enabled" to JsonPrimitive(enabled))) } })
                     Text("Allow administrator password login", Modifier.padding(start = 12.dp))
                 }
-                if (status.flag("oidc_enabled")) TextButton(enabled = !busy && status.flag("password_login"), onClick = { run {
-                    val old = api("/admin/v0/oidc"); api("/admin/v0/oidc", "PUT", obj("expected_revision" to old.jsonObject.getValue("revision"), "provider" to JsonNull, "confirm" to JsonPrimitive(true)))
-                } }) { Text("Disable OIDC") }
-                ChangePassword(busy, run)
             }
             "Server" -> ServerSettings(busy, run)
         }
@@ -294,16 +330,19 @@ private fun Overview(run: (suspend () -> Unit) -> Unit) {
 @Composable
 private fun Users(busy: Boolean, run: (suspend () -> Unit) -> Unit) {
     var deleting by remember { mutableStateOf<JsonElement?>(null) }
+    var access by remember { mutableStateOf<JsonElement?>(null) }
+    var invitation by remember { mutableStateOf<JsonElement?>(null) }
     var users by remember { mutableStateOf<List<JsonElement>>(emptyList()) }; var next by remember { mutableStateOf("") }; var selected by remember { mutableStateOf<JsonElement?>(null) }
     suspend fun refresh() { val result = api("/admin/v0/accounts"); users = result.jsonObject.getValue("accounts").jsonArray; next = result.text("next_after") }
     LaunchedEffect(Unit) { run { refresh() } }
-    if (deleting == null && selected == null) {
+    if (deleting == null && selected == null && access == null) {
     Text("People on your server", style = MaterialTheme.typography.headlineMedium)
     if (users.isEmpty()) Text("No users to display.")
     for (user in users) {
         Row(Modifier.fillMaxWidth().padding(vertical = 10.dp), verticalAlignment = Alignment.CenterVertically) {
             Column(Modifier.weight(1f)) { Text(user.text("username"), style = MaterialTheme.typography.titleMedium); Text(if (user.flag("disabled")) "Disabled" else user.text("role"), style = MaterialTheme.typography.bodySmall) }
             if (user.flag("deleted")) Text("Deleted") else {
+                TextButton(enabled = !busy && !user.flag("disabled"), onClick = { access = user }) { Text("Account access") }
                 TextButton(enabled = !busy, onClick = { selected = user }) { Text(if (user.flag("disabled")) "Enable" else "Disable") }
                 TextButton(enabled = !busy, onClick = { deleting = user }) { Text("Delete") }
             }
@@ -311,6 +350,19 @@ private fun Users(busy: Boolean, run: (suspend () -> Unit) -> Unit) {
         HorizontalDivider()
     }
     if (next.isNotEmpty()) TextButton(enabled = !busy, onClick = { run { val result = api("/admin/v0/accounts?after=$next"); users = users + result.jsonObject.getValue("accounts").jsonArray; next = result.text("next_after") } }) { Text("Load more") }
+    }
+    access?.let { user ->
+        Text("Account access for ${user.text("username")}", style = MaterialTheme.typography.headlineMedium)
+        Text("Verify the person's identity before sharing an invitation. It grants access to this existing account and revokes its current devices when redeemed. It does not recover encryption keys or message history.")
+        val issued = invitation
+        if (issued == null) {
+            Action("Issue one-hour access invitation", !busy) { run { invitation = api("/admin/v0/accounts/${user.text("id")}/reauthorization-invitations", "POST", obj("expires_in_seconds" to JsonPrimitive(3600))) } }
+        } else {
+            Text("Share privately. This single-use invitation expires one hour after issue.")
+            CopyableCallback(issued.text("secret"), "Copy account access invitation")
+            TextButton(enabled = !busy, onClick = { run { api("/admin/v0/invitations/${issued.text("id")}", "DELETE"); invitation = null; access = null } }) { Text("Revoke invitation") }
+        }
+        TextButton(enabled = !busy, onClick = { invitation = null; access = null }) { Text(if (issued == null) "Back to users" else "Done") }
     }
     deleting?.let { user -> Confirmation(title = { Text("Delete ${user.text("username")}? ") }, text = { Text("Permanently disable this account and schedule removal of its stored messages, attachments and recovery data. The username stays reserved to prevent impersonation. Copies already delivered to other devices remain.") }, confirmButton = { TextButton(enabled = !busy, onClick = { run {
         api("/admin/v0/accounts/${user.text("id")}/delete", "POST", obj("expected_revision" to user.jsonObject.getValue("revision"), "confirm" to JsonPrimitive(true))); deleting = null; refresh()
@@ -369,9 +421,9 @@ private fun GroupRecords(busy: Boolean, run: (suspend () -> Unit) -> Unit) {
 
 @OptIn(ExperimentalEncodingApi::class)
 @Composable
-private fun AdminAvatar() {
-    var image by remember { mutableStateOf<ImageBitmap?>(null) }
-    LaunchedEffect(Unit) {
+private fun AdminAvatar(status: JsonElement, modifier: Modifier) {
+    var image by remember(status.text("username"), status.flag("oidc_linked")) { mutableStateOf<ImageBitmap?>(null) }
+    LaunchedEffect(status.text("username"), status.flag("oidc_linked")) {
         runCatching {
             val encoded = api("/auth/v0/admin/avatar").text("image")
             if (encoded.isNotEmpty()) {
@@ -380,7 +432,64 @@ private fun AdminAvatar() {
             }
         }
     }
-    image?.let { Image(it, "Administrator profile picture", Modifier.size(64.dp).clip(androidx.compose.foundation.shape.CircleShape)) }
+    Box(modifier.clip(androidx.compose.foundation.shape.CircleShape).background(MaterialTheme.colorScheme.secondaryContainer), contentAlignment = Alignment.Center) {
+        val picture = image
+        if (picture != null) Image(picture, null, Modifier.fillMaxSize())
+        else Text((status.text("display_name").ifBlank { status.text("username") }.firstOrNull()?.toString() ?: "S").uppercase(), style = MaterialTheme.typography.titleMedium)
+    }
+}
+@Composable
+private fun HeaderAccount(status: JsonElement, busy: Boolean, account: () -> Unit, logout: () -> Unit) {
+    var open by remember { mutableStateOf(false) }
+    var anchor by remember { mutableStateOf(Offset.Zero) }
+    val button = remember { FocusRequester() }
+    var selected by remember { mutableStateOf(0) }
+    IconButton(onClick = { selected = if (status.flag("complete")) 0 else 1; open = !open }, enabled = !busy,
+        modifier = Modifier.focusRequester(button).onGloballyPositioned { anchor = it.positionInWindow() + Offset(it.size.width.toFloat(), it.size.height.toFloat()) }
+            .semantics { contentDescription = "Your account menu" }) {
+        AdminAvatar(status, Modifier.size(40.dp))
+    }
+    if (open) {
+        MenuKeys { key -> when (key) {
+            "Escape" -> { open = false; button.requestFocus(); true }
+            "ArrowDown", "ArrowUp" -> { selected = if (status.flag("complete")) 1 - selected else 1; true }
+            "Enter", " " -> { if (!busy) { open = false; if (selected == 0) account() else logout() }; true }
+            "Tab" -> { open = false; false }
+            else -> false
+        } }
+        AdminMenu(anchor, { open = false }, "Your account menu") {
+            Text(status.text("display_name").ifBlank { status.text("username").ifBlank { "Your account" } }, Modifier.padding(horizontal = 16.dp, vertical = 8.dp), style = MaterialTheme.typography.titleMedium)
+            listOf("Account", "Sign out").forEachIndexed { index, label ->
+                DropdownMenuItem(text = { Text(label) }, enabled = !busy && (index == 1 || status.flag("complete")),
+                    onClick = { open = false; if (index == 0) account() else logout() },
+                    modifier = Modifier.background(if (selected == index) MaterialTheme.colorScheme.surfaceVariant else androidx.compose.ui.graphics.Color.Transparent))
+            }
+        }
+    }
+}
+@Composable
+private fun AccountPage(status: JsonElement, busy: Boolean, run: (suspend () -> Unit) -> Unit, close: () -> Unit, appearance: () -> Unit) {
+    var profile by remember { mutableStateOf<JsonElement?>(null) }
+    var name by remember { mutableStateOf("") }
+    var saved by remember { mutableStateOf(false) }
+    LaunchedEffect(Unit) { run { profile = api("/auth/v0/admin/profile"); name = checkNotNull(profile).text("display_name") } }
+    val ready = !busy && profile != null && name.trim() != profile?.text("display_name")
+    val submit: () -> Unit = { if (ready) run {
+        profile = api("/auth/v0/admin/profile", "PUT", obj("revision" to checkNotNull(profile).jsonObject.getValue("revision"), "display_name" to str(name.trim())))
+        name = checkNotNull(profile).text("display_name"); saved = true
+    } }
+    Page("Your account.", "Personal settings for your Sigil account.") {
+        Text("@${status.text("username")}:${status.text("server_name")}", style = MaterialTheme.typography.bodyLarge)
+        Field("Display name", name, { name = it; saved = false }, enabled = !busy && profile != null, onSubmit = submit)
+        Text("Your display name is separate from your permanent Sigil address. Leave it empty to use your username.", style = MaterialTheme.typography.bodySmall)
+        Action("Save profile", ready, submit)
+        if (saved) Text("Profile saved.")
+        HorizontalDivider()
+        TextButton(onClick = appearance) { Text("Appearance") }
+        Text("Appearance is currently saved only in this browser.", style = MaterialTheme.typography.bodySmall)
+        ChangePassword(busy, run)
+        TextButton(onClick = close) { Text("Back to Administration") }
+    }
 }
 @Composable
 private fun ChangePassword(busy: Boolean, run: (suspend () -> Unit) -> Unit) {
@@ -403,14 +512,36 @@ private fun ChangePassword(busy: Boolean, run: (suspend () -> Unit) -> Unit) {
 @Composable
 private fun AdminAppearance(appearance: Appearance, close: () -> Unit, change: (Appearance) -> Unit) {
     var accent by remember { mutableStateOf(accentText(appearance.accent)) }
-    Page("Make it feel like you.", "Choose your typography, appearance and accent.") {
+    Page("Make it feel like you.", "Appearance for this browser. Preview uses sample messages.") {
             Text("Typography")
             for (font in listOf("Newsreader", "Google Sans Flex")) Row(verticalAlignment = Alignment.CenterVertically) { RadioButton(appearance.font == font, { change(appearance.copy(font = font)) }, modifier = Modifier.semantics { contentDescription = font }); Text(font) }
             Text("Appearance")
             for (mode in listOf("System", "Light", "Dark")) Row(verticalAlignment = Alignment.CenterVertically) { RadioButton(appearance.mode == mode, { change(appearance.copy(mode = mode)) }, modifier = Modifier.semantics { contentDescription = mode }); Text(mode) }
             Field("Accent color · hex", accent, { accent = it; parseAccent(it)?.let { color -> change(appearance.copy(accent = color)) } }, onSubmit = close)
             TextButton(onClick = { change(Appearance()); accent = accentText(Appearance().accent) }) { Text("Restore Sigil defaults") }
+        TimelinePreview()
         Action("Done", true, close)
+    }
+}
+@Composable
+private fun TimelinePreview() {
+    OutlinedCard(Modifier.fillMaxWidth()) {
+        Column(Modifier.fillMaxWidth().padding(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            Text("Preview · sample conversation", style = MaterialTheme.typography.labelLarge)
+            Surface(shape = RoundedCornerShape(14.dp), color = MaterialTheme.colorScheme.surfaceContainerHighest) {
+                Text("Shall we meet at the bookshop?", Modifier.padding(14.dp))
+            }
+            Surface(Modifier.align(Alignment.End), shape = RoundedCornerShape(14.dp), color = MaterialTheme.colorScheme.primaryContainer) {
+                Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text("Sounds good. See you at six.")
+                    Text("https://example.com", color = MaterialTheme.colorScheme.primary)
+                }
+            }
+            Text("♥ 1", style = MaterialTheme.typography.labelMedium)
+            Surface(shape = RoundedCornerShape(10.dp), color = MaterialTheme.colorScheme.surfaceContainerHighest) {
+                Text("let greeting = \"Hello, Sigil\";", Modifier.padding(14.dp), fontFamily = LocalCodeFont.current, style = MaterialTheme.typography.bodySmall)
+            }
+        }
     }
 }
 

@@ -28,6 +28,13 @@ records and blocks recreation. Both deletions require `expected_revision` and
 `confirm:true`. Downloaded copies and other servers are outside these operations.
 Direct conversations have no server-readable chat directory.
 
+The header's Account menu contains personal display-name, password and appearance
+controls. Appearance is browser-local; its timeline uses sample messages.
+`GET/PUT /auth/v0/admin/profile` edits the signed-in owner's profile;
+`/client/v0/profile` serves the authenticated device's account. Writes send the
+current `revision` and `display_name` (empty uses the username, maximum 128
+characters). Addresses remain unchanged. Onboarding accepts optional `display_name`.
+
 | Role | Permission |
 | --- | --- |
 | Member | Own authenticated client APIs |
@@ -119,6 +126,24 @@ login requires explicit device replacement; old credentials are revoked and
 the new device starts without the old encryption identity or recovery keys.
 History still requires the client's separate encrypted recovery mechanism.
 Native `restart_oidc_enrollment` abandons an unfinished flow with fresh proofs.
+
+Before disabling OIDC or changing its issuer/client ID, use
+`GET/PUT /admin/v0/oidc/transition`. PUT requires `configuration_revision`,
+transition `revision`, `retiring` and `confirm:true`. Retirement pauses new OIDC
+registration while preserving existing sign-ins/linking. Every active linked
+account except the password-backed web owner must acknowledge administrator-assisted
+access. GET lists counts and pending accounts (`after` pagination).
+Authenticated clients GET `/client/v0/oidc/access`, then POST its two revision
+fields with `confirm_invitation_fallback:true`. This records informed acknowledgement,
+not possession of an independent login credential. Cancellation, provider changes
+and restore invalidate acknowledgements. Disabling/changing OIDC rechecks the gate
+transactionally; existing device sessions remain valid.
+
+Users → Account access issues a one-hour replacement invitation for an existing
+account. Verify the recipient before sharing. Redemption revokes old devices;
+issuing alone does not. Invitations can be revoked before use. Encryption-key and
+history recovery remain separate. Ordinary-user passwords are not implemented;
+native transition prompts belong to the client UI.
 
 ## Guided maintenance
 

@@ -18,8 +18,28 @@ import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import kotlin.math.roundToInt
+import kotlinx.browser.document
+import org.w3c.dom.events.Event
+import org.w3c.dom.events.KeyboardEvent
 
-private class MenuEntry(val position: State<Offset>, val dismiss: State<() -> Unit>, val content: State<@Composable () -> Unit>)
+@Composable
+internal fun MenuKeys(handle: (String) -> Boolean) {
+    val current = rememberUpdatedState(handle)
+    DisposableEffect(Unit) {
+        val root = checkNotNull(document.body!!.shadowRoot)
+        val listener: (Event) -> Unit = { event ->
+            val key = event as? KeyboardEvent
+            if (key != null && !key.isComposing && !key.ctrlKey && !key.altKey && !key.metaKey &&
+                ((key.repeat && key.key == "Enter") || current.value(key.key))) {
+                event.preventDefault(); event.stopPropagation()
+            }
+        }
+        root.addEventListener("keydown", listener, true)
+        onDispose { root.removeEventListener("keydown", listener, true) }
+    }
+}
+
+private class MenuEntry(val position: State<Offset>, val dismiss: State<() -> Unit>, val title: State<String>, val content: State<@Composable () -> Unit>)
 private class MenuHostState { var entry by mutableStateOf<MenuEntry?>(null) }
 private val LocalMenuHost = staticCompositionLocalOf<MenuHostState> { error("Missing menu host") }
 
@@ -47,7 +67,7 @@ internal fun AdminMenuHost(content: @Composable () -> Unit) {
                         }
                     }
                 }) {
-                    Surface(Modifier.offset { offset }.onSizeChanged { menuSize = it }.semantics { paneTitle = "Editing menu" },
+                    Surface(Modifier.offset { offset }.onSizeChanged { menuSize = it }.semantics { paneTitle = entry.title.value },
                         shape = RoundedCornerShape(10.dp), color = MaterialTheme.colorScheme.surfaceContainer, shadowElevation = 6.dp) {
                         Column(Modifier.width(IntrinsicSize.Max).widthIn(min = 112.dp, max = 280.dp).padding(vertical = 8.dp)) { entry.content.value() }
                     }
@@ -58,13 +78,14 @@ internal fun AdminMenuHost(content: @Composable () -> Unit) {
 }
 
 @Composable
-internal fun AdminMenu(position: Offset, dismiss: () -> Unit, content: @Composable () -> Unit) {
+internal fun AdminMenu(position: Offset, dismiss: () -> Unit, title: String = "Editing menu", content: @Composable () -> Unit) {
     val host = LocalMenuHost.current
     val positionState = rememberUpdatedState(position)
     val dismissState = rememberUpdatedState(dismiss)
+    val titleState = rememberUpdatedState(title)
     val contentState = rememberUpdatedState(content)
     DisposableEffect(host) {
-        val entry = MenuEntry(positionState, dismissState, contentState)
+        val entry = MenuEntry(positionState, dismissState, titleState, contentState)
         host.entry = entry
         onDispose { if (host.entry === entry) host.entry = null }
     }

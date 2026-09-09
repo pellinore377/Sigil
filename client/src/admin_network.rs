@@ -1,6 +1,56 @@
 use super::*;
 use sigil_protocol::{admin::*, oidc};
 impl HttpsClient {
+    pub fn oidc_access(&self) -> Result<oidc::Access, Error> {
+        self.json(
+            self.request(Method::GET, "/client/v0/oidc/access", None::<&()>)?,
+            200,
+            SMALL,
+        )
+    }
+    pub fn acknowledge_oidc_fallback(
+        &self,
+        value: &oidc::AcknowledgeFallback,
+    ) -> Result<oidc::Access, Error> {
+        let result: oidc::Access = self.json(
+            self.request(Method::POST, "/client/v0/oidc/access", Some(value))?,
+            200,
+            SMALL,
+        )?;
+        if !result.invitation_fallback_acknowledged
+            || result.configuration_revision != value.configuration_revision
+            || result.transition_revision != value.transition_revision
+        {
+            return Err(Error::InvalidResponse);
+        }
+        Ok(result)
+    }
+    pub fn profile(&self) -> Result<sigil_protocol::profile::Profile, Error> {
+        self.json(
+            self.request(Method::GET, "/client/v0/profile", None::<&()>)?,
+            200,
+            SMALL,
+        )
+    }
+    pub fn set_profile(
+        &self,
+        value: &sigil_protocol::profile::Profile,
+    ) -> Result<sigil_protocol::profile::Profile, Error> {
+        if !sigil_protocol::profile::valid_name(&value.display_name) {
+            return Err(Error::Configuration);
+        }
+        let updated: sigil_protocol::profile::Profile = self.json(
+            self.request(Method::PUT, "/client/v0/profile", Some(value))?,
+            200,
+            SMALL,
+        )?;
+        if value.revision.checked_add(1) != Some(updated.revision)
+            || value.display_name != updated.display_name
+        {
+            return Err(Error::InvalidResponse);
+        }
+        Ok(updated)
+    }
     pub fn discover_account(&self, username: &str) -> Result<FoundAccount, Error> {
         if !accounts::valid_username(username) {
             return Err(Error::Configuration);

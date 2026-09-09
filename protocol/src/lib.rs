@@ -177,3 +177,4 @@ mod tests {
 
 pub mod accounts;
 pub mod conversation;
+pub mod profile;
