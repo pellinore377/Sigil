@@ -25,7 +25,8 @@ import kotlinx.coroutines.delay
 
 @Composable
 internal fun InboxFab(visible: Boolean, modifier: Modifier, create: () -> Unit) {
-    AnimatedVisibility(visible, modifier, enter = slideInVertically(tween(MotionMillis)) { it } + fadeIn(), exit = slideOutVertically(tween(MotionMillis)) { it } + fadeOut()) {
+    val bottom = with(LocalDensity.current) { 64.dp.roundToPx() } + WindowInsets.navigationBars.getBottom(LocalDensity.current)
+    AnimatedVisibility(visible, modifier, enter = slideInVertically(tween(MotionMillis)) { it + bottom }, exit = slideOutVertically(tween(MotionMillis)) { it + bottom }) {
         FloatingActionButton(create, Modifier.padding(20.dp), shape = RoundedCornerShape(18.dp), containerColor = MaterialTheme.colorScheme.primary, contentColor = MaterialTheme.colorScheme.onPrimary) { Glyph("edit_square", 27, "New conversation") }
     }
 }

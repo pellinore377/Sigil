@@ -99,14 +99,12 @@ internal fun ConversationPage(chat: ChatSummary, state: MessengerState, draft: T
             val goingBack = LocalNavigationBack.current
             val headerInset = LocalHeaderInset.current
             val banner = !chat.group && (!chat.verified || chat.request == "incoming")
-            val controls = banner || page == "Search" || state.historical
+            val controls = page == "Search" || state.historical
             val timelineMotion = if (motion == null) Modifier else with(motion) { Modifier.animateEnterExit(
                 enter = if (goingBack) fadeIn(tween(MotionMillis)) else slideInVertically(tween(MotionMillis)) { it }, exit = slideOutVertically(tween(MotionMillis)) { it }) }
-            Column(Modifier.weight(1f).fillMaxWidth().then(timelineMotion)) {
+            Column(Modifier.weight(1f).fillMaxWidth().then(timelineMotion).testTag("timeline-body")) {
             if (controls) Spacer(Modifier.height(headerInset))
                 if (page == "Search") OutlinedTextField(localQuery, { localQuery = it }, Modifier.fillMaxWidth().padding(12.dp), placeholder = { Text("Search this conversation") }, singleLine = true)
-            if (banner) ContactRequestPanel(chat, state.busy, command)
-
             if (state.historical) SigilTextButton({ command("latest", emptyMap()) }, Modifier.align(Alignment.CenterHorizontally)) { Text("Return to latest messages") }
             LazyColumn(Modifier.weight(1f).fillMaxWidth().testTag("timeline"), state = list, reverseLayout = true, contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = (if (controls) 0.dp else headerInset) + 12.dp, bottom = 12.dp)) {
                 item("typing") { AnimatedVisibility(!threadsOverview && state.typing.isNotEmpty(), enter = expandVertically(tween(MotionMillis)) + fadeIn(), exit = shrinkVertically(tween(MotionMillis)) + fadeOut()) { TypingRow(state.typing.map { state.people[it] ?: if (chat.group) "Member" else chat.name }, chat.name, state.typing) } }
@@ -152,6 +150,7 @@ internal fun ConversationPage(chat: ChatSummary, state: MessengerState, draft: T
                 }
                 if (state.more) item { SigilTextButton({ command("older", emptyMap()) }, Modifier.fillMaxWidth(), enabled = !state.busy) { Text("Earlier messages") } }
             }
+            if (banner) ContactRequestPanel(chat, state.busy, command)
             }
             val composerMotion = if (motion == null) Modifier else with(motion) { Modifier.animateEnterExit(
                 enter = if (goingBack) fadeIn(tween(MotionMillis)) else slideInHorizontally(tween(160, delayMillis = 80)) { it } + fadeIn(tween(160, delayMillis = 80)),

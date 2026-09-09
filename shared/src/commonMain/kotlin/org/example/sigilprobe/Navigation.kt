@@ -28,6 +28,7 @@ private data class Screen(val destination: String, val page: String, val chat: C
 internal val LocalNavigationBack = staticCompositionLocalOf { false }
 internal val LocalPageMotion = staticCompositionLocalOf<AnimatedContentScope?> { null }
 internal val LocalHeaderInset = staticCompositionLocalOf { 0.dp }
+internal val LocalFooterHeight = staticCompositionLocalOf<((androidx.compose.ui.unit.Dp) -> Unit)?> { null }
 internal typealias Command = (String, Map<String, Any?>) -> Unit
 private val LocalBackActions = staticCompositionLocalOf<androidx.compose.runtime.snapshots.SnapshotStateList<() -> Unit>?> { null }
 @Composable
@@ -90,6 +91,7 @@ fun SigilApp(palette: (Int, Boolean) -> String, analyze: (String) -> String, sta
     val backActions = remember { mutableStateListOf<() -> Unit>() }
     val navigate: (String) -> Unit = navigate@{ target ->
         if (target == "contact-code") { command("contact_qr", mapOf("action" to "show")); return@navigate }
+        if (chat == null) command("close", emptyMap())
         if (target == "new") newTitle = "New conversation"
         goingBack = tabGoesBack(page, target); focus.clearFocus(); keyboard?.hide(); selected = emptySet(); page = target; query = ""; category = ""
     }
@@ -142,6 +144,11 @@ fun SigilApp(palette: (Int, Boolean) -> String, analyze: (String) -> String, sta
                         if (state.call != null && callMinimized) SigilTextButton({ callMinimized = false }, Modifier.fillMaxWidth()) { Glyph("call", 18); Spacer(Modifier.width(8.dp)); Text("Return to call") }
                         val headerHeight = pageHeaderHeight()
                         val conversation = destination == "conversation"
+                        var composerHeight by remember { mutableStateOf(72.dp) }
+                        val footerHeight = if (conversation) composerHeight else 64.dp
+                        val hasFooter = conversation || (destination == "home" && page in MainTabs)
+                        val navigationInset = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
+                        val footerOffset by animateDpAsState(if (hasFooter) 0.dp else footerHeight + navigationInset, tween(MotionMillis), label = "Footer position")
                         val tint = LocalChatTint.current
                         val radius by animateDpAsState(if (conversation) 24.dp else 0.dp, tween(MotionMillis), label = "Header corners")
                         val shape = RoundedCornerShape(bottomStart = radius, bottomEnd = radius)
@@ -150,10 +157,11 @@ fun SigilApp(palette: (Int, Boolean) -> String, analyze: (String) -> String, sta
                                 LocalWallpaper.current(chat.id, Modifier.matchParentSize())
                                 if (chatTheme.gradient) Spacer(Modifier.matchParentSize().background(Brush.verticalGradient(listOf(MaterialTheme.colorScheme.background.copy(alpha = .7f), MaterialTheme.colorScheme.primaryContainer.copy(alpha = .7f)))))
                             }
+                            Surface(Modifier.align(Alignment.BottomCenter).fillMaxWidth().height(footerHeight).offset(y = footerOffset).footerShadow().testTag("footer-surface"), shape = RoundedCornerShape(topStart = 24.dp, topEnd = 24.dp)) {}
                         AnimatedContent(Screen(destination, page, chat, conversationPage, state, newTitle, thread?.id), Modifier.fillMaxSize(), contentKey = { it.destination }, transitionSpec = {
-                            val enter = if (targetState.destination == "conversation") fadeIn(tween(MotionMillis))
+                            val enter = if (targetState.destination == "conversation") EnterTransition.None
                                 else if (goingBack) fadeIn(tween(MotionMillis)) else slideInVertically(tween(MotionMillis)) { it } + fadeIn(tween(MotionMillis))
-                            val exit = if (initialState.destination == "conversation") fadeOut(tween(MotionMillis))
+                            val exit = if (initialState.destination == "conversation") ExitTransition.None
                                 else if (goingBack) slideOutVertically(tween(MotionMillis)) { it } + fadeOut(tween(MotionMillis)) else fadeOut(tween(MotionMillis))
                             enter togetherWith exit
                             }, label = "Page") { screen ->
@@ -162,7 +170,7 @@ fun SigilApp(palette: (Int, Boolean) -> String, analyze: (String) -> String, sta
                                 val chat = screen.chat
                                 val state = screen.state
                                 val detail = screen.detail
-                                CompositionLocalProvider(LocalPageHeader provides true, LocalPageMotion provides this, LocalNavigationBack provides goingBack, LocalHeaderInset provides if (target == "conversation") headerHeight else 0.dp) {
+                                CompositionLocalProvider(LocalPageHeader provides true, LocalPageMotion provides this, LocalNavigationBack provides goingBack, LocalHeaderInset provides if (target == "conversation") headerHeight else 0.dp, LocalFooterHeight provides if (target == "conversation") ({ composerHeight = it }) else null) {
                                 Box(Modifier.fillMaxSize().then(if (target != "conversation") Modifier.padding(top = headerHeight, bottom = if (target == "home" && page in MainTabs) 64.dp else 0.dp).background(MaterialTheme.colorScheme.background) else Modifier)) {
                             when (target) {
                                 "call" -> state.call?.let { CallPage(it, state.chats, dispatch, state.profileAvatar, callPanel) { callPanel = it } }
@@ -198,7 +206,6 @@ fun SigilApp(palette: (Int, Boolean) -> String, analyze: (String) -> String, sta
                                         }
                                       }
                                       }
-                                      InboxFab(page == "inbox", Modifier.align(Alignment.BottomEnd)) { navigate("new") }
                                     }
                                 }
                             }
@@ -208,8 +215,8 @@ fun SigilApp(palette: (Int, Boolean) -> String, analyze: (String) -> String, sta
                                 Surface(Modifier.fillMaxWidth().height(headerHeight).zIndex(1f).testTag("main-header").headerShadow(shape, if (conversation) (2f * tint).dp else 0.dp), shape = shape,
                                     color = if (conversation) lerp(MaterialTheme.colorScheme.background, MaterialTheme.colorScheme.surface, tint) else MaterialTheme.colorScheme.background) {
                                     AnimatedContent(Screen(destination, page, chat, conversationPage, state, newTitle, thread?.id), contentKey = { if (it.destination == "home") "home" else it.destination + if (it.destination == "conversation") it.detail + (it.thread ?: "") else if (it.destination == "new") it.title else "" }, transitionSpec = {
-                                        (slideInHorizontally(tween(160, delayMillis = 80)) { if (goingBack) -it else it } + fadeIn(tween(160, delayMillis = 80))) togetherWith
-                                            (if (goingBack) slideOutHorizontally(tween(MotionMillis)) { it } + fadeOut(tween(100)) else fadeOut(tween(100)))
+                                        (slideInHorizontally(tween(160, delayMillis = 80)) { if (goingBack) -48 else 48 } + fadeIn(tween(160, delayMillis = 80))) togetherWith
+                                            (if (goingBack) slideOutHorizontally(tween(MotionMillis)) { 48 } + fadeOut(tween(100)) else fadeOut(tween(100)))
                                     }, label = "Header items") { screen ->
                                         when (screen.destination) {
                                             "call" -> screen.state.call?.let { CallHeader(it, screen.state.chats, screen.state.profileAvatar, dispatch, { callMinimized = true }) { callPanel = it } }
@@ -229,15 +236,14 @@ fun SigilApp(palette: (Int, Boolean) -> String, analyze: (String) -> String, sta
                                     }
                                 }
                         androidx.compose.animation.AnimatedVisibility(chat == null && page in listOf("inbox", "calls", "settings") && (state.call == null || callMinimized), modifier = Modifier.align(Alignment.BottomCenter).zIndex(2f), enter = slideInVertically(tween(MotionMillis)) { it } + fadeIn(), exit = slideOutVertically(tween(MotionMillis)) { it } + fadeOut()) {
-                            Surface(Modifier.footerShadow().testTag("main-navigation"), shape = RoundedCornerShape(topStart = 24.dp, topEnd = 24.dp)) {
-                                Row(Modifier.fillMaxWidth().padding(vertical = 8.dp), horizontalArrangement = Arrangement.SpaceEvenly) {
+                                Row(Modifier.fillMaxWidth().padding(vertical = 8.dp).testTag("main-navigation"), horizontalArrangement = Arrangement.SpaceEvenly) {
                                     listOf(Triple("inbox", "chat_bubble", "Messages"), Triple("calls", "call", "Calls"), Triple("settings", "settings", "Settings")).forEach { (tab, icon, label) ->
                                         Surface(shape = RoundedCornerShape(16.dp), color = if (page == tab) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surface,
                                             contentColor = if (page == tab) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurfaceVariant) { Symbol(icon, label) { navigate(tab) } }
                                     }
                                 }
-                            }
                         }
+                        InboxFab(destination == "home" && page == "inbox", Modifier.align(Alignment.BottomEnd).padding(bottom = 64.dp).zIndex(3f)) { navigate("new") }
                     }
                     }
                 }
