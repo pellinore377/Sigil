@@ -211,12 +211,17 @@ async fn submit(
         Ok(Json(v)) => v,
         Err(e) => return error(e.status(), "invalid_request", "Invalid message request"),
     };
+    let log = state.ciphertext_log.clone();
+    let record = log.capture(&request);
     match with_store(state, move |store| {
         store.submit_message(&token, request, now()?)
     })
     .await
     {
-        Ok(v) => (StatusCode::ACCEPTED, Json(v)).into_response(),
+        Ok(v) => {
+            log.accepted(record, v.sequence);
+            (StatusCode::ACCEPTED, Json(v)).into_response()
+        }
         Err(e) => store_error(e),
     }
 }
