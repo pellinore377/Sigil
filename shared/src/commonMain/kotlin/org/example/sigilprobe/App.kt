@@ -6,69 +6,100 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.text.input.TextFieldState
 import androidx.compose.foundation.text.input.clearText
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.semantics.*
 import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.font.FontStyle
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.buildAnnotatedString
+import androidx.compose.ui.text.style.TextDecoration
+import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import org.jetbrains.compose.resources.Font
 import sigil.shared.generated.resources.*
 
-private data class Letter(val text: String, val mine: Boolean)
-private data class Conversation(val id: String, val name: String, val initial: String, val preview: String)
-private val examples = listOf(
-    Conversation("alex", "Alex Morgan", "A", "A little room to think."),
-    Conversation("weekend", "Weekend plans", "W", "Shall we take the long way home?"),
-    Conversation("self", "Note to Self", "S", "Small ideas, kept close."),
-)
+data class ChatDevice(val id: String, val fingerprint: String, val verified: Boolean, val blocked: Boolean, val changed: Boolean)
+data class ChatSummary(val id: String, val address: String, val preview: String, val time: String, val verified: Boolean, val devices: List<ChatDevice>) {
+    val name get() = address.removePrefix("@").substringBefore(':')
+}
+data class ChatMessage(val id: String, val author: String, val text: String, val mine: Boolean, val time: String,
+    val delivery: String, val pinned: Boolean, val reactions: List<String>, val myReactions: List<String>, val reply: String?, val readByMe: Boolean)
+data class MessengerState(val phase: String = "loading", val address: String = "", val fingerprint: String = "", val device: String = "",
+    val chats: List<ChatSummary> = emptyList(), val selected: String? = null, val messages: List<ChatMessage> = emptyList(),
+    val more: Boolean = false, val busy: Boolean = false, val issue: String? = null, val sent: Long = 0)
 
 @Composable
-fun SigilApp(palette: (Int, Boolean) -> String, analyze: (String) -> String, redact: (String) -> String,
+fun SigilApp(palette: (Int, Boolean) -> String, analyze: (String) -> String, state: MessengerState, command: (String, Map<String, Any?>) -> Unit,
     read: (String) -> String? = { null }, write: (String, String) -> Unit = { _, _ -> }, dynamicAccent: Int? = null,
     onBackAvailable: (Boolean, () -> Unit) -> Unit = { _, _ -> }) {
     var appearance by remember { mutableStateOf(decodeAppearance(read("appearance"))) }
-    val themes = remember { mutableStateMapOf<String, ChatTheme>().apply { examples.forEach { put(it.id, decodeChat(read("chat.${it.id}"))) } } }
-    val letters = remember { examples.associate { it.id to mutableStateListOf(Letter(it.preview, false)) } }
-    val drafts = remember { examples.associate { it.id to TextFieldState() } }
-    var selected by remember { mutableStateOf<String?>(null) }
-    var settings by remember { mutableStateOf(false) }
-    var chatSettings by remember { mutableStateOf(false) }
-    val back = { if (settings) settings = false else if (chatSettings) chatSettings = false else selected = null }
-    SideEffect { onBackAvailable(settings || selected != null, back) }
-    SigilTheme(appearance, dynamicAccent = dynamicAccent, palette = palette) {
+    var page by rememberSaveable { mutableStateOf("") }
+    var chatAppearance by remember { mutableStateOf(ChatTheme()) }
+    val drafts = remember { mutableMapOf<String, TextFieldState>() }
+    val chat = state.chats.find { it.id == state.selected }
+    LaunchedEffect(chat?.id) { chatAppearance = decodeChat(read("chat.${chat?.id}")) }
+    val back = { if (page.isNotEmpty()) page = "" else command("close", emptyMap()) }
+    SideEffect { onBackAvailable(page.isNotEmpty() || state.selected != null, back) }
+    SigilTheme(appearance, if (chat != null) chatAppearance else null, dynamicAccent, palette) {
         Surface(color = MaterialTheme.colorScheme.background) {
-            BoxWithConstraints(Modifier.fillMaxSize().safeDrawingPadding().imePadding()) {
-                val wide = maxWidth >= 840.dp
-                if (settings) {
-                    AppearancePage(appearance, dynamicAccent != null, back) {
+            Column(Modifier.fillMaxSize().safeDrawingPadding().imePadding()) {
+                if (state.busy) LinearProgressIndicator(Modifier.fillMaxWidth().height(2.dp))
+                state.issue?.let { issue ->
+                    Surface(color = MaterialTheme.colorScheme.surfaceVariant) {
+                        Row(Modifier.fillMaxWidth().padding(start = 20.dp), verticalAlignment = Alignment.CenterVertically) {
+                            Text(issue, Modifier.weight(1f), style = MaterialTheme.typography.bodySmall)
+                            Symbol("close", "Dismiss notice") { command("dismiss", emptyMap()) }
+                        }
+                    }
+                }
+                when {
+                    state.phase == "loading" -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { CircularProgressIndicator() }
+                    state.phase == "unavailable" -> Box(Modifier.fillMaxSize().padding(32.dp), contentAlignment = Alignment.Center) { Text("Connected messaging is currently available in the Android development build.") }
+                    state.phase != "connected" -> SignIn(state, command)
+                    page == "appearance" -> AppearancePage(appearance, dynamicAccent != null, { page = "settings" }) {
                         appearance = it; write("appearance", it.encode())
                     }
-                } else Row(Modifier.fillMaxSize()) {
-                    if (selected == null || wide) Column(Modifier.then(if (wide) Modifier.width(320.dp) else Modifier.fillMaxWidth()).fillMaxHeight()) {
-                        Inbox(selected, { selected = it; chatSettings = false }, { settings = true })
+                    page == "chatAppearance" -> ChatAppearance(chatAppearance, { page = "" }) {
+                        chatAppearance = it; write("chat.${chat?.id}", it.encode())
                     }
-                    if (wide) VerticalDivider()
-                    val conversation = examples.find { it.id == selected }
-                    if (conversation != null) {
-                        val theme = themes.getValue(conversation.id)
-                        SigilTheme(appearance, theme, dynamicAccent, palette) {
-                            Surface(Modifier.weight(1f).fillMaxHeight(), color = MaterialTheme.colorScheme.background) {
-                                if (chatSettings) ChatAppearance(theme, { chatSettings = false }) {
-                                    themes[conversation.id] = it; write("chat.${conversation.id}", it.encode())
-                                } else ConversationPage(conversation, letters.getValue(conversation.id), drafts.getValue(conversation.id),
-                                    theme.gradient, back, { chatSettings = true }, analyze, redact)
+                    page == "settings" -> Column(Modifier.verticalScroll(rememberScrollState())) {
+                        Header("Settings", back)
+                        Row(Modifier.padding(24.dp), verticalAlignment = Alignment.CenterVertically) {
+                            Avatar(state.address.removePrefix("@"), 56)
+                            Column(Modifier.padding(start = 16.dp)) {
+                                Text(state.address.substringBefore(':').removePrefix("@"), style = MaterialTheme.typography.headlineSmall)
+                                Text(state.address, style = MaterialTheme.typography.bodyMedium)
                             }
                         }
-                    } else if (wide) Box(Modifier.weight(1f).fillMaxHeight(), contentAlignment = Alignment.Center) {
-                        Text("A little room for correspondence.", style = MaterialTheme.typography.headlineSmall)
+                        SettingRow("palette", "Appearance", "Typeface, colors and display mode") { page = "appearance" }
+                        SettingRow("devices", "Devices", "This device's verification fingerprint") { page = "device" }
+                        Text("Development build · messaging integration", Modifier.padding(24.dp), style = MaterialTheme.typography.bodySmall)
                     }
+                    page == "device" -> Column(Modifier.verticalScroll(rememberScrollState()).padding(bottom = 24.dp)) {
+                        Header("This device", { page = "settings" })
+                        Column(Modifier.padding(24.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
+                            Text("Compare this fingerprint with your contact through a trusted channel before approving this device.")
+                            SelectionContainer { Text(state.fingerprint.chunked(4).joinToString(" "), fontFamily = LocalCodeFont.current) }
+                            Text("Your messaging keys are stored on this device, protected by Android's hardware-backed key store.", style = MaterialTheme.typography.bodyMedium)
+                        }
+                    }
+                    page == "new" -> NewConversation(state, { page = "" }, command) { page = "" }
+                    chat != null -> ConversationPage(chat, state, drafts.getOrPut(chat.id) { TextFieldState() }, chatAppearance.gradient, back, { page = "chatAppearance" }, analyze, command)
+                    else -> Inbox(state, { command("open", mapOf("peer" to it)) }, { page = "new" }, { page = "settings" })
                 }
             }
         }
@@ -78,11 +109,9 @@ fun SigilApp(palette: (Int, Boolean) -> String, analyze: (String) -> String, red
 @Composable
 private fun Symbol(name: String, label: String, action: () -> Unit) {
     IconButton(action, Modifier.semantics { contentDescription = label }) {
-        Text(name, fontFamily = FontFamily(Font(Res.font.material_symbols)), fontSize = 24.sp,
-            modifier = Modifier.clearAndSetSemantics { })
+        Text(name, fontFamily = FontFamily(Font(Res.font.material_symbols)), fontSize = 24.sp, modifier = Modifier.clearAndSetSemantics { })
     }
 }
-
 @Composable
 private fun Header(title: String, back: (() -> Unit)? = null, action: @Composable RowScope.() -> Unit = {}) {
     Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 12.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -91,78 +120,224 @@ private fun Header(title: String, back: (() -> Unit)? = null, action: @Composabl
         action()
     }
 }
-
 @Composable
-private fun Inbox(selected: String?, open: (String) -> Unit, settings: () -> Unit) {
-    var search by remember { mutableStateOf("") }
-    Column(Modifier.fillMaxHeight()) {
-        Header("Sigil") { Symbol("settings", "Appearance", settings) }
-        OutlinedTextField(search, { search = it }, Modifier.fillMaxWidth().padding(horizontal = 20.dp),
-            label = { Text("Search conversations") }, singleLine = true, shape = RoundedCornerShape(18.dp))
-        Text("Development · sample conversations", Modifier.padding(20.dp), style = MaterialTheme.typography.bodySmall)
-        LazyColumn(Modifier.weight(1f)) {
-            items(examples.filter { it.name.contains(search, ignoreCase = true) }, key = { it.id }) { conversation ->
-                val active = selected == conversation.id
-                Row(Modifier.fillMaxWidth().clickable { open(conversation.id) }
-                    .background(if (active) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.background)
-                    .padding(horizontal = 20.dp, vertical = 20.dp), verticalAlignment = Alignment.CenterVertically) {
-                    Surface(Modifier.size(48.dp), shape = CircleShape, color = MaterialTheme.colorScheme.surfaceVariant) {
-                        Box(contentAlignment = Alignment.Center) { Text(conversation.initial, style = MaterialTheme.typography.titleLarge) }
-                    }
-                    Column(Modifier.weight(1f).padding(start = 16.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                        Text(conversation.name, style = MaterialTheme.typography.titleLarge)
-                        Text(conversation.preview, maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.bodyMedium)
+private fun Avatar(name: String, size: Int = 48) {
+    Surface(Modifier.size(size.dp), shape = CircleShape, color = MaterialTheme.colorScheme.surfaceVariant) {
+        Box(contentAlignment = Alignment.Center) { Text(name.take(1).uppercase(), style = MaterialTheme.typography.titleLarge) }
+    }
+}
+@Composable
+private fun SettingRow(icon: String, title: String, detail: String, click: () -> Unit) {
+    Row(Modifier.fillMaxWidth().clickable(onClick = click).padding(horizontal = 20.dp, vertical = 16.dp), verticalAlignment = Alignment.CenterVertically) {
+        Text(icon, fontFamily = FontFamily(Font(Res.font.material_symbols)), fontSize = 24.sp, modifier = Modifier.clearAndSetSemantics { })
+        Column(Modifier.weight(1f).padding(horizontal = 16.dp)) { Text(title, style = MaterialTheme.typography.titleMedium); Text(detail, style = MaterialTheme.typography.bodySmall) }
+        Text("›")
+    }
+}
+@Composable
+private fun SignIn(state: MessengerState, command: (String, Map<String, Any?>) -> Unit) {
+    var server by rememberSaveable { mutableStateOf("") }
+    var invitation by remember { mutableStateOf("") }
+    var username by rememberSaveable { mutableStateOf("") }
+    var useInvitation by rememberSaveable { mutableStateOf(false) }
+    var replacement by rememberSaveable { mutableStateOf(false) }
+    val submit = {
+        if (useInvitation) command("enroll", mapOf("server" to server.trim(), "invitation" to invitation.trim(), "label" to "Android"))
+        else command("oidc", mapOf("server" to server.trim(), "username" to username.trim().ifBlank { null }, "label" to "Android", "replace_devices" to replacement))
+    }
+    Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(28.dp), verticalArrangement = Arrangement.spacedBy(20.dp)) {
+        Spacer(Modifier.height(32.dp))
+        Text("Sigil", style = MaterialTheme.typography.displayLarge)
+        Text("A little room for correspondence.", style = MaterialTheme.typography.headlineSmall)
+        if (state.phase == "new") {
+            OutlinedTextField(server, { server = it }, Modifier.fillMaxWidth(), label = { Text("Account domain") },
+                placeholder = { Text("example.com") }, singleLine = true, keyboardOptions = KeyboardOptions(imeAction = ImeAction.Next))
+            Text("Use the domain after the colon in your Sigil address.", style = MaterialTheme.typography.bodySmall)
+            if (useInvitation) OutlinedTextField(invitation, { invitation = it }, Modifier.fillMaxWidth(), label = { Text("Access invitation") },
+                singleLine = true, keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done), keyboardActions = KeyboardActions(onDone = { if (!state.busy && server.isNotBlank() && invitation.isNotBlank()) submit() }))
+            else {
+                OutlinedTextField(username, { username = it }, Modifier.fillMaxWidth(), label = { Text("Username (if registering)") }, singleLine = true)
+                Toggle("Replace existing devices on this account", replacement) { replacement = it }
+                if (replacement) Text("This access flow replaces existing devices. Their encryption keys and history are not transferred. Device linking and recovery screens are still being integrated.", style = MaterialTheme.typography.bodySmall)
+            }
+            Button(submit, enabled = !state.busy && server.isNotBlank() && (!useInvitation || invitation.isNotBlank()), modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(14.dp)) {
+                Text(if (useInvitation) "Use invitation" else "Continue with identity provider")
+            }
+            TextButton({ useInvitation = !useInvitation }) { Text(if (useInvitation) "Use identity provider" else "Use an access invitation") }
+        } else {
+            Text("Your sign-in is saved on this device. Continue to finish it.")
+            Button({ command("resume", emptyMap()) }, enabled = !state.busy) { Text("Continue sign-in") }
+        }
+        Text("Development build", style = MaterialTheme.typography.bodySmall)
+    }
+}
+@Composable
+private fun Inbox(state: MessengerState, open: (String) -> Unit, create: () -> Unit, settings: () -> Unit) {
+    var searching by rememberSaveable { mutableStateOf(false) }
+    var query by rememberSaveable { mutableStateOf("") }
+    Column(Modifier.fillMaxSize()) {
+        Header("Sigil") { Symbol("search", "Search conversations") { searching = !searching } }
+        if (searching) OutlinedTextField(query, { query = it }, Modifier.fillMaxWidth().padding(horizontal = 20.dp), label = { Text("Search conversations") }, singleLine = true)
+        Box(Modifier.weight(1f)) {
+            LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(bottom = 88.dp)) {
+                items(state.chats.filter { it.address.contains(query, true) || it.preview.contains(query, true) }, key = { it.id }) { chat ->
+                    Row(Modifier.fillMaxWidth().clickable { open(chat.id) }.padding(horizontal = 20.dp, vertical = 16.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Avatar(chat.name)
+                        Column(Modifier.weight(1f).padding(horizontal = 16.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                            Text(chat.name, style = MaterialTheme.typography.titleLarge)
+                            Text(if (!chat.verified) "Verify devices to start" else chat.preview.ifEmpty { "Start a conversation" }, maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.bodyMedium)
+                        }
+                        Text(chat.time, style = MaterialTheme.typography.labelSmall)
                     }
                 }
-                HorizontalDivider(Modifier.padding(start = 84.dp, end = 20.dp), color = MaterialTheme.colorScheme.outlineVariant)
             }
+            if (state.chats.isEmpty()) Column(Modifier.align(Alignment.Center).padding(32.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+                Text("Your correspondence starts here.", style = MaterialTheme.typography.headlineSmall)
+                Spacer(Modifier.height(12.dp)); Text("Add someone by their Sigil address.")
+            }
+            FloatingActionButton(create, Modifier.align(Alignment.BottomEnd).padding(24.dp), shape = RoundedCornerShape(18.dp), containerColor = MaterialTheme.colorScheme.inverseSurface, contentColor = MaterialTheme.colorScheme.inverseOnSurface) {
+                Text("edit_square", fontFamily = FontFamily(Font(Res.font.material_symbols)), fontSize = 26.sp, modifier = Modifier.semantics { contentDescription = "New conversation" })
+            }
+        }
+        Row(Modifier.fillMaxWidth().padding(vertical = 8.dp), horizontalArrangement = Arrangement.SpaceEvenly) {
+            TextButton(create) { Text("New conversation") }
+            TextButton(settings) { Text("Settings") }
         }
     }
 }
-
 @Composable
-private fun ConversationPage(conversation: Conversation, letters: MutableList<Letter>, draft: TextFieldState,
-    gradient: Boolean, back: () -> Unit, settings: () -> Unit, analyze: (String) -> String, redact: (String) -> String) {
-    var formatting by remember { mutableStateOf(false) }
+private fun NewConversation(state: MessengerState, back: () -> Unit, command: (String, Map<String, Any?>) -> Unit, opened: () -> Unit) {
+    var address by rememberSaveable { mutableStateOf("") }
+    Column(Modifier.fillMaxSize()) {
+        Header("New conversation", back)
+        Column(Modifier.padding(24.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
+            OutlinedTextField(address, { address = it }, Modifier.fillMaxWidth(), label = { Text("Sigil address") }, placeholder = { Text("@someone:example.com") }, singleLine = true,
+                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search), keyboardActions = KeyboardActions(onSearch = { if (!state.busy) command("find", mapOf("address" to address.trim())) }))
+            Button({ command("find", mapOf("address" to address.trim())) }, enabled = !state.busy && address.isNotBlank()) { Text("Find person") }
+            state.chats.filter { it.address == address.trim() }.forEach { chat ->
+                SettingRow("person", chat.name, chat.address) { command("open", mapOf("peer" to chat.id)); opened() }
+            }
+            Text("Your contact must allow account discovery. Compare device fingerprints before your first message.", style = MaterialTheme.typography.bodyMedium)
+        }
+    }
+}
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
+private fun ConversationPage(chat: ChatSummary, state: MessengerState, draft: TextFieldState, gradient: Boolean, back: () -> Unit, appearance: () -> Unit, analyze: (String) -> String, command: (String, Map<String, Any?>) -> Unit) {
+    var reply by remember(chat.id) { mutableStateOf<ChatMessage?>(null) }
+    var selected by remember(chat.id) { mutableStateOf<ChatMessage?>(null) }
+    var verify by remember(chat.id) { mutableStateOf(false) }
+    var submitted by remember { mutableStateOf<String?>(null) }
+    LaunchedEffect(state.sent) { submitted?.let { if (draft.text.toString() == it) draft.clearText(); submitted = null; reply = null } }
     val scheme = MaterialTheme.colorScheme
     Column(Modifier.fillMaxSize().then(if (gradient) Modifier.background(Brush.verticalGradient(listOf(scheme.background, scheme.primaryContainer))) else Modifier)) {
-        Header(conversation.name, back) { Symbol("tune", "Conversation appearance", settings) }
-        Text("Local preview · messages stay in this session", Modifier.padding(horizontal = 20.dp), style = MaterialTheme.typography.bodySmall)
-        LazyColumn(Modifier.weight(1f).fillMaxWidth().padding(horizontal = 20.dp), reverseLayout = true,
-            contentPadding = PaddingValues(vertical = 24.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-            items(letters.asReversed()) { letter ->
-                Row(Modifier.fillMaxWidth(), horizontalArrangement = if (letter.mine) Arrangement.End else Arrangement.Start) {
-                    Surface(Modifier.widthIn(max = 520.dp).fillMaxWidth(.88f), shape = RoundedCornerShape(18.dp),
-                        color = if (letter.mine) scheme.primaryContainer else scheme.surface,
-                        contentColor = if (letter.mine) scheme.onPrimaryContainer else scheme.onSurface) {
-                        Text(letter.text, Modifier.padding(16.dp), style = MaterialTheme.typography.bodyLarge)
+        Row(Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+            Symbol("arrow_back", "Back", back); Avatar(chat.name, 40)
+            Column(Modifier.weight(1f).padding(start = 12.dp)) {
+                Text(chat.name, style = MaterialTheme.typography.titleLarge)
+                Text(if (chat.verified) "Verified devices" else "Device verification needed", style = MaterialTheme.typography.labelSmall)
+            }
+            Symbol("verified_user", "Verify devices") { verify = true }
+            Symbol("tune", "Conversation appearance", appearance)
+        }
+        HorizontalDivider(color = scheme.outlineVariant)
+        if (!chat.verified) TextButton({ verify = true }, Modifier.align(Alignment.CenterHorizontally)) { Text("Compare and approve devices") }
+        LazyColumn(Modifier.weight(1f).fillMaxWidth(), reverseLayout = true, contentPadding = PaddingValues(horizontal = 20.dp, vertical = 16.dp)) {
+            items(state.messages, key = { it.author + it.id }) { message ->
+                val index = state.messages.indexOf(message)
+                val older = state.messages.getOrNull(index + 1)
+                val newer = state.messages.getOrNull(index - 1)
+                val grouped = older?.mine == message.mine
+                Column(Modifier.fillMaxWidth().padding(top = if (grouped) 3.dp else 16.dp)) {
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = if (message.mine) Arrangement.End else Arrangement.Start) {
+                        Column(Modifier.widthIn(max = 300.dp), horizontalAlignment = if (message.mine) Alignment.End else Alignment.Start) {
+                            Surface(Modifier.combinedClickable(onClick = {}, onLongClick = { selected = message }),
+                                shape = RoundedCornerShape(topStart = if (!message.mine && grouped) 6.dp else 20.dp, topEnd = if (message.mine && grouped) 6.dp else 20.dp, bottomEnd = 20.dp, bottomStart = 20.dp),
+                                color = if (message.mine) scheme.inverseSurface else scheme.surfaceVariant,
+                                contentColor = if (message.mine) scheme.inverseOnSurface else scheme.onSurfaceVariant) {
+                                Column(Modifier.padding(horizontal = 16.dp, vertical = 11.dp)) {
+                                    message.reply?.let { Text(it, style = MaterialTheme.typography.bodySmall, maxLines = 2, overflow = TextOverflow.Ellipsis); Spacer(Modifier.height(6.dp)) }
+                                    MessageText(message.text, analyze)
+                                }
+                            }
+                            if (message.reactions.isNotEmpty() || message.pinned) Surface(shape = RoundedCornerShape(10.dp), color = scheme.surface) {
+                                Text((if (message.pinned) "⌖ " else "") + message.reactions.distinct().joinToString(" "), Modifier.padding(horizontal = 6.dp, vertical = 2.dp), style = MaterialTheme.typography.bodySmall)
+                            }
+                            if (newer?.mine != message.mine || index == 0) Row(Modifier.padding(top = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+                                Text(listOf(message.time, message.delivery).filter { it.isNotBlank() }.joinToString(" · "), style = MaterialTheme.typography.labelSmall)
+                                if (message.mine && message.delivery == "Read") { Spacer(Modifier.width(6.dp)); Avatar(chat.name, 18) }
+                            }
+                        }
                     }
                 }
-            }
-        }
-        Surface(color = scheme.surface) {
-            Column(Modifier.padding(horizontal = 16.dp, vertical = 8.dp)) {
-                Composer(draft, analyze, showTools = formatting)
-                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                    TextButton({ formatting = !formatting }) { Text(if (formatting) "Hide formatting" else "Formatting") }
-                    Spacer(Modifier.weight(1f))
-                    Button({
-                        val text = redact(draft.text.toString())
-                        if (text != "Invalid SigilText; send blocked") { letters.add(Letter(text, true)); draft.clearText() }
-                    }, enabled = draft.text.isNotBlank() && redact(draft.text.toString()) != "Invalid SigilText; send blocked") { Text("Send locally") }
+                if (!message.mine && !message.readByMe && chat.verified) LaunchedEffect(message.id) {
+                    command("read", mapOf("peer" to chat.id, "author" to message.author, "message" to message.id))
                 }
+            }
+            if (state.more) item { TextButton({ command("older", emptyMap()) }, Modifier.fillMaxWidth(), enabled = !state.busy) { Text("Earlier messages") } }
+        }
+        reply?.let { message -> Row(Modifier.fillMaxWidth().padding(start = 20.dp), verticalAlignment = Alignment.CenterVertically) {
+            Text("Replying to ${message.text}", Modifier.weight(1f), maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.bodySmall)
+            Symbol("close", "Cancel reply") { reply = null }
+        } }
+        Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 10.dp), verticalAlignment = Alignment.Bottom) {
+            Composer(draft, analyze, Modifier.weight(1f), showTools = false)
+            Spacer(Modifier.width(8.dp))
+            FilledIconButton({
+                submitted = draft.text.toString()
+                command("post", mapOf("peer" to chat.id, "text" to draft.text.toString(), "reply_author" to reply?.author, "reply_message" to reply?.id))
+            }, Modifier.size(52.dp), enabled = chat.verified && draft.text.isNotBlank() && !state.busy, shape = RoundedCornerShape(16.dp),
+                colors = IconButtonDefaults.filledIconButtonColors(containerColor = scheme.inverseSurface, contentColor = scheme.inverseOnSurface)) {
+                Text("arrow_upward", fontFamily = FontFamily(Font(Res.font.material_symbols)), fontSize = 25.sp, modifier = Modifier.semantics { contentDescription = "Send message" })
             }
         }
     }
+    if (verify) AlertDialog(onDismissRequest = { verify = false }, title = { Text("Verify ${chat.name}'s devices") },
+        text = { Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(16.dp)) {
+            Text("Compare each fingerprint with your contact through a trusted channel. They must also approve your device.")
+            chat.devices.forEach { device ->
+                SelectionContainer { Text(device.fingerprint.chunked(4).joinToString(" "), fontFamily = LocalCodeFont.current, style = MaterialTheme.typography.bodySmall) }
+                if (device.changed || device.blocked) Text("This device changed or is blocked. Identity recovery must be reviewed before it can be used.")
+                else TextButton({ command("confirm", mapOf("peer" to device.id, "fingerprint" to device.fingerprint)) }, enabled = !state.busy) { Text(if (device.verified) "Re-apply sender permission" else "Fingerprints match · approve") }
+            }
+        } }, confirmButton = { TextButton({ verify = false }) { Text("Done") } })
+    selected?.let { message -> AlertDialog(onDismissRequest = { selected = null }, title = { Text("Message") }, text = {
+        Column {
+            TextButton({ reply = message; selected = null }) { Text("Reply") }
+            TextButton({ command("react", mapOf("peer" to chat.id, "author" to message.author, "message" to message.id, "emoji" to "❤️", "active" to ("❤️" !in message.myReactions))); selected = null }) { Text(if ("❤️" in message.myReactions) "Remove ❤️" else "React ❤️") }
+            TextButton({ command("pin", mapOf("peer" to chat.id, "author" to message.author, "message" to message.id, "active" to !message.pinned)); selected = null }) { Text(if (message.pinned) "Unpin" else "Pin message") }
+        }
+    }, confirmButton = { TextButton({ selected = null }) { Text("Close") } }) }
 }
 
+@Composable
+private fun MessageText(source: String, analyze: (String) -> String) {
+    val codeFont = LocalCodeFont.current
+    val text = remember(source, codeFont) {
+        val formats = spans(analyze(source))
+        val projection = EditorProjection(source, formats)
+        buildAnnotatedString {
+            append(projection.text)
+            formats.forEach {
+                val style = when (it.style) {
+                    1 -> SpanStyle(fontWeight = FontWeight.Bold)
+                    2 -> SpanStyle(fontStyle = FontStyle.Italic)
+                    3 -> SpanStyle(textDecoration = TextDecoration.LineThrough)
+                    else -> SpanStyle(fontFamily = codeFont)
+                }
+                addStyle(style, projection.offsets[it.start], projection.offsets[it.end])
+            }
+        }
+    }
+    Text(text, style = MaterialTheme.typography.bodyLarge)
+}
 @Composable
 private fun AppearancePage(value: Appearance, dynamicAvailable: Boolean, back: () -> Unit, update: (Appearance) -> Unit) {
     Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(bottom = 24.dp)) {
         Header("Appearance", back)
         Column(Modifier.widthIn(max = 680.dp).padding(horizontal = 24.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
             Text("Your ink. Your paper.", style = MaterialTheme.typography.headlineLarge)
-            Text("Defaults for Sigil and conversations that follow the app theme.")
+            Text("Appearance on this device. Account-wide appearance sync is not connected yet.")
             Choices("Typeface", listOf("Newsreader", "Google Sans Flex"), value.font) { update(value.copy(font = it)) }
             Choices("Appearance mode", listOf("System", "Light", "Dark"), value.mode) { update(value.copy(mode = it)) }
             if (dynamicAvailable) Toggle("Use Android wallpaper colors", value.dynamic) { update(value.copy(dynamic = it)) }
@@ -216,6 +391,7 @@ private fun Toggle(label: String, checked: Boolean, update: (Boolean) -> Unit) {
 @Composable
 private fun AccentPicker(value: Int?, update: (Int) -> Unit) {
     var text by remember(value) { mutableStateOf(value?.let(::accentText) ?: "") }
+    var advanced by remember { mutableStateOf(false) }
     val parsed = parseAccent(text)
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
         Text("Accent color", style = MaterialTheme.typography.titleMedium)
@@ -228,10 +404,13 @@ private fun AccentPicker(value: Int?, update: (Int) -> Unit) {
                 }
             }
         }
+        TextButton({ advanced = !advanced }) { Text(if (advanced) "Hide advanced color" else "Advanced color") }
+        if (advanced) {
         OutlinedTextField(text, { text = it.take(7) }, label = { Text("Hex color") }, prefix = { Text("#") },
             singleLine = true, isError = text.isNotEmpty() && parsed == null,
             supportingText = { Text("Six hexadecimal digits, for example 48658C") })
         TextButton({ parsed?.let(update) }, enabled = parsed != null) { Text("Apply accent") }
+        }
     }
 }
 

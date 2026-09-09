@@ -184,6 +184,18 @@ impl ClientStore {
         timestamp: u64,
         now: u64,
     ) -> Result<(), Error> {
+        self.queue_peer_contents(&[(peer, id)], body, timestamp, now)
+    }
+    pub(crate) fn queue_peer_contents(
+        &mut self,
+        recipients: &[(Id, Id)],
+        body: Content<'_>,
+        timestamp: u64,
+        now: u64,
+    ) -> Result<(), Error> {
+        if recipients.is_empty() || recipients.len() > 64 {
+            return Err(Error::Limit);
+        }
         if now == 0 || now > i64::MAX as u64 {
             return Err(Error::Expired);
         }
@@ -195,52 +207,53 @@ impl ClientStore {
         let tx = self
             .db
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
-        let text = context(&tx, &self.key, &own, &peer)?.encode(id, body, timestamp)?;
-        if crate::conversations::cancelled(&tx, &self.key, &[0; 32], &id)? {
-            return Err(Error::Obsolete);
-        }
-        crate::conversations::check_send(&tx, &self.key, &text, now)?;
-        if matches!(body, Content::File(_) | Content::Rich(_)) {
-            super::require_resend(
-                &tx,
-                &self.key,
-                &own,
-                &peer,
-                &Direct::from_bytes(&text).map_err(|_| Error::InvalidEvent)?,
-                true,
-            )?;
-        }
-        match read(&tx, &self.key, &fingerprint, &id) {
-            Ok((prior, _)) => {
-                return if prior.peer == peer && prior.text == text {
-                    Ok(())
-                } else {
-                    Err(Error::Conflict)
+        for &(peer, id) in recipients {
+            let text = context(&tx, &self.key, &own, &peer)?.encode(id, body, timestamp)?;
+            if crate::conversations::cancelled(&tx, &self.key, &[0; 32], &id)? {
+                return Err(Error::Obsolete);
+            }
+            crate::conversations::check_send(&tx, &self.key, &text, now)?;
+            if matches!(body, Content::File(_) | Content::Rich(_)) {
+                super::require_resend(
+                    &tx,
+                    &self.key,
+                    &own,
+                    &peer,
+                    &Direct::from_bytes(&text).map_err(|_| Error::InvalidEvent)?,
+                    true,
+                )?;
+            }
+            match read(&tx, &self.key, &fingerprint, &id) {
+                Ok((prior, _)) => {
+                    if prior.peer != peer || prior.text != text {
+                        return Err(Error::Conflict);
+                    }
+                    continue;
                 }
+                Err(Error::NotFound) => {}
+                Err(error) => return Err(error),
             }
-            Err(Error::NotFound) => {}
-            Err(error) => return Err(error),
-        }
-        if matches!(body, Content::Conversation(_)) {
-            super::retain(&tx, &self.key, &own, &peer, &text, true)?;
-        }
-        if existing(&tx, &self.key, peer, id, &text, now)?.is_none() {
-            if tx.query_row("SELECT count(*) FROM send_intents", [], |r| {
-                r.get::<_, i64>(0)
-            })? >= 256
-            {
-                return Err(Error::Limit);
+            if matches!(body, Content::Conversation(_)) {
+                super::retain(&tx, &self.key, &own, &peer, &text, true)?;
             }
-            let intent = Intent {
-                peer,
-                generation: 0,
-                started: now,
-                text,
-            };
-            tx.execute(
-                "INSERT INTO send_intents VALUES(?1,?2)",
-                (id.as_slice(), seal(&self.key, &fingerprint, &id, &intent)?),
-            )?;
+            if existing(&tx, &self.key, peer, id, &text, now)?.is_none() {
+                if tx.query_row("SELECT count(*) FROM send_intents", [], |r| {
+                    r.get::<_, i64>(0)
+                })? >= 256
+                {
+                    return Err(Error::Limit);
+                }
+                let intent = Intent {
+                    peer,
+                    generation: 0,
+                    started: now,
+                    text,
+                };
+                tx.execute(
+                    "INSERT INTO send_intents VALUES(?1,?2)",
+                    (id.as_slice(), seal(&self.key, &fingerprint, &id, &intent)?),
+                )?;
+            }
         }
         tx.commit()?;
         Ok(())

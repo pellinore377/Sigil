@@ -23,6 +23,7 @@ pub use connection::SendProgress;
 pub mod conversations;
 mod event;
 pub mod groups;
+pub mod mobile;
 mod notes;
 mod rich_text;
 pub mod services;

@@ -479,17 +479,39 @@ impl ClientStore {
         timestamp: u64,
         now: u64,
     ) -> Result<(), Error> {
+        self.queue_direct_operation(&[peer], operation, timestamp, now)
+    }
+    /// Atomically queues the same operation to the selected devices of one account.
+    pub fn queue_direct_operation(
+        &mut self,
+        peers: &[Id],
+        operation: &Operation,
+        timestamp: u64,
+        now: u64,
+    ) -> Result<(), Error> {
+        let mut conversation = None;
+        let mut recipients = Vec::new();
+        for peer in peers {
+            let current = self.direct_conversation(*peer)?;
+            if conversation.is_some_and(|old| old != current)
+                || recipients.iter().any(|(p, _)| p == peer)
+            {
+                return Err(Error::Conflict);
+            }
+            conversation = Some(current);
+            let id = Sha256::digest(
+                [
+                    b"Sigil/conversation-delivery/v0".as_slice(),
+                    &operation.id,
+                    peer,
+                ]
+                .concat(),
+            )
+            .into();
+            recipients.push((*peer, id));
+        }
         let bytes = Zeroizing::new(operation.to_bytes().map_err(|_| Error::InvalidEvent)?);
-        let id = Sha256::digest(
-            [
-                b"Sigil/conversation-delivery/v0".as_slice(),
-                &operation.id,
-                &peer,
-            ]
-            .concat(),
-        )
-        .into();
-        self.queue_peer_content(peer, id, Content::Conversation(&bytes), timestamp, now)
+        self.queue_peer_contents(&recipients, Content::Conversation(&bytes), timestamp, now)
     }
     pub fn queue_group_operation(
         &mut self,
@@ -1062,7 +1084,8 @@ impl ClientStore {
         search: Option<&str>,
         now: u64,
     ) -> Result<Page, Error> {
-        let page = self.scan_conversations(Some(conversation), after, thread, search, now)?;
+        let page =
+            self.scan_conversations(Some(conversation), after, thread, search, now, false)?;
         Ok(Page {
             messages: page.hits.into_iter().map(|v| v.message).collect(),
             next: page.next,
@@ -1074,8 +1097,22 @@ impl ClientStore {
         after: Option<i64>,
         now: u64,
     ) -> Result<SearchPage, Error> {
-        self.scan_conversations(None, after, None, Some(query), now)
+        self.scan_conversations(None, after, None, Some(query), now, false)
     }
+    /// Newest first, with a cursor over candidates including deleted messages.
+    pub fn recent_conversation_page(
+        &mut self,
+        conversation: Id,
+        before: Option<i64>,
+        now: u64,
+    ) -> Result<Page, Error> {
+        let page = self.scan_conversations(Some(conversation), before, None, None, now, true)?;
+        Ok(Page {
+            messages: page.hits.into_iter().map(|v| v.message).collect(),
+            next: page.next,
+        })
+    }
+    #[allow(clippy::too_many_arguments)]
     fn scan_conversations(
         &mut self,
         conversation: Option<Id>,
@@ -1083,6 +1120,7 @@ impl ClientStore {
         thread: Option<&Reference>,
         search: Option<&str>,
         now: u64,
+        newest: bool,
     ) -> Result<SearchPage, Error> {
         if after.is_some_and(|v| v < 0) || search.is_some_and(|v| v.len() > 1024) {
             return Err(Error::Limit);
@@ -1090,14 +1128,19 @@ impl ClientStore {
         let now = time_floor(&self.db, &self.key, now)?;
         let (_, own) = crate::structured::account_context(&self.db, &self.key)?;
         let query = search.map(str::to_lowercase);
-        let sql = if conversation.is_some() {
+        let sql = if newest {
+            "SELECT rowid,id,CASE WHEN length(state)<=574000 THEN state END FROM conversation_ops WHERE scope=?1 AND kind=0 AND rowid<?2 ORDER BY rowid DESC LIMIT 64"
+        } else if conversation.is_some() {
             "SELECT rowid,id,CASE WHEN length(state)<=574000 THEN state END FROM conversation_ops WHERE scope=?1 AND kind=0 AND rowid>?2 ORDER BY rowid LIMIT 64"
         } else {
             "SELECT rowid,id,CASE WHEN length(state)<=574000 THEN state END FROM conversation_ops WHERE ?1 IS NULL AND kind=0 AND rowid>?2 ORDER BY rowid LIMIT 64"
         };
         let at = conversation.map(|v| scope(&self.key, &v)).transpose()?;
         let mut stmt = self.db.prepare(sql)?;
-        let mut rows = stmt.query((at.as_ref().map(Id::as_slice), after.unwrap_or(0)))?;
+        let mut rows = stmt.query((
+            at.as_ref().map(Id::as_slice),
+            after.unwrap_or(if newest { i64::MAX } else { 0 }),
+        ))?;
         let mut hits = Vec::new();
         let mut next = None;
         let mut count = 0;

@@ -1,6 +1,10 @@
 # Current work
 
-Backend/shared Rust items **#1–#12 are implemented**. The container includes a Compose/Wasm setup wizard and Admin dashboard: ownership claim, Argon2id password, verified OIDC linking, account/group deletion, registration and personal Account controls. Display names persist per account; appearance remains browser-local with a sample timeline. HTTPS discovery supports separate identity and service domains. Advanced service/maintenance controls remain APIs; messaging layouts remain paused. [plan.md](plan.md) is unchanged.
+Backend/shared Rust items **#1–#12 are implemented**. The container includes a Compose/Wasm setup wizard and Admin dashboard: ownership claim, Argon2id password, verified OIDC linking, account/group deletion, registration and personal Account controls. Display names persist per account; appearance remains browser-local with a sample timeline. HTTPS discovery supports separate identity and service domains. Advanced service/maintenance controls remain APIs. [plan.md](plan.md) is unchanged.
+
+Android development UI now connects to Rust enrollment, explicit device verification, durable direct-message sending, timeline pagination, replies, reactions, pins and foreground synchronization. A physical phone and a separate Rust client exchanged synthetic encrypted messages over HTTPS; received content survived app restart. Native PocketID sign-in awaits operator testing. Device linking/recovery, durable UI drafts, account-wide appearance, rich attachments and calls remain UI work. Desktop messaging has no connected storage adapter.
+
+The published container supports opt-in `SIGIL_LOG_CIPHERTEXT=true` diagnostics for accepted local message envelopes. Logging defaults off, uses a bounded queue and excludes plaintext, credentials and private keys. Container acceptance verifies enabled/disabled behavior and exact payload bytes; anonymous GHCR pull succeeds.
 
 Codex reviewed all eight backend areas in [Audit.md](Audit.md); Claude completed four independent source-review batches. Confirmed restore-journal, quota, maintenance-artifact and federation-counter defects are corrected. That independent audit predates the browser additions; those have received self-review and regression testing.
 
@@ -8,7 +12,7 @@ Claude ran through `claudex-loop` with requested/observed Fable 5.1; usage also 
 
 ## Validation
 
-Server schema **29**, native **68**, attachment cache **5**. Release workspace: **760 passed, zero failures, eleven ignored**. Clippy, formatting and whitespace checks pass. Excluded entries are parent-invoked crash helpers, a fixture generator and separate acceptance/load tests; commands are in the README.
+Server schema **29**, native **68**, attachment cache **5**. Last full release workspace baseline: **760 passed, zero failures, eleven ignored**. Subsequent Android integration: client library **299 passed, five ignored**, plus a new view-once reply regression; all four mobile boundary tests pass. Shared UI **15 tests** and physical Android key-storage **five tests** pass. Server logging regressions, scoped Clippy, formatting and whitespace checks pass. Packaged Android libraries pass 16 KiB alignment checks. Excluded entries are parent-invoked crash helpers, a fixture generator and separate acceptance/load tests; commands are in the README.
 
 Regressions reproduce the four defects before correction and pass afterward. Tests also cover reciprocal authorization rollback, retries/refunds, migration/restore accounting, live-artifact preservation and bounded deletion retries. Independent HMAC/HKDF expectations verify 36 initial Triple Ratchet packets; this does not prove later-epoch or post-compromise security. Three timing-sensitive debug group scenarios failed; all three pass unchanged in release, including the complete workspace run.
 
