@@ -2,7 +2,9 @@
 .kotlin/
 **/build/
 **/target/
-kotlin-js-store/
+kotlin-js-store/**
+!kotlin-js-store/wasm/
+!kotlin-js-store/wasm/yarn.lock
 local.properties
 *.jks
 *.keystore
