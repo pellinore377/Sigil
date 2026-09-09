@@ -7,20 +7,14 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.text.input.PasswordVisualTransformation
-import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.contentDescription
-import androidx.compose.ui.focus.onFocusChanged
-import androidx.compose.foundation.text.KeyboardOptions
-import androidx.compose.ui.text.input.KeyboardType
 import kotlinx.browser.window
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.serialization.json.*
 import org.w3c.xhr.XMLHttpRequest
-import org.w3c.dom.url.URL
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
 import org.jetbrains.compose.resources.painterResource
@@ -73,6 +67,7 @@ fun AdminApp() {
     LaunchedEffect(Unit) { run {} }
     SigilTheme(appearance, palette = ::rustPalette) {
         Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
+            AdminMenuHost {
             Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal = 32.dp, vertical = 24.dp), horizontalAlignment = Alignment.CenterHorizontally) {
                 Row(Modifier.fillMaxWidth().widthIn(max = 1180.dp), verticalAlignment = Alignment.CenterVertically) {
                     Image(painterResource(if (appearance.mode == "Dark" || (appearance.mode == "System" && isSystemInDarkTheme())) Res.drawable.sigil_dark else Res.drawable.sigil_light), null, Modifier.height(46.dp).width(28.dp))
@@ -93,6 +88,7 @@ fun AdminApp() {
                 else Dashboard(current, busy, run)
                 if (busy) LinearProgressIndicator(Modifier.widthIn(max = 680.dp).fillMaxWidth().padding(top = 20.dp))
             }
+            }
         }
     }
 }
@@ -106,14 +102,6 @@ private fun Page(title: String, subtitle: String, content: @Composable ColumnSco
     }
 }
 @Composable
-private fun Field(label: String, value: String, change: (String) -> Unit, secret: Boolean = false, enabled: Boolean = true) {
-    var focused by remember { mutableStateOf(false) }
-    if (focused) WebFieldInput(label, secret)
-    OutlinedTextField(value, change, Modifier.fillMaxWidth().onFocusChanged { focused = it.isFocused }.semantics { contentDescription = label }, label = { Text(label) }, singleLine = true, enabled = enabled,
-        keyboardOptions = KeyboardOptions(keyboardType = if (secret) KeyboardType.Password else KeyboardType.Text, autoCorrectEnabled = false),
-        shape = RoundedCornerShape(10.dp), visualTransformation = if (secret) PasswordVisualTransformation() else VisualTransformation.None)
-}
-@Composable
 private fun Action(label: String, enabled: Boolean, action: () -> Unit) {
     Button(action, Modifier.heightIn(min = 48.dp), enabled = enabled, shape = RoundedCornerShape(10.dp)) { Text(label) }
 }
@@ -121,28 +109,32 @@ private fun Action(label: String, enabled: Boolean, action: () -> Unit) {
 private fun ClaimPage(busy: Boolean, run: (suspend () -> Unit) -> Unit) {
     var code by remember { mutableStateOf("") }; var password by remember { mutableStateOf("") }; var confirm by remember { mutableStateOf("") }
     var server by remember { mutableStateOf(window.location.hostname) }
+    val ready = !busy && code.isNotBlank() && password.isNotBlank() && password == confirm
+    val submit: () -> Unit = { if (ready) run {
+        api("/setup/v0/claim", "POST", obj("code" to str(code), "password" to str(password), "server_name" to str(server), "public_origin" to str(window.location.origin)))
+        code = ""; password = ""; confirm = ""
+    } }
     Page("A place for your correspondence.", "Welcome to your Sigil server. Let’s make it yours.") {
         Text("1 / 3   ·   Secure your server", style = MaterialTheme.typography.labelLarge)
         Field("One-time code from container logs", code, { code = it }, secret = true, enabled = !busy)
         Field("Identity domain", server, { server = it }, enabled = !busy)
         Text("Your address will look like @you:$server. This domain cannot change after setup.", style = MaterialTheme.typography.bodySmall)
         Field("Administrator password · at least 15 characters", password, { password = it }, secret = true, enabled = !busy)
-        Field("Repeat password", confirm, { confirm = it }, secret = true, enabled = !busy)
-        Action("Secure my server", !busy && code.isNotBlank() && password.isNotBlank() && password == confirm) { run {
-            api("/setup/v0/claim", "POST", obj("code" to str(code), "password" to str(password), "server_name" to str(server), "public_origin" to str(window.location.origin)))
-            code = ""; password = ""; confirm = ""
-        } }
+        Field("Repeat password", confirm, { confirm = it }, secret = true, enabled = !busy, onSubmit = submit)
+        Action("Secure my server", ready, submit)
     }
 }
 @Composable
 private fun LoginPage(status: JsonElement, busy: Boolean, run: (suspend () -> Unit) -> Unit) {
     var username by remember { mutableStateOf("") }; var password by remember { mutableStateOf("") }
+    val ready = !busy && password.isNotEmpty()
+    val submit: () -> Unit = { if (ready) run { api("/auth/v0/admin/login", "POST", obj("username" to str(username), "password" to str(password))); password = "" } }
     Page("Welcome back.", "Sign in to look after your Sigil server.") {
         if (status.flag("oidc_login")) Action("Sign in with your identity provider", !busy) { run { val result = api("/auth/v0/admin/oidc", "POST"); window.location.assign(result.text("authorization_url")) } }
         if (status.flag("password_login")) {
             if (status.flag("complete")) Field("Administrator username", username, { username = it }, enabled = !busy)
-            Field("Password", password, { password = it }, secret = true, enabled = !busy)
-            Action("Sign in", !busy && password.isNotEmpty()) { run { api("/auth/v0/admin/login", "POST", obj("username" to str(username), "password" to str(password))); password = "" } }
+            Field("Password", password, { password = it }, secret = true, enabled = !busy, onSubmit = submit)
+            Action("Sign in", ready, submit)
         }
     }
 }
@@ -150,6 +142,8 @@ private fun LoginPage(status: JsonElement, busy: Boolean, run: (suspend () -> Un
 private fun IdentityPage(status: JsonElement, busy: Boolean, run: (suspend () -> Unit) -> Unit) {
     var local by remember { mutableStateOf(false) }
     var username by remember(status.text("suggested_username")) { mutableStateOf(status.text("suggested_username")) }
+    val ready = !busy && username.isNotBlank()
+    val submit: () -> Unit = { if (ready) run { api("/auth/v0/admin/finish", "POST", obj("username" to str(username))) } }
     Page("Your administrator account.", "Choose how you’ll sign in to administer this server.") {
         Text("2 / 3   ·   Your identity", style = MaterialTheme.typography.labelLarge)
         if (!local && !status.flag("oidc_linked")) {
@@ -157,9 +151,9 @@ private fun IdentityPage(status: JsonElement, busy: Boolean, run: (suspend () ->
             TextButton(enabled = !busy, onClick = { local = true }) { Text("Continue with a local administrator") }
         } else {
             if (status.flag("oidc_linked")) Text("Your identity provider is linked. Confirm your Sigil username.")
-            Field("Username", username, { username = it }, enabled = !busy)
+            Field("Username", username, { username = it }, enabled = !busy, onSubmit = submit)
             Text("@$username:${status.text("server_name")}")
-            Action("Open my dashboard", !busy && username.isNotBlank()) { run { api("/auth/v0/admin/finish", "POST", obj("username" to str(username))) } }
+            Action("Open my dashboard", ready, submit)
         }
     }
 }
@@ -168,54 +162,36 @@ private fun OidcForm(status: JsonElement, busy: Boolean, run: (suspend () -> Uni
     var unlinkPassword by remember { mutableStateOf("") }
     var issuer by remember { mutableStateOf("") }; var client by remember { mutableStateOf("") }; var secret by remember { mutableStateOf("") }
     var configuration by remember { mutableStateOf<JsonElement?>(null) }
-    var networks by remember { mutableStateOf("") }
-    var networksEdited by remember { mutableStateOf(false) }
     LaunchedEffect(Unit) { run {
         val saved = api("/admin/v0/oidc")
         configuration = saved; issuer = saved.text("issuer"); client = saved.text("client_id")
-        if (issuer.isNotEmpty()) {
-            val url = URL(issuer)
-            val rule = saved.jsonObject["exceptions"]?.jsonArray?.firstOrNull {
-                it.text("host") == url.hostname.removeSurrounding("[", "]") && it.text("port") == url.port.ifEmpty { "443" }
-            }
-            networks = rule?.jsonObject?.get("networks")?.jsonArray?.joinToString(", ") { it.jsonPrimitive.content }.orEmpty()
-        }
+    } }
+    val ready = !busy && configuration != null && issuer.isNotBlank() && client.isNotBlank()
+    val submit: () -> Unit = { if (ready) run {
+        val old = checkNotNull(configuration)
+        val exceptions = if (issuer.trim() == old.text("issuer")) old.jsonObject["exceptions"] ?: JsonArray(emptyList()) else JsonArray(emptyList())
+        configuration = api("/admin/v0/oidc", "PUT", obj("expected_revision" to old.jsonObject.getValue("revision"), "confirm" to JsonPrimitive(true), "provider" to obj("issuer" to str(issuer.trim()), "client_id" to str(client.trim()), "client_secret" to if (secret.isEmpty()) JsonNull else str(secret), "exceptions" to exceptions)))
+        secret = ""
     } }
     Text("Connect Pocket ID or another OpenID Connect provider.")
     Text("Add this callback URL to your provider:", style = MaterialTheme.typography.bodySmall)
-    androidx.compose.foundation.text.selection.SelectionContainer { Text("${status.text("public_origin")}/auth/v0/oidc/callback", style = MaterialTheme.typography.bodyMedium) }
+    Field("Callback URL", "${status.text("public_origin")}/auth/v0/oidc/callback", {}, readOnly = true)
     Field("Issuer URL", issuer, { issuer = it }, enabled = !busy)
     Field("Client ID", client, { client = it }, enabled = !busy)
-    Field("Client secret · empty for a public client", secret, { secret = it }, secret = true, enabled = !busy)
-    Field("Allowed provider IPs or networks · optional", networks, { networks = it; networksEdited = true }, enabled = !busy)
-    Text("For an internal provider, enter its IP address or CIDR network; separate multiple entries with commas. This allows only this issuer's host and port. HTTPS certificate checks still apply.", style = MaterialTheme.typography.bodySmall)
+    Field("Client secret · empty for a public client", secret, { secret = it }, secret = true, enabled = !busy, onSubmit = submit)
     if (configuration?.flag("secret_configured") == true) Text("Re-enter the client secret when saving changes.", style = MaterialTheme.typography.bodySmall)
-    Action("Save identity provider", !busy && configuration != null && issuer.isNotBlank() && client.isNotBlank()) { run {
-        val old = checkNotNull(configuration)
-        val url = URL(issuer.trim())
-        val host = url.hostname.removeSurrounding("[", "]")
-        val port = url.port.ifEmpty { "443" }
-        val previous = old.jsonObject["exceptions"]?.jsonArray ?: JsonArray(emptyList())
-        val exceptions = if (!networksEdited && issuer.trim() == old.text("issuer")) previous else {
-            val matching = previous.firstOrNull { it.text("host") == host && it.text("port") == port }
-            val ranges = networks.split(',').map(String::trim).filter(String::isNotEmpty).map {
-                str(if ('/' in it) it else "$it/${if (':' in it) 128 else 32}")
-            }
-            if (ranges.isEmpty()) JsonArray(emptyList()) else JsonArray(listOf(obj("host" to str(host), "port" to JsonPrimitive(port.toInt()), "networks" to JsonArray(ranges), "root_ca" to (matching?.jsonObject?.get("root_ca") ?: JsonNull))))
-        }
-        configuration = api("/admin/v0/oidc", "PUT", obj("expected_revision" to old.jsonObject.getValue("revision"), "confirm" to JsonPrimitive(true), "provider" to obj("issuer" to str(issuer.trim()), "client_id" to str(client.trim()), "client_secret" to if (secret.isEmpty()) JsonNull else str(secret), "exceptions" to exceptions)))
-        networksEdited = false
-        secret = ""
-    } }
+    Action("Save identity provider", ready, submit)
     if (status.flag("oidc_enabled")) Action(if (status.flag("oidc_linked")) "Verify identity again" else "Link my administrator identity", !busy) { run {
         val result = api("/auth/v0/admin/oidc", "POST"); window.location.assign(result.text("authorization_url"))
     } }
     if (status.flag("oidc_linked")) {
         Text("To link a different identity, enable password login and unlink this one first.", style = MaterialTheme.typography.bodySmall)
-        Field("Administrator password to unlink", unlinkPassword, { unlinkPassword = it }, secret = true, enabled = !busy)
-        TextButton(enabled = !busy && status.flag("password_login") && unlinkPassword.isNotEmpty(), onClick = { run {
+        val canUnlink = !busy && status.flag("password_login") && unlinkPassword.isNotEmpty()
+        val unlink: () -> Unit = { if (canUnlink) run {
             api("/auth/v0/admin/oidc/unlink", "POST", obj("password" to str(unlinkPassword))); unlinkPassword = ""
-        } }) { Text("Unlink administrator identity") }
+        } }
+        Field("Administrator password to unlink", unlinkPassword, { unlinkPassword = it }, secret = true, enabled = !busy, onSubmit = unlink)
+        TextButton(enabled = canUnlink, onClick = unlink) { Text("Unlink administrator identity") }
     }
 }
 @Composable
@@ -296,16 +272,18 @@ private fun ServerSettings(busy: Boolean, run: (suspend () -> Unit) -> Unit) {
     var policy by remember { mutableStateOf<JsonObject?>(null) }
     var limit by remember { mutableStateOf("") }; var daily by remember { mutableStateOf("") }; var registration by remember { mutableStateOf("closed") }
     LaunchedEffect(Unit) { run { val p = api("/admin/v0/policy"); policy = p.jsonObject; limit = p.text("max_accounts"); daily = p.text("registrations_per_day"); registration = p.text("registration") } }
+    val ready = !busy && policy != null && limit.toIntOrNull() != null && daily.toIntOrNull() != null
+    val submit: () -> Unit = { if (ready) run {
+        val updated = JsonObject(policy!!.toMutableMap().apply { put("max_accounts", JsonPrimitive(limit.toInt())); put("registrations_per_day", JsonPrimitive(daily.toInt())); put("registration", str(registration)) })
+        policy = api("/admin/v0/policy", "PUT", updated).jsonObject
+    } }
     Column(Modifier.widthIn(max = 680.dp), verticalArrangement = Arrangement.spacedBy(18.dp)) {
         Text("A considered welcome.", style = MaterialTheme.typography.headlineMedium)
         Text("Choose who can join, and how quickly your server can grow.")
         for ((value, label) in listOf("closed" to "Registration closed", "invitations" to "Invitation only", "oidc" to "Identity provider")) Row(verticalAlignment = Alignment.CenterVertically) { RadioButton(registration == value, { registration = value }, modifier = Modifier.semantics { contentDescription = label }, enabled = !busy); Text(label) }
         Field("Maximum accounts", limit, { limit = it }, enabled = !busy)
-        Field("New accounts per day", daily, { daily = it }, enabled = !busy)
-        Action("Save server settings", !busy && policy != null && limit.toIntOrNull() != null && daily.toIntOrNull() != null) { run {
-            val updated = JsonObject(policy!!.toMutableMap().apply { put("max_accounts", JsonPrimitive(limit.toInt())); put("registrations_per_day", JsonPrimitive(daily.toInt())); put("registration", str(registration)) })
-            policy = api("/admin/v0/policy", "PUT", updated).jsonObject
-        } }
+        Field("New accounts per day", daily, { daily = it }, enabled = !busy, onSubmit = submit)
+        Action("Save server settings", ready, submit)
     }
 }
 
@@ -355,15 +333,17 @@ private fun AdminAvatar() {
 private fun ChangePassword(busy: Boolean, run: (suspend () -> Unit) -> Unit) {
     var current by remember { mutableStateOf("") }; var replacement by remember { mutableStateOf("") }; var confirm by remember { mutableStateOf("") }
     var saved by remember { mutableStateOf(false) }
+    val ready = !busy && current.isNotEmpty() && replacement.isNotEmpty() && replacement == confirm
+    val submit: () -> Unit = { if (ready) run {
+        api("/auth/v0/admin/password", "POST", obj("current" to str(current), "replacement" to str(replacement)))
+        current = ""; replacement = ""; confirm = ""; saved = true
+    } }
     HorizontalDivider()
     Text("Change administrator password", style = MaterialTheme.typography.headlineSmall)
     Field("Current password", current, { current = it; saved = false }, secret = true, enabled = !busy)
     Field("New password · at least 15 characters", replacement, { replacement = it; saved = false }, secret = true, enabled = !busy)
-    Field("Repeat new password", confirm, { confirm = it }, secret = true, enabled = !busy)
-    Action("Update password", !busy && current.isNotEmpty() && replacement.isNotEmpty() && replacement == confirm) { run {
-        api("/auth/v0/admin/password", "POST", obj("current" to str(current), "replacement" to str(replacement)))
-        current = ""; replacement = ""; confirm = ""; saved = true
-    } }
+    Field("Repeat new password", confirm, { confirm = it }, secret = true, enabled = !busy, onSubmit = submit)
+    Action("Update password", ready, submit)
     if (saved) Text("Password updated. Other browser sessions have been signed out.")
 }
 
@@ -375,7 +355,7 @@ private fun AdminAppearance(appearance: Appearance, close: () -> Unit, change: (
             for (font in listOf("Newsreader", "Google Sans Flex")) Row(verticalAlignment = Alignment.CenterVertically) { RadioButton(appearance.font == font, { change(appearance.copy(font = font)) }, modifier = Modifier.semantics { contentDescription = font }); Text(font) }
             Text("Appearance")
             for (mode in listOf("System", "Light", "Dark")) Row(verticalAlignment = Alignment.CenterVertically) { RadioButton(appearance.mode == mode, { change(appearance.copy(mode = mode)) }, modifier = Modifier.semantics { contentDescription = mode }); Text(mode) }
-            Field("Accent color · hex", accent, { accent = it; parseAccent(it)?.let { color -> change(appearance.copy(accent = color)) } })
+            Field("Accent color · hex", accent, { accent = it; parseAccent(it)?.let { color -> change(appearance.copy(accent = color)) } }, onSubmit = close)
             TextButton(onClick = { change(Appearance()); accent = accentText(Appearance().accent) }) { Text("Restore Sigil defaults") }
         Action("Done", true, close)
     }

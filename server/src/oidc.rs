@@ -29,6 +29,7 @@ pub struct Provider {
     pub issuer: String,
     pub client_id: String,
     pub client_secret: Option<Zeroizing<String>>,
+    #[serde(default)]
     pub exceptions: Vec<egress::Exception>,
 }
 #[derive(Clone, Deserialize, Serialize)]
@@ -88,7 +89,16 @@ fn http(
     request: openidconnect::HttpRequest,
 ) -> Result<openidconnect::HttpResponse, std::io::Error> {
     let (parts, body) = request.into_parts();
-    let result = egress::Policy::new(provider.exceptions.clone())
+    let issuer = openidconnect::url::Url::parse(&provider.issuer)
+        .map_err(|_| std::io::Error::other("invalid OIDC issuer"))?;
+    let target = openidconnect::url::Url::parse(&parts.uri.to_string())
+        .map_err(|_| std::io::Error::other("invalid OIDC endpoint"))?;
+    if issuer.origin() != target.origin() {
+        return Err(std::io::Error::other(
+            "OIDC endpoints must share the issuer origin",
+        ));
+    }
+    let result = egress::Policy::oidc(&provider.issuer, provider.exceptions.clone())
         .and_then(|p| p.service(ureq::http::Request::from_parts(parts, &body)))
         .map_err(|_| std::io::Error::other("OIDC transport failed"))?;
     let mut response = ureq::http::Response::builder().status(result.status);
@@ -712,7 +722,7 @@ pub(crate) fn check(update: &Configure) -> Result<Option<CoreProviderMetadata>, 
 impl Store {
     pub(crate) fn web_picture_request(
         &self,
-    ) -> Result<Option<(String, Vec<egress::Exception>)>, StoreError> {
+    ) -> Result<Option<(String, egress::Policy)>, StoreError> {
         let picture: Option<String> =
             self.0
                 .query_row("SELECT picture FROM web_owner", [], |r| r.get(0))?;
@@ -721,6 +731,8 @@ impl Store {
         };
         let (_, provider) = read(&self.0)?;
         let provider = provider.ok_or(StoreError::NotFound)?;
-        Ok(Some((picture, provider.provider.exceptions)))
+        let policy = egress::Policy::oidc(&provider.provider.issuer, provider.provider.exceptions)
+            .map_err(|_| StoreError::InvalidData)?;
+        Ok(Some((picture, policy)))
     }
 }

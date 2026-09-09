@@ -78,16 +78,20 @@ accounts both return not found; partial search and public directories are absent
 
 Use `GET/PUT /admin/v0/oidc`. Updates require `expected_revision`, `confirm:true`
 and `provider` (null disables). Provider fields: HTTPS `issuer`, `client_id`,
-`client_secret` (null for public clients), and explicit egress `exceptions` for
-private/self-hosted endpoints. Disable OIDC before changing the public origin.
-The browser wizard accepts allowed provider IPs or CIDRs, scoped to the issuer's
-host and port. Bare IPs allow only that address; TLS validation remains required.
+`client_secret` (null for public clients), and optional egress `exceptions`.
+The configured issuer's host and HTTPS port may resolve to public, RFC1918 or
+IPv6 unique-local addresses automatically, including Docker addresses that change.
+Loopback, link-local and other reserved addresses still require an explicit API
+exception. Existing exceptions retain their network restrictions and custom CA;
+omit them for automatic addressing. Disable OIDC before changing the public origin.
 Secrets are write-only: resupply them when
 replacing provider configuration. Register the exact returned `redirect_uri`
 with Pocket ID or another standard authorization-code provider. Token,
 authorization and JWKS endpoints must share the issuer origin. Client-secret
 Basic/POST authentication follows provider discovery metadata. Configure TLS
-trust explicitly for private providers; redirects and ambient proxies are disabled.
+trust explicitly only for custom certificate authorities; redirects and ambient
+proxies are disabled. Profile images on the issuer origin share its network policy;
+other image hosts retain the ordinary public-address policy or explicit exceptions.
 
 The Rust client persists a random flow ID, proof and fresh device credential
 before opening the system browser. Authorization uses code flow, S256 PKCE and

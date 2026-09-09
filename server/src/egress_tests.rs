@@ -222,6 +222,80 @@ fn urls_and_all_resolved_addresses_obey_exact_operator_exceptions() {
     assert!(Policy::new(vec![rule.clone(), rule]).is_err());
 }
 #[test]
+fn oidc_private_addresses_follow_only_the_configured_origin() {
+    let uri = endpoint("https://idp.example:9443/token").unwrap();
+    let policy = Policy::oidc("https://idp.example:9443/tenant", vec![]).unwrap();
+    for ip in [
+        "10.0.0.2",
+        "172.20.0.4",
+        "172.20.0.7",
+        "192.168.1.2",
+        "fd00::2",
+        "8.8.8.8",
+    ] {
+        let address = SocketAddr::new(ip.parse().unwrap(), 9443);
+        assert!(policy.check(&uri, &[address]).is_ok(), "{ip}");
+        assert_eq!(
+            Policy::default().check(&uri, &[address]),
+            Err(Error::Policy)
+        );
+    }
+    for ip in [
+        "127.0.0.1",
+        "0.0.0.0",
+        "169.254.169.254",
+        "100.100.100.200",
+        "224.0.0.1",
+        "::1",
+        "::",
+        "fe80::1",
+        "ff02::1",
+        "::ffff:172.20.0.4",
+    ] {
+        let address = SocketAddr::new(ip.parse().unwrap(), 9443);
+        assert_eq!(policy.check(&uri, &[address]), Err(Error::Policy), "{ip}");
+        assert_eq!(
+            policy.check(&uri, &["172.20.0.4:9443".parse().unwrap(), address]),
+            Err(Error::Policy),
+            "mixed DNS: {ip}"
+        );
+    }
+    for url in [
+        "https://other.example:9443/token",
+        "https://idp.example/token",
+        "https://idp.example.evil.test:9443/token",
+    ] {
+        let other = endpoint(url).unwrap();
+        let address = SocketAddr::new(
+            "172.20.0.4".parse().unwrap(),
+            other.port_u16().unwrap_or(443),
+        );
+        assert_eq!(
+            policy.check(&other, &[address]),
+            Err(Error::Policy),
+            "{url}"
+        );
+    }
+    assert_eq!(
+        policy.check(&uri, &["172.20.0.4:443".parse().unwrap()]),
+        Err(Error::Policy)
+    );
+    let pinned = Policy::oidc(
+        "https://idp.example:9443",
+        vec![Exception {
+            host: "idp.example".into(),
+            port: 9443,
+            networks: vec!["172.20.0.4/32".into()],
+            root_ca: None,
+        }],
+    )
+    .unwrap();
+    assert_eq!(
+        pinned.check(&uri, &["172.20.0.7:9443".parse().unwrap()]),
+        Err(Error::Policy)
+    );
+}
+#[test]
 fn real_tls_revalidates_dns_rejects_wrong_names_and_never_follows_redirects() {
     let _serial = NETWORK.lock().unwrap();
     let hits = Arc::new(AtomicUsize::new(0));
