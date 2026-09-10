@@ -15,6 +15,19 @@ impl ClientStore {
         let now = conversations::now();
         match action {
             "status" => (),
+            "android" => {
+                let state = self.push_state()?;
+                if state.configured && state.choice != Choice::Fcm && !replace {
+                    return Ok(json!({"ignored":true}));
+                }
+                return match self.connected_client()?.push_android() {
+                    Ok(provider) => serde_json::to_value(provider).map_err(|_| Error::InvalidEvent),
+                    Err(crate::network::Error::Status { code: 404, .. }) => {
+                        Ok(json!({"legacy":true}))
+                    }
+                    Err(e) => Err(e.into()),
+                };
+            }
             "fcm" => {
                 let state = self.push_state()?;
                 if state.configured && !replace {
@@ -94,5 +107,16 @@ mod tests {
         assert_eq!(result["value"]["unavailable"], true);
         assert!(!bob.push_state().unwrap().configured);
         assert!(bob.unified_push_registration().unwrap().is_none());
+        let android: serde_json::Value =
+            serde_json::from_str(&bob.mobile_command(r#"{"command":"push","action":"android"}"#))
+                .unwrap();
+        assert_eq!(android["ok"], true);
+        assert!(android["value"]["android"].is_null());
+        assert!(!bob.push_state().unwrap().configured);
+        bob.disable_push(crate::conversations::now()).unwrap();
+        let ignored: serde_json::Value =
+            serde_json::from_str(&bob.mobile_command(r#"{"command":"push","action":"android"}"#))
+                .unwrap();
+        assert_eq!(ignored["value"]["ignored"], true);
     }
 }

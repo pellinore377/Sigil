@@ -61,6 +61,47 @@ fn configuration(expected_revision: u64) -> Configure {
         }),
     }
 }
+#[test]
+fn android_bootstrap_is_authenticated_project_bound_and_restore_safe() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("server.db");
+    let (mut store, alice, _) = setup(&path);
+    let config = sigil_protocol::push::AndroidConfig {
+        project_id: "sigil-synthetic".into(), application_id: "1:123456789:android:0123456789abcdef".into(),
+        api_key: format!("AIza{}", "x".repeat(35)), sender_id: "123456789".into(),
+    };
+    let request = crate::push_android::Configure { expected_revision: 0, expected_push_revision: 1, android: Some(config.clone()) };
+    let saved = store.configure_push_android(request.clone()).unwrap();
+    assert_eq!(store.configure_push_android(request.clone()).unwrap(), saved);
+    assert_eq!(store.push_android(&alice, NOW).unwrap().android, Some(config.clone()));
+    assert!(store.push_android(&random_secret().unwrap(), NOW).is_err());
+    let public = serde_json::to_string(&store.push_android(&alice, NOW).unwrap()).unwrap();
+    assert!(!public.contains("private_key") && !public.contains("client_email"));
+    let mut bad = request.clone();
+    bad.expected_revision = 1;
+    bad.android.as_mut().unwrap().project_id = "different-project".into();
+    assert!(store.configure_push_android(bad).is_err());
+    assert_eq!(store.push_android_configuration().unwrap(), saved);
+    let backup = dir.path().join("backup.db");
+    store.backup(&backup).unwrap();
+    let restore = dir.path().join("restore.db");
+    Store::restore(&backup, &restore).unwrap();
+    assert!(Store::open(&restore).unwrap().push_android_configuration().unwrap().android.is_none());
+    let mut disable = configuration(1);
+    disable.fcm = FcmUpdate::Disable;
+    store.configure_push(disable).unwrap();
+    assert!(store.push_android(&alice, NOW).unwrap().android.is_none());
+    assert!(store.configure_push_android(request).is_err());
+    store.configure_push(configuration(2)).unwrap();
+    assert!(store.push_android(&alice, NOW).unwrap().android.is_none());
+    // Re-enabling the same project must not revive its previous bootstrap.
+    store.configure_push_android(crate::push_android::Configure {expected_revision:1,expected_push_revision:3,android:Some(config.clone())}).unwrap();
+    drop(store);
+    assert_eq!(Store::open(&path).unwrap().push_android(&alice,NOW).unwrap().android,Some(config));
+    let db=rusqlite::Connection::open(&path).unwrap();
+    db.execute_batch("DROP TABLE push_android; PRAGMA user_version=33;").unwrap();
+    assert!(Store::open(&path).unwrap().push_android(&alice,NOW).unwrap().android.is_none());
+}
 fn registration(expected_revision: u64) -> Register {
     Register {
         expected_revision,
@@ -388,7 +429,7 @@ fn configuration_rotation_migration_and_restore_preserve_safe_retry_boundaries()
     assert!(restored.push_status(&alice, NOW + 2).is_err());
     assert_eq!(restored.0.query_row("SELECT count(*) FROM push_channels WHERE target IS NOT NULL OR proof IS NOT NULL OR proof_hash IS NOT NULL",[],|r|r.get::<_,i64>(0)).unwrap(),0);
     drop(store);
-    db.execute_batch("ALTER TABLE private_groups DROP COLUMN blocked; DROP TABLE profile_shares; DROP TABLE profile_photos; DROP TABLE contact_requests; DROP TABLE contact_request_policy; DROP TABLE account_passwords; DROP TABLE password_policy; DROP TABLE web_oidc; DROP TABLE web_sessions; DROP TABLE oidc_fallback_ack; DROP TABLE oidc_transition; DROP TABLE account_profiles; DROP TABLE web_owner; DROP TABLE deleted_accounts; DROP TABLE operation_uploads; DROP TABLE operations; DROP TABLE operation_configuration; DROP TABLE oidc_grants; DROP TABLE oidc_bindings; DROP TABLE oidc_flows; DROP TABLE oidc_configuration; DROP TABLE registration_usage; DROP TABLE account_policy; DROP TABLE admin_policy; DROP TABLE call_connections; DROP TABLE calls; DROP TABLE call_configuration; DROP TABLE service_budgets; DROP TABLE service_configuration; DROP TABLE map_configuration; DROP TABLE private_group_invitations; DROP TABLE private_group_proposals; DROP TABLE private_group_nonces; DROP TABLE private_group_commits; DROP TABLE private_group_members; DROP TABLE private_groups; DROP TABLE group_credential_uids; DROP TABLE group_authority; DROP INDEX prekeys_available; DROP INDEX prekeys_remote_claim; ALTER TABLE prekeys DROP COLUMN remote_request; ALTER TABLE prekeys DROP COLUMN remote_device; ALTER TABLE prekeys DROP COLUMN remote_account; ALTER TABLE prekeys DROP COLUMN remote_server; CREATE INDEX prekeys_available ON prekeys(device_id,expires_at) WHERE bundle IS NOT NULL AND claimant IS NULL; DROP TABLE federation_outbox; DROP TABLE federation_revocations; DROP TABLE federation_senders; DROP TABLE federation_nonces; DROP TABLE federation_admission; DROP TABLE federation_usage; DROP TABLE federation_peers; DROP TABLE federation_configuration; DROP TABLE push_jobs;DROP TABLE push_channels;DROP TABLE push_configuration;PRAGMA user_version=13;CREATE TABLE push_jobs(synthetic INTEGER);").unwrap();
+    db.execute_batch("ALTER TABLE private_groups DROP COLUMN blocked; DROP TABLE profile_shares; DROP TABLE profile_photos; DROP TABLE contact_requests; DROP TABLE contact_request_policy; DROP TABLE account_passwords; DROP TABLE password_policy; DROP TABLE web_oidc; DROP TABLE web_sessions; DROP TABLE oidc_fallback_ack; DROP TABLE oidc_transition; DROP TABLE account_profiles; DROP TABLE web_owner; DROP TABLE deleted_accounts; DROP TABLE operation_uploads; DROP TABLE operations; DROP TABLE operation_configuration; DROP TABLE oidc_grants; DROP TABLE oidc_bindings; DROP TABLE oidc_flows; DROP TABLE oidc_configuration; DROP TABLE registration_usage; DROP TABLE account_policy; DROP TABLE admin_policy; DROP TABLE call_connections; DROP TABLE calls; DROP TABLE call_configuration; DROP TABLE service_budgets; DROP TABLE service_configuration; DROP TABLE map_configuration; DROP TABLE private_group_invitations; DROP TABLE private_group_proposals; DROP TABLE private_group_nonces; DROP TABLE private_group_commits; DROP TABLE private_group_members; DROP TABLE private_groups; DROP TABLE group_credential_uids; DROP TABLE group_authority; DROP INDEX prekeys_available; DROP INDEX prekeys_remote_claim; ALTER TABLE prekeys DROP COLUMN remote_request; ALTER TABLE prekeys DROP COLUMN remote_device; ALTER TABLE prekeys DROP COLUMN remote_account; ALTER TABLE prekeys DROP COLUMN remote_server; CREATE INDEX prekeys_available ON prekeys(device_id,expires_at) WHERE bundle IS NOT NULL AND claimant IS NULL; DROP TABLE federation_outbox; DROP TABLE federation_revocations; DROP TABLE federation_senders; DROP TABLE federation_nonces; DROP TABLE federation_admission; DROP TABLE federation_usage; DROP TABLE federation_peers; DROP TABLE federation_configuration; DROP TABLE push_jobs;DROP TABLE push_channels;DROP TABLE push_configuration;DROP TABLE IF EXISTS push_android; PRAGMA user_version=13;CREATE TABLE push_jobs(synthetic INTEGER);").unwrap();
     assert!(Store::open(&path).is_err());
     assert_eq!(
         db.query_row("PRAGMA user_version", [], |r| r.get::<_, i64>(0))

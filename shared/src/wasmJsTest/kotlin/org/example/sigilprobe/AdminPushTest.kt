@@ -4,6 +4,22 @@ import kotlinx.serialization.json.*
 import kotlin.test.*
 
 class AdminPushTest {
+    @Test fun android_download_is_project_and_package_bound_and_strips_unrelated_fields() {
+        val source=buildJsonObject {
+            putJsonObject("project_info") {put("project_id","synthetic-project");put("project_number","123456789");put("storage_bucket","ignored")}
+            putJsonArray("client") {add(buildJsonObject {
+                putJsonObject("client_info") {put("mobilesdk_app_id","1:123456789:android:0123456789abcdef");putJsonObject("android_client_info") {put("package_name","org.sigil.compose")}}
+                putJsonArray("api_key") {add(buildJsonObject {put("current_key","AIza"+"x".repeat(35))})}
+                put("private_key","must not leave browser")
+            })}
+        }.toString()
+        val result=androidFirebaseRequest(source,"synthetic-project")
+        assertEquals(setOf("project_id","sender_id","application_id","api_key"),result.keys)
+        assertEquals("123456789",result.getValue("sender_id").jsonPrimitive.content)
+        assertFailsWith<IllegalArgumentException> {androidFirebaseRequest(source,"another-project")}
+        assertFailsWith<IllegalArgumentException> {androidFirebaseRequest(source.replace("org.sigil.compose","org.other.app"),"synthetic-project")}
+        assertFailsWith<IllegalArgumentException> {androidFirebaseRequest("{\"private_key\":\"secret\"}","synthetic-project")}
+    }
     private val previous=Json.parseToJsonElement("""{"revision":9007199254740993,"exceptions":[{"host":"push.example.org","port":443,"networks":["192.0.2.0/24"],"root_ca":null}]}""").jsonObject
     private val update=PushUpdate("9007199254740993",true,"mailto:admin@example.org",false,null,false)
     @Test fun saves_preserve_exact_revision_and_private_network_policy_without_reading_a_secret() {
