@@ -78,7 +78,7 @@ Appearance is a settings hub with focused pages:
 | Typography | Font family, text size and representative writing/code previews. |
 | Layout | Comfortable/compact conversation rows, preview-line count, optional collections and their labels; pane/sidebar options on wider screens. |
 | Motion & media | Reduced motion, message effects and GIF autoplay. Download/storage policy belongs elsewhere. |
-| Maps | Follow appearance or a chosen map style, light/dark variants and supported label-font choices; preview before applying. |
+| Maps | Choose from this account's server-enabled styles, follow appearance or select supported light/dark variants and label fonts; preview before applying. |
 
 Appearance defaults to private account synchronization. Advanced allows this device to opt out without affecting other devices; returning to account settings clearly replaces its local override. Platform-only settings and layout choices for incompatible form factors remain local. Background assets require encrypted synchronization before claiming they follow the account. Appearance controls presentation; location permissions, providers and live-sharing consent belong outside it.
 
@@ -180,6 +180,12 @@ Show the selected place and available accuracy before sending. Request permissio
 Live markers use subtle expanding radio rings while updates are fresh and sharing is active. Show remaining duration, last update and Stop sharing. Stale/offline/ended states stop the rings and display their actual status; reduced motion uses a static live indicator. Animate movement only between received positions, never invent location or precision. End/expiry stops further sharing and leaves an explicitly ended card.
 
 Each mode has a compact map card and an expanded map with clear identity/place details, accuracy when known, recenter and appropriate sharing controls. Expand the existing panel for map selection; preserve it on Back. Map style follows the viewer's preferences, keeping markers and labels readable; source attribution remains visible. Provider settings disclose who receives search queries. Search and opening a map never silently start live sharing.
+
+Automatic address previews detect likely addresses on the client before encryption, resolve them and show a removable map card with the address beneath it. Preserve surrounding text as a caption; ambiguous matches require selection and failed lookup preserves plain text. Send resolved coordinates with the encrypted message so recipients do not repeat the search. The setting explains that the lookup service receives the candidate address, not the entire draft.
+
+Admin → Maps offers existing mounted archives or supported regional downloads, with size, progress, cancellation and update controls. Self-hosted address/business lookup uses a compatible local search engine and index: import a supported prebuilt index when available, otherwise build from source data. Dataset downloads/updates contact their source; local queries require no third-party requests or silent external fallback. Server-hosted lookup still reveals the query to that server.
+
+Admins enable a catalog of map styles for their users. Each style family (Sigil, Ancient, Cyber, etc.) has a tested variant for each supported tile schema/version, including its fonts, sprites and attribution. Expose only compatible installed combinations; vector styles cannot recolor raster tiles. Style selection is private and scoped to the active account/server. Different servers may offer different catalogs; a removed/unavailable choice visibly falls back to an available default. Federated locations render using the recipient's catalog, not the sender's styling. Automatic installation and additional style families remain implementation work.
 
 ### Motion
 
