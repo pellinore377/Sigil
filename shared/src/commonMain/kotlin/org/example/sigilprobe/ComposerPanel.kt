@@ -26,7 +26,7 @@ import kotlinx.coroutines.flow.*
 
 private val createItems = listOf("Note" to "description", "Checklist" to "checklist", "Poll" to "ballot", "Reminder" to "notifications_active", "Task" to "assignment", "Timer" to "timer")
 @Composable
-internal fun ComposerPanel(draft: TextFieldState, analyze: (String) -> String, enabled: Boolean, notes: Boolean, command: Command, peer: String, voice: VoiceState, sent: Long, sentText: String?, requestContact: (() -> Unit)? = null, attachments: List<Transfer> = emptyList(), editingCaption: Boolean = false, attachmentTarget: Map<String, Any?> = mapOf("peer" to peer), send: (String, Boolean) -> Unit) {
+internal fun ComposerPanel(draft: TextFieldState, analyze: (String) -> String, enabled: Boolean, notes: Boolean, command: Command, peer: String, voice: VoiceState, sent: Long, sentText: String?, requestContact: (() -> Unit)? = null, attachments: List<Transfer> = emptyList(), editingCaption: Boolean = false, attachmentTarget: Map<String, Any?> = mapOf("peer" to peer), send: (String, Boolean, String?) -> Unit) {
     val motionPolicy = LocalMotion.current
     var panel by remember(peer) { mutableStateOf("") }
     var showSource by remember(peer) { mutableStateOf(false) }
@@ -125,7 +125,7 @@ internal fun ComposerPanel(draft: TextFieldState, analyze: (String) -> String, e
                         val caption = draft.text.toString(); pendingCaption = caption
                         attachmentDrafts.forEach { command("file_send", mapOf("request" to it.request, "caption" to caption)) }
                         if (voiceReady) command("record_send", mapOf("peer" to peer, "caption" to caption))
-                    } else if (hasText && requestContact != null) requestContact() else if (hasText) send(if (notes && !editingCaption) "note::${escapeField(draft.text.toString())};" else draft.text.toString(), notes && !editingCaption) else change("Voice") },
+                    } else if (hasText && requestContact != null) requestContact() else if (hasText) send(if (notes && !editingCaption) "note::${escapeField(draft.text.toString())};" else draft.text.toString(), notes && !editingCaption, null) else change("Voice") },
                     Modifier.size(48.dp), enabled = if (hasAttachment) enabled && voice.phase != "Sending" && attachmentDrafts.none { it.phase == "Staging" } else if (hasText) enabled || requestContact != null else true, shape = RoundedCornerShape(16.dp),
                     colors = IconButtonDefaults.filledIconButtonColors(containerColor = MaterialTheme.colorScheme.primary, contentColor = MaterialTheme.colorScheme.onPrimary)) {
                     Glyph(if (hasAttachment || hasText) "send" else "graphic_eq", 24, if (editingCaption) "Save caption" else if (voiceReady) "Send voice message" else if (attachmentDrafts.isNotEmpty()) "Send attachments" else if (hasText) if (requestContact != null) "Send request" else "Send message" else "Voice message")
@@ -164,7 +164,7 @@ internal fun ComposerPanel(draft: TextFieldState, analyze: (String) -> String, e
                         "Camera" -> LocalCameraPanel.current(attachmentTarget, { change("Attachments") }, { change("") })
                         "Place" -> LocalPlacePanel.current(attachmentTarget, { change("Attachments") }, { change("") })
                         in createItems.map { it.first } -> builders.SaveableStateProvider("$peer:$shown") {
-                            StructuredBuilder(shown, enabled, { change("Create") }) { source -> pendingBuilder = "$peer:$shown" to source; send(source, true) }
+                            StructuredBuilder(shown, enabled, { change("Create") }) { source, timezone -> pendingBuilder = "$peer:$shown" to source; send(source, true, timezone) }
                         }
                         "Format" -> Column(Modifier.padding(16.dp)) {
                             CompositionLocalProvider(LocalPageHeader provides false) { Header("Formatting", { change("Attachments") }) }
@@ -181,7 +181,7 @@ internal fun ComposerPanel(draft: TextFieldState, analyze: (String) -> String, e
 private fun Modifier.semanticsButton(name: String) = this.then(Modifier.semantics { contentDescription = name; role = androidx.compose.ui.semantics.Role.Button })
 internal fun escapeField(value: String) = value.replace("\\", "\\\\").replace(";", "\\;")
 @Composable
-private fun StructuredBuilder(kind: String, enabled: Boolean, back: () -> Unit, send: (String) -> Unit) {
+internal fun StructuredBuilder(kind: String, enabled: Boolean, back: () -> Unit, send: (String, String?) -> Unit) {
     val motionPolicy = LocalMotion.current
     var title by rememberSaveable(kind) { mutableStateOf("") }
     var entries by rememberSaveable(kind) { mutableStateOf(listOf("")) }
@@ -189,6 +189,17 @@ private fun StructuredBuilder(kind: String, enabled: Boolean, back: () -> Unit, 
     var multi by rememberSaveable(kind) { mutableStateOf(false) }
     var hidden by rememberSaveable(kind) { mutableStateOf(false) }
     var whenText by rememberSaveable(kind) { mutableStateOf(if (kind == "Timer") "5m" else "tomorrow 9am") }
+    val temporal=kind in listOf("Reminder","Timer")
+    val resolveTime=LocalTemporalPreview.current
+    var preview by remember(kind,whenText) {mutableStateOf<TemporalPreview?>(null)}
+    var checkingTime by remember(kind,whenText) {mutableStateOf(temporal)}
+    LaunchedEffect(kind,whenText,resolveTime) {
+        if(temporal) {
+            kotlinx.coroutines.delay(150)
+            preview=kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Default) {resolveTime?.invoke(kind,whenText)}
+            checkingTime=false
+        }
+    }
     val focus = LocalFocusManager.current
     Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal = 24.dp, vertical = 12.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically) { Symbol("chevron_left", "Back to create", back); Text(kind, Modifier.weight(1f), style = MaterialTheme.typography.titleLarge) }
@@ -204,7 +215,13 @@ private fun StructuredBuilder(kind: String, enabled: Boolean, back: () -> Unit, 
             }
           } }
         }
-        if (kind in listOf("Reminder", "Timer")) OutlinedTextField(whenText, { whenText = it }, Modifier.fillMaxWidth(), label = { Text(if (kind == "Timer") "Duration, e.g. 5m" else "When") })
+        if (temporal) {
+            OutlinedTextField(whenText, { whenText = it }, Modifier.fillMaxWidth(), singleLine=true, shape=RoundedCornerShape(16.dp),
+                isError=!checkingTime && preview==null && whenText.isNotBlank(), label = { Text(if (kind == "Timer") "Duration, e.g. 5m" else "When") })
+            Text(if(checkingTime)"Checking time…" else preview?.label ?: if(resolveTime==null)"Time preview is unavailable." else if(kind=="Timer")"Use a duration such as 5m or 1h 30m." else "Use a date such as tomorrow 9am or 2027-07-05 9:30am.",
+                Modifier.fillMaxWidth().animateContentSize(motionPolicy.tween(MotionMillis)).semantics {liveRegion=LiveRegionMode.Polite}, style=MaterialTheme.typography.bodySmall,
+                color=if(checkingTime || preview!=null)MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.error)
+        }
         if (kind == "Poll") {
             SigilTextButton({ advanced = !advanced }) { Text(if (advanced) "Hide advanced" else "Advanced") }
             Expandable(advanced) { Toggle("Allow multiple choices", multi) { multi = it }; Toggle("Hide results until voting", hidden) { hidden = it } }
@@ -217,11 +234,11 @@ private fun StructuredBuilder(kind: String, enabled: Boolean, back: () -> Unit, 
                 "Poll" -> "poll::${if (multi) "multi::" else ""}${if (hidden) "closed::" else ""}$heading\n$items;"
                 "Checklist" -> "checklist::$heading\n$items;"
                 "Task" -> "checklist::task::$heading\n$items;"
-                "Reminder" -> "remind::${escapeField(whenText)}::$heading;"
-                else -> "timer::${escapeField(whenText)};"
+                "Reminder" -> "remind::${escapeField(preview?.source ?: return@SigilButton)}::$heading;"
+                else -> "timer::${escapeField(preview?.source ?: return@SigilButton)};"
             }
-            send(source)
-        }, enabled = enabled && (if (kind == "Timer") whenText.isNotBlank() else title.isNotBlank()) && (kind !in listOf("Poll", "Checklist", "Task") || entries.count { it.isNotBlank() } >= if (kind == "Poll") 2 else 1), modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(16.dp)) { Text(if (kind == "Poll") "Send poll" else "Send") }
+            send(source,preview?.timezone)
+        }, enabled = enabled && (!temporal || preview!=null && !checkingTime) && (if (kind == "Timer") whenText.isNotBlank() else title.isNotBlank()) && (kind !in listOf("Poll", "Checklist", "Task") || entries.count { it.isNotBlank() } >= if (kind == "Poll") 2 else 1), modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(16.dp)) { Text(if (kind == "Poll") "Send poll" else "Send") }
     }
 }
 @OptIn(ExperimentalLayoutApi::class)

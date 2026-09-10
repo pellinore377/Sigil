@@ -435,7 +435,7 @@ class Messenger(application: Application) : AndroidViewModel(application) {
             val bytes = ByteArray(32).also { SecureRandom().nextBytes(it) }
             value.put("request", bytes.joinToString("") { "%02x".format(it) })
             value.put("timestamp", System.currentTimeMillis() / 1000)
-            if (name == "post") value.put("timezone", java.util.TimeZone.getDefault().id)
+            if (name == "post" && value.isNull("timezone")) value.put("timezone", java.util.TimeZone.getDefault().id)
         }
         return value.toString()
     }

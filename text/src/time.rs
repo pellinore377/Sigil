@@ -143,6 +143,21 @@ pub fn duration(source: &str) -> Result<u64, Error> {
 }
 
 /// Resolve once using sender context. Numeric dates never guess an absent locale.
+pub fn date_confirmation(
+    source: &str,
+    now: u64,
+    timezone: &str,
+    order: Option<DateOrder>,
+) -> Result<(u64, String, String), Error> {
+    let at = resolve_date(source, now, timezone, order)?;
+    let local = timestamp(at)?.to_zoned(zone(timezone)?);
+    Ok((
+        at,
+        local.strftime("%Y-%m-%dT%H:%M:%S").to_string(),
+        local.strftime("%:z").to_string(),
+    ))
+}
+
 pub fn resolve_date(
     source: &str,
     now: u64,

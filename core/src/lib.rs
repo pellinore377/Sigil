@@ -65,6 +65,28 @@ mod tests {
     }
 }
 mod composer;
+mod temporal;
+
+#[cfg_attr(target_arch = "wasm32", wasm_bindgen::prelude::wasm_bindgen)]
+pub fn temporal_preview(input: &str) -> String {
+    temporal::preview(input)
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[no_mangle]
+pub extern "system" fn Java_org_sigil_NativeCore_temporalPreview(
+    mut env: JNIEnv,
+    _: JObject,
+    input: JString,
+) -> jstring {
+    let result = match env.get_string(&input) {
+        Ok(value) => temporal_preview(&String::from(value)),
+        Err(_) => return std::ptr::null_mut(),
+    };
+    env.new_string(result)
+        .map(JString::into_raw)
+        .unwrap_or(std::ptr::null_mut())
+}
 
 #[cfg_attr(target_arch = "wasm32", wasm_bindgen::prelude::wasm_bindgen)]
 pub fn analyze(input: &str) -> String {

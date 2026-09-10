@@ -6,6 +6,7 @@ import android.media.AudioManager
 import android.os.SystemClock
 import androidx.activity.ComponentActivity
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.semantics.SemanticsActions
 import androidx.compose.ui.test.*
@@ -26,6 +27,37 @@ class ContentTest {
     @get:Rule val ui = createAndroidComposeRule<ComponentActivity>()
     private val context get() = InstrumentationRegistry.getInstrumentation().targetContext
     @Before fun isolated() { Assume.assumeTrue(context.packageName.endsWith(".acceptance")) }
+    @Test fun reminderBuilderSendsItsConfirmedTimeAndTimezone() = runBlocking {
+        lateinit var messenger:Messenger
+        val store=androidx.lifecycle.ViewModelStore()
+        ui.runOnIdle {messenger=Messenger(context.applicationContext as Application);store.put("reminder",messenger)}
+        try {
+            ui.waitUntil(10_000) {messenger.state.phase=="connected"}
+            ui.runOnIdle {messenger.command("open",mapOf("peer" to "self"))}
+            ui.waitUntil(10_000) {messenger.state.selected=="self" && !messenger.state.busy}
+            ui.runOnUiThread {ui.activity.setSigilContent {
+                CompositionLocalProvider(LocalTemporalPreview provides {kind,input->
+                    val result=NativeCore.temporalPreview("$kind\n1772945999\nAmerica/New_York\nmonth\n$input").split('\n')
+                    if(result.size==3)TemporalPreview(result[0],"America/New_York","${result[0]} (UTC${result[2]})") else null
+                }) {SigilApp(NativeCore::palette,NativeCore::analyze,messenger.state,messenger::command)}
+            }}
+            ui.onNodeWithContentDescription("Attachments").performClick()
+            ui.onNodeWithContentDescription("Create").performClick()
+            ui.onNodeWithContentDescription("Reminder").performClick()
+            ui.onNodeWithText("Title").performTextInput("Synthetic confirmed reminder")
+            ui.onNodeWithText("When").performTextReplacement("not a date")
+            ui.onNodeWithText("Send").assertIsNotEnabled()
+            ui.onNodeWithText("When").performTextReplacement("07/05/30 9:30am")
+            ui.waitUntil(5000) {ui.onAllNodesWithText("2030-07-05T09:30:00 (UTC-04:00)").fetchSemanticsNodes().isNotEmpty()}
+            ui.onNodeWithText("Send").performScrollTo().performClick()
+            ui.waitUntil(10_000) {messenger.state.sent>0}
+            val messages=native("timeline",mapOf("peer" to "self")).getJSONArray("messages")
+            val message=(0 until messages.length()).map {messages.getJSONObject(it)}.single {it.getString("text").contains("Synthetic confirmed reminder")}
+            val part=message.getJSONArray("parts").getJSONObject(0)
+            assertEquals(java.time.Instant.parse("2030-07-05T13:30:00Z").epochSecond,part.getLong("at"))
+            assertTrue(message.getString("text").contains("America/New_York"))
+        } finally {ui.runOnIdle {store.clear()}}
+    }
     @Test fun storedMotionUsesCanonicalRustParametersAndShapedTextUnits() = runBlocking {
         native("post",mapOf("peer" to "self","request" to "d4".repeat(32),"timestamp" to System.currentTimeMillis()/1000,
             "text" to "wave::office العربية 👩🏽‍💻; spoiler::shake::SYNTHETIC_HIDDEN_MOTION;","formatted" to true))
