@@ -15,7 +15,7 @@ class RandomizerBuilderTest {
     @get:Rule val ui=createComposeRule()
     @Test fun guided_fields_keep_each_modes_draft_and_only_send_valid_explicit_actions() {
         val sent=mutableListOf<String>()
-        ui.setContent {MaterialTheme {CompositionLocalProvider(LocalRandomizerSource provides NativeCore::randomizerSource) {
+        ui.setContent {MaterialTheme {CompositionLocalProvider(LocalBuilderSource provides NativeCore::builderSource) {
             Box(Modifier.width(380.dp).height(700.dp)) {RandomizerBuilder(true,{},sent::add)}
         }}}
         ui.onNodeWithText("Count 1").performTextReplacement("3")
@@ -29,7 +29,7 @@ class RandomizerBuilderTest {
         ui.onNodeWithText("Pick a choice").assertIsNotEnabled()
         ui.onNodeWithText("Choice 2").performTextReplacement("redact::keep this;")
         ui.onNodeWithText("Pick a choice").performScrollTo().performClick()
-        assertEquals(NativeCore.randomizerSource("Choice\nFish, chips\nredact::keep this;"),sent.last())
+        assertEquals(NativeCore.builderSource("Choice\nFish, chips\nredact::keep this;"),sent.last())
         ui.onNodeWithText("Dice").performScrollTo().performClick()
         ui.onNodeWithText("Count 1").assertTextContains("3")
         ui.onNodeWithText("Sides 1").assertTextContains("20")
@@ -42,6 +42,6 @@ class RandomizerBuilderTest {
         assertEquals("pick::number::-5--1;",sent.last())
         ui.onNodeWithText("Coin").performScrollTo().performClick()
         ui.onNodeWithText("Flip coin").performScrollTo().performClick()
-        assertEquals(listOf("roll::3d20;",NativeCore.randomizerSource("Choice\nFish, chips\nredact::keep this;"),"pick::number::-5--1;","pick::flip;"),sent)
+        assertEquals(listOf("roll::3d20;",NativeCore.builderSource("Choice\nFish, chips\nredact::keep this;"),"pick::number::-5--1;","pick::flip;"),sent)
     }
 }

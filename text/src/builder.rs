@@ -4,7 +4,9 @@ use std::collections::BTreeSet;
 pub fn source(input: &str) -> Result<String, Error> {
     let limits = CardLimits::default();
     if input.len() > limits.text.source_bytes / 2
-        || input.chars().any(|c| c.is_control() && c != '\n')
+        || input
+            .chars()
+            .any(|c| c.is_control() && c != '\n' && !(c == '\t' && input.starts_with("Table\n")))
     {
         return Err(Error::Limit);
     }
@@ -42,16 +44,7 @@ pub fn source(input: &str) -> Result<String, Error> {
                 .into_iter()
                 .map(str::trim)
                 .filter(|v| !v.is_empty() && seen.insert(*v))
-                .map(|v| {
-                    let mut literal = String::new();
-                    for ch in v.chars() {
-                        if ch.is_ascii_punctuation() {
-                            literal.push('\\');
-                        }
-                        literal.push(ch);
-                    }
-                    literal
-                })
+                .map(literal)
                 .collect::<Vec<_>>();
             if choices.len() < 2 {
                 return Err(Error::Invalid);
@@ -76,12 +69,52 @@ pub fn source(input: &str) -> Result<String, Error> {
             format!("pick::number::{min}-{max};")
         }
         "Coin" if values.is_empty() => "pick::flip;".into(),
+        "Table" => {
+            let mut rows = values
+                .iter()
+                .map(|row| row.split('\t').map(str::trim).collect::<Vec<_>>());
+            let columns = rows.next().ok_or(Error::Invalid)?;
+            if columns.is_empty()
+                || columns.len() > limits.options
+                || values.len() > limits.items + 1
+            {
+                return Err(Error::Limit);
+            }
+            let mut lines = vec![format!(
+                "table::{}",
+                columns
+                    .into_iter()
+                    .map(literal)
+                    .collect::<Vec<_>>()
+                    .join(" | ")
+            )];
+            for row in rows {
+                lines.push(format!(
+                    "- {}",
+                    row.into_iter().map(literal).collect::<Vec<_>>().join(" | ")
+                ));
+            }
+            let lines = lines.iter().map(String::as_str).collect::<Vec<_>>();
+            crate::data::parse(&lines, limits)?.validate(limits)?;
+            format!("{};", lines.join("\n"))
+        }
         _ => return Err(Error::Invalid),
     };
     if source.len() > limits.text.source_bytes {
         return Err(Error::Limit);
     }
     Ok(source)
+}
+
+fn literal(value: &str) -> String {
+    let mut output = String::new();
+    for ch in value.chars() {
+        if ch.is_ascii_punctuation() {
+            output.push('\\');
+        }
+        output.push(ch);
+    }
+    output
 }
 
 #[cfg(test)]
@@ -180,5 +213,57 @@ mod tests {
             assert!(source(input).is_err(), "{input}");
         }
         assert!(source(&"x".repeat(17000)).is_err());
+    }
+
+    #[test]
+    fn table_fields_remain_literal_and_use_canonical_validation() {
+        let draft =
+            source("Table\nName\tCount\nFish | chips\t2\nredact::literal;\t👩🏽‍💻 **hello**").unwrap();
+        let Parsed::Card(card) = parse_card(
+            &draft,
+            Origin {
+                message: [1; 32],
+                creator: [2; 32],
+                created_at: 1767225600,
+                timezone: None,
+            },
+            Default::default(),
+        )
+        .unwrap()
+        .content
+        else {
+            panic!()
+        };
+        let Construct::Data(crate::data::Data::Table(table)) = card.content else {
+            panic!()
+        };
+        assert_eq!(
+            table.columns.iter().map(|t| t.body()).collect::<Vec<_>>(),
+            ["Name", "Count"]
+        );
+        assert_eq!(
+            table.rows[0].iter().map(|t| t.body()).collect::<Vec<_>>(),
+            ["Fish | chips", "2"]
+        );
+        assert_eq!(
+            table.rows[1].iter().map(|t| t.body()).collect::<Vec<_>>(),
+            ["redact::literal;", "👩🏽‍💻 **hello**"]
+        );
+        assert!(table
+            .rows
+            .iter()
+            .flatten()
+            .all(|t| t.spans().iter().all(|s| s.effects == Default::default())));
+        for invalid in [
+            "Table\nName",
+            "Table\n\t\nx\ty",
+            "Table\nName\nx\ty",
+            "Table\nName\n ",
+            "Table\nName\nx\ry",
+        ] {
+            assert!(source(invalid).is_err(), "{invalid}");
+        }
+        assert!(source(&format!("Table\n{}\nx", vec!["Column"; 65].join("\t"))).is_err());
+        assert!(source(&format!("Table\nName\n{}", vec!["Value"; 257].join("\n"))).is_err());
     }
 }

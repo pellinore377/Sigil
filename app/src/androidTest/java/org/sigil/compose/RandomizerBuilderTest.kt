@@ -31,7 +31,7 @@ class RandomizerBuilderTest {
         ui.onNodeWithText("Choice 1").performTextInput("Fish,\nchips")
         ui.onNodeWithText("Choice 2").performScrollTo().performTextInput("redact::literal;")
         ui.onNodeWithText("Pick a choice").performScrollTo().performClick()
-        assertEquals(NativeCore.randomizerSource("Choice\nFish, chips\nredact::literal;"),commands.last {it.first=="post"}.second["text"])
+        assertEquals(NativeCore.builderSource("Choice\nFish, chips\nredact::literal;"),commands.last {it.first=="post"}.second["text"])
         ui.onNodeWithText("Coin").performScrollTo().performClick()
         ui.onNodeWithText("Coin").assertIsSelected()
         ui.onNodeWithText("Flip coin").performScrollTo().performClick()

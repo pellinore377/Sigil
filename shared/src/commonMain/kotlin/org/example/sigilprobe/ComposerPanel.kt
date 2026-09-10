@@ -24,7 +24,7 @@ import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.semantics.*
 import kotlinx.coroutines.flow.*
 
-private val createItems = listOf("Note" to "description", "Checklist" to "checklist", "Poll" to "ballot", "Reminder" to "notifications_active", "Task" to "assignment", "Timer" to "timer", "Randomizer" to "casino", "Help" to "help")
+private val createItems = listOf("Note" to "description", "Checklist" to "checklist", "Poll" to "ballot", "Reminder" to "notifications_active", "Task" to "assignment", "Timer" to "timer", "Randomizer" to "casino", "Table" to "table", "Help" to "help")
 @Composable
 internal fun ComposerPanel(draft: TextFieldState, analyze: (String) -> String, enabled: Boolean, notes: Boolean, command: Command, peer: String, voice: VoiceState, sent: Long, sentText: String?, requestContact: (() -> Unit)? = null, attachments: List<Transfer> = emptyList(), editingCaption: Boolean = false, attachmentTarget: Map<String, Any?> = mapOf("peer" to peer), send: (String, Boolean, String?) -> Unit) {
     val motionPolicy = LocalMotion.current
@@ -170,6 +170,9 @@ internal fun ComposerPanel(draft: TextFieldState, analyze: (String) -> String, e
                         "Help" -> HelpPanel(enabled,{change(if(helpQuery==null)"Create" else "")},helpQuery) {source->pendingBuilder="$peer:$shown" to source;send(source,true,null)}
                         "Randomizer" -> builders.SaveableStateProvider("$peer:$shown") {
                             RandomizerBuilder(enabled,{change("Create")}) {source->pendingBuilder="$peer:$shown" to source;send(source,true,null)}
+                        }
+                        "Table" -> builders.SaveableStateProvider("$peer:$shown") {
+                            TableBuilder(enabled,{change("Create")}) {source->pendingBuilder="$peer:$shown" to source;send(source,true,null)}
                         }
                         in createItems.map { it.first } -> builders.SaveableStateProvider("$peer:$shown") {
                             StructuredBuilder(shown, enabled, { change("Create") }) { source, timezone -> pendingBuilder = "$peer:$shown" to source; send(source, true, timezone) }

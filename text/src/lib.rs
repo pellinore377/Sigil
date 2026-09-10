@@ -2,6 +2,7 @@
 //! Canonical SigilText domain data. Source text is never a serialized fallback.
 pub mod action;
 mod blocks;
+pub mod builder;
 mod card_parse;
 pub mod chart;
 pub mod code;
@@ -19,7 +20,6 @@ pub mod motion;
 pub mod numeric;
 mod parse;
 pub mod poll_close;
-pub mod randomizer_builder;
 pub mod recurrence;
 pub mod recipe;
 pub mod service;

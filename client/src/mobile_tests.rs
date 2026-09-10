@@ -1194,19 +1194,23 @@ fn stored_service_cards_project_without_a_provider_configuration() {
 }
 
 #[test]
-fn randomizer_builder_sources_keep_durable_acknowledgements_and_results() {
+fn guided_builder_sources_keep_durable_acknowledgements_and_results() {
     let (dir,_server,mut alice,_bob,now)=crate::claims::tests::pair();
-    for (index,input) in ["Dice\n20\n20","Choice\nFish, chips\nredact::literal;","Number\n-5\n-1","Coin"].iter().enumerate() {
-        let source=sigil_protocol::text::randomizer_builder::source(input).unwrap();
+    for (index,input) in ["Dice\n20\n20","Choice\nFish, chips\nredact::literal;","Number\n-5\n-1","Coin","Table\nName\tCount\nFish | chips\t2\nredact::literal;\t10"].iter().enumerate() {
+        let source=sigil_protocol::text::builder::source(input).unwrap();
         let request=format!("{:064x}",700+index);
         assert_eq!(run(&mut alice,json!({"command":"post_status","peer":"self","request":request}))["queued"],false);
         run(&mut alice,json!({"command":"post","peer":"self","request":request,"timestamp":now,"text":source,"rich":true}));
         assert_eq!(run(&mut alice,json!({"command":"post_status","peer":"self","request":request}))["queued"],true);
     }
     let before=run(&mut alice,json!({"command":"timeline","peer":"self"}));
+    let table=before["messages"].as_array().unwrap().iter().find_map(|message|message["parts"].as_array()?.iter().find_map(|part|part.get("table"))).unwrap();
+    assert_eq!(table["rows"][0][0]["text"],"Fish | chips");
+    assert_eq!(table["rows"][1][0]["text"],"redact::literal;");
+    assert_eq!(table["numeric_order"][1],json!([0,1]));
     drop(alice);
     let mut alice=ClientStore::open(&dir.path().join("alice.db"),StorageKey::new(Secret32::from_bytes([9;32])).unwrap()).unwrap();
-    for index in 0..4 {
+    for index in 0..5 {
         assert_eq!(run(&mut alice,json!({"command":"post_status","peer":"self","request":format!("{:064x}",700+index)}))["queued"],true);
     }
     assert_eq!(before["messages"],run(&mut alice,json!({"command":"timeline","peer":"self"}))["messages"]);
