@@ -131,13 +131,13 @@ internal class VoiceRecorder(private val scope: CoroutineScope, private val stag
         clearPreview()
         finish(); bytes.clear(); withContext(Dispatchers.Main) { update(VoiceState()) }
     } } }
-    fun send() { scope.launch(Dispatchers.IO) { mutex.withLock {
+    fun send(caption: String = "") { scope.launch(Dispatchers.IO) { mutex.withLock {
         clearPreview()
         if (!finish()) return@withLock
         withContext(Dispatchers.Main) { update(VoiceState("Sending", peer, elapsed, levels)) }
         val audio = bytes.toByteArray()
         try {
-            stage(peer, audio, target)
+            stage(peer, audio, target + ("caption" to caption))
             bytes.clear()
             withContext(Dispatchers.Main) { update(VoiceState()) }
         } catch (cancelled: CancellationException) { throw cancelled }

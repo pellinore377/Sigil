@@ -31,8 +31,8 @@ import org.sigil.storage.NativeStorage
 import org.sigil.storage.StorageKeyProvider
 import java.nio.ByteBuffer
 
-internal class EncryptedMedia(private val context: android.content.Context, private val peer: String, private val author: String, private val message: String, private val length: Long) : MediaDataSource() {
-    constructor(context: android.content.Context, message: ChatMessage) : this(context, message.peer, message.author, message.id, message.attachment!!.bytes)
+internal class EncryptedMedia(private val context: android.content.Context, private val peer: String, private val author: String, private val message: String, private val length: Long, private val draft: Boolean = false) : MediaDataSource() {
+    constructor(context: android.content.Context, message: ChatMessage) : this(context, message.peer, message.author, message.id, message.attachment!!.bytes, message.attachment!!.draft)
     private var part = -1
     private var bytes = ByteArray(0)
     private var closed = false
@@ -45,7 +45,7 @@ internal class EncryptedMedia(private val context: android.content.Context, priv
         val index = (position / (1024 * 1024)).toInt()
         if (part != index) {
             bytes.fill(0)
-            bytes = StorageKeyProvider(context).withKey { directory, key -> NativeStorage.readFileChunk(directory.path, key, peer, author, message, index) } ?: throw java.io.IOException("Attachment unavailable")
+            bytes = StorageKeyProvider(context).withKey { directory, key -> if (draft) NativeStorage.readDraftChunk(directory.path, key, message, index) else NativeStorage.readFileChunk(directory.path, key, peer, author, message, index) } ?: throw java.io.IOException("Attachment unavailable")
             part = index
         }
         val within = (position % (1024 * 1024)).toInt()
@@ -57,10 +57,22 @@ internal class EncryptedMedia(private val context: android.content.Context, priv
     @Synchronized override fun close() { closed = true; bytes.fill(0); bytes = ByteArray(0) }
 }
 internal fun prepare(context: android.content.Context, message: ChatMessage): Boolean {
-    val command = JSONObject().put("command", "file_get").put("peer", message.peer).put("author", message.author).put("message", message.id)
+    val draft = message.attachment?.draft == true
+    val command = if (draft) JSONObject().put("command", "files") else JSONObject().put("command", "file_get").put("peer", message.peer).put("author", message.author).put("message", message.id)
     val result = StorageKeyProvider(context).withKey { directory, key -> JSONObject(NativeStorage.execute(directory.path, key, command.toString())) }
     check(result.getBoolean("ok"))
+    if (draft) {
+        val uploads = result.getJSONObject("value").getJSONArray("uploads")
+        val upload = (0 until uploads.length()).map { uploads.getJSONObject(it) }.singleOrNull { it.getString("request") == message.id && it.optBoolean("draft") } ?: error("Draft unavailable")
+        return upload.getString("phase") in listOf("Ready", "Starting", "Uploading", "Checking", "Published")
+    }
     return result.getJSONObject("value").getString("phase") in listOf("Complete", "Published", "Restored")
+}
+@Composable
+internal fun AndroidAttachmentDraft(file: org.sigil.Transfer, modifier: Modifier) {
+    val message = remember(file) { ChatMessage(file.request, "", "", true, "", "", false, emptyList(), emptyList(), null, true,
+        peer = file.peer, attachment = org.sigil.AttachmentDetails(file.name, file.mediaType, file.bytes, draft = true)) }
+    Box(modifier) { AndroidAttachment(message) }
 }
 private fun bitmap(context: android.content.Context, message: ChatMessage): Bitmap {
     val length = message.attachment!!.bytes

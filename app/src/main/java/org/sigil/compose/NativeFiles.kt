@@ -49,12 +49,20 @@ internal class NativeFiles(private val app: Application, private val scope: Coro
     }
     private suspend fun publish(sent: Boolean = false) {
         val rows = execute("files").getJSONArray("uploads")
-        val files = (0 until rows.length()).map { index -> rows.getJSONObject(index).let { Transfer(it.getString("request"), it.getString("peer"), it.getString("name"), it.getLong("length"), it.getString("phase")) } }
+        val files = (0 until rows.length()).map { index -> rows.getJSONObject(index).let { Transfer(it.getString("request"), it.getString("peer"), it.getString("name"), it.getLong("length"), it.getString("phase"), it.optBoolean("draft"), it.getString("media_type")) } }
         withContext(Dispatchers.Main) { update(files, sent) }
     }
     fun cancel(request: String) { scope.launch(Dispatchers.IO) { mutex.withLock {
         try { execute("file_cancel", mapOf("request" to request)); staging[request]?.cancel(); publish() }
         catch (_: Exception) { withContext(Dispatchers.Main) { issue("The attachment could not be cancelled. It may already have been sent.") } }
+    } } }
+    fun send(request: String, caption: String, committed: () -> Unit) { scope.launch(Dispatchers.IO) { mutex.withLock {
+        try {
+            execute("file_send", mapOf("request" to request, "caption" to caption)); next = 0; publish()
+            withContext(Dispatchers.Main) { committed() }
+            NativeSync.enqueue(app)
+        } catch (cancelled: CancellationException) { throw cancelled }
+        catch (_: Exception) { withContext(Dispatchers.Main) { issue("Could not queue this attachment. Your draft is still available.") } }
     } } }
     fun import(target: Map<String, Any?>, uri: Uri) { scope.launch(Dispatchers.IO) {
         try {
@@ -65,10 +73,10 @@ internal class NativeFiles(private val app: Application, private val scope: Coro
             }
             val type = app.contentResolver.getType(uri) ?: "application/octet-stream"
             app.contentResolver.openInputStream(uri)?.use { stream ->
-                if (size >= 0) stage(target, name, type, size, stream)
+                if (size >= 0) stage(target + ("draft" to true), name, type, size, stream)
                 else {
                     val bytes = stream.chunk(32 * 1024 * 1024 + 1)
-                    try { check(bytes.size <= 32 * 1024 * 1024); bytes.inputStream().use { stage(target, name, type, bytes.size.toLong(), it) } }
+                    try { check(bytes.size <= 32 * 1024 * 1024); bytes.inputStream().use { stage(target + ("draft" to true), name, type, bytes.size.toLong(), it) } }
                     finally { bytes.fill(0) }
                 }
             } ?: error("Cannot open selected file")
@@ -87,7 +95,7 @@ internal class NativeFiles(private val app: Application, private val scope: Coro
                     override fun read(): Int { val b = ByteArray(1); return if (read(b, 0, 1) == -1) -1 else b[0].toInt() and 255 }
                     override fun read(buffer: ByteArray, offset: Int, length: Int): Int = media.readAt(position, buffer, offset, length).also { if (it > 0) position += it }
                 }
-                stage(mapOf("peer" to fields["peer"]), metadata.getString("name"), metadata.getString("media_type"), size, stream) {
+                stage(mapOf("peer" to fields["peer"], "caption" to metadata.optString("caption")), metadata.getString("name"), metadata.getString("media_type"), size, stream) {
                     NativeSync.enqueue(app)
                     withTimeout(120_000) {
                         while (true) {

@@ -26,7 +26,10 @@ fn verify(db: &Connection, key: &StorageKey, bytes: &[u8], now: u64) -> Result<I
     ) {
         return Err(Error::Unprepared);
     }
-    if content(&state, file.source)?.as_slice() != bytes {
+    let cached = content(&state, file.source)?;
+    let cached =
+        sigil_protocol::file::File::from_bytes(&cached).map_err(|_| Error::InvalidStore)?;
+    if !cached.same_attachment(&file) {
         return Err(Error::Conflict);
     }
     Ok(id)

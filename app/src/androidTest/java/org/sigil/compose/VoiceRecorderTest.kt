@@ -22,6 +22,7 @@ class VoiceRecorderTest {
         val recorder = VoiceRecorder(scope, { peer, bytes, target ->
             assertEquals("synthetic", peer)
             assertEquals("thread", target["thread_message"])
+            assertEquals("An accompanying thought.", target["caption"])
             assertTrue(bytes.size > 7)
             assertEquals(255, bytes[0].toInt() and 255)
             assertEquals(240, bytes[1].toInt() and 240)
@@ -51,7 +52,7 @@ class VoiceRecorderTest {
             assertEquals(0, queued)
             recorder.pausePreview()
             assertFalse(await("Ready").playing)
-            recorder.send()
+            recorder.send("An accompanying thought.")
             await("Idle")
             assertEquals(1, queued)
         } finally { recorder.close(); scope.cancel() }

@@ -30,6 +30,7 @@ fn file(id: u8, now: u64, expiry: u64) -> Record {
     let key = sigil_crypto::attachment::FileKey::generate(0).unwrap();
     let descriptor = key.descriptor([0; 32]);
     let bytes = sigil_protocol::file::File {
+        caption: "A retained attachment caption.",
         source: "chat.example",
         name: "synthetic.bin",
         media_type: "application/octet-stream",

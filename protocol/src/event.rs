@@ -90,6 +90,7 @@ mod tests {
         ]
         .concat();
         let body = crate::file::File {
+            caption: "",
             source: "chat.example",
             name: "synthetic.bin",
             media_type: "application/octet-stream",

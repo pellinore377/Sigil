@@ -179,7 +179,7 @@ internal fun ConversationPage(chat: ChatSummary, state: MessengerState, draft: T
             FooterContent {
             Column(Modifier.fillMaxWidth().then(composerMotion)) {
             val context = editing?.let { "Editing: ${it.text}" } ?: reply?.let { "Replying to ${it.text}" } ?: thread?.let { "Reply in thread" }
-            state.transfers.filter { it.peer == chat.id }.forEach { transfer ->
+            state.transfers.filter { it.peer == chat.id && !it.draft }.forEach { transfer ->
                 Row(Modifier.fillMaxWidth().padding(start = 20.dp), verticalAlignment = Alignment.CenterVertically) {
                     Column(Modifier.weight(1f)) { Text(transfer.name, maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.bodySmall); Text(if (transfer.phase == "Staging") "Importing…" else "Sending attachment…", style = MaterialTheme.typography.labelSmall) }
                     Symbol("close", "Cancel attachment") { command("file_cancel", mapOf("request" to transfer.request)) }
@@ -189,7 +189,7 @@ internal fun ConversationPage(chat: ChatSummary, state: MessengerState, draft: T
             val inputCommand: Command = { action, fields ->
                 command(action, if (action in listOf("attachment_pick", "record_start")) fields + mapOf("reply_author" to reply?.author, "reply_message" to reply?.id, "thread_author" to thread?.author, "thread_message" to thread?.id) else fields)
             }
-            if (!threadsOverview) ComposerPanel(draft, analyze, chat.verified && !state.busy, page == "Notes", inputCommand, chat.id, state.voice, state.sent, state.sentText, requestContact = if (!chat.verified && !chat.group && !state.busy && chat.request in listOf("none", "expired")) ({ command("contact_request", mapOf("peer" to chat.id, "action" to "send")) }) else null) { text, rich ->
+            if (!threadsOverview) ComposerPanel(draft, analyze, chat.verified && !state.busy, page == "Notes", inputCommand, chat.id, state.voice, state.sent, state.sentText, requestContact = if (!chat.verified && !chat.group && !state.busy && chat.request in listOf("none", "expired")) ({ command("contact_request", mapOf("peer" to chat.id, "action" to "send")) }) else null, attachments = state.transfers.filter { it.peer == chat.id }, editingCaption = editing?.attachment != null) { text, rich ->
                 submitted = draft.text.toString()
                 if (editing != null) command("edit", mapOf("peer" to chat.id, "author" to editing!!.author, "message" to editing!!.id, "text" to text))
                 else command("post", mapOf("peer" to chat.id, "text" to text, "rich" to rich,
@@ -206,7 +206,7 @@ internal fun ConversationPage(chat: ChatSummary, state: MessengerState, draft: T
                     "reply" -> respond(message, false)
                     "thread" -> respond(message, true)
                     "copy" -> { clipboard.setText(AnnotatedString(message.text)); selected = null }
-                    "edit" -> { editing = message; draft.edit { replace(0, length, message.text) }; selected = null }
+                    "edit" -> { editing = message; draft.edit { replace(0, length, message.attachment?.caption ?: message.text) }; selected = null }
                     "forward" -> { command("forward_picker", mapOf("peer" to chat.id, "author" to message.author, "message" to message.id)); selected = null }
                     else -> {
                         val fields = mutableMapOf<String, Any?>("peer" to chat.id, "author" to message.author, "message" to message.id)
@@ -230,9 +230,10 @@ internal fun MessageBubble(message: ChatMessage, grouped: Boolean, followed: Boo
             bottomStart = if (!message.mine && followed) 5.dp else 20.dp, bottomEnd = if (message.mine && followed) 5.dp else 20.dp),
             color = if (message.mine) scheme.primary else scheme.surfaceVariant, contentColor = if (message.mine) scheme.onPrimary else scheme.onSurfaceVariant) {
             CompositionLocalProvider(LocalMessageSurface provides if (message.mine) scheme.primary else scheme.surfaceVariant) {
-            Column(Modifier.padding(horizontal = 14.dp, vertical = 10.dp)) {
+            Column(if (message.attachment == null) Modifier.padding(horizontal = 14.dp, vertical = 10.dp) else Modifier) {
                 message.reply?.let { Surface(shape = RoundedCornerShape(12.dp), color = (if (message.mine) scheme.onPrimary else scheme.onSurface).copy(alpha = .09f)) { Text(it, Modifier.padding(9.dp), style = MaterialTheme.typography.bodySmall, maxLines = 2, overflow = TextOverflow.Ellipsis) }; Spacer(Modifier.height(6.dp)) }
                 if (message.attachment != null) LocalAttachmentContent.current(message) else if (message.parts.isNotEmpty()) MessageCards(message, analyze, command) else MessageText(message.text, analyze)
+                message.attachment?.caption?.takeIf { it.isNotEmpty() }?.let { Box(Modifier.padding(horizontal = 14.dp, vertical = 10.dp)) { MessageText(it, analyze) } }
             }
             }
         }

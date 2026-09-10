@@ -6,8 +6,11 @@ import androidx.compose.animation.core.*
 import androidx.compose.foundation.*
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.grid.*
+import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.input.TextFieldState
+import androidx.compose.foundation.text.input.clearText
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.material3.*
@@ -23,10 +26,12 @@ import kotlinx.coroutines.flow.*
 
 private val createItems = listOf("Note" to "description", "Checklist" to "checklist", "Poll" to "ballot", "Reminder" to "notifications_active", "Task" to "assignment", "Timer" to "timer")
 @Composable
-internal fun ComposerPanel(draft: TextFieldState, analyze: (String) -> String, enabled: Boolean, notes: Boolean, command: Command, peer: String, voice: VoiceState, sent: Long, sentText: String?, requestContact: (() -> Unit)? = null, send: (String, Boolean) -> Unit) {
+internal fun ComposerPanel(draft: TextFieldState, analyze: (String) -> String, enabled: Boolean, notes: Boolean, command: Command, peer: String, voice: VoiceState, sent: Long, sentText: String?, requestContact: (() -> Unit)? = null, attachments: List<Transfer> = emptyList(), editingCaption: Boolean = false, send: (String, Boolean) -> Unit) {
     var panel by remember(peer) { mutableStateOf("") }
     val builders = rememberSaveableStateHolder()
     var pendingBuilder by remember(peer) { mutableStateOf<Pair<String, String>?>(null) }
+    var pendingCaption by remember(peer) { mutableStateOf<String?>(null) }
+    LaunchedEffect(sent) { pendingCaption?.takeIf { it == sentText }?.let { if (draft.text.toString() == it) draft.clearText(); pendingCaption = null } }
     LaunchedEffect(sent) { pendingBuilder?.takeIf { it.second == sentText }?.let {
         if ("$peer:$panel" == it.first) panel = ""
         builders.removeState(it.first); pendingBuilder = null
@@ -52,7 +57,7 @@ internal fun ComposerPanel(draft: TextFieldState, analyze: (String) -> String, e
     val formInset by animateDpAsState(if (building) measured else 0.dp, if (building) snap() else tween(MotionMillis), label = "Form keyboard")
     LaunchedEffect(keyboardPending) { if (keyboardPending) { kotlinx.coroutines.delay(1500); keyboardPending = false } }
     LaunchedEffect(measured, keyboardPending) { if (keyboardPending && measured >= keyboardHeight - 2.dp) keyboardPending = false }
-    fun change(value: String) { if (panel.isEmpty() && measured > 120.dp) keyboardHeight = maxOf(keyboardHeight, measured); keyboardPending = false; focus.clearFocus(); panel = value; keyboard?.hide() }
+    fun change(value: String) { if (panel.isEmpty() && measured > 120.dp) keyboardHeight = measured; keyboardPending = false; focus.clearFocus(); panel = value; keyboard?.hide() }
     fun showKeyboard() { if (panel == "Voice") command("record_stop", emptyMap()); keyboardPending = panel.isNotEmpty(); panel = ""; editor.requestFocus(); keyboard?.show() }
     BackAction(panel.isNotEmpty()) {
         when (panel) {
@@ -80,23 +85,48 @@ internal fun ComposerPanel(draft: TextFieldState, analyze: (String) -> String, e
     }
     DisposableEffect(peer) { onDispose { if (canType) command("typing", mapOf("peer" to peer, "active" to false)) } }
     val voiceReady = voice.peer == peer && voice.phase in listOf("Ready", "Sending")
+    val attachmentDrafts = attachments.filter { it.draft }
+    val hasAttachment = voiceReady || attachmentDrafts.isNotEmpty()
+    val hasText = draft.text.isNotBlank() || editingCaption
     LaunchedEffect(voice.phase) { if (voiceReady) change("") }
     Surface(shape = RoundedCornerShape(topStart = 24.dp, topEnd = 24.dp), color = if (LocalFooterHost.current == null) MaterialTheme.colorScheme.surface else androidx.compose.ui.graphics.Color.Transparent) {
         Column {
             ComposerBar {
                 Surface(shape = RoundedCornerShape(16.dp), color = MaterialTheme.colorScheme.surfaceVariant) {
-                    Symbol(if (voiceReady) "delete" else if (panel.isEmpty()) "add" else "close", if (voiceReady) "Discard voice message" else if (panel.isEmpty()) "Attachments" else "Close attachment panel") {
-                        if (voiceReady) command("record_cancel", emptyMap()) else if (panel.isEmpty()) change("Attachments") else { if (panel == "Voice") command("record_stop", emptyMap()); change("") }
+                    Symbol(if (panel.isEmpty()) "add" else "close", if (panel.isEmpty()) "Attachments" else "Close attachment panel") {
+                        if (panel.isEmpty()) change("Attachments") else { if (panel == "Voice") command("record_stop", emptyMap()); change("") }
                     }
                 }
 
-                if (voiceReady) VoiceDraft(voice, Modifier.weight(1f)) { command("record_preview", emptyMap()) }
-                else Composer(draft, analyze, Modifier.weight(1f), showTools = false, focusRequester = editor, onFocus = { if (panel == "Voice") command("record_stop", emptyMap()); if (panel.isNotEmpty()) keyboardPending = true; panel = "" })
+                Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    if (attachmentDrafts.isNotEmpty()) LazyRow(Modifier.fillMaxWidth().heightIn(max = 192.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        items(attachmentDrafts, key = { it.request }) { file ->
+                            Surface(shape = RoundedCornerShape(16.dp), color = MaterialTheme.colorScheme.surfaceVariant) {
+                                Column(Modifier.width(176.dp).padding(8.dp)) {
+                                    if (file.phase != "Staging") LocalAttachmentDraft.current(file, Modifier.fillMaxWidth().heightIn(max = 120.dp))
+                                    Row(verticalAlignment = Alignment.CenterVertically) {
+                                        Text(if (file.phase == "Staging") "Importing ${file.name}" else file.name, Modifier.weight(1f), maxLines = 2, style = MaterialTheme.typography.bodySmall)
+                                        Symbol("close", "Remove ${file.name}") { command("file_cancel", mapOf("request" to file.request)) }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    if (voiceReady) Row(verticalAlignment = Alignment.CenterVertically) {
+                        VoiceDraft(voice, Modifier.weight(1f)) { command("record_preview", emptyMap()) }
+                        Symbol("delete", "Discard voice message") { command("record_cancel", emptyMap()) }
+                    }
+                    Composer(draft, analyze, Modifier.fillMaxWidth(), showTools = false, focusRequester = editor, onFocus = { if (panel == "Voice") command("record_stop", emptyMap()); if (panel.isNotEmpty()) keyboardPending = true; panel = "" })
+                }
 
-                FilledIconButton({ if (voiceReady) command("record_send", mapOf("peer" to peer)) else if (draft.text.isNotBlank() && requestContact != null) requestContact() else if (draft.text.isNotBlank()) send(if (notes) "note::${escapeField(draft.text.toString())};" else draft.text.toString(), notes) else change("Voice") },
-                    Modifier.size(48.dp), enabled = if (voiceReady) enabled && voice.phase == "Ready" else if (draft.text.isNotBlank()) enabled || requestContact != null else true, shape = RoundedCornerShape(16.dp),
+                FilledIconButton({ if (hasAttachment) {
+                        val caption = draft.text.toString(); pendingCaption = caption
+                        attachmentDrafts.forEach { command("file_send", mapOf("request" to it.request, "caption" to caption)) }
+                        if (voiceReady) command("record_send", mapOf("peer" to peer, "caption" to caption))
+                    } else if (hasText && requestContact != null) requestContact() else if (hasText) send(if (notes && !editingCaption) "note::${escapeField(draft.text.toString())};" else draft.text.toString(), notes && !editingCaption) else change("Voice") },
+                    Modifier.size(48.dp), enabled = if (hasAttachment) enabled && voice.phase != "Sending" && attachmentDrafts.none { it.phase == "Staging" } else if (hasText) enabled || requestContact != null else true, shape = RoundedCornerShape(16.dp),
                     colors = IconButtonDefaults.filledIconButtonColors(containerColor = MaterialTheme.colorScheme.primary, contentColor = MaterialTheme.colorScheme.onPrimary)) {
-                    Glyph(if (voiceReady || draft.text.isNotBlank()) "send" else "graphic_eq", 24, if (voiceReady) "Send voice message" else if (draft.text.isNotBlank()) if (requestContact != null) "Send request" else "Send message" else "Voice message")
+                    Glyph(if (hasAttachment || hasText) "send" else "graphic_eq", 24, if (editingCaption) "Save caption" else if (voiceReady) "Send voice message" else if (attachmentDrafts.isNotEmpty()) "Send attachments" else if (hasText) if (requestContact != null) "Send request" else "Send message" else "Voice message")
                 }
             }
             Box(Modifier.fillMaxWidth().padding(bottom = formInset).then(if (panel.isEmpty() && !keyboardPending && measured > 0.dp) Modifier.windowInsetsBottomHeight(WindowInsets.ime) else Modifier.height(panelHeight))) {

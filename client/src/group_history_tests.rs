@@ -334,6 +334,7 @@ fn grants_bind_all_authorization_fields_and_unknown_retention_encodings_fail_clo
     ]
     .concat();
     let file = sigil_protocol::file::File {
+        caption: "",
         source: "chat.example",
         name: "expired.bin",
         media_type: "application/octet-stream",

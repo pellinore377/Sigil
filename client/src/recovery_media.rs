@@ -24,7 +24,11 @@ pub(super) fn file_bytes(content: &Content) -> Result<Option<Zeroizing<Vec<u8>>>
     }
 }
 fn content_index(key: &StorageKey, bytes: &[u8]) -> Result<Id, Error> {
-    Ok(key.commitment(bytes, b"Sigil/archive-media-reference/v0")?)
+    let mut file =
+        sigil_protocol::file::File::from_bytes(bytes).map_err(|_| Error::InvalidStore)?;
+    file.caption = "";
+    let bytes = Zeroizing::new(file.to_bytes().map_err(|_| Error::InvalidStore)?);
+    Ok(key.commitment(&bytes, b"Sigil/archive-media-reference/v0")?)
 }
 pub(super) fn index_media(db: &Connection, key: &StorageKey, record: &Record) -> Result<(), Error> {
     if matches!(record.content, Content::Omitted) {
@@ -124,7 +128,12 @@ pub(crate) fn references_file(
             .ok_or(Error::InvalidStore)?;
         state.key.open_record(&reference, &sealed)?;
         let record = local_record(db, key, reference.id)?;
-        if file_bytes(&record.content)?.is_none_or(|v| v.as_slice() != bytes) {
+        let retained = file_bytes(&record.content)?.ok_or(Error::InvalidStore)?;
+        let retained =
+            sigil_protocol::file::File::from_bytes(&retained).map_err(|_| Error::InvalidStore)?;
+        let expected =
+            sigil_protocol::file::File::from_bytes(bytes).map_err(|_| Error::InvalidStore)?;
+        if !retained.same_attachment(&expected) {
             return Err(Error::InvalidStore);
         }
         let live = if let Content::Media { record: parent, .. } = record.content {

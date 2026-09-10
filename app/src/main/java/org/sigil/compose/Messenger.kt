@@ -36,7 +36,10 @@ class Messenger(application: Application) : AndroidViewModel(application) {
         state = state.copy(transfers = uploads)
         if (sent) scope.launch { serialized(false) { refresh() } }
     }, { state = state.copy(issue = it) })
-    private val voice = VoiceRecorder(scope, { peer, bytes, target -> bytes.inputStream().use { files.stage(target + ("peer" to peer), "Voice message.aac", "audio/aac", bytes.size.toLong(), it) } }, { state = state.copy(voice = it) }, { state = state.copy(issue = it) })
+    private val voice = VoiceRecorder(scope, { peer, bytes, target ->
+        bytes.inputStream().use { files.stage(target + ("peer" to peer), "Voice message.aac", "audio/aac", bytes.size.toLong(), it) }
+        withContext(Dispatchers.Main) { state = state.copy(sent = state.sent + 1, sentText = target["caption"] as? String) }
+    }, { state = state.copy(voice = it) }, { state = state.copy(issue = it) })
     var microphoneRequest by mutableStateOf<Pair<String, Map<String, Any?>>?>(null)
         private set
     fun microphoneResult(granted: Boolean) { val target = microphoneRequest; microphoneRequest = null; if (granted && target != null) voice.start(target.first, target.second) else if (!granted) state = state.copy(issue = "Microphone permission is needed to record a voice message.") }
@@ -94,7 +97,7 @@ class Messenger(application: Application) : AndroidViewModel(application) {
     } } }
     private fun changeWallpaper(peer: String, uri: Uri?) { scope.launch { serialized(true) { saveWallpaper(getApplication(), peer, uri); wallpaperRevision++ } } }
     fun importPhoto(target: Map<String, Any?>, bytes: ByteArray) { scope.launch(Dispatchers.IO) {
-        try { bytes.inputStream().use { files.stage(target, "Photo.jpg", "image/jpeg", bytes.size.toLong(), it) } }
+        try { bytes.inputStream().use { files.stage(target + ("draft" to true), "Photo.jpg", "image/jpeg", bytes.size.toLong(), it) } }
         catch (cancelled: CancellationException) { throw cancelled }
         catch (_: Exception) { withContext(Dispatchers.Main) { state = state.copy(issue = "Could not queue this photo.") } }
         finally { bytes.fill(0) }
@@ -211,7 +214,7 @@ class Messenger(application: Application) : AndroidViewModel(application) {
             "record_start" -> { val peer = fields["peer"] as String; if (getApplication<Application>().checkSelfPermission(android.Manifest.permission.RECORD_AUDIO) == android.content.pm.PackageManager.PERMISSION_GRANTED) voice.start(peer, fields) else microphoneRequest = peer to fields.toMap(); return }
             "record_stop" -> { voice.stop(); return }
             "record_cancel" -> { voice.discard(); return }
-            "record_send" -> { voice.send(); return }
+            "record_send" -> { voice.send(fields["caption"] as? String ?: ""); return }
             "record_preview" -> { voice.playPreview(); return }
             "attachment_pick" -> { picker = fields.filterKeys { it != "kind" } to (fields["kind"] as String); return }
             "delete_conversation" -> {
@@ -225,6 +228,7 @@ class Messenger(application: Application) : AndroidViewModel(application) {
                 return
             }
             "file_cancel" -> { files.cancel(fields["request"] as String); return }
+            "file_send" -> { val caption = fields["caption"] as String; files.send(fields["request"] as String, caption) { state = state.copy(sent = state.sent + 1, sentText = caption) }; return }
             "server_changed" -> {
                 if (state.phase != "new") return
                 discoveryGeneration++
@@ -478,7 +482,7 @@ class Messenger(application: Application) : AndroidViewModel(application) {
             messages += timeline.getJSONArray("messages").objects().map { message ->
                 ChatMessage(message.getString("id"), message.getString("author"), message.getString("text"), message.getBoolean("mine"), clock(message.getLong("timestamp")),
                     message.getString("delivery"), message.getBoolean("pinned"), message.getJSONArray("reactions").strings(), message.getJSONArray("my_reactions").strings(), message.optional("reply"), message.getBoolean("read_by_me"), message.getLong("timestamp"), separator(message.getLong("timestamp")), message.optJSONArray("readers")?.strings().orEmpty(), message.optBoolean("noted"), message.optional("thread_author"), message.optional("thread_message"), message.optBoolean("editable", true), message.optString("kind", "Text"), peer,
-                    message.optJSONObject("attachment")?.let { AttachmentDetails(it.getString("name"), it.getString("media_type"), it.getLong("length")) },
+                    message.optJSONObject("attachment")?.let { AttachmentDetails(it.getString("name"), it.getString("media_type"), it.getLong("length"), it.optString("caption")) },
                     message.optJSONArray("parts")?.objects()?.map { part -> MessagePart(part.optString("id"), part.getString("kind"), part.getString("text"), part.optJSONArray("items")?.objects()?.map { item -> CardItem(item.getString("id"), item.getString("text"), item.getBoolean("checked"), item.getBoolean("enabled"), if (item.isNull("count")) null else item.getLong("count"), item.richText()) }.orEmpty(), part.optBoolean("multiple"), part.optBoolean("closed"), if (part.isNull("voters")) null else part.getLong("voters"), if (part.has("at")) separator(part.getLong("at")) else "", part.optInt("latitude_e6") / 1_000_000.0, part.optInt("longitude_e6") / 1_000_000.0, part.richText()) }.orEmpty(), message.optional("thread_preview"))
             }
             before = if (timeline.isNull("next")) null else timeline.getLong("next")

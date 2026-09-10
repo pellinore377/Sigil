@@ -5,7 +5,7 @@ use crate::{
     *,
 };
 use serde::Deserialize;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use sigil_crypto::Secret32;
 #[path = "mobile_account.rs"]
 mod account;
@@ -168,6 +168,8 @@ enum Command {
         length: u64,
         name: String,
         media_type: String,
+        draft: Option<bool>,
+        caption: Option<Zeroizing<String>>,
         reply_author: Option<String>,
         reply_message: Option<String>,
         thread_author: Option<String>,
@@ -175,6 +177,10 @@ enum Command {
     },
     FileFinish {
         request: String,
+    },
+    FileSend {
+        request: String,
+        caption: Zeroizing<String>,
     },
     FileCancel {
         request: String,
@@ -845,6 +851,8 @@ impl ClientStore {
                 length,
                 name,
                 media_type,
+                draft,
+                caption,
                 reply_author,
                 reply_message,
                 thread_author,
@@ -856,6 +864,8 @@ impl ClientStore {
                 length,
                 name,
                 media_type,
+                draft: draft.unwrap_or(false),
+                caption: caption.unwrap_or_default(),
                 file: [0; 32],
                 reply: optional_reference(reply_author, reply_message)?,
                 thread: optional_reference(thread_author, thread_message)?,
@@ -865,6 +875,7 @@ impl ClientStore {
                 self.mobile_cache()?.finish_staging(upload.file)?;
                 Ok(json!({}))
             }
+            Command::FileSend { request, caption } => self.mobile_file_send(id(&request)?, caption),
             Command::FileCancel { request } => {
                 let request = id(&request)?;
                 let upload = self.mobile_upload(request)?;
@@ -1108,15 +1119,21 @@ impl ClientStore {
                 author,
                 message,
                 text,
-            } => self.mobile_action(
-                &peer,
-                &request,
-                timestamp,
-                Action::Edit {
-                    target: reference(&author, &message)?,
-                    body: Body::Text(text),
-                },
-            ),
+            } => {
+                let target = reference(&author, &message)?;
+                let conversation = self.mobile_conversation(&peer)?;
+                let original =
+                    self.conversation_message(conversation, target.clone(), conversations::now())?;
+                let body = if let Some(Body::File(bytes)) = original.body {
+                    let mut file = sigil_protocol::file::File::from_bytes(&bytes)
+                        .map_err(|_| Error::InvalidStore)?;
+                    file.caption = &text;
+                    Body::File(file.to_bytes().map_err(|_| Error::InvalidEvent)?)
+                } else {
+                    Body::Text(text)
+                };
+                self.mobile_action(&peer, &request, timestamp, Action::Edit { target, body })
+            }
             Command::Delete {
                 peer,
                 request,
@@ -1578,7 +1595,15 @@ impl ClientStore {
 fn body_text(body: &Body) -> Result<String, Error> {
     Ok(match body {
         Body::Text(text) => text.clone(),
-        Body::File(_) => "Attachment".into(),
+        Body::File(bytes) => {
+            let file =
+                sigil_protocol::file::File::from_bytes(bytes).map_err(|_| Error::InvalidStore)?;
+            if file.caption.is_empty() {
+                file.name.to_owned()
+            } else {
+                file.caption.to_owned()
+            }
+        }
         Body::Rich(bytes) => {
             match sigil_protocol::text::Document::from_bytes(bytes)
                 .map_err(|_| Error::InvalidStore)?
@@ -1658,14 +1683,16 @@ mod tests {
         alice.confirm_peer(known.id, known.fingerprint).unwrap();
         let own = alice.own_device_binding().unwrap();
         let unverified = alice.observe_peer_binding(&own).unwrap();
-        assert!(alice
-            .queue_peer_contents(
-                &[(known.id, [71; 32]), (unverified.id, [72; 32])],
-                sigil_protocol::event::Content::Text("atomic"),
-                now,
-                now
-            )
-            .is_err());
+        assert!(
+            alice
+                .queue_peer_contents(
+                    &[(known.id, [71; 32]), (unverified.id, [72; 32])],
+                    sigil_protocol::event::Content::Text("atomic"),
+                    now,
+                    now
+                )
+                .is_err()
+        );
         assert_eq!(
             alice
                 .db
