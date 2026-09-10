@@ -26,12 +26,12 @@ class CallTransportTest {
         android.system.Os.chmod(directory.path, 448); android.system.Os.chmod(File(directory, "client.db").path, 384)
         var handle = 0L; var audible = 0
         val returned = IntArray(3); val sent = AtomicIntegerArray(3); val rendered = AtomicIntegerArray(2)
-        val sendTimes = java.util.concurrent.ConcurrentLinkedQueue<Long>()
+        val sendTimes = List(3) { java.util.concurrent.ConcurrentLinkedQueue<Long>() }
         fun send(kind: Int, timestamp: Long, keyframe: Boolean, bytes: ByteArray) {
             val begin = SystemClock.elapsedRealtimeNanos()
             if (NativeStorage.sendCallFrame(handle, kind, timestamp, keyframe, bytes)) {
                 sent.incrementAndGet(kind)
-                if (sendTimes.size < 1000) sendTimes.add(SystemClock.elapsedRealtimeNanos() - begin)
+                if (sendTimes[kind].size < 1000) sendTimes[kind].add(SystemClock.elapsedRealtimeNanos() - begin)
             }
         }
         val connections = mutableSetOf<Int>()
@@ -84,8 +84,12 @@ class CallTransportTest {
             val evidence = "Received ${returned.toList()}; sent $sent; rendered $rendered; states $connections"
             assertTrue(evidence, returned[0] >= 80 && rendered.get(0) >= 10 && rendered.get(1) >= 10)
             assertTrue("Returned audio did not decode", audible >= 48000)
-            val times = sendTimes.sorted()
+            val times = sendTimes.flatMap { it }.sorted()
             android.util.Log.i("SigilAcceptance", "Native media send: ${times.size} frames, p95 ${times[(times.size - 1) * 95 / 100] / 1_000_000.0} ms")
+            sendTimes.forEachIndexed { kind, samples ->
+                val sorted = samples.sorted()
+                if (sorted.isNotEmpty()) android.util.Log.i("SigilAcceptance", "Media kind=$kind frames=${sorted.size} p95=${sorted[(sorted.size - 1) * 95 / 100] / 1_000_000.0} ms")
+            }
             NativeStorage.closeCall(handle)
             assertEquals(-1, NativeStorage.callState(handle)); assertNull(NativeStorage.receiveCallFrames(handle))
             assertFalse(NativeStorage.sendCallFrame(handle, 0, 0, false, byteArrayOf(1)))

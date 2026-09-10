@@ -139,15 +139,19 @@ internal class NativeCalls(private val app: Application, private val update: (Li
         }
     }
     private suspend fun controlLoop(id: String, current: Long) {
+        var maintenanceAt = SystemClock.elapsedRealtime() + 5000
         while (scope.isActive && desired == id && generation == current) {
             try {
-                val result = native("sync", mapOf("interactive" to true))
+                val setup = visible?.connection != "connected"
+                val fast = setup && SystemClock.elapsedRealtime() < maintenanceAt
+                val result = native("sync", mapOf("interactive" to true, "call_setup" to fast))
+                if (!fast && result.optBoolean("ran")) maintenanceAt = SystemClock.elapsedRealtime() + 5000
                 refresh(native("calls"))
                 val call = history.find { it.id == id }
                 if (call == null || call.phase in listOf("ended", "left", "declined")) { end(); return }
                 NativeSync.presence(app, true)
                 if (call.phase == "active" && media == null) media = scope.launch { mediaLoop(id, current) }
-                val until = (result.getLong("next_at") * 1000 - System.currentTimeMillis()).coerceIn(1000, 300000)
+                val until = (result.getLong("next_at") * 1000 - System.currentTimeMillis()).coerceIn(if (setup) 250 else 1000, 300000)
                 delay(until)
             } catch (cancelled: CancellationException) { throw cancelled }
             catch (_: Exception) { visible = visible?.copy(connection = "reconnecting"); emit(); delay(5000) }
@@ -163,23 +167,33 @@ internal class NativeCalls(private val app: Application, private val update: (Li
                 if (handle <= 0L) { delay(if (handle < 0) (-handle).coerceAtMost(86400) * 1000 else retry); retry = (retry * 2).coerceAtMost(30000); continue }
                 token = handle
                 var disconnectedAt = 0L
+                var status = 0
+                var nextStatus = 0L
                 try {
                     while (scope.isActive && desired == id && generation == current) {
-                        val status = withContext(Dispatchers.IO) { NativeStorage.callState(handle) }
+                        val clock = SystemClock.elapsedRealtime()
+                        val refreshStatus = clock >= nextStatus
+                        if (refreshStatus) {
+                            status = withContext(Dispatchers.IO) { NativeStorage.callState(handle) }
+                            nextStatus = clock + 200
+                        }
                         if (status == -1 || status == 3 || status == 4) break
                         val next = bits()
                         if (next != enabled && withContext(Dispatchers.IO) { NativeStorage.callTracks(handle, next) }) enabled = next
                         if (status == 2) { if (disconnectedAt == 0L) disconnectedAt = SystemClock.elapsedRealtime(); if (SystemClock.elapsedRealtime() - disconnectedAt > 5000) break } else disconnectedAt = 0
                         val state = if (status == 1) "connected" else if (status == 2) "reconnecting" else if (status == 5) "securing call" else "connecting"
-                        visible = visible?.copy(connection = state, seconds = if (started == 0L) 0 else (SystemClock.elapsedRealtime() - started) / 1000, levels = levels); emit()
+                        if (refreshStatus) {
+                            visible = visible?.copy(connection = state, seconds = if (started == 0L) 0 else (SystemClock.elapsedRealtime() - started) / 1000, levels = levels); emit()
+                        }
+                        var received = false
                         if (status == 1) {
                             retry = 1000
                             if (started == 0L && history.find { it.id == id }?.participants?.size?.let { it > 1 } == true) started = SystemClock.elapsedRealtime()
                             if (microphone == null) microphone = CallMicrophone({ timestamp, bytes -> send(0, timestamp, false, bytes) }, { amplitude -> scope.launch { levels = levels + ("self" to amplitude) } }, { scope.launch { issue("Microphone capture stopped."); end() } }).apply { muted = this@NativeCalls.muted }
                             if (video && cameraReady && camera == null) camera = CallCamera(app, front, { timestamp, keyframe, bytes -> send(1, timestamp, keyframe, bytes); videoOutputs["self:1"]?.offer(timestamp, keyframe, bytes) }, { scope.launch { video = false; camera?.close(); camera = null; applyTracks(); issue("Camera capture stopped.") } })
-                            withContext(Dispatchers.IO) { NativeStorage.receiveCallFrames(handle)?.let { bytes -> try { receive(handle, bytes) } finally { bytes.fill(0) } } }
+                            received = withContext(Dispatchers.IO) { NativeStorage.receiveCallFrames(handle)?.let { bytes -> try { receive(handle, bytes); bytes.isNotEmpty() } finally { bytes.fill(0) } } == true }
                         }
-                        delay(20)
+                        delay(if (received) 5 else 20)
                     }
                 } finally { token = 0; microphone?.close(); microphone = null; camera?.close(); camera = null; synchronized(speakers) { speakers.values.forEach { it.close() }; speakers.clear() }; NativeStorage.closeCall(handle) }
                 delay(500)
@@ -249,7 +263,7 @@ internal class NativeCalls(private val app: Application, private val update: (Li
     }
     private fun stopService() { if (CallService.owner === this) { CallService.owner = null; app.stopService(Intent(app, CallService::class.java)) } }
     private fun <T> keys(work: (String, ByteArray) -> T): T = StorageKeyProvider(app).withKey { directory, key -> work(directory.path, key) }
-    private suspend fun native(command: String, fields: Map<String, Any?> = emptyMap()): JSONObject = if (command == "sync") NativeSync.run(app, fields["interactive"] == true) else withContext(Dispatchers.IO) {
+    private suspend fun native(command: String, fields: Map<String, Any?> = emptyMap()): JSONObject = if (command == "sync") NativeSync.run(app, fields["interactive"] == true, fields["call_setup"] == true) else withContext(Dispatchers.IO) {
         val request = JSONObject().put("command", command); fields.forEach { (key, value) -> request.put(key, JSONObject.wrap(value)) }
         val result = keys { directory, key -> JSONObject(NativeStorage.execute(directory, key, request.toString())) }
         check(result.getBoolean("ok")); result.getJSONObject("value")

@@ -9,11 +9,32 @@ impl ClientStore {
         connection: Option<&str>,
         endpoint: Option<&str>,
         payload: Option<&str>,
+        token: Option<&str>,
         replace: bool,
     ) -> Result<Value, Error> {
         let now = conversations::now();
         match action {
             "status" => (),
+            "fcm" => {
+                let state = self.push_state()?;
+                if state.configured && !replace {
+                    return Ok(json!({"ignored":true}));
+                }
+                if !self.connected_client()?.push_providers()?.fcm {
+                    return Ok(json!({"unavailable":true}));
+                }
+                self.set_fcm_push_token(token.ok_or(Error::InvalidEvent)?, now)?;
+            }
+            "fcm_token" => {
+                if self.push_state()?.choice != Choice::Fcm {
+                    return Ok(json!({"ignored":true}));
+                }
+                self.set_fcm_push_token(token.ok_or(Error::InvalidEvent)?, now)?;
+            }
+            "fcm_receive" => {
+                let hint = self.receive_fcm_push(payload.ok_or(Error::InvalidEvent)?, now)?;
+                return Ok(json!({"accepted": hint != ReceivedHint::Ignored}));
+            }
             "prepare" => {
                 let providers = self.connected_client()?.push_providers()?;
                 let Some(vapid) = providers
@@ -54,7 +75,7 @@ impl ClientStore {
         let state = self.push_state()?;
         let connector = self.unified_push_registration()?;
         Ok(
-            json!({"choice":match state.choice { Choice::Disabled => "disabled", Choice::Fcm => "fcm", Choice::UnifiedPush => "unified_push" },
+            json!({"configured":state.configured, "choice":match state.choice { Choice::Disabled => "disabled", Choice::Fcm => "fcm", Choice::UnifiedPush => "unified_push" },
             "awaiting_endpoint":state.awaiting_endpoint, "pending":state.configured && (state.pending || state.updating),
             "remote":state.remote.map(|s|s.state), "connection":connector.as_ref().map(|c|&c.connection), "vapid":connector.as_ref().map(|c|&c.vapid_key)}),
         )

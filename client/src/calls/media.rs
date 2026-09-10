@@ -60,6 +60,10 @@ impl ClientStore {
         Ok(())
     }
     pub fn refresh_call_media(&mut self, media: &mut Media, now: u64) -> Result<usize, Error> {
+        self.refresh_media_record(media, now)?;
+        Ok(media.receivers.len())
+    }
+    fn refresh_media_record(&mut self, media: &mut Media, now: u64) -> Result<Record, Error> {
         let tx = self
             .db
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
@@ -140,7 +144,7 @@ impl ClientStore {
         for (id, generation, receiver) in incoming {
             media.receivers.insert(id, (generation, receiver));
         }
-        Ok(media.receivers.len())
+        Ok(record)
     }
     pub fn seal_call_frame(
         &mut self,
@@ -151,8 +155,7 @@ impl ClientStore {
         encoded: &[u8],
         now: u64,
     ) -> Result<Vec<u8>, Error> {
-        self.refresh_call_media(media, now)?;
-        let record = load(&self.db, &self.key, &media.call)?;
+        let record = self.refresh_media_record(media, now)?;
         authority(&record, media, now)?;
         if !enabled(&record, record.own_id()?, kind) {
             return Err(Error::Unprepared);
@@ -184,8 +187,7 @@ impl ClientStore {
         encrypted: &[u8],
         now: u64,
     ) -> Result<sigil_calls::Frame, Error> {
-        self.refresh_call_media(media, now)?;
-        let record = load(&self.db, &self.key, &media.call)?;
+        let record = self.refresh_media_record(media, now)?;
         authority(&record, media, now)?;
         if !enabled(&record, sender, kind) {
             return Err(Error::Unprepared);
@@ -222,8 +224,7 @@ impl ClientStore {
         packet: &[u8],
         now: u64,
     ) -> Result<Option<sigil_calls::Frame>, Error> {
-        self.refresh_call_media(media, now)?;
-        let record = load(&self.db, &self.key, &media.call)?;
+        let record = self.refresh_media_record(media, now)?;
         authority(&record, media, now)?;
         if !enabled(&record, sender, kind) {
             return Err(Error::Unprepared);

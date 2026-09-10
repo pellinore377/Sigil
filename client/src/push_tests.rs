@@ -150,6 +150,82 @@ fn activate(dir: &tempfile::TempDir, client: &mut ClientStore, now: u64) {
 }
 
 #[test]
+fn mobile_fcm_registration_survives_restart_and_respects_provider_choice() {
+    use serde_json::json;
+    let (dir, _fixture, mut client, _, _) = setup();
+    fn command(client: &mut ClientStore, value: serde_json::Value) -> serde_json::Value {
+        let result: serde_json::Value =
+            serde_json::from_str(&client.mobile_command(&value.to_string())).unwrap();
+        assert_eq!(result["ok"], true, "{result}");
+        result["value"].clone()
+    }
+    let value = command(
+        &mut client,
+        json!({"command":"push", "action":"fcm", "token":"synthetic-token"}),
+    );
+    assert_eq!(value["choice"], "fcm");
+    assert_eq!(value["configured"], true);
+    register(&mut client, crate::conversations::now());
+    let (proof, _) = server_push(&dir, &client);
+    drop(client);
+    let mut client = open(&dir.path().join("client.db"));
+    let result = command(
+        &mut client,
+        json!({"command":"push", "action":"fcm_receive", "payload":B64::encode_string(&proof)}),
+    );
+    assert_eq!(result["accepted"], true);
+    assert!(
+        matches!(client.push_step(crate::conversations::now()).unwrap(), Progress::Updated(s) if s.state == RemoteState::Active)
+    );
+    command(
+        &mut client,
+        json!({"command":"push", "action":"fcm_token", "token":"synthetic-replacement"}),
+    );
+    let result = command(
+        &mut client,
+        json!({"command":"push", "action":"fcm_receive", "payload":B64::encode_string(&proof)}),
+    );
+    assert_eq!(result["accepted"], false);
+    Connection::open(dir.path().join("server.db"))
+        .unwrap()
+        .execute("UPDATE push_channels SET last_change=last_change-60", [])
+        .unwrap();
+    assert!(
+        matches!(client.push_step(crate::conversations::now()).unwrap(), Progress::Updated(s) if s.state == RemoteState::Pending)
+    );
+    assert!(
+        matches!(server_push(&dir, &client).1, Target::Fcm { token } if token == "synthetic-replacement")
+    );
+    command(&mut client, json!({"command":"push", "action":"disable"}));
+    drop(client);
+    let mut client = open(&dir.path().join("client.db"));
+    for action in ["fcm", "fcm_token"] {
+        let result = command(
+            &mut client,
+            json!({"command":"push", "action":action, "token":"synthetic-token"}),
+        );
+        assert_eq!(result["ignored"], true);
+    }
+    let result = command(
+        &mut client,
+        json!({"command":"push", "action":"fcm_receive", "payload":B64::encode_string(&Payload::Wake.to_bytes())}),
+    );
+    assert_eq!(result["accepted"], false);
+    let result = command(
+        &mut client,
+        json!({"command":"push", "action":"fcm", "token":"synthetic-token", "replace":true}),
+    );
+    assert_eq!(result["choice"], "fcm");
+    command(&mut client, json!({"command":"push", "action":"prepare"}));
+    let result = command(
+        &mut client,
+        json!({"command":"push", "action":"fcm_token", "token":"synthetic-late-token"}),
+    );
+    assert_eq!(result["ignored"], true);
+    assert_eq!(client.push_state().unwrap().choice, Choice::UnifiedPush);
+}
+
+#[test]
 fn invalid_registration_does_not_automatically_resubmit_the_same_token() {
     let (dir, _fixture, mut client, now, _) = setup();
     activate(&dir, &mut client, now);

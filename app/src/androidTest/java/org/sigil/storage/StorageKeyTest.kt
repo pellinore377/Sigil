@@ -12,6 +12,17 @@ class StorageKeyTest {
     private val providers = mutableListOf<StorageKeyProvider>()
     private fun provider(name: String) = StorageKeyProvider(context, "key-test-$name").also { providers.add(it) }
 
+    @Test fun wrappingTimings() {
+        val provider = provider("timing")
+        provider.withKey { _, _ -> }
+        val elapsed = List(20) {
+            val start = System.nanoTime()
+            StorageKeyProvider(context, "key-test-timing").withKey { _, _ -> }
+            (System.nanoTime() - start) / 1_000_000.0
+        }.sorted()
+        android.util.Log.i("SigilAcceptance", "Storage wrapping median=${elapsed[10]} ms p95=${elapsed[18]} ms")
+    }
+
     @After fun cleanup() {
         val store = KeyStore.getInstance("AndroidKeyStore").apply { load(null) }
         providers.forEach { store.deleteEntry(it.alias); it.directory.deleteRecursively() }

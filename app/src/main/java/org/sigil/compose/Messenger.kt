@@ -185,9 +185,14 @@ class Messenger(application: Application) : AndroidViewModel(application) {
                     val old = execute("push", mapOf("action" to "status")).optional("connection")
                     if (name == "push_disable") {
                         execute("push", mapOf("action" to "disable"))
-                        withContext(Dispatchers.IO) { NativePush.unregister(getApplication(), old) }
+                        withContext(Dispatchers.IO) { NativeFcm.stop(getApplication()); NativePush.unregister(getApplication(), old) }
                     } else {
                         val distributor = fields["distributor"] as String
+                        if (distributor == NativeFcm.ID) {
+                            withContext(Dispatchers.IO) { NativeFcm.register(getApplication(), true) }
+                            state = state.copy(push = withContext(Dispatchers.IO) { NativePush.settings(getApplication()) })
+                            return@serialized
+                        }
                         val registration = execute("push", mapOf("action" to "prepare", "replace" to (distributor != NativePush.selected(getApplication()))))
                         if (registration.optBoolean("unavailable")) { state = state.copy(issue = "Your server has not enabled UnifiedPush. Ask its administrator to enable push delivery."); return@serialized }
                         if (registration.optString("remote") == "invalid" && !registration.getBoolean("awaiting_endpoint")) execute("push", mapOf("action" to "retry"))
@@ -422,7 +427,7 @@ class Messenger(application: Application) : AndroidViewModel(application) {
         if (key.first == peer && value is String) key.second to value else null
     }
     private suspend fun refresh() {
-        val value = execute("state")
+        val value = execute("state", mapOf("calls" to true))
         val phase = value.getString("phase")
         files.enabled = foreground && phase == "connected"
         if (phase != "connected") { state = state.copy(phase = phase, loginAddress = if (phase == "new") state.loginAddress else value.optional("server") ?: state.loginAddress); return }
@@ -440,7 +445,7 @@ class Messenger(application: Application) : AndroidViewModel(application) {
             catch (cancelled: CancellationException) { throw cancelled }
             catch (_: Exception) { }
         }
-        calls.refresh(execute("calls"))
+        calls.refresh(value.getJSONObject("call_state"))
         state = state.copy(readReceipts = value.getBoolean("read_receipts"), typingIndicators = value.getBoolean("typing_indicators"), presenceSharing = value.getBoolean("presence_sharing"), invitations = value.getJSONArray("invitations").objects().map { GroupInvitation(it.getString("id"), it.getString("peer"), it.getString("group")) })
         val chats = value.getJSONArray("chats").objects().map { chat ->
             ChatSummary(chat.getString("id"), chat.getString("address"), chat.getString("preview"), clock(chat.getLong("timestamp")), chat.getBoolean("verified"),

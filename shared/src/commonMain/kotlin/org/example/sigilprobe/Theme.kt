@@ -56,9 +56,13 @@ internal fun SigilTheme(appearance: Appearance, chat: ChatTheme? = null, dynamic
     val seed = chat?.accent ?: if (appearance.dynamic) dynamicAccent ?: appearance.accent else appearance.accent
     val transition = updateTransition(ThemeTarget(seed, dark, chatKey, chat != null), label = "Appearance")
     val tint by transition.animateFloat(transitionSpec = { tween(180, if (targetState.chat != null && initialState.chat != targetState.chat) MotionMillis else 0) }, label = "Conversation tint") { if (it.tinted) 1f else 0f }
+    val palettes = remember(palette) { linkedMapOf<Pair<Int, Boolean>, List<Color>>() }
     val colors = (0..8).map { index ->
         transition.animateColor(transitionSpec = { tween(180, if (targetState.chat != null && initialState.chat != targetState.chat) MotionMillis else 0) }, label = "Theme color") { target ->
-            remember(target.seed, target.dark) { palette(target.seed, target.dark).split(',').map { Color(0xff000000L or it.toLong(16)) } }[index]
+            palettes.getOrPut(target.seed to target.dark) {
+                if (palettes.size >= 4) palettes.remove(palettes.keys.first())
+                palette(target.seed, target.dark).split(',').map { Color(0xff000000L or it.toLong(16)) }
+            }[index]
         }.value
     }
     val base = if (dark) darkColorScheme() else lightColorScheme()

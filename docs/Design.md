@@ -203,6 +203,8 @@ Use the dark call reference for participant layout, rounded video tiles, restrai
 
 Apply the same typography, spacing, and surface language to setup, health, storage, backups, users, and updates. Lead with understandable state and the next useful action. Operational warnings must remain prominent enough to act on within the otherwise quiet interface.
 
+The overview is a visual operational dashboard: real queue trends, storage composition, service health and actionable failures, with labeled units, observation windows, refresh time and accessible numeric equivalents. Charts link to relevant settings or diagnostics. Missing history stays empty rather than inventing a trend. Keep content private: no message plaintext, contact graphs or inferred private membership. Administrators enable supported push providers; devices default to Google delivery when available, with provider selection under advanced notification settings.
+
 ### Adaptive layouts
 
 Share the design language across phone, tablet, desktop, and web. Use available width for panes and readable content rather than stretching a phone layout. Respect platform input, insets, keyboard behavior, and accessibility conventions. Exact breakpoints and component measurements remain implementation work.

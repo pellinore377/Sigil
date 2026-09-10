@@ -46,10 +46,10 @@ internal object NativeSync {
             check(result.getBoolean("ok")); result.getJSONObject("value")
         }
     }
-    suspend fun run(context: Context, interactive: Boolean = false): JSONObject = withContext(Dispatchers.IO) {
+    suspend fun run(context: Context, interactive: Boolean = false, callSetup: Boolean = false): JSONObject = withContext(Dispatchers.IO) {
         sync.withLock {
             check(!NativeSignOut.pending(context))
-            val request = JSONObject().put("command", "sync").put("interactive", interactive).toString()
+            val request = JSONObject().put("command", "sync").put("interactive", interactive).put("call_setup", callSetup).toString()
             val result = StorageKeyProvider(context).withKey { directory, key -> JSONObject(NativeStorage.execute(directory.path, key, request)) }
             check(result.getBoolean("ok")); result.getJSONObject("value")
         }
@@ -59,9 +59,12 @@ internal object NativeSync {
         if (!enabled || NativeSignOut.pending(context)) { jobs.cancel(PERIODIC); jobs.cancel(PENDING); return }
         if (jobs.getPendingJob(PERIODIC) == null) jobs.schedule(base(context, PERIODIC).setPeriodic(15 * 60_000L).build())
     }
-    fun enqueue(context: Context, delay: Long = 0) {
+    fun enqueue(context: Context, delay: Long = 0, urgent: Boolean = false) {
         if (NativeSignOut.pending(context)) return
-        context.getSystemService(JobScheduler::class.java).schedule(base(context, PENDING).setMinimumLatency(delay.coerceAtLeast(0)).build())
+        val jobs = context.getSystemService(JobScheduler::class.java)
+        if (urgent && delay <= 0 && android.os.Build.VERSION.SDK_INT >= 31 &&
+            jobs.schedule(base(context, PENDING).setExpedited(true).build()) == JobScheduler.RESULT_SUCCESS) return
+        jobs.schedule(base(context, PENDING).setMinimumLatency(delay.coerceAtLeast(0)).build())
     }
     private fun base(context: Context, id: Int) = JobInfo.Builder(id, ComponentName(context, SyncService::class.java)).setRequiredNetworkType(JobInfo.NETWORK_TYPE_ANY).setPersisted(true).setBackoffCriteria(10_000L, JobInfo.BACKOFF_POLICY_EXPONENTIAL)
 }
@@ -73,20 +76,30 @@ class SyncService : JobService() {
         work[params.jobId]?.cancel()
         work[params.jobId] = scope.launch {
             var retry = false
+            var nextDelay: Long? = null
             try {
                 if (!NativeSignOut.pending(this@SyncService) && File(noBackupFilesDir, "native/client.db").isFile) {
                     val value = NativeSync.run(this@SyncService)
                     retry = !value.isNull("issue")
+                    NativeNotifications.update(this@SyncService)
                     val files = NativeSync.files(this@SyncService)
                     retry = retry || !files.isNull("issue")
                     val next = listOfNotNull(value.getLong("next_at").takeIf { !value.getBoolean("ran") || value.getBoolean("pending") || files.getInt("sent") > 0 }, files.getLong("next_at").takeIf { files.getBoolean("pending") }).minOrNull()
-                    if (next != null) NativeSync.enqueue(this@SyncService, (next * 1000 - System.currentTimeMillis()).coerceAtLeast(1000))
+                    nextDelay = next?.let { (it * 1000 - System.currentTimeMillis()).coerceAtLeast(1000) }
                     NativeNotifications.update(this@SyncService)
                 }
             } catch (cancelled: CancellationException) { throw cancelled }
             catch (_: Exception) { retry = !NativeSignOut.pending(this@SyncService) }
             val current = coroutineContext.job
-            main.post { if (work[params.jobId] === current) { work.remove(params.jobId); if (!current.isCancelled) jobFinished(params, retry) } }
+            main.post {
+                if (work[params.jobId] === current) {
+                    work.remove(params.jobId)
+                    if (!current.isCancelled) {
+                        jobFinished(params, retry && nextDelay == null)
+                        nextDelay?.let { NativeSync.enqueue(this@SyncService, it) }
+                    }
+                }
+            }
         }
         return true
     }

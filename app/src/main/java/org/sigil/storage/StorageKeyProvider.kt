@@ -24,7 +24,11 @@ import javax.crypto.spec.GCMParameterSpec
 
 /** Hardware wrapping only; Rust owns database and messaging behavior. */
 class StorageKeyProvider(context: Context, name: String = "native") {
-    companion object { private val wrappingLock = Any() }
+    companion object {
+        private val wrappingLock = Any()
+        // Opaque hardware handles only; unwrapped storage keys are never cached.
+        private val handles = LinkedHashMap<String, SecretKey>(4, 0.75f, true)
+    }
     private val app = context.applicationContext
     internal val directory: File
     internal val alias: String
@@ -54,17 +58,27 @@ class StorageKeyProvider(context: Context, name: String = "native") {
             lock.channel.lock().use {
                 val atomic = AtomicFile(File(directory, "storage.key"))
                 val exists = atomic.baseFile.exists() || File(directory, "storage.key.bak").exists()
-                val keyStore = KeyStore.getInstance("AndroidKeyStore").apply { load(null) }
-                val wrapping = if (keyStore.containsAlias(alias)) {
-                    keyStore.getKey(alias, null) as? SecretKey ?: error("Storage wrapping key unavailable")
-                } else {
-                    check(!exists && !File(directory, "client.db").exists()) { "Storage wrapping key missing" }
-                    generate()
+                val wrapping = handles[alias] ?: run {
+                    val keyStore = KeyStore.getInstance("AndroidKeyStore").apply { load(null) }
+                    val handle = if (keyStore.containsAlias(alias)) {
+                        keyStore.getKey(alias, null) as? SecretKey ?: error("Storage wrapping key unavailable")
+                    } else {
+                        check(!exists && !File(directory, "client.db").exists()) { "Storage wrapping key missing" }
+                        generate()
+                    }
+                    requireHardware(handle)
+                    if (handles.size == 4) handles.remove(handles.keys.first())
+                    handles[alias] = handle
+                    handle
                 }
-                requireHardware(wrapping)
-                if (exists) unwrap(wrapping, read(atomic)) else {
-                    check(!File(directory, "client.db").exists()) { "Wrapped storage key missing" }
-                    create(wrapping, atomic)
+                try {
+                    if (exists) unwrap(wrapping, read(atomic)) else {
+                        check(!File(directory, "client.db").exists()) { "Wrapped storage key missing" }
+                        create(wrapping, atomic)
+                    }
+                } catch (error: Throwable) {
+                    handles.remove(alias)
+                    throw error
                 }
             }
         } }

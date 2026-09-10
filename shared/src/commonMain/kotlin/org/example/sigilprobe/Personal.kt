@@ -168,7 +168,7 @@ internal fun PersonalPage(page: String, state: MessengerState, command: Command,
                     state.push?.let { push ->
                         Text(push.status)
                         Text("Push wakes Sigil to check for messages. It does not contain your messages or contact names. Without push, Android checks periodically and incoming calls can be delayed.", style = MaterialTheme.typography.bodySmall)
-                        if (push.distributors.isEmpty()) Text("For instant delivery, install a UnifiedPush service and enable UnifiedPush on your server.", style = MaterialTheme.typography.bodySmall)
+                        if (push.distributors.isEmpty()) Text("Google notifications require a configured app build and server. UnifiedPush is also available with an installed distributor.", style = MaterialTheme.typography.bodySmall)
                         push.distributors.forEach { service ->
                             SigilTextButton({ command("push_select", mapOf("distributor" to service.id)) }, enabled = !state.busy) { Text(if (push.enabled && push.distributor == service.id) "Reconnect ${service.name}" else "Use ${service.name}") }
                         }

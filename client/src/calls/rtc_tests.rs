@@ -325,6 +325,9 @@ async fn group_android_loop(
             left = true;
         }
         if left && continued >= 20 {
+            if !export.join("continued").exists() {
+                std::fs::write(export.join("continued"), b"authenticated rekeyed audio").unwrap();
+            }
             let call = charlie.call(id, now).unwrap();
             if call.participants.len() == 1 && call.phase == Phase::Active {
                 phone_left = true;
