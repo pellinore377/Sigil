@@ -96,27 +96,36 @@ fn random(max: u64) -> Result<u64, Error> {
     }
     Err(Error::Invalid)
 }
-impl Randomizer {
-    pub fn dice(source: &str, limits: CardLimits) -> Result<Self, Error> {
-        limits.validate()?;
-        if source.len() > 1024 {
+pub(crate) fn dice_plan(source: &str, limits: CardLimits) -> Result<Vec<(usize, u32)>, Error> {
+    limits.validate()?;
+    if source.len() > 1024 {
+        return Err(Error::Limit);
+    }
+    let mut groups = Vec::new();
+    let mut total = 0usize;
+    for group in source.split(',') {
+        let (count, sides) = group.trim().split_once('d').ok_or(Error::Invalid)?;
+        let count = count.parse::<usize>().map_err(|_| Error::Invalid)?;
+        let sides = sides.parse::<u32>().map_err(|_| Error::Invalid)?;
+        total = total.checked_add(count).ok_or(Error::Limit)?;
+        if count == 0 || total > limits.items || !(2..=limits.dice_sides).contains(&sides) {
             return Err(Error::Limit);
         }
-        let mut groups = Vec::new();
-        let mut total = 0usize;
-        for group in source.split(',') {
-            let (count, sides) = group.trim().split_once('d').ok_or(Error::Invalid)?;
-            let count = count.parse::<usize>().map_err(|_| Error::Invalid)?;
-            let sides = sides.parse::<u32>().map_err(|_| Error::Invalid)?;
-            total = total.checked_add(count).ok_or(Error::Limit)?;
-            if count == 0 || total > limits.items || !(2..=limits.dice_sides).contains(&sides) {
-                return Err(Error::Limit);
-            }
-            let faces = (0..count)
-                .map(|_| random(u64::from(sides)).map(|v| v as u32 + 1))
-                .collect::<Result<_, _>>()?;
-            groups.push(Dice { sides, faces });
-        }
+        groups.push((count, sides));
+    }
+    Ok(groups)
+}
+impl Randomizer {
+    pub fn dice(source: &str, limits: CardLimits) -> Result<Self, Error> {
+        let groups = dice_plan(source, limits)?
+            .into_iter()
+            .map(|(count, sides)| {
+                let faces = (0..count)
+                    .map(|_| random(u64::from(sides)).map(|v| v as u32 + 1))
+                    .collect::<Result<_, _>>()?;
+                Ok(Dice { sides, faces })
+            })
+            .collect::<Result<_, Error>>()?;
         Ok(Self::Dice { groups })
     }
     pub fn pick(
@@ -572,8 +581,8 @@ pub(crate) fn parse(lines: &[&str], limits: CardLimits) -> Result<Utility, Error
             } else {
                 Randomizer::pick(
                     None,
-                    source
-                        .split(',')
+                    choices(source)
+                        .into_iter()
                         .map(|v| text(v.trim()))
                         .collect::<Result<_, _>>()?,
                     limits,
@@ -631,6 +640,21 @@ pub(crate) fn parse(lines: &[&str], limits: CardLimits) -> Result<Utility, Error
         "swatch" => Utility::Swatch(swatch(source)?),
         _ => return Err(Error::Invalid),
     })
+}
+
+fn choices(source: &str) -> Vec<&str> {
+    let mut values = Vec::new();
+    let mut start = 0;
+    let mut escaped = false;
+    for (at, ch) in source.char_indices() {
+        if ch == ',' && !escaped {
+            values.push(&source[start..at]);
+            start = at + 1;
+        }
+        escaped = ch == '\\' && !escaped;
+    }
+    values.push(&source[start..]);
+    values
 }
 fn swatch(source: &str) -> Result<[u8; 4], Error> {
     if let Some(hex) = source.strip_prefix('#') {

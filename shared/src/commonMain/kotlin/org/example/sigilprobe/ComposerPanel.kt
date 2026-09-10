@@ -24,7 +24,7 @@ import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.semantics.*
 import kotlinx.coroutines.flow.*
 
-private val createItems = listOf("Note" to "description", "Checklist" to "checklist", "Poll" to "ballot", "Reminder" to "notifications_active", "Task" to "assignment", "Timer" to "timer", "Help" to "help")
+private val createItems = listOf("Note" to "description", "Checklist" to "checklist", "Poll" to "ballot", "Reminder" to "notifications_active", "Task" to "assignment", "Timer" to "timer", "Randomizer" to "casino", "Help" to "help")
 @Composable
 internal fun ComposerPanel(draft: TextFieldState, analyze: (String) -> String, enabled: Boolean, notes: Boolean, command: Command, peer: String, voice: VoiceState, sent: Long, sentText: String?, requestContact: (() -> Unit)? = null, attachments: List<Transfer> = emptyList(), editingCaption: Boolean = false, attachmentTarget: Map<String, Any?> = mapOf("peer" to peer), send: (String, Boolean, String?) -> Unit) {
     val motionPolicy = LocalMotion.current
@@ -168,6 +168,9 @@ internal fun ComposerPanel(draft: TextFieldState, analyze: (String) -> String, e
                         "Camera" -> LocalCameraPanel.current(attachmentTarget, { change("Attachments") }, { change("") })
                         "Place" -> LocalPlacePanel.current(attachmentTarget, { change("Attachments") }, { change("") })
                         "Help" -> HelpPanel(enabled,{change(if(helpQuery==null)"Create" else "")},helpQuery) {source->pendingBuilder="$peer:$shown" to source;send(source,true,null)}
+                        "Randomizer" -> builders.SaveableStateProvider("$peer:$shown") {
+                            RandomizerBuilder(enabled,{change("Create")}) {source->pendingBuilder="$peer:$shown" to source;send(source,true,null)}
+                        }
                         in createItems.map { it.first } -> builders.SaveableStateProvider("$peer:$shown") {
                             StructuredBuilder(shown, enabled, { change("Create") }) { source, timezone -> pendingBuilder = "$peer:$shown" to source; send(source, true, timezone) }
                         }
@@ -205,21 +208,10 @@ internal fun StructuredBuilder(kind: String, enabled: Boolean, back: () -> Unit,
             checkingTime=false
         }
     }
-    val focus = LocalFocusManager.current
     Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal = 24.dp, vertical = 12.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically) { Symbol("chevron_left", "Back to create", back); Text(kind, Modifier.weight(1f), style = MaterialTheme.typography.titleLarge) }
         if (kind != "Timer") OutlinedTextField(title, { title = it }, Modifier.fillMaxWidth(), shape = RoundedCornerShape(16.dp), label = { Text(if (kind == "Poll") "Question" else if (kind == "Note") "Your note" else "Title") }, minLines = if (kind == "Note") 3 else 1)
-        if (kind in listOf("Poll", "Checklist", "Task")) Column {
-          entries.forEachIndexed { index, entry -> key(index) {
-            val visible = remember { MutableTransitionState(index == 0).apply { targetState = true } }
-            AnimatedVisibility(visible, enter = expandVertically(motionPolicy.tween(MotionMillis), expandFrom = Alignment.Top) + slideInHorizontally(motionPolicy.tween(MotionMillis)) { it } + fadeIn(motionPolicy.tween(MotionMillis))) {
-              OutlinedTextField(entry, { value -> entries = entries.toMutableList().also { it[index] = value; if (index == it.lastIndex && value.isNotBlank()) it.add("") } }, Modifier.fillMaxWidth().padding(top = if (index == 0) 0.dp else 16.dp),
-                shape = RoundedCornerShape(16.dp), singleLine = true, label = { Text("${if (kind == "Poll") "Option" else "Item"} ${index + 1}") },
-                leadingIcon = { Glyph(if (kind == "Poll") "radio_button_unchecked" else "check_box_outline_blank", 20, filled = false) },
-                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Next), keyboardActions = KeyboardActions(onNext = { focus.moveFocus(FocusDirection.Next) }))
-            }
-          } }
-        }
+        if (kind in listOf("Poll", "Checklist", "Task")) BuilderEntries(entries,if(kind=="Poll")"Option" else "Item",if(kind=="Poll")"radio_button_unchecked" else "check_box_outline_blank") {entries=it}
         if (temporal) {
             OutlinedTextField(whenText, { whenText = it }, Modifier.fillMaxWidth(), singleLine=true, shape=RoundedCornerShape(16.dp),
                 isError=!checkingTime && preview==null && whenText.isNotBlank(), label = { Text(if (kind == "Timer") "Duration, e.g. 5m" else "When") })
@@ -244,6 +236,21 @@ internal fun StructuredBuilder(kind: String, enabled: Boolean, back: () -> Unit,
             }
             send(source,preview?.timezone)
         }, enabled = enabled && (!temporal || preview!=null && !checkingTime) && (if (kind == "Timer") whenText.isNotBlank() else title.isNotBlank()) && (kind !in listOf("Poll", "Checklist", "Task") || entries.count { it.isNotBlank() } >= if (kind == "Poll") 2 else 1), modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(16.dp)) { Text(if (kind == "Poll") "Send poll" else "Send") }
+    }
+}
+@Composable
+internal fun BuilderEntries(entries:List<String>,label:String,icon:String,change:(List<String>)->Unit) {
+    val motion=LocalMotion.current
+    val focus=LocalFocusManager.current
+    Column {
+        entries.forEachIndexed {index,entry->key(index) {
+            val visible=remember {MutableTransitionState(index==0).apply {targetState=true}}
+            AnimatedVisibility(visible,enter=expandVertically(motion.tween(MotionMillis),expandFrom=Alignment.Top)+slideInHorizontally(motion.tween(MotionMillis)) {it}+fadeIn(motion.tween(MotionMillis))) {
+                OutlinedTextField(entry,{raw->val value=raw.replace('\n',' ').replace('\r',' ');change(entries.toMutableList().also {it[index]=value;if(index==it.lastIndex && value.isNotBlank() && it.size<256)it.add("")})},
+                    Modifier.fillMaxWidth().padding(top=if(index==0)0.dp else 16.dp),shape=RoundedCornerShape(16.dp),singleLine=true,label={Text("$label ${index+1}")},
+                    leadingIcon={Glyph(icon,20,filled=false)},keyboardOptions=KeyboardOptions(imeAction=ImeAction.Next),keyboardActions=KeyboardActions(onNext={focus.moveFocus(FocusDirection.Next)}))
+            }
+        }}
     }
 }
 @OptIn(ExperimentalLayoutApi::class)

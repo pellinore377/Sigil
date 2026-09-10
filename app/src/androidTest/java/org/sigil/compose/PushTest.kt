@@ -86,12 +86,16 @@ class PushTest {
         broadcast(Intent("sigil.fixture.CONFIGURE").putExtra("endpoint", File(context.cacheDir, "push-endpoint").readText()))
         val registration = NativePush.execute(context, "prepare")
         NativePush.register(context, distributor.packageName, registration)
-        withTimeout(20_000) {
+        var issue:String?=null
+        try {withTimeout(20_000) {
             while (true) {
-                NativeSync.files(context)
+                issue=NativeSync.files(context).optString("issue").takeUnless {it=="null" || it.isEmpty()}
                 if (NativePush.execute(context, "status").optString("remote") == "pending") break
                 delay(100)
             }
+        }} catch(error:TimeoutCancellationException) {
+            val status=NativePush.execute(context,"status")
+            throw AssertionError("Push registration timed out: remote=${status.optString("remote")}, awaiting_endpoint=${status.optBoolean("awaiting_endpoint")}, pending=${status.optBoolean("pending")}, issue=$issue",error)
         }
         assertFalse(NativePush.settings(context).status.contains("enabled"))
     }

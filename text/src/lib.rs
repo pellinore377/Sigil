@@ -19,6 +19,7 @@ pub mod motion;
 pub mod numeric;
 mod parse;
 pub mod poll_close;
+pub mod randomizer_builder;
 pub mod recurrence;
 pub mod recipe;
 pub mod service;
