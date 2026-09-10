@@ -67,7 +67,7 @@ internal fun ChartCard(chart: ChartContent) {
 }
 
 @Composable
-private fun ChartPlot(chart: ChartContent, hidden: Set<Int>, selected: Int?, select: (Int) -> Unit, modifier: Modifier, zoomable: Boolean = false) {
+internal fun ChartPlot(chart: ChartContent, hidden: Set<Int>, selected: Int?, select: (Int) -> Unit, modifier: Modifier, zoomable: Boolean = false) {
     var zoom by remember(chart) { mutableFloatStateOf(1f) }
     var pan by remember(chart) { mutableStateOf(Offset.Zero) }
     var bounds by remember { mutableStateOf(IntSize.Zero) }

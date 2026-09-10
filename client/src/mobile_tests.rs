@@ -1108,3 +1108,21 @@ fn utility_projection_preserves_values_and_keeps_wifi_secrets_out_of_previews() 
         }
     }
 }
+
+#[test]
+fn stored_service_cards_project_without_a_provider_configuration() {
+    use sigil_protocol::text::{service::{Provider, Snapshot, ResultData}, structured::{Card, Construct}, Text};
+    let (_dir, _server, mut alice, _bob, now)=crate::claims::tests::pair();
+    let t=|s|Text::plain(s,Default::default()).unwrap();
+    let card=Card{id:[0x82;32],creator:alice.account_reference().unwrap(),created_at:now,
+        content:Construct::Service(Box::new(Snapshot{provider:Provider{id:"offline".into(),version:None,attribution:t("Synthetic provider"),source_url:Some("https://example.test/source".into())},resolved_at:now,
+            content:ResultData::Translation{original:t("Hello"),source_language:"en".into(),target_language:"es".into(),detected:false,translated:t("Hola")}}))};
+    alice.mobile_action("self",&"82".repeat(32),now,Action::Post{body:Body::Rich(card.to_bytes().unwrap()),reply:None,thread:None,expires_at:None,view_once:false}).unwrap();
+    let timeline=run(&mut alice,json!({"command":"timeline","peer":"self"}));
+    let part=&timeline["messages"][0]["parts"][0];
+    assert_eq!(part["kind"],"service");
+    assert_eq!(part["service"]["title"]["text"],"Hola");
+    assert_eq!(part["service"]["original"]["text"],"Hello");
+    assert_eq!(part["service"]["copy"],"Hola");
+    assert_eq!(part["service"]["source"],"https://example.test/source");
+}

@@ -22,6 +22,7 @@ pub mod poll_close;
 pub mod recurrence;
 pub mod recipe;
 pub mod service;
+mod service_view;
 pub mod structured;
 pub mod table;
 pub mod time;

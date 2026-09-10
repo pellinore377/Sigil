@@ -67,6 +67,8 @@ instrument TableTest
 instrument RecipeTest
 instrument ChartTest
 instrument DiagramTest
+instrument UtilityTest
+instrument ServiceCardTest
 instrument LayoutTest
 instrument TimelinePerformanceTest
 instrument RealTimelinePerformanceTest
