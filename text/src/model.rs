@@ -1,6 +1,6 @@
 use crate::Effects;
 use serde::{Deserialize, Serialize};
-use unicode_normalization::{is_nfc, UnicodeNormalization};
+use unicode_normalization::{UnicodeNormalization, is_nfc};
 use unicode_segmentation::UnicodeSegmentation;
 
 pub const MAX_WIRE_BYTES: usize = 60 * 1024;
@@ -84,6 +84,8 @@ pub struct Presentation<'a> {
     pub text: &'a str,
     pub spans: Vec<Span>,
     pub blocks: Vec<crate::Block>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub code_tokens: Vec<crate::code::Token>,
 }
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -161,6 +163,30 @@ impl Text {
         offsets.push(at);
         let mut spans = self.spans.clone();
         let mut blocks = self.blocks.clone();
+        let mut code_tokens = Vec::new();
+        if blocks
+            .iter()
+            .any(|b| matches!(b.kind, crate::BlockKind::Code { language: Some(_) }))
+        {
+            let bytes: Vec<_> = self
+                .body
+                .grapheme_indices(true)
+                .map(|(i, _)| i)
+                .chain(std::iter::once(self.body.len()))
+                .collect();
+            for block in &blocks {
+                if let crate::BlockKind::Code {
+                    language: Some(language),
+                } = &block.kind
+                {
+                    code_tokens.extend(crate::code::highlight(
+                        &self.body[bytes[block.start as usize]..bytes[block.end as usize]],
+                        language,
+                        offsets[block.start as usize],
+                    ));
+                }
+            }
+        }
         for span in &mut spans {
             span.start = offsets[span.start as usize];
             span.end = offsets[span.end as usize];
@@ -173,6 +199,7 @@ impl Text {
             text: &self.body,
             spans,
             blocks,
+            code_tokens,
         }
     }
     /// Selection indices use the same graphemes as effects, never UTF-16 units.

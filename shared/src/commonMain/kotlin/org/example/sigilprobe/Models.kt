@@ -15,9 +15,10 @@ data class ChatMessage(val id: String, val author: String, val text: String, val
 data class MessagePart(val id: String, val kind: String, val text: String, val items: List<CardItem> = emptyList(), val multiple: Boolean = false, val closed: Boolean = false, val voters: Long? = null, val date: String = "", val latitude: Double = 0.0, val longitude: Double = 0.0, val rich: RichText? = null,
     val locationMode: String = "pin", val sampledAt: Long = 0, val accuracyCm: Long? = null, val until: Long? = null, val stopped: Boolean = false, val canStop: Boolean = false)
 data class CardItem(val id: String, val text: String, val checked: Boolean, val enabled: Boolean, val count: Long? = null, val rich: RichText? = null)
-data class RichText(val text: String, val spans: List<RichSpan> = emptyList(), val blocks: List<RichBlock> = emptyList())
+data class RichText(val text: String, val spans: List<RichSpan> = emptyList(), val blocks: List<RichBlock> = emptyList(), val codeTokens: List<CodeToken> = emptyList())
 data class RichSpan(val start: Int, val end: Int, val flags: Set<String> = emptySet(), val colors: List<String> = emptyList(), val size: Int = 0, val reveal: String = "", val link: String? = null)
-data class RichBlock(val start: Int, val end: Int, val kind: String, val level: Int = 0)
+data class RichBlock(val start: Int, val end: Int, val kind: String, val level: Int = 0, val language: String = "")
+data class CodeToken(val start: Int, val end: Int, val role: String)
 data class AttachmentDetails(val name: String, val mediaType: String, val bytes: Long, val caption: String = "", val draft: Boolean = false)
 data class CollectionItem(val id: String, val name: String, val icon: String = "folder")
 data class GroupInvitation(val id: String, val peer: String, val group: String)

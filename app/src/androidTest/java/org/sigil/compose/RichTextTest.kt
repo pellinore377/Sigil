@@ -17,6 +17,32 @@ import org.sigil.*
 
 class RichTextTest {
     @get:Rule val ui = createAndroidComposeRule<ComponentActivity>()
+    @Test fun code_expands_copies_exact_whitespace_and_wraps_without_exposing_concealed_code() {
+        val source = "let letter = \"👋\";\n" + (1..12).joinToString("\n") { "    // Synthetic line $it with enough content to scroll horizontally without losing indentation" }
+        val code = RichText(source, blocks = listOf(RichBlock(0, source.length, "code", language = "rust")), codeTokens = listOf(CodeToken(0, 3, "keyword")))
+        val secret = "concealed-code-content"
+        val hidden = RichText(secret, listOf(RichSpan(0, secret.length, reveal = "spoiler")), listOf(RichBlock(0, secret.length, "code", language = "rust")))
+        val chat = ChatSummary("self", "@sam:example.test", "", "", true, emptyList(), displayName = "Sam")
+        fun message(id: String, value: RichText) = ChatMessage(id, "sam", value.text, true, "9:33", "sent", false, emptyList(), emptyList(), null, true, timestamp = 1000, parts = listOf(MessagePart("", "text", value.text, rich = value)))
+        ui.runOnUiThread { ui.activity.setSigilContent { SigilApp(NativeCore::palette, NativeCore::analyze, MessengerState(phase = "connected", chats = listOf(chat), selected = "self", messages = listOf(message("2", code), message("1", hidden))), { _, _ -> }) } }
+        ui.onNodeWithContentDescription("Copy code").performClick()
+        val clipboard = ui.activity.getSystemService(android.content.ClipboardManager::class.java)
+        ui.runOnIdle { assertEquals(source, clipboard.primaryClip!!.getItemAt(0).text.toString()) }
+        ui.onNodeWithText(secret).assertDoesNotExist()
+        ui.onNodeWithText("Open code · 13 lines").performClick()
+        val node = ui.onNode(hasText(source) and hasAnyAncestor(isDialog()))
+        node.assertIsDisplayed()
+        fun layout(): TextLayoutResult {
+            val layouts = mutableListOf<TextLayoutResult>()
+            node.performSemanticsAction(SemanticsActions.GetTextLayoutResult) { it(layouts) }
+            return layouts.single()
+        }
+        assertFalse(layout().layoutInput.softWrap)
+        ui.onNodeWithText("Wrap lines").performClick()
+        assertTrue(layout().layoutInput.softWrap)
+        ui.onNodeWithContentDescription("Close code").performClick()
+        ui.onNodeWithTag("composer").assertIsDisplayed()
+    }
     @Test fun canonical_formatting_links_and_emoji_spoilers_render_on_the_phone() {
         val rich = JSONObject("""{"rich":{"text":"👩🏽‍💻 **literal** link","spans":[{"start":8,"end":19,"effects":[{"kind":"code","value":true}]},{"start":20,"end":24,"effects":[{"kind":"link","value":"https://example.com/letter"}]}],"blocks":[]}}""").richText()!!
         val hidden = RichText("🙈", listOf(RichSpan(0, 2, reveal = "spoiler")))

@@ -5,6 +5,7 @@ import org.json.JSONObject
 import org.sigil.RichText
 import org.sigil.RichSpan
 import org.sigil.RichBlock
+import org.sigil.CodeToken
 
 internal fun JSONObject.richText(): RichText? = optJSONObject("rich")?.let { rich ->
     fun JSONArray.objects() = (0 until length()).map(::getJSONObject)
@@ -36,6 +37,6 @@ internal fun JSONObject.richText(): RichText? = optJSONObject("rich")?.let { ric
         RichSpan(span.getInt("start"), span.getInt("end"), flags, colors, size, reveal, link)
     }, rich.getJSONArray("blocks").objects().map { block ->
         val kind = block.getJSONObject("kind")
-        RichBlock(block.getInt("start"), block.getInt("end"), kind.getString("kind"), kind.optInt("level"))
-    })
+        RichBlock(block.getInt("start"), block.getInt("end"), kind.getString("kind"), kind.optInt("level"), if (kind.isNull("language")) "" else kind.getString("language"))
+    }, rich.optJSONArray("code_tokens")?.objects()?.map { CodeToken(it.getInt("start"), it.getInt("end"), it.getString("role")) }.orEmpty())
 }
