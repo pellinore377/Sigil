@@ -3,11 +3,12 @@ set -euo pipefail
 cd -- "$(dirname -- "$0")/../.."
 source app/tests/build.sh
 scratch=$(mktemp -d /tmp/sigil-call-device.XXXXXX)
-container= fixture_pid= port=
+container= fixture_pid= progress_pid= port=
 cleanup() {
   local result=$?
   if ((result != 0)) && [[ -f "$scratch/fixture.log" ]]; then cat "$scratch/fixture.log"; fi
   if [[ -n "$fixture_pid" ]]; then kill "$fixture_pid" >/dev/null 2>&1 || true; fi
+  if [[ -n "$progress_pid" ]]; then kill "$progress_pid" >/dev/null 2>&1 || true; fi
   if [[ -n "$port" ]]; then "$adb" reverse --remove "tcp:$port" >/dev/null 2>&1 || true; fi
   "$adb" reverse --remove tcp:39813 >/dev/null 2>&1 || true
   "$adb" shell rm -f /data/local/tmp/sigil-call-fixture.db >/dev/null 2>&1 || true
@@ -67,7 +68,20 @@ for mode in "${modes[@]}"; do
   "$adb" shell run-as "$app_id" cp /data/local/tmp/sigil-call-fixture.db "$directory/client.db"
   "$adb" shell run-as "$app_id" chmod 700 "$directory"
   "$adb" shell run-as "$app_id" chmod 600 "$directory/client.db"
+  if [[ "$mode" == group ]]; then
+    (
+      while kill -0 "$fixture_pid" 2>/dev/null; do
+        if [[ -f "$SIGIL_ANDROID_CALL_EXPORT/continued" ]]; then
+          "$adb" shell run-as "$app_id" touch cache/call-continued
+          break
+        fi
+        sleep 1
+      done
+    ) &
+    progress_pid=$!
+  fi
   instrument "$test_class"
+  if [[ -n "$progress_pid" ]]; then wait "$progress_pid"; progress_pid=; fi
   touch "$SIGIL_ANDROID_CALL_EXPORT/done"
   if ! wait "$fixture_pid"; then cat "$scratch/fixture.log"; exit 1; fi
   fixture_pid=

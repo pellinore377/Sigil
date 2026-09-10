@@ -450,7 +450,9 @@ impl ClientStore {
                 Ok(None) | Err(Error::InvalidEvent | Error::Conflict | Error::Unprepared) => (),
                 Err(error) => return Err(error),
             }
-            if bytes >= 4 * 1024 * 1024 {
+            if bytes >= 4 * 1024 * 1024
+                || !frames.is_empty() && clock.elapsed() >= Duration::from_millis(8)
+            {
                 break;
             }
         }

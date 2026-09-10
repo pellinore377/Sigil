@@ -189,6 +189,10 @@ impl ClientStore {
     pub fn sync_foreground_online(&mut self) -> Result<ScheduledSync, Error> {
         self.sync_with_poll(clock, 1)
     }
+    /// The platform paces setup attempts; shared reservations and failures still apply.
+    pub fn sync_call_setup_online(&mut self) -> Result<ScheduledSync, Error> {
+        self.sync_with_poll(clock, 0)
+    }
 
     fn sync_with_clock(
         &mut self,
@@ -215,7 +219,8 @@ impl ClientStore {
         }
         if poll < POLL_SECONDS
             && state.failures == 0
-            && state.next == state.last.saturating_add(POLL_SECONDS)
+            && (state.next == state.last.saturating_add(POLL_SECONDS)
+                || poll == 0 && state.next == state.last.saturating_add(1))
         {
             state.next = state.last.saturating_add(poll);
         }
@@ -230,7 +235,7 @@ impl ClientStore {
         state.next = now + RESERVATION_SECONDS;
         let reserved = write(&tx, &self.key, &own, &state)?;
         tx.commit()?;
-        let step = self.sync_step_online(now);
+        let step = self.sync_step_with_maintenance(now, poll != 0);
         let (next_at, scheduling_error) = match clock().and_then(|finished| {
             complete(
                 &mut self.db,
@@ -422,6 +427,60 @@ mod tests {
         let foreground = store.sync_with_poll(|| Ok(now + 1), 1).unwrap();
         assert!(foreground.step.is_some());
         assert_eq!(foreground.next_at, now + 2);
+    }
+    #[test]
+    fn call_setup_shortens_healthy_waits_and_leaves_maintenance_to_regular_passes() {
+        let (_dir, _fixture, mut store, reject, _, now) = setup(120);
+        reject.store(false, Ordering::SeqCst);
+        let regular = store.sync_with_poll(|| Ok(now), 1).unwrap();
+        assert!(regular.step.unwrap().maintenance.is_some());
+        let setup = store.sync_with_poll(|| Ok(now), 0).unwrap();
+        let step = setup.step.unwrap();
+        assert!(step.failure.is_none());
+        assert!(step.maintenance.is_none() && step.prekey_supply.is_none());
+        assert_eq!(setup.next_at, now);
+        assert!(store
+            .sync_with_poll(|| Ok(now + 1), 1)
+            .unwrap()
+            .step
+            .unwrap()
+            .maintenance
+            .is_some());
+    }
+    #[test]
+    fn call_setup_preserves_backoff_and_incomplete_reservations() {
+        let (_dir, _fixture, mut store, reject, hits, now) = setup(120);
+        let failed = store.sync_with_poll(|| Ok(now), 0).unwrap();
+        assert_eq!(failed.next_at, now + 120);
+        reject.store(false, Ordering::SeqCst);
+        assert!(store
+            .sync_with_poll(|| Ok(now + 119), 0)
+            .unwrap()
+            .step
+            .is_none());
+        assert_eq!(hits.load(Ordering::SeqCst), 1);
+        // Reserve explicitly, as if the process exited before completion.
+        let own = device_fingerprint(&store.own_device_binding().unwrap()).unwrap();
+        let tx = store.db.transaction().unwrap();
+        let (mut state, _) = read(&tx, &store.key, &own).unwrap();
+        state.last = now + 120;
+        state.next = state.last + RESERVATION_SECONDS;
+        state.failures = 0;
+        write(&tx, &store.key, &own, &state).unwrap();
+        tx.commit().unwrap();
+        assert!(store
+            .sync_with_poll(|| Ok(now + 121), 0)
+            .unwrap()
+            .step
+            .is_none());
+        assert_eq!(hits.load(Ordering::SeqCst), 1);
+        assert!(store
+            .sync_with_poll(|| Ok(now + 180), 0)
+            .unwrap()
+            .step
+            .unwrap()
+            .failure
+            .is_none());
     }
     #[test]
     fn foreground_polling_preserves_server_backoff_and_only_shortens_success_delay() {

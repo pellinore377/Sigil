@@ -81,7 +81,9 @@ Dependency advisories and mitigations are documented in [Security.md](docs/Secur
 
 Physical Android call acceptance: set `ANDROID_HOME`, `ANDROID_NDK_HOME`, `JAVA_HOME` (JDK 21), and optionally `GRADLE`; run `bash app/tests/calls.sh` with an unlocked device, Docker, OpenSSL and jq. It installs/clears only `org.sigil.compose.acceptance`, uses synthetic accounts and loopback TURN/TLS through ADB, and leaves the regular app's data untouched. The test-only resolver is confined to the acceptance native library.
 
-With the same Android environment, `bash app/tests/content.sh` checks authenticated maps, encrypted attachments, history backup/recovery and UnifiedPush proof delivery through a synthetic Android distributor. It uses only the isolated acceptance app and synthetic content. Live push requires an installed UnifiedPush distributor and server push configuration; select it under Notifications.
+With the same Android environment, `bash app/tests/content.sh` checks authenticated maps, encrypted attachments, history backup/recovery and UnifiedPush proof delivery through a synthetic Android distributor. Pass `push` to run only push acceptance and foreground sync timing. It uses only the isolated acceptance app and synthetic content.
+
+For Google push, register Android package `org.sigil.compose` in Firebase and set `SIGIL_FIREBASE_CONFIG` to an external `google-services.json` when running `app/release.sh`. Only release builds include this configuration. Configure the server's `/admin/v0/push` API with FCM service-account credentials from that same project; never put the service-account key in the APK or repository. Google push is selected automatically on compatible devices unless the user already chose another delivery method. UnifiedPush requires an installed distributor and server support. Both are selectable under Notifications. FCM wake-ups currently use normal priority and can be delayed during Android idle; prompt background calling is not yet validated.
 
 ## Maintenance
 

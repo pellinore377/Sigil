@@ -34,9 +34,9 @@ internal object NativePush {
         val label = try { context.packageManager.getApplicationLabel(context.packageManager.getApplicationInfo(name, 0)).toString() } catch (_: Exception) { name }
         PushDistributor(name, label)
     }
-    fun execute(context: Context, action: String, fields: Map<String, String> = emptyMap()): JSONObject {
+    fun execute(context: Context, action: String, fields: Map<String, String> = emptyMap(), replace: Boolean = false): JSONObject {
         check(!NativeSignOut.pending(context) && File(context.noBackupFilesDir, "native/client.db").isFile)
-        val request = JSONObject().put("command", "push").put("action", action)
+        val request = JSONObject().put("command", "push").put("action", action).put("replace", replace)
         fields.forEach { (key, value) -> request.put(key, value) }
         val result = StorageKeyProvider(context).withKey { directory, key -> JSONObject(NativeStorage.execute(directory.path, key, request.toString())) }
         check(result.getBoolean("ok")) { "Push setup could not complete. Check your server's push configuration and retry." }
@@ -46,20 +46,24 @@ internal object NativePush {
         val state = execute(context, "status")
         val choice = state.getString("choice")
         val phase = when {
-            choice == "disabled" -> if (state.optString("remote") == "active" || state.getBoolean("pending")) "Turning off instant delivery…" else "Periodic background sync"
+            !state.getBoolean("configured") && status(context).contains("issue") -> status(context).getString("issue", "Push is unavailable").orEmpty()
+            choice == "disabled" -> if (state.optString("remote") == "active" || state.getBoolean("pending")) "Turning off push delivery…" else "Periodic background sync"
+            choice == "fcm" && !NativeFcm.available(context) -> "Google notifications are unavailable on this device or build"
             choice == "unified_push" && selected(context) !in distributors(context).map { it.id } -> "Your push service is unavailable"
             status(context).contains("issue") -> status(context).getString("issue", "Push is unavailable").orEmpty()
             state.getBoolean("awaiting_endpoint") -> "Waiting for the push service"
             state.getBoolean("pending") -> "Registering with your server…"
-            state.optString("remote") == "active" -> "Instant delivery is enabled"
+            state.optString("remote") == "active" -> "Push delivery is enabled"
             state.optString("remote") == "pending" -> "Confirming delivery…"
             state.optString("remote") in listOf("invalid", "expired") -> "Registration needs attention"
             else -> "Waiting for registration"
         }
-        return PushSettings(choice != "disabled", phase, selected(context), distributors(context))
+        val services = (if (NativeFcm.available(context)) listOf(PushDistributor(NativeFcm.ID, "Google notifications")) else emptyList()) + distributors(context)
+        return PushSettings(choice != "disabled", phase, if (choice == "fcm") NativeFcm.ID else selected(context), services)
     }
     fun register(context: Context, distributor: String, registration: JSONObject) {
         require(distributor in distributors(context).map { it.id })
+        NativeFcm.stop(context)
         available(context)
         UnifiedPush.saveDistributor(context, distributor)
         UnifiedPush.register(context, instance = registration.getString("connection"), messageForDistributor = "Sigil", vapid = registration.getString("vapid"), keyManager = Keys)
@@ -69,16 +73,25 @@ internal object NativePush {
         connection?.let { UnifiedPush.unregister(context, it, Keys) }
         NativeSync.enqueue(context)
     }
-    private var resumed = false
-    suspend fun resume(context: Context) = withContext(Dispatchers.IO) {
-        if (resumed || NativeSignOut.pending(context)) return@withContext
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    @Volatile private var resumed = false
+    @Volatile private var retryAt = 0L
+    @Synchronized fun resume(context: Context) {
+        if (resumed || android.os.SystemClock.elapsedRealtime() < retryAt || NativeSignOut.pending(context)) return
         resumed = true
-        try {
-            val registration = execute(context, "status")
-            val distributor = selected(context)
-            if (!registration.isNull("connection") && distributor in distributors(context).map { it.id }) register(context, distributor!!, registration)
-        } catch (cancelled: CancellationException) { throw cancelled }
-        catch (_: Exception) { resumed = false }
+        retryAt = android.os.SystemClock.elapsedRealtime() + 60_000
+        scope.launch {
+            try {
+                val registration = execute(context, "status")
+                if ((!registration.getBoolean("configured") || registration.optString("choice") == "fcm") && NativeFcm.available(context)) {
+                    resumed = NativeFcm.register(context, false)
+                    return@launch
+                }
+                val distributor = selected(context)
+                if (!registration.isNull("connection") && distributor in distributors(context).map { it.id }) register(context, distributor!!, registration)
+            } catch (cancelled: CancellationException) { resumed = false; throw cancelled }
+            catch (_: Exception) { resumed = false }
+        }
     }
 }
 

@@ -43,7 +43,8 @@ port=$(cat "$scratch/port")
 "$adb" shell run-as "$app_id" cp /data/local/tmp/sigil-content-fixture.db no_backup/native/client.db
 "$adb" shell run-as "$app_id" chmod 700 no_backup/native
 "$adb" shell run-as "$app_id" chmod 600 no_backup/native/client.db
-instrument ContentTest
+if [[ ${1:-all} != push ]]; then instrument ContentTest; fi
+if [[ ${1:-all} == push ]]; then instrument 'PushTest#foregroundSyncTimings'; fi
 "$adb" push "$scratch/push-endpoint" /data/local/tmp/sigil-push-fixture >/dev/null
 "$adb" shell run-as "$app_id" cp /data/local/tmp/sigil-push-fixture cache/push-endpoint
 instrument 'PushTest#register'
@@ -56,6 +57,7 @@ test -s "$scratch/push-sealed"
 "$adb" shell run-as "$app_id" cp /data/local/tmp/sigil-push-fixture cache/push-sealed
 "$adb" shell rm -f /data/local/tmp/sigil-push-fixture
 instrument 'PushTest#encryptedProofReachesRustThroughTheDistributorAndReceiver'
+if [[ ${1:-all} == push ]]; then exit 0; fi
 "$adb" exec-out run-as "$app_id" cat cache/acceptance-recovery.key > "$scratch/recovery.key"
 "$adb" shell run-as "$app_id" rm cache/acceptance-recovery.key
 instrument MessagingUiTest

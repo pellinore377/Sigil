@@ -46,6 +46,28 @@ class PushTest {
     private val context get() = instrumentation.targetContext
     private val distributor get() = ComponentName(instrumentation.context.packageName, FixturePushDistributor::class.java.name)
     @Before fun isolated() { Assume.assumeTrue(context.packageName.endsWith(".acceptance")) }
+    @Test fun foregroundSyncTimings() {
+        val unwrap = mutableListOf<Long>(); val sync = mutableListOf<Long>(); val state = mutableListOf<Long>()
+        repeat(6) {
+            val begin = android.os.SystemClock.elapsedRealtimeNanos()
+            org.sigil.storage.StorageKeyProvider(context).withKey { directory, key ->
+                val ready = android.os.SystemClock.elapsedRealtimeNanos()
+                val result = org.json.JSONObject(org.sigil.storage.NativeStorage.execute(directory.path, key, "{\"command\":\"sync\",\"interactive\":true}"))
+                assertTrue(result.toString(), result.getBoolean("ok"))
+                val synced = android.os.SystemClock.elapsedRealtimeNanos()
+                val snapshot = org.json.JSONObject(org.sigil.storage.NativeStorage.execute(directory.path, key, "{\"command\":\"state\",\"calls\":true}"))
+                assertTrue(snapshot.toString(), snapshot.getBoolean("ok"))
+                assertTrue(snapshot.getJSONObject("value").getJSONObject("call_state").has("calls"))
+                if (result.getJSONObject("value").getBoolean("ran")) {
+                    unwrap += ready - begin; sync += synced - ready; state += android.os.SystemClock.elapsedRealtimeNanos() - synced
+                }
+            }
+            Thread.sleep(1100)
+        }
+        assertTrue(sync.isNotEmpty())
+        fun p95(samples: List<Long>) = samples.sorted()[(samples.size * 0.95).toInt().coerceAtMost(samples.lastIndex)] / 1_000_000.0
+        android.util.Log.i("SigilAcceptance", "Foreground fixture sync: ${sync.size} passes, p95 unwrap=${p95(unwrap)} ms, sync=${p95(sync)} ms, state=${p95(state)} ms")
+    }
     private suspend fun enable(enabled: Boolean) {
         context.startActivity(Intent().setComponent(ComponentName(distributor.packageName, FixturePushActivity::class.java.name)).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK).putExtra("enabled", enabled))
         val expected = if (enabled) android.content.pm.PackageManager.COMPONENT_ENABLED_STATE_ENABLED else android.content.pm.PackageManager.COMPONENT_ENABLED_STATE_DISABLED
@@ -88,9 +110,13 @@ class PushTest {
                     delay(100)
                 }
             }
-            assertEquals("Instant delivery is enabled", NativePush.settings(context).status)
+            assertEquals("Push delivery is enabled", NativePush.settings(context).status)
+            assertTrue(NativePush.execute(context, "fcm_token", mapOf("token" to "synthetic-late-google-token")).getBoolean("ignored"))
+            NativeFcm.receive(context, "U0dQVwAAAAAA", true)
+            assertEquals("unified_push", NativePush.execute(context, "status").getString("choice"))
             val connection = NativePush.execute(context, "status").getString("connection")
             NativePush.execute(context, "disable")
+            assertTrue(NativePush.execute(context, "fcm_token", mapOf("token" to "synthetic-disabled-google-token")).getBoolean("ignored"))
             NativePush.unregister(context, connection)
             withTimeout(20_000) {
                 while (NativePush.execute(context, "status").optString("remote") != "disabled") { NativeSync.files(context); delay(100) }

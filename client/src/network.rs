@@ -41,12 +41,14 @@ pub struct HttpsClient {
     server: String,
     credential: Zeroizing<String>,
     discover: bool,
-    resolved: std::sync::Arc<std::sync::OnceLock<String>>,
+    resolved: DiscoveryCache,
 }
+type DiscoveryCache = std::sync::Arc<std::sync::Mutex<Option<(std::time::Instant, String)>>>;
 struct PooledAgent {
     id: [u8; 32],
     created: std::time::Instant,
     agent: Agent,
+    resolved: DiscoveryCache,
 }
 static AGENTS: std::sync::Mutex<Vec<PooledAgent>> = std::sync::Mutex::new(Vec::new());
 const SMALL: usize = 8192;
@@ -218,7 +220,7 @@ impl HttpsClient {
             &"0".repeat(64),
             roots,
         )?;
-        if !same_https_origin(canonical.api_origin()?, &discovered.api_origin) {
+        if !same_https_origin(&canonical.api_origin()?, &discovered.api_origin) {
             return Err(Error::InvalidResponse);
         }
         if server != discovered.server_name
@@ -259,17 +261,19 @@ impl HttpsClient {
         client.discover = true;
         Ok(client)
     }
-    fn api_origin(&self) -> Result<&str, Error> {
+    fn api_origin(&self) -> Result<String, Error> {
         if !self.discover {
-            return Ok(&self.origin);
+            return Ok(self.origin.clone());
         }
-        if self.resolved.get().is_none() {
-            let _ = self.resolved.set(self.resolve_origin()?);
+        let mut cached = self.resolved.lock().map_err(|_| Error::Transport)?;
+        if let Some((created, origin)) = &*cached {
+            if created.elapsed() < Duration::from_secs(60) {
+                return Ok(origin.clone());
+            }
         }
-        self.resolved
-            .get()
-            .map(String::as_str)
-            .ok_or(Error::Configuration)
+        let origin = self.resolve_origin()?;
+        *cached = Some((std::time::Instant::now(), origin.clone()));
+        Ok(origin)
     }
     fn resolve_origin(&self) -> Result<String, Error> {
         let request = Request::get(format!(
@@ -328,10 +332,10 @@ impl HttpsClient {
             agents
                 .iter()
                 .find(|entry| entry.id == id)
-                .map(|entry| entry.agent.clone())
+                .map(|entry| (entry.agent.clone(), entry.resolved.clone()))
         };
-        let agent = if let Some(agent) = pooled {
-            agent
+        let (agent, resolved) = if let Some(pooled) = pooled {
+            pooled
         } else {
             let root_certs = if roots.is_empty() {
                 RootCerts::WebPki
@@ -369,12 +373,14 @@ impl HttpsClient {
             if agents.len() >= 8 {
                 agents.remove(0);
             }
+            let resolved = DiscoveryCache::default();
             agents.push(PooledAgent {
                 id,
                 created: std::time::Instant::now(),
                 agent: agent.clone(),
+                resolved: resolved.clone(),
             });
-            agent
+            (agent, resolved)
         };
         Ok(Self {
             agent,
@@ -382,7 +388,7 @@ impl HttpsClient {
             server: server.into(),
             credential: Zeroizing::new(credential.into()),
             discover: false,
-            resolved: Default::default(),
+            resolved,
         })
     }
 

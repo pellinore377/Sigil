@@ -73,26 +73,37 @@ fn connected_requests_share_discovery_and_invalidate_on_credential_rotation() {
     let mut store = open(&dir.path().join("client.db"));
     prepare(&mut store, &fixture, &invite.secret);
     store.enroll_online().unwrap();
+    crate::network::tests::expire_discovery(&store.connected_client().unwrap());
     discoveries.store(0, Ordering::SeqCst);
     let old = store.connected_client().unwrap();
     old.session().unwrap();
     store.connected_client().unwrap().session().unwrap();
     assert_eq!(discoveries.load(Ordering::SeqCst), 1);
+    drop(store);
+    let mut store = open(&dir.path().join("client.db"));
+    let reopened = store.connected_client().unwrap();
+    let shared = crate::network::tests::shares_discovery(&old, &reopened);
+    reopened.session().unwrap();
+    assert_eq!(
+        discoveries.load(Ordering::SeqCst),
+        if shared { 1 } else { 2 }
+    );
     store.prepare_credential_rotation().unwrap();
     assert!(matches!(store.connected_client(), Err(Error::Unprepared)));
     store.rotate_credential_online().unwrap();
-    discoveries.store(0, Ordering::SeqCst);
+    let rotated = store.connected_client().unwrap();
+    assert!(!crate::network::tests::shares_discovery(&old, &rotated));
+    rotated.session().unwrap();
+    let before = discoveries.load(Ordering::SeqCst);
     store.connected_client().unwrap().session().unwrap();
-    store.connected_client().unwrap().session().unwrap();
-    assert_eq!(discoveries.load(Ordering::SeqCst), 1);
+    assert_eq!(discoveries.load(Ordering::SeqCst), before);
     assert!(matches!(
         old.session(),
         Err(network::Error::Status { code: 401, .. })
     ));
-    store.connection.borrow_mut().as_mut().unwrap().1 =
-        std::time::Instant::now() - std::time::Duration::from_secs(60);
-    store.connected_client().unwrap().session().unwrap();
-    assert_eq!(discoveries.load(Ordering::SeqCst), 2);
+    crate::network::tests::expire_discovery(&rotated);
+    rotated.session().unwrap();
+    assert_eq!(discoveries.load(Ordering::SeqCst), before + 1);
 }
 pub(crate) fn setup() -> (tempfile::TempDir, Fixture, accounts::Invitation, u64) {
     use std::os::unix::fs::PermissionsExt;

@@ -658,3 +658,11 @@ fn service_address_discovery_accepts_the_default_https_port_without_weakening_or
         assert!(methods.sso);
     }
 }
+pub(crate) fn expire_discovery(client: &super::HttpsClient) {
+    if let Some((created, _)) = client.resolved.lock().unwrap().as_mut() {
+        *created = std::time::Instant::now() - std::time::Duration::from_secs(60);
+    }
+}
+pub(crate) fn shares_discovery(left: &super::HttpsClient, right: &super::HttpsClient) -> bool {
+    std::sync::Arc::ptr_eq(&left.resolved, &right.resolved)
+}

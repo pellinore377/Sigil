@@ -147,6 +147,9 @@ impl ClientStore {
     /// is inferred. Replenishes at most one prekey toward a target of eight.
     /// This low-level pass bypasses scheduling; use sync_due_online for durable backoff.
     pub fn sync_step_online(&mut self, now: u64) -> SyncStep {
+        self.sync_step_with_maintenance(now, true)
+    }
+    pub(super) fn sync_step_with_maintenance(&mut self, now: u64, maintenance: bool) -> SyncStep {
         let mut step = SyncStep::default();
         match self.advance_structured_actions() {
             Ok(count) => step.structured = count,
@@ -182,11 +185,6 @@ impl ClientStore {
             .position(|item| matches!(item.result, Err(Error::Network(_))))
         {
             step.failure = Some(SyncFailure::PrekeyNetwork(index));
-            return step;
-        }
-        step.prekey_supply = Some(self.replenish_prekey_online());
-        if matches!(step.prekey_supply, Some(Err(Error::Network(_)))) {
-            step.failure = Some(SyncFailure::PrekeySupplyNetwork);
             return step;
         }
         match self.resume_calls_online(now) {
@@ -343,6 +341,14 @@ impl ClientStore {
             step.failure = Some(SyncFailure::GroupOutboundNetwork(index));
             return step;
         }
+        if !maintenance {
+            return step;
+        }
+        step.prekey_supply = Some(self.replenish_prekey_online());
+        if matches!(step.prekey_supply, Some(Err(Error::Network(_)))) {
+            step.failure = Some(SyncFailure::PrekeySupplyNetwork);
+            return step;
+        }
         match self.maintain_sessions_online(now) {
             Ok(maintenance) => step.maintenance = Some(maintenance),
             Err(error) => step.failure = Some(SyncFailure::Maintenance(error)),
@@ -376,6 +382,51 @@ mod tests {
         .unwrap()
     }
     #[test]
+    fn queued_messages_precede_inventory_work_and_preserve_its_backoff() {
+        let (dir, fixture, mut alice, mut bob, now) = pair();
+        let (_, peer) = trust(&mut alice, &mut bob);
+        alice
+            .queue_peer_text(peer, [90; 32], "synthetic priority", now, now)
+            .unwrap();
+        let port = fixture.port();
+        drop(fixture);
+        let (router, maintenance) = sigil_server::router_with_maintenance(
+            sigil_server::store::Store::open(&dir.path().join("server.db")).unwrap(),
+            sigil_server::auth::AdminToken::load_or_create(&dir.path().join("admin.token"))
+                .unwrap(),
+        );
+        let router = router.layer(axum::middleware::from_fn(
+            |request: axum::extract::Request, next: axum::middleware::Next| async move {
+                if request.method() == axum::http::Method::GET
+                    && request.uri().path() == "/client/v0/prekeys"
+                {
+                    return axum::http::Response::builder()
+                        .status(429)
+                        .header("retry-after", "120")
+                        .body(axum::body::Body::empty())
+                        .unwrap();
+                }
+                next.run(request).await
+            },
+        ));
+        let _fixture = network::tests::Fixture::maintained_at(router, maintenance, port);
+        let result = alice.sync_due_online().unwrap();
+        let step = result.step.unwrap();
+        assert!(matches!(
+            step.failure,
+            Some(SyncFailure::PrekeySupplyNetwork)
+        ));
+        assert!(step.sends.iter().any(|item| item.result.is_ok()));
+        assert!(result.next_at >= now + 120);
+        assert!(alice.sync_due_online().unwrap().step.is_none());
+        assert!(bob
+            .receive_mailbox_online(now)
+            .unwrap()
+            .iter()
+            .any(|item| matches!(&item.result,
+            Ok(MailboxEvent::Text(text)) if text.text().unwrap().body == "synthetic priority")));
+    }
+    #[test]
     fn unavailable_call_service_does_not_block_queued_messages() {
         let (dir, _fixture, mut alice, mut bob, now) = pair();
         let (_, peer) = trust(&mut alice, &mut bob);
@@ -402,7 +453,9 @@ mod tests {
     fn small_positive_clock_skew_does_not_exceed_server_delivery_lifetime() {
         let (_dir, _fixture, mut alice, mut bob, now) = pair();
         let (_, peer) = trust(&mut alice, &mut bob);
-        alice.queue_peer_text(peer, [93; 32], "synthetic clock skew", now + 30, now + 30).unwrap();
+        alice
+            .queue_peer_text(peer, [93; 32], "synthetic clock skew", now + 30, now + 30)
+            .unwrap();
         let step = alice.sync_step_online(now + 30);
         assert!(step.failure.is_none(), "{:?}", step.issue());
         let incoming = bob.receive_mailbox_online(now + 30).unwrap();

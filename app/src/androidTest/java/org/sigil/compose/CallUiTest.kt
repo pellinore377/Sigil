@@ -32,10 +32,12 @@ class CallUiTest {
         audio.setStreamVolume(AudioManager.STREAM_VOICE_CALL, 0, 0)
         try {
             ui.waitUntil(15000) { ui.onAllNodesWithText("Answer").fetchSemanticsNodes().isNotEmpty() }
+            val answerAt = android.os.SystemClock.elapsedRealtime()
             ui.onNodeWithText("Answer").performClick()
-            val elapsed = SemanticsMatcher("Elapsed call time") { node -> node.config.getOrNull(androidx.compose.ui.semantics.SemanticsProperties.Text)?.any { it.text.matches(Regex("[0-9]+:[0-9]{2}")) } == true }
+            val elapsed = SemanticsMatcher("Elapsed call time") { node -> node.config.getOrNull(androidx.compose.ui.semantics.SemanticsProperties.Text)?.any { Regex("(?:^| · )[0-9]+:[0-9]{2}$").containsMatchIn(it.text) } == true }
             try { ui.waitUntil(45000) { ui.onAllNodes(elapsed).fetchSemanticsNodes().isNotEmpty() } }
             catch (error: androidx.compose.ui.test.ComposeTimeoutException) { throw AssertionError(ui.onRoot().printToString(), error) }
+            android.util.Log.i("SigilCallTiming", "answer to connected ms=${android.os.SystemClock.elapsedRealtime() - answerAt}")
             Thread.sleep(6000)
             val mode = InstrumentationRegistry.getArguments().getString("call_end")
             if (mode == "group") {
@@ -43,7 +45,7 @@ class CallUiTest {
                 ui.waitUntil(60000) {
                     val call = messenger.state.call
                     val other = call?.call?.participants?.singleOrNull { !it.own }
-                    call?.call?.participants?.size == 2 && other?.name == "charlie" && call.connection == "connected" && call.levels.containsKey(other.id)
+                    call?.call?.participants?.size == 2 && other?.name == "charlie" && call.connection == "connected" && call.levels.containsKey(other.id) && File(context.cacheDir, "call-continued").exists()
                 }
                 Thread.sleep(6000)
                 ui.onNodeWithText("Leave").performClick()

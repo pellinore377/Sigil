@@ -43,6 +43,7 @@ enum Command {
         connection: Option<String>,
         endpoint: Option<String>,
         payload: Option<String>,
+        token: Option<Zeroizing<String>>,
         replace: Option<bool>,
     },
     CancelLogin {},
@@ -196,7 +197,10 @@ enum Command {
         invitation: String,
         accept: bool,
     },
-    State {},
+    State {
+        #[serde(default)]
+        calls: bool,
+    },
     MarkRead {
         peer: String,
         request: String,
@@ -258,6 +262,7 @@ enum Command {
     },
     Sync {
         interactive: Option<bool>,
+        call_setup: Option<bool>,
     },
     Publish {},
     Find {
@@ -578,12 +583,14 @@ impl ClientStore {
                 connection,
                 endpoint,
                 payload,
+                token,
                 replace,
             } => self.mobile_push(
                 &action,
                 connection.as_deref(),
                 endpoint.as_deref(),
                 payload.as_deref(),
+                token.as_deref().map(String::as_str),
                 replace.unwrap_or(false),
             ),
             Command::CancelLogin {} => {
@@ -890,7 +897,13 @@ impl ClientStore {
                 }
                 Ok(json!({}))
             }
-            Command::State {} => self.mobile_state(),
+            Command::State { calls } => {
+                let mut value = self.mobile_state()?;
+                if calls && value["phase"] == "connected" {
+                    value["call_state"] = self.mobile_calls()?;
+                }
+                Ok(value)
+            }
             Command::Snooze {
                 peer,
                 request,
@@ -1264,8 +1277,13 @@ impl ClientStore {
                 self.mobile_calls()
             }
             Command::Calls {} => self.mobile_calls(),
-            Command::Sync { interactive } => {
-                let result = if interactive == Some(true) {
+            Command::Sync {
+                interactive,
+                call_setup,
+            } => {
+                let result = if call_setup == Some(true) {
+                    self.sync_call_setup_online()?
+                } else if interactive == Some(true) {
                     self.sync_foreground_online()?
                 } else {
                     self.sync_due_online()?
