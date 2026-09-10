@@ -1651,10 +1651,13 @@ fn body_text(body: &Body) -> Result<String, Error> {
             {
                 sigil_protocol::text::Document::Text(v) => v.body().to_owned(),
                 sigil_protocol::text::Document::Card(c) => {
-                    c.body().map_err(|_| Error::InvalidStore)?
+                    cards::card_display_body(&c)?
                 }
                 sigil_protocol::text::Document::Composition(c) => {
-                    c.body().map_err(|_| Error::InvalidStore)?
+                    c.parts.iter().map(|part| match part {
+                        sigil_protocol::text::composition::Part::Text(text) => Ok(text.body().to_owned()),
+                        sigil_protocol::text::composition::Part::Card(card) => cards::card_display_body(card),
+                    }).collect::<Result<Vec<_>, Error>>()?.join("\n")
                 }
                 _ => "Structured message".into(),
             }
