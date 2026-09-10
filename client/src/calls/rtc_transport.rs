@@ -450,9 +450,7 @@ impl ClientStore {
                     }
                 }
                 Ok(None)
-                | Err(Error::InvalidEvent | Error::Conflict | Error::Unprepared | Error::Limit) => {
-                    ()
-                }
+                | Err(Error::InvalidEvent | Error::Conflict | Error::Unprepared | Error::Limit) => {}
                 Err(error) => return Err(error),
             }
         }
