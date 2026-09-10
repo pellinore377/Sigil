@@ -26,7 +26,7 @@ Completed ciphertext frames are assembled into bounded per-stream queues before 
 
 Synthetic OnePlus measurements: hardware unwrap p95 49→37 ms; combined media send p95 33→28 ms, audio 18 ms; local direct-call answer→connection about four seconds. A local timeline read completed in 73 ms while the command queue was locked. These do not establish real WAN delivery latency or subjective call quality. Two-phone retesting remains necessary.
 
-Android FCM and UnifiedPush adapters use encrypted Rust token/proof/rotation state. Explicit disabled/UnifiedPush choices survive Google token callbacks. Notifications run before bulk maintenance. Real Firebase build configuration and matching server credentials are not supplied. Live FCM, idle-device ringing and provider-choice polish remain pending; normal-priority server wake-ups do not establish prompt Doze delivery.
+Android FCM and UnifiedPush adapters use encrypted Rust token/proof/rotation state. Explicit disabled/UnifiedPush choices survive Google token callbacks. Notifications run before bulk maintenance. Real Firebase build configuration and matching server credentials are not supplied. The current FCM setup requires a build and server using the same target project; a universal prebuilt-client delivery service remains undecided. Live FCM, idle-device ringing and provider-choice polish remain pending; normal-priority server wake-ups do not establish prompt Doze delivery.
 
 ## Validation
 
@@ -41,6 +41,8 @@ Synthetic server benchmark: with 4 CPUs/8 GiB, 50 accounts, 20 devices and concu
 Backend/shared Rust roadmap items #1–#12 are implemented. Server schema 33, native schema 77, attachment cache 5. The container includes the Compose/Wasm setup wizard and current Admin interface, Argon2id passwords, OIDC linking/transitions, account/group administration and separate user-password policy. Advanced maintenance/service controls remain APIs. GHCR `latest` and revision tags support deployment; TCP 8080 serves HTTP and UDP 34780 serves calls. Existing server schema 33 remains compatible with alpha.12. Obtainium/update signing instructions are in the README.
 
 The Admin overview now samples real diagnostics into bounded session-local queue charts, with missing-history/gap/stale states, numeric navigation, storage proportions and maintenance failures. Logical payload sizes are distinguished from database allocation. Browser production builds and shared dashboard tests pass; deployed-browser visual acceptance remains pending.
+
+Admin → Server → Notifications supports Google service-account import/replacement, UnifiedPush contact settings, disabling providers and explicit signing-key rotation. Changes preserve existing egress exceptions and exact revisions; secrets clear after saving. Three desktop UI tests, three browser adapter tests and 14 server push tests pass, along with the production Wasm build. Saving configuration does not establish provider delivery.
 
 Directory-bound first contact requires accepted contact consent; independent fingerprint comparison is optional. Unexpected identities need trusted-device endorsement or explicit replacement approval. Contact QR codes authorize a bound, single-use request. Accidental declines can be reversed by the recipient before expiry; senders cannot override blocks/declines. Account recovery revokes old devices and requires replacement consent. History recovery never restores live identity/session keys or peer approval. Profile sharing is server-visible metadata, separate from encryption identity.
 

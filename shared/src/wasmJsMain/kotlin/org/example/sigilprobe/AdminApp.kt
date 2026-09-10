@@ -399,6 +399,8 @@ private fun ServerSettings(busy: Boolean, run: (suspend () -> Unit) -> Unit) {
         Action("Save server settings", ready, submit)
         HorizontalDivider()
         CallingSettings(busy, run)
+        HorizontalDivider()
+        AdminPush()
     }
 }
 
