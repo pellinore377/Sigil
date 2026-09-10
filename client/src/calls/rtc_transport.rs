@@ -3,28 +3,28 @@ use rtc::{
     media_stream::MediaStreamTrack,
     peer_connection::{
         configuration::{
-            media_engine::MediaEngine, setting_engine::SettingEngine, RTCConfigurationBuilder,
-            RTCIceServer,
+            RTCConfigurationBuilder, RTCIceServer, media_engine::MediaEngine,
+            setting_engine::SettingEngine,
         },
         sdp::RTCSessionDescription,
     },
     rtp_transceiver::{
-        rtp_sender::{RTCRtpCodec, RTCRtpCodingParameters, RTCRtpEncodingParameters, RtpCodecKind},
         RTCRtpTransceiverDirection, RTCRtpTransceiverInit,
+        rtp_sender::{RTCRtpCodec, RTCRtpCodingParameters, RTCRtpEncodingParameters, RtpCodecKind},
     },
 };
 use sigil_calls::{Downstream, Layout, MediaKind, Track};
 use std::{
     sync::{
-        atomic::{AtomicU8, Ordering},
         Arc,
+        atomic::{AtomicU8, Ordering},
     },
     time::Duration,
 };
 use tokio::sync::mpsc;
 use webrtc::{
     media_stream::{
-        track_local::{static_rtp::TrackLocalStaticRTP, TrackLocal},
+        track_local::{TrackLocal, static_rtp::TrackLocalStaticRTP},
         track_remote::{TrackRemote, TrackRemoteEvent},
     },
     peer_connection::{
@@ -34,6 +34,8 @@ use webrtc::{
 };
 #[path = "packet_order.rs"]
 mod packet_order;
+#[path = "ready_frames.rs"]
+mod ready_frames;
 #[cfg(test)]
 #[path = "rtc_tests.rs"]
 mod tests;
@@ -113,6 +115,8 @@ pub struct RtcCall {
     sequence: [u16; 3],
     incoming: std::collections::BTreeMap<u32, packet_order::PacketOrder<Packet>>,
     video_gaps: std::collections::BTreeSet<u32>,
+    ready: ready_frames::ReadyFrames,
+    ready_cursor: usize,
     incoming_cursor: usize,
 }
 impl ClientStore {
@@ -304,6 +308,8 @@ impl ClientStore {
             sequence: [0; 3],
             incoming: Default::default(),
             video_gaps: Default::default(),
+            ready: Default::default(),
+            ready_cursor: 0,
             incoming_cursor: 0,
         })
     }
@@ -425,34 +431,73 @@ impl ClientStore {
                 .find(|s| s.ssrc == packet.ssrc)
                 .ok_or(Error::InvalidStore)?;
             if gap && stream.track.kind != MediaKind::Audio {
+                call.ready.clear(packet.ssrc);
                 call.video_gaps.insert(packet.ssrc);
             }
-            match self.assemble_call_packet(
+            match call
+                .media
+                .assemble(stream.track.sender, stream.track.kind, &packet.payload)
+            {
+                Ok(Some(encrypted)) => {
+                    if call.ready.push(
+                        packet.ssrc,
+                        stream.track.kind == MediaKind::Audio,
+                        encrypted,
+                        clock,
+                    ) && stream.track.kind != MediaKind::Audio
+                    {
+                        call.video_gaps.insert(packet.ssrc);
+                    }
+                }
+                Ok(None)
+                | Err(Error::InvalidEvent | Error::Conflict | Error::Unprepared | Error::Limit) => {
+                    ()
+                }
+                Err(error) => return Err(error),
+            }
+        }
+        for _ in 0..128 {
+            let mut candidate = None;
+            for _ in 0..call.streams.len() {
+                let stream = &call.streams[call.ready_cursor];
+                call.ready_cursor = (call.ready_cursor + 1) % call.streams.len();
+                let (encrypted, dropped) = call.ready.pop(stream.ssrc, clock);
+                if dropped && stream.track.kind != MediaKind::Audio {
+                    call.video_gaps.insert(stream.ssrc);
+                }
+                if let Some(encrypted) = encrypted {
+                    candidate = Some((stream, encrypted));
+                    break;
+                }
+            }
+            let Some((stream, encrypted)) = candidate else {
+                break;
+            };
+            match self.open_call_frame(
                 &mut call.media,
                 stream.track.sender,
                 stream.track.kind,
-                &packet.payload,
+                &encrypted,
                 now,
             ) {
-                Ok(Some(frame)) => {
-                    if call.video_gaps.contains(&packet.ssrc) {
-                        if !frame.keyframe {
-                            continue;
-                        }
-                        call.video_gaps.remove(&packet.ssrc);
+                Ok(frame) => {
+                    if !call.video_gaps.contains(&stream.ssrc) || frame.keyframe {
+                        call.video_gaps.remove(&stream.ssrc);
+                        bytes += frame.data.len();
+                        frames.push(ReceivedFrame {
+                            sender: stream.track.sender,
+                            frame,
+                        });
                     }
-                    bytes += frame.data.len();
-                    frames.push(ReceivedFrame {
-                        sender: stream.track.sender,
-                        frame,
-                    });
                 }
-                Ok(None) | Err(Error::InvalidEvent | Error::Conflict | Error::Unprepared) => (),
+                Err(Error::InvalidEvent | Error::Conflict | Error::Unprepared) => {
+                    if stream.track.kind != MediaKind::Audio {
+                        call.video_gaps.insert(stream.ssrc);
+                    }
+                }
                 Err(error) => return Err(error),
             }
-            if bytes >= 4 * 1024 * 1024
-                || !frames.is_empty() && clock.elapsed() >= Duration::from_millis(8)
-            {
+            if bytes >= 4 * 1024 * 1024 || clock.elapsed() >= Duration::from_millis(8) {
                 break;
             }
         }

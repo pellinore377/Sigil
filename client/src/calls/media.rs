@@ -11,6 +11,18 @@ pub struct Media {
     receivers: BTreeMap<Id, (u64, sigil_calls::Receiver)>,
     assembly: sigil_calls::Assembly,
 }
+impl Media {
+    pub(super) fn assemble(
+        &mut self,
+        sender: Id,
+        kind: sigil_calls::MediaKind,
+        packet: &[u8],
+    ) -> Result<Option<Vec<u8>>, Error> {
+        self.assembly
+            .push(sender, kind, packet, std::time::Instant::now())
+            .map_err(failure)
+    }
+}
 impl ClientStore {
     /// Each new handle demands a fresh receiver challenge, including after a crash.
     pub fn start_call_media(&mut self, id: Id, tracks: Tracks, now: u64) -> Result<Media, Error> {
@@ -240,10 +252,7 @@ impl ClientStore {
         now: u64,
     ) -> Result<Option<sigil_calls::Frame>, Error> {
         // Bounded ciphertext assembly precedes the full authority check on each completed frame.
-        let encrypted = media
-            .assembly
-            .push(sender, kind, packet, std::time::Instant::now())
-            .map_err(failure)?;
+        let encrypted = media.assemble(sender, kind, packet)?;
         encrypted
             .map(|bytes| self.open_call_frame(media, sender, kind, &bytes, now))
             .transpose()
