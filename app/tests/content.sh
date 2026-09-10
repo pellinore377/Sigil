@@ -70,6 +70,7 @@ if [[ ${1:-all} == push ]]; then exit 0; fi
 "$adb" shell run-as "$app_id" rm cache/acceptance-recovery.key
 instrument MessagingUiTest
 instrument RevisionsTest
+instrument CreatePanelTest
 instrument RichTextTest
 instrument TextMotionTest
 instrument HelpTest

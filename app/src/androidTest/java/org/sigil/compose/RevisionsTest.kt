@@ -68,6 +68,7 @@ class RevisionsTest {
             ui.onNodeWithContentDescription("Attachments").performClick()
             ui.onNodeWithContentDescription("Close attachment panel").assertIsDisplayed()
             ui.onNodeWithContentDescription("Create").performClick()
+            ui.onNodeWithText("Search tools").performTextReplacement("Poll")
             ui.onNodeWithContentDescription("Poll").performClick()
             ui.onNodeWithText("Question").performClick().performTextReplacement("Where shall we meet?")
             ui.onNodeWithText("Option 1").performScrollTo().performClick().performTextReplacement("Library")
@@ -176,6 +177,7 @@ class RevisionsTest {
         ui.onNodeWithContentDescription("Attachments").performClick()
         ui.onNodeWithContentDescription("Create").performClick()
         for (kind in listOf("Note", "Checklist", "Poll", "Reminder", "Task", "Timer")) {
+            ui.onNodeWithText("Search tools").performTextReplacement(kind)
             ui.onNodeWithContentDescription(kind).performScrollTo().performClick()
             ui.onAllNodes(isDialog()).assertCountEquals(0)
             val opened = ui.onNodeWithContentDescription("Back to create").fetchSemanticsNode().boundsInWindow.left
