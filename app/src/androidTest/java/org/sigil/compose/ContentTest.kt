@@ -266,6 +266,9 @@ class ContentTest {
             assertEquals("A caption with the recording.", row.getJSONObject("attachment").getString("caption"))
             val message = ChatMessage(row.getString("id"), row.getString("author"), "", true, "", "Delivered", false, emptyList(), emptyList(), null, true, peer = peer, attachment = AttachmentDetails("Synthetic tone.wav", "audio/wav", bytes.size.toLong(), "A caption with the recording."))
             EncryptedMedia(context, message).use { media -> val read = ByteArray(bytes.size); assertEquals(bytes.size, media.readAt(0, read, 0, read.size)); assertArrayEquals(bytes, read); read.fill(0) }
+            val waveform = withContext(Dispatchers.Default) { audioWaveform(context, message, 3000) }
+            assertEquals(64, waveform.size)
+            assertTrue(waveform.toString(), waveform.all { it in .23f.. .25f })
             val audio = context.getSystemService(AudioManager::class.java)
             val volume = audio.getStreamVolume(AudioManager.STREAM_MUSIC)
             audio.setStreamVolume(AudioManager.STREAM_MUSIC, 0, 0)
@@ -280,6 +283,12 @@ class ContentTest {
                 ui.onNodeWithContentDescription("Pause audio message").performClick()
                 ui.onNodeWithTag("audio-seek").performSemanticsAction(SemanticsActions.SetProgress) { it(2200f) }
                 ui.waitUntil(3000) { ui.onAllNodesWithText("0:02 / 0:03").fetchSemanticsNodes().isNotEmpty() }
+                ui.onNodeWithContentDescription("Expand audio").performClick()
+                ui.onNodeWithText("1.5×").performClick()
+                ui.onNodeWithText("0:02 / 0:03").assertIsDisplayed()
+                ui.onAllNodesWithText("A caption with the recording.").onLast().assertIsDisplayed()
+                ui.onNodeWithText("Close").performClick()
+                ui.onNodeWithText("0:02 / 0:03").assertIsDisplayed()
             } finally { ui.runOnUiThread { ui.activity.setContentView(android.widget.FrameLayout(ui.activity)) }; audio.setStreamVolume(AudioManager.STREAM_MUSIC, volume, 0) }
             val forward = mapOf("source" to peer, "peer" to "self", "author" to message.author, "message" to message.id)
             val prepared = native("forward", forward + mapOf("request" to "78".repeat(32), "timestamp" to System.currentTimeMillis() / 1000))
