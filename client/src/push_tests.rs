@@ -521,6 +521,29 @@ fn unifiedpush_uses_persisted_rust_keys_and_ignores_obsolete_connectors() {
 }
 
 #[test]
+fn initial_opt_out_or_missing_endpoint_does_not_delay_first_registration() {
+    for awaiting_endpoint in [false,true] {
+        let (_dir,_fixture,mut client,now,_)=setup();
+        if awaiting_endpoint {
+            let providers=client.connected_client().unwrap().push_providers().unwrap();
+            client.prepare_unified_push(&providers.vapid_public_key.unwrap(),false,now).unwrap();
+        } else {client.disable_push(now).unwrap();}
+        client.push_step(now).unwrap();
+        client.push_step(now).unwrap();
+        let before=client.push_state().unwrap();
+        client.set_fcm_push_token("synthetic-first-token",now+1).unwrap();
+        let registered=client.push_step(now+1).expect("First registration should not inherit a no-op disable cooldown");
+        assert!(matches!(registered,Progress::Updated(s) if s.state==RemoteState::Pending && s.revision==1));
+        assert_eq!(before.remote.unwrap().revision,0);
+        assert!(!before.pending && !before.updating);
+        client.disable_push(now+2).unwrap();
+        assert!(matches!(client.push_step(now+2).unwrap(),Progress::Updated(s) if s.state==RemoteState::Disabled));
+        client.set_fcm_push_token("synthetic-replacement-token",now+3).unwrap();
+        assert!(matches!(client.push_step(now+3),Err(Error::Network(network::Error::Status {code:503,..}))));
+    }
+}
+
+#[test]
 fn push_scheduler_preserves_retry_after_and_new_preferences_survive_old_completion() {
     let (dir, _fixture, mut client, now, limited) = setup();
     client.set_fcm_push_token("synthetic-token", now).unwrap();
@@ -537,6 +560,8 @@ fn push_scheduler_preserves_retry_after_and_new_preferences_survive_old_completi
         })))
     ));
     assert_eq!(failed.next_at, now + 106);
+    let status=client.push_state().unwrap();
+    assert_eq!((status.scheduled_at,status.next_attempt_at,status.failures),(now+7,now+106,1));
     client.set_fcm_push_token("synthetic-new", now + 8).unwrap();
     drop(client);
     let mut client = open(&dir.path().join("client.db"));

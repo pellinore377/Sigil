@@ -90,6 +90,7 @@ impl ClientStore {
         Ok(
             json!({"configured":state.configured, "choice":match state.choice { Choice::Disabled => "disabled", Choice::Fcm => "fcm", Choice::UnifiedPush => "unified_push" },
             "awaiting_endpoint":state.awaiting_endpoint, "pending":state.configured && (state.pending || state.updating),
+            "operation_pending":state.pending, "scheduled_at":state.scheduled_at, "next_attempt_at":state.next_attempt_at, "failures":state.failures,
             "remote":state.remote.map(|s|s.state), "connection":connector.as_ref().map(|c|&c.connection), "vapid":connector.as_ref().map(|c|&c.vapid_key)}),
         )
     }
