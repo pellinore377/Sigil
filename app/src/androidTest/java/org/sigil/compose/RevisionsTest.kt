@@ -28,7 +28,7 @@ class RevisionsTest {
         val bitmap = InstrumentationRegistry.getInstrumentation().uiAutomation.takeScreenshot()
         File(ui.activity.cacheDir, "revision-$name.png").outputStream().use { bitmap.compress(Bitmap.CompressFormat.PNG, 100, it) }; bitmap.recycle()
     }
-    @Test fun mainTabsKeepNavigationAndAppearanceStartsWithTimeline() {
+    @Test fun mainTabsKeepNavigationAndAppearancePagesShareTheHeader() {
         show { SigilApp(NativeCore::palette, NativeCore::analyze, MessengerState(phase = "connected", chats = listOf(chat), profileName = "Alex", address = "@alex:example.com"), { _, _ -> }) }
         val header = ui.onNodeWithTag("main-header").fetchSemanticsNode()
         listOf("Calls", "Settings", "Messages", "Settings").forEach { tab ->
@@ -54,6 +54,8 @@ class RevisionsTest {
         ui.mainClock.advanceTimeBy(80)
         capture("appearance-opening-160")
         ui.mainClock.autoAdvance = true; ui.waitForIdle()
+        ui.onNodeWithText("Colors & backgrounds").performClick()
+        assertEquals(header.id, ui.onNodeWithTag("main-header").fetchSemanticsNode().id)
         ui.onNodeWithText("Dinner still on for tonight?").assertIsDisplayed()
         capture("appearance")
     }
@@ -96,6 +98,7 @@ class RevisionsTest {
         }) }
         ui.onNodeWithContentDescription("Settings").performClick()
         ui.onNodeWithText("Theme, typography, and layout").performScrollTo().performClick()
+        ui.onNodeWithText("Colors & backgrounds").performClick()
         for (accent in listOf("Rose", "Moss", "Lavender")) ui.onNodeWithContentDescription(accent).performScrollTo().performClick()
         assertEquals(3, saved.size)
         for (old in saved.take(2)) {
@@ -104,6 +107,17 @@ class RevisionsTest {
         }
         ui.runOnIdle { state.value = state.value.copy(ui = mapOf("appearance" to saved.last())) }
         ui.onNodeWithContentDescription("Lavender").assertIsSelected()
+    }
+    @Test fun replyGestureShowsItsActionBeforeReleaseAndCanBeCancelled() {
+        val message = ChatMessage("message", "sam", "A short thought.", false, "9:33am", "Read", false, emptyList(), emptyList(), null, true)
+        show { SigilApp(NativeCore::palette, NativeCore::analyze, MessengerState(phase = "connected", chats = listOf(chat), selected = "peer", messages = listOf(message)), { _, _ -> }) }
+        val bubble = ui.onNodeWithText("A short thought.")
+        bubble.performTouchInput { down(center); moveBy(androidx.compose.ui.geometry.Offset(180f, 0f)) }
+        ui.onNodeWithText("Reply", substring = false).assertIsDisplayed()
+        bubble.performTouchInput { cancel() }
+        ui.onNodeWithText("Replying to A short thought.").assertDoesNotExist()
+        bubble.performTouchInput { down(center); moveBy(androidx.compose.ui.geometry.Offset(180f, 0f)); up() }
+        ui.onNodeWithText("Replying to A short thought.").assertIsDisplayed()
     }
     @Test fun conversationReusesTheMainHeaderContainer() {
         val state = mutableStateOf(MessengerState(phase = "connected", chats = listOf(chat)))

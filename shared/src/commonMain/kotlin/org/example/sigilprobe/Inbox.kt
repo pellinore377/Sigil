@@ -121,12 +121,13 @@ internal fun Inbox(state: MessengerState, collection: String, choose: (String) -
 }
 @Composable
 internal fun ChatRow(chat: ChatSummary, selected: Boolean = false, modifier: Modifier = Modifier, open: () -> Unit, hold: () -> Unit = {}) {
-    Row(modifier.fillMaxWidth().combinedClickable(onClick = open, onLongClick = hold).padding(horizontal = 20.dp, vertical = 11.dp), verticalAlignment = Alignment.CenterVertically) {
+    val appearance = LocalAppearance.current
+    Row(modifier.fillMaxWidth().heightIn(min = 64.dp).combinedClickable(onClick = open, onLongClick = hold).padding(horizontal = 20.dp, vertical = if (appearance.compact) 6.dp else 12.dp), verticalAlignment = Alignment.CenterVertically) {
         if (selected) Surface(Modifier.size(48.dp), shape = CircleShape, color = MaterialTheme.colorScheme.primary, contentColor = MaterialTheme.colorScheme.onPrimary) { Box(contentAlignment = Alignment.Center) { Glyph("check", 26) } }
         else PresenceAvatar(chat)
         Column(Modifier.weight(1f).padding(horizontal = 12.dp), verticalArrangement = Arrangement.spacedBy(2.dp)) {
             Text(chat.name, style = MaterialTheme.typography.titleLarge, maxLines = 1, overflow = TextOverflow.Ellipsis)
-            Text(if (chat.typing.isNotEmpty()) "Typing…" else chat.preview, maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            if (appearance.previewLines > 0 || chat.typing.isNotEmpty()) Text(if (chat.typing.isNotEmpty()) "Typing…" else chat.preview, maxLines = appearance.previewLines.coerceAtLeast(1), overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
         Column(horizontalAlignment = Alignment.End, verticalArrangement = Arrangement.spacedBy(4.dp)) {
             if (chat.request == "incoming") RequestChip("Request")

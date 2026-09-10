@@ -96,7 +96,7 @@ internal fun ComposerPanel(draft: TextFieldState, analyze: (String) -> String, e
                 FilledIconButton({ if (voiceReady) command("record_send", mapOf("peer" to peer)) else if (draft.text.isNotBlank() && requestContact != null) requestContact() else if (draft.text.isNotBlank()) send(if (notes) "note::${escapeField(draft.text.toString())};" else draft.text.toString(), notes) else change("Voice") },
                     Modifier.size(48.dp), enabled = if (voiceReady) enabled && voice.phase == "Ready" else if (draft.text.isNotBlank()) enabled || requestContact != null else true, shape = RoundedCornerShape(16.dp),
                     colors = IconButtonDefaults.filledIconButtonColors(containerColor = MaterialTheme.colorScheme.primary, contentColor = MaterialTheme.colorScheme.onPrimary)) {
-                    Glyph(if (voiceReady || draft.text.isNotBlank()) "arrow_upward" else "graphic_eq", 25, if (voiceReady) "Send voice message" else if (draft.text.isNotBlank()) if (requestContact != null) "Send request" else "Send message" else "Voice message")
+                    Glyph(if (voiceReady || draft.text.isNotBlank()) "send" else "graphic_eq", 24, if (voiceReady) "Send voice message" else if (draft.text.isNotBlank()) if (requestContact != null) "Send request" else "Send message" else "Voice message")
                 }
             }
             Box(Modifier.fillMaxWidth().padding(bottom = formInset).then(if (panel.isEmpty() && !keyboardPending && measured > 0.dp) Modifier.windowInsetsBottomHeight(WindowInsets.ime) else Modifier.height(panelHeight))) {
