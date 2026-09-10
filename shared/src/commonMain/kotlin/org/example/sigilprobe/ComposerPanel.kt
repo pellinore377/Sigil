@@ -29,6 +29,7 @@ private val createItems = listOf("Note" to "description", "Checklist" to "checkl
 internal fun ComposerPanel(draft: TextFieldState, analyze: (String) -> String, enabled: Boolean, notes: Boolean, command: Command, peer: String, voice: VoiceState, sent: Long, sentText: String?, requestContact: (() -> Unit)? = null, attachments: List<Transfer> = emptyList(), editingCaption: Boolean = false, attachmentTarget: Map<String, Any?> = mapOf("peer" to peer), send: (String, Boolean) -> Unit) {
     val motionPolicy = LocalMotion.current
     var panel by remember(peer) { mutableStateOf("") }
+    var showSource by remember(peer) { mutableStateOf(false) }
     val builders = rememberSaveableStateHolder()
     var pendingBuilder by remember(peer) { mutableStateOf<Pair<String, String>?>(null) }
     var pendingCaption by remember(peer) { mutableStateOf<String?>(null) }
@@ -117,7 +118,7 @@ internal fun ComposerPanel(draft: TextFieldState, analyze: (String) -> String, e
                         VoiceDraft(voice, Modifier.weight(1f), { command("record_preview", emptyMap()) }) { command("record_seek", mapOf("position" to it)) }
                         Symbol("delete", "Discard voice message") { command("record_cancel", emptyMap()) }
                     }
-                    Composer(draft, analyze, Modifier.fillMaxWidth(), showTools = false, focusRequester = editor, onFocus = { if (panel == "Voice") command("record_stop", emptyMap()); if (panel.isNotEmpty()) keyboardPending = true; panel = "" })
+                    Composer(draft, analyze, Modifier.fillMaxWidth(), showTools = false, focusRequester = editor, namedFormatting = !hasAttachment && !editingCaption, showSource = showSource, onFocus = { if (panel == "Voice") command("record_stop", emptyMap()); if (panel.isNotEmpty()) keyboardPending = true; panel = "" })
                 }
 
                 FilledIconButton({ if (hasAttachment) {
@@ -168,6 +169,7 @@ internal fun ComposerPanel(draft: TextFieldState, analyze: (String) -> String, e
                         "Format" -> Column(Modifier.padding(16.dp)) {
                             CompositionLocalProvider(LocalPageHeader provides false) { Header("Formatting", { change("Attachments") }) }
                             Row { listOf("Bold" to "**", "Italic" to "*", "Strike" to "~~", "Code" to "`").forEach { (name, marker) -> SigilTextButton({ draft.format(marker) }) { Text(name) } } }
+                            Toggle("Show formatting syntax", showSource) { showSource = it }
                             SigilTextButton({ showKeyboard() }) { Text("Continue writing") }
                         }
                     }

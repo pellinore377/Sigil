@@ -34,14 +34,58 @@ class ComposerTest {
     }
     private val field get() = ui.onNodeWithTag("composer")
 
-    private fun open(source: String) {
+    private fun open(source: String, named: Boolean = false) {
         state = TextFieldState(source)
         ui.setContent {
-            CompositionLocalProvider(LocalClipboard provides clipboard) {
+            CompositionLocalProvider(LocalClipboard provides clipboard, LocalEditorAnalysis provides if (named) NativeCore::editor else null) {
                 MaterialTheme { Composer(state, NativeCore::analyze) }
             }
         }
         field.performClick()
+    }
+
+    @Test fun named_modifiers_reenter_without_losing_source_or_unicode() {
+        val source = "underline::bold::שלום; red-blue::café; big1::wide; 👩🏽‍💻"
+        open(source, named = true)
+        assertEquals("שלום café wide 👩🏽‍💻", rendered())
+        field.performTextInputSelection(TextRange(9), relativeToOriginalText = false)
+        field.performKeyInput { pressKey(Key.Backspace) }
+        ui.runOnIdle { assertEquals(source.replace("café", "caf"), state.text.toString()) }
+        assertEquals("שלום caf wide 👩🏽‍💻", rendered())
+        ui.onNodeWithText("Undo").performClick()
+        assertEquals("שלום café wide 👩🏽‍💻", rendered())
+        ui.onNodeWithText("Source").performClick()
+        assertEquals(source, rendered())
+    }
+
+    @Test fun unfinished_supported_modifiers_format_while_unsupported_preview_keeps_its_source() {
+        open("underline::first", named = true)
+        assertEquals("first", rendered())
+        field.performTextInputSelection(TextRange(state.text.length))
+        field.performTextInput("; spoiler::secret; scratch::covered; shake::bold::moving; redact::deleted;")
+        assertEquals("first spoiler::secret; scratch::covered; shake::bold::moving; redact::deleted;", rendered())
+        ui.runOnIdle { assertEquals("underline::first; spoiler::secret; scratch::covered; shake::bold::moving; redact::deleted;", state.text.toString()) }
+    }
+
+    @Test fun nested_strike_and_underline_both_survive_presentation() {
+        open("~~first underline::second;~~", named = true)
+        val results = mutableListOf<TextLayoutResult>()
+        field.performSemanticsAction(SemanticsActions.GetTextLayoutResult) { it(results) }
+        val text = results.single().layoutInput.text
+        assertEquals("first second", text.text)
+        val combined = androidx.compose.ui.text.style.TextDecoration.combine(listOf(androidx.compose.ui.text.style.TextDecoration.Underline, androidx.compose.ui.text.style.TextDecoration.LineThrough))
+        kotlin.test.assertTrue(text.spanStyles.any { it.start == 6 && it.end == 12 && it.item.textDecoration == combined })
+    }
+    @Test fun editing_escaped_punctuation_keeps_the_escape_with_its_character() {
+        open("underline::Hello; \\[REDACTED\\]", named = true)
+        assertEquals("Hello [REDACTED]", rendered())
+        field.performTextInputSelection(TextRange(6), relativeToOriginalText = false)
+        field.performTextInput("X")
+        ui.runOnIdle { assertEquals("underline::Hello; X\\[REDACTED\\]",state.text.toString()) }
+        assertEquals("Hello X[REDACTED]", rendered())
+        field.performTextInputSelection(TextRange(7,8), relativeToOriginalText = false)
+        field.performKeyInput { pressKey(Key.Backspace) }
+        ui.runOnIdle { assertEquals("underline::Hello; XREDACTED\\]",state.text.toString()) }
     }
     private fun rendered(): String {
         val results = mutableListOf<TextLayoutResult>()

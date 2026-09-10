@@ -5,4 +5,5 @@ object NativeCore {
     external fun palette(accent: Int, dark: Boolean): String
     external fun redact(input: String): String
     external fun analyze(input: String): String
+    external fun editor(input: String): String
 }

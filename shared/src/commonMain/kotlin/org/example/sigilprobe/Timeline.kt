@@ -79,6 +79,12 @@ internal fun ConversationPage(chat: ChatSummary, state: MessengerState, draft: T
     val keyboard = LocalSoftwareKeyboardController.current
     val focus = LocalFocusManager.current
     LaunchedEffect(state.sent) { submitted?.let { if (draft.text.toString() == it) draft.clearText(); submitted = null; reply = null; editing = null } }
+    LaunchedEffect(state.editDraft) { state.editDraft?.let { edit ->
+        if (edit.peer == chat.id) state.messages.firstOrNull { it.id == edit.message && it.author == edit.author }?.let {
+            editing = it; reply = null; setThread(null); draft.edit { replace(0, length, edit.source) }
+        }
+        command("edit_source_used", emptyMap())
+    } }
     val atLatest by remember { derivedStateOf { list.firstVisibleItemIndex == 0 && list.firstVisibleItemScrollOffset < 80 } }
     LaunchedEffect(state.typing, state.messages.firstOrNull()?.id) { if (atLatest) list.animateScrollToItem(0) }
     LaunchedEffect(chat.id, page, localQuery, thread?.id, thread?.author) {
@@ -192,8 +198,8 @@ internal fun ConversationPage(chat: ChatSummary, state: MessengerState, draft: T
             }
             if (!threadsOverview) ComposerPanel(draft, analyze, chat.verified && !state.busy, page == "Notes", inputCommand, chat.id, state.voice, state.sent, state.sentText, requestContact = if (!chat.verified && !chat.group && !state.busy && chat.request in listOf("none", "expired")) ({ command("contact_request", mapOf("peer" to chat.id, "action" to "send")) }) else null, attachments = state.transfers.filter { it.peer == chat.id }, editingCaption = editing?.attachment != null, attachmentTarget = mapOf("peer" to chat.id, "reply_author" to reply?.author, "reply_message" to reply?.id, "thread_author" to thread?.author, "thread_message" to thread?.id)) { text, rich ->
                 submitted = draft.text.toString()
-                if (editing != null) command("edit", mapOf("peer" to chat.id, "author" to editing!!.author, "message" to editing!!.id, "text" to text))
-                else command("post", mapOf("peer" to chat.id, "text" to text, "rich" to rich,
+                if (editing != null) command("edit", mapOf("peer" to chat.id, "author" to editing!!.author, "message" to editing!!.id, "text" to text, "formatted" to true))
+                else command("post", mapOf("peer" to chat.id, "text" to text, "rich" to rich, "formatted" to true,
                     "reply_author" to reply?.author, "reply_message" to reply?.id, "thread_author" to thread?.author, "thread_message" to thread?.id))
             }
         }
@@ -207,7 +213,7 @@ internal fun ConversationPage(chat: ChatSummary, state: MessengerState, draft: T
                     "reply" -> respond(message, false)
                     "thread" -> respond(message, true)
                     "copy" -> { clipboard.setText(AnnotatedString(message.text)); selected = null }
-                    "edit" -> { editing = message; draft.edit { replace(0, length, message.attachment?.caption ?: message.text) }; selected = null }
+                    "edit" -> { command("edit_source", mapOf("peer" to chat.id, "author" to message.author, "message" to message.id)); selected = null }
                     "forward" -> { command("forward_picker", mapOf("peer" to chat.id, "author" to message.author, "message" to message.id)); selected = null }
                     else -> {
                         val fields = mutableMapOf<String, Any?>("peer" to chat.id, "author" to message.author, "message" to message.id)

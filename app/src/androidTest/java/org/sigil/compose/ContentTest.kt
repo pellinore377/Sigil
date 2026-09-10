@@ -26,6 +26,40 @@ class ContentTest {
     @get:Rule val ui = createAndroidComposeRule<ComponentActivity>()
     private val context get() = InstrumentationRegistry.getInstrumentation().targetContext
     @Before fun isolated() { Assume.assumeTrue(context.packageName.endsWith(".acceptance")) }
+    @Test fun composerSendsCanonicalFormattingAndRedactsBeforeTheTimeline() = runBlocking {
+        lateinit var messenger: Messenger
+        val store = androidx.lifecycle.ViewModelStore()
+        ui.runOnIdle { messenger = Messenger(context.applicationContext as Application); store.put("composer", messenger) }
+        try {
+            ui.waitUntil(10_000) { messenger.state.phase == "connected" }
+            ui.runOnIdle { messenger.command("open", mapOf("peer" to "self")) }
+            ui.waitUntil(10_000) { messenger.state.selected == "self" && !messenger.state.busy }
+            ui.runOnUiThread { ui.activity.setSigilContent { SigilApp(NativeCore::palette, NativeCore::analyze, messenger.state, messenger::command) } }
+            ui.onNodeWithTag("composer").performClick().performTextInput("underline::Synthetic composer letter; redact::SYNTHETIC_COMPOSER_SECRET;")
+            ui.onNodeWithContentDescription("Send message").performClick()
+            ui.waitUntil(10_000) { messenger.state.sent > 0 }
+            val messages = native("timeline", mapOf("peer" to "self")).getJSONArray("messages")
+            val message = (0 until messages.length()).map { messages.getJSONObject(it) }.single { it.getString("text").startsWith("Synthetic composer letter") }
+            val rich = message.getJSONArray("parts").getJSONObject(0).getJSONObject("rich")
+            assertEquals("Synthetic composer letter [REDACTED]", rich.getString("text"))
+            assertTrue(rich.getJSONArray("spans").toString().contains("underline"))
+            assertFalse(message.toString().contains("SYNTHETIC_COMPOSER_SECRET"))
+            ui.waitUntil(10_000) { messenger.state.messages.any { it.id == message.getString("id") } }
+            ui.runOnIdle { messenger.command("edit_source", mapOf("peer" to "self", "author" to message.getString("author"), "message" to message.getString("id"))) }
+            ui.waitUntil(10_000) { ui.onAllNodesWithContentDescription("Cancel reply or edit").fetchSemanticsNodes().isNotEmpty() }
+            ui.onNodeWithContentDescription("Cancel reply or edit").assertIsDisplayed()
+            ui.onNodeWithTag("composer").performClick()
+            val layouts = mutableListOf<androidx.compose.ui.text.TextLayoutResult>()
+            ui.onNodeWithTag("composer").performSemanticsAction(SemanticsActions.GetTextLayoutResult) { it(layouts) }
+            assertEquals("Synthetic composer letter [REDACTED]", layouts.single().layoutInput.text.text)
+            assertTrue(layouts.single().layoutInput.text.spanStyles.any { it.item.textDecoration == androidx.compose.ui.text.style.TextDecoration.Underline })
+            ui.onNodeWithContentDescription("Send message").performClick()
+            ui.waitUntil(10_000) { messenger.state.sent > 1 }
+            val edited = native("timeline", mapOf("peer" to "self")).getJSONArray("messages")
+            val saved = (0 until edited.length()).map { edited.getJSONObject(it) }.single { it.getString("id") == message.getString("id") }
+            assertEquals(rich.toString(), saved.getJSONArray("parts").getJSONObject(0).getJSONObject("rich").toString())
+        } finally { ui.runOnIdle { store.clear() } }
+    }
     @Test fun locationWorkUsesEncryptedStateAndAnOngoingStopNotification() = runBlocking {
         val now = System.currentTimeMillis() / 1000
         val request = "e7".repeat(32)

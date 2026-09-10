@@ -360,6 +360,55 @@ fn filtered_history_advances_and_search_opens_the_original_message() {
     assert_eq!(root["messages"][0]["text"], "Letter 1");
 }
 #[test]
+fn mobile_formatted_posts_redact_before_queueing_and_keep_legacy_retries_unchanged() {
+    let (_dir, _server, mut alice, _bob, now) = crate::claims::tests::pair();
+    let source = "underline::bold::Hello; red-blue::café; redact::SYNTHETIC_SECRET;";
+    let post = json!({"command":"post","peer":"self","request":"67".repeat(32),"timestamp":now,"text":source,"formatted":true});
+    run(&mut alice, post.clone());
+    run(&mut alice, post);
+    let timeline = run(&mut alice,json!({"command":"timeline","peer":"self"}));
+    assert_eq!(timeline["messages"].as_array().unwrap().len(),1);
+    let message = &timeline["messages"][0];
+    let rich = &message["parts"][0]["rich"];
+    assert_eq!(rich["text"],"Hello café [REDACTED]");
+    assert!(!timeline.to_string().contains("SYNTHETIC_SECRET"));
+    let reference = reference(message["author"].as_str().unwrap(),message["id"].as_str().unwrap()).unwrap();
+    let conversation = alice.mobile_conversation("self").unwrap();
+    let Some(Body::Rich(bytes)) = alice.conversation_message(conversation,reference,now).unwrap().body else { panic!() };
+    assert!(!String::from_utf8_lossy(&bytes).contains("SYNTHETIC_SECRET"));
+    let doc = sigil_protocol::text::Document::from_bytes(&bytes).unwrap();
+    let sigil_protocol::text::Document::Text(text) = doc else { panic!() };
+    assert!(text.spans().iter().any(|span| span.effects.bold && span.effects.underline));
+    let edit = run(&mut alice,json!({"command":"edit_source","peer":"self","author":message["author"],"message":message["id"]}));
+    let restored = sigil_protocol::text::parse(edit["edit_source"].as_str().unwrap(),Default::default()).unwrap();
+    assert!(restored == text);
+    assert!(!edit.to_string().contains("SYNTHETIC_SECRET"));
+    run(&mut alice,json!({"command":"edit","peer":"self","request":"68".repeat(32),"timestamp":now+1,"author":message["author"],"message":message["id"],"text":"italic::Revised; redact::SECOND_SECRET;","formatted":true}));
+    let edited = run(&mut alice,json!({"command":"timeline","peer":"self"}));
+    assert_eq!(edited["messages"][0]["parts"][0]["rich"]["text"],"Revised [REDACTED]");
+    assert!(!edited.to_string().contains("SECOND_SECRET"));
+    let legacy = json!({"command":"post","peer":"self","request":"69".repeat(32),"timestamp":now+2,"text":"underline::literal;"});
+    run(&mut alice,legacy.clone());
+    run(&mut alice,legacy);
+    let timeline = run(&mut alice,json!({"command":"timeline","peer":"self"}));
+    assert_eq!(timeline["messages"][0]["text"],"underline::literal;");
+    assert!(timeline["messages"][0]["parts"].as_array().unwrap().is_empty());
+    let legacy = &timeline["messages"][0];
+    run(&mut alice,json!({"command":"edit","peer":"self","request":"6a".repeat(32),"timestamp":now+3,"author":legacy["author"],"message":legacy["id"],"text":"underline::literal;","formatted":true}));
+    let unchanged = run(&mut alice,json!({"command":"timeline","peer":"self"}));
+    assert!(unchanged["messages"][0]["parts"].as_array().unwrap().is_empty());
+    let wrong_author: Value = serde_json::from_str(&alice.mobile_command(&json!({"command":"edit_source","peer":"self","author":"99".repeat(32),"message":message["id"]}).to_string())).unwrap();
+    assert_eq!(wrong_author["ok"],false);
+    run(&mut alice,json!({"command":"delete","peer":"self","request":"6c".repeat(32),"timestamp":now+4,"author":message["author"],"message":message["id"]}));
+    let removed: Value = serde_json::from_str(&alice.mobile_command(&json!({"command":"edit_source","peer":"self","author":message["author"],"message":message["id"]}).to_string())).unwrap();
+    assert_eq!(removed["ok"],false);
+    alice.mobile_action("self",&"6d".repeat(32),now,Action::Post{body:Body::Text("Synthetic view-once text".into()),reply:None,thread:None,expires_at:None,view_once:true}).unwrap();
+    let once: Value = serde_json::from_str(&alice.mobile_command(&json!({"command":"edit_source","peer":"self","author":message["author"],"message":"6d".repeat(32)}).to_string())).unwrap();
+    assert_eq!(once["ok"],false);
+    assert!(matches!(inline_body("A plain letter".into()).unwrap(),Body::Text(_)));
+    assert!(matches!(inline_body(r"\*literal\*".into()).unwrap(),Body::Rich(_)));
+}
+#[test]
 fn mobile_preserves_canonical_formatting_without_reparsing_or_losing_unicode_ranges() {
     let (_dir, _server, mut alice, _bob, now) = crate::claims::tests::pair();
     let text = sigil_protocol::text::parse(

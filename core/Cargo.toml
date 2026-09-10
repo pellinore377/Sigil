@@ -9,6 +9,7 @@ crate-type = ["cdylib", "rlib"]
 [dependencies]
 sigil-text = { path = "../text" }
 pulldown-cmark = { version = "=0.13.4", default-features = false }
+unicode-segmentation = { version = "=1.13.3", default-features = false }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 jni = "=0.21.1"

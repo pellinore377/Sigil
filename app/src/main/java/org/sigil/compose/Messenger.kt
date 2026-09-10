@@ -185,6 +185,7 @@ class Messenger(application: Application) : AndroidViewModel(application) {
         if (NativeSignOut.pending(getApplication())) return
         if (name.startsWith("call_")) { calls.command(name, fields + ("name" to (fields["peer"] as? String)?.let { peer -> state.chats.find { it.id == peer }?.name })); return }
         when (name) {
+            "edit_source_used" -> { state = state.copy(editDraft = null); return }
             "recovery_account_open" -> { recoveringAccount = true; return }
             "recover_account" -> recoveringAccount = false
             "recovery_restore_open" -> { restoringRecovery = true; return }
@@ -314,6 +315,7 @@ class Messenger(application: Application) : AndroidViewModel(application) {
                     result.optJSONObject("forward_file")?.let { files.forward(fields, it) }
                     if (name == "oidc_account") nextAccess = 0
                     result.optional("open")?.let { state = state.copy(selected = it); groupCreate = null; pages = 1 }
+                    if (name == "edit_source" && state.selected == fields["peer"]) state = state.copy(editDraft = EditDraft(fields["peer"] as String, fields["author"] as String, fields["message"] as String, result.getString("edit_source")))
                     if (name in listOf("profile", "set_profile")) state = state.copy(profileName = result.getString("display_name"), profileRevision = result.getLong("revision"))
                     if (name in listOf("photo_publish", "photo_retry", "photo_cancel")) photoRevision++
                     if (name in listOf("devices", "revoke_device")) {
