@@ -230,6 +230,10 @@ impl ClientStore {
                 value["kind"] = json!("recipe");
                 value["recipe"] = recipe.presentation(None).map_err(|_| Error::InvalidStore)?;
             }
+            Construct::Data(sigil_protocol::text::data::Data::Chart(chart)) => {
+                value["kind"] = json!("chart");
+                value["chart"] = chart.presentation().map_err(|_| Error::InvalidStore)?;
+            }
             _ => {}
         }
         Ok(value)
