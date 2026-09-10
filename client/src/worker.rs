@@ -80,6 +80,41 @@ pub struct SyncStep {
     /// A failed stage can have partial durable effects; retry uses its journals.
     pub failure: Option<SyncFailure>,
 }
+impl SyncStep {
+    pub(crate) fn issue(&self) -> Option<(&'static str, &Error)> {
+        if let Some(error) = schedule::failure_error(self) {
+            return Some((self.failure.as_ref()?.stage(), error));
+        }
+        macro_rules! lane {
+            ($items:expr, $stage:literal) => {
+                if let Some(error) = $items
+                    .iter()
+                    .filter_map(|item| item.result.as_ref().err())
+                    .find(|error| !matches!(error, Error::Obsolete))
+                {
+                    return Some(($stage, error));
+                }
+            };
+        }
+        lane!(self.incoming, "receiving messages");
+        lane!(self.prekeys, "publishing keys");
+        if let Some(Err(error)) = &self.prekey_supply {
+            if !matches!(error, Error::Obsolete) {
+                return Some(("publishing keys", error));
+            }
+        }
+        lane!(self.calls, "updating calls");
+        lane!(self.invitations, "updating invitations");
+        lane!(self.groups, "updating groups");
+        lane!(self.history, "sharing history");
+        lane!(self.retry_controls, "sending retry controls");
+        lane!(self.retries, "recovering sessions");
+        lane!(self.sends, "starting conversations");
+        lane!(self.outbound, "sending messages");
+        lane!(self.group_outbound, "sending group messages");
+        None
+    }
+}
 impl ClientStore {
     /// A platform worker invokes this for the enabled backend services.
     /// Each network lane preserves its own durable deadline and error report.
@@ -161,11 +196,16 @@ impl ClientStore {
                 return step;
             }
         }
-        if let Some(index) = step
-            .calls
-            .iter()
-            .position(|item| matches!(item.result, Err(Error::Network(_))))
-        {
+        if let Some(index) = step.calls.iter().position(|item| match &item.result {
+            // A rejected call must not stop unrelated messaging. Preserve
+            // global backoff for authentication, throttling and outages.
+            Err(Error::Network(network::Error::Status {
+                code: 400 | 403 | 404 | 409 | 410 | 422,
+                retry_after_seconds: None,
+            })) => false,
+            Err(Error::Network(_)) => true,
+            _ => false,
+        }) {
             step.failure = Some(SyncFailure::CallNetwork(index));
             return step;
         }
@@ -336,6 +376,76 @@ mod tests {
         .unwrap()
     }
     #[test]
+    fn unavailable_call_service_does_not_block_queued_messages() {
+        let (dir, _fixture, mut alice, mut bob, now) = pair();
+        let (_, peer) = trust(&mut alice, &mut bob);
+        alice.create_direct_call([91; 32], now, 3600).unwrap();
+        alice.invite_to_call([91; 32], peer, now).unwrap();
+        alice
+            .queue_peer_text(peer, [92; 32], "synthetic queued message", now, now)
+            .unwrap();
+        drop(alice);
+        let mut alice = reopen(&dir.path().join("alice.db"));
+        let step = alice.sync_step_online(now);
+        assert!(step.calls.iter().any(|attempt| matches!(
+            attempt.result,
+            Err(Error::Network(network::Error::Status { code: 404, .. }))
+        )));
+        assert!(step.failure.is_none());
+        assert_eq!(step.issue().map(|(stage, _)| stage), Some("updating calls"));
+        assert!(step.sends.iter().any(|attempt| attempt.result.is_ok()));
+        let incoming = bob.receive_mailbox_online(now).unwrap();
+        assert!(incoming.iter().any(|item| matches!(&item.result,
+            Ok(MailboxEvent::Text(text)) if text.text().unwrap().body == "synthetic queued message")));
+    }
+    #[test]
+    fn call_authentication_and_retry_after_still_defer_network_work() {
+        for (status, retry) in [(401, None), (429, Some(120)), (404, Some(120))] {
+            let (dir, fixture, mut alice, mut bob, now) = pair();
+            let (_, peer) = trust(&mut alice, &mut bob);
+            alice.create_direct_call([91; 32], now, 3600).unwrap();
+            alice
+                .queue_peer_text(peer, [92; 32], "synthetic queued message", now, now)
+                .unwrap();
+            let port = fixture.port();
+            drop(fixture);
+            let (router, maintenance) = sigil_server::router_with_maintenance(
+                sigil_server::store::Store::open(&dir.path().join("server.db")).unwrap(),
+                sigil_server::auth::AdminToken::load_or_create(&dir.path().join("admin.token"))
+                    .unwrap(),
+            );
+            let router = router.layer(axum::middleware::from_fn(
+                move |request: axum::extract::Request, next: axum::middleware::Next| async move {
+                    if request.uri().path() == "/client/v0/calls" {
+                        let mut response = axum::http::Response::builder().status(status);
+                        if let Some(seconds) = retry {
+                            response = response.header("retry-after", seconds.to_string());
+                        }
+                        return response.body(axum::body::Body::empty()).unwrap();
+                    }
+                    next.run(request).await
+                },
+            ));
+            let _fixture = network::tests::Fixture::maintained_at(router, maintenance, port);
+            let result = alice.sync_due_online().unwrap();
+            let step = result.step.unwrap();
+            assert!(matches!(step.failure, Some(SyncFailure::CallNetwork(_))));
+            assert!(step.sends.is_empty() && step.outbound.is_empty());
+            if let Some(seconds) = retry {
+                assert!(result.next_at >= now + seconds);
+            }
+            assert!(alice.sync_due_online().unwrap().step.is_none());
+            assert_eq!(
+                alice
+                    .db
+                    .query_row("SELECT count(*) FROM send_intents", [], |r| r
+                        .get::<_, i64>(0))
+                    .unwrap(),
+                1
+            );
+        }
+    }
+    #[test]
     fn interrupted_ack_preserves_received_result_and_resumes_after_restart() {
         let (dir, _fixture, mut alice, mut bob, now) = pair();
         let (_, b) = trust(&mut alice, &mut bob);
@@ -374,6 +484,10 @@ mod tests {
         let step = bob.sync_step_online(now);
         assert!(step.failure.is_none());
         assert!(step.incoming[0].result.is_err());
+        assert_eq!(
+            step.issue().map(|(stage, _)| stage),
+            Some("receiving messages")
+        );
         assert_eq!(step.acknowledged, 0);
         assert_eq!(
             bob.db

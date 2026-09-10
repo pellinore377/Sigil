@@ -408,7 +408,7 @@ fn error_message(error: &Error) -> String {
             "Access denied. Check the request status and account permissions."
         }
         Error::Network(network::Error::Status { code: 404, .. }) => {
-            "Not found. Check the address and that account discovery is enabled."
+            "The requested item or service wasn't found (HTTP 404)."
         }
         Error::Network(network::Error::Status { code: 429, .. }) => {
             "The server asked us to wait. Queued messages will retry."
@@ -1275,20 +1275,8 @@ impl ClientStore {
                     .err()
                     .map(|error| format!("Contact sync: {}", error_message(&error)));
                 if let Some(step) = &result.step {
-                    if let Some(error) = schedule::failure_error(step) {
-                        issue = Some(format!(
-                            "Sync: {} — {}",
-                            step.failure
-                                .as_ref()
-                                .map(SyncFailure::stage)
-                                .unwrap_or("working"),
-                            error_message(error)
-                        ));
-                    }
-                    if step.incoming.iter().any(|v| v.result.is_err()) {
-                        issue = Some(
-                            "A received message needs device verification or recovery.".into(),
-                        );
+                    if let Some((stage, error)) = step.issue() {
+                        issue = Some(format!("Sync: {} — {}", stage, error_message(error)));
                     }
                 }
                 if let Some(contact_issue) = contact_issue {
