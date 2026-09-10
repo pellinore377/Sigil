@@ -125,20 +125,41 @@ internal fun ConversationPage(chat: ChatSummary, state: MessengerState, draft: T
                     var drag by remember { mutableFloatStateOf(0f) }
                     val offset by animateFloatAsState(drag, tween(90), label = "Reply swipe")
                     val density = LocalDensity.current
+                    val haptic = LocalHapticFeedback.current
+                    val threshold = with(density) { 52.dp.toPx() }
                     Column(Modifier.fillMaxWidth().animateItem().padding(top = if (grouped) 3.dp else 12.dp)) {
                         if (showSeparator(message, older)) Text(message.separator.ifEmpty { message.time }, Modifier.align(Alignment.CenterHorizontally).padding(top = 6.dp, bottom = 14.dp), style = MaterialTheme.typography.labelMedium, color = scheme.onSurfaceVariant)
                         if (chat.group && !message.mine && !grouped) Row(Modifier.padding(bottom = 4.dp), verticalAlignment = Alignment.CenterVertically) { val name = state.people[message.author] ?: "Former member"; Avatar(name, 20, message.author); Text(name, Modifier.padding(start = 6.dp), style = MaterialTheme.typography.bodySmall) }
                         Row(Modifier.fillMaxWidth().combinedClickable(interactionSource = remember { androidx.compose.foundation.interaction.MutableInteractionSource() }, indication = null, onClick = { details = message.author to message.id }, onLongClick = { selected = message to bounds })
                             .pointerInput(message.id, message.mine) { detectHorizontalDragGestures(onDragEnd = {
-                                if (abs(drag) > with(density) { 52.dp.toPx() }) respond(message, swipeAction(message.mine, drag) == "thread")
+                                if (abs(drag) >= threshold) respond(message, swipeAction(message.mine, drag) == "thread")
                                 drag = 0f
-                            }, onDragCancel = { drag = 0f }) { change, amount -> change.consume(); val limit = with(density) { 110.dp.toPx() }; drag = (drag + amount).coerceIn(-limit, limit) } },
+                            }, onDragCancel = { drag = 0f }) { change, amount ->
+                                change.consume()
+                                val before = drag
+                                val limit = with(density) { 110.dp.toPx() }
+                                drag = (drag + amount).coerceIn(-limit, limit)
+                                if (abs(before) < threshold && abs(drag) >= threshold) haptic.performHapticFeedback(androidx.compose.ui.hapticfeedback.HapticFeedbackType.LongPress)
+                            } },
                             horizontalArrangement = if (message.mine) Arrangement.End else Arrangement.Start) {
                             Column(Modifier.widthIn(max = 330.dp).fillMaxWidth(.88f), horizontalAlignment = if (message.mine) Alignment.End else Alignment.Start) {
                                 val lifted = selected?.first?.let { it.id == message.id && it.author == message.author } == true
-                                Box(Modifier.graphicsLayer { translationX = offset; alpha = if (lifted) 0f else 1f }.then(if (lifted) Modifier.clearAndSetSemantics { } else Modifier).onGloballyPositioned { bounds = it.boundsInWindow(); if (lifted) returnBounds = bounds }
+                                Box(Modifier.fillMaxWidth(), contentAlignment = if (message.mine) Alignment.CenterEnd else Alignment.CenterStart) {
+                                  if (abs(offset) > 1f && !lifted) {
+                                    val action = swipeAction(message.mine, offset)
+                                    val armed = abs(drag) >= threshold
+                                    Column(Modifier.align(if (offset > 0) Alignment.CenterStart else Alignment.CenterEnd).width(96.dp)
+                                        .graphicsLayer { alpha = (abs(offset) / threshold).coerceIn(0f, 1f) }, horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                                        Surface(shape = RoundedCornerShape(12.dp), color = if (armed) scheme.primary else scheme.surfaceVariant, contentColor = if (armed) scheme.onPrimary else scheme.onSurfaceVariant) {
+                                            Box(Modifier.padding(8.dp)) { Glyph(if (action == "reply") "reply" else "forum", 24) }
+                                        }
+                                        Text(if (action == "reply") "Reply" else "Reply in thread", style = MaterialTheme.typography.labelSmall, textAlign = androidx.compose.ui.text.style.TextAlign.Center, color = scheme.onBackground)
+                                    }
+                                  }
+                                  Box(Modifier.graphicsLayer { translationX = offset; alpha = if (lifted) 0f else 1f }.then(if (lifted) Modifier.clearAndSetSemantics { } else Modifier).onGloballyPositioned { bounds = it.boundsInWindow(); if (lifted) returnBounds = bounds }
                                     .pointerInput(message.id) { awaitPointerEventScope { while (true) { val event = awaitPointerEvent(); if (event.type == PointerEventType.Press && event.buttons.isSecondaryPressed) selected = message to bounds } } }) {
                                     MessageBubble(message, grouped, newer?.author == message.author, analyze, if (chat.verified && !state.busy) command else null)
+                                  }
                                 }
                                 MessageDetails(message, details == (message.author to message.id), !state.historical && page.isEmpty() && thread == null && showsReceipt(index, messages), chat, state.people)
                             }

@@ -38,6 +38,7 @@ class LayoutTest {
         ui.onNodeWithText("Media, downloads, and cache").assertExists()
         capture("large-settings")
         ui.onNodeWithText("Theme, typography, and layout").performScrollTo().performClick()
+        ui.onNodeWithText("Colors & backgrounds").performClick()
         ui.onNodeWithText("Custom color").performScrollTo().performClick()
         ui.onNodeWithText("Apply color").assertIsDisplayed()
         capture("large-color")
@@ -54,6 +55,7 @@ class LayoutTest {
             assertFalse(bars.isAppearanceLightStatusBars)
             assertFalse(bars.isAppearanceLightNavigationBars)
         }
+        ui.onNodeWithContentDescription("Back").performClick()
         ui.onNodeWithText("Reset app appearance").performScrollTo().assertIsDisplayed()
         capture("large-appearance-dark")
     }

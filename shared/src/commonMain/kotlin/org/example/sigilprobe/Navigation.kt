@@ -116,6 +116,7 @@ fun SigilApp(palette: (Int, Boolean) -> String, analyze: (String) -> String, sta
             backActions.isNotEmpty() -> backActions.last()()
             selected.isNotEmpty() -> selected = emptySet()
             conversationPage.isNotEmpty() -> conversationPage = ""
+            page.startsWith("appearance-") -> navigate("appearance")
             page in listOf("appearance", "device", "profile", "privacy", "notifications", "storage", "about") -> navigate("settings")
             chat != null -> { command("close", emptyMap()); conversationPage = "" }
             page == "history" -> navigate("storage")
@@ -173,7 +174,7 @@ fun SigilApp(palette: (Int, Boolean) -> String, analyze: (String) -> String, sta
                         Box(Modifier.weight(1f).fillMaxWidth().background(MaterialTheme.colorScheme.background)) {
                             if (chat != null) {
                                 LocalWallpaper.current(chat.id, Modifier.matchParentSize())
-                                if (chatTheme.gradient) Spacer(Modifier.matchParentSize().background(Brush.verticalGradient(listOf(MaterialTheme.colorScheme.background.copy(alpha = .7f), MaterialTheme.colorScheme.primaryContainer.copy(alpha = .7f)))))
+                                if (chatTheme.gradient ?: appearance.gradient) Spacer(Modifier.matchParentSize().background(Brush.verticalGradient(listOf(MaterialTheme.colorScheme.background.copy(alpha = .7f), MaterialTheme.colorScheme.primaryContainer.copy(alpha = .7f)))))
                             }
                             Surface(Modifier.align(Alignment.BottomCenter).fillMaxWidth().height(footerHeight + navigationInset).offset(y = footerOffset + navigationInset).zIndex(2f).testTag("footer-surface"), shape = RoundedCornerShape(topStart = 24.dp, topEnd = 24.dp)) {}
                         AnimatedContent(Screen(destination, page, chat, conversationPage, state, newTitle, thread?.id), Modifier.fillMaxSize(), contentKey = { it.destination }, transitionSpec = {
@@ -192,13 +193,13 @@ fun SigilApp(palette: (Int, Boolean) -> String, analyze: (String) -> String, sta
                                 Box(Modifier.fillMaxSize().then(if (target != "conversation") Modifier.padding(top = headerHeight, bottom = if (target == "home" && page in MainTabs) 64.dp else 0.dp) else Modifier)) {
                             when (target) {
                                 "call" -> state.call?.let { CallPage(it, state.chats, dispatch, state.profileAvatar, callPanel) { callPanel = it } }
-                                "conversation" -> chat?.let { ConversationPage(it, state, drafts.getOrPut(it.id) { TextFieldState(it.draft) }, analyze, dispatch, detail, chatTheme.gradient, thread, { thread = it }) }
+                                "conversation" -> chat?.let { ConversationPage(it, state, drafts.getOrPut(it.id) { TextFieldState(it.draft) }, analyze, dispatch, detail, chatTheme.gradient ?: appearance.gradient, thread, { thread = it }) }
                                 "theme" -> chat?.let { current -> ChatAppearance(chatTheme, analyze, current.id, command, { goingBack = true; conversationPage = "" }) { chatTheme = it; pendingChatTheme = current.id to it.encode(); write("chat.${current.id}", it.encode()); command("organize", mapOf("peer" to current.id, "value" to mapOf("UiSetting" to mapOf("key" to "chat_theme", "value" to it.encode())))) } }
                                 "chat-settings" -> chat?.let { ConversationSettings(it, state.busy, dispatch, back) }
-                                "appearance" -> AppearancePage(appearance, analyze, dynamicAccent != null, back, state.collectionsEnabled,
+                                "appearance", "appearance-colors", "appearance-type", "appearance-layout" -> AppearancePage(appearance, analyze, dynamicAccent != null, back, state.collectionsEnabled,
                                     { enabled -> command("organize", mapOf("peer" to null, "value" to mapOf("CollectionsEnabled" to enabled))) },
                                     sharedRead("collection_labels") != "false", { sharedWrite("collection_labels", it.toString()) }, followAccount,
-                                    { if (!it) write("device_appearance", appearance.encode()); followAccount = it; write("follow_account_theme", it.toString()) }) { appearance = it; if (followAccount) { pendingAppearance = it.encode(); sharedWrite("appearance", it.encode()) } else write("device_appearance", it.encode()) }
+                                    { if (!it) write("device_appearance", appearance.encode()); followAccount = it; write("follow_account_theme", it.toString()) }, target, navigate) { appearance = it; if (followAccount) { pendingAppearance = it.encode(); sharedWrite("appearance", it.encode()) } else write("device_appearance", it.encode()) }
                                 "device", "profile", "privacy", "notifications", "storage", "about" -> PersonalPage(target, state, dispatch, back)
                                 "history" -> SavedHistoryPage(state, command, back, open)
                                 "saved-conversation" -> SavedConversationPage(state, analyze, command, back)
@@ -248,7 +249,7 @@ fun SigilApp(palette: (Int, Boolean) -> String, analyze: (String) -> String, sta
                                             else -> Row(Modifier.fillMaxSize().padding(horizontal = 12.dp), verticalAlignment = Alignment.CenterVertically) {
                                                 Symbol("chevron_left", "Back", back)
                                                 Text(when (screen.destination) {
-                                                    "appearance" -> "Appearance"; "theme" -> "Conversation appearance"; "chat-settings" -> "Conversation settings"
+                                                    "appearance", "appearance-colors", "appearance-type", "appearance-layout" -> appearanceTitle(screen.destination); "theme" -> "Conversation appearance"; "chat-settings" -> "Conversation settings"
                                                     "device" -> "Devices"; "profile" -> "Profile"; "privacy" -> "Privacy"; "notifications" -> "Notifications"
                                                     "storage" -> "Data and storage"; "history" -> "Saved history"; "saved-conversation" -> "Saved conversation"
                                                     "new" -> screen.title; else -> "About"
