@@ -216,6 +216,8 @@ class Messenger(application: Application) : AndroidViewModel(application) {
             "record_cancel" -> { voice.discard(); return }
             "record_send" -> { voice.send(fields["caption"] as? String ?: ""); return }
             "record_preview" -> { voice.playPreview(); return }
+            "record_pause" -> { voice.pauseRecording(); return }
+            "record_seek" -> { voice.seek((fields["position"] as Number).toLong()); return }
             "attachment_pick" -> { picker = fields.filterKeys { it != "kind" } to (fields["kind"] as String); return }
             "delete_conversation" -> {
                 scope.launch { serialized(true) {

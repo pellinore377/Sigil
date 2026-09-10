@@ -21,7 +21,8 @@ data class AttachmentDetails(val name: String, val mediaType: String, val bytes:
 data class CollectionItem(val id: String, val name: String, val icon: String = "folder")
 data class GroupInvitation(val id: String, val peer: String, val group: String)
 data class Transfer(val request: String, val peer: String, val name: String, val bytes: Long, val phase: String, val draft: Boolean = false, val mediaType: String = "application/octet-stream")
-data class VoiceState(val phase: String = "Idle", val peer: String = "", val seconds: Long = 0, val levels: List<Float> = emptyList(), val playing: Boolean = false)
+data class VoiceState(val phase: String = "Idle", val peer: String = "", val seconds: Long = 0, val levels: List<Float> = emptyList(), val playing: Boolean = false,
+    val paused: Boolean = false, val position: Long = 0, val duration: Long = 0)
 data class CallParticipant(val id: String, val peer: String, val name: String, val own: Boolean, val verified: Boolean, val audio: Boolean, val camera: Boolean, val screen: Boolean, val fingerprint: String = "")
 data class CallSummary(val id: String, val phase: String, val direct: Boolean, val created: Long, val participants: List<CallParticipant>, val canInvite: Boolean = false, val name: String = "", val outgoing: Boolean = false, val time: String = "")
 data class ActiveCall(val call: CallSummary, val name: String, val connection: String = "connecting", val seconds: Long = 0, val muted: Boolean = false, val speaker: Boolean = false, val camera: Boolean = false, val screen: Boolean = false, val levels: Map<String, Float> = emptyMap())

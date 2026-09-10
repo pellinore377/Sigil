@@ -153,7 +153,7 @@ internal fun SignIn(state: MessengerState, command: (String, Map<String, Any?>) 
     }
 }
 @Composable
-internal fun MessageText(source: String, analyze: (String) -> String) {
+fun MessageText(source: String, analyze: (String) -> String) {
     val codeFont = LocalCodeFont.current
     val text = remember(source, codeFont) {
         val formats = spans(analyze(source))

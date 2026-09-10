@@ -63,7 +63,7 @@ internal fun ComposerPanel(draft: TextFieldState, analyze: (String) -> String, e
         when (panel) {
             "Create", "Format" -> change("Attachments")
             in createItems.map { it.first } -> change("Create")
-            else -> { if (panel == "Voice") command("record_cancel", emptyMap()); change("") }
+            else -> { if (panel == "Voice") command("record_stop", emptyMap()); change("") }
         }
     }
     LaunchedEffect(draft, peer) {
@@ -113,7 +113,7 @@ internal fun ComposerPanel(draft: TextFieldState, analyze: (String) -> String, e
                         }
                     }
                     if (voiceReady) Row(verticalAlignment = Alignment.CenterVertically) {
-                        VoiceDraft(voice, Modifier.weight(1f)) { command("record_preview", emptyMap()) }
+                        VoiceDraft(voice, Modifier.weight(1f), { command("record_preview", emptyMap()) }) { command("record_seek", mapOf("position" to it)) }
                         Symbol("delete", "Discard voice message") { command("record_cancel", emptyMap()) }
                     }
                     Composer(draft, analyze, Modifier.fillMaxWidth(), showTools = false, focusRequester = editor, onFocus = { if (panel == "Voice") command("record_stop", emptyMap()); if (panel.isNotEmpty()) keyboardPending = true; panel = "" })
@@ -223,13 +223,14 @@ private fun StructuredBuilder(kind: String, enabled: Boolean, back: () -> Unit, 
 private fun VoicePanel(command: Command, peer: String, voice: VoiceState, close: () -> Unit) {
     val recording = voice.peer == peer && voice.phase == "Recording"
     Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(24.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(20.dp, Alignment.CenterVertically)) {
-        Text(if (recording) "Recording" else "Voice message", style = MaterialTheme.typography.titleMedium)
+        Text(if (recording) if (voice.paused) "Paused" else "Recording" else "Voice message", style = MaterialTheme.typography.titleMedium)
         if (recording) {
-            VoiceWaveform(voice.levels, Modifier.fillMaxWidth().height(48.dp))
+            AudioWaveform(voice.levels, Modifier.fillMaxWidth().height(48.dp))
             Text("${voice.seconds / 60}:${(voice.seconds % 60).toString().padStart(2, '0')}", style = MaterialTheme.typography.titleMedium, fontFamily = LocalCodeFont.current)
         } else Text("Listen before you send.", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
         FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.CenterHorizontally), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            SigilTextButton(close) { Text("Cancel") }
+            SigilTextButton(close) { Text(if (recording) "Discard" else "Cancel") }
+            if (recording) SigilIconButton({ command("record_pause", emptyMap()) }) { Glyph(if (voice.paused) "mic" else "pause", 24, if (voice.paused) "Resume recording" else "Pause recording") }
             SigilButton({ command(if (recording) "record_stop" else "record_start", mapOf("peer" to peer)) }, shape = RoundedCornerShape(18.dp), contentPadding = PaddingValues(horizontal = 24.dp, vertical = 16.dp),
                 colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary, contentColor = MaterialTheme.colorScheme.onPrimary)) { Glyph(if (recording) "check" else "mic", 24); Spacer(Modifier.width(8.dp)); Text(if (recording) "Done" else "Record") }
         }
@@ -237,24 +238,11 @@ private fun VoicePanel(command: Command, peer: String, voice: VoiceState, close:
 }
 
 @Composable
-private fun VoiceDraft(voice: VoiceState, modifier: Modifier, play: () -> Unit) {
+private fun VoiceDraft(voice: VoiceState, modifier: Modifier, play: () -> Unit, seek: (Long) -> Unit) {
     Surface(modifier, shape = RoundedCornerShape(16.dp), color = MaterialTheme.colorScheme.background) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Symbol(if (voice.playing) "pause" else "play_arrow", if (voice.playing) "Pause voice preview" else "Play voice preview", play)
-            VoiceWaveform(voice.levels, Modifier.weight(1f).height(32.dp))
-            Text("${voice.seconds / 60}:${(voice.seconds % 60).toString().padStart(2, '0')}", Modifier.padding(horizontal = 8.dp), style = MaterialTheme.typography.labelSmall)
-        }
+        AudioPlayback(voice.position, voice.duration.takeIf { it > 0 } ?: voice.seconds * 1000, voice.playing, voice.levels,
+            enabled = voice.phase == "Ready", preview = true, modifier = Modifier.padding(end = 8.dp, bottom = 8.dp), play = play, seek = seek)
     }
-}
-
-@Composable
-private fun VoiceWaveform(levels: List<Float>, modifier: Modifier) {
-    val ink = LocalContentColor.current
-    Canvas(modifier) { levels.forEachIndexed { i, level ->
-        val x = size.width * (i + .5f) / levels.size
-        val height = size.height * level.coerceIn(.08f, 1f) / 2f
-        drawLine(ink, androidx.compose.ui.geometry.Offset(x, center.y - height), androidx.compose.ui.geometry.Offset(x, center.y + height), 2.dp.toPx(), androidx.compose.ui.graphics.StrokeCap.Round)
-    } }
 }
 
 @Composable

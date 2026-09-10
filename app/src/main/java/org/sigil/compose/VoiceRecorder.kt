@@ -30,16 +30,24 @@ internal class VoiceRecorder(private val scope: CoroutineScope, private val stag
     private var peer = ""
     private var target = emptyMap<String, Any?>()
     private var started = 0L
+    private var pausedAt = 0L
+    private var pausedTime = 0L
+    private val samples = ArrayList<Float>(6000)
     private var levels = emptyList<Float>()
     private var elapsed = 0L
+    private var position = 0L
+    private var duration = 0L
     private var preview: MediaPlayer? = null
     private var previewSource: MediaDataSource? = null
     private fun clearPreview() { preview?.release(); preview = null; previewSource?.close(); previewSource = null }
+    private fun ready() = VoiceState("Ready", peer, elapsed, levels, preview?.isPlaying == true, position = position, duration = duration)
+    private fun recording() = VoiceState("Recording", peer, elapsed, samples.takeLast(48), paused = pausedAt != 0L)
+    private fun capturedMillis() = ((if (pausedAt != 0L) pausedAt else SystemClock.elapsedRealtime()) - started - pausedTime).coerceAtLeast(0)
     fun playPreview() { scope.launch(Dispatchers.IO) { mutex.withLock {
         if (closed.get() || recorder != null || bytes.size() == 0) return@withLock
         try {
             val current = preview
-            if (current != null) { if (current.isPlaying) current.pause() else current.start() }
+            if (current != null) { if (current.isPlaying) current.pause() else { if (position >= duration) { position = 0; current.seekTo(0) }; current.start() } }
             else {
                 val audio = bytes.toByteArray()
                 val source = object : MediaDataSource() {
@@ -56,23 +64,43 @@ internal class VoiceRecorder(private val scope: CoroutineScope, private val stag
                 }
                 previewSource = source
                 val player = MediaPlayer(); preview = player
-                player.setDataSource(source); player.prepare()
+                player.setDataSource(source); player.prepare(); duration = player.duration.toLong().coerceAtLeast(0)
+                if (position >= duration) position = 0
+                if (position > 0) player.seekTo(position, MediaPlayer.SEEK_CLOSEST)
                 player.setOnCompletionListener { scope.launch(Dispatchers.IO) { mutex.withLock {
-                    if (preview === player) { clearPreview(); withContext(Dispatchers.Main) { update(VoiceState("Ready", peer, elapsed, levels)) } }
+                    if (preview === player) { position = duration; withContext(Dispatchers.Main) { update(ready()) } }
                 } } }
                 player.start()
             }
-            withContext(Dispatchers.Main) { update(VoiceState("Ready", peer, elapsed, levels, preview?.isPlaying == true)) }
-        } catch (_: Exception) { clearPreview(); withContext(Dispatchers.Main) { issue("Could not play this recording."); update(VoiceState("Ready", peer, elapsed, levels)) } }
+            withContext(Dispatchers.Main) { update(ready()) }
+        } catch (cancelled: CancellationException) { throw cancelled }
+        catch (_: Exception) { clearPreview(); withContext(Dispatchers.Main) { issue("Could not play this recording."); update(ready()) } }
     } } }
     fun pausePreview() { scope.launch(Dispatchers.IO) { mutex.withLock {
-        if (preview != null) { clearPreview(); withContext(Dispatchers.Main) { update(VoiceState("Ready", peer, elapsed, levels)) } }
+        preview?.let { if (it.isPlaying) it.pause(); position = it.currentPosition.toLong(); withContext(Dispatchers.Main) { update(ready()) } }
+    } } }
+    fun seek(milliseconds: Long) { scope.launch(Dispatchers.IO) { mutex.withLock {
+        if (closed.get() || recorder != null || bytes.size() == 0) return@withLock
+        position = milliseconds.coerceIn(0, duration)
+        preview?.seekTo(position, MediaPlayer.SEEK_CLOSEST)
+        withContext(Dispatchers.Main) { update(ready()) }
+    } } }
+    fun pauseRecording() { scope.launch(Dispatchers.IO) { mutex.withLock {
+        val capture = recorder ?: return@withLock
+        try {
+            if (pausedAt == 0L) { capture.pause(); pausedAt = SystemClock.elapsedRealtime() }
+            else { capture.resume(); pausedTime += SystemClock.elapsedRealtime() - pausedAt; pausedAt = 0 }
+            elapsed = capturedMillis() / 1000
+            withContext(Dispatchers.Main) { update(recording()) }
+        } catch (cancelled: CancellationException) { throw cancelled }
+        catch (_: Exception) { withContext(Dispatchers.Main) { issue("Could not pause or resume recording. You can stop and keep it.") } }
     } } }
     fun start(peer: String, target: Map<String, Any?> = emptyMap()) { scope.launch(Dispatchers.IO) { mutex.withLock {
         if (closed.get() || recorder != null) return@withLock
         if (bytes.size() > 0) { withContext(Dispatchers.Main) { issue("Send or discard your recording before starting another.") }; return@withLock }
         clearPreview()
-        bytes.clear(); this@VoiceRecorder.peer = peer; this@VoiceRecorder.target = target.toMap(); levels = emptyList()
+        bytes.clear(); this@VoiceRecorder.peer = peer; this@VoiceRecorder.target = target.toMap(); levels = emptyList(); samples.clear()
+        pausedAt = 0; pausedTime = 0; elapsed = 0; position = 0; duration = 0
         val descriptors = ParcelFileDescriptor.createPipe()
         pipe = descriptors[0]
         reader = scope.async(Dispatchers.IO) {
@@ -104,16 +132,25 @@ internal class VoiceRecorder(private val scope: CoroutineScope, private val stag
         while (isActive) {
             delay(100)
             mutex.withLock {
-                val capture = recorder ?: return@withLock
-                elapsed = (SystemClock.elapsedRealtime() - started) / 1000
-                val level = runCatching { capture.maxAmplitude / 32767f }.getOrDefault(0f)
-                levels = (levels + level).takeLast(48)
-                withContext(Dispatchers.Main) { update(VoiceState("Recording", peer, elapsed, levels)) }
+                val capture = recorder
+                if (capture != null) {
+                    elapsed = capturedMillis() / 1000
+                    if (pausedAt == 0L && samples.size < 6000) samples += runCatching { capture.maxAmplitude / 32767f }.getOrDefault(0f)
+                    withContext(Dispatchers.Main) { update(recording()) }
+                } else preview?.let { player ->
+                    if (player.isPlaying) { position = player.currentPosition.toLong(); withContext(Dispatchers.Main) { update(ready()) } }
+                }
             }
         }
     } }
     private suspend fun finish(): Boolean {
         val capture = recorder ?: return bytes.size() > 0
+        duration = capturedMillis(); elapsed = duration / 1000
+        levels = if (samples.isEmpty()) emptyList() else List(minOf(64, samples.size)) { index ->
+            val count = minOf(64, samples.size)
+            (index * samples.size / count until (index + 1) * samples.size / count).maxOf { samples[it] }
+        }
+        samples.clear()
         recorder = null
         val success = runCatching { capture.stop() }.isSuccess
         capture.release()
@@ -125,7 +162,7 @@ internal class VoiceRecorder(private val scope: CoroutineScope, private val stag
     }
     fun stop() { scope.launch(Dispatchers.IO) { mutex.withLock {
         val ready = finish()
-        withContext(Dispatchers.Main) { update(if (ready) VoiceState("Ready", peer, elapsed, levels) else VoiceState()) }
+        withContext(Dispatchers.Main) { update(if (ready) ready() else VoiceState()) }
     } } }
     fun discard() { scope.launch(Dispatchers.IO) { mutex.withLock {
         clearPreview()
@@ -141,7 +178,7 @@ internal class VoiceRecorder(private val scope: CoroutineScope, private val stag
             bytes.clear()
             withContext(Dispatchers.Main) { update(VoiceState()) }
         } catch (cancelled: CancellationException) { throw cancelled }
-        catch (_: Exception) { withContext(Dispatchers.Main) { issue("Could not queue this recording. You can retry sending it."); update(VoiceState("Ready", peer, elapsed, levels)) } }
+        catch (_: Exception) { withContext(Dispatchers.Main) { issue("Could not queue this recording. You can retry sending it."); update(ready()) } }
         finally { audio.fill(0) }
     } } }
     fun close() {
