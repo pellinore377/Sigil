@@ -4,6 +4,8 @@ import org.sigil.SigilIconButton
 
 import android.media.MediaPlayer
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -99,7 +101,7 @@ private fun InlineAudio(message: ChatMessage) {
     else Spacer(Modifier.fillMaxWidth().height(inlineHeight))
     if (expanded) androidx.compose.ui.window.Dialog({ expanded = false }) {
         Surface(shape = androidx.compose.foundation.shape.RoundedCornerShape(24.dp)) {
-            Column(Modifier.fillMaxWidth().padding(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            Column(Modifier.fillMaxWidth().heightIn(max = 600.dp).verticalScroll(rememberScrollState()).padding(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 Text(if (message.attachment!!.name == "Voice message.aac") "Voice message" else message.attachment!!.name, style = MaterialTheme.typography.titleMedium)
                 if (levels.isNotEmpty()) AudioWaveform(levels, Modifier.fillMaxWidth().height(96.dp), position.toFloat() / duration.coerceAtLeast(1))
                 AudioPlayback(position, duration, playing, levels, enabled = ready && !failed, play = ::play, seek = ::seek)

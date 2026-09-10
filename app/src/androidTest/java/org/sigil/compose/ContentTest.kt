@@ -222,6 +222,57 @@ class ContentTest {
         ui.runOnIdle { assertFalse("Map loading failed", failed) }
         assertTrue("The authenticated vector point was not rendered", red >= 100)
     }
+    @Test fun encryptedGifHonorsAutoplayAndReducedMotion() = runBlocking {
+        Assume.assumeTrue(android.os.Build.VERSION.SDK_INT >= 28)
+        val encoded = java.io.ByteArrayOutputStream()
+        encoded.write("GIF89a".toByteArray()); encoded.write(byteArrayOf(16, 0, 16, 0, 0x80.toByte(), 0, 0, -1, 0, 0, 0, 0, -1))
+        encoded.write(byteArrayOf(0x21, -1, 11)); encoded.write("NETSCAPE2.0".toByteArray()); encoded.write(byteArrayOf(3, 1, 0, 0, 0))
+        for (color in 0..1) {
+            encoded.write(byteArrayOf(0x21, 0xf9.toByte(), 4, 0, 10, 0, 0, 0, 0x2c, 0, 0, 0, 0, 16, 0, 16, 0, 0, 2))
+            val compressed = java.io.ByteArrayOutputStream()
+            var buffer = 0; var bits = 0
+            fun code(value: Int) { buffer = buffer or (value shl bits); bits += 3; while (bits >= 8) { compressed.write(buffer and 255); buffer = buffer ushr 8; bits -= 8 } }
+            repeat(256) { code(4); code(color) }; code(5)
+            if (bits > 0) compressed.write(buffer)
+            encoded.write(compressed.size()); encoded.write(compressed.toByteArray()); encoded.write(0)
+        }
+        encoded.write(0x3b)
+        val bytes = encoded.toByteArray()
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
+        val files = NativeFiles(context.applicationContext as Application, scope, { _, _ -> }, { fail(it) })
+        val reduced = androidx.compose.runtime.mutableStateOf(false)
+        var request: String? = null
+        try {
+            withContext(Dispatchers.IO) { bytes.inputStream().use { files.stage(mapOf("peer" to "self", "draft" to true), "Synthetic animation.gif", "image/gif", bytes.size.toLong(), it) } }
+            request = native("files").getJSONArray("uploads").getJSONObject(0).getString("request")
+            val message = ChatMessage(request, "", "", true, "", "", false, emptyList(), emptyList(), null, true, peer = "self",
+                attachment = AttachmentDetails("Synthetic animation.gif", "image/gif", bytes.size.toLong(), "An animated thought.", draft = true))
+            ui.setContent { androidx.compose.material3.MaterialTheme { androidx.compose.runtime.CompositionLocalProvider(LocalAppearance provides Appearance(autoplayGifs = false), LocalMotion provides MotionPolicy(reduced.value)) { GifAttachment(message) } } }
+            ui.waitUntil(5000) { ui.onAllNodesWithContentDescription("Synthetic animation.gif").fetchSemanticsNodes().isNotEmpty() }
+            ui.onNodeWithContentDescription("Play GIF").assertIsEnabled().performClick()
+            fun picture(view: android.view.View): android.widget.ImageView? = if (view is android.widget.ImageView && view.contentDescription == "Synthetic animation.gif") view else if (view is android.view.ViewGroup) (0 until view.childCount).firstNotNullOfOrNull { picture(view.getChildAt(it)) } else null
+            val colors = mutableSetOf<Int>()
+            val frame = android.graphics.Bitmap.createBitmap(16, 16, android.graphics.Bitmap.Config.ARGB_8888)
+            try {
+                withTimeout(3000) { while (colors.size < 2) {
+                    ui.runOnIdle { val drawable = picture(ui.activity.window.decorView)!!.drawable; drawable.setBounds(0, 0, 16, 16); drawable.draw(android.graphics.Canvas(frame)); colors += frame.getPixel(8, 8) }
+                    delay(50)
+                } }
+            } finally { frame.recycle() }
+            assertEquals(setOf(Color.RED, Color.BLUE), colors)
+            ui.runOnIdle { reduced.value = true }
+            ui.onNodeWithContentDescription("Play GIF").assertIsNotEnabled()
+            ui.runOnIdle { assertFalse((picture(ui.activity.window.decorView)!!.drawable as android.graphics.drawable.AnimatedImageDrawable).isRunning) }
+            ui.onNodeWithContentDescription("Expand GIF").performClick()
+            ui.onNodeWithText("An animated thought.").assertIsDisplayed()
+            ui.onNodeWithText("Close").performClick()
+            assertTrue(native("files").getJSONArray("uploads").getJSONObject(0).getBoolean("draft"))
+        } finally {
+            ui.runOnUiThread { ui.activity.setContentView(android.widget.FrameLayout(ui.activity)) }
+            request?.let { native("file_cancel", mapOf("request" to it)) }
+            scope.cancel(); bytes.fill(0)
+        }
+    }
     @Test fun encryptedImageDraftOpensZoomsAndKeepsItsCaptionWithoutSending() = runBlocking {
         val bitmap = android.graphics.Bitmap.createBitmap(2400, 1600, android.graphics.Bitmap.Config.ARGB_8888)
         bitmap.eraseColor(Color.rgb(20, 100, 180))

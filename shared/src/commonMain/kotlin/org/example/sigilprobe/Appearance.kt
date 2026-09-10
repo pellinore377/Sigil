@@ -43,10 +43,19 @@ internal fun AppearancePage(value: Appearance, analyze: (String) -> String, dyna
                 Toggle("Collections", collections, setCollections)
                 Expandable(collections) { Toggle("Show collection names", collectionLabels, setCollectionLabels) }
             }
+            "appearance-media" -> {
+                Toggle("Reduce motion", value.reducedMotion) { update(value.copy(reducedMotion = it)) }
+                Text("Use still transitions and indicators. Your device's reduced-motion setting is always respected.", style = MaterialTheme.typography.bodySmall)
+                Toggle("Message effects", value.messageEffects) { update(value.copy(messageEffects = it)) }
+                Text("Animate emoji messages and authored text effects when motion is allowed.", style = MaterialTheme.typography.bodySmall)
+                Toggle("Play GIFs automatically", value.autoplayGifs) { update(value.copy(autoplayGifs = it)) }
+                Text("Videos and audio play only when you choose to play them.", style = MaterialTheme.typography.bodySmall)
+            }
             else -> {
                 SettingRow("palette", "Colors & backgrounds", "Mode, accent and conversation backgrounds") { navigate("appearance-colors") }
                 SettingRow("text_format", "Typography", "${value.font} · ${(value.textScale * 100).toInt()}%") { navigate("appearance-type") }
                 SettingRow("view_agenda", "Layout", "Conversation spacing, previews and collections") { navigate("appearance-layout") }
+                SettingRow("animation", "Motion & media", "Animation, message effects and GIF playback") { navigate("appearance-media") }
                 var advanced by remember { mutableStateOf(false) }
                 SigilTextButton({ advanced = !advanced }, Modifier.fillMaxWidth()) { Text("Advanced", Modifier.weight(1f), textAlign = TextAlign.Start); Glyph(if (advanced) "expand_less" else "expand_more") }
                 Expandable(advanced) { Toggle("Follow account appearance on this device", followAccount, setFollowAccount) }
@@ -59,6 +68,7 @@ internal fun appearanceTitle(section: String) = when (section) {
     "appearance-colors" -> "Colors & backgrounds"
     "appearance-type" -> "Typography"
     "appearance-layout" -> "Layout"
+    "appearance-media" -> "Motion & media"
     else -> "Appearance"
 }
 

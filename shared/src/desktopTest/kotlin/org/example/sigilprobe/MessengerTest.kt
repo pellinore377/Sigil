@@ -11,6 +11,38 @@ class MessengerTest {
     @get:Rule val ui = createComposeRule()
     private fun chat(verified: Boolean) = ChatSummary("peer", "@sam:example.com", "", "", verified,
         listOf(ChatDevice("peer", "ab".repeat(32), verified, false, false)))
+    @Test fun motion_preferences_follow_account_until_this_device_opts_out() {
+        val saved = mutableMapOf("account_appearance" to "Google Sans Flex|Dark|555555|false")
+        val commands = mutableListOf<Map<String, Any?>>()
+        val systemReduced = mutableStateOf(false)
+        var reduced = false
+        ui.setContent { androidx.compose.runtime.CompositionLocalProvider(LocalSystemReducedMotion provides systemReduced.value) {
+            SigilApp(NativeCore::palette, NativeCore::analyze, MessengerState(phase = "connected"), { name, value -> if (name == "organize") commands += value },
+                read = saved::get, write = { key, value -> saved[key] = value }, overlay = { val current = LocalMotion.current.reduced; androidx.compose.runtime.SideEffect { reduced = current } })
+        } }
+        ui.onNodeWithContentDescription("Settings").performClick()
+        ui.onAllNodesWithText("Appearance").onLast().performScrollTo().performClick()
+        ui.onNodeWithText("Motion & media").performScrollTo().performClick()
+        ui.onNodeWithContentDescription("Reduce motion").performClick()
+        ui.onNodeWithContentDescription("Message effects").performClick()
+        ui.onNodeWithContentDescription("Play GIFs automatically").performClick()
+        ui.runOnIdle {
+            assertEquals(true, reduced)
+            val preference = decodeAppearance(saved["account_appearance"])
+            assertEquals("Google Sans Flex", preference.font)
+            assertEquals(true, preference.reducedMotion)
+            assertEquals(false, preference.messageEffects)
+            assertEquals(false, preference.autoplayGifs)
+        }
+        ui.onNodeWithContentDescription("Back").performClick()
+        ui.onNodeWithText("Advanced").performScrollTo().performClick()
+        ui.onNodeWithContentDescription("Follow account appearance on this device").performScrollTo().performClick()
+        val count = commands.size
+        ui.onNodeWithText("Motion & media").performScrollTo().performClick()
+        ui.onNodeWithContentDescription("Reduce motion").performClick()
+        ui.runOnIdle { assertEquals(false, reduced); assertEquals(count, commands.size); assertEquals(true, decodeAppearance(saved["account_appearance"]).reducedMotion); systemReduced.value = true }
+        ui.runOnIdle { assertEquals(true, reduced) }
+    }
     @Test fun attachment_caption_stays_editable_and_only_clears_for_its_own_commit() {
         val state = mutableStateOf(MessengerState(phase = "connected", chats = listOf(chat(true)), selected = "peer", transfers = listOf(Transfer("file", "peer", "Photo.jpg", 128, "Ready", true, "image/jpeg"))))
         val sent = mutableListOf<Map<String, Any?>>()

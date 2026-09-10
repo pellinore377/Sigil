@@ -25,8 +25,9 @@ import kotlinx.coroutines.delay
 
 @Composable
 internal fun InboxFab(visible: Boolean, modifier: Modifier, create: () -> Unit) {
+    val motionPolicy = LocalMotion.current
     val bottom = with(LocalDensity.current) { 64.dp.roundToPx() } + WindowInsets.navigationBars.getBottom(LocalDensity.current)
-    AnimatedVisibility(visible, modifier, enter = slideInVertically(tween(MotionMillis)) { it + bottom }, exit = slideOutVertically(tween(MotionMillis)) { it + bottom }) {
+    AnimatedVisibility(visible, modifier, enter = slideInVertically(motionPolicy.tween(MotionMillis)) { it + bottom }, exit = slideOutVertically(motionPolicy.tween(MotionMillis)) { it + bottom }) {
         FloatingActionButton(create, Modifier.padding(20.dp), shape = RoundedCornerShape(18.dp), containerColor = MaterialTheme.colorScheme.primary, contentColor = MaterialTheme.colorScheme.onPrimary) { Glyph("edit_square", 27, "New conversation") }
     }
 }
@@ -34,11 +35,12 @@ internal fun InboxFab(visible: Boolean, modifier: Modifier, create: () -> Unit) 
 @Composable
 internal fun MainHeader(page: String, goingBack: Boolean, query: String, update: (String) -> Unit, selected: Set<String>, state: MessengerState, command: Command,
     clear: () -> Unit, collections: () -> Unit, search: () -> Unit, notes: () -> Unit, back: () -> Unit) {
+    val motionPolicy = LocalMotion.current
     val height = pageHeaderHeight()
     Box(Modifier.fillMaxWidth().height(height).clipToBounds()) {
         AnimatedContent(if (page in listOf("calls", "settings")) page else "inbox", transitionSpec = {
-            (slideInHorizontally(tween(160, delayMillis = 80)) { if (goingBack) -it else it } + fadeIn(tween(160, delayMillis = 80))) togetherWith
-                (if (goingBack) slideOutHorizontally(tween(MotionMillis)) { it } + fadeOut(tween(100)) else fadeOut(tween(100)))
+            (slideInHorizontally(motionPolicy.tween(160, delayMillis = 80)) { if (goingBack) -it else it } + fadeIn(motionPolicy.tween(160, delayMillis = 80))) togetherWith
+                (if (goingBack) slideOutHorizontally(motionPolicy.tween(MotionMillis)) { it } + fadeOut(motionPolicy.tween(100)) else fadeOut(motionPolicy.tween(100)))
         }, label = "Main header items") { tab ->
             if (tab == "inbox") InboxHeader(page, height, query, update, selected, state, command, clear, collections, search, notes, back)
             else Box(Modifier.fillMaxWidth().height(height).padding(horizontal = 20.dp), contentAlignment = Alignment.CenterStart) {
@@ -50,13 +52,14 @@ internal fun MainHeader(page: String, goingBack: Boolean, query: String, update:
 @Composable
 private fun InboxHeader(page: String, height: Dp, query: String, update: (String) -> Unit, selected: Set<String>, state: MessengerState, command: Command,
     clear: () -> Unit, collections: () -> Unit, search: () -> Unit, notes: () -> Unit, back: () -> Unit) {
+    val motionPolicy = LocalMotion.current
     val opened = page in listOf("search", "notes")
-    val progress by animateFloatAsState(if (opened) 1f else 0f, tween(MotionMillis), label = "Header transformation")
+    val progress by animateFloatAsState(if (opened) 1f else 0f, motionPolicy.tween(MotionMillis), label = "Header transformation")
     val focus = remember { FocusRequester() }
     val keyboard = LocalSoftwareKeyboardController.current
-    LaunchedEffect(page) { if (page == "search") { delay(MotionMillis.toLong()); focus.requestFocus(); keyboard?.show() } }
+    LaunchedEffect(page) { if (page == "search") { delay(motionPolicy.delay(MotionMillis.toLong())); focus.requestFocus(); keyboard?.show() } }
     AnimatedContent(selected.isNotEmpty(), transitionSpec = {
-        (slideInHorizontally(tween(MotionMillis)) { it } + fadeIn()) togetherWith (slideOutHorizontally(tween(MotionMillis)) { -it } + fadeOut())
+        (slideInHorizontally(motionPolicy.tween(MotionMillis)) { it } + fadeIn()) togetherWith (slideOutHorizontally(motionPolicy.tween(MotionMillis)) { -it } + fadeOut())
     }, label = "Selection toolbar") { selecting ->
         if (selecting) {
             Row(Modifier.fillMaxWidth().height(height).horizontalScroll(rememberScrollState()).padding(vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -76,12 +79,12 @@ private fun InboxHeader(page: String, height: Dp, query: String, update: (String
             Text("Sigil", Modifier.align(Alignment.CenterStart).padding(start = 8.dp).alpha(1f - progress), style = MaterialTheme.typography.displaySmall)
             val x = (maxWidth - 96.dp) * (1f - progress)
             Box(Modifier.offset(x = x).align(Alignment.CenterStart)) {
-                Crossfade(opened, animationSpec = tween(MotionMillis), label = "Search to back") { backIcon ->
+                Crossfade(opened, animationSpec = motionPolicy.tween(MotionMillis), label = "Search to back") { backIcon ->
                     if (backIcon) Symbol("chevron_left", "Back", back) else Symbol("search", "Search conversations", search)
                 }
             }
-            AnimatedVisibility(!opened, Modifier.align(Alignment.CenterEnd), enter = fadeIn(tween(MotionMillis)), exit = fadeOut(tween(120))) { Symbol("description", "Conversation notes", notes) }
-            AnimatedVisibility(opened, Modifier.align(Alignment.CenterStart).padding(start = 56.dp, end = 8.dp).fillMaxWidth(), enter = fadeIn(tween(MotionMillis)), exit = fadeOut(tween(100))) {
+            AnimatedVisibility(!opened, Modifier.align(Alignment.CenterEnd), enter = fadeIn(motionPolicy.tween(MotionMillis)), exit = fadeOut(motionPolicy.tween(120))) { Symbol("description", "Conversation notes", notes) }
+            AnimatedVisibility(opened, Modifier.align(Alignment.CenterStart).padding(start = 56.dp, end = 8.dp).fillMaxWidth(), enter = fadeIn(motionPolicy.tween(MotionMillis)), exit = fadeOut(motionPolicy.tween(100))) {
               BasicTextField(query, update, Modifier.fillMaxWidth().focusRequester(focus),
                 cursorBrush = androidx.compose.ui.graphics.SolidColor(MaterialTheme.colorScheme.primary), singleLine = true, textStyle = MaterialTheme.typography.titleMedium.copy(color = MaterialTheme.colorScheme.onBackground),
                 decorationBox = { inner -> Box { if (query.isEmpty()) Text(if (page == "notes") "Search notes" else "Search all conversations", color = MaterialTheme.colorScheme.onSurfaceVariant, style = MaterialTheme.typography.titleMedium); inner() } })

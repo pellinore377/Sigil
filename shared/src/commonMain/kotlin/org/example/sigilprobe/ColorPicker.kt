@@ -48,6 +48,7 @@ internal fun AccentPicker(value: Int?, update: (Int) -> Unit) {
 }
 @Composable
 private fun CustomColor(initial: Int, close: () -> Unit, apply: (Int) -> Unit) {
+    val motionPolicy = LocalMotion.current
     val seed = remember(initial) { hsv(initial) }
     var hue by remember { mutableFloatStateOf(seed[0]) }; var saturation by remember { mutableFloatStateOf(seed[1]) }; var brightness by remember { mutableFloatStateOf(seed[2]) }
     var advanced by remember { mutableStateOf(false) }
@@ -58,8 +59,8 @@ private fun CustomColor(initial: Int, close: () -> Unit, apply: (Int) -> Unit) {
         Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
             Row { SigilTextButton({ advanced = false }) { Text("Color") }; SigilTextButton({ advanced = true }) { Text("Advanced") } }
             AnimatedContent(advanced, transitionSpec = {
-                (slideInHorizontally(tween(MotionMillis)) { if (targetState) it else -it } + fadeIn()) togetherWith
-                    (slideOutHorizontally(tween(MotionMillis)) { if (targetState) -it else it } + fadeOut())
+                (slideInHorizontally(motionPolicy.tween(MotionMillis)) { if (targetState) it else -it } + fadeIn()) togetherWith
+                    (slideOutHorizontally(motionPolicy.tween(MotionMillis)) { if (targetState) -it else it } + fadeOut())
             }, label = "Color controls") { detailed -> Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
             if (!detailed) {
                 Canvas(Modifier.fillMaxWidth().height(160.dp).clip(RoundedCornerShape(16.dp))

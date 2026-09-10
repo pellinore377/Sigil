@@ -128,7 +128,8 @@ private fun RowScope.CallControl(icon: String, label: String, destructive: Boole
 }
 @Composable
 private fun CallWave(level: Float, modifier: Modifier) {
-    val amplitude by animateFloatAsState(level.coerceIn(0f, 1f), tween(100), label = "Voice level")
+    val motionPolicy = LocalMotion.current
+    val amplitude by animateFloatAsState(level.coerceIn(0f, 1f), motionPolicy.tween(100), label = "Voice level")
     val color = MaterialTheme.colorScheme.onSurfaceVariant
     Canvas(modifier.semantics { contentDescription = "Voice activity" }) {
         repeat(19) { i ->
