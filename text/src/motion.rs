@@ -1,7 +1,7 @@
 use crate::Animation;
 
 /// Version-1 rendering parameters: distances are thousandths of an em, angles degrees.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
 pub struct Parameters {
     pub duration_ms: u16,
     pub easing: [u16; 4],
@@ -15,6 +15,67 @@ pub struct Parameters {
     pub spring_stiffness: u16,
     pub spring_damping: u16,
     pub substitutions: &'static str,
+}
+
+#[derive(serde::Serialize)]
+pub struct Run {
+    pub animation: Animation,
+    pub parameters: Parameters,
+    pub units: Vec<[u32; 2]>,
+}
+
+pub(crate) fn presentation(text: &crate::Text) -> Vec<Run> {
+    use unicode_segmentation::UnicodeSegmentation;
+    let graphemes: Vec<_> = text.body().graphemes(true).collect();
+    let mut offsets = vec![0];
+    for g in &graphemes {
+        offsets.push(offsets.last().unwrap() + g.encode_utf16().count() as u32);
+    }
+    let mut budget = 192;
+    let mut runs: Vec<Run> = Vec::new();
+    for run in text.spans().iter().filter_map(|span| {
+        let animation = span.effects.animation?;
+        if budget == 0 || span.effects.reveal.is_some() {
+            return None;
+        }
+        let source = graphemes[span.start as usize..span.end as usize].concat();
+        let mut at = offsets[span.start as usize];
+        let mut units = Vec::new();
+        for word in source.split_word_bounds() {
+            let end = at + word.encode_utf16().count() as u32;
+            if !word.chars().all(char::is_whitespace) {
+                // Keep joined scripts and emoji intact; barrel moves complete words.
+                if word.is_ascii() && animation != Animation::Barrel {
+                    units.extend((at..end).map(|i| [i, i + 1]));
+                } else {
+                    units.push([at, end]);
+                }
+            }
+            at = end;
+            if units.len() > budget {
+                break;
+            }
+        }
+        if units.len() > budget {
+            return None;
+        }
+        if units.is_empty() {
+            return None;
+        }
+        budget -= units.len();
+        Some(Run {
+            animation,
+            parameters: animation.parameters(),
+            units,
+        })
+    }) {
+        if let Some(previous) = runs.iter_mut().find(|r| r.animation == run.animation) {
+            previous.units.extend(run.units);
+        } else {
+            runs.push(run);
+        }
+    }
+    runs
 }
 impl Animation {
     pub fn parameters(self) -> Parameters {
@@ -74,67 +135,16 @@ impl Animation {
             }
             Self::Flip => {
                 p.duration_ms = 700;
-                p.rotation = 360;
+                p.rotation = 180;
                 p.stagger_ms = 40;
             }
             Self::Barrel => {
                 p.duration_ms = 900;
                 p.rotation = 360;
+                p.displacement = 600;
             }
         }
         p
-    }
-}
-
-/// Retain per-message playback state across recomposition; clocks use monotonic milliseconds.
-pub struct Playback {
-    elapsed: u64,
-    last_tick: Option<u64>,
-    running: bool,
-    finished: bool,
-}
-impl Playback {
-    pub fn new(new_content: bool) -> Self {
-        Self {
-            elapsed: 0,
-            last_tick: None,
-            running: false,
-            finished: !new_content,
-        }
-    }
-    pub fn replay(&mut self) {
-        self.elapsed = 0;
-        self.last_tick = None;
-        self.running = false;
-        self.finished = false;
-    }
-    /// Returns normalized progress, with 1000 the static final appearance.
-    pub fn tick(
-        &mut self,
-        now: u64,
-        visible: bool,
-        reduced_motion: bool,
-        animation: Animation,
-    ) -> u16 {
-        if reduced_motion {
-            self.finished = true;
-        }
-        if self.finished {
-            return 1000;
-        }
-        if self.running {
-            self.elapsed = self
-                .elapsed
-                .saturating_add(now.saturating_sub(self.last_tick.unwrap_or(now)));
-        }
-        self.last_tick = Some(now);
-        self.running = visible;
-        let duration = u64::from(animation.parameters().duration_ms);
-        if self.elapsed >= duration {
-            self.finished = true;
-            return 1000;
-        }
-        ((self.elapsed * 1000) / duration) as u16
     }
 }
 
@@ -155,23 +165,37 @@ pub fn seed(message: &[u8; 32], glyph: u32, sample: u32) -> u64 {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     #[test]
-    fn rerender_visibility_and_reduced_motion_never_restart_playback() {
-        let mut playback = Playback::new(true);
-        assert_eq!(playback.tick(100, true, false, Animation::Wave), 0);
-        assert_eq!(playback.tick(700, false, false, Animation::Wave), 500);
-        assert_eq!(playback.tick(10000, true, false, Animation::Wave), 500);
-        assert_eq!(playback.tick(10600, true, false, Animation::Wave), 1000);
-        assert_eq!(playback.tick(10601, false, false, Animation::Wave), 1000);
-        playback.replay();
-        assert_eq!(playback.tick(11000, true, false, Animation::Wave), 0);
-        assert_eq!(playback.tick(11001, true, true, Animation::Wave), 1000);
-        assert_eq!(playback.tick(11002, true, false, Animation::Wave), 1000);
-        assert_eq!(
-            Playback::new(false).tick(1, true, false, Animation::Wave),
-            1000
-        );
-        assert_ne!(seed(&[1; 32], 1, 1), seed(&[1; 32], 2, 1));
+    fn presentation_preserves_words_emoji_and_secrets_with_bounded_work() {
+        let text = crate::parse(
+            "wave::office العربية 👩🏽‍💻 café; spoiler::shake::hidden;",
+            Default::default(),
+        )
+        .unwrap();
+        let wire = text.to_bytes().unwrap();
+        let view = text.presentation();
+        assert_eq!(view.motion.len(), 1);
+        let utf16: Vec<_> = text.body().encode_utf16().collect();
+        let words: Vec<_> = view.motion[0]
+            .units
+            .iter()
+            .map(|r| String::from_utf16(&utf16[r[0] as usize..r[1] as usize]).unwrap())
+            .collect();
+        assert_eq!(&words[..6], ["o", "f", "f", "i", "c", "e"]);
+        for word in ["العربية", "👩🏽‍💻", "café"] {
+            assert!(words.iter().any(|v| v == word), "{words:?}");
+        }
+        assert!(!words.iter().any(|v| v.contains("hidden")));
+        assert_eq!(wire, text.to_bytes().unwrap());
+        let text = crate::parse(
+            &format!("wave::{};", "word ".repeat(1000)),
+            Default::default(),
+        )
+        .unwrap();
+        let view = text.presentation();
+        assert!(view.motion.iter().map(|r| r.units.len()).sum::<usize>() <= 192);
+        assert!(view.motion.is_empty());
+        let barrel = crate::parse("barrel::whole words;", Default::default()).unwrap();
+        assert_eq!(barrel.presentation().motion[0].units, vec![[0, 5], [6, 11]]);
     }
 }

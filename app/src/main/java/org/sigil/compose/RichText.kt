@@ -51,7 +51,14 @@ internal fun JSONObject.richValue(): RichText {
     }, rich.getJSONArray("blocks").objects().map { block ->
         val kind = block.getJSONObject("kind")
         RichBlock(block.getInt("start"), block.getInt("end"), kind.getString("kind"), kind.optInt("level"), if (kind.isNull("language")) "" else kind.getString("language"))
-    }, rich.optJSONArray("code_tokens")?.objects()?.map { CodeToken(it.getInt("start"), it.getInt("end"), it.getString("role")) }.orEmpty())
+    }, rich.optJSONArray("code_tokens")?.objects()?.map { CodeToken(it.getInt("start"), it.getInt("end"), it.getString("role")) }.orEmpty(),
+        rich.optJSONArray("motion")?.objects()?.map { run ->
+            val p=run.getJSONObject("parameters")
+            val units=run.getJSONArray("units")
+            org.sigil.TextMotion(run.getString("animation"),p.getInt("duration_ms"),p.getInt("cycles"),p.getInt("displacement"),p.getInt("rotation"),p.getInt("scale_per_mille"),p.getInt("stagger_ms"),p.getInt("particles"),
+                (0 until units.length()).map { units.getJSONArray(it).let { u->u.getInt(0) to u.getInt(1) } },
+                p.getJSONArray("easing").let {a->(0 until a.length()).map {a.getInt(it)/1000f}},p.getInt("particle_lifetime_ms"),p.getInt("spring_stiffness"),p.getInt("spring_damping"))
+        }.orEmpty())
 }
 
 internal fun JSONObject.tableContent(): TableContent? = optJSONObject("table")?.let { table ->

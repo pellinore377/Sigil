@@ -1,6 +1,6 @@
 use crate::Effects;
 use serde::{Deserialize, Serialize};
-use unicode_normalization::{UnicodeNormalization, is_nfc};
+use unicode_normalization::{is_nfc, UnicodeNormalization};
 use unicode_segmentation::UnicodeSegmentation;
 
 pub const MAX_WIRE_BYTES: usize = 60 * 1024;
@@ -86,6 +86,8 @@ pub struct Presentation<'a> {
     pub blocks: Vec<crate::Block>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub code_tokens: Vec<crate::code::Token>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub motion: Vec<crate::motion::Run>,
 }
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -200,6 +202,7 @@ impl Text {
             spans,
             blocks,
             code_tokens,
+            motion: crate::motion::presentation(self),
         }
     }
     /// Selection indices use the same graphemes as effects, never UTF-16 units.

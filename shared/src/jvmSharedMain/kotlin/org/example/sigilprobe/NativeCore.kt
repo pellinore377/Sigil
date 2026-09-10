@@ -6,4 +6,5 @@ object NativeCore {
     external fun redact(input: String): String
     external fun analyze(input: String): String
     external fun editor(input: String): String
+    external fun motionSeeds(input: String): String
 }

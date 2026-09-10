@@ -96,7 +96,7 @@ private fun RichInlineText(value: RichText, modifier: Modifier = Modifier, style
     val foreground = LocalContentColor.current
     val surface = LocalMessageSurface.current.takeOrElse { MaterialTheme.colorScheme.surface }
     val text = remember(value, revealed, font, surface, foreground) { richPresentation(value, revealed, font, surface, foreground) { revealed = revealed + it } }
-    Text(text, modifier.pointerInput(text) {
+    Text(text, modifier.then(textMotion(value,revealed,layout,foreground)).pointerInput(text) {
         awaitEachGesture {
             val down = awaitFirstDown(requireUnconsumed = false)
             val offset = layout?.getOffsetForPosition(down.position) ?: return@awaitEachGesture

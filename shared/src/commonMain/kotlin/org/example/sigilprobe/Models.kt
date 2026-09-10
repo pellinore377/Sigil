@@ -24,7 +24,9 @@ data class DiagramNode(val label: RichText, val shape: String, val x: Float, val
 data class DiagramEdge(val from: Int, val to: Int, val label: RichText, val dashed: Boolean, val y: Float)
 data class DiagramEntry(val date: RichText, val label: RichText)
 data class CardItem(val id: String, val text: String, val checked: Boolean, val enabled: Boolean, val count: Long? = null, val rich: RichText? = null)
-data class RichText(val text: String, val spans: List<RichSpan> = emptyList(), val blocks: List<RichBlock> = emptyList(), val codeTokens: List<CodeToken> = emptyList())
+data class RichText(val text: String, val spans: List<RichSpan> = emptyList(), val blocks: List<RichBlock> = emptyList(), val codeTokens: List<CodeToken> = emptyList(), val motion: List<TextMotion> = emptyList())
+data class TextMotion(val kind:String,val duration:Int,val cycles:Int,val displacement:Int,val rotation:Int,val scale:Int,val stagger:Int,val particles:Int,val units:List<Pair<Int,Int>>,
+    val easing:List<Float> = emptyList(),val particleLifetime:Int=650,val stiffness:Int=180,val damping:Int=24)
 data class RichSpan(val start: Int, val end: Int, val flags: Set<String> = emptySet(), val colors: List<String> = emptyList(), val size: Int = 0, val reveal: String = "", val link: String? = null)
 data class RichBlock(val start: Int, val end: Int, val kind: String, val level: Int = 0, val language: String = "")
 data class CodeToken(val start: Int, val end: Int, val role: String)
@@ -49,7 +51,7 @@ data class SearchHit(val peer: String, val id: String, val author: String, val t
 data class EditDraft(val peer: String, val author: String, val message: String, val source: String)
 data class MessengerState(val phase: String = "loading", val address: String = "", val fingerprint: String = "", val device: String = "",
     val chats: List<ChatSummary> = emptyList(), val selected: String? = null, val messages: List<ChatMessage> = emptyList(),
-    val more: Boolean = false, val busy: Boolean = false, val issue: String? = null, val sent: Long = 0, val sentText: String? = null, val editDraft: EditDraft? = null,
+    val more: Boolean = false, val busy: Boolean = false, val issue: String? = null, val sent: Long = 0, val sentText: String? = null, val editDraft: EditDraft? = null, val timelineLoaded:Boolean=false,
     val loginAddress: String = "", val loginMethods: LoginMethods? = null, val discovering: Boolean = false, val discoveryIssue: String? = null,
     val collectionsEnabled: Boolean = false, val collections: List<CollectionItem> = emptyList(),
     val searchHits: List<SearchHit> = emptyList(), val searching: Boolean = false, val searchQuery: String = "",
