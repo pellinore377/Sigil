@@ -141,7 +141,7 @@ fn request(client: &ClientStore, group: Id, message: Id, recipient: Id, now: u64
         payload: transport::hex(
             &packet(&client.db, &client.key, &own, &job.message, &stored).unwrap(),
         ),
-        expires_at: now + 604800,
+        expires_at: now + 604740,
     }
 }
 fn fingerprint_id(client: &ClientStore, peer: Id) -> Id {

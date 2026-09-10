@@ -411,7 +411,58 @@ private fun ServerSettings(busy: Boolean, run: (suspend () -> Unit) -> Unit) {
         Field("Maximum accounts", limit, { limit = it }, enabled = !busy)
         Field("New accounts per day", daily, { daily = it }, enabled = !busy, onSubmit = submit)
         Action("Save server settings", ready, submit)
+        HorizontalDivider()
+        CallingSettings(busy, run)
     }
+}
+
+@Composable
+private fun CallingSettings(busy: Boolean, run: (suspend () -> Unit) -> Unit) {
+    var configuration by remember { mutableStateOf<JsonObject?>(null) }
+    var status by remember { mutableStateOf<JsonElement?>(null) }
+    var enabled by remember { mutableStateOf(false) }
+    var bind by remember { mutableStateOf("0.0.0.0:34780") }
+    var advertised by remember { mutableStateOf("") }
+    var capacity by remember { mutableStateOf("1") }
+    var urls by remember { mutableStateOf("") }
+    var secret by remember { mutableStateOf("") }
+    fun load(value: JsonElement) {
+        configuration = value.jsonObject
+        val settings = value.jsonObject["settings"] as? JsonObject
+        enabled = settings != null
+        if (settings != null) {
+            bind = settings.text("bind"); advertised = settings.text("advertised"); capacity = settings.text("max_calls")
+            urls = settings.getValue("turn_urls").jsonArray.joinToString(", ") { it.jsonPrimitive.content }
+        }
+        secret = ""
+    }
+    LaunchedEffect(Unit) { run { load(api("/admin/v0/calls")); status = api("/admin/v0/calls/status") } }
+    Text("Voice and video calls", style = MaterialTheme.typography.headlineMedium)
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Switch(enabled, { enabled = it }, enabled = !busy && configuration != null, modifier = Modifier.semantics { contentDescription = "Enable calling" })
+        Text("Enable calling")
+    }
+    Text(if (configuration?.get("settings") is JsonObject) {
+        if (status?.flag("ready") == true) "Media listener is ready. Public reachability still depends on your network."
+        else "The media listener is not ready. Check its bind address and container logs."
+    } else "Calling is disabled on this server.")
+    if (enabled) {
+        Field("Listen address and UDP port", bind, { bind = it }, enabled = !busy)
+        Field("Public IP and UDP port", advertised, { advertised = it }, enabled = !busy)
+        Text("For example, 203.0.113.10:34780. Publish UDP port 34780 in Compose and forward it to this container. An HTTP proxy does not forward call media.", style = MaterialTheme.typography.bodySmall)
+        Field("Concurrent calls (1–8)", capacity, { capacity = it }, enabled = !busy)
+        Field("TURN URLs (optional, comma separated)", urls, { urls = it }, enabled = !busy)
+        Field(if (configuration?.flag("has_turn_secret") == true) "TURN secret (leave empty to keep)" else "TURN secret", secret, { secret = it }, secret = true, enabled = !busy)
+    }
+    Text("Saving changes ends active calls.", style = MaterialTheme.typography.bodySmall)
+    val ready = !busy && configuration != null && (!enabled || (bind.isNotBlank() && advertised.isNotBlank() && capacity.toIntOrNull() in 1..8))
+    Action("Save calling settings", ready) { if (ready) run {
+        val turns = urls.split(',').map { it.trim() }.filter { it.isNotEmpty() }
+        val settings = if (!enabled) JsonNull else obj("bind" to str(bind.trim()), "advertised" to str(advertised.trim()), "max_calls" to JsonPrimitive(capacity.toInt()), "turn_urls" to JsonArray(turns.map(::str)))
+        val update = when { !enabled || turns.isEmpty() -> obj("action" to str("clear")); secret.isNotEmpty() -> obj("action" to str("set"), "value" to str(secret)); else -> obj("action" to str("keep")) }
+        load(api("/admin/v0/calls", "PUT", obj("expected_revision" to configuration!!.getValue("revision"), "settings" to settings, "turn_secret" to update)))
+        status = api("/admin/v0/calls/status")
+    } }
 }
 
 @Composable

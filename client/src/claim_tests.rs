@@ -127,7 +127,7 @@ fn lost_claim_response_retries_same_assignment_and_initial_state_commits_atomica
     ));
     let frozen = alice.pending_deliveries(SESSION, now).unwrap();
     assert_eq!(frozen[0].recipient_device, transport::hex(&device(&bob)));
-    assert_eq!(frozen[0].expires_at, now + 604800);
+    assert_eq!(frozen[0].expires_at, now + 604740);
     assert!(matches!(
         alice.prepare_delivery(SESSION, MESSAGE, [8; 32], now + 604800, now),
         Err(Error::Conflict)

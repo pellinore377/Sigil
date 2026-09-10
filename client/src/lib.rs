@@ -90,6 +90,7 @@ pub enum Error {
     Obsolete,
     Unprepared,
     DirectoryUnavailable,
+    CallingUnavailable,
     UnsupportedSession,
     RetiredSession,
     Network(network::Error),
@@ -124,6 +125,7 @@ impl From<network::Error> for Error {
 pub struct ClientStore {
     db: Connection,
     key: StorageKey,
+    connection: std::cell::RefCell<Option<(Vec<u8>, std::time::Instant, network::HttpsClient)>>,
 }
 fn binding(kind: u8, session: &Id, record: &[u8]) -> Vec<u8> {
     let mut bytes = b"Sigil/client/v0".to_vec();
@@ -450,7 +452,7 @@ impl ClientStore {
         }
         tx.commit()?;
         private_db::finish(&db)?;
-        Ok(Self { db, key })
+        Ok(Self { db, key, connection: Default::default() })
     }
 
     /// Import an already authenticated session. For new incoming handshakes use accept_initial.

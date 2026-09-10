@@ -34,13 +34,14 @@ pub enum Error {
     },
 }
 
+#[derive(Clone)]
 pub struct HttpsClient {
     agent: Agent,
     origin: String,
     server: String,
     credential: Zeroizing<String>,
     discover: bool,
-    resolved: std::sync::OnceLock<String>,
+    resolved: std::sync::Arc<std::sync::OnceLock<String>>,
 }
 const SMALL: usize = 8192;
 #[path = "admin_network.rs"]
@@ -342,7 +343,7 @@ impl HttpsClient {
             server: server.into(),
             credential: Zeroizing::new(credential.into()),
             discover: false,
-            resolved: std::sync::OnceLock::new(),
+            resolved: Default::default(),
         })
     }
 

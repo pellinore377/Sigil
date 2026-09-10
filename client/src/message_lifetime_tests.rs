@@ -63,7 +63,7 @@ fn retained_sessions_and_messages_cross_old_limits_without_reset_or_replay() {
             .send_peer_text(b, id, "retained lifetime text", now, now)
             .unwrap();
         let submit = alice
-            .prepare_delivery(session, id, own, now + 604800, now)
+            .prepare_delivery(session, id, own, now + 604740, now)
             .unwrap();
         let request = sigil_protocol::mailbox::Submit {
             recipient_device: submit.recipient_device.clone(),

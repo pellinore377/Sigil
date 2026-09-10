@@ -26,6 +26,52 @@ class ContentTest {
     @get:Rule val ui = createAndroidComposeRule<ComponentActivity>()
     private val context get() = InstrumentationRegistry.getInstrumentation().targetContext
     @Before fun isolated() { Assume.assumeTrue(context.packageName.endsWith(".acceptance")) }
+    @Test fun repeatedSendTapsWhileBusyCreateOneMessage() = runBlocking {
+        lateinit var messenger: Messenger
+        val store = androidx.lifecycle.ViewModelStore()
+        ui.runOnIdle { messenger = Messenger(context.applicationContext as Application); store.put("send", messenger) }
+        try {
+            ui.waitUntil(10_000) { messenger.state.phase == "connected" }
+            val field = Messenger::class.java.getDeclaredField("mutex").apply { isAccessible = true }
+            val queue = field.get(messenger) as kotlinx.coroutines.sync.Mutex
+            withTimeout(10_000) { queue.lock() }
+            try {
+                InstrumentationRegistry.getInstrumentation().runOnMainSync {
+                    repeat(3) { messenger.command("post", mapOf("peer" to "self", "text" to "Synthetic repeated tap", "rich" to false)) }
+                }
+            } finally { queue.unlock() }
+            withTimeout(10_000) { queue.lock() }
+            queue.unlock()
+            val messages = native("timeline", mapOf("peer" to "self")).getJSONArray("messages")
+            assertEquals(1, (0 until messages.length()).count { messages.getJSONObject(it).getString("text") == "Synthetic repeated tap" })
+        } finally { ui.runOnIdle { store.clear() } }
+    }
+    @Test fun typingAndPostingDoNotWaitForTheNetworkWorker() = runBlocking {
+        lateinit var messenger: Messenger
+        val store = androidx.lifecycle.ViewModelStore()
+        ui.runOnIdle { messenger = Messenger(context.applicationContext as Application); store.put("send", messenger) }
+        val field = NativeSync::class.java.getDeclaredField("sync").apply { isAccessible = true }
+        val network = field.get(NativeSync) as kotlinx.coroutines.sync.Mutex
+        try {
+            ui.waitUntil(10_000) { messenger.state.phase == "connected" }
+            withTimeout(10_000) { network.lock() }
+            try {
+                ui.runOnIdle { messenger.foreground(true) }
+                delay(1800)
+                val peer = messenger.state.chats.first { it.id != "self" && it.verified }.id
+                val started = SystemClock.elapsedRealtime()
+                InstrumentationRegistry.getInstrumentation().runOnMainSync {
+                    messenger.command("typing", mapOf("peer" to peer, "active" to true))
+                    messenger.command("post", mapOf("peer" to peer, "text" to "Synthetic concurrent send", "rich" to false))
+                }
+                withTimeout(3000) { while (!withContext(Dispatchers.Main) { messenger.state.sent == 1L }) delay(10) }
+                val timeline = native("timeline", mapOf("peer" to peer)).getJSONArray("messages")
+                assertTrue((0 until timeline.length()).any { timeline.getJSONObject(it).getString("text") == "Synthetic concurrent send" })
+                assertTrue(network.isLocked)
+                InstrumentationRegistry.getInstrumentation().sendStatus(0, android.os.Bundle().apply { putString("stream", "\nSIGIL_LOCAL_SEND_MS=${SystemClock.elapsedRealtime() - started}\n") })
+            } finally { ui.runOnIdle { messenger.foreground(false) }; network.unlock() }
+        } finally { ui.runOnIdle { store.clear() } }
+    }
     @Test fun timelineReadsDoNotWaitForTheNetworkCommandQueue() = runBlocking {
         lateinit var messenger: Messenger
         val store = androidx.lifecycle.ViewModelStore()

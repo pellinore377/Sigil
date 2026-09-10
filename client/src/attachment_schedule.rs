@@ -241,7 +241,10 @@ impl ClientStore {
                 (&state, &reserved),
                 finished,
                 (failed, network),
-                if attempt.is_some() { 1 } else { 5 },
+                match attempt.as_ref().map(|a| &a.result) {
+                    Some(Ok(TransferProgress::Upload(UploadStep::Idle) | TransferProgress::Download(DownloadStep::Idle) | TransferProgress::Cleanup(0))) | None => 5,
+                    _ => 0,
+                },
             )
         });
         let (next_at, scheduling_error) = match completion {

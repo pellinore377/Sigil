@@ -28,6 +28,7 @@ impl ClientStore {
         for peer in &recipients {
             peers::trusted(&self.db, &self.key, peer)?;
         }
+        self.mobile_call_available()?;
         self.start_call(request, now, history.direct, &recipients)?;
         Ok(json!({"call":transport::hex(&request)}))
     }
@@ -90,11 +91,18 @@ impl ClientStore {
                 }
             }
             Err(Error::NotFound) => {
+                self.mobile_call_available()?;
                 self.start_call(request, now, !peer.starts_with("group:"), &recipients)?;
             }
             Err(error) => return Err(error),
         }
         Ok(json!({"call":transport::hex(&request)}))
+    }
+    fn mobile_call_available(&self) -> Result<(), Error> {
+        if !self.connected_client()?.call_availability()?.enabled {
+            return Err(Error::CallingUnavailable);
+        }
+        Ok(())
     }
     pub(super) fn mobile_calls(&mut self) -> Result<Value, Error> {
         let now = conversations::now();

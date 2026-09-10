@@ -5,33 +5,32 @@ use crate::{
     incoming::tests::trust,
 };
 fn round(clients: &mut [ClientStore], now: u64) {
+    fn retry<T>(mut work: impl FnMut() -> Result<T, Error>) -> T {
+        for _ in 0..8 {
+            match work() {
+                Ok(value) => return value,
+                Err(Error::Network(crate::network::Error::Status { code: 429, retry_after_seconds: Some(wait) })) if wait <= 5 => std::thread::sleep(std::time::Duration::from_secs(wait)),
+                Err(error) => panic!("call fixture: {error:?}"),
+            }
+        }
+        panic!("call fixture exhausted rate-limit retries")
+    }
     for client in clients.iter_mut() {
-        client.replenish_prekey_online().unwrap();
+        retry(|| client.replenish_prekey_online());
+    }
+    for client in clients.iter_mut() {
+        retry(|| client.resume_calls_online(now)?.into_iter().try_for_each(|a| a.result));
+    }
+    for client in clients.iter_mut() {
+        retry(|| client.resume_outbound_online(now)?.into_iter().try_for_each(|a| a.result.map(|_| ())));
     }
     for (i, client) in clients.iter_mut().enumerate() {
-        for attempt in client.resume_calls_online(now).unwrap() {
-            attempt.result.unwrap_or_else(|e| {
-                panic!(
-                    "call worker {i}, coordinator {}: {e:?}",
-                    attempt.id == [92; 32]
-                )
-            });
-        }
-    }
-    for (i, client) in clients.iter_mut().enumerate() {
-        for attempt in client.resume_outbound_online(now).unwrap() {
-            attempt
-                .result
-                .unwrap_or_else(|e| panic!("outbound {i}: {e:?}"));
-        }
-    }
-    for (i, client) in clients.iter_mut().enumerate() {
-        for attempt in client.receive_mailbox_online(now).unwrap() {
+        for attempt in retry(|| client.receive_mailbox_online(now)) {
             attempt
                 .result
                 .unwrap_or_else(|e| panic!("incoming {i}: {e:?}"));
         }
-        client.acknowledge_incoming_online().unwrap();
+        retry(|| client.acknowledge_incoming_online());
     }
 }
 #[test]

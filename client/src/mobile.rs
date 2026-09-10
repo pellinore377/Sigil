@@ -418,6 +418,7 @@ fn error_message(error: &Error) -> String {
         Error::Network(network::Error::Configuration) => "The server address or connection configuration is invalid.",
         Error::Network(_) => "Cannot reach or verify the server. Check the address and connection.",
         Error::DirectoryUnavailable => "The contact directory is unavailable. Update the server or check account discovery.",
+        Error::CallingUnavailable => "Calling is disabled on your server. Its administrator can enable voice and video in Server settings.",
         Error::Unprepared => "This action isn't ready. Check sign-in, request acceptance, or any identity-change notice.",
         Error::Conflict => "State changed or verification does not match. Refresh before retrying.",
         Error::Limit => "A size or capacity limit was reached.",

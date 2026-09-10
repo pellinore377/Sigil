@@ -56,6 +56,8 @@ request() {
 start "$original" "$previous"
 docker exec "$container" cat /var/lib/sigil/data/admin.token > "$scratch/admin"
 headers admin
+request 200 admin GET /admin/v0/diagnostics
+previous_schema=$(jq -er '.schema' "$scratch/response.json")
 request 503 - GET /readyz
 printf '%s' '{"expected_revision":0,"settings":{"server_name":"chat.example"}}' > "$scratch/config.json"
 request 200 admin PUT /admin/v0/configuration config.json
@@ -125,6 +127,9 @@ docker kill "$container" >/dev/null
 docker rm "$container" >/dev/null
 container=
 start "$original"
+request 200 admin GET /admin/v0/diagnostics
+current_schema=$(jq -er '.schema' "$scratch/response.json")
+test "$current_schema" -ge "$previous_schema"
 request 200 - GET /versions
 jq -e '.contact_requests==[0,1] and .contact_directory==[0]' "$scratch/response.json" >/dev/null
 printf '%s' '{"username":"synthetic"}' > "$scratch/directory.json"
@@ -163,7 +168,7 @@ if docker run --rm "${runtime[@]}" --mount "source=$original,target=/var/lib/sig
     echo 'Backup unexpectedly bypassed the running server lock.' >&2; exit 1
 fi
 stop
-if [[ "$previous" != "$image" ]]; then
+if ((previous_schema < current_schema)); then
     if docker run --rm "${runtime[@]}" --mount "source=$original,target=/var/lib/sigil" "$previous" backup /var/lib/sigil/downgrade.db > "$scratch/downgrade.log" 2>&1; then
         echo 'An older binary unexpectedly opened the migrated database.' >&2; exit 1
     fi
