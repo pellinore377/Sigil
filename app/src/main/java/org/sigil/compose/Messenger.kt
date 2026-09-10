@@ -96,12 +96,12 @@ class Messenger(application: Application) : AndroidViewModel(application) {
         execute("photo_publish"); photoRevision++; refresh()
     } } }
     private fun changeWallpaper(peer: String, uri: Uri?) { scope.launch { serialized(true) { saveWallpaper(getApplication(), peer, uri); wallpaperRevision++ } } }
-    fun importPhoto(target: Map<String, Any?>, bytes: ByteArray) { scope.launch(Dispatchers.IO) {
-        try { bytes.inputStream().use { files.stage(target + ("draft" to true), "Photo.jpg", "image/jpeg", bytes.size.toLong(), it) } }
+    suspend fun importPhoto(target: Map<String, Any?>, bytes: ByteArray): Boolean = withContext(Dispatchers.IO) {
+        try { bytes.inputStream().use { files.stage(target + ("draft" to true), "Photo.jpg", "image/jpeg", bytes.size.toLong(), it) }; true }
         catch (cancelled: CancellationException) { throw cancelled }
-        catch (_: Exception) { withContext(Dispatchers.Main) { state = state.copy(issue = "Could not queue this photo.") } }
+        catch (_: Exception) { withContext(Dispatchers.Main) { state = state.copy(issue = "Could not prepare this photo. You can try again.") }; false }
         finally { bytes.fill(0) }
-    } }
+    }
     private var foreground = false
     private var nextSync = 0L
     private var nextAccess = 0L
