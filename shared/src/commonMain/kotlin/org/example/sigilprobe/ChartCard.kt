@@ -5,6 +5,7 @@ import androidx.compose.foundation.gestures.*
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.*
@@ -68,6 +69,7 @@ internal fun ChartCard(chart: ChartContent) {
 
 @Composable
 internal fun ChartPlot(chart: ChartContent, hidden: Set<Int>, selected: Int?, select: (Int) -> Unit, modifier: Modifier, zoomable: Boolean = false) {
+    val playback=LocalTextMotion.current?.clock.takeIf {!zoomable && !LocalMotion.current.reduced && LocalAppearance.current.messageEffects}
     var zoom by remember(chart) { mutableFloatStateOf(1f) }
     var pan by remember(chart) { mutableStateOf(Offset.Zero) }
     var bounds by remember { mutableStateOf(IntSize.Zero) }
@@ -121,23 +123,28 @@ internal fun ChartPlot(chart: ChartContent, hidden: Set<Int>, selected: Int?, se
             } }) {
             Canvas(Modifier.fillMaxSize().graphicsLayer { scaleX = zoom; scaleY = zoom; translationX = pan.x; translationY = pan.y }
                 .semantics { contentDescription = "${chart.kind.replaceFirstChar { it.uppercase() }} chart, ${chart.points.size} points. Values are listed below." }) {
+                val progress=FastOutSlowInEasing.transform(((playback?.elapsed ?: 2000f)/ChartMotionMillis).coerceIn(0f,1f))
                 val radius = min(size.width, size.height) * if (chart.kind == "donut") .36f else .42f
-                fun marker(index: Int, at: Offset) {
+                fun marker(index: Int, at: Offset, growth:Float=1f) {
+                    if(growth<=0f)return
                     val color = colors[index]
+                    scale(growth,growth,at) {
                     when (index % 3) {
                         0 -> drawCircle(color, 4.dp.toPx(), at)
                         1 -> drawRect(color, at - Offset(4.dp.toPx(), 4.dp.toPx()), Size(8.dp.toPx(), 8.dp.toPx()))
                         else -> drawPath(Path().apply { moveTo(at.x, at.y - 5.dp.toPx()); lineTo(at.x + 5.dp.toPx(), at.y + 4.dp.toPx()); lineTo(at.x - 5.dp.toPx(), at.y + 4.dp.toPx()); close() }, color)
                     }
                     if (selected == index) drawCircle(ink, 8.dp.toPx(), at, style = Stroke(2.dp.toPx()))
+                    }
                 }
                 if (circular) {
                     var start = -90f
                     chart.points.forEachIndexed { index, p ->
                         val sweep = p.share * 360f
                         if (index !in hidden) {
-                            drawArc(colors[index], start, sweep, chart.kind == "pie", topLeft = center - Offset(radius, radius), size = Size(radius * 2, radius * 2), style = if (chart.kind == "pie") Fill else Stroke(radius * .42f))
-                            if (p.share > .04f || selected == index) {
+                            val visibleSweep=min(sweep,(progress*360f-start-90f).coerceAtLeast(0f))
+                            drawArc(colors[index], start, visibleSweep, chart.kind == "pie", topLeft = center - Offset(radius, radius), size = Size(radius * 2, radius * 2), style = if (chart.kind == "pie") Fill else Stroke(radius * .42f))
+                            if (visibleSweep>=sweep && (p.share > .04f || selected == index)) {
                                 val angle = (start + sweep / 2) * PI.toFloat() / 180f
                                 val at = center + Offset(cos(angle), sin(angle)) * (radius * if (chart.kind == "pie") .63f else 1f)
                                 drawCircle(background, 11.dp.toPx(), at)
@@ -151,12 +158,15 @@ internal fun ChartPlot(chart: ChartContent, hidden: Set<Int>, selected: Int?, se
                     drawLine(axisColor, zero, zero + if (chart.horizontal) Offset(0f, size.height) else Offset(size.width, 0f), 1.dp.toPx())
                     if (chart.kind == "area") {
                         chart.points.indices.zipWithNext().forEach { (a, b) -> if (a !in hidden && b !in hidden) {
-                            val from = point(a, size.width, size.height); val to = point(b, size.width, size.height)
+                            val from = point(a, size.width, size.height)
+                            val fraction=(progress*(chart.points.size-1)-a).coerceIn(0f,1f)
+                            val to = from+(point(b,size.width,size.height)-from)*fraction
                             drawPath(Path().apply { moveTo(from.x, zero.y); lineTo(from.x, from.y); lineTo(to.x, to.y); lineTo(to.x, zero.y); close() }, colors[a].copy(alpha = .18f))
                         } }
                     }
                     chart.points.forEachIndexed { index, _ -> if (index !in hidden) {
-                        val at = point(index, size.width, size.height)
+                        val target = point(index, size.width, size.height)
+                        val at = if(chart.kind=="bar")if(chart.horizontal)Offset(zero.x+(target.x-zero.x)*progress,target.y) else Offset(target.x,zero.y+(target.y-zero.y)*progress) else target
                         if (chart.kind == "bar") {
                             val band = (if (chart.horizontal) size.height else size.width) / chart.points.size
                             val thickness = (band * .7f).coerceAtMost(36.dp.toPx())
@@ -164,15 +174,21 @@ internal fun ChartPlot(chart: ChartContent, hidden: Set<Int>, selected: Int?, se
                             val rect = if (chart.horizontal) Size(abs(at.x - zero.x).coerceAtLeast(1f), thickness) else Size(thickness, abs(at.y - zero.y).coerceAtLeast(1f))
                             drawRect(colors[index], top, rect)
                             if (selected == index) drawRect(ink, top, rect, style = Stroke(2.dp.toPx()))
-                            if (band >= 24.dp.toPx() || selected == index) {
+                            if (progress>=1f && (band >= 24.dp.toPx() || selected == index)) {
                                 val insetX = min(12.dp.toPx(), size.width / 2); val insetY = min(12.dp.toPx(), size.height / 2)
                                 val atLabel = if (chart.horizontal) Offset(((zero.x + at.x) / 2).coerceIn(insetX, size.width - insetX), at.y) else Offset(at.x, ((zero.y + at.y) / 2).coerceIn(insetY, size.height - insetY))
                                 drawCircle(background, 11.dp.toPx(), atLabel)
                                 drawText(labels[index], topLeft = atLabel - Offset(labels[index].size.width / 2f, labels[index].size.height / 2f))
                             }
                         } else {
-                            if (chart.kind in listOf("line", "area") && index > 0 && index - 1 !in hidden) drawLine(colors[index], point(index - 1, size.width, size.height), at, 2.dp.toPx())
-                            marker(index, at)
+                            if (chart.kind in listOf("line", "area") && index > 0 && index - 1 !in hidden) {
+                                val from=point(index-1,size.width,size.height)
+                                val fraction=(progress*(chart.points.size-1)-(index-1)).coerceIn(0f,1f)
+                                if(fraction>0f)drawLine(colors[index],from,from+(at-from)*fraction,2.dp.toPx())
+                            }
+                            val growth=if(chart.kind=="scatter")((progress-index.toFloat()/chart.points.size*.4f)/.6f).coerceIn(0f,1f)
+                                else if(progress*(chart.points.size-1)>=index)1f else 0f
+                            marker(index, at,growth)
                         }
                     } }
                 }

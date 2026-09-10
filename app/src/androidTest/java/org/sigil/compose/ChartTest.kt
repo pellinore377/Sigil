@@ -13,6 +13,39 @@ import org.sigil.*
 
 class ChartTest {
     @get:Rule val ui = createAndroidComposeRule<ComponentActivity>()
+    @Test fun new_chart_reveals_once_and_replays_without_changing_its_values() {
+        val chart=ChartContent("bar",RichText("Synthetic animated chart"),false,.5f,listOf("-4","-2","0","2","4"),emptyList(),"A\t-2\nB\t3",
+            listOf(ChartPoint(RichText("A"),.25f,.25f,"-2",null,.25f,"25"),ChartPoint(RichText("B"),.75f,.875f,"3",null,.75f,"75")))
+        val chat=ChatSummary("self","@sam:example.test","","",true,emptyList())
+        var state by mutableStateOf(MessengerState(phase="connected",chats=listOf(chat),selected="self",timelineLoaded=true))
+        ui.mainClock.autoAdvance=false
+        ui.runOnUiThread {ui.activity.setSigilContent {SigilApp(NativeCore::palette,NativeCore::analyze,state,{_,_->})}}
+        ui.mainClock.advanceTimeBy(600)
+        val message=ChatMessage("chart","sam","Chart",true,"9:33","sent",false,emptyList(),emptyList(),null,true,
+            timestamp=1000,parts=listOf(MessagePart("card","chart","Chart",chart=chart)))
+        ui.runOnUiThread {state=state.copy(messages=listOf(message))}
+        ui.mainClock.advanceTimeBy(280)
+        val plot=ui.onNodeWithContentDescription("Bar chart, 2 points. Values are listed below.")
+        val moving=plot.captureToImage().asAndroidBitmap()
+        val bounds=plot.fetchSemanticsNode().boundsInRoot.size
+        ui.mainClock.advanceTimeBy(1200)
+        val settled=plot.captureToImage().asAndroidBitmap()
+        assertFalse(moving.sameAs(settled))
+        assertEquals(bounds,plot.fetchSemanticsNode().boundsInRoot.size)
+        ui.onNodeWithText("Synthetic animated chart",useUnmergedTree=true).assertIsDisplayed().performTouchInput {longClick()}
+        ui.mainClock.advanceTimeBy(500)
+        ui.onNode(isDialog()).assertExists()
+        ui.mainClock.autoAdvance=true
+        ui.onNodeWithText("Replay animation").performScrollTo()
+        ui.mainClock.autoAdvance=false
+        ui.onNodeWithText("Replay animation").performClick()
+        ui.mainClock.advanceTimeBy(500)
+        assertFalse(plot.captureToImage().asAndroidBitmap().sameAs(settled))
+        ui.mainClock.advanceTimeBy(1200)
+        assertTrue(plot.captureToImage().asAndroidBitmap().sameAs(settled))
+        ui.onNodeWithText("-2").assertExists()
+        ui.onNodeWithText("3").assertExists()
+    }
     @Test fun chart_types_expand_select_values_toggle_points_and_copy_data() {
         var kind by mutableStateOf("pie")
         val chart = ChartContent("pie", RichText("Synthetic chart"), false, 0f, listOf("0", "1", "2", "3", "4"), listOf("0", "1", "2", "3", "4"), "A\t1\nB\t3",

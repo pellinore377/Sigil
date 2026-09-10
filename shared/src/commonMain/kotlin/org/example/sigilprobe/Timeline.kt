@@ -95,7 +95,7 @@ internal fun ConversationPage(chat: ChatSummary, state: MessengerState, draft: T
     val threadsOverview = page == "Threads" && thread == null
     val messages = if (threadsOverview) state.messages.filter { it.threadAuthor != null && it.threadMessage != null }.distinctBy { it.threadAuthor to it.threadMessage } else state.messages
     val textMotion=remember(chat.id,page,thread,state.historical) {MotionLedger()}
-    val animated=remember(messages) {messages.associate {it.author+it.id to it.textMotionDuration()}.filterValues {it>0}}
+    val animated=remember(messages) {messages.associate {it.author+it.id to it.messageMotionDuration()}.filterValues {it>0}}
     textMotion.update(messages.map {it.author+it.id},state.timelineLoaded,!state.historical && page.isEmpty(),animated.keys)
     val visibleKeys by remember {derivedStateOf {list.layoutInfo.visibleItemsInfo.map {it.key}.toSet()}}
     BackAction(thread != null) { setThread(null); if (state.historical) command("latest", emptyMap()) }
@@ -339,7 +339,7 @@ private fun MessageMenu(message: ChatMessage, origin: Rect, returnTo: Rect, grou
                 Surface(Modifier.width(232.dp).alpha(progress.value), shape = RoundedCornerShape(20.dp), color = MaterialTheme.colorScheme.surfaceVariant) {
                     Column(Modifier.padding(vertical = 6.dp)) {
                         val entries = listOf("reply" to "Reply", "forward" to "Forward", "copy" to "Copy", "thread" to "Reply in thread", "pin" to if (message.pinned) "Unpin" else "Pin", "note" to if (message.noted) "Remove from notes" else "Add to notes") +
-                            (if(message.hasTextMotion())listOf("replay" to "Replay animation") else emptyList()) +
+                            (if(message.hasMessageMotion())listOf("replay" to "Replay animation") else emptyList()) +
                             (if (message.mine && message.editable) listOf("edit" to "Edit") else emptyList()) + (if (message.mine) listOf("delete" to "Delete") else emptyList())
                         entries.forEach { (key, label) -> DropdownMenuItem({ Text(label, color = if (key == "delete") MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurface) }, { choose(key, "") },
                             leadingIcon = { Glyph(when(key) { "thread" -> "forum"; "pin" -> "push_pin"; "note" -> "description"; "copy" -> "content_copy"; else -> key }, 20) }) }
