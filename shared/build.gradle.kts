@@ -31,6 +31,7 @@ kotlin {
             implementation("org.jetbrains.kotlinx:kotlinx-browser:0.3")
             implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.9.0")
         }
+        wasmJsTest.dependencies { implementation(kotlin("test")) }
         val desktopTest by getting {
             dependencies {
                 implementation(kotlin("test"))
