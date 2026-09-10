@@ -12,6 +12,8 @@ import android.view.Surface
 import android.view.TextureView
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.layout.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -23,6 +25,7 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
 import kotlinx.coroutines.*
 import org.json.JSONObject
 import org.sigil.ChatMessage
@@ -74,15 +77,21 @@ internal fun AndroidAttachmentDraft(file: org.sigil.Transfer, modifier: Modifier
         peer = file.peer, attachment = org.sigil.AttachmentDetails(file.name, file.mediaType, file.bytes, draft = true)) }
     Box(modifier) { AndroidAttachment(message) }
 }
-private fun bitmap(context: android.content.Context, message: ChatMessage): Bitmap {
+internal fun mediaBytes(context: android.content.Context, message: ChatMessage, limit: Int): ByteArray {
     val length = message.attachment!!.bytes
-    check(length in 1..16 * 1024 * 1024)
+    check(length in 1..limit)
     val bytes = ByteArray(length.toInt())
     try {
         EncryptedMedia(context, message).use { media ->
             var at = 0
             while (at < bytes.size) { val count = media.readAt(at.toLong(), bytes, at, bytes.size - at); check(count > 0); at += count }
         }
+        return bytes
+    } catch (error: Throwable) { bytes.fill(0); throw error }
+}
+private fun bitmap(context: android.content.Context, message: ChatMessage): Bitmap {
+    val bytes = mediaBytes(context, message, 16 * 1024 * 1024)
+    try {
         return if (Build.VERSION.SDK_INT >= 28) ImageDecoder.decodeBitmap(ImageDecoder.createSource(ByteBuffer.wrap(bytes))) { decoder, info, _ ->
             val scale = maxOf(1f, maxOf(info.size.width, info.size.height) / 1600f)
             decoder.setTargetSize((info.size.width / scale).toInt().coerceAtLeast(1), (info.size.height / scale).toInt().coerceAtLeast(1))
@@ -122,7 +131,7 @@ internal fun AndroidAttachment(message: ChatMessage) {
     }
     Column(Modifier.widthIn(min = 160.dp, max = 300.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
         val picture = bitmap
-        if (picture != null) Image(picture.asImageBitmap(), file.name, Modifier.fillMaxWidth().heightIn(max = 300.dp).clickable { opened = true }, contentScale = ContentScale.Fit)
+        if (picture != null) Image(picture.asImageBitmap(), file.name, Modifier.fillMaxWidth().heightIn(max = 300.dp).clickable { opened = true }, contentScale = ContentScale.Inside)
         else {
             Text(file.name, maxLines = 2)
             Text(if (file.bytes >= 1024 * 1024) "${file.bytes / (1024 * 1024)} MB" else "${file.bytes / 1024} KB", style = MaterialTheme.typography.labelSmall)
@@ -134,9 +143,32 @@ internal fun AndroidAttachment(message: ChatMessage) {
         }
     }
     if (opened) {
-        if (image && bitmap != null) Dialog({ opened = false }) { Image(bitmap!!.asImageBitmap(), file.name, Modifier.fillMaxWidth(), contentScale = ContentScale.Fit) }
+        if (image && bitmap != null) Dialog({ opened = false }, DialogProperties(usePlatformDefaultWidth = false)) {
+            Surface(Modifier.fillMaxSize()) {
+                Column(Modifier.fillMaxSize().systemBarsPadding().padding(16.dp)) {
+                    Row(verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
+                        org.sigil.SigilIconButton({ opened = false }) { Glyph("chevron_left", 24, "Close image") }
+                        Text(file.name, Modifier.weight(1f), maxLines = 2, style = MaterialTheme.typography.titleMedium)
+                    }
+                    ImageViewer(message, bitmap!!, Modifier.weight(1f).fillMaxWidth())
+                    if (file.caption.isNotBlank()) Box(Modifier.heightIn(max = 160.dp).verticalScroll(rememberScrollState())) { org.sigil.MessageText(file.caption, org.sigil.NativeCore::analyze) }
+                }
+            }
+        }
         else if (playable) VideoDialog(message) { opened = false }
-        else LaunchedEffect(message.id) { NativeFileProvider.open(context, message); opened = false }
+        else Dialog({ opened = false }) {
+            Surface(shape = androidx.compose.foundation.shape.RoundedCornerShape(24.dp)) {
+                Column(Modifier.fillMaxWidth().padding(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    Glyph("draft", 32)
+                    Text(file.name, style = MaterialTheme.typography.titleMedium)
+                    Text("${file.bytes} bytes · ${file.mediaType}", style = MaterialTheme.typography.bodySmall)
+                    Text("An in-app preview is unavailable for this file.", style = MaterialTheme.typography.bodyMedium)
+                    if (file.caption.isNotBlank()) org.sigil.MessageText(file.caption, org.sigil.NativeCore::analyze)
+                    SigilTextButton({ NativeFileProvider.open(context, message) }) { Text("Open externally") }
+                    SigilTextButton({ opened = false }) { Text("Close") }
+                }
+            }
+        }
     }
 }
 @Composable
@@ -190,6 +222,7 @@ internal fun VideoDialog(message: ChatMessage, close: () -> Unit) {
                     Slider(position.toFloat().coerceIn(0f, duration.toFloat()), { seeking = true; position = it.toLong() }, Modifier.testTag("media-seek"), valueRange = 0f..duration.toFloat(), onValueChangeFinished = { player.seekTo(position, MediaPlayer.SEEK_CLOSEST); seeking = false })
                     Text("${mediaTime(position)} / ${mediaTime(duration)}", style = MaterialTheme.typography.labelSmall)
                 }
+                if (message.attachment!!.caption.isNotBlank()) Box(Modifier.heightIn(max = 160.dp).verticalScroll(rememberScrollState())) { org.sigil.MessageText(message.attachment!!.caption, org.sigil.NativeCore::analyze) }
                 Row { SigilTextButton({ if (playing) player.pause() else player.start(); playing = !playing }, enabled = ready && !failed) { Glyph(if (playing) "pause" else "play_arrow", 24); Text(if (playing) "Pause" else "Play") }; SigilTextButton(close) { Text("Close") } }
             }
         }
