@@ -8,6 +8,16 @@ import org.junit.Test
 import kotlin.test.*
 
 class RichTextTest {
+    @Test fun code_viewers_never_extract_concealed_ranges_and_keep_utf16_offsets() {
+        val value = RichText("👋\nlet x = 1;\nEnd", listOf(RichSpan(3, 13, flags = setOf("code"))), listOf(RichBlock(3, 13, "code", language = "rust")), listOf(CodeToken(3, 6, "keyword")))
+        val block = visibleCodeBlocks(value).single()
+        val code = richSlice(value, block.start, block.end)
+        assertEquals("let x = 1;", code.text)
+        assertEquals(CodeToken(0, 3, "keyword"), code.codeTokens.single())
+        assertEquals(0, code.spans.single().start)
+        assertEquals(10, code.spans.single().end)
+        assertTrue(visibleCodeBlocks(value.copy(spans = listOf(RichSpan(0, 13, reveal = "spoiler")))).isEmpty())
+    }
     @Test fun hidden_text_has_no_semantic_content_or_link_until_revealed() {
         val value = RichText("A secret end", listOf(RichSpan(2, 8, reveal = "spoiler", link = "https://example.com/secret")))
         var revealed = -1

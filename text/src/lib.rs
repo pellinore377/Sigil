@@ -3,6 +3,7 @@
 pub mod action;
 mod blocks;
 mod card_parse;
+pub mod code;
 pub mod composition;
 pub mod contact;
 pub mod data;

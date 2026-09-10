@@ -1,6 +1,7 @@
 package org.sigil
 
 import androidx.compose.foundation.gestures.*
+import androidx.compose.foundation.layout.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
@@ -74,6 +75,21 @@ internal fun richPresentation(value: RichText, revealed: Set<Int>, codeFont: Fon
 
 @Composable
 fun RichMessageText(value: RichText, modifier: Modifier = Modifier, style: TextStyle = MaterialTheme.typography.bodyLarge) {
+    val code = remember(value) { visibleCodeBlocks(value) }
+    if (code.isEmpty()) { RichInlineText(value, modifier, style); return }
+    Column(modifier, verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        var start = 0
+        code.forEach { block ->
+            if (block.start > start) richSlice(value, start, block.start).takeIf { it.text.isNotBlank() }?.let { RichInlineText(it, style = style) }
+            CodeBlock(richSlice(value, block.start, block.end), block.language)
+            start = block.end
+        }
+        if (start < value.text.length) richSlice(value, start, value.text.length).takeIf { it.text.isNotBlank() }?.let { RichInlineText(it, style = style) }
+    }
+}
+
+@Composable
+private fun RichInlineText(value: RichText, modifier: Modifier = Modifier, style: TextStyle = MaterialTheme.typography.bodyLarge) {
     var revealed by remember(value) { mutableStateOf(emptySet<Int>()) }
     var layout by remember { mutableStateOf<TextLayoutResult?>(null) }
     val font = LocalCodeFont.current
