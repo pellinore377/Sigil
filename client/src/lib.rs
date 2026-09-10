@@ -90,6 +90,7 @@ pub enum Error {
     Obsolete,
     Unprepared,
     DirectoryUnavailable,
+    SharedContactChanged,
     CallingUnavailable,
     UnsupportedSession,
     RetiredSession,

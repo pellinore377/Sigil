@@ -67,6 +67,12 @@ enum Command {
         peer: String,
         action: String,
     },
+    ContactOpen {
+        peer: String,
+        author: String,
+        message: String,
+        card: String,
+    },
     IdentityAccept {
         peer: String,
         review: String,
@@ -451,6 +457,7 @@ fn error_message(error: &Error) -> String {
         Error::Network(network::Error::Configuration) => "The server address or connection configuration is invalid.",
         Error::Network(_) => "Cannot reach or verify the server. Check the address and connection.",
         Error::DirectoryUnavailable => "The contact directory is unavailable. Update the server or check account discovery.",
+        Error::SharedContactChanged => "This address now refers to a different account than the shared contact. Ask for an updated contact card.",
         Error::CallingUnavailable => "Calling is disabled on your server. Its administrator can enable voice and video in Server settings.",
         Error::Unprepared => "This action isn't ready. Check sign-in, request acceptance, or any identity-change notice.",
         Error::Conflict => "State changed or verification does not match. Refresh before retrying.",
@@ -685,6 +692,9 @@ impl ClientStore {
                 self.mobile_accept_identity(&peer, id(&review)?)
             }
             Command::ContactRequest { peer, action } => self.mobile_request(&peer, &action),
+            Command::ContactOpen { peer, author, message, card } => {
+                self.mobile_open_contact_card(&peer, reference(&author, &message)?, id(&card)?)
+            }
             Command::ContactRefresh {} => {
                 self.mobile_contact_sync(true)?;
                 self.mobile_state()

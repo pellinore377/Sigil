@@ -329,6 +329,39 @@ class ContentTest {
             scope.cancel();bytes.fill(0)
         }
     }
+    @Test fun encryptedCsvDraftPagesCellsAndKeepsCaptionWithoutSending() = runBlocking {
+        val bytes=("Name,Value\n"+(1..130).joinToString("\n") { "Item $it,$it" }).toByteArray()
+        val scope=CoroutineScope(SupervisorJob()+Dispatchers.Main)
+        val files=NativeFiles(context.applicationContext as Application,scope,{_,_->},{fail(it)})
+        var request:String?=null
+        try {
+            withContext(Dispatchers.IO) { bytes.inputStream().use { files.stage(mapOf("peer" to "self","draft" to true),"Synthetic table.csv","text/csv",bytes.size.toLong(),it) } }
+            request=native("files").getJSONArray("uploads").getJSONObject(0).getString("request")
+            val message=ChatMessage(request,"","",true,"","",false,emptyList(),emptyList(),null,true,peer="self",attachment=AttachmentDetails("Synthetic table.csv","text/csv",bytes.size.toLong(),"The table caption.",draft=true))
+            ui.setContent { androidx.compose.material3.MaterialTheme { AndroidAttachment(message) } }
+            ui.onNodeWithText("Download").performClick()
+            ui.waitUntil(5000) { ui.onAllNodesWithText("Open").fetchSemanticsNodes().isNotEmpty() }
+            ui.onNodeWithText("Open").performClick()
+            ui.waitUntil(15_000) { ui.onAllNodesWithText("Rows 1–128 of 131").fetchSemanticsNodes().isNotEmpty() }
+            ui.onNodeWithText("The table caption.").assertIsDisplayed()
+            ui.onNodeWithContentDescription("Row 2, column 1").performClick()
+            ui.onNodeWithText("Copy cell").performClick()
+            assertEquals("Item 1",(context.getSystemService(android.content.Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager).primaryClip!!.getItemAt(0).text.toString())
+            ui.onNodeWithText("Close cell").performClick()
+            ui.onNodeWithContentDescription("Next rows").performClick()
+            ui.waitUntil(15_000) { ui.onAllNodesWithText("Rows 129–131 of 131").fetchSemanticsNodes().isNotEmpty() }
+            ui.onNodeWithText("Item 130").performScrollTo().assertIsDisplayed()
+            ui.onNodeWithContentDescription("Next rows").assertIsNotEnabled()
+            ui.onNodeWithContentDescription("Previous rows").performClick()
+            ui.waitUntil(15_000) { ui.onAllNodesWithText("Rows 1–128 of 131").fetchSemanticsNodes().isNotEmpty() }
+            ui.onNodeWithContentDescription("Close file").performClick()
+            assertTrue(native("files").getJSONArray("uploads").getJSONObject(0).getBoolean("draft"))
+        } finally {
+            ui.runOnUiThread { ui.activity.setContentView(android.widget.FrameLayout(ui.activity)) }
+            request?.let { native("file_cancel",mapOf("request" to it)) }
+            scope.cancel();bytes.fill(0)
+        }
+    }
     @Test fun encryptedImageDraftOpensZoomsAndKeepsItsCaptionWithoutSending() = runBlocking {
         val bitmap = android.graphics.Bitmap.createBitmap(2400, 1600, android.graphics.Bitmap.Config.ARGB_8888)
         bitmap.eraseColor(Color.rgb(20, 100, 180))

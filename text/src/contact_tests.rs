@@ -13,6 +13,22 @@ fn contact(id: u8, address: &str) -> Contact {
 }
 
 #[test]
+fn contact_view_omits_remote_images_and_concealed_vcard_copy() {
+    let mut value=contact(1,"@user:example.org");
+    value.avatar_url=Some("https://remote.example/tracking.png".into());
+    let canonical=value.body().unwrap();
+    let view=value.presentation().unwrap();
+    assert!(!view.to_string().contains("remote.example"));
+    assert_eq!(view["address"],"@user:example.org");
+    assert_eq!(view["vcard"],value.vcard().unwrap());
+    assert_eq!(canonical,value.body().unwrap());
+    value.display_name=parse("spoiler::Private name;",Limits::default()).unwrap();
+    let view=value.presentation().unwrap();
+    assert!(view["vcard"].is_null());
+    assert!(!view["name"]["spans"].as_array().unwrap().is_empty());
+}
+
+#[test]
 fn mentions_bind_only_selected_identities_and_redaction_removes_metadata() {
     let known = [
         contact(1, "@user:one.example"),

@@ -11,6 +11,39 @@ fn count(db: &rusqlite::Connection, table: &str) -> i64 {
         .unwrap()
 }
 #[test]
+fn shared_contact_action_binds_the_account_without_sending_a_request_or_accepting_replacement() {
+    use sigil_protocol::text::{contact::Contact as SharedContact, structured::{Card, Construct}, Text};
+    let (dir, _fixture, mut alice, mut bob, now) = crate::claims::tests::pair();
+    let server = rusqlite::Connection::open(dir.path().join("server.db")).unwrap();
+    server.execute("DELETE FROM allowed_senders", []).unwrap();
+    alice.publish_device_binding_online().unwrap();
+    bob.publish_device_binding_online().unwrap();
+    let author = alice.account_reference().unwrap();
+    for (number, identity, view_once) in [(71u8,[7;32],false),(72,bob.account_reference().unwrap(),false),(73,bob.account_reference().unwrap(),true)] {
+        let card = Card { id:[number;32],creator:author,created_at:now,content:Construct::Contact(SharedContact {
+            user_id:identity,address:"@bob:chat.example".into(),display_name:Text::plain("Synthetic Bob",Default::default()).unwrap(),avatar_url:Some("https://external.example/avatar.png".into()),
+        }) };
+        alice.mobile_action("self",&transport::hex(&card.id),now,Action::Post {body:Body::Rich(card.to_bytes().unwrap()),reply:None,thread:None,expires_at:None,view_once}).unwrap();
+        if !view_once {
+            let timeline:Value=serde_json::from_str(&alice.mobile_command(r#"{"command":"timeline","peer":"self"}"#)).unwrap();
+            assert_eq!(timeline["ok"],true);
+            let part=&timeline["value"]["messages"][0]["parts"][0];
+            assert_eq!(part["kind"],"contact");
+            assert_eq!(part["contact"]["identity"],transport::hex(&identity));
+            assert!(!part.to_string().contains("external.example"));
+        }
+        let target=Reference {author,message:card.id};
+        let result=alice.mobile_open_contact_card("self",target,card.id);
+        match number {
+            71 => { assert!(matches!(result,Err(Error::SharedContactChanged)));assert_eq!(count(&alice.db,"mobile_contacts"),0); }
+            72 => { let value=result.unwrap();assert!(value["open"].as_str().unwrap().starts_with("dm:"));assert_eq!(count(&alice.db,"mobile_contacts"),1); }
+            _ => assert!(matches!(result,Err(Error::Obsolete))),
+        }
+        assert_eq!(count(&server,"contact_requests"),0);
+        assert_eq!(count(&server,"allowed_senders"),0);
+    }
+}
+#[test]
 fn directory_contacts_require_acceptance_and_preserve_trust_after_restart() {
     let (dir, _fixture, mut alice, mut bob, _) = crate::claims::tests::pair();
     let server = rusqlite::Connection::open(dir.path().join("server.db")).unwrap();

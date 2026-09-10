@@ -29,7 +29,7 @@ internal fun PdfViewer(message: ChatMessage, close: () -> Unit) {
     var loading by remember { mutableStateOf(true) }
     var zoom by remember(index) { mutableFloatStateOf(1f) }
     var pan by remember(index) { mutableStateOf(Offset.Zero) }
-    val session=remember(message.id,retry) { runCatching { PdfSession(context) }.getOrNull() }
+    val session=remember(message.id,retry) { runCatching { FilePreviewSession(context) }.getOrNull() }
     DisposableEffect(session) { onDispose { session?.close() } }
     LaunchedEffect(session,index) {
         failed=false; loading=true
@@ -78,7 +78,7 @@ internal fun PdfViewer(message: ChatMessage, close: () -> Unit) {
                 }
                 Row(Modifier.fillMaxWidth(),horizontalArrangement=Arrangement.SpaceBetween,verticalAlignment=Alignment.CenterVertically) {
                     SigilIconButton({index--},enabled=!loading && index>0) { Glyph("chevron_left",24,"Previous PDF page") }
-                    Text(if(shown==null)"PDF" else "Page ${index+1} of ${shown.pages}",Modifier.semantics { liveRegion=LiveRegionMode.Polite },style=MaterialTheme.typography.labelLarge)
+                    Text(if(shown==null)"PDF" else "Page ${shown.index+1} of ${shown.pages}",Modifier.semantics { liveRegion=LiveRegionMode.Polite },style=MaterialTheme.typography.labelLarge)
                     SigilIconButton({index++},enabled=!loading && shown!=null && index+1<shown.pages) { Glyph("chevron_right",24,"Next PDF page") }
                 }
                 if(file.caption.isNotBlank()) Box(Modifier.heightIn(max=120.dp).verticalScroll(rememberScrollState())) { MessageText(file.caption,NativeCore::analyze) }

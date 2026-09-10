@@ -13,7 +13,7 @@ import java.util.concurrent.*
 internal const val PdfPreviewMagic = 0x53475031
 internal const val PdfPreviewPixels = 4 * 1024 * 1024
 
-class PdfPreviewService : Service() {
+class FilePreviewService : Service() {
     private val main = Handler(Looper.getMainLooper())
     private val executor = ThreadPoolExecutor(1,1,0L,TimeUnit.MILLISECONDS,ArrayBlockingQueue(1))
     private val timeout = Runnable { android.os.Process.killProcess(android.os.Process.myPid()) }
@@ -22,7 +22,11 @@ class PdfPreviewService : Service() {
         val output = message.data.getParcelable<ParcelFileDescriptor>("output")
         val index = message.arg1
         val width = message.arg2
-        if (message.what != 1 || input == null || output == null || index !in 0..99_999 || width !in 32..2048) {
+        val format=message.data.getString("format")
+        val request=message.data.getString("request")
+        val pdf=message.what==1 && index in 0..99_999 && width in 32..2048
+        val portable=message.what==2 && format!=null && format.length<=32 && request!=null && request.length<=1024
+        if ((!pdf && !portable) || input == null || output == null) {
             input?.close(); output?.close()
         } else {
             try { executor.execute {
@@ -30,7 +34,8 @@ class PdfPreviewService : Service() {
                 try {
                     input.use { descriptor ->
                         require(descriptor.statSize in 1..128L*1024*1024)
-                        PdfRenderer(descriptor).use { renderer ->
+                        if(portable) output.use { require(NativePreview.render(descriptor.fd,it.fd,format!!,request!!)) }
+                        else PdfRenderer(descriptor).use { renderer ->
                             require(renderer.pageCount in 1..100_000 && index < renderer.pageCount)
                             renderer.openPage(index).use { page ->
                                 require(page.width > 0 && page.height > 0)

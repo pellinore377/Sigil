@@ -246,7 +246,10 @@ impl ClientStore {
                 value["kind"] = json!("utility");
                 value["utility"] = utility.presentation().map_err(|_| Error::InvalidStore)?;
             }
-            _ => {}
+            Construct::Contact(contact) => {
+                value["kind"] = json!("contact");
+                value["contact"] = contact.presentation().map_err(|_| Error::InvalidStore)?;
+            }
         }
         Ok(value)
     }
@@ -258,6 +261,13 @@ impl ClientStore {
             _ => None,
         }).ok_or(Error::NotFound)?;
         CardReference::of(&card).map_err(|_| Error::InvalidStore)
+    }
+    pub(super) fn mobile_open_contact_card(&mut self, peer: &str, target: Reference, card: Id) -> Result<Value, Error> {
+        let conversation = self.mobile_conversation(peer)?;
+        let reference = self.mobile_card_reference(conversation, target, card)?;
+        let state = self.card_state(conversation, reference)?;
+        let Construct::Contact(contact) = state.definition.content else { return Err(Error::InvalidEvent) };
+        self.mobile_find_bound(&contact.address, Some(contact.user_id))
     }
     #[allow(clippy::too_many_arguments)]
     pub(super) fn mobile_card_action(

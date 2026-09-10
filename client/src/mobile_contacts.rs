@@ -263,17 +263,23 @@ impl ClientStore {
         Ok(directory)
     }
     pub(super) fn mobile_find(&mut self, address: &str) -> Result<Value, Error> {
+        self.mobile_find_bound(address, None)
+    }
+    pub(super) fn mobile_find_bound(&mut self, address: &str, expected: Option<Id>) -> Result<Value, Error> {
         let found = self.discover_account_online(address)?;
         let (username, server) = address
             .strip_prefix('@')
             .and_then(|v| v.split_once(':'))
             .ok_or(Error::InvalidEvent)?;
         let account = id(&found.account)?;
+        let key = event::account_reference(server, &account);
+        if expected.is_some_and(|reference| reference != key) {
+            return Err(Error::SharedContactChanged);
+        }
         let own = self.connection_session()?.ok_or(Error::Unprepared)?;
         if address == own.address {
             return Ok(json!({"open":"self"}));
         }
-        let key = event::account_reference(server, &account);
         let mut contact = match self.contact(key) {
             Ok(value) if value.username == username => value,
             Ok(_) => return Err(Error::Conflict),
@@ -296,7 +302,9 @@ impl ClientStore {
         };
         self.save_contact(&contact)?;
         self.contact_peers(&mut contact, None)?;
-        self.mobile_state()
+        let mut state = self.mobile_state()?;
+        if expected.is_some() { state["open"] = json!(contact.display()); }
+        Ok(state)
     }
     pub(super) fn mobile_contact_chats(&mut self, chats: &mut Vec<Value>) -> Result<(), Error> {
         let ids = self

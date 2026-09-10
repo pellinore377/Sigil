@@ -16,6 +16,9 @@ import org.sigil.DiagramEdge
 import org.sigil.DiagramEntry
 
 internal fun JSONObject.richText(): RichText? = optJSONObject("rich")?.let { it.richValue() }
+internal fun JSONObject.contactContent(): org.sigil.ContactContent? = optJSONObject("contact")?.let { c ->
+    org.sigil.ContactContent(c.getString("address"),c.getJSONObject("name").richValue(),c.getString("identity"),if(c.isNull("vcard"))null else c.getString("vcard"))
+}
 internal fun JSONObject.richValue(): RichText {
     val rich = this
     fun JSONArray.objects() = (0 until length()).map(::getJSONObject)

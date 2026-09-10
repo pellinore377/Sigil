@@ -36,7 +36,7 @@ private fun obj(vararg pairs: Pair<String, JsonElement>) = JsonObject(pairs.toMa
 private fun str(value: String) = JsonPrimitive(value)
 private fun JsonElement.text(key: String) = jsonObject[key]?.jsonPrimitive?.contentOrNull.orEmpty()
 private fun JsonElement.flag(key: String) = jsonObject[key]?.jsonPrimitive?.booleanOrNull == true
-private suspend fun api(path: String, method: String = "GET", body: JsonElement? = null): JsonElement = suspendCancellableCoroutine { c ->
+internal suspend fun api(path: String, method: String = "GET", body: JsonElement? = null): JsonElement = suspendCancellableCoroutine { c ->
     val request = XMLHttpRequest()
     request.open(method, path)
     request.timeout = 30000
@@ -293,12 +293,12 @@ private fun OidcForm(status: JsonElement, busy: Boolean, run: (suspend () -> Uni
 private fun Dashboard(status: JsonElement, busy: Boolean, run: (suspend () -> Unit) -> Unit) {
     var page by remember { mutableStateOf("Overview") }
     Column(Modifier.widthIn(max = 1100.dp).fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(24.dp)) {
-        Text("Your server, at a glance.", style = MaterialTheme.typography.displaySmall)
+        Text("Administration", style = MaterialTheme.typography.displaySmall)
         Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             for (tab in listOf("Overview", "Users", "Groups", "Authentication", "Server")) AdminTab(tab, page == tab, !busy) { page = tab }
         }
         when (page) {
-            "Overview" -> Overview(run)
+            "Overview" -> AdminOverview { page=it }
             "Users" -> Users(busy, run)
             "Groups" -> GroupRecords(busy, run)
             "Authentication" -> Column(Modifier.widthIn(max = 680.dp), verticalArrangement = Arrangement.spacedBy(18.dp)) {
@@ -326,20 +326,6 @@ private fun UserPasswordPolicy(busy: Boolean, run: (suspend () -> Unit) -> Unit)
         Text("Allow user password sign-in", Modifier.padding(start = 12.dp))
     }
     Text("Users with a password can sign in even when SSO is enabled. Set passwords under Users → Account access. Disabling this leaves existing devices signed in.", style = MaterialTheme.typography.bodySmall)
-}
-@Composable
-private fun Overview(run: (suspend () -> Unit) -> Unit) {
-    var diagnostics by remember { mutableStateOf<JsonElement?>(null) }
-    LaunchedEffect(Unit) { run { diagnostics = api("/admin/v0/diagnostics") } }
-    Text("Encrypted correspondence", style = MaterialTheme.typography.headlineMedium)
-    Text("This server stores encrypted correspondence. Administration cannot read messages or reveal private group membership.")
-    diagnostics?.let { data ->
-        for ((key, label) in listOf("accounts" to "Active accounts", "devices" to "Active devices", "mailbox_pending" to "Messages waiting for delivery", "federation_pending" to "Federated deliveries pending", "federation_failed_peers" to "Servers needing attention", "push_pending" to "Notifications pending", "attachment_bytes" to "Encrypted attachments", "recovery_bytes" to "Encrypted recovery data", "database_bytes" to "Database storage", "version" to "Server version")) {
-            val value = data.text(key)
-            val displayed = if (key.endsWith("_bytes")) value.toLongOrNull()?.let { if (it >= 1048576) "${it / 1048576} MiB" else "${it / 1024} KiB" } ?: value else value
-            Row(Modifier.fillMaxWidth().padding(vertical = 6.dp), horizontalArrangement = Arrangement.SpaceBetween) { Text(label, Modifier.weight(1f)); Text(displayed) }
-        }
-    }
 }
 @Composable
 private fun Users(busy: Boolean, run: (suspend () -> Unit) -> Unit) {

@@ -20,8 +20,8 @@ class PdfPreviewTest {
         val bad=java.io.File(context.cacheDir,"synthetic-invalid.pdf")
         syntheticPdf().also { file.writeBytes(it); it.fill(0) }
         bad.writeText("This is synthetic invalid PDF content.")
-        lateinit var session:PdfSession
-        ui.runOnIdle { session=PdfSession(context) }
+        lateinit var session:FilePreviewSession
+        ui.runOnIdle { session=FilePreviewSession(context) }
         try {
             for(index in 0..1) {
                 val page=session.render(ParcelFileDescriptor.open(file,ParcelFileDescriptor.MODE_READ_ONLY),index,400)
@@ -30,7 +30,7 @@ class PdfPreviewTest {
             }
             val process=InstrumentationRegistry.getInstrumentation().uiAutomation.executeShellCommand("ps -A -o UID,NAME").use { fd ->
                 ParcelFileDescriptor.AutoCloseInputStream(fd).bufferedReader().use { it.readText() }
-            }.lineSequence().first { it.contains("${context.packageName}:pdf_preview") }
+            }.lineSequence().first { it.contains("${context.packageName}:file_preview") }
             assertNotEquals(android.os.Process.myUid().toString(),process.trim().substringBefore(' '))
             assertTrue(process.trim().substringBefore(' ').all(Char::isDigit))
             val workerUid=process.trim().substringBefore(' ').toInt()

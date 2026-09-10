@@ -4552,11 +4552,14 @@ version = "0.1.0"
 dependencies = [
  "getrandom 0.4.3",
  "jni 0.21.1",
+ "libc",
  "qrcode",
  "rqrr",
+ "serde_json",
  "sigil-calls",
  "sigil-client",
  "sigil-crypto",
+ "sigil-media",
  "tokio",
  "zeroize",
 ]

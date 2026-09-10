@@ -23,6 +23,9 @@ internal fun MessageCards(message: ChatMessage, analyze: (String) -> String, com
             else if (part.diagram != null) DiagramCard(part.diagram)
             else if (part.utility != null) UtilityCard(part.utility)
             else if (part.service != null) ServiceCard(part.service)
+            else if (part.contact != null) ContactCard(part.contact, command?.let { action -> {
+                action("contact_open",mapOf("peer" to message.peer,"author" to message.author,"message" to message.id,"card" to part.id))
+            } })
             else Column(Modifier.widthIn(min = 180.dp, max = 280.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                 val icon = when (part.kind) { "note" -> "description"; "checklist" -> "checklist"; "task" -> "assignment"; "poll" -> "ballot"; "reminder" -> "notifications_active"; "timer", "countdown", "ago" -> "timer"; else -> "article" }
                 Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) { Glyph(icon, 18); Text(part.kind.replaceFirstChar { it.uppercase() }, style = MaterialTheme.typography.labelMedium) }
