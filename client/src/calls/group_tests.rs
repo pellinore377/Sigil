@@ -4,17 +4,17 @@ use crate::{
     connection::tests::{credential, prepare},
     incoming::tests::trust,
 };
-fn round(clients: &mut [ClientStore], now: u64) {
-    fn retry<T>(mut work: impl FnMut() -> Result<T, Error>) -> T {
-        for _ in 0..8 {
-            match work() {
-                Ok(value) => return value,
-                Err(Error::Network(crate::network::Error::Status { code: 429, retry_after_seconds: Some(wait) })) if wait <= 5 => std::thread::sleep(std::time::Duration::from_secs(wait)),
-                Err(error) => panic!("call fixture: {error:?}"),
-            }
+fn retry<T>(mut work: impl FnMut() -> Result<T, Error>) -> T {
+    for _ in 0..8 {
+        match work() {
+            Ok(value) => return value,
+            Err(Error::Network(crate::network::Error::Status { code: 429, retry_after_seconds: Some(wait) })) if wait <= 5 => std::thread::sleep(std::time::Duration::from_secs(wait)),
+            Err(error) => panic!("call fixture: {error:?}"),
         }
-        panic!("call fixture exhausted rate-limit retries")
     }
+    panic!("call fixture exhausted rate-limit retries")
+}
+fn round(clients: &mut [ClientStore], now: u64) {
     for client in clients.iter_mut() {
         retry(|| client.replenish_prekey_online());
     }
@@ -534,26 +534,19 @@ fn group_call(continuation: bool, pending: bool) {
     clients[controller]
         .prepare_prekey_claim(request, binding.device, binding.identity)
         .unwrap();
-    clients[controller]
-        .claim_prekey_online(request, now)
-        .unwrap();
+    retry(|| clients[controller].claim_prekey_online(request, now));
     clients[controller]
         .start_claimed_initial(request, session, message, b"not a call control", now)
         .unwrap();
     assert_eq!(
-        clients[controller]
-            .send_pending_online(session, now)
-            .unwrap()
-            .accepted,
+        retry(|| clients[controller].send_pending_online(session, now)).accepted,
         1
     );
     let before: i64 = clients[recipient]
         .db
         .query_row("SELECT count(*) FROM sessions", [], |r| r.get(0))
         .unwrap();
-    assert!(clients[recipient]
-        .receive_mailbox_online(now)
-        .unwrap()
+    assert!(retry(|| clients[recipient].receive_mailbox_online(now))
         .into_iter()
         .any(|attempt| matches!(attempt.result, Err(Error::Unprepared))));
     assert_eq!(
