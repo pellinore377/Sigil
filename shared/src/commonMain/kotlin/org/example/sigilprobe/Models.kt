@@ -46,9 +46,10 @@ data class PushSettings(val enabled: Boolean, val status: String, val distributo
 data class AccountAccess(val configuration: Long, val transition: Long, val issuer: String?, val linked: Boolean, val retiring: Boolean, val acknowledged: Boolean, val linkPending: Boolean)
 data class SearchHit(val peer: String, val id: String, val author: String, val text: String, val time: String,
     val pinned: Boolean = false, val noted: Boolean = false, val kind: String = "Text", val thread: Boolean = false, val threadTarget: ThreadTarget? = null)
+data class EditDraft(val peer: String, val author: String, val message: String, val source: String)
 data class MessengerState(val phase: String = "loading", val address: String = "", val fingerprint: String = "", val device: String = "",
     val chats: List<ChatSummary> = emptyList(), val selected: String? = null, val messages: List<ChatMessage> = emptyList(),
-    val more: Boolean = false, val busy: Boolean = false, val issue: String? = null, val sent: Long = 0, val sentText: String? = null,
+    val more: Boolean = false, val busy: Boolean = false, val issue: String? = null, val sent: Long = 0, val sentText: String? = null, val editDraft: EditDraft? = null,
     val loginAddress: String = "", val loginMethods: LoginMethods? = null, val discovering: Boolean = false, val discoveryIssue: String? = null,
     val collectionsEnabled: Boolean = false, val collections: List<CollectionItem> = emptyList(),
     val searchHits: List<SearchHit> = emptyList(), val searching: Boolean = false, val searchQuery: String = "",

@@ -6,6 +6,31 @@ struct SourceSpan {
     range: Range<usize>,
     effects: Effects,
 }
+/// Byte ranges in the unmodified authoring source, including delimiters.
+pub struct EditorSpan {
+    pub start: usize,
+    pub end: usize,
+    pub prefix: usize,
+    pub suffix: usize,
+    pub effects: Effects,
+}
+
+pub fn editor_spans(source: &str) -> Result<Vec<EditorSpan>, Error> {
+    if source.len() > Limits::default().source_bytes { return Err(Error::Limit); }
+    let syntax = syntax(source)?;
+    let delimiter = |at| syntax.edits.get(syntax.edits.partition_point(|edit| edit.range.start < at))
+        .filter(|edit| edit.range.start == at && edit.replacement.is_empty())
+        .map_or(0, |edit| edit.range.end - edit.range.start);
+    let mut result = Vec::new();
+    for span in &syntax.spans {
+        if syntax.redacted(&span.range) { continue; }
+        let prefix = delimiter(span.range.start);
+        let suffix = delimiter(span.range.end);
+        if span.range.start + prefix >= span.range.end { continue; }
+        result.push(EditorSpan { start:span.range.start, end:span.range.end+suffix, prefix, suffix, effects:span.effects.clone() });
+    }
+    Ok(result)
+}
 struct Edit {
     range: Range<usize>,
     replacement: &'static str,

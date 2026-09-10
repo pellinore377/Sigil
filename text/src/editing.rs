@@ -158,3 +158,64 @@ pub fn at_revision(action: &Action, card: &Card, revision: Option<&Action>) -> R
     }
     Ok(value)
 }
+
+/// Returns authoring syntax only when reparsing preserves the entire canonical value.
+pub fn text_source(text: &crate::Text) -> Option<String> {
+    use unicode_segmentation::UnicodeSegmentation;
+    if !text.blocks().is_empty() || !text.mentions().is_empty() { return None; }
+    fn literal(value: &str) -> String {
+        let mut result = String::new();
+        for c in value.chars() { if c.is_ascii_punctuation() { result.push('\\'); } result.push(c); }
+        result
+    }
+    let offsets: Vec<_> = text.body().grapheme_indices(true).map(|(at,_)|at).chain(std::iter::once(text.body().len())).collect();
+    let mut result = String::new();
+    let mut at = 0;
+    for span in text.spans() {
+        let start = offsets[span.start as usize]; let end = offsets[span.end as usize];
+        result.push_str(&literal(&text.body()[at..start]));
+        let body = &text.body()[start..end];
+        let e = &span.effects;
+        let mut source = if e.code {
+            let count = body.split(|c| c!='`').map(str::len).max().unwrap_or(0)+1;
+            let marker = "`".repeat(count);
+            let pad = body.starts_with(['`',' ']) || body.ends_with(['`',' ']);
+            format!("{marker}{}{body}{}{marker}",if pad {" "} else {""},if pad {" "} else {""})
+        } else { literal(body) };
+        if let Some(url) = &e.link { source = format!("[{source}]({})",url.replace('(',"\\(").replace(')',"\\)")); }
+        let mut tokens = Vec::new();
+        for (enabled,token) in [(e.underline,"underline"),(e.mono,"mono"),(e.mark,"mark")] { if enabled { tokens.push(token.into()); } }
+        if let Some(paint) = &e.paint { tokens.push(match paint {
+            crate::Paint::Solid { color } => String::from(*color),
+            crate::Paint::Gradient { stops } => stops.iter().map(|c|String::from(*c)).collect::<Vec<_>>().join("-"),
+            crate::Paint::Rainbow => "rainbow".into(), crate::Paint::Theme => return None,
+        }); }
+        if let Some(size) = e.size { tokens.push(format!("{}{}",if size>0 {"big"} else {"small"},size.unsigned_abs())); }
+        if let Some(reveal) = e.reveal { tokens.push(if reveal==crate::Reveal::Spoiler {"spoiler"} else {"scratch"}.into()); }
+        if let Some(animation) = e.animation { tokens.push(format!("{animation:?}").to_ascii_lowercase()); }
+        if !tokens.is_empty() { source = format!("{}::{source};",tokens.join("::")); }
+        for (enabled,marker) in [(e.strike,"~~"),(e.italic,"*"),(e.bold,"**")] { if enabled { source = format!("{marker}{source}{marker}"); } }
+        result.push_str(&source);
+        at = end;
+    }
+    result.push_str(&literal(&text.body()[at..]));
+    (crate::parse(&result,Default::default()).ok().as_ref()==Some(text)).then_some(result)
+}
+
+#[cfg(test)]
+mod source_tests {
+    use super::text_source;
+    #[test]
+    fn inline_source_round_trips_styles_code_links_unicode_and_redaction() {
+        for source in ["plain **bold** and *italic*", "***bold and italic***", "a**partial**word", "underline::bold::Hello; red-blue::café;", "mono::green::status;", "mark::red::remember;", "small3::little; big2::large;", "spoiler::private; scratch::covered;", "wave::hello;", "`**literal**`", "`` `a` ``", "👩🏽‍💻 **שלום** e\u{301}", "[A link](https://example.test/a\\(b\\))", r"\*literal\* and \bold::literal;", "redact::SYNTHETIC_SECRET; **after**"] {
+            let text = crate::parse(source,Default::default()).unwrap();
+            let saved = text_source(&text).unwrap_or_else(||panic!("Cannot reconstruct {source}"));
+            assert_eq!(crate::parse(&saved,Default::default()).unwrap().body(),text.body());
+            assert!(!saved.contains("SYNTHETIC_SECRET"));
+        }
+        let heading = crate::parse("# Heading",Default::default()).unwrap();
+        assert!(text_source(&heading).is_none());
+        let value = crate::Text::from_runs(&[crate::Run{text:"word",effects:Default::default()},crate::Run{text:"part",effects:crate::Effects{underline:true,..Default::default()}}],Default::default()).unwrap();
+        assert!(text_source(&value).is_none());
+    }
+}

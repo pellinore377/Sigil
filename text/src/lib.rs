@@ -32,7 +32,7 @@ pub use blocks::{Block, BlockKind};
 pub use card_parse::{item_id, parse_card, parse_card_with_dates, Draft, Hint, Origin, Parsed};
 pub use effects::{Animation, Color, Effects, Hue, Paint, Reveal};
 pub use model::{Error, Limits, Presentation, Run, Span, Text, MAX_WIRE_BYTES};
-pub use parse::parse;
+pub use parse::{parse, editor_spans, EditorSpan};
 /// Validated rich event content; ordinary string messages never enter this decoder.
 pub enum Document {
     Text(Text),

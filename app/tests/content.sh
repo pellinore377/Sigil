@@ -73,6 +73,7 @@ instrument PdfPreviewTest
 instrument FilePreviewTest
 instrument DashboardTest
 instrument ContactCardTest
+instrument ComposerTest
 instrument LayoutTest
 instrument TimelinePerformanceTest
 instrument RealTimelinePerformanceTest

@@ -91,6 +91,7 @@ pub enum Error {
     Unprepared,
     DirectoryUnavailable,
     SharedContactChanged,
+    UnsupportedTextEdit,
     CallingUnavailable,
     UnsupportedSession,
     RetiredSession,

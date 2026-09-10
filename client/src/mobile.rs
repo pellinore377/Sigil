@@ -337,6 +337,11 @@ enum Command {
         peer: String,
         active: bool,
     },
+    EditSource {
+        peer: String,
+        author: String,
+        message: String,
+    },
     Edit {
         peer: String,
         request: String,
@@ -344,6 +349,8 @@ enum Command {
         author: String,
         message: String,
         text: String,
+        #[serde(default)]
+        formatted: bool,
     },
     Delete {
         peer: String,
@@ -377,6 +384,8 @@ enum Command {
         thread_message: Option<String>,
         #[serde(default)]
         rich: bool,
+        #[serde(default)]
+        formatted: bool,
         timezone: Option<String>,
     },
     React {
@@ -403,6 +412,14 @@ enum Command {
         author: String,
         message: String,
     },
+}
+fn inline_body(source: String) -> Result<Body, Error> {
+    let text = sigil_protocol::text::parse(&source, Default::default()).map_err(|_| Error::InvalidEvent)?;
+    if text.body() == source && text.spans().is_empty() && text.blocks().is_empty() {
+        Ok(Body::Text(source))
+    } else {
+        Ok(Body::Rich(text.to_bytes().map_err(|_| Error::InvalidEvent)?))
+    }
 }
 fn reference(author: &str, message: &str) -> Result<Reference, Error> {
     Ok(Reference {
@@ -458,6 +475,7 @@ fn error_message(error: &Error) -> String {
         Error::Network(_) => "Cannot reach or verify the server. Check the address and connection.",
         Error::DirectoryUnavailable => "The contact directory is unavailable. Update the server or check account discovery.",
         Error::SharedContactChanged => "This address now refers to a different account than the shared contact. Ask for an updated contact card.",
+        Error::UnsupportedTextEdit => "This message's formatting cannot be reopened for editing yet.",
         Error::CallingUnavailable => "Calling is disabled on your server. Its administrator can enable voice and video in Server settings.",
         Error::Unprepared => "This action isn't ready. Check sign-in, request acceptance, or any identity-change notice.",
         Error::Conflict => "State changed or verification does not match. Refresh before retrying.",
@@ -1163,6 +1181,22 @@ impl ClientStore {
                 Ok(json!({}))
             }
             Command::Block { peer, active } => self.mobile_block(&peer, active),
+            Command::EditSource { peer, author, message } => {
+                let target = reference(&author,&message)?;
+                let conversation = self.mobile_conversation(&peer)?;
+                let own = self.account_reference()?;
+                let original = self.conversation_message(conversation,target.clone(),conversations::now())?;
+                if target.author != own || original.deleted || original.view_once { return Err(Error::Obsolete); }
+                let source = match original.body.ok_or(Error::Obsolete)? {
+                    Body::Text(source) => source,
+                    Body::File(bytes) => sigil_protocol::file::File::from_bytes(&bytes).map_err(|_|Error::InvalidStore)?.caption.to_owned(),
+                    Body::Rich(bytes) => match sigil_protocol::text::Document::from_bytes(&bytes).map_err(|_|Error::InvalidStore)? {
+                        sigil_protocol::text::Document::Text(text) => sigil_protocol::text::editing::text_source(&text).ok_or(Error::UnsupportedTextEdit)?,
+                        _ => return Err(Error::UnsupportedTextEdit),
+                    },
+                };
+                Ok(json!({"edit_source":source}))
+            }
             Command::Edit {
                 peer,
                 request,
@@ -1170,16 +1204,21 @@ impl ClientStore {
                 author,
                 message,
                 text,
+                formatted,
             } => {
                 let target = reference(&author, &message)?;
                 let conversation = self.mobile_conversation(&peer)?;
                 let original =
                     self.conversation_message(conversation, target.clone(), conversations::now())?;
-                let body = if let Some(Body::File(bytes)) = original.body {
+                let body = if matches!(&original.body,Some(Body::Text(value)) if value == &text) {
+                    Body::Text(text)
+                } else if let Some(Body::File(bytes)) = original.body {
                     let mut file = sigil_protocol::file::File::from_bytes(&bytes)
                         .map_err(|_| Error::InvalidStore)?;
                     file.caption = &text;
                     Body::File(file.to_bytes().map_err(|_| Error::InvalidEvent)?)
+                } else if formatted {
+                    inline_body(text)?
                 } else {
                     Body::Text(text)
                 };
@@ -1530,6 +1569,7 @@ impl ClientStore {
                 thread_author,
                 thread_message,
                 rich,
+                formatted,
                 timezone,
             } => {
                 let reply = optional_reference(reply_author, reply_message)?;
@@ -1549,6 +1589,8 @@ impl ClientStore {
                         return Err(Error::InvalidEvent);
                     }
                     Body::Rich(doc.to_bytes().map_err(|_| Error::InvalidEvent)?)
+                } else if formatted {
+                    inline_body(text)?
                 } else {
                     Body::Text(text)
                 };

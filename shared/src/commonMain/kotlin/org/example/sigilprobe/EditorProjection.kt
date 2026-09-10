@@ -29,7 +29,7 @@ internal class EditorProjection(val source: String, formats: List<FormatSpan>) {
         for (i in source.indices) if (!hidden[i]) anchors[offsets[i]] = i
         anchors[text.length] = source.length
         formats.forEach {
-            anchors[offsets[it.start + it.prefix]] = it.start + it.prefix
+            anchors[offsets[it.start + it.prefix]] = if (it.style == 0) it.start else it.start + it.prefix
             anchors[offsets[it.end - it.suffix]] = it.end - it.suffix
         }
     }

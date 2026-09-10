@@ -71,6 +71,16 @@ pub fn analyze(input: &str) -> String {
     composer::analyze(input)
 }
 
+#[cfg_attr(target_arch = "wasm32", wasm_bindgen::prelude::wasm_bindgen)]
+pub fn editor(input: &str) -> String { composer::editor(input) }
+
+#[cfg(not(target_arch = "wasm32"))]
+#[no_mangle]
+pub extern "system" fn Java_org_sigil_NativeCore_editor(mut env: JNIEnv, _: JObject, input: JString) -> jstring {
+    let result=match env.get_string(&input) { Ok(value)=>editor(&String::from(value)),Err(_)=>return std::ptr::null_mut() };
+    env.new_string(result).map(JString::into_raw).unwrap_or(std::ptr::null_mut())
+}
+
 mod theme;
 
 #[cfg_attr(target_arch = "wasm32", wasm_bindgen::prelude::wasm_bindgen)]
