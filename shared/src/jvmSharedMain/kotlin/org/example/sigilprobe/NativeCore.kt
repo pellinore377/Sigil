@@ -10,4 +10,5 @@ object NativeCore {
     external fun temporalPreview(input: String): String
     external fun helpCatalog(input: String): String
     external fun builderSource(input: String): String
+    external fun codePreview(input: String): String
 }

@@ -54,7 +54,7 @@ internal fun ComposerPanel(draft: TextFieldState, analyze: (String) -> String, e
     }
     val expandedHeight = if (panel.isNotEmpty() || keyboardPending) maxOf(keyboardHeight, measured) else measured
     val panelHeight by animateDpAsState(expandedHeight, if (measured > 0.dp || keyboardPending) snap() else motionPolicy.tween(MotionMillis), label = "Composer height")
-    val building = panel == "Place" || panel == "Create" || createItems.any { it.first == panel }
+    val building = panel == "Place" || panel == "Create" || panel == "Code block" || createItems.any { it.first == panel }
     val formInset by animateDpAsState(if (building) measured else 0.dp, if (building) snap() else motionPolicy.tween(MotionMillis), label = "Form keyboard")
     LaunchedEffect(keyboardPending) { if (keyboardPending) { kotlinx.coroutines.delay(1500); keyboardPending = false } }
     LaunchedEffect(measured, keyboardPending) { if (keyboardPending && measured >= keyboardHeight - 2.dp) keyboardPending = false }
@@ -63,6 +63,7 @@ internal fun ComposerPanel(draft: TextFieldState, analyze: (String) -> String, e
     BackAction(panel.isNotEmpty()) {
         when (panel) {
             "Create", "Format", "Camera", "Place" -> change("Attachments")
+            "Code block" -> change("Format")
             "Help" -> change(if(draft.text.toString().trim().startsWith("help::"))"" else "Create")
             in createItems.map { it.first } -> change("Create")
             else -> { if (panel == "Voice") command("record_stop", emptyMap()); change("") }
@@ -140,7 +141,7 @@ internal fun ComposerPanel(draft: TextFieldState, analyze: (String) -> String, e
                         initialState.isEmpty() -> (slideInHorizontally(motionPolicy.tween(MotionMillis)) { it } + fadeIn(motionPolicy.tween(MotionMillis))) togetherWith ExitTransition.None
                         targetState.isEmpty() -> EnterTransition.None togetherWith (slideOutHorizontally(motionPolicy.tween(MotionMillis)) { it } + fadeOut(motionPolicy.tween(MotionMillis)))
                         else -> {
-                            val back = targetState == "Attachments" || targetState == "Create" && createItems.any { it.first == initialState }
+                            val back = targetState == "Attachments" || targetState == "Create" && createItems.any { it.first == initialState } || targetState == "Format" && initialState == "Code block"
                             (slideInHorizontally(motionPolicy.tween(MotionMillis)) { if (back) -it else it } + fadeIn()) togetherWith
                                 (slideOutHorizontally(motionPolicy.tween(MotionMillis)) { if (back) it else -it } + fadeOut())
                         }
@@ -174,13 +175,17 @@ internal fun ComposerPanel(draft: TextFieldState, analyze: (String) -> String, e
                         "Table" -> builders.SaveableStateProvider("$peer:$shown") {
                             TableBuilder(enabled,{change("Create")}) {source->pendingBuilder="$peer:$shown" to source;send(source,true,null)}
                         }
+                        "Code block" -> builders.SaveableStateProvider("$peer:$shown") {
+                            CodeBuilder(enabled,{change("Format")}) {source->pendingBuilder="$peer:$shown" to source;send(source,false,null)}
+                        }
                         in createItems.map { it.first } -> builders.SaveableStateProvider("$peer:$shown") {
                             StructuredBuilder(shown, enabled, { change("Create") }) { source, timezone -> pendingBuilder = "$peer:$shown" to source; send(source, true, timezone) }
                         }
-                        "Format" -> Column(Modifier.padding(16.dp)) {
+                        "Format" -> Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp)) {
                             CompositionLocalProvider(LocalPageHeader provides false) { Header("Formatting", { change("Attachments") }) }
                             Row { listOf("Bold" to "**", "Italic" to "*", "Strike" to "~~", "Code" to "`").forEach { (name, marker) -> SigilTextButton({ draft.format(marker) }) { Text(name) } } }
                             Toggle("Show formatting syntax", showSource) { showSource = it }
+                            SigilTextButton({change("Code block")}) {Glyph("code_blocks",20);Spacer(Modifier.width(8.dp));Text("Code block")}
                             SigilTextButton({ showKeyboard() }) { Text("Continue writing") }
                         }
                     }

@@ -4,9 +4,11 @@ use std::collections::BTreeSet;
 pub fn source(input: &str) -> Result<String, Error> {
     let limits = CardLimits::default();
     if input.len() > limits.text.source_bytes / 2
-        || input
-            .chars()
-            .any(|c| c.is_control() && c != '\n' && !(c == '\t' && input.starts_with("Table\n")))
+        || input.chars().any(|c| {
+            c.is_control()
+                && c != '\n'
+                && !(c == '\t' && (input.starts_with("Table\n") || input.starts_with("Code\n")))
+        })
     {
         return Err(Error::Limit);
     }
@@ -14,6 +16,32 @@ pub fn source(input: &str) -> Result<String, Error> {
     let kind = fields.next().ok_or(Error::Invalid)?;
     let values = fields.collect::<Vec<_>>();
     let source = match kind {
+        "Code" => {
+            let (language, body) = input
+                .strip_prefix("Code\n")
+                .and_then(|v| v.split_once('\n'))
+                .ok_or(Error::Invalid)?;
+            if body.trim().is_empty()
+                || language.len() > 32
+                || !language
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
+            {
+                return Err(Error::Invalid);
+            }
+            let fence = "`".repeat(
+                body.split(|c| c != '`')
+                    .map(str::len)
+                    .max()
+                    .unwrap_or(0)
+                    .saturating_add(1)
+                    .max(3),
+            );
+            format!(
+                "{fence}{language}\n{body}{}{fence}",
+                if body.ends_with('\n') { "" } else { "\n" }
+            )
+        }
         "Dice" => {
             if values.is_empty()
                 || !values.len().is_multiple_of(2)
@@ -104,6 +132,32 @@ pub fn source(input: &str) -> Result<String, Error> {
         return Err(Error::Limit);
     }
     Ok(source)
+}
+
+pub fn code_preview(input: &str) -> Result<String, Error> {
+    if !input.starts_with("Code\n") {
+        return Err(Error::Invalid);
+    }
+    let text = crate::parse(&source(input)?, Default::default())?;
+    let [crate::Block {
+        kind: crate::BlockKind::Code { language },
+        ..
+    }] = text.blocks()
+    else {
+        return Err(Error::Invalid);
+    };
+    let view = text.presentation();
+    let tokens = view
+        .code_tokens
+        .iter()
+        .map(|t| format!("{},{},{}", t.start, t.end, t.role))
+        .collect::<Vec<_>>()
+        .join(";");
+    Ok(format!(
+        "{}\n{tokens}\n{}",
+        language.as_deref().unwrap_or(""),
+        view.text
+    ))
 }
 
 fn literal(value: &str) -> String {
@@ -265,5 +319,54 @@ mod tests {
         }
         assert!(source(&format!("Table\n{}\nx", vec!["Column"; 65].join("\t"))).is_err());
         assert!(source(&format!("Table\nName\n{}", vec!["Value"; 257].join("\n"))).is_err());
+    }
+
+    #[test]
+    fn code_builder_preserves_literal_code_and_previews_canonical_tokens() {
+        for body in [
+            "\tlet x = \"👩🏽‍💻\";\n\n",
+            "```\nredact::literal;\n```\n",
+            "``````",
+            "  **plain**\n<script>literal</script>",
+            "// e\u{301}\n",
+        ] {
+            let input = format!("Code\nrust\n{body}");
+            let source = source(&input).unwrap();
+            let parsed = crate::parse(&source, Default::default()).unwrap();
+            let expected = format!("{body}{}", if body.ends_with('\n') { "" } else { "\n" });
+            use unicode_normalization::UnicodeNormalization;
+            assert_eq!(parsed.body(), expected.nfc().collect::<String>());
+            assert_eq!(parsed.blocks().len(), 1);
+            assert!(
+                matches!(&parsed.blocks()[0].kind, crate::BlockKind::Code {language:Some(v)} if v=="rust")
+            );
+            assert!(parsed
+                .spans()
+                .iter()
+                .all(|s| s.effects.code && s.effects.reveal.is_none()));
+            let preview = code_preview(&input).unwrap();
+            let fields = preview.splitn(3, '\n').collect::<Vec<_>>();
+            assert_eq!(fields[0], "rust");
+            assert_eq!(fields[2], parsed.body());
+        }
+        assert!(code_preview("Code\nrust\nlet x = 2;")
+            .unwrap()
+            .starts_with("rust\n0,3,keyword;8,9,number\n"));
+        assert!(code_preview("Code\nunknown\nx")
+            .unwrap()
+            .starts_with("unknown\n\n"));
+        assert!(code_preview("Code\n\nx").unwrap().starts_with("\n\n"));
+        for input in [
+            "Code",
+            "Code\nrust",
+            "Code\nrust\n \t",
+            "Code\nc++\nx",
+            "Code\na b\nx",
+            "Code\nrust\nx\r",
+            "Code\nrust\nx\0",
+            "Coin",
+        ] {
+            assert!(code_preview(input).is_err(), "{input}");
+        }
     }
 }

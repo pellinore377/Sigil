@@ -1196,11 +1196,11 @@ fn stored_service_cards_project_without_a_provider_configuration() {
 #[test]
 fn guided_builder_sources_keep_durable_acknowledgements_and_results() {
     let (dir,_server,mut alice,_bob,now)=crate::claims::tests::pair();
-    for (index,input) in ["Dice\n20\n20","Choice\nFish, chips\nredact::literal;","Number\n-5\n-1","Coin","Table\nName\tCount\nFish | chips\t2\nredact::literal;\t10"].iter().enumerate() {
+    for (index,input) in ["Dice\n20\n20","Choice\nFish, chips\nredact::literal;","Number\n-5\n-1","Coin","Table\nName\tCount\nFish | chips\t2\nredact::literal;\t10","Code\nrust\n\tlet x = \"👩🏽‍💻\";\n```\nredact::literal;\n"].iter().enumerate() {
         let source=sigil_protocol::text::builder::source(input).unwrap();
         let request=format!("{:064x}",700+index);
         assert_eq!(run(&mut alice,json!({"command":"post_status","peer":"self","request":request}))["queued"],false);
-        run(&mut alice,json!({"command":"post","peer":"self","request":request,"timestamp":now,"text":source,"rich":true}));
+        run(&mut alice,json!({"command":"post","peer":"self","request":request,"timestamp":now,"text":source,"rich":!input.starts_with("Code\n"),"formatted":true}));
         assert_eq!(run(&mut alice,json!({"command":"post_status","peer":"self","request":request}))["queued"],true);
     }
     let before=run(&mut alice,json!({"command":"timeline","peer":"self"}));
@@ -1208,9 +1208,13 @@ fn guided_builder_sources_keep_durable_acknowledgements_and_results() {
     assert_eq!(table["rows"][0][0]["text"],"Fish | chips");
     assert_eq!(table["rows"][1][0]["text"],"redact::literal;");
     assert_eq!(table["numeric_order"][1],json!([0,1]));
+    let code=before["messages"].as_array().unwrap().iter().flat_map(|m|m["parts"].as_array().unwrap()).filter_map(|p|p.get("rich")).find(|r|r["blocks"].as_array().is_some_and(|b|b.iter().any(|b|b["kind"]["kind"]=="code"))).unwrap();
+    assert_eq!(code["text"],"\tlet x = \"👩🏽‍💻\";\n```\nredact::literal;\n");
+    assert_eq!(code["blocks"][0]["kind"]["language"],"rust");
+    assert!(!code["code_tokens"].as_array().unwrap().is_empty());
     drop(alice);
     let mut alice=ClientStore::open(&dir.path().join("alice.db"),StorageKey::new(Secret32::from_bytes([9;32])).unwrap()).unwrap();
-    for index in 0..5 {
+    for index in 0..6 {
         assert_eq!(run(&mut alice,json!({"command":"post_status","peer":"self","request":format!("{:064x}",700+index)}))["queued"],true);
     }
     assert_eq!(before["messages"],run(&mut alice,json!({"command":"timeline","peer":"self"}))["messages"]);
