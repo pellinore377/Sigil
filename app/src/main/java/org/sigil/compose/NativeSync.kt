@@ -82,6 +82,8 @@ class SyncService : JobService() {
                     val value = NativeSync.run(this@SyncService)
                     retry = !value.isNull("issue")
                     NativeNotifications.update(this@SyncService)
+                    val locations = NativeLocations.work(this@SyncService)
+                    retry = retry || !locations.isNull("issue")
                     val files = NativeSync.files(this@SyncService)
                     retry = retry || !files.isNull("issue")
                     val next = listOfNotNull(value.getLong("next_at").takeIf { !value.getBoolean("ran") || value.getBoolean("pending") || files.getInt("sent") > 0 }, files.getLong("next_at").takeIf { files.getBoolean("pending") }).minOrNull()

@@ -26,6 +26,33 @@ class ContentTest {
     @get:Rule val ui = createAndroidComposeRule<ComponentActivity>()
     private val context get() = InstrumentationRegistry.getInstrumentation().targetContext
     @Before fun isolated() { Assume.assumeTrue(context.packageName.endsWith(".acceptance")) }
+    @Test fun locationWorkUsesEncryptedStateAndAnOngoingStopNotification() = runBlocking {
+        val now = System.currentTimeMillis() / 1000
+        val request = "e7".repeat(32)
+        try {
+            native("place", mapOf("peer" to "self", "request" to request, "timestamp" to now - 30, "latitude_e6" to 0, "longitude_e6" to 0,
+                "accuracy_cm" to 1000, "sampled_at" to now - 30, "label" to "Synthetic live share", "pin" to false, "live" to "fifteen_minutes"))
+            val sample = android.location.Location("synthetic").apply { latitude = 1.25; longitude = -2.5; accuracy = 12f; time = now * 1000; elapsedRealtimeNanos = SystemClock.elapsedRealtimeNanos() }
+            assertEquals(1, NativeLocations.work(context, sample).getInt("active"))
+            val messages = native("timeline", mapOf("peer" to "self")).getJSONArray("messages")
+            val message = (0 until messages.length()).map { messages.getJSONObject(it) }.first { it.getString("id") == request }
+            assertEquals(1250000, message.getJSONArray("parts").getJSONObject(0).getInt("latitude_e6"))
+            NativeLocations.requestStop(context)
+            assertEquals(0, NativeLocations.work(context).getInt("active"))
+            assertFalse(NativeLocations.stopping(context))
+            assertEquals(0, NativeLocations.work(context, sample).getInt("active"))
+            InstrumentationRegistry.getInstrumentation().uiAutomation.grantRuntimePermission(context.packageName, android.Manifest.permission.ACCESS_COARSE_LOCATION)
+            if (android.os.Build.VERSION.SDK_INT >= 33) InstrumentationRegistry.getInstrumentation().uiAutomation.grantRuntimePermission(context.packageName, android.Manifest.permission.POST_NOTIFICATIONS)
+            withContext(Dispatchers.Main) { NativeLocations.prepare(context) }
+            assertTrue(context.getSystemService(android.app.NotificationManager::class.java).activeNotifications.any { it.id == 31 })
+            withContext(Dispatchers.Main) { NativeLocations.prepared(); context.startService(android.content.Intent(context, LocationService::class.java).setAction("stop")) }
+            withTimeout(5000) { while (NativeLocations.running) delay(25) }
+            assertFalse(context.getSystemService(android.app.NotificationManager::class.java).activeNotifications.any { it.id == 31 })
+        } finally {
+            NativeLocations.requestStop(context); NativeLocations.work(context)
+            withContext(Dispatchers.Main) { NativeLocations.prepared(); context.stopService(android.content.Intent(context, LocationService::class.java)) }
+        }
+    }
     @Test fun repeatedSendTapsWhileBusyCreateOneMessage() = runBlocking {
         lateinit var messenger: Messenger
         val store = androidx.lifecycle.ViewModelStore()

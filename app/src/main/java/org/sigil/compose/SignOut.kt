@@ -16,7 +16,10 @@ internal object NativeSignOut {
     private fun preferences(context: Context) = context.getSharedPreferences("sign_out", Context.MODE_PRIVATE)
     fun stage(context: Context): String = preferences(context).getString("stage", "").orEmpty()
     fun pending(context: Context) = stage(context).isNotEmpty()
-    fun save(context: Context, stage: String) { check(preferences(context).edit().putString("stage", stage).commit()) }
+    fun save(context: Context, stage: String) {
+        check(preferences(context).edit().putString("stage", stage).commit())
+        context.stopService(android.content.Intent(context, LocationService::class.java))
+    }
     fun erase(context: Context): Boolean = context.getSystemService(ActivityManager::class.java).clearApplicationUserData()
 }
 

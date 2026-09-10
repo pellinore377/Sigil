@@ -13,6 +13,9 @@ import androidx.compose.material3.dynamicLightColorScheme
 import androidx.compose.runtime.*
 import androidx.compose.ui.graphics.toArgb
 import androidx.lifecycle.ViewModelProvider
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.repeatOnLifecycle
+import kotlinx.coroutines.*
 import org.sigil.NativeCore
 import org.sigil.SigilApp
 
@@ -47,11 +50,24 @@ class MainActivity : ComponentActivity() {
         intent.data = null
         val preferences = getSharedPreferences("appearance", MODE_PRIVATE)
         setSigilContent {
-            var placePeer by remember { mutableStateOf<Map<String, Any?>?>(null) }
             var backAvailable by remember { mutableStateOf(false) }
             var goBack by remember { mutableStateOf<() -> Unit>({}) }
             BackHandler(backAvailable) { goBack() }
             val dynamicAccent = if (Build.VERSION.SDK_INT >= 31) dynamicLightColorScheme(this).primary.toArgb() and 0xffffff else null
+            LaunchedEffect(messenger.state.phase) {
+                if (messenger.state.phase == "connected") lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) {
+                    try {
+                        if (!NativeLocations.running) {
+                            val locations = NativeLocations.work(this@MainActivity)
+                            if (locations.getInt("active") > 0 && lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED)) {
+                                if (!NativeLocations.permitted(this@MainActivity)) { NativeLocations.requestStop(this@MainActivity); NativeLocations.work(this@MainActivity) }
+                                else try { NativeLocations.prepare(this@MainActivity) } finally { NativeLocations.prepared() }
+                            }
+                        }
+                    } catch (cancelled: CancellationException) { throw cancelled } catch (_: Exception) { }
+                    awaitCancellation()
+                }
+            }
             LaunchedEffect(messenger.authorizationUrl) {
                 messenger.authorizationUrl?.let { url ->
                     try { openSignIn(Uri.parse(url)) }
@@ -61,8 +77,7 @@ class MainActivity : ComponentActivity() {
             }
             LaunchedEffect(messenger.picker) {
                 messenger.picker?.let { (peer, kind) ->
-                    if (kind == "Place") placePeer = peer
-                    else {
+                    run {
                         pickerPeer = when (kind) { "Wallpaper" -> peer + ("wallpaper" to "true"); "Profile photo" -> peer + ("profile_photo" to "true"); else -> peer }
                         if (kind in listOf("Photos", "Wallpaper", "Profile photo")) photos.launch(PickVisualMediaRequest(if (kind == "Photos") ActivityResultContracts.PickVisualMedia.ImageAndVideo else ActivityResultContracts.PickVisualMedia.ImageOnly))
                         else filePicker.launch(arrayOf("*/*"))
@@ -74,7 +89,7 @@ class MainActivity : ComponentActivity() {
             LaunchedEffect(messenger.notificationPermission) { if (messenger.notificationPermission && Build.VERSION.SDK_INT >= 33) notifications.launch(android.Manifest.permission.POST_NOTIFICATIONS) }
             LaunchedEffect(messenger.calls.permissions) { messenger.calls.permissions?.let { (_, fields) -> callPermissions.launch(if (fields["video"] == true) arrayOf(android.Manifest.permission.RECORD_AUDIO, android.Manifest.permission.CAMERA) else arrayOf(android.Manifest.permission.RECORD_AUDIO)) } }
             LaunchedEffect(messenger.calls.projectionRequest) { messenger.calls.projectionRequest?.let { id -> projectionCall = id; projection.launch(getSystemService(android.media.projection.MediaProjectionManager::class.java).createScreenCaptureIntent()) } }
-            CompositionLocalProvider(org.sigil.LocalCameraPanel provides { target, back, done -> CameraPanel(back) { bytes -> if (messenger.importPhoto(target, bytes)) done() } }, org.sigil.LocalProfilePhoto provides { reference, modifier -> ProfilePhoto(reference, messenger.photoRevision, modifier) }, org.sigil.LocalWallpaper provides { peer, modifier -> Wallpaper(peer, messenger.wallpaperRevision, modifier) }, org.sigil.LocalCallVideo provides { member, screen, modifier -> CallVideoView(messenger.calls, member, screen, modifier) }, org.sigil.LocalAttachmentContent provides { message -> AndroidAttachment(message) }, org.sigil.LocalAttachmentDraft provides { file, modifier -> AndroidAttachmentDraft(file, modifier) }, org.sigil.LocalLocationContent provides { part -> LocationCard(part) }) {
+            CompositionLocalProvider(org.sigil.LocalPlacePanel provides { target, back, done -> PlacePanel(back, messenger.state.profileAvatar) { fields -> messenger.sharePlace(target + fields).also { if (it) done() } } }, org.sigil.LocalCameraPanel provides { target, back, done -> CameraPanel(back) { bytes -> if (messenger.importPhoto(target, bytes)) done() } }, org.sigil.LocalProfilePhoto provides { reference, modifier -> ProfilePhoto(reference, messenger.photoRevision, modifier) }, org.sigil.LocalWallpaper provides { peer, modifier -> Wallpaper(peer, messenger.wallpaperRevision, modifier) }, org.sigil.LocalCallVideo provides { member, screen, modifier -> CallVideoView(messenger.calls, member, screen, modifier) }, org.sigil.LocalAttachmentContent provides { message -> AndroidAttachment(message) }, org.sigil.LocalAttachmentDraft provides { file, modifier -> AndroidAttachmentDraft(file, modifier) }, org.sigil.LocalLocationContent provides { message, part, command -> LocationCard(message, part, messenger.state.people[message.author] ?: if (message.mine) "You" else "Shared place", command) }) {
             SigilApp(NativeCore::palette, NativeCore::analyze, messenger.state, messenger::command,
                 read = { preferences.getString(it, null) }, write = { key, value -> preferences.edit().putString(key, value).apply() },
                 dynamicAccent = dynamicAccent, onBackAvailable = { available, action -> backAvailable = available; goBack = action },
@@ -85,7 +100,6 @@ class MainActivity : ComponentActivity() {
                     messenger.recoveryKey?.let { secret -> RecoveryDialog(secret, messenger.state.busy, messenger::dismissRecovery) { messenger.command("recovery_enable", mapOf("secret" to secret)) } }
                     if (messenger.restoringRecovery) RestoreRecoveryDialog(messenger.state.busy, messenger.state.issue, messenger::dismissRestoreRecovery) { secret -> messenger.command("recovery_restore", mapOf("secret" to secret, "accept_unanchored" to true)) }
                     if (messenger.recoveringAccount) AccountRecoveryDialog(messenger.state.loginMethods?.sso == true || messenger.state.phase == "oidc", messenger.state.busy, messenger.state.issue, messenger::dismissAccountRecovery) { method, invitation -> messenger.command("recover_account", mapOf("server" to (messenger.state.loginMethods?.server ?: messenger.state.loginAddress), "method" to method, "invitation" to invitation, "confirm_replacement" to true)) }
-                    placePeer?.let { peer -> PlaceSheet({ placePeer = null }) { fields -> messenger.command("place", fields + peer); placePeer = null } }
                 })
             }
         }

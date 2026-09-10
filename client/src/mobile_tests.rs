@@ -955,3 +955,49 @@ fn reading_with_receipts_disabled_updates_unread_without_disclosing_a_receipt() 
         0
     );
 }
+
+#[test]
+fn mobile_live_locations_keep_device_jobs_and_retry_stops_without_resampling() {
+    let (dir, _server, mut alice, _bob, _) = crate::claims::tests::pair();
+    let now = conversations::now();
+    let request = "d1".repeat(32);
+    run(&mut alice, json!({"command":"place","peer":"self","request":request,"timestamp":now-30,
+        "latitude_e6":0,"longitude_e6":0,"accuracy_cm":2500,"sampled_at":now-30,
+        "label":"Synthetic location","pin":false,"live":"fifteen_minutes"}));
+    let jobs = run(&mut alice, json!({"command":"location_work"}));
+    assert_eq!(jobs["active"], 1);
+    assert_eq!(jobs["until"], now-30+900);
+    let point = json!({"coordinates":{"latitude_e6":1250000,"longitude_e6":-2500000},"accuracy_cm":1200,"sampled_at":now});
+    let updated = run(&mut alice, json!({"command":"location_work","point":point}));
+    assert_eq!(updated["queued"], 1);
+    assert_eq!(run(&mut alice, json!({"command":"location_work","point":point}))["queued"], 0);
+    let timeline = run(&mut alice, json!({"command":"timeline","peer":"self"}));
+    let message = &timeline["messages"][0];
+    let card = &message["parts"][0];
+    assert_eq!(card["location_mode"], "live");
+    assert_eq!(card["latitude_e6"], 1250000);
+    assert_eq!(card["sampled_at"], now);
+    assert_eq!(card["can_stop"], true);
+    let stop = json!({"command":"location_stop","peer":"self","author":message["author"],"message":request,"card":card["id"]});
+    let mut wrong = stop.clone(); wrong["message"] = json!("d2".repeat(32));
+    assert_eq!(serde_json::from_str::<Value>(&alice.mobile_command(&wrong.to_string())).unwrap()["ok"], false);
+    for sampled_at in [now+600, now-600] {
+        let mut invalid = point.clone(); invalid["sampled_at"] = json!(sampled_at);
+        assert_eq!(serde_json::from_str::<Value>(&alice.mobile_command(&json!({"command":"location_work","point":invalid}).to_string())).unwrap()["ok"], false);
+    }
+    alice.db.execute_batch("CREATE TRIGGER fail BEFORE INSERT ON conversation_ops BEGIN SELECT RAISE(ABORT,'synthetic'); END").unwrap();
+    assert_eq!(serde_json::from_str::<Value>(&alice.mobile_command(&stop.to_string())).unwrap()["ok"], false);
+    assert!(alice.location_jobs(None, now).unwrap().jobs.is_empty());
+    assert_eq!(alice.location_jobs(None, now).unwrap().stops.len(), 1);
+    alice.db.execute_batch("DROP TRIGGER fail").unwrap();
+    drop(alice);
+    let mut alice = ClientStore::open(&dir.path().join("alice.db"), StorageKey::new(Secret32::from_bytes([9;32])).unwrap()).unwrap();
+    let retry = run(&mut alice, json!({"command":"location_work","point":point}));
+    assert_eq!(retry["active"], 0);
+    assert_eq!(retry["queued"], 1);
+    assert!(retry["issue"].is_null());
+    assert_eq!(run(&mut alice, json!({"command":"location_work"}))["queued"], 0);
+    let timeline = run(&mut alice, json!({"command":"timeline","peer":"self"}));
+    assert_eq!(timeline["messages"][0]["parts"][0]["stopped"], true);
+    assert_eq!(timeline["messages"][0]["parts"][0]["can_stop"], false);
+}

@@ -96,6 +96,22 @@ class Messenger(application: Application) : AndroidViewModel(application) {
         execute("photo_publish"); photoRevision++; refresh()
     } } }
     private fun changeWallpaper(peer: String, uri: Uri?) { scope.launch { serialized(true) { saveWallpaper(getApplication(), peer, uri); wallpaperRevision++ } } }
+    private var pendingPlace: Pair<Map<String, Any?>, String>? = null
+    suspend fun sharePlace(fields: Map<String, Any?>): Boolean = mutex.withLock {
+        if (NativeSignOut.pending(getApplication()) || !foreground) return@withLock false
+        val live = fields["live"] != null
+        try {
+            if (live) NativeLocations.prepare(getApplication())
+            val raw = pendingPlace?.takeIf { it.first == fields }?.second ?: request("place", fields).also { pendingPlace = fields.toMap() to it }
+            native(raw)
+            pendingPlace = null
+            NativeSync.enqueue(getApplication())
+            scope.launch { serialized(false) { refresh() } }
+            true
+        } catch (cancelled: CancellationException) { throw cancelled }
+        catch (_: Exception) { false }
+        finally { if (live) NativeLocations.prepared() }
+    }
     suspend fun importPhoto(target: Map<String, Any?>, bytes: ByteArray): Boolean = withContext(Dispatchers.IO) {
         try { bytes.inputStream().use { files.stage(target + ("draft" to true), "Photo.jpg", "image/jpeg", bytes.size.toLong(), it) }; true }
         catch (cancelled: CancellationException) { throw cancelled }
@@ -485,7 +501,7 @@ class Messenger(application: Application) : AndroidViewModel(application) {
                 ChatMessage(message.getString("id"), message.getString("author"), message.getString("text"), message.getBoolean("mine"), clock(message.getLong("timestamp")),
                     message.getString("delivery"), message.getBoolean("pinned"), message.getJSONArray("reactions").strings(), message.getJSONArray("my_reactions").strings(), message.optional("reply"), message.getBoolean("read_by_me"), message.getLong("timestamp"), separator(message.getLong("timestamp")), message.optJSONArray("readers")?.strings().orEmpty(), message.optBoolean("noted"), message.optional("thread_author"), message.optional("thread_message"), message.optBoolean("editable", true), message.optString("kind", "Text"), peer,
                     message.optJSONObject("attachment")?.let { AttachmentDetails(it.getString("name"), it.getString("media_type"), it.getLong("length"), it.optString("caption")) },
-                    message.optJSONArray("parts")?.objects()?.map { part -> MessagePart(part.optString("id"), part.getString("kind"), part.getString("text"), part.optJSONArray("items")?.objects()?.map { item -> CardItem(item.getString("id"), item.getString("text"), item.getBoolean("checked"), item.getBoolean("enabled"), if (item.isNull("count")) null else item.getLong("count"), item.richText()) }.orEmpty(), part.optBoolean("multiple"), part.optBoolean("closed"), if (part.isNull("voters")) null else part.getLong("voters"), if (part.has("at")) separator(part.getLong("at")) else "", part.optInt("latitude_e6") / 1_000_000.0, part.optInt("longitude_e6") / 1_000_000.0, part.richText()) }.orEmpty(), message.optional("thread_preview"))
+                    message.optJSONArray("parts")?.objects()?.map { part -> MessagePart(part.optString("id"), part.getString("kind"), part.getString("text"), part.optJSONArray("items")?.objects()?.map { item -> CardItem(item.getString("id"), item.getString("text"), item.getBoolean("checked"), item.getBoolean("enabled"), if (item.isNull("count")) null else item.getLong("count"), item.richText()) }.orEmpty(), part.optBoolean("multiple"), part.optBoolean("closed"), if (part.isNull("voters")) null else part.getLong("voters"), if (part.has("at")) separator(part.getLong("at")) else "", part.optInt("latitude_e6") / 1_000_000.0, part.optInt("longitude_e6") / 1_000_000.0, part.richText(), part.optString("location_mode", "pin"), part.optLong("sampled_at"), if (part.isNull("accuracy_cm")) null else part.getLong("accuracy_cm"), if (part.isNull("until")) null else part.getLong("until"), part.optBoolean("stopped"), part.optBoolean("can_stop")) }.orEmpty(), message.optional("thread_preview"))
             }
             before = if (timeline.isNull("next")) null else timeline.getLong("next")
             if (firstPage && (messages.isNotEmpty() || before == null)) {
