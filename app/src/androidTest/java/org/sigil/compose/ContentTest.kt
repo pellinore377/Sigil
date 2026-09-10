@@ -300,6 +300,35 @@ class ContentTest {
             scope.cancel(); bytes.fill(0)
         }
     }
+    @Test fun encryptedPdfDraftPagesZoomsAndKeepsCaptionWithoutSending() = runBlocking {
+        val bytes=syntheticPdf()
+        val scope=CoroutineScope(SupervisorJob()+Dispatchers.Main)
+        val files=NativeFiles(context.applicationContext as Application,scope,{_,_->},{fail(it)})
+        var request:String?=null
+        try {
+            withContext(Dispatchers.IO) { bytes.inputStream().use { files.stage(mapOf("peer" to "self","draft" to true),"Synthetic pages.pdf","application/pdf",bytes.size.toLong(),it) } }
+            request=native("files").getJSONArray("uploads").getJSONObject(0).getString("request")
+            val message=ChatMessage(request,"","",true,"","",false,emptyList(),emptyList(),null,true,peer="self",attachment=AttachmentDetails("Synthetic pages.pdf","application/pdf",bytes.size.toLong(),"A caption for both pages.",draft=true))
+            ui.setContent { androidx.compose.material3.MaterialTheme { AndroidAttachment(message) } }
+            ui.onNodeWithText("Download").performClick()
+            ui.waitUntil(5000) { ui.onAllNodesWithText("Open").fetchSemanticsNodes().isNotEmpty() }
+            ui.onNodeWithText("Open").performClick()
+            ui.waitUntil(15_000) { ui.onAllNodesWithContentDescription("PDF page 1").fetchSemanticsNodes().isNotEmpty() }
+            ui.onNodeWithText("A caption for both pages.").assertIsDisplayed()
+            ui.onNodeWithContentDescription("Zoom in PDF").performClick()
+            ui.onNodeWithContentDescription("Zoom out PDF").assertIsEnabled().performClick()
+            ui.onNodeWithContentDescription("Next PDF page").performClick()
+            ui.waitUntil(15_000) { ui.onAllNodesWithContentDescription("PDF page 2").fetchSemanticsNodes().isNotEmpty() }
+            ui.onNodeWithText("Page 2 of 2").assertIsDisplayed()
+            ui.onNodeWithContentDescription("Next PDF page").assertIsNotEnabled()
+            ui.onNodeWithContentDescription("Close PDF").performClick()
+            assertTrue(native("files").getJSONArray("uploads").getJSONObject(0).getBoolean("draft"))
+        } finally {
+            ui.runOnUiThread { ui.activity.setContentView(android.widget.FrameLayout(ui.activity)) }
+            request?.let { native("file_cancel",mapOf("request" to it)) }
+            scope.cancel();bytes.fill(0)
+        }
+    }
     @Test fun encryptedImageDraftOpensZoomsAndKeepsItsCaptionWithoutSending() = runBlocking {
         val bitmap = android.graphics.Bitmap.createBitmap(2400, 1600, android.graphics.Bitmap.Config.ARGB_8888)
         bitmap.eraseColor(Color.rgb(20, 100, 180))

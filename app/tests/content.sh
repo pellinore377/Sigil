@@ -69,6 +69,7 @@ instrument ChartTest
 instrument DiagramTest
 instrument UtilityTest
 instrument ServiceCardTest
+instrument PdfPreviewTest
 instrument LayoutTest
 instrument TimelinePerformanceTest
 instrument RealTimelinePerformanceTest

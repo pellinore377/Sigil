@@ -21,6 +21,23 @@ class NativeFileProvider : ContentProvider() {
         private val grants = ConcurrentHashMap<String, Pair<Long, ChatMessage>>()
         private val readers = java.util.concurrent.Semaphore(8)
         private val handler by lazy { Handler(HandlerThread("attachment-reader").apply { start() }.looper) }
+        internal fun reader(context: Context, message: ChatMessage): ParcelFileDescriptor {
+            if (!readers.tryAcquire()) throw java.io.FileNotFoundException("Too many open attachments")
+            val media = EncryptedMedia(context, message)
+            try {
+                return context.getSystemService(StorageManager::class.java).openProxyFileDescriptor(ParcelFileDescriptor.MODE_READ_ONLY, object : ProxyFileDescriptorCallback() {
+                    override fun onGetSize() = media.size
+                    override fun onRead(offset: Long, size: Int, data: ByteArray): Int {
+                        try {
+                            var count = 0
+                            while (count < size) { val read = media.readAt(offset + count, data, count, size - count); if (read < 0) break; count += read }
+                            return count
+                        } catch (_: Exception) { data.fill(0); throw ErrnoException("read", OsConstants.EIO) }
+                    }
+                    override fun onRelease() { media.close(); readers.release() }
+                }, handler)
+            } catch (error: Exception) { media.close(); readers.release(); throw error }
+        }
         fun open(context: Context, message: ChatMessage) {
             val now = SystemClock.elapsedRealtime()
             grants.entries.removeIf { it.value.first < now }
@@ -49,22 +66,9 @@ class NativeFileProvider : ContentProvider() {
     override fun openFile(uri: Uri, mode: String): ParcelFileDescriptor {
         if (mode != "r") throw java.io.FileNotFoundException()
         val message = message(uri)
-        if (!readers.tryAcquire()) throw java.io.FileNotFoundException("Too many open attachments")
-        val media = EncryptedMedia(context!!, message)
-        try {
-            return context!!.getSystemService(StorageManager::class.java).openProxyFileDescriptor(ParcelFileDescriptor.MODE_READ_ONLY, object : ProxyFileDescriptorCallback() {
-                override fun onGetSize() = media.size
-                override fun onRead(offset: Long, size: Int, data: ByteArray): Int {
-                    try {
-                        var count = 0
-                        while (count < size) { val read = media.readAt(offset + count, data, count, size - count); if (read < 0) break; count += read }
-                        return count
-                    } catch (_: Exception) { data.fill(0); throw ErrnoException("read", OsConstants.EIO) }
-                }
-                override fun onRelease() { media.close(); readers.release() }
-            }, handler)
-        } catch (error: Exception) { media.close(); readers.release(); throw error }
+        return reader(context!!, message)
     }
+
     override fun insert(uri: Uri, values: ContentValues?): Uri? = throw UnsupportedOperationException()
     override fun update(uri: Uri, values: ContentValues?, selection: String?, selectionArgs: Array<out String>?) = throw UnsupportedOperationException()
     override fun delete(uri: Uri, selection: String?, selectionArgs: Array<out String>?) = throw UnsupportedOperationException()
