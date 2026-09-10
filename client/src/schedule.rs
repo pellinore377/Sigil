@@ -213,6 +213,12 @@ impl ClientStore {
         if now < state.last {
             return Err(Error::Expired);
         }
+        if poll < POLL_SECONDS
+            && state.failures == 0
+            && state.next == state.last.saturating_add(POLL_SECONDS)
+        {
+            state.next = state.last.saturating_add(poll);
+        }
         if now < state.next {
             return Ok(ScheduledSync {
                 step: None,
@@ -407,6 +413,15 @@ mod tests {
     fn run(store: &mut ClientStore, begin: u64, end: u64) -> Result<ScheduledSync, Error> {
         let mut times = [begin, end].into_iter();
         store.sync_with_clock(|| Ok(times.next().unwrap()))
+    }
+    #[test]
+    fn foreground_does_not_inherit_a_healthy_background_poll_delay() {
+        let (_dir, _fixture, mut store, reject, _, now) = setup(120);
+        reject.store(false, Ordering::SeqCst);
+        assert_eq!(run(&mut store, now, now).unwrap().next_at, now + 5);
+        let foreground = store.sync_with_poll(|| Ok(now + 1), 1).unwrap();
+        assert!(foreground.step.is_some());
+        assert_eq!(foreground.next_at, now + 2);
     }
     #[test]
     fn foreground_polling_preserves_server_backoff_and_only_shortens_success_delay() {

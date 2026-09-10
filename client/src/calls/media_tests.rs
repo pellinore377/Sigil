@@ -1,5 +1,95 @@
 use super::*;
 use crate::{claims::tests::pair, incoming::tests::trust};
+#[test]
+fn fragmented_video_keeps_audio_and_authentication_live() {
+    let (dir, _fixture, mut alice, mut bob, now) = pair();
+    crate::calls::tests::configure(dir.path());
+    let (alice_peer, peer) = trust(&mut alice, &mut bob);
+    let id = [79; 32];
+    alice.start_call(id, now, true, &[peer]).unwrap();
+    crate::calls::tests::pump(&mut alice, &mut bob, now);
+    bob.answer_call(id, true, now).unwrap();
+    crate::calls::tests::pump(&mut alice, &mut bob, now);
+    let tracks = Tracks {
+        audio: true,
+        camera: true,
+        screen: false,
+    };
+    let mut a = alice.start_call_media(id, tracks, now).unwrap();
+    let mut b = bob.start_call_media(id, tracks, now).unwrap();
+    crate::calls::tests::pump(&mut alice, &mut bob, now);
+    alice.refresh_call_media(&mut a, now).unwrap();
+    bob.refresh_call_media(&mut b, now).unwrap();
+    crate::calls::tests::pump(&mut alice, &mut bob, now);
+    let own = load(&alice.db, &alice.key, &id).unwrap().own_id().unwrap();
+    let started = std::time::Instant::now();
+    let video = vec![42; 64 * 1024];
+    for timestamp in 0..20 {
+        let packets = alice
+            .seal_call_packets(
+                &mut a,
+                sigil_calls::MediaKind::Camera,
+                timestamp,
+                true,
+                &video,
+                now,
+            )
+            .unwrap();
+        for (index, packet) in packets.iter().enumerate() {
+            let frame = bob
+                .assemble_call_packet(&mut b, own, sigil_calls::MediaKind::Camera, packet, now)
+                .unwrap();
+            assert_eq!(frame.is_some(), index + 1 == packets.len());
+            if let Some(frame) = frame {
+                assert_eq!(*frame.data, video);
+            }
+        }
+        let audio = alice
+            .seal_call_frame(
+                &mut a,
+                sigil_calls::MediaKind::Audio,
+                timestamp,
+                false,
+                b"synthetic audio",
+                now,
+            )
+            .unwrap();
+        assert_eq!(
+            &*bob
+                .open_call_frame(&mut b, own, sigil_calls::MediaKind::Audio, &audio, now)
+                .unwrap()
+                .data,
+            b"synthetic audio"
+        );
+    }
+    eprintln!("20 fragmented video/audio frames: {:?}", started.elapsed());
+    let packets = alice
+        .seal_call_packets(
+            &mut a,
+            sigil_calls::MediaKind::Camera,
+            21,
+            true,
+            &video,
+            now,
+        )
+        .unwrap();
+    for packet in &packets[..packets.len() - 1] {
+        assert!(bob
+            .assemble_call_packet(&mut b, own, sigil_calls::MediaKind::Camera, packet, now)
+            .unwrap()
+            .is_none());
+    }
+    bob.block_peer(alice_peer, true).unwrap();
+    assert!(bob
+        .assemble_call_packet(
+            &mut b,
+            own,
+            sigil_calls::MediaKind::Camera,
+            packets.last().unwrap(),
+            now
+        )
+        .is_err());
+}
 fn lifecycle(blocked_end: bool) {
     let (dir, _fixture, mut alice, mut bob, now) = pair();
     crate::calls::tests::configure(dir.path());

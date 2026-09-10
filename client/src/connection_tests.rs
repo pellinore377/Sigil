@@ -12,8 +12,44 @@ fn open(path: &Path) -> ClientStore {
     .unwrap()
 }
 #[test]
+fn reopened_stores_reuse_https_connections_without_reusing_credentials_or_roots() {
+    let (dir, fixture, invite, _) = setup();
+    let path = dir.path().join("client.db");
+    let mut store = open(&path);
+    prepare(&mut store, &fixture, &invite.secret);
+    store.enroll_online().unwrap();
+    store.connected_client().unwrap().session().unwrap();
+    let before = fixture.connections();
+    drop(store);
+    open(&path).connected_client().unwrap().session().unwrap();
+    assert_eq!(fixture.connections(), before);
+    let changed = network::HttpsClient::new(
+        "chat.example",
+        fixture.port(),
+        &"bc".repeat(32),
+        &[CA.to_vec()],
+    )
+    .unwrap();
+    assert!(matches!(
+        changed.session(),
+        Err(network::Error::Status { code: 401, .. })
+    ));
+    assert!(fixture.connections() > before);
+    let actual = open(&path);
+    let untrusted =
+        network::HttpsClient::new("chat.example", fixture.port(), &credential(&actual), &[])
+            .unwrap();
+    assert!(matches!(
+        untrusted.session(),
+        Err(network::Error::Transport)
+    ));
+}
+#[test]
 fn connected_requests_share_discovery_and_invalidate_on_credential_rotation() {
-    use std::sync::{Arc, atomic::{AtomicUsize, Ordering}};
+    use std::sync::{
+        atomic::{AtomicUsize, Ordering},
+        Arc,
+    };
     let (dir, old, invite, _) = setup();
     drop(old);
     let discoveries = Arc::new(AtomicUsize::new(0));
@@ -21,13 +57,18 @@ fn connected_requests_share_discovery_and_invalidate_on_credential_rotation() {
     let router = sigil_server::router(
         Store::open(&dir.path().join("server.db")).unwrap(),
         AdminToken::load_or_create(&dir.path().join("admin.token")).unwrap(),
-    ).layer(axum::middleware::from_fn(move |request: axum::extract::Request, next: axum::middleware::Next| {
-        let hits = hits.clone();
-        async move {
-            if request.uri().path() == sigil_protocol::discovery::PATH { hits.fetch_add(1, Ordering::SeqCst); }
-            next.run(request).await
-        }
-    }));
+    )
+    .layer(axum::middleware::from_fn(
+        move |request: axum::extract::Request, next: axum::middleware::Next| {
+            let hits = hits.clone();
+            async move {
+                if request.uri().path() == sigil_protocol::discovery::PATH {
+                    hits.fetch_add(1, Ordering::SeqCst);
+                }
+                next.run(request).await
+            }
+        },
+    ));
     let fixture = Fixture::new(router);
     let mut store = open(&dir.path().join("client.db"));
     prepare(&mut store, &fixture, &invite.secret);
@@ -44,8 +85,12 @@ fn connected_requests_share_discovery_and_invalidate_on_credential_rotation() {
     store.connected_client().unwrap().session().unwrap();
     store.connected_client().unwrap().session().unwrap();
     assert_eq!(discoveries.load(Ordering::SeqCst), 1);
-    assert!(matches!(old.session(), Err(network::Error::Status { code: 401, .. })));
-    store.connection.borrow_mut().as_mut().unwrap().1 = std::time::Instant::now() - std::time::Duration::from_secs(60);
+    assert!(matches!(
+        old.session(),
+        Err(network::Error::Status { code: 401, .. })
+    ));
+    store.connection.borrow_mut().as_mut().unwrap().1 =
+        std::time::Instant::now() - std::time::Duration::from_secs(60);
     store.connected_client().unwrap().session().unwrap();
     assert_eq!(discoveries.load(Ordering::SeqCst), 2);
 }

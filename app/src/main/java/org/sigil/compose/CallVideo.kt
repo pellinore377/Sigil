@@ -12,6 +12,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.viewinterop.AndroidView
 import java.nio.ByteBuffer
 import java.util.concurrent.ArrayBlockingQueue
+import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 
 internal class Vp8Encoder(val width: Int, val height: Int, private val rotation: Int, private val send: (Long, Boolean, ByteArray) -> Unit, private val failed: (Exception) -> Unit) : AutoCloseable {
@@ -103,22 +104,48 @@ internal class CallCamera(context: Context, front: Boolean, send: (Long, Boolean
     }
 }
 private data class VideoPacket(val timestamp: Long, val keyframe: Boolean, val bytes: ByteArray)
+internal fun callVideoTransform(width: Int, height: Int, rotation: Int, viewWidth: Int, viewHeight: Int): Matrix {
+    val sideways = rotation == 90 || rotation == 270
+    val aspect = if (sideways) height.toFloat() / width else width.toFloat() / height
+    val display = viewWidth.toFloat() / viewHeight
+    return Matrix().apply {
+        setRotate(rotation.toFloat(), viewWidth / 2f, viewHeight / 2f)
+        if (sideways) postScale(viewWidth.toFloat() / viewHeight, viewHeight.toFloat() / viewWidth, viewWidth / 2f, viewHeight / 2f)
+        postScale(if (aspect < display) aspect / display else 1f, if (aspect > display) display / aspect else 1f, viewWidth / 2f, viewHeight / 2f)
+    }
+}
 internal class CallVideoDecoder(private val surface: Surface, private val geometry: (Int, Int, Int) -> Unit) : AutoCloseable {
     private val running = AtomicBoolean(true)
     private val queue = ArrayBlockingQueue<VideoPacket>(4)
+    private val lostFrame = AtomicBoolean(false)
     private val worker = Thread({
         var codec: MediaCodec? = null
         var dimensions: Size? = null
         var rendered: Triple<Int, Int, Int>? = null
+        var lastTimestamp = Long.MIN_VALUE
         fun reset() {
             val previous = codec; codec = null; dimensions = null
             try { previous?.stop() } catch (_: Exception) {}
             try { previous?.release() } catch (_: Exception) {}
         }
+        fun drainOutput() {
+            val active = codec ?: return
+            val info = MediaCodec.BufferInfo()
+            while (true) {
+                val output = active.dequeueOutputBuffer(info, 0)
+                if (output == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) continue
+                if (output < 0) break
+                active.releaseOutputBuffer(output, running.get())
+            }
+        }
         try {
             while (running.get()) {
-                val packet = queue.take()
+                if (lostFrame.getAndSet(false)) reset()
+                try { drainOutput() } catch (_: Exception) { reset() }
+                val packet = queue.poll(10, TimeUnit.MILLISECONDS) ?: continue
                 try {
+                    if (lostFrame.getAndSet(false)) reset()
+                    if (packet.timestamp <= lastTimestamp) { reset(); continue }
                     val bytes = packet.bytes
                     require(bytes.size > 6)
                     val buffer = ByteBuffer.wrap(bytes)
@@ -142,18 +169,20 @@ internal class CallVideoDecoder(private val surface: Surface, private val geomet
                     val shape = Triple(width, height, rotation)
                     if (rendered != shape) { geometry(width, height, rotation); rendered = shape }
                     val active = requireNotNull(codec)
-                    val input = active.dequeueInputBuffer(10000)
+                    var input = active.dequeueInputBuffer(10000)
+                    var attempts = 0
+                    while (input < 0 && running.get() && attempts++ < 4) {
+                        drainOutput()
+                        input = active.dequeueInputBuffer(10000)
+                    }
                     if (input >= 0) {
                         val target = requireNotNull(active.getInputBuffer(input)); target.clear(); require(bytes.size - 6 <= target.remaining()); target.put(bytes, 6, bytes.size - 6)
                         active.queueInputBuffer(input, 0, bytes.size - 6, packet.timestamp, 0)
+                        lastTimestamp = packet.timestamp
+                    } else {
+                        reset()
                     }
-                    val info = MediaCodec.BufferInfo()
-                    while (true) {
-                        val output = active.dequeueOutputBuffer(info, 0)
-                        if (output == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) continue
-                        if (output < 0) break
-                        active.releaseOutputBuffer(output, running.get())
-                    }
+                    drainOutput()
                 } catch (interrupted: InterruptedException) { throw interrupted }
                 catch (_: Exception) { reset() }
                 finally { packet.bytes.fill(0) }
@@ -165,7 +194,11 @@ internal class CallVideoDecoder(private val surface: Surface, private val geomet
     fun offer(timestamp: Long, keyframe: Boolean, bytes: ByteArray) = synchronized(queue) {
         if (!running.get()) return
         val packet = VideoPacket(timestamp, keyframe, bytes.copyOf())
-        if (!queue.offer(packet)) packet.bytes.fill(0)
+        if (!queue.offer(packet)) {
+            drain()
+            lostFrame.set(true)
+            if (!keyframe || !queue.offer(packet)) packet.bytes.fill(0)
+        }
     }
     private fun drain() { while (true) { val value = queue.poll() ?: break; value.bytes.fill(0) } }
     override fun close() { synchronized(queue) { running.set(false); drain() }; worker.interrupt() }
@@ -181,14 +214,7 @@ internal fun CallVideoView(calls: NativeCalls, member: String, screen: Boolean, 
                 val (w, h, rotation) = geometry ?: return
                 val target = this@apply
                 if (target.width <= 0 || target.height <= 0) return
-                val sideways = rotation == 90 || rotation == 270
-                val aspect = if (sideways) h.toFloat() / w else w.toFloat() / h
-                val display = target.width.toFloat() / target.height
-                val matrix = Matrix()
-                matrix.setRotate(rotation.toFloat(), target.width / 2f, target.height / 2f)
-                if (sideways) matrix.postScale(target.height.toFloat() / target.width, target.width.toFloat() / target.height, target.width / 2f, target.height / 2f)
-                matrix.postScale(if (aspect < display) aspect / display else 1f, if (aspect > display) display / aspect else 1f, target.width / 2f, target.height / 2f)
-                target.setTransform(matrix)
+                target.setTransform(callVideoTransform(w, h, rotation, target.width, target.height))
             }
             override fun onSurfaceTextureAvailable(texture: android.graphics.SurfaceTexture, width: Int, height: Int) {
                 val target = this@apply

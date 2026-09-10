@@ -6,6 +6,7 @@ import android.media.audiofx.NoiseSuppressor
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.util.concurrent.ArrayBlockingQueue
+import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.math.abs
 
@@ -23,12 +24,17 @@ internal class OpusEncoder(private val encoded: (Long, ByteArray) -> Unit) : Aut
     }
     fun input(pcm: ShortArray, count: Int) {
         require(count in 0..pcm.size)
-        val index = codec.dequeueInputBuffer(10000)
-        if (index >= 0) {
-            val input = requireNotNull(codec.getInputBuffer(index)).order(ByteOrder.nativeOrder())
-            input.clear(); require(count * 2 <= input.remaining()); input.asShortBuffer().put(pcm, 0, count)
-            codec.queueInputBuffer(index, 0, count * 2, samples * 1_000_000 / 48000, 0)
+        var index = codec.dequeueInputBuffer(10000)
+        val deadline = android.os.SystemClock.elapsedRealtime() + 1000
+        while (index < 0) {
+            if (Thread.currentThread().isInterrupted) throw InterruptedException()
+            check(android.os.SystemClock.elapsedRealtime() < deadline) { "Audio encoder stalled" }
+            drain()
+            index = codec.dequeueInputBuffer(10000)
         }
+        val input = requireNotNull(codec.getInputBuffer(index)).order(ByteOrder.nativeOrder())
+        input.clear(); require(count * 2 <= input.remaining()); input.asShortBuffer().put(pcm, 0, count)
+        codec.queueInputBuffer(index, 0, count * 2, samples * 1_000_000 / 48000, 0)
         samples += count
         drain()
     }
@@ -65,11 +71,16 @@ internal class OpusDecoder(private val pcm: (ShortArray, Int) -> Unit) : AutoClo
     }
     fun input(timestamp: Long, bytes: ByteArray) {
         require(bytes.size in 1..8192)
-        val index = codec.dequeueInputBuffer(10000)
-        if (index >= 0) {
-            val input = requireNotNull(codec.getInputBuffer(index)); input.clear(); require(input.remaining() >= bytes.size); input.put(bytes)
-            codec.queueInputBuffer(index, 0, bytes.size, timestamp, 0)
+        var index = codec.dequeueInputBuffer(10000)
+        val deadline = android.os.SystemClock.elapsedRealtime() + 1000
+        while (index < 0) {
+            if (Thread.currentThread().isInterrupted) throw InterruptedException()
+            check(android.os.SystemClock.elapsedRealtime() < deadline) { "Audio decoder stalled" }
+            drain()
+            index = codec.dequeueInputBuffer(10000)
         }
+        val input = requireNotNull(codec.getInputBuffer(index)); input.clear(); require(input.remaining() >= bytes.size); input.put(bytes)
+        codec.queueInputBuffer(index, 0, bytes.size, timestamp, 0)
         drain()
     }
     fun drain() {
@@ -136,18 +147,26 @@ internal class CallSpeaker(private val level: (Float) -> Unit, private val faile
                 .setAudioFormat(AudioFormat.Builder().setSampleRate(48000).setChannelMask(AudioFormat.CHANNEL_OUT_MONO).setEncoding(AudioFormat.ENCODING_PCM_16BIT).build())
                 .setBufferSizeInBytes(maxOf(7680, AudioTrack.getMinBufferSize(48000, AudioFormat.CHANNEL_OUT_MONO, AudioFormat.ENCODING_PCM_16BIT))).setTransferMode(AudioTrack.MODE_STREAM).build()
             output = track
-            track.play()
+            var primed = 0
+            var playing = false
             var tick = 0
             OpusDecoder { samples, count ->
                 if (tick++ % 5 == 0) level((samples.maxOfOrNull { abs(it.toInt()) } ?: 0) / 32768f)
                 var offset = 0
                 while (running.get() && offset < count) {
-                    val written = track.write(samples, offset, count - offset, AudioTrack.WRITE_BLOCKING)
+                    val requested = if (playing) count - offset else minOf(count - offset, 2880 - primed)
+                    val written = track.write(samples, offset, requested, AudioTrack.WRITE_BLOCKING)
                     check(written > 0); offset += written
+                    if (!playing) {
+                        primed += written
+                        if (primed >= 2880) { track.play(); playing = true }
+                    }
                 }
             }.use { decoder ->
                 while (running.get()) {
-                    val (timestamp, bytes) = queue.take()
+                    val packet = queue.poll(10, TimeUnit.MILLISECONDS)
+                    if (packet == null) { decoder.drain(); continue }
+                    val (timestamp, bytes) = packet
                     try { decoder.input(timestamp, bytes) } finally { bytes.fill(0) }
                 }
             }

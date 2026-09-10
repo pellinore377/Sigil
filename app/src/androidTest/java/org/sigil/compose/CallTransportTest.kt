@@ -26,6 +26,14 @@ class CallTransportTest {
         android.system.Os.chmod(directory.path, 448); android.system.Os.chmod(File(directory, "client.db").path, 384)
         var handle = 0L; var audible = 0
         val returned = IntArray(3); val sent = AtomicIntegerArray(3); val rendered = AtomicIntegerArray(2)
+        val sendTimes = java.util.concurrent.ConcurrentLinkedQueue<Long>()
+        fun send(kind: Int, timestamp: Long, keyframe: Boolean, bytes: ByteArray) {
+            val begin = SystemClock.elapsedRealtimeNanos()
+            if (NativeStorage.sendCallFrame(handle, kind, timestamp, keyframe, bytes)) {
+                sent.incrementAndGet(kind)
+                if (sendTimes.size < 1000) sendTimes.add(SystemClock.elapsedRealtimeNanos() - begin)
+            }
+        }
         val connections = mutableSetOf<Int>()
         val thread = HandlerThread("Call acceptance").apply { start() }
         val readers = List(2) { index -> ImageReader.newInstance(640, 480, ImageFormat.YUV_420_888, 3).apply { setOnImageAvailableListener({ reader -> reader.acquireLatestImage()?.use { rendered.incrementAndGet(index) } }, Handler(thread.looper)) } }
@@ -40,10 +48,10 @@ class CallTransportTest {
             assertTrue("Native peer connection failed", handle != 0L)
             val deadline = SystemClock.elapsedRealtime() + 60000
             val pcm = ShortArray(960)
-            Vp8Encoder(640, 480, 0, { timestamp, keyframe, bytes -> for (kind in 1..2) if (NativeStorage.sendCallFrame(handle, kind, timestamp, keyframe, bytes)) sent.incrementAndGet(kind) }, { fail("Video encoder failed") }).use { video ->
+            Vp8Encoder(640, 480, 0, { timestamp, keyframe, bytes -> for (kind in 1..2) send(kind, timestamp, keyframe, bytes) }, { fail("Video encoder failed") }).use { video ->
                 DrawSurface(video.surface).use { draw ->
                     OpusDecoder { samples, _ -> audible += samples.count { abs(it.toInt()) > 1000 } }.use { decoder ->
-                        OpusEncoder { timestamp, bytes -> if (NativeStorage.sendCallFrame(handle, 0, timestamp, false, bytes)) sent.incrementAndGet(0) }.use { encoder ->
+                        OpusEncoder { timestamp, bytes -> send(0, timestamp, false, bytes) }.use { encoder ->
                             var frame = 0
                             while (SystemClock.elapsedRealtime() < deadline && (returned[0] < 80 || audible < 48000 || rendered.get(0) < 10 || rendered.get(1) < 10)) {
                                 if (frame % 20 == 0) { sync(); connections += NativeStorage.callState(handle) }
@@ -76,6 +84,8 @@ class CallTransportTest {
             val evidence = "Received ${returned.toList()}; sent $sent; rendered $rendered; states $connections"
             assertTrue(evidence, returned[0] >= 80 && rendered.get(0) >= 10 && rendered.get(1) >= 10)
             assertTrue("Returned audio did not decode", audible >= 48000)
+            val times = sendTimes.sorted()
+            android.util.Log.i("SigilAcceptance", "Native media send: ${times.size} frames, p95 ${times[(times.size - 1) * 95 / 100] / 1_000_000.0} ms")
             NativeStorage.closeCall(handle)
             assertEquals(-1, NativeStorage.callState(handle)); assertNull(NativeStorage.receiveCallFrames(handle))
             assertFalse(NativeStorage.sendCallFrame(handle, 0, 0, false, byteArrayOf(1)))
