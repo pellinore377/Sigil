@@ -5,6 +5,9 @@ import android.content.ComponentName
 import android.content.Context
 import android.os.Handler
 import android.os.Looper
+import android.os.PersistableBundle
+import android.os.SystemClock
+import android.provider.Settings
 import kotlinx.coroutines.*
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -16,6 +19,7 @@ import java.io.File
 internal object NativeSync {
     private const val PERIODIC = 21
     private const val PENDING = 22
+    private const val DEFERRED = 23
     private val sync = Mutex()
     private val transfers = Mutex()
     private val presence = Mutex()
@@ -56,15 +60,26 @@ internal object NativeSync {
     }
     fun enable(context: Context, enabled: Boolean) {
         val jobs = context.getSystemService(JobScheduler::class.java)
-        if (!enabled || NativeSignOut.pending(context)) { jobs.cancel(PERIODIC); jobs.cancel(PENDING); return }
+        if (!enabled || NativeSignOut.pending(context)) { jobs.cancel(PERIODIC); jobs.cancel(PENDING); jobs.cancel(DEFERRED); return }
         if (jobs.getPendingJob(PERIODIC) == null) jobs.schedule(base(context, PERIODIC).setPeriodic(15 * 60_000L).build())
     }
-    fun enqueue(context: Context, delay: Long = 0, urgent: Boolean = false) {
+    @Synchronized fun enqueue(context: Context, delay: Long = 0, urgent: Boolean = false) {
         if (NativeSignOut.pending(context)) return
         val jobs = context.getSystemService(JobScheduler::class.java)
+        val now = SystemClock.elapsedRealtime()
+        val wait = delay.coerceIn(0, Long.MAX_VALUE - now)
+        val id = if (wait == 0L) PENDING else DEFERRED
+        val boot = Settings.Global.getInt(context.contentResolver, Settings.Global.BOOT_COUNT, -1)
+        val existing = jobs.getPendingJob(id)
+        if (wait > 0 && existing != null) {
+            val deadline = if (existing.minLatencyMillis == 0L || boot < 0 || existing.extras.getInt("boot", -1) != boot) 0L
+                else existing.extras.getLong("due", 0L)
+            if (deadline <= now + wait) return
+        }
+        val timing = PersistableBundle().apply { putLong("due", now + wait); putInt("boot", boot) }
         if (urgent && delay <= 0 && android.os.Build.VERSION.SDK_INT >= 31 &&
-            jobs.schedule(base(context, PENDING).setExpedited(true).build()) == JobScheduler.RESULT_SUCCESS) return
-        jobs.schedule(base(context, PENDING).setMinimumLatency(delay.coerceAtLeast(0)).build())
+            jobs.schedule(base(context, id).setExtras(timing).setExpedited(true).build()) == JobScheduler.RESULT_SUCCESS) return
+        jobs.schedule(base(context, id).setExtras(timing).setMinimumLatency(wait).build())
     }
     private fun base(context: Context, id: Int) = JobInfo.Builder(id, ComponentName(context, SyncService::class.java)).setRequiredNetworkType(JobInfo.NETWORK_TYPE_ANY).setPersisted(true).setBackoffCriteria(10_000L, JobInfo.BACKOFF_POLICY_EXPONENTIAL)
 }

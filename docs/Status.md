@@ -26,7 +26,7 @@ Remaining implementation: complete live composition/builders, full contact impor
 
 ## Performance and delivery
 
-Validated HTTPS discovery and connection pools survive native store reopening, with bounded lifetime and credential/trust-root isolation. Opaque hardware handles are cached while each access still unwraps the key; decrypted keys are not cached. Outbound messaging and call work precede inventory/recovery maintenance. UI timeline reads bypass network work and account refresh. Sync scheduling preserves backoff/Retry-After and uses faster bounded call-setup polling.
+Validated HTTPS discovery and connection pools survive native store reopening, with bounded lifetime and credential/trust-root isolation. Opaque hardware handles are cached while each access still unwraps the key; decrypted keys are not cached. Outbound messaging and call work precede inventory/recovery maintenance. UI timeline reads bypass network work and account refresh. Sync scheduling preserves backoff/Retry-After and uses faster bounded call-setup polling. Android delayed maintenance now has a separate job and retains the earliest requested time, so it cannot overwrite an immediate wake-up. A physical regression reproduced the replacement before the fix; scheduling, push lifecycle and synthetic sync/proof tests pass afterward.
 
 Completed ciphertext frames are assembled into bounded per-stream queues before authenticated decoding. This prevents video starvation under the receive budget. Every frame retains authority, signature, AEAD and replay checks. RTP reordering, loss/keyframe recovery, rotated video scaling and audio priming are connected. All four physical synthetic call modes pass, including group continuation after creator departure/rekey.
 
