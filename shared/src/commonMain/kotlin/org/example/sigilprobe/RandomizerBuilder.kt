@@ -17,8 +17,6 @@ import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 
-val LocalRandomizerSource=staticCompositionLocalOf<((String)->String)?> {null}
-
 @Composable
 internal fun RandomizerBuilder(enabled:Boolean,back:()->Unit,send:(String)->Unit) {
     var kind by rememberSaveable {mutableStateOf("Dice")}
@@ -26,7 +24,7 @@ internal fun RandomizerBuilder(enabled:Boolean,back:()->Unit,send:(String)->Unit
     var choices by rememberSaveable {mutableStateOf(listOf(""))}
     var minimum by rememberSaveable {mutableStateOf("1")}
     var maximum by rememberSaveable {mutableStateOf("100")}
-    val resolve=LocalRandomizerSource.current
+    val resolve=LocalBuilderSource.current
     val input=when(kind) {"Dice"->listOf(kind)+dice;"Choice"->listOf(kind)+choices.filter {it.isNotBlank()};"Number"->listOf(kind,minimum,maximum);else->listOf(kind)}.joinToString("\n")
     val source=remember(input,resolve) {resolve?.invoke(input).orEmpty()}
     val motion=LocalMotion.current
