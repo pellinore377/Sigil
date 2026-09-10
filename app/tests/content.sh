@@ -22,6 +22,7 @@ instrument() {
   rg -q '^OK \(' "$scratch/device.log"
 }
 "$adb" shell pm clear "$app_id" >/dev/null
+instrument SyncSchedulingTest
 instrument FixtureKeyTest
 export SIGIL_ANDROID_CONTENT_EXPORT="$scratch"
 "$adb" exec-out run-as "$app_id" cat cache/acceptance.key > "$scratch/key"
