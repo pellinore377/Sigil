@@ -65,6 +65,7 @@ instrument RevisionsTest
 instrument RichTextTest
 instrument TableTest
 instrument RecipeTest
+instrument ChartTest
 instrument LayoutTest
 instrument TimelinePerformanceTest
 instrument RealTimelinePerformanceTest

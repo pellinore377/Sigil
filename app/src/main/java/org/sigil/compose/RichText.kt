@@ -8,6 +8,8 @@ import org.sigil.RichBlock
 import org.sigil.CodeToken
 import org.sigil.TableContent
 import org.sigil.RecipeContent
+import org.sigil.ChartContent
+import org.sigil.ChartPoint
 
 internal fun JSONObject.richText(): RichText? = optJSONObject("rich")?.let { it.richValue() }
 internal fun JSONObject.richValue(): RichText {
@@ -60,4 +62,14 @@ internal fun JSONObject.recipeContent(): RecipeContent? = optJSONObject("recipe"
     RecipeContent(recipe.getJSONObject("title").richValue(), if (recipe.isNull("serves")) null else recipe.getInt("serves"),
         if (recipe.isNull("original_serves")) null else recipe.getInt("original_serves"), if (recipe.isNull("seconds")) null else recipe.getLong("seconds"),
         texts("ingredients"), recipe.getJSONArray("scaled").let { a -> (0 until a.length()).map(a::getBoolean) }, texts("steps"))
+}
+internal fun JSONObject.chartContent(): ChartContent? = optJSONObject("chart")?.let { chart ->
+    fun strings(name: String) = chart.getJSONArray(name).let { a -> (0 until a.length()).map(a::getString) }
+    ChartContent(chart.getString("kind"), chart.getJSONObject("title").richValue(), chart.getBoolean("horizontal"), chart.getDouble("zero").toFloat(),
+        strings("y_ticks"), strings("x_ticks"), if (chart.isNull("copy_data")) null else chart.getString("copy_data"),
+        chart.getJSONArray("points").let { a -> (0 until a.length()).map { index ->
+            val p = a.getJSONObject(index)
+            ChartPoint(p.getJSONObject("label").richValue(), p.getDouble("x").toFloat(), p.getDouble("y").toFloat(), p.getString("value"),
+                if (p.isNull("x_value")) null else p.getString("x_value"), p.getDouble("share").toFloat(), p.getString("percent"))
+        } })
 }

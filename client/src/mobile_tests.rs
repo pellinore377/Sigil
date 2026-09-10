@@ -460,6 +460,24 @@ fn recipe_serving_views_are_local_and_cannot_read_another_message_card() {
     assert_eq!(fresh["messages"][0]["parts"][0]["recipe"], part["recipe"]);
 }
 #[test]
+fn all_chart_types_project_exact_values_and_bounded_coordinates() {
+    let (_dir, _server, mut alice, _bob, now) = crate::claims::tests::pair();
+    for (index, kind) in ["pie", "donut", "bar", "line", "area", "scatter"].iter().enumerate() {
+        let request = format!("{:064x}", index + 500);
+        let rows = if *kind == "scatter" { "- -2 = 3\n- 4 = -1" } else { "- red::A = 2\n- B = 6" };
+        run(&mut alice, json!({"command":"post","peer":"self","request":request,"timestamp":now,"rich":true,"text":format!("chart::{kind}::Values\n{rows};")}));
+        let timeline = run(&mut alice, json!({"command":"timeline","peer":"self"}));
+        let part = &timeline["messages"][0]["parts"][0];
+        assert_eq!(part["kind"], "chart");
+        let chart = &part["chart"];
+        assert_eq!(chart["kind"], *kind);
+        assert_eq!(chart["points"][0]["value"], if *kind == "scatter" { "3" } else { "2" });
+        for point in chart["points"].as_array().unwrap() {
+            for axis in ["x", "y", "share"] { assert!((0.0..=1.0).contains(&point[axis].as_f64().unwrap())); }
+        }
+    }
+}
+#[test]
 fn forwarding_preserves_text_and_notes_and_snapshots_current_checklist_state() {
     let (_dir, _server, mut alice, _bob, now) = crate::claims::tests::pair();
     let author = transport::hex(&alice.account_reference().unwrap());
