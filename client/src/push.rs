@@ -270,6 +270,9 @@ pub struct PushState {
     pub remote: Option<RemoteStatus>,
     pub pending: bool,
     pub updating: bool,
+    pub scheduled_at: u64,
+    pub next_attempt_at: u64,
+    pub failures: u8,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ReceivedHint {
@@ -300,6 +303,7 @@ impl ClientStore {
     pub fn push_state(&self) -> Result<PushState, Error> {
         let scope = scope(&self.db, &self.key)?;
         let (state, _) = read(&self.db, &self.key, &scope)?;
+        let (schedule, _) = crate::schedule::read_push(&self.db, &self.key, &scope)?;
         let choice = match state.preference {
             Preference::Disabled => Choice::Disabled,
             Preference::Fcm { .. } => Choice::Fcm,
@@ -315,6 +319,9 @@ impl ClientStore {
             remote: state.status.clone(),
             pending: state.pending.is_some(),
             updating: state.reconcile || state.applied != state.generation,
+            scheduled_at: schedule.last,
+            next_attempt_at: schedule.next,
+            failures: schedule.failures,
         })
     }
     pub fn set_fcm_push_token(&mut self, token: &str, now: u64) -> Result<(), Error> {

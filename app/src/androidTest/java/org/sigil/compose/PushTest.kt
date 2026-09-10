@@ -89,13 +89,13 @@ class PushTest {
         var issue:String?=null
         try {withTimeout(20_000) {
             while (true) {
-                issue=NativeSync.files(context).optString("issue").takeUnless {it=="null" || it.isEmpty()}
+                issue=NativeSync.files(context).optString("issue").takeUnless {it=="null" || it.isEmpty()} ?: issue
                 if (NativePush.execute(context, "status").optString("remote") == "pending") break
                 delay(100)
             }
         }} catch(error:TimeoutCancellationException) {
             val status=NativePush.execute(context,"status")
-            throw AssertionError("Push registration timed out: remote=${status.optString("remote")}, awaiting_endpoint=${status.optBoolean("awaiting_endpoint")}, pending=${status.optBoolean("pending")}, issue=$issue",error)
+            throw AssertionError("Push registration timed out: remote=${status.optString("remote")}, awaiting_endpoint=${status.optBoolean("awaiting_endpoint")}, pending=${status.optBoolean("pending")}, operation=${status.optBoolean("operation_pending")}, scheduled=${status.optLong("scheduled_at")}, next=${status.optLong("next_attempt_at")}, now=${System.currentTimeMillis()/1000}, failures=${status.optInt("failures")}, issue=$issue",error)
         }
         assertFalse(NativePush.settings(context).status.contains("enabled"))
     }

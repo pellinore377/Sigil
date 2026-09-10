@@ -185,10 +185,13 @@ impl ClientStore {
             if rejected(&state) {
                 return Ok(Progress::AwaitingRegistration);
             }
-            if state.applied == state.generation
-                && status.state == RemoteState::Disabled
-                && desired.is_none()
-            {
+            if status.state == RemoteState::Disabled && desired.is_none() {
+                if state.applied != state.generation || state.registered.is_some() {
+                    state.applied = state.generation;
+                    state.registered = None;
+                    write(&tx, &self.key, &scope, &state, before.as_deref())?;
+                    tx.commit()?;
+                }
                 return Ok(if matches!(state.preference, Preference::Unified { .. }) {
                     Progress::AwaitingEndpoint
                 } else {
