@@ -388,6 +388,7 @@ fn handoff_failure_cancellation_expiry_and_foreign_source_do_not_create_send_int
     let state = load(&cache.db, &cache.key, file).unwrap();
     let bad = Zeroizing::new(
         sigil_protocol::file::File {
+            caption: "",
             source: "foreign.example",
             name: "synthetic.bin",
             media_type: "application/octet-stream",

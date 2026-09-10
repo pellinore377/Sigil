@@ -19,4 +19,5 @@ object NativeStorage {
     external fun execute(directory: String, key: ByteArray, request: String): String
     external fun stageFile(directory: String, key: ByteArray, request: String, index: Int, bytes: ByteArray): Boolean
     external fun readFileChunk(directory: String, key: ByteArray, peer: String, author: String, message: String, index: Int): ByteArray?
+    external fun readDraftChunk(directory: String, key: ByteArray, request: String, index: Int): ByteArray?
 }

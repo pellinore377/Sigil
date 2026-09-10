@@ -161,6 +161,36 @@ pub extern "system" fn Java_org_sigil_storage_NativeStorage_stageFile(
 }
 
 #[no_mangle]
+pub extern "system" fn Java_org_sigil_storage_NativeStorage_readDraftChunk(
+    mut env: JNIEnv,
+    _: JObject,
+    directory: JString,
+    key: JByteArray,
+    request: JString,
+    index: jint,
+) -> jbyteArray {
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(
+        || -> Option<Zeroizing<Vec<u8>>> {
+            if index < 0 {
+                return None;
+            }
+            let request = String::from(env.get_string(&request).ok()?);
+            if request.len() != 64 {
+                return None;
+            }
+            open(&mut env, &directory, &key)?
+                .mobile_file_draft_chunk(&request, index as u32)
+                .ok()
+        },
+    ));
+    result
+        .ok()
+        .flatten()
+        .and_then(|bytes| env.byte_array_from_slice(&bytes).ok())
+        .map(|v| v.into_raw())
+        .unwrap_or(std::ptr::null_mut())
+}
+#[no_mangle]
 pub extern "system" fn Java_org_sigil_storage_NativeStorage_readFileChunk(
     mut env: JNIEnv,
     _: JObject,

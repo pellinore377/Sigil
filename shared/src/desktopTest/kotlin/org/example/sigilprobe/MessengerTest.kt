@@ -11,6 +11,20 @@ class MessengerTest {
     @get:Rule val ui = createComposeRule()
     private fun chat(verified: Boolean) = ChatSummary("peer", "@sam:example.com", "", "", verified,
         listOf(ChatDevice("peer", "ab".repeat(32), verified, false, false)))
+    @Test fun attachment_caption_stays_editable_and_only_clears_for_its_own_commit() {
+        val state = mutableStateOf(MessengerState(phase = "connected", chats = listOf(chat(true)), selected = "peer", transfers = listOf(Transfer("file", "peer", "Photo.jpg", 128, "Ready", true, "image/jpeg"))))
+        val sent = mutableListOf<Map<String, Any?>>()
+        ui.setContent { SigilApp(NativeCore::palette, NativeCore::analyze, state.value, { name, fields -> if (name == "file_send") sent += fields }) }
+        ui.onNodeWithTag("composer").performTextInput("Keep this caption")
+        ui.onNodeWithContentDescription("Send attachments").performClick()
+        ui.runOnIdle { assertEquals("Keep this caption", sent.single()["caption"]); state.value = state.value.copy(issue = "Synthetic send failure") }
+        ui.onNodeWithTag("composer").assertTextContains("Keep this caption")
+        ui.runOnIdle { state.value = state.value.copy(sent = 1, sentText = "Different send") }
+        ui.onNodeWithTag("composer").assertTextContains("Keep this caption")
+        ui.onNodeWithTag("composer").performTextReplacement("A new thought")
+        ui.runOnIdle { state.value = state.value.copy(sent = 2, sentText = "Keep this caption", transfers = emptyList()) }
+        ui.onNodeWithTag("composer").assertTextContains("A new thought")
+    }
 
     @Test fun conversation_settings_are_separate_and_keep_changes_in_the_conversation() {
         val commands = mutableListOf<Pair<String, Map<String, Any?>>>()

@@ -606,6 +606,7 @@ mod tests {
         list.push(0, &chunk).unwrap();
         let descriptor = file_key.descriptor(list.finish().unwrap());
         let bytes = sigil_protocol::file::File {
+            caption: "",
             source: "chat.example",
             name: "synthetic.bin",
             media_type: "application/octet-stream",

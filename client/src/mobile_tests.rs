@@ -572,6 +572,97 @@ fn mobile_cards_use_authorized_state_and_hide_poll_results_until_voting() {
     assert_eq!(bad["ok"], false);
 }
 #[test]
+fn attachment_drafts_survive_restart_and_commit_the_caption_only_on_send() {
+    let (dir, _server, mut alice, _bob, now) = crate::claims::tests::pair();
+    let request = "86".repeat(32);
+    run(
+        &mut alice,
+        json!({"command":"file_begin","peer":"self","request":request,"timestamp":now,"length":5,"name":"draft.txt","media_type":"text/plain","draft":true}),
+    );
+    assert_eq!(
+        serde_json::from_str::<Value>(&alice.mobile_command(
+            &json!({"command":"file_send","request":request,"caption":"Too early"}).to_string()
+        ))
+        .unwrap()["ok"],
+        false
+    );
+    alice.mobile_file_stage(&request, 0, b"hello").unwrap();
+    assert!(alice.mobile_file_draft_chunk(&request, 0).is_err());
+    run(
+        &mut alice,
+        json!({"command":"file_finish","request":request}),
+    );
+    assert_eq!(
+        &*alice.mobile_file_draft_chunk(&request, 0).unwrap(),
+        b"hello"
+    );
+    assert_eq!(run(&mut alice, json!({"command":"file_work"}))["sent"], 0);
+    assert!(
+        run(&mut alice, json!({"command":"timeline","peer":"self"}))["messages"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+    drop(alice);
+    let mut alice = ClientStore::open(
+        &dir.path().join("alice.db"),
+        StorageKey::new(Secret32::from_bytes([9; 32])).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        run(&mut alice, json!({"command":"files"}))["uploads"][0]["draft"],
+        true
+    );
+    let send = json!({"command":"file_send","request":request,"caption":"A caption kept with its attachment. 📚"});
+    alice.db.execute_batch("CREATE TRIGGER fail_caption BEFORE UPDATE ON mobile_uploads BEGIN SELECT RAISE(ABORT,'synthetic failure'); END").unwrap();
+    assert_eq!(
+        serde_json::from_str::<Value>(&alice.mobile_command(&send.to_string())).unwrap()["ok"],
+        false
+    );
+    alice.db.execute_batch("DROP TRIGGER fail_caption").unwrap();
+    assert_eq!(
+        run(&mut alice, json!({"command":"files"}))["uploads"][0]["draft"],
+        true
+    );
+    run(&mut alice, send.clone());
+    assert!(alice.mobile_file_draft_chunk(&request, 0).is_err());
+    run(&mut alice, send);
+    assert_eq!(serde_json::from_str::<Value>(&alice.mobile_command(&json!({"command":"file_send","request":request,"caption":"Do not change a committed send"}).to_string())).unwrap()["ok"], false);
+    assert!(
+        !std::fs::read(dir.path().join("alice.db"))
+            .unwrap()
+            .windows(20)
+            .any(|v| v == b"A caption kept with ")
+    );
+    assert_eq!(run(&mut alice, json!({"command":"file_work"}))["sent"], 1);
+    let timeline = run(&mut alice, json!({"command":"timeline","peer":"self"}));
+    assert_eq!(timeline["messages"].as_array().unwrap().len(), 1);
+    assert_eq!(
+        timeline["messages"][0]["attachment"]["caption"],
+        "A caption kept with its attachment. 📚"
+    );
+    let author = timeline["messages"][0]["author"].as_str().unwrap();
+    assert_eq!(
+        &*alice
+            .mobile_file_chunk("self", author, &request, 0)
+            .unwrap(),
+        b"hello"
+    );
+    run(
+        &mut alice,
+        json!({"command":"edit","peer":"self","request":"87".repeat(32),"timestamp":now,"author":author,"message":request,"text":""}),
+    );
+    let edited = run(&mut alice, json!({"command":"timeline","peer":"self"}));
+    assert_eq!(edited["messages"][0]["attachment"]["caption"], "");
+    assert_eq!(
+        &*alice
+            .mobile_file_chunk("self", author, &request, 0)
+            .unwrap(),
+        b"hello"
+    );
+    assert_eq!(run(&mut alice, json!({"command":"file_work"}))["sent"], 0);
+}
+#[test]
 fn uploaded_files_queue_from_encrypted_cache_and_deletion_revokes_chunk_access() {
     let (_dir, _server, mut alice, _bob, now) = crate::claims::tests::pair();
     let request = "84".repeat(32);

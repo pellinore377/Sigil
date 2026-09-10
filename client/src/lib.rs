@@ -72,7 +72,7 @@ mod outbound;
 pub use outbound::OutboundAttempt;
 
 pub type Id = [u8; 32];
-pub const DATABASE_VERSION: u32 = 76;
+pub const DATABASE_VERSION: u32 = 77;
 #[derive(Debug)]
 pub enum Error {
     Storage(rusqlite::Error),
@@ -446,6 +446,9 @@ impl ClientStore {
         if version < 76 {
             tx.execute_batch("CREATE TABLE mobile_contact_invite(id INTEGER PRIMARY KEY CHECK(id=1),state BLOB NOT NULL); PRAGMA user_version=76;")?;
             mobile::contacts::migrate_work(&tx, &key)?;
+        }
+        if version < 77 {
+            tx.pragma_update(None, "user_version", 77)?;
         }
         if version < 63 {
             conversations::migrate(&tx, &key)?;

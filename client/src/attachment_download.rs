@@ -136,6 +136,33 @@ pub(super) fn completed(
     Ok(file_key.open_chunk(index, &data)?)
 }
 impl Cache {
+    pub(crate) fn staged_chunk(
+        &self,
+        file: Id,
+        index: u32,
+        now: u64,
+    ) -> Result<Zeroizing<Vec<u8>>, Error> {
+        let tx = self.db.unchecked_transaction()?;
+        let state = load(&tx, &self.key, file)?;
+        live(&state, now)?;
+        if state.direction != Direction::Upload
+            || !matches!(
+                state.phase,
+                Phase::Ready
+                    | Phase::Starting
+                    | Phase::Uploading
+                    | Phase::Checking
+                    | Phase::Published
+            )
+        {
+            return Err(Error::Unprepared);
+        }
+        let (file_key, _) = state.key()?;
+        let (_, data) = part(&tx, &self.key, state.shape(), index)?.ok_or(Error::InvalidStore)?;
+        let plaintext = file_key.open_chunk(index, &data)?;
+        tx.commit()?;
+        Ok(plaintext)
+    }
     /// Caller must obtain this descriptor from authenticated encrypted content
     /// and authorize the conversation/source first. Parsing alone proves neither.
     /// This low-level handoff does not grant archive-managed retention.

@@ -36,6 +36,7 @@ pub(super) fn content(state: &State, server: &str) -> Result<Zeroizing<Vec<u8>>,
     )?);
     Ok(Zeroizing::new(
         sigil_protocol::file::File {
+            caption: "",
             source: state.source.as_deref().unwrap_or(server),
             name: &metadata.name,
             media_type: &metadata.media_type,
@@ -275,7 +276,10 @@ impl ClientStore {
             .file;
         let state = load(&tx, &cache.key, id)?;
         live(&state, now)?;
-        if content(&state, &server)?.as_slice() != bytes.as_slice() {
+        let cached = content(&state, &server)?;
+        let cached =
+            sigil_protocol::file::File::from_bytes(&cached).map_err(|_| Error::InvalidStore)?;
+        if !cached.same_attachment(&file) {
             return Err(Error::Conflict);
         }
         download::completed(&tx, &cache.key, id, index, now)

@@ -10,7 +10,7 @@ pub(super) fn metadata(body: Option<&Body>) -> Result<Option<Value>, Error> {
     let key = sigil_protocol::file::KeyDescriptor::from_bytes(file.descriptor)
         .map_err(|_| Error::InvalidStore)?;
     Ok(Some(
-        json!({"name":file.name,"media_type":file.media_type,"length":key.length}),
+        json!({"name":file.name,"media_type":file.media_type,"length":key.length,"caption":file.caption}),
     ))
 }
 
@@ -23,6 +23,10 @@ pub(super) struct Upload {
     pub length: u64,
     pub name: String,
     pub media_type: String,
+    #[serde(default)]
+    pub draft: bool,
+    #[serde(default)]
+    pub caption: Zeroizing<String>,
     pub file: Id,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reply: Option<Reference>,
@@ -45,11 +49,11 @@ impl ClientStore {
         .concat())
     }
     pub(super) fn mobile_upload(&self, request: Id) -> Result<Upload, Error> {
-        let bytes: Vec<u8> = self.db.query_row("SELECT CASE WHEN length(state)<=2048 THEN state END FROM mobile_uploads WHERE id=?1", [request.as_slice()], |r| r.get(0)).optional()?.ok_or(Error::NotFound)?;
+        let bytes: Vec<u8> = self.db.query_row("SELECT CASE WHEN length(state)<=65536 THEN state END FROM mobile_uploads WHERE id=?1", [request.as_slice()], |r| r.get(0)).optional()?.ok_or(Error::NotFound)?;
         let upload: Upload =
             serde_json::from_slice(&self.key.open(&bytes, &self.upload_aad(request)?)?)
                 .map_err(|_| Error::InvalidStore)?;
-        if upload.request != request {
+        if upload.request != request || upload.caption.len() > sigil_protocol::file::MAX_CAPTION {
             return Err(Error::InvalidStore);
         }
         Ok(upload)
@@ -81,6 +85,7 @@ impl ClientStore {
         if upload.timestamp == 0
             || upload.timestamp > i64::MAX as u64
             || upload.length > 1024 * 1024 * 1024
+            || upload.caption.len() > sigil_protocol::file::MAX_CAPTION
         {
             return Err(Error::Limit);
         }
@@ -93,6 +98,8 @@ impl ClientStore {
                     || previous.timestamp != upload.timestamp
                     || previous.reply != upload.reply
                     || previous.thread != upload.thread
+                    || previous.draft != upload.draft
+                    || previous.caption != upload.caption
                 {
                     return Err(Error::Conflict);
                 }
@@ -149,9 +156,57 @@ impl ClientStore {
         let mut uploads = Vec::new();
         for id in self.upload_ids()? {
             let upload = self.mobile_upload(id)?;
-            uploads.push(json!({"request":transport::hex(&id),"peer":upload.peer,"name":upload.name,"length":upload.length,"phase":format!("{:?}",cache.phase(upload.file)?)}));
+            uploads.push(json!({"request":transport::hex(&id),"peer":upload.peer,"name":upload.name,"media_type":upload.media_type,"length":upload.length,"phase":format!("{:?}",cache.phase(upload.file)?),"draft":upload.draft,"caption":upload.caption.as_str()}));
         }
         Ok(json!({"uploads":uploads}))
+    }
+    pub(super) fn mobile_file_send(
+        &mut self,
+        request: Id,
+        caption: Zeroizing<String>,
+    ) -> Result<Value, Error> {
+        if caption.len() > sigil_protocol::file::MAX_CAPTION {
+            return Err(Error::Limit);
+        }
+        let upload = self.mobile_upload(request)?;
+        if matches!(
+            self.mobile_cache()?.phase(upload.file)?,
+            Phase::Staging | Phase::Cancelled | Phase::Expired
+        ) {
+            return Err(Error::Unprepared);
+        }
+        let aad = self.upload_aad(request)?;
+        let tx = self
+            .db
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let bytes: Vec<u8> = tx.query_row(
+            "SELECT CASE WHEN length(state)<=65536 THEN state END FROM mobile_uploads WHERE id=?1",
+            [request.as_slice()],
+            |r| r.get(0),
+        )?;
+        let mut current: Upload = serde_json::from_slice(&self.key.open(&bytes, &aad)?)
+            .map_err(|_| Error::InvalidStore)?;
+        if current.request != request || current.file != upload.file {
+            return Err(Error::Conflict);
+        }
+        if !current.draft {
+            if current.caption != caption {
+                return Err(Error::Conflict);
+            }
+            return Ok(json!({}));
+        }
+        current.caption = caption;
+        current.draft = false;
+        current.timestamp = conversations::now();
+        let encoded =
+            Zeroizing::new(serde_json::to_vec(&current).map_err(|_| Error::InvalidStore)?);
+        let sealed = self.key.seal(&encoded, &aad)?;
+        tx.execute(
+            "UPDATE mobile_uploads SET state=?1 WHERE id=?2",
+            (sealed, request.as_slice()),
+        )?;
+        tx.commit()?;
+        Ok(json!({}))
     }
     pub(super) fn mobile_file_work(&mut self) -> Result<Value, Error> {
         let mut cache = self.mobile_cache()?;
@@ -162,7 +217,9 @@ impl ClientStore {
                 || !result.attempt.as_ref().is_some_and(|a| a.result.is_ok())
                 || result.next_at > conversations::now()
                 || started.elapsed().as_secs() >= 2
-            { break; }
+            {
+                break;
+            }
             result = self.sync_attachments_due_online(&mut cache)?;
         }
         let mut issue = result.scheduling_error.as_ref().map(error_message);
@@ -178,18 +235,22 @@ impl ClientStore {
         for id in self.upload_ids()? {
             let upload = self.mobile_upload(id)?;
             match cache.phase(upload.file)? {
-                Phase::Published => {
+                Phase::Published if !upload.draft => {
                     self.with_published_file(
                         &mut cache,
                         upload.file,
                         conversations::now(),
                         |store, bytes| {
+                            let mut file = sigil_protocol::file::File::from_bytes(bytes)
+                                .map_err(|_| Error::InvalidStore)?;
+                            file.caption = &upload.caption;
+                            let content = file.to_bytes().map_err(|_| Error::InvalidEvent)?;
                             store.mobile_action(
                                 &upload.peer,
                                 &transport::hex(&upload.request),
                                 upload.timestamp,
                                 Action::Post {
-                                    body: Body::File(bytes.to_vec()),
+                                    body: Body::File(content),
                                     reply: upload.reply.clone(),
                                     thread: upload.thread.clone(),
                                     expires_at: None,
@@ -207,7 +268,7 @@ impl ClientStore {
                     self.db
                         .execute("DELETE FROM mobile_uploads WHERE id=?1", [id.as_slice()])?;
                 }
-                Phase::Staging => {}
+                Phase::Staging | Phase::Published => {}
                 _ => pending = true,
             }
         }
@@ -289,7 +350,7 @@ impl ClientStore {
             conversations::now(),
         )?;
         Ok(
-            json!({"name":file.name,"media_type":file.media_type,"length":key.length,"phase":format!("{:?}",cache.phase(id)?)}),
+            json!({"name":file.name,"media_type":file.media_type,"length":key.length,"caption":file.caption,"phase":format!("{:?}",cache.phase(id)?)}),
         )
     }
     pub fn mobile_file_chunk(
@@ -307,5 +368,17 @@ impl ClientStore {
             index,
             conversations::now(),
         )
+    }
+    pub fn mobile_file_draft_chunk(
+        &self,
+        request: &str,
+        index: u32,
+    ) -> Result<Zeroizing<Vec<u8>>, Error> {
+        let upload = self.mobile_upload(id(request)?)?;
+        if !upload.draft {
+            return Err(Error::Unprepared);
+        }
+        self.mobile_cache()?
+            .staged_chunk(upload.file, index, conversations::now())
     }
 }

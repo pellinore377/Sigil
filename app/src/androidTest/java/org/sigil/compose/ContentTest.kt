@@ -73,6 +73,8 @@ class ContentTest {
         } finally { ui.runOnIdle { store.clear() } }
     }
     @Test fun timelineReadsDoNotWaitForTheNetworkCommandQueue() = runBlocking {
+        val text = "Synthetic independent timeline read"
+        native("post", mapOf("peer" to "self", "request" to "6b".repeat(32), "timestamp" to System.currentTimeMillis() / 1000, "text" to text))
         lateinit var messenger: Messenger
         val store = androidx.lifecycle.ViewModelStore()
         ui.runOnIdle { messenger = Messenger(context.applicationContext as Application); store.put("timeline", messenger) }
@@ -82,13 +84,12 @@ class ContentTest {
             val queue = field.get(messenger) as kotlinx.coroutines.sync.Mutex
             withTimeout(10_000) { queue.lock() }
             try {
-                val peer = messenger.state.chats.first { it.id != "self" }.id
                 var start = 0L
                 InstrumentationRegistry.getInstrumentation().runOnMainSync {
-                    start = SystemClock.elapsedRealtime(); messenger.command("open", mapOf("peer" to peer))
+                    start = SystemClock.elapsedRealtime(); messenger.command("open", mapOf("peer" to "self"))
                 }
                 withTimeout(3000) {
-                    while (!withContext(Dispatchers.Main) { messenger.state.messages.any { it.text == "Attachment acceptance" } }) delay(5)
+                    while (!withContext(Dispatchers.Main) { messenger.state.messages.any { it.text == text } }) delay(5)
                 }
                 assertTrue("The command queue was released before the local read finished", queue.isLocked)
                 InstrumentationRegistry.getInstrumentation().sendStatus(0, android.os.Bundle().apply {
@@ -236,7 +237,16 @@ class ContentTest {
         val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
         val files = NativeFiles(context.applicationContext as Application, scope, { _, _ -> }, { fail(it) })
         try {
-            withContext(Dispatchers.IO) { bytes.inputStream().use { files.stage(mapOf("peer" to peer, "reply_author" to root.getString("author"), "reply_message" to root.getString("id")), "Synthetic tone.wav", "audio/wav", bytes.size.toLong(), it) } }
+            withContext(Dispatchers.IO) { bytes.inputStream().use { files.stage(mapOf("peer" to peer, "draft" to true, "reply_author" to root.getString("author"), "reply_message" to root.getString("id")), "Synthetic tone.wav", "audio/wav", bytes.size.toLong(), it) } }
+            val upload = native("files").getJSONArray("uploads").getJSONObject(0)
+            assertTrue(upload.getBoolean("draft"))
+            assertEquals(0, NativeSync.files(context).getInt("sent"))
+            assertEquals(root.getString("id"), native("timeline", mapOf("peer" to peer)).getJSONArray("messages").getJSONObject(0).getString("id"))
+            val draft = ChatMessage(upload.getString("request"), "", "", true, "", "", false, emptyList(), emptyList(), null, true, peer = peer, attachment = AttachmentDetails("Synthetic tone.wav", "audio/wav", bytes.size.toLong(), draft = true))
+            EncryptedMedia(context, draft).use { media -> val read = ByteArray(bytes.size); assertEquals(bytes.size, media.readAt(0, read, 0, read.size)); assertArrayEquals(bytes, read); read.fill(0) }
+            val committed = CompletableDeferred<Unit>()
+            files.send(upload.getString("request"), "A caption with the recording.") { committed.complete(Unit) }
+            withTimeout(10000) { committed.await() }
             val deadline = SystemClock.elapsedRealtime() + 60000
             while (SystemClock.elapsedRealtime() < deadline && native("files").getJSONArray("uploads").length() > 0) {
                 NativeSync.files(context); NativeSync.run(context, true); delay(300)
@@ -253,7 +263,8 @@ class ContentTest {
                 row = native("timeline", mapOf("peer" to peer)).getJSONArray("messages").getJSONObject(0)
             }
             assertTrue("Attachment was queued but never accepted by the server", row.getString("delivery") in listOf("Sent", "Delivered", "Read"))
-            val message = ChatMessage(row.getString("id"), row.getString("author"), "", true, "", "Delivered", false, emptyList(), emptyList(), null, true, peer = peer, attachment = AttachmentDetails("Synthetic tone.wav", "audio/wav", bytes.size.toLong()))
+            assertEquals("A caption with the recording.", row.getJSONObject("attachment").getString("caption"))
+            val message = ChatMessage(row.getString("id"), row.getString("author"), "", true, "", "Delivered", false, emptyList(), emptyList(), null, true, peer = peer, attachment = AttachmentDetails("Synthetic tone.wav", "audio/wav", bytes.size.toLong(), "A caption with the recording."))
             EncryptedMedia(context, message).use { media -> val read = ByteArray(bytes.size); assertEquals(bytes.size, media.readAt(0, read, 0, read.size)); assertArrayEquals(bytes, read); read.fill(0) }
             val audio = context.getSystemService(AudioManager::class.java)
             val volume = audio.getStreamVolume(AudioManager.STREAM_MUSIC)
@@ -263,6 +274,7 @@ class ContentTest {
                     SigilApp(NativeCore::palette, NativeCore::analyze, MessengerState(phase = "connected", selected = peer,
                         chats = listOf(ChatSummary(peer, "@sam:example.com", "", "", true, emptyList(), displayName = "Sam")), messages = listOf(message)), { _, _ -> })
                 } }
+                ui.onNodeWithText("A caption with the recording.").assertIsDisplayed()
                 ui.onNodeWithContentDescription("Play audio message").performClick()
                 ui.waitUntil(10000) { ui.onAllNodesWithText("0:01 / 0:03").fetchSemanticsNodes().isNotEmpty() }
                 ui.onNodeWithContentDescription("Pause audio message").performClick()
@@ -281,6 +293,7 @@ class ContentTest {
                     delay(250)
                 }
             }
+            assertEquals("A caption with the recording.", copy!!.getJSONObject("attachment").getString("caption"))
             native("clear_conversation", mapOf("peer" to peer, "request" to "79".repeat(32), "timestamp" to System.currentTimeMillis() / 1000))
             val chunk = StorageKeyProvider(context).withKey { directory, key -> NativeStorage.readFileChunk(directory.path, key, peer, message.author, message.id, 0) }
             assertNull(chunk)

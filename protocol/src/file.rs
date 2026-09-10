@@ -6,8 +6,10 @@ pub const CHUNK_OVERHEAD: usize = 84;
 pub const DESCRIPTOR_SIZE: usize = 116;
 pub const DESCRIPTOR_PREFIX: &[u8; 8] = b"SGAD\0\x01\0\0";
 const PREFIX: &[u8; 8] = b"SGFC\0\x01\0\0";
+const CAPTION_PREFIX: &[u8; 8] = b"SGFC\0\x02\0\0";
 const HEADER: usize = 170;
-pub const MAX_CONTENT: usize = HEADER + 253 + 255 + 127;
+pub const MAX_CAPTION: usize = 8192;
+pub const MAX_CONTENT: usize = HEADER + 253 + 255 + 127 + 2 + MAX_CAPTION;
 type Id = [u8; 32];
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -89,6 +91,7 @@ impl<'a> KeyDescriptor<'a> {
 /// Canonical ordinary-retention content carried only inside authenticated
 /// encrypted events/recovery. MIME and name remain untrusted rendering metadata.
 pub struct File<'a> {
+    pub caption: &'a str,
     pub source: &'a str,
     pub name: &'a str,
     pub media_type: &'a str,
@@ -97,8 +100,20 @@ pub struct File<'a> {
     pub descriptor: &'a [u8],
 }
 impl<'a> File<'a> {
+    /// Captions belong to messages; cache identity includes every file authority field.
+    pub fn same_attachment(&self, other: &File<'_>) -> bool {
+        self.source == other.source
+            && self.name == other.name
+            && self.media_type == other.media_type
+            && self.expires_at == other.expires_at
+            && self.access == other.access
+            && self.descriptor == other.descriptor
+    }
     pub fn validate(&self) -> Result<(), &'static str> {
         metadata(self.name, self.media_type)?;
+        if self.caption.len() > MAX_CAPTION {
+            return Err("file caption too long");
+        }
         if !crate::valid_server_name(self.source)
             || self
                 .expires_at
@@ -112,9 +127,18 @@ impl<'a> File<'a> {
     pub fn to_bytes(&self) -> Result<Vec<u8>, &'static str> {
         self.validate()?;
         let mut bytes = Vec::with_capacity(
-            HEADER + self.source.len() + self.name.len() + self.media_type.len(),
+            HEADER
+                + self.source.len()
+                + self.name.len()
+                + self.media_type.len()
+                + self.caption.len()
+                + 2,
         );
-        bytes.extend_from_slice(PREFIX);
+        bytes.extend_from_slice(if self.caption.is_empty() {
+            PREFIX
+        } else {
+            CAPTION_PREFIX
+        });
         for value in [self.source, self.name, self.media_type] {
             bytes.extend_from_slice(&(value.len() as u16).to_be_bytes());
         }
@@ -124,15 +148,26 @@ impl<'a> File<'a> {
         for value in [self.source, self.name, self.media_type] {
             bytes.extend_from_slice(value.as_bytes());
         }
+        if !self.caption.is_empty() {
+            bytes.extend_from_slice(&(self.caption.len() as u16).to_be_bytes());
+            bytes.extend_from_slice(self.caption.as_bytes());
+        }
         Ok(bytes)
     }
     pub fn from_bytes(bytes: &'a [u8]) -> Result<Self, &'static str> {
-        if !(HEADER..=MAX_CONTENT).contains(&bytes.len()) || &bytes[..8] != PREFIX {
+        if !(HEADER..=MAX_CONTENT).contains(&bytes.len())
+            || (&bytes[..8] != PREFIX && &bytes[..8] != CAPTION_PREFIX)
+        {
             return Err("unsupported file content");
         }
         let length = |offset| u16::from_be_bytes([bytes[offset], bytes[offset + 1]]) as usize;
         let (source, name, mime) = (length(8), length(10), length(12));
-        if HEADER + source + name + mime != bytes.len() {
+        let end = HEADER + source + name + mime;
+        let captioned = &bytes[..8] == CAPTION_PREFIX;
+        if end > bytes.len()
+            || (!captioned && end != bytes.len())
+            || (captioned && (end + 2 >= bytes.len() || end + 2 + length(end) != bytes.len()))
+        {
             return Err("invalid file lengths");
         }
         let expires = u64::from_be_bytes(
@@ -144,9 +179,14 @@ impl<'a> File<'a> {
             std::str::from_utf8(&bytes[start..end]).map_err(|_| "invalid file encoding")
         };
         let value = Self {
+            caption: if captioned {
+                text(end + 2, bytes.len())?
+            } else {
+                ""
+            },
             source: text(HEADER, HEADER + source)?,
             name: text(HEADER + source, HEADER + source + name)?,
-            media_type: text(HEADER + source + name, bytes.len())?,
+            media_type: text(HEADER + source + name, end)?,
             expires_at: (expires != 0).then_some(expires),
             access: bytes[22..54]
                 .try_into()
@@ -177,6 +217,7 @@ mod tests {
         let descriptor = descriptor();
         let access = [4; 32];
         let mut file = File {
+            caption: "",
             source: "chat.example",
             name: "synthetic 🗒.txt",
             media_type: "text/plain",
@@ -187,6 +228,14 @@ mod tests {
         let bytes = file.to_bytes().unwrap();
         let parsed = File::from_bytes(&bytes).unwrap();
         assert_eq!(parsed.to_bytes().unwrap(), bytes);
+        let mut altered = File::from_bytes(&bytes).unwrap();
+        altered.caption = "Different caption";
+        assert!(parsed.same_attachment(&altered));
+        altered.access = &[5; 32];
+        assert!(!parsed.same_attachment(&altered));
+        altered.access = parsed.access;
+        altered.expires_at = Some(9);
+        assert!(!parsed.same_attachment(&altered));
         assert_eq!(parsed.name, file.name);
         for length in 0..bytes.len() {
             assert!(File::from_bytes(&bytes[..length]).is_err());
@@ -226,6 +275,51 @@ mod tests {
             file.media_type = mime;
             assert!(file.to_bytes().is_err());
         }
+    }
+    #[test]
+    fn captions_use_a_distinct_version_and_preserve_legacy_file_bytes() {
+        let descriptor = descriptor();
+        let mut file = File {
+            caption: "",
+            source: "chat.example",
+            name: "photo.jpg",
+            media_type: "image/jpeg",
+            expires_at: None,
+            access: &[4; 32],
+            descriptor: &descriptor,
+        };
+        let legacy = file.to_bytes().unwrap();
+        assert_eq!(&legacy[..8], PREFIX);
+        assert_eq!(File::from_bytes(&legacy).unwrap().caption, "");
+        file.caption = "A quiet afternoon.\n📚";
+        let bytes = file.to_bytes().unwrap();
+        let parsed = File::from_bytes(&bytes).unwrap();
+        assert_eq!(&bytes[..8], CAPTION_PREFIX);
+        assert_eq!(parsed.caption, file.caption);
+        assert_eq!(parsed.descriptor, file.descriptor);
+        assert_eq!(parsed.to_bytes().unwrap(), bytes);
+        for end in 0..bytes.len() {
+            assert!(File::from_bytes(&bytes[..end]).is_err());
+        }
+        let mut extra = bytes.clone();
+        extra.push(0);
+        assert!(File::from_bytes(&extra).is_err());
+        let mut empty = legacy.clone();
+        empty[..8].copy_from_slice(CAPTION_PREFIX);
+        empty.extend_from_slice(&[0, 0]);
+        assert!(File::from_bytes(&empty).is_err());
+        let mut invalid = bytes;
+        *invalid.last_mut().unwrap() = 255;
+        assert!(File::from_bytes(&invalid).is_err());
+        let max = "a".repeat(MAX_CAPTION);
+        file.caption = &max;
+        assert_eq!(
+            File::from_bytes(&file.to_bytes().unwrap()).unwrap().caption,
+            max
+        );
+        let excessive = "a".repeat(MAX_CAPTION + 1);
+        file.caption = &excessive;
+        assert!(file.to_bytes().is_err());
     }
     #[test]
     fn descriptor_rejects_unknown_profiles_bad_shape_and_extra_bytes() {
