@@ -478,6 +478,28 @@ fn all_chart_types_project_exact_values_and_bounded_coordinates() {
     }
 }
 #[test]
+fn diagram_projection_keeps_directed_edges_rich_labels_and_timeline_order() {
+    let (_dir, _server, mut alice, _bob, now) = crate::claims::tests::pair();
+    run(&mut alice,json!({"command":"post","peer":"self","request":"78".repeat(32),"timestamp":now,"rich":true,
+        "text":"diagram::sequence::Delivery\n- Client -> Server: **send**\n- Server --> Client: reply;"}));
+    let timeline=run(&mut alice,json!({"command":"timeline","peer":"self"}));
+    let diagram=&timeline["messages"][0]["parts"][0]["diagram"];
+    assert_eq!(diagram["kind"],"sequence");
+    assert_eq!(diagram["nodes"][0]["y"],diagram["nodes"][1]["y"]);
+    assert_eq!(diagram["edges"][0]["from"],diagram["edges"][1]["to"]);
+    assert_eq!(diagram["edges"][0]["to"],diagram["edges"][1]["from"]);
+    assert_eq!(diagram["edges"][0]["dashed"],false);
+    assert_eq!(diagram["edges"][1]["dashed"],true);
+    assert_eq!(diagram["edges"][0]["label"]["text"],"send");
+    assert!(!diagram["edges"][0]["label"]["spans"].as_array().unwrap().is_empty());
+    run(&mut alice,json!({"command":"post","peer":"self","request":"79".repeat(32),"timestamp":now,"rich":true,
+        "text":"diagram::timeline::Project\n- September = Later\n- March = Earlier;"}));
+    let timeline=run(&mut alice,json!({"command":"timeline","peer":"self"}));
+    let entries=&timeline["messages"][0]["parts"][0]["diagram"]["entries"];
+    assert_eq!(entries[0]["date"]["text"],"September");
+    assert_eq!(entries[1]["date"]["text"],"March");
+}
+#[test]
 fn forwarding_preserves_text_and_notes_and_snapshots_current_checklist_state() {
     let (_dir, _server, mut alice, _bob, now) = crate::claims::tests::pair();
     let author = transport::hex(&alice.account_reference().unwrap());

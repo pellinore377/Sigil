@@ -8,6 +8,7 @@ pub mod code;
 pub mod composition;
 pub mod contact;
 pub mod data;
+pub mod diagram;
 pub mod editing;
 mod effects;
 pub mod help;

@@ -234,6 +234,10 @@ impl ClientStore {
                 value["kind"] = json!("chart");
                 value["chart"] = chart.presentation().map_err(|_| Error::InvalidStore)?;
             }
+            Construct::Data(sigil_protocol::text::data::Data::Diagram(diagram)) => {
+                value["kind"] = json!("diagram");
+                value["diagram"] = diagram.presentation().map_err(|_| Error::InvalidStore)?;
+            }
             _ => {}
         }
         Ok(value)
