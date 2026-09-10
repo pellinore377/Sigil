@@ -9,7 +9,7 @@ use std::{
 };
 
 const APPLICATION_ID: i64 = 0x5349474c;
-pub const SCHEMA_VERSION: i64 = 33;
+pub const SCHEMA_VERSION: i64 = 34;
 
 #[derive(Debug)]
 pub enum StoreError {
@@ -220,6 +220,9 @@ impl Store {
             transaction
                 .execute_batch("ALTER TABLE contact_requests ADD COLUMN invitation TEXT;")?;
         }
+        if version < 34 {
+            transaction.execute_batch(crate::push_android::MIGRATION)?;
+        }
         transaction.pragma_update(None, "user_version", SCHEMA_VERSION)?;
         transaction.commit()?;
         let mode: String = db.query_row("PRAGMA journal_mode=DELETE", [], |r| r.get(0))?;
@@ -373,6 +376,7 @@ impl Store {
             )?;
             tx.execute_batch("DELETE FROM push_jobs; UPDATE push_channels SET state=3,target=NULL,proof=NULL,proof_hash=NULL,expires_at=NULL;")?;
             crate::push_config::reset_after_restore(&tx)?;
+            crate::push_android::reset(&tx)?;
             tx.execute_batch("DELETE FROM oidc_flows; DELETE FROM oidc_grants; UPDATE oidc_configuration SET revision=revision+1,value=NULL;")?;
             crate::oidc_transition::reset(&tx)?;
             tx.execute_batch("DELETE FROM account_passwords; UPDATE password_policy SET enabled=0,revision=revision+1,login_after=0;")?;

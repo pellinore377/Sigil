@@ -516,7 +516,7 @@ fn directory_is_authenticated_and_schema_32_requests_remain_valid() {
     store
         .0
         .execute_batch(
-            "ALTER TABLE contact_requests DROP COLUMN invitation; PRAGMA user_version=32;",
+            "ALTER TABLE contact_requests DROP COLUMN invitation; DROP TABLE IF EXISTS push_android; PRAGMA user_version=32;",
         )
         .unwrap();
     drop(store);

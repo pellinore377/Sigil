@@ -246,6 +246,7 @@ fn schema26_rebuild_counts_retained_contacts_and_recipient_grants_once_including
     )
     .unwrap();
     db.execute_batch("DROP TABLE profile_shares; DROP TABLE profile_photos; DROP TABLE contact_requests; DROP TABLE contact_request_policy; DROP TABLE account_passwords; DROP TABLE password_policy; DROP TABLE web_oidc; DROP TABLE web_sessions; DROP TABLE oidc_fallback_ack; DROP TABLE oidc_transition; DROP TABLE account_profiles; DROP TABLE web_owner; DROP TABLE deleted_accounts; ALTER TABLE private_groups DROP COLUMN blocked;").unwrap();
+    db.execute_batch("DROP TABLE push_android;").unwrap();
     db.pragma_update(None, "user_version", 26).unwrap();
     db.execute_batch("ALTER TABLE oidc_grants DROP COLUMN replace_devices;")
         .unwrap();

@@ -17,6 +17,47 @@ pub struct Providers {
     pub vapid_public_key: Option<String>,
 }
 
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct AndroidConfig {
+    pub project_id: String,
+    pub application_id: String,
+    pub api_key: String,
+    pub sender_id: String,
+}
+impl AndroidConfig {
+    pub fn valid(&self) -> bool {
+        let project = self.project_id.as_bytes();
+        let app = self
+            .application_id
+            .strip_prefix(&format!("1:{}:android:", self.sender_id));
+        (6..=30).contains(&project.len())
+            && project[0].is_ascii_lowercase()
+            && !project.ends_with(b"-")
+            && project
+                .iter()
+                .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || *b == b'-')
+            && (1..=20).contains(&self.sender_id.len())
+            && self.sender_id.bytes().all(|b| b.is_ascii_digit())
+            && !self.sender_id.starts_with('0')
+            && app.is_some_and(|s| {
+                (16..=64).contains(&s.len()) && s.bytes().all(|b| b.is_ascii_hexdigit())
+            })
+            && self.api_key.len() == 39
+            && self.api_key.starts_with("AIza")
+            && self
+                .api_key
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct AndroidProvider {
+    pub android: Option<AndroidConfig>,
+}
+
 #[derive(Clone, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(tag = "provider", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Target {
@@ -113,6 +154,34 @@ impl<'a> Payload<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn android_options_accept_only_bounded_matching_firebase_identifiers() {
+        let good = AndroidConfig {
+            project_id: "sigil-synthetic".into(),
+            application_id: "1:123456789:android:0123456789abcdef".into(),
+            api_key: format!("AIza{}", "x".repeat(35)),
+            sender_id: "123456789".into(),
+        };
+        assert!(good.valid());
+        for (field, bad) in [
+            ("project_id", ""),
+            ("project_id", "https://example.org"),
+            ("application_id", "1:987654321:android:0123456789abcdef"),
+            ("application_id", "1:123456789:ios:0123456789abcdef"),
+            ("sender_id", "0"),
+            ("api_key", "AIza\n"),
+            ("api_key", "secret"),
+        ] {
+            let mut value = serde_json::to_value(&good).unwrap();
+            value[field] = bad.into();
+            assert!(!serde_json::from_value::<AndroidConfig>(value)
+                .unwrap()
+                .valid());
+        }
+        let mut value = serde_json::to_value(good).unwrap();
+        value["private_key"] = "never sent to clients".into();
+        assert!(serde_json::from_value::<AndroidConfig>(value).is_err());
+    }
     #[test]
     fn canonical_push_has_no_optional_message_fields() {
         for payload in [

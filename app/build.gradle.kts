@@ -1,5 +1,3 @@
-import groovy.json.JsonSlurper
-
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
@@ -23,21 +21,6 @@ android {
         create("acceptance") { initWith(getByName("debug")); applicationIdSuffix = ".acceptance"; matchingFallbacks += "debug"; resValue("string", "app_name", "Sigil Acceptance") }
         release {
             isMinifyEnabled = true; proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"))
-            providers.environmentVariable("SIGIL_FIREBASE_CONFIG").orNull?.let { path ->
-                val config = JsonSlurper().parse(file(path)) as Map<*, *>
-                val project = config["project_info"] as Map<*, *>
-                val client = (config["client"] as List<*>).map { it as Map<*, *> }.single {
-                    val info = it["client_info"] as Map<*, *>
-                    (info["android_client_info"] as Map<*, *>)["package_name"] == "org.sigil.compose"
-                }
-                val info = client["client_info"] as Map<*, *>
-                val api = (client["api_key"] as List<*>).first() as Map<*, *>
-                mapOf("google_app_id" to info["mobilesdk_app_id"], "google_api_key" to api["current_key"],
-                    "gcm_defaultSenderId" to project["project_number"], "project_id" to project["project_id"]).forEach { (name, value) ->
-                    require(value is String && value.matches(Regex("[A-Za-z0-9_:\\-]+"))) { "Invalid Firebase $name" }
-                    resValue("string", name, value)
-                }
-            }
         }
     }
     compileOptions { sourceCompatibility = JavaVersion.VERSION_17; targetCompatibility = JavaVersion.VERSION_17 }

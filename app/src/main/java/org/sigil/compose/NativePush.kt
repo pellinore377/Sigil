@@ -48,7 +48,7 @@ internal object NativePush {
         val phase = when {
             !state.getBoolean("configured") && status(context).contains("issue") -> status(context).getString("issue", "Push is unavailable").orEmpty()
             choice == "disabled" -> if (state.optString("remote") == "active" || state.getBoolean("pending")) "Turning off push delivery…" else "Periodic background sync"
-            choice == "fcm" && !NativeFcm.available(context) -> "Google notifications are unavailable on this device or build"
+            choice == "fcm" && !NativeFcm.available(context) -> "Google notifications are unavailable on this device"
             choice == "unified_push" && selected(context) !in distributors(context).map { it.id } -> "Your push service is unavailable"
             status(context).contains("issue") -> status(context).getString("issue", "Push is unavailable").orEmpty()
             state.getBoolean("awaiting_endpoint") -> "Waiting for the push service"
@@ -87,6 +87,7 @@ internal object NativePush {
                     resumed = NativeFcm.register(context, false)
                     return@launch
                 }
+                if(registration.getBoolean("configured") && registration.optString("choice")!="fcm")NativeFcm.stop(context)
                 val distributor = selected(context)
                 if (!registration.isNull("connection") && distributor in distributors(context).map { it.id }) register(context, distributor!!, registration)
             } catch (cancelled: CancellationException) { resumed = false; throw cancelled }

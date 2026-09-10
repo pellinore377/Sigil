@@ -78,7 +78,7 @@ internal fun PushSettings(read:suspend ()->PushConfiguration, save:suspend (Push
             }
             AnimatedVisibility(google) {
                 Column(verticalArrangement=Arrangement.spacedBy(12.dp)) {
-                    Text("The Android build must use the same Firebase project as the target configured here. Saving credentials does not verify delivery.",style=MaterialTheme.typography.bodySmall)
+                    Text("Save the server credentials here, then add the public Android app configuration below. Both must use the same Firebase project. Saving configuration does not verify delivery.",style=MaterialTheme.typography.bodySmall)
                     if(current.project.isNotEmpty()) {
                         Text("Project: ${current.project}")
                         Text(current.email,style=MaterialTheme.typography.bodySmall)

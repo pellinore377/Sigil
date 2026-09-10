@@ -43,6 +43,13 @@ port=$(cat "$scratch/port")
 "$adb" shell run-as "$app_id" cp /data/local/tmp/sigil-content-fixture.db no_backup/native/client.db
 "$adb" shell run-as "$app_id" chmod 700 no_backup/native
 "$adb" shell run-as "$app_id" chmod 600 no_backup/native/client.db
+instrument 'FirebaseBootstrapTest#project_change_stages_a_restart_and_rejects_old_callbacks'
+"$adb" shell am force-stop "$app_id"
+instrument 'FirebaseBootstrapTest#application_initializes_saved_default_before_services_then_honors_opt_out'
+"$adb" shell am force-stop "$app_id"
+instrument 'FirebaseBootstrapTest#disabled_delivery_does_not_initialize_google_on_cold_start'
+"$adb" shell am force-stop "$app_id"
+instrument 'FirebaseBootstrapTest#durable_opt_out_wins_over_a_stale_bootstrap_after_crash'
 if [[ ${1:-all} != push ]]; then instrument ContentTest; fi
 if [[ ${1:-all} == push ]]; then instrument 'PushTest#foregroundSyncTimings'; fi
 "$adb" push "$scratch/push-endpoint" /data/local/tmp/sigil-push-fixture >/dev/null
