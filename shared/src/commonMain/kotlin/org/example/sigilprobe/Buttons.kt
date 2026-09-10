@@ -8,6 +8,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Shape
+import androidx.compose.ui.graphics.isSpecified
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.semantics
@@ -32,7 +33,10 @@ fun SigilOutlinedButton(onClick: () -> Unit, modifier: Modifier = Modifier, enab
 @Composable
 fun SigilTextButton(onClick: () -> Unit, modifier: Modifier = Modifier, enabled: Boolean = true,
     contentPadding: PaddingValues = ButtonDefaults.TextButtonContentPadding, content: @Composable RowScope.() -> Unit) {
-    TextButton(onClick, modifier, enabled, shape = SigilButtonShape, contentPadding = contentPadding, content = content)
+    val ink = if (LocalMessageSurface.current.isSpecified) LocalContentColor.current else MaterialTheme.colorScheme.primary
+    TextButton(onClick, modifier, enabled, shape = SigilButtonShape,
+        colors = ButtonDefaults.textButtonColors(contentColor = ink, disabledContentColor = ink.copy(alpha = .38f)),
+        contentPadding = contentPadding, content = content)
 }
 
 @Composable

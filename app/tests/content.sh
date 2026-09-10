@@ -75,6 +75,7 @@ instrument HelpTest
 instrument TableTest
 instrument RecipeTest
 instrument ChartTest
+instrument RandomizerTest
 instrument DiagramTest
 instrument UtilityTest
 instrument ServiceCardTest

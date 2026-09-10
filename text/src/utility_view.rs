@@ -1,8 +1,9 @@
 use crate::{
-    Error, Text,
     utility::{Qr, Randomizer, Utility},
+    Error, Text,
 };
-use serde_json::{Value, json};
+use serde_json::{json, Value};
+use unicode_segmentation::UnicodeSegmentation;
 
 impl Utility {
     pub fn presentation(&self) -> Result<Value, Error> {
@@ -45,17 +46,64 @@ impl Utility {
             }
             Self::Random(value) => match value {
                 Randomizer::Dice { groups } => {
-                    json!({"kind":"dice","display":self.body()?,"details":groups.iter().flat_map(|g|g.faces.iter().map(|face|plain(&format!("d{} · {}",g.sides,face)))).collect::<Result<Vec<_>,_>>()?})
+                    let mut summary = groups
+                        .iter()
+                        .take(8)
+                        .map(|g| {
+                            format!(
+                                "{}d{} · {}",
+                                g.faces.len(),
+                                g.sides,
+                                g.faces.iter().map(|&v| u64::from(v)).sum::<u64>()
+                            )
+                        })
+                        .collect::<Vec<_>>();
+                    if groups.len() > 8 {
+                        summary.push(format!("{} more groups", groups.len() - 8));
+                    }
+                    if groups.len() > 1 {
+                        summary.push(format!(
+                            "Total: {}",
+                            groups
+                                .iter()
+                                .flat_map(|g| g.faces.iter())
+                                .map(|&v| u64::from(v))
+                                .sum::<u64>()
+                        ));
+                    }
+                    json!({"kind":"dice","display":summary.join("\n"),"copy":self.body()?,"details":groups.iter().flat_map(|g|g.faces.iter().map(|face|plain(&format!("d{} · {}",g.sides,face)))).collect::<Result<Vec<_>,_>>()?,
+                        "motion":{"kind":"dice","dice":groups.iter().flat_map(|g|g.faces.iter().map(|face|json!({"sides":g.sides,"face":face}))).take(6).collect::<Vec<_>>()}})
                 }
                 Randomizer::Pick {
                     category,
                     options,
                     selected,
                 } => {
-                    json!({"kind":"pick","display":category.as_deref().unwrap_or("Choice"),"rich":options[*selected as usize].presentation(),"details":options.iter().map(Text::presentation).collect::<Vec<_>>(),"selected":selected})
+                    let visible = options
+                        .iter()
+                        .all(|t| t.spans().iter().all(|s| s.effects.reveal.is_none()));
+                    let coin = category.as_deref() == Some("flip") && options.len() == 2;
+                    let frames = options
+                        .iter()
+                        .take(12)
+                        .map(|t| {
+                            let mut graphemes = t.body().graphemes(true);
+                            let mut label = graphemes.by_ref().take(48).collect::<String>();
+                            if graphemes.next().is_some() {
+                                label.push('…');
+                            }
+                            label
+                        })
+                        .collect::<Vec<_>>();
+                    json!({"kind":"pick","display":category.as_deref().unwrap_or("Choice"),"rich":options[*selected as usize].presentation(),"details":options.iter().map(Text::presentation).collect::<Vec<_>>(),"selected":selected,
+                        "motion":visible.then(||json!({"kind":if coin {"coin"}else{"choice"},"frames":frames,"selected":selected,"result":options[*selected as usize].body()}))})
                 }
                 Randomizer::Number { min, max, selected } => {
-                    json!({"kind":"random","display":selected.to_string(),"copy":selected.to_string(),"alternate":format!("Between {min} and {max}")})
+                    let span = i128::from(*max) - i128::from(*min);
+                    let frames = [9, 2, 11, 5, 14, 0, 13, 4, 10, 1, 12, 6]
+                        .map(|n| (i128::from(*min) + span * n / 15).to_string());
+                    json!({"kind":"random","display":selected.to_string(),"copy":selected.to_string(),"alternate":format!("Between {min} and {max}"),
+                        "motion":{"kind":"number","frames":frames,"result":selected.to_string()}})
                 }
             },
             Self::Swatch(rgba) => {
@@ -109,12 +157,10 @@ mod tests {
             "QR: WIFI:T:WPA;S:Synthetic network;P:synthetic-secret;;"
         );
         assert!(crate::structured::Card::from_bytes(&bytes).unwrap() == card);
-        assert!(
-            view["qr"]["payload"]
-                .as_str()
-                .unwrap()
-                .contains("synthetic-secret")
-        );
+        assert!(view["qr"]["payload"]
+            .as_str()
+            .unwrap()
+            .contains("synthetic-secret"));
         let width = view["qr"]["width"].as_u64().unwrap() as usize;
         let cells = view["qr"]["cells"].as_str().unwrap().as_bytes();
         assert_eq!(cells.len(), width * width);
@@ -144,11 +190,44 @@ mod tests {
             expression: "\\frac{1}{2}".into(),
             block: true,
         };
-        assert!(
-            math.presentation().unwrap()["mathml"]
-                .as_str()
-                .unwrap()
-                .contains("<mfrac>")
-        );
+        assert!(math.presentation().unwrap()["mathml"]
+            .as_str()
+            .unwrap()
+            .contains("<mfrac>"));
+    }
+    #[test]
+    fn randomizer_motion_is_bounded_and_never_reveals_concealed_candidates() {
+        let dice = Utility::Random(Randomizer::Dice {
+            groups: vec![crate::utility::Dice {
+                sides: 20,
+                faces: vec![17; 40],
+            }],
+        });
+        let before = dice.clone();
+        let view = dice.presentation().unwrap();
+        assert_eq!(view["motion"]["dice"].as_array().unwrap().len(), 6);
+        assert_eq!(view["motion"]["dice"][0], json!({"sides":20,"face":17}));
+        assert!(dice == before);
+        let hidden = Utility::Random(Randomizer::Pick {
+            category: None,
+            options: vec![
+                crate::parse("spoiler::Secret;", Default::default()).unwrap(),
+                Text::plain("Visible", Default::default()).unwrap(),
+            ],
+            selected: 1,
+        });
+        assert!(hidden.presentation().unwrap()["motion"].is_null());
+        let number = Utility::Random(Randomizer::Number {
+            min: i64::MIN,
+            max: i64::MAX,
+            selected: 42,
+        });
+        let view = number.presentation().unwrap();
+        assert_eq!(view["motion"]["result"], "42");
+        assert_eq!(number.presentation().unwrap(), view);
+        assert_eq!(view["motion"]["frames"].as_array().unwrap().len(), 12);
+        for frame in view["motion"]["frames"].as_array().unwrap() {
+            assert!(frame.as_str().unwrap().parse::<i64>().is_ok());
+        }
     }
 }

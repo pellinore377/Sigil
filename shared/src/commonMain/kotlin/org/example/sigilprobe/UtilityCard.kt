@@ -7,6 +7,7 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.*
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.semantics.*
@@ -30,11 +31,14 @@ internal fun UtilityCard(value: UtilityContent) {
     val sensitiveCopy = LocalSensitiveCopy.current
     val qr = value.qr
     val visible = qr?.concealed != true || revealed
+    val clock=LocalTextMotion.current?.clock
+    val animate=LocalAppearance.current.messageEffects && !LocalMotion.current.reduced
+    fun resultAlpha(full:Boolean)=if(!full && animate && value.motion!=null && (clock?.elapsed ?: 2000f)<RandomizerMotionMillis)0f else 1f
     val label = when (value.kind) {
         "calculation" -> "Calculation"; "conversion" -> "Conversion"; "math" -> "Formula"; "qr" -> when (qr?.kind) {
             "wifi" -> "Wi-Fi QR code"; "contact" -> "Contact QR code"; else -> "QR code"
         }
-        "dice" -> "Dice"; "pick" -> "Choice"; "random" -> "Random number"; "swatch" -> "Color"
+        "dice" -> "Dice"; "pick" -> if(value.motion?.kind=="coin")"Coin flip" else "Choice"; "random" -> "Random number"; "swatch" -> "Color"
         "keys" -> "Keyboard shortcut"; "rating" -> "Rating"; "progress" -> "Progress"; "quote" -> "Quote"; else -> "Details"
     }
     @Composable fun body(full: Boolean) {
@@ -59,6 +63,8 @@ internal fun UtilityCard(value: UtilityContent) {
             if (render != null && value.mathml != null) render(value.mathml, value.display, Modifier.fillMaxWidth().height(if (full) 300.dp else 140.dp))
             else SelectionContainer { Text(value.display, fontFamily = LocalCodeFont.current) }
         } else {
+            value.motion?.let {RandomizerStage(it,full,value.rich)}
+            if(value.kind=="dice" && value.details.size>6)Text("Showing 6 of ${value.details.size} dice",style=MaterialTheme.typography.bodySmall)
             if (value.kind == "swatch") {
                 val rgba = value.rgba ?: 0L
                 val color = Color((rgba shr 24 and 255).toInt(), (rgba shr 16 and 255).toInt(), (rgba shr 8 and 255).toInt(), (rgba and 255).toInt())
@@ -69,8 +75,8 @@ internal fun UtilityCard(value: UtilityContent) {
                     drawRect(color)
                 }
             }
-            value.rich?.let { RichMessageText(it) }
-            if (value.display.isNotEmpty()) Text(if (swapped) value.alternate else value.display, style = if (value.kind in listOf("calculation", "random", "rating", "progress")) MaterialTheme.typography.headlineSmall else MaterialTheme.typography.bodyLarge)
+            if(value.motion?.kind!="choice")value.rich?.let { RichMessageText(it,Modifier.graphicsLayer {alpha=resultAlpha(full)}) }
+            if (value.display.isNotEmpty() && !(value.kind=="random" && value.motion!=null) && value.motion?.kind!="coin") Text(if (swapped) value.alternate else value.display, modifier=Modifier.graphicsLayer {alpha=resultAlpha(full)}, style = if (value.kind in listOf("calculation", "random", "rating", "progress")) MaterialTheme.typography.headlineSmall else MaterialTheme.typography.bodyLarge)
             if (value.alternate.isNotEmpty()) {
                 Text(if (swapped) value.display else value.alternate, style = MaterialTheme.typography.bodyLarge)
                 if (value.kind == "conversion") SigilTextButton({ swapped = !swapped }) { Glyph("swap_vert", 20); Text("Swap display") }
