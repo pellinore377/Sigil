@@ -32,6 +32,7 @@
                 <action android:name="org.unifiedpush.android.connector.TEMP_UNAVAILABLE" />
             </intent-filter>
         </receiver>
+        <service android:name=".PdfPreviewService" android:exported="false" android:isolatedProcess="true" android:process=":pdf_preview" />
         <service android:name=".CallService" android:exported="false" android:foregroundServiceType="microphone|camera|mediaProjection" />
         <service android:name=".LocationService" android:exported="false" android:foregroundServiceType="location" />
         <provider android:name=".NativeFileProvider" android:authorities="${applicationId}.files" android:exported="false" android:grantUriPermissions="true" />

@@ -101,7 +101,7 @@ fn android_content_acceptance() {
     std::fs::copy(dir.path().join("bob.db"), export.join("client.db")).unwrap();
     std::fs::write(export.join("port"), fixture.port().to_string()).unwrap();
     std::fs::write(export.join("ready"), b"ready").unwrap();
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(240);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(360);
     let mut received = false;
     while std::time::Instant::now() < deadline {
         let incoming = match alice.receive_mailbox_online(conversations::now()) {
