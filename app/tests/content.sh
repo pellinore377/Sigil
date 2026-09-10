@@ -91,6 +91,7 @@ instrument TextMotionTest
 instrument HelpTest
 instrument TableTest
 instrument TableBuilderTest
+instrument CodeBuilderTest
 instrument RecipeTest
 instrument ChartTest
 instrument RandomizerTest

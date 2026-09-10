@@ -38,7 +38,7 @@ internal fun ComponentActivity.setSigilContent(content: @Composable () -> Unit) 
             // Older Android retains its window pan until it rechecks the focused field's bounds.
             LaunchedEffect(ime) { withFrameNanos { }; view.rootView.requestLayout() }
         }
-        CompositionLocalProvider(org.sigil.LocalBuilderSource provides org.sigil.NativeCore::builderSource, org.sigil.LocalHelpCatalog provides org.sigil.NativeCore::helpCatalog, org.sigil.LocalTemporalPreview provides ::nativeTemporalPreview, org.sigil.LocalMotionBlur provides (Build.VERSION.SDK_INT>=31), org.sigil.LocalMotionVisible provides visible, org.sigil.LocalTextMotionSeeds provides org.sigil.NativeCore::motionSeeds, org.sigil.LocalEditorAnalysis provides org.sigil.NativeCore::editor, org.sigil.LocalSensitiveCopy provides { value ->
+        CompositionLocalProvider(org.sigil.LocalCodePreview provides org.sigil.NativeCore::codePreview, org.sigil.LocalBuilderSource provides org.sigil.NativeCore::builderSource, org.sigil.LocalHelpCatalog provides org.sigil.NativeCore::helpCatalog, org.sigil.LocalTemporalPreview provides ::nativeTemporalPreview, org.sigil.LocalMotionBlur provides (Build.VERSION.SDK_INT>=31), org.sigil.LocalMotionVisible provides visible, org.sigil.LocalTextMotionSeeds provides org.sigil.NativeCore::motionSeeds, org.sigil.LocalEditorAnalysis provides org.sigil.NativeCore::editor, org.sigil.LocalSensitiveCopy provides { value ->
             val clip = android.content.ClipData.newPlainText("Sigil", value)
             clip.description.extras = android.os.PersistableBundle().apply { putBoolean("android.content.extra.IS_SENSITIVE", true) }
             getSystemService(android.content.ClipboardManager::class.java).setPrimaryClip(clip)
