@@ -6,10 +6,13 @@ import org.sigil.RichText
 import org.sigil.RichSpan
 import org.sigil.RichBlock
 import org.sigil.CodeToken
+import org.sigil.TableContent
 
-internal fun JSONObject.richText(): RichText? = optJSONObject("rich")?.let { rich ->
+internal fun JSONObject.richText(): RichText? = optJSONObject("rich")?.let { it.richValue() }
+internal fun JSONObject.richValue(): RichText {
+    val rich = this
     fun JSONArray.objects() = (0 until length()).map(::getJSONObject)
-    RichText(rich.getString("text"), rich.getJSONArray("spans").objects().map { span ->
+    return RichText(rich.getString("text"), rich.getJSONArray("spans").objects().map { span ->
         val flags = mutableSetOf<String>()
         var colors = emptyList<String>()
         var size = 0
@@ -39,4 +42,15 @@ internal fun JSONObject.richText(): RichText? = optJSONObject("rich")?.let { ric
         val kind = block.getJSONObject("kind")
         RichBlock(block.getInt("start"), block.getInt("end"), kind.getString("kind"), kind.optInt("level"), if (kind.isNull("language")) "" else kind.getString("language"))
     }, rich.optJSONArray("code_tokens")?.objects()?.map { CodeToken(it.getInt("start"), it.getInt("end"), it.getString("role")) }.orEmpty())
+}
+
+internal fun JSONObject.tableContent(): TableContent? = optJSONObject("table")?.let { table ->
+    fun JSONArray.texts() = (0 until length()).map { getJSONObject(it).richValue() }
+    val rows = table.getJSONArray("rows")
+    val orders = table.getJSONArray("numeric_order")
+    val copies = table.getJSONArray("copy_rows")
+    TableContent(table.getJSONArray("columns").texts(), (0 until rows.length()).map { rows.getJSONArray(it).texts() },
+        (0 until orders.length()).map { column -> orders.optJSONArray(column)?.let { order -> (0 until order.length()).map(order::getInt) } },
+        (0 until copies.length()).map { if (copies.isNull(it)) null else copies.getString(it) },
+        if (table.isNull("copy_table")) null else table.getString("copy_table"))
 }
