@@ -1,6 +1,8 @@
 # Current work
 
-Active: Android performance and the approved design implementation. The 05:00 America/Chicago cutoff passed with Android and optimization unfinished; browser messaging at `/` remains deferred, with administration intended for `/admin`. Production accounts, the home server and VPS remain untouched during this work. Changes are local and unpushed; the public Android release remains `0.1.0-alpha.12`.
+Active: Android performance and the approved design implementation. Browser messaging at `/` remains deferred, with administration intended for `/admin`. Android `0.1.0-alpha.13` (code 14) and server image `59f13aa`/`latest` are published from `main`; the APK retains its signing certificate. Container upgrade/restart/restore acceptance passes. Production accounts, the home server and VPS remain untouched; pulling and redeploying the image is still required there.
+
+Implementation is paused at the user's usage-limit check. Uncommitted Android alarm integration is excluded from the release. Rust's three alarm tests, client Clippy and shared UI checks pass. Physical content's 17 tests passed, then AlarmTest failed because a deleted timer remained in the platform's scheduled-ID registry (line 67); notification delivery/privacy and replay assertions before that passed. Cancellation/rebuild behavior needs diagnosis. Subsequent batching/bounded-registry and enqueue changes are not phone-tested. The acceptance run exited and cleaned up.
 
 ## Android
 
