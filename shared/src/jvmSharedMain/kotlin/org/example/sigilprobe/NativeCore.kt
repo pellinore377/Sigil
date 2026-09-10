@@ -7,4 +7,5 @@ object NativeCore {
     external fun analyze(input: String): String
     external fun editor(input: String): String
     external fun motionSeeds(input: String): String
+    external fun temporalPreview(input: String): String
 }

@@ -202,10 +202,10 @@ internal fun ConversationPage(chat: ChatSummary, state: MessengerState, draft: T
             val inputCommand: Command = { action, fields ->
                 command(action, if (action in listOf("attachment_pick", "record_start")) fields + mapOf("reply_author" to reply?.author, "reply_message" to reply?.id, "thread_author" to thread?.author, "thread_message" to thread?.id) else fields)
             }
-            if (!threadsOverview) ComposerPanel(draft, analyze, chat.verified && !state.busy, page == "Notes", inputCommand, chat.id, state.voice, state.sent, state.sentText, requestContact = if (!chat.verified && !chat.group && !state.busy && chat.request in listOf("none", "expired")) ({ command("contact_request", mapOf("peer" to chat.id, "action" to "send")) }) else null, attachments = state.transfers.filter { it.peer == chat.id }, editingCaption = editing?.attachment != null, attachmentTarget = mapOf("peer" to chat.id, "reply_author" to reply?.author, "reply_message" to reply?.id, "thread_author" to thread?.author, "thread_message" to thread?.id)) { text, rich ->
+            if (!threadsOverview) ComposerPanel(draft, analyze, chat.verified && !state.busy, page == "Notes", inputCommand, chat.id, state.voice, state.sent, state.sentText, requestContact = if (!chat.verified && !chat.group && !state.busy && chat.request in listOf("none", "expired")) ({ command("contact_request", mapOf("peer" to chat.id, "action" to "send")) }) else null, attachments = state.transfers.filter { it.peer == chat.id }, editingCaption = editing?.attachment != null, attachmentTarget = mapOf("peer" to chat.id, "reply_author" to reply?.author, "reply_message" to reply?.id, "thread_author" to thread?.author, "thread_message" to thread?.id)) { text, rich, timezone ->
                 submitted = draft.text.toString()
                 if (editing != null) command("edit", mapOf("peer" to chat.id, "author" to editing!!.author, "message" to editing!!.id, "text" to text, "formatted" to true))
-                else command("post", mapOf("peer" to chat.id, "text" to text, "rich" to rich, "formatted" to true,
+                else command("post", mapOf("peer" to chat.id, "text" to text, "rich" to rich, "formatted" to true, "timezone" to timezone,
                     "reply_author" to reply?.author, "reply_message" to reply?.id, "thread_author" to thread?.author, "thread_message" to thread?.id))
             }
         }
