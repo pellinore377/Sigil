@@ -222,6 +222,10 @@ impl ClientStore {
                 value["stopped"] = json!(location.stopped);
                 value["can_stop"] = json!(location.active(conversations::now()) && card.creator == self.account_reference()?);
             }
+            Construct::Data(sigil_protocol::text::data::Data::Table(table)) => {
+                value["kind"] = json!("table");
+                value["table"] = json!(table.presentation());
+            }
             _ => {}
         }
         Ok(value)

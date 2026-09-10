@@ -17,6 +17,7 @@ internal fun MessageCards(message: ChatMessage, analyze: (String) -> String, com
         message.parts.forEach { part ->
             if (part.kind == "text") { if (part.rich != null) RichMessageText(part.rich) else MessageText(part.text, analyze) }
             else if (part.kind == "location") LocalLocationContent.current(message, part, command)
+            else if (part.table != null) TableCard(part.table)
             else Column(Modifier.widthIn(min = 180.dp, max = 280.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                 val icon = when (part.kind) { "note" -> "description"; "checklist" -> "checklist"; "task" -> "assignment"; "poll" -> "ballot"; "reminder" -> "notifications_active"; "timer", "countdown", "ago" -> "timer"; else -> "article" }
                 Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) { Glyph(icon, 18); Text(part.kind.replaceFirstChar { it.uppercase() }, style = MaterialTheme.typography.labelMedium) }

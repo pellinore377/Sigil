@@ -421,6 +421,23 @@ fn mobile_preserves_canonical_formatting_without_reparsing_or_losing_unicode_ran
     assert!(!note["rich"]["spans"].as_array().unwrap().is_empty());
 }
 #[test]
+fn mobile_table_projection_preserves_numeric_order_rich_cells_and_copy_privacy() {
+    let (_dir, _server, mut alice, _bob, now) = crate::claims::tests::pair();
+    run(&mut alice, json!({"command":"post","peer":"self","request":"99".repeat(32),"timestamp":now,"rich":true,
+        "text":"table::Name | Count\n- **A** | 10\n- spoiler::Hidden cell | 2;"}));
+    let timeline = run(&mut alice, json!({"command":"timeline","peer":"self"}));
+    let part = &timeline["messages"][0]["parts"][0];
+    assert_eq!(part["kind"], "table");
+    let table = &part["table"];
+    assert_eq!(table["numeric_order"][1], json!([1,0]));
+    assert_eq!(table["rows"][0][0]["text"], "A");
+    assert!(!table["rows"][0][0]["spans"].as_array().unwrap().is_empty());
+    assert_eq!(table["copy_rows"][0], "A\t10");
+    assert!(table["copy_rows"][1].is_null());
+    assert!(table["copy_table"].is_null());
+    assert_eq!(table["rows"][1][0]["spans"][0]["effects"][0]["kind"], "reveal");
+}
+#[test]
 fn forwarding_preserves_text_and_notes_and_snapshots_current_checklist_state() {
     let (_dir, _server, mut alice, _bob, now) = crate::claims::tests::pair();
     let author = transport::hex(&alice.account_reference().unwrap());

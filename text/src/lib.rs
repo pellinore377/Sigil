@@ -20,6 +20,7 @@ pub mod poll_close;
 pub mod recurrence;
 pub mod service;
 pub mod structured;
+pub mod table;
 pub mod time;
 pub mod utility;
 pub use blocks::{Block, BlockKind};
