@@ -74,7 +74,7 @@ class MessengerTest {
     @Test fun attachment_forms_keep_unsent_content_until_the_matching_post_succeeds() {
         val state = mutableStateOf(MessengerState(phase = "connected", chats = listOf(chat(true)), selected = "peer"))
         ui.setContent { SigilApp(NativeCore::palette, NativeCore::analyze, state.value, { _, _ -> }) }
-        fun note() { ui.onNodeWithContentDescription("Create").performClick(); ui.onNodeWithContentDescription("Note").performClick() }
+        fun note() { ui.onNodeWithContentDescription("Create").performClick(); ui.onNodeWithText("Search tools").performTextReplacement("Note"); ui.onNodeWithContentDescription("Note").performClick() }
         ui.onNodeWithContentDescription("Attachments").performClick(); note()
         ui.onNodeWithText("Your note").performTextInput("Keep this thought")
         ui.onNodeWithContentDescription("Back to create").performClick()

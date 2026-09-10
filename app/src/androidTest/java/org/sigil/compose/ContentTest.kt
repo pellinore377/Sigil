@@ -43,6 +43,7 @@ class ContentTest {
             }}
             ui.onNodeWithContentDescription("Attachments").performClick()
             ui.onNodeWithContentDescription("Create").performClick()
+            ui.onNodeWithText("Search tools").performTextInput("Reminder")
             ui.onNodeWithContentDescription("Reminder").performClick()
             ui.onNodeWithText("Title").performTextInput("Synthetic confirmed reminder")
             ui.onNodeWithText("When").performTextReplacement("not a date")

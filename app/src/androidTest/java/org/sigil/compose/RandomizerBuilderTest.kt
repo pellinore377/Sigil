@@ -19,6 +19,7 @@ class RandomizerBuilderTest {
         }}
         ui.onNodeWithContentDescription("Attachments").performClick()
         ui.onNodeWithContentDescription("Create").performClick()
+        ui.onNodeWithContentDescription("Ask & Decide").performClick()
         ui.onNodeWithContentDescription("Randomizer").performScrollTo().performClick()
         ui.onNodeWithText("Count 1").performTextReplacement("3")
         ui.onNodeWithText("Sides 1").performTextReplacement("8")
@@ -40,7 +41,7 @@ class RandomizerBuilderTest {
             java.io.File(ui.activity.cacheDir,"randomizer-builder.png").outputStream().use {ui.onRoot().captureToImage().asAndroidBitmap().compress(android.graphics.Bitmap.CompressFormat.PNG,100,it)}
         }
         ui.onNodeWithContentDescription("Back to create").performClick()
-        ui.onNodeWithContentDescription("Back to attachments").assertIsDisplayed()
+        ui.onNodeWithContentDescription("Back to categories").assertIsDisplayed()
         assertEquals(3,commands.count {it.first=="post"})
     }
 }

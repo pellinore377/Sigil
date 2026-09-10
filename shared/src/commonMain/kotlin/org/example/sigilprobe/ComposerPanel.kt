@@ -24,7 +24,6 @@ import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.semantics.*
 import kotlinx.coroutines.flow.*
 
-private val createItems = listOf("Note" to "description", "Checklist" to "checklist", "Poll" to "ballot", "Reminder" to "notifications_active", "Task" to "assignment", "Timer" to "timer", "Randomizer" to "casino", "Table" to "table", "Help" to "help")
 @Composable
 internal fun ComposerPanel(draft: TextFieldState, analyze: (String) -> String, enabled: Boolean, notes: Boolean, command: Command, peer: String, voice: VoiceState, sent: Long, sentText: String?, requestContact: (() -> Unit)? = null, attachments: List<Transfer> = emptyList(), editingCaption: Boolean = false, attachmentTarget: Map<String, Any?> = mapOf("peer" to peer), send: (String, Boolean, String?) -> Unit) {
     val motionPolicy = LocalMotion.current
@@ -55,7 +54,7 @@ internal fun ComposerPanel(draft: TextFieldState, analyze: (String) -> String, e
     }
     val expandedHeight = if (panel.isNotEmpty() || keyboardPending) maxOf(keyboardHeight, measured) else measured
     val panelHeight by animateDpAsState(expandedHeight, if (measured > 0.dp || keyboardPending) snap() else motionPolicy.tween(MotionMillis), label = "Composer height")
-    val building = panel == "Place" || createItems.any { it.first == panel }
+    val building = panel == "Place" || panel == "Create" || createItems.any { it.first == panel }
     val formInset by animateDpAsState(if (building) measured else 0.dp, if (building) snap() else motionPolicy.tween(MotionMillis), label = "Form keyboard")
     LaunchedEffect(keyboardPending) { if (keyboardPending) { kotlinx.coroutines.delay(1500); keyboardPending = false } }
     LaunchedEffect(measured, keyboardPending) { if (keyboardPending && measured >= keyboardHeight - 2.dp) keyboardPending = false }
@@ -149,9 +148,10 @@ internal fun ComposerPanel(draft: TextFieldState, analyze: (String) -> String, e
                 }, label = "Composer panel") { shown ->
                     when (shown) {
                         "" -> Unit
-                        "Attachments", "Create" -> Column {
-                            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) { if (shown == "Create") Symbol("chevron_left", "Back to attachments") { change("Attachments") }; Text(shown, Modifier.weight(1f).padding(start = 20.dp), style = MaterialTheme.typography.titleMedium) }
-                            val items = if (shown == "Create") createItems else listOf("Photos" to "image", "Camera" to "photo_camera", "Files" to "attach_file", "Place" to "location_on", "Create" to "add_notes", "Format" to "text_format")
+                        "Create" -> builders.SaveableStateProvider("$peer:Create") {CreatePanel({change("Attachments")},::change)}
+                        "Attachments" -> Column {
+                            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) { Text("Attachments", Modifier.weight(1f).padding(start = 20.dp), style = MaterialTheme.typography.titleMedium) }
+                            val items = listOf("Photos" to "image", "Camera" to "photo_camera", "Files" to "attach_file", "Place" to "location_on", "Create" to "add_notes", "Format" to "text_format")
                             LazyVerticalGrid(GridCells.Fixed(3), contentPadding = PaddingValues(horizontal = 20.dp, vertical = 8.dp), verticalArrangement = Arrangement.spacedBy(16.dp), horizontalArrangement = Arrangement.spacedBy(16.dp)) {
                                 items(items) { (name, icon) -> Column(Modifier.clickable {
                                     when (name) {

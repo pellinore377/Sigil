@@ -19,6 +19,7 @@ class TableBuilderTest {
         }}
         ui.onNodeWithContentDescription("Attachments").performClick()
         ui.onNodeWithContentDescription("Create").performClick()
+        ui.onNodeWithContentDescription("Data & Visualize").performScrollTo().performClick()
         ui.onNodeWithContentDescription("Table").performScrollTo().performClick()
         ui.onNodeWithText("Column 1").performTextInput("Name")
         ui.onNodeWithText("Column 2").performScrollTo().performTextInput("Count")
