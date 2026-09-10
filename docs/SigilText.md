@@ -1019,6 +1019,8 @@ Randomizers are **casual client-generated randomness by default**, not cryptogra
 | `pick::<category>;` | Chooses from a built-in or user-defined category |
 | `pick::flip;` | Flips a 3D coin and returns Heads or Tails |
 
+Escape a comma within an option as `\,`. Graphical builders keep option text literal.
+
 Presentation:
 
 - **Explicit options:** animate through candidate chips/cards like a fast roulette or slot-strip, decelerate, then land on the stored choice.

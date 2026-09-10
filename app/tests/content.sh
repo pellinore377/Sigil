@@ -77,6 +77,7 @@ instrument TableTest
 instrument RecipeTest
 instrument ChartTest
 instrument RandomizerTest
+instrument RandomizerBuilderTest
 instrument DiagramTest
 instrument UtilityTest
 instrument ServiceCardTest
