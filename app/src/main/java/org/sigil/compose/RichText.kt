@@ -84,3 +84,13 @@ internal fun JSONObject.diagramContent(): DiagramContent? = optJSONObject("diagr
         list("edges") { DiagramEdge(it.getInt("from"), it.getInt("to"), it.getJSONObject("label").richValue(), it.getBoolean("dashed"), it.getDouble("y").toFloat()) },
         list("entries") { DiagramEntry(it.getJSONObject("date").richValue(), it.getJSONObject("label").richValue()) })
 }
+
+internal fun JSONObject.utilityContent(): org.sigil.UtilityContent? = optJSONObject("utility")?.let { u ->
+    fun string(name: String) = if (u.isNull(name)) null else u.getString(name)
+    org.sigil.UtilityContent(u.getString("kind"), u.optString("display"), u.optString("alternate"), string("copy"), u.richText(),
+        u.optJSONObject("secondary")?.richValue(), u.optJSONArray("details")?.let { a -> (0 until a.length()).map { a.getJSONObject(it).richValue() } }.orEmpty(),
+        if (u.isNull("selected")) null else u.getInt("selected"), if (u.isNull("ratio")) null else u.getDouble("ratio").toFloat(),
+        if (u.isNull("rgba")) null else u.getLong("rgba"), string("mathml"), u.optJSONObject("qr")?.let { q ->
+            org.sigil.QrContent(q.getString("kind"), q.getInt("width"), q.getString("cells"), q.getString("payload"), q.optJSONObject("password")?.richValue(), q.getBoolean("concealed"))
+        })
+}
