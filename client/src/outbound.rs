@@ -31,7 +31,7 @@ fn cursor(
 }
 
 impl ClientStore {
-    /// Attempt one queued packet from each of at most 16 sessions. Queue order
+    /// Attempt up to four queued packets from each of at most 16 sessions. Queue order
     /// within each session is preserved. Local errors do not starve other sessions;
     /// network errors stop the pass so callers can honor Retry-After. Cursor wrap
     /// takes an empty pass. Unprepared packets require application intervention.
@@ -49,7 +49,7 @@ impl ClientStore {
         let mut next = Vec::new();
         for bytes in ids {
             let session: Id = bytes.try_into().map_err(|_| Error::InvalidStore)?;
-            let result = self.send_pending_limit(session, now, 1);
+            let result = self.send_pending_limit(session, now, 4);
             let stop = matches!(result, Err(Error::Network(_)));
             attempts.push(OutboundAttempt { session, result });
             next = session.to_vec();
@@ -172,18 +172,9 @@ mod tests {
                 .as_ref()
                 .unwrap()
                 .accepted,
-            1
+            2
         );
-        assert_eq!(bob.connected_client().unwrap().mailbox().unwrap().len(), 1);
-        assert!(alice.resume_outbound_online(now).unwrap().is_empty());
-        assert_eq!(
-            alice.resume_outbound_online(now).unwrap()[0]
-                .result
-                .as_ref()
-                .unwrap()
-                .accepted,
-            1
-        );
+        assert_eq!(bob.connected_client().unwrap().mailbox().unwrap().len(), 2);
         let received = bob.receive_mailbox_online(now).unwrap();
         let bodies: Vec<_> = received
             .iter()

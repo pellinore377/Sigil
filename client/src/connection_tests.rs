@@ -11,6 +11,44 @@ fn open(path: &Path) -> ClientStore {
     )
     .unwrap()
 }
+#[test]
+fn connected_requests_share_discovery_and_invalidate_on_credential_rotation() {
+    use std::sync::{Arc, atomic::{AtomicUsize, Ordering}};
+    let (dir, old, invite, _) = setup();
+    drop(old);
+    let discoveries = Arc::new(AtomicUsize::new(0));
+    let hits = discoveries.clone();
+    let router = sigil_server::router(
+        Store::open(&dir.path().join("server.db")).unwrap(),
+        AdminToken::load_or_create(&dir.path().join("admin.token")).unwrap(),
+    ).layer(axum::middleware::from_fn(move |request: axum::extract::Request, next: axum::middleware::Next| {
+        let hits = hits.clone();
+        async move {
+            if request.uri().path() == sigil_protocol::discovery::PATH { hits.fetch_add(1, Ordering::SeqCst); }
+            next.run(request).await
+        }
+    }));
+    let fixture = Fixture::new(router);
+    let mut store = open(&dir.path().join("client.db"));
+    prepare(&mut store, &fixture, &invite.secret);
+    store.enroll_online().unwrap();
+    discoveries.store(0, Ordering::SeqCst);
+    let old = store.connected_client().unwrap();
+    old.session().unwrap();
+    store.connected_client().unwrap().session().unwrap();
+    assert_eq!(discoveries.load(Ordering::SeqCst), 1);
+    store.prepare_credential_rotation().unwrap();
+    assert!(matches!(store.connected_client(), Err(Error::Unprepared)));
+    store.rotate_credential_online().unwrap();
+    discoveries.store(0, Ordering::SeqCst);
+    store.connected_client().unwrap().session().unwrap();
+    store.connected_client().unwrap().session().unwrap();
+    assert_eq!(discoveries.load(Ordering::SeqCst), 1);
+    assert!(matches!(old.session(), Err(network::Error::Status { code: 401, .. })));
+    store.connection.borrow_mut().as_mut().unwrap().1 = std::time::Instant::now() - std::time::Duration::from_secs(60);
+    store.connected_client().unwrap().session().unwrap();
+    assert_eq!(discoveries.load(Ordering::SeqCst), 2);
+}
 pub(crate) fn setup() -> (tempfile::TempDir, Fixture, accounts::Invitation, u64) {
     use std::os::unix::fs::PermissionsExt;
     let dir = tempfile::tempdir().unwrap();

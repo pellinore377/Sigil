@@ -155,7 +155,16 @@ impl ClientStore {
     }
     pub(super) fn mobile_file_work(&mut self) -> Result<Value, Error> {
         let mut cache = self.mobile_cache()?;
-        let result = self.sync_attachments_due_online(&mut cache)?;
+        let started = std::time::Instant::now();
+        let mut result = self.sync_attachments_due_online(&mut cache)?;
+        for _ in 1..8 {
+            if result.scheduling_error.is_some()
+                || !result.attempt.as_ref().is_some_and(|a| a.result.is_ok())
+                || result.next_at > conversations::now()
+                || started.elapsed().as_secs() >= 2
+            { break; }
+            result = self.sync_attachments_due_online(&mut cache)?;
+        }
         let mut issue = result.scheduling_error.as_ref().map(error_message);
         if let Some(error) = result
             .attempt

@@ -430,7 +430,7 @@ impl ClientStore {
                     peer,
                     device,
                 },
-                now + 604800,
+                now + crate::transport::DEFAULT_LIFETIME,
             )?;
         }
         keys::save_sender(&tx, &self.key, &own, &sender, true, None)?;

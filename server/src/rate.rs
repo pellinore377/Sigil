@@ -62,7 +62,7 @@ pub(crate) struct Limiter {
 impl Limiter {
     pub(crate) fn new(now: Instant) -> Self {
         Self {
-            global: Bucket::new(100, 20, now),
+            global: Bucket::new(256, 10, now),
             enrollment: Bucket::new(5, 5000, now),
             browser_auth: Bucket::new(5, 2000, now),
             devices: HashMap::new(),
@@ -77,8 +77,8 @@ impl Limiter {
             }
         }
         let device = self.devices.entry(id).or_insert_with(|| Device {
-            all: Bucket::new(128, 500, now),
-            writes: Bucket::new(64, 2000, now),
+            all: Bucket::new(128, 50, now),
+            writes: Bucket::new(64, 100, now),
             last: now,
         });
         device.last = device.last.max(now);
@@ -216,6 +216,20 @@ pub(crate) async fn limit(State(state): State<AppState>, request: Request, next:
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn messaging_and_transfer_work_can_share_a_device_budget() {
+        let start = Instant::now();
+        let mut limiter = Limiter::new(start);
+        for second in 0..120 {
+            let now = start + Duration::from_secs(second);
+            for request in 0..12 {
+                assert!(limiter.global.take(now).is_ok());
+                assert!(limiter.device("alice".into(), request < 8, now).is_ok(), "throttled ordinary sync and chunk work at {second}s");
+            }
+        }
+        let now = start + Duration::from_secs(120);
+        assert!((0..256).any(|_| limiter.device("alice".into(), true, now).is_err()));
+    }
     #[test]
     fn token_refill_is_fractional_bounded_and_monotonic() {
         let start = Instant::now();

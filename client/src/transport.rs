@@ -1,6 +1,8 @@
 //! Frozen local mailbox requests. Transport authentication and peer/device mapping are external.
 use super::*;
 use sigil_protocol::mailbox::{Receipt, Submit};
+// Leave room for small clock differences within the server's seven-day limit.
+pub(crate) const DEFAULT_LIFETIME: u64 = 604800 - 60;
 
 fn cancelled(tx: &Transaction<'_>, key: &StorageKey, session: &Id, id: &Id) -> Result<bool, Error> {
     Ok(retry::cancelled(tx, key, session, id)?
@@ -364,7 +366,7 @@ pub(super) fn prepare(
             )? {
             handshake::prepare_expiry(tx, key, &session, expires_at, now)?
         } else {
-            expires_at.unwrap_or(now.saturating_add(604800))
+            expires_at.unwrap_or(now.saturating_add(DEFAULT_LIFETIME))
         };
         if expiry <= now || expiry > i64::MAX as u64 || expiry > now.saturating_add(604800) {
             return Err(Error::Expired);

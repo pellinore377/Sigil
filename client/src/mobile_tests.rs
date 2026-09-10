@@ -173,7 +173,8 @@ fn presence_is_opt_in_encrypted_and_expires_without_a_background_heartbeat() {
 }
 #[test]
 fn mobile_call_creation_rolls_back_when_invitation_storage_fails() {
-    let (_dir, _server, mut alice, mut bob, now) = crate::claims::tests::pair();
+    let (dir, _server, mut alice, mut bob, now) = crate::claims::tests::pair();
+    enable_calls(dir.path());
     let (_, peer) = crate::incoming::tests::trust(&mut alice, &mut bob);
     alice.db.execute_batch("CREATE TRIGGER fail_invite BEFORE INSERT ON call_jobs BEGIN SELECT RAISE(ABORT,'synthetic'); END").unwrap();
     let request = json!({"command":"call_start","peer":transport::hex(&peer),"request":"94".repeat(32),"timestamp":now});
@@ -196,6 +197,7 @@ fn mobile_call_creation_rolls_back_when_invitation_storage_fails() {
 #[test]
 fn call_history_survives_expiry_and_redial_preserves_group_kind_and_trust() {
     let (dir, _server, mut alice, mut bob, now) = crate::claims::tests::pair();
+    enable_calls(dir.path());
     let (_, peer) = crate::incoming::tests::trust(&mut alice, &mut bob);
     let call = [91; 32];
     alice.create_group_call(call, now, 60).unwrap();
@@ -581,13 +583,6 @@ fn uploaded_files_queue_from_encrypted_cache_and_deletion_revokes_chunk_access()
         &mut alice,
         json!({"command":"file_finish","request":request}),
     );
-    let upload = alice.mobile_upload(id(&request).unwrap()).unwrap();
-    let mut cache = alice.mobile_cache().unwrap();
-    for _ in 0..3 {
-        alice
-            .upload_attachment_step(&mut cache, upload.file)
-            .unwrap();
-    }
     assert_eq!(run(&mut alice, json!({"command":"file_work"}))["sent"], 1);
     let timeline = run(&mut alice, json!({"command":"timeline","peer":"self"}));
     let message = &timeline["messages"][0];
@@ -607,6 +602,24 @@ fn uploaded_files_queue_from_encrypted_cache_and_deletion_revokes_chunk_access()
     assert!(alice
         .mobile_file_chunk("self", author, &request, 0)
         .is_err());
+}
+#[test]
+fn disabled_calling_does_not_queue_a_mobile_call() {
+    let (dir, _server, mut alice, mut bob, now) = crate::claims::tests::pair();
+    let (_, peer) = crate::incoming::tests::trust(&mut alice, &mut bob);
+    assert!(matches!(alice.mobile_call_start(&transport::hex(&peer), [86; 32], now), Err(Error::CallingUnavailable)));
+    assert_eq!(alice.db.query_row("SELECT count(*) FROM calls", [], |r| r.get::<_, u32>(0)).unwrap(), 0);
+    enable_calls(dir.path());
+    assert!(alice.mobile_call_start(&transport::hex(&peer), [86; 32], now).is_ok());
+}
+fn enable_calls(dir: &std::path::Path) {
+    sigil_server::store::Store::open(&dir.join("server.db")).unwrap().configure_calls(sigil_server::call_config::Configure {
+        expected_revision: 0,
+        settings: Some(sigil_server::call_config::Settings {
+            bind: "127.0.0.1:34780".parse().unwrap(), advertised: "127.0.0.1:34780".parse().unwrap(), max_calls: 1, turn_urls: Vec::new(),
+        }),
+        turn_secret: sigil_server::service_config::SecretUpdate::Clear,
+    }).unwrap();
 }
 #[test]
 fn queued_attachment_keeps_reply_and_thread_across_restart() {

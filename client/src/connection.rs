@@ -668,11 +668,17 @@ impl ClientStore {
     /// Exposes transport only for the durably bound account. Returns Unprepared
     /// while enrollment or credential rotation still needs reconciliation.
     pub fn connected_client(&self) -> Result<network::HttpsClient, Error> {
-        let (profile, _) = load(&self.db, &self.key)?;
+        let (profile, state) = load(&self.db, &self.key)?;
+        let mut cached = self.connection.borrow_mut();
         if profile.session.is_none() || profile.rotation.is_some() {
+            *cached = None;
             return Err(Error::Unprepared);
         }
-        client(&self.db, &self.key, &profile, &profile.credential)
+        if cached.as_ref().is_none_or(|(previous, created, _)| previous != &state || created.elapsed().as_secs() >= 60) {
+            *cached = None;
+            *cached = Some((state, std::time::Instant::now(), client(&self.db, &self.key, &profile, &profile.credential)?));
+        }
+        Ok(cached.as_ref().ok_or(Error::Unprepared)?.2.clone())
     }
     /// No database write lock is held across a network call. On an ambiguous
     /// enrollment response, GET session recovers the original committed identity.

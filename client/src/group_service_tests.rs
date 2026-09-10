@@ -336,7 +336,7 @@ fn private_envelopes_survive_lost_receipts_migration_and_reject_metadata_substit
         recipient_device: bob.connection_session().unwrap().unwrap().device_id,
         message_id: hex(&delivery),
         payload: hex(&raw),
-        expires_at: now + 604800,
+        expires_at: now + 604740,
     };
     alice.connected_client().unwrap().submit(&request).unwrap();
     crate::test_schema::rewind(&alice.db, 55);

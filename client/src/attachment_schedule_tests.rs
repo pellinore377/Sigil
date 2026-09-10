@@ -82,7 +82,7 @@ fn retry_after_and_failed_completion_preserve_reservation_across_restart() {
         resumed.attempt.unwrap().result.unwrap(),
         TransferProgress::Upload(UploadStep::Begun)
     );
-    assert_eq!(resumed.next_at, now + 152);
+    assert_eq!(resumed.next_at, now + 151);
     assert_eq!(
         schedule::read(&cache.db, &cache.key, &cache.scope)
             .unwrap()

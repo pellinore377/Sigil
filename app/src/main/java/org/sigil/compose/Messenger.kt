@@ -24,6 +24,7 @@ class Messenger(application: Application) : AndroidViewModel(application) {
         private set
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private val mutex = Mutex()
+    private var submittingPost = false
     var signOutStage by mutableStateOf(NativeSignOut.stage(application))
         private set
     var signOutBusy by mutableStateOf(false)
@@ -125,7 +126,7 @@ class Messenger(application: Application) : AndroidViewModel(application) {
             while (isActive) {
                 delay(1000)
                 if (signOutStage.isEmpty() && foreground && state.phase == "connected" && System.currentTimeMillis() / 1000 >= nextSync) {
-                    serialized(false) {
+                    attempt(false) {
                         if (!published) { execute("publish"); published = true }
                         val result = execute("sync", mapOf("interactive" to true))
                         nextSync = result.getLong("next_at")
@@ -134,7 +135,7 @@ class Messenger(application: Application) : AndroidViewModel(application) {
                             if (state.issue == syncIssue || issue != null) state = state.copy(issue = issue)
                             syncIssue = issue
                         }
-                        refresh()
+                        serialized(false) { refresh() }
                         NativeSync.presence(getApplication(), state.call?.call?.phase in listOf("active", "joining"))
                     }
                     // Rust also persists backoff; an IO failure must not create a busy loop.
@@ -260,7 +261,13 @@ class Messenger(application: Application) : AndroidViewModel(application) {
         val setting = (fields["value"] as? Map<*, *>)?.get("UiSetting") as? Map<*, *>
         val preference = if (name == "organize") (setting?.get("key") as? String)?.let { (fields["peer"] as? String) to it } else null
         if (preference != null) pendingUiSettings[preference] = setting?.get("value")
+        if (name == "post") {
+            if (submittingPost) return
+            submittingPost = true
+            state = state.copy(busy = true)
+        }
         scope.launch {
+            try {
             serialized(preference == null && name !in listOf("read", "typing", "draft", "open")) {
                 if (preference != null) {
                     if (pendingUiSettings[preference] != setting?.get("value")) return@serialized
@@ -304,6 +311,7 @@ class Messenger(application: Application) : AndroidViewModel(application) {
                 refresh()
                 if (preference != null && pendingUiSettings[preference] == setting?.get("value")) pendingUiSettings.remove(preference)
             }
+            } finally { if (name == "post") { submittingPost = false; state = state.copy(busy = false) } }
         }
     }
     private fun search(query: String, category: String, more: Boolean = false) {
@@ -375,8 +383,9 @@ class Messenger(application: Application) : AndroidViewModel(application) {
             }
         } }
     }
-    private suspend fun serialized(progress: Boolean, work: suspend () -> Unit) = mutex.withLock {
-        if (NativeSignOut.pending(getApplication())) return@withLock
+    private suspend fun serialized(progress: Boolean, work: suspend () -> Unit) = mutex.withLock { attempt(progress, work) }
+    private suspend fun attempt(progress: Boolean, work: suspend () -> Unit) {
+        if (NativeSignOut.pending(getApplication())) return
         if (progress) state = state.copy(busy = true, issue = null)
         try { work() } catch (cancelled: CancellationException) { throw cancelled }
         catch (error: Exception) {

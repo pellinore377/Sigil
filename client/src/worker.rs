@@ -399,6 +399,17 @@ mod tests {
             Ok(MailboxEvent::Text(text)) if text.text().unwrap().body == "synthetic queued message")));
     }
     #[test]
+    fn small_positive_clock_skew_does_not_exceed_server_delivery_lifetime() {
+        let (_dir, _fixture, mut alice, mut bob, now) = pair();
+        let (_, peer) = trust(&mut alice, &mut bob);
+        alice.queue_peer_text(peer, [93; 32], "synthetic clock skew", now + 30, now + 30).unwrap();
+        let step = alice.sync_step_online(now + 30);
+        assert!(step.failure.is_none(), "{:?}", step.issue());
+        let incoming = bob.receive_mailbox_online(now + 30).unwrap();
+        assert!(incoming.iter().any(|item| matches!(&item.result,
+            Ok(MailboxEvent::Text(text)) if text.text().unwrap().body == "synthetic clock skew")));
+    }
+    #[test]
     fn call_authentication_and_retry_after_still_defer_network_work() {
         for (status, retry) in [(401, None), (429, Some(120)), (404, Some(120))] {
             let (dir, fixture, mut alice, mut bob, now) = pair();

@@ -371,7 +371,7 @@ pub(super) fn prepare_expiry(
         _ => return Err(Error::InvalidStore),
     };
     let expiry =
-        requested.unwrap_or_else(|| now.saturating_add(604800).min(cap.unwrap_or(u64::MAX)));
+        requested.unwrap_or_else(|| now.saturating_add(transport::DEFAULT_LIFETIME).min(cap.unwrap_or(u64::MAX)));
     if expiry <= now
         || expiry > i64::MAX as u64
         || expiry > now.saturating_add(604800)

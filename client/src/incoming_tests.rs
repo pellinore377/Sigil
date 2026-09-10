@@ -561,11 +561,11 @@ fn unconfirmed_delivery_window_cannot_slide_and_peer_confirmation_releases_it() 
             [3; 32],
             [71; 32],
             recipient,
-            deadline + 1 + 604800,
+            deadline + 1 + 604740,
             deadline + 1,
         )
         .unwrap();
-    assert_eq!(request.expires_at, deadline + 1 + 604800);
+    assert_eq!(request.expires_at, deadline + 1 + 604740);
 }
 
 #[test]
