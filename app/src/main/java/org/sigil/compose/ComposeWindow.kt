@@ -17,6 +17,12 @@ import androidx.compose.ui.text.PlatformTextStyle
 internal fun ComponentActivity.setSigilContent(content: @Composable () -> Unit) {
     enableEdgeToEdge()
     setContent {
+        var visible by remember { mutableStateOf(lifecycle.currentState.isAtLeast(androidx.lifecycle.Lifecycle.State.STARTED)) }
+        DisposableEffect(lifecycle) {
+            val observer=androidx.lifecycle.LifecycleEventObserver {_,_->visible=lifecycle.currentState.isAtLeast(androidx.lifecycle.Lifecycle.State.STARTED)}
+            lifecycle.addObserver(observer)
+            onDispose {lifecycle.removeObserver(observer)}
+        }
         var reducedMotion by remember { mutableStateOf(!android.animation.ValueAnimator.areAnimatorsEnabled()) }
         DisposableEffect(Unit) {
             val observer = object : android.database.ContentObserver(android.os.Handler(android.os.Looper.getMainLooper())) {
@@ -31,7 +37,7 @@ internal fun ComponentActivity.setSigilContent(content: @Composable () -> Unit) 
             // Older Android retains its window pan until it rechecks the focused field's bounds.
             LaunchedEffect(ime) { withFrameNanos { }; view.rootView.requestLayout() }
         }
-        CompositionLocalProvider(org.sigil.LocalEditorAnalysis provides org.sigil.NativeCore::editor, org.sigil.LocalSensitiveCopy provides { value ->
+        CompositionLocalProvider(org.sigil.LocalMotionBlur provides (Build.VERSION.SDK_INT>=31), org.sigil.LocalMotionVisible provides visible, org.sigil.LocalTextMotionSeeds provides org.sigil.NativeCore::motionSeeds, org.sigil.LocalEditorAnalysis provides org.sigil.NativeCore::editor, org.sigil.LocalSensitiveCopy provides { value ->
             val clip = android.content.ClipData.newPlainText("Sigil", value)
             clip.description.extras = android.os.PersistableBundle().apply { putBoolean("android.content.extra.IS_SENSITIVE", true) }
             getSystemService(android.content.ClipboardManager::class.java).setPrimaryClip(clip)

@@ -266,19 +266,19 @@ class Messenger(application: Application) : AndroidViewModel(application) {
                 return
             }
             "dismiss" -> { state = state.copy(issue = null); return }
-            "close" -> { timelineJob?.cancel(); state = state.copy(selected = null, messages = emptyList(), historical = false); anchor = null; pages = 1; return }
+            "close" -> { timelineJob?.cancel(); state = state.copy(selected = null, messages = emptyList(), historical = false, timelineLoaded=false); anchor = null; pages = 1; return }
             "open" -> {
                 anchor = (fields["author"] as? String)?.let { author -> (fields["message"] as? String)?.let { author to it } }
                 val target = (fields["thread_author"] as? String)?.let { author -> (fields["thread_message"] as? String)?.let { ThreadTarget(author, it) } }
                 timelineFilter = mapOf("category" to "Timeline") + if (target == null) emptyMap() else mapOf("thread_author" to target.author, "thread_message" to target.id)
-                state = state.copy(selected = fields["peer"] as String, messages = emptyList(), historical = anchor != null, threadTarget = target); pages = 1
+                state = state.copy(selected = fields["peer"] as String, messages = emptyList(), historical = anchor != null, threadTarget = target, timelineLoaded=false); pages = 1
             }
             "timeline_filter" -> {
                 val filter = fields.filter { (key, value) -> key != "peer" && value != null }
                 if (timelineFilter == filter) return
-                timelineFilter = filter; pages = 1; state = state.copy(messages = emptyList())
+                timelineFilter = filter; pages = 1; state = state.copy(messages = emptyList(),timelineLoaded=false)
             }
-            "latest" -> { anchor = null; state = state.copy(historical = false); pages = 1 }
+            "latest" -> { anchor = null; state = state.copy(historical = false,timelineLoaded=false); pages = 1 }
             "older" -> pages++
             "read" -> if (!foreground) return
         }
@@ -511,17 +511,17 @@ class Messenger(application: Application) : AndroidViewModel(application) {
             }
             before = if (timeline.isNull("next")) null else timeline.getLong("next")
             if (firstPage && (messages.isNotEmpty() || before == null)) {
-                state = state.copy(selected = peer, messages = messages.toList(), more = before != null)
+                state = state.copy(selected = peer, messages = messages.toList(), more = before != null,timelineLoaded=true)
                 return
             }
             if (before == null) {
-                if (state.selected == peer) state = state.copy(messages = messages, more = false)
+                if (state.selected == peer) state = state.copy(messages = messages, more = false,timelineLoaded=true)
                 return
             }
-            if (messages.isNotEmpty()) state = state.copy(messages = messages.toList(), more = true)
+            if (messages.isNotEmpty()) state = state.copy(messages = messages.toList(), more = true,timelineLoaded=true)
             yield()
         } while (messages.size < wanted)
-        if (state.selected == peer) state = state.copy(messages = messages, more = true)
+        if (state.selected == peer) state = state.copy(messages = messages, more = true,timelineLoaded=true)
     }
     private fun storage(result: JSONObject) {
         val recovery = result.getJSONObject("recovery")

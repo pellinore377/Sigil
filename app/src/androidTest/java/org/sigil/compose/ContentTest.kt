@@ -26,6 +26,17 @@ class ContentTest {
     @get:Rule val ui = createAndroidComposeRule<ComponentActivity>()
     private val context get() = InstrumentationRegistry.getInstrumentation().targetContext
     @Before fun isolated() { Assume.assumeTrue(context.packageName.endsWith(".acceptance")) }
+    @Test fun storedMotionUsesCanonicalRustParametersAndShapedTextUnits() = runBlocking {
+        native("post",mapOf("peer" to "self","request" to "d4".repeat(32),"timestamp" to System.currentTimeMillis()/1000,
+            "text" to "wave::office العربية 👩🏽‍💻; spoiler::shake::SYNTHETIC_HIDDEN_MOTION;","formatted" to true))
+        val messages=native("timeline",mapOf("peer" to "self")).getJSONArray("messages")
+        val message=(0 until messages.length()).map {messages.getJSONObject(it)}.single {it.getString("text").startsWith("office العربية")}
+        val rich=message.getJSONArray("parts").getJSONObject(0).richText()!!
+        val motion=rich.motion.single()
+        assertEquals("wave",motion.kind);assertEquals(1200,motion.duration);assertEquals(140,motion.displacement)
+        assertEquals(listOf("o","f","f","i","c","e","العربية","👩🏽‍💻"),motion.units.map {rich.text.substring(it.first,it.second)})
+        assertFalse(motion.units.any {rich.text.substring(it.first,it.second).contains("SYNTHETIC_HIDDEN_MOTION")})
+    }
     @Test fun composerSendsCanonicalFormattingAndRedactsBeforeTheTimeline() = runBlocking {
         lateinit var messenger: Messenger
         val store = androidx.lifecycle.ViewModelStore()

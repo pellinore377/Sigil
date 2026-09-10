@@ -22,7 +22,8 @@ internal fun visibleCodeBlocks(value: RichText) = value.blocks.filter { block ->
 internal fun richSlice(value: RichText, start: Int, end: Int) = RichText(value.text.substring(start, end),
     value.spans.filter { it.start < end && it.end > start }.map { it.copy(start = maxOf(it.start, start) - start, end = minOf(it.end, end) - start) },
     value.blocks.filter { it.start < end && it.end > start }.map { it.copy(start = maxOf(it.start, start) - start, end = minOf(it.end, end) - start) },
-    value.codeTokens.filter { it.start >= start && it.end <= end }.map { it.copy(start = it.start - start, end = it.end - start) })
+    value.codeTokens.filter { it.start >= start && it.end <= end }.map { it.copy(start = it.start - start, end = it.end - start) },
+    value.motion.mapNotNull { run ->run.copy(units=run.units.filter {it.first>=start && it.second<=end}.map {it.first-start to it.second-start}).takeIf {it.units.isNotEmpty()} })
 
 @Composable
 internal fun CodeBlock(value: RichText, language: String) {

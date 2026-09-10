@@ -94,6 +94,10 @@ internal fun ConversationPage(chat: ChatSummary, state: MessengerState, draft: T
     }
     val threadsOverview = page == "Threads" && thread == null
     val messages = if (threadsOverview) state.messages.filter { it.threadAuthor != null && it.threadMessage != null }.distinctBy { it.threadAuthor to it.threadMessage } else state.messages
+    val textMotion=remember(chat.id,page,thread,state.historical) {MotionLedger()}
+    val animated=remember(messages) {messages.associate {it.author+it.id to it.textMotionDuration()}.filterValues {it>0}}
+    textMotion.update(messages.map {it.author+it.id},state.timelineLoaded,!state.historical && page.isEmpty(),animated.keys)
+    val visibleKeys by remember {derivedStateOf {list.layoutInfo.visibleItemsInfo.map {it.key}.toSet()}}
     BackAction(thread != null) { setThread(null); if (state.historical) command("latest", emptyMap()) }
     fun respond(message: ChatMessage, threaded: Boolean) {
         if (threaded) { setThread(ThreadTarget(message.threadAuthor ?: message.author, message.threadMessage ?: message.id)); reply = null } else reply = message
@@ -165,7 +169,9 @@ internal fun ConversationPage(chat: ChatSummary, state: MessengerState, draft: T
                                   }
                                   Box(Modifier.graphicsLayer { translationX = offset; alpha = if (lifted) 0f else 1f }.then(if (lifted) Modifier.clearAndSetSemantics { } else Modifier).onGloballyPositioned { bounds = it.boundsInWindow(); if (lifted) returnBounds = bounds }
                                     .pointerInput(message.id) { awaitPointerEventScope { while (true) { val event = awaitPointerEvent(); if (event.type == PointerEventType.Press && event.buttons.isSecondaryPressed) selected = message to bounds } } }) {
-                                    MessageBubble(message, grouped, newer?.author == message.author, analyze, if (chat.verified && !state.busy) command else null)
+                                    if(message.author+message.id in animated) MessageMotion(message.id,textMotion.state(message.author+message.id),message.author+message.id in visibleKeys && selected==null,animated.getValue(message.author+message.id)) {
+                                        MessageBubble(message, grouped, newer?.author == message.author, analyze, if (chat.verified && !state.busy) command else null)
+                                    } else MessageBubble(message, grouped, newer?.author == message.author, analyze, if (chat.verified && !state.busy) command else null)
                                   }
                                 }
                                 MessageDetails(message, details == (message.author to message.id), !state.historical && page.isEmpty() && thread == null && showsReceipt(index, messages), chat, state.people)
@@ -214,6 +220,7 @@ internal fun ConversationPage(chat: ChatSummary, state: MessengerState, draft: T
                     "thread" -> respond(message, true)
                     "copy" -> { clipboard.setText(AnnotatedString(message.text)); selected = null }
                     "edit" -> { command("edit_source", mapOf("peer" to chat.id, "author" to message.author, "message" to message.id)); selected = null }
+                    "replay" -> {textMotion.state(message.author+message.id).replay();selected=null}
                     "forward" -> { command("forward_picker", mapOf("peer" to chat.id, "author" to message.author, "message" to message.id)); selected = null }
                     else -> {
                         val fields = mutableMapOf<String, Any?>("peer" to chat.id, "author" to message.author, "message" to message.id)
@@ -332,6 +339,7 @@ private fun MessageMenu(message: ChatMessage, origin: Rect, returnTo: Rect, grou
                 Surface(Modifier.width(232.dp).alpha(progress.value), shape = RoundedCornerShape(20.dp), color = MaterialTheme.colorScheme.surfaceVariant) {
                     Column(Modifier.padding(vertical = 6.dp)) {
                         val entries = listOf("reply" to "Reply", "forward" to "Forward", "copy" to "Copy", "thread" to "Reply in thread", "pin" to if (message.pinned) "Unpin" else "Pin", "note" to if (message.noted) "Remove from notes" else "Add to notes") +
+                            (if(message.hasTextMotion())listOf("replay" to "Replay animation") else emptyList()) +
                             (if (message.mine && message.editable) listOf("edit" to "Edit") else emptyList()) + (if (message.mine) listOf("delete" to "Delete") else emptyList())
                         entries.forEach { (key, label) -> DropdownMenuItem({ Text(label, color = if (key == "delete") MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurface) }, { choose(key, "") },
                             leadingIcon = { Glyph(when(key) { "thread" -> "forum"; "pin" -> "push_pin"; "note" -> "description"; "copy" -> "content_copy"; else -> key }, 20) }) }
