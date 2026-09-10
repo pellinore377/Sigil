@@ -63,6 +63,8 @@ if [[ ${1:-all} == push ]]; then exit 0; fi
 instrument MessagingUiTest
 instrument RevisionsTest
 instrument RichTextTest
+instrument TableTest
+instrument RecipeTest
 instrument LayoutTest
 instrument TimelinePerformanceTest
 instrument RealTimelinePerformanceTest

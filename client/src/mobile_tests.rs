@@ -438,6 +438,28 @@ fn mobile_table_projection_preserves_numeric_order_rich_cells_and_copy_privacy()
     assert_eq!(table["rows"][1][0]["spans"][0]["effects"][0]["kind"], "reveal");
 }
 #[test]
+fn recipe_serving_views_are_local_and_cannot_read_another_message_card() {
+    let (_dir, _server, mut alice, _bob, now) = crate::claims::tests::pair();
+    let request = "98".repeat(32);
+    run(&mut alice, json!({"command":"post","peer":"self","request":request,"timestamp":now,"rich":true,
+        "text":"recipe::Dinner\nserves::4\ntime::25 min\ningredients:\n- 200g flour\n- 1-2 eggs\nsteps:\n- Combine ingredients\n- Bake;"}));
+    let timeline = run(&mut alice, json!({"command":"timeline","peer":"self"}));
+    let message = &timeline["messages"][0];
+    let part = &message["parts"][0];
+    assert_eq!(part["kind"], "recipe");
+    assert_eq!(part["recipe"]["ingredients"][0]["text"], "200g flour");
+    let command = json!({"command":"recipe_view","peer":"self","author":message["author"],"message":message["id"],"card":part["id"],"serves":2});
+    let view = run(&mut alice, command.clone());
+    assert_eq!(view["recipe"]["ingredients"][0]["text"], "100g flour");
+    assert_eq!(view["recipe"]["ingredients"][1]["text"], "1-2 eggs");
+    let mut forged = command;
+    forged["message"] = json!("97".repeat(32));
+    let result: Value = serde_json::from_str(&alice.mobile_command(&forged.to_string())).unwrap();
+    assert_eq!(result["ok"], false);
+    let fresh = run(&mut alice, json!({"command":"timeline","peer":"self"}));
+    assert_eq!(fresh["messages"][0]["parts"][0]["recipe"], part["recipe"]);
+}
+#[test]
 fn forwarding_preserves_text_and_notes_and_snapshots_current_checklist_state() {
     let (_dir, _server, mut alice, _bob, now) = crate::claims::tests::pair();
     let author = transport::hex(&alice.account_reference().unwrap());

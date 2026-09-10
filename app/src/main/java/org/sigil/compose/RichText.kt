@@ -7,6 +7,7 @@ import org.sigil.RichSpan
 import org.sigil.RichBlock
 import org.sigil.CodeToken
 import org.sigil.TableContent
+import org.sigil.RecipeContent
 
 internal fun JSONObject.richText(): RichText? = optJSONObject("rich")?.let { it.richValue() }
 internal fun JSONObject.richValue(): RichText {
@@ -53,4 +54,10 @@ internal fun JSONObject.tableContent(): TableContent? = optJSONObject("table")?.
         (0 until orders.length()).map { column -> orders.optJSONArray(column)?.let { order -> (0 until order.length()).map(order::getInt) } },
         (0 until copies.length()).map { if (copies.isNull(it)) null else copies.getString(it) },
         if (table.isNull("copy_table")) null else table.getString("copy_table"))
+}
+internal fun JSONObject.recipeContent(): RecipeContent? = optJSONObject("recipe")?.let { recipe ->
+    fun texts(name: String) = recipe.getJSONArray(name).let { a -> (0 until a.length()).map { a.getJSONObject(it).richValue() } }
+    RecipeContent(recipe.getJSONObject("title").richValue(), if (recipe.isNull("serves")) null else recipe.getInt("serves"),
+        if (recipe.isNull("original_serves")) null else recipe.getInt("original_serves"), if (recipe.isNull("seconds")) null else recipe.getLong("seconds"),
+        texts("ingredients"), recipe.getJSONArray("scaled").let { a -> (0 until a.length()).map(a::getBoolean) }, texts("steps"))
 }

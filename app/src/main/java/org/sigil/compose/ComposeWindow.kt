@@ -31,7 +31,14 @@ internal fun ComponentActivity.setSigilContent(content: @Composable () -> Unit) 
             // Older Android retains its window pan until it rechecks the focused field's bounds.
             LaunchedEffect(ime) { withFrameNanos { }; view.rootView.requestLayout() }
         }
-        CompositionLocalProvider(org.sigil.LocalSystemReducedMotion provides reducedMotion, LocalTextPlatformStyle provides PlatformTextStyle(includeFontPadding = false), LocalSystemAppearance provides { dark ->
+        CompositionLocalProvider(org.sigil.LocalKeepScreenAwake provides { enabled ->
+            val view = LocalView.current
+            DisposableEffect(view, enabled) {
+                val previous = view.keepScreenOn
+                if (enabled) view.keepScreenOn = true
+                onDispose { view.keepScreenOn = previous }
+            }
+        }, org.sigil.LocalSystemReducedMotion provides reducedMotion, LocalTextPlatformStyle provides PlatformTextStyle(includeFontPadding = false), LocalSystemAppearance provides { dark ->
             WindowCompat.getInsetsController(window, window.decorView).apply {
                 isAppearanceLightStatusBars = !dark
                 isAppearanceLightNavigationBars = !dark

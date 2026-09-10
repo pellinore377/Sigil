@@ -166,6 +166,13 @@ enum Command {
         message: String,
         card: String,
     },
+    RecipeView {
+        peer: String,
+        author: String,
+        message: String,
+        card: String,
+        serves: u16,
+    },
     CardAction {
         peer: String,
         author: String,
@@ -850,6 +857,13 @@ impl ClientStore {
                 let action = self.stop_location(conversation, reference, conversations::now())?;
                 self.mobile_location_queue(conversation, action)?;
                 Ok(json!({}))
+            }
+            Command::RecipeView { peer, author, message, card, serves } => {
+                let conversation = self.mobile_conversation(&peer)?;
+                let reference = self.mobile_card_reference(conversation, Reference { author: id(&author)?, message: id(&message)? }, id(&card)?)?;
+                let state = self.card_state(conversation, reference)?;
+                let sigil_protocol::text::structured::Construct::Data(sigil_protocol::text::data::Data::Recipe(recipe)) = state.definition.content else { return Err(Error::InvalidEvent); };
+                Ok(json!({"recipe":recipe.presentation(Some(serves)).map_err(|_| Error::InvalidEvent)?}))
             }
             Command::CardAction {
                 peer,

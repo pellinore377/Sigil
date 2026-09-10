@@ -18,3 +18,5 @@ val LocalLocationContent = staticCompositionLocalOf<@Composable (ChatMessage, Me
     { _, part, _ -> Text("${part.latitude}, ${part.longitude}") }
 }
 val LocalWallpaper = staticCompositionLocalOf<@Composable (String, Modifier) -> Boolean> { { _, _ -> false } }
+val LocalRecipeScale = staticCompositionLocalOf<(suspend (ChatMessage, MessagePart, Int) -> RecipeContent)? > { null }
+val LocalKeepScreenAwake = staticCompositionLocalOf<(@Composable (Boolean) -> Unit)?> { null }
