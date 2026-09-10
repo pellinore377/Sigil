@@ -24,7 +24,7 @@ import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.semantics.*
 import kotlinx.coroutines.flow.*
 
-private val createItems = listOf("Note" to "description", "Checklist" to "checklist", "Poll" to "ballot", "Reminder" to "notifications_active", "Task" to "assignment", "Timer" to "timer")
+private val createItems = listOf("Note" to "description", "Checklist" to "checklist", "Poll" to "ballot", "Reminder" to "notifications_active", "Task" to "assignment", "Timer" to "timer", "Help" to "help")
 @Composable
 internal fun ComposerPanel(draft: TextFieldState, analyze: (String) -> String, enabled: Boolean, notes: Boolean, command: Command, peer: String, voice: VoiceState, sent: Long, sentText: String?, requestContact: (() -> Unit)? = null, attachments: List<Transfer> = emptyList(), editingCaption: Boolean = false, attachmentTarget: Map<String, Any?> = mapOf("peer" to peer), send: (String, Boolean, String?) -> Unit) {
     val motionPolicy = LocalMotion.current
@@ -64,6 +64,7 @@ internal fun ComposerPanel(draft: TextFieldState, analyze: (String) -> String, e
     BackAction(panel.isNotEmpty()) {
         when (panel) {
             "Create", "Format", "Camera", "Place" -> change("Attachments")
+            "Help" -> change(if(draft.text.toString().trim().startsWith("help::"))"" else "Create")
             in createItems.map { it.first } -> change("Create")
             else -> { if (panel == "Voice") command("record_stop", emptyMap()); change("") }
         }
@@ -90,6 +91,9 @@ internal fun ComposerPanel(draft: TextFieldState, analyze: (String) -> String, e
     val attachmentDrafts = attachments.filter { it.draft }
     val hasAttachment = voiceReady || attachmentDrafts.isNotEmpty()
     val hasText = draft.text.isNotBlank() || editingCaption
+    val helpSource=draft.text.toString().trim().takeIf {!hasAttachment && !editingCaption && !notes && it.startsWith("help::")}
+    val helpQuery=helpSource?.takeIf {';' !in it && '\n' !in it}?.removePrefix("help::")
+    LaunchedEffect(helpQuery) {if(helpQuery!=null) {keyboardPending=false;panel="Help"}}
     LaunchedEffect(voice.phase) { if (voiceReady) change("") }
     Surface(shape = RoundedCornerShape(topStart = 24.dp, topEnd = 24.dp), color = if (LocalFooterHost.current == null) MaterialTheme.colorScheme.surface else androidx.compose.ui.graphics.Color.Transparent) {
         Column {
@@ -125,10 +129,10 @@ internal fun ComposerPanel(draft: TextFieldState, analyze: (String) -> String, e
                         val caption = draft.text.toString(); pendingCaption = caption
                         attachmentDrafts.forEach { command("file_send", mapOf("request" to it.request, "caption" to caption)) }
                         if (voiceReady) command("record_send", mapOf("peer" to peer, "caption" to caption))
-                    } else if (hasText && requestContact != null) requestContact() else if (hasText) send(if (notes && !editingCaption) "note::${escapeField(draft.text.toString())};" else draft.text.toString(), notes && !editingCaption, null) else change("Voice") },
-                    Modifier.size(48.dp), enabled = if (hasAttachment) enabled && voice.phase != "Sending" && attachmentDrafts.none { it.phase == "Staging" } else if (hasText) enabled || requestContact != null else true, shape = RoundedCornerShape(16.dp),
+                    } else if(helpQuery!=null)change("Help") else if (hasText && requestContact != null) requestContact() else if (hasText) send(if (notes && !editingCaption) "note::${escapeField(draft.text.toString())};" else helpSource ?: draft.text.toString(), notes && !editingCaption || helpSource?.endsWith(';')==true, null) else change("Voice") },
+                    Modifier.size(48.dp), enabled = if (hasAttachment) enabled && voice.phase != "Sending" && attachmentDrafts.none { it.phase == "Staging" } else if(helpQuery!=null)true else if (hasText) enabled || requestContact != null else true, shape = RoundedCornerShape(16.dp),
                     colors = IconButtonDefaults.filledIconButtonColors(containerColor = MaterialTheme.colorScheme.primary, contentColor = MaterialTheme.colorScheme.onPrimary)) {
-                    Glyph(if (hasAttachment || hasText) "send" else "graphic_eq", 24, if (editingCaption) "Save caption" else if (voiceReady) "Send voice message" else if (attachmentDrafts.isNotEmpty()) "Send attachments" else if (hasText) if (requestContact != null) "Send request" else "Send message" else "Voice message")
+                    Glyph(if(helpQuery!=null)"help" else if (hasAttachment || hasText) "send" else "graphic_eq", 24, if(helpQuery!=null)"Open help" else if (editingCaption) "Save caption" else if (voiceReady) "Send voice message" else if (attachmentDrafts.isNotEmpty()) "Send attachments" else if (hasText) if (requestContact != null) "Send request" else "Send message" else "Voice message")
                 }
             }
             Box(Modifier.fillMaxWidth().padding(bottom = formInset).then(if (panel.isEmpty() && !keyboardPending && measured > 0.dp) Modifier.windowInsetsBottomHeight(WindowInsets.ime) else Modifier.height(panelHeight))) {
@@ -163,6 +167,7 @@ internal fun ComposerPanel(draft: TextFieldState, analyze: (String) -> String, e
                         "Voice" -> VoicePanel(command, peer, voice) { command("record_cancel", emptyMap()); panel = "" }
                         "Camera" -> LocalCameraPanel.current(attachmentTarget, { change("Attachments") }, { change("") })
                         "Place" -> LocalPlacePanel.current(attachmentTarget, { change("Attachments") }, { change("") })
+                        "Help" -> HelpPanel(enabled,{change(if(helpQuery==null)"Create" else "")},helpQuery) {source->pendingBuilder="$peer:$shown" to source;send(source,true,null)}
                         in createItems.map { it.first } -> builders.SaveableStateProvider("$peer:$shown") {
                             StructuredBuilder(shown, enabled, { change("Create") }) { source, timezone -> pendingBuilder = "$peer:$shown" to source; send(source, true, timezone) }
                         }

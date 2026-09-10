@@ -360,6 +360,23 @@ fn filtered_history_advances_and_search_opens_the_original_message() {
     assert_eq!(root["messages"][0]["text"], "Letter 1");
 }
 #[test]
+fn mobile_help_sharing_preserves_literal_examples_and_rejects_invalid_rich_input() {
+    let (_dir,_server,mut alice,_bob,now)=crate::claims::tests::pair();
+    let source="help::redact;";
+    let post=json!({"command":"post","peer":"self","request":"e8".repeat(32),"timestamp":now,"text":source,"rich":true});
+    run(&mut alice,post.clone());run(&mut alice,post);
+    let timeline=run(&mut alice,json!({"command":"timeline","peer":"self"}));
+    assert_eq!(timeline["messages"].as_array().unwrap().len(),1);
+    let expected=sigil_protocol::text::help::sheet("redact",Default::default()).unwrap();
+    assert_eq!(timeline["messages"][0]["text"],expected.body());
+    assert!(timeline["messages"][0]["text"].as_str().unwrap().contains("redact::private;"));
+    for source in ["help::UNKNOWN_SECRET;","help::redact::SECRET;","just text","timer::not a duration;"] {
+        let result:Value=serde_json::from_str(&alice.mobile_command(&json!({"command":"post","peer":"self","request":"e9".repeat(32),"timestamp":now,"text":source,"rich":true}).to_string())).unwrap();
+        assert_eq!(result["ok"],false);
+    }
+    assert_eq!(run(&mut alice,json!({"command":"timeline","peer":"self"}))["messages"].as_array().unwrap().len(),1);
+}
+#[test]
 fn mobile_formatted_posts_redact_before_queueing_and_keep_legacy_retries_unchanged() {
     let (_dir, _server, mut alice, _bob, now) = crate::claims::tests::pair();
     let source = "underline::bold::Hello; red-blue::café; redact::SYNTHETIC_SECRET;";

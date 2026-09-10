@@ -179,7 +179,7 @@ fn status_is_bound_to_the_exact_request_owner_and_remote_receipt() {
         )
         .route(
             "/client/v0/federation/messages",
-            post(move || {
+            post(move |Json(_request): Json<Queue>| {
                 let value = setter.lock().unwrap().clone();
                 async move { (axum::http::StatusCode::ACCEPTED, Json(value)) }
             }),
@@ -210,11 +210,11 @@ fn status_is_bound_to_the_exact_request_owner_and_remote_receipt() {
         *value.lock().unwrap() = bad;
         assert_eq!(
             client.federated_outbound(&own, &request),
-            Err(Error::InvalidResponse)
+            Err(Error::InvalidResponse), "GET case {n}"
         );
         assert_eq!(
             client.queue_federated_message(&own, &request),
-            Err(Error::InvalidResponse)
+            Err(Error::InvalidResponse), "POST case {n}"
         );
     }
     *value.lock().unwrap() = good;

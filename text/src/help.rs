@@ -18,6 +18,10 @@ macro_rules! topic {
 }
 pub const TOPICS: &[Topic] = &[
     topic!(
+        "info", "info", "Use modifier::content; to format text. Stack modifiers together. Inline formatting can end at a line break without the final semicolon.",
+        "modifier::content;", [], "bold::blue::Hello;\ntimer::5m;\nremind::tomorrow 9am::Call;", false
+    ),
+    topic!(
         "markdown",
         "text",
         "Headings, lists, quotes, links and code",
@@ -524,6 +528,44 @@ pub fn search(query: &str) -> impl Iterator<Item = &'static Topic> + '_ {
             || topic.aliases.iter().any(|alias| alias.contains(query))
     })
 }
+pub fn catalog(query: &str) -> String {
+    if query.len() > 128 {
+        return String::new();
+    }
+    let words = query
+        .to_lowercase()
+        .split_whitespace()
+        .map(str::to_owned)
+        .collect::<Vec<_>>();
+    TOPICS
+        .iter()
+        .filter(|topic| {
+            let haystack = format!(
+                "{} {} {} {} {} {}",
+                topic.name,
+                topic.category,
+                topic.description,
+                topic.template,
+                topic.options.join(" "),
+                topic.aliases.join(" ")
+            )
+            .to_lowercase();
+            words.iter().all(|word| haystack.contains(word))
+        })
+        .map(|topic| {
+            format!(
+                "{}\u{1f}{}\u{1f}{}\u{1f}{}\u{1f}{}\u{1f}{}",
+                topic.name,
+                topic.category,
+                topic.description,
+                topic.template,
+                topic.options.join("\n"),
+                topic.example
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\u{1e}")
+}
 pub(crate) fn structured_prefix(source: &str) -> bool {
     TOPICS.iter().any(|topic| {
         topic.structured
@@ -556,6 +598,21 @@ pub fn sheet(query: &str, limits: Limits) -> Result<Text, Error> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn local_reference_filters_options_and_descriptions_without_changing_examples() {
+        let result = catalog("");
+        assert_eq!(result.split('\u{1e}').count(), TOPICS.len());
+        for (row, topic) in result.split('\u{1e}').zip(TOPICS) {
+            let fields = row.split('\u{1f}').collect::<Vec<_>>();
+            assert_eq!(fields.len(), 6);
+            assert_eq!(fields[5], topic.example);
+        }
+        assert!(catalog("WAVE").starts_with("wave\u{1f}"));
+        assert!(catalog("number").contains("pick\u{1f}"));
+        assert!(catalog("animations horizontal").starts_with("shake\u{1f}"));
+        assert!(catalog("NONEXISTENT_TOPIC").is_empty());
+        assert!(catalog(&"a".repeat(129)).is_empty());
+    }
     #[test]
     fn help_examples_use_the_same_parser_as_the_composer() {
         let origin = crate::Origin {

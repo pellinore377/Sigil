@@ -64,6 +64,7 @@ instrument MessagingUiTest
 instrument RevisionsTest
 instrument RichTextTest
 instrument TextMotionTest
+instrument HelpTest
 instrument TableTest
 instrument RecipeTest
 instrument ChartTest

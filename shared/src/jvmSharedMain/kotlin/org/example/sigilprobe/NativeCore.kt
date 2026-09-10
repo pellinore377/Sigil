@@ -8,4 +8,5 @@ object NativeCore {
     external fun editor(input: String): String
     external fun motionSeeds(input: String): String
     external fun temporalPreview(input: String): String
+    external fun helpCatalog(input: String): String
 }
