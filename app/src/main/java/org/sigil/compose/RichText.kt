@@ -102,6 +102,13 @@ internal fun JSONObject.utilityContent(): org.sigil.UtilityContent? = optJSONObj
         if (u.isNull("selected")) null else u.getInt("selected"), if (u.isNull("ratio")) null else u.getDouble("ratio").toFloat(),
         if (u.isNull("rgba")) null else u.getLong("rgba"), string("mathml"), u.optJSONObject("qr")?.let { q ->
             org.sigil.QrContent(q.getString("kind"), q.getInt("width"), q.getString("cells"), q.getString("payload"), q.optJSONObject("password")?.richValue(), q.getBoolean("concealed"))
+        }, u.optJSONObject("motion")?.let { m ->
+            val dice = m.optJSONArray("dice")?.let { a -> (0 until minOf(6,a.length())).map {
+                val die=a.getJSONObject(it)
+                org.sigil.DieFace(die.getInt("sides"),die.getInt("face"))
+            }}.orEmpty()
+            val frames=m.optJSONArray("frames")?.let {a->(0 until minOf(12,a.length())).map(a::getString)}.orEmpty()
+            org.sigil.RandomizerMotion(m.getString("kind"),dice,frames,m.optInt("selected"),m.optString("result"))
         })
 }
 
