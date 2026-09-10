@@ -37,6 +37,82 @@ pub(super) fn pump(a: &mut ClientStore, b: &mut ClientStore, now: u64) {
     }
 }
 #[test]
+fn expired_unregistered_call_does_not_block_new_calls() {
+    delayed_registration(false);
+}
+#[test]
+fn lost_registration_response_still_closes_a_timed_out_call() {
+    delayed_registration(true);
+}
+fn delayed_registration(accepted: bool) {
+    let (dir, _fixture, mut alice, mut bob, now) = pair();
+    configure(dir.path());
+    let (_, peer) = trust(&mut alice, &mut bob);
+    let old = [1; 32];
+    alice.start_call(old, now, true, &[peer]).unwrap();
+    if accepted {
+        let record = load(&alice.db, &alice.key, &old).unwrap();
+        alice
+            .connected_client()
+            .unwrap()
+            .publish_call(&record.commits[0])
+            .unwrap();
+    }
+    let later = now + 61;
+    rusqlite::Connection::open(dir.path().join("server.db"))
+        .unwrap()
+        .execute("UPDATE call_configuration SET clock=?1", [later as i64])
+        .unwrap();
+    for attempt in alice.resume_calls_online(later).unwrap() {
+        attempt.result.unwrap();
+    }
+    let record = load(&alice.db, &alice.key, &old).unwrap();
+    assert!(record.phase == Phase::Ended);
+    assert!(record.secret.is_none() && record.commits.is_empty());
+    let live: i64 = rusqlite::Connection::open(dir.path().join("server.db"))
+        .unwrap()
+        .query_row("SELECT count(*) FROM calls WHERE closed=0", [], |r| {
+            r.get(0)
+        })
+        .unwrap();
+    assert_eq!(live, 0);
+    let next = [2; 32];
+    alice.start_call(next, later, true, &[peer]).unwrap();
+    for attempt in alice.resume_calls_online(later).unwrap() {
+        attempt.result.unwrap();
+    }
+    assert!(load(&alice.db, &alice.key, &next)
+        .unwrap()
+        .commits
+        .is_empty());
+}
+#[test]
+fn fresh_registration_conflict_is_not_discarded() {
+    let (dir, _fixture, mut alice, mut bob, now) = pair();
+    configure(dir.path());
+    let (_, peer) = trust(&mut alice, &mut bob);
+    let id = [3; 32];
+    alice.start_call(id, now, true, &[peer]).unwrap();
+    let mut record = load(&alice.db, &alice.key, &id).unwrap();
+    let client = alice.connected_client().unwrap();
+    client.publish_call(&record.commits[0]).unwrap();
+    end(&alice.key, &mut record).unwrap();
+    client.publish_call(record.commits.last().unwrap()).unwrap();
+    assert!(alice
+        .resume_calls_online(now)
+        .unwrap()
+        .into_iter()
+        .any(|attempt| matches!(
+            attempt.result,
+            Err(Error::Network(crate::network::Error::Status {
+                code: 409,
+                ..
+            }))
+        )));
+    let record = load(&alice.db, &alice.key, &id).unwrap();
+    assert!(record.secret.is_some() && !record.commits.is_empty());
+}
+#[test]
 fn caller_hangup_cancels_ringing_and_an_answer_in_flight() {
     for answer in [false, true] {
         let (dir, _fixture, mut alice, mut bob, now) = pair();

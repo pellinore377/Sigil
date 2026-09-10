@@ -525,13 +525,30 @@ impl ClientStore {
                     let Some(roster) = record.commits.first() else {
                         break;
                     };
-                    self.connected_client()?.publish_call(roster)?;
+                    let published = self.connected_client()?.publish_call(roster);
+                    let rejected_initial = matches!(
+                        published,
+                        Err(crate::network::Error::Status { code: 409, .. })
+                    ) && roster.roster.revision == 0
+                        && now.saturating_sub(roster.roster.created) > 60;
+                    if !rejected_initial {
+                        published?;
+                    }
                     let tx = self
                         .db
                         .transaction_with_behavior(TransactionBehavior::Immediate)?;
                     let mut current = load(&tx, &self.key, &id)?;
                     if current.commits.first() != Some(roster) {
                         return Err(Error::Conflict);
+                    }
+                    if rejected_initial {
+                        // A rejected initial roster past its admission window cannot be retried.
+                        current.finish(Phase::Ended);
+                        current.commits.clear();
+                        current.notify.clear();
+                        super::save(&tx, &self.key, &current)?;
+                        tx.commit()?;
+                        return Ok(());
                     }
                     current.commits.remove(0);
                     super::save(&tx, &self.key, &current)?;
