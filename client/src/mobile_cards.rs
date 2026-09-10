@@ -211,10 +211,29 @@ impl ClientStore {
                 value["rich"] = json!(location.share.label.presentation());
                 value["latitude_e6"] = json!(location.share.point.coordinates.latitude_e6);
                 value["longitude_e6"] = json!(location.share.point.coordinates.longitude_e6);
+                value["location_mode"] = json!(match location.share.mode {
+                    sigil_protocol::text::location::Mode::Once => "once",
+                    sigil_protocol::text::location::Mode::Pin => "pin",
+                    sigil_protocol::text::location::Mode::Live { .. } => "live",
+                });
+                value["sampled_at"] = json!(location.share.point.sampled_at);
+                value["accuracy_cm"] = json!(location.share.point.accuracy_cm);
+                value["until"] = json!(location.until);
+                value["stopped"] = json!(location.stopped);
+                value["can_stop"] = json!(location.active(conversations::now()) && card.creator == self.account_reference()?);
             }
             _ => {}
         }
         Ok(value)
+    }
+    pub(super) fn mobile_card_reference(&mut self, conversation: Id, target: Reference, card: Id) -> Result<CardReference, Error> {
+        let message = self.conversation_message(conversation, target, conversations::now())?;
+        if message.deleted || message.view_once { return Err(Error::Obsolete); }
+        let card = parts(message.body.as_ref())?.into_iter().find_map(|part| match part {
+            Part::Card(value) if value.id == card => Some(value),
+            _ => None,
+        }).ok_or(Error::NotFound)?;
+        CardReference::of(&card).map_err(|_| Error::InvalidStore)
     }
     #[allow(clippy::too_many_arguments)]
     pub(super) fn mobile_card_action(
@@ -228,18 +247,7 @@ impl ClientStore {
         timestamp: u64,
     ) -> Result<Value, Error> {
         let conversation = self.mobile_conversation(peer)?;
-        let message = self.conversation_message(conversation, target, conversations::now())?;
-        if message.deleted || message.view_once {
-            return Err(Error::Obsolete);
-        }
-        let card = parts(message.body.as_ref())?
-            .into_iter()
-            .find_map(|part| match part {
-                Part::Card(value) if value.id == card => Some(value),
-                _ => None,
-            })
-            .ok_or(Error::NotFound)?;
-        let reference = CardReference::of(&card).map_err(|_| Error::InvalidStore)?;
+        let reference = self.mobile_card_reference(conversation, target, card)?;
         let state = self.card_state(conversation, reference)?;
         let (previous, change) = match (item, checked, choices) {
             (Some(item), Some(checked), None) => {

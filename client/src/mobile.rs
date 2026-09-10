@@ -19,6 +19,8 @@ mod device_link;
 mod files;
 #[path = "mobile_maps.rs"]
 mod maps;
+#[path = "mobile_locations.rs"]
+mod locations;
 #[path = "mobile_calls.rs"]
 mod mobile_calls;
 #[path = "mobile_groups.rs"]
@@ -146,10 +148,23 @@ enum Command {
         sampled_at: u64,
         label: String,
         pin: bool,
+        live: Option<sigil_protocol::text::location::Duration>,
         reply_author: Option<String>,
         reply_message: Option<String>,
         thread_author: Option<String>,
         thread_message: Option<String>,
+    },
+    LocationWork {
+        after: Option<String>,
+        point: Option<sigil_protocol::text::location::Point>,
+        #[serde(default)]
+        stop: bool,
+    },
+    LocationStop {
+        peer: String,
+        author: String,
+        message: String,
+        card: String,
     },
     CardAction {
         peer: String,
@@ -786,6 +801,7 @@ impl ClientStore {
                 sampled_at,
                 label,
                 pin,
+                live,
                 reply_author,
                 reply_message,
                 thread_author,
@@ -801,7 +817,10 @@ impl ClientStore {
                 };
                 let card = self.location_card(
                     id(&request)?,
-                    if pin {
+                    if let Some(duration) = live {
+                        if pin { return Err(Error::InvalidEvent); }
+                        structured::LocationKind::Live(duration)
+                    } else if pin {
                         structured::LocationKind::Pin
                     } else {
                         structured::LocationKind::Once
@@ -823,6 +842,14 @@ impl ClientStore {
                         view_once: false,
                     },
                 )
+            }
+            Command::LocationWork { after, point, stop } => self.mobile_location_work(after.map(|v| id(&v)).transpose()?, point, stop),
+            Command::LocationStop { peer, author, message, card } => {
+                let conversation = self.mobile_conversation(&peer)?;
+                let reference = self.mobile_card_reference(conversation, Reference { author: id(&author)?, message: id(&message)? }, id(&card)?)?;
+                let action = self.stop_location(conversation, reference, conversations::now())?;
+                self.mobile_location_queue(conversation, action)?;
+                Ok(json!({}))
             }
             Command::CardAction {
                 peer,

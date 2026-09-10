@@ -11,7 +11,10 @@ val LocalAttachmentDraft = staticCompositionLocalOf<@Composable (Transfer, Modif
 val LocalCameraPanel = staticCompositionLocalOf<@Composable (Map<String, Any?>, () -> Unit, () -> Unit) -> Unit> {
     { _, back, _ -> SigilTextButton(back) { Text("Camera unavailable · Back") } }
 }
-val LocalLocationContent = staticCompositionLocalOf<@Composable (MessagePart) -> Unit> {
-    { part -> Text("${part.latitude}, ${part.longitude}") }
+val LocalPlacePanel = staticCompositionLocalOf<@Composable (Map<String, Any?>, () -> Unit, () -> Unit) -> Unit> {
+    { _, back, _ -> SigilTextButton(back) { Text("Location unavailable · Back") } }
+}
+val LocalLocationContent = staticCompositionLocalOf<@Composable (ChatMessage, MessagePart, Command?) -> Unit> {
+    { _, part, _ -> Text("${part.latitude}, ${part.longitude}") }
 }
 val LocalWallpaper = staticCompositionLocalOf<@Composable (String, Modifier) -> Boolean> { { _, _ -> false } }

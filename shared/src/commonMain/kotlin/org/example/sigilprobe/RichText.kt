@@ -73,7 +73,7 @@ internal fun richPresentation(value: RichText, revealed: Set<Int>, codeFont: Fon
 }
 
 @Composable
-internal fun RichMessageText(value: RichText, modifier: Modifier = Modifier, style: TextStyle = MaterialTheme.typography.bodyLarge) {
+fun RichMessageText(value: RichText, modifier: Modifier = Modifier, style: TextStyle = MaterialTheme.typography.bodyLarge) {
     var revealed by remember(value) { mutableStateOf(emptySet<Int>()) }
     var layout by remember { mutableStateOf<TextLayoutResult?>(null) }
     val font = LocalCodeFont.current

@@ -12,7 +12,8 @@ data class ChatMessage(val id: String, val author: String, val text: String, val
     val delivery: String, val pinned: Boolean, val reactions: List<String>, val myReactions: List<String>, val reply: String?, val readByMe: Boolean,
     val timestamp: Long = 0, val separator: String = "", val readers: List<String> = emptyList(), val noted: Boolean = false,
     val threadAuthor: String? = null, val threadMessage: String? = null, val editable: Boolean = true, val kind: String = "Text", val peer: String = "", val attachment: AttachmentDetails? = null, val parts: List<MessagePart> = emptyList(), val threadPreview: String? = null)
-data class MessagePart(val id: String, val kind: String, val text: String, val items: List<CardItem> = emptyList(), val multiple: Boolean = false, val closed: Boolean = false, val voters: Long? = null, val date: String = "", val latitude: Double = 0.0, val longitude: Double = 0.0, val rich: RichText? = null)
+data class MessagePart(val id: String, val kind: String, val text: String, val items: List<CardItem> = emptyList(), val multiple: Boolean = false, val closed: Boolean = false, val voters: Long? = null, val date: String = "", val latitude: Double = 0.0, val longitude: Double = 0.0, val rich: RichText? = null,
+    val locationMode: String = "pin", val sampledAt: Long = 0, val accuracyCm: Long? = null, val until: Long? = null, val stopped: Boolean = false, val canStop: Boolean = false)
 data class CardItem(val id: String, val text: String, val checked: Boolean, val enabled: Boolean, val count: Long? = null, val rich: RichText? = null)
 data class RichText(val text: String, val spans: List<RichSpan> = emptyList(), val blocks: List<RichBlock> = emptyList())
 data class RichSpan(val start: Int, val end: Int, val flags: Set<String> = emptySet(), val colors: List<String> = emptyList(), val size: Int = 0, val reveal: String = "", val link: String? = null)

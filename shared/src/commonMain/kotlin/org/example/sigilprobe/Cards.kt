@@ -16,11 +16,11 @@ internal fun MessageCards(message: ChatMessage, analyze: (String) -> String, com
     Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
         message.parts.forEach { part ->
             if (part.kind == "text") { if (part.rich != null) RichMessageText(part.rich) else MessageText(part.text, analyze) }
+            else if (part.kind == "location") LocalLocationContent.current(message, part, command)
             else Column(Modifier.widthIn(min = 180.dp, max = 280.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                 val icon = when (part.kind) { "note" -> "description"; "checklist" -> "checklist"; "task" -> "assignment"; "poll" -> "ballot"; "reminder" -> "notifications_active"; "timer", "countdown", "ago" -> "timer"; else -> "article" }
                 Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) { Glyph(icon, 18); Text(part.kind.replaceFirstChar { it.uppercase() }, style = MaterialTheme.typography.labelMedium) }
                 if (part.rich != null) RichMessageText(part.rich) else MessageText(part.text, analyze)
-                if (part.kind == "location") LocalLocationContent.current(part)
                 if (part.date.isNotEmpty()) Text(part.date, style = MaterialTheme.typography.bodySmall)
                 part.items.forEach { item ->
                     val act: () -> Unit = {

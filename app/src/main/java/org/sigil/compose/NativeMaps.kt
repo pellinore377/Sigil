@@ -3,6 +3,9 @@ package org.sigil.compose
 import android.content.Context
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
+import androidx.compose.foundation.layout.*
+import androidx.compose.ui.unit.*
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.lifecycle.Lifecycle
@@ -58,13 +61,15 @@ internal object NativeMaps {
 }
 
 @Composable
-internal fun ServerMap(modifier: Modifier, latitude: Double = 0.0, longitude: Double = 0.0, movable: Boolean = true, chosen: (Double, Double) -> Unit = { _, _ -> }, failure: () -> Unit = {}) {
+internal fun ServerMap(modifier: Modifier, latitude: Double = 0.0, longitude: Double = 0.0, movable: Boolean = true, selected: Boolean = true, recenter: Int = 0, marker: (@Composable () -> Unit)? = null, chosen: (Double, Double) -> Unit = { _, _ -> }, failure: () -> Unit = {}) {
     val context = LocalContext.current
     val lifecycle = LocalLifecycleOwner.current.lifecycle
     val currentChosen by rememberUpdatedState(chosen)
     val currentFailure by rememberUpdatedState(failure)
     val view = remember { NativeMaps.initialize(context); MapView(context).apply { onCreate(null) } }
     var map by remember { mutableStateOf<org.maplibre.android.maps.MapLibreMap?>(null) }
+    var anchor by remember { mutableStateOf<android.graphics.PointF?>(null) }
+    val markerPoint by rememberUpdatedState(if (selected && marker != null) LatLng(latitude, longitude) else null)
     DisposableEffect(view) {
         var disposed = false
         OfflineManager.getInstance(context).setMaximumAmbientCacheSize(0, object : OfflineManager.FileSourceCallback {
@@ -79,17 +84,29 @@ internal fun ServerMap(modifier: Modifier, latitude: Double = 0.0, longitude: Do
             override fun onError(message: String) { if (!disposed) currentFailure() }
         })
         val error = MapView.OnDidFailLoadingMapListener { currentFailure() }
+        val frame = MapView.OnDidFinishRenderingFrameListener { _, _, _ ->
+            anchor = markerPoint?.let { map?.projection?.toScreenLocation(it) }
+        }
+        view.addOnDidFinishRenderingFrameListener(frame)
         view.addOnDidFailLoadingMapListener(error)
         if (lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED)) view.onStart()
         if (lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED)) view.onResume()
         val observer = LifecycleEventObserver { _, event -> when (event) { Lifecycle.Event.ON_START -> view.onStart(); Lifecycle.Event.ON_RESUME -> view.onResume(); Lifecycle.Event.ON_PAUSE -> view.onPause(); Lifecycle.Event.ON_STOP -> view.onStop(); else -> Unit } }
         lifecycle.addObserver(observer)
-        onDispose { disposed = true; lifecycle.removeObserver(observer); view.removeOnDidFailLoadingMapListener(error); view.onPause(); view.onStop(); view.onDestroy() }
+        onDispose { disposed = true; lifecycle.removeObserver(observer); view.removeOnDidFailLoadingMapListener(error); view.removeOnDidFinishRenderingFrameListener(frame); view.onPause(); view.onStop(); view.onDestroy() }
     }
-    LaunchedEffect(map, latitude, longitude) { map?.let { controller ->
-        controller.cameraPosition = CameraPosition.Builder().target(LatLng(latitude, longitude)).zoom(if (latitude == 0.0 && longitude == 0.0) 1.0 else 14.0).build()
+    LaunchedEffect(map, latitude, longitude, selected, recenter, marker != null) { map?.let { controller ->
+        controller.cameraPosition = CameraPosition.Builder().target(LatLng(latitude, longitude)).zoom(if (selected) 14.0 else 1.0).build()
         controller.clear()
-        if (latitude != 0.0 || longitude != 0.0) controller.addMarker(org.maplibre.android.annotations.MarkerOptions().position(LatLng(latitude, longitude)))
+        if (selected && marker == null) controller.addMarker(org.maplibre.android.annotations.MarkerOptions().position(LatLng(latitude, longitude)))
+        anchor = markerPoint?.let { controller.projection.toScreenLocation(it) }
     } }
-    AndroidView({ view }, modifier)
+    Box(modifier) {
+        AndroidView({ view }, Modifier.matchParentSize())
+        val position = anchor
+        if (position != null && marker != null && selected) {
+            val radius = with(LocalDensity.current) { 32.dp.toPx() }
+            Box(Modifier.offset { IntOffset((position.x - radius).toInt(), (position.y - radius).toInt()) }.size(64.dp)) { marker() }
+        }
+    }
 }

@@ -773,3 +773,35 @@ fn demotion_blocks_queued_invitations_after_restart_with_stale_or_current_member
         );
     }
 }
+
+#[test]
+fn linked_device_retains_a_failed_stop_for_another_devices_live_location() {
+    use sigil_protocol::{conversation::{Action as MessageAction, Body}, text::{action::Reference, location::{Duration, Point}, service::Coordinates, Text}};
+    let (dir, fixture, mut alice, _bob, now) = crate::claims::tests::pair();
+    alice.publish_device_binding_online().unwrap();
+    let mut joining = linked_device(&mut alice, &dir.path().join("joining.db"), &fixture, now);
+    let card = alice.location_card([214;32], crate::structured::LocationKind::Live(Duration::Hour), Point {
+        coordinates: Coordinates { latitude_e6: 0, longitude_e6: 0 }, accuracy_cm: None, sampled_at: now,
+    }, Text::plain("Synthetic share", Default::default()).unwrap(), now).unwrap();
+    let reference = Reference::of(&card).unwrap();
+    let operation = joining.conversation_operation(card.id, MessageAction::Post {
+        body: Body::Rich(card.to_bytes().unwrap()), reply: None, thread: None, expires_at: None, view_once: false,
+    }).unwrap();
+    let conversation = joining.note_to_self(&operation, now, now).unwrap();
+    assert!(joining.location_jobs(None, now).unwrap().jobs.is_empty());
+    let stop = joining.stop_location(conversation, reference, now).unwrap();
+    let batch = joining.location_jobs(None, now).unwrap();
+    assert!(batch.jobs.is_empty());
+    assert_eq!(batch.stops.len(), 1);
+    assert!(batch.stops[0].1 == stop);
+    drop(joining);
+    let mut joining = open(&dir.path().join("joining.db"));
+    let batch = joining.location_jobs(None, now).unwrap();
+    assert!(batch.jobs.is_empty());
+    assert_eq!(batch.stops.len(), 1);
+    let status: serde_json::Value = serde_json::from_str(&joining.mobile_command(r#"{"command":"location_work"}"#)).unwrap();
+    assert_eq!(status["ok"], true);
+    assert_eq!(status["value"]["active"], 0);
+    assert_eq!(status["value"]["queued"], 1);
+    assert!(joining.card_state(conversation, reference).unwrap().location.unwrap().stopped);
+}
