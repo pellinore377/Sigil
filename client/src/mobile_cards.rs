@@ -226,6 +226,10 @@ impl ClientStore {
                 value["kind"] = json!("table");
                 value["table"] = json!(table.presentation());
             }
+            Construct::Data(sigil_protocol::text::data::Data::Recipe(recipe)) => {
+                value["kind"] = json!("recipe");
+                value["recipe"] = recipe.presentation(None).map_err(|_| Error::InvalidStore)?;
+            }
             _ => {}
         }
         Ok(value)

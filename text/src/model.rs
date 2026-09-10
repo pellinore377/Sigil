@@ -337,6 +337,44 @@ impl Text {
             limits,
         )
     }
+    pub(crate) fn replace_plain_prefix(
+        &self,
+        end: usize,
+        replacement: &str,
+    ) -> Result<Option<Self>, Error> {
+        if !self.body.is_char_boundary(end)
+            || !self.body[..end].is_ascii()
+            || !self.blocks.is_empty()
+            || !self.mentions.is_empty()
+            || self.spans.iter().any(|s| (s.start as usize) < end)
+        {
+            return Ok(None);
+        }
+        let offsets: Vec<_> = self
+            .body
+            .grapheme_indices(true)
+            .map(|(at, _)| at)
+            .chain(std::iter::once(self.body.len()))
+            .collect();
+        let mut runs = self.runs(&offsets);
+        let mut consumed = 0;
+        for run in &mut runs {
+            let skip = (end - consumed).min(run.text.len());
+            consumed += skip;
+            run.text = &run.text[skip..];
+            if consumed == end {
+                break;
+            }
+        }
+        runs.insert(
+            0,
+            Run {
+                text: replacement,
+                effects: Effects::default(),
+            },
+        );
+        Self::from_runs(&runs, Default::default()).map(Some)
+    }
     pub fn from_runs(runs: &[Run<'_>], limits: Limits) -> Result<Self, Error> {
         limits.validate()?;
         if runs.len() > 4096 {

@@ -18,6 +18,7 @@ pub mod numeric;
 mod parse;
 pub mod poll_close;
 pub mod recurrence;
+pub mod recipe;
 pub mod service;
 pub mod structured;
 pub mod table;
