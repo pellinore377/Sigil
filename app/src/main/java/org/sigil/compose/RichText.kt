@@ -10,6 +10,10 @@ import org.sigil.TableContent
 import org.sigil.RecipeContent
 import org.sigil.ChartContent
 import org.sigil.ChartPoint
+import org.sigil.DiagramContent
+import org.sigil.DiagramNode
+import org.sigil.DiagramEdge
+import org.sigil.DiagramEntry
 
 internal fun JSONObject.richText(): RichText? = optJSONObject("rich")?.let { it.richValue() }
 internal fun JSONObject.richValue(): RichText {
@@ -72,4 +76,11 @@ internal fun JSONObject.chartContent(): ChartContent? = optJSONObject("chart")?.
             ChartPoint(p.getJSONObject("label").richValue(), p.getDouble("x").toFloat(), p.getDouble("y").toFloat(), p.getString("value"),
                 if (p.isNull("x_value")) null else p.getString("x_value"), p.getDouble("share").toFloat(), p.getString("percent"))
         } })
+}
+internal fun JSONObject.diagramContent(): DiagramContent? = optJSONObject("diagram")?.let { diagram ->
+    fun <T> list(name: String, read: (JSONObject) -> T) = diagram.getJSONArray(name).let { a -> (0 until a.length()).map { read(a.getJSONObject(it)) } }
+    DiagramContent(diagram.getString("kind"), diagram.getJSONObject("title").richValue(), diagram.getDouble("width").toFloat(), diagram.getDouble("height").toFloat(),
+        list("nodes") { DiagramNode(it.getJSONObject("label").richValue(), it.getString("shape"), it.getDouble("x").toFloat(), it.getDouble("y").toFloat()) },
+        list("edges") { DiagramEdge(it.getInt("from"), it.getInt("to"), it.getJSONObject("label").richValue(), it.getBoolean("dashed"), it.getDouble("y").toFloat()) },
+        list("entries") { DiagramEntry(it.getJSONObject("date").richValue(), it.getJSONObject("label").richValue()) })
 }

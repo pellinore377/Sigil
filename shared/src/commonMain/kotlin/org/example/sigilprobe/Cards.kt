@@ -20,6 +20,7 @@ internal fun MessageCards(message: ChatMessage, analyze: (String) -> String, com
             else if (part.table != null) TableCard(part.table)
             else if (part.recipe != null) RecipeCard(message, part)
             else if (part.chart != null) ChartCard(part.chart)
+            else if (part.diagram != null) DiagramCard(part.diagram)
             else Column(Modifier.widthIn(min = 180.dp, max = 280.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                 val icon = when (part.kind) { "note" -> "description"; "checklist" -> "checklist"; "task" -> "assignment"; "poll" -> "ballot"; "reminder" -> "notifications_active"; "timer", "countdown", "ago" -> "timer"; else -> "article" }
                 Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) { Glyph(icon, 18); Text(part.kind.replaceFirstChar { it.uppercase() }, style = MaterialTheme.typography.labelMedium) }
