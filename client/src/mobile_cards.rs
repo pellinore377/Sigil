@@ -156,7 +156,7 @@ impl ClientStore {
     fn mobile_card(&self, conversation: Id, card: &Card) -> Result<Value, Error> {
         let reference = CardReference::of(card).map_err(|_| Error::InvalidStore)?;
         let state = self.card_state(conversation, reference)?;
-        let mut value = json!({"id":transport::hex(&card.id), "kind":"card", "text":card.body().map_err(|_| Error::InvalidStore)?, "items":[]});
+        let mut value = json!({"id":transport::hex(&card.id), "kind":"card", "text":card_display_body(card)?, "items":[]});
         match &state.definition.content {
             Construct::Note(note) => {
                 value["kind"] = json!("note");
@@ -336,4 +336,10 @@ impl ClientStore {
             },
         )
     }
+}
+
+pub(super) fn card_display_body(card: &Card) -> Result<String, Error> {
+    if matches!(&card.content, Construct::Utility(sigil_protocol::text::utility::Utility::Qr(_))) {
+        Ok("QR code".into())
+    } else { card.body().map_err(|_| Error::InvalidStore) }
 }

@@ -85,15 +85,30 @@ impl Utility {
 mod tests {
     use super::*;
     #[test]
-    fn utility_views_keep_committed_random_results_and_hide_wifi_passwords_in_fallbacks() {
+    fn utility_views_keep_committed_random_results_and_preserve_canonical_qr_fallbacks() {
         let plain = |s| Text::plain(s, Default::default()).unwrap();
         let wifi = Utility::Qr(Qr::Wifi {
             ssid: plain("Synthetic network"),
             password: plain("synthetic-secret"),
         });
         let view = wifi.presentation().unwrap();
-        assert!(!wifi.body().unwrap().contains("synthetic-secret"));
-        assert!(!wifi.html().unwrap().contains("synthetic-secret"));
+        assert_eq!(
+            wifi.body().unwrap(),
+            "QR: WIFI:T:WPA;S:Synthetic network;P:synthetic-secret;;"
+        );
+        let card = crate::structured::Card {
+            id: [1; 32],
+            creator: [2; 32],
+            created_at: 1_800_000_000,
+            content: crate::structured::Construct::Utility(wifi.clone()),
+        };
+        let bytes = card.to_bytes().unwrap();
+        let wire: Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(
+            wire["body"],
+            "QR: WIFI:T:WPA;S:Synthetic network;P:synthetic-secret;;"
+        );
+        assert!(crate::structured::Card::from_bytes(&bytes).unwrap() == card);
         assert!(
             view["qr"]["payload"]
                 .as_str()
