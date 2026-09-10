@@ -30,14 +30,14 @@ fn add(triangles: &mut Vec<Triangle>, triangle: Triangle) -> Result<(), Error> {
     triangles.push(triangle);
     Ok(())
 }
-fn three_mf(path: &Path) -> Result<Vec<Triangle>, Error> {
-    check_zip(path)?;
-    preflight(path)?;
+fn three_mf(input: &File) -> Result<Vec<Triangle>, Error> {
+    check_zip(input)?;
+    preflight(input)?;
     let model =
-        lib3mf::Model::from_reader(std::fs::File::open(path)?).map_err(|_| Error::Invalid)?;
+        lib3mf::Model::from_reader(source(input)?).map_err(|_| Error::Invalid)?;
     let mut models = std::collections::HashMap::from([(String::new(), model)]);
     let mut archive =
-        zip::ZipArchive::new(std::fs::File::open(path)?).map_err(|_| Error::Invalid)?;
+        zip::ZipArchive::new(source(input)?).map_err(|_| Error::Invalid)?;
     for index in 0..archive.len() {
         let mut part = archive.by_index(index).map_err(|_| Error::Invalid)?;
         if !part.name().ends_with(".model") {
@@ -147,9 +147,9 @@ fn three_mf(path: &Path) -> Result<Vec<Triangle>, Error> {
     Ok(triangles)
 }
 
-fn preflight(path: &Path) -> Result<(), Error> {
+fn preflight(input: &File) -> Result<(), Error> {
     let mut archive =
-        zip::ZipArchive::new(std::fs::File::open(path)?).map_err(|_| Error::Invalid)?;
+        zip::ZipArchive::new(source(input)?).map_err(|_| Error::Invalid)?;
     for index in 0..archive.len() {
         let mut part = archive.by_index(index).map_err(|_| Error::Invalid)?;
         if part.is_dir() {
@@ -194,16 +194,16 @@ fn bounded_xml(xml: &[u8]) -> Result<(), Error> {
 }
 
 pub(super) fn render(
-    path: &Path,
+    input: &File,
     format: Format,
     yaw: f32,
     pitch: f32,
     width: u32,
 ) -> Result<Preview, Error> {
     let mut triangles = if format == Format::ThreeMf {
-        three_mf(path)?
+        three_mf(input)?
     } else {
-        let mesh = stl_io::read_stl(&mut std::fs::File::open(path)?).map_err(|_| Error::Invalid)?;
+        let mesh = stl_io::read_stl(&mut source(input)?).map_err(|_| Error::Invalid)?;
         let mut triangles = Vec::new();
         for face in mesh.faces {
             let mut triangle = [[0.; 3]; 3];
@@ -322,6 +322,6 @@ mod tests {
             .unwrap();
         std::io::Write::write_all(&mut zip, format!("<model{attributes}/>").as_bytes()).unwrap();
         zip.finish().unwrap();
-        assert!(matches!(three_mf(file.path()), Err(Error::Limit)));
+        assert!(matches!(three_mf(file.as_file()), Err(Error::Limit)));
     }
 }

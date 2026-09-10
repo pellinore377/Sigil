@@ -70,6 +70,9 @@ instrument DiagramTest
 instrument UtilityTest
 instrument ServiceCardTest
 instrument PdfPreviewTest
+instrument FilePreviewTest
+instrument DashboardTest
+instrument ContactCardTest
 instrument LayoutTest
 instrument TimelinePerformanceTest
 instrument RealTimelinePerformanceTest

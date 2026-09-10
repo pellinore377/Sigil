@@ -71,6 +71,13 @@ impl Contact {
     pub fn handle(&self) -> &str {
         self.address.split(':').next().unwrap_or(&self.address)
     }
+    pub fn presentation(&self) -> Result<serde_json::Value, Error> {
+        self.validate()?;
+        let concealed = self.display_name.spans().iter().any(|span| span.effects.reveal.is_some());
+        Ok(serde_json::json!({"address":self.address,"name":self.display_name.presentation(),
+            "identity":self.user_id.iter().map(|b|format!("{b:02x}")).collect::<String>(),
+            "vcard":if concealed {None} else {Some(self.vcard()?)}}))
+    }
     pub fn body(&self) -> Result<String, Error> {
         self.validate()?;
         Ok(format!(

@@ -1,30 +1,35 @@
-use crate::{formats::Format, Content, Error, Preview, Request, MAX_INPUT};
+use crate::{Content, Error, MAX_INPUT, Preview, Request, formats::Format};
+#[cfg(feature = "worker")]
+use std::path::Path;
 use std::{
-    io::{Cursor, Read},
-    path::Path,
+    fs::File,
+    io::{Cursor, Read, Seek},
 };
+#[cfg(feature = "worker")]
 mod audio;
+#[cfg(feature = "worker")]
 mod av;
 mod mesh;
+#[cfg(feature = "worker")]
 mod office;
+#[cfg(feature = "worker")]
 mod pdf;
 mod table;
 
+#[cfg(feature = "worker")]
 pub fn render(path: &Path, format: Format, request: &Request) -> Result<Preview, Error> {
     request.validate()?;
     if std::fs::metadata(path)?.len() > MAX_INPUT {
         return Err(Error::Limit);
     }
     let preview = match (format, request) {
+        #[cfg(feature = "worker")]
         (Format::Pdf, Request::Page { index, width }) => pdf::render(path, *index, *width)?,
-        (
-            Format::Csv | Format::Tsv | Format::Spreadsheet,
-            Request::Table { sheet, row, column },
-        ) => table::render(path, format, *sheet, *row, *column)?,
-        (Format::Text | Format::Contact, Request::Text { offset }) => text(path, *offset)?,
+        #[cfg(feature = "worker")]
         (Format::Document | Format::Presentation, Request::Page { index, width }) => {
             office::render(path, *index, *width)?
         }
+        #[cfg(feature = "worker")]
         (
             Format::Audio | Format::Video,
             Request::Audio {
@@ -36,20 +41,46 @@ pub fn render(path: &Path, format: Format, request: &Request) -> Result<Preview,
             Err(Error::Unsupported) => av::audio(path, *start_ms, *duration_ms)?,
             Err(error) => return Err(error),
         },
+        #[cfg(feature = "worker")]
         (Format::Image | Format::Gif | Format::Video, Request::Frame { at_ms, width }) => {
             av::frame(path, *at_ms, *width)?
         }
+        _ => return render_portable(File::open(path)?, format, request),
+    };
+    preview.validate()?;
+    Ok(preview)
+}
+pub fn render_portable(
+    mut file: File,
+    format: Format,
+    request: &Request,
+) -> Result<Preview, Error> {
+    request.validate()?;
+    if file.metadata()?.len() > MAX_INPUT {
+        return Err(Error::Limit);
+    }
+    file.rewind()?;
+    let preview = match (format, request) {
+        (
+            Format::Csv | Format::Tsv | Format::Spreadsheet,
+            Request::Table { sheet, row, column },
+        ) => table::render(&file, format, *sheet, *row, *column)?,
+        (Format::Text | Format::Contact, Request::Text { offset }) => text(file, *offset)?,
         (Format::Stl | Format::ThreeMf, Request::Mesh { yaw, pitch, width }) => {
-            mesh::render(path, format, *yaw, *pitch, *width)?
+            mesh::render(&file, format, *yaw, *pitch, *width)?
         }
         _ => return Err(Error::Unsupported),
     };
     preview.validate()?;
     Ok(preview)
 }
-fn text(path: &Path, offset: u64) -> Result<Preview, Error> {
+fn source(file: &File) -> Result<File, Error> {
+    let mut copy = file.try_clone()?;
+    copy.rewind()?;
+    Ok(copy)
+}
+fn text(mut file: File, offset: u64) -> Result<Preview, Error> {
     use std::io::{Seek, SeekFrom};
-    let mut file = std::fs::File::open(path)?;
     let total = file.metadata()?.len();
     if offset > total {
         return Err(Error::Invalid);
@@ -73,14 +104,13 @@ fn text(path: &Path, offset: u64) -> Result<Preview, Error> {
         bytes: Vec::new(),
     })
 }
-pub(super) fn check_zip(path: &Path) -> Result<(), Error> {
-    let mut file = std::fs::File::open(path)?;
+pub(super) fn check_zip(input: &File) -> Result<(), Error> {
+    let mut file = source(input)?;
     let mut magic = [0; 4];
     if file.read(&mut magic)? != 4 || &magic != b"PK\x03\x04" {
         return Ok(());
     }
-    let mut archive =
-        zip::ZipArchive::new(std::fs::File::open(path)?).map_err(|_| Error::Invalid)?;
+    let mut archive = zip::ZipArchive::new(source(input)?).map_err(|_| Error::Invalid)?;
     if archive.len() > 8192 {
         return Err(Error::Limit);
     }

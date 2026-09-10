@@ -1,6 +1,6 @@
 use super::*;
 pub(super) fn render(path: &Path, index: u32, width: u32) -> Result<Preview, Error> {
-    check_zip(path)?;
+    check_zip(&File::open(path)?)?;
     let office = std::env::var_os("SIGIL_OFFICE").ok_or(Error::Unavailable)?;
     let root = Path::new("/tmp/sigil-office");
     std::fs::create_dir(root)?;

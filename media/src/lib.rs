@@ -1,7 +1,7 @@
 #![forbid(unsafe_code)]
 use serde::{Deserialize, Serialize};
 use std::io::{Read, Write};
-#[cfg(feature = "worker")]
+#[cfg(feature = "portable")]
 pub mod decode;
 pub mod formats;
 #[cfg(target_os = "linux")]

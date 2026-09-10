@@ -158,6 +158,7 @@ internal fun AndroidAttachment(message: ChatMessage) {
         }
         else if (playable) VideoDialog(message) { opened = false }
         else if ((file.mediaType == "application/pdf" || file.name.endsWith(".pdf",ignoreCase=true)) && file.bytes <= 128L*1024*1024) PdfViewer(message) { opened = false }
+        else if (portableFormat(file.name,file.mediaType)!=null && file.bytes<=128L*1024*1024) FileViewer(message,portableFormat(file.name,file.mediaType)!!) { opened=false }
         else Dialog({ opened = false }) {
             Surface(shape = androidx.compose.foundation.shape.RoundedCornerShape(24.dp)) {
                 Column(Modifier.fillMaxWidth().heightIn(max = 600.dp).verticalScroll(rememberScrollState()).padding(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {

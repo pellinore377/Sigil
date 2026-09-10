@@ -14,6 +14,9 @@ crate-type = ["cdylib", "rlib"]
 sigil-client = { path = "../client", features = ["rtc-client"] }
 sigil-calls = { path = "../calls" }
 sigil-crypto = { path = "../crypto" }
+sigil-media = { path = "../media", default-features = false, features = ["portable"] }
+serde_json.workspace = true
+libc = "=0.2.189"
 jni = "=0.21.1"
 zeroize = "=1.9.0"
 tokio = { version = "=1.53.1", features = ["rt-multi-thread", "time", "net", "sync"] }

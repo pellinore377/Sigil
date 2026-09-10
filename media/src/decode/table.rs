@@ -1,17 +1,22 @@
 use super::*;
 use calamine::Reader;
 pub(super) fn render(
-    path: &Path,
+    input: &File,
     format: Format,
     sheet: u32,
     row: u32,
     column: u32,
 ) -> Result<Preview, Error> {
     if format == Format::Spreadsheet {
-        check_zip(path)?;
-        let source: std::sync::Arc<[u8]> = std::fs::read(path)?.into();
-        let mut file = calamine::open_workbook_auto_from_rs(Cursor::new(source))
-            .map_err(|_| Error::Invalid)?;
+        check_zip(input)?;
+        let mut bytes = Vec::new();
+        source(input)?.take(MAX_INPUT + 1).read_to_end(&mut bytes)?;
+        if bytes.len() as u64 > MAX_INPUT {
+            return Err(Error::Limit);
+        }
+        let bytes: std::sync::Arc<[u8]> = bytes.into();
+        let mut file =
+            calamine::open_workbook_auto_from_rs(Cursor::new(bytes)).map_err(|_| Error::Invalid)?;
         let sheets = file.sheet_names().to_vec();
         let name = sheets.get(sheet as usize).ok_or(Error::Invalid)?;
         let range = file.worksheet_range(name).map_err(|_| Error::Invalid)?;
@@ -52,8 +57,7 @@ pub(super) fn render(
         .has_headers(false)
         .flexible(true)
         .delimiter(if format == Format::Tsv { b'\t' } else { b',' })
-        .from_path(path)
-        .map_err(|_| Error::Invalid)?;
+        .from_reader(source(input)?);
     let mut total_rows = 0;
     let mut total_columns = 0;
     let mut cells = Vec::new();

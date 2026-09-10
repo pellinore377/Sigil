@@ -6,7 +6,8 @@ publish.workspace = true
 
 [features]
 default = ["worker"]
-worker = ["dep:pdfium-render", "dep:calamine", "dep:csv", "dep:symphonia", "dep:zip", "dep:stl_io", "dep:lib3mf", "dep:tiny-skia", "dep:quick-xml"]
+portable = ["dep:calamine", "dep:csv", "dep:zip", "dep:stl_io", "dep:lib3mf", "dep:tiny-skia", "dep:quick-xml"]
+worker = ["portable", "dep:pdfium-render", "dep:symphonia"]
 
 [dependencies]
 serde.workspace = true
