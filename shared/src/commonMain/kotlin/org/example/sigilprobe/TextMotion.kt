@@ -44,7 +44,8 @@ internal class MotionLedger {
 internal data class TextMotionContext(val message:String,val clock:TextPlayback)
 internal val LocalTextMotion=staticCompositionLocalOf<TextMotionContext?> {null}
 
-internal fun ChatMessage.textMotionDuration()=parts.maxOfOrNull {p->
+internal const val ChartMotionMillis=700
+internal fun ChatMessage.messageMotionDuration()=parts.maxOfOrNull {p->
     val texts=buildList {
         p.rich?.let(::add);addAll(p.items.mapNotNull {it.rich})
         p.table?.let {addAll(it.columns);it.rows.forEach(::addAll)}
@@ -59,9 +60,9 @@ internal fun ChatMessage.textMotionDuration()=parts.maxOfOrNull {p->
             s.current?.let {add(it.description)};addAll(s.days.map {it.description});addAll(s.hours.map {it.description})
         }
     }
-    texts.maxOfOrNull {t->t.motion.maxOfOrNull {if(it.kind=="typewriter" && it.stagger>0)minOf(it.duration,it.stagger*it.units.size) else it.duration} ?: 0} ?: 0
+    maxOf(if(p.chart!=null)ChartMotionMillis else 0,texts.maxOfOrNull {t->t.motion.maxOfOrNull {if(it.kind=="typewriter" && it.stagger>0)minOf(it.duration,it.stagger*it.units.size) else it.duration} ?: 0} ?: 0)
 } ?: 0
-internal fun ChatMessage.hasTextMotion()=textMotionDuration()>0
+internal fun ChatMessage.hasMessageMotion()=messageMotionDuration()>0
 
 @Composable
 internal fun MessageMotion(message:String,clock:TextPlayback,visible:Boolean,duration:Int=2000,content:@Composable ()->Unit) {
