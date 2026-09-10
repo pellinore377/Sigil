@@ -17,6 +17,19 @@ import java.util.concurrent.atomic.AtomicInteger
 
 class CallVideoTest {
     @get:Rule val ui = createAndroidComposeRule<ComponentActivity>()
+    @Test fun rotationPreservesAspectAndFitsInsideTheView() {
+        for ((width, height) in listOf(640 to 480, 1280 to 720)) {
+            for ((viewWidth, viewHeight) in listOf(400 to 800, 800 to 400, 120 to 120)) {
+                for (rotation in listOf(0, 90, 180, 270)) {
+                    val bounds = android.graphics.RectF(0f, 0f, viewWidth.toFloat(), viewHeight.toFloat())
+                    callVideoTransform(width, height, rotation, viewWidth, viewHeight).mapRect(bounds)
+                    val expected = if (rotation % 180 == 0) width.toFloat() / height else height.toFloat() / width
+                    assertEquals("$rotation degrees in $viewWidth x $viewHeight", expected, bounds.width() / bounds.height(), .001f)
+                    assertTrue(bounds.left >= -.01f && bounds.top >= -.01f && bounds.right <= viewWidth + .01f && bounds.bottom <= viewHeight + .01f)
+                }
+            }
+        }
+    }
     @Test fun cameraProducesLiveVp8AndStopsAfterClose() {
         val instrument = InstrumentationRegistry.getInstrumentation()
         instrument.uiAutomation.grantRuntimePermission(instrument.targetContext.packageName, android.Manifest.permission.CAMERA)
@@ -28,6 +41,21 @@ class CallVideoTest {
     }
     @Test fun surfaceVp8RoundTripRendersSyntheticFrames() {
         videoRoundTrip(false)
+    }
+    @Test fun aSingleFrameRendersWithoutWaitingForAnotherInput() {
+        val thread = HandlerThread("Single frame acceptance").apply { start() }
+        val ready = CountDownLatch(1)
+        val reader = ImageReader.newInstance(640, 480, ImageFormat.YUV_420_888, 3)
+        reader.setOnImageAvailableListener({ source -> source.acquireLatestImage()?.use { ready.countDown() } }, Handler(thread.looper))
+        val decoder = CallVideoDecoder(reader.surface) { _, _, _ -> }
+        try {
+            Vp8Encoder(640, 480, 0, { time, keyframe, bytes -> decoder.offer(time, keyframe, bytes) }, { throw it }).use { encoder ->
+                DrawSurface(encoder.surface).use { draw ->
+                    draw.frame(0)
+                    assertTrue("Final video frame remained stuck in the decoder", ready.await(5, TimeUnit.SECONDS))
+                }
+            }
+        } finally { decoder.close(); Thread.sleep(100); reader.close(); thread.quitSafely() }
     }
     @Test fun invalidFrameDoesNotPreventLaterVideoFromRendering() {
         videoRoundTrip(true)

@@ -32,6 +32,8 @@ use webrtc::{
         RTCPeerConnectionState,
     },
 };
+#[path = "packet_order.rs"]
+mod packet_order;
 #[cfg(test)]
 #[path = "rtc_tests.rs"]
 mod tests;
@@ -40,6 +42,7 @@ mod turn_stream;
 
 struct Packet {
     ssrc: u32,
+    sequence: u16,
     payload: Vec<u8>,
 }
 struct Handler {
@@ -73,6 +76,7 @@ impl PeerConnectionEventHandler for Handler {
                     if packet.payload.len() <= 2048 {
                         let _ = packets.try_send(Packet {
                             ssrc: packet.header.ssrc,
+                            sequence: packet.header.sequence_number,
                             payload: packet.payload.to_vec(),
                         });
                     }
@@ -107,6 +111,9 @@ pub struct RtcCall {
     streams: Vec<Downstream>,
     uploads: Vec<Arc<TrackLocalStaticRTP>>,
     sequence: [u16; 3],
+    incoming: std::collections::BTreeMap<u32, packet_order::PacketOrder<Packet>>,
+    video_gaps: std::collections::BTreeSet<u32>,
+    incoming_cursor: usize,
 }
 impl ClientStore {
     pub async fn connect_rtc_call(
@@ -295,6 +302,9 @@ impl ClientStore {
             streams: answer.streams,
             uploads,
             sequence: [0; 3],
+            incoming: Default::default(),
+            video_gaps: Default::default(),
+            incoming_cursor: 0,
         })
     }
     pub fn rtc_connection_state(
@@ -384,14 +394,40 @@ impl ClientStore {
         self.refresh_call_media(&mut call.media, now)?;
         let mut frames = Vec::new();
         let mut bytes = 0;
+        let clock = std::time::Instant::now();
         for _ in 0..128 {
             let Ok(packet) = call.transport.packets.try_recv() else {
                 break;
             };
-            let Some(stream) = call.streams.iter().find(|s| s.ssrc == packet.ssrc) else {
-                continue;
+            if call.streams.iter().any(|s| s.ssrc == packet.ssrc) {
+                call.incoming
+                    .entry(packet.ssrc)
+                    .or_default()
+                    .push(packet.sequence, packet, clock);
+            }
+        }
+        for _ in 0..128 {
+            let mut candidate = None;
+            for _ in 0..call.streams.len() {
+                let ssrc = call.streams[call.incoming_cursor].ssrc;
+                call.incoming_cursor = (call.incoming_cursor + 1) % call.streams.len();
+                if let Some(packet) = call.incoming.get_mut(&ssrc).and_then(|q| q.pop(clock)) {
+                    candidate = Some(packet);
+                    break;
+                }
+            }
+            let Some((packet, gap)) = candidate else {
+                break;
             };
-            match self.open_call_packet(
+            let stream = call
+                .streams
+                .iter()
+                .find(|s| s.ssrc == packet.ssrc)
+                .ok_or(Error::InvalidStore)?;
+            if gap && stream.track.kind != MediaKind::Audio {
+                call.video_gaps.insert(packet.ssrc);
+            }
+            match self.assemble_call_packet(
                 &mut call.media,
                 stream.track.sender,
                 stream.track.kind,
@@ -399,6 +435,12 @@ impl ClientStore {
                 now,
             ) {
                 Ok(Some(frame)) => {
+                    if call.video_gaps.contains(&packet.ssrc) {
+                        if !frame.keyframe {
+                            continue;
+                        }
+                        call.video_gaps.remove(&packet.ssrc);
+                    }
                     bytes += frame.data.len();
                     frames.push(ReceivedFrame {
                         sender: stream.track.sender,

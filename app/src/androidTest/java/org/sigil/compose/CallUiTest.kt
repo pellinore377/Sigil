@@ -26,6 +26,7 @@ class CallUiTest {
         val context = instrument.targetContext
         Assume.assumeTrue(context.packageName.endsWith(".acceptance"))
         instrument.uiAutomation.grantRuntimePermission(context.packageName, Manifest.permission.RECORD_AUDIO)
+        if (android.os.Build.VERSION.SDK_INT >= 33) instrument.uiAutomation.grantRuntimePermission(context.packageName, Manifest.permission.POST_NOTIFICATIONS)
         val audio = context.getSystemService(AudioManager::class.java)
         val volume = audio.getStreamVolume(AudioManager.STREAM_VOICE_CALL)
         audio.setStreamVolume(AudioManager.STREAM_VOICE_CALL, 0, 0)

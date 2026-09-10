@@ -228,6 +228,17 @@ impl ClientStore {
         if !enabled(&record, sender, kind) {
             return Err(Error::Unprepared);
         }
+        self.assemble_call_packet(media, sender, kind, packet, now)
+    }
+    pub(super) fn assemble_call_packet(
+        &mut self,
+        media: &mut Media,
+        sender: Id,
+        kind: sigil_calls::MediaKind,
+        packet: &[u8],
+        now: u64,
+    ) -> Result<Option<sigil_calls::Frame>, Error> {
+        // Bounded ciphertext assembly precedes the full authority check on each completed frame.
         let encrypted = media
             .assembly
             .push(sender, kind, packet, std::time::Instant::now())

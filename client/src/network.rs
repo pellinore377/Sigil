@@ -43,6 +43,12 @@ pub struct HttpsClient {
     discover: bool,
     resolved: std::sync::Arc<std::sync::OnceLock<String>>,
 }
+struct PooledAgent {
+    id: [u8; 32],
+    created: std::time::Instant,
+    agent: Agent,
+}
+static AGENTS: std::sync::Mutex<Vec<PooledAgent>> = std::sync::Mutex::new(Vec::new());
 const SMALL: usize = 8192;
 #[path = "admin_network.rs"]
 mod admin;
@@ -305,38 +311,71 @@ impl HttpsClient {
         {
             return Err(Error::Configuration);
         }
-        let root_certs = if roots.is_empty() {
-            RootCerts::WebPki
-        } else {
-            RootCerts::new_with_certs(
-                &roots
-                    .iter()
-                    .map(|bytes| Certificate::from_der(bytes).to_owned())
-                    .collect::<Vec<_>>(),
-            )
+        let mut scope = Sha256::new();
+        scope.update(b"Sigil/https-pool/v1");
+        scope.update((server.len() as u32).to_be_bytes());
+        scope.update(server.as_bytes());
+        scope.update(port.to_be_bytes());
+        scope.update(credential.as_bytes());
+        for root in roots {
+            scope.update((root.len() as u32).to_be_bytes());
+            scope.update(root);
+        }
+        let id: [u8; 32] = scope.finalize().into();
+        let pooled = {
+            let mut agents = AGENTS.lock().map_err(|_| Error::Transport)?;
+            agents.retain(|entry| entry.created.elapsed() < Duration::from_secs(60));
+            agents
+                .iter()
+                .find(|entry| entry.id == id)
+                .map(|entry| entry.agent.clone())
         };
-        let config = Agent::config_builder()
-            .https_only(true)
-            .proxy(None)
-            .max_redirects(0)
-            .http_status_as_error(false)
-            .tls_config(TlsConfig::builder().root_certs(root_certs).build())
-            .timeout_global(Some(Duration::from_secs(20)))
-            .timeout_resolve(Some(Duration::from_secs(5)))
-            .timeout_connect(Some(Duration::from_secs(5)))
-            .timeout_send_body(Some(Duration::from_secs(10)))
-            .timeout_recv_response(Some(Duration::from_secs(10)))
-            .timeout_recv_body(Some(Duration::from_secs(10)))
-            .max_response_header_size(SMALL)
-            .input_buffer_size(16384)
-            .output_buffer_size(16384)
-            .max_idle_connections(1)
-            .max_idle_connections_per_host(1)
-            .user_agent("Sigil/experimental-v0")
-            .build();
-        let agent = Agent::with_parts(config, DefaultConnector::default(), BoundedResolver);
-        #[cfg(test)]
-        let agent = tests::agent(agent.config().clone());
+        let agent = if let Some(agent) = pooled {
+            agent
+        } else {
+            let root_certs = if roots.is_empty() {
+                RootCerts::WebPki
+            } else {
+                RootCerts::new_with_certs(
+                    &roots
+                        .iter()
+                        .map(|bytes| Certificate::from_der(bytes).to_owned())
+                        .collect::<Vec<_>>(),
+                )
+            };
+            let config = Agent::config_builder()
+                .https_only(true)
+                .proxy(None)
+                .max_redirects(0)
+                .http_status_as_error(false)
+                .tls_config(TlsConfig::builder().root_certs(root_certs).build())
+                .timeout_global(Some(Duration::from_secs(20)))
+                .timeout_resolve(Some(Duration::from_secs(5)))
+                .timeout_connect(Some(Duration::from_secs(5)))
+                .timeout_send_body(Some(Duration::from_secs(10)))
+                .timeout_recv_response(Some(Duration::from_secs(10)))
+                .timeout_recv_body(Some(Duration::from_secs(10)))
+                .max_response_header_size(SMALL)
+                .input_buffer_size(16384)
+                .output_buffer_size(16384)
+                .max_idle_connections(4)
+                .max_idle_connections_per_host(2)
+                .user_agent("Sigil/experimental-v0")
+                .build();
+            let agent = Agent::with_parts(config, DefaultConnector::default(), BoundedResolver);
+            #[cfg(test)]
+            let agent = tests::agent(agent.config().clone());
+            let mut agents = AGENTS.lock().map_err(|_| Error::Transport)?;
+            if agents.len() >= 8 {
+                agents.remove(0);
+            }
+            agents.push(PooledAgent {
+                id,
+                created: std::time::Instant::now(),
+                agent: agent.clone(),
+            });
+            agent
+        };
         Ok(Self {
             agent,
             origin: format!("https://{server}:{port}"),
@@ -406,12 +445,20 @@ impl HttpsClient {
         self.send(request)
     }
     fn send(&self, request: Request<&[u8]>) -> Result<Response<Body>, Error> {
-        let response = self.agent.run(request).map_err(|_| Error::Transport)?;
+        let mut response = self.agent.run(request).map_err(|_| Error::Transport)?;
         if !response.status().is_success() {
-            return Err(Error::Status {
+            let error = Error::Status {
                 code: response.status().as_u16(),
                 retry_after_seconds: retry_after(&response),
-            });
+            };
+            // Consume bounded error responses so discovery fallbacks retain the connection.
+            let _ = response
+                .body_mut()
+                .with_config()
+                .limit(SMALL as u64)
+                .read_to_vec()
+                .map(Zeroizing::new);
+            return Err(error);
         }
         Ok(response)
     }

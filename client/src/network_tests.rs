@@ -28,6 +28,7 @@ fn token() -> String {
 struct Listener {
     socket: tokio::net::TcpListener,
     tls: TlsAcceptor,
+    connections: Arc<AtomicUsize>,
 }
 impl axum::serve::Listener for Listener {
     type Io = tokio_rustls::server::TlsStream<tokio::net::TcpStream>;
@@ -35,6 +36,7 @@ impl axum::serve::Listener for Listener {
     async fn accept(&mut self) -> (Self::Io, Self::Addr) {
         loop {
             let (socket, address) = self.socket.accept().await.unwrap();
+            self.connections.fetch_add(1, Ordering::SeqCst);
             if let Ok(Ok(stream)) =
                 tokio::time::timeout(Duration::from_secs(3), self.tls.accept(socket)).await
             {
@@ -80,6 +82,7 @@ pub(crate) struct Fixture {
     address: SocketAddr,
     stop: Option<tokio::sync::oneshot::Sender<()>>,
     worker: Option<std::thread::JoinHandle<()>>,
+    connections: Arc<AtomicUsize>,
 }
 impl Fixture {
     pub(crate) fn local_provider(app: Router) -> Self {
@@ -132,6 +135,8 @@ impl Fixture {
         let address = socket.local_addr().unwrap();
         ENDPOINTS.lock().unwrap().insert(address.port(), address);
         let (stop, stopped) = tokio::sync::oneshot::channel();
+        let connections = Arc::new(AtomicUsize::new(0));
+        let count = connections.clone();
         let worker = std::thread::spawn(move || {
             let runtime = tokio::runtime::Builder::new_multi_thread()
                 .worker_threads(2)
@@ -153,6 +158,7 @@ impl Fixture {
                 let listener = Listener {
                     socket: tokio::net::TcpListener::from_std(socket).unwrap(),
                     tls: TlsAcceptor::from(Arc::new(config)),
+                    connections: count,
                 };
                 if let Some(maintenance) = maintenance {
                     tokio::spawn(maintenance);
@@ -169,7 +175,11 @@ impl Fixture {
             address,
             stop: Some(stop),
             worker: Some(worker),
+            connections,
         }
+    }
+    pub(crate) fn connections(&self) -> usize {
+        self.connections.load(Ordering::SeqCst)
     }
     fn client(&self, server: &str, credential: &str, roots: &[Vec<u8>]) -> HttpsClient {
         HttpsClient::new(server, self.address.port(), credential, roots).unwrap()
