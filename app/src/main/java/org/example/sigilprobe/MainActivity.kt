@@ -47,7 +47,6 @@ class MainActivity : ComponentActivity() {
         intent.data = null
         val preferences = getSharedPreferences("appearance", MODE_PRIVATE)
         setSigilContent {
-            var cameraPeer by remember { mutableStateOf<Map<String, Any?>?>(null) }
             var placePeer by remember { mutableStateOf<Map<String, Any?>?>(null) }
             var backAvailable by remember { mutableStateOf(false) }
             var goBack by remember { mutableStateOf<() -> Unit>({}) }
@@ -62,8 +61,7 @@ class MainActivity : ComponentActivity() {
             }
             LaunchedEffect(messenger.picker) {
                 messenger.picker?.let { (peer, kind) ->
-                    if (kind == "Camera") cameraPeer = peer
-                    else if (kind == "Place") placePeer = peer
+                    if (kind == "Place") placePeer = peer
                     else {
                         pickerPeer = when (kind) { "Wallpaper" -> peer + ("wallpaper" to "true"); "Profile photo" -> peer + ("profile_photo" to "true"); else -> peer }
                         if (kind in listOf("Photos", "Wallpaper", "Profile photo")) photos.launch(PickVisualMediaRequest(if (kind == "Photos") ActivityResultContracts.PickVisualMedia.ImageAndVideo else ActivityResultContracts.PickVisualMedia.ImageOnly))
@@ -76,7 +74,7 @@ class MainActivity : ComponentActivity() {
             LaunchedEffect(messenger.notificationPermission) { if (messenger.notificationPermission && Build.VERSION.SDK_INT >= 33) notifications.launch(android.Manifest.permission.POST_NOTIFICATIONS) }
             LaunchedEffect(messenger.calls.permissions) { messenger.calls.permissions?.let { (_, fields) -> callPermissions.launch(if (fields["video"] == true) arrayOf(android.Manifest.permission.RECORD_AUDIO, android.Manifest.permission.CAMERA) else arrayOf(android.Manifest.permission.RECORD_AUDIO)) } }
             LaunchedEffect(messenger.calls.projectionRequest) { messenger.calls.projectionRequest?.let { id -> projectionCall = id; projection.launch(getSystemService(android.media.projection.MediaProjectionManager::class.java).createScreenCaptureIntent()) } }
-            CompositionLocalProvider(org.sigil.LocalProfilePhoto provides { reference, modifier -> ProfilePhoto(reference, messenger.photoRevision, modifier) }, org.sigil.LocalWallpaper provides { peer, modifier -> Wallpaper(peer, messenger.wallpaperRevision, modifier) }, org.sigil.LocalCallVideo provides { member, screen, modifier -> CallVideoView(messenger.calls, member, screen, modifier) }, org.sigil.LocalAttachmentContent provides { message -> AndroidAttachment(message) }, org.sigil.LocalAttachmentDraft provides { file, modifier -> AndroidAttachmentDraft(file, modifier) }, org.sigil.LocalLocationContent provides { part -> LocationCard(part) }) {
+            CompositionLocalProvider(org.sigil.LocalCameraPanel provides { target, back, done -> CameraPanel(back) { bytes -> if (messenger.importPhoto(target, bytes)) done() } }, org.sigil.LocalProfilePhoto provides { reference, modifier -> ProfilePhoto(reference, messenger.photoRevision, modifier) }, org.sigil.LocalWallpaper provides { peer, modifier -> Wallpaper(peer, messenger.wallpaperRevision, modifier) }, org.sigil.LocalCallVideo provides { member, screen, modifier -> CallVideoView(messenger.calls, member, screen, modifier) }, org.sigil.LocalAttachmentContent provides { message -> AndroidAttachment(message) }, org.sigil.LocalAttachmentDraft provides { file, modifier -> AndroidAttachmentDraft(file, modifier) }, org.sigil.LocalLocationContent provides { part -> LocationCard(part) }) {
             SigilApp(NativeCore::palette, NativeCore::analyze, messenger.state, messenger::command,
                 read = { preferences.getString(it, null) }, write = { key, value -> preferences.edit().putString(key, value).apply() },
                 dynamicAccent = dynamicAccent, onBackAvailable = { available, action -> backAvailable = available; goBack = action },
@@ -87,7 +85,6 @@ class MainActivity : ComponentActivity() {
                     messenger.recoveryKey?.let { secret -> RecoveryDialog(secret, messenger.state.busy, messenger::dismissRecovery) { messenger.command("recovery_enable", mapOf("secret" to secret)) } }
                     if (messenger.restoringRecovery) RestoreRecoveryDialog(messenger.state.busy, messenger.state.issue, messenger::dismissRestoreRecovery) { secret -> messenger.command("recovery_restore", mapOf("secret" to secret, "accept_unanchored" to true)) }
                     if (messenger.recoveringAccount) AccountRecoveryDialog(messenger.state.loginMethods?.sso == true || messenger.state.phase == "oidc", messenger.state.busy, messenger.state.issue, messenger::dismissAccountRecovery) { method, invitation -> messenger.command("recover_account", mapOf("server" to (messenger.state.loginMethods?.server ?: messenger.state.loginAddress), "method" to method, "invitation" to invitation, "confirm_replacement" to true)) }
-                    cameraPeer?.let { peer -> CameraSheet({ cameraPeer = null }) { bytes -> messenger.importPhoto(peer, bytes); cameraPeer = null } }
                     placePeer?.let { peer -> PlaceSheet({ placePeer = null }) { fields -> messenger.command("place", fields + peer); placePeer = null } }
                 })
             }

@@ -26,7 +26,7 @@ import kotlinx.coroutines.flow.*
 
 private val createItems = listOf("Note" to "description", "Checklist" to "checklist", "Poll" to "ballot", "Reminder" to "notifications_active", "Task" to "assignment", "Timer" to "timer")
 @Composable
-internal fun ComposerPanel(draft: TextFieldState, analyze: (String) -> String, enabled: Boolean, notes: Boolean, command: Command, peer: String, voice: VoiceState, sent: Long, sentText: String?, requestContact: (() -> Unit)? = null, attachments: List<Transfer> = emptyList(), editingCaption: Boolean = false, send: (String, Boolean) -> Unit) {
+internal fun ComposerPanel(draft: TextFieldState, analyze: (String) -> String, enabled: Boolean, notes: Boolean, command: Command, peer: String, voice: VoiceState, sent: Long, sentText: String?, requestContact: (() -> Unit)? = null, attachments: List<Transfer> = emptyList(), editingCaption: Boolean = false, attachmentTarget: Map<String, Any?> = mapOf("peer" to peer), send: (String, Boolean) -> Unit) {
     val motionPolicy = LocalMotion.current
     var panel by remember(peer) { mutableStateOf("") }
     val builders = rememberSaveableStateHolder()
@@ -62,7 +62,7 @@ internal fun ComposerPanel(draft: TextFieldState, analyze: (String) -> String, e
     fun showKeyboard() { if (panel == "Voice") command("record_stop", emptyMap()); keyboardPending = panel.isNotEmpty(); panel = ""; editor.requestFocus(); keyboard?.show() }
     BackAction(panel.isNotEmpty()) {
         when (panel) {
-            "Create", "Format" -> change("Attachments")
+            "Create", "Format", "Camera" -> change("Attachments")
             in createItems.map { it.first } -> change("Create")
             else -> { if (panel == "Voice") command("record_stop", emptyMap()); change("") }
         }
@@ -150,7 +150,7 @@ internal fun ComposerPanel(draft: TextFieldState, analyze: (String) -> String, e
                             LazyVerticalGrid(GridCells.Fixed(3), contentPadding = PaddingValues(horizontal = 20.dp, vertical = 8.dp), verticalArrangement = Arrangement.spacedBy(16.dp), horizontalArrangement = Arrangement.spacedBy(16.dp)) {
                                 items(items) { (name, icon) -> Column(Modifier.clickable {
                                     when (name) {
-                                        "Photos", "Camera", "Files", "Place" -> command("attachment_pick", mapOf("peer" to peer, "kind" to name))
+                                        "Photos", "Files", "Place" -> command("attachment_pick", mapOf("peer" to peer, "kind" to name))
                                         else -> change(name)
                                     }
                                 }.semanticsButton(name), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(6.dp)) {
@@ -160,6 +160,7 @@ internal fun ComposerPanel(draft: TextFieldState, analyze: (String) -> String, e
                             }
                         }
                         "Voice" -> VoicePanel(command, peer, voice) { command("record_cancel", emptyMap()); panel = "" }
+                        "Camera" -> LocalCameraPanel.current(attachmentTarget, { change("Attachments") }, { change("") })
                         in createItems.map { it.first } -> builders.SaveableStateProvider("$peer:$shown") {
                             StructuredBuilder(shown, enabled, { change("Create") }) { source -> pendingBuilder = "$peer:$shown" to source; send(source, true) }
                         }
