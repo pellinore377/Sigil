@@ -110,6 +110,7 @@ private fun bitmap(context: android.content.Context, message: ChatMessage): Bitm
 @Composable
 internal fun AndroidAttachment(message: ChatMessage) {
     val file = message.attachment ?: return
+    if (file.mediaType == "image/gif" && file.bytes <= 16 * 1024 * 1024 && Build.VERSION.SDK_INT >= 28) { GifAttachment(message); return }
     if (file.mediaType.startsWith("audio/")) { AudioMessage(message); return }
     val context = LocalContext.current
     val image = file.mediaType.startsWith("image/") && file.bytes <= 16 * 1024 * 1024
@@ -158,7 +159,7 @@ internal fun AndroidAttachment(message: ChatMessage) {
         else if (playable) VideoDialog(message) { opened = false }
         else Dialog({ opened = false }) {
             Surface(shape = androidx.compose.foundation.shape.RoundedCornerShape(24.dp)) {
-                Column(Modifier.fillMaxWidth().padding(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                Column(Modifier.fillMaxWidth().heightIn(max = 600.dp).verticalScroll(rememberScrollState()).padding(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                     Glyph("draft", 32)
                     Text(file.name, style = MaterialTheme.typography.titleMedium)
                     Text("${file.bytes} bytes · ${file.mediaType}", style = MaterialTheme.typography.bodySmall)
@@ -206,7 +207,7 @@ internal fun VideoDialog(message: ChatMessage, close: () -> Unit) {
     }
     Dialog(close) {
         Surface(shape = androidx.compose.foundation.shape.RoundedCornerShape(24.dp)) {
-            Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            Column(Modifier.heightIn(max = 600.dp).verticalScroll(rememberScrollState()).padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 Text(message.attachment!!.name, style = MaterialTheme.typography.titleMedium)
                 AndroidView(factory = { context -> TextureView(context).apply {
                     surfaceTextureListener = object : TextureView.SurfaceTextureListener {

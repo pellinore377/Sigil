@@ -27,6 +27,7 @@ import kotlinx.coroutines.flow.*
 private val createItems = listOf("Note" to "description", "Checklist" to "checklist", "Poll" to "ballot", "Reminder" to "notifications_active", "Task" to "assignment", "Timer" to "timer")
 @Composable
 internal fun ComposerPanel(draft: TextFieldState, analyze: (String) -> String, enabled: Boolean, notes: Boolean, command: Command, peer: String, voice: VoiceState, sent: Long, sentText: String?, requestContact: (() -> Unit)? = null, attachments: List<Transfer> = emptyList(), editingCaption: Boolean = false, send: (String, Boolean) -> Unit) {
+    val motionPolicy = LocalMotion.current
     var panel by remember(peer) { mutableStateOf("") }
     val builders = rememberSaveableStateHolder()
     var pendingBuilder by remember(peer) { mutableStateOf<Pair<String, String>?>(null) }
@@ -52,9 +53,9 @@ internal fun ComposerPanel(draft: TextFieldState, analyze: (String) -> String, e
         }
     }
     val expandedHeight = if (panel.isNotEmpty() || keyboardPending) maxOf(keyboardHeight, measured) else measured
-    val panelHeight by animateDpAsState(expandedHeight, if (measured > 0.dp || keyboardPending) snap() else tween(MotionMillis), label = "Composer height")
+    val panelHeight by animateDpAsState(expandedHeight, if (measured > 0.dp || keyboardPending) snap() else motionPolicy.tween(MotionMillis), label = "Composer height")
     val building = createItems.any { it.first == panel }
-    val formInset by animateDpAsState(if (building) measured else 0.dp, if (building) snap() else tween(MotionMillis), label = "Form keyboard")
+    val formInset by animateDpAsState(if (building) measured else 0.dp, if (building) snap() else motionPolicy.tween(MotionMillis), label = "Form keyboard")
     LaunchedEffect(keyboardPending) { if (keyboardPending) { kotlinx.coroutines.delay(1500); keyboardPending = false } }
     LaunchedEffect(measured, keyboardPending) { if (keyboardPending && measured >= keyboardHeight - 2.dp) keyboardPending = false }
     fun change(value: String) { if (panel.isEmpty() && measured > 120.dp) keyboardHeight = measured; keyboardPending = false; focus.clearFocus(); panel = value; keyboard?.hide() }
@@ -132,12 +133,12 @@ internal fun ComposerPanel(draft: TextFieldState, analyze: (String) -> String, e
             Box(Modifier.fillMaxWidth().padding(bottom = formInset).then(if (panel.isEmpty() && !keyboardPending && measured > 0.dp) Modifier.windowInsetsBottomHeight(WindowInsets.ime) else Modifier.height(panelHeight))) {
                 AnimatedContent(panel, transitionSpec = {
                     when {
-                        initialState.isEmpty() -> (slideInHorizontally(tween(MotionMillis)) { it } + fadeIn(tween(MotionMillis))) togetherWith ExitTransition.None
-                        targetState.isEmpty() -> EnterTransition.None togetherWith (slideOutHorizontally(tween(MotionMillis)) { it } + fadeOut(tween(MotionMillis)))
+                        initialState.isEmpty() -> (slideInHorizontally(motionPolicy.tween(MotionMillis)) { it } + fadeIn(motionPolicy.tween(MotionMillis))) togetherWith ExitTransition.None
+                        targetState.isEmpty() -> EnterTransition.None togetherWith (slideOutHorizontally(motionPolicy.tween(MotionMillis)) { it } + fadeOut(motionPolicy.tween(MotionMillis)))
                         else -> {
                             val back = targetState == "Attachments" || targetState == "Create" && createItems.any { it.first == initialState }
-                            (slideInHorizontally(tween(MotionMillis)) { if (back) -it else it } + fadeIn()) togetherWith
-                                (slideOutHorizontally(tween(MotionMillis)) { if (back) it else -it } + fadeOut())
+                            (slideInHorizontally(motionPolicy.tween(MotionMillis)) { if (back) -it else it } + fadeIn()) togetherWith
+                                (slideOutHorizontally(motionPolicy.tween(MotionMillis)) { if (back) it else -it } + fadeOut())
                         }
                     }
                 }, label = "Composer panel") { shown ->
@@ -177,6 +178,7 @@ private fun Modifier.semanticsButton(name: String) = this.then(Modifier.semantic
 internal fun escapeField(value: String) = value.replace("\\", "\\\\").replace(";", "\\;")
 @Composable
 private fun StructuredBuilder(kind: String, enabled: Boolean, back: () -> Unit, send: (String) -> Unit) {
+    val motionPolicy = LocalMotion.current
     var title by rememberSaveable(kind) { mutableStateOf("") }
     var entries by rememberSaveable(kind) { mutableStateOf(listOf("")) }
     var advanced by rememberSaveable(kind) { mutableStateOf(false) }
@@ -190,7 +192,7 @@ private fun StructuredBuilder(kind: String, enabled: Boolean, back: () -> Unit, 
         if (kind in listOf("Poll", "Checklist", "Task")) Column {
           entries.forEachIndexed { index, entry -> key(index) {
             val visible = remember { MutableTransitionState(index == 0).apply { targetState = true } }
-            AnimatedVisibility(visible, enter = expandVertically(tween(MotionMillis), expandFrom = Alignment.Top) + slideInHorizontally(tween(MotionMillis)) { it } + fadeIn(tween(MotionMillis))) {
+            AnimatedVisibility(visible, enter = expandVertically(motionPolicy.tween(MotionMillis), expandFrom = Alignment.Top) + slideInHorizontally(motionPolicy.tween(MotionMillis)) { it } + fadeIn(motionPolicy.tween(MotionMillis))) {
               OutlinedTextField(entry, { value -> entries = entries.toMutableList().also { it[index] = value; if (index == it.lastIndex && value.isNotBlank()) it.add("") } }, Modifier.fillMaxWidth().padding(top = if (index == 0) 0.dp else 16.dp),
                 shape = RoundedCornerShape(16.dp), singleLine = true, label = { Text("${if (kind == "Poll") "Option" else "Item"} ${index + 1}") },
                 leadingIcon = { Glyph(if (kind == "Poll") "radio_button_unchecked" else "check_box_outline_blank", 20, filled = false) },

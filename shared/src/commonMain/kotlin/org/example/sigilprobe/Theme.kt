@@ -20,12 +20,13 @@ import org.jetbrains.compose.resources.Font
 import sigil.shared.generated.resources.*
 
 data class Appearance(val font: String = "Newsreader", val mode: String = "System", val accent: Int = 0x555555, val dynamic: Boolean = false,
-    val textScale: Float = 1f, val compact: Boolean = false, val previewLines: Int = 1, val gradient: Boolean = false)
+    val textScale: Float = 1f, val compact: Boolean = false, val previewLines: Int = 1, val gradient: Boolean = false,
+    val reducedMotion: Boolean = false, val messageEffects: Boolean = true, val autoplayGifs: Boolean = true)
 data class ChatTheme(val accent: Int? = null, val gradient: Boolean? = null)
 private data class ThemeTarget(val seed: Int, val dark: Boolean, val chat: String?, val tinted: Boolean)
 
 internal val LocalChatTint = staticCompositionLocalOf { 0f }
-internal val LocalAppearance = staticCompositionLocalOf { Appearance() }
+val LocalAppearance = staticCompositionLocalOf { Appearance() }
 val LocalCodeFont = staticCompositionLocalOf<FontFamily> { FontFamily.Monospace }
 val LocalSystemAppearance = staticCompositionLocalOf<(Boolean) -> Unit> { {} }
 val LocalTextPlatformStyle = staticCompositionLocalOf<PlatformTextStyle?> { null }
@@ -44,9 +45,12 @@ internal fun decodeAppearance(value: String?): Appearance {
         compact = parts.getOrNull(5) == "true",
         previewLines = parts.getOrNull(6)?.toIntOrNull()?.takeIf { it in 0..2 } ?: 1,
         gradient = parts.getOrNull(7) == "true",
+        reducedMotion = parts.getOrNull(8) == "true",
+        messageEffects = parts.getOrNull(9) != "false",
+        autoplayGifs = parts.getOrNull(10) != "false",
     )
 }
-internal fun Appearance.encode() = "$font|$mode|${accentText(accent)}|$dynamic|$textScale|$compact|$previewLines|$gradient"
+internal fun Appearance.encode() = "$font|$mode|${accentText(accent)}|$dynamic|$textScale|$compact|$previewLines|$gradient|$reducedMotion|$messageEffects|$autoplayGifs"
 internal fun decodeChat(value: String?): ChatTheme {
     val parts = value?.split('|') ?: return ChatTheme()
     return ChatTheme(parts.getOrNull(0)?.let(::parseAccent), parts.getOrNull(1)?.toBooleanStrictOrNull())
@@ -57,14 +61,15 @@ internal fun ChatTheme.encode() = "${accent?.let(::accentText) ?: ""}|${gradient
 internal fun SigilTheme(appearance: Appearance, chat: ChatTheme? = null, dynamicAccent: Int? = null,
     palette: (Int, Boolean) -> String, chatKey: String? = null, content: @Composable () -> Unit) {
     val dark = when (appearance.mode) { "Dark" -> true; "Light" -> false; else -> isSystemInDarkTheme() }
+    val motionPolicy = MotionPolicy(appearance.reducedMotion || LocalSystemReducedMotion.current)
     val systemAppearance = LocalSystemAppearance.current
     SideEffect { systemAppearance(dark) }
     val seed = chat?.accent ?: if (appearance.dynamic) dynamicAccent ?: appearance.accent else appearance.accent
     val transition = updateTransition(ThemeTarget(seed, dark, chatKey, chat != null), label = "Appearance")
-    val tint by transition.animateFloat(transitionSpec = { tween(180, if (targetState.chat != null && initialState.chat != targetState.chat) MotionMillis else 0) }, label = "Conversation tint") { if (it.tinted) 1f else 0f }
+    val tint by transition.animateFloat(transitionSpec = { motionPolicy.tween(180, if (targetState.chat != null && initialState.chat != targetState.chat) MotionMillis else 0) }, label = "Conversation tint") { if (it.tinted) 1f else 0f }
     val palettes = remember(palette) { linkedMapOf<Pair<Int, Boolean>, List<Color>>() }
     val colors = (0..8).map { index ->
-        transition.animateColor(transitionSpec = { tween(180, if (targetState.chat != null && initialState.chat != targetState.chat) MotionMillis else 0) }, label = "Theme color") { target ->
+        transition.animateColor(transitionSpec = { motionPolicy.tween(180, if (targetState.chat != null && initialState.chat != targetState.chat) MotionMillis else 0) }, label = "Theme color") { target ->
             palettes.getOrPut(target.seed to target.dark) {
                 if (palettes.size >= 4) palettes.remove(palettes.keys.first())
                 palette(target.seed, target.dark).split(',').map { Color(0xff000000L or it.toLong(16)) }
@@ -95,7 +100,7 @@ internal fun SigilTheme(appearance: Appearance, chat: ChatTheme? = null, dynamic
         bodyLarge = style(18, 26), bodyMedium = style(16, 23), bodySmall = style(14, 20),
         labelLarge = style(16, 22), labelMedium = style(14, 20), labelSmall = style(12, 18),
     )
-    CompositionLocalProvider(LocalCodeFont provides FontFamily(Font(Res.font.google_sans_code)), LocalChatTint provides tint, LocalAppearance provides appearance) {
+    CompositionLocalProvider(LocalCodeFont provides FontFamily(Font(Res.font.google_sans_code)), LocalChatTint provides tint, LocalAppearance provides appearance, LocalMotion provides motionPolicy) {
         MaterialTheme(colorScheme = scheme, typography = typography) {
             CompositionLocalProvider(LocalTextSelectionColors provides TextSelectionColors(scheme.primary, scheme.primary.copy(alpha = .3f)), content = content)
         }
