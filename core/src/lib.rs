@@ -72,6 +72,27 @@ pub fn temporal_preview(input: &str) -> String {
     temporal::preview(input)
 }
 
+#[cfg_attr(target_arch = "wasm32", wasm_bindgen::prelude::wasm_bindgen)]
+pub fn help_catalog(input: &str) -> String {
+    sigil_text::help::catalog(input)
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[no_mangle]
+pub extern "system" fn Java_org_sigil_NativeCore_helpCatalog(
+    mut env: JNIEnv,
+    _: JObject,
+    input: JString,
+) -> jstring {
+    let result = match env.get_string(&input) {
+        Ok(value) => help_catalog(&String::from(value)),
+        Err(_) => return std::ptr::null_mut(),
+    };
+    env.new_string(result)
+        .map(JString::into_raw)
+        .unwrap_or(std::ptr::null_mut())
+}
+
 #[cfg(not(target_arch = "wasm32"))]
 #[no_mangle]
 pub extern "system" fn Java_org_sigil_NativeCore_temporalPreview(

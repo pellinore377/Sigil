@@ -1584,7 +1584,10 @@ impl ClientStore {
                         timezone: timezone.as_deref(),
                         date_order: None,
                     })?;
-                    if matches!(doc, sigil_protocol::text::Document::Text(_)) {
+                    let help = text.trim_end().strip_prefix("help::")
+                        .and_then(|value| value.strip_suffix(';'))
+                        .is_some_and(|query| sigil_protocol::text::help::sheet(query, Default::default()).is_ok());
+                    if matches!(doc, sigil_protocol::text::Document::Text(_)) && !help {
                         self.discard_sigiltext_draft(conversation, id(&request)?)?;
                         return Err(Error::InvalidEvent);
                     }
