@@ -409,6 +409,8 @@ impl Utility {
             }
             Self::Conversion(value) => value.body()?,
             Self::Math { expression, .. } | Self::Art(expression) => expression.clone(),
+            Self::Qr(Qr::Wifi { ssid, .. }) => format!("Wi-Fi: {}", ssid.body()),
+            Self::Qr(Qr::Contact { address, .. }) => format!("Contact QR: {address}"),
             Self::Qr(value) => format!("QR: {}", value.payload()?),
             Self::Random(value) => value.body(),
             Self::Swatch(rgba) => format!(

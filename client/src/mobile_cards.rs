@@ -238,6 +238,10 @@ impl ClientStore {
                 value["kind"] = json!("diagram");
                 value["diagram"] = diagram.presentation().map_err(|_| Error::InvalidStore)?;
             }
+            Construct::Utility(utility) => {
+                value["kind"] = json!("utility");
+                value["utility"] = utility.presentation().map_err(|_| Error::InvalidStore)?;
+            }
             _ => {}
         }
         Ok(value)

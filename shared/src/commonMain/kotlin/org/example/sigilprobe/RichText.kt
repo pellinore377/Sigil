@@ -13,7 +13,7 @@ import androidx.compose.ui.text.style.*
 import androidx.compose.ui.unit.*
 import kotlin.math.abs
 
-internal val LocalMessageSurface = staticCompositionLocalOf { Color.Unspecified }
+val LocalMessageSurface = staticCompositionLocalOf { Color.Unspecified }
 
 internal fun textColor(name: String, surface: Color): Color {
     val hue = when (name.dropLast(1)) { "red" -> 5f; "orange" -> 28f; "yellow" -> 52f; "green" -> 135f; "cyan" -> 185f; "blue" -> 220f; "purple" -> 275f; "pink" -> 330f; else -> 0f }

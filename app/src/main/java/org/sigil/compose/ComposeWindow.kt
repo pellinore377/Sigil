@@ -31,7 +31,11 @@ internal fun ComponentActivity.setSigilContent(content: @Composable () -> Unit) 
             // Older Android retains its window pan until it rechecks the focused field's bounds.
             LaunchedEffect(ime) { withFrameNanos { }; view.rootView.requestLayout() }
         }
-        CompositionLocalProvider(org.sigil.LocalKeepScreenAwake provides { enabled ->
+        CompositionLocalProvider(org.sigil.LocalSensitiveCopy provides { value ->
+            val clip = android.content.ClipData.newPlainText("Sigil", value)
+            clip.description.extras = android.os.PersistableBundle().apply { putBoolean("android.content.extra.IS_SENSITIVE", true) }
+            getSystemService(android.content.ClipboardManager::class.java).setPrimaryClip(clip)
+        }, org.sigil.LocalMathContent provides { mathml, expression, modifier -> MathContent(mathml, expression, modifier) }, org.sigil.LocalKeepScreenAwake provides { enabled ->
             val view = LocalView.current
             DisposableEffect(view, enabled) {
                 val previous = view.keepScreenOn

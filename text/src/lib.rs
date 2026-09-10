@@ -26,6 +26,7 @@ pub mod structured;
 pub mod table;
 pub mod time;
 pub mod utility;
+mod utility_view;
 pub use blocks::{Block, BlockKind};
 pub use card_parse::{item_id, parse_card, parse_card_with_dates, Draft, Hint, Origin, Parsed};
 pub use effects::{Animation, Color, Effects, Hue, Paint, Reveal};

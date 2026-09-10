@@ -1080,3 +1080,31 @@ fn mobile_live_locations_keep_device_jobs_and_retry_stops_without_resampling() {
     assert_eq!(timeline["messages"][0]["parts"][0]["stopped"], true);
     assert_eq!(timeline["messages"][0]["parts"][0]["can_stop"], false);
 }
+
+#[test]
+fn utility_projection_preserves_values_and_keeps_wifi_secrets_out_of_previews() {
+    let (_dir, _server, mut alice, _bob, now) = crate::claims::tests::pair();
+    for (index, (source, kind)) in [
+        ("calc::1 / 3;", "calculation"), ("convert::5 km;", "conversion"),
+        ("math::\\frac{1}{2};", "math"), ("roll::2d20;", "dice"),
+        ("pick::A, B;", "pick"), ("pick::number::1-10;", "random"),
+        ("swatch::#12345680;", "swatch"), ("kbd::Ctrl+C;", "keys"),
+        ("rate::4/5;", "rating"), ("progress::65;", "progress"),
+        ("quote::Sam::Hello;", "quote"), ("qr::wifi::Synthetic::synthetic-secret;", "qr"),
+    ].iter().enumerate() {
+        run(&mut alice,json!({"command":"post","peer":"self","request":format!("{:064x}",index+600),"timestamp":now,"rich":true,"text":source}));
+        let timeline=run(&mut alice,json!({"command":"timeline","peer":"self"}));
+        let part=&timeline["messages"][0]["parts"][0];
+        assert_eq!(part["kind"],"utility","{source}");
+        assert_eq!(part["utility"]["kind"],*kind);
+        if *kind=="calculation" { assert_eq!(part["utility"]["copy"],"0.3333333333333333"); }
+        if *kind=="qr" {
+            assert!(!timeline["messages"][0]["text"].as_str().unwrap().contains("synthetic-secret"));
+            assert!(part["utility"]["qr"]["payload"].as_str().unwrap().contains("synthetic-secret"));
+        }
+        if *kind=="dice" || *kind=="random" {
+            let again=run(&mut alice,json!({"command":"timeline","peer":"self"}));
+            assert_eq!(part["utility"],again["messages"][0]["parts"][0]["utility"]);
+        }
+    }
+}
