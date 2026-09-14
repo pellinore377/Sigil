@@ -321,6 +321,8 @@ impl ClientStore {
                 return Err(Error::Limit);
             }
             let mut selected = None;
+            let tried = sessions.len() as u8;
+            let (mut replay, mut limit, mut other) = (0, 0, 0);
             for session in sessions {
                 let session: Id = session.try_into().map_err(|_| Error::InvalidStore)?;
                 let mut state = load(&tx, &self.key, &session)?;
@@ -338,11 +340,15 @@ impl ClientStore {
                     Err(sigil_crypto::Error::Entropy) => {
                         return Err(Error::Crypto(sigil_crypto::Error::Entropy))
                     }
-                    Err(_) => {}
+                    Err(sigil_crypto::Error::Replay) => replay += 1,
+                    Err(sigil_crypto::Error::Limit) => limit += 1,
+                    Err(sigil_crypto::Error::Authentication) => {}
+                    Err(_) => other += 1,
                 }
             }
-            let (session, state, plaintext) =
-                selected.ok_or(Error::Crypto(sigil_crypto::Error::Authentication))?;
+            let (session, state, plaintext) = selected.ok_or(Error::ReceiveAuthentication {
+                sessions: tried, replay, limit, other,
+            })?;
             commit_received(
                 &tx, &self.key, session, message, &packet, &state, &plaintext,
             )?;

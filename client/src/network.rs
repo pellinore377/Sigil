@@ -374,6 +374,16 @@ impl HttpsClient {
         content_type: Option<&str>,
         access: Option<&str>,
     ) -> Result<Response<Body>, Error> {
+        self.send(self.build_request(method, path, bytes, content_type, access)?)
+    }
+    fn build_request<'a>(
+        &self,
+        method: Method,
+        path: &str,
+        bytes: &'a [u8],
+        content_type: Option<&str>,
+        access: Option<&str>,
+    ) -> Result<Request<&'a [u8]>, Error> {
         if bytes.len()
             > sigil_crypto::attachment::CHUNK_SIZE + sigil_crypto::attachment::CHUNK_OVERHEAD
         {
@@ -406,8 +416,7 @@ impl HttpsClient {
             value.set_sensitive(true);
             builder = builder.header(sigil_protocol::attachments::ACCESS_HEADER, value);
         }
-        let request = builder.body(bytes).map_err(|_| Error::Configuration)?;
-        self.send(request)
+        builder.body(bytes).map_err(|_| Error::Configuration)
     }
     #[cfg(not(target_arch="wasm32"))]
     fn send(&self, request: Request<&[u8]>) -> Result<Response<Body>, Error> {
@@ -677,6 +686,19 @@ impl HttpsClient {
         self.session_response(result?, 201)
     }
     pub fn submit(&self, request: &mailbox::Submit) -> Result<mailbox::Receipt, Error> {
+        self.submit_recovery(request, None)
+    }
+    pub(crate) fn submit_recovery(
+        &self,
+        request: &mailbox::Submit,
+        proof: Option<&[u8]>,
+    ) -> Result<mailbox::Receipt, Error> {
+        if proof.is_some() {
+            match self.submit(request) {
+                Err(error) if crate::outbound::recipient_full(&error) => {}
+                result => return result,
+            }
+        }
         if !accounts::valid_credential(&request.recipient_device)
             || !accounts::valid_credential(&request.message_id)
             || !valid_hex(&request.payload, 32, mailbox::MAX_PAYLOAD_HEX)
@@ -684,11 +706,18 @@ impl HttpsClient {
         {
             return Err(Error::Configuration);
         }
-        let receipt: mailbox::Receipt = self.json(
-            self.request(Method::POST, "/client/v0/messages", Some(request))?,
-            202,
-            SMALL,
+        let bytes = serde_json::to_vec(request).map_err(|_| Error::Configuration)?;
+        let mut http = self.build_request(
+            Method::POST, "/client/v0/messages", &bytes, Some("application/json"), None,
         )?;
+        if let Some(proof) = proof {
+            sigil_protocol::retry::Request::from_bytes(proof).map_err(|_| Error::Configuration)?;
+            http.headers_mut().insert(
+                mailbox::RECOVERY_HEADER,
+                HeaderValue::from_str(&crate::transport::hex(proof)).map_err(|_| Error::Configuration)?,
+            );
+        }
+        let receipt: mailbox::Receipt = self.json(self.send(http)?, 202, SMALL)?;
         if receipt.sequence <= 0 || receipt.expires_at != request.expires_at {
             return Err(Error::InvalidResponse);
         }

@@ -501,6 +501,7 @@ fn error_message(error: &Error) -> String {
         Error::UnsupportedSession => "This encrypted session format is unsupported (session-format). Your stored keys have not been reset.",
         Error::RetiredSession => "This encrypted session has been retired (session-retired). Your stored keys have not been reset.",
         Error::InvalidStore => "Stored device state could not be validated (storage-state). Your stored keys have not been reset.",
+        Error::ReceiveAuthentication { sessions, replay, limit, other } => return format!("Message authentication failed (receive-s{sessions}-r{replay}-l{limit}-o{other}). Your stored keys have not been reset."),
         Error::Storage(rusqlite::Error::SqliteFailure(code, _)) => return format!("Device storage could not complete the operation (sqlite-{}). Your stored keys have not been reset.",code.extended_code),
         Error::Storage(rusqlite::Error::QueryReturnedNoRows) => "A required storage record was not found (storage-missing). Your stored keys have not been reset.",
         Error::Storage(_) => "A storage operation failed (storage-query). Your stored keys have not been reset.",

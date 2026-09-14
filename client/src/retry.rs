@@ -459,12 +459,12 @@ impl ClientStore {
             return Ok(receipt);
         }
         live(&request, now)?;
-        let receipt = network.submit(&Submit {
+        let receipt = network.submit_recovery(&Submit {
             recipient_device: transport::hex(&peer.binding.device),
             message_id: transport::hex(&id),
             payload: transport::hex(&record.packet),
             expires_at: request.expires_at,
-        })?;
+        }, Some(&record.packet))?;
         let tx = self
             .db
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
