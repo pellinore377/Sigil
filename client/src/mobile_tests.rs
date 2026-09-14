@@ -2,6 +2,14 @@ use super::*;
 #[path = "mobile_content_acceptance.rs"]
 mod content_acceptance;
 
+#[test]
+fn error_diagnostics_do_not_expose_storage_or_file_details() {
+    let private="synthetic private content";
+    let errors=[Error::Storage(rusqlite::Error::SqliteFailure(rusqlite::ffi::Error::new(5),Some(private.into()))),Error::Io(std::io::Error::other(private))];
+    for error in errors {assert!(!error_message(&error).contains(private));}
+    assert!(error_message(&Error::Crypto(sigil_crypto::Error::Authentication)).contains("crypto-authentication"));
+}
+
 fn run(store: &mut ClientStore, value: Value) -> Value {
     let result: Value = serde_json::from_str(&store.mobile_command(&value.to_string())).unwrap();
     assert_eq!(result["ok"], true, "{result}");
