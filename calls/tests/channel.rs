@@ -239,6 +239,29 @@ async fn data_channel_and_rtp_forward_the_same_authenticated_fragmented_media() 
         seen.iter().flatten().all(|value| *value),
         "not all encrypted tracks crossed both transports: {seen:?}"
     );
+    channel
+        .send(bytes::BytesMut::from(
+            channel::Packet {
+                sender: members[1].id,
+                kind: MediaKind::Audio,
+                sequence: 9000,
+                timestamp: 1,
+                marker: true,
+                payload: vec![1; 16].into(),
+            }
+            .encode()
+            .unwrap()
+            .as_slice(),
+        ))
+        .await
+        .unwrap();
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while forwarder.lock().unwrap().counts() != (1, 1) {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("a channel cannot impersonate another roster member");
     let mut closed = roster.roster;
     closed.revision += 1;
     closed.previous = Some(digest);

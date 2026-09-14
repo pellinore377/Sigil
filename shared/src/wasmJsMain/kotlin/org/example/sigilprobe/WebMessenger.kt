@@ -92,6 +92,8 @@ private val stamped=setOf("post","place","group_create","react","pin","read","ma
     val wake=remember {Channel<Unit>(Channel.CONFLATED)}
     var post by remember {mutableStateOf<Pair<Map<String,Any?>,String>?>(null)}
     var sending by remember {mutableStateOf(false)}
+    var groupCreate by remember {mutableStateOf<Pair<Map<String,Any?>,String>?>(null)}
+    var creatingGroup by remember {mutableStateOf(false)}
     val forwarding=remember {mutableSetOf<Map<String,Any?>>() }
     var filter by remember {mutableStateOf<Map<String,Any?>>(mapOf("category" to "Timeline"))}
     var searchAfter by remember {mutableStateOf<Long?>(null)}
@@ -358,6 +360,8 @@ recoverAccount=true;return@command}
         if(!ready)return@command
         if(name=="post" && sending)return@command
         if(name=="post")sending=true
+        if(name=="group_create" && creatingGroup)return@command
+        if(name=="group_create")creatingGroup=true
         scope.launch {
             try {mutex.withLock {
                 state=state.copy(busy=name !in setOf("typing","read","draft","open"),issue=null)
@@ -403,9 +407,13 @@ recoverAccount=true;return@command}
                     "attachment_open","call_start","call_prepare","wallpaper_choose"->state=state.copy(issue="This browser integration is not available yet.")
                     else->{
                         if(name in setOf("file_send","file_cancel"))fileNext=0
-                        val raw=if(name=="post"
- && post?.first==fields)post!!.second else request(name,fields).also {if(name=="post")post=fields.toMap() to it}
+                        val raw=when {
+                            name=="post" && post?.first==fields->post!!.second
+                            name=="group_create" && groupCreate?.first==fields->groupCreate!!.second
+                            else->request(name,fields).also {if(name=="post")post=fields.toMap() to it;if(name=="group_create")groupCreate=fields.toMap() to it}
+                        }
                         val value=native(raw)
+                        if(name=="group_create")groupCreate=null
                         if(name=="recovery_generate")recoveryKey=value.string("secret")
                         if(name in setOf("storage","recovery_enable","recovery_policy","recovery_restore"))storage(value)
                         if(name in setOf("recovery_enable","recovery_restore")){recoveryKey=null;restoreHistory=false;fileNext=0}
@@ -424,7 +432,7 @@ if(name=="contact_policy")state=state.copy(allowRequests=value.bool("enabled"))
                     }
                 }
             }}catch(e:Exception) {state=state.copy(searching=if(name in setOf("search","search_more"))false else state.searching,issue=e.message?:"Could not complete this action. Your draft is preserved.")}
-            finally {state=state.copy(busy=false,discovering=false);if(name=="post")sending=false;if(name !in setOf("open","older","latest","timeline_filter","search","search_more","discover","storage","devices","profile"))wake.trySend(Unit)}
+            finally {state=state.copy(busy=false,discovering=false);if(name=="post")sending=false;if(name=="group_create")creatingGroup=false;if(name !in setOf("open","older","latest","timeline_filter","search","search_more","discover","storage","devices","profile"))wake.trySend(Unit)}
         }
     }
     CompositionLocalProvider(LocalNotificationPanel provides {value,action->WebNotificationSettings(value,action)},LocalWallpaper provides {peer,modifier->WebWallpaper(peer,wallpaperRevision,modifier)},LocalWebFileSave provides ::saveFile,LocalMaterialPlatform provides WebMaterials,LocalSolidMaterial provides (if(materialsReady) {value,progress,modifier->MaterialMessages(value,progress,modifier)} else null),LocalMaterialOverlay provides (if(materialsReady) {timeline,modifier->MaterialTimelineOverlay(timeline,modifier)} else null),LocalProfilePhoto provides {reference,modifier->WebProfilePhoto(reference,photoRevision,modifier)},LocalMathContent provides {mathml,expression,modifier->WebMath(mathml,expression,modifier)},LocalMotionVisible provides visible,LocalClientFeatures provides ClientFeatures(calls=false,files=true,voice=true,locations=false,notifications=notificationsReady,recovery=true),LocalServiceAccess provides ::service,LocalDraftId provides ::browserRequestId,LocalRecipeScale provides ::recipe,LocalTemporalPreview provides {kind,input->val result=rustTemporal("$kind\n${(BrowserDate.now()/1000).toLong()}\n$timezone\n$dateOrder\n$input").split('\n');if(result.size!=3)null else result[1].toLongOrNull()?.let {TemporalPreview(result[0],timezone,if(kind=="Timer")"$it seconds" else calendar(it)+" · "+timezone)}},LocalCameraPanel provides {target,back,done->WebCameraPanel(back) {file->stage(file,target);done()}},LocalAttachmentContent provides {message->message.webFile()?.let {WebAttachment(it,::loadFile,{viewing=it},outgoing=message.mine)}},LocalAttachmentDraft provides {file,modifier->WebAttachment(WebFile(file.peer,"","",file.name,file.mediaType,file.bytes,draft=file.request),::loadFile,{viewing=it},modifier)},LocalBuilderSource provides ::rustBuilder,LocalStructuredPreview provides {source->runCatching {ContentDecoder.part(rustPreview(buildJsonObject {put("source",source);put("now",(BrowserDate.now()/1000).toLong());put("timezone",timezone)}.toString()),::clock)}.getOrNull()},LocalBuilderTimezone provides timezone,LocalCodePreview provides ::rustCode,LocalEditorAnalysis provides ::rustEditor,LocalHelpCatalog provides ::rustHelp,LocalTextMotionSeeds provides ::rustMotionSeeds) {
