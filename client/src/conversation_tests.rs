@@ -1665,3 +1665,88 @@ fn first_edit_does_not_compete_with_a_migrated_post_version() {
         matches!(a.conversation_message(conv,reference,now).unwrap().body,Some(Body::Text(v)) if v=="edited")
     );
 }
+
+#[test]
+fn linked_history_skips_superseded_appearance_settings() {
+    let (_dir, _fixture, mut phone, mut browser, _, _, now) = linked();
+    for n in 0..24u8 {
+        let value = if n == 0 || n == 23 {
+            "Google Sans Flex|Dark|555555"
+        } else if n % 2 == 0 {
+            "Newsreader|Light|ff0000"
+        } else {
+            "Newsreader|Dark|00ff00"
+        };
+        let op = phone
+            .conversation_operation(
+                [100 + n; 32],
+                Action::Private {
+                    conversation: [0; 32],
+                    value: Private::UiSetting {
+                        key: "appearance".into(),
+                        value: Some(value.into()),
+                    },
+                },
+            )
+            .unwrap();
+        phone.apply_private_operation(&op, now).unwrap();
+    }
+    for _ in 0..6 {
+        pump(&mut phone, &mut browser, now);
+        if let Some(value) = browser
+            .conversation_preferences([0; 32])
+            .unwrap()
+            .ui
+            .get("appearance")
+        {
+            assert_eq!(value, "Google Sans Flex|Dark|555555");
+        }
+    }
+    assert_eq!(
+        browser
+            .conversation_preferences([0; 32])
+            .unwrap()
+            .ui
+            .get("appearance")
+            .map(String::as_str),
+        Some("Google Sans Flex|Dark|555555")
+    );
+    let count: i64 = browser
+        .db
+        .query_row(
+            "SELECT count(*) FROM conversation_ops WHERE kind=1",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        count, 1,
+        "Only the winning setting should be copied, even when its value was used before"
+    );
+}
+
+#[test]
+fn forwarded_archival_catalog_does_not_restore_contact_trust() {
+    let (_dir,_fixture,mut a,mut b,_,bp,now)=linked();
+    let own=a.own_device_binding().unwrap();
+    let binding=peers::parse(&own).unwrap().binding;
+    let author=event::account(&binding);
+    let key=sigil_crypto::IdentityKey::generate().unwrap();
+    let mut contact=binding.clone();
+    contact.username="charlie".into();contact.account=[90;32];contact.device=[91;32];contact.identity=key.public_key();
+    let signed=sigil_protocol::device::SignedBinding {signature:key.sign(&contact.signing_bytes().unwrap()).unwrap(),binding:contact.clone()};
+    let reference=event::account(&contact);
+    let data=serde_json::to_vec(&serde_json::json!({"server":contact.server,"username":contact.username,"account":contact.account,"blocked":false,"anchors":[{"statement":transport::hex(&signed.to_bytes().unwrap()),"verified":true}]})).unwrap();
+    let name=format!("contact.{}",transport::hex(&reference));
+    let manifest=serde_json::json!({"parts":1,"digest":<Id>::from(Sha256::digest(&data))}).to_string();
+    let archived_device=[222;32];
+    for (n,(name,value)) in [(format!("{name}.0"),transport::hex(&data)),(name,manifest)].into_iter().enumerate() {
+        let conversation=crate::mobile::contacts::catalog::scope(author,archived_device);
+        let e=Entry {conversation,author,identity:binding.identity,timestamp:now,seen:now,operation:Operation {id:[223+n as u8;32],version:Version {device:archived_device,counter:n as u64+1},action:Action::Private {conversation,value:Private::UiSetting {key:name,value:Some(value)}}}};
+        let raw=serde_json::to_vec(&e).unwrap();
+        let op=a.conversation_operation([230+n as u8;32],Action::SyncPart {transfer:[240+n as u8;32],index:0,total:1,digest:Sha256::digest(&raw).into(),payload:transport::hex(&raw)}).unwrap();
+        deliver(&mut a,&mut b,bp,&op,now);
+    }
+    assert!(matches!(b.peer(peers::reference(&contact.server,&contact.device)),Err(Error::NotFound)));
+    assert_eq!(b.db.query_row("SELECT count(*) FROM mobile_contacts",[],|r|r.get::<_,u32>(0)).unwrap(),0);
+}

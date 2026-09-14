@@ -16,6 +16,12 @@ struct Gpu {
     device: wgpu::Device,
     queue: wgpu::Queue,
     failed: Arc<AtomicBool>,
+    gl: Option<GlSurface>,
+}
+struct GlSurface {
+    canvas: web_sys::HtmlCanvasElement,
+    surface: wgpu::Surface<'static>,
+    config: RefCell<wgpu::SurfaceConfiguration>,
 }
 thread_local! {static VIEWS:Cell<u32>=const{Cell::new(0)};static GPU:RefCell<Option<Rc<Gpu>>>=const{RefCell::new(None)};}
 fn fail(message: &str) -> JsValue {
@@ -23,46 +29,103 @@ fn fail(message: &str) -> JsValue {
 }
 #[wasm_bindgen]
 pub async fn initialize_materials() -> Result<bool, JsValue> {
-    if let Some(hardware) = GPU.with(|v| {
-        v.borrow()
-            .as_ref()
-            .map(|gpu| gpu.adapter.get_info().device_type != wgpu::DeviceType::Cpu)
-    }) {
-        return Ok(hardware);
+    if GPU.with(|v| v.borrow().is_some()) {
+        return Ok(true);
     }
+    let gpu = match initialize_gpu(false).await {
+        Ok(gpu) if gpu.adapter.get_info().device_type != wgpu::DeviceType::Cpu => gpu,
+        _ => initialize_gpu(true).await?,
+    };
+    GPU.with(|v| {
+        if v.borrow().is_none() {
+            *v.borrow_mut() = Some(Rc::new(gpu));
+        }
+    });
+    Ok(true)
+}
+async fn initialize_gpu(gl: bool) -> Result<Gpu, JsValue> {
     let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
-        backends: wgpu::Backends::BROWSER_WEBGPU,
+        backends: if gl {
+            wgpu::Backends::GL
+        } else {
+            wgpu::Backends::BROWSER_WEBGPU
+        },
         ..wgpu::InstanceDescriptor::new_without_display_handle()
     });
+    let canvas = if gl {
+        let canvas = web_sys::window()
+            .and_then(|w| w.document())
+            .ok_or_else(|| fail("Document unavailable"))?
+            .create_element("canvas")?
+            .dyn_into::<web_sys::HtmlCanvasElement>()?;
+        canvas.set_width(192);
+        canvas.set_height(192);
+        Some(canvas)
+    } else {
+        None
+    };
+    let surface = canvas
+        .as_ref()
+        .map(|c| instance.create_surface(wgpu::SurfaceTarget::Canvas(c.clone())))
+        .transpose()
+        .map_err(|_| fail("WebGL canvas unavailable"))?;
     let adapter = instance
-        .request_adapter(&wgpu::RequestAdapterOptions::default())
+        .request_adapter(&wgpu::RequestAdapterOptions {
+            compatible_surface: surface.as_ref(),
+            ..Default::default()
+        })
         .await
-        .map_err(|_| fail("WebGPU unavailable"))?;
+        .map_err(|_| fail("Graphics adapter unavailable"))?;
     let (device, queue) = adapter
-        .request_device(&wgpu::DeviceDescriptor::default())
+        .request_device(&wgpu::DeviceDescriptor {
+            required_limits: if gl {
+                wgpu::Limits::downlevel_webgl2_defaults()
+            } else {
+                wgpu::Limits::default()
+            },
+            ..Default::default()
+        })
         .await
-        .map_err(|_| fail("WebGPU device unavailable"))?;
+        .map_err(|_| fail("Graphics device unavailable"))?;
     let failed = Arc::new(AtomicBool::new(false));
     let flag = failed.clone();
     device.on_uncaptured_error(Arc::new(move |_: wgpu::Error| {
         flag.store(true, Ordering::Relaxed);
     }));
-    GPU.with(|v| {
-        if v.borrow().is_none() {
-            *v.borrow_mut() = Some(Rc::new(Gpu {
-                instance,
-                adapter,
-                device,
-                queue,
-                failed,
-            }));
+    let gl = match (canvas, surface) {
+        (Some(canvas), Some(surface)) => {
+            let mut config = surface
+                .get_default_config(&adapter, 192, 192)
+                .ok_or_else(|| fail("Canvas format unavailable"))?;
+            let caps = surface.get_capabilities(&adapter);
+            config.format = caps
+                .formats
+                .into_iter()
+                .find(|f| !f.is_srgb())
+                .ok_or_else(|| fail("Canvas format unavailable"))?;
+            if caps
+                .alpha_modes
+                .contains(&wgpu::CompositeAlphaMode::PreMultiplied)
+            {
+                config.alpha_mode = wgpu::CompositeAlphaMode::PreMultiplied;
+            }
+            surface.configure(&device, &config);
+            Some(GlSurface {
+                canvas,
+                surface,
+                config: RefCell::new(config),
+            })
         }
-    });
-    Ok(GPU.with(|v| {
-        v.borrow()
-            .as_ref()
-            .is_some_and(|gpu| gpu.adapter.get_info().device_type != wgpu::DeviceType::Cpu)
-    }))
+        _ => None,
+    };
+    Ok(Gpu {
+        instance,
+        adapter,
+        device,
+        queue,
+        failed,
+        gl,
+    })
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -87,7 +150,8 @@ fn rgb(c: u32) -> [f32; 3] {
 #[wasm_bindgen]
 pub struct MaterialView {
     gpu: Rc<Gpu>,
-    surface: wgpu::Surface<'static>,
+    surface: Option<wgpu::Surface<'static>>,
+    canvas: Option<web_sys::CanvasRenderingContext2d>,
     renderer: Renderer,
     label: Option<(u32, String)>,
     pending: Arc<AtomicBool>,
@@ -105,32 +169,38 @@ impl MaterialView {
         if !(1..=512).contains(&canvas.width()) || !(1..=512).contains(&canvas.height()) {
             return Err(fail("Invalid canvas dimensions"));
         }
-        let surface = gpu
-            .instance
-            .create_surface(wgpu::SurfaceTarget::Canvas(canvas.clone()))
-            .map_err(|_| fail("Canvas unavailable"))?;
-        let mut config = surface
-            .get_default_config(&gpu.adapter, canvas.width(), canvas.height())
-            .ok_or_else(|| fail("Canvas format unavailable"))?;
-        let caps = surface.get_capabilities(&gpu.adapter);
-        config.format = caps
-            .formats
-            .into_iter()
-            .find(|f| !f.is_srgb())
-            .ok_or_else(|| fail("Canvas format unavailable"))?;
-        config.alpha_mode = wgpu::CompositeAlphaMode::PreMultiplied;
-        surface.configure(&gpu.device, &config);
-        let renderer = Renderer::with_format(
-            &gpu.device,
-            &gpu.queue,
-            config.width,
-            config.height,
-            config.format,
-        );
+        let width = canvas.width();
+        let height = canvas.height();
+        let (surface, context, format) = if let Some(gl) = &gpu.gl {
+            let context = canvas
+                .get_context("2d")?
+                .ok_or_else(|| fail("Canvas unavailable"))?
+                .dyn_into::<web_sys::CanvasRenderingContext2d>()?;
+            (None, Some(context), gl.config.borrow().format)
+        } else {
+            let surface = gpu
+                .instance
+                .create_surface(wgpu::SurfaceTarget::Canvas(canvas.clone()))
+                .map_err(|_| fail("Canvas unavailable"))?;
+            let mut config = surface
+                .get_default_config(&gpu.adapter, canvas.width(), canvas.height())
+                .ok_or_else(|| fail("Canvas format unavailable"))?;
+            let caps = surface.get_capabilities(&gpu.adapter);
+            config.format = caps
+                .formats
+                .into_iter()
+                .find(|f| !f.is_srgb())
+                .ok_or_else(|| fail("Canvas format unavailable"))?;
+            config.alpha_mode = wgpu::CompositeAlphaMode::PreMultiplied;
+            surface.configure(&gpu.device, &config);
+            (Some(surface), None, config.format)
+        };
+        let renderer = Renderer::with_format(&gpu.device, &gpu.queue, width, height, format);
         VIEWS.with(|v| v.set(v.get() + 1));
         Ok(Self {
             gpu,
             surface,
+            canvas: context,
             renderer,
             label: None,
             pending: Arc::new(AtomicBool::new(false)),
@@ -245,7 +315,22 @@ impl MaterialView {
         a.inclusions = p[9];
         scene.border = p[10].clamp(0., 2.) as u32;
         scene.texture_style = p[12].clamp(0., 3.) as u32;
-        let frame = match self.surface.get_current_texture() {
+        let surface = if let Some(gl) = &self.gpu.gl {
+            let mut config = gl.config.borrow_mut();
+            if config.width != self.renderer.width || config.height != self.renderer.height {
+                config.width = self.renderer.width;
+                config.height = self.renderer.height;
+                gl.canvas.set_width(config.width);
+                gl.canvas.set_height(config.height);
+                gl.surface.configure(&self.gpu.device, &config);
+            }
+            &gl.surface
+        } else {
+            self.surface
+                .as_ref()
+                .ok_or_else(|| fail("Canvas unavailable"))?
+        };
+        let frame = match surface.get_current_texture() {
             wgpu::CurrentSurfaceTexture::Success(f)
             | wgpu::CurrentSurfaceTexture::Suboptimal(f) => f,
             wgpu::CurrentSurfaceTexture::Timeout | wgpu::CurrentSurfaceTexture::Occluded => {
@@ -260,6 +345,16 @@ impl MaterialView {
             &frame.texture.create_view(&Default::default()),
         );
         self.gpu.queue.present(frame);
+        if let (Some(gl), Some(context)) = (&self.gpu.gl, &self.canvas) {
+            context.clear_rect(
+                0.,
+                0.,
+                self.renderer.width as f64,
+                self.renderer.height as f64,
+            );
+            context.draw_image_with_html_canvas_element(&gl.canvas, 0., 0.)?;
+            return Ok(true);
+        }
         self.pending.store(true, Ordering::Relaxed);
         let pending = self.pending.clone();
         self.gpu

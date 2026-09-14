@@ -12,6 +12,7 @@ import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.semantics.*
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import kotlinx.serialization.json.*
 import kotlinx.coroutines.delay
 
@@ -19,7 +20,6 @@ import kotlinx.coroutines.delay
     val flow=remember(raw){Json.parseToJsonElement(raw).jsonObject}
     val stage=flow.string("stage")
     var scanning by remember(stage){mutableStateOf(stage=="scan_offer")}
-    var matched by remember(stage){mutableStateOf(false)}
     val canCancel=flow.bool("can_cancel",true)
     val currentCommand by rememberUpdatedState(command)
     val currentBusy by rememberUpdatedState(busy)
@@ -41,8 +41,8 @@ import kotlinx.coroutines.delay
                     "show_offer"->"On your existing device, open Settings, then Devices, then Link a new device. Scan this code with that device."
                     "scan_offer"->"Scan the code shown by your new device. Keep both devices with you throughout setup."
                     "exchanging"->"Connecting to your new device…"
-                    "confirm_sponsor"->"Check that these symbols match on both devices. Only approve a device you have with you."
-                    "wait_approval"->"Compare these symbols with your phone, then approve the link on your phone. This device will sign in automatically."
+                    "confirm_sponsor"->"Tap the emoji shown on your new device to approve it. Only link a device you have with you."
+                    "wait_approval"->"Select this emoji on your phone. This device will sign in automatically."
                     "restart_required"->"Cancel this older linking attempt, then start again to use the single-scan flow."
                     "authorize"->"Your approval is saved. Retry to finish registering the device."
                     "cancelling"->"Cancellation is pending. Retry to make sure the server cancels this link."
@@ -52,14 +52,21 @@ import kotlinx.coroutines.delay
                 if(scanning && !busy)scanner {scanning=false;command("scan",it)}
                 else if(flow.containsKey("cells"))QrGrid(flow.long("width").toInt(),flow.string("cells"),"Device linking QR code")
                 val emoji=flow["emoji"]?.takeUnless{it==JsonNull}?.jsonArray?.map {it.jsonPrimitive.content}.orEmpty()
-                if(emoji.isNotEmpty())Text(emoji.joinToString(" "),style=MaterialTheme.typography.headlineMedium)
+                if(emoji.isNotEmpty())Text(emoji.joinToString(" "),fontSize=64.sp)
                 flow.optional("account")?.let {Text(it,style=MaterialTheme.typography.titleMedium)}
                 issue?.let {Text(it,color=MaterialTheme.colorScheme.error)}
                 if(busy && stage !in setOf("show_offer","exchanging","wait_approval"))CircularProgressIndicator(Modifier.size(24.dp))
             }
             when(stage){
                 "scan_offer"->if(!scanning)SigilButton({scanning=true},enabled=!busy){Text("Scan the new device")}
-                "confirm_sponsor"->{Row(verticalAlignment=Alignment.CenterVertically){Checkbox(matched,{matched=it},enabled=!busy);Text("The symbols match on both devices.",Modifier.weight(1f))};SigilButton({command("confirm",null)},enabled=matched&&!busy){Text("Approve this device")}}
+                "confirm_sponsor"->{
+                    val choices=flow["choices"]?.jsonArray?.map {it.jsonPrimitive.content}.orEmpty()
+                    choices.chunked(3).forEach {row->
+                        Row(horizontalArrangement=Arrangement.spacedBy(16.dp)) {
+                            row.forEach {emoji->SigilButton({command("confirm",emoji)},Modifier.size(80.dp),enabled=!busy){Text(emoji,style=MaterialTheme.typography.headlineMedium)}}
+                        }
+                    }
+                }
                 "prepare_offer","authorize","cancelling"->SigilButton({command("retry",null)},enabled=!busy){Text("Retry")}
                 "done"->SigilButton(close,enabled=!busy){Text("Continue")}
             }

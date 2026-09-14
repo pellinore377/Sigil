@@ -306,7 +306,7 @@ impl ClientStore {
         if let Some(index) = step
             .sends
             .iter()
-            .position(|item| matches!(item.result, Err(Error::Network(_))))
+            .position(|item| matches!(&item.result, Err(Error::Network(e)) if !crate::outbound::recipient_full(e)))
         {
             step.failure = Some(SyncFailure::SendIntentNetwork(index));
             return step;
@@ -321,7 +321,7 @@ impl ClientStore {
         if let Some(index) = step
             .outbound
             .iter()
-            .position(|item| matches!(item.result, Err(Error::Network(_))))
+            .position(|item| matches!(&item.result, Err(Error::Network(e)) if !crate::outbound::recipient_full(e)))
         {
             step.failure = Some(SyncFailure::OutboundNetwork(index));
             return step;

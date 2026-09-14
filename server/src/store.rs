@@ -17,6 +17,7 @@ pub enum StoreError {
     InvalidData,
     Conflict,
     Busy,
+    MailboxFull,
     Unauthorized,
     AlreadyExists,
     NotFound,

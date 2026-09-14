@@ -460,6 +460,11 @@ fn store_error(value: StoreError) -> Response {
             "busy",
             "Storage is busy; retry later",
         ),
+        StoreError::MailboxFull => error(
+            StatusCode::INSUFFICIENT_STORAGE,
+            "recipient_mailbox_full",
+            "Recipient inbox is full; retry after it receives queued messages",
+        ),
         StoreError::Conflict => error(
             StatusCode::CONFLICT,
             "revision_conflict",

@@ -5,6 +5,8 @@ use sigil_protocol::{
     contacts::*,
     federation::{Lookup, LookupValue, ProxyLookup, Service},
 };
+#[path = "contact_catalog.rs"]
+pub(crate) mod catalog;
 
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -24,10 +26,12 @@ struct Contact {
     review: Option<Id>,
     #[serde(default)]
     qr_fingerprint: Option<Id>,
+    #[serde(default)]
+    linked_accepted: bool,
 }
 impl Contact {
     fn accepted(&self) -> bool {
-        self.receipt
+        self.linked_accepted || self.receipt
             .as_ref()
             .is_some_and(|r| r.state == RequestState::Accepted)
             || self
@@ -120,6 +124,7 @@ impl ClientStore {
         load_contact(&self.db, &self.key, id)
     }
     fn save_contact(&mut self, value: &Contact) -> Result<(), Error> {
+        let own=self.own_device_binding()?;
         let id = value.id();
         let bytes = Zeroizing::new(serde_json::to_vec(value).map_err(|_| Error::InvalidStore)?);
         if bytes.len() > 16000 || value.work_at > waiting() {
@@ -131,6 +136,7 @@ impl ClientStore {
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
         if tx.query_row("SELECT count(*)>=4096 AND NOT EXISTS(SELECT 1 FROM mobile_contacts WHERE id=?1) FROM mobile_contacts", [id.as_slice()], |r| r.get::<_,bool>(0))? { return Err(Error::Limit); }
         tx.execute("INSERT INTO mobile_contacts VALUES(?1,?2,?3) ON CONFLICT(id) DO UPDATE SET work_at=excluded.work_at,state=excluded.state", (id.as_slice(), value.work_at as i64, sealed))?;
+        catalog::publish(&tx,&self.key,&own,value)?;
         tx.commit()?;
         Ok(())
     }
@@ -162,6 +168,7 @@ impl ClientStore {
                 block_pending: false,
                 review: None,
                 qr_fingerprint: None,
+                linked_accepted: false,
             }),
             Err(error) => Err(error),
         }
@@ -297,6 +304,7 @@ impl ClientStore {
                 block_pending: false,
                 review: None,
                 qr_fingerprint: None,
+                linked_accepted: false,
             },
             Err(error) => return Err(error),
         };
@@ -619,14 +627,7 @@ impl ClientStore {
                 self.save_contact(&contact)?;
             }
         }
-        let accepted = contact
-            .receipt
-            .as_ref()
-            .is_some_and(|r| r.state == RequestState::Accepted)
-            || contact
-                .incoming
-                .as_ref()
-                .is_some_and(|r| r.receipt.state == RequestState::Accepted);
+        let accepted = contact.accepted();
         if accepted {
             self.contact_peers(&mut contact, None)?;
         }
@@ -714,6 +715,7 @@ impl ClientStore {
                 block_pending: false,
                 review: None,
                 qr_fingerprint: None,
+                linked_accepted: false,
             },
             Err(error) => return Err(error),
         };

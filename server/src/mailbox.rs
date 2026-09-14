@@ -106,7 +106,7 @@ impl Store {
             || pending >= 256
             || used.saturating_add(request.payload.len() as u64) > quota
         {
-            return Err(StoreError::Busy);
+            return Err(StoreError::MailboxFull);
         }
         tx.execute("INSERT INTO mailbox(sender,message_id,recipient,payload,payload_hash,expires_at) VALUES(?1,?2,?3,?4,?5,?6)", (&sender,&request.message_id,&request.recipient_device,&request.payload,hash.as_slice(),request.expires_at as i64))?;
         let sequence = tx.last_insert_rowid();

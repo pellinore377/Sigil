@@ -109,7 +109,7 @@ internal fun SigilTheme(appearance: Appearance, chat: ChatTheme? = null, dynamic
     val globalAccent=remember(globalSeed,dark,palette) {Color(0xff000000L or palette(globalSeed,dark).split(',')[4].toLong(16))}
     CompositionLocalProvider(LocalGlobalAccent provides globalAccent, LocalCodeFont provides FontFamily(Font(Res.font.google_sans_code)), LocalChatTint provides tint, LocalAppearance provides appearance, LocalMotion provides motionPolicy) {
         MaterialTheme(colorScheme = scheme, typography = typography) {
-            CompositionLocalProvider(LocalTextSelectionColors provides TextSelectionColors(scheme.primary, scheme.primary.copy(alpha = .3f)), content = content)
+            CompositionLocalProvider(LocalContentColor provides scheme.onBackground, LocalTextSelectionColors provides TextSelectionColors(scheme.primary, scheme.primary.copy(alpha = .3f)), content = content)
         }
     }
 }

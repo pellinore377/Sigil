@@ -52,6 +52,36 @@ struct Record {
     blocked: bool,
     replacement: Option<(Id, Id)>,
 }
+#[derive(serde::Serialize,serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct ContactAnchor {
+    pub statement: String,
+    pub verified: bool,
+}
+pub(crate) fn contact_anchors(tx:&Transaction<'_>,key:&StorageKey,server:&str,account:Id)->Result<Vec<ContactAnchor>,Error> {
+    let ids=tx.prepare("SELECT id FROM peers WHERE obsolete=0 ORDER BY id")?.query_map([],|r|r.get::<_,Vec<u8>>(0))?.collect::<Result<Vec<_>,_>>()?;
+    let mut anchors=Vec::new();
+    for raw in ids {
+        let record=load(tx,key,&raw.try_into().map_err(|_|Error::InvalidStore)?)?;
+        if record.trusted && !record.suspended && record.signed.binding.server==server && record.signed.binding.account==account {
+            anchors.push(ContactAnchor {statement:transport::hex(&record.signed.to_bytes().map_err(|_|Error::InvalidStore)?),verified:record.verified});
+            if anchors.len()>64 {return Err(Error::Limit);}
+        }
+    }
+    Ok(anchors)
+}
+pub(crate) fn import_contact_anchor(tx:&Transaction<'_>,key:&StorageKey,anchor:&ContactAnchor)->Result<Id,Error> {
+    let signed=parse(&Statement {statement:anchor.statement.clone()}.bytes().map_err(|_|Error::InvalidEvent)?)?;
+    let id=peer_id(&signed.binding);
+    observe(tx,key,&signed.to_bytes().map_err(|_|Error::InvalidEvent)?)?;
+    let mut record=load(tx,key,&id)?;
+    if record.signed.binding==signed.binding && record.candidate.is_none() && record.replacement.is_none() && !record.blocked {
+        record.trusted=true;
+        record.verified |= anchor.verified;
+        save(tx,key,&id,&record)?;
+    }
+    Ok(id)
+}
 pub(super) fn parse(bytes: &[u8]) -> Result<SignedBinding, Error> {
     let signed = SignedBinding::from_bytes(bytes).map_err(|_| Error::InvalidStore)?;
     verify_signature(
