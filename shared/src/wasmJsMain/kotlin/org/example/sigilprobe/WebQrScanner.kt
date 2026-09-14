@@ -20,7 +20,7 @@ import kotlin.js.*
     WebElementView(factory={video},modifier=Modifier.fillMaxWidth().aspectRatio(1f),update={attached=true},onRelease={browserCameraStop()})
     LaunchedEffect(attached,attempt) {
         if(attached)try {
-            browserCameraStart(video).await<JsAny?>()
+            browserCameraStart(video).awaitBrowser<JsAny?>()
             while(isActive) {delay(350);browserCameraScan()?.let {browserCameraStop();callback(it);return@LaunchedEffect}}
         }catch(cancelled:CancellationException){throw cancelled}
         catch(_:Exception){error="Could not open the camera. Allow camera access, then retry."}

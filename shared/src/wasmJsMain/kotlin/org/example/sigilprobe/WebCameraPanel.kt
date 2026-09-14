@@ -24,7 +24,7 @@ import kotlin.js.*
     val video=remember {(document.createElement("video") as HTMLVideoElement).apply {setAttribute("style","display:block;width:100%;height:100%;object-fit:contain;border-radius:16px;background:#111");setAttribute("aria-label","Camera preview")}}
     LaunchedEffect(attempt) {
         ready=false;issue=null
-        try {browserCameraStartPhoto(video).await<JsAny?>();ready=true}
+        try {browserCameraStartPhoto(video).awaitBrowser<JsAny?>();ready=true}
         catch(cancelled:CancellationException){throw cancelled}
         catch(_:Exception){issue="Allow camera access, then retry."}
     }
@@ -40,7 +40,7 @@ import kotlin.js.*
                 SigilTextButton({url?.let(::browserRevokeFileUrl);url=null;file=null;attempt++},enabled=!busy){Text("Retake")}
                 SigilButton({scope.launch {busy=true;try {use(file!!)}catch(cancelled:CancellationException){throw cancelled}catch(_:Exception){issue="Could not attach this photo. Retry."}finally{busy=false}}},enabled=!busy){Text("Use photo")}
             }else if(issue!=null)SigilTextButton({attempt++}){Text("Retry camera")}
-            else SigilButton({scope.launch {busy=true;try {val captured=browserCameraPhoto().await<JsAny>();file=captured;url=browserCameraPhotoUrl(captured);browserCameraStop()}catch(_:Exception){issue="Could not capture this photo. Retry."}finally{busy=false}}},enabled=ready&&!busy){Text("Take photo")}
+            else SigilButton({scope.launch {busy=true;try {val captured=browserCameraPhoto().awaitBrowser<JsAny>();file=captured;url=browserCameraPhotoUrl(captured);browserCameraStop()}catch(_:Exception){issue="Could not capture this photo. Retry."}finally{busy=false}}},enabled=ready&&!busy){Text("Take photo")}
         }
     }
 }

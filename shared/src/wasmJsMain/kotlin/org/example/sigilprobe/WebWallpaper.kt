@@ -18,7 +18,7 @@ import kotlin.js.*
     var image by remember(peer){mutableStateOf<ImageBitmap?>(null)}
     LaunchedEffect(peer,revision) {
         try {
-            val encoded=browserWallpaperImage(peer).await<JsString>().toString()
+            val encoded=browserWallpaperImage(peer).awaitBrowser<JsString>().toString()
             image=if(encoded.isEmpty())null else {
                 val bytes=Base64.decode(encoded)
                 try {val decoded=org.jetbrains.skia.Image.makeFromEncoded(bytes);if(decoded.width in 1..1600 && decoded.height in 1..1600)decoded.toComposeImageBitmap()else null}

@@ -44,7 +44,7 @@ internal object WebMaterials:MaterialPlatform {
 
     override suspend fun record(data:FloatArray):FloatArray? {
         yield()
-        return try {Json.parseToJsonElement(browserMaterialRecord(JsonArray(data.map(::JsonPrimitive)).toString()).await<kotlin.js.JsString>().toString()).jsonArray.map{it.jsonPrimitive.float}.toFloatArray()}catch(cancelled:CancellationException){throw cancelled}catch(_:Exception){null}
+        return try {Json.parseToJsonElement(browserMaterialRecord(JsonArray(data.map(::JsonPrimitive)).toString()).awaitBrowser<kotlin.js.JsString>().toString()).jsonArray.map{it.jsonPrimitive.float}.toFloatArray()}catch(cancelled:CancellationException){throw cancelled}catch(_:Exception){null}
     }
     override fun horizontalExtent(sides:Int,face:Int,rotation:FloatArray?,outgoing:Boolean)=runCatching {browserMaterialExtent(sides,face,rotation?.let {JsonArray(it.map(::JsonPrimitive)).toString()}.orEmpty(),outgoing)}.getOrDefault(1.14f)
 }
