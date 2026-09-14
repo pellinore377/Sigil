@@ -66,7 +66,7 @@ private val stamped=setOf("post","place","group_create","react","pin","read","ma
     var notificationsReady by remember {mutableStateOf(false)}
     var notificationNext by remember {mutableStateOf(0.0)}
     DisposableEffect(Unit){val listener:(org.w3c.dom.events.Event)->Unit={runCatching{browserMaterialShutdown()};Unit};window.addEventListener("pagehide",listener);onDispose{window.removeEventListener("pagehide",listener);runCatching{browserMaterialShutdown()}}}
-    LaunchedEffect(Unit) {try{initializeMaterialWasm().await<JsAny?>();materialsReady=initializeMaterialGpu().await<JsBoolean>().toBoolean()}catch(_:Exception){}}
+    LaunchedEffect(Unit) {try{initializeMaterialWasm().awaitBrowser<JsAny?>();materialsReady=initializeMaterialGpu().awaitBrowser<JsBoolean>().toBoolean()}catch(_:Exception){}}
     var ready by remember {mutableStateOf(false)}
     var startupError by remember {mutableStateOf<String?>(null)}
     var signOut by remember {mutableStateOf(false)}
@@ -101,7 +101,7 @@ private val stamped=setOf("post","place","group_create","react","pin","read","ma
     var searchGeneration by remember {mutableStateOf(0)}
     var pages by remember {mutableStateOf(1)}
     suspend fun native(raw:String):JsonObject {
-        val response=Json.parseToJsonElement(browserCommand(raw).await<JsString>().toString()).jsonObject
+        val response=Json.parseToJsonElement(browserCommand(raw).awaitBrowser<JsString>().toString()).jsonObject
         check(response.bool("ok")) {response.string("error")}
         return response["value"]?.jsonObject ?: JsonObject(emptyMap())
     }
@@ -117,7 +117,7 @@ private val stamped=setOf("post","place","group_create","react","pin","read","ma
     suspend fun execute(name:String,fields:Map<String,Any?> = emptyMap())=native(request(name,fields))
     suspend fun notificationStatus() {
         if(!notificationsReady)return
-        val local=webNotificationsEnabled().await<JsBoolean>().toBoolean()
+        val local=webNotificationsEnabled().awaitBrowser<JsBoolean>().toBoolean()
         val permission=webNotificationsPermission()
         val remote=execute("browser_push",mapOf("action" to "status"))
         val status=when {
@@ -133,10 +133,10 @@ private val stamped=setOf("post","place","group_create","react","pin","read","ma
     suspend fun notificationWork() {
         if(!notificationsReady || BrowserDate.now()<notificationNext)return
         notificationNext=BrowserDate.now()+3000
-        val pending=webNotificationsPending().await<JsString>().toString()
+        val pending=webNotificationsPending().awaitBrowser<JsString>().toString()
         if(pending.isNotEmpty()) {
             val proof=Json.parseToJsonElement(pending).jsonObject
-            if(execute("browser_push",mapOf("action" to "receive","endpoint" to proof.string("endpoint"),"payload" to proof.string("payload"))).bool("accepted")){webNotificationsClear(pending).await<JsAny?>();fileNext=0;wake.trySend(Unit)}
+            if(execute("browser_push",mapOf("action" to "receive","endpoint" to proof.string("endpoint"),"payload" to proof.string("payload"))).bool("accepted")){webNotificationsClear(pending).awaitBrowser<JsAny?>();fileNext=0;wake.trySend(Unit)}
         }
         if(state.push!=null)notificationStatus()
     }
@@ -194,7 +194,7 @@ private val stamped=setOf("post","place","group_create","react","pin","read","ma
             for(index in 0 until count.toInt()) {
                 currentCoroutineContext().ensureActive()
                 val bytes=read(index)
-                try {mutex.withLock {browserFileStage(id,index,bytes).await<JsAny?>()}}
+                try {mutex.withLock {browserFileStage(id,index,bytes).awaitBrowser<JsAny?>()}}
                 finally {browserReleaseBytes(bytes)}
                 yield()
             }
@@ -204,7 +204,7 @@ private val stamped=setOf("post","place","group_create","react","pin","read","ma
             throw error
         }
     }
-    suspend fun stage(file:JsAny,fields:Map<String,Any?>) = stageChunks(Json.parseToJsonElement(browserFileMetadata(file)).jsonObject,fields) {browserFileSlice(file,it).await<JsAny>()}
+    suspend fun stage(file:JsAny,fields:Map<String,Any?>) = stageChunks(Json.parseToJsonElement(browserFileMetadata(file)).jsonObject,fields) {browserFileSlice(file,it).awaitBrowser<JsAny>()}
     suspend fun download(file:WebFile) {
         if(file.draft.isEmpty())withTimeout(120000) {
             while(true) {
@@ -216,21 +216,21 @@ private val stamped=setOf("post","place","group_create","react","pin","read","ma
     }
     suspend fun saveFile(file:WebFile,handle:JsAny) {
         download(file)
-        browserFileSave(handle,file.peer,file.author,file.message,file.draft,file.bytes.toDouble()).await<JsAny?>()
+        browserFileSave(handle,file.peer,file.author,file.message,file.draft,file.bytes.toDouble()).awaitBrowser<JsAny?>()
     }
     suspend fun loadFile(file:WebFile):String {
         download(file)
         val promise=browserFileUrl(file.peer,file.author,file.message,file.draft,file.bytes.toDouble(),file.type)
         var claimed=false
-        try {val value=promise.await<JsString>().toString();claimed=true;return value}
+        try {val value=promise.awaitBrowser<JsString>().toString();claimed=true;return value}
         finally {if(!claimed)promise.then<JsAny?>({browserRevokeFileUrl(it.toString());null},{null})}
 
     }
     suspend fun refresh() {
 state=StateDecoder.state(execute("state"),state,::clock);if(state.phase=="connected"){timeline();transfers();if(state.storage!=null)storage(execute("storage"));if((BrowserDate.now()/1000).toLong()>=accessNext){account(execute("account_access"));accessNext=(BrowserDate.now()/1000).toLong()+30}}}
     LaunchedEffect(Unit) {
-        try {initializeBrowser().await<JsAny?>();startBrowser().await<JsAny?>();refresh();ready=true
-            try{initializeNotificationWasm().await<JsAny?>();notificationsReady=webNotificationsSupported();if(state.phase!="connected" && notificationsReady)webNotificationsDisable().await<JsAny?>()}catch(_:Exception){}
+        try {initializeBrowser().awaitBrowser<JsAny?>();startBrowser().awaitBrowser<JsAny?>();refresh();ready=true
+            try{initializeNotificationWasm().awaitBrowser<JsAny?>();notificationsReady=webNotificationsSupported();if(state.phase!="connected" && notificationsReady)webNotificationsDisable().awaitBrowser<JsAny?>()}catch(_:Exception){}
         }
         catch(_:Exception){startupError="Could not open this browser device. Close other Sigil tabs and reload. A current browser with private storage and cross-origin isolation is required."}
     }
@@ -251,7 +251,7 @@ if(browserDocument.visibilityState=="visible" && state.phase=="oidc" && !mutex.i
         if(state.voice.phase!="Recording")return
         val peer=state.voice.peer;state=state.copy(voice=state.voice.copy(phase="Saving"))
         recordingJob=scope.launch {
-            try {val file=browserVoiceFinish().await<JsAny>();stage(file,mapOf("peer" to peer));state=state.copy(voice=VoiceState())}
+            try {val file=browserVoiceFinish().awaitBrowser<JsAny>();stage(file,mapOf("peer" to peer));state=state.copy(voice=VoiceState())}
             catch(cancelled:CancellationException){throw cancelled}
             catch(_:Exception){state=state.copy(voice=VoiceState(),issue="Could not save the voice recording. Please try again.")}
         }
@@ -280,7 +280,7 @@ if(browserDocument.visibilityState=="visible" && state.phase=="oidc" && !mutex.i
                         if(metadata!=null) {
                             val source=fields["source"] as String;val author=fields["author"] as String;val message=fields["message"] as String
                             download(WebFile(source,author,message,metadata.string("name"),metadata.string("media_type"),metadata.long("length")))
-                            stageChunks(metadata,mapOf("peer" to fields["peer"],"caption" to metadata.string("caption")),draft=false) {index->browserFileRead(source,author,message,index).await<JsAny>()}
+                            stageChunks(metadata,mapOf("peer" to fields["peer"],"caption" to metadata.string("caption")),draft=false) {index->browserFileRead(source,author,message,index).awaitBrowser<JsAny>()}
                         }
                         mutex.withLock {refresh()};wake.trySend(Unit)
                     }catch(cancelled:CancellationException){throw cancelled}
@@ -292,9 +292,9 @@ if(browserDocument.visibilityState=="visible" && state.phase=="oidc" && !mutex.i
                 val selection=if(name=="photo_choose")browserPickFile(true)else null
                 scope.launch {
                     try {
-                        val file=selection?.await<JsAny?>()
+                        val file=selection?.awaitBrowser<JsAny?>()
                         if(selection!=null && file==null)return@launch
-                        mutex.withLock {state=state.copy(busy=true);browserProfileStage(file).await<JsAny?>();state=state.copy(photoPending=true);photoRevision++;execute("photo_publish");photoRevision++;refresh()}
+                        mutex.withLock {state=state.copy(busy=true);browserProfileStage(file).awaitBrowser<JsAny?>();state=state.copy(photoPending=true);photoRevision++;execute("photo_publish");photoRevision++;refresh()}
                     }catch(cancelled:CancellationException){throw cancelled}
                     catch(_:Exception){state=state.copy(issue="Could not update your profile photo. Choose an image under 16 MiB, or retry publishing it.")}
                     finally {state=state.copy(busy=false)}
@@ -306,10 +306,10 @@ if(browserDocument.visibilityState=="visible" && state.phase=="oidc" && !mutex.i
                 val permission=webNotificationsRequest()
                 state=state.copy(busy=true)
                 scope.launch{try {
-                    permission.await<JsAny?>()
+                    permission.awaitBrowser<JsAny?>()
                     val providers=mutex.withLock{execute("browser_push",mapOf("action" to "providers"))}
                     check(providers.bool("unified_push")){"Your administrator must enable Web Push in server notification settings."}
-                    val target=Json.parseToJsonElement(webNotificationsSubscribe(providers.string("vapid_public_key")).await<JsString>().toString())
+                    val target=Json.parseToJsonElement(webNotificationsSubscribe(providers.string("vapid_public_key")).awaitBrowser<JsString>().toString())
                     mutex.withLock{execute("browser_push",mapOf("action" to "register","target" to target));notificationStatus()};notificationNext=0.0;fileNext=0;wake.trySend(Unit)
                 }catch(cancelled:CancellationException){throw cancelled}catch(e:Exception){state=state.copy(issue=e.message?:"Could not enable notifications. Check your browser permissions and server settings.")}
                 finally{state=state.copy(busy=false)}};return@command
@@ -317,7 +317,7 @@ if(browserDocument.visibilityState=="visible" && state.phase=="oidc" && !mutex.i
             "push_disable"->{
                 if(state.busy || !notificationsReady)return@command
                 state=state.copy(busy=true)
-                scope.launch{try{webNotificationsDisable().await<JsAny?>();mutex.withLock{execute("browser_push",mapOf("action" to "disable"));notificationStatus()};fileNext=0;wake.trySend(Unit)}catch(cancelled:CancellationException){throw cancelled}catch(_:Exception){state=state.copy(issue="Could not finish disabling notifications. Try again.")}finally{state=state.copy(busy=false)}};return@command
+                scope.launch{try{webNotificationsDisable().awaitBrowser<JsAny?>();mutex.withLock{execute("browser_push",mapOf("action" to "disable"));notificationStatus()};fileNext=0;wake.trySend(Unit)}catch(cancelled:CancellationException){throw cancelled}catch(_:Exception){state=state.copy(issue="Could not finish disabling notifications. Try again.")}finally{state=state.copy(busy=false)}};return@command
             }
             "recovery_account_open"->{
 recoverAccount=true;return@command}
@@ -326,7 +326,7 @@ recoverAccount=true;return@command}
                 if(state.voice.phase!="Idle")return@command
                 state=state.copy(voice=VoiceState(phase="Starting",peer=fields["peer"] as String))
                 recordingJob=scope.launch {
-                    try {browserVoiceStart().await<JsAny?>();state=state.copy(voice=state.voice.copy(phase="Recording"))}
+                    try {browserVoiceStart().awaitBrowser<JsAny?>();state=state.copy(voice=state.voice.copy(phase="Recording"))}
                     catch(cancelled:CancellationException){throw cancelled}
                     catch(_:Exception){browserVoiceCancel();state=state.copy(voice=VoiceState(),issue="Allow microphone access to record a voice message.")}
                 };return@command
@@ -337,12 +337,12 @@ recoverAccount=true;return@command}
             "attachment_pick"->{
                 val wallpaper=fields["kind"]=="Wallpaper"
                 val selected=browserPickFile(fields["kind"]=="Photos" || wallpaper)
-                scope.launch {try {selected.await<JsAny?>()?.let {if(wallpaper){mutex.withLock{browserWallpaperStage(fields["peer"] as String,it).await<JsAny?>();wallpaperRevision++}}else stage(it,fields)}}
+                scope.launch {try {selected.awaitBrowser<JsAny?>()?.let {if(wallpaper){mutex.withLock{browserWallpaperStage(fields["peer"] as String,it).awaitBrowser<JsAny?>();wallpaperRevision++}}else stage(it,fields)}}
                     catch(cancelled:CancellationException){throw cancelled}
                     catch(_:Exception){state=state.copy(issue="Could not import this attachment. Check access, available space and its size.")}}
                 return@command
             }
-            "wallpaper_remove"->{scope.launch {try{mutex.withLock{browserWallpaperStage(fields["peer"] as String,null).await<JsAny?>();wallpaperRevision++}}catch(cancelled:CancellationException){throw cancelled}catch(_:Exception){state=state.copy(issue="Could not remove this wallpaper. Try again.")}};return@command}
+            "wallpaper_remove"->{scope.launch {try{mutex.withLock{browserWallpaperStage(fields["peer"] as String,null).awaitBrowser<JsAny?>();wallpaperRevision++}}catch(cancelled:CancellationException){throw cancelled}catch(_:Exception){state=state.copy(issue="Could not remove this wallpaper. Try again.")}};return@command}
 
             "sign_out"->{if(state.voice.phase!="Idle"){state=state.copy(issue="Send or discard your recording before signing out.");return@command};signOut=true;signOutFailed=false;signOutSaved=false;return@command}
             "edit_source_used"->{state=state.copy(editDraft=null);return@command}
@@ -446,12 +446,12 @@ if(signOut)AlertDialog(onDismissRequest={if(!state.busy)signOut=false},title={Te
     if(signOutFailed)Text("Server revocation was not confirmed. Retry, or remove local data and revoke this device from another signed-in device.")
 }},confirmButton={SigilTextButton(onClick={scope.launch {mutex.withLock {
     state=state.copy(busy=true)
-    try {if(notificationsReady)webNotificationsDisable().await<JsAny?>();execute("browser_sign_out");finishRemoval()}
+    try {if(notificationsReady)webNotificationsDisable().awaitBrowser<JsAny?>();execute("browser_sign_out");finishRemoval()}
     catch(_:Exception){signOutFailed=true;state=state.copy(busy=false)}
 }}},enabled=signOutSaved&&!state.busy){Text(if(signOutFailed)"Retry revocation" else "Sign out")}},dismissButton={Row {
     if(signOutFailed)SigilTextButton(onClick={scope.launch {mutex.withLock {
         state=state.copy(busy=true)
-        try {if(notificationsReady)webNotificationsDisable().await<JsAny?>();execute("browser_erase");finishRemoval()}
+        try {if(notificationsReady)webNotificationsDisable().awaitBrowser<JsAny?>();execute("browser_erase");finishRemoval()}
         catch(_:Exception){state=state.copy(busy=false,issue="Local removal could not finish. Reload to retry any pending removal.")}
     }}},enabled=signOutSaved&&!state.busy){Text("Remove local data")}
     SigilTextButton({signOut=false},enabled=!state.busy){Text("Cancel")}

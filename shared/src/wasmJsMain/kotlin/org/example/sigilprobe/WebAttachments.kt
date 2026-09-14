@@ -64,7 +64,7 @@ internal fun ChatMessage.webFile()=attachment?.let {WebFile(peer,author,id,it.na
             if(!expanded)SigilTextButton({open(file)}){Text("Expand",color=ink)}
             if(browserFileStreamSupported())SigilTextButton({
                 val destination=browserFileDestination(file.name)
-                scope.launch {saving=true;try{destination.await<JsAny?>()?.let {save(file,it)}}catch(cancelled:CancellationException){throw cancelled}catch(_:Exception){issue="Could not save this attachment. Check your connection and available space."}finally{saving=false}}
+                scope.launch {saving=true;try{destination.awaitBrowser<JsAny?>()?.let {save(file,it)}}catch(cancelled:CancellationException){throw cancelled}catch(_:Exception){issue="Could not save this attachment. Check your connection and available space."}finally{saving=false}}
             },enabled=!saving){Text(if(saving)"Saving…" else "Save file",color=ink)}
             else if(current!=null)SigilTextButton({browserSaveFileUrl(current,file.name)}){Text("Save file",color=ink)}
         }

@@ -20,7 +20,7 @@ private val photoLoads=Semaphore(2)
     LaunchedEffect(reference,revision,visible) {
         if(visible)while(isActive) {
             try {
-                val encoded=photoLoads.withPermit{browserProfileImage(reference).await<JsString>().toString()}
+                val encoded=photoLoads.withPermit{browserProfileImage(reference).awaitBrowser<JsString>().toString()}
                 image=if(encoded.isEmpty())null else {
                     val bytes=Base64.decode(encoded)
                     try {val decoded=org.jetbrains.skia.Image.makeFromEncoded(bytes);if(decoded.width in 1..512 && decoded.height in 1..512)decoded.toComposeImageBitmap()else null}
