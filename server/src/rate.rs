@@ -157,6 +157,7 @@ pub(crate) async fn limit(State(state): State<AppState>, mut request: Request, n
     let enrollment = matches!(
         request.uri().path(),
         "/client/v0/enroll"
+            | "/client/v0/link-relay/create"
             | "/client/v0/reauthorize"
             | "/client/v0/oidc/start"
             | "/client/v0/login/password"
@@ -182,7 +183,7 @@ pub(crate) async fn limit(State(state): State<AppState>, mut request: Request, n
         || anonymous_group
         || matches!(
             request.uri().path(),
-            "/client/v0/oidc/finish" | "/client/v0/oidc/username" | "/client/v0/login"
+            "/client/v0/oidc/finish" | "/client/v0/oidc/username" | "/client/v0/login" | "/client/v0/link-relay/exchange"
         )
     {
         return next.run(request).await;

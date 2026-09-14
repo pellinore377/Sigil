@@ -13,6 +13,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.semantics.*
 import androidx.compose.ui.unit.dp
 import kotlinx.serialization.json.*
+import kotlinx.coroutines.delay
 
 @Composable fun LinkPanel(raw:String,busy:Boolean,issue:String?,command:(String,String?)->Unit,scanner:@Composable ((String)->Unit)->Unit) {
     val flow=remember(raw){Json.parseToJsonElement(raw).jsonObject}
@@ -20,6 +21,14 @@ import kotlinx.serialization.json.*
     var scanning by remember(stage){mutableStateOf(stage=="scan_offer")}
     var matched by remember(stage){mutableStateOf(false)}
     val canCancel=flow.bool("can_cancel",true)
+    val currentCommand by rememberUpdatedState(command)
+    val currentBusy by rememberUpdatedState(busy)
+    LaunchedEffect(stage) {
+        if(stage in setOf("show_offer","exchanging","wait_approval"))while(true){
+            delay(1500)
+            if(!currentBusy)currentCommand("poll",null)
+        }
+    }
     val close={if(!busy)command(if(stage=="done")"close" else if(canCancel)"cancel" else "pause",null)}
     Surface(Modifier.fillMaxSize(),shape=MaterialTheme.shapes.extraLarge) {
         Column(Modifier.fillMaxSize().systemBarsPadding().padding(24.dp),horizontalAlignment=Alignment.CenterHorizontally,verticalArrangement=Arrangement.spacedBy(16.dp)) {
@@ -31,9 +40,10 @@ import kotlinx.serialization.json.*
                 Text(when(stage){
                     "show_offer"->"On your existing device, open Settings, then Devices, then Link a new device. Scan this code with that device."
                     "scan_offer"->"Scan the code shown by your new device. Keep both devices with you throughout setup."
-                    "show_proposal"->"Now scan this code with your new device. Compare the symbols shown on both screens."
-                    "confirm_join","confirm_sponsor"->"Check that these symbols match on both devices. Only approve a device you have with you."
-                    "show_response"->"Scan this final code with your existing device and approve the link there. Then finish here."
+                    "exchanging"->"Connecting to your new device…"
+                    "confirm_sponsor"->"Check that these symbols match on both devices. Only approve a device you have with you."
+                    "wait_approval"->"Compare these symbols with your phone, then approve the link on your phone. This device will sign in automatically."
+                    "restart_required"->"Cancel this older linking attempt, then start again to use the single-scan flow."
                     "authorize"->"Your approval is saved. Retry to finish registering the device."
                     "cancelling"->"Cancellation is pending. Retry to make sure the server cancels this link."
                     "done"->"Your device is linked."
@@ -45,16 +55,14 @@ import kotlinx.serialization.json.*
                 if(emoji.isNotEmpty())Text(emoji.joinToString(" "),style=MaterialTheme.typography.headlineMedium)
                 flow.optional("account")?.let {Text(it,style=MaterialTheme.typography.titleMedium)}
                 issue?.let {Text(it,color=MaterialTheme.colorScheme.error)}
-                if(busy)CircularProgressIndicator(Modifier.size(24.dp))
+                if(busy && stage !in setOf("show_offer","exchanging","wait_approval"))CircularProgressIndicator(Modifier.size(24.dp))
             }
             when(stage){
-                "scan_offer","show_offer","show_proposal"->if(!scanning)SigilButton({scanning=true},enabled=!busy){Text("Scan the other device")}
-                "confirm_join","confirm_sponsor"->{Row(verticalAlignment=Alignment.CenterVertically){Checkbox(matched,{matched=it},enabled=!busy);Text("The symbols match on both devices.",Modifier.weight(1f))};SigilButton({command("confirm",null)},enabled=matched&&!busy){Text("Approve this device")}}
-                "show_response"->SigilButton({command("finish",null)},enabled=!busy){Text("Finish linking")}
+                "scan_offer"->if(!scanning)SigilButton({scanning=true},enabled=!busy){Text("Scan the new device")}
+                "confirm_sponsor"->{Row(verticalAlignment=Alignment.CenterVertically){Checkbox(matched,{matched=it},enabled=!busy);Text("The symbols match on both devices.",Modifier.weight(1f))};SigilButton({command("confirm",null)},enabled=matched&&!busy){Text("Approve this device")}}
                 "prepare_offer","authorize","cancelling"->SigilButton({command("retry",null)},enabled=!busy){Text("Retry")}
                 "done"->SigilButton(close,enabled=!busy){Text("Continue")}
             }
-            if(scanning && stage!="scan_offer")SigilTextButton({scanning=false}){Text("Show my code")}
         }
     }
 }

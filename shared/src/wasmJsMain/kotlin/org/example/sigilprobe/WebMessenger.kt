@@ -73,6 +73,8 @@ private val stamped=setOf("post","place","group_create","react","pin","read","ma
     var signOutFailed by remember {mutableStateOf(false)}
     var signOutSaved by remember {mutableStateOf(false)}
     var linking by remember {mutableStateOf<JsonObject?>(null)}
+    var linkingBusy by remember {mutableStateOf(false)}
+    var linkingIssue by remember {mutableStateOf<String?>(null)}
     var contactQr by remember {mutableStateOf<JsonObject?>(null)}
     var photoRevision by remember {mutableIntStateOf(0)}
     var wallpaperRevision by remember {mutableIntStateOf(0)}
@@ -229,7 +231,7 @@ private val stamped=setOf("post","place","group_create","react","pin","read","ma
     suspend fun refresh() {
 state=StateDecoder.state(execute("state"),state,::clock);if(state.phase=="connected"){timeline();transfers();if(state.storage!=null)storage(execute("storage"));if((BrowserDate.now()/1000).toLong()>=accessNext){account(execute("account_access"));accessNext=(BrowserDate.now()/1000).toLong()+30}}}
     LaunchedEffect(Unit) {
-        try {initializeBrowser().awaitBrowser<JsAny?>();startBrowser().awaitBrowser<JsAny?>();refresh();ready=true
+        try {initializeBrowser().awaitBrowser<JsAny?>();startBrowser().awaitBrowser<JsAny?>();refresh();linking=execute("device_link",mapOf("action" to "status")).takeUnless{it.string("stage")=="none"};ready=true
             try{initializeNotificationWasm().awaitBrowser<JsAny?>();notificationsReady=webNotificationsSupported();if(state.phase!="connected" && notificationsReady)webNotificationsDisable().awaitBrowser<JsAny?>()}catch(_:Exception){}
         }
         catch(_:Exception){startupError="Could not open this browser device. Close other Sigil tabs and reload. A current browser with private storage and cross-origin isolation is required."}
@@ -272,6 +274,27 @@ if(browserDocument.visibilityState=="visible" && state.phase=="oidc" && !mutex.i
     fun finishRemoval() {ready=false;browserCameraStop();val keys=(0 until window.localStorage.length).mapNotNull{window.localStorage.key(it)};keys.filter{it.startsWith("messenger.")}.forEach{window.localStorage.removeItem(it)};window.location.reload()}
     val command:Command=command@{name,fields->
         when(name) {
+            "device_link"->{
+                if(linkingBusy)return@command
+                if(fields["action"]=="pause"){linking=null;return@command}
+                linkingBusy=true
+                scope.launch {mutex.withLock {
+                    try {
+                        val result=execute(name,fields)
+                        linking=result.takeUnless{it.string("stage")=="none"};linkingIssue=null
+                        if(result.string("stage")=="done"){
+                            runCatching{refresh()}.onFailure{state=state.copy(issue=it.message)}
+                            if(!result.bool("sponsor")){execute(name,mapOf("action" to "close"));linking=null}
+                        }
+                    }catch(cancelled:CancellationException){throw cancelled}
+                    catch(error:Exception){linkingIssue=error.message?:"Could not complete this linking step. Retry when connected."}
+                    finally {
+                        runCatching{execute(name,mapOf("action" to "status"))}.onSuccess{linking=it.takeUnless{v->v.string("stage")=="none"}}
+                        linkingBusy=false
+                    }
+                }}
+                return@command
+            }
             "forward"->{
                 if(!ready || !forwarding.add(fields.toMap()))return@command
                 scope.launch {
@@ -386,10 +409,6 @@ recoverAccount=true;return@command}
     if(fields["action"]=="scan" && fields["qr"]==null)contactQr=(json(context+mapOf("stage" to "scan")) as JsonObject)
     else {val value=execute(name,context+fields);value.optional("open")?.let{state=state.copy(selected=it);pages=1};contactQr=value.takeUnless{it.string("stage") in listOf("done","none")}?.let{JsonObject(it+(json(context) as JsonObject))};refresh()}
 }
-"device_link"->{
-    if(fields["action"]=="pause")linking=null
-    else {val value=execute(name,fields);linking=value.takeUnless {it.string("stage")=="none"};refresh()}
-}
 "search","search_more"->{
     if(searchVersion==searchGeneration) {
         val value=execute("search",mapOf("query" to state.searchQuery,"category" to searchCategory,"after" to searchAfter))
@@ -468,7 +487,7 @@ Box(Modifier.weight(1f).fillMaxWidth(),contentAlignment=Alignment.Center) {
         val device=linking!=null
         val close={if(!state.busy)command(if(device)"device_link" else "contact_qr",mapOf("action" to if(!device || qr.string("stage")=="done")"close" else if(qr.bool("can_cancel",true))"cancel" else "pause"))}
         Box(Modifier.widthIn(max=600.dp).fillMaxWidth().fillMaxHeight(.94f).onPreviewKeyEvent {if(it.type==KeyEventType.KeyDown && it.key==Key.Escape){close();true}else false}) {
-            if(device)LinkPanel(qr.toString(),state.busy,state.issue,{action,payload->command("device_link",mapOf("action" to action,"qr" to payload))}) {found->WebQrScanner(found)}
+            if(device)LinkPanel(qr.toString(),linkingBusy,linkingIssue,{action,payload->command("device_link",mapOf("action" to action,"qr" to payload))}) {found->WebQrScanner(found)}
             else ContactPanel(qr.toString(),state.busy,state.issue,{action,payload->command("contact_qr",mapOf("action" to action,"qr" to payload))}) {found->WebQrScanner(found)}
         }
     } else screens.SaveableStateProvider("messenger") {

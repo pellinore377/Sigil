@@ -147,7 +147,7 @@ internal fun SignIn(state: MessengerState, command: (String, Map<String, Any?>) 
             Text("Finish signing in with your server.", style = MaterialTheme.typography.bodyMedium)
             SigilButton({ command("resume", emptyMap()) }, enabled = !state.busy) { Text("Continue sign-in") }
         }
-        SigilTextButton({ command("device_link", mapOf("action" to "join")) }, enabled = !state.busy) { Text("Link to an existing device") }
+        SigilTextButton({ command("device_link", mapOf("action" to "join","server" to state.loginAddress)) }, enabled = !state.busy && methods!=null) { Text("Link to an existing device") }
         if (LocalClientFeatures.current.recovery && (methods != null || state.phase != "new")) SigilTextButton({ command("recovery_account_open", emptyMap()) }, enabled = !state.busy) { Text("Recover a lost account") }
         if (state.phase != "new") SigilTextButton({ command("cancel_login", emptyMap()) }, enabled = !state.busy) { Text("Back to sign-in choices") }
     }

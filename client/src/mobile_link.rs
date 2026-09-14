@@ -1,10 +1,14 @@
 use super::*;
 use rusqlite::OptionalExtension;
 use serde::Serialize;
+#[path="mobile_link_relay.rs"] mod relay;
+#[path="mobile_link_transport.rs"] mod transport_flow;
 
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Flow {
+    #[serde(default)]
+    relay:Option<relay::Relay>,
     attempt: Id,
     sponsor: bool,
     stage: String,
@@ -40,7 +44,7 @@ impl ClientStore {
     fn link_flow_binding(&mut self) -> Result<Vec<u8>, Error> {
         Ok([b"Sigil/mobile-link/v1".as_slice(), &self.identity()?].concat())
     }
-    pub(super) fn mobile_link(
+    pub(super) fn link_step(
         &mut self,
         action: &str,
         scanned: Option<&str>,
@@ -79,6 +83,7 @@ impl ClientStore {
             self.identity()?;
             getrandom::fill(&mut attempt).map_err(|_| sigil_crypto::Error::Entropy)?;
             let initial = Flow {
+                relay:None,
                 attempt,
                 sponsor,
                 stage: if sponsor {
@@ -154,9 +159,11 @@ impl ClientStore {
                 self.save_link_flow(&flow)?;
             }
             "finish" if flow.stage == "show_response" => {
-                self.finish_device_link_online(flow.attempt, 443, &[])?;
+                let(port,roots)=relay::endpoint();
+                self.finish_device_link_online(flow.attempt, port, &roots)?;
                 flow.stage = "done".into();
                 flow.qr.clear();
+                flow.relay = None;
                 self.save_link_flow(&flow)?;
             }
             "retry" if flow.stage == "authorize" || flow.stage == "cancelling" => (),
@@ -183,6 +190,7 @@ impl ClientStore {
             self.authorize_sponsored_link_online(flow.attempt)?;
             flow.stage = "done".into();
             flow.response.clear();
+            flow.relay = None;
             self.save_link_flow(&flow)?;
         }
         if flow.stage == "cancelling" && matches!(action, "cancel" | "retry") {
@@ -200,17 +208,6 @@ impl ClientStore {
             value["account"] = json!(self.connection_session()?.ok_or(Error::Unprepared)?.address);
         } else if flow.digest.is_some() {
             value["account"] = json!(self.joining_link_address(flow.attempt)?);
-        }
-        if !flow.qr.is_empty() {
-            let qr =
-                qrcode::QrCode::with_error_correction_level(flow.qr.as_bytes(), qrcode::EcLevel::M)
-                    .map_err(|_| Error::Limit)?;
-            value["width"] = json!(qr.width());
-            value["cells"] = json!(qr
-                .to_colors()
-                .into_iter()
-                .map(|c| if c == qrcode::Color::Dark { '1' } else { '0' })
-                .collect::<String>());
         }
         Ok(value)
     }
@@ -237,7 +234,7 @@ mod tests {
         sponsor.enroll_online().unwrap();
         let mut joining = open(&jp);
         assert_eq!(
-            joining.mobile_link("join", None).unwrap()["stage"],
+            joining.link_step("join", None).unwrap()["stage"],
             "show_offer"
         );
         let offer = joining.link_flow().unwrap().unwrap().qr;
@@ -245,40 +242,40 @@ mod tests {
         let mut joining = open(&jp);
         assert_eq!(joining.link_flow().unwrap().unwrap().qr, offer);
         assert_eq!(
-            sponsor.mobile_link("sponsor", None).unwrap()["stage"],
+            sponsor.link_step("sponsor", None).unwrap()["stage"],
             "scan_offer"
         );
-        assert!(sponsor.mobile_link("confirm", None).is_err());
+        assert!(sponsor.link_step("confirm", None).is_err());
         sponsor.db.execute_batch("CREATE TRIGGER fail_ui BEFORE UPDATE ON mobile_link BEGIN SELECT RAISE(ABORT,'disk failure'); END;").unwrap();
-        assert!(sponsor.mobile_link("scan", Some(&offer)).is_err());
+        assert!(sponsor.link_step("scan", Some(&offer)).is_err());
         sponsor.db.execute_batch("DROP TRIGGER fail_ui;").unwrap();
         drop(sponsor);
         let mut sponsor = open(&sp);
-        let proposal_view = sponsor.mobile_link("scan", Some(&offer)).unwrap();
+        let proposal_view = sponsor.link_step("scan", Some(&offer)).unwrap();
         let proposal = sponsor.link_flow().unwrap().unwrap().qr;
-        assert!(proposal_view["width"].as_u64().unwrap() <= 177);
-        let confirmation = joining.mobile_link("scan", Some(&proposal)).unwrap();
+        assert_eq!(proposal_view["stage"], "show_proposal");
+        let confirmation = joining.link_step("scan", Some(&proposal)).unwrap();
         assert_eq!(confirmation["emoji"], proposal_view["emoji"]);
         assert_eq!(confirmation["stage"], "confirm_join");
         assert_eq!(confirmation["account"], proposal_view["account"]);
-        assert!(joining.mobile_link("finish", None).is_err());
-        joining.mobile_link("confirm", None).unwrap();
+        assert!(joining.link_step("finish", None).is_err());
+        joining.link_step("confirm", None).unwrap();
         let pending = joining.link_flow().unwrap().unwrap();
         assert_eq!(
-            joining.mobile_link("status", None).unwrap()["can_cancel"],
+            joining.link_step("status", None).unwrap()["can_cancel"],
             false
         );
         assert!(matches!(
-            joining.mobile_link("cancel", None),
+            joining.link_step("cancel", None),
             Err(Error::Conflict)
         ));
         assert_eq!(
-            joining.mobile_link("status", None).unwrap()["stage"],
+            joining.link_step("status", None).unwrap()["stage"],
             "show_response"
         );
         let response = pending.qr;
         assert_eq!(
-            sponsor.mobile_link("scan", Some(&response)).unwrap()["stage"],
+            sponsor.link_step("scan", Some(&response)).unwrap()["stage"],
             "confirm_sponsor"
         );
         let mut server = sigil_server::store::Store::open(&dir.path().join("server.db")).unwrap();
@@ -294,15 +291,15 @@ mod tests {
         drop(sponsor);
         let mut sponsor = open(&sp);
         assert_eq!(
-            sponsor.mobile_link("status", None).unwrap()["stage"],
+            sponsor.link_step("status", None).unwrap()["stage"],
             "confirm_sponsor"
         );
         sponsor.db.execute_batch("CREATE TABLE test_ui_writes(n INTEGER); INSERT INTO test_ui_writes VALUES(0);
             CREATE TRIGGER fail_done BEFORE UPDATE ON mobile_link WHEN (SELECT n FROM test_ui_writes)>0 BEGIN SELECT RAISE(ABORT,'disk failure'); END;
             CREATE TRIGGER count_ui AFTER UPDATE ON mobile_link BEGIN UPDATE test_ui_writes SET n=n+1; END;").unwrap();
-        assert!(sponsor.mobile_link("confirm", None).is_err());
+        assert!(sponsor.link_step("confirm", None).is_err());
         assert_eq!(
-            sponsor.mobile_link("status", None).unwrap()["stage"],
+            sponsor.link_step("status", None).unwrap()["stage"],
             "authorize"
         );
         assert_eq!(
@@ -321,7 +318,7 @@ mod tests {
             .unwrap();
         drop(sponsor);
         let mut sponsor = open(&sp);
-        assert_eq!(sponsor.mobile_link("retry", None).unwrap()["stage"], "done");
+        assert_eq!(sponsor.link_step("retry", None).unwrap()["stage"], "done");
         joining
             .finish_device_link_online(
                 pending.attempt,
@@ -331,15 +328,15 @@ mod tests {
             .unwrap();
         // The platform's completion retries the already persisted receipt.
         assert_eq!(
-            joining.mobile_link("finish", None).unwrap()["stage"],
+            joining.link_step("finish", None).unwrap()["stage"],
             "done"
         );
         assert_eq!(
             sponsor.connection_session().unwrap().unwrap().account_id,
             joining.connection_session().unwrap().unwrap().account_id
         );
-        assert_eq!(joining.mobile_link("close", None).unwrap()["stage"], "none");
-        assert!(joining.mobile_link("join", None).is_err());
+        assert_eq!(joining.link_step("close", None).unwrap()["stage"], "none");
+        assert!(joining.link_step("join", None).is_err());
     }
     #[test]
     fn cancellation_is_durable_and_local_frames_are_identity_bound() {
@@ -348,10 +345,10 @@ mod tests {
         prepare(&mut sponsor, &fixture, &invitation.secret);
         sponsor.enroll_online().unwrap();
         let mut joining = open(&dir.path().join("joining.db"));
-        joining.mobile_link("join", None).unwrap();
+        joining.link_step("join", None).unwrap();
         let offer = joining.link_flow().unwrap().unwrap().qr;
-        sponsor.mobile_link("sponsor", None).unwrap();
-        sponsor.mobile_link("scan", Some(&offer)).unwrap();
+        sponsor.link_step("sponsor", None).unwrap();
+        sponsor.link_step("scan", Some(&offer)).unwrap();
         let attempt = sponsor.link_flow().unwrap().unwrap().attempt;
         let raw: Vec<u8> = sponsor
             .db
@@ -362,18 +359,18 @@ mod tests {
             .db
             .execute("UPDATE mobile_link SET state=?1", [raw])
             .unwrap();
-        assert!(joining.mobile_link("status", None).is_err());
+        assert!(joining.link_step("status", None).is_err());
         assert_eq!(
-            sponsor.mobile_link("cancel", None).unwrap()["stage"],
+            sponsor.link_step("cancel", None).unwrap()["stage"],
             "none"
         );
         assert!(matches!(
             sponsor.prepare_sponsored_link(attempt, &offer, conversations::now()),
             Err(Error::Cancelled)
         ));
-        sponsor.mobile_link("sponsor", None).unwrap();
+        sponsor.link_step("sponsor", None).unwrap();
         assert_eq!(
-            sponsor.mobile_link("cancel", None).unwrap()["stage"],
+            sponsor.link_step("cancel", None).unwrap()["stage"],
             "none"
         );
     }
@@ -390,16 +387,16 @@ mod cancellation_tests {
             StorageKey::new(Secret32::from_bytes([19; 32])).unwrap(),
         )
         .unwrap();
-        joining.mobile_link("join", None).unwrap();
-        let offer = joining.mobile_link("status", None).unwrap();
+        joining.link_step("join", None).unwrap();
+        let offer = joining.link_step("status", None).unwrap();
         joining.db.execute_batch("CREATE TRIGGER fail_cancel BEFORE DELETE ON identity BEGIN SELECT RAISE(ABORT,'disk failure'); END;").unwrap();
-        assert!(joining.mobile_link("cancel", None).is_err());
-        assert_eq!(joining.mobile_link("status", None).unwrap(), offer);
+        assert!(joining.link_step("cancel", None).is_err());
+        assert_eq!(joining.link_step("status", None).unwrap(), offer);
         joining
             .db
             .execute_batch("DROP TRIGGER fail_cancel;")
             .unwrap();
-        joining.mobile_link("cancel", None).unwrap();
+        joining.link_step("cancel", None).unwrap();
         crate::connection::tests::prepare(&mut joining, &fixture, &invitation.secret);
         joining.enroll_online().unwrap();
     }

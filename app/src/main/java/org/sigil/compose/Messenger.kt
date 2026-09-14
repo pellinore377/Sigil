@@ -74,13 +74,30 @@ class Messenger(application: Application) : AndroidViewModel(application) {
     }
     var deviceLink by mutableStateOf<JSONObject?>(null)
         private set
+    var deviceLinkIssue by mutableStateOf<String?>(null)
+        private set
+    var deviceLinkBusy by mutableStateOf(false)
+        private set
     private fun linkResult(value: JSONObject) { deviceLink = value.takeUnless { it.getString("stage") == "none" } }
     private fun deviceLink(fields: Map<String, Any?>) {
         if (fields["action"] == "pause") { deviceLink = null; return }
-        scope.launch { serialized(true) {
-        try { linkResult(execute("device_link", fields)); refresh(); NativeSync.enable(getApplication(), state.phase == "connected") }
-        finally { linkResult(execute("device_link", mapOf("action" to "status"))) }
-    } } }
+        if(deviceLinkBusy)return
+        deviceLinkBusy=true
+        scope.launch { mutex.withLock {
+            try {
+                linkResult(execute("device_link", fields));deviceLinkIssue=null
+                if(deviceLink?.optString("stage")=="done") {
+                    attempt(false){refresh();NativeSync.enable(getApplication(),state.phase=="connected")}
+                    if(deviceLink?.optBoolean("sponsor")==false)linkResult(execute("device_link",mapOf("action" to "close")))
+                }
+            }catch(cancelled:CancellationException){throw cancelled}
+            catch(error:Exception){deviceLinkIssue=if(error is NativeFailure)error.message else "Could not complete this linking step. Retry when connected."}
+            finally {
+                try{linkResult(execute("device_link",mapOf("action" to "status")))}catch(_:Exception){}
+                deviceLinkBusy=false
+            }
+        } }
+    }
     fun notificationPermissionResult() { notificationPermission = false; state = state.copy(notifications = NativeNotifications.settings(getApplication())) }
     fun pickerOpened() { picker = null }
     var wallpaperRevision by mutableStateOf(0L)
