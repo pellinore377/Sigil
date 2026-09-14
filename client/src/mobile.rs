@@ -96,6 +96,7 @@ enum Command {
     DeviceLink {
         action: String,
         qr: Option<String>,
+        choice: Option<String>,
         server:Option<String>,
     },
     Devices {
@@ -478,6 +479,7 @@ fn error_message(error: &Error) -> String {
         Error::Network(network::Error::Status { code: 429, .. }) => {
             "The server asked us to wait. Queued messages will retry."
         }
+        Error::Network(network::Error::Status { code: 507, .. }) => "A recipient's inbox is full. Messages are queued and will retry as space becomes available.",
         Error::Network(network::Error::Status { code, .. }) => return format!("Server request failed (HTTP {code})."),
         Error::Network(network::Error::InvalidResponse) => "The server returned an invalid response.",
         Error::Network(network::Error::Configuration) => "The server address or connection configuration is invalid.",
@@ -750,7 +752,7 @@ impl ClientStore {
                 Ok(json!({}))
             }
             Command::LeaveGroup { peer } => self.mobile_leave_group(&peer),
-            Command::DeviceLink { action, qr,server } => self.mobile_link(&action, qr.as_deref(),server.as_deref()),
+            Command::DeviceLink { action, qr, choice, server } => self.mobile_link(&action, if action == "confirm" { choice.as_deref() } else { qr.as_deref() }, server.as_deref()),
             Command::Devices { cursor } => self.mobile_devices(cursor),
             Command::SignOut {} => {
                 let session = self.connection_session()?.ok_or(Error::Unprepared)?;

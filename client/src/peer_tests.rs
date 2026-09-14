@@ -35,6 +35,42 @@ fn changed(original: &[u8], key: &IdentityKey) -> Vec<u8> {
 }
 
 #[test]
+fn linked_contact_anchors_preserve_blocks_and_identity_conflicts() {
+    let (_dir,_fixture,mut alice,mut bob,_)=crate::claims::tests::pair();
+    let original=bob.own_device_binding().unwrap();
+    let peer=alice.observe_peer_binding(&original).unwrap();
+    let anchor=ContactAnchor {statement:transport::hex(&original),verified:false};
+    {
+        let tx=alice.db.transaction().unwrap();
+        import_contact_anchor(&tx,&alice.key,&anchor).unwrap();
+        tx.commit().unwrap();
+    }
+    assert!(alice.peer(peer.id).unwrap().trusted);
+    assert!(!alice.peer(peer.id).unwrap().verified);
+    let replacement=changed(&original,&IdentityKey::generate().unwrap());
+    let candidate=alice.observe_peer_binding(&replacement).unwrap().changed_fingerprint;
+    {
+        let tx=alice.db.transaction().unwrap();
+        import_contact_anchor(&tx,&alice.key,&ContactAnchor {statement:anchor.statement.clone(),verified:true}).unwrap();
+        tx.commit().unwrap();
+    }
+    let current=alice.peer(peer.id).unwrap();
+    assert!(!current.trusted);
+    assert_eq!(current.changed_fingerprint,candidate);
+    alice.block_peer(peer.id,true).unwrap();
+    {
+        let tx=alice.db.transaction().unwrap();
+        import_contact_anchor(&tx,&alice.key,&anchor).unwrap();
+        tx.commit().unwrap();
+    }
+    assert!(alice.peer(peer.id).unwrap().blocked);
+    let mut malformed=original;
+    *malformed.last_mut().unwrap()^=1;
+    let tx=alice.db.transaction().unwrap();
+    assert!(import_contact_anchor(&tx,&alice.key,&ContactAnchor {statement:transport::hex(&malformed),verified:true}).is_err());
+}
+
+#[test]
 #[cfg_attr(
     debug_assertions,
     ignore = "bulk cryptographic boundary acceptance; run cargo test --release -p sigil-client --lib"

@@ -1,6 +1,16 @@
 //! Fair, bounded scheduling over existing durable packet journals.
 use super::*;
 
+pub(crate) fn recipient_full(error: &network::Error) -> bool {
+    matches!(
+        error,
+        network::Error::Status {
+            code: 507,
+            retry_after_seconds: None
+        }
+    )
+}
+
 #[derive(Debug)]
 pub struct OutboundAttempt {
     pub session: Id,
@@ -33,7 +43,8 @@ fn cursor(
 impl ClientStore {
     /// Attempt up to four queued packets from each of at most 16 sessions. Queue order
     /// within each session is preserved. Local errors do not starve other sessions;
-    /// network errors stop the pass so callers can honor Retry-After. Cursor wrap
+    /// recipient capacity errors leave other sessions running; transport errors
+    /// stop the pass so callers can honor Retry-After. Cursor wrap
     /// takes an empty pass. Unprepared packets require application intervention.
     pub fn resume_outbound_online(&mut self, now: u64) -> Result<Vec<OutboundAttempt>, Error> {
         if now == 0 || now > i64::MAX as u64 {
@@ -50,7 +61,7 @@ impl ClientStore {
         for bytes in ids {
             let session: Id = bytes.try_into().map_err(|_| Error::InvalidStore)?;
             let result = self.send_pending_limit(session, now, 4);
-            let stop = matches!(result, Err(Error::Network(_)));
+            let stop = matches!(&result, Err(Error::Network(error)) if !recipient_full(error));
             attempts.push(OutboundAttempt { session, result });
             next = session.to_vec();
             if stop {
@@ -82,6 +93,108 @@ mod tests {
             StorageKey::new(sigil_crypto::Secret32::from_bytes([9; 32])).unwrap(),
         )
         .unwrap()
+    }
+    #[test]
+    fn full_recipient_does_not_stall_another_queue_or_discard_packets() {
+        use crate::connection::tests::{credential, prepare};
+        use sigil_protocol::{accounts::InviteRequest, mailbox::Submit};
+        let (dir, fixture, mut alice, mut bob, now) = pair();
+        let mut server = sigil_server::store::Store::open(&dir.path().join("server.db")).unwrap();
+        let invite = server
+            .invite(
+                InviteRequest {
+                    username: "charlie".into(),
+                    expires_in_seconds: 60,
+                },
+                now,
+            )
+            .unwrap();
+        let mut charlie = reopen(&dir.path().join("charlie.db"));
+        prepare(&mut charlie, &fixture, &invite.secret);
+        charlie.enroll_online().unwrap();
+        server
+            .allow_sender(
+                &credential(&charlie),
+                &alice.connection_session().unwrap().unwrap().device_id,
+                now,
+            )
+            .unwrap();
+        charlie
+            .prepare_prekey_publication([80; 32], true, 3600)
+            .unwrap();
+        charlie.publish_prekey_online([80; 32]).unwrap();
+        let (_, b) = trust(&mut alice, &mut bob);
+        let (_, c) = trust(&mut alice, &mut charlie);
+        for (n, peer) in [(0u8, b), (1, c)] {
+            alice.prepare_peer_claim([n; 32], peer).unwrap();
+            alice.claim_prekey_online([n; 32], now).unwrap();
+            alice
+                .start_claimed_text([n; 32], [n; 32], [n; 32], "queued", now, now)
+                .unwrap();
+        }
+        let recipient = bob.connection_session().unwrap().unwrap().device_id;
+        let mut receipts = Vec::new();
+        for n in 64..128u8 {
+            receipts.push(
+                server
+                    .submit_message(
+                        &credential(&alice),
+                        Submit {
+                            recipient_device: recipient.clone(),
+                            message_id: transport::hex(&[n; 32]),
+                            payload: "11".repeat(32),
+                            expires_at: now + 3600,
+                        },
+                        now,
+                    )
+                    .unwrap(),
+            );
+        }
+        let frozen = serde_json::to_vec(&alice.pending_deliveries([0; 32], now).unwrap()).unwrap();
+        let attempts = alice.resume_outbound_online(now).unwrap();
+        assert_eq!(attempts.len(), 2);
+        assert!(matches!(&attempts[0].result,Err(Error::Network(error)) if recipient_full(error)));
+        assert_eq!(attempts[1].result.as_ref().unwrap().accepted, 1);
+        assert_eq!(
+            charlie.connected_client().unwrap().mailbox().unwrap().len(),
+            1
+        );
+        assert_eq!(
+            serde_json::to_vec(&alice.pending_deliveries([0; 32], now).unwrap()).unwrap(),
+            frozen
+        );
+        assert!(alice.resume_outbound_online(now).unwrap().is_empty());
+        let step = alice.sync_step_online(now);
+        assert!(
+            step.failure.is_none(),
+            "A recipient limit must not become a server outage"
+        );
+        assert!(step.maintenance.is_some());
+        assert!(
+            step.outbound
+                .iter()
+                .any(|a| matches!(&a.result,Err(Error::Network(e)) if recipient_full(e)))
+        );
+        for receipt in receipts {
+            server
+                .acknowledge_message(&credential(&bob), receipt.sequence, now)
+                .unwrap();
+        }
+        assert!(alice.resume_outbound_online(now).unwrap().is_empty());
+        assert_eq!(
+            alice.resume_outbound_online(now).unwrap()[0]
+                .result
+                .as_ref()
+                .unwrap()
+                .accepted,
+            1
+        );
+        assert!(
+            bob.receive_mailbox_online(now)
+                .unwrap()
+                .iter()
+                .all(|a| a.result.is_ok())
+        );
     }
     #[test]
     fn cursor_bounds_errors_includes_zero_and_survives_restart() {

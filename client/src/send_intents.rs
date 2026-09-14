@@ -396,7 +396,8 @@ impl ClientStore {
         for raw in ids {
             let id: Id = raw.try_into().map_err(|_| Error::InvalidStore)?;
             let result = self.prepare_send_intent_online(id, now);
-            let stop = matches!(result, Err(Error::Network(_)));
+            let stop =
+                matches!(&result, Err(Error::Network(e)) if !crate::outbound::recipient_full(e));
             results.push(SendIntentAttempt { id, result });
             next = id.to_vec();
             if stop {

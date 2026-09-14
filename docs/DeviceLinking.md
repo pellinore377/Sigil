@@ -5,12 +5,14 @@
 Linking needs one physical scan and approval on the existing device:
 
 1. The joining installation displays a QR containing its offer, canonical server, relay ID, phone capability and a fresh 32-byte secret. The existing device scans it directly.
-2. The devices exchange their existing encrypted proposal and signed response through HTTPS relay slots, additionally authenticated with the QR secret. Both display the same account and eight confirmation symbols.
-3. The user checks the symbols and approves on the existing device. It submits the complete signed proof; the joining installation retrieves and verifies it, installs its connection, and signs in automatically. The computer needs no camera.
+2. The devices exchange their existing encrypted proposal and signed response through HTTPS relay slots, additionally authenticated with the QR secret. The joining device displays one emoji; the existing device displays six choices.
+3. The user selects the matching emoji on the existing device. It submits the complete signed proof; the joining installation retrieves and verifies it, installs its connection, and signs in automatically. The computer needs no camera.
 
 The QR uses `sigil:link:v1:relay:` followed by bounded JSON. The secret never reaches the relay server. Forwarded screenshots and unsolicited codes must not replace scanning the intended device. The internal offer/proposal/response encodings remain unchanged.
 
-`emoji_confirmation` maps the first 48 bits of the transcript digest to eight symbols from a fixed 64-entry alphabet. Symbols are supplementary: trust requires the QR secret, authenticated full transcript and signed proof, not the short string alone. Joining consent is generated only after verifying the QR-secret-authenticated proposal; sponsor consent requires explicit user approval.
+The displayed emoji is the first symbol from `emoji_confirmation`; the five distinct alternatives and their order are transcript-derived. This is supplementary user confirmation, not a six-choice cryptographic authentication mechanism. Trust requires the QR secret, authenticated full transcript and signed proof. Joining consent is generated only after verifying the QR-secret-authenticated proposal; sponsor consent requires selecting the matching emoji.
+
+Existing accepted contacts bootstrap through same-account encrypted conversation synchronization. A dedicated private scope carries bounded, hashed contact snapshots in existing `UiSetting` fragments, preserving compatibility with older clients. Only complete snapshots import signed trust anchors; independent-verification status is preserved, not inferred. Existing contact decisions and conflicting/blocked peer records are not overwritten. Catalog state is excluded from recovery archives and forwarded only by its authoring device; imported contacts can publish fresh snapshots from their own live trust store.
 
 ## Encodings and cryptography
 

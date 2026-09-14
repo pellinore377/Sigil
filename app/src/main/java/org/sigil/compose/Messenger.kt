@@ -167,7 +167,7 @@ class Messenger(application: Application) : AndroidViewModel(application) {
                         val result = execute("sync", mapOf("interactive" to true))
                         nextSync = result.getLong("next_at")
                         val issue = result.optional("issue")
-                        if (issue != null || (result.getBoolean("ran") && !result.getBoolean("pending"))) {
+                        if (issue != null || result.getBoolean("ran")) {
                             if (state.issue == syncIssue || issue != null) state = state.copy(issue = issue)
                             syncIssue = issue
                         }

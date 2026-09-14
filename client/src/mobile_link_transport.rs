@@ -69,6 +69,11 @@ impl ClientStore {
             if !flow.sponsor || flow.stage != "confirm_sponsor" {
                 return Err(Error::Conflict);
             }
+            let expected =
+                crate::link::emoji_confirmation(flow.digest.ok_or(Error::Unprepared)?)[0];
+            if scanned != Some(expected) {
+                return Err(Error::InvalidEvent);
+            }
             self.link_step("confirm", None)?;
         } else if !matches!(action, "join" | "sponsor" | "poll" | "retry") {
             return Err(Error::InvalidEvent);
@@ -156,6 +161,37 @@ impl ClientStore {
             return Ok(value);
         };
         let mut value = self.link_step("status", None)?;
+        if let Some(digest) = flow.digest {
+            let correct = crate::link::emoji_confirmation(digest)[0];
+            if flow.sponsor {
+                let mut choices = vec![correct];
+                for n in 0u32..1024 {
+                    let hash: Id = sha2::Sha256::digest(
+                        [
+                            b"Sigil/link-choices/v1".as_slice(),
+                            &digest,
+                            &n.to_be_bytes(),
+                        ]
+                        .concat(),
+                    )
+                    .into();
+                    let emoji = crate::link::emoji_confirmation(hash)[0];
+                    if !choices.contains(&emoji) {
+                        choices.push(emoji);
+                    }
+                    if choices.len() == 6 {
+                        break;
+                    }
+                }
+                choices.sort_by_key(|emoji| {
+                    sha2::Sha256::digest([digest.as_slice(), emoji.as_bytes()].concat()).to_vec()
+                });
+                value["choices"] = json!(choices);
+                value.as_object_mut().unwrap().remove("emoji");
+            } else {
+                value["emoji"] = json!([correct]);
+            }
+        }
         value.as_object_mut().unwrap().remove("cells");
         value.as_object_mut().unwrap().remove("width");
         match flow.stage.as_str() {
@@ -235,7 +271,15 @@ mod tests {
         let mut phone = open(&phone_path);
         let approval = phone.mobile_link("poll", None, None).unwrap();
         assert_eq!(approval["stage"], "confirm_sponsor");
-        assert_eq!(waiting["emoji"], approval["emoji"]);
+        let correct = waiting["emoji"][0].as_str().unwrap();
+        assert!(
+            approval["choices"]
+                .as_array()
+                .unwrap()
+                .contains(&json!(correct))
+        );
+        assert!(approval.get("emoji").is_none());
+        assert!(phone.mobile_link("confirm", Some("wrong"), None).is_err());
         assert_eq!(server.admin_diagnostics(now).unwrap()["devices"], 1);
         assert!(matches!(browser.connection_session(), Err(Error::NotFound)));
         assert!(browser.mobile_link("confirm", None, None).is_err());
@@ -244,7 +288,7 @@ mod tests {
             "wait_approval"
         );
         assert_eq!(
-            phone.mobile_link("confirm", None, None).unwrap()["stage"],
+            phone.mobile_link("confirm", Some(correct), None).unwrap()["stage"],
             "done"
         );
         assert_eq!(

@@ -75,6 +75,7 @@ private val stamped=setOf("post","place","group_create","react","pin","read","ma
     var linking by remember {mutableStateOf<JsonObject?>(null)}
     var linkingBusy by remember {mutableStateOf(false)}
     var linkingIssue by remember {mutableStateOf<String?>(null)}
+    var syncIssue by remember {mutableStateOf<String?>(null)}
     var contactQr by remember {mutableStateOf<JsonObject?>(null)}
     var photoRevision by remember {mutableIntStateOf(0)}
     var wallpaperRevision by remember {mutableIntStateOf(0)}
@@ -244,8 +245,8 @@ if(browserDocument.visibilityState=="visible" && state.phase=="oidc" && !mutex.i
     catch(_:Exception){}
 }
             if(browserDocument.visibilityState=="visible" && state.phase=="connected" && !mutex.isLocked) {
-                try {mutex.withLock {val result=execute("sync",mapOf("interactive" to true));refresh();if((BrowserDate.now()/1000).toLong()>=fileNext)fileWork();runCatching{notificationWork()};result.optional("issue")?.let {state=state.copy(issue=it)}}}
-                catch(e:Exception){state=state.copy(issue=e.message?:"Synchronization failed. Your queued messages are preserved.")}
+                try {mutex.withLock {val result=execute("sync",mapOf("interactive" to true));refresh();if((BrowserDate.now()/1000).toLong()>=fileNext)fileWork();runCatching{notificationWork()};val issue=result.optional("issue");if(issue!=null || result.bool("ran")){if(state.issue==syncIssue || issue!=null)state=state.copy(issue=issue);syncIssue=issue}}}
+                catch(e:Exception){syncIssue=e.message?:"Synchronization failed. Your queued messages are preserved.";state=state.copy(issue=syncIssue)}
             }
         }
     }
@@ -487,7 +488,7 @@ Box(Modifier.weight(1f).fillMaxWidth(),contentAlignment=Alignment.Center) {
         val device=linking!=null
         val close={if(!state.busy)command(if(device)"device_link" else "contact_qr",mapOf("action" to if(!device || qr.string("stage")=="done")"close" else if(qr.bool("can_cancel",true))"cancel" else "pause"))}
         Box(Modifier.widthIn(max=600.dp).fillMaxWidth().fillMaxHeight(.94f).onPreviewKeyEvent {if(it.type==KeyEventType.KeyDown && it.key==Key.Escape){close();true}else false}) {
-            if(device)LinkPanel(qr.toString(),linkingBusy,linkingIssue,{action,payload->command("device_link",mapOf("action" to action,"qr" to payload))}) {found->WebQrScanner(found)}
+            if(device)LinkPanel(qr.toString(),linkingBusy,linkingIssue,{action,payload->command("device_link",mapOf("action" to action,(if(action=="confirm")"choice" else "qr") to payload))}) {found->WebQrScanner(found)}
             else ContactPanel(qr.toString(),state.busy,state.issue,{action,payload->command("contact_qr",mapOf("action" to action,"qr" to payload))}) {found->WebQrScanner(found)}
         }
     } else screens.SaveableStateProvider("messenger") {

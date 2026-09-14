@@ -98,6 +98,31 @@ fn copyable(db: &Connection, key: &StorageKey, e: &Entry) -> Result<Option<bool>
     if e.operation.ephemeral() || matches!(e.operation.action, Action::SyncPart { .. }) {
         return Ok(Some(false));
     }
+    if let Action::Private {
+        value: Private::UiSetting { key: name, .. },
+        ..
+    } = &e.operation.action
+    {
+        let mut latest = order(&e.operation);
+        visit(
+            db,
+            key,
+            "SELECT id,CASE WHEN length(state)<=574000 THEN state END FROM conversation_ops WHERE scope=?1 AND kind=1 ORDER BY id",
+            &scope(key, &e.conversation)?,
+            |entry| {
+                if entry.conversation != e.conversation {
+                    return Err(Error::InvalidStore);
+                }
+                if entry.author == e.author
+                    && matches!(&entry.operation.action,Action::Private {value:Private::UiSetting{key,..},..} if key==name)
+                {
+                    latest = latest.clone().max(order(&entry.operation));
+                }
+                Ok(())
+            },
+        )?;
+        return Ok(Some(order(&e.operation) == latest));
+    }
     if let Action::Edit { target, .. } = &e.operation.action {
         return Ok(original(db, key, &e.conversation, target)?.map(|p| {
             p.author == e.author
@@ -575,7 +600,7 @@ impl ClientStore {
         self.queue_direct_operation(&[peer], operation, timestamp, now)
     }
 }
-fn new_operation(
+pub(crate) fn new_operation(
     tx: &Transaction<'_>,
     key: &StorageKey,
     own: Id,
@@ -756,7 +781,7 @@ pub struct Preferences {
     pub drafts: Vec<Draft>,
     pub ui: std::collections::BTreeMap<String, String>,
 }
-fn preferences(
+pub(crate) fn preferences(
     db: &Connection,
     key: &StorageKey,
     conversation: Id,
@@ -1596,6 +1621,7 @@ fn history_id(e: &Entry) -> Id {
     .into()
 }
 fn archive_new(tx: &Transaction<'_>, key: &StorageKey, e: &Entry) -> Result<(), Error> {
+    if e.conversation==crate::mobile::contacts::catalog::scope(e.author,e.operation.version.device) {return Ok(());}
     if !recovery::configured(tx)? || copyable(tx, key, e)? != Some(true) {
         return Ok(());
     }
