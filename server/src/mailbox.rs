@@ -1,23 +1,24 @@
 use crate::{
+    AppState,
     enrollment::{bearer, native_only, now},
     error,
     prekeys::{active, authorize},
     store::{Store, StoreError},
-    store_error, with_store, AppState,
+    store_error, with_store,
 };
 use axum::{
-    extract::{rejection::JsonRejection, Path, RawQuery, State},
+    Json, Router,
+    extract::{Path, RawQuery, State, rejection::JsonRejection},
     http::{HeaderMap, StatusCode},
     middleware,
     response::{IntoResponse, Response},
     routing::{delete, get, post},
-    Json, Router,
 };
 use rusqlite::{OptionalExtension, TransactionBehavior};
 use sha2::{Digest, Sha256};
 use sigil_protocol::{
     accounts::valid_credential,
-    mailbox::{Delivery, Receipt, Submit, MAX_BODY, MAX_PAYLOAD_HEX},
+    mailbox::{Delivery, MAX_BODY, MAX_PAYLOAD_HEX, Receipt, Submit},
 };
 use tower_http::limit::RequestBodyLimitLayer;
 
@@ -37,6 +38,24 @@ impl Store {
         &mut self,
         credential: &str,
         request: Submit,
+        now: u64,
+    ) -> Result<Receipt, StoreError> {
+        self.submit_message_inner(credential, request, None, now)
+    }
+    pub fn submit_recovery_message(
+        &mut self,
+        credential: &str,
+        request: Submit,
+        proof: &str,
+        now: u64,
+    ) -> Result<Receipt, StoreError> {
+        self.submit_message_inner(credential, request, Some(proof), now)
+    }
+    fn submit_message_inner(
+        &mut self,
+        credential: &str,
+        request: Submit,
+        proof: Option<&str>,
         now: u64,
     ) -> Result<Receipt, StoreError> {
         if !valid_credential(&request.recipient_device)
@@ -70,6 +89,10 @@ impl Store {
             return Err(StoreError::NotFound);
         }
         crate::admission::check(&tx, &sender, &request.recipient_device)?;
+        let recovery = proof
+            .map(|proof| recovery_reserve(&tx, &sender, &request, proof, now))
+            .transpose()?
+            .unwrap_or(false);
         let hash = Sha256::digest(request.payload.as_bytes());
         let previous: Option<(i64,String,Vec<u8>,i64)> = tx.query_row("SELECT sequence,recipient,payload_hash,expires_at FROM mailbox WHERE sender=?1 AND message_id=?2", (&sender,&request.message_id), |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?))).optional()?;
         if let Some((sequence, recipient, old_hash, expiry)) = previous {
@@ -102,8 +125,8 @@ impl Store {
             (&request.recipient_device, &sender, now as i64),
             |r| r.get(0),
         )?;
-        if peer_pending >= 64
-            || pending >= 256
+        if peer_pending >= 64 + u32::from(recovery)
+            || pending >= 256 + 4 * u32::from(recovery)
             || used.saturating_add(request.payload.len() as u64) > quota
         {
             return Err(StoreError::MailboxFull);
@@ -190,6 +213,87 @@ impl Store {
     }
 }
 
+// One extra packet per pair lets signed recovery proceed without discarding the
+// failed original. Account storage quotas and normal sender admission still apply.
+fn recovery_reserve(
+    tx: &rusqlite::Transaction<'_>,
+    sender: &str,
+    message: &Submit,
+    proof: &str,
+    now: u64,
+) -> Result<bool, StoreError> {
+    use sigil_protocol::{device::SignedBinding, retry::Request};
+    let invalid = || StoreError::Invalid("invalid recovery authorization");
+    if proof.len() != sigil_protocol::retry::BYTES * 2
+        || !proof
+            .bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+    {
+        return Err(invalid());
+    }
+    let bytes = proof
+        .as_bytes()
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .map(|p| {
+            u8::from_str_radix(std::str::from_utf8(p).map_err(|_| invalid())?, 16)
+                .map_err(|_| invalid())
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let request = Request::from_bytes(&bytes).map_err(|_| invalid())?;
+    let hex = |bytes: &[u8]| bytes.iter().map(|b| format!("{b:02x}")).collect::<String>();
+    let id = Sha256::digest(
+        [
+            b"Sigil/retry-request-id/v0".as_slice(),
+            &request.requester,
+            &request.target,
+            &request.message,
+        ]
+        .concat(),
+    );
+    if message.message_id != hex(&id) || message.expires_at != request.expires_at {
+        return Err(invalid());
+    }
+    let (requester, target) = if message.payload == proof {
+        (sender, message.recipient_device.as_str())
+    } else {
+        (message.recipient_device.as_str(), sender)
+    };
+    let mut identity = None;
+    for (device, expected) in [(requester, request.requester), (target, request.target)] {
+        let statement: Vec<u8> = tx
+            .query_row(
+                "SELECT statement FROM device_bindings WHERE device=?1 AND length(statement)<=512",
+                [device],
+                |r| r.get(0),
+            )
+            .optional()?
+            .ok_or_else(invalid)?;
+        let binding = SignedBinding::from_bytes(&statement)
+            .map_err(|_| invalid())?
+            .binding;
+        if hex(&binding.device) != device
+            || Sha256::digest(binding.signing_bytes().map_err(|_| invalid())?).as_slice()
+                != expected
+        {
+            return Err(invalid());
+        }
+        if device == requester {
+            identity = Some(binding.identity);
+        }
+    }
+    sigil_crypto::verify_signature(
+        &identity.ok_or_else(invalid)?,
+        &request.signing_bytes().map_err(|_| invalid())?,
+        &request.signature,
+    )
+    .map_err(|_| invalid())?;
+    Ok(tx.query_row(
+        "SELECT EXISTS(SELECT 1 FROM mailbox WHERE sender=?1 AND recipient=?2 AND message_id=?3 AND payload IS NOT NULL AND expires_at>?4)",
+        (target, requester, hex(&request.message), now as i64), |r| r.get(0))?)
+}
+
 pub(crate) fn routes() -> Router<AppState> {
     Router::new()
         .route("/client/v0/messages", post(submit))
@@ -211,10 +315,27 @@ async fn submit(
         Ok(Json(v)) => v,
         Err(e) => return error(e.status(), "invalid_request", "Invalid message request"),
     };
+    if headers.get_all(sigil_protocol::mailbox::RECOVERY_HEADER).iter().count() > 1 {
+        return error(StatusCode::BAD_REQUEST, "invalid_request", "Invalid recovery authorization");
+    }
+    let proof = match headers.get(sigil_protocol::mailbox::RECOVERY_HEADER) {
+        Some(value) => match value.to_str() {
+            Ok(value) => Some(value.to_owned()),
+            Err(_) => {
+                return error(
+                    StatusCode::BAD_REQUEST,
+                    "invalid_request",
+                    "Invalid recovery authorization",
+                );
+            }
+        },
+        None => None,
+    };
     let log = state.ciphertext_log.clone();
     let record = log.capture(&request);
-    match with_store(state, move |store| {
-        store.submit_message(&token, request, now()?)
+    match with_store(state, move |store| match proof {
+        Some(proof) => store.submit_recovery_message(&token, request, &proof, now()?),
+        None => store.submit_message(&token, request, now()?),
     })
     .await
     {
@@ -248,7 +369,7 @@ async fn poll(
                 StatusCode::BAD_REQUEST,
                 "invalid_request",
                 "Invalid mailbox cursor",
-            )
+            );
         }
     };
     match with_store(state, move |store| {

@@ -124,7 +124,7 @@ impl ClientStore {
         let peer = peers::known(&self.db, &self.key, &record.peer)?;
         let packet =
             self.prepare_delivery(session, id, peer.binding.device, request.expires_at, now)?;
-        let receipt = self.connected_client()?.submit(&packet)?;
+        let receipt = self.connected_client()?.submit_recovery(&packet, Some(&record.packet))?;
         self.acknowledge_sent(session, id, &receipt)?;
         Ok(receipt)
     }

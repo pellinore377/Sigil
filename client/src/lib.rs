@@ -80,6 +80,12 @@ pub enum Error {
     Storage(rusqlite::Error),
     Io(std::io::Error),
     Crypto(sigil_crypto::Error),
+    ReceiveAuthentication {
+        sessions: u8,
+        replay: u8,
+        limit: u8,
+        other: u8,
+    },
     InvalidStore,
     InvalidEvent,
     Conflict,

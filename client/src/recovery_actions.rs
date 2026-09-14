@@ -117,7 +117,7 @@ impl ClientStore {
                 |r| r.get::<_, bool>(0),
             );
             match live {
-                Ok(false) => matches!(error, Error::Crypto(sigil_crypto::Error::Authentication)),
+                Ok(false) => matches!(error, Error::ReceiveAuthentication { sessions: 0, .. }),
                 Ok(true) => false,
                 Err(_) => return RecoveryAdvice::Refused(RecoveryBlock::LocalState),
             }

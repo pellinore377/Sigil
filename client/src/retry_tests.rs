@@ -17,6 +17,128 @@ fn count(client: &ClientStore, table: &str) -> i64 {
         .unwrap()
 }
 #[test]
+fn full_inboxes_recover_without_discarding_failed_delivery() {
+    use crate::connection::tests::credential;
+    let (dir, _fixture, mut alice, mut bob, now) = pair();
+    let (_, b) = trust(&mut alice, &mut bob);
+    alice.publish_device_binding_online().unwrap();
+    bob.publish_device_binding_online().unwrap();
+    start(&mut alice, b, now);
+    let original = next(&bob);
+    bob.db.execute("UPDATE prekeys SET state=NULL", []).unwrap();
+    assert!(bob.accept_delivery(&original).is_err());
+    let mut server = sigil_server::store::Store::open(&dir.path().join("server.db")).unwrap();
+    for n in 64..127u8 {
+        server
+            .submit_message(
+                &credential(&alice),
+                Submit {
+                    recipient_device: bob.connection_session().unwrap().unwrap().device_id,
+                    message_id: transport::hex(&[n; 32]),
+                    payload: "11".repeat(32),
+                    expires_at: now + 3600,
+                },
+                now,
+            )
+            .unwrap();
+    }
+    for n in 128..192u8 {
+        server.submit_message(&credential(&bob), Submit {
+            recipient_device: alice.connection_session().unwrap().unwrap().device_id,
+            message_id: transport::hex(&[n; 32]),
+            payload: "11".repeat(32),
+            expires_at: now + 3600,
+        }, now).unwrap();
+    }
+    let id = bob.prepare_retry_request(&original, now).unwrap();
+    let control = bob.send_retry_request_online(id, now).unwrap();
+    let control = alice.connected_client().unwrap().mailbox_after(control.sequence - 1).unwrap().remove(0);
+    alice.accept_retry_request(&control, now).unwrap();
+    bob.prepare_prekey_publication([80; 32], true, 3600)
+        .unwrap();
+    bob.publish_prekey_online([80; 32]).unwrap();
+    let attempts = alice.resume_retries_online(now).unwrap();
+    assert_eq!(attempts.len(), 1);
+    let receipt = attempts[0].result.as_ref().unwrap();
+    assert!(!bob.resolve_failed_delivery(&original).unwrap());
+    assert_eq!(bob.acknowledge_incoming_online().unwrap(), 0);
+    assert_eq!(next(&bob), original);
+    let response = bob
+        .connected_client()
+        .unwrap()
+        .mailbox_after(receipt.sequence - 1)
+        .unwrap()
+        .remove(0);
+    assert_eq!(response.message_id, transport::hex(&id));
+    let proof = read(&bob.db, &bob.key, "retry_outbox", &id)
+        .unwrap()
+        .unwrap()
+        .packet;
+    let mut packet = Submit {
+        recipient_device: bob.connection_session().unwrap().unwrap().device_id,
+        message_id: response.message_id.clone(),
+        payload: response.payload.clone(),
+        expires_at: response.expires_at,
+    };
+    for byte in [8, 40, 72, 104, 112, 175] {
+        let mut bad = proof.clone();
+        bad[byte] ^= 1;
+        assert!(
+            server
+                .submit_recovery_message(
+                    &credential(&alice),
+                    serde_json::from_value(serde_json::to_value(&packet).unwrap()).unwrap(),
+                    &transport::hex(&bad),
+                    now
+                )
+                .is_err()
+        );
+    }
+    packet.message_id = transport::hex(&[128; 32]);
+    assert!(matches!(
+        server.submit_message(
+            &credential(&alice),
+            serde_json::from_value(serde_json::to_value(&packet).unwrap()).unwrap(),
+            now
+        ),
+        Err(sigil_server::store::StoreError::MailboxFull)
+    ));
+    assert!(
+        server
+            .submit_recovery_message(
+                &credential(&alice),
+                serde_json::from_value(serde_json::to_value(&packet).unwrap()).unwrap(),
+                &transport::hex(&proof),
+                now
+            )
+            .is_err()
+    );
+    let mut second = Request::from_bytes(&proof).unwrap();
+    second.message = [64; 32];
+    let tx = bob.db.transaction().unwrap();
+    second.signature = handshake::identity(&tx, &bob.key)
+        .unwrap()
+        .sign(&second.signing_bytes().unwrap())
+        .unwrap();
+    drop(tx);
+    packet.message_id = transport::hex(&super::id(&second));
+    assert!(matches!(
+        server.submit_recovery_message(
+            &credential(&alice),
+            packet,
+            &transport::hex(&second.to_bytes().unwrap()),
+            now
+        ),
+        Err(sigil_server::store::StoreError::MailboxFull)
+    ));
+    let received = bob.accept_delivery(&response).unwrap();
+    assert_eq!(received.text().unwrap().body, "synthetic initial");
+    assert!(bob.resolve_failed_delivery(&original).unwrap());
+    assert_eq!(bob.acknowledge_incoming_online().unwrap(), 2);
+    assert_ne!(next(&bob).sequence, original.sequence);
+}
+
+#[test]
 fn signed_retry_survives_restart_lost_receipt_and_atomic_claim_staging() {
     let (dir, _fixture, mut alice, mut bob, now) = pair();
     let (_a, b) = trust(&mut alice, &mut bob);

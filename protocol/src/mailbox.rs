@@ -2,6 +2,7 @@ use serde::{Deserialize, Serialize};
 
 pub const MAX_PAYLOAD_HEX: usize = 134460;
 pub const MAX_BODY: usize = 140 * 1024;
+pub const RECOVERY_HEADER: &str = "sigil-recovery-request";
 
 #[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]

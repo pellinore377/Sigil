@@ -43,6 +43,86 @@ fn count(client: &ClientStore, table: &str) -> i64 {
         .unwrap()
 }
 #[test]
+fn receive_diagnostics_distinguish_packet_rejection_replay_and_stored_state() {
+    let (_dir, _fixture, mut alice, mut bob, now) = pair();
+    let (a, b) = trust(&mut alice, &mut bob);
+    start(&mut alice, b, now);
+    let first = bob.accept_delivery(&next(&bob)).unwrap();
+    bob.acknowledge_incoming_online().unwrap();
+    bob.send_peer_text(a, [89; 32], "confirmation", now, now)
+        .unwrap();
+    bob.send_pending_online(first.session, now).unwrap();
+    alice.receive_mailbox_online(now).unwrap();
+    alice.acknowledge_incoming_online().unwrap();
+    alice
+        .send_text([3; 32], [90; 32], "synthetic next", now, now)
+        .unwrap();
+    alice.send_pending_online([3; 32], now).unwrap();
+    let valid = next(&bob);
+    let state: Vec<u8> = bob
+        .db
+        .query_row(
+            "SELECT state FROM sessions WHERE id=?1",
+            [first.session.as_slice()],
+            |r| r.get(0),
+        )
+        .unwrap();
+    let mut bad = valid.clone();
+    let end = bad.payload.len();
+    let altered = if &bad.payload[end - 2..] == "00" {
+        "01"
+    } else {
+        "00"
+    };
+    bad.payload.replace_range(end - 2.., altered);
+    assert!(matches!(
+        bob.accept_delivery(&bad),
+        Err(Error::ReceiveAuthentication {
+            sessions: 1,
+            replay: 0,
+            limit: 0,
+            other: 0
+        })
+    ));
+    assert_eq!(
+        bob.db
+            .query_row(
+                "SELECT state FROM sessions WHERE id=?1",
+                [first.session.as_slice()],
+                |r| r.get::<_, Vec<u8>>(0)
+            )
+            .unwrap(),
+        state
+    );
+    let mut damaged = state.clone();
+    *damaged.last_mut().unwrap() ^= 1;
+    bob.db.execute("UPDATE sessions SET state=?1", [&damaged]).unwrap();
+    assert!(matches!(
+        bob.accept_delivery(&valid),
+        Err(Error::Crypto(sigil_crypto::Error::Authentication))
+    ));
+    bob.db
+        .execute(
+            "UPDATE sessions SET state=?1 WHERE id=?2",
+            (&state, first.session.as_slice()),
+        )
+        .unwrap();
+    bob.accept_delivery(&valid).unwrap();
+    bad = valid;
+    bad.sequence += 100;
+    bad.message_id = transport::hex(&[91; 32]);
+    assert!(matches!(
+        bob.accept_delivery(&bad),
+        Err(Error::ReceiveAuthentication {
+            sessions: 1,
+            replay: 1,
+            limit: 0,
+            other: 0
+        })
+    ));
+}
+
+#[test]
 fn real_https_routes_initial_and_reply_and_acknowledgements_survive_local_failure() {
     let (dir, _fixture, mut alice, mut bob, now) = pair();
     let (a, b) = trust(&mut alice, &mut bob);
