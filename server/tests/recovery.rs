@@ -297,7 +297,7 @@ fn object_bounds_hashes_and_shared_mailbox_quota_are_enforced() {
     };
     assert!(matches!(
         store.submit_message(&bob, submit(20000), NOW),
-        Err(StoreError::Busy)
+        Err(StoreError::MailboxFull)
     ));
     let receipt = store.submit_message(&bob, submit(18000), NOW).unwrap();
     let (extra, body) = object(16, 2000);
