@@ -234,8 +234,8 @@ impl ClientStore {
     /// Ambiguous publication retries use the same bundle and original lifetime.
     pub fn publish_prekey_online(&mut self, slot: Id) -> Result<PublishedPrekey, Error> {
         self.publish_prekey_with_clock(slot, || {
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
+            crate::clock::SystemTime::now()
+                .duration_since(crate::clock::UNIX_EPOCH)
                 .map(|v| v.as_secs())
                 .map_err(|_| Error::InvalidStore)
         })

@@ -22,7 +22,11 @@ pub(crate) fn routes() -> Router<AppState> {
     Router::new()
         .route(sigil_protocol::discovery::PATH, get(discovery))
         .route("/", get(index))
-        .nest_service("/web", ServeDir::new(directory))
+        .route("/admin", get(index))
+        .route("/preview", get(index))
+        .route("/messenger", get(index))
+        .route("/auth/browser",get(browser_callback))
+        .nest_service("/web", ServeDir::new(directory).precompressed_gzip())
         .route("/setup/v0/status", get(status))
         .route("/setup/v0/claim", post(claim))
         .route("/auth/v0/admin/login", post(login))
@@ -54,7 +58,11 @@ async fn discovery(State(state): State<AppState>) -> Response {
     })
     .await
     {
-        Ok(v) => Json(v).into_response(),
+        Ok(v) => {
+            let mut response=Json(v).into_response();
+            response.headers_mut().insert(header::ACCESS_CONTROL_ALLOW_ORIGIN, "*".parse().unwrap());
+            response
+        },
         Err(e) => store_error(e),
     }
 }
@@ -65,7 +73,7 @@ async fn index() -> Response {
         Ok(html) => Html(html).into_response(),
         Err(_) => (
             axum::http::StatusCode::SERVICE_UNAVAILABLE,
-            "Admin interface has not been built",
+            "Web interface has not been built",
         )
             .into_response(),
     }
@@ -303,7 +311,7 @@ pub(crate) fn oidc_redirect(token: &str) -> Response {
     *response.status_mut() = axum::http::StatusCode::SEE_OTHER;
     response
         .headers_mut()
-        .insert(header::LOCATION, "/".parse().unwrap());
+        .insert(header::LOCATION, "/admin".parse().unwrap());
     response
 }
 
@@ -396,4 +404,10 @@ async fn oidc_unlink(
         Ok(()) => Json(serde_json::json!({"ok":true})).into_response(),
         Err(e) => store_error(e),
     }
+}
+
+async fn browser_callback()->Html<&'static str> {
+    Html(r#"<!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1"><title>Sigil</title><style>
+@font-face{font-family:Sigil;src:url('/web/composeResources/sigil.shared.generated.resources/font/newsreader.ttf')}*{box-sizing:border-box}body{margin:0;min-height:100svh;display:grid;place-items:center;padding:24px;background:#f4f4f4;color:#222;font-family:Sigil,Georgia,serif}main{max-width:28rem;text-align:center}img{width:48px;height:80px;object-fit:contain}h1{font-size:2.5rem;font-weight:400;margin:16px 0}p{font-size:1.15rem;line-height:1.5}a{display:inline-block;padding:12px 20px;border-radius:16px;background:#dedede;color:inherit;text-decoration:none}a:hover{background:#ccc}@media(prefers-color-scheme:dark){body{background:#141414;color:#eee}img{filter:invert(1)}a{background:#333}a:hover{background:#444}}
+</style></head><body><main><img src="/web/composeResources/sigil.shared.generated.resources/drawable/sigil_light.svg" alt=""><h1>Sigil</h1><p id="auth-status" role="status">Completing sign-in…</p><a href="/" target="_self">Return to Sigil</a></main><script type="module" src="/web/sigil-callback.mjs"></script></body></html>"#)
 }

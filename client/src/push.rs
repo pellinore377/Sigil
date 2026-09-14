@@ -23,6 +23,12 @@ enum Preference {
     Fcm {
         token: Zeroizing<String>,
     },
+    Browser {
+        endpoint: String,
+        public_key: String,
+        auth: Zeroizing<String>,
+        vapid: String,
+    },
     Unified {
         connector: Id,
         endpoint: Option<String>,
@@ -37,6 +43,10 @@ impl Preference {
             Self::Disabled => Ok(None),
             Self::Fcm { token } => Ok(Some(Target::Fcm {
                 token: token.to_string(),
+            })),
+            Self::Browser { endpoint, public_key, auth, vapid } => Ok(Some(Target::UnifiedPush {
+                endpoint: endpoint.clone(), public_key: public_key.clone(),
+                auth_secret: auth.to_string(), vapid_key: vapid.clone(),
             })),
             Self::Unified {
                 endpoint,
@@ -307,7 +317,7 @@ impl ClientStore {
         let choice = match state.preference {
             Preference::Disabled => Choice::Disabled,
             Preference::Fcm { .. } => Choice::Fcm,
-            Preference::Unified { .. } => Choice::UnifiedPush,
+            Preference::Unified { .. } | Preference::Browser { .. } => Choice::UnifiedPush,
         };
         Ok(PushState {
             configured: state.configured,
@@ -343,6 +353,32 @@ impl ClientStore {
         changed(&tx, &self.key, &scope, &mut state, before.as_deref(), now)?;
         tx.commit()?;
         Ok(())
+    }
+    pub fn set_browser_push(&mut self, target: Target, now: u64) -> Result<(), Error> {
+        if !network::push_target_fields(&target) { return Err(Error::InvalidEvent); }
+        let Target::UnifiedPush { endpoint, public_key, auth_secret, vapid_key } = &target else { return Err(Error::InvalidEvent); };
+        public(public_key)?;
+        public(vapid_key)?;
+        let tx = self.db.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let scope = scope(&tx, &self.key)?;
+        let (mut state, before) = read(&tx, &self.key, &scope)?;
+        time(&state, now)?;
+        if matches!(state.preference, Preference::Browser { .. }) && state.preference.target()?.as_ref() == Some(&target) { return Ok(()); }
+        state.preference = Preference::Browser { endpoint:endpoint.clone(), public_key:public_key.clone(), auth:Zeroizing::new(auth_secret.clone()), vapid:vapid_key.clone() };
+        changed(&tx, &self.key, &scope, &mut state, before.as_deref(), now)?;
+        tx.commit()?;
+        Ok(())
+    }
+    /// The browser decrypts Web Push, but only a matching durable subscription may echo a proof.
+    pub fn receive_browser_push(&mut self, endpoint: &str, payload: &[u8], now: u64) -> Result<ReceivedHint, Error> {
+        let tx = self.db.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let scope = scope(&tx, &self.key)?;
+        let (mut state, before) = read(&tx, &self.key, &scope)?;
+        time(&state, now)?;
+        if !matches!(&state.preference, Preference::Browser { endpoint:current, .. } if current == endpoint) { return Ok(ReceivedHint::Ignored); }
+        let hint = receive(&tx, &self.key, &scope, &mut state, before.as_deref(), payload, now)?;
+        tx.commit()?;
+        Ok(hint)
     }
     pub fn prepare_unified_push(
         &mut self,

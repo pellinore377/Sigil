@@ -203,6 +203,7 @@ impl ClientStore {
                 value["kind"] = json!("timer");
                 value["text"] = json!("Timer");
                 value["at"] = json!(timer.ends_at);
+                value["started_at"]=json!(timer.started_at);
             }
             Construct::Location(_) => {
                 let location = state.location.as_ref().ok_or(Error::InvalidStore)?;

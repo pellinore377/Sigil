@@ -18,8 +18,9 @@ zeroize = { version = "=1.9.0", features = ["serde"] }
 sha2 = "=0.10.9"
 serde.workspace = true
 serde_json.workspace = true
-ureq = { version = "=3.4.0", default-features = false, features = ["rustls"] }
+http = "=1.5.0"
 getrandom = "=0.4.3"
+rqrr = { version = "=0.11.0", default-features = false }
 qrcode = { version = "=0.14.1", default-features = false }
 web-push-native = { version = "=0.5.0", default-features = false }
 base64ct = { version = "=1.8.3", features = ["alloc"] }
@@ -29,6 +30,14 @@ tokio = { version = "=1.53.1", features = ["rt-multi-thread", "net", "sync", "ti
 async-trait = { version = "=0.1.89", optional = true }
 tokio-rustls = { version = "=0.26.5", default-features = false, features = ["ring", "tls12"], optional = true }
 webpki-roots = { version = "=1.0.9", optional = true }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+ureq = { version = "=3.4.0", default-features = false, features = ["rustls"] }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+rusqlite = { version = "=0.40.2", default-features = false, features = ["ffi-sqlite-wasm-rs"] }
+web-time = "=1.1.0"
+getrandom = { version = "=0.4.3", features = ["wasm_js"] }
 
 [dev-dependencies]
 ring = "=0.17.14"

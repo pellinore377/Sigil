@@ -40,7 +40,7 @@ internal fun spans(wire: String) = wire.lineSequence().filter { it.isNotEmpty() 
 // Keep unsupported presentation visible as source, including its modifier chain.
 internal fun editorFormats(wire: String): List<FormatSpan> {
     val all = spans(wire)
-    val sourceRanges = all.filter { it.style in listOf(7, 8, 12) }.map { it.start to it.end }.toSet()
+    val sourceRanges = all.filter { it.style in listOf(7, 8) }.map { it.start to it.end }.toSet()
     return all.filter { it.start to it.end !in sourceRanges }
 }
 
@@ -63,6 +63,7 @@ internal fun presentation(analyze: (String) -> String, codeFont: FontFamily = Fo
             2 -> SpanStyle(fontStyle = FontStyle.Italic)
             4 -> SpanStyle(fontFamily = codeFont)
             6 -> SpanStyle(background = foreground.copy(alpha = .16f))
+            12 -> SpanStyle(textDecoration=TextDecoration.Underline,background=foreground.copy(alpha=.06f))
             9 -> SpanStyle(fontSize = (1f + (it.argument.toIntOrNull() ?: 0).coerceIn(-3, 3) * .12f).em)
             10, 11 -> {
                 val colors = it.argument.substringBefore('|').split(':').map { name -> textColor(name, surface) }
@@ -178,6 +179,7 @@ fun Composer(state: TextFieldState, analyze: (String) -> String, modifier: Modif
         }
         Text(if (active.isEmpty()) "Composer" else "Formatting: ${active.joinToString()}")
         }
+        if(!showTools && formats.any {it.style==12}) Text("Animated text",style=MaterialTheme.typography.labelSmall,color=MaterialTheme.colorScheme.onSurfaceVariant)
         LocalComposerInput.current(sourceMode) {
         BasicTextField(state, enabled = enabled, cursorBrush = androidx.compose.ui.graphics.SolidColor(MaterialTheme.colorScheme.primary),
             modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp, max = 144.dp).testTag("composer")

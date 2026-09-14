@@ -129,7 +129,7 @@ async fn browser_routes_require_ownership_origin_and_session_proof() {
     let code = store.web_setup_code().unwrap().unwrap();
     let token = AdminToken::load_or_create(&dir.path().join("admin.token")).unwrap();
     let app = router(store, token);
-    for path in ["/", "/web/index.html", "/setup/v0/status"] {
+    for path in ["/", "/admin", "/messenger", "/preview", "/web/index.html", "/setup/v0/status"] {
         let response = app
             .clone()
             .oneshot(Request::get(path).body(Body::empty()).unwrap())
@@ -311,4 +311,26 @@ async fn personal_profile_requires_own_session_and_same_origin_writes() {
     .unwrap();
     assert_eq!(profile.display_name, "New name");
     assert_eq!(profile.revision, 2);
+}
+
+#[tokio::test]
+async fn only_successful_content_addressed_binaries_are_cacheable() {
+    let app = axum::Router::new()
+        .route("/web/{*path}", axum::routing::get(|axum::extract::Path(path): axum::extract::Path<String>| async move {
+            if path.starts_with("00000") { StatusCode::NOT_FOUND } else { StatusCode::OK }
+        }))
+        .route("/client/v0/mailbox", axum::routing::get(|| async { "private" }))
+        .layer(axum::middleware::from_fn(crate::security_headers));
+    for (path, expected) in [
+        ("/web/abcdef0123456789abcd.wasm", "public, max-age=31536000, immutable"),
+        ("/web/00000000000000000000.wasm", "no-store"),
+        ("/web/sigil_browser_bg.wasm", "no-store"),
+        ("/web/shared.js", "no-store"),
+        ("/client/v0/mailbox", "no-store"),
+    ] {
+        let response=app.clone().oneshot(Request::get(path).body(Body::empty()).unwrap()).await.unwrap();
+        assert_eq!(response.headers()["cache-control"],expected);
+        assert_eq!(response.headers()["cross-origin-opener-policy"],"same-origin");
+        assert_eq!(response.headers()["cross-origin-embedder-policy"],"require-corp");
+    }
 }

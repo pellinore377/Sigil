@@ -80,14 +80,35 @@ class MessengerTest {
         ui.onNodeWithContentDescription("Back to create").performClick()
         ui.onNodeWithContentDescription("Note").performClick()
         ui.onNodeWithText("Keep this thought").assertExists()
-        ui.onNodeWithText("Send", useUnmergedTree = true).performScrollTo().performClick()
+        ui.onNodeWithText("Add to message", useUnmergedTree = true).performScrollTo().performClick()
+        ui.onNodeWithContentDescription("Send message").performClick()
         ui.runOnIdle { state.value = state.value.copy(issue = "Synthetic storage failure") }
+        ui.onNodeWithContentDescription("Edit Note").performClick()
         ui.onNodeWithText("Keep this thought").assertExists()
         ui.runOnIdle { state.value = state.value.copy(sent = 1, sentText = "Unrelated post", issue = null) }
         ui.onNodeWithText("Keep this thought").assertExists()
+        ui.onNodeWithText("Add to message", useUnmergedTree = true).performScrollTo().performClick()
         ui.runOnIdle { state.value = state.value.copy(sent = 2, sentText = "note::Keep this thought;") }
         ui.onNodeWithContentDescription("Attachments").performClick(); note()
         ui.onNodeWithText("Keep this thought").assertDoesNotExist()
+    }
+
+    @Test fun acknowledgement_preserves_a_newer_structured_draft() {
+        val state = mutableStateOf(MessengerState(phase = "connected", chats = listOf(chat(true)), selected = "peer"))
+        ui.setContent { SigilApp(NativeCore::palette, NativeCore::analyze, state.value, { _, _ -> }) }
+        ui.onNodeWithContentDescription("Attachments").performClick()
+        ui.onNodeWithContentDescription("Create").performClick()
+        ui.onNodeWithText("Search tools").performTextReplacement("Note")
+        ui.onNodeWithContentDescription("Note").performClick()
+        ui.onNodeWithText("Your note").performTextInput("First thought")
+        ui.onNodeWithText("Add to message", useUnmergedTree = true).performScrollTo().performClick()
+        ui.onNodeWithContentDescription("Send message").performClick()
+        ui.onNodeWithContentDescription("Edit Note").performClick()
+        ui.onNodeWithText("First thought").performTextReplacement("New thought")
+        ui.onNodeWithText("Add to message", useUnmergedTree = true).performScrollTo().performClick()
+        ui.runOnIdle { state.value = state.value.copy(sent = 1, sentText = "note::First thought;") }
+        ui.onNodeWithContentDescription("Edit Note").performClick()
+        ui.onNodeWithText("New thought").assertExists()
     }
 
     @Test fun unaccepted_contact_cannot_send_even_with_a_draft() {

@@ -52,3 +52,15 @@ dependencies {
     debugImplementation("androidx.compose.ui:ui-test-manifest:1.9.4")
     add("acceptanceImplementation", "androidx.compose.ui:ui-test-manifest:1.9.4")
 }
+
+val buildMaterials by tasks.registering(Exec::class) {
+    val output = layout.buildDirectory.dir("material-rust")
+    inputs.files(rootProject.fileTree("materials") { include("**/*.rs", "**/*.wgsl", "**/Cargo.toml", "Cargo.lock", "assets/*.svg", "build-android.sh"); exclude("**/build/**", "**/target/**") })
+    inputs.dir(rootProject.file("shared/src/commonMain/composeResources"))
+    outputs.dir(output)
+    environment("ANDROID_NDK_HOME", providers.environmentVariable("ANDROID_NDK_HOME").orElse(android.sdkDirectory.resolve("ndk/27.2.12479018").absolutePath).get())
+    workingDir(rootProject.projectDir)
+    commandLine("bash", "materials/build-android.sh", output.get().asFile.absolutePath)
+}
+android.sourceSets["main"].jniLibs.srcDir(layout.buildDirectory.dir("material-rust"))
+tasks.named("preBuild") { dependsOn(buildMaterials) }

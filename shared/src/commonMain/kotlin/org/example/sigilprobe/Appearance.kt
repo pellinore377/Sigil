@@ -17,6 +17,7 @@ import androidx.compose.ui.unit.dp
 internal fun AppearancePage(value: Appearance, analyze: (String) -> String, dynamicAvailable: Boolean, back: () -> Unit, collections: Boolean = false, setCollections: (Boolean) -> Unit = {}, collectionLabels: Boolean = true, setCollectionLabels: (Boolean) -> Unit = {}, followAccount: Boolean = true, setFollowAccount: (Boolean) -> Unit = {}, section: String = "appearance", navigate: (String) -> Unit = {}, update: (Appearance) -> Unit) {
     AppearanceLayout(appearanceTitle(section), if (followAccount) "Make Sigil feel like yours.\nThese settings follow your account." else "Make this device feel like yours.\nYour other devices keep their appearance.", back) {
         when (section) {
+            "appearance-objects" -> ObjectAppearance(value,update)
             "appearance-colors" -> {
                 TimelinePreview(analyze, gradient = value.gradient)
                 AppearanceChoices("Appearance mode", listOf("Light" to "light_mode", "Dark" to "dark_mode", "System" to "devices"), value.mode) { update(value.copy(mode = it)) }
@@ -49,6 +50,13 @@ internal fun AppearancePage(value: Appearance, analyze: (String) -> String, dyna
                 Toggle("Message effects", value.messageEffects) { update(value.copy(messageEffects = it)) }
                 Text("Animate emoji messages and authored text effects when motion is allowed.", style = MaterialTheme.typography.bodySmall)
                 Toggle("Play GIFs automatically", value.autoplayGifs) { update(value.copy(autoplayGifs = it)) }
+                Toggle("Replay message effects automatically",value.replaySeconds>0) {update(value.copy(replaySeconds=if(it)20 else 0))}
+                Expandable(value.replaySeconds>0) {
+                    Column {
+                        Text("Wait ${value.replaySeconds} seconds between replays")
+                        Slider(value.replaySeconds.coerceIn(10,30).toFloat(),{update(value.copy(replaySeconds=it.toInt()))},valueRange=10f..30f,steps=19)
+                    }
+                }
                 Text("Videos and audio play only when you choose to play them.", style = MaterialTheme.typography.bodySmall)
             }
             else -> {
@@ -56,6 +64,7 @@ internal fun AppearancePage(value: Appearance, analyze: (String) -> String, dyna
                 SettingRow("text_format", "Typography", "${value.font} · ${(value.textScale * 100).toInt()}%") { navigate("appearance-type") }
                 SettingRow("view_agenda", "Layout", "Conversation spacing, previews and collections") { navigate("appearance-layout") }
                 SettingRow("animation", "Motion & media", "Animation, message effects and GIF playback") { navigate("appearance-media") }
+                SettingRow("casino", "Dice, coins & cards", "Materials, colors and a live playground") { navigate("appearance-objects") }
                 var advanced by remember { mutableStateOf(false) }
                 SigilTextButton({ advanced = !advanced }, Modifier.fillMaxWidth()) { Text("Advanced", Modifier.weight(1f), textAlign = TextAlign.Start); Glyph(if (advanced) "expand_less" else "expand_more") }
                 Expandable(advanced) { Toggle("Follow account appearance on this device", followAccount, setFollowAccount) }
@@ -69,6 +78,7 @@ internal fun appearanceTitle(section: String) = when (section) {
     "appearance-type" -> "Typography"
     "appearance-layout" -> "Layout"
     "appearance-media" -> "Motion & media"
+    "appearance-objects" -> "Dice, coins & cards"
     else -> "Appearance"
 }
 

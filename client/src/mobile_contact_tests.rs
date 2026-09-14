@@ -452,3 +452,23 @@ fn requests_preserve_existing_conversation_references_and_cached_decisions_refre
         RequestState::Declined
     );
 }
+
+#[test]
+fn mobile_contact_builder_checks_identity_without_sending_a_request() {
+    let (dir,_fixture,mut alice,mut bob,now)=crate::claims::tests::pair();
+    alice.publish_device_binding_online().unwrap();bob.publish_device_binding_online().unwrap();
+    let invoke=|store:&mut ClientStore,value:Value|->Value {serde_json::from_str(&store.mobile_command(&value.to_string())).unwrap()};
+    let preview=invoke(&mut alice,json!({"command":"contact_preview","address":"@bob:chat.example"}));
+    assert_eq!(preview["ok"],true,"{preview}");
+    let contact=preview["value"]["contact"].clone();
+    let posted=invoke(&mut alice,json!({"command":"post","peer":"self","request":"c8".repeat(32),"timestamp":now,"text":"Meet Bob","rich":true,"shared_contact":contact}));
+    assert_eq!(posted["ok"],true,"{posted}");
+    let timeline=invoke(&mut alice,json!({"command":"timeline","peer":"self"}));
+    assert_eq!(timeline["value"]["messages"][0]["parts"][0]["kind"],"contact");
+    assert_eq!(timeline["value"]["messages"][0]["parts"][1]["text"],"Meet Bob");
+    let mut wrong=preview["value"]["contact"].clone();wrong["user_id"]=json!("01".repeat(32));
+    let rejected=invoke(&mut alice,json!({"command":"post","peer":"self","request":"c9".repeat(32),"timestamp":now,"text":"Must not send","rich":true,"shared_contact":wrong}));
+    assert_eq!(rejected["ok"],false);
+    let server=rusqlite::Connection::open(dir.path().join("server.db")).unwrap();
+    assert_eq!(count(&server,"contact_requests"),0);
+}

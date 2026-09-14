@@ -21,8 +21,12 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.*
 import kotlin.math.*
 
-internal const val RandomizerMotionMillis=1500
+val LocalSolidMaterial = staticCompositionLocalOf<(@Composable (RandomizerMotion, Float, Modifier) -> Unit)?> { null }
+val LocalCardBack = staticCompositionLocalOf { false }
+internal const val RandomizerMotionMillis=6500
+internal fun randomizerDuration(value:RandomizerMotion)=when(value.kind){"dice","coin"->RandomizerMotionMillis;"choice"->3200;else->1500}
 private val supportedDice=setOf(4,6,8,10,12,20)
+private val nativeDice=supportedDice+setOf(16,24,30)
 private fun coinGeometry():List<DiePolygon> {
     val a=List(32) {i->val angle=(i*2*PI/32).toFloat();Vertex(cos(angle),sin(angle),.09f)}
     val b=a.map {it.copy(z=-.09f)}
@@ -42,12 +46,22 @@ internal fun RandomizerStage(value:RandomizerMotion,full:Boolean=false,rich:Rich
     val motion=LocalMotion.current
     val enabled=!full && !motion.reduced && LocalAppearance.current.messageEffects
     val visible=LocalMotionVisible.current
-    LaunchedEffect(visible,context) {if(!visible)context?.clock?.elapsed=2000f}
-    DisposableEffect(context) {onDispose {context?.clock?.elapsed=2000f}}
+    LaunchedEffect(visible,context) {if(!visible)context?.clock?.elapsed=12000f}
+    DisposableEffect(context) {onDispose {context?.clock?.elapsed=12000f}}
     val dice=value.dice.take(6).filter {it.sides>=2 && it.face in 1..it.sides}
     val coin=value.kind=="coin" && value.frames.size==2 && value.selected in 0..1
     val solid=value.kind=="dice" && dice.isNotEmpty() || coin
-    if(!solid) {ChoiceReveal(value,rich,context,enabled);return}
+    if(!solid) {
+        if(value.kind=="choice" && LocalSolidMaterial.current!=null) {MaterialSlot(value,{if(enabled)((context?.clock?.elapsed ?: 12000f)/(context?.clock?.duration(randomizerDuration(value)) ?: randomizerDuration(value))).coerceIn(0f,1f)else 1f},Modifier.fillMaxWidth().height(if(LocalObjectMenu.current)170.dp else 180.dp).semantics {contentDescription="Chosen: ${value.result}"});return}
+        ChoiceReveal(value,rich,context,enabled);return
+    }
+    val material=LocalSolidMaterial.current
+    if(material!=null && (coin || dice.all {it.sides in nativeDice})) {
+        val rows=if(coin)1 else (dice.size+2)/3
+        val description=if(coin)"Coin: ${value.result}" else "Dice: "+dice.joinToString {"d${it.sides} · ${it.face}"}
+        MaterialSlot(value.copy(dice=dice),{if(enabled)((context?.clock?.elapsed ?: 12000f)/(context?.clock?.duration(randomizerDuration(value)) ?: randomizerDuration(value))).coerceIn(0f,1f)else 1f},Modifier.fillMaxWidth().height((if(LocalObjectMenu.current) {if(coin)164 else rows*116} else if(coin)184 else rows*132).dp).clipToBounds().semantics {contentDescription=description})
+        return
+    }
     val meshes=remember(dice,coin) {if(coin)listOf(coinGeometry()) else dice.map {diceGeometry(it.sides)}}
     val measure=rememberTextMeasurer(cacheSize=128)
     val style=MaterialTheme.typography.titleMedium
@@ -63,8 +77,8 @@ internal fun RandomizerStage(value:RandomizerMotion,full:Boolean=false,rich:Rich
         val labels=if(coin)value.frames else meshes.flatMapIndexed {i,m->m.map {if(dice[i].sides in supportedDice)it.number.toString() else dice[i].face.toString()}}+dice.map {"d${it.sides}"}
         labels.distinct().associateWith {measure.measure(AnnotatedString(it),style,overflow=TextOverflow.Ellipsis,maxLines=1,constraints=Constraints(maxWidth=with(density) {220.dp.roundToPx()}))}
     }
-    Canvas(Modifier.fillMaxWidth().height((if(coin)148 else rows*104).dp).clipToBounds().clearAndSetSemantics {contentDescription=description}) {
-        val progress=if(enabled) ((context?.clock?.elapsed ?: 2000f)/RandomizerMotionMillis).coerceIn(0f,1f) else 1f
+    Canvas(Modifier.fillMaxWidth().height((if(LocalObjectMenu.current) {if(coin)164 else rows*116} else if(coin)184 else rows*132).dp).clipToBounds().clearAndSetSemantics {contentDescription=description}) {
+        val progress=if(enabled) ((context?.clock?.elapsed ?: 12000f)/(context?.clock?.duration(randomizerDuration(value)) ?: randomizerDuration(value))).coerceIn(0f,1f) else 1f
         fun project(v:Vertex,center:Offset,scale:Float):Offset {val perspective=4f/(4f-v.z);return center+Offset(v.x*scale*perspective,-v.y*scale*perspective)}
         meshes.forEachIndexed {index,mesh->
             val side=size.width/columns
@@ -130,7 +144,7 @@ internal fun RandomizerStage(value:RandomizerMotion,full:Boolean=false,rich:Rich
 
 @Composable
 private fun ChoiceReveal(value:RandomizerMotion,rich:RichText?,context:TextMotionContext?,enabled:Boolean) {
-    val moving by remember(context,enabled) {derivedStateOf {enabled && (context?.clock?.elapsed ?: 2000f)<RandomizerMotionMillis}}
+    val moving by remember(context,enabled) {derivedStateOf {enabled && (context?.clock?.elapsed ?: 12000f)<randomizerDuration(value)}}
     val measure=rememberTextMeasurer()
     val style=if(value.kind=="number")MaterialTheme.typography.headlineSmall else MaterialTheme.typography.bodyLarge
     val surface=MaterialTheme.colorScheme.primaryContainer
@@ -142,7 +156,7 @@ private fun ChoiceReveal(value:RandomizerMotion,rich:RichText?,context:TextMotio
             RichMessageText(rich ?: RichText(value.result),Modifier.padding(12.dp).graphicsLayer {alpha=if(moving)0f else 1f},style)
         }
         if(moving && frames.isNotEmpty())Canvas(Modifier.matchParentSize()) {
-            val p=((context?.clock?.elapsed ?: 2000f)/RandomizerMotionMillis).coerceIn(0f,1f)
+            val p=((context?.clock?.elapsed ?: 12000f)/(context?.clock?.duration(randomizerDuration(value)) ?: randomizerDuration(value))).coerceIn(0f,1f)
             val travel=18f*(1f-(1f-p).pow(3))
             val frame=frames[travel.toInt()%frames.size]
             val offset=(travel%1f-.5f)*size.height*.45f

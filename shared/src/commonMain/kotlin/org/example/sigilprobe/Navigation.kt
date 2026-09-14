@@ -21,6 +21,9 @@ import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.unit.dp
 
+internal data class ClientFeatures(val calls:Boolean=true,val files:Boolean=true,val voice:Boolean=true,val locations:Boolean=true,val notifications:Boolean=true,val recovery:Boolean=true)
+internal val LocalWideLayout=staticCompositionLocalOf {false}
+internal val LocalClientFeatures=staticCompositionLocalOf {ClientFeatures()}
 internal const val MotionMillis = 240
 internal val MainTabs = listOf("inbox", "calls", "settings")
 internal fun tabGoesBack(from: String, to: String) = from in MainTabs && to in MainTabs && MainTabs.indexOf(to) < MainTabs.indexOf(from)
@@ -61,7 +64,7 @@ internal fun BackAction(enabled: Boolean, action: () -> Unit) {
 @Composable
 fun SigilApp(palette: (Int, Boolean) -> String, analyze: (String) -> String, state: MessengerState, command: Command,
     read: (String) -> String? = { null }, write: (String, String) -> Unit = { _, _ -> }, dynamicAccent: Int? = null,
-    onBackAvailable: (Boolean, () -> Unit) -> Unit = { _, _ -> }, overlay: @Composable () -> Unit = {}) {
+    onBackAvailable: (Boolean, () -> Unit) -> Unit = { _, _ -> }, wideLayout: Boolean = false, overlay: @Composable () -> Unit = {}) {
     var followAccount by remember { mutableStateOf(read("follow_account_theme") != "false") }
     var pendingAppearance by remember { mutableStateOf<String?>(null) }
     var appearance by remember { mutableStateOf(decodeAppearance(if (followAccount) state.ui["appearance"] ?: read("account_appearance") ?: read("appearance") else read("device_appearance") ?: read("appearance"))) }
@@ -140,8 +143,17 @@ fun SigilApp(palette: (Int, Boolean) -> String, analyze: (String) -> String, sta
       val motionPolicy = LocalMotion.current
       val footer = remember { FooterHost() }
       CompositionLocalProvider(LocalBackActions provides backActions, LocalFooterHost provides footer) {
+        BoxWithConstraints(Modifier.fillMaxSize()) {
+        val wide = wideLayout && maxWidth >= 1000.dp && state.phase == "connected"
+        CompositionLocalProvider(LocalWideLayout provides wide) {
+        Row(Modifier.fillMaxSize()) {
+        if (wide) SigilTheme(appearance, palette = palette) {
+            NavigationPane(state, page, query, { query = it }, category, { category = it }, collection, { collection = it }, selected,
+                { id -> selected = if (id in selected) selected - id else selected + id }, { selected = emptySet() }, { collectionSheet = true },
+                open, { peer -> open(peer); conversationPage = "Notes" }, { target -> command("close", emptyMap()); conversationPage = ""; navigate(target) }, dispatch, sharedRead, sharedWrite)
+        }
         val mainHeader = chat == null && (state.call == null || callMinimized) && page in listOf("inbox", "calls", "settings", "search", "notes")
-        Surface(color = if (mainHeader || chat == null) MaterialTheme.colorScheme.background else lerp(MaterialTheme.colorScheme.background, MaterialTheme.colorScheme.surface, LocalChatTint.current), contentColor = MaterialTheme.colorScheme.onBackground) {
+        Surface(Modifier.weight(1f), color = if (mainHeader || chat == null) MaterialTheme.colorScheme.background else lerp(MaterialTheme.colorScheme.background, MaterialTheme.colorScheme.surface, LocalChatTint.current), contentColor = MaterialTheme.colorScheme.onBackground) {
             Column(Modifier.fillMaxSize().windowInsetsPadding(WindowInsets.systemBars.union(WindowInsets.displayCutout)).onPreviewKeyEvent {
                 if (it.type == KeyEventType.KeyDown && it.key == Key.Escape) { back(); true } else false
             }) {
@@ -155,9 +167,9 @@ fun SigilApp(palette: (Int, Boolean) -> String, analyze: (String) -> String, sta
                     state.phase != "connected" -> Box(Modifier.imePadding()) { SignIn(state, command) }
                     else -> {
                         if (state.accountAccess?.let { it.linked && it.retiring && !it.acknowledged } == true && page != "profile" && state.call == null) SigilTextButton({ command("close", emptyMap()); conversationPage = ""; navigate("profile") }, Modifier.fillMaxWidth()) { Text("Your server’s sign-in is changing · Review") }
-                        val destination = when { state.call != null && !callMinimized -> "call"; chat?.archived == true -> "saved-conversation"; chat != null -> when (conversationPage) { "Chat theme" -> "theme"; "Settings" -> "chat-settings"; else -> "conversation" }; page in listOf("inbox", "search", "notes", "calls", "settings") -> "home"; else -> page }
+                        val destination = when { wide && chat == null && page in listOf("inbox", "search", "notes") -> "welcome"; state.call != null && !callMinimized -> "call"; chat?.archived == true -> "saved-conversation"; chat != null -> when (conversationPage) { "Chat theme" -> "theme"; "Settings" -> "chat-settings"; else -> "conversation" }; page in listOf("inbox", "search", "notes", "calls", "settings") -> "home"; else -> page }
                         if (state.call != null && callMinimized) SigilTextButton({ callMinimized = false }, Modifier.fillMaxWidth()) { Glyph("call", 18); Spacer(Modifier.width(8.dp)); Text("Return to call") }
-                        val headerBase = pageHeaderHeight()
+                        val headerBase = if (destination == "welcome") 0.dp else pageHeaderHeight()
                         val headerScreen = Screen(destination, page, chat, conversationPage, state, newTitle, thread?.id)
                         val headerKey = if (destination == "home") "home" else destination + if (destination == "conversation") conversationPage + (thread?.id ?: "") else if (destination == "new") newTitle else ""
                         val headerTransition = updateTransition(headerKey, label = "Header")
@@ -166,7 +178,7 @@ fun SigilApp(palette: (Int, Boolean) -> String, analyze: (String) -> String, sta
                         val footerTransition = updateTransition(conversation, label = "Footer")
                         val footerProgress by footerTransition.animateFloat(transitionSpec = { motionPolicy.tween(MotionMillis) }, label = "Footer expansion") { if (it) 1f else 0f }
                         val footerHeight = 64.dp + (footer.height - 64.dp) * footerProgress
-                        val hasFooter = conversation || (destination == "home" && page in MainTabs)
+                        val hasFooter = conversation || (!wide && destination == "home" && page in MainTabs)
                         val navigationInset = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
                         val footerOffset by animateDpAsState(if (hasFooter) 0.dp else footerHeight + navigationInset, motionPolicy.tween(MotionMillis), label = "Footer position")
                         val tint = LocalChatTint.current
@@ -191,13 +203,14 @@ fun SigilApp(palette: (Int, Boolean) -> String, analyze: (String) -> String, sta
                                 val state = screen.state
                                 val detail = screen.detail
                                 CompositionLocalProvider(LocalPageHeader provides true, LocalPageMotion provides this, LocalNavigationBack provides goingBack, LocalHeaderInset provides if (target == "conversation") headerHeight else 0.dp) {
-                                Box(Modifier.fillMaxSize().then(if (target != "conversation") Modifier.padding(top = headerHeight, bottom = if (target == "home" && page in MainTabs) 64.dp else 0.dp) else Modifier)) {
+                                Box(Modifier.fillMaxSize().then(if (target != "conversation") Modifier.padding(top = headerHeight, bottom = if (!wide && target == "home" && page in MainTabs) 64.dp else 0.dp) else Modifier)) {
                             when (target) {
+                                "welcome" -> ConversationWelcome()
                                 "call" -> state.call?.let { CallPage(it, state.chats, dispatch, state.profileAvatar, callPanel) { callPanel = it } }
                                 "conversation" -> chat?.let { ConversationPage(it, state, drafts.getOrPut(it.id) { TextFieldState(it.draft) }, analyze, dispatch, detail, chatTheme.gradient ?: appearance.gradient, thread, { thread = it }) }
                                 "theme" -> chat?.let { current -> ChatAppearance(chatTheme, analyze, current.id, command, { goingBack = true; conversationPage = "" }) { chatTheme = it; pendingChatTheme = current.id to it.encode(); write("chat.${current.id}", it.encode()); command("organize", mapOf("peer" to current.id, "value" to mapOf("UiSetting" to mapOf("key" to "chat_theme", "value" to it.encode())))) } }
                                 "chat-settings" -> chat?.let { ConversationSettings(it, state.busy, dispatch, back) }
-                                "appearance", "appearance-colors", "appearance-type", "appearance-layout", "appearance-media" -> AppearancePage(appearance, analyze, dynamicAccent != null, back, state.collectionsEnabled,
+                                "appearance", "appearance-colors", "appearance-type", "appearance-layout", "appearance-media", "appearance-objects" -> AppearancePage(appearance, analyze, dynamicAccent != null, back, state.collectionsEnabled,
                                     { enabled -> command("organize", mapOf("peer" to null, "value" to mapOf("CollectionsEnabled" to enabled))) },
                                     sharedRead("collection_labels") != "false", { sharedWrite("collection_labels", it.toString()) }, followAccount,
                                     { if (!it) write("device_appearance", appearance.encode()); followAccount = it; write("follow_account_theme", it.toString()) }, target, navigate) { appearance = it; if (followAccount) { pendingAppearance = it.encode(); sharedWrite("appearance", it.encode()) } else write("device_appearance", it.encode()) }
@@ -250,7 +263,7 @@ fun SigilApp(palette: (Int, Boolean) -> String, analyze: (String) -> String, sta
                                             else -> Row(Modifier.fillMaxSize().padding(horizontal = 12.dp), verticalAlignment = Alignment.CenterVertically) {
                                                 Symbol("chevron_left", "Back", back)
                                                 Text(when (screen.destination) {
-                                                    "appearance", "appearance-colors", "appearance-type", "appearance-layout", "appearance-media" -> appearanceTitle(screen.destination); "theme" -> "Conversation appearance"; "chat-settings" -> "Conversation settings"
+                                                    "appearance", "appearance-colors", "appearance-type", "appearance-layout", "appearance-media", "appearance-objects" -> appearanceTitle(screen.destination); "theme" -> "Conversation appearance"; "chat-settings" -> "Conversation settings"
                                                     "device" -> "Devices"; "profile" -> "Profile"; "privacy" -> "Privacy"; "notifications" -> "Notifications"
                                                     "storage" -> "Data and storage"; "history" -> "Saved history"; "saved-conversation" -> "Saved conversation"
                                                     "new" -> screen.title; else -> "About"
@@ -259,15 +272,15 @@ fun SigilApp(palette: (Int, Boolean) -> String, analyze: (String) -> String, sta
                                         }
                                     }
                                 }
-                        androidx.compose.animation.AnimatedVisibility(chat == null && page in listOf("inbox", "calls", "settings") && (state.call == null || callMinimized), modifier = Modifier.align(Alignment.BottomCenter).zIndex(3f), enter = slideInVertically(motionPolicy.tween(MotionMillis)) { it } + fadeIn(), exit = slideOutVertically(motionPolicy.tween(MotionMillis)) { it } + fadeOut()) {
+                        androidx.compose.animation.AnimatedVisibility(!wide && chat == null && page in listOf("inbox", "calls", "settings") && (state.call == null || callMinimized), modifier = Modifier.align(Alignment.BottomCenter).zIndex(3f), enter = slideInVertically(motionPolicy.tween(MotionMillis)) { it } + fadeIn(), exit = slideOutVertically(motionPolicy.tween(MotionMillis)) { it } + fadeOut()) {
                                 Row(Modifier.fillMaxWidth().padding(vertical = 8.dp).testTag("main-navigation"), horizontalArrangement = Arrangement.SpaceEvenly) {
-                                    listOf(Triple("inbox", "chat_bubble", "Messages"), Triple("calls", "call", "Calls"), Triple("settings", "settings", "Settings")).forEach { (tab, icon, label) ->
+                                    listOf(Triple("inbox", "chat_bubble", "Messages"), Triple("calls", "call", "Calls"), Triple("settings", "settings", "Settings")).filter {it.first!="calls" || LocalClientFeatures.current.calls}.forEach { (tab, icon, label) ->
                                         Surface(shape = RoundedCornerShape(16.dp), color = if (page == tab) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surface,
                                             contentColor = if (page == tab) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurfaceVariant) { Symbol(icon, label) { navigate(tab) } }
                                     }
                                 }
                         }
-                        InboxFab(destination == "home" && page == "inbox", Modifier.align(Alignment.BottomEnd).padding(bottom = 64.dp).zIndex(1f)) { navigate("new") }
+                        InboxFab(!wide && destination == "home" && page == "inbox", Modifier.align(Alignment.BottomEnd).padding(bottom = 64.dp).zIndex(1f)) { navigate("new") }
                         val density = LocalDensity.current
                         Box(Modifier.align(Alignment.BottomCenter).fillMaxWidth().zIndex(3f).onSizeChanged { if (footer.content != null) footer.height = with(density) { it.height.toDp() } }) { footer.content?.invoke() }
                     }
@@ -276,6 +289,9 @@ fun SigilApp(palette: (Int, Boolean) -> String, analyze: (String) -> String, sta
             }
             if (collectionSheet) CollectionSheet(state, selected, command, { collectionSheet = false; selected = emptySet() })
             if (actionSheet.isNotEmpty()) ConversationActionSheet(actionSheet, actionFields, state, command) { actionSheet = ""; selected = emptySet() }
+        }
+        }
+        }
         }
         overlay()
       }

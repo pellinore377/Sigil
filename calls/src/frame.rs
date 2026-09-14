@@ -5,7 +5,11 @@ use sframe::{
     key::{DecryptionKey, EncryptionKey},
     CipherSuite,
 };
-use std::time::{Duration, Instant};
+use std::time::Duration;
+#[cfg(not(target_arch = "wasm32"))]
+use std::time::Instant;
+#[cfg(target_arch = "wasm32")]
+use web_time::Instant;
 use zeroize::Zeroizing;
 const MAX_FRAME: usize = 1024 * 1024;
 const MAX_COUNTER: u64 = (1 << 20) - 1;

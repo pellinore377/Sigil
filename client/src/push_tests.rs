@@ -150,6 +150,42 @@ fn activate(dir: &tempfile::TempDir, client: &mut ClientStore, now: u64) {
 }
 
 #[test]
+fn browser_subscription_proofs_survive_restart_and_reject_replacement_and_disable() {
+    let (dir, _fixture, mut client, now, _) = setup();
+    let endpoint="https://push.example/browser";
+    let secret=p256::SecretKey::from_slice(&[7;32]).unwrap();
+    let target=Target::UnifiedPush {
+        endpoint:endpoint.into(),
+        public_key:B64::encode_string(secret.public_key().to_encoded_point(false).as_bytes()),
+        auth_secret:B64::encode_string(&[8;16]),
+        vapid_key:client.connected_client().unwrap().push_providers().unwrap().vapid_public_key.unwrap(),
+    };
+    client.set_browser_push(target.clone(),now).unwrap();
+    register(&mut client,now);
+    let (proof, registered)=server_push(&dir,&client);
+    assert!(registered==target);
+    drop(client);
+    let mut client=open(&dir.path().join("client.db"));
+    assert_eq!(client.receive_browser_push("https://push.example/other",&proof,now).unwrap(),ReceivedHint::Ignored);
+    let mut wrong=proof.clone();wrong[9]^=1;
+    assert_eq!(client.receive_browser_push(endpoint,&wrong,now).unwrap(),ReceivedHint::Ignored);
+    assert!(client.receive_browser_push(endpoint,&proof[..72],now).is_err());
+    assert_eq!(client.receive_browser_push(endpoint,&proof,now).unwrap(),ReceivedHint::ConfirmationQueued);
+    assert!(matches!(client.push_step(now).unwrap(),Progress::Updated(s) if s.state==RemoteState::Active));
+    let revision=client.push_state().unwrap().remote.unwrap().revision;
+    client.set_browser_push(target.clone(),now).unwrap();
+    assert!(!client.push_state().unwrap().updating);
+    let mut changed=target;
+    if let Target::UnifiedPush{endpoint,..}=&mut changed{*endpoint="https://push.example/new".into();}
+    client.set_browser_push(changed,now).unwrap();
+    assert_eq!(client.receive_browser_push(endpoint,&proof,now).unwrap(),ReceivedHint::Ignored);
+    assert_eq!(client.receive_browser_push("https://push.example/new",&proof,now).unwrap(),ReceivedHint::Ignored);
+    client.disable_push(now).unwrap();
+    assert_eq!(client.receive_browser_push("https://push.example/new",&Payload::Wake.to_bytes(),now).unwrap(),ReceivedHint::Ignored);
+    assert_eq!(client.push_state().unwrap().remote.unwrap().revision,revision);
+}
+
+#[test]
 fn mobile_fcm_registration_survives_restart_and_respects_provider_choice() {
     use serde_json::json;
     let (dir, _fixture, mut client, _, _) = setup();

@@ -21,12 +21,14 @@ import sigil.shared.generated.resources.*
 
 data class Appearance(val font: String = "Newsreader", val mode: String = "System", val accent: Int = 0x555555, val dynamic: Boolean = false,
     val textScale: Float = 1f, val compact: Boolean = false, val previewLines: Int = 1, val gradient: Boolean = false,
-    val reducedMotion: Boolean = false, val messageEffects: Boolean = true, val autoplayGifs: Boolean = true)
+    val reducedMotion: Boolean = false, val messageEffects: Boolean = true, val autoplayGifs: Boolean = true,
+    val objectMode:String="Conversational",val diceStyle:ObjectStyle=defaultObjectStyle(0),val coinStyle:ObjectStyle=defaultObjectStyle(1),val cardStyle:ObjectStyle=defaultObjectStyle(2),val replaySeconds:Int=0)
 data class ChatTheme(val accent: Int? = null, val gradient: Boolean? = null)
 private data class ThemeTarget(val seed: Int, val dark: Boolean, val chat: String?, val tinted: Boolean)
 
 internal val LocalChatTint = staticCompositionLocalOf { 0f }
 val LocalAppearance = staticCompositionLocalOf { Appearance() }
+val LocalGlobalAccent = staticCompositionLocalOf { Color(0xff555555) }
 val LocalCodeFont = staticCompositionLocalOf<FontFamily> { FontFamily.Monospace }
 val LocalSystemAppearance = staticCompositionLocalOf<(Boolean) -> Unit> { {} }
 val LocalTextPlatformStyle = staticCompositionLocalOf<PlatformTextStyle?> { null }
@@ -48,9 +50,12 @@ internal fun decodeAppearance(value: String?): Appearance {
         reducedMotion = parts.getOrNull(8) == "true",
         messageEffects = parts.getOrNull(9) != "false",
         autoplayGifs = parts.getOrNull(10) != "false",
+        objectMode=parts.getOrNull(11)?.takeIf {it in listOf("Personalized","Global","Conversational")} ?: "Conversational",
+        diceStyle=decodeObjectStyle(parts.getOrNull(12),0),coinStyle=decodeObjectStyle(parts.getOrNull(13),1),cardStyle=decodeObjectStyle(parts.getOrNull(14),2),
+        replaySeconds=parts.getOrNull(15)?.toIntOrNull()?.takeIf {it in 10..30} ?: 0,
     )
 }
-internal fun Appearance.encode() = "$font|$mode|${accentText(accent)}|$dynamic|$textScale|$compact|$previewLines|$gradient|$reducedMotion|$messageEffects|$autoplayGifs"
+internal fun Appearance.encode() = "$font|$mode|${accentText(accent)}|$dynamic|$textScale|$compact|$previewLines|$gradient|$reducedMotion|$messageEffects|$autoplayGifs|$objectMode|${diceStyle.encode()}|${coinStyle.encode()}|${cardStyle.encode()}|$replaySeconds"
 internal fun decodeChat(value: String?): ChatTheme {
     val parts = value?.split('|') ?: return ChatTheme()
     return ChatTheme(parts.getOrNull(0)?.let(::parseAccent), parts.getOrNull(1)?.toBooleanStrictOrNull())
@@ -100,7 +105,9 @@ internal fun SigilTheme(appearance: Appearance, chat: ChatTheme? = null, dynamic
         bodyLarge = style(18, 26), bodyMedium = style(16, 23), bodySmall = style(14, 20),
         labelLarge = style(16, 22), labelMedium = style(14, 20), labelSmall = style(12, 18),
     )
-    CompositionLocalProvider(LocalCodeFont provides FontFamily(Font(Res.font.google_sans_code)), LocalChatTint provides tint, LocalAppearance provides appearance, LocalMotion provides motionPolicy) {
+    val globalSeed=if(appearance.dynamic)dynamicAccent ?: appearance.accent else appearance.accent
+    val globalAccent=remember(globalSeed,dark,palette) {Color(0xff000000L or palette(globalSeed,dark).split(',')[4].toLong(16))}
+    CompositionLocalProvider(LocalGlobalAccent provides globalAccent, LocalCodeFont provides FontFamily(Font(Res.font.google_sans_code)), LocalChatTint provides tint, LocalAppearance provides appearance, LocalMotion provides motionPolicy) {
         MaterialTheme(colorScheme = scheme, typography = typography) {
             CompositionLocalProvider(LocalTextSelectionColors provides TextSelectionColors(scheme.primary, scheme.primary.copy(alpha = .3f)), content = content)
         }

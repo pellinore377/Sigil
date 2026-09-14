@@ -44,6 +44,23 @@ To publish an update, increment Android's `versionCode` and `versionName` in `ap
 
 Use Cargo.lock and the toolchain pinned in Dockerfile.
 
+Browser development: build the Rust client, notification, core and material Wasm modules before the Compose distribution (JDK 21, `wasm32-unknown-unknown`, and wasm-bindgen 0.2.127). Serve through Sigil over HTTPS; retain its COOP/COEP headers. `/admin` serves administration, `/messenger` messaging, and `/preview` a local-only design workbench. After setup, `/` opens messaging. Available browser features and acceptance limits are in [Status.md](docs/Status.md).
+
+```sh
+cargo build --locked --release --target wasm32-unknown-unknown -p sigil-core -p sigil-browser -p sigil-browser-events
+wasm-bindgen target/wasm32-unknown-unknown/release/sigil_core.wasm --target web --out-dir target/web
+wasm-bindgen target/wasm32-unknown-unknown/release/sigil_browser.wasm --target web --out-dir target/web
+wasm-bindgen target/wasm32-unknown-unknown/release/sigil_browser_events.wasm --target web --out-dir target/web
+cargo build --locked --manifest-path materials/Cargo.toml --release --target wasm32-unknown-unknown --lib
+wasm-bindgen materials/target/wasm32-unknown-unknown/release/sigil_materials.wasm --target web --out-dir target/web
+gradle -Pkotlin.daemon.jvmargs=-Xmx6g :shared:wasmJsBrowserDistribution
+```
+
+
+Materials (`materials`, separate Cargo.lock): Android Gradle builds the graphics JNI library automatically; it requires the Android NDK and the `aarch64-linux-android` Rust target. Desktop playground: `CARGO_TARGET_DIR=target cargo run --locked --manifest-path materials/Cargo.toml`. Add `-- --snapshots /tmp/sigil-materials` for captures. Run Rust tests using the same manifest.
+
+Android playground: set `ANDROID_HOME`, `ANDROID_NDK_HOME`, `JAVA_HOME`, optionally `GRADLE`/`ADB`, then run `bash materials/android-playground.sh`. It installs the separately debug-signed `Sigil Materials` app. GPU benchmark: `bash materials/android-benchmark.sh [--single-sample]`; it removes its temporary executable. These scripts target Linux x86_64 hosts and arm64 Android devices. GPU timestamps exclude UI/presentation; wall timings include completion polling. Short benchmarks do not establish sustained thermal performance. Playground throws use synthetic launch seeds, not secure randomization; replay preserves a throw.
+
 Attachment preview tests require Bubblewrap, FFmpeg, LibreOffice and `heif-enc` on the test machine, then `bash media/tests/runtime.sh`. These are not server deployment dependencies. The test downloads checksum-pinned PDFium without V8/XFA into a temporary directory. Set `SIGIL_TEST_OFFICE_LIBRARIES` if LibreOffice is outside `/usr/lib`; `SIGIL_TEST_PDFIUM` selects an existing library. Preview isolation currently targets Linux; other platform adapters remain client acceptance work.
 
 ```sh
@@ -83,7 +100,7 @@ Physical Android call acceptance: set `ANDROID_HOME`, `ANDROID_NDK_HOME`, `JAVA_
 
 With the same Android environment, `bash app/tests/content.sh` checks authenticated maps, encrypted attachments, history backup/recovery and UnifiedPush proof delivery through a synthetic Android distributor. Pass `push` to run only push acceptance and foreground sync timing. It uses only the isolated acceptance app and synthetic content.
 
-For Google push, register Android package `org.sigil.compose` in Firebase. In Administration → Server → Notifications, enable Google notifications and save the project's service-account JSON. Then paste that Android app's `google-services.json` into Android app configuration below. The standard APK obtains only the public Firebase options after sign-in; private service-account keys stay on the server. The `/admin/v0/push` and `/admin/v0/push/android` APIs remain available. Changing Firebase projects requires a cold app restart. Google push is selected automatically on compatible devices unless the user already chose another delivery method. UnifiedPush requires an installed distributor, server support and a contact URL in the same Admin section. Both are selectable under Notifications. FCM wake-ups currently use normal priority and can be delayed during Android idle; prompt background calling is not yet validated.
+For Google push, register Android package `org.sigil.compose` in Firebase. In Administration → Server → Notifications, enable Google notifications and save the project's service-account JSON. Then paste that Android app's `google-services.json` into Android app configuration below. The standard APK obtains only the public Firebase options after sign-in; private service-account keys stay on the server. The `/admin/v0/push` and `/admin/v0/push/android` APIs remain available. Changing Firebase projects requires a cold app restart. Google push is selected automatically on compatible devices unless the user already chose another delivery method. Web Push and UnifiedPush share the server toggle and contact URL in the same Admin section. Android UnifiedPush also requires an installed distributor. Browser users enable notifications under their own Notifications settings; permission and a normal browser profile are required. Both are selectable under Notifications. FCM wake-ups currently use normal priority and can be delayed during Android idle; prompt background calling is not yet validated.
 
 ## Maintenance
 

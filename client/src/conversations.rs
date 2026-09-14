@@ -1425,8 +1425,8 @@ impl ClientStore {
 }
 
 pub(crate) fn now() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
+    crate::clock::SystemTime::now()
+        .duration_since(crate::clock::UNIX_EPOCH)
         .map(|v| v.as_secs())
         .unwrap_or(u64::MAX)
 }

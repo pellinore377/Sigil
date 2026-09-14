@@ -107,7 +107,7 @@ internal fun TableBuilder(enabled:Boolean,back:()->Unit,send:(String)->Unit) {
                                 Box(Modifier.fillMaxWidth().padding(12.dp),contentAlignment=Alignment.Center) {TableCard(preview)}
                             }
                         }
-                        SigilButton({send(source)},Modifier.fillMaxWidth(),enabled=enabled) {Text("Send table")}
+                        SigilButton({send(source)},Modifier.fillMaxWidth(),enabled=enabled) {Text(if(LocalBuilderAction.current=="Send")"Send table" else LocalBuilderAction.current)}
                     } else Text(if(resolve==null)"The builder is unavailable." else "Add a column name and at least one row. Tables support up to 64 columns and 256 rows within the message size limit.",style=MaterialTheme.typography.bodyMedium)
                 }
             }

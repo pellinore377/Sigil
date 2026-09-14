@@ -38,7 +38,7 @@ class RandomizerMotionTest {
         for(example in examples) {
             ui.runOnIdle {value=example;clock.elapsed=350f}
             val moving=pixels();val bounds=ui.onNodeWithTag("stage").fetchSemanticsNode().boundsInRoot.size
-            ui.runOnIdle {clock.elapsed=2000f}
+            ui.runOnIdle {clock.elapsed=12000f}
             val settled=pixels()
             assertNotEquals(moving,settled,example.kind)
             assertEquals(bounds,ui.onNodeWithTag("stage").fetchSemanticsNode().boundsInRoot.size)

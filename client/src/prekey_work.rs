@@ -316,8 +316,8 @@ mod tests {
         let identity = alice.identity().unwrap();
         let (publication, _, _) = load(&alice.db, &alice.key, &[0; 32], &identity).unwrap();
         assert_eq!(publication.expiry, Some(claimed.expires_at));
-        let after = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
+        let after = crate::clock::SystemTime::now()
+            .duration_since(crate::clock::UNIX_EPOCH)
             .unwrap()
             .as_secs();
         assert!(

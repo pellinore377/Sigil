@@ -19,6 +19,7 @@ class TableBuilderTest {
         }}
         ui.onNodeWithContentDescription("Attachments").performClick()
         ui.onNodeWithContentDescription("Create").performClick()
+        ui.onNodeWithContentDescription("Filter tools").performClick()
         ui.onNodeWithContentDescription("Data & Visualize").performScrollTo().performClick()
         ui.onNodeWithContentDescription("Table").performScrollTo().performClick()
         ui.onNodeWithText("Column 1").performTextInput("Name")
@@ -37,7 +38,9 @@ class TableBuilderTest {
         if(androidx.test.platform.app.InstrumentationRegistry.getArguments().getString("capture_builder")=="true") {
             java.io.File(ui.activity.cacheDir,"table-builder.png").outputStream().use {ui.onRoot().captureToImage().asAndroidBitmap().compress(android.graphics.Bitmap.CompressFormat.PNG,100,it)}
         }
-        ui.onNodeWithText("Send table").performScrollTo().performClick()
+        ui.onNodeWithText("Add to message").performScrollTo().performClick()
+        assertTrue(commands.none {it.first=="post"})
+        ui.onNodeWithContentDescription("Send message").performClick()
         val sent=commands.single {it.first=="post"}.second
         assertEquals(NativeCore.builderSource("Table\nName\tCount\nFish | chips\t2"),sent["text"])
         assertEquals(true,sent["rich"])

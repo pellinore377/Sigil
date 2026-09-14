@@ -86,8 +86,11 @@ async fn devices(
         Err(value) => store_error(value),
     }
 }
+#[derive(Clone)]
+pub(crate) struct BrowserOriginVerified;
+
 pub(crate) async fn native_only(request: Request, next: Next) -> Response {
-    if request.headers().contains_key(header::ORIGIN) {
+    if request.headers().contains_key(header::ORIGIN) && request.extensions().get::<BrowserOriginVerified>().is_none() {
         return error(
             StatusCode::FORBIDDEN,
             "origin_not_allowed",

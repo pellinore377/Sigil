@@ -9,6 +9,7 @@ object NativeCore {
     external fun motionSeeds(input: String): String
     external fun temporalPreview(input: String): String
     external fun helpCatalog(input: String): String
+    external fun structuredPreview(input:String):String
     external fun builderSource(input: String): String
     external fun codePreview(input: String): String
 }

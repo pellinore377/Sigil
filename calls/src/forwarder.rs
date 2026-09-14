@@ -8,7 +8,7 @@ use str0m::{
     format::Codec,
     media::{Direction, Mid},
     net::{Protocol, Receive},
-    rtp::{RtpPacket, RtpWrite},
+    rtp::RtpWrite,
     Event, Input, Output, Rtc,
 };
 pub struct Datagram {
@@ -30,6 +30,12 @@ struct Peer {
     feedback: Instant,
     queues: BTreeMap<Mid, crate::forwarding::Queue>,
     rewrite: BTreeMap<Mid, crate::forwarding::Rewrite>,
+    browser: bool,
+    channel: Option<str0m::channel::ChannelId>,
+}
+struct Packet {
+    ssrc: u32,
+    data: crate::channel::Packet,
 }
 struct Room {
     roster: SignedRoster,
@@ -138,8 +144,14 @@ impl Forwarder {
             .accept_offer(offer)
             .map_err(|_| Error::Invalid)?
             .to_sdp_string();
-        if value.sdp.lines().filter(|l| l.starts_with("m=")).count()
-            != 3 + value.layout.downloads.len()
+        let applications = value
+            .sdp
+            .lines()
+            .filter(|line| line.starts_with("m=application "))
+            .count();
+        if applications > 1
+            || value.sdp.lines().filter(|l| l.starts_with("m=")).count()
+                != 3 + value.layout.downloads.len() + applications
         {
             return Err(Error::Invalid);
         }
@@ -193,6 +205,8 @@ impl Forwarder {
                 feedback: clock,
                 queues: BTreeMap::new(),
                 rewrite: BTreeMap::new(),
+                browser: applications == 1,
+                channel: None,
             },
         );
         Ok(answer)
@@ -229,7 +243,7 @@ impl Forwarder {
         let mut datagrams = Vec::new();
         let mut next = clock + Duration::from_millis(50);
         for room in self.rooms.values_mut() {
-            let mut packets: Vec<(Id, u64, MediaKind, RtpPacket)> = Vec::new();
+            let mut packets: Vec<(Id, u64, MediaKind, Packet)> = Vec::new();
             let mut feedback = Vec::new();
             let mut dead = Vec::new();
             for (id, peer) in &mut room.peers {
@@ -252,6 +266,9 @@ impl Forwarder {
                             }
                         }
                         Ok(Output::Event(Event::RtpPacket(packet))) => {
+                            if peer.browser {
+                                continue;
+                            }
                             let source = peer
                                 .rtc
                                 .direct_api()
@@ -270,9 +287,73 @@ impl Forwarder {
                                         && p.spec().codec == codec(kind)
                                 });
                                 if valid && packet.payload.len() <= 1500 {
-                                    packets.push((*id, peer.sequence, kind, packet));
+                                    packets.push((
+                                        *id,
+                                        peer.sequence,
+                                        kind,
+                                        Packet {
+                                            ssrc: *packet.header.ssrc,
+                                            data: crate::channel::Packet {
+                                                sender: *id,
+                                                kind,
+                                                sequence: *packet.seq_no,
+                                                timestamp: packet.header.timestamp,
+                                                marker: packet.header.marker,
+                                                payload: packet.payload,
+                                            },
+                                        },
+                                    ));
                                 }
                             }
+                        }
+                        Ok(Output::Event(Event::ChannelOpen(channel, label))) => {
+                            let valid = peer.browser
+                                && peer.channel.is_none()
+                                && label == crate::channel::LABEL
+                                && peer
+                                    .rtc
+                                    .channel(channel)
+                                    .and_then(|c| c.config().cloned())
+                                    .is_some_and(|config| {
+                                        !config.ordered
+                                            && matches!(
+                                                config.reliability,
+                                                str0m::channel::Reliability::MaxRetransmits {
+                                                    retransmits: 0
+                                                }
+                                            )
+                                    });
+                            if valid {
+                                peer.channel = Some(channel);
+                            } else {
+                                peer.rtc.disconnect();
+                            }
+                        }
+                        Ok(Output::Event(Event::ChannelData(data))) => {
+                            if !peer.browser || peer.channel != Some(data.id) || !data.binary {
+                                peer.rtc.disconnect();
+                                continue;
+                            }
+                            match crate::channel::Packet::decode(&data.data) {
+                                Ok(packet) if packet.sender == *id => {
+                                    let kind = packet.kind;
+                                    packets.push((
+                                        *id,
+                                        peer.sequence,
+                                        kind,
+                                        Packet {
+                                            ssrc: kind as u32 + 1,
+                                            data: packet,
+                                        },
+                                    ));
+                                }
+                                _ => peer.rtc.disconnect(),
+                            }
+                        }
+                        Ok(Output::Event(Event::ChannelClose(channel)))
+                            if peer.channel == Some(channel) =>
+                        {
+                            peer.rtc.disconnect()
                         }
                         Ok(Output::Event(Event::KeyframeRequest(request))) => {
                             if clock.duration_since(peer.feedback) >= Duration::from_millis(500) {
@@ -325,6 +406,19 @@ impl Forwarder {
                     else {
                         continue;
                     };
+                    if peer.browser {
+                        if let Some(mut channel) = peer.channel.and_then(|id| peer.rtc.channel(id))
+                        {
+                            let sent = channel.buffered_amount() <= 192 * 1024
+                                && packet.data.encode().ok().is_some_and(|bytes| {
+                                    channel.write(true, &bytes).unwrap_or(false)
+                                });
+                            if !sent {
+                                self.dropped = self.dropped.saturating_add(1);
+                            }
+                        }
+                        continue;
+                    }
                     let mid = mid(&route.mid);
                     let pt = peer.rtc.media(mid).and_then(|media| {
                         peer.rtc
@@ -345,7 +439,7 @@ impl Forwarder {
                                 .queues
                                 .entry(mid)
                                 .or_default()
-                                .admit(sample, packet.payload.len())
+                                .admit(sample, packet.data.payload.len())
                             {
                                 self.dropped = self.dropped.saturating_add(1);
                                 continue;
@@ -353,9 +447,9 @@ impl Forwarder {
                             let Some((sequence, timestamp)) =
                                 peer.rewrite.entry(mid).or_default().packet(
                                     generation,
-                                    *packet.header.ssrc,
-                                    *packet.seq_no,
-                                    packet.header.timestamp,
+                                    packet.ssrc,
+                                    packet.data.sequence,
+                                    packet.data.timestamp,
                                     if kind == MediaKind::Audio { 960 } else { 3000 },
                                 )
                             else {
@@ -367,9 +461,9 @@ impl Forwarder {
                                     sequence.into(),
                                     timestamp,
                                     clock,
-                                    packet.payload.clone(),
+                                    packet.data.payload.clone(),
                                 )
-                                .marker(packet.header.marker)
+                                .marker(packet.data.marker)
                                 .nackable(kind != MediaKind::Audio),
                             );
                         }

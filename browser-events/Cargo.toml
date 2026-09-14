@@ -1,0 +1,18 @@
+[package]
+name = "sigil-browser-events"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+crate-type = ["cdylib"]
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+sigil-protocol = { path = "../protocol" }
+serde_json.workspace = true
+base64ct = { version = "=1.8.3", features = ["alloc"] }
+wasm-bindgen = "=0.2.127"
+wasm-bindgen-futures = "=0.4.77"
+js-sys = "=0.3.104"
+futures-channel = "=0.3.34"
+web-sys = { version = "=0.3.104", features = ["Window","Navigator","Event","EventTarget","DomException","IdbFactory","IdbDatabase","IdbObjectStore","IdbRequest","IdbOpenDbRequest","IdbTransaction","IdbTransactionMode","ServiceWorkerContainer","ServiceWorkerRegistration","ServiceWorkerGlobalScope","ServiceWorker","RegistrationOptions","WorkerType","PushManager","PushSubscription","PushSubscriptionOptions","PushSubscriptionOptionsInit","PushEncryptionKeyName","PushEvent","PushMessageData","Notification","NotificationOptions","NotificationPermission","NotificationEvent","Clients","Client","ClientQueryOptions","ClientType","WindowClient","Location","WorkerLocation"] }

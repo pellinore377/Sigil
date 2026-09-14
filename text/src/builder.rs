@@ -2,6 +2,7 @@ use crate::{structured::CardLimits, utility::dice_plan, Error};
 use std::collections::BTreeSet;
 
 pub fn source(input: &str) -> Result<String, Error> {
+    if input.starts_with('{') {return crate::form::source(input); }
     let limits = CardLimits::default();
     if input.len() > limits.text.source_bytes / 2
         || input.chars().any(|c| {
@@ -160,7 +161,7 @@ pub fn code_preview(input: &str) -> Result<String, Error> {
     ))
 }
 
-fn literal(value: &str) -> String {
+pub(crate) fn literal(value: &str) -> String {
     let mut output = String::new();
     for ch in value.chars() {
         if ch.is_ascii_punctuation() {

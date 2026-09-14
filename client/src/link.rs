@@ -9,6 +9,9 @@ mod exchange;
 mod journal;
 #[path = "link_offer.rs"]
 mod offer;
+#[path = "link_qr.rs"]
+mod qr;
+pub use qr::scan_frame;
 pub(crate) use exchange::discard_unapproved_offer;
 pub use exchange::{emoji_confirmation, offer_qr};
 

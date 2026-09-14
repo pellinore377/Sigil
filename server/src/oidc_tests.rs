@@ -716,7 +716,7 @@ fn browser_callback_requires_its_cookie_before_consuming_the_authorization_code(
             .await
             .unwrap();
         assert_eq!(response.status(), axum::http::StatusCode::SEE_OTHER);
-        assert_eq!(response.headers()["location"], "/");
+        assert_eq!(response.headers()["location"], "/admin");
         let cookie = response.headers()["set-cookie"]
             .to_str()
             .unwrap()
@@ -1254,4 +1254,25 @@ fn sso_registration_name_requires_callback_proof_and_retries_without_duplicate_a
         )
         .unwrap();
     assert_eq!(session.address, "@carol:chat.example");
+}
+
+#[test]
+fn messenger_callback_target_is_durable_and_does_not_replace_completion_proof() {
+    let _guard=crate::egress::tests::NETWORK.lock().unwrap();
+    let idp=Idp::new();let (_dir,mut store,_,_,now)=crate::admin::tests::setup();enable(&mut store,&idp);
+    let request=Start {request_id:random_secret().unwrap(),secret:random_secret().unwrap(),username:Some("browser_user".into()),replace_devices:false};
+    let started=store.oidc_browser_start(request.clone(),None,now).unwrap();
+    assert!(matches!(store.oidc_start(request.clone(),None,now),Err(StoreError::Conflict)));
+    assert_eq!(store.oidc_browser_start(request.clone(),None,now).unwrap().authorization_url,started.authorization_url);
+    let url=openidconnect::url::Url::parse(&started.authorization_url).unwrap();
+    let params=url.query_pairs().collect::<std::collections::BTreeMap<_,_>>();
+    *idp.claims.lock().unwrap()=serde_json::json!({"iss":idp.fixture.uri("127.0.0.1",""),"sub":"synthetic-browser","aud":"sigil-synthetic","iat":now,"exp":now+600,"nonce":params["nonce"],"challenge":params["code_challenge"]});
+    let callback=store.oidc_claim(&params["state"],now).unwrap().unwrap();
+    let verified=callback.verify("synthetic-code");
+    let completion=store.oidc_verified(callback,verified,now).unwrap().unwrap();
+    assert!(completion.browser);
+    let mut finish=Finish {request_id:request.request_id,secret:request.secret,completion:None};
+    assert!(matches!(store.oidc_finish(finish.clone(),now).unwrap(),Progress::Pending));
+    finish.completion=Some("ab".repeat(32));assert!(store.oidc_finish(finish.clone(),now).is_err());
+    finish.completion=Some(completion.secret);assert!(matches!(store.oidc_finish(finish,now).unwrap(),Progress::Ready{..}));
 }

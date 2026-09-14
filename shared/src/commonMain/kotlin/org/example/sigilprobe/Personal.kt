@@ -12,6 +12,8 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.delay
 
+val LocalNotificationPanel=staticCompositionLocalOf<(@Composable (MessengerState,Command)->Unit)?> {null}
+
 @Composable
 internal fun NewConversation(state: MessengerState, command: Command, back: () -> Unit, open: (String) -> Unit, titleChanged: (String) -> Unit = {}) {
     var query by remember { mutableStateOf("") }
@@ -61,10 +63,10 @@ internal fun SettingsPage(state: MessengerState, navigate: (String) -> Unit) {
             SettingRow("person", "Profile", "Display name and photo") { navigate("profile") }
             SettingRow("lock", "Privacy", "Read receipts, typing, and who can reach you") { navigate("privacy") }
             SettingRow("devices", "Devices", "Linked devices and verification") { navigate("device") }
-            SettingRow("notifications", "Notifications", "Messages, calls, and sounds") { navigate("notifications") }
+            if(LocalClientFeatures.current.notifications)SettingRow("notifications", "Notifications", "Messages, calls, and sounds") { navigate("notifications") }
         }
         SettingsSection("Appearance") { SettingRow("palette", "Appearance", "Theme, typography, and layout") { navigate("appearance") } }
-        SettingsSection("Data and storage") { SettingRow("database", "Data and storage", "Media, downloads, and cache") { navigate("storage") } }
+        if(LocalClientFeatures.current.files)SettingsSection("Data and storage") { SettingRow("database", "Data and storage", "Media, downloads, and cache") { navigate("storage") } }
         SettingsSection("Help") { SettingRow("info", "About", "Version, licenses, and support") { navigate("about") } }
         Spacer(Modifier.height(24.dp))
     }
@@ -132,7 +134,7 @@ internal fun PersonalPage(page: String, state: MessengerState, command: Command,
                 }
                 "profile" -> {
                     Avatar(state.profileName.ifEmpty { state.address.removePrefix("@") }, 88, state.profileAvatar)
-                    Row { SigilTextButton({ command("photo_choose", emptyMap()) }, enabled = !state.busy) { Text("Change photo") }; SigilTextButton({ command("photo_remove", emptyMap()) }, enabled = !state.busy) { Text("Remove photo") } }
+                    if(LocalClientFeatures.current.files)Row { SigilTextButton({ command("photo_choose", emptyMap()) }, enabled = !state.busy) { Text("Change photo") }; SigilTextButton({ command("photo_remove", emptyMap()) }, enabled = !state.busy) { Text("Remove photo") } }
                     Text("Your name and photo are shared with approved contacts and are visible to your server. They do not change your encryption identity.", style = MaterialTheme.typography.bodySmall)
                     if (state.photoPending) {
                         Text("Photo change waiting to upload")
@@ -155,6 +157,8 @@ internal fun PersonalPage(page: String, state: MessengerState, command: Command,
                     Toggle("Share activity status", state.presenceSharing) { command("organize", mapOf("peer" to null, "value" to mapOf("PresenceSharing" to it))) }
                 }
                 "notifications" -> {
+                    val panel=LocalNotificationPanel.current
+                    if(panel!=null)panel(state,command) else {
                     Text("On this device", style = MaterialTheme.typography.titleLarge)
                     Text("Notifications keep message content private. Snoozed conversations do not produce message alerts.")
                     state.notifications?.let { settings ->
@@ -175,6 +179,7 @@ internal fun PersonalPage(page: String, state: MessengerState, command: Command,
                         if (push.enabled) SigilTextButton({ command("push_disable", emptyMap()) }, enabled = !state.busy) { Text("Use periodic sync instead") }
                     }
                     SigilTextButton({ command("notification_settings", emptyMap()) }, enabled = !state.busy) { Text("Refresh delivery status") }
+                    }
                 }
                 "storage" -> {
                     Text("This device", style = MaterialTheme.typography.titleLarge)

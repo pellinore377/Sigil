@@ -3,6 +3,7 @@
 pub mod action;
 mod blocks;
 pub mod builder;
+pub mod form;
 mod card_parse;
 pub mod chart;
 pub mod code;

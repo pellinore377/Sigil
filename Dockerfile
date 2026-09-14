@@ -7,6 +7,8 @@ COPY core core
 COPY crypto crypto
 COPY client client
 COPY android android
+COPY browser browser
+COPY browser-events browser-events
 COPY protocol protocol
 COPY text text
 COPY media media
@@ -22,18 +24,21 @@ FROM toolchain AS web-tools
 COPY --from=java /opt/java/openjdk /opt/java/openjdk
 ENV JAVA_HOME=/opt/java/openjdk
 ENV PATH="/opt/java/openjdk/bin:${PATH}"
-RUN apt-get update && apt-get install -y --no-install-recommends curl unzip ca-certificates && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y --no-install-recommends curl unzip ca-certificates clang llvm && rm -rf /var/lib/apt/lists/*
 RUN curl -fsSL https://services.gradle.org/distributions/gradle-8.13-bin.zip -o /tmp/gradle.zip && echo '20f1b1176237254a6fc204d8434196fa11a4cfb387567519c61556e8710aed78  /tmp/gradle.zip' | sha256sum -c - && unzip -q /tmp/gradle.zip -d /opt && rm /tmp/gradle.zip
 RUN rustup target add wasm32-unknown-unknown && cargo install --locked wasm-bindgen-cli --version 0.2.127
 FROM web-tools AS web-build
 WORKDIR /src
 COPY --from=source /src /src
-RUN cargo build --locked --release --target wasm32-unknown-unknown -p sigil-core && wasm-bindgen target/wasm32-unknown-unknown/release/sigil_core.wasm --target web --out-dir target/web
+RUN cargo build --locked --release --target wasm32-unknown-unknown -p sigil-core -p sigil-browser -p sigil-browser-events && wasm-bindgen target/wasm32-unknown-unknown/release/sigil_browser_events.wasm --target web --out-dir target/web && wasm-bindgen target/wasm32-unknown-unknown/release/sigil_core.wasm --target web --out-dir target/web && wasm-bindgen target/wasm32-unknown-unknown/release/sigil_browser.wasm --target web --out-dir target/web
 COPY build.gradle.kts settings.gradle.kts gradle.properties ./
 COPY app app
 COPY shared shared
+COPY materials materials
+RUN cargo build --locked --manifest-path materials/Cargo.toml --release --target wasm32-unknown-unknown --lib && wasm-bindgen materials/target/wasm32-unknown-unknown/release/sigil_materials.wasm --target web --out-dir target/web
 COPY kotlin-js-store kotlin-js-store
-RUN /opt/gradle-8.13/bin/gradle --no-daemon :shared:wasmJsBrowserDistribution --console=plain
+COPY licenses licenses
+RUN /opt/gradle-8.13/bin/gradle --no-daemon -Pkotlin.daemon.jvmargs=-Xmx6g :shared:wasmJsBrowserDistribution --console=plain
 
 FROM debian:bookworm-slim@sha256:5ae3c39ebd15e229dcedd5cee596b2497182493d41ff162e824ba13fc1b2b867
 RUN mkdir -p /var/lib/sigil && chown 65532:65532 /var/lib/sigil && chmod 700 /var/lib/sigil

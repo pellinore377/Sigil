@@ -33,7 +33,8 @@ internal fun UtilityCard(value: UtilityContent) {
     val visible = qr?.concealed != true || revealed
     val clock=LocalTextMotion.current?.clock
     val animate=LocalAppearance.current.messageEffects && !LocalMotion.current.reduced
-    fun resultAlpha(full:Boolean)=if(!full && animate && value.motion!=null && (clock?.elapsed ?: 2000f)<RandomizerMotionMillis)0f else 1f
+    val objectMessage=value.motion?.kind in listOf("dice","coin","choice")
+    fun resultAlpha(full:Boolean)=if(!full && animate && value.motion!=null && (clock?.elapsed ?: 12000f)<(clock?.duration(randomizerDuration(value.motion)) ?: randomizerDuration(value.motion)))0f else 1f
     val label = when (value.kind) {
         "calculation" -> "Calculation"; "conversion" -> "Conversion"; "math" -> "Formula"; "qr" -> when (qr?.kind) {
             "wifi" -> "Wi-Fi QR code"; "contact" -> "Contact QR code"; else -> "QR code"
@@ -42,6 +43,16 @@ internal fun UtilityCard(value: UtilityContent) {
         "keys" -> "Keyboard shortcut"; "rating" -> "Rating"; "progress" -> "Progress"; "quote" -> "Quote"; else -> "Details"
     }
     @Composable fun body(full: Boolean) {
+        if(objectMessage) {
+            RandomizerStage(value.motion!!,full,value.rich)
+            if(value.motion.kind=="dice" && value.motion.dice.size>1) {
+                val alpha by androidx.compose.animation.core.animateFloatAsState(resultAlpha(full),label="Dice total")
+                Text(if(value.motion.result.isNotEmpty())"Total · ${value.motion.result}" else value.display,Modifier.fillMaxWidth().graphicsLayer {this.alpha=alpha},textAlign=androidx.compose.ui.text.style.TextAlign.End,style=MaterialTheme.typography.labelLarge)
+            }
+            if(value.details.size>6)Text("6 of ${value.details.size} dice shown",style=MaterialTheme.typography.bodySmall)
+            value.secondary?.let {RichMessageText(it,style=MaterialTheme.typography.bodyMedium)}
+            return
+        }
         if (qr != null) {
             value.rich?.let { RichMessageText(it) }
             if (visible) QrImage(qr, Modifier.widthIn(max = if (full) 480.dp else 232.dp).fillMaxWidth().aspectRatio(1f))
@@ -75,7 +86,7 @@ internal fun UtilityCard(value: UtilityContent) {
                     drawRect(color)
                 }
             }
-            if(value.motion?.kind!="choice")value.rich?.let { RichMessageText(it,Modifier.graphicsLayer {alpha=resultAlpha(full)}) }
+            value.rich?.let { RichMessageText(it,Modifier.graphicsLayer {alpha=resultAlpha(full)}) }
             if (value.display.isNotEmpty() && !(value.kind=="random" && value.motion!=null) && value.motion?.kind!="coin") Text(if (swapped) value.alternate else value.display, modifier=Modifier.graphicsLayer {alpha=resultAlpha(full)}, style = if (value.kind in listOf("calculation", "random", "rating", "progress")) MaterialTheme.typography.headlineSmall else MaterialTheme.typography.bodyLarge)
             if (value.alternate.isNotEmpty()) {
                 Text(if (swapped) value.display else value.alternate, style = MaterialTheme.typography.bodyLarge)
@@ -101,9 +112,9 @@ internal fun UtilityCard(value: UtilityContent) {
         }
     }
     Column(Modifier.widthIn(min = 200.dp, max = 280.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-        Text(label, style = MaterialTheme.typography.labelMedium)
+        if(!objectMessage)Text(label, style = MaterialTheme.typography.labelMedium)
         body(false)
-        SigilTextButton({ expanded = true }) { Glyph("open_in_full", 18); Spacer(Modifier.width(8.dp)); Text("Open ${label.lowercase()}") }
+        if(!objectMessage)SigilTextButton({ expanded = true }) { Glyph("open_in_full", 18); Spacer(Modifier.width(8.dp)); Text("Open ${label.lowercase()}") }
     }
     if (expanded) Dialog({ expanded = false }, DialogProperties(usePlatformDefaultWidth = false)) {
         Surface(Modifier.fillMaxSize()) {

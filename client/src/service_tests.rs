@@ -303,3 +303,30 @@ fn service_disclosure_cancellation_restart_and_encrypted_delivery_do_not_repeat_
         .windows(b"Synthetic result".len())
         .any(|v| v == b"Synthetic result"));
 }
+
+#[test]
+fn mobile_lookup_is_explicit_and_staged_snapshot_posts_with_caption() {
+    let calls=Arc::new(AtomicUsize::new(0));let count=calls.clone();
+    let endpoint=Fixture::local_provider(Router::new().route("/translate",post(move || {let count=count.clone();async move {count.fetch_add(1,Ordering::SeqCst);Json(json!({"translatedText":"Synthetic result","detectedLanguage":{"language":"en"}}))}})));
+    let (dir,_fixture,mut alice,_bob,_)=pair();
+    let mut server=Store::open(&dir.path().join("server.db")).unwrap();
+    server.configure_services(Configure {expected_revision:0,per_account_daily:20,total_daily:20,providers:vec![EntryUpdate {
+        provider:Provider {id:"synthetic".into(),kind:Kind::LibreTranslate,endpoint:format!("https://127.0.0.1:{}/translate",endpoint.port()),attribution:Text::plain("Synthetic provider",Default::default()).unwrap(),version:None,source_url:None},secret:SecretUpdate::Clear,
+        exceptions:vec![sigil_server::egress::Exception {host:"127.0.0.1".into(),port:endpoint.port(),networks:vec!["127.0.0.1/32".into()],root_ca:Some(include_bytes!("../../server/tests/fixtures/provider-ca.der").to_vec())}],
+    }]}).unwrap();
+    let invoke=|alice:&mut ClientStore,value:Value|->Value {let output:Value=serde_json::from_str(&alice.mobile_command(&value.to_string())).unwrap();assert_eq!(output["ok"],true,"{output}");output["value"].clone()};
+    let catalog=invoke(&mut alice,json!({"command":"service","action":"catalog"}))["catalog"].clone();
+    assert_eq!(calls.load(Ordering::SeqCst),0);
+    let query="b4".repeat(32);
+    let request=json!({"command":"service","action":"resolve","request":query,"catalog":catalog,"provider":"synthetic","form":{"kind":"Translation","text":"Example","language":"es"}});
+    let response=invoke(&mut alice,request.clone());
+    assert!(response["preview"]["service"].is_object());
+    invoke(&mut alice,request);
+    assert_eq!(calls.load(Ordering::SeqCst),1);
+    invoke(&mut alice,json!({"command":"post","peer":"self","request":"b5".repeat(32),"timestamp":crate::conversations::now(),"text":"Caption redact::secret;","rich":true,"service_query":query}));
+    let timeline=invoke(&mut alice,json!({"command":"timeline","peer":"self"}));
+    let parts=&timeline["messages"][0]["parts"];
+    assert_eq!(parts[0]["kind"],"service");assert_eq!(parts[1]["text"],"Caption [REDACTED]");assert!(!timeline.to_string().contains("secret"));
+    assert_eq!(calls.load(Ordering::SeqCst),1);
+    assert_eq!(alice.db.query_row("SELECT count(*) FROM service_queries",[],|r|r.get::<_,i64>(0)).unwrap(),0);
+}

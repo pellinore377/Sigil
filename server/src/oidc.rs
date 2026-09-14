@@ -58,6 +58,8 @@ pub(crate) struct Stored {
 }
 #[derive(Deserialize, Serialize)]
 struct Flow {
+    #[serde(default)]
+    browser: bool,
     username: Option<String>,
     #[serde(default)]
     suggested_username: Option<String>,
@@ -250,6 +252,13 @@ impl Store {
         now: u64,
         profile: bool,
     ) -> Result<Started, StoreError> {
+    self.oidc_begin_for(request,link,now,profile,false)
+}
+pub(crate) fn oidc_browser_start(&mut self,request:Start,link:Option<&str>,now:u64)->Result<Started,StoreError> {
+    let profile=request.username.is_none() && link.is_none();
+    self.oidc_begin_for(request,link,now,profile,true)
+}
+fn oidc_begin_for(&mut self,request:Start,link:Option<&str>,now:u64,profile:bool,browser:bool)->Result<Started,StoreError> {
         if !valid_credential(&request.request_id)
             || !valid_credential(&request.secret)
             || request
@@ -289,7 +298,7 @@ impl Store {
             )
             .optional()?;
         if let Some((old, expires_at, value)) = previous {
-            if old != hash {
+            if old != hash || decode::<Flow>(&value)?.browser != browser {
                 return Err(StoreError::Conflict);
             }
             return Ok(Started {
@@ -330,6 +339,7 @@ impl Store {
             .url();
         let authorization_url = url.to_string();
         let flow = Flow {
+            browser,
             suggested_username: None,
             username: request.username,
             replace_devices: request.replace_devices,
@@ -395,6 +405,7 @@ impl Store {
         };
         let completion = if status == 1 {
             Some(Completion {
+                browser: callback.flow.browser,
                 request_id: callback.id.clone(),
                 secret: random_secret().map_err(|_| StoreError::InvalidData)?,
             })
@@ -675,6 +686,7 @@ pub(crate) struct Callback {
     flow: Flow,
 }
 pub(crate) struct Completion {
+    pub browser: bool,
     pub request_id: String,
     pub secret: String,
 }

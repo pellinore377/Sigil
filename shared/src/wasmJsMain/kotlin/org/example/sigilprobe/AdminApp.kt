@@ -83,6 +83,10 @@ fun AdminApp() {
                     Spacer(Modifier.width(12.dp))
                     Text("Sigil", style = MaterialTheme.typography.headlineLarge)
                     Spacer(Modifier.weight(1f))
+                    if (status?.flag("authenticated") == true && status?.flag("complete") == true) {
+                        SigilTextButton(onClick = { window.location.assign("/messenger") }, enabled = !busy) { Glyph("forum",20); Spacer(Modifier.width(8.dp)); Text("Messages") }
+                        Spacer(Modifier.width(12.dp))
+                    }
                     if (status?.flag("authenticated") == true) HeaderAccount(checkNotNull(status), busy,
                         { accountOpen = true; appearanceOpen = false },
                         { run { api("/auth/v0/admin/logout", "POST"); accountOpen = false; appearanceOpen = false } })
@@ -505,7 +509,8 @@ private fun HeaderAccount(status: JsonElement, busy: Boolean, account: () -> Uni
     var anchor by remember { mutableStateOf(Offset.Zero) }
     val button = remember { FocusRequester() }
     var selected by remember { mutableStateOf(0) }
-    SigilIconButton(onClick = { selected = if (status.flag("complete")) 0 else 1; open = !open }, enabled = !busy,
+    fun choose(index:Int) {open=false;when(index){0->account();1->window.location.assign("/messenger");else->logout()}}
+    SigilIconButton(onClick = { selected = if (status.flag("complete")) 0 else 2; open = !open }, enabled = !busy,
         modifier = Modifier.focusRequester(button).onGloballyPositioned { anchor = it.positionInWindow() + Offset(it.size.width.toFloat(), it.size.height.toFloat()) }
             .semantics { contentDescription = "Your account menu" }) {
         AdminAvatar(status, Modifier.size(40.dp))
@@ -513,16 +518,16 @@ private fun HeaderAccount(status: JsonElement, busy: Boolean, account: () -> Uni
     if (open) {
         MenuKeys { key -> when (key) {
             "Escape" -> { open = false; button.requestFocus(); true }
-            "ArrowDown", "ArrowUp" -> { selected = if (status.flag("complete")) 1 - selected else 1; true }
-            "Enter", " " -> { if (!busy) { open = false; if (selected == 0) account() else logout() }; true }
+            "ArrowDown", "ArrowUp" -> { selected = if (status.flag("complete")) (selected + if(key=="ArrowDown")1 else 2)%3 else 2; true }
+            "Enter", " " -> { if (!busy) { choose(selected) }; true }
             "Tab" -> { open = false; false }
             else -> false
         } }
         AdminMenu(anchor, { open = false }, "Your account menu") {
             Text(status.text("display_name").ifBlank { status.text("username").ifBlank { "Your account" } }, Modifier.padding(horizontal = 16.dp, vertical = 8.dp), style = MaterialTheme.typography.titleMedium)
-            listOf("Account", "Sign out").forEachIndexed { index, label ->
-                DropdownMenuItem(text = { Text(label) }, enabled = !busy && (index == 1 || status.flag("complete")),
-                    onClick = { open = false; if (index == 0) account() else logout() },
+            listOf("Account", "Messages", "Sign out").forEachIndexed { index, label ->
+                DropdownMenuItem(text = { Text(label) }, enabled = !busy && (index == 2 || status.flag("complete")),
+                    onClick = { choose(index) },
                     modifier = Modifier.background(if (selected == index) MaterialTheme.colorScheme.surfaceVariant else androidx.compose.ui.graphics.Color.Transparent))
             }
         }

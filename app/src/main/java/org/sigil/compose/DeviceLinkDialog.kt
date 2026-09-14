@@ -1,7 +1,6 @@
 package org.sigil.compose
 
 import org.sigil.SigilButton
-import org.sigil.SigilTextButton
 
 import android.Manifest
 import android.content.pm.PackageManager
@@ -13,22 +12,14 @@ import androidx.camera.core.*
 import androidx.camera.core.resolutionselector.*
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.camera.view.PreviewView
-import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.*
-import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.geometry.Size as DrawSize
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.semantics.contentDescription
-import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.compose.ui.window.*
@@ -41,54 +32,10 @@ import java.util.concurrent.atomic.AtomicBoolean
 
 @Composable
 internal fun DeviceLinkDialog(flow: JSONObject, busy: Boolean, issue: String?, command: (String, String?) -> Unit) {
-    val stage = flow.getString("stage")
-    var scanning by remember(stage) { mutableStateOf(stage == "scan_offer") }
-    var matched by remember(stage) { mutableStateOf(false) }
-    val canCancel = flow.optBoolean("can_cancel", true)
-    val close = { if (!busy) command(if (stage == "done") "close" else if (canCancel) "cancel" else "pause", null) }
-    Dialog(close, DialogProperties(usePlatformDefaultWidth = false, securePolicy = SecureFlagPolicy.SecureOn)) {
-        Surface(Modifier.fillMaxSize()) {
-            Column(Modifier.fillMaxSize().systemBarsPadding().padding(24.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(16.dp)) {
-                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                    Text("Link a device", Modifier.weight(1f), style = MaterialTheme.typography.headlineMedium)
-                    SigilTextButton(close, enabled = !busy) { Text(if (stage == "done") "Done" else if (canCancel) "Cancel" else "Finish later") }
-                }
-                Column(Modifier.weight(1f).verticalScroll(rememberScrollState()), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(20.dp)) {
-                Text(when (stage) {
-                    "show_offer" -> "On your existing device, open Settings → Devices → Link a new device. Scan this code with that device."
-                    "scan_offer" -> "Scan the code shown by your new device. Keep both devices with you throughout setup."
-                    "show_proposal" -> "Now scan this code with your new device. Compare the symbols shown on both screens."
-                    "confirm_join", "confirm_sponsor" -> "Check that these symbols match on both devices. Only approve a device you have with you."
-                    "show_response" -> "Scan this final code with your existing device and approve the link there. Then finish here."
-                    "authorize" -> "Your approval is saved. Retry to finish registering the device."
-                    "cancelling" -> "Cancellation is pending. Retry to make sure the server cancels this link."
-                    "done" -> "Your device is linked."
-                    else -> "Preparing a secure link…"
-                })
-                if (scanning && !busy) QrScanner { qr -> scanning = false; command("scan", qr) }
-                else if (flow.has("cells")) {
-                    QrCanvas(flow, "Device linking QR code")
-                }
-                flow.optJSONArray("emoji")?.let { emoji ->
-                    Text((0 until emoji.length()).joinToString(" ") { emoji.getString(it) }, style = MaterialTheme.typography.headlineMedium)
-                }
-                if (flow.has("account")) Text(flow.getString("account"), style = MaterialTheme.typography.titleMedium)
-                issue?.let { Text(it, color = MaterialTheme.colorScheme.error) }
-                if (busy) CircularProgressIndicator(Modifier.size(24.dp))
-                }
-                when (stage) {
-                    "scan_offer", "show_offer", "show_proposal" -> if (!scanning) SigilButton({ scanning = true }, enabled = !busy) { Text("Scan the other device") }
-                    "confirm_join", "confirm_sponsor" -> {
-                        Row(verticalAlignment = Alignment.CenterVertically) { Checkbox(matched, { matched = it }, enabled = !busy); Text("The symbols match on both devices.", Modifier.weight(1f)) }
-                        SigilButton({ command("confirm", null) }, enabled = matched && !busy) { Text("Approve this device") }
-                    }
-                    "show_response" -> SigilButton({ command("finish", null) }, enabled = !busy) { Text("Finish linking") }
-                    "prepare_offer", "authorize", "cancelling" -> SigilButton({ command("retry", null) }, enabled = !busy) { Text("Retry") }
-                    "done" -> SigilButton(close, enabled = !busy) { Text("Continue") }
-                }
-                if (scanning && stage != "scan_offer") SigilTextButton({ scanning = false }) { Text("Show my code") }
-            }
-        }
+    val stage=flow.getString("stage")
+    val close={if(!busy)command(if(stage=="done")"close" else if(flow.optBoolean("can_cancel",true))"cancel" else "pause",null)}
+    Dialog(close,DialogProperties(usePlatformDefaultWidth=false,securePolicy=SecureFlagPolicy.SecureOn)) {
+        org.sigil.LinkPanel(flow.toString(),busy,issue,command) {found->QrScanner(found)}
     }
 }
 
@@ -148,39 +95,10 @@ internal fun QrScanner(found: (String) -> Unit) {
     issue?.let { Text(it) }
 }
 
-@Composable
-internal fun QrCanvas(flow: JSONObject, label: String) {
-    val width = flow.getInt("width"); val cells = flow.getString("cells")
-    Canvas(Modifier.fillMaxWidth().aspectRatio(1f).semantics { contentDescription = label }) {
-        drawRect(Color.White)
-        val unit = kotlin.math.floor(size.minDimension / (width + 8))
-        val origin = Offset((size.width - unit * width) / 2, (size.height - unit * width) / 2)
-        cells.forEachIndexed { index, cell -> if (cell == '1') drawRect(Color.Black, origin + Offset(index % width * unit, index / width * unit), DrawSize(unit, unit)) }
-    }
-}
 
 @Composable
 internal fun ContactQrDialog(flow: JSONObject, busy: Boolean, issue: String?, command: (String, String?) -> Unit) {
-    val stage = flow.getString("stage")
-    val close = { if (!busy) command("close", null) }
-    Dialog(close, DialogProperties(usePlatformDefaultWidth = false, securePolicy = SecureFlagPolicy.SecureOn)) {
-        Surface(Modifier.fillMaxSize()) {
-            Column(Modifier.fillMaxSize().systemBarsPadding().padding(24.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(16.dp)) {
-                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                    Text(if (flow.has("review")) "Confirm identity" else "Connect in person", Modifier.weight(1f), style = MaterialTheme.typography.headlineMedium)
-                    SigilTextButton(close, enabled = !busy) { Text("Close") }
-                }
-                Column(Modifier.weight(1f).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(16.dp)) {
-                    Text(if (stage == "scan") "Scan the contact code on the other person’s screen." else "Have the other person scan this code to connect. One person can use it, within ten minutes.")
-                    if (busy) CircularProgressIndicator()
-                    else if (stage == "scan") QrScanner { command("scan", it) }
-                    else if (flow.optBoolean("consumed")) Text("Code scanned. You can close this screen.")
-                    else if (flow.optBoolean("expired")) Text("This code expired. Show a new code to connect.")
-                    else if (flow.has("cells")) QrCanvas(flow, "Contact QR code")
-                    issue?.let { Text(it, color = MaterialTheme.colorScheme.error) }
-                }
-                if (!flow.has("review")) SigilButton({ command(if (stage == "scan" || flow.optBoolean("expired") || flow.optBoolean("consumed")) "show" else "scan", null) }, enabled = !busy) { Text(if (stage == "scan" || flow.optBoolean("expired") || flow.optBoolean("consumed")) "Show my code" else "Scan a code") }
-            }
-        }
+    Dialog({if(!busy)command("close",null)},DialogProperties(usePlatformDefaultWidth=false,securePolicy=SecureFlagPolicy.SecureOn)) {
+        org.sigil.ContactPanel(flow.toString(),busy,issue,command) {found->QrScanner(found)}
     }
 }

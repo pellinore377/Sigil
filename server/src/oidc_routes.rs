@@ -107,11 +107,12 @@ async fn configure(State(state): State<AppState>, Json(update): Json<oidc::Confi
         Err(_) => store_error(StoreError::InvalidData),
     }
 }
-async fn start(State(state): State<AppState>, Json(request): Json<Start>) -> Response {
-    run(state, move |s| s.oidc_start(request, None, now()?)).await
+async fn start(State(state): State<AppState>, browser:Option<axum::Extension<crate::enrollment::BrowserOriginVerified>>, Json(request): Json<Start>) -> Response {
+    run(state, move |s| if browser.is_some() {s.oidc_browser_start(request,None,now()?)} else {s.oidc_start(request, None, now()?)}).await
 }
 async fn link(
     State(state): State<AppState>,
+    browser:Option<axum::Extension<crate::enrollment::BrowserOriginVerified>>,
     headers: HeaderMap,
     Json(request): Json<Start>,
 ) -> Response {
@@ -119,7 +120,7 @@ async fn link(
         Ok(v) => v,
         Err(e) => return store_error(e),
     };
-    run(state, move |s| s.oidc_start(request, Some(&token), now()?)).await
+    run(state, move |s| if browser.is_some() {s.oidc_browser_start(request,Some(&token),now()?)} else {s.oidc_start(request, Some(&token), now()?)}).await
 }
 async fn finish(State(state): State<AppState>, Json(request): Json<Finish>) -> Response {
     run(state, move |s| s.oidc_finish(request, now()?)).await
@@ -251,7 +252,7 @@ async fn complete(
 fn finished(completion: Option<oidc::Completion>) -> Response {
     let redirect = completion
         .as_ref()
-        .map(|value| format!("sigil://oidc/{}/{}", value.request_id, value.secret));
+        .map(|value| if value.browser {format!("/auth/browser#oidc/{}/{}",value.request_id,value.secret)} else {format!("sigil://oidc/{}/{}", value.request_id, value.secret)});
     let body=match &redirect {
         Some(uri)=>format!("<!doctype html><title>Sigil</title><p>Continue only on the device where you started signing in.</p><a href=\"{uri}\">Return to Sigil</a><p>If this page is closed before returning, start sign-in again.</p>"),
         None=>"<!doctype html><title>Sigil</title><p>Authentication was not completed or this callback was already used. Return to Sigil to restart sign-in.</p>".into()
@@ -284,6 +285,7 @@ mod tests {
         let id = "ab".repeat(32);
         let secret = "cd".repeat(32);
         let response = finished(Some(oidc::Completion {
+            browser:false,
             request_id: id.clone(),
             secret: secret.clone(),
         }));
@@ -299,6 +301,9 @@ mod tests {
         assert!(std::str::from_utf8(&body)
             .unwrap()
             .contains("Return to Sigil"));
+let browser=finished(Some(oidc::Completion {browser:true,request_id:id.clone(),secret:secret.clone()}));
+assert_eq!(browser.status(),StatusCode::SEE_OTHER);
+assert_eq!(browser.headers()[header::LOCATION],format!("/auth/browser#oidc/{id}/{secret}"));
         let response = finished(None);
         assert_eq!(response.status(), StatusCode::OK);
         assert!(!response.headers().contains_key(header::LOCATION));

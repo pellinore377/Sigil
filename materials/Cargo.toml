@@ -1,0 +1,39 @@
+[package]
+name = "sigil-materials"
+version = "0.1.0"
+edition = "2021"
+publish = false
+default-run = "sigil-material-lab"
+
+[[bin]]
+name = "sigil-material-lab"
+path = "src/main.rs"
+
+[lib]
+crate-type = ["rlib", "cdylib"]
+
+[workspace]
+members = ["android-native"]
+resolver = "2"
+
+[dependencies]
+wgpu = "=30.0.1"
+glam = { version = "=0.33.6", features = ["bytemuck"] }
+bytemuck = { version = "=1.25.2", features = ["derive"] }
+pollster = "=0.4.0"
+png = "=0.18.1"
+ab_glyph = "=0.2.32"
+resvg = { version = "=0.47.0", default-features = false }
+rapier3d = { version = "=0.35.3", features = ["enhanced-determinism"] }
+
+[target.'cfg(all(not(target_os = "android"), not(target_arch = "wasm32")))'.dependencies]
+eframe = { version = "=0.36.1", default-features = false, features = ["wgpu", "wayland", "x11", "default_fonts"] }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+wasm-bindgen = "=0.2.127"
+wasm-bindgen-futures = "=0.4.77"
+js-sys = "=0.3.104"
+web-sys = { version = "=0.3.104", features = ["HtmlCanvasElement", "Window", "Worker", "WorkerOptions", "WorkerType", "MessageEvent", "Event", "DedicatedWorkerGlobalScope"] }
+serde = {version = "1", features = ["derive"]}
+serde_json = "1"
+futures-channel = "0.3"
