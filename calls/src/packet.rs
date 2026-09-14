@@ -1,8 +1,9 @@
 use crate::{hash, Error, Id, MediaKind};
-use std::{
-    collections::BTreeMap,
-    time::{Duration, Instant},
-};
+#[cfg(not(target_arch = "wasm32"))]
+use std::time::Instant;
+use std::{collections::BTreeMap, time::Duration};
+#[cfg(target_arch = "wasm32")]
+use web_time::Instant;
 
 const CHUNK: usize = 1024;
 const HEADER: usize = 44;

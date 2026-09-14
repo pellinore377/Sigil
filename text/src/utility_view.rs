@@ -71,8 +71,16 @@ impl Utility {
                                 .sum::<u64>()
                         ));
                     }
+                    let mut physical=Vec::new();
+                    'groups: for group in groups {for face in &group.faces {
+                        if physical.len()+if group.sides==100 {2}else{1}>6 {break 'groups;}
+                        if group.sides==100 {
+                            physical.push(json!({"sides":10,"face":(face%100)/10+1,"marking":"tens"}));
+                            physical.push(json!({"sides":10,"face":face%10+1,"marking":"units"}));
+                        } else {physical.push(json!({"sides":group.sides,"face":face}));}
+                    }}
                     json!({"kind":"dice","display":summary.join("\n"),"copy":self.body()?,"details":groups.iter().flat_map(|g|g.faces.iter().map(|face|plain(&format!("d{} · {}",g.sides,face)))).collect::<Result<Vec<_>,_>>()?,
-                        "motion":{"kind":"dice","dice":groups.iter().flat_map(|g|g.faces.iter().map(|face|json!({"sides":g.sides,"face":face}))).take(6).collect::<Vec<_>>()}})
+                        "motion":{"kind":"dice","result":groups.iter().flat_map(|g|g.faces.iter()).map(|&v|u64::from(v)).sum::<u64>().to_string(),"dice":physical}})
                 }
                 Randomizer::Pick {
                     category,
@@ -207,6 +215,13 @@ mod tests {
         let view = dice.presentation().unwrap();
         assert_eq!(view["motion"]["dice"].as_array().unwrap().len(), 6);
         assert_eq!(view["motion"]["dice"][0], json!({"sides":20,"face":17}));
+        assert_eq!(view["motion"]["result"], "680");
+        let percentile=Utility::Random(Randomizer::Dice {groups:vec![crate::utility::Dice {sides:100,faces:vec![100,42]}]}).presentation().unwrap();
+        assert_eq!(percentile["motion"]["result"],"142");
+        assert_eq!(percentile["motion"]["dice"],json!([
+            {"sides":10,"face":1,"marking":"tens"},{"sides":10,"face":1,"marking":"units"},
+            {"sides":10,"face":5,"marking":"tens"},{"sides":10,"face":3,"marking":"units"}
+        ]));
         assert!(dice == before);
         let hidden = Utility::Random(Randomizer::Pick {
             category: None,

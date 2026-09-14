@@ -210,7 +210,7 @@ impl ClientStore {
     }
     pub(super) fn mobile_file_work(&mut self) -> Result<Value, Error> {
         let mut cache = self.mobile_cache()?;
-        let started = std::time::Instant::now();
+        let started = crate::clock::Instant::now();
         let mut result = self.sync_attachments_due_online(&mut cache)?;
         for _ in 1..8 {
             if result.scheduling_error.is_some()

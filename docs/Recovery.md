@@ -39,4 +39,4 @@ All routes require a live account-scoped device credential.
 | `PUT /client/v0/recovery/head` | Exact-head CAS; explicit acknowledgement for restored-head repair |
 | `POST /client/v0/recovery/objects/delete` | At most 64 IDs under the exact current head |
 
-Objects are 36–67,266 bytes; request bodies are capped at 140 KiB. Archives hold at most 131,072 records. Accounts have 262,144 lifetime object IDs including tombstones. Ciphertext shares the configurable account quota (default 10 GiB); exhaustion rejects new storage without silently deleting history. Native schema 63 and attachment cache schema 4 reject older readers.
+Objects are 36–67,266 bytes; request bodies are capped at 140 KiB. Archives hold at most 131,072 records. Accounts have 262,144 lifetime object IDs including tombstones. Ciphertext shares the configurable account quota (default 10 GiB); exhaustion rejects new storage without silently deleting history. Native schema 77 and attachment cache schema 5 reject older readers.

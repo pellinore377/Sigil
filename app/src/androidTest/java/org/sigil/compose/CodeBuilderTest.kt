@@ -36,7 +36,9 @@ class CodeBuilderTest {
         if(androidx.test.platform.app.InstrumentationRegistry.getArguments().getString("capture_builder")=="true") {
             java.io.File(ui.activity.cacheDir,"code-builder.png").outputStream().use {ui.onRoot().captureToImage().asAndroidBitmap().compress(android.graphics.Bitmap.CompressFormat.PNG,100,it)}
         }
-        ui.onNodeWithText("Send code").assertIsDisplayed().performClick()
+        ui.onNodeWithText("Add to message").assertIsDisplayed().performClick()
+        assertTrue(commands.none {it.first=="post"})
+        ui.onNodeWithContentDescription("Send message").performClick()
         val sent=commands.single {it.first=="post"}.second
         assertEquals(NativeCore.builderSource("Code\nrust\n$body"),sent["text"])
         assertEquals(false,sent["rich"])

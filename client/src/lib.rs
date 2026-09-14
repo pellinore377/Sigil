@@ -15,6 +15,8 @@ mod erasure;
 #[cfg(test)]
 mod load_tests;
 mod private_db;
+mod clock;
+#[cfg(target_arch="wasm32")] pub mod browser_transport;
 mod storage_blob;
 pub use erasure::JournalErasure;
 use zeroize::Zeroizing;
@@ -127,7 +129,7 @@ impl From<network::Error> for Error {
 pub struct ClientStore {
     db: Connection,
     key: StorageKey,
-    connection: std::cell::RefCell<Option<(Vec<u8>, std::time::Instant, network::HttpsClient)>>,
+    connection: std::cell::RefCell<Option<(Vec<u8>, crate::clock::Instant, network::HttpsClient)>>,
 }
 fn binding(kind: u8, session: &Id, record: &[u8]) -> Vec<u8> {
     let mut bytes = b"Sigil/client/v0".to_vec();

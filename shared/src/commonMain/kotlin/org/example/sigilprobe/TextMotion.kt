@@ -19,9 +19,12 @@ val LocalTextMotionSeeds=staticCompositionLocalOf<((String)->String)?> {null}
 val LocalMotionVisible=staticCompositionLocalOf {true}
 val LocalMotionBlur=staticCompositionLocalOf {true}
 internal class TextPlayback(fresh:Boolean=false) {
-    var elapsed by mutableFloatStateOf(if(fresh)0f else 2000f)
+    val preparing=mutableStateMapOf<Any,Unit>()
+    var materialDuration by mutableIntStateOf(0)
+    fun duration(default:Int)=if(materialDuration>0)maxOf(minOf(default,2000),materialDuration)else default
+    var elapsed by mutableFloatStateOf(if(fresh)0f else 12000f)
     var generation by mutableIntStateOf(0)
-    fun replay() {elapsed=0f;generation++}
+    fun replay() {elapsed=0f;materialDuration=0;generation++}
 }
 internal class MotionLedger {
     private var initialized=false
@@ -60,7 +63,7 @@ internal fun ChatMessage.messageMotionDuration()=parts.maxOfOrNull {p->
             s.current?.let {add(it.description)};addAll(s.days.map {it.description});addAll(s.hours.map {it.description})
         }
     }
-    maxOf(if(p.chart!=null)ChartMotionMillis else 0,if(p.utility?.motion!=null)RandomizerMotionMillis else 0,texts.maxOfOrNull {t->t.motion.maxOfOrNull {if(it.kind=="typewriter" && it.stagger>0)minOf(it.duration,it.stagger*it.units.size) else it.duration} ?: 0} ?: 0)
+    maxOf(if(p.chart!=null)ChartMotionMillis else 0,p.utility?.motion?.let(::randomizerDuration) ?: 0,texts.maxOfOrNull {t->t.motion.maxOfOrNull {if(it.kind=="typewriter" && it.stagger>0)minOf(it.duration,it.stagger*it.units.size) else it.duration} ?: 0} ?: 0)
 } ?: 0
 internal fun ChatMessage.hasMessageMotion()=messageMotionDuration()>0
 
@@ -68,16 +71,21 @@ internal fun ChatMessage.hasMessageMotion()=messageMotionDuration()>0
 internal fun MessageMotion(message:String,clock:TextPlayback,visible:Boolean,duration:Int=2000,content:@Composable ()->Unit) {
     val active=visible && LocalMotionVisible.current
     val reduced=LocalMotion.current.reduced || !LocalAppearance.current.messageEffects
-    LaunchedEffect(clock,active,reduced,clock.generation,duration) {
-        if(reduced)clock.elapsed=2000f
+    val replaySeconds=LocalAppearance.current.replaySeconds
+    LaunchedEffect(clock,active,reduced,clock.generation,duration,replaySeconds) {
+        if(reduced)clock.elapsed=12000f
         if(active && !reduced) {
             var last=withFrameNanos {it}
-            while(clock.elapsed<duration.coerceIn(1,2000)) {
+            while(clock.elapsed<clock.duration(duration).coerceIn(1,12000)) {
                 val now=withFrameNanos {it}
-                clock.elapsed=(clock.elapsed+(now-last).coerceAtLeast(0)/1_000_000f).coerceAtMost(2000f)
+                if(clock.preparing.isEmpty())clock.elapsed=(clock.elapsed+(now-last).coerceAtLeast(0)/1_000_000f).coerceAtMost(12000f)
                 last=now
             }
-            clock.elapsed=2000f
+            clock.elapsed=12000f
+            if(replaySeconds in 10..30) {
+                kotlinx.coroutines.delay(replaySeconds*1000L)
+                clock.replay()
+            }
         }
     }
     CompositionLocalProvider(LocalTextMotion provides TextMotionContext(message,clock),content=content)
@@ -138,8 +146,8 @@ internal fun textMotion(value:RichText,revealed:Set<Int>,layout:TextLayoutResult
         val glowMask=Path().apply {glow.forEach {addPath(it.path)}}
         val glowPaint=Paint()
         onDrawWithContent {
-            val elapsed=if(playing)checkNotNull(context).clock.elapsed else 2000f
-            if(cells.isEmpty() || (!flipped && (elapsed>=2000f || cells.all {elapsed>=it.run.duration})) || size.width>4096 || size.height>4096 || size.width*size.height>4_000_000f)drawContent()
+            val elapsed=if(playing)checkNotNull(context).clock.elapsed else 12000f
+            if(cells.isEmpty() || (!flipped && (elapsed>=12000f || cells.all {elapsed>=it.run.duration})) || size.width>4096 || size.height>4096 || size.width*size.height>4_000_000f)drawContent()
             else {
                 layer.record {this@onDrawWithContent.drawContent()}
                 clipPath(mask,ClipOp.Difference) {drawLayer(layer)}

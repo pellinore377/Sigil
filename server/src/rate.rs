@@ -118,7 +118,7 @@ fn reject(reason: Rejection) -> Response {
     response
 }
 
-pub(crate) async fn limit(State(state): State<AppState>, request: Request, next: Next) -> Response {
+pub(crate) async fn limit(State(state): State<AppState>, mut request: Request, next: Next) -> Response {
     if matches!(
         request.uri().path(),
         "/setup/v0/claim" | "/auth/v0/admin/login" | "/auth/v0/admin/oidc"
@@ -139,11 +139,20 @@ pub(crate) async fn limit(State(state): State<AppState>, request: Request, next:
         return next.run(request).await;
     }
     if request.headers().contains_key(header::ORIGIN) {
-        return error(
-            StatusCode::FORBIDDEN,
-            "origin_not_allowed",
-            "Browser sessions are not enabled",
-        );
+        let origin = request.headers().get(header::ORIGIN).and_then(|v| v.to_str().ok()).map(str::to_owned);
+        let same_origin = request.headers().get_all(header::ORIGIN).iter().count() == 1
+            && origin.is_some()
+            && matches!(with_store(state.clone(), move |s| {
+                Ok(s.administration_policy()?.public_origin == origin)
+            }).await, Ok(true));
+        if request.headers().get_all("x-sigil-client").iter().count() != 1
+            || request.headers().get("x-sigil-client").and_then(|v| v.to_str().ok()) != Some("1")
+            || request.headers().contains_key(header::COOKIE)
+            || !same_origin
+        {
+            return error(StatusCode::FORBIDDEN, "origin_not_allowed", "Use this server's web messenger");
+        }
+        request.extensions_mut().insert(crate::enrollment::BrowserOriginVerified);
     }
     let enrollment = matches!(
         request.uri().path(),

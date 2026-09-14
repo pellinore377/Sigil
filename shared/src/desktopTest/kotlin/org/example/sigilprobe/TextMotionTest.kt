@@ -13,26 +13,45 @@ import kotlin.test.*
 
 class TextMotionTest {
     @get:Rule val ui=createComposeRule()
+    @Test fun preparation_holds_playback_and_optional_replay_obeys_visibility_and_reduced_motion() {
+        val clock=TextPlayback(true)
+        val token=Any();clock.preparing[token]=Unit
+        var visible by mutableStateOf(true)
+        var reduced by mutableStateOf(false)
+        ui.mainClock.autoAdvance=false
+        ui.setContent {CompositionLocalProvider(LocalAppearance provides Appearance(replaySeconds=10),LocalMotion provides MotionPolicy(reduced)) {
+            MessageMotion("sample",clock,visible,500) {}
+        }}
+        ui.mainClock.advanceTimeBy(1000);assertEquals(0f,clock.elapsed)
+        clock.materialDuration=3000;clock.preparing.remove(token)
+        ui.mainClock.advanceTimeBy(1000);assertTrue(clock.elapsed in 900f..1100f)
+        ui.mainClock.advanceTimeBy(2200);assertEquals(12000f,clock.elapsed)
+        ui.mainClock.advanceTimeBy(9000);assertEquals(0,clock.generation)
+        ui.mainClock.advanceTimeBy(1200);assertEquals(1,clock.generation)
+        visible=false;ui.mainClock.advanceTimeBy(30000);assertEquals(1,clock.generation)
+        visible=true;reduced=true;ui.mainClock.advanceTimeBy(30000)
+        assertEquals(1,clock.generation);assertEquals(12000f,clock.elapsed)
+    }
     @Test fun history_paging_and_recomposition_do_not_restart_new_message_playback() {
         val ledger=MotionLedger()
         ledger.update(emptyList(),false,true)
         ledger.update(listOf("old"),true,true)
-        assertEquals(2000f,ledger.state("old").elapsed)
+        assertEquals(12000f,ledger.state("old").elapsed)
         ledger.update(listOf("new","old","older"),true,true)
         val clock=ledger.state("new")
         assertEquals(0f,clock.elapsed)
-        assertEquals(2000f,ledger.state("older").elapsed)
+        assertEquals(12000f,ledger.state("older").elapsed)
         clock.elapsed=800f
         ledger.update(listOf("new","old","older","oldest"),true,true)
         assertSame(clock,ledger.state("new"));assertEquals(800f,clock.elapsed)
-        assertEquals(2000f,ledger.state("oldest").elapsed)
+        assertEquals(12000f,ledger.state("oldest").elapsed)
         ledger.state("old").replay()
         assertEquals(0f,ledger.state("old").elapsed);assertEquals(800f,clock.elapsed)
         val empty=MotionLedger()
         empty.update(emptyList(),true,true)
         empty.update(listOf("first"),true,true,emptySet())
         empty.update(listOf("first"),true,true,setOf("first"))
-        assertEquals(2000f,empty.state("first").elapsed)
+        assertEquals(12000f,empty.state("first").elapsed)
         val history=(0..1000).map {"history-$it"}
         val archive=MotionLedger()
         archive.update(history,true,false)
@@ -69,10 +88,10 @@ class TextMotionTest {
         assertEquals(bounds,ui.onNodeWithTag("moving-text").fetchSemanticsNode().boundsInRoot)
         reduced=true
         ui.mainClock.advanceTimeByFrame()
-        assertEquals(2000f,clock.elapsed)
+        assertEquals(12000f,clock.elapsed)
         reduced=false;visible=true
         ui.mainClock.advanceTimeBy(500)
-        assertEquals(2000f,clock.elapsed)
+        assertEquals(12000f,clock.elapsed)
     }
     @Test fun concealed_content_offsets_and_slices_keep_only_visible_motion_ranges() {
         val rich=RichText("secret wave",listOf(RichSpan(0,6,reveal="spoiler")),motion=listOf(TextMotion("shake",480,4,80,0,1000,0,0,listOf(7 to 11))))
@@ -88,7 +107,7 @@ class TextMotionTest {
             MessageMotion("synthetic",clock,true) {}
         }}
         ui.waitForIdle()
-        assertEquals(2000f,clock.elapsed)
+        assertEquals(12000f,clock.elapsed)
     }
     private fun pixels():List<androidx.compose.ui.graphics.Color> {
         val pixels=ui.onNodeWithTag("effect").captureToImage().toPixelMap()
@@ -106,7 +125,7 @@ class TextMotionTest {
         assertNotEquals(initial,pixels())
         ui.runOnIdle {native=false}
         assertNotEquals(initial,pixels())
-        ui.runOnIdle {clock.elapsed=2000f}
+        ui.runOnIdle {clock.elapsed=12000f}
         assertEquals(initial,pixels())
     }
     @Test fun upside_down_glyphs_are_settled_in_history_and_reduced_motion() {

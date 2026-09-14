@@ -134,8 +134,8 @@ pub(super) fn write(
     Ok(sealed)
 }
 pub(super) fn clock() -> Result<u64, Error> {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
+    crate::clock::SystemTime::now()
+        .duration_since(crate::clock::UNIX_EPOCH)
         .map(|d| d.as_secs())
         .map_err(|_| Error::Expired)
 }

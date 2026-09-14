@@ -1,3 +1,5 @@
+import java.util.zip.GZIPOutputStream
+
 plugins {
     id("org.jetbrains.kotlin.multiplatform")
     id("org.jetbrains.kotlin.plugin.compose")
@@ -15,6 +17,7 @@ kotlin {
     }
     sourceSets {
         commonMain.dependencies {
+            implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.9.0")
             implementation(compose.components.resources)
             implementation(compose.material3)
             implementation(compose.foundation)
@@ -29,7 +32,6 @@ kotlin {
         }
         wasmJsMain.dependencies {
             implementation("org.jetbrains.kotlinx:kotlinx-browser:0.3")
-            implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.9.0")
         }
         wasmJsTest.dependencies { implementation(kotlin("test")) }
         val desktopTest by getting {
@@ -69,7 +71,7 @@ val trimUnusedBrowserImport by tasks.registering {
             "Unexpected browser date-library import; audit generated glue before proceeding"
         }
         copy {
-            from(rootProject.file("target/web")) { include("sigil_core.js", "sigil_core_bg.wasm") }
+            from(rootProject.file("target/web")) { include("sigil_core.js", "sigil_core_bg.wasm", "sigil_browser.js", "sigil_browser_bg.wasm", "sigil_browser_events.js", "sigil_browser_events_bg.wasm", "sigil_materials.js", "sigil_materials_bg.wasm") }
             into(generated)
         }
     }
@@ -86,5 +88,23 @@ compose.desktop {
     application {
         mainClass = "org.sigil.MainKt"
         jvmArgs += "-Djava.library.path=${rootProject.projectDir}/target/release"
+    }
+}
+
+tasks.named("wasmJsBrowserDistribution") {
+    doLast {
+        val destination = layout.buildDirectory.dir("dist/wasmJs/productionExecutable").get().asFile
+        copy {
+            from(rootProject.file("target/web")) { include("sigil_browser.js", "sigil_browser_bg.wasm", "sigil_browser_events.js", "sigil_browser_events_bg.wasm", "sigil_materials.js", "sigil_materials_bg.wasm") }
+            into(destination)
+        }
+        destination.resolve("sigil-material-worker.mjs").writeText("import init, { material_worker_receive } from './sigil_materials.js'; const ready = init(); self.onmessage = async ({data}) => { await ready; material_worker_receive(data); };\n")
+        destination.resolve("sigil-notifications.mjs").writeText("import init, { notification_push, notification_open } from './sigil_browser_events.js'; const ready = init(); self.addEventListener('push', event => event.waitUntil(ready.then(() => notification_push(event)))); self.addEventListener('notificationclick', event => event.waitUntil(ready.then(() => notification_open(event))));\n")
+        destination.resolve("sigil-worker.mjs").writeText("import init, { worker_start } from './sigil_browser.js'; self.onmessage = async ({data}) => { self.onmessage = null; await init({module_or_path:data}); await worker_start(); };\n")
+        destination.resolve("sigil-callback.mjs").writeText("import init, { complete_browser_auth } from './sigil_browser.js'; await init(); await complete_browser_auth();\n")
+        copy { from(rootProject.file("licenses")); into(destination.resolve("licenses")) }
+        destination.walkTopDown().filter { it.isFile && it.extension in setOf("wasm", "js", "mjs", "json", "ttf", "svg") }.toList().forEach { asset ->
+            GZIPOutputStream(asset.resolveSibling(asset.name + ".gz").outputStream()).use { output -> asset.inputStream().use { it.copyTo(output) } }
+        }
     }
 }

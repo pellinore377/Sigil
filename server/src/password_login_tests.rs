@@ -194,3 +194,28 @@ fn passwords_have_independent_salts_and_restore_does_not_revive_old_passwords() 
         0
     );
 }
+
+#[tokio::test]
+async fn browser_messaging_requires_exact_origin_explicit_header_and_device_credentials() {
+    use axum::{body::Body,http::{Request,StatusCode}};
+    use tower::ServiceExt;
+    let (dir,mut store,_,_,_)=crate::admin::tests::setup();
+    let mut policy=store.administration_policy().unwrap();
+    policy.public_origin=Some("https://sigil.example.test".into());
+    store.configure_administration(policy).unwrap();
+    let token=crate::auth::AdminToken::load_or_create(&dir.path().join("admin.token")).unwrap();
+    let app=crate::router(store,token);
+    for (origin,marker,cookie,status) in [
+        ("https://sigil.example.test",true,false,StatusCode::UNPROCESSABLE_ENTITY),
+        ("https://attacker.example",true,false,StatusCode::FORBIDDEN),
+        ("null",true,false,StatusCode::FORBIDDEN),
+        ("https://sigil.example.test",false,false,StatusCode::FORBIDDEN),
+        ("https://sigil.example.test",true,true,StatusCode::FORBIDDEN),
+    ] {
+        let mut request=Request::post("/client/v0/login/password").header("origin",origin).header("content-type","application/json");
+        if marker {request=request.header("x-sigil-client","1");}
+        if cookie {request=request.header("cookie","__Host-sigil-admin=invalid");}
+        assert_eq!(app.clone().oneshot(request.body(Body::from("{}")).unwrap()).await.unwrap().status(),status);
+    }
+    assert_eq!(app.oneshot(Request::get("/client/v0/mailbox").header("origin","https://sigil.example.test").header("x-sigil-client","1").body(Body::empty()).unwrap()).await.unwrap().status(),StatusCode::UNAUTHORIZED);
+}

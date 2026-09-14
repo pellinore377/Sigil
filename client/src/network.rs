@@ -1,9 +1,10 @@
-//! Native HTTPS transport. Blocking calls belong on a dedicated worker, never UI.
+//! Validated HTTPS transport. Blocking adapters run on a dedicated worker.
 use serde::{de::DeserializeOwned, Serialize};
 use sha2::{Digest, Sha256};
 use sigil_crypto::recovery::Object;
 use sigil_protocol::{accounts, mailbox, prekeys, recovery};
 use std::time::Duration;
+#[cfg(not(target_arch="wasm32"))]
 use std::{
     net::{SocketAddr, ToSocketAddrs},
     sync::{
@@ -11,16 +12,19 @@ use std::{
         mpsc,
     },
 };
+#[cfg(not(target_arch="wasm32"))]
 use ureq::unversioned::{
     resolver::{ResolvedSocketAddrs, Resolver},
     transport::{DefaultConnector, NextTimeout},
 };
+#[cfg(not(target_arch="wasm32"))]
 use ureq::{
-    http::{header, HeaderValue, Method, Request, Response},
     tls::{Certificate, RootCerts, TlsConfig},
     Agent, Body,
 };
 use zeroize::Zeroizing;
+use http::{header,HeaderValue,Method,Request,Response};
+#[cfg(target_arch="wasm32")] use crate::browser_transport::Body;
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum Error {
@@ -36,6 +40,7 @@ pub enum Error {
 
 #[derive(Clone)]
 pub struct HttpsClient {
+    #[cfg(not(target_arch="wasm32"))]
     agent: Agent,
     origin: String,
     server: String,
@@ -43,14 +48,7 @@ pub struct HttpsClient {
     discover: bool,
     resolved: DiscoveryCache,
 }
-type DiscoveryCache = std::sync::Arc<std::sync::Mutex<Option<(std::time::Instant, String)>>>;
-struct PooledAgent {
-    id: [u8; 32],
-    created: std::time::Instant,
-    agent: Agent,
-    resolved: DiscoveryCache,
-}
-static AGENTS: std::sync::Mutex<Vec<PooledAgent>> = std::sync::Mutex::new(Vec::new());
+type DiscoveryCache = std::sync::Arc<std::sync::Mutex<Option<(crate::clock::Instant, String)>>>;
 const SMALL: usize = 8192;
 #[path = "admin_network.rs"]
 mod admin;
@@ -74,74 +72,7 @@ mod services;
 pub use calls::CallAvailability;
 pub(crate) use push::{target_fields as push_target_fields, valid_status as valid_push_status};
 pub use services::{MapAvailability, MapTile};
-static DNS_JOBS: AtomicUsize = AtomicUsize::new(0);
-struct DnsPermit;
-impl Drop for DnsPermit {
-    fn drop(&mut self) {
-        DNS_JOBS.fetch_sub(1, Ordering::AcqRel);
-    }
-}
-#[derive(Debug)]
-struct BoundedResolver;
-fn lookup(
-    timeout: NextTimeout,
-    resolve: impl FnOnce() -> std::io::Result<Vec<SocketAddr>> + Send + 'static,
-) -> Result<Vec<SocketAddr>, ureq::Error> {
-    DNS_JOBS
-        .fetch_update(Ordering::AcqRel, Ordering::Acquire, |count| {
-            (count < 4).then_some(count + 1)
-        })
-        .map_err(|_| ureq::Error::Io(std::io::Error::from(std::io::ErrorKind::WouldBlock)))?;
-    let permit = DnsPermit;
-    let (sender, receiver) = mpsc::sync_channel(1);
-    std::thread::Builder::new()
-        .name("sigil-dns".into())
-        .spawn(move || {
-            let _permit = permit;
-            let _ = sender.send(resolve());
-        })
-        .map_err(ureq::Error::Io)?;
-    match receiver.recv_timeout((*timeout.after).min(Duration::from_secs(5))) {
-        Ok(result) => result.map_err(ureq::Error::Io),
-        Err(mpsc::RecvTimeoutError::Timeout) => Err(ureq::Error::Timeout(timeout.reason)),
-        Err(mpsc::RecvTimeoutError::Disconnected) => Err(ureq::Error::Io(std::io::Error::from(
-            std::io::ErrorKind::Other,
-        ))),
-    }
-}
-impl Resolver for BoundedResolver {
-    fn resolve(
-        &self,
-        uri: &ureq::http::Uri,
-        _: &ureq::config::Config,
-        timeout: NextTimeout,
-    ) -> Result<ResolvedSocketAddrs, ureq::Error> {
-        let host = uri.host().ok_or(ureq::Error::HostNotFound)?.to_owned();
-        let port = uri.port_u16().unwrap_or(443);
-        #[cfg(feature = "test-loopback")]
-        if host == "chat.example" {
-            let mut result = self.empty();
-            result.push(SocketAddr::from(([127, 0, 0, 1], port)));
-            return Ok(result);
-        }
-        let addresses = lookup(timeout, move || {
-            (host.as_str(), port)
-                .to_socket_addrs()
-                .map(|values| values.take(16).collect())
-        })?;
-        let mut result = self.empty();
-        for address in addresses {
-            result.push(address);
-        }
-        if result.is_empty() {
-            Err(ureq::Error::HostNotFound)
-        } else {
-            Ok(result)
-        }
-    }
-}
-
-#[cfg(test)]
+#[cfg(all(test,not(target_arch="wasm32")))]
 #[path = "network_tests.rs"]
 pub(crate) mod tests;
 
@@ -176,7 +107,7 @@ fn retry_after(response: &Response<Body>) -> Option<u64> {
 fn same_https_origin(left: &str, right: &str) -> bool {
     let parse = |value: &str| {
         sigil_protocol::discovery::valid_origin(value)
-            .then(|| value.parse::<ureq::http::Uri>().ok())
+            .then(|| value.parse::<http::Uri>().ok())
             .flatten()
     };
     match (parse(left), parse(right)) {
@@ -188,7 +119,26 @@ fn same_https_origin(left: &str, right: &str) -> bool {
     }
 }
 
+#[cfg(not(target_arch="wasm32"))]
+#[path="network_native.rs"]
+mod native;
+#[cfg(not(target_arch="wasm32"))]
+use native::*;
+
 impl HttpsClient {
+    #[cfg(target_arch="wasm32")]
+    pub fn new(server:&str,port:u16,credential:&str,roots:&[Vec<u8>])->Result<Self,Error> {
+        super::recovery::account_scope(server,[0;32]).map_err(|_|Error::Configuration)?;
+        if port==0 || !roots.is_empty() || !accounts::valid_credential(credential) {return Err(Error::Configuration);}
+        Ok(Self {origin:format!("https://{server}:{port}"),server:server.into(),credential:Zeroizing::new(credential.into()),discover:false,resolved:DiscoveryCache::default()})
+    }
+    #[cfg(target_arch="wasm32")]
+    fn send(&self,request:Request<&[u8]>)->Result<Response<Body>,Error> {
+        let response=crate::browser_transport::send(request)?;
+        if !response.status().is_success() {return Err(Error::Status {code:response.status().as_u16(),retry_after_seconds:retry_after(&response)});}
+        Ok(response)
+    }
+
     pub fn login_methods(
         server: &str,
         port: u16,
@@ -272,7 +222,7 @@ impl HttpsClient {
             }
         }
         let origin = self.resolve_origin()?;
-        *cached = Some((std::time::Instant::now(), origin.clone()));
+        *cached = Some((crate::clock::Instant::now(), origin.clone()));
         Ok(origin)
     }
     fn resolve_origin(&self) -> Result<String, Error> {
@@ -298,6 +248,7 @@ impl HttpsClient {
     /// Names are canonical homeserver DNS names; schemes, paths, credentials and
     /// IP literals are rejected. Empty roots uses bundled WebPKI roots. Explicit
     /// DER roots replace them for a privately administered CA; verification stays on.
+    #[cfg(not(target_arch="wasm32"))]
     pub fn new(
         server: &str,
         port: u16,
@@ -376,7 +327,7 @@ impl HttpsClient {
             let resolved = DiscoveryCache::default();
             agents.push(PooledAgent {
                 id,
-                created: std::time::Instant::now(),
+                created: crate::clock::Instant::now(),
                 agent: agent.clone(),
                 resolved: resolved.clone(),
             });
@@ -450,6 +401,7 @@ impl HttpsClient {
         let request = builder.body(bytes).map_err(|_| Error::Configuration)?;
         self.send(request)
     }
+    #[cfg(not(target_arch="wasm32"))]
     fn send(&self, request: Request<&[u8]>) -> Result<Response<Body>, Error> {
         let mut response = self.agent.run(request).map_err(|_| Error::Transport)?;
         if !response.status().is_success() {

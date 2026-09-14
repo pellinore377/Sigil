@@ -3,6 +3,10 @@ use super::*;
 #[path = "media_tests.rs"]
 mod tests;
 use std::collections::BTreeMap;
+#[cfg(not(target_arch = "wasm32"))]
+use std::time::Instant;
+#[cfg(target_arch = "wasm32")]
+use web_time::Instant;
 pub struct Media {
     pub(super) call: Id,
     pub(super) lease: Id,
@@ -19,7 +23,7 @@ impl Media {
         packet: &[u8],
     ) -> Result<Option<Vec<u8>>, Error> {
         self.assembly
-            .push(sender, kind, packet, std::time::Instant::now())
+            .push(sender, kind, packet, Instant::now())
             .map_err(failure)
     }
 }

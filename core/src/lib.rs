@@ -257,3 +257,16 @@ pub extern "system" fn Java_org_sigil_NativeCore_palette(
         .map(JString::into_raw)
         .unwrap_or(std::ptr::null_mut())
 }
+
+#[cfg_attr(target_arch = "wasm32", wasm_bindgen::prelude::wasm_bindgen)]
+pub fn structured_preview(input:&str)->String {sigil_text::form::preview(input).unwrap_or_default()}
+#[cfg(not(target_arch="wasm32"))]
+#[no_mangle]
+pub extern "system" fn Java_org_sigil_NativeCore_structuredPreview(mut env:JNIEnv,_:JObject,input:JString)->jstring {
+    let result=env.get_string(&input).map(|s|structured_preview(&String::from(s))).unwrap_or_default();
+    env.new_string(result).map(JString::into_raw).unwrap_or(std::ptr::null_mut())
+}
+
+#[cfg(target_arch="wasm32")]
+#[wasm_bindgen::prelude::wasm_bindgen]
+pub fn playground(input:&str)->String {sigil_text::form::playground(input).unwrap_or_default()}

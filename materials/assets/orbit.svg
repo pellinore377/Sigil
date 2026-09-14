@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="20 0 530 760" fill="currentColor" role="img" aria-labelledby="title desc">
+<title id="title">Sigil orbital mark</title><desc id="desc">A sweeping S ribbon with two tapered points, an open orbit, and a small central glint. Symbol only.</desc>
+<path id="orbit" d="M330 145 C449 156 532 245 535 365 C522 262 446 182 330 164 Z"/>
+<path id="sweep" d="M117 215 C61 272 43 339 70 389 C107 456 210 475 311 510 L259 564 C206 539 101 526 63 461 C22 391 49 278 117 215 Z"/>
+<path id="lower" d="M311 510 L259 564 C272 623 272 692 287 742 C303 677 307 596 311 510 Z"/>
+<path id="ribbon" d="M251 150 C196 181 180 216 213 245 C247 276 328 294 411 335 C481 369 522 404 514 464 C505 531 427 591 332 622 C414 575 465 515 456 472 C447 427 389 402 308 369 C222 334 135 310 131 251 C128 210 179 171 251 150 Z"/>
+<path id="upper" d="M289 18 C274 95 271 183 289 266 C307 181 306 99 289 18 Z"/>
+<path id="star" d="M289 371 C299 405 307 412 338 422 C307 431 298 440 289 475 C279 440 271 431 239 422 C271 413 279 405 289 371 Z"/>
+</svg>

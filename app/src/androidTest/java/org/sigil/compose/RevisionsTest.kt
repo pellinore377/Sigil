@@ -82,7 +82,8 @@ class RevisionsTest {
             assertTrue("Keyboard should be open", ime > 0)
             assertTrue("Entry is under the keyboard: $field", field.bottom <= view.height - ime + 2)
             capture("poll-${font.replace(' ', '-')}")
-            ui.onNodeWithText("Send poll").performScrollTo().assertIsEnabled().performClick()
+            ui.onNodeWithText("Add to message").performScrollTo().assertIsEnabled().performClick()
+            ui.onNodeWithContentDescription("Send message").performClick()
             val expected = "poll::Where shall we meet?\n- Library\n- Garden\n- Gallery;"
             assertEquals(expected, posts.last()["text"])
             assertEquals(true, posts.last()["rich"])
@@ -143,7 +144,7 @@ class RevisionsTest {
         capture("voice")
         ui.onNodeWithText("Record").performClick()
         ui.runOnIdle { state.value = state.value.copy(voice = VoiceState("Recording", "peer", 3, listOf(.1f, .5f, .8f, .3f))) }
-        ui.onNodeWithText("Done").performClick()
+        ui.onNodeWithText("Use recording").performClick()
         assertTrue("record_stop" in commands)
         assertFalse("record_send" in commands)
         ui.runOnIdle { state.value = state.value.copy(voice = state.value.voice.copy(phase = "Ready")) }
@@ -155,21 +156,21 @@ class RevisionsTest {
         ui.onNodeWithContentDescription("Send voice message").performClick()
         assertTrue("record_send" in commands)
     }
-    @Test fun closingAttachmentsAnimatesTheComposerDown() {
+    @Test fun closingAttachmentsReversesThePanelHeight() {
         show { SigilApp(NativeCore::palette, NativeCore::analyze, MessengerState(phase = "connected", chats = listOf(chat), selected = "peer"), { _, _ -> }) }
-        val closed = ui.onNodeWithTag("composer").fetchSemanticsNode().boundsInWindow.top
+        val closed = ui.onNodeWithTag("composer-panel").fetchSemanticsNode().boundsInWindow.height
         ui.onNodeWithContentDescription("Attachments").performClick()
-        val expanded = ui.onNodeWithTag("composer").fetchSemanticsNode().boundsInWindow.top
-        assertTrue(expanded < closed)
+        val expanded = ui.onNodeWithTag("composer-panel").fetchSemanticsNode().boundsInWindow.height
+        assertTrue(expanded > closed)
         ui.mainClock.autoAdvance = false
         ui.onNodeWithContentDescription("Close attachment panel").performClick()
         ui.mainClock.advanceTimeBy(96)
-        val closing = ui.onNodeWithTag("composer").fetchSemanticsNode().boundsInWindow.top
-        assertTrue("Closing jumped to its final position", closing > expanded && closing < closed)
+        val closing = ui.onNodeWithTag("composer-panel").fetchSemanticsNode().boundsInWindow.height
+        assertTrue("Closing jumped to its final position", closing < expanded && closing > closed)
         ui.onNodeWithContentDescription("Photos").assertExists()
         ui.mainClock.autoAdvance = true
         ui.waitForIdle()
-        assertEquals(closed, ui.onNodeWithTag("composer").fetchSemanticsNode().boundsInWindow.top)
+        assertEquals(closed, ui.onNodeWithTag("composer-panel").fetchSemanticsNode().boundsInWindow.height)
         ui.onNodeWithContentDescription("Photos").assertDoesNotExist()
     }
     @Test fun createFormsAnimateOutBeforeRemoval() {
@@ -198,15 +199,16 @@ class RevisionsTest {
         ui.waitUntil(5000) { imeHeight() == 0 }
         ui.onNodeWithContentDescription("Attachments").performClick()
         ui.onNodeWithContentDescription("Format").performClick()
-        ui.onNodeWithText("Continue writing").performClick()
+        ui.onNodeWithContentDescription("Continue writing").performClick()
         ui.waitUntil(5000) { imeHeight() > 0 }
         Thread.sleep(600); ui.waitForIdle()
-        val keyboard = ui.onNodeWithTag("composer").fetchSemanticsNode().boundsInWindow.top
+        val navigation = WindowInsetsCompat.toWindowInsetsCompat(view.rootWindowInsets).getInsets(WindowInsetsCompat.Type.navigationBars()).bottom
+        val keyboard = (imeHeight()-navigation).toFloat()
         ui.runOnUiThread { androidx.core.view.WindowCompat.getInsetsController(ui.activity.window, view).hide(WindowInsetsCompat.Type.ime()) }
         ui.waitUntil(5000) { imeHeight() == 0 }
         Thread.sleep(300); ui.waitForIdle()
         ui.onNodeWithContentDescription("Attachments").performClick()
-        assertEquals(keyboard, ui.onNodeWithTag("composer").fetchSemanticsNode().boundsInWindow.top, 3f)
+        assertEquals(keyboard, ui.onNodeWithTag("composer-panel").fetchSemanticsNode().boundsInWindow.height, 3f)
     }
     @Test fun scannerStaysBetweenInstructionsAndCodeSwitch() {
         val instrument = InstrumentationRegistry.getInstrumentation()

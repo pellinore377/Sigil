@@ -92,9 +92,9 @@ mod tests {
             assert_eq!(result["ok"], true, "{result}");
             assert!(result["value"]["issue"].is_null(), "{result}");
         };
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+        let deadline = crate::clock::Instant::now() + std::time::Duration::from_secs(20);
         while source.recovery_status().unwrap().anchor.is_none()
-            && std::time::Instant::now() < deadline
+            && crate::clock::Instant::now() < deadline
         {
             work(&mut source);
             std::thread::sleep(std::time::Duration::from_millis(200));
@@ -173,9 +173,9 @@ mod tests {
             .is_empty());
         drop(replacement);
         let mut replacement = open();
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+        let deadline = crate::clock::Instant::now() + std::time::Duration::from_secs(20);
         while replacement.recovery_status().unwrap().anchor.is_none()
-            && std::time::Instant::now() < deadline
+            && crate::clock::Instant::now() < deadline
         {
             work(&mut replacement);
             std::thread::sleep(std::time::Duration::from_millis(200));

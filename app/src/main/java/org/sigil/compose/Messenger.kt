@@ -428,7 +428,7 @@ class Messenger(application: Application) : AndroidViewModel(application) {
     }
     private fun request(name: String, fields: Map<String, Any?> = emptyMap()): String {
         val value = JSONObject().put("command", name)
-        fields.forEach { (key, item) -> value.put(key, JSONObject.wrap(item)) }
+        fields.forEach { (key, item) -> value.put(key, if(key=="shared_contact" && item is String)JSONObject(item)else JSONObject.wrap(item)) }
         if (name in listOf("oidc", "enroll")) value.put("label", android.os.Build.MODEL.take(60))
         if (name == "card_action") value.put("timestamp", System.currentTimeMillis() / 1000)
         if (name in listOf("post", "place", "group_create", "react", "pin", "read", "mark_read", "snooze", "forward", "organize", "edit", "delete", "clear_conversation", "note", "typing", "draft")) {
@@ -440,6 +440,11 @@ class Messenger(application: Application) : AndroidViewModel(application) {
         return value.toString()
     }
     private suspend fun execute(name: String, fields: Map<String, Any?> = emptyMap()) = if (name == "sync") NativeSync.run(getApplication(), fields["interactive"] == true) else native(request(name, fields))
+    suspend fun serviceRequest(raw:String):ServiceResponse=mutex.withLock {
+        check(foreground && !NativeSignOut.pending(getApplication()))
+        val result=native(raw)
+        ServiceResponse(result.toString(),result.optJSONObject("preview")?.let(::previewPart))
+    }
     suspend fun recipeView(message: ChatMessage, part: MessagePart, serves: Int): RecipeContent {
         check(!NativeSignOut.pending(getApplication()))
         return execute("recipe_view", mapOf("peer" to message.peer, "author" to message.author, "message" to message.id, "card" to part.id, "serves" to serves)).recipeContent() ?: error("Recipe unavailable")
@@ -507,7 +512,7 @@ class Messenger(application: Application) : AndroidViewModel(application) {
                 ChatMessage(message.getString("id"), message.getString("author"), message.getString("text"), message.getBoolean("mine"), clock(message.getLong("timestamp")),
                     message.getString("delivery"), message.getBoolean("pinned"), message.getJSONArray("reactions").strings(), message.getJSONArray("my_reactions").strings(), message.optional("reply"), message.getBoolean("read_by_me"), message.getLong("timestamp"), separator(message.getLong("timestamp")), message.optJSONArray("readers")?.strings().orEmpty(), message.optBoolean("noted"), message.optional("thread_author"), message.optional("thread_message"), message.optBoolean("editable", true), message.optString("kind", "Text"), peer,
                     message.optJSONObject("attachment")?.let { AttachmentDetails(it.getString("name"), it.getString("media_type"), it.getLong("length"), it.optString("caption")) },
-                    message.optJSONArray("parts")?.objects()?.map { part -> MessagePart(part.optString("id"), part.getString("kind"), part.getString("text"), part.optJSONArray("items")?.objects()?.map { item -> CardItem(item.getString("id"), item.getString("text"), item.getBoolean("checked"), item.getBoolean("enabled"), if (item.isNull("count")) null else item.getLong("count"), item.richText()) }.orEmpty(), part.optBoolean("multiple"), part.optBoolean("closed"), if (part.isNull("voters")) null else part.getLong("voters"), if (part.has("at")) separator(part.getLong("at")) else "", part.optInt("latitude_e6") / 1_000_000.0, part.optInt("longitude_e6") / 1_000_000.0, part.richText(), part.optString("location_mode", "pin"), part.optLong("sampled_at"), if (part.isNull("accuracy_cm")) null else part.getLong("accuracy_cm"), if (part.isNull("until")) null else part.getLong("until"), part.optBoolean("stopped"), part.optBoolean("can_stop"), part.tableContent(), part.recipeContent(), part.chartContent(), part.diagramContent(), part.utilityContent(), part.serviceContent(), part.contactContent()) }.orEmpty(), message.optional("thread_preview"))
+                    message.optJSONArray("parts")?.objects()?.map { part -> MessagePart(part.optString("id"), part.getString("kind"), part.getString("text"), part.optJSONArray("items")?.objects()?.map { item -> CardItem(item.getString("id"), item.getString("text"), item.getBoolean("checked"), item.getBoolean("enabled"), if (item.isNull("count")) null else item.getLong("count"), item.richText()) }.orEmpty(), part.optBoolean("multiple"), part.optBoolean("closed"), if (part.isNull("voters")) null else part.getLong("voters"), if (part.has("at")) separator(part.getLong("at")) else "", part.optInt("latitude_e6") / 1_000_000.0, part.optInt("longitude_e6") / 1_000_000.0, part.richText(), part.optString("location_mode", "pin"), part.optLong("sampled_at"), if (part.isNull("accuracy_cm")) null else part.getLong("accuracy_cm"), if (part.isNull("until")) null else part.getLong("until"), part.optBoolean("stopped"), part.optBoolean("can_stop"), part.tableContent(), part.recipeContent(), part.chartContent(), part.diagramContent(), part.utilityContent(), part.serviceContent(), part.contactContent(),part.optLong("at"),part.optLong("started_at")) }.orEmpty(), message.optional("thread_preview"))
             }
             before = if (timeline.isNull("next")) null else timeline.getLong("next")
             if (firstPage && (messages.isNotEmpty() || before == null)) {

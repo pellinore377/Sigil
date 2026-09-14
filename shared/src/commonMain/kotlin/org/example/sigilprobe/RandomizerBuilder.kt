@@ -48,7 +48,7 @@ internal fun RandomizerBuilder(enabled:Boolean,back:()->Unit,send:(String)->Unit
             Column(verticalArrangement=Arrangement.spacedBy(12.dp)) {
                 when(mode) {
                     "Dice"->{
-                        Text("Set the count and sides for each group. Common dice have 4, 6, 8, 10, 12 or 20 sides.",style=MaterialTheme.typography.bodySmall)
+                        Text("Set the count and sides for each group. Shapes: d4, d6, d8, d10, d12, d16, d20, d24 and d30. d100 uses a percentile pair.",style=MaterialTheme.typography.bodySmall)
                         dice.chunked(2).forEachIndexed {index,group->key(index) {
                             ExpandableRow(index) {
                                 NumberField(group[0],{dice=dice.toMutableList().also {v->v[index*2]=it}},"Count ${index+1}",Modifier.weight(1f))
@@ -73,7 +73,7 @@ internal fun RandomizerBuilder(enabled:Boolean,back:()->Unit,send:(String)->Unit
             }
         }
         Text(if(resolve==null)"The builder is unavailable." else if(source.isEmpty())when(kind) {"Dice"->"Use positive counts, 2–1,000,000 sides and no more than 256 dice.";"Choice"->"Add two different choices.";else->"Enter a valid inclusive range."} else "The result appears in the conversation after you send.",style=MaterialTheme.typography.bodySmall)
-        SigilButton({send(source)},Modifier.fillMaxWidth(),enabled=enabled && source.isNotEmpty()) {Text(action)}
+        SigilButton({send(source)},Modifier.fillMaxWidth(),enabled=enabled && source.isNotEmpty()) {Text(if(LocalBuilderAction.current=="Send")action else LocalBuilderAction.current)}
         }
     }
 }

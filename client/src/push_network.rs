@@ -28,7 +28,7 @@ pub(crate) fn target_fields(target: &Target) -> bool {
             auth_secret,
             vapid_key,
         } => {
-            let uri = endpoint.parse::<ureq::http::Uri>();
+            let uri = endpoint.parse::<http::Uri>();
             endpoint.len() <= push::MAX_ENDPOINT
                 && endpoint.is_ascii()
                 && !endpoint.contains('#')

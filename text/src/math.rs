@@ -72,6 +72,7 @@ pub fn html(source: &str, block: bool) -> Result<String, Error> {
         &mut output,
         events.into_iter().map(Ok::<_, io::Error>),
         RenderConfig {
+            xml: true,
             display_mode: if block {
                 DisplayMode::Block
             } else {

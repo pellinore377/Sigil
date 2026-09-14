@@ -400,7 +400,7 @@ impl ClientStore {
         self.refresh_call_media(&mut call.media, now)?;
         let mut frames = Vec::new();
         let mut bytes = 0;
-        let clock = std::time::Instant::now();
+        let clock = crate::clock::Instant::now();
         for _ in 0..128 {
             let Ok(packet) = call.transport.packets.try_recv() else {
                 break;

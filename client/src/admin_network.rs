@@ -114,7 +114,7 @@ impl HttpsClient {
         )?;
         let url = value
             .authorization_url
-            .parse::<ureq::http::Uri>()
+            .parse::<http::Uri>()
             .map_err(|_| Error::InvalidResponse)?;
         if url.scheme_str() != Some("https")
             || url.authority().is_none_or(|a| a.as_str().contains('@'))

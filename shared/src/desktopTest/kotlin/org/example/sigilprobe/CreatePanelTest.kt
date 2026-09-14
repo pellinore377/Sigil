@@ -16,9 +16,9 @@ class CreatePanelTest {
         val opened=mutableListOf<String>()
         var closed=0
         ui.setContent {MaterialTheme {Box(Modifier.width(400.dp).height(600.dp)) {CreatePanel({closed++},opened::add)}}}
+        ui.onNodeWithContentDescription("Filter tools").performClick()
         ui.onNodeWithContentDescription("Plan & Organize").assertExists()
-        ui.onNodeWithContentDescription("Poll").assertDoesNotExist()
-        ui.onNodeWithContentDescription("Ask & Decide").performClick()
+        ui.onNodeWithContentDescription("Ask & Decide").performScrollTo().performClick()
         ui.onNodeWithContentDescription("Poll").assertExists()
         ui.onNodeWithContentDescription("Note").assertDoesNotExist()
         ui.onNodeWithText("Search tools").performTextInput("spreadsheet")

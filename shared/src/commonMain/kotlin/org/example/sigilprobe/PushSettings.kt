@@ -95,11 +95,11 @@ internal fun PushSettings(read:suspend ()->PushConfiguration, save:suspend (Push
             Row(verticalAlignment=Alignment.CenterVertically) {
                 Switch(unified,{unified=it;saved=false},enabled=editing,
                     modifier=Modifier.semantics { contentDescription="Enable UnifiedPush" })
-                Text("UnifiedPush",Modifier.padding(start=12.dp))
+                Text("Web Push and UnifiedPush",Modifier.padding(start=12.dp))
             }
             AnimatedVisibility(unified) {
                 Column(verticalArrangement=Arrangement.spacedBy(12.dp)) {
-                    Text("For devices with a compatible push distributor installed. A contact identifies this server to the delivery service.",style=MaterialTheme.typography.bodySmall)
+                    Text("For browser notifications and Android devices with a compatible push distributor. A contact identifies this server to the delivery service.",style=MaterialTheme.typography.bodySmall)
                     field("Contact · mailto:admin@example.org or HTTPS URL",contact,{contact=it;saved=false},false,editing)
                 }
             }

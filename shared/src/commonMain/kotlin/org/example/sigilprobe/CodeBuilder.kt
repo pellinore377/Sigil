@@ -67,7 +67,7 @@ internal fun CodeBuilder(enabled:Boolean,back:()->Unit,send:(String)->Unit) {
                         }
                     } else Text(if(resolve==null || render==null)"The code builder is unavailable." else "Check the language name and code. Language names use letters, numbers, hyphens or underscores.",color=MaterialTheme.colorScheme.error,style=MaterialTheme.typography.bodyMedium)
                 }
-                SigilButton({if(preview!=null && source.isNotEmpty())send(source)},Modifier.fillMaxWidth(),enabled=enabled && preview!=null && source.isNotEmpty()) {Text("Send code")}
+                SigilButton({if(preview!=null && source.isNotEmpty())send(source)},Modifier.fillMaxWidth(),enabled=enabled && preview!=null && source.isNotEmpty()) {Text(if(LocalBuilderAction.current=="Send")"Send code" else LocalBuilderAction.current)}
             } else Column(Modifier.fillMaxSize(),verticalArrangement=Arrangement.spacedBy(8.dp)) {
                 Row(verticalAlignment=Alignment.CenterVertically) {
                     Box {

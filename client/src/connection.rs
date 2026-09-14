@@ -676,7 +676,7 @@ impl ClientStore {
         }
         if cached.as_ref().is_none_or(|(previous, created, _)| previous != &state || created.elapsed().as_secs() >= 60) {
             *cached = None;
-            *cached = Some((state, std::time::Instant::now(), client(&self.db, &self.key, &profile, &profile.credential)?));
+            *cached = Some((state, crate::clock::Instant::now(), client(&self.db, &self.key, &profile, &profile.credential)?));
         }
         Ok(cached.as_ref().ok_or(Error::Unprepared)?.2.clone())
     }

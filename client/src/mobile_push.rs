@@ -3,6 +3,28 @@ use crate::push::{Choice, ReceivedHint};
 use base64ct::{Base64UrlUnpadded, Encoding};
 
 impl ClientStore {
+    pub(super) fn mobile_browser_push(&mut self, action:&str, target:Option<sigil_protocol::push::Target>, endpoint:Option<&str>, payload:Option<&str>) -> Result<Value, Error> {
+        let now=conversations::now();
+        match action {
+            "providers" => return serde_json::to_value(self.connected_client()?.push_providers()?).map_err(|_| Error::InvalidEvent),
+            "register" => {
+                let target=target.ok_or(Error::InvalidEvent)?;
+                let providers=self.connected_client()?.push_providers()?;
+                if !matches!(&target,sigil_protocol::push::Target::UnifiedPush{vapid_key,..} if providers.unified_push && providers.vapid_public_key.as_ref()==Some(vapid_key)) {return Err(Error::InvalidEvent);}
+                self.set_browser_push(target,now)?;
+            }
+            "receive" => {
+                let payload=payload.filter(|v|v.len()<=98).ok_or(Error::InvalidEvent)?;
+                let bytes=Base64UrlUnpadded::decode_vec(payload).map_err(|_|Error::InvalidEvent)?;
+                let hint=self.receive_browser_push(endpoint.ok_or(Error::InvalidEvent)?,&bytes,now)?;
+                return Ok(json!({"accepted":hint!=ReceivedHint::Ignored}));
+            }
+            "disable" => self.disable_push(now)?,
+            "status" => (),
+            _=>return Err(Error::InvalidEvent),
+        }
+        self.mobile_push("status",None,None,None,None,false)
+    }
     pub(super) fn mobile_push(
         &mut self,
         action: &str,

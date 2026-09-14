@@ -68,7 +68,10 @@ impl ClientStore {
         )
     }
     pub(super) fn mobile_storage(&self) -> Result<Value, Error> {
-        let allocated = std::fs::metadata(self.db.path().ok_or(Error::InvalidStore)?)?.len();
+        let pages: i64 = self.db.query_row("PRAGMA page_count", [], |r| r.get(0))?;
+        let page_size: i64 = self.db.query_row("PRAGMA page_size", [], |r| r.get(0))?;
+        let allocated = u64::try_from(pages.checked_mul(page_size).ok_or(Error::Limit)?)
+            .map_err(|_| Error::InvalidStore)?;
         let (media, media_used, budget) = self.mobile_cache()?.storage_usage()?;
         let recovery = match self.history_recovery_progress() {
             Ok(value) => {

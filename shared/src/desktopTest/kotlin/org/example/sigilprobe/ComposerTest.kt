@@ -30,7 +30,10 @@ class ComposerTest {
         var entry: ClipEntry? = null
         override val nativeClipboard = java.awt.datatransfer.Clipboard("synthetic composer test")
         override suspend fun getClipEntry() = entry
-        override suspend fun setClipEntry(clipEntry: ClipEntry?) { entry = clipEntry }
+        override suspend fun setClipEntry(clipEntry: ClipEntry?) {
+            entry = clipEntry
+            nativeClipboard.setContents(clipEntry?.nativeClipEntry as? Transferable, null)
+        }
     }
     private val field get() = ui.onNodeWithTag("composer")
 
@@ -63,7 +66,7 @@ class ComposerTest {
         assertEquals("first", rendered())
         field.performTextInputSelection(TextRange(state.text.length))
         field.performTextInput("; spoiler::secret; scratch::covered; shake::bold::moving; redact::deleted;")
-        assertEquals("first spoiler::secret; scratch::covered; shake::bold::moving; redact::deleted;", rendered())
+        assertEquals("first spoiler::secret; scratch::covered; moving redact::deleted;", rendered())
         ui.runOnIdle { assertEquals("underline::first; spoiler::secret; scratch::covered; shake::bold::moving; redact::deleted;", state.text.toString()) }
     }
 

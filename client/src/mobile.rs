@@ -11,6 +11,8 @@ use sigil_crypto::Secret32;
 mod account;
 #[path = "mobile_cards.rs"]
 mod cards;
+#[path="mobile_services.rs"]
+mod mobile_services;
 #[path = "mobile_contacts.rs"]
 pub(crate) mod contacts;
 #[path = "mobile_link.rs"]
@@ -40,6 +42,9 @@ mod wallpaper;
 #[derive(Deserialize)]
 #[serde(tag = "command", rename_all = "snake_case", deny_unknown_fields)]
 enum Command {
+    BrowserPush { action: String, target: Option<sigil_protocol::push::Target>, endpoint: Option<String>, payload: Option<String> },
+    ContactPreview {address:String},
+    Service { action:String, request:Option<String>, catalog:Option<sigil_protocol::services::Catalog>, provider:Option<String>, form:Option<mobile_services::ServiceForm> },
     Push {
         action: String,
         connection: Option<String>,
@@ -54,6 +59,7 @@ enum Command {
         method: String,
         invitation: Option<Zeroizing<String>>,
         confirm_replacement: bool,
+        label: Option<String>,
     },
     AccountAccess {},
     AcknowledgeAccess {
@@ -374,6 +380,8 @@ enum Command {
         active: bool,
     },
     Post {
+        service_query: Option<String>,
+        shared_contact: Option<sigil_protocol::text::contact::Contact>,
         peer: String,
         request: String,
         timestamp: u64,
@@ -631,6 +639,7 @@ impl ClientStore {
     }
     fn mobile_execute(&mut self, command: Command) -> Result<Value, Error> {
         match command {
+            Command::BrowserPush { action, target, endpoint, payload } => self.mobile_browser_push(&action,target,endpoint.as_deref(),payload.as_deref()),
             Command::Push {
                 action,
                 connection,
@@ -655,7 +664,9 @@ impl ClientStore {
                 method,
                 invitation,
                 confirm_replacement,
+                label,
             } => {
+                let label = label.as_deref().unwrap_or("Android");
                 if !confirm_replacement {
                     return Err(Error::InvalidEvent);
                 }
@@ -668,7 +679,7 @@ impl ClientStore {
                         self.restart_oidc_recovery()?;
                     } else {
                         self.cancel_unused_enrollment()?;
-                        self.prepare_oidc_enrollment(&server, 443, &[], None, "Android", true)?;
+                        self.prepare_oidc_enrollment(&server, 443, &[], None, label, true)?;
                     }
                     serde_json::to_value(self.start_oidc_online()?).map_err(|_| Error::InvalidStore)
                 } else if method == "invitation" {
@@ -677,7 +688,7 @@ impl ClientStore {
                         return Err(Error::InvalidEvent);
                     }
                     self.cancel_unused_enrollment()?;
-                    self.prepare_enrollment(&server, 443, &[], &invitation, "Android", true)?;
+                    self.prepare_enrollment(&server, 443, &[], &invitation, label, true)?;
                     self.enroll_online()?;
                     self.publish_device_binding_online()?;
                     self.mobile_state()
@@ -1559,7 +1570,11 @@ impl ClientStore {
                     "typing":activity.iter().filter(|v|v.typing && v.author != own).map(|v|transport::hex(&v.author)).collect::<Vec<_>>()}),
                 )
             }
+            Command::ContactPreview {address}=>{let contact=self.mobile_contact_preview(&address)?;Ok(json!({"contact":contact,"preview":{"id":"preview","kind":"contact","text":"","contact":contact.presentation().map_err(|_|Error::InvalidEvent)?}}))},
+            Command::Service {action,request,catalog,provider,form}=>self.mobile_service(&action,request,catalog,provider,form),
             Command::Post {
+                service_query,
+                shared_contact,
                 peer,
                 request,
                 timestamp,
@@ -1574,7 +1589,8 @@ impl ClientStore {
             } => {
                 let reply = optional_reference(reply_author, reply_message)?;
                 let thread = optional_reference(thread_author, thread_message)?;
-                let body = if rich {
+                if service_query.is_some() && shared_contact.is_some(){return Err(Error::InvalidEvent);}
+                let body = if let Some(contact)=shared_contact.as_ref() {self.mobile_shared_contact_body(contact,&request,timestamp,&text)?} else if let Some(query)=service_query.as_deref() {self.mobile_service_body(query,&request,timestamp,&text)?} else if rich {
                     let conversation = self.mobile_conversation(&peer)?;
                     let doc = self.prepare_sigiltext(crate::rich_text::SigilTextDraft {
                         conversation,
@@ -1609,7 +1625,7 @@ impl ClientStore {
                         view_once: false,
                     },
                 )?;
-                if rich {
+                if let Some(query)=service_query {self.discard_service_query(id(&query)?)?;} else if rich && shared_contact.is_none() {
                     let conversation = self.mobile_conversation(&peer)?;
                     self.discard_sigiltext_draft(conversation, id(&request)?)?;
                 }

@@ -11,11 +11,20 @@ These experimental profiles implement published designs independently; they are 
 | Pairwise messaging | `SGHI` 2, authenticated Triple Ratchet suite 2 | Classical sessions are history-only; reframing cannot select another suite |
 | Encrypted events | Exact canonical `SGEV`/group frames and `SGCO` 1 | Unknown framing/content/fields fail; never reinterpret as ordinary text |
 | History recovery | Authenticated `SGHR`, `SGHP`, `SGHM` 1 | Wrong scope, hash, key, lineage or version fails; no live-state import |
-| Local databases | Server 27, client 68, cache 5 | Validate identity/key/schema before use; newer schemas fail closed |
+| Local databases | Server 34, client 77, cache 5 | Validate identity/key/schema before use; newer schemas fail closed |
 
 `/versions` describes storage APIs. Empty messaging arrays do not certify unfinished interoperability. There is no opportunistic negotiation: future incompatible profiles need explicit versioned routes/framing and authenticated selection. An older binary must use a pre-upgrade server backup on separate storage, followed by restore sanitization; never open a migrated database or roll back live client state.
 
+## Browser device
+
+The Wasm client uses the existing Rust store and field encryption over OPFS SQLite. A nonextractable WebCrypto key in IndexedDB wraps the storage key; this is not hardware-backed isolation from same-origin code. HTTPS, cross-origin isolation and one active storage-owning tab are required. Fetch omits cookies and refuses redirects. Credentialed browser API requests require the exact configured public origin and the client marker; public discovery alone allows cross-origin reads.
+
+Browser attachment chunks use the encrypted cache and bounded worker messages. Preview URLs contain decrypted data until revoked; previews/saving currently cap assembled Blobs at 128 MiB. Unknown file types download as opaque files. Formula rendering accepts a restricted MathML tree. Capture stops camera/microphone tracks on disposal. Material workers receive presentation data only, never messaging keys.
+
+The web host supplies executable code and therefore remains trusted: a malicious host or same-origin script can access plaintext and use the wrapping key. Browser eviction, profile removal and user-cleared site data can remove local history. Sign-out revokes the device before erasing local storage; interrupted erasure resumes from a durable marker. Explicit local-only removal does not confirm remote revocation. None of this guarantees physical-media erasure or browser backup exclusion.
+
 ## Erasure
+
 
 SQLite connections enable `secure_delete`, DELETE journaling and EXTRA synchronization. Superseded records are cleared from live database pages before commit returns; the rollback journal is removed. Upgrades first drain old WAL state and vacuum historical free pages. A durable pending marker makes interrupted cleanup retry on open. Migration requires temporary disk space and exclusive access; failure prevents opening the store.
 
