@@ -2,16 +2,15 @@
 
 ## Trust and user interaction
 
-Linking uses three direct, physical QR scans between the intended devices:
+Linking needs one physical scan and approval on the existing device:
 
-1. The joining installation creates a pending offer with its independent identity, fresh device ID, challenge, ephemeral provisioning key and commitment to its own random transport credential. The sponsor scans this offer directly from that installation.
-2. The sponsor displays an encrypted proposal containing its signed account/device binding and the complete proposed transcript. The joining device scans this return QR directly from the sponsor. It pins the exact proposal and displays the account context and confirmation value for approval.
-3. After explicit confirmation, the joining device displays an encrypted response containing its own signed binding and role-specific consent. The sponsor scans it, checks the confirmation value and explicitly approves. Both signatures bind the complete transcript.
-4. The live sponsor submits the complete proof over HTTPS. The server atomically creates the one-use authorization. The joining installation authenticates with the credential it generated locally, retrieves the proof, verifies it against its saved exchange, and atomically installs its connection and verified sponsor relationship. Both devices retain independent identity and ratchet keys.
+1. The joining installation displays a QR containing its offer, canonical server, relay ID, phone capability and a fresh 32-byte secret. The existing device scans it directly.
+2. The devices exchange their existing encrypted proposal and signed response through HTTPS relay slots, additionally authenticated with the QR secret. Both display the same account and eight confirmation symbols.
+3. The user checks the symbols and approves on the existing device. It submits the complete signed proof; the joining installation retrieves and verifies it, installs its connection, and signs in automatically. The computer needs no camera.
 
-QR payloads use `sigil:link:v1:offer:`, `sigil:link:v1:proposal:` and `sigil:link:v1:response:` followed by bounded, lowercase hexadecimal bytes. The direct scans are the authentication channel: unsolicited codes, forwarded screenshots and network-delivered proposals cannot substitute for that trust assumption. This flow requires scans in both directions; it is not a single-scan rendezvous service.
+The QR uses `sigil:link:v1:relay:` followed by bounded JSON. The secret never reaches the relay server. Forwarded screenshots and unsolicited codes must not replace scanning the intended device. The internal offer/proposal/response encodings remain unchanged.
 
-`emoji_confirmation` maps the first 48 bits of the transcript confirmation digest to eight symbols from the fixed 64-entry alphabet in `client/src/link_exchange.rs`, six bits per symbol, most significant first. Emojis are an additional visual consistency check. **The short string alone must never establish trust.** The full, directly scanned exchange and exact confirmation digest are mandatory. UI work must display the proposed account and device context and obtain the approval consumed by the Rust confirmation methods.
+`emoji_confirmation` maps the first 48 bits of the transcript digest to eight symbols from a fixed 64-entry alphabet. Symbols are supplementary: trust requires the QR secret, authenticated full transcript and signed proof, not the short string alone. Joining consent is generated only after verifying the QR-secret-authenticated proposal; sponsor consent requires explicit user approval.
 
 ## Encodings and cryptography
 
@@ -41,6 +40,12 @@ This provisioning channel is classical. It carries public bindings and consent s
 
 A complete proof has an exact bounded encoding: `SGLP 00 01 00 00`, transcript, two u16-length-prefixed signed bindings and two 64-byte signatures, at most 1,380 bytes. Parsing rejects truncation, malformed fields and trailing bytes.
 
+
+## Relay
+
+`POST /client/v0/link-relay/create` reserves two role-separated capabilities; only their SHA-256 hashes are stored. `POST /client/v0/link-relay/exchange` writes the caller’s immutable slot and reads the opposite slot. Exact retries are idempotent; replacement fails. Either capability may cancel the relay. Creation uses enrollment throttling; all requests use global limits and browser-origin checks. At most 256 reservations live for ten minutes, with two packets of at most 10,000 hexadecimal characters each. Expiry and restore clear reservations.
+
+Packets use AES-256-GCM-SIV under the QR secret, with associated data `Sigil/device-link-relay/v1/<server>/<id>/<proposal|response>`. The relay can delay or drop setup but cannot substitute a binding without the QR secret. Client storage encrypts relay state and freezes packet ciphertext before transmission. Completion removes the client relay secret. Relay cancellation alone does not retract signed consent; durable cancellation below handles that case.
 
 ## Durable authorization
 

@@ -9,7 +9,7 @@ use std::{
 };
 
 const APPLICATION_ID: i64 = 0x5349474c;
-pub const SCHEMA_VERSION: i64 = 34;
+pub const SCHEMA_VERSION: i64 = 35;
 
 #[derive(Debug)]
 pub enum StoreError {
@@ -223,6 +223,7 @@ impl Store {
         if version < 34 {
             transaction.execute_batch(crate::push_android::MIGRATION)?;
         }
+        if version < 35 {transaction.execute_batch(crate::link_relay::MIGRATION)?;}
         transaction.pragma_update(None, "user_version", SCHEMA_VERSION)?;
         transaction.commit()?;
         let mode: String = db.query_row("PRAGMA journal_mode=DELETE", [], |r| r.get(0))?;
@@ -377,7 +378,7 @@ impl Store {
             tx.execute_batch("DELETE FROM push_jobs; UPDATE push_channels SET state=3,target=NULL,proof=NULL,proof_hash=NULL,expires_at=NULL;")?;
             crate::push_config::reset_after_restore(&tx)?;
             crate::push_android::reset(&tx)?;
-            tx.execute_batch("DELETE FROM oidc_flows; DELETE FROM oidc_grants; UPDATE oidc_configuration SET revision=revision+1,value=NULL;")?;
+            tx.execute_batch("DELETE FROM link_relay; DELETE FROM oidc_flows; DELETE FROM oidc_grants; UPDATE oidc_configuration SET revision=revision+1,value=NULL;")?;
             crate::oidc_transition::reset(&tx)?;
             tx.execute_batch("DELETE FROM account_passwords; UPDATE password_policy SET enabled=0,revision=revision+1,login_after=0;")?;
             tx.execute_batch(

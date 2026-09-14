@@ -48,6 +48,7 @@ impl Store {
         changed+=tx.execute("DELETE FROM invitations WHERE id IN (SELECT id FROM invitations WHERE expires_at<=?1 ORDER BY expires_at,id LIMIT ?2)",(now as i64,BATCH as i64))?;
         changed+=tx.execute("DELETE FROM oidc_flows WHERE id IN (SELECT id FROM oidc_flows WHERE expires<=?1 LIMIT 64)",[now as i64])?;
         changed+=tx.execute("DELETE FROM oidc_grants WHERE token_hash IN (SELECT token_hash FROM oidc_grants WHERE expires<=?1 LIMIT 64)",[now as i64])?;
+        changed += tx.execute("DELETE FROM link_relay WHERE id IN (SELECT id FROM link_relay WHERE expires<=?1 LIMIT 64)",[now as i64])?;
         changed += crate::attachments::cleanup(&tx, now)?;
         changed += crate::contact_requests::cleanup(&tx, now)?;
         changed += crate::push_delivery::cleanup(&tx, now)?;

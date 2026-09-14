@@ -1,5 +1,27 @@
 //! Experimental device-link consent transcript. Parsing does not establish trust.
 const PREFIX: &[u8; 8] = b"SGLT\0\x01\0\0";
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RelayCreate {
+    pub id: String,
+    pub owner: String,
+    pub phone: String,
+    pub expires: u64,
+}
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RelayExchange {
+    pub id: String,
+    pub token: String,
+    pub packet: Option<String>,
+    #[serde(default)]
+    pub cancel: bool,
+}
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RelayReply {
+    pub packet: Option<String>,
+}
 pub const TRANSCRIPT_BYTES: usize = 216;
 pub const MAX_LIFETIME: u64 = 600;
 

@@ -246,8 +246,8 @@ impl ClientStore {
         tx.commit()?;
         Ok((encode("proposal", &proposal), digest))
     }
-    /// The proposal QR must be scanned directly from the intended sponsor. Do not
-    /// call this on an unsolicited network message or link sent by another person.
+    /// Accept only a direct scan or a relay packet authenticated by the secret
+    /// transferred in the joining device's QR. Never accept an unbound network proposal.
     pub fn accept_link_proposal(&mut self, attempt: Id, qr: &str, now: u64) -> Result<Id, Error> {
         let own = self.identity()?;
         let id = journal::reference(&own, 5, &attempt);

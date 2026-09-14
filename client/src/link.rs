@@ -1,4 +1,4 @@
-//! Durable direct-QR linking, consent and one-use server authorization.
+//! Durable QR-authenticated linking, consent and one-use server authorization.
 use crate::{peers, ClientStore, Error, Id};
 use sha2::{Digest, Sha256};
 use sigil_crypto::verify_signature;
@@ -16,7 +16,7 @@ pub(crate) use exchange::discard_unapproved_offer;
 pub use exchange::{emoji_confirmation, offer_qr};
 
 /// Full confirmation digest. The emoji string is supplementary; authentication
-/// requires the complete direct QR exchange, not a truncated digest alone.
+/// requires the QR-authenticated exchange, not a truncated digest alone.
 pub fn confirmation(transcript: &Transcript) -> Result<Id, Error> {
     Ok(sigil_crypto::link::confirmation(transcript)?)
 }

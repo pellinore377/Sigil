@@ -29,6 +29,7 @@ mod group_authority;
 mod group_operations;
 mod group_routes;
 mod link;
+mod link_relay;
 mod login_routes;
 mod mailbox;
 mod maintenance;
@@ -209,6 +210,7 @@ fn application_with_log(
         )
         .merge(push_routes::client())
         .merge(link::routes())
+        .merge(link_relay::routes())
         .merge(admin.layer(RequestBodyLimitLayer::new(MAX_ADMIN_BODY)))
         .merge(enrollment::routes().layer(RequestBodyLimitLayer::new(MAX_ADMIN_BODY)))
         .merge(mailbox::routes())

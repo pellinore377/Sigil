@@ -126,6 +126,14 @@ mod native;
 use native::*;
 
 impl HttpsClient {
+    pub(crate) fn reserve_link_relay(&self,value:&sigil_protocol::link::RelayCreate)->Result<(),Error>{
+        let response=self.request(Method::POST,"/client/v0/link-relay/create",Some(value))?;
+        let _:serde_json::Value=self.json(response,200,SMALL)?;Ok(())
+    }
+    pub(crate) fn exchange_link_relay(&self,value:&sigil_protocol::link::RelayExchange)->Result<sigil_protocol::link::RelayReply,Error>{
+        let response=self.request(Method::POST,"/client/v0/link-relay/exchange",Some(value))?;
+        self.json(response,200,16384)
+    }
     #[cfg(target_arch="wasm32")]
     pub fn new(server:&str,port:u16,credential:&str,roots:&[Vec<u8>])->Result<Self,Error> {
         super::recovery::account_scope(server,[0;32]).map_err(|_|Error::Configuration)?;

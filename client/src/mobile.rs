@@ -96,6 +96,7 @@ enum Command {
     DeviceLink {
         action: String,
         qr: Option<String>,
+        server:Option<String>,
     },
     Devices {
         cursor: Option<String>,
@@ -749,7 +750,7 @@ impl ClientStore {
                 Ok(json!({}))
             }
             Command::LeaveGroup { peer } => self.mobile_leave_group(&peer),
-            Command::DeviceLink { action, qr } => self.mobile_link(&action, qr.as_deref()),
+            Command::DeviceLink { action, qr,server } => self.mobile_link(&action, qr.as_deref(),server.as_deref()),
             Command::Devices { cursor } => self.mobile_devices(cursor),
             Command::SignOut {} => {
                 let session = self.connection_session()?.ok_or(Error::Unprepared)?;
