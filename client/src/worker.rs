@@ -90,7 +90,8 @@ impl SyncStep {
                 if let Some(error) = $items
                     .iter()
                     .filter_map(|item| item.result.as_ref().err())
-                    .find(|error| !matches!(error, Error::Obsolete))
+                    .find(|error| !matches!(error, Error::Obsolete)
+                        && !matches!(error, Error::Network(error) if outbound::recipient_full(error)))
                 {
                     return Some(($stage, error));
                 }

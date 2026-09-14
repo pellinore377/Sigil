@@ -495,7 +495,29 @@ fn error_message(error: &Error) -> String {
         Error::Expired | Error::Obsolete => {
             "This operation expired or its message is no longer available."
         }
-        _ => "The operation could not complete. Your stored keys have not been reset.",
+        Error::NotFound => "A required local record was not found (local-missing). Your stored keys have not been reset.",
+        Error::AlreadyDelivered => "This delivery was already processed (already-delivered).",
+        Error::Cancelled => "This operation was cancelled.",
+        Error::UnsupportedSession => "This encrypted session format is unsupported (session-format). Your stored keys have not been reset.",
+        Error::RetiredSession => "This encrypted session has been retired (session-retired). Your stored keys have not been reset.",
+        Error::InvalidStore => "Stored device state could not be validated (storage-state). Your stored keys have not been reset.",
+        Error::Storage(rusqlite::Error::SqliteFailure(code, _)) => return format!("Device storage could not complete the operation (sqlite-{}). Your stored keys have not been reset.",code.extended_code),
+        Error::Storage(rusqlite::Error::QueryReturnedNoRows) => "A required storage record was not found (storage-missing). Your stored keys have not been reset.",
+        Error::Storage(_) => "A storage operation failed (storage-query). Your stored keys have not been reset.",
+        Error::Io(_) => "A device file operation failed (device-io). Your stored keys have not been reset.",
+        Error::Crypto(value) => {
+            let code=match value {
+                sigil_crypto::Error::Entropy=>"entropy",
+                sigil_crypto::Error::InvalidKey=>"key",
+                sigil_crypto::Error::Authentication=>"authentication",
+                sigil_crypto::Error::Limit=>"capacity",
+                sigil_crypto::Error::Encoding=>"encoding",
+                sigil_crypto::Error::State=>"state",
+                sigil_crypto::Error::Replay=>"replay",
+            };
+            return format!("Encrypted processing failed (crypto-{code}). Your stored keys have not been reset.");
+        }
+        Error::Preview(_) => "The file preview could not be processed (preview).",
     }.to_owned()
 }
 impl ClientStore {
