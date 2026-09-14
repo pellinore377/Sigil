@@ -29,6 +29,7 @@ RUN curl -fsSL https://services.gradle.org/distributions/gradle-8.13-bin.zip -o 
 RUN rustup target add wasm32-unknown-unknown && cargo install --locked wasm-bindgen-cli --version 0.2.127
 FROM web-tools AS web-build
 WORKDIR /src
+ENV CFLAGS_wasm32_unknown_unknown="-std=gnu2x"
 COPY --from=source /src /src
 RUN cargo build --locked --release --target wasm32-unknown-unknown -p sigil-core -p sigil-browser -p sigil-browser-events && wasm-bindgen target/wasm32-unknown-unknown/release/sigil_browser_events.wasm --target web --out-dir target/web && wasm-bindgen target/wasm32-unknown-unknown/release/sigil_core.wasm --target web --out-dir target/web && wasm-bindgen target/wasm32-unknown-unknown/release/sigil_browser.wasm --target web --out-dir target/web
 COPY build.gradle.kts settings.gradle.kts gradle.properties ./
