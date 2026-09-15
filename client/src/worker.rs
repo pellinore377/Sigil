@@ -91,6 +91,8 @@ impl SyncStep {
                     .iter()
                     .filter_map(|item| item.result.as_ref().err())
                     .find(|error| !matches!(error, Error::Obsolete)
+                        // A recipient awaiting acceptance or identity consent is shown in its conversation, not as a sync failure.
+                        && !(matches!(error, Error::Unprepared) && $stage == "sending messages")
                         && !matches!(error, Error::Network(error) if outbound::recipient_full(error)
                             || matches!($stage, "sending messages" | "sending group messages")
                                 && outbound::recipient_unavailable(error)))
