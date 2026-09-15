@@ -194,15 +194,17 @@ class Messenger(application: Application) : AndroidViewModel(application) {
         }
         // Server-held mailbox wait: new mail wakes a sync immediately instead of waiting for the poll.
         scope.launch {
-            var last = 0L
+            var fast = 0
             while (isActive) {
                 if (!(signOutStage.isEmpty() && foreground && state.phase == "connected")) { delay(500); continue }
                 val started = System.currentTimeMillis()
                 val hit = try { withContext(Dispatchers.IO) { StorageKeyProvider(getApplication()).withKey { directory, key -> NativeStorage.mailboxWait(directory.path, key, 25) } } }
                 catch (cancelled: CancellationException) { throw cancelled }
                 catch (_: Exception) { false }
-                if (hit) { if (started - last < 1500) delay(2000); last = started; forceSync = true; syncWake.trySend(Unit) }
-                else if (System.currentTimeMillis() - started < 1000) delay(2000)
+                // Re-arm at once; only a run of instant returns (mail nobody acknowledges, or errors) waits.
+                fast = if (System.currentTimeMillis() - started < 300) fast + 1 else 0
+                if (hit) { forceSync = true; syncWake.trySend(Unit); if (fast >= 3) delay(1000) }
+                else if (fast >= 3) delay(2000)
             }
         }
     }
@@ -353,7 +355,6 @@ class Messenger(application: Application) : AndroidViewModel(application) {
                     val alreadyQueued = retry && execute("post_status", mapOf("peer" to fields["peer"], "request" to JSONObject(raw).getString("request"))).getBoolean("queued")
                     if (name == "recover_account") recoveryPreference(true)
                     val result = if (alreadyQueued) JSONObject() else native(raw)
-                    if (name == "post") { val flush = native(request("flush")); if (flush.getInt("sent") > 0) loadTimeline(); flush.optString("issue").takeIf { it.isNotEmpty() && !flush.isNull("issue") }?.let { state = state.copy(issue = it) } }
                     if (name !in setOf("draft","profile","devices","storage","edit_source")) syncWake.trySend(Unit)
                     if (name == "cancel_login") recoveryPreference(false)
                     accountAccess(result)
@@ -385,6 +386,8 @@ class Messenger(application: Application) : AndroidViewModel(application) {
                         state = state.copy(sent = state.sent + 1, sentText = fields["text"] as? String, sentMessage = if (name == "post") JSONObject(raw).getString("request") else null)
                         loadTimeline()
                     }
+                    // Send after the timeline shows the message; the flush pass reports only its own issue.
+                    if (name == "post") { val flush = native(request("flush")); if (flush.getInt("sent") > 0) loadTimeline(); flush.optString("issue").takeIf { it.isNotEmpty() && !flush.isNull("issue") }?.let { state = state.copy(issue = it) } }
                 }
                 if (name != "post") refresh()
                 if (preference != null && pendingUiSettings[preference] == setting?.get("value")) pendingUiSettings.remove(preference)
@@ -504,9 +507,12 @@ class Messenger(application: Application) : AndroidViewModel(application) {
         return execute("recipe_view", mapOf("peer" to message.peer, "author" to message.author, "message" to message.id, "card" to part.id, "serves" to serves)).recipeContent() ?: error("Recipe unavailable")
     }
     private suspend fun native(raw: String): JSONObject = withContext(Dispatchers.IO) {
+        val started = android.os.SystemClock.elapsedRealtime()
         val result = StorageKeyProvider(getApplication()).withKey { directory, key ->
             JSONObject(NativeStorage.execute(directory.path, key, raw))
         }
+        // Durations only; command names are not message content.
+        android.util.Log.i("SigilTiming", "${JSONObject(raw).optString("command")} ${android.os.SystemClock.elapsedRealtime() - started}ms")
         if (!result.getBoolean("ok")) throw NativeFailure(result.getString("error"))
         result.getJSONObject("value")
     }
@@ -553,6 +559,11 @@ class Messenger(application: Application) : AndroidViewModel(application) {
     }
     private suspend fun refreshTimeline(peer: String, filter: Map<String, Any?>, initialAnchor: Pair<String, String>?, wanted: Int, firstPage: Boolean) {
         if (NativeSignOut.pending(getApplication())) return
+        val started = android.os.SystemClock.elapsedRealtime()
+        try { refreshTimelinePages(peer, filter, initialAnchor, wanted, firstPage) }
+        finally { android.util.Log.i("SigilTiming", "timeline ${android.os.SystemClock.elapsedRealtime() - started}ms") }
+    }
+    private suspend fun refreshTimelinePages(peer: String, filter: Map<String, Any?>, initialAnchor: Pair<String, String>?, wanted: Int, firstPage: Boolean) {
         if (peer.startsWith("history:") && state.chats.none { it.id == peer }) state = state.copy(chats = state.chats + ChatSummary(peer, "", "", "", false, emptyList(), displayName = "Saved conversation", archived = true))
         if (peer == "self" && state.chats.none { it.id == "self" }) state = state.copy(chats = state.chats + ChatSummary("self", state.address, "", "", true, emptyList(), displayName = "Note to Self"))
         val messages = mutableListOf<ChatMessage>()

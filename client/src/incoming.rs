@@ -604,59 +604,76 @@ impl ClientStore {
             .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
             .collect::<Result<_, _>>()?;
         let mut count = 0;
+        // Ordinary deliveries validate in order, then acknowledge concurrently.
+        let mut ready = Vec::new();
+        let mut halted = None;
         for (sequence, control) in sequences {
-            if control == 3 {
-                groups::acknowledge_group(self, sequence)?;
-                count += 1;
-                continue;
+            let result = match control {
+                3 => groups::acknowledge_group(self, sequence),
+                2 => self.acknowledge_recovered_online(sequence),
+                1 => self.acknowledge_retry_online(sequence),
+                _ => self.commit_incoming(&own_statement, &own, sequence).map(|()| ready.push(sequence)),
+            };
+            if let Err(error) = result {
+                halted = Some(error);
+                break;
             }
-            if control == 2 {
-                self.acknowledge_recovered_online(sequence)?;
+            if control != 0 {
                 count += 1;
-                continue;
             }
-            if control == 1 {
-                self.acknowledge_retry_online(sequence)?;
-                count += 1;
-                continue;
+        }
+        let mut failure = None;
+        for (sequence, result) in ready.iter().zip(network.acknowledge_deliveries(&ready)) {
+            match result {
+                Ok(()) => {
+                    let tx = self
+                        .db
+                        .transaction_with_behavior(TransactionBehavior::Immediate)?;
+                    let mut current =
+                        record(&tx, &self.key, &own, *sequence)?.ok_or(Error::InvalidStore)?;
+                    current.acknowledged = true;
+                    tx.execute(
+                        "UPDATE incoming SET acknowledged=1,state=?1 WHERE sequence=?2",
+                        (current.seal(&self.key, &own, *sequence)?, sequence),
+                    )?;
+                    tx.commit()?;
+                    count += 1;
+                }
+                Err(error) => {
+                    failure = failure.or(Some(Error::from(error)));
+                }
             }
-            let tx = self
-                .db
-                .transaction_with_behavior(TransactionBehavior::Immediate)?;
-            let prior = record(&tx, &self.key, &own, sequence)?.ok_or(Error::InvalidStore)?;
-            let committed = prior.message(&tx, &self.key)?;
-            event::validate(
-                &tx,
-                &self.key,
-                &own_statement,
-                &prior.peer,
-                &prior.message,
-                &committed.plaintext,
-                prior.expires,
-            )?;
-            event::remember(
-                &tx,
-                &self.key,
-                &own_statement,
-                &prior.peer,
-                &prior.session,
-                &committed.plaintext,
-            )?;
-            tx.commit()?;
-            network.acknowledge_delivery(sequence)?;
-            let tx = self
-                .db
-                .transaction_with_behavior(TransactionBehavior::Immediate)?;
-            let mut current = record(&tx, &self.key, &own, sequence)?.ok_or(Error::InvalidStore)?;
-            current.acknowledged = true;
-            tx.execute(
-                "UPDATE incoming SET acknowledged=1,state=?1 WHERE sequence=?2",
-                (current.seal(&self.key, &own, sequence)?, sequence),
-            )?;
-            tx.commit()?;
-            count += 1;
+        }
+        if let Some(error) = halted.or(failure) {
+            return Err(error);
         }
         Ok(count)
+    }
+    /// Validates and remembers a delivery before its acknowledgement leaves.
+    fn commit_incoming(&mut self, own_statement: &[u8], own: &Id, sequence: i64) -> Result<(), Error> {
+        let tx = self
+            .db
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let prior = record(&tx, &self.key, own, sequence)?.ok_or(Error::InvalidStore)?;
+        let committed = prior.message(&tx, &self.key)?;
+        event::validate(
+            &tx,
+            &self.key,
+            own_statement,
+            &prior.peer,
+            &prior.message,
+            &committed.plaintext,
+            prior.expires,
+        )?;
+        event::remember(
+            &tx,
+            &self.key,
+            own_statement,
+            &prior.peer,
+            &prior.session,
+            &committed.plaintext,
+        )?;
+        Ok(tx.commit()?)
     }
 }
 fn cursor(db: &Connection, key: &StorageKey, own: &Id) -> Result<(i64, Option<Vec<u8>>), Error> {

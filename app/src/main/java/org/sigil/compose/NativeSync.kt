@@ -54,8 +54,12 @@ internal object NativeSync {
         sync.withLock {
             check(!NativeSignOut.pending(context))
             val request = JSONObject().put("command", "sync").put("interactive", interactive).put("call_setup", callSetup).put("wake", wake).toString()
+            val started = android.os.SystemClock.elapsedRealtime()
             val result = StorageKeyProvider(context).withKey { directory, key -> JSONObject(NativeStorage.execute(directory.path, key, request)) }
-            check(result.getBoolean("ok")); result.getJSONObject("value")
+            check(result.getBoolean("ok"))
+            val value = result.getJSONObject("value")
+            android.util.Log.i("SigilTiming", "sync ${android.os.SystemClock.elapsedRealtime() - started}ms native=${value.optLong("ms")} ran=${value.optBoolean("ran")} interactive=$interactive wake=$wake ${value.optJSONObject("timings")}")
+            value
         }
     }
     fun enable(context: Context, enabled: Boolean) {

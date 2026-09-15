@@ -282,14 +282,16 @@ state=StateDecoder.state(execute("state"),state,::clock);if(state.phase=="connec
     }
     LaunchedEffect(ready,visible,state.phase) {
         if(!(ready && visible && state.phase=="connected"))return@LaunchedEffect
-        var last=0.0
+        var fast=0
         while(isActive) {
             val started=BrowserDate.now()
             val hit=try {browserMailboxWatch().awaitBrowser<JsBoolean>().toBoolean()}
             catch(cancelled:CancellationException){throw cancelled}
             catch(_:Exception){delay(5000);continue}
-            if(hit){if(started-last<1500)delay(2000);last=started;forceSync=true;wake.trySend(Unit)}
-            else if(BrowserDate.now()-started<1000)delay(2000)
+            // Re-arm at once; only a run of instant hits (mail nobody acknowledges) waits.
+            fast=if(BrowserDate.now()-started<300)fast+1 else 0
+            if(hit){forceSync=true;wake.trySend(Unit);if(fast>=3)delay(1000)}
+            else if(fast>=3)delay(2000)
         }
     }
     LaunchedEffect(ready) {
