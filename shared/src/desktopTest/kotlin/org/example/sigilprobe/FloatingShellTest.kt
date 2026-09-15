@@ -241,7 +241,7 @@ class FloatingShellTest {
         ui.onNodeWithText("Robin").assertIsDisplayed()
     }
 
-    @Test fun status_protection_hides_content_under_system_icons_and_fades_below() {
+    @Test fun status_fade_keeps_content_visible_under_system_icons_and_softens_to_clear() {
         ui.setContent { SigilTheme(Appearance(), palette = NativeCore::palette) {
             Box(Modifier.requiredSize(100.dp, 120.dp).background(Color.Red).testTag("status-protection-preview")) {
                 StatusFade(48.dp)
@@ -250,7 +250,10 @@ class FloatingShellTest {
         val pixels = ui.onNodeWithTag("status-protection-preview").captureToImage().toPixelMap()
         val x = pixels.width / 2
         fun at(y: Int) = pixels[x, y * pixels.height / 120]
-        assertEquals(at(0), at(40))
+        assertTrue(at(0).red > at(0).green)
+        val samples = listOf(0, 10, 20, 30, 40, 50, 60, 70, 78).map { at(it).green }
+        assertTrue(samples.zipWithNext().all { (above, below) -> above > below })
+        assertTrue(at(78).green < .03f)
         assertTrue(at(60) != at(40) && at(60) != Color.Red)
         assertTrue(at(70) != at(60) && at(70) != Color.Red)
         assertEquals(Color.Red, at(80))

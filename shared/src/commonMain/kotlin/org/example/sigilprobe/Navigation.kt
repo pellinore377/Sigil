@@ -281,7 +281,6 @@ fun SigilApp(palette: (Int, Boolean) -> String, analyze: (String) -> String, sta
                                 }
                         if (!wide) {
                             StatusFade(statusInset, Modifier.align(Alignment.TopCenter).zIndex(3.75f).testTag(if (conversation) "conversation-status-fade" else "main-status-fade"))
-                            Box(Modifier.align(Alignment.TopCenter).fillMaxWidth().height(statusInset).background(MaterialTheme.colorScheme.background).zIndex(5f).testTag("system-status-protection"))
                         }
                         var retainedConversation by remember { mutableStateOf(headerScreen) }
                         SideEffect { if (conversation) retainedConversation = headerScreen }
