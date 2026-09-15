@@ -285,10 +285,16 @@ async fn security_headers(request: Request, next: Next) -> Response {
 /// Mailbox waits hold their own bounded slots and a longer deadline.
 async fn timeouts(request: Request, next: Next) -> Response {
     let limit = if request.uri().path() == mailbox::WAIT_PATH { mailbox::WAIT_DEADLINE } else { 5 };
-    match tokio::time::timeout(Duration::from_secs(limit), next.run(request)).await {
+    let (method, path) = (request.method().clone(), request.uri().path().to_owned());
+    let response = match tokio::time::timeout(Duration::from_secs(limit), next.run(request)).await {
         Ok(response) => response,
         Err(_) => error(StatusCode::REQUEST_TIMEOUT, "timeout", "Request timed out"),
+    };
+    // Path only: no query strings, credentials or bodies.
+    if response.status().is_server_error() {
+        eprintln!("sigil.server_error {} {} {}", response.status().as_u16(), method, path);
     }
+    response
 }
 async fn bounded(State(state): State<AppState>, request: Request, next: Next) -> Response {
     if request.uri().path() == mailbox::WAIT_PATH {

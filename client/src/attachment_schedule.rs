@@ -47,15 +47,17 @@ fn select(store: &ClientStore, cache: &mut Cache, now: u64) -> Result<Option<(Id
     if !cursor.is_empty() && cursor.len() != 32 {
         return Err(Error::InvalidStore);
     }
+    // Fair order from the cursor, wrapping once, so idle files never delay active work.
     let mut ids = tx
-        .prepare("SELECT id FROM files WHERE id>?1 ORDER BY id LIMIT 16")?
+        .prepare("SELECT id FROM files WHERE id>?1 ORDER BY id LIMIT 1024")?
         .query_map([&cursor], |r| r.get::<_, Vec<u8>>(0))?
         .collect::<Result<Vec<_>, _>>()?;
-    if ids.is_empty() && !cursor.is_empty() {
-        ids = tx
-            .prepare("SELECT id FROM files ORDER BY id LIMIT 16")?
-            .query_map([], |r| r.get::<_, Vec<u8>>(0))?
-            .collect::<Result<Vec<_>, _>>()?;
+    if !cursor.is_empty() {
+        ids.extend(
+            tx.prepare("SELECT id FROM files WHERE id<=?1 ORDER BY id LIMIT 1024")?
+                .query_map([&cursor], |r| r.get::<_, Vec<u8>>(0))?
+                .collect::<Result<Vec<_>, _>>()?,
+        );
     }
     let mut next = Vec::new();
     let mut selected = None;
@@ -154,8 +156,8 @@ fn select(store: &ClientStore, cache: &mut Cache, now: u64) -> Result<Option<(Id
     Ok(selected)
 }
 impl ClientStore {
-    /// Offline retention/cleanup pass using the same bounded fair file cursor.
-    /// Examine at most 16 files and release at most 16 chunks. A zero result
+    /// Offline retention/cleanup pass using the same fair file cursor.
+    /// Release at most 16 chunks. A zero result
     /// can mean the selected file needs network work; no network runs here.
     pub fn maintain_attachment_cache(&self, cache: &mut Cache, now: u64) -> Result<usize, Error> {
         match select(self, cache, now)? {
