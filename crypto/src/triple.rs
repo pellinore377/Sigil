@@ -181,6 +181,36 @@ mod tests {
     use super::*;
 
     #[test]
+    fn queue_sized_gap_crosses_a_turn_without_committing_forged_state() {
+        let (mut alice, mut bob) = pair();
+        bob.receive(&alice.send(b"initial").unwrap()).unwrap();
+        let mut delayed = Vec::new();
+        for _ in 0..226 {
+            delayed.push(alice.send(b"delayed").unwrap());
+        }
+        alice.receive(&bob.send(b"reply").unwrap()).unwrap();
+        let packet = alice.send(b"after gap").unwrap();
+        let key = crate::storage::StorageKey::new(Secret32::from_bytes([27; 32])).unwrap();
+        let before = bob.seal_checkpoint(&key, b"receiver").unwrap();
+        let mut forged = Packet::from_bytes(&packet.to_bytes()).unwrap();
+        forged.ciphertext[0] ^= 1;
+        assert!(matches!(bob.receive(&forged), Err(Error::Authentication)));
+        forged.ec.number = crate::skipped::MAX_WORK as u32 + 1;
+        assert!(matches!(bob.receive(&forged), Err(Error::Limit)));
+        assert_eq!(
+            key.open(&before, b"receiver").unwrap(),
+            key.open(
+                &bob.seal_checkpoint(&key, b"receiver").unwrap(),
+                b"receiver"
+            )
+            .unwrap()
+        );
+        assert_eq!(bob.receive(&packet).unwrap(), b"after gap");
+        assert_eq!(bob.receive(delayed.last().unwrap()).unwrap(), b"delayed");
+        assert!(bob.receive(&packet).is_err());
+    }
+
+    #[test]
     fn split_and_hybrid_kdfs_match_openssl() {
         let (ec, pq) = split(Secret32::from_bytes([1; 32])).unwrap();
         assert_eq!(

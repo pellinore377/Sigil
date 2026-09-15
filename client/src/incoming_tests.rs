@@ -43,6 +43,46 @@ fn count(client: &ClientStore, table: &str) -> i64 {
         .unwrap()
 }
 #[test]
+fn receiver_catches_up_after_an_outbox_sized_delivery_gap() {
+    let (_dir, _fixture, mut alice, mut bob, now) = pair();
+    let (a, b) = trust(&mut alice, &mut bob);
+    start(&mut alice, b, now);
+    let first = bob.accept_delivery(&next(&bob)).unwrap();
+    bob.acknowledge_incoming_online().unwrap();
+    bob.send_peer_text(a, [89; 32], "confirmation", now, now)
+        .unwrap();
+    bob.send_pending_online(first.session, now).unwrap();
+    alice.receive_mailbox_online(now).unwrap();
+    alice.acknowledge_incoming_online().unwrap();
+    for n in 0..226u32 {
+        let id: Id = Sha256::digest([b"delayed".as_slice(), &n.to_be_bytes()].concat()).into();
+        alice.send_text([3; 32], id, "delayed", now, now).unwrap();
+    }
+    alice
+        .send_text([3; 32], [90; 32], "after gap", now, now)
+        .unwrap();
+    let recipient = decode_id(&bob.connection_session().unwrap().unwrap().device_id).unwrap();
+    let packet = alice
+        .prepare_delivery([3; 32], [90; 32], recipient, now + transport::DEFAULT_LIFETIME, now)
+        .unwrap();
+    alice.connected_client().unwrap().submit(&packet).unwrap();
+    let attempts = bob.receive_mailbox_online(now).unwrap();
+    let MailboxEvent::Text(incoming) = attempts.into_iter().next().unwrap().result.unwrap() else {
+        panic!("expected text")
+    };
+    assert_eq!(incoming.text().unwrap().body, "after gap");
+    assert_eq!(incoming.session, first.session);
+    assert_eq!(bob.acknowledge_incoming_online().unwrap(), 1);
+    assert!(
+        bob.connected_client()
+            .unwrap()
+            .mailbox()
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[test]
 fn receive_diagnostics_distinguish_packet_rejection_replay_and_stored_state() {
     let (_dir, _fixture, mut alice, mut bob, now) = pair();
     let (a, b) = trust(&mut alice, &mut bob);

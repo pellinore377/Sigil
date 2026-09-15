@@ -8,6 +8,7 @@ use crate::{
 mod checkpoint;
 
 pub const MAX_SKIPPED_KEYS: usize = crate::skipped::MAX;
+const MAX_SKIP_WORK: usize = crate::skipped::MAX_WORK;
 const HEADER_LEN: usize = 48;
 const PREFIX: &[u8; 8] = b"SGDR\0\x01\0\0";
 
@@ -89,7 +90,7 @@ impl Step {
         work: &mut usize,
     ) -> Result<(), Error> {
         let gap = until.checked_sub(self.received).ok_or(Error::Replay)? as usize;
-        if gap > MAX_SKIPPED_KEYS || *work + gap > MAX_SKIPPED_KEYS {
+        if gap > MAX_SKIP_WORK || *work + gap > MAX_SKIP_WORK {
             return Err(Error::Limit);
         }
         *work += gap;
@@ -345,12 +346,12 @@ mod tests {
         let (mut alice, mut bob) = pair();
         bob.receive(&alice.send(b"start").unwrap()).unwrap();
         let mut old = Vec::new();
-        for _ in 0..100 {
+        for _ in 0..MAX_SKIP_WORK / 2 + 1 {
             old.push(alice.send(b"old delayed").unwrap());
         }
         alice.receive(&bob.send(b"reply").unwrap()).unwrap();
         let mut new = Vec::new();
-        for _ in 0..100 {
+        for _ in 0..MAX_SKIP_WORK / 2 + 1 {
             new.push(alice.send(b"new delayed").unwrap());
         }
         let target = alice.send(b"target").unwrap();
@@ -359,7 +360,7 @@ mod tests {
         bob.receive(old.last().unwrap()).unwrap();
         assert_eq!(bob.receive(&target).unwrap(), b"target");
         assert_eq!(bob.skipped.len(), MAX_SKIPPED_KEYS);
-        for packet in new.iter().rev() {
+        for packet in new.iter().rev().take(MAX_SKIPPED_KEYS) {
             assert_eq!(bob.receive(packet).unwrap(), b"new delayed");
         }
     }
@@ -392,17 +393,18 @@ mod tests {
     fn skipped_key_budget_and_counter_overflow_fail_without_advancing() {
         let (mut alice, mut bob) = pair();
         let mut packets = Vec::new();
-        for _ in 0..MAX_SKIPPED_KEYS + 2 {
+        for _ in 0..MAX_SKIP_WORK + 2 {
             packets.push(alice.send(b"synthetic").unwrap());
         }
         assert_eq!(
-            bob.receive(&packets[MAX_SKIPPED_KEYS + 1]),
+            bob.receive(&packets[MAX_SKIP_WORK + 1]),
             Err(Error::Limit)
         );
-        bob.receive(&packets[MAX_SKIPPED_KEYS]).unwrap();
+        bob.receive(&packets[MAX_SKIP_WORK]).unwrap();
         assert_eq!(bob.skipped.len(), MAX_SKIPPED_KEYS);
-        bob.receive(&packets[0]).unwrap();
-        bob.receive(&packets[MAX_SKIPPED_KEYS + 1]).unwrap();
+        assert!(bob.receive(&packets[0]).is_err());
+        bob.receive(&packets[MAX_SKIP_WORK - 1]).unwrap();
+        bob.receive(&packets[MAX_SKIP_WORK + 1]).unwrap();
         alice.step.sent = u32::MAX;
         assert!(matches!(alice.send(b"overflow"), Err(Error::Limit)));
         assert_eq!(alice.step.sent, u32::MAX);
