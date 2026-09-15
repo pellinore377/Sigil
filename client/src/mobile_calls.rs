@@ -135,10 +135,13 @@ impl ClientStore {
             if let Some(value) = values.iter_mut().find(|v| v["id"] == id) {
                 value["outgoing"] = json!(history.outgoing);
                 value["name"] = json!(name);
+                value["missed"] = json!(history.missed);
+                value["duration"] = json!(history.duration);
+                value["video"] = json!(history.video);
                 continue;
             }
             let participants = history.people.iter().map(|person| json!({"member":transport::hex(&person.peer),"peer":transport::hex(&person.peer),"name":person.name,"address":person.address,"own":person.own,"verified":false,"fingerprint":"","audio":false,"camera":false,"screen":false})).collect::<Vec<_>>();
-            values.push(json!({"id":id,"phase":match history.phase { calls::Phase::Active | calls::Phase::Joining | calls::Phase::Ringing => calls::Phase::Ended, phase => phase },"direct":history.direct,"created":history.created,"participants":participants,"can_invite":false,"outgoing":history.outgoing,"name":name}));
+            values.push(json!({"id":id,"phase":match history.phase { calls::Phase::Active | calls::Phase::Joining | calls::Phase::Ringing => calls::Phase::Ended, phase => phase },"direct":history.direct,"created":history.created,"participants":participants,"can_invite":false,"outgoing":history.outgoing,"name":name,"missed":history.missed,"duration":history.duration,"video":history.video}));
         }
         values.sort_by_key(|v| std::cmp::Reverse(v["created"].as_u64().unwrap_or(0)));
         Ok(json!({"calls":values}))

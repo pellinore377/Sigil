@@ -334,3 +334,19 @@ async fn only_successful_content_addressed_binaries_are_cacheable() {
         assert_eq!(response.headers()["cross-origin-embedder-policy"],"require-corp");
     }
 }
+
+#[tokio::test]
+async fn audio_worklet_script_permissions_are_limited_to_messaging() {
+    let app = axum::Router::new()
+        .fallback(|| async { StatusCode::OK })
+        .layer(axum::middleware::from_fn(crate::security_headers));
+    for (path, worklet) in [("/", true), ("/messenger", true), ("/admin", false), ("/auth/browser", false)] {
+        let response = app.clone().oneshot(Request::get(path).body(Body::empty()).unwrap()).await.unwrap();
+        let policy = response.headers()["content-security-policy"].to_str().unwrap();
+        let scripts = policy.split(';').find(|value| value.trim().starts_with("script-src ")).unwrap();
+        assert_eq!(scripts.split_whitespace().any(|value| value == "blob:"), worklet);
+        assert!(!scripts.split_whitespace().any(|value| matches!(value, "'unsafe-eval'" | "'unsafe-inline'")));
+        assert!(policy.contains("object-src 'none'"));
+        assert!(policy.contains("frame-ancestors 'none'"));
+    }
+}

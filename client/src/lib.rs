@@ -10,13 +10,14 @@ use sigil_crypto::{
 };
 use std::path::Path;
 pub mod attachments;
+#[cfg(target_arch = "wasm32")]
+pub mod browser_transport;
 pub mod calls;
+mod clock;
 mod erasure;
 #[cfg(test)]
 mod load_tests;
 mod private_db;
-mod clock;
-#[cfg(target_arch="wasm32")] pub mod browser_transport;
 mod storage_blob;
 pub use erasure::JournalErasure;
 use zeroize::Zeroizing;
@@ -465,7 +466,11 @@ impl ClientStore {
         }
         tx.commit()?;
         private_db::finish(&db)?;
-        Ok(Self { db, key, connection: Default::default() })
+        Ok(Self {
+            db,
+            key,
+            connection: Default::default(),
+        })
     }
 
     /// Import an already authenticated session. For new incoming handshakes use accept_initial.

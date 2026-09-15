@@ -338,10 +338,15 @@ pub(super) fn receive(tx: &Transaction<'_>, key: &StorageKey, op: &Operation) ->
             observe(tx, key, e.operation.version.counter)?;
         }
         remember_origin(tx, key, &op.version.device, transfer, entry_id(key, &e)?)?;
-        let catalog=(e.author==own && e.operation.version.device==op.version.device
-            && e.conversation==crate::mobile::contacts::catalog::scope(own,e.operation.version.device)).then(||e.operation.clone());
+        let catalog = (e.author == own
+            && e.operation.version.device == op.version.device
+            && e.conversation
+                == crate::mobile::contacts::catalog::scope(own, e.operation.version.device))
+        .then(|| e.operation.clone());
         ingest(tx, key, e)?;
-        if let Some(operation)=catalog {crate::mobile::contacts::catalog::receive(tx,key,own,&operation)?;}
+        if let Some(operation) = catalog {
+            crate::mobile::contacts::catalog::receive(tx, key, own, &operation)?;
+        }
         for n in 0..*total {
             tx.execute(
                 "DELETE FROM conversation_fragments WHERE id=?1",
@@ -410,8 +415,15 @@ impl ClientStore {
                             (peer.as_slice(), at.as_slice(), original.as_slice()),
                         )?;
                     }
-                    if e.operation.version.device == known.fingerprint || allowed != Some(true)
-                        || (e.conversation==crate::mobile::contacts::catalog::scope(account,e.operation.version.device) && e.operation.version.device!=device) {
+                    if e.operation.version.device == known.fingerprint
+                        || allowed != Some(true)
+                        || (e.conversation
+                            == crate::mobile::contacts::catalog::scope(
+                                account,
+                                e.operation.version.device,
+                            )
+                            && e.operation.version.device != device)
+                    {
                         cursor.after = sequence;
                         save(&tx, &self.key, "conversation_sync", &peer, &cursor)?;
                         tx.commit()?;

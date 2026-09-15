@@ -68,7 +68,7 @@ class RevisionsTest {
             ui.onNodeWithContentDescription("Attachments").performClick()
             ui.onNodeWithContentDescription("Close attachment panel").assertIsDisplayed()
             ui.onNodeWithContentDescription("Create").performClick()
-            ui.onNodeWithText("Search tools").performTextReplacement("Poll")
+
             ui.onNodeWithContentDescription("Poll").performClick()
             ui.onNodeWithText("Question").performClick().performTextReplacement("Where shall we meet?")
             ui.onNodeWithText("Option 1").performScrollTo().performClick().performTextReplacement("Library")
@@ -82,7 +82,7 @@ class RevisionsTest {
             assertTrue("Keyboard should be open", ime > 0)
             assertTrue("Entry is under the keyboard: $field", field.bottom <= view.height - ime + 2)
             capture("poll-${font.replace(' ', '-')}")
-            ui.onNodeWithText("Add to message").performScrollTo().assertIsEnabled().performClick()
+            ui.onNodeWithContentDescription("Attach").assertIsEnabled().performClick()
             ui.onNodeWithContentDescription("Send message").performClick()
             val expected = "poll::Where shall we meet?\n- Library\n- Garden\n- Gallery;"
             assertEquals(expected, posts.last()["text"])
@@ -121,17 +121,26 @@ class RevisionsTest {
         bubble.performTouchInput { down(center); moveBy(androidx.compose.ui.geometry.Offset(180f, 0f)); up() }
         ui.onNodeWithText("Replying to A short thought.").assertIsDisplayed()
     }
-    @Test fun conversationReusesTheMainHeaderContainer() {
+    @Test fun conversationEntersBeforeItsFloatingChromeAndReversesOnBack() {
         val state = mutableStateOf(MessengerState(phase = "connected", chats = listOf(chat)))
         show { SigilApp(NativeCore::palette, NativeCore::analyze, state.value, { _, _ -> }) }
-        val header = ui.onNodeWithTag("main-header").fetchSemanticsNode()
-        for (selected in listOf("peer", null, "peer", null)) {
+        repeat(2) {
             ui.mainClock.autoAdvance = false
-            ui.runOnUiThread { state.value = state.value.copy(selected = selected) }
+            ui.runOnUiThread { state.value = state.value.copy(selected = "peer") }
             ui.mainClock.advanceTimeBy(96)
-            val current = ui.onNodeWithTag("main-header").fetchSemanticsNode()
-            assertEquals(header.id, current.id)
-            assertEquals(header.boundsInWindow, current.boundsInWindow)
+            ui.onNodeWithTag("timeline-body").assertExists()
+            ui.onNodeWithTag("conversation-header").assertIsNotDisplayed()
+            ui.onNodeWithTag("conversation-footer").assertIsNotDisplayed()
+            ui.mainClock.advanceTimeBy(400)
+            ui.onNodeWithTag("conversation-header").assertIsDisplayed()
+            ui.onNodeWithTag("conversation-footer").assertIsDisplayed()
+            ui.onNodeWithTag("main-header").assertDoesNotExist()
+            ui.runOnUiThread { state.value = state.value.copy(selected = null) }
+            ui.mainClock.advanceTimeBy(400)
+            ui.onNodeWithTag("conversation-header").assertDoesNotExist()
+            ui.onNodeWithTag("conversation-footer").assertDoesNotExist()
+            ui.onNodeWithTag("main-header").assertIsDisplayed()
+            ui.onNodeWithTag("main-navigation").assertIsDisplayed()
             ui.mainClock.autoAdvance = true
             ui.waitForIdle()
         }
@@ -142,9 +151,9 @@ class RevisionsTest {
         show { SigilApp(NativeCore::palette, NativeCore::analyze, state.value, { name, _ -> commands += name }) }
         ui.onNodeWithContentDescription("Voice message").performClick()
         capture("voice")
-        ui.onNodeWithText("Record").performClick()
+        assertTrue("record_start" in commands)
         ui.runOnIdle { state.value = state.value.copy(voice = VoiceState("Recording", "peer", 3, listOf(.1f, .5f, .8f, .3f))) }
-        ui.onNodeWithText("Use recording").performClick()
+        ui.onNodeWithContentDescription("Stop recording").performClick()
         assertTrue("record_stop" in commands)
         assertFalse("record_send" in commands)
         ui.runOnIdle { state.value = state.value.copy(voice = state.value.voice.copy(phase = "Ready")) }
@@ -178,7 +187,7 @@ class RevisionsTest {
         ui.onNodeWithContentDescription("Attachments").performClick()
         ui.onNodeWithContentDescription("Create").performClick()
         for (kind in listOf("Note", "Checklist", "Poll", "Reminder", "Task", "Timer")) {
-            ui.onNodeWithText("Search tools").performTextReplacement(kind)
+            ui.onNodeWithContentDescription("Create page 1").performClick()
             ui.onNodeWithContentDescription(kind).performScrollTo().performClick()
             ui.onAllNodes(isDialog()).assertCountEquals(0)
             val opened = ui.onNodeWithContentDescription("Back to create").fetchSemanticsNode().boundsInWindow.left
@@ -198,30 +207,32 @@ class RevisionsTest {
         ui.runOnUiThread { androidx.core.view.WindowCompat.getInsetsController(ui.activity.window, view).hide(WindowInsetsCompat.Type.ime()) }
         ui.waitUntil(5000) { imeHeight() == 0 }
         ui.onNodeWithContentDescription("Attachments").performClick()
+        val expanded = ui.onNodeWithTag("composer-panel").fetchSemanticsNode().boundsInWindow.height
         ui.onNodeWithContentDescription("Format").performClick()
         ui.onNodeWithContentDescription("Continue writing").performClick()
         ui.waitUntil(5000) { imeHeight() > 0 }
         Thread.sleep(600); ui.waitForIdle()
-        val navigation = WindowInsetsCompat.toWindowInsetsCompat(view.rootWindowInsets).getInsets(WindowInsetsCompat.Type.navigationBars()).bottom
-        val keyboard = (imeHeight()-navigation).toFloat()
         ui.runOnUiThread { androidx.core.view.WindowCompat.getInsetsController(ui.activity.window, view).hide(WindowInsetsCompat.Type.ime()) }
         ui.waitUntil(5000) { imeHeight() == 0 }
         Thread.sleep(300); ui.waitForIdle()
-        ui.onNodeWithContentDescription("Attachments").performClick()
-        assertEquals(keyboard, ui.onNodeWithTag("composer-panel").fetchSemanticsNode().boundsInWindow.height, 3f)
+        ui.onNodeWithContentDescription("Bold").assertIsDisplayed()
+        ui.onNodeWithContentDescription("Back to attachments").performClick()
+        assertEquals(expanded, ui.onNodeWithTag("composer-panel").fetchSemanticsNode().boundsInWindow.height, 3f)
+        ui.onNodeWithContentDescription("Create").assertIsDisplayed()
     }
-    @Test fun scannerStaysBetweenInstructionsAndCodeSwitch() {
+    @Test fun scannerStaysBelowInstructionsAndCancelRemainsReachable() {
         val instrument = InstrumentationRegistry.getInstrumentation()
         instrument.uiAutomation.grantRuntimePermission(instrument.targetContext.packageName, android.Manifest.permission.CAMERA)
-        val flow = JSONObject().put("stage", "show_offer").put("width", 21).put("cells", "0".repeat(441))
-        show { SigilApp(NativeCore::palette, NativeCore::analyze, MessengerState(), { _, _ -> }, overlay = { DeviceLinkDialog(flow, false, null) { _, _ -> } }) }
-        ui.onNodeWithText("Scan the other device").performClick()
-        ui.onNodeWithText("Show my code").assertIsDisplayed()
+        val flow = JSONObject().put("stage", "scan_offer")
+        val commands=mutableListOf<String>()
+        show { SigilApp(NativeCore::palette, NativeCore::analyze, MessengerState(), { _, _ -> }, overlay = { DeviceLinkDialog(flow, false, null) { action, _ -> commands+=action } }) }
         val finder = ui.onNodeWithTag("link-viewfinder").fetchSemanticsNode().boundsInWindow
-        val button = ui.onNodeWithText("Show my code").fetchSemanticsNode().boundsInWindow
-        assertTrue(finder.bottom <= button.top)
-        ui.onNodeWithText("Show my code").performClick()
-        ui.onNodeWithContentDescription("Device linking QR code").assertIsDisplayed()
+        val instructions=ui.onNodeWithText("Scan the code shown by your new device. Keep both devices with you throughout setup.").fetchSemanticsNode().boundsInWindow
+        val cancel=ui.onNodeWithText("Cancel").assertIsDisplayed().fetchSemanticsNode().boundsInWindow
+        assertTrue(finder.top>=instructions.bottom)
+        assertTrue(cancel.bottom<=finder.top)
+        ui.onNodeWithText("Cancel").performClick()
+        assertEquals(listOf("cancel"),commands)
     }
     @Test fun tabDirectionFollowsPositionAndSubpagesKeepTheHeader() {
         show { SigilApp(NativeCore::palette, NativeCore::analyze, MessengerState(phase = "connected", chats = listOf(chat)), { _, _ -> }) }
@@ -243,63 +254,24 @@ class RevisionsTest {
         assertEquals(header, ui.onNodeWithTag("main-header").fetchSemanticsNode().id)
         ui.onNodeWithTag("main-navigation").assertIsDisplayed()
     }
-    @Test fun conversationMovesContentInsideStationarySurfaces() {
-        val state = mutableStateOf(MessengerState(phase = "connected", ui = mapOf("appearance" to "Newsreader|Dark|555555|false"), chats = listOf(chat.copy(ui = mapOf("chat_theme" to "287C54|false")))))
-        show { SigilApp(NativeCore::palette, NativeCore::analyze, state.value, { name, _ -> if (name == "close") state.value = state.value.copy(selected = null) }) }
-        val header = ui.onNodeWithTag("main-header").fetchSemanticsNode().id
-        val footer = ui.onNodeWithTag("footer-surface").fetchSemanticsNode().id
-        val initialHeaderHeight = ui.onNodeWithTag("main-header").getUnclippedBoundsInRoot().let { it.bottom - it.top }
-        val footerBottom = ui.onNodeWithTag("footer-surface").getUnclippedBoundsInRoot().bottom
-        val initialHeight = ui.onNodeWithTag("footer-surface").getUnclippedBoundsInRoot().let { it.bottom - it.top }
-        fun headerColor(): androidx.compose.ui.graphics.Color {
-            val pixels = ui.onNodeWithTag("main-header").captureToImage().toPixelMap()
-            return pixels[pixels.width / 2, pixels.height - 4]
+    @Test fun settledConversationChromeDoesNotRestartOnSync() {
+        val state = mutableStateOf(MessengerState(phase = "connected", selected = "peer", chats = listOf(chat),
+            messages = listOf(ChatMessage("motion", "sam", "A letter arriving from below", false, "9:33am", "", false, emptyList(), emptyList(), null, true))))
+        show { SigilApp(NativeCore::palette, NativeCore::analyze, state.value, { _, _ -> }) }
+        val header = ui.onNodeWithTag("conversation-header").fetchSemanticsNode()
+        val footer = ui.onNodeWithTag("conversation-footer").fetchSemanticsNode()
+        for (busy in listOf(true, false)) {
+            ui.mainClock.autoAdvance = false
+            ui.runOnIdle { state.value = state.value.copy(busy = busy, messages = state.value.messages.map { it.copy(delivery = "Delivered") }) }
+            ui.mainClock.advanceTimeBy(64)
+            val current = ui.onNodeWithTag("conversation-header").fetchSemanticsNode()
+            assertEquals(header.id, current.id)
+            assertEquals(header.boundsInWindow, current.boundsInWindow)
+            assertEquals(footer.boundsInWindow, ui.onNodeWithTag("conversation-footer").fetchSemanticsNode().boundsInWindow)
+            ui.onNodeWithText("A letter arriving from below").assertIsDisplayed()
+            ui.mainClock.autoAdvance = true
+            ui.waitForIdle()
         }
-        val background = headerColor()
-        ui.mainClock.autoAdvance = false
-        ui.runOnIdle { state.value = state.value.copy(selected = "peer", messages = listOf(ChatMessage("motion", "sam", "A letter arriving from below", false, "9:33am", "", false, emptyList(), emptyList(), null, true))) }
-        ui.mainClock.advanceTimeBy(64)
-        val first = ui.onNodeWithTag("timeline-body").getUnclippedBoundsInRoot().top
-        assertTrue("Timeline did not enter from below", first.value > 100f)
-        assertEquals(header, ui.onNodeWithTag("main-header").fetchSemanticsNode().id)
-        assertEquals(initialHeaderHeight, ui.onNodeWithTag("main-header").getUnclippedBoundsInRoot().let { it.bottom - it.top })
-        assertTrue("Main header elements did not slide away", ui.onNodeWithText("Sigil").getUnclippedBoundsInRoot().left.value < 0f)
-        assertEquals(footer, ui.onNodeWithTag("footer-surface").fetchSemanticsNode().id)
-        assertEquals(footerBottom, ui.onNodeWithTag("footer-surface").getUnclippedBoundsInRoot().bottom)
-        val growingHeight = ui.onNodeWithTag("footer-surface").getUnclippedBoundsInRoot().let { it.bottom - it.top }
-        assertTrue("Footer height did not start growing", growingHeight > initialHeight)
-        assertEquals("Header color changed before the movement finished", background, headerColor())
-        capture("opening-64")
-        ui.mainClock.advanceTimeBy(80)
-        assertTrue(ui.onNodeWithTag("timeline-body").getUnclippedBoundsInRoot().top < first)
-        assertEquals(background, headerColor())
-        ui.mainClock.advanceTimeBy(64)
-        assertTrue("Floating button stopped above the gesture area", ui.onNodeWithContentDescription("New conversation").getUnclippedBoundsInRoot().top > footerBottom)
-        capture("opening-208")
-        ui.mainClock.advanceTimeBy(96)
-        val earlyTint = headerColor()
-        val growingHeaderHeight = ui.onNodeWithTag("main-header").getUnclippedBoundsInRoot().let { it.bottom - it.top }
-        assertTrue("Header did not grow with its tint", growingHeaderHeight > initialHeaderHeight)
-        ui.runOnIdle { state.value = state.value.copy(busy = true) }
-        ui.mainClock.advanceTimeBy(48)
-        val laterTint = headerColor()
-        val label = ui.onNodeWithText("Sam").captureToImage().toPixelMap()
-        assertTrue("Header foreground became dark during its tint", (0 until label.height).sumOf { y -> (0 until label.width).count { x -> label[x, y].red > .6f && label[x, y].green > .6f && label[x, y].blue > .6f } } > 20)
-        capture("opening-352")
-        ui.mainClock.autoAdvance = true; ui.waitForIdle()
-        assertTrue("Header jumped to its final height", growingHeaderHeight < ui.onNodeWithTag("main-header").getUnclippedBoundsInRoot().let { it.bottom - it.top })
-        assertTrue("Footer height jumped to its final size", growingHeight < ui.onNodeWithTag("footer-surface").getUnclippedBoundsInRoot().let { it.bottom - it.top })
-        val settled = headerColor()
-        assertNotEquals("Header tint did not animate", earlyTint, laterTint)
-        ui.runOnIdle { state.value = state.value.copy(busy = false, messages = state.value.messages.map { it.copy(delivery = "Delivered") }) }
-        ui.mainClock.advanceTimeBy(500)
-        assertEquals(header, ui.onNodeWithTag("main-header").fetchSemanticsNode().id)
-        assertEquals("Header changed after settling", settled, headerColor())
-        ui.onNodeWithText("A letter arriving from below").assertIsDisplayed()
-        ui.onNodeWithContentDescription("Back").performClick()
-        assertEquals(header, ui.onNodeWithTag("main-header").fetchSemanticsNode().id)
-        assertEquals(footer, ui.onNodeWithTag("footer-surface").fetchSemanticsNode().id)
-        ui.onNodeWithTag("main-navigation").assertIsDisplayed()
     }
     @Test fun devicesHideFingerprintsAndOfferRemovalAndRenaming() {
         val fingerprint = "abcd".repeat(16)

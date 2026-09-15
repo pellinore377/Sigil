@@ -23,6 +23,8 @@ internal class Vp8Encoder(val width: Int, val height: Int, private val rotation:
     init {
         try {
             val format = MediaFormat.createVideoFormat(MediaFormat.MIMETYPE_VIDEO_VP8, width, height)
+            format.setInteger(MediaFormat.KEY_PRIORITY, 0)
+            format.setInteger(MediaFormat.KEY_OPERATING_RATE, 24)
             format.setInteger(MediaFormat.KEY_COLOR_FORMAT, MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface)
             format.setInteger(MediaFormat.KEY_BIT_RATE, 700000)
             format.setInteger(MediaFormat.KEY_FRAME_RATE, 24)
@@ -164,7 +166,8 @@ internal class CallVideoDecoder(private val surface: Surface, private val geomet
                         if (!keyframe) continue
                         reset()
                         codec = MediaCodec.createDecoderByType(MediaFormat.MIMETYPE_VIDEO_VP8)
-                        codec!!.configure(MediaFormat.createVideoFormat(MediaFormat.MIMETYPE_VIDEO_VP8, width, height), surface, null, 0); codec!!.start(); dimensions = size
+                        val format = MediaFormat.createVideoFormat(MediaFormat.MIMETYPE_VIDEO_VP8, width, height).apply { setInteger(MediaFormat.KEY_PRIORITY, 0) }
+                        codec!!.configure(format, surface, null, 0); codec!!.start(); dimensions = size
                     }
                     val shape = Triple(width, height, rotation)
                     if (rendered != shape) { geometry(width, height, rotation); rendered = shape }

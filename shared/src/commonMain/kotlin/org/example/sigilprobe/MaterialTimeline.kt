@@ -19,7 +19,51 @@ class MaterialAnchor(val value:RandomizerMotion,val outgoing:Boolean,val progres
     var retainPose:((List<FloatArray>)->Unit)?=null
     var bounds by mutableStateOf(Rect.Zero)
     var press:(()->Unit)?=null
+    var launchOrigin by mutableStateOf<Rect?>(null)
+    internal var launchHost:PreviewLaunch?=null
+    var message:String?=null
+    var ordinal=0
 }
+internal class PreviewLaunch {
+    var source = ""
+    var bounds = Rect.Zero
+    val visibleOrigins = mutableMapOf<Int, Rect>()
+    private var pending: Triple<String, Map<Int,Rect>, Long>? = null
+    private val origins = mutableStateMapOf<String, Map<Int,Rect>>()
+    var activeSource by mutableStateOf<String?>(null)
+        private set
+    var activeMessage by mutableStateOf<String?>(null)
+        private set
+    private val lifted=mutableStateMapOf<Int,Boolean>()
+    private val departed=mutableStateMapOf<Int,Boolean>()
+    fun holding(value:String?)=value!=null && activeSource==value
+    fun isActive(message:String?)=message!=null && activeMessage==message && activeSource!=null
+    fun lifted(ordinal:Int)=lifted[ordinal]==true
+    fun arm(value: String, sent: Long) {
+        if(activeSource!=null)return
+        pending = bounds.takeIf { value == source && it.width > 0 && it.height > 0 }?.let { Triple(value, visibleOrigins.toMap().ifEmpty {mapOf(0 to it)}, sent) }
+        if(pending!=null){activeSource=value;activeMessage=null;lifted.clear();departed.clear()}
+    }
+    fun bind(value: String, message: String, sent: Long) {
+        val flight = pending ?: return
+        if (flight.first != value || sent <= flight.third) return
+        if (origins.size >= 16) origins.remove(origins.keys.first())
+        origins[message] = flight.second
+        activeMessage=message
+        pending = null
+    }
+    fun origin(message: String, ordinal:Int=0) = origins[message]?.get(ordinal)
+    fun started(message:String?,ordinal:Int) {if(isActive(message))lifted[ordinal]=true}
+    fun departed(message:String?,ordinal:Int) {
+        if(!isActive(message))return
+        departed[ordinal]=true
+        if(origins[message]?.keys?.all {departed[it]==true}==true){activeSource=null;activeMessage=null}
+    }
+    fun cancel() { pending = null;activeSource=null;activeMessage=null;lifted.clear();departed.clear() }
+}
+internal val LocalMaterialHandoffPass=staticCompositionLocalOf {false}
+internal val LocalPreviewLaunch = staticCompositionLocalOf<PreviewLaunch?> { null }
+internal val LocalMaterialOrdinal = staticCompositionLocalOf {0}
 internal val LocalMaterialPress=staticCompositionLocalOf<(() -> Unit)?> {null}
 val LocalMaterialOverlay=staticCompositionLocalOf<(@Composable (MaterialTimeline,Modifier)->Unit)?> {null}
 internal val LocalMaterialTimeline=staticCompositionLocalOf<MaterialTimeline?> {null}
@@ -35,13 +79,16 @@ val LocalObjectMenu=staticCompositionLocalOf {false}
     val press=LocalMaterialPress.current
     val current=rememberUpdatedState(progress)
     val clock=LocalTextMotion.current?.clock
+    val launch = LocalPreviewLaunch.current
+    val message = LocalTextMotion.current?.message
+    val ordinal = LocalMaterialOrdinal.current
     val poseKey="${LocalTextMotion.current?.message}/${value.hashCode()}"
     val key=remember {Any()}
     val anchor=remember(value,outgoing,clock) {MaterialAnchor(value,outgoing,{current.value()},{clock?.generation ?: 0},{clock?.elapsed=12000f},{duration->
         if(clock!=null && duration>0)clock.materialDuration=maxOf(clock.materialDuration,duration.coerceAtMost(12000))
         clock?.preparing?.remove(key);Unit
     })}
-    SideEffect {anchor.press=press;anchor.inline=true;anchor.retainPose={poses->
+    SideEffect {anchor.launchHost=launch;anchor.message=message;anchor.ordinal=ordinal;anchor.launchOrigin=if (outgoing && clock?.generation == 0 && message != null) launch?.origin(message,ordinal) else null;anchor.press=press;anchor.inline=true;anchor.retainPose={poses->
         if(timeline.restPoses.size>=256 && poseKey !in timeline.restPoses)timeline.restPoses.remove(timeline.restPoses.keys.first())
         timeline.restPoses[poseKey]=poses
     }}

@@ -347,7 +347,10 @@ impl ClientStore {
                 }
             }
             let (session, state, plaintext) = selected.ok_or(Error::ReceiveAuthentication {
-                sessions: tried, replay, limit, other,
+                sessions: tried,
+                replay,
+                limit,
+                other,
             })?;
             commit_received(
                 &tx, &self.key, session, message, &packet, &state, &plaintext,

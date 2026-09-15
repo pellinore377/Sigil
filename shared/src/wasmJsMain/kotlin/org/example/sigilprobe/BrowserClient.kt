@@ -23,7 +23,7 @@ import kotlin.js.*
 @JsName("voice_level") external fun browserVoiceLevel():Float
 @JsName("voice_finish") external fun browserVoiceFinish():Promise<JsAny>
 @JsName("voice_cancel") external fun browserVoiceCancel()
-@JsName("camera_start_photo") external fun browserCameraStartPhoto(video:org.w3c.dom.HTMLVideoElement):Promise<JsAny>
+@JsName("camera_start_photo") external fun browserCameraStartPhoto(video:org.w3c.dom.HTMLVideoElement,front:Boolean):Promise<JsAny>
 @JsName("camera_photo") external fun browserCameraPhoto():Promise<JsAny>
 @JsName("camera_photo_url") external fun browserCameraPhotoUrl(file:JsAny):String
 @JsName("render_math") external fun browserRenderMath(target:org.w3c.dom.HTMLElement,mathml:String)
@@ -35,3 +35,14 @@ import kotlin.js.*
 @JsName("file_stream_supported") external fun browserFileStreamSupported():Boolean
 @JsName("file_destination") external fun browserFileDestination(name:String):Promise<JsAny?>
 @JsName("file_save") external fun browserFileSave(handle:JsAny,peer:String,author:String,message:String,draft:String,length:Double):Promise<JsAny?>
+@JsName("browser_call_connect") external fun browserCallConnect(call:String,frame:(String,JsAny)->Unit):Promise<JsAny>
+@JsName("browser_call_control") external fun browserCallControl(request:String):Promise<JsString>
+@JsName("browser_call_send") external fun browserCallSend(kind:Int,timestamp:Double,keyframe:Boolean,bytes:JsAny):Promise<JsBoolean>
+@JsName("browser_call_close") external fun browserCallClose()
+@JsName("browser_call_transport_state") external fun browserCallTransportState():String
+
+@JsName("LocationWatch") external class BrowserLocationWatch(changed:(String)->Unit,failed:(String)->Unit):JsAny {
+    fun free()
+}
+
+@JsName("map_resource") external fun browserMapResource(path:String):Promise<JsAny>

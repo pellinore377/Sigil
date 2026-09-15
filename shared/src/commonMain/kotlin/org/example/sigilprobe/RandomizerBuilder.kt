@@ -18,8 +18,8 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 
 @Composable
-internal fun RandomizerBuilder(enabled:Boolean,back:()->Unit,send:(String)->Unit) {
-    var kind by rememberSaveable {mutableStateOf("Dice")}
+internal fun RandomizerBuilder(enabled:Boolean,back:()->Unit,initialMode:String?=null,send:(String)->Unit) {
+    var kind by rememberSaveable(initialMode) {mutableStateOf(initialMode ?: "Dice")}
     var dice by rememberSaveable {mutableStateOf(listOf("2","6"))}
     var choices by rememberSaveable {mutableStateOf(listOf(""))}
     var minimum by rememberSaveable {mutableStateOf("1")}
@@ -32,15 +32,16 @@ internal fun RandomizerBuilder(enabled:Boolean,back:()->Unit,send:(String)->Unit
     val keyboard=LocalSoftwareKeyboardController.current
     val modes=listOf("Dice","Choice","Number","Coin")
     val action=when(kind) {"Dice"->"Roll dice";"Choice"->"Pick a choice";"Number"->"Pick a number";else->"Flip coin"}
-    Column(Modifier.fillMaxSize().padding(horizontal=20.dp,vertical=12.dp),verticalArrangement=Arrangement.spacedBy(12.dp)) {
-        Row(verticalAlignment=Alignment.CenterVertically) {
+    val sizing=rememberBuilderSizing(20.dp)
+    Column(Modifier.fillMaxSize().padding(start=8.dp,end=8.dp,top=8.dp),verticalArrangement=Arrangement.spacedBy(12.dp)) {
+        Row(sizing.measure("header"),verticalAlignment=Alignment.CenterVertically) {
             Symbol("chevron_left","Back to create",back)
-            Text("Randomizer",Modifier.weight(1f),style=MaterialTheme.typography.titleLarge)
+            Text(when(initialMode){"Choice"->"Cards";"Number"->"Random Number";null->"Randomizer";else->initialMode},Modifier.weight(1f),style=MaterialTheme.typography.titleLarge)
         }
-        LazyRow(horizontalArrangement=Arrangement.spacedBy(8.dp)) {
+        if(initialMode==null)LazyRow(sizing.measure("modes"),horizontalArrangement=Arrangement.spacedBy(8.dp)) {
             items(modes) {mode->FilterChip(selected=kind==mode,onClick={focus.clearFocus();keyboard?.hide();kind=mode},label={Text(mode)},shape=RoundedCornerShape(12.dp))}
         }
-        Column(Modifier.weight(1f).verticalScroll(rememberScrollState()),verticalArrangement=Arrangement.spacedBy(12.dp)) {
+        Column(Modifier.weight(1f).verticalScroll(rememberScrollState()).wrapContentHeight(unbounded=true).then(sizing.measure("body")),verticalArrangement=Arrangement.spacedBy(12.dp)) {
         AnimatedContent(kind,transitionSpec={
             (slideInHorizontally(motion.tween(MotionMillis)) {if(modes.indexOf(targetState)>modes.indexOf(initialState))it else -it}+fadeIn(motion.tween(MotionMillis))) togetherWith
                 (slideOutHorizontally(motion.tween(MotionMillis)) {if(modes.indexOf(targetState)>modes.indexOf(initialState))-it else it}+fadeOut(motion.tween(MotionMillis)))
@@ -73,7 +74,7 @@ internal fun RandomizerBuilder(enabled:Boolean,back:()->Unit,send:(String)->Unit
             }
         }
         Text(if(resolve==null)"The builder is unavailable." else if(source.isEmpty())when(kind) {"Dice"->"Use positive counts, 2–1,000,000 sides and no more than 256 dice.";"Choice"->"Add two different choices.";else->"Enter a valid inclusive range."} else "The result appears in the conversation after you send.",style=MaterialTheme.typography.bodySmall)
-        SigilButton({send(source)},Modifier.fillMaxWidth(),enabled=enabled && source.isNotEmpty()) {Text(if(LocalBuilderAction.current=="Send")action else LocalBuilderAction.current)}
+        BuilderConfirm(if(LocalBuilderAction.current=="Send")action else LocalBuilderAction.current,enabled && source.isNotEmpty()) {send(source)}
         }
     }
 }

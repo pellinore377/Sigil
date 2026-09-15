@@ -7,7 +7,7 @@ use jni::{
 };
 use ndk::native_window::NativeWindow;
 use raw_window_handle::{AndroidDisplayHandle, HasWindowHandle, RawDisplayHandle};
-use sigil_materials::{geometry::Die, physics::Throw, Lettering, Mode, Object, Renderer, Scene};
+use sigil_materials::{geometry::Die, physics::Throw, Lettering, Mode, Object, Renderer, RendererResources, Scene};
 use std::{
     cell::RefCell,
     sync::Arc,
@@ -20,6 +20,7 @@ struct Gpu {
     adapter: wgpu::Adapter,
     device: wgpu::Device,
     queue: wgpu::Queue,
+    resources: std::sync::Mutex<Vec<Arc<RendererResources>>>,
 }
 fn gpu() -> Result<&'static Gpu, String> {
     static GPU: std::sync::OnceLock<Result<Gpu, String>> = std::sync::OnceLock::new();
@@ -39,6 +40,7 @@ fn gpu() -> Result<&'static Gpu, String> {
             adapter,
             device,
             queue,
+            resources: std::sync::Mutex::new(Vec::new()),
         })
     })
     .as_ref()
@@ -110,7 +112,16 @@ impl State {
             .find(|f| !f.is_srgb())
             .ok_or("No linear surface format")?;
         config.present_mode = wgpu::PresentMode::Fifo;
-        let renderer = Renderer::with_format(&device, &queue, width, height, config.format);
+        let resources={
+            let mut cache=gpu.resources.lock().map_err(|_|"Material resource cache unavailable")?;
+            if let Some(found)=cache.iter().find(|value|value.format()==config.format) {found.clone()}
+            else {
+                let resources=Arc::new(RendererResources::new(&device,&queue,config.format));
+                if cache.len()<4 {cache.push(resources.clone());}
+                resources
+            }
+        };
+        let renderer = Renderer::with_resources(&device, &queue, width, height, &resources);
         queue.submit([]);
         wait(&device)?;
         surface.configure(&device, &config);

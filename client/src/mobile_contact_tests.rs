@@ -12,35 +12,77 @@ fn count(db: &rusqlite::Connection, table: &str) -> i64 {
 }
 #[test]
 fn shared_contact_action_binds_the_account_without_sending_a_request_or_accepting_replacement() {
-    use sigil_protocol::text::{contact::Contact as SharedContact, structured::{Card, Construct}, Text};
+    use sigil_protocol::text::{
+        contact::Contact as SharedContact,
+        structured::{Card, Construct},
+        Text,
+    };
     let (dir, _fixture, mut alice, mut bob, now) = crate::claims::tests::pair();
     let server = rusqlite::Connection::open(dir.path().join("server.db")).unwrap();
     server.execute("DELETE FROM allowed_senders", []).unwrap();
     alice.publish_device_binding_online().unwrap();
     bob.publish_device_binding_online().unwrap();
     let author = alice.account_reference().unwrap();
-    for (number, identity, view_once) in [(71u8,[7;32],false),(72,bob.account_reference().unwrap(),false),(73,bob.account_reference().unwrap(),true)] {
-        let card = Card { id:[number;32],creator:author,created_at:now,content:Construct::Contact(SharedContact {
-            user_id:identity,address:"@bob:chat.example".into(),display_name:Text::plain("Synthetic Bob",Default::default()).unwrap(),avatar_url:Some("https://external.example/avatar.png".into()),
-        }) };
-        alice.mobile_action("self",&transport::hex(&card.id),now,Action::Post {body:Body::Rich(card.to_bytes().unwrap()),reply:None,thread:None,expires_at:None,view_once}).unwrap();
+    for (number, identity, view_once) in [
+        (71u8, [7; 32], false),
+        (72, bob.account_reference().unwrap(), false),
+        (73, bob.account_reference().unwrap(), true),
+    ] {
+        let card = Card {
+            id: [number; 32],
+            creator: author,
+            created_at: now,
+            content: Construct::Contact(SharedContact {
+                user_id: identity,
+                address: "@bob:chat.example".into(),
+                display_name: Text::plain("Synthetic Bob", Default::default()).unwrap(),
+                avatar_url: Some("https://external.example/avatar.png".into()),
+            }),
+        };
+        alice
+            .mobile_action(
+                "self",
+                &transport::hex(&card.id),
+                now,
+                Action::Post {
+                    body: Body::Rich(card.to_bytes().unwrap()),
+                    reply: None,
+                    thread: None,
+                    expires_at: None,
+                    view_once,
+                },
+            )
+            .unwrap();
         if !view_once {
-            let timeline:Value=serde_json::from_str(&alice.mobile_command(r#"{"command":"timeline","peer":"self"}"#)).unwrap();
-            assert_eq!(timeline["ok"],true);
-            let part=&timeline["value"]["messages"][0]["parts"][0];
-            assert_eq!(part["kind"],"contact");
-            assert_eq!(part["contact"]["identity"],transport::hex(&identity));
+            let timeline: Value = serde_json::from_str(
+                &alice.mobile_command(r#"{"command":"timeline","peer":"self"}"#),
+            )
+            .unwrap();
+            assert_eq!(timeline["ok"], true);
+            let part = &timeline["value"]["messages"][0]["parts"][0];
+            assert_eq!(part["kind"], "contact");
+            assert_eq!(part["contact"]["identity"], transport::hex(&identity));
             assert!(!part.to_string().contains("external.example"));
         }
-        let target=Reference {author,message:card.id};
-        let result=alice.mobile_open_contact_card("self",target,card.id);
+        let target = Reference {
+            author,
+            message: card.id,
+        };
+        let result = alice.mobile_open_contact_card("self", target, card.id);
         match number {
-            71 => { assert!(matches!(result,Err(Error::SharedContactChanged)));assert_eq!(count(&alice.db,"mobile_contacts"),0); }
-            72 => { let value=result.unwrap();assert!(value["open"].as_str().unwrap().starts_with("dm:"));assert_eq!(count(&alice.db,"mobile_contacts"),1); }
-            _ => assert!(matches!(result,Err(Error::Obsolete))),
+            71 => {
+                assert!(matches!(result, Err(Error::SharedContactChanged)));
+                assert_eq!(count(&alice.db, "mobile_contacts"), 0);
+            }
+            72 => {
+                let value = result.unwrap();
+                assert!(value["open"].as_str().unwrap().starts_with("dm:"));
+                assert_eq!(count(&alice.db, "mobile_contacts"), 1);
+            }
+            _ => assert!(matches!(result, Err(Error::Obsolete))),
         }
-        assert_eq!(count(&server,"contact_requests"),0);
-        assert_eq!(count(&server,"allowed_senders"),0);
+        assert_eq!(count(&server, "contact_requests"), 0);
+        assert_eq!(count(&server, "allowed_senders"), 0);
     }
 }
 #[test]
@@ -455,22 +497,41 @@ fn requests_preserve_existing_conversation_references_and_cached_decisions_refre
 
 #[test]
 fn mobile_contact_builder_checks_identity_without_sending_a_request() {
-    let (dir,_fixture,mut alice,mut bob,now)=crate::claims::tests::pair();
-    alice.publish_device_binding_online().unwrap();bob.publish_device_binding_online().unwrap();
-    let invoke=|store:&mut ClientStore,value:Value|->Value {serde_json::from_str(&store.mobile_command(&value.to_string())).unwrap()};
-    let preview=invoke(&mut alice,json!({"command":"contact_preview","address":"@bob:chat.example"}));
-    assert_eq!(preview["ok"],true,"{preview}");
-    let contact=preview["value"]["contact"].clone();
-    let posted=invoke(&mut alice,json!({"command":"post","peer":"self","request":"c8".repeat(32),"timestamp":now,"text":"Meet Bob","rich":true,"shared_contact":contact}));
-    assert_eq!(posted["ok"],true,"{posted}");
-    let timeline=invoke(&mut alice,json!({"command":"timeline","peer":"self"}));
-    assert_eq!(timeline["value"]["messages"][0]["parts"][0]["kind"],"contact");
-    assert_eq!(timeline["value"]["messages"][0]["parts"][1]["text"],"Meet Bob");
-    let mut wrong=preview["value"]["contact"].clone();wrong["user_id"]=json!("01".repeat(32));
-    let rejected=invoke(&mut alice,json!({"command":"post","peer":"self","request":"c9".repeat(32),"timestamp":now,"text":"Must not send","rich":true,"shared_contact":wrong}));
-    assert_eq!(rejected["ok"],false);
-    let server=rusqlite::Connection::open(dir.path().join("server.db")).unwrap();
-    assert_eq!(count(&server,"contact_requests"),0);
+    let (dir, _fixture, mut alice, mut bob, now) = crate::claims::tests::pair();
+    alice.publish_device_binding_online().unwrap();
+    bob.publish_device_binding_online().unwrap();
+    let invoke = |store: &mut ClientStore, value: Value| -> Value {
+        serde_json::from_str(&store.mobile_command(&value.to_string())).unwrap()
+    };
+    let preview = invoke(
+        &mut alice,
+        json!({"command":"contact_preview","address":"@bob:chat.example"}),
+    );
+    assert_eq!(preview["ok"], true, "{preview}");
+    let contact = preview["value"]["contact"].clone();
+    let posted = invoke(
+        &mut alice,
+        json!({"command":"post","peer":"self","request":"c8".repeat(32),"timestamp":now,"text":"Meet Bob","rich":true,"shared_contact":contact}),
+    );
+    assert_eq!(posted["ok"], true, "{posted}");
+    let timeline = invoke(&mut alice, json!({"command":"timeline","peer":"self"}));
+    assert_eq!(
+        timeline["value"]["messages"][0]["parts"][0]["kind"],
+        "contact"
+    );
+    assert_eq!(
+        timeline["value"]["messages"][0]["parts"][1]["text"],
+        "Meet Bob"
+    );
+    let mut wrong = preview["value"]["contact"].clone();
+    wrong["user_id"] = json!("01".repeat(32));
+    let rejected = invoke(
+        &mut alice,
+        json!({"command":"post","peer":"self","request":"c9".repeat(32),"timestamp":now,"text":"Must not send","rich":true,"shared_contact":wrong}),
+    );
+    assert_eq!(rejected["ok"], false);
+    let server = rusqlite::Connection::open(dir.path().join("server.db")).unwrap();
+    assert_eq!(count(&server, "contact_requests"), 0);
 }
 
 #[test]
@@ -561,65 +622,142 @@ fn linking_recovers_an_existing_outgoing_conversation() {
     let conversation = browser
         .mobile_conversation(chat["id"].as_str().unwrap())
         .unwrap();
-    let browser_target=chat["id"].as_str().unwrap().to_owned();
-    let peer=browser.peer(browser.mobile_peer(&browser_target).unwrap()).unwrap();
+    let browser_target = chat["id"].as_str().unwrap().to_owned();
+    let peer = browser
+        .peer(browser.mobile_peer(&browser_target).unwrap())
+        .unwrap();
     assert!(peer.trusted);
-    assert!(!peer.verified,"Directory trust must not become independent verification");
-    assert_eq!(peer.fingerprint,device_fingerprint(&bob.own_device_binding().unwrap()).unwrap());
     assert!(
-        browser
-            .recent_conversation_page(conversation, None, now)
-            .unwrap()
-            .messages
-            .iter()
-            .any(|m| m.body == Some(Body::Text("Before linking".into())))
+        !peer.verified,
+        "Directory trust must not become independent verification"
     );
-    bob.mobile_request(&source,"refresh").unwrap();
-    bob.prepare_prekey_publication([85;32],true,3600).unwrap();
-    bob.publish_prekey_online([85;32]).unwrap();
-    browser.mobile_action(&browser_target,&"86".repeat(32),conversations::now(),Action::Post {body:Body::Text("From the linked browser".into()),reply:None,thread:None,expires_at:None,view_once:false}).unwrap();
+    assert_eq!(
+        peer.fingerprint,
+        device_fingerprint(&bob.own_device_binding().unwrap()).unwrap()
+    );
+    assert!(browser
+        .recent_conversation_page(conversation, None, now)
+        .unwrap()
+        .messages
+        .iter()
+        .any(|m| m.body == Some(Body::Text("Before linking".into()))));
+    bob.mobile_request(&source, "refresh").unwrap();
+    bob.prepare_prekey_publication([85; 32], true, 3600)
+        .unwrap();
+    bob.publish_prekey_online([85; 32]).unwrap();
+    browser
+        .mobile_action(
+            &browser_target,
+            &"86".repeat(32),
+            conversations::now(),
+            Action::Post {
+                body: Body::Text("From the linked browser".into()),
+                reply: None,
+                thread: None,
+                expires_at: None,
+                view_once: false,
+            },
+        )
+        .unwrap();
     for _ in 0..4 {
-        let now=conversations::now();
-        for sent in browser.resume_send_intents_online(now).unwrap() {browser.send_pending_online(sent.result.unwrap(),now).unwrap();}
-        for sent in browser.resume_outbound_online(now).unwrap() {sent.result.unwrap();}
-        for received in bob.receive_mailbox_online(now).unwrap() {received.result.unwrap();}
+        let now = conversations::now();
+        for sent in browser.resume_send_intents_online(now).unwrap() {
+            browser
+                .send_pending_online(sent.result.unwrap(), now)
+                .unwrap();
+        }
+        for sent in browser.resume_outbound_online(now).unwrap() {
+            sent.result.unwrap();
+        }
+        for received in bob.receive_mailbox_online(now).unwrap() {
+            received.result.unwrap();
+        }
         bob.acknowledge_incoming_online().unwrap();
     }
-    assert!(bob.recent_conversation_page(conversation,None,conversations::now()).unwrap().messages.iter().any(|m|m.body==Some(Body::Text("From the linked browser".into()))));
-    let now=conversations::now();
-    let mut tablet=open(&dir.path().join("tablet.db"));
-    let offer=tablet.prepare_device_link_offer([87;32],now).unwrap();
-    let (proposal,digest)=browser.prepare_sponsored_link([88;32],&crate::link::offer_qr(&offer).unwrap(),now).unwrap();
-    tablet.accept_link_proposal([87;32],&proposal,now).unwrap();
-    let response=tablet.confirm_link_proposal([87;32],digest,now).unwrap();
-    browser.confirm_sponsored_link([88;32],&response,digest,now).unwrap();
-    browser.authorize_sponsored_link_online([88;32]).unwrap();
-    tablet.finish_device_link_online([87;32],fixture.port(),&[crate::network::tests::CA.to_vec()]).unwrap();
-    tablet.prepare_prekey_publication([89;32],true,3600).unwrap();
-    tablet.publish_prekey_online([89;32]).unwrap();
+    assert!(bob
+        .recent_conversation_page(conversation, None, conversations::now())
+        .unwrap()
+        .messages
+        .iter()
+        .any(|m| m.body == Some(Body::Text("From the linked browser".into()))));
+    let now = conversations::now();
+    let mut tablet = open(&dir.path().join("tablet.db"));
+    let offer = tablet.prepare_device_link_offer([87; 32], now).unwrap();
+    let (proposal, digest) = browser
+        .prepare_sponsored_link([88; 32], &crate::link::offer_qr(&offer).unwrap(), now)
+        .unwrap();
+    tablet
+        .accept_link_proposal([87; 32], &proposal, now)
+        .unwrap();
+    let response = tablet.confirm_link_proposal([87; 32], digest, now).unwrap();
+    browser
+        .confirm_sponsored_link([88; 32], &response, digest, now)
+        .unwrap();
+    browser.authorize_sponsored_link_online([88; 32]).unwrap();
+    tablet
+        .finish_device_link_online(
+            [87; 32],
+            fixture.port(),
+            &[crate::network::tests::CA.to_vec()],
+        )
+        .unwrap();
+    tablet
+        .prepare_prekey_publication([89; 32], true, 3600)
+        .unwrap();
+    tablet.publish_prekey_online([89; 32]).unwrap();
     for _ in 0..8 {
-        let now=conversations::now();
+        let now = conversations::now();
         browser.sync_conversation_devices(now).unwrap();
-        for sent in browser.resume_send_intents_online(now).unwrap() {browser.send_pending_online(sent.result.unwrap(),now).unwrap();}
-        for sent in browser.resume_outbound_online(now).unwrap() {sent.result.unwrap();}
-        for received in tablet.receive_mailbox_online(now).unwrap() {received.result.unwrap();}
+        for sent in browser.resume_send_intents_online(now).unwrap() {
+            browser
+                .send_pending_online(sent.result.unwrap(), now)
+                .unwrap();
+        }
+        for sent in browser.resume_outbound_online(now).unwrap() {
+            sent.result.unwrap();
+        }
+        for received in tablet.receive_mailbox_online(now).unwrap() {
+            received.result.unwrap();
+        }
         tablet.acknowledge_incoming_online().unwrap();
         tablet.mobile_contact_sync(true).unwrap();
     }
-    assert!(tablet.contact_for(&browser_target).unwrap().accepted(),"An imported contact must carry over when that device sponsors another link");
-    assert_eq!(tablet.peer(tablet.mobile_peer(&browser_target).unwrap()).unwrap().fingerprint,peer.fingerprint);
-    browser.mobile_request(&browser_target,"block").unwrap();
-    let known=phone.mobile_peer(&target).unwrap();
-    phone.confirm_peer(known,peer.fingerprint).unwrap();
-    phone.save_contact(&phone.contact_for(&target).unwrap()).unwrap();
+    assert!(
+        tablet.contact_for(&browser_target).unwrap().accepted(),
+        "An imported contact must carry over when that device sponsors another link"
+    );
+    assert_eq!(
+        tablet
+            .peer(tablet.mobile_peer(&browser_target).unwrap())
+            .unwrap()
+            .fingerprint,
+        peer.fingerprint
+    );
+    browser.mobile_request(&browser_target, "block").unwrap();
+    let known = phone.mobile_peer(&target).unwrap();
+    phone.confirm_peer(known, peer.fingerprint).unwrap();
+    phone
+        .save_contact(&phone.contact_for(&target).unwrap())
+        .unwrap();
     for _ in 0..4 {
-        let now=conversations::now();
+        let now = conversations::now();
         phone.sync_conversation_devices(now).unwrap();
-        for sent in phone.resume_send_intents_online(now).unwrap() {phone.send_pending_online(sent.result.unwrap(),now).unwrap();}
-        for sent in phone.resume_outbound_online(now).unwrap() {sent.result.unwrap();}
-        for received in browser.receive_mailbox_online(now).unwrap() {received.result.unwrap();}
+        for sent in phone.resume_send_intents_online(now).unwrap() {
+            phone
+                .send_pending_online(sent.result.unwrap(), now)
+                .unwrap();
+        }
+        for sent in phone.resume_outbound_online(now).unwrap() {
+            sent.result.unwrap();
+        }
+        for received in browser.receive_mailbox_online(now).unwrap() {
+            received.result.unwrap();
+        }
         browser.acknowledge_incoming_online().unwrap();
     }
-    assert!(browser.contact_for(&browser_target).unwrap().blocked,"A later catalog snapshot must not undo a local block");
+    assert!(
+        browser.contact_for(&browser_target).unwrap().blocked,
+        "A later catalog snapshot must not undo a local block"
+    );
     assert!(!browser.peer(peer.id).unwrap().trusted);
 }

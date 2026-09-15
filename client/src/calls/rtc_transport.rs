@@ -3,28 +3,28 @@ use rtc::{
     media_stream::MediaStreamTrack,
     peer_connection::{
         configuration::{
-            RTCConfigurationBuilder, RTCIceServer, media_engine::MediaEngine,
-            setting_engine::SettingEngine,
+            media_engine::MediaEngine, setting_engine::SettingEngine, RTCConfigurationBuilder,
+            RTCIceServer,
         },
         sdp::RTCSessionDescription,
     },
     rtp_transceiver::{
-        RTCRtpTransceiverDirection, RTCRtpTransceiverInit,
         rtp_sender::{RTCRtpCodec, RTCRtpCodingParameters, RTCRtpEncodingParameters, RtpCodecKind},
+        RTCRtpTransceiverDirection, RTCRtpTransceiverInit,
     },
 };
 use sigil_calls::{Downstream, Layout, MediaKind, Track};
 use std::{
     sync::{
-        Arc,
         atomic::{AtomicU8, Ordering},
+        Arc,
     },
     time::Duration,
 };
 use tokio::sync::mpsc;
 use webrtc::{
     media_stream::{
-        track_local::{TrackLocal, static_rtp::TrackLocalStaticRTP},
+        track_local::{static_rtp::TrackLocalStaticRTP, TrackLocal},
         track_remote::{TrackRemote, TrackRemoteEvent},
     },
     peer_connection::{
@@ -118,6 +118,40 @@ pub struct RtcCall {
     ready: ready_frames::ReadyFrames,
     ready_cursor: usize,
     incoming_cursor: usize,
+}
+/// An authenticated frame whose RTP sequence numbers have already been reserved.
+pub struct RtcTransmission {
+    track: Arc<TrackLocalStaticRTP>,
+    packets: Vec<rtc::rtp::packet::Packet>,
+}
+impl RtcTransmission {
+    pub async fn send(self) -> Result<(), Error> {
+        let track = self.track;
+        send_packets(self.packets, |packet| {
+            let track = track.clone();
+            async move {
+                track
+                    .write_rtp(packet)
+                    .await
+                    .map(|_| ())
+                    .map_err(|_| Error::Unprepared)
+            }
+        })
+        .await
+    }
+}
+async fn send_packets<F, U>(
+    packets: Vec<rtc::rtp::packet::Packet>,
+    mut write: F,
+) -> Result<(), Error>
+where
+    F: FnMut(rtc::rtp::packet::Packet) -> U,
+    U: std::future::Future<Output = Result<(), Error>>,
+{
+    for packet in packets {
+        write(packet).await?;
+    }
+    Ok(())
 }
 impl ClientStore {
     pub async fn connect_rtc_call(
@@ -361,12 +395,26 @@ impl ClientStore {
         encoded: &[u8],
         now: u64,
     ) -> Result<(), Error> {
+        self.rtc_prepare_send(call, kind, timestamp, keyframe, encoded, now)?
+            .send()
+            .await
+    }
+    pub fn rtc_prepare_send(
+        &mut self,
+        call: &mut RtcCall,
+        kind: MediaKind,
+        timestamp: u64,
+        keyframe: bool,
+        encoded: &[u8],
+        now: u64,
+    ) -> Result<RtcTransmission, Error> {
         if self.rtc_connection_state(call, now)? != "connected" {
             return Err(Error::Unprepared);
         }
         let index = kind as usize;
         let packets =
             self.seal_call_packets(&mut call.media, kind, timestamp, keyframe, encoded, now)?;
+        let mut wire = Vec::with_capacity(packets.len());
         for (n, payload) in packets.iter().enumerate() {
             let packet = rtc::rtp::packet::Packet {
                 header: rtc::rtp::header::Header {
@@ -382,12 +430,12 @@ impl ClientStore {
                 payload: payload.clone().into(),
             };
             call.sequence[index] = call.sequence[index].wrapping_add(1);
-            call.uploads[index]
-                .write_rtp(packet)
-                .await
-                .map_err(|_| Error::Unprepared)?;
+            wire.push(packet);
         }
-        Ok(())
+        Ok(RtcTransmission {
+            track: call.uploads[index].clone(),
+            packets: wire,
+        })
     }
     pub fn rtc_receive(
         &mut self,
@@ -450,7 +498,8 @@ impl ClientStore {
                     }
                 }
                 Ok(None)
-                | Err(Error::InvalidEvent | Error::Conflict | Error::Unprepared | Error::Limit) => {}
+                | Err(Error::InvalidEvent | Error::Conflict | Error::Unprepared | Error::Limit) => {
+                }
                 Err(error) => return Err(error),
             }
         }

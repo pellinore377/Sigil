@@ -34,7 +34,7 @@ impl Rect {
 pub struct Playback {
     pub frames: Vec<Vec<Pose>>,
     pub contacts: usize,
-    pub rest_frame: usize,
+    pub return_frame: usize,
 }
 pub fn view_rotation(rotation: Quat) -> Quat {
     Quat::from_rotation_x(std::f32::consts::FRAC_PI_2) * rotation
@@ -273,6 +273,17 @@ pub fn record(
     outgoing: bool,
     seed: u32,
 ) -> Option<Playback> {
+    record_from(items, bounds, obstacles, targets, outgoing, seed, None)
+}
+fn record_from(
+    items: &[Item],
+    bounds: Rect,
+    obstacles: &[Rect],
+    targets: &[Vec3],
+    outgoing: bool,
+    seed: u32,
+    starts: Option<&[Vec3]>,
+) -> Option<Playback> {
     if items.is_empty()
         || items.len() > 6
         || items.len() != targets.len()
@@ -280,6 +291,11 @@ pub fn record(
         || obstacles.len() > 64
         || obstacles.iter().any(|r| !r.valid())
         || targets.iter().any(|p| !p.is_finite())
+        || starts.is_some_and(|s| {
+            s.len() != items.len()
+                || s.iter()
+                    .any(|p| !p.is_finite() || !clear(bounds, &[], p.x, p.z, 0.78))
+        })
     {
         return None;
     }
@@ -297,11 +313,39 @@ pub fn record(
             targets,
             outgoing,
             seed.wrapping_add(attempt * 971),
+            starts,
         ) {
             return Some(playback);
         }
     }
     None
+}
+fn launch_landing(bounds: Rect, obstacles: &[Rect], index: usize, count: usize) -> Option<Vec3> {
+    let columns = count.min(3);
+    let rows = count.div_ceil(columns);
+    let center = Vec3::new(
+        (bounds.left + bounds.right) * 0.5
+            + ((index % columns) as f32 - (columns - 1) as f32 * 0.5) * 2.,
+        0.,
+        bounds.top
+            + (bounds.bottom - bounds.top) * 0.48
+            + ((index / columns) as f32 - (rows - 1) as f32 * 0.5) * 2.4,
+    );
+    (0..=24)
+        .flat_map(|z| {
+            (0..=16).map(move |x| {
+                Vec3::new(
+                    bounds.left + (bounds.right - bounds.left) * x as f32 / 16.,
+                    0.,
+                    bounds.top + (bounds.bottom - bounds.top) * z as f32 / 24.,
+                )
+            })
+        })
+        .filter(|p| clear(bounds, obstacles, p.x, p.z, 1.1))
+        .min_by(|a, b| {
+            a.distance_squared(center)
+                .total_cmp(&b.distance_squared(center))
+        })
 }
 fn simulate(
     items: &[Item],
@@ -310,6 +354,7 @@ fn simulate(
     targets: &[Vec3],
     outgoing: bool,
     seed: u32,
+    starts: Option<&[Vec3]>,
 ) -> Option<Playback> {
     let mut bodies = RigidBodySet::new();
     let mut colliders = ColliderSet::new();
@@ -369,34 +414,81 @@ fn simulate(
             .rotate_left(13) as f32
             / u32::MAX as f32;
         let coin = item.object == Object::Coin;
-        let start = targets[i];
+        let start = starts.map_or(targets[i], |s| s[i]);
+        let landing = launch_landing(bounds, obstacles, i, items.len()).unwrap_or(targets[i]);
+        let direction = Vec3::new(landing.x - start.x, 0., landing.z - start.z);
+        let travel = if coin {
+            (direction * 1.15).clamp_length_max(18.)
+        } else {
+            direction.normalize_or_zero() * (direction.length() * 24.).sqrt().min(19.)
+        };
+        let rotation = if starts.is_some() {
+            let preview = crate::presentation::result_pose(
+                item.object,
+                item.die,
+                if coin { 0 } else { 1 },
+                1.,
+            )?;
+            (Quat::from_rotation_x(-std::f32::consts::FRAC_PI_2) * preview.rotation)
+                .to_scaled_axis()
+        } else if coin {
+            Vec3::new(-std::f32::consts::FRAC_PI_2, 0., 0.)
+        } else {
+            Vec3::new(0.6 + v, 0.2, 1.1)
+        };
+        let height = if starts.is_some() {
+            let orientation = Quat::from_scaled_axis(rotation);
+            let support = if coin {
+                -0.104 * SCALE
+            } else {
+                item.die
+                    .hull()
+                    .vertices
+                    .iter()
+                    .map(|v| (orientation * *v * SCALE).y)
+                    .fold(f32::INFINITY, f32::min)
+            };
+            -1.25 - support + 0.012
+        } else if coin {
+            -1.16
+        } else {
+            -0.15 + i as f32 * 0.04
+        };
         let h = bodies.insert(
             RigidBodyBuilder::dynamic()
-                .translation(Vector::new(
-                    start.x,
-                    if coin { -1.16 } else { -0.15 + i as f32 * 0.04 },
-                    start.z,
-                ))
-                .rotation(if coin {
-                    Vector::new(-std::f32::consts::FRAC_PI_2, 0., 0.)
-                } else {
-                    Vector::new(0.6 + v, 0.2, 1.1)
-                })
-                .enabled_translations(!coin, true, !coin)
+                .translation(Vector::new(start.x, height, start.z))
+                .rotation(Vector::new(rotation.x, rotation.y, rotation.z))
+                .enabled_translations(!coin || starts.is_some(), true, !coin || starts.is_some())
                 .enabled_rotations(true, !coin, !coin)
                 .linvel(Vector::new(
-                    if coin {
+                    if starts.is_some() {
+                        travel.x
+                    } else if coin {
                         0.
                     } else if outgoing {
                         -5.5 - v * 1.5
                     } else {
                         5.5 + v * 1.5
                     },
-                    if coin { 9. } else { 1.5 },
-                    if coin { 0. } else { -5.5 - v * 1.5 },
+                    if coin {
+                        9.
+                    } else if starts.is_some() {
+                        3.2
+                    } else {
+                        1.5
+                    },
+                    if starts.is_some() {
+                        travel.z
+                    } else if coin {
+                        0.
+                    } else {
+                        -5.5 - v * 1.5
+                    },
                 ))
                 .angvel(if coin {
                     Vector::new(29. + v * 3., 0., 0.)
+                } else if starts.is_some() {
+                    Vector::new(travel.z * 1.2, 1.5, -travel.x * 1.2)
                 } else {
                     Vector::new(-7. - v * 2., 1.5, if outgoing { 7. } else { -7. })
                 })
@@ -497,10 +589,28 @@ fn simulate(
         }
     }
     let rest = frames.last()?.clone();
-    let rest_frame = frames.len() - 1;
-    for _ in 0..51 {
+    if starts.is_some() && items[0].object != Object::Coin {
+        let moving = frames
+            .iter()
+            .rposition(|frame| {
+                frame.iter().zip(&rest).any(|(a, b)| {
+                    a.position.distance(b.position) > 0.003
+                        || a.rotation.angle_between(b.rotation) > 0.01
+                })
+            })
+            .unwrap_or(0);
+        frames.truncate((moving + 7).min(frames.len()));
         frames.push(rest.clone());
     }
+    let hold = if starts.is_some() && items[0].object != Object::Coin {
+        18
+    } else {
+        51
+    };
+    for _ in 0..hold {
+        frames.push(rest.clone());
+    }
+    let return_frame = frames.len() - 1;
     let mut placed = rest.clone();
     let mut routes = Vec::new();
     for i in 0..items.len() {
@@ -668,7 +778,7 @@ fn simulate(
     Some(Playback {
         frames,
         contacts,
-        rest_frame,
+        return_frame,
     })
 }
 #[cfg(test)]
@@ -717,6 +827,71 @@ mod tests {
         }
     }
     #[test]
+    fn preview_physics_leaves_the_tray_before_the_return() {
+        let bounds = Rect {
+            left: 0.,
+            top: 0.,
+            right: 14.,
+            bottom: 24.,
+        };
+        let obstacles = [Rect {
+            left: 9.,
+            top: 7.,
+            right: 13.,
+            bottom: 14.,
+        }];
+        let start = Vec3::new(7., 0., 20.);
+        for object in [Object::Coin, Object::Die] {
+            let item = Item {
+                object,
+                die: Die::D6,
+                face: if object == Object::Coin { 0 } else { 3 },
+            };
+            let scene = record_from(
+                &[item],
+                bounds,
+                &obstacles,
+                &[Vec3::new(11., 0., 18.)],
+                true,
+                123,
+                Some(&[start]),
+            )
+            .expect("preview trajectory");
+            let resting = scene.frames[scene.return_frame][0].position;
+            assert!(
+                scene.frames[30][0].position.z < 18.,
+                "visible motion before return"
+            );
+            assert!(clear(bounds, &obstacles, resting.x, resting.z, 0.78));
+            assert!((resting.x - 7.).abs() < 3., "central landing");
+            assert!(resting.z < 17., "clear of the preview tray");
+        }
+    }
+    #[test]
+    fn preview_launch_starts_in_its_actual_position_and_keeps_the_result_target() {
+        for sides in [0., 6.] {
+            let face = if sides == 0. { 0. } else { 3. };
+            let packed = [14., 24., 1., 0., 1., 123., sides, face, 11., 10., 7., 20.];
+            let scene = record_packed(&packed).expect("source-aware launch");
+            assert_eq!(scene[1], 7.);
+            assert_eq!(scene[3], 20.);
+            let last = &scene[scene.len() - 7..];
+            assert!((last[0] - 11.).abs() < 0.01);
+            assert!((last[2] - 10.).abs() < 0.01);
+            assert!(scene[1..].as_chunks::<7>().0.iter().any(|p| p[2] < 18.));
+            assert!(record_packed(&packed[..10]).is_some());
+            assert!(record_packed(&packed[..11]).is_none());
+            let mut invalid = packed;
+            invalid[10] = f32::NAN;
+            assert!(record_packed(&invalid).is_none());
+            invalid[10] = -1.;
+            assert!(record_packed(&invalid).is_none());
+            invalid = packed;
+            invalid[2] = f32::MAX;
+            assert!(record_packed(&invalid).is_none());
+        }
+    }
+    #[test]
     fn enlarged_dice_fit_a_phone_and_return_together() {
         let items = [Die::D4, Die::D6, Die::D8, Die::D10, Die::D12, Die::D20].map(|die| Item {
             object: Object::Die,
@@ -745,12 +920,49 @@ mod tests {
             47,
         )
         .expect("Enlarged dice must have a joint return on a phone");
-        let returning = &scene.frames[scene.rest_frame + 52..];
+        let returning = &scene.frames[scene.return_frame + 1..];
         assert!(returning.windows(2).any(|p| p[0]
             .iter()
             .zip(&p[1])
             .all(|(a, b)| a.position.distance(b.position) > 0.001)));
         assert!(scene.frames.len() <= 720);
+    }
+    #[test]
+    fn all_dice_shapes_launch_from_a_two_row_preview() {
+        let items = [Die::D4, Die::D6, Die::D8, Die::D10, Die::D12, Die::D20].map(|die| Item {
+            object: Object::Die,
+            die,
+            face: 1,
+        });
+        let starts = (0..6)
+            .map(|i| Vec3::new(4. + (i % 3) as f32 * 2., 0., 20. + (i / 3) as f32 * 2.4))
+            .collect::<Vec<_>>();
+        let targets = (0..6)
+            .map(|i| Vec3::new(7. + (i % 3) as f32 * 2., 0., 17. + (i / 3) as f32 * 2.4))
+            .collect::<Vec<_>>();
+        let scene = record_from(
+            &items,
+            Rect {
+                left: 0.,
+                top: 0.,
+                right: 14.,
+                bottom: 26.,
+            },
+            &[],
+            &targets,
+            true,
+            47,
+            Some(&starts),
+        )
+        .expect("six-shape launch");
+        for (i, start) in starts.iter().enumerate() {
+            assert!(scene.frames[30][i].position.z < start.z - 2.);
+            let final_position = scene.frames.last().unwrap()[i].position;
+            assert!(
+                (final_position.x - targets[i].x).abs() < 0.01
+                    && (final_position.z - targets[i].z).abs() < 0.01
+            );
+        }
     }
     #[test]
     fn six_dice_can_return_to_their_message_slots() {
@@ -782,7 +994,7 @@ mod tests {
         )
         .expect("six settled shapes with collision-aware placement");
         assert!(scene.contacts > 0);
-        let returning = &scene.frames[scene.rest_frame + 52..];
+        let returning = &scene.frames[scene.return_frame + 1..];
         assert!(
             returning.windows(2).any(|pair| pair[0]
                 .iter()
@@ -857,61 +1069,74 @@ mod tests {
     }
 }
 
-pub fn record_packed(a:&[f32])->Option<Vec<f32>> {
-    if !(8..=300).contains(&a.len()){return None;}
-        if !a.iter().all(|v| v.is_finite()) {
-            return None;
-        }
-        let n = a[2] as usize;
-        let m = a[3] as usize;
-        if n == 0 || n > 6 || m > 64 || a.len() != 6 + n * 4 + m * 4 {
-            return None;
-        }
-        let mut items = Vec::new();
-        let mut targets = Vec::new();
-        for v in a[6..6 + n * 4].as_chunks::<4>().0 {
-            let coin = v[0] == 0.;
-            let die = if coin {
-                Die::D6
-            } else {
-                Die::ALL.into_iter().find(|d| d.sides() as f32 == v[0])?
-            };
-            items.push(Item {
-                object: if coin { Object::Coin } else { Object::Die },
-                die,
-                face: v[1] as u32,
-            });
-            targets.push(glam::Vec3::new(v[2], 0., v[3]));
-        }
-        let rect = |v: &[f32]| Rect {
-            left: v[0],
-            top: v[1],
-            right: v[2],
-            bottom: v[3],
+pub fn record_packed(a: &[f32]) -> Option<Vec<f32>> {
+    if !(8..=300).contains(&a.len()) {
+        return None;
+    }
+    if !a.iter().all(|v| v.is_finite()) {
+        return None;
+    }
+    let n = a[2] as usize;
+    let m = a[3] as usize;
+    if n == 0 || n > 6 || m > 64 {
+        return None;
+    }
+    let base = 6 + n * 4 + m * 4;
+    if a.len() != base && a.len() != base + n * 2 {
+        return None;
+    }
+    let mut items = Vec::new();
+    let mut targets = Vec::new();
+    for v in a[6..6 + n * 4].as_chunks::<4>().0 {
+        let coin = v[0] == 0.;
+        let die = if coin {
+            Die::D6
+        } else {
+            Die::ALL.into_iter().find(|d| d.sides() as f32 == v[0])?
         };
-        let obstacles = a[6 + n * 4..]
-            .as_chunks::<4>()
+        items.push(Item {
+            object: if coin { Object::Coin } else { Object::Die },
+            die,
+            face: v[1] as u32,
+        });
+        targets.push(glam::Vec3::new(v[2], 0., v[3]));
+    }
+    let rect = |v: &[f32]| Rect {
+        left: v[0],
+        top: v[1],
+        right: v[2],
+        bottom: v[3],
+    };
+    let obstacles = a[6 + n * 4..base]
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .map(|v| rect(v))
+        .collect::<Vec<_>>();
+    let starts = (a.len() != base).then(|| {
+        a[base..]
+            .as_chunks::<2>()
             .0
             .iter()
-            .map(|v| rect(v))
-            .collect::<Vec<_>>();
-        let playback = record(
-            &items,
-            rect(&[0., 0., a[0], a[1]]),
-            &obstacles,
-            &targets,
-            a[4] != 0.,
-            a[5] as u32,
-        )?;
-        let mut output = Vec::with_capacity(1 + playback.frames.len() * n * 7);
-        output.push(playback.rest_frame as f32);
-        for frame in playback.frames {
-            for p in frame {
-                output.extend_from_slice(&p.position.to_array());
-                output.extend_from_slice(
-                    &view_rotation(p.rotation).to_array(),
-                );
-            }
+            .map(|v| Vec3::new(v[0], 0., v[1]))
+            .collect::<Vec<_>>()
+    });
+    let playback = record_from(
+        &items,
+        rect(&[0., 0., a[0], a[1]]),
+        &obstacles,
+        &targets,
+        a[4] != 0.,
+        a[5] as u32,
+        starts.as_deref(),
+    )?;
+    let mut output = Vec::with_capacity(1 + playback.frames.len() * n * 7);
+    output.push(playback.return_frame as f32);
+    for frame in playback.frames {
+        for p in frame {
+            output.extend_from_slice(&p.position.to_array());
+            output.extend_from_slice(&view_rotation(p.rotation).to_array());
         }
+    }
     Some(output)
 }

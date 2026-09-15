@@ -37,6 +37,10 @@ COPY app app
 COPY shared shared
 COPY materials materials
 RUN cargo build --locked --manifest-path materials/Cargo.toml --release --target wasm32-unknown-unknown --lib && wasm-bindgen materials/target/wasm32-unknown-unknown/release/sigil_materials.wasm --target web --out-dir target/web
+COPY browser-maps browser-maps
+RUN cargo build --locked --manifest-path browser-maps/Cargo.toml --release --target wasm32-unknown-unknown --lib && wasm-bindgen browser-maps/target/wasm32-unknown-unknown/release/sigil_browser_maps.wasm --target web --out-dir target/web
+COPY browser-audio browser-audio
+RUN rustup toolchain install nightly-2026-09-06 --profile minimal --component rust-src && cd browser-audio && cargo build --locked --release --target wasm32-unknown-unknown && wasm-bindgen target/wasm32-unknown-unknown/release/sigil_browser_audio.wasm --target web --out-dir ../target/web
 COPY kotlin-js-store kotlin-js-store
 COPY licenses licenses
 RUN /opt/gradle-8.13/bin/gradle --no-daemon -Pkotlin.daemon.jvmargs=-Xmx6g :shared:wasmJsBrowserDistribution --console=plain

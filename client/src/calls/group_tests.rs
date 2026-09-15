@@ -8,7 +8,10 @@ fn retry<T>(mut work: impl FnMut() -> Result<T, Error>) -> T {
     for _ in 0..8 {
         match work() {
             Ok(value) => return value,
-            Err(Error::Network(crate::network::Error::Status { code: 429, retry_after_seconds: Some(wait) })) if wait <= 5 => std::thread::sleep(std::time::Duration::from_secs(wait)),
+            Err(Error::Network(crate::network::Error::Status {
+                code: 429,
+                retry_after_seconds: Some(wait),
+            })) if wait <= 5 => std::thread::sleep(std::time::Duration::from_secs(wait)),
             Err(error) => panic!("call fixture: {error:?}"),
         }
     }
@@ -19,10 +22,20 @@ fn round(clients: &mut [ClientStore], now: u64) {
         retry(|| client.replenish_prekey_online());
     }
     for client in clients.iter_mut() {
-        retry(|| client.resume_calls_online(now)?.into_iter().try_for_each(|a| a.result));
+        retry(|| {
+            client
+                .resume_calls_online(now)?
+                .into_iter()
+                .try_for_each(|a| a.result)
+        });
     }
     for client in clients.iter_mut() {
-        retry(|| client.resume_outbound_online(now)?.into_iter().try_for_each(|a| a.result.map(|_| ())));
+        retry(|| {
+            client
+                .resume_outbound_online(now)?
+                .into_iter()
+                .try_for_each(|a| a.result.map(|_| ()))
+        });
     }
     for (i, client) in clients.iter_mut().enumerate() {
         for attempt in retry(|| client.receive_mailbox_online(now)) {

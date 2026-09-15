@@ -40,7 +40,7 @@ internal val formSpecs=mapOf(
     var steps by rememberSaveable(kind){mutableStateOf(listOf(""))}
     var recurring by rememberSaveable(kind){mutableStateOf(true)}
     var syntax by rememberSaveable(kind){mutableStateOf(false)}
-    var showPreview by rememberSaveable(kind){mutableStateOf(false)}
+    var options by rememberSaveable(kind){mutableStateOf(false)}
     val timezone=LocalBuilderTimezone.current
     val temporal=kind in listOf("Countdown","Elapsed time")
     val resolveTime=LocalTemporalPreview.current
@@ -52,20 +52,19 @@ internal val formSpecs=mapOf(
         val data=if(kind=="Recipe")ingredients.filter {it.isNotBlank()}.map {listOf("ingredients",it)}+steps.filter {it.isNotBlank()}.map {listOf("steps",it)} else rows.filter {it.any(String::isNotBlank)}.map {if(kind=="Recurring checklist")listOf(it[0],recurring.toString())else it}
         put("rows",JsonArray(data.map {JsonArray(it.map(::JsonPrimitive))}))
     }.toString()
-    val resolve=LocalBuilderSource.current;val render=LocalStructuredPreview.current
+    val resolve=LocalBuilderSource.current
     var validatedInput by remember(kind){mutableStateOf("")}
     var source by remember(kind){mutableStateOf("")}
-    var preview by remember(kind){mutableStateOf<MessagePart?>(null)}
     var checking by remember(kind){mutableStateOf(false)}
-    LaunchedEffect(input,resolve,render) {checking=true;kotlinx.coroutines.delay(120);val result=kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Default) {val s=resolve?.invoke(input).orEmpty();s to s.takeIf {it.isNotEmpty()}?.let {render?.invoke(it)}};source=result.first;preview=result.second;validatedInput=input;checking=false}
-    Column(Modifier.fillMaxSize().padding(horizontal=20.dp,vertical=8.dp),verticalArrangement=Arrangement.spacedBy(8.dp)) {
-        Row(verticalAlignment=Alignment.CenterVertically) {Symbol("chevron_left","Back to create",back);Text(kind,Modifier.weight(1f),style=MaterialTheme.typography.titleLarge);SigilTextButton({showPreview=!showPreview},enabled=preview!=null) {Text(if(showPreview)"Edit" else "Preview")};Symbol("code","Show syntax") {syntax=!syntax}}
-        Column(Modifier.weight(1f).verticalScroll(rememberScrollState()),verticalArrangement=Arrangement.spacedBy(12.dp)) {
-            if(showPreview && preview!=null)BuilderPreview(preview!!)
-            else {
+    LaunchedEffect(input,resolve) {checking=true;kotlinx.coroutines.delay(120);source=kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Default) {resolve?.invoke(input).orEmpty()};validatedInput=input;checking=false}
+    val sizing=rememberBuilderSizing(16.dp)
+    Column(Modifier.fillMaxSize().padding(start=8.dp,end=8.dp,top=8.dp),verticalArrangement=Arrangement.spacedBy(8.dp)) {
+        Row(sizing.measure("header"),verticalAlignment=Alignment.CenterVertically) {Symbol("chevron_left","Back to create",back);Text(kind,Modifier.weight(1f),style=MaterialTheme.typography.titleLarge);Symbol("code","Show syntax") {syntax=!syntax}}
+        Column(Modifier.weight(1f).verticalScroll(rememberScrollState()).wrapContentHeight(unbounded=true).then(sizing.measure("body")),verticalArrangement=Arrangement.spacedBy(12.dp)) {
+            run {
                 if(spec.modes.isNotEmpty())LazyRow(horizontalArrangement=Arrangement.spacedBy(8.dp)) {items(spec.modes){m->FilterChip(mode==m,{mode=m},label={Text(m.replaceFirstChar {it.uppercase()})},shape=RoundedCornerShape(12.dp))}}
                 if(spec.title)FormField("Title",title,{title=it})
-                spec.fields.forEachIndexed {i,label->
+                if(kind!="Recipe")spec.fields.forEachIndexed {i,label->
                     if(!(kind=="QR code" && i==1 && mode!="wifi")) {
                         if(kind=="Color swatch")AccentPicker(parseAccent(fields[0]) ?: 0x808080) {fields=listOf("#"+accentText(it))}
                         else if(kind=="Progress") {Text("${fields[0]}%",style=MaterialTheme.typography.titleLarge);Slider(fields[0].toFloatOrNull() ?: 0f,{fields=listOf(it.toInt().toString())},valueRange=0f..100f)}
@@ -76,6 +75,10 @@ internal val formSpecs=mapOf(
                 if(kind=="Recipe") {
                     Text("Ingredients",style=MaterialTheme.typography.titleMedium);BuilderEntries(ingredients,"Ingredient","restaurant"){ingredients=it}
                     Text("Steps",style=MaterialTheme.typography.titleMedium);BuilderEntries(steps,"Step","format_list_numbered"){steps=it}
+                    SigilTextButton({options=!options}) {Glyph(if(options)"expand_less" else "expand_more",20);Text("Options")}
+                    Expandable(options) {Column(verticalArrangement=Arrangement.spacedBy(8.dp)) {
+                        spec.fields.forEachIndexed {i,label->FormField(label.removeSuffix(" (optional)"),fields[i],{v->fields=fields.toMutableList().also {it[i]=v}})}
+                    }}
                 }
                 if(spec.rows.isNotEmpty()) {
                     if(kind=="Recurring checklist")Toggle("Keep items after reset",recurring){recurring=it}
@@ -95,7 +98,7 @@ internal val formSpecs=mapOf(
             if(syntax && source.isNotEmpty())Text(source,fontFamily=LocalCodeFont.current,style=MaterialTheme.typography.bodySmall)
         }
         if(!checking && source.isEmpty() && (title.isNotEmpty() || fields.any {it.isNotEmpty()} || rows.any {r->r.any {it.isNotEmpty()}}))Text("Complete the fields with valid values to continue.",style=MaterialTheme.typography.bodySmall,color=MaterialTheme.colorScheme.onSurfaceVariant)
-        SigilButton({send(source,if(temporal)date?.timezone else if(kind=="Recurring checklist")timezone else null)},Modifier.fillMaxWidth(),enabled=enabled && validatedInput==input && !checking && source.isNotEmpty() && (!temporal||date!=null)) {Text(LocalBuilderAction.current)}
+        BuilderConfirm(enabled=enabled && validatedInput==input && !checking && source.isNotEmpty() && (!temporal||date!=null)) {send(source,if(temporal)date?.timezone else if(kind=="Recurring checklist")timezone else null)}
     }
 }
 @Composable internal fun FormField(label:String,value:String,change:(String)->Unit,multiline:Boolean=false) {

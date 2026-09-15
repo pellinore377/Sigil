@@ -208,11 +208,14 @@ impl ClientStore {
         tx.commit()?;
         Ok(json!({}))
     }
-    pub(super) fn mobile_file_work(&mut self) -> Result<Value, Error> {
+    pub(super) fn mobile_file_work(&mut self, steps: u8) -> Result<Value, Error> {
+        if !(1..=8).contains(&steps) {
+            return Err(Error::InvalidEvent);
+        }
         let mut cache = self.mobile_cache()?;
         let started = crate::clock::Instant::now();
         let mut result = self.sync_attachments_due_online(&mut cache)?;
-        for _ in 1..8 {
+        for _ in 1..steps {
             if result.scheduling_error.is_some()
                 || !result.attempt.as_ref().is_some_and(|a| a.result.is_ok())
                 || result.next_at > conversations::now()
@@ -350,7 +353,7 @@ impl ClientStore {
             conversations::now(),
         )?;
         Ok(
-            json!({"name":file.name,"media_type":file.media_type,"length":key.length,"caption":file.caption,"phase":format!("{:?}",cache.phase(id)?)}),
+            json!({"name":file.name,"media_type":file.media_type,"length":key.length,"caption":file.caption,"phase":format!("{:?}",cache.phase(id)?),"cache_id":transport::hex(&id)}),
         )
     }
     pub fn mobile_file_chunk(

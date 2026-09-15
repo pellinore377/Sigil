@@ -1,0 +1,84 @@
+package org.sigil
+
+import androidx.compose.runtime.*
+import androidx.compose.ui.geometry.Rect
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.drawWithContent
+import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.drawscope.clipPath
+import androidx.compose.ui.layout.LayoutCoordinates
+import androidx.compose.ui.layout.onGloballyPositioned
+
+internal class MaterialOcclusion {
+    var header by mutableStateOf(Rect.Zero)
+    var footer by mutableStateOf(Rect.Zero)
+    var input by mutableStateOf(Rect.Zero)
+    var notice by mutableStateOf(Rect.Zero)
+    fun launch(viewport: Rect, source: Rect?): Rect? {
+        if (source == null || !input.overlaps(viewport)) return null
+        val normal = visible(viewport)
+        val left = maxOf(viewport.left, source.left)
+        val right = minOf(viewport.right, source.right)
+        val top = maxOf(normal.top, minOf(normal.bottom, source.top))
+        val bottom = minOf(source.bottom, input.top, viewport.bottom)
+        return if (left < right && top < bottom) Rect(left, top, right, bottom) else null
+    }
+    fun visible(viewport: Rect): Rect {
+        val top = if (header.overlaps(viewport)) maxOf(viewport.top, header.bottom) else viewport.top
+        val bottom = if (footer.overlaps(viewport)) minOf(viewport.bottom, footer.top) else viewport.bottom
+        return Rect(viewport.left, top, viewport.right, maxOf(top, bottom))
+    }
+}
+internal val LocalMaterialOcclusion = staticCompositionLocalOf<MaterialOcclusion?> { null }
+
+internal fun materialClipInsets(viewport: Rect, left: Float, top: Float, width: Float, height: Float): List<Float> {
+    if (width <= 0 || height <= 0 || !width.isFinite() || !height.isFinite()) return listOf(100f, 0f, 0f, 0f)
+    return listOf(
+        ((viewport.top - top) / height * 100).coerceIn(0f, 100f),
+        ((left + width - viewport.right) / width * 100).coerceIn(0f, 100f),
+        ((top + height - viewport.bottom) / height * 100).coerceIn(0f, 100f),
+        ((viewport.left - left) / width * 100).coerceIn(0f, 100f),
+    )
+}
+
+internal val LocalMaterialLaunchWindow = staticCompositionLocalOf<Rect?> { null }
+
+@Composable internal fun Modifier.materialOcclusion(): Modifier {
+    val timeline = LocalMaterialTimeline.current
+    if (timeline == null || LocalObjectMenu.current) return this
+    val occlusion = LocalMaterialOcclusion.current
+    val source = LocalMaterialLaunchWindow.current
+    var coordinates by remember { mutableStateOf<LayoutCoordinates?>(null) }
+    val path = remember { Path() }
+    return onGloballyPositioned { coordinates = it }.drawWithContent {
+        val layout = coordinates?.takeIf { it.isAttached } ?: return@drawWithContent
+        path.reset()
+        fun add(rect: Rect) {
+            if (rect.width <= 0 || rect.height <= 0) return
+            val a = layout.windowToLocal(rect.topLeft)
+            val b = layout.windowToLocal(Offset(rect.right, rect.top))
+            val c = layout.windowToLocal(rect.bottomRight)
+            val d = layout.windowToLocal(Offset(rect.left, rect.bottom))
+            path.moveTo(a.x, a.y); path.lineTo(b.x, b.y); path.lineTo(c.x, c.y); path.lineTo(d.x, d.y)
+            path.close()
+        }
+        materialClipRegions(occlusion?.visible(timeline.viewport) ?: timeline.viewport, occlusion?.launch(timeline.viewport, source), occlusion?.notice).forEach(::add)
+        clipPath(path) { this@drawWithContent.drawContent() }
+    }
+}
+
+internal fun materialClipRegions(visible: Rect, launch: Rect?, exclusion: Rect?): List<Rect> = listOfNotNull(visible,launch).flatMap { bounds ->
+    if(exclusion==null || !bounds.overlaps(exclusion)) listOf(bounds)
+    else {
+        val hole=bounds.intersect(exclusion)
+        listOf(Rect(bounds.left,bounds.top,bounds.right,hole.top),Rect(bounds.left,hole.bottom,bounds.right,bounds.bottom),
+            Rect(bounds.left,hole.top,hole.left,hole.bottom),Rect(hole.right,hole.top,bounds.right,hole.bottom))
+    }
+}.filter {it.width>0 && it.height>0}
+
+internal fun materialClipPath(visible: Rect, launch: Rect?, left: Float, top: Float, exclusion: Rect? = null): String {
+    val regions=materialClipRegions(visible,launch,exclusion)
+    if(regions.isEmpty())return "inset(100%)"
+    return "path('"+regions.joinToString(" "){rect->"M ${rect.left-left} ${rect.top-top} H ${rect.right-left} V ${rect.bottom-top} H ${rect.left-left} Z"}+"')"
+}

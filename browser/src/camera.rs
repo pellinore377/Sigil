@@ -30,13 +30,13 @@ pub fn camera_stop() {
 }
 #[wasm_bindgen]
 pub async fn camera_start(video: HtmlVideoElement) -> Result<(), JsValue> {
-    start(video, 640).await
+    start(video, 640, false).await
 }
 #[wasm_bindgen]
-pub async fn camera_start_photo(video: HtmlVideoElement) -> Result<(), JsValue> {
-    start(video, 1280).await
+pub async fn camera_start_photo(video: HtmlVideoElement, front: bool) -> Result<(), JsValue> {
+    start(video, 1280, front).await
 }
-async fn start(video: HtmlVideoElement, resolution: u32) -> Result<(), JsValue> {
+async fn start(video: HtmlVideoElement, resolution: u32, front: bool) -> Result<(), JsValue> {
     camera_stop();
     let generation = GENERATION.with(Cell::get);
     let window = web_sys::window().ok_or_else(|| fail("Missing window"))?;
@@ -51,7 +51,7 @@ async fn start(video: HtmlVideoElement, resolution: u32) -> Result<(), JsValue> 
     let constraints = MediaStreamConstraints::new();
     constraints.set_audio(&false.into());
     let settings = js_sys::Object::new();
-    set(&settings, "facingMode", &"environment".into())?;
+    set(&settings, "facingMode", &if front { "user" } else { "environment" }.into())?;
     set(&settings, "width", &resolution.into())?;
     set(&settings, "height", &resolution.into())?;
     constraints.set_video(&settings);

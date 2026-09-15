@@ -15,7 +15,9 @@ import androidx.compose.ui.unit.dp
 
 @Composable
 internal fun AppearancePage(value: Appearance, analyze: (String) -> String, dynamicAvailable: Boolean, back: () -> Unit, collections: Boolean = false, setCollections: (Boolean) -> Unit = {}, collectionLabels: Boolean = true, setCollectionLabels: (Boolean) -> Unit = {}, followAccount: Boolean = true, setFollowAccount: (Boolean) -> Unit = {}, section: String = "appearance", navigate: (String) -> Unit = {}, update: (Appearance) -> Unit) {
-    AppearanceLayout(appearanceTitle(section), if (followAccount) "Make Sigil feel like yours.\nThese settings follow your account." else "Make this device feel like yours.\nYour other devices keep their appearance.", back) {
+    SettingsDetailLayout(appearanceTitle(section), back, continuous = section == "appearance" || section == "appearance-media") {
+        Text(if (followAccount) "Account appearance · shared across your devices" else "Device appearance · only this device",
+            Modifier.padding(horizontal = 12.dp, vertical = 16.dp), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
         when (section) {
             "appearance-objects" -> ObjectAppearance(value,update)
             "appearance-colors" -> {
@@ -38,36 +40,36 @@ internal fun AppearancePage(value: Appearance, analyze: (String) -> String, dyna
                 Text("Also respects your device's text-size setting. Code uses Google Sans Code with either font.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
             "appearance-layout" -> {
-                ChatRow(ChatSummary("preview", "Sam", "A little note for tomorrow.", "9:24am", true, emptyList()), open = {})
+                ChatRow(ChatSummary("preview", "Sam", "A little note for tomorrow.", "9:24am", true, emptyList()), modifier = Modifier.testTag("inbox-density-preview"), open = {})
                 AppearanceChoices("Conversation spacing", listOf("Comfortable" to "view_agenda", "Compact" to "view_headline"), if (value.compact) "Compact" else "Comfortable") { update(value.copy(compact = it == "Compact")) }
                 AppearanceChoices("Message previews", listOf("None" to "visibility_off", "1 line" to "short_text", "2 lines" to "notes"), listOf("None", "1 line", "2 lines")[value.previewLines]) { update(value.copy(previewLines = listOf("None", "1 line", "2 lines").indexOf(it))) }
-                Toggle("Collections", collections, setCollections)
-                Expandable(collections) { Toggle("Show collection names", collectionLabels, setCollectionLabels) }
+                SettingsToggle("Collections", "Show collections in the inbox", collections, update = setCollections)
+                Expandable(collections) { SettingsToggle("Show collection names", "Labels beneath collection icons", collectionLabels, update = setCollectionLabels) }
             }
             "appearance-media" -> {
-                Toggle("Reduce motion", value.reducedMotion) { update(value.copy(reducedMotion = it)) }
-                Text("Use still transitions and indicators. Your device's reduced-motion setting is always respected.", style = MaterialTheme.typography.bodySmall)
-                Toggle("Message effects", value.messageEffects) { update(value.copy(messageEffects = it)) }
-                Text("Animate emoji messages and authored text effects when motion is allowed.", style = MaterialTheme.typography.bodySmall)
-                Toggle("Play GIFs automatically", value.autoplayGifs) { update(value.copy(autoplayGifs = it)) }
-                Toggle("Replay message effects automatically",value.replaySeconds>0) {update(value.copy(replaySeconds=if(it)20 else 0))}
+                SettingsToggle("Reduce motion", "Use still transitions and indicators", value.reducedMotion) { update(value.copy(reducedMotion = it)) }
+                SettingsToggle("Message effects", "Animate emoji and authored text effects", value.messageEffects) { update(value.copy(messageEffects = it)) }
+                SettingsToggle("Play GIFs automatically", "Animate GIFs in the timeline", value.autoplayGifs) { update(value.copy(autoplayGifs = it)) }
+                SettingsToggle("Replay message effects automatically", "", value.replaySeconds>0) {update(value.copy(replaySeconds=if(it)20 else 0))}
                 Expandable(value.replaySeconds>0) {
                     Column {
                         Text("Wait ${value.replaySeconds} seconds between replays")
                         Slider(value.replaySeconds.coerceIn(10,30).toFloat(),{update(value.copy(replaySeconds=it.toInt()))},valueRange=10f..30f,steps=19)
                     }
                 }
-                Text("Videos and audio play only when you choose to play them.", style = MaterialTheme.typography.bodySmall)
+                Text("Your device’s reduced-motion setting is always respected. Videos and audio play only when you choose.", Modifier.padding(12.dp), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
             else -> {
-                SettingRow("palette", "Colors & backgrounds", "Mode, accent and conversation backgrounds") { navigate("appearance-colors") }
-                SettingRow("text_format", "Typography", "${value.font} · ${(value.textScale * 100).toInt()}%") { navigate("appearance-type") }
-                SettingRow("view_agenda", "Layout", "Conversation spacing, previews and collections") { navigate("appearance-layout") }
-                SettingRow("animation", "Motion & media", "Animation, message effects and GIF playback") { navigate("appearance-media") }
-                SettingRow("casino", "Dice, coins & cards", "Materials, colors and a live playground") { navigate("appearance-objects") }
+                SettingsLink("palette", "Colors & backgrounds", "Mode, accent and conversation backgrounds") { navigate("appearance-colors") }
+                SettingsLink("text_format", "Typography", "${value.font} · ${(value.textScale * 100).toInt()}%") { navigate("appearance-type") }
+                SettingsLink("view_agenda", "Layout", "Conversation spacing, previews and collections") { navigate("appearance-layout") }
+                SettingsLink("animation", "Motion & media", "Animation, message effects and GIF playback") { navigate("appearance-media") }
+                SettingsLink("casino", "Dice, coins & cards", "Materials, colors and a live playground") { navigate("appearance-objects") }
+                Spacer(Modifier.height(16.dp))
                 var advanced by remember { mutableStateOf(false) }
                 SigilTextButton({ advanced = !advanced }, Modifier.fillMaxWidth()) { Text("Advanced", Modifier.weight(1f), textAlign = TextAlign.Start); Glyph(if (advanced) "expand_less" else "expand_more") }
-                Expandable(advanced) { Toggle("Follow account appearance on this device", followAccount, setFollowAccount) }
+                Expandable(advanced) { SettingsToggle("Follow account appearance on this device", "", followAccount, update = setFollowAccount) }
+                Spacer(Modifier.height(8.dp))
                 SigilOutlinedButton({ update(Appearance()) }, Modifier.fillMaxWidth(), shape = RoundedCornerShape(16.dp)) { Text("Reset app appearance") }
             }
         }
@@ -86,7 +88,7 @@ internal fun appearanceTitle(section: String) = when (section) {
 internal fun ChatAppearance(value: ChatTheme, analyze: (String) -> String, peer: String, command: Command, back: () -> Unit, update: (ChatTheme) -> Unit) {
     var image by remember(peer) { mutableStateOf(false) }
     val gradient = value.gradient ?: LocalAppearance.current.gradient
-    AppearanceLayout("Conversation appearance", "Make this conversation feel like yours.\nThese settings are private to you.", back) {
+    AppearanceLayout("Conversation appearance", "Private to you", back) {
         TimelinePreview(analyze, peer, gradient) { image = it }
         AccentPicker(value.accent) { update(value.copy(accent = it)) }
         SigilTextButton({ update(value.copy(accent = null)) }) { Text(if (value.accent == null) "Following app accent" else "Follow app accent") }
@@ -141,11 +143,19 @@ private fun TimelinePreview(analyze: (String) -> String, peer: String? = null, g
         }
     }
     val chat = remember { ChatSummary("preview", "Sam", "", "", true, emptyList()) }
+    val backdrop = rememberChromeBackdrop()
     Surface(Modifier.testTag("timeline-preview"), shape = RoundedCornerShape(24.dp), color = scheme.background) {
-        Column {
+        Box {
+        Box(Modifier.matchParentSize().captureBackdrop(backdrop)) {
+        if (peer != null) { val image = LocalWallpaper.current(peer, Modifier.matchParentSize()); SideEffect { hasImage(image) } }
+        if (gradient) Box(Modifier.matchParentSize().background(Brush.verticalGradient(listOf(scheme.background.copy(alpha = .7f), scheme.primaryContainer.copy(alpha = .7f)))))
+        }
+        Column(Modifier.padding(12.dp)) {
+            FloatingChrome(backdrop, Modifier, RoundedCornerShape(24.dp)) {
+                Box(Modifier.fillMaxWidth().height(72.dp)) { ConversationHeader(chat, "", false, { _, _ -> }, {}) {} }
+            }
             Box(Modifier.fillMaxWidth()) {
-                if (peer != null) { val image = LocalWallpaper.current(peer, Modifier.matchParentSize()); SideEffect { hasImage(image) } }
-                Column(Modifier.then(if (gradient) Modifier.background(Brush.verticalGradient(listOf(scheme.background.copy(alpha = .7f), scheme.primaryContainer.copy(alpha = .7f)))) else Modifier).padding(horizontal = 16.dp, vertical = 12.dp)) {
+                Column(Modifier.padding(horizontal = 16.dp, vertical = 12.dp)) {
                     Text("Today, 9:24am", Modifier.fillMaxWidth().padding(top = 6.dp, bottom = 14.dp), textAlign = TextAlign.Center, style = MaterialTheme.typography.labelMedium, color = scheme.onSurfaceVariant)
                     messages.forEachIndexed { index, message ->
                         Column(Modifier.align(if (message.mine) Alignment.End else Alignment.Start).widthIn(max = 330.dp).fillMaxWidth(.88f)
@@ -156,13 +166,14 @@ private fun TimelinePreview(analyze: (String) -> String, peer: String? = null, g
                     }
                 }
             }
-            Surface(Modifier.testTag("preview-footer"), shape = RoundedCornerShape(topStart = 24.dp, topEnd = 24.dp), color = scheme.surface) {
+            FloatingChrome(backdrop, Modifier.testTag("preview-footer"), RoundedCornerShape(24.dp)) {
                 ComposerBar {
                     Surface(shape = RoundedCornerShape(16.dp), color = scheme.surfaceVariant) { Symbol("add", "Preview attachments") {} }
                     Composer(remember { TextFieldState() }, analyze, Modifier.weight(1f), showTools = false, enabled = false)
                     FilledIconButton({}, Modifier.size(48.dp), shape = RoundedCornerShape(16.dp), colors = IconButtonDefaults.filledIconButtonColors(containerColor = scheme.primary, contentColor = scheme.onPrimary)) { Glyph("graphic_eq", 25) }
                 }
             }
+        }
         }
     }
 }

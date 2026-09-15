@@ -18,5 +18,13 @@ class ContentDecoderTest {
         assertFalse(text.text.contains("secret"))
         assertFalse(text.rich!!.text.contains("secret"))
         assertEquals("wave",text.rich!!.motion.single().kind)
+        val task=ContentDecoder.part(NativeCore.structuredPreview("checklist::task::Tasks\n- bold::One\n- Two;"))
+        assertEquals("task",task.kind)
+        assertTrue("bold" in task.items.first().rich!!.spans.first().flags)
+        assertTrue(task.items.none { it.enabled })
+        val poll=ContentDecoder.part(NativeCore.structuredPreview("poll::closed::multi2::Choose\n- One\n- Two\n- Three;"))
+        assertTrue(poll.multiple)
+        assertNull(poll.voters)
+        assertTrue(poll.items.all { it.count==null && !it.enabled })
     }
 }

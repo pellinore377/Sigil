@@ -68,7 +68,7 @@ internal fun AdminMenuHost(content: @Composable () -> Unit) {
                     }
                 }) {
                     Surface(Modifier.offset { offset }.onSizeChanged { menuSize = it }.semantics { paneTitle = entry.title.value },
-                        shape = RoundedCornerShape(10.dp), color = MaterialTheme.colorScheme.surfaceContainer, shadowElevation = 6.dp) {
+                        shape = RoundedCornerShape(18.dp), color = MaterialTheme.colorScheme.surfaceContainerHigh, shadowElevation = 6.dp) {
                         Column(Modifier.width(IntrinsicSize.Max).widthIn(min = 112.dp, max = 280.dp).padding(vertical = 8.dp)) { entry.content.value() }
                     }
                 }

@@ -43,16 +43,27 @@ fn full_inboxes_recover_without_discarding_failed_delivery() {
             .unwrap();
     }
     for n in 128..192u8 {
-        server.submit_message(&credential(&bob), Submit {
-            recipient_device: alice.connection_session().unwrap().unwrap().device_id,
-            message_id: transport::hex(&[n; 32]),
-            payload: "11".repeat(32),
-            expires_at: now + 3600,
-        }, now).unwrap();
+        server
+            .submit_message(
+                &credential(&bob),
+                Submit {
+                    recipient_device: alice.connection_session().unwrap().unwrap().device_id,
+                    message_id: transport::hex(&[n; 32]),
+                    payload: "11".repeat(32),
+                    expires_at: now + 3600,
+                },
+                now,
+            )
+            .unwrap();
     }
     let id = bob.prepare_retry_request(&original, now).unwrap();
     let control = bob.send_retry_request_online(id, now).unwrap();
-    let control = alice.connected_client().unwrap().mailbox_after(control.sequence - 1).unwrap().remove(0);
+    let control = alice
+        .connected_client()
+        .unwrap()
+        .mailbox_after(control.sequence - 1)
+        .unwrap()
+        .remove(0);
     alice.accept_retry_request(&control, now).unwrap();
     bob.prepare_prekey_publication([80; 32], true, 3600)
         .unwrap();
@@ -83,16 +94,14 @@ fn full_inboxes_recover_without_discarding_failed_delivery() {
     for byte in [8, 40, 72, 104, 112, 175] {
         let mut bad = proof.clone();
         bad[byte] ^= 1;
-        assert!(
-            server
-                .submit_recovery_message(
-                    &credential(&alice),
-                    serde_json::from_value(serde_json::to_value(&packet).unwrap()).unwrap(),
-                    &transport::hex(&bad),
-                    now
-                )
-                .is_err()
-        );
+        assert!(server
+            .submit_recovery_message(
+                &credential(&alice),
+                serde_json::from_value(serde_json::to_value(&packet).unwrap()).unwrap(),
+                &transport::hex(&bad),
+                now
+            )
+            .is_err());
     }
     packet.message_id = transport::hex(&[128; 32]);
     assert!(matches!(
@@ -103,16 +112,14 @@ fn full_inboxes_recover_without_discarding_failed_delivery() {
         ),
         Err(sigil_server::store::StoreError::MailboxFull)
     ));
-    assert!(
-        server
-            .submit_recovery_message(
-                &credential(&alice),
-                serde_json::from_value(serde_json::to_value(&packet).unwrap()).unwrap(),
-                &transport::hex(&proof),
-                now
-            )
-            .is_err()
-    );
+    assert!(server
+        .submit_recovery_message(
+            &credential(&alice),
+            serde_json::from_value(serde_json::to_value(&packet).unwrap()).unwrap(),
+            &transport::hex(&proof),
+            now
+        )
+        .is_err());
     let mut second = Request::from_bytes(&proof).unwrap();
     second.message = [64; 32];
     let tx = bob.db.transaction().unwrap();

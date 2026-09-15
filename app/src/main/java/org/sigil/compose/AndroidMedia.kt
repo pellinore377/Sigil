@@ -11,6 +11,8 @@ import android.os.Build
 import android.view.Surface
 import android.view.TextureView
 import androidx.compose.foundation.Image
+import androidx.compose.foundation.background
+import androidx.compose.ui.Alignment
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.rememberScrollState
@@ -18,6 +20,7 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
@@ -59,7 +62,9 @@ internal class EncryptedMedia(private val context: android.content.Context, priv
     }
     @Synchronized override fun close() { closed = true; bytes.fill(0); bytes = ByteArray(0) }
 }
-internal fun prepare(context: android.content.Context, message: ChatMessage): Boolean {
+internal data class PreparedMedia(val ready:Boolean,val identity:String?=null)
+internal fun prepare(context: android.content.Context, message: ChatMessage)=prepareMedia(context,message).ready
+internal fun prepareMedia(context: android.content.Context, message: ChatMessage):PreparedMedia {
     val draft = message.attachment?.draft == true
     val command = if (draft) JSONObject().put("command", "files") else JSONObject().put("command", "file_get").put("peer", message.peer).put("author", message.author).put("message", message.id)
     val result = StorageKeyProvider(context).withKey { directory, key -> JSONObject(NativeStorage.execute(directory.path, key, command.toString())) }
@@ -67,9 +72,10 @@ internal fun prepare(context: android.content.Context, message: ChatMessage): Bo
     if (draft) {
         val uploads = result.getJSONObject("value").getJSONArray("uploads")
         val upload = (0 until uploads.length()).map { uploads.getJSONObject(it) }.singleOrNull { it.getString("request") == message.id && it.optBoolean("draft") } ?: error("Draft unavailable")
-        return upload.getString("phase") in listOf("Ready", "Starting", "Uploading", "Checking", "Published")
+        return PreparedMedia(upload.getString("phase") in listOf("Ready", "Starting", "Uploading", "Checking", "Published"))
     }
-    return result.getJSONObject("value").getString("phase") in listOf("Complete", "Published", "Restored")
+    val value=result.getJSONObject("value")
+    return PreparedMedia(value.getString("phase") in listOf("Complete", "Published", "Restored"),value.optString("cache_id").takeIf {it.length==64})
 }
 @Composable
 internal fun AndroidAttachmentDraft(file: org.sigil.Transfer, modifier: Modifier) {
@@ -91,9 +97,11 @@ internal fun mediaBytes(context: android.content.Context, message: ChatMessage, 
 }
 private fun bitmap(context: android.content.Context, message: ChatMessage): Bitmap {
     val bytes = mediaBytes(context, message, 16 * 1024 * 1024)
-    try {
+    try { return decodeThumbnail(bytes) } finally { bytes.fill(0) }
+}
+internal fun decodeThumbnail(bytes:ByteArray):Bitmap {
         return if (Build.VERSION.SDK_INT >= 28) ImageDecoder.decodeBitmap(ImageDecoder.createSource(ByteBuffer.wrap(bytes))) { decoder, info, _ ->
-            val scale = maxOf(1f, maxOf(info.size.width, info.size.height) / 1600f)
+            val scale = maxOf(1f, maxOf(info.size.width, info.size.height) / 1080f)
             decoder.setTargetSize((info.size.width / scale).toInt().coerceAtLeast(1), (info.size.height / scale).toInt().coerceAtLeast(1))
             decoder.allocator = ImageDecoder.ALLOCATOR_SOFTWARE
         } else {
@@ -101,18 +109,39 @@ private fun bitmap(context: android.content.Context, message: ChatMessage): Bitm
             BitmapFactory.decodeByteArray(bytes, 0, bytes.size, options)
             check(options.outWidth > 0 && options.outHeight > 0)
             options.inSampleSize = 1
-            while (maxOf(options.outWidth, options.outHeight) / options.inSampleSize > 1600) options.inSampleSize *= 2
+            while (maxOf(options.outWidth, options.outHeight) / options.inSampleSize > 1080) options.inSampleSize *= 2
             options.inJustDecodeBounds = false
             BitmapFactory.decodeByteArray(bytes, 0, bytes.size, options) ?: error("Unsupported image")
         }
-    } finally { bytes.fill(0) }
 }
+internal suspend fun authorizedThumbnail(cache:ImageCache?,prepare:suspend()->PreparedMedia,decode:suspend()->Bitmap):Bitmap {
+    while(true) {
+        val prepared=prepare()
+        if(prepared.ready) {
+            val identity=prepared.identity
+            return if(cache==null || identity==null) decode()
+            else cache.load(identity) {
+                val image=decode()
+                try {
+                    check(prepare().let {it.ready && it.identity==identity}) {"Attachment changed while loading"}
+                    image
+                } catch(error:Throwable) {image.recycle();throw error}
+            }
+        }
+        delay(1000)
+    }
+}
+private suspend fun historyBitmap(context:android.content.Context,message:ChatMessage,cache:ImageCache?) = authorizedThumbnail(
+    cache.takeUnless {message.attachment?.draft==true},
+    prepare={withContext(Dispatchers.IO){prepareMedia(context,message)}},
+    decode={withContext(Dispatchers.IO){bitmap(context,message)}})
 @Composable
 internal fun AndroidAttachment(message: ChatMessage) {
     val file = message.attachment ?: return
     if (file.mediaType == "image/gif" && file.bytes <= 16 * 1024 * 1024 && Build.VERSION.SDK_INT >= 28) { GifAttachment(message); return }
     if (file.mediaType.startsWith("audio/")) { AudioMessage(message); return }
     val context = LocalContext.current
+    val imageCache=LocalImageCache.current
     val image = file.mediaType.startsWith("image/") && file.bytes <= 16 * 1024 * 1024
     val playable = file.mediaType.startsWith("video/")
     var requested by remember(message.id) { mutableStateOf(image) }
@@ -120,19 +149,34 @@ internal fun AndroidAttachment(message: ChatMessage) {
     var failed by remember(message.id) { mutableStateOf(false) }
     var bitmap by remember(message.id) { mutableStateOf<Bitmap?>(null) }
     var opened by remember(message.id) { mutableStateOf(false) }
-    LaunchedEffect(message.id, requested) {
+    var openWhenReady by remember(message.id) { mutableStateOf(false) }
+    LaunchedEffect(message.id, requested, imageCache) {
         if (!requested) return@LaunchedEffect
         failed = false
         try {
-            while (!withContext(Dispatchers.IO) { prepare(context, message) }) delay(1000)
-            if (image) bitmap = withContext(Dispatchers.IO) { bitmap(context, message) }
+            if(image) bitmap=historyBitmap(context,message,imageCache)
+            else while (!withContext(Dispatchers.IO) { prepare(context, message) }) delay(1000)
+            if (playable) bitmap = withContext(Dispatchers.IO) {
+                runCatching { EncryptedMedia(context, message).use { source ->
+                    android.media.MediaMetadataRetriever().let { retriever ->
+                        try { retriever.setDataSource(source); if (Build.VERSION.SDK_INT >= 27) retriever.getScaledFrameAtTime(0, android.media.MediaMetadataRetriever.OPTION_CLOSEST_SYNC, 600, 600) else null }
+                        finally { retriever.release() }
+                    }
+                } }.getOrNull()
+            }
             ready = true
+            if (openWhenReady) { opened = true; openWhenReady = false }
         } catch (cancelled: CancellationException) { throw cancelled }
         catch (_: Exception) { failed = true; requested = false }
     }
-    Column(Modifier.widthIn(min = 160.dp, max = 300.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+    Column(Modifier.widthIn(max = 300.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
         val picture = bitmap
-        if (picture != null) Image(picture.asImageBitmap(), file.name, Modifier.fillMaxWidth().heightIn(max = 300.dp).clickable { opened = true }, contentScale = ContentScale.Inside)
+        if (playable) org.sigil.ImageMessageFrame(picture?.width ?: 16, picture?.height ?: 9) { frame -> Box(frame.clip(androidx.compose.foundation.shape.RoundedCornerShape(18.dp)).background(MaterialTheme.colorScheme.surfaceContainerHigh).clickable(enabled = !requested || ready) { if (ready) opened = true else { openWhenReady = true; requested = true } }, contentAlignment = Alignment.Center) {
+            picture?.let { Image(it.asImageBitmap(), file.name, Modifier.fillMaxSize(), contentScale = ContentScale.Fit) }
+            if (requested && !ready) CircularProgressIndicator(Modifier.size(32.dp))
+            else Surface(shape = androidx.compose.foundation.shape.CircleShape, color = androidx.compose.ui.graphics.Color.Black.copy(alpha = .6f), contentColor = androidx.compose.ui.graphics.Color.White) { Box(Modifier.size(48.dp), contentAlignment = Alignment.Center) { Glyph(if (failed) "refresh" else "play_arrow", 28, if (failed) "Retry video" else "Play video") } }
+        } }
+        else if (picture != null) org.sigil.ImageMessageFrame(picture.width, picture.height) { frame -> Box(frame.clickable { opened = true }) { Image(picture.asImageBitmap(), file.name, Modifier.fillMaxSize(), contentScale = ContentScale.Fit); if (file.mediaType == "image/gif") org.sigil.GifChip(Modifier.align(Alignment.TopStart)) } }
         else {
             Text(file.name, maxLines = 2)
             Text(if (file.bytes >= 1024 * 1024) "${file.bytes / (1024 * 1024)} MB" else "${file.bytes / 1024} KB", style = MaterialTheme.typography.labelSmall)
@@ -144,17 +188,8 @@ internal fun AndroidAttachment(message: ChatMessage) {
         }
     }
     if (opened) {
-        if (image && bitmap != null) Dialog({ opened = false }, DialogProperties(usePlatformDefaultWidth = false)) {
-            Surface(Modifier.fillMaxSize()) {
-                Column(Modifier.fillMaxSize().systemBarsPadding().padding(16.dp)) {
-                    Row(verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
-                        org.sigil.SigilIconButton({ opened = false }) { Glyph("chevron_left", 24, "Close image") }
-                        Text(file.name, Modifier.weight(1f), maxLines = 2, style = MaterialTheme.typography.titleMedium)
-                    }
-                    ImageViewer(message, bitmap!!, Modifier.weight(1f).fillMaxWidth())
-                    if (file.caption.isNotBlank()) Box(Modifier.heightIn(max = 160.dp).verticalScroll(rememberScrollState())) { org.sigil.MessageText(file.caption, org.sigil.NativeCore::analyze) }
-                }
-            }
+        if (image && bitmap != null) MediaDialog(message, { opened = false }) {
+            org.sigil.MediaViewerFrame(bitmap!!.width, bitmap!!.height) { frame -> ImageViewer(message, bitmap!!, frame) }
         }
         else if (playable) VideoDialog(message) { opened = false }
         else if ((file.mediaType == "application/pdf" || file.name.endsWith(".pdf",ignoreCase=true)) && file.bytes <= 128L*1024*1024) PdfViewer(message) { opened = false }
@@ -200,33 +235,35 @@ internal fun VideoDialog(message: ChatMessage, close: () -> Unit) {
         while (ready && !failed) { if (!seeking) position = player.currentPosition.toLong(); delay(250) }
     }
     DisposableEffect(player) {
-        player.setDataSource(media)
+        try { player.setDataSource(media) } catch (_: Exception) { failed = true }
         player.setOnPreparedListener { duration = it.duration.toLong().coerceAtLeast(0); ready = true; if (lifecycle.lifecycle.currentState.isAtLeast(androidx.lifecycle.Lifecycle.State.STARTED)) { it.start(); playing = true } }
         player.setOnVideoSizeChangedListener { _, width, height -> if (width > 0 && height > 0) ratio = width.toFloat() / height }
         player.setOnCompletionListener { playing = false }
         player.setOnErrorListener { _, _, _ -> failed = true; playing = false; true }
         onDispose { released = true; player.release(); media.close() }
     }
-    Dialog(close) {
-        Surface(shape = androidx.compose.foundation.shape.RoundedCornerShape(24.dp)) {
-            Column(Modifier.heightIn(max = 600.dp).verticalScroll(rememberScrollState()).padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                Text(message.attachment!!.name, style = MaterialTheme.typography.titleMedium)
+    MediaDialog(message, close) {
+        Column(Modifier.widthIn(max = 1000.dp).fillMaxSize(), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            org.sigil.MediaViewerFrame((ratio * 1000).toInt(), 1000, Modifier.weight(1f)) { frame ->
                 AndroidView(factory = { context -> TextureView(context).apply {
                     surfaceTextureListener = object : TextureView.SurfaceTextureListener {
                         private var surface: Surface? = null
-                        override fun onSurfaceTextureAvailable(texture: android.graphics.SurfaceTexture, width: Int, height: Int) { surface = Surface(texture); player.setSurface(surface); if (!prepared) { prepared = true; player.prepareAsync() } }
+                        override fun onSurfaceTextureAvailable(texture: android.graphics.SurfaceTexture, width: Int, height: Int) { surface = Surface(texture); player.setSurface(surface); if (!prepared && !failed) { prepared = true; try { player.prepareAsync() } catch (_: Exception) { failed = true } } }
                         override fun onSurfaceTextureSizeChanged(texture: android.graphics.SurfaceTexture, width: Int, height: Int) {}
                         override fun onSurfaceTextureUpdated(texture: android.graphics.SurfaceTexture) {}
                         override fun onSurfaceTextureDestroyed(texture: android.graphics.SurfaceTexture): Boolean { if (!released) player.setSurface(null); surface?.release(); surface = null; return true }
                     }
-                } }, modifier = Modifier.fillMaxWidth().aspectRatio(ratio.coerceIn(.25f, 4f)))
-                if (failed) Text("This device could not play the attachment.")
-                if (ready && !failed && duration > 0) {
-                    Slider(position.toFloat().coerceIn(0f, duration.toFloat()), { seeking = true; position = it.toLong() }, Modifier.testTag("media-seek"), valueRange = 0f..duration.toFloat(), onValueChangeFinished = { player.seekTo(position, MediaPlayer.SEEK_CLOSEST); seeking = false })
-                    Text("${mediaTime(position)} / ${mediaTime(duration)}", style = MaterialTheme.typography.labelSmall)
+                } }, modifier = frame)
+            }
+            if (failed) Text("This device could not play the attachment.")
+            Surface(shape = androidx.compose.foundation.shape.RoundedCornerShape(24.dp), color = MaterialTheme.colorScheme.surfaceContainerHigh, contentColor = MaterialTheme.colorScheme.onSurface) {
+                Row(Modifier.fillMaxWidth().padding(horizontal = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+                    org.sigil.SigilIconButton({ if (playing) player.pause() else player.start(); playing = !playing }, enabled = ready && !failed) { Glyph(if (playing) "pause" else "play_arrow", 24, if (playing) "Pause" else "Play") }
+                    if (ready && !failed && duration > 0) {
+                        Slider(position.toFloat().coerceIn(0f, duration.toFloat()), { seeking = true; position = it.toLong() }, Modifier.weight(1f).testTag("media-seek"), valueRange = 0f..duration.toFloat(), onValueChangeFinished = { player.seekTo(position, MediaPlayer.SEEK_CLOSEST); seeking = false })
+                        Text("${mediaTime(position)} / ${mediaTime(duration)}", Modifier.padding(start = 8.dp), style = MaterialTheme.typography.labelSmall, maxLines = 1)
+                    } else if (!failed) CircularProgressIndicator(Modifier.padding(12.dp).size(20.dp), strokeWidth = 2.dp)
                 }
-                if (message.attachment!!.caption.isNotBlank()) Box(Modifier.heightIn(max = 160.dp).verticalScroll(rememberScrollState())) { org.sigil.MessageText(message.attachment!!.caption, org.sigil.NativeCore::analyze) }
-                Row { SigilTextButton({ if (playing) player.pause() else player.start(); playing = !playing }, enabled = ready && !failed) { Glyph(if (playing) "pause" else "play_arrow", 24); Text(if (playing) "Pause" else "Play") }; SigilTextButton(close) { Text("Close") } }
             }
         }
     }

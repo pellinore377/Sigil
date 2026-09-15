@@ -16,6 +16,8 @@ internal class OpusEncoder(private val encoded: (Long, ByteArray) -> Unit) : Aut
     init {
         try {
             val format = MediaFormat.createAudioFormat(MediaFormat.MIMETYPE_AUDIO_OPUS, 48000, 1)
+            format.setInteger(MediaFormat.KEY_PRIORITY, 0)
+            format.setInteger(MediaFormat.KEY_OPERATING_RATE, 48000)
             format.setInteger(MediaFormat.KEY_BIT_RATE, 32000)
             format.setInteger(MediaFormat.KEY_MAX_INPUT_SIZE, 3840)
             codec.configure(format, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
@@ -62,6 +64,8 @@ internal class OpusDecoder(private val pcm: (ShortArray, Int) -> Unit) : AutoClo
     init {
         try {
             val format = MediaFormat.createAudioFormat(MediaFormat.MIMETYPE_AUDIO_OPUS, 48000, 1)
+            format.setInteger(MediaFormat.KEY_PRIORITY, 0)
+            format.setInteger(MediaFormat.KEY_OPERATING_RATE, 48000)
             val header = ByteBuffer.allocate(19).order(ByteOrder.LITTLE_ENDIAN).put("OpusHead".toByteArray(Charsets.US_ASCII)).put(1).put(1).putShort(0).putInt(48000).putShort(0).put(0)
             header.flip(); format.setByteBuffer("csd-0", header)
             format.setByteBuffer("csd-1", ByteBuffer.allocate(8).order(ByteOrder.nativeOrder()).putLong(0).apply { flip() })
@@ -107,6 +111,7 @@ internal class CallMicrophone(private val send: (Long, ByteArray) -> Unit, priva
     @Volatile var muted = false
     @Volatile private var recorder: AudioRecord? = null
     private val worker = Thread({
+        runCatching { android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_AUDIO) }
         var capture: AudioRecord? = null
         var aec: AcousticEchoCanceler? = null
         var noise: NoiseSuppressor? = null
@@ -141,10 +146,12 @@ internal class CallSpeaker(private val level: (Float) -> Unit, private val faile
     private val queue = ArrayBlockingQueue<Pair<Long, ByteArray>>(8)
     @Volatile private var output: AudioTrack? = null
     private val worker = Thread({
+        runCatching { android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_AUDIO) }
         var track: AudioTrack? = null
         try {
             track = AudioTrack.Builder().setAudioAttributes(AudioAttributes.Builder().setUsage(AudioAttributes.USAGE_VOICE_COMMUNICATION).setContentType(AudioAttributes.CONTENT_TYPE_SPEECH).build())
                 .setAudioFormat(AudioFormat.Builder().setSampleRate(48000).setChannelMask(AudioFormat.CHANNEL_OUT_MONO).setEncoding(AudioFormat.ENCODING_PCM_16BIT).build())
+                .setPerformanceMode(AudioTrack.PERFORMANCE_MODE_LOW_LATENCY)
                 .setBufferSizeInBytes(maxOf(7680, AudioTrack.getMinBufferSize(48000, AudioFormat.CHANNEL_OUT_MONO, AudioFormat.ENCODING_PCM_16BIT))).setTransferMode(AudioTrack.MODE_STREAM).build()
             output = track
             var primed = 0

@@ -83,7 +83,7 @@ internal fun Avatar(name: String, size: Int = 48, photo: String = "") {
 val LocalProfilePhoto = staticCompositionLocalOf<@Composable (String, Modifier) -> Unit> { { _, _ -> } }
 @Composable
 internal fun SettingRow(icon: String, title: String, detail: String, click: () -> Unit) {
-    Row(Modifier.fillMaxWidth().clickable(onClick = click).padding(horizontal = 20.dp, vertical = 16.dp), verticalAlignment = Alignment.CenterVertically) {
+    Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(20.dp)).clickable(onClick = click).padding(horizontal = 20.dp, vertical = 16.dp), verticalAlignment = Alignment.CenterVertically) {
         Glyph(icon)
         Column(Modifier.weight(1f).padding(horizontal = 16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) { Text(title, style = MaterialTheme.typography.titleMedium); Text(detail, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant) }
         Glyph("chevron_right", 20)

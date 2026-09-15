@@ -11,9 +11,9 @@ mod journal;
 mod offer;
 #[path = "link_qr.rs"]
 mod qr;
-pub use qr::scan_frame;
 pub(crate) use exchange::discard_unapproved_offer;
 pub use exchange::{emoji_confirmation, offer_qr};
+pub use qr::scan_frame;
 
 /// Full confirmation digest. The emoji string is supplementary; authentication
 /// requires the QR-authenticated exchange, not a truncated digest alone.

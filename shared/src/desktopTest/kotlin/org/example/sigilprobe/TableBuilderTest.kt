@@ -50,7 +50,7 @@ class TableBuilderTest {
         ui.onNodeWithText("Preview").performClick()
         ui.onNodeWithText("Fish | chips").assertExists()
         ui.onNodeWithText("redact::literal;").assertExists()
-        ui.onNodeWithText("Send table").performScrollTo().performClick()
+        ui.onNodeWithText("Send table").performClick()
         assertEquals(listOf(NativeCore.builderSource("Table\nName\nFish | chips\nredact::literal;")),sent)
     }
 }

@@ -9,6 +9,7 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.semantics.*
 import androidx.compose.ui.unit.dp
+import androidx.compose.foundation.shape.RoundedCornerShape
 
 data class OperationalSample(
     val at: Long,val accounts: Long,val devices: Long,val messages: Long,val federation: Long,val push: Long,
@@ -32,7 +33,7 @@ fun OperationalDashboard(samples: List<OperationalSample>,loading: Boolean,error
     Column(Modifier.fillMaxWidth(),verticalArrangement=Arrangement.spacedBy(24.dp)) {
         Row(Modifier.fillMaxWidth(),verticalAlignment=Alignment.CenterVertically) {
             Column(Modifier.weight(1f)) {
-                Text("Server overview",style=MaterialTheme.typography.headlineMedium)
+                Text("Overview",style=MaterialTheme.typography.headlineLarge)
                 Text(current?.let { "Observed ${observationTime(it.at)}" } ?: "Waiting for the first observation",style=MaterialTheme.typography.bodySmall)
             }
             SigilIconButton(refresh,enabled=!loading) { Glyph("refresh",24,"Refresh server overview") }
@@ -43,13 +44,18 @@ fun OperationalDashboard(samples: List<OperationalSample>,loading: Boolean,error
             if(loading) LinearProgressIndicator(Modifier.fillMaxWidth())
             Text("No operational history yet.")
         } else {
-            FlowRow(horizontalArrangement=Arrangement.spacedBy(16.dp),verticalArrangement=Arrangement.spacedBy(16.dp)) {
-                OperationalMetric("Active accounts",current.accounts.toString(),"People", {navigate("Users")})
-                OperationalMetric("Active devices",current.devices.toString(),"People", {navigate("Users")})
-                OperationalMetric("Database allocated",storageSize(current.database),"Server", {navigate("Server")})
+            BoxWithConstraints(Modifier.fillMaxWidth()) {
+                val narrow=maxWidth<640.dp
+                val metrics: @Composable (Modifier)->Unit = { modifier ->
+                    OperationalMetric("Accounts",current.accounts.toString(),"People", {navigate("Users")},modifier,narrow)
+                    OperationalMetric("Devices",current.devices.toString(),"People", {navigate("Users")},modifier,narrow)
+                    OperationalMetric("Database",storageSize(current.database),"Server", {navigate("Server")},modifier,narrow)
+                }
+                if(narrow) Column(verticalArrangement=Arrangement.spacedBy(12.dp)) {metrics(Modifier.fillMaxWidth())}
+                else Row(horizontalArrangement=Arrangement.spacedBy(16.dp)) {metrics(Modifier.weight(1f))}
             }
             DashboardSection("Delivery queues") {
-                Text("Waiting items, sampled while this dashboard is visible. Queued messages can include offline recipients.",style=MaterialTheme.typography.bodySmall)
+                Text("Queued items include offline recipients.",style=MaterialTheme.typography.bodySmall)
                 QueueHistory(samples)
             }
             DashboardSection("Encrypted payload storage") {
@@ -62,7 +68,7 @@ fun OperationalDashboard(samples: List<OperationalSample>,loading: Boolean,error
                 }
                 MetricLine("Attachments",storageSize(current.attachments))
                 MetricLine("Recovery",storageSize(current.recovery))
-                Text("Logical payload sizes within the database; do not add these to database allocation. Disk free space and journal files are not measured here.",style=MaterialTheme.typography.bodySmall)
+                Text("Included in database allocation. Free disk space and journals are not measured.",style=MaterialTheme.typography.bodySmall)
                 SigilTextButton({navigate("Server")}) { Text("Server settings") }
             }
             DashboardSection("Attention and maintenance") {
@@ -76,21 +82,24 @@ fun OperationalDashboard(samples: List<OperationalSample>,loading: Boolean,error
                 Text(if(current.restorePending)"A restore is waiting for restart." else "No restore is waiting for restart.",style=MaterialTheme.typography.bodySmall)
                 Text(current.lastBackup?.let { "Last completed backup, restore or upgrade: ${observationTime(it)}" } ?: "No completed backup, restore or upgrade recorded.",style=MaterialTheme.typography.bodySmall)
             }
-            Text("Server ${current.version} · schema ${current.schema}. These diagnostics contain operational totals, not message contents or private group membership.",style=MaterialTheme.typography.bodySmall)
+            Text("Server ${current.version} · schema ${current.schema}",style=MaterialTheme.typography.bodySmall)
         }
     }
 }
 
 @Composable
-private fun OperationalMetric(label: String,value: String,destination: String,open: () -> Unit) {
-    Surface(Modifier.widthIn(min=220.dp).clickable(role=Role.Button,onClickLabel="Open $destination",onClick=open),shape=MaterialTheme.shapes.large,color=MaterialTheme.colorScheme.surfaceContainer) {
-        Column(Modifier.padding(20.dp),verticalArrangement=Arrangement.spacedBy(8.dp)) { Text(label,style=MaterialTheme.typography.labelLarge);Text(value,style=MaterialTheme.typography.headlineLarge) }
+private fun OperationalMetric(label: String,value: String,destination: String,open: () -> Unit,modifier: Modifier,compact: Boolean) {
+    Surface(modifier.clickable(role=Role.Button,onClickLabel="Open $destination",onClick=open),shape=RoundedCornerShape(24.dp),color=MaterialTheme.colorScheme.surfaceContainerHigh) {
+        if(compact) Row(Modifier.padding(20.dp),verticalAlignment=Alignment.CenterVertically,horizontalArrangement=Arrangement.spacedBy(16.dp)) {
+            Text(label,Modifier.weight(1f),style=MaterialTheme.typography.labelLarge,color=MaterialTheme.colorScheme.onSurfaceVariant)
+            Text(value,style=MaterialTheme.typography.headlineSmall)
+        } else Column(Modifier.padding(24.dp),verticalArrangement=Arrangement.spacedBy(8.dp)) { Text(label,style=MaterialTheme.typography.labelLarge,color=MaterialTheme.colorScheme.onSurfaceVariant);Text(value,style=MaterialTheme.typography.displaySmall) }
     }
 }
 @Composable
 private fun DashboardSection(title: String,content: @Composable ColumnScope.() -> Unit) {
-    Surface(Modifier.fillMaxWidth(),shape=MaterialTheme.shapes.large,color=MaterialTheme.colorScheme.surfaceContainerLow) {
-        Column(Modifier.padding(20.dp),verticalArrangement=Arrangement.spacedBy(12.dp)) { Text(title,style=MaterialTheme.typography.titleLarge);content() }
+    Surface(Modifier.fillMaxWidth(),shape=RoundedCornerShape(24.dp),color=MaterialTheme.colorScheme.surface) {
+        Column(Modifier.padding(24.dp),verticalArrangement=Arrangement.spacedBy(16.dp)) { Text(title,style=MaterialTheme.typography.titleLarge);content() }
     }
 }
 @Composable

@@ -547,6 +547,7 @@ mod work;
 pub(crate) use envelope::{
     is_envelope, migrate as migrate_envelopes, MIGRATION as ENVELOPE_MIGRATION,
 };
+pub(crate) use work::storage_stage;
 pub(crate) use work::MIGRATION as WORK_MIGRATION;
 pub use work::{GroupWork, GroupWorkAttempt};
 #[path = "group_store.rs"]

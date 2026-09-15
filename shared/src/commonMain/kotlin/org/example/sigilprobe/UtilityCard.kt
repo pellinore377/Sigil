@@ -34,6 +34,7 @@ internal fun UtilityCard(value: UtilityContent) {
     val clock=LocalTextMotion.current?.clock
     val animate=LocalAppearance.current.messageEffects && !LocalMotion.current.reduced
     val objectMessage=value.motion?.kind in listOf("dice","coin","choice")
+    val canExpand=qr!=null || value.kind=="math"
     fun resultAlpha(full:Boolean)=if(!full && animate && value.motion!=null && (clock?.elapsed ?: 12000f)<(clock?.duration(randomizerDuration(value.motion)) ?: randomizerDuration(value.motion)))0f else 1f
     val label = when (value.kind) {
         "calculation" -> "Calculation"; "conversion" -> "Conversion"; "math" -> "Formula"; "qr" -> when (qr?.kind) {
@@ -112,9 +113,12 @@ internal fun UtilityCard(value: UtilityContent) {
         }
     }
     Column(Modifier.widthIn(min = 200.dp, max = 280.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-        if(!objectMessage)Text(label, style = MaterialTheme.typography.labelMedium)
+        if(!objectMessage)Row(Modifier.fillMaxWidth(), verticalAlignment=Alignment.CenterVertically) {
+            Text(label, Modifier.weight(1f), style = MaterialTheme.typography.labelMedium)
+            if(!canExpand)value.copy?.let { copy -> SigilIconButton({clipboard.setText(AnnotatedString(copy))}) {Glyph("content_copy",18,"Copy ${label.lowercase()}")} }
+        }
         body(false)
-        if(!objectMessage)SigilTextButton({ expanded = true }) { Glyph("open_in_full", 18); Spacer(Modifier.width(8.dp)); Text("Open ${label.lowercase()}") }
+        if(canExpand)SigilTextButton({ expanded = true }) { Glyph("open_in_full", 18); Spacer(Modifier.width(8.dp)); Text("Open ${label.lowercase()}") }
     }
     if (expanded) Dialog({ expanded = false }, DialogProperties(usePlatformDefaultWidth = false)) {
         Surface(Modifier.fillMaxSize()) {

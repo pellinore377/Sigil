@@ -63,7 +63,13 @@ fn receiver_catches_up_after_an_outbox_sized_delivery_gap() {
         .unwrap();
     let recipient = decode_id(&bob.connection_session().unwrap().unwrap().device_id).unwrap();
     let packet = alice
-        .prepare_delivery([3; 32], [90; 32], recipient, now + transport::DEFAULT_LIFETIME, now)
+        .prepare_delivery(
+            [3; 32],
+            [90; 32],
+            recipient,
+            now + transport::DEFAULT_LIFETIME,
+            now,
+        )
         .unwrap();
     alice.connected_client().unwrap().submit(&packet).unwrap();
     let attempts = bob.receive_mailbox_online(now).unwrap();
@@ -73,13 +79,12 @@ fn receiver_catches_up_after_an_outbox_sized_delivery_gap() {
     assert_eq!(incoming.text().unwrap().body, "after gap");
     assert_eq!(incoming.session, first.session);
     assert_eq!(bob.acknowledge_incoming_online().unwrap(), 1);
-    assert!(
-        bob.connected_client()
-            .unwrap()
-            .mailbox()
-            .unwrap()
-            .is_empty()
-    );
+    assert!(bob
+        .connected_client()
+        .unwrap()
+        .mailbox()
+        .unwrap()
+        .is_empty());
 }
 
 #[test]
@@ -136,7 +141,9 @@ fn receive_diagnostics_distinguish_packet_rejection_replay_and_stored_state() {
     );
     let mut damaged = state.clone();
     *damaged.last_mut().unwrap() ^= 1;
-    bob.db.execute("UPDATE sessions SET state=?1", [&damaged]).unwrap();
+    bob.db
+        .execute("UPDATE sessions SET state=?1", [&damaged])
+        .unwrap();
     assert!(matches!(
         bob.accept_delivery(&valid),
         Err(Error::Crypto(sigil_crypto::Error::Authentication))

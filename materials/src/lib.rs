@@ -61,7 +61,11 @@ pub struct Appearance {
 impl Appearance {
     pub fn for_object(object: Object) -> Self {
         let (color, second, ink) = match object {
-            Object::Die => ([0.44, 0.22, 0.73], [0.484, 0.352, 0.658], [0.95, 0.82, 0.51]),
+            Object::Die => (
+                [0.44, 0.22, 0.73],
+                [0.484, 0.352, 0.658],
+                [0.95, 0.82, 0.51],
+            ),
             Object::Card => ([0.19, 0.16, 0.28], [0.37, 0.22, 0.46], [0.89, 0.78, 0.53]),
             Object::Coin => ([0.83, 0.62, 0.28], [0.83, 0.62, 0.28], [0.72, 0.50, 0.19]),
         };
@@ -299,6 +303,70 @@ pub struct Params {
     obstacles: [[[f32; 4]; 2]; 7],
 }
 
+pub struct RendererResources {
+    pipeline: wgpu::RenderPipeline,
+    logo: wgpu::Texture,
+    orbit: wgpu::Texture,
+    sampler: wgpu::Sampler,
+    format: wgpu::TextureFormat,
+}
+impl RendererResources {
+    pub fn format(&self) -> wgpu::TextureFormat {
+        self.format
+    }
+    pub fn new(device: &wgpu::Device, queue: &wgpu::Queue, format: wgpu::TextureFormat) -> Self {
+        let logo = mask_texture(device);
+        write_mask(queue, &logo, &logo_mask(LOGO));
+        let orbit = mask_texture(device);
+        write_mask(
+            queue,
+            &orbit,
+            &logo_mask(include_bytes!("../assets/orbit.svg")),
+        );
+        let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            ..Default::default()
+        });
+        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("bounded material study"),
+            source: wgpu::ShaderSource::Wgsl(include_str!("material.wgsl").into()),
+        });
+        let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("material study"),
+            layout: None,
+            vertex: wgpu::VertexState {
+                module: &shader,
+                entry_point: Some("vs"),
+                compilation_options: Default::default(),
+                buffers: &[],
+            },
+            primitive: Default::default(),
+            depth_stencil: None,
+            multisample: Default::default(),
+            fragment: Some(wgpu::FragmentState {
+                module: &shader,
+                entry_point: Some("fs"),
+                compilation_options: Default::default(),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format,
+                    blend: None,
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+            }),
+            multiview_mask: None,
+            cache: None,
+        });
+        Self {
+            pipeline,
+            logo,
+            orbit,
+            sampler,
+            format,
+        }
+    }
+}
+
 pub struct Renderer {
     profiler: Option<performance::Profiler>,
     pipeline: wgpu::RenderPipeline,
@@ -462,7 +530,15 @@ fn text_width<F: Font>(font: &impl ScaleFont<F>, text: &str) -> f32 {
     }
     total
 }
-fn digit_mask(lettering: Lettering) -> Vec<u8> {
+fn digit_mask(lettering: Lettering) -> &'static [u8] {
+    static SERIF: std::sync::OnceLock<Vec<u8>> = std::sync::OnceLock::new();
+    static SANS: std::sync::OnceLock<Vec<u8>> = std::sync::OnceLock::new();
+    match lettering {
+        Lettering::Newsreader => SERIF.get_or_init(|| raster_digits(Lettering::Newsreader)),
+        Lettering::Sans => SANS.get_or_init(|| raster_digits(Lettering::Sans)),
+    }
+}
+fn raster_digits(lettering: Lettering) -> Vec<u8> {
     let mut atlas = vec![0; 512 * 512];
     for i in 0..41 {
         let text = match i {
@@ -525,6 +601,17 @@ impl Renderer {
         height: u32,
         format: wgpu::TextureFormat,
     ) -> Self {
+        let resources = RendererResources::new(device, queue, format);
+        Self::with_resources(device, queue, width, height, &resources)
+    }
+    pub fn with_resources(
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        width: u32,
+        height: u32,
+        resources: &RendererResources,
+    ) -> Self {
+        let format = resources.format;
         let width = width.clamp(1, 1600);
         let height = height.clamp(1, 1200);
         let uniform = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -532,54 +619,16 @@ impl Renderer {
             contents: bytemuck::bytes_of(&Scene::default().params(width, height)),
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         });
-        let logo = mask_texture(device);
-        write_mask(queue, &logo, &logo_mask(LOGO));
-        let orbit = mask_texture(device);
-        write_mask(
-            queue,
-            &orbit,
-            &logo_mask(include_bytes!("../assets/orbit.svg")),
-        );
+        let pipeline = resources.pipeline.clone();
+        let logo = &resources.logo;
+        let orbit = &resources.orbit;
+        let sampler = &resources.sampler;
         let digits = mask_texture(device);
-        write_mask(queue, &digits, &digit_mask(Lettering::Newsreader));
+        write_mask(queue, &digits, digit_mask(Lettering::Newsreader));
         let label = mask_texture(device);
         write_mask(queue, &label, &label_mask("The museum"));
-        let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
-            mag_filter: wgpu::FilterMode::Linear,
-            min_filter: wgpu::FilterMode::Linear,
-            ..Default::default()
-        });
         let texture = target(device, width, height, format);
         let view = texture.create_view(&Default::default());
-        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("bounded material study"),
-            source: wgpu::ShaderSource::Wgsl(include_str!("material.wgsl").into()),
-        });
-        let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("material study"),
-            layout: None,
-            vertex: wgpu::VertexState {
-                module: &shader,
-                entry_point: Some("vs"),
-                compilation_options: Default::default(),
-                buffers: &[],
-            },
-            primitive: Default::default(),
-            depth_stencil: None,
-            multisample: Default::default(),
-            fragment: Some(wgpu::FragmentState {
-                module: &shader,
-                entry_point: Some("fs"),
-                compilation_options: Default::default(),
-                targets: &[Some(wgpu::ColorTargetState {
-                    format,
-                    blend: None,
-                    write_mask: wgpu::ColorWrites::ALL,
-                })],
-            }),
-            multiview_mask: None,
-            cache: None,
-        });
         let bindings = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("material bindings"),
             layout: &pipeline.get_bind_group_layout(0),
@@ -646,7 +695,7 @@ impl Renderer {
     }
     pub fn set_label(&self, queue: &wgpu::Queue, text: &str, lettering: Lettering) {
         write_mask(queue, &self.label, &text_mask(text, lettering));
-        write_mask(queue, &self.digits, &digit_mask(lettering));
+        write_mask(queue, &self.digits, digit_mask(lettering));
     }
     pub fn render(&self, device: &wgpu::Device, queue: &wgpu::Queue, scene: &Scene) {
         self.render_to(device, queue, scene, &self.view);
@@ -840,3 +889,73 @@ mod web;
 
 #[cfg(target_arch = "wasm32")]
 mod web_worker;
+
+#[cfg(all(test, not(target_os = "android"), not(target_arch = "wasm32")))]
+#[test]
+#[ignore = "requires a local Vulkan adapter; reports renderer startup latency"]
+fn renderer_startup_benchmark() {
+    let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
+        backends: wgpu::Backends::VULKAN,
+        ..wgpu::InstanceDescriptor::new_without_display_handle()
+    });
+    let adapter =
+        pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default()))
+            .unwrap();
+    let (device, queue) =
+        pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default())).unwrap();
+    eprintln!("adapter={:?}", adapter.get_info());
+    let mut times = Vec::new();
+    for _ in 0..6 {
+        let started = std::time::Instant::now();
+        let renderer =
+            Renderer::with_format(&device, &queue, 256, 256, wgpu::TextureFormat::Rgba8Unorm);
+        queue.submit([]);
+        device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
+        times.push(started.elapsed().as_secs_f64() * 1000.);
+        drop(renderer);
+    }
+    eprintln!("separate pipeline startup ms={times:?}");
+    let resources = RendererResources::new(&device, &queue, wgpu::TextureFormat::Rgba8Unorm);
+    let mut times = Vec::new();
+    for _ in 0..6 {
+        let started = std::time::Instant::now();
+        let renderer = Renderer::with_resources(&device, &queue, 256, 256, &resources);
+        queue.submit([]);
+        device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
+        times.push(started.elapsed().as_secs_f64() * 1000.);
+        drop(renderer);
+    }
+    eprintln!("shared resources startup ms={times:?}");
+    let a = Renderer::with_resources(&device, &queue, 96, 128, &resources);
+    let b = Renderer::with_resources(&device, &queue, 96, 128, &resources);
+    let mut scene = Scene::default();
+    scene.object = Object::Card;
+    scene.yaw = 0.;
+    scene.pitch = 0.;
+    let dir = std::env::temp_dir().join(format!("sigil-renderer-isolation-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    for object in [Object::Card, Object::Die] {
+        scene.object = object;
+        scene.die = Die::D20;
+        let snapshot = |renderer: &Renderer, name: &str| {
+            renderer.render(&device, &queue, &scene);
+            let path = dir.join(name);
+            renderer.save(&device, &queue, &path).unwrap();
+            std::fs::read(path).unwrap()
+        };
+        a.set_label(&queue, "ALPHA", Lettering::Newsreader);
+        let prior = snapshot(&a, "before.png");
+        b.set_label(&queue, "BRAVO", Lettering::Sans);
+        assert_eq!(
+            prior,
+            snapshot(&a, "after.png"),
+            "another view changed this view's label or font"
+        );
+        assert_ne!(
+            prior,
+            snapshot(&b, "other.png"),
+            "independent labels must render differently"
+        );
+    }
+    std::fs::remove_dir_all(dir).unwrap();
+}

@@ -155,6 +155,7 @@ pub fn save_file_url(url: String, name: String) -> Result<(), JsValue> {
 #[derive(Deserialize)]
 #[serde(tag = "operation", rename_all = "snake_case", deny_unknown_fields)]
 enum Operation {
+    MapResource { path: String },
     WallpaperStage {
         peer: String,
     },
@@ -352,6 +353,15 @@ async fn read(request: serde_json::Value) -> Result<Uint8Array, JsValue> {
     Ok(bytes)
 }
 
+#[wasm_bindgen]
+pub async fn map_resource(path: String) -> Result<Uint8Array, JsValue> {
+    if path.len() > 1024 { return Err(fail("Invalid map resource")); }
+    let bytes = host::rpc(serde_json::json!({"operation":"map_resource","path":path}).to_string(), Some(Uint8Array::new_with_length(0)))
+        .await?.dyn_into::<Uint8Array>()?;
+    if bytes.length() > 4 * 1024 * 1024 + 256 { return Err(fail("Map resource too large")); }
+    Ok(bytes)
+}
+
 pub(crate) fn receive(event: &web_sys::MessageEvent) -> bool {
     let data = event.data();
     if get(&data, "binary").ok().and_then(|v| v.as_bool()) != Some(true) {
@@ -380,6 +390,7 @@ pub(crate) fn receive(event: &web_sys::MessageEvent) -> bool {
             let mut slot = slot.borrow_mut();
             let store = slot.as_mut().ok_or_else(|| fail("Browser is locked"))?;
             let result = match operation {
+                Operation::MapResource { path } if bytes.length() == 0 => store.mobile_map_resource(&path),
                 Operation::WallpaperStage { peer } => {
                     let plain = Zeroizing::new(bytes.to_vec());
                     release_bytes(bytes);

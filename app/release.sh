@@ -4,8 +4,9 @@ cd "$(dirname "$0")/.."
 : "${ANDROID_HOME:?Set ANDROID_HOME}"
 : "${ANDROID_NDK_HOME:?Set ANDROID_NDK_HOME}"
 : "${JAVA_HOME:?Set JAVA_HOME to JDK 21}"
-: "${SIGIL_ANDROID_KEYSTORE:?Set SIGIL_ANDROID_KEYSTORE}"
-: "${SIGIL_ANDROID_PASSWORD_FILE:?Set SIGIL_ANDROID_PASSWORD_FILE}"
+: "${SIGIL_ANDROID_KEYSTORE:=${XDG_DATA_HOME:-$HOME/.local/share}/sigil/android-signing/release.p12}"
+: "${SIGIL_ANDROID_PASSWORD_FILE:=${XDG_DATA_HOME:-$HOME/.local/share}/sigil/android-signing/password}"
+[[ -r "$SIGIL_ANDROID_KEYSTORE" && -r "$SIGIL_ANDROID_PASSWORD_FILE" ]] || { printf 'Signing files missing; set SIGIL_ANDROID_KEYSTORE and SIGIL_ANDROID_PASSWORD_FILE.\n' >&2; exit 1; }
 build_tools="$ANDROID_HOME/build-tools/35.0.0"
 gradle=${GRADLE:-gradle}
 export PATH="$JAVA_HOME/bin:$PATH"

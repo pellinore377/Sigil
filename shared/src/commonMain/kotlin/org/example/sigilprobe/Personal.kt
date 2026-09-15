@@ -5,10 +5,13 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.*
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.selection.selectable
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.*
 import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.draw.clip
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.delay
 
@@ -51,31 +54,41 @@ internal fun NewConversation(state: MessengerState, command: Command, back: () -
         }
     }
 }
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
-internal fun SettingsPage(state: MessengerState, navigate: (String) -> Unit) {
-    Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState())) {
-        Row(Modifier.fillMaxWidth().clickable { navigate("profile") }.padding(24.dp), verticalAlignment = Alignment.CenterVertically) {
-            Avatar(state.profileName.ifEmpty { state.address.removePrefix("@") }, 64, state.profileAvatar)
-            Column(Modifier.weight(1f).padding(start = 16.dp)) { Text(state.profileName.ifEmpty { state.address.substringBefore(':').removePrefix("@") }, style = MaterialTheme.typography.headlineSmall); Text(state.address, style = MaterialTheme.typography.bodySmall) }
-            Symbol("qr_code", "My contact code") { navigate("contact-code") }
-        }
-        SettingsSection("Account") {
-            SettingRow("person", "Profile", "Display name and photo") { navigate("profile") }
-            SettingRow("lock", "Privacy", "Read receipts, typing, and who can reach you") { navigate("privacy") }
-            SettingRow("devices", "Devices", "Linked devices and verification") { navigate("device") }
-            if(LocalClientFeatures.current.notifications)SettingRow("notifications", "Notifications", "Messages, calls, and sounds") { navigate("notifications") }
-        }
-        SettingsSection("Appearance") { SettingRow("palette", "Appearance", "Theme, typography, and layout") { navigate("appearance") } }
-        if(LocalClientFeatures.current.files)SettingsSection("Data and storage") { SettingRow("database", "Data and storage", "Media, downloads, and cache") { navigate("storage") } }
-        SettingsSection("Help") { SettingRow("info", "About", "Version, licenses, and support") { navigate("about") } }
-        Spacer(Modifier.height(24.dp))
+internal fun NewCallDialog(state: MessengerState, command: Command, close: () -> Unit) {
+    var query by rememberSaveable { mutableStateOf("") }
+    var selected by rememberSaveable { mutableStateOf<String?>(null) }
+    val features = LocalClientFeatures.current
+    val contacts = state.chats.filter { it.id != "self" && it.verified && !it.hidden && !it.archived }
+    val target = contacts.firstOrNull { it.id == selected }
+    val enabled = features.calls && state.phase == "connected" && !state.busy && state.call == null && target != null
+    fun start(video: Boolean) {
+        if (!enabled || video && !features.videoCalls) return
+        command("call_start", mapOf("peer" to target!!.id, "video" to video))
+        close()
     }
-}
-@Composable
-private fun SettingsSection(title: String, body: @Composable () -> Unit) {
-    HorizontalDivider(Modifier.padding(horizontal = 24.dp), color = MaterialTheme.colorScheme.outlineVariant)
-    Text(title, Modifier.padding(start = 24.dp, top = 12.dp), style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
-    body()
+    AlertDialog(onDismissRequest = close, title = { Text("New call") }, text = {
+        Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            OutlinedTextField(query, { query = it }, Modifier.fillMaxWidth(), singleLine = true, label = { Text("Name or address") }, leadingIcon = { Glyph("search", 22) })
+            val matches = contacts.filter { it.name.contains(query, true) || it.address.contains(query, true) }
+            if (matches.isEmpty()) Text(if (query.isBlank()) "No contacts available." else "No matches.", color = MaterialTheme.colorScheme.onSurfaceVariant)
+            else LazyColumn(Modifier.fillMaxWidth().heightIn(max = 320.dp)) {
+                items(matches, key = { it.id }) { contact ->
+                    Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(16.dp)).selectable(selected == contact.id, role = androidx.compose.ui.semantics.Role.RadioButton, onClick = { selected = contact.id }).padding(vertical = 10.dp, horizontal = 8.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                        Avatar(contact.name, 40, contact.avatar)
+                        Text(contact.name, Modifier.weight(1f), maxLines = 2, overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis, style = MaterialTheme.typography.titleMedium)
+                        RadioButton(selected == contact.id, onClick = null)
+                    }
+                }
+            }
+        }
+    }, confirmButton = {
+        FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            SigilTextButton({ start(false) }, enabled = enabled) { Glyph("call", 20); Spacer(Modifier.width(6.dp)); Text("Audio call") }
+            if (features.videoCalls) SigilTextButton({ start(true) }, enabled = enabled) { Glyph("videocam", 20); Spacer(Modifier.width(6.dp)); Text("Video call") }
+        }
+    }, dismissButton = { SigilTextButton(close) { Text("Cancel") } })
 }
 @Composable
 internal fun PersonalPage(page: String, state: MessengerState, command: Command, back: () -> Unit) {
@@ -92,18 +105,12 @@ internal fun PersonalPage(page: String, state: MessengerState, command: Command,
         text = { Text("${nameOf(device)} will lose access to the server. Messages already stored there remain on that device.") },
         confirmButton = { SigilTextButton({ command("revoke_device", mapOf("device" to device.id)); revoking = null }) { Text("Sign out device") } },
         dismissButton = { SigilTextButton({ revoking = null }) { Text("Cancel") } }) }
-    Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState())) {
-        Header(when(page) { "device" -> "Devices"; "profile" -> "Profile"; "privacy" -> "Privacy"; "notifications" -> "Notifications"; "storage" -> "Data and storage"; else -> "About" }, back)
-        Column(Modifier.padding(24.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
+    SettingsDetailLayout(when(page) { "device" -> "Devices"; "profile" -> "Profile"; "privacy" -> "Privacy"; "notifications" -> "Notifications"; "storage" -> "Data and storage"; else -> "About" }, back, continuous = page == "privacy") {
             when(page) {
                 "device" -> {
-                    Text("Devices on your account", style = MaterialTheme.typography.titleLarge)
-                    SigilButton({ command("device_link", mapOf("action" to "sponsor")) }, enabled = !state.busy) { Text("Link a new device") }
-                    Text("Manage where you’re signed in. Removing a device stops its access to your account.", style = MaterialTheme.typography.bodyMedium)
-                    SigilTextButton({ command("devices", emptyMap()) }, enabled = !state.busy) { Text("Refresh") }
                     state.devices.filter { state.ui["device_hidden.${it.id}"] != "true" }.forEach { device ->
                         var details by remember(device.id) { mutableStateOf(false) }
-                        Surface(shape = RoundedCornerShape(20.dp), color = MaterialTheme.colorScheme.surface) {
+                        Column {
                             Column(Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                                 Row(verticalAlignment = Alignment.CenterVertically) {
                                     Glyph(if (device.current) "smartphone" else "devices", 28)
@@ -131,9 +138,11 @@ internal fun PersonalPage(page: String, state: MessengerState, command: Command,
                         }
                     }
                     state.devicesNext?.let { cursor -> SigilTextButton({ command("devices", mapOf("cursor" to cursor)) }, enabled = !state.busy) { Text("Load more devices") } }
+                    SigilButton({ command("device_link", mapOf("action" to "sponsor")) }, enabled = !state.busy) { Text("Link a new device") }
+                    SigilTextButton({ command("devices", emptyMap()) }, enabled = !state.busy) { Text("Refresh") }
                 }
                 "profile" -> {
-                    Avatar(state.profileName.ifEmpty { state.address.removePrefix("@") }, 88, state.profileAvatar)
+                    Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) { Avatar(state.profileName.ifEmpty { state.address.removePrefix("@") }, 88, state.profileAvatar) }
                     if(LocalClientFeatures.current.files)Row { SigilTextButton({ command("photo_choose", emptyMap()) }, enabled = !state.busy) { Text("Change photo") }; SigilTextButton({ command("photo_remove", emptyMap()) }, enabled = !state.busy) { Text("Remove photo") } }
                     Text("Your name and photo are shared with approved contacts and are visible to your server. They do not change your encryption identity.", style = MaterialTheme.typography.bodySmall)
                     if (state.photoPending) {
@@ -141,7 +150,7 @@ internal fun PersonalPage(page: String, state: MessengerState, command: Command,
                         Row { SigilTextButton({ command("photo_retry", emptyMap()) }, enabled = !state.busy) { Text("Retry upload") }; SigilTextButton({ command("photo_cancel", emptyMap()) }, enabled = !state.busy) { Text("Discard change") } }
                     }
                     var name by remember(state.profileRevision) { mutableStateOf(state.profileName) }
-                    OutlinedTextField(name, { name = it }, label = { Text("Display name") })
+                    OutlinedTextField(name, { name = it }, Modifier.fillMaxWidth(), shape = RoundedCornerShape(16.dp), label = { Text("Display name") })
                     Text(state.address)
                     SigilButton({ command("set_profile", mapOf("revision" to state.profileRevision, "name" to name.trim())) }, enabled = !state.busy && state.profileRevision != null) { Text("Save name") }
                     HorizontalDivider()
@@ -150,11 +159,11 @@ internal fun PersonalPage(page: String, state: MessengerState, command: Command,
                     SigilTextButton({ command("sign_out", emptyMap()) }, enabled = !state.busy) { Text("Sign out of this device") }
                 }
                 "privacy" -> {
-                    Text("These preferences apply across your account. Conversations can have their own overrides.")
-                    state.allowRequests?.let { enabled -> Toggle("Allow message requests", enabled) { command("contact_policy", mapOf("enabled" to it)) } }
-                    Toggle("Read receipts", state.readReceipts) { command("organize", mapOf("peer" to null, "value" to mapOf("ReadReceipts" to it))) }
-                    Toggle("Typing indicators", state.typingIndicators) { command("organize", mapOf("peer" to null, "value" to mapOf("TypingIndicators" to it))) }
-                    Toggle("Share activity status", state.presenceSharing) { command("organize", mapOf("peer" to null, "value" to mapOf("PresenceSharing" to it))) }
+                    Text("Account preferences. Conversations can have their own overrides.", Modifier.padding(horizontal = 12.dp, vertical = 16.dp), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    SettingsToggle("Read receipts", "Let contacts see when you read messages", state.readReceipts, !state.busy) { command("organize", mapOf("peer" to null, "value" to mapOf("ReadReceipts" to it))) }
+                    SettingsToggle("Typing indicators", "Show when you are writing", state.typingIndicators, !state.busy) { command("organize", mapOf("peer" to null, "value" to mapOf("TypingIndicators" to it))) }
+                    state.allowRequests?.let { enabled -> SettingsToggle("Allow message requests", "Let people request a conversation", enabled, !state.busy) { command("contact_policy", mapOf("enabled" to it)) } }
+                    SettingsToggle("Share activity status", "Let contacts see your activity", state.presenceSharing, !state.busy) { command("organize", mapOf("peer" to null, "value" to mapOf("PresenceSharing" to it))) }
                 }
                 "notifications" -> {
                     val panel=LocalNotificationPanel.current
@@ -163,8 +172,8 @@ internal fun PersonalPage(page: String, state: MessengerState, command: Command,
                     Text("Notifications keep message content private. Snoozed conversations do not produce message alerts.")
                     state.notifications?.let { settings ->
                         if (!settings.enabled) { Text("Notifications are disabled in Android."); SigilButton({ command("notification_permission", emptyMap()) }) { Text("Enable notifications") } }
-                        Toggle("Message notifications", settings.messages) { command("notification_change", mapOf("key" to "messages", "enabled" to it)) }
-                        Toggle("Incoming call notifications", settings.calls) { command("notification_change", mapOf("key" to "incoming", "enabled" to it)) }
+                        SettingsToggle("Message notifications", "Notify you of new messages", settings.messages, !state.busy) { command("notification_change", mapOf("key" to "messages", "enabled" to it)) }
+                        SettingsToggle("Incoming call notifications", "Notify you of incoming calls", settings.calls, !state.busy) { command("notification_change", mapOf("key" to "incoming", "enabled" to it)) }
                     }
                     SigilTextButton({ command("notification_system_settings", emptyMap()) }) { Text("Sounds and Android notification settings") }
                     HorizontalDivider()
@@ -185,9 +194,13 @@ internal fun PersonalPage(page: String, state: MessengerState, command: Command,
                     Text("This device", style = MaterialTheme.typography.titleLarge)
                     Text("Messages and downloaded attachments are stored encrypted on this device.")
                     state.storage?.let { storage ->
-                        Text("Message database · ${storageBytes(storage.database)}")
-                        Text("Media cache · ${storageBytes(storage.mediaUsed)} used of ${storageBytes(storage.budget)}")
-                        Text("${storageBytes(storage.media)} allocated on disk", style = MaterialTheme.typography.bodySmall)
+                        Text("${storageBytes(storage.database + storage.media)} on this device", style = MaterialTheme.typography.headlineSmall)
+                        Column {
+                            SettingsValue("Message database", storageBytes(storage.database))
+                            SettingsValue("Media cache", storageBytes(storage.mediaUsed))
+                            SettingsValue("Cache limit", storageBytes(storage.budget))
+                        }
+                        Text("${storageBytes(storage.media)} allocated for media", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                         HorizontalDivider()
                         Text("Encrypted history recovery", style = MaterialTheme.typography.titleMedium)
                         Text(if (storage.restoring) "Restoring encrypted history…" else if (!storage.recovery) "Not enabled" else storage.checkpoint?.let { "Last backup · $it" } ?: "Waiting for the first backup")
@@ -214,24 +227,6 @@ internal fun PersonalPage(page: String, state: MessengerState, command: Command,
                 }
                 else -> { Text("Sigil", style = MaterialTheme.typography.displayMedium); Text("Modern correspondence."); Text("Development build · 0.1"); Text("Newsreader, Google Sans Flex, Google Sans Code, and Material Symbols."); Text("Animated Noto Emoji by Google · CC BY 4.0. Lottie by Airbnb · Apache 2.0."); androidx.compose.foundation.text.selection.SelectionContainer { Text("https://googlefonts.github.io/noto-emoji-animation/\nhttps://creativecommons.org/licenses/by/4.0/", style = MaterialTheme.typography.bodySmall) } }
             }
-        }
     }
 }
 private fun storageBytes(bytes: Long): String = when { bytes < 1024 -> "$bytes B"; bytes < 1024 * 1024 -> "${(bytes + 1023) / 1024} KiB"; else -> "${(bytes + 1024 * 1024 - 1) / (1024 * 1024)} MiB" }
-@Composable
-internal fun CallHistoryPage(state: MessengerState, command: Command) {
-    Column(Modifier.fillMaxSize()) {
-        if (state.calls.isEmpty()) Box(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) { Text("Your calls will appear here.", style = MaterialTheme.typography.bodyLarge) }
-        else LazyColumn { items(state.calls, key = { it.id }) { call ->
-            val other = call.participants.filter { !it.own }
-            val status = when (call.phase) { "ringing" -> "Incoming call"; "joining" -> "Connecting"; "active" -> "In progress"; "declined" -> "Unanswered"; else -> if (call.outgoing) "Outgoing" else "Incoming" }
-            SettingRow(if (call.outgoing) "call_made" else "call_received", call.name.ifEmpty { other.joinToString(", ") { it.name }.ifEmpty { "Call" } }, "$status · ${call.time}") {
-                when (call.phase) {
-                    "active", "joining" -> command("call_resume", mapOf("call" to call.id))
-                    "ringing" -> command("call_answer", mapOf("call" to call.id))
-                    else -> command("call_redial", mapOf("call" to call.id, "video" to false, "name" to call.name))
-                }
-            }
-        } }
-    }
-}

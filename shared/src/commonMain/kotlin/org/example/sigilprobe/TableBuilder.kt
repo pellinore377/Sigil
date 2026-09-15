@@ -51,30 +51,36 @@ internal fun TableBuilder(enabled:Boolean,back:()->Unit,send:(String)->Unit) {
         rows=rows.map {values->values.filterIndexed {i,_->i!=index}}
         remove=-1
     }
-    Column(Modifier.fillMaxSize().padding(horizontal=20.dp,vertical=8.dp),verticalArrangement=Arrangement.spacedBy(8.dp)) {
-        Row(verticalAlignment=Alignment.CenterVertically) {
+    val sizing=rememberBuilderSizing(24.dp)
+    Column(Modifier.fillMaxSize().padding(start=8.dp,end=8.dp,top=8.dp),verticalArrangement=Arrangement.spacedBy(8.dp)) {
+        Row(sizing.measure("header"),verticalAlignment=Alignment.CenterVertically) {
             Symbol("chevron_left","Back to create",back)
             Text("Table",Modifier.weight(1f),style=MaterialTheme.typography.titleLarge)
         }
-        Row(horizontalArrangement=Arrangement.spacedBy(8.dp)) {
+        Row(sizing.measure("pages"),horizontalArrangement=Arrangement.spacedBy(8.dp)) {
             pages.forEach {value->FilterChip(selected=page==value,onClick={change(value)},label={Text(value)},shape=RoundedCornerShape(12.dp))}
         }
         if(tooLarge)Text("That edit is too large. Shorten the text and try again.",color=MaterialTheme.colorScheme.error,style=MaterialTheme.typography.bodySmall)
-        AnimatedContent(page,Modifier.weight(1f),transitionSpec={
+        when(page) {
+            "Columns"->BuilderConfirm("Enter rows",columns.any {it.isNotBlank()}) {change("Rows")}
+            "Rows"->BuilderConfirm("Preview table",source.isNotEmpty()) {change("Preview")}
+            else->BuilderConfirm(if(LocalBuilderAction.current=="Send")"Send table" else LocalBuilderAction.current,enabled && preview!=null && source.isNotEmpty()) {send(source)}
+        }
+        AnimatedContent(page,Modifier.weight(1f).verticalScroll(rememberScrollState()).wrapContentHeight(unbounded=true).then(sizing.measure("body")),transitionSpec={
             (slideInHorizontally(motion.tween(MotionMillis)){if(pages.indexOf(targetState)>pages.indexOf(initialState))it else -it}+fadeIn(motion.tween(MotionMillis))) togetherWith
                 (slideOutHorizontally(motion.tween(MotionMillis)){if(pages.indexOf(targetState)>pages.indexOf(initialState))-it else it}+fadeOut(motion.tween(MotionMillis)))
         },label="Table form") {shown->
             when(shown) {
-                "Columns"->LazyColumn(verticalArrangement=Arrangement.spacedBy(12.dp)) {
-                    item {Text("Name the columns, then enter your rows.",style=MaterialTheme.typography.bodySmall)}
-                    itemsIndexed(columns) {index,value->
-                        Row(Modifier.animateItem(fadeInSpec=motion.tween(MotionMillis),placementSpec=motion.tween(MotionMillis)),verticalAlignment=Alignment.CenterVertically) {
+                "Columns"->Column(verticalArrangement=Arrangement.spacedBy(12.dp)) {
+                    Text("Name the columns, then enter your rows.",style=MaterialTheme.typography.bodySmall)
+                    columns.forEachIndexed {index,value->
+                        Row(Modifier.animateContentSize(motion.tween(MotionMillis)),verticalAlignment=Alignment.CenterVertically) {
                             TableField(value,{update(columns.toMutableList().also {v->v[index]=it},rows)},"Column ${index+1}",Modifier.weight(1f))
                             if(columns.size>1)SigilIconButton({if(rows.any {it[index].isNotBlank()})remove=index else deleteColumn(index)}) {Glyph("close",20,"Remove column ${index+1}")}
                         }
                     }
-                    if(columns.size<64)item {SigilTextButton({columns=columns+"";rows=rows.map {it+""}}) {Glyph("add",20);Text("Add column")}}
-                    item {SigilButton({change("Rows")},Modifier.fillMaxWidth(),enabled=columns.any {it.isNotBlank()}) {Text("Enter rows")}}
+                    if(columns.size<64) {SigilTextButton({columns=columns+"";rows=rows.map {it+""}}) {Glyph("add",20);Text("Add column")}}
+
                 }
                 "Rows"->Column(verticalArrangement=Arrangement.spacedBy(8.dp)) {
                     Row(verticalAlignment=Alignment.CenterVertically) {
@@ -83,31 +89,31 @@ internal fun TableBuilder(enabled:Boolean,back:()->Unit,send:(String)->Unit) {
                         SigilIconButton({focus.clearFocus();row++},enabled=row<rows.lastIndex) {Glyph("chevron_right",24,"Next row")}
                         if(rows.size>1)SigilIconButton({rows=rows.filterIndexed {i,_->i!=row};row=row.coerceAtMost(rows.lastIndex)}) {Glyph("delete",20,"Remove row ${row+1}")}
                     }
-                    AnimatedContent(row,Modifier.weight(1f),transitionSpec={
+                    AnimatedContent(row,transitionSpec={
                         (slideInHorizontally(motion.tween(MotionMillis)){if(targetState>initialState)it else -it}+fadeIn(motion.tween(MotionMillis))) togetherWith
                             (slideOutHorizontally(motion.tween(MotionMillis)){if(targetState>initialState)-it else it}+fadeOut(motion.tween(MotionMillis)))
                     },label="Table row") {shownRow->
                     val cells=rows.getOrNull(shownRow)
-                    if(cells!=null)LazyColumn(verticalArrangement=Arrangement.spacedBy(12.dp)) {
-                        itemsIndexed(columns) {index,name->
+                    if(cells!=null)Column(verticalArrangement=Arrangement.spacedBy(12.dp)) {
+                        columns.forEachIndexed {index,name->
                             TableField(cells[index],{value->if(shownRow in rows.indices)update(columns,rows.toMutableList().also {v->v[shownRow]=v[shownRow].toMutableList().also {it[index]=value}})},name.ifBlank {"Column ${index+1}"},Modifier.fillMaxWidth())
                         }
-                        if(rows.size<256)item {
+                        if(rows.size<256) {
                             SigilTextButton({focus.clearFocus();rows=rows+listOf(List(columns.size){""});row=rows.lastIndex},enabled=cells.any {it.isNotBlank()}) {Glyph("add",20);Text("Add row")}
                         }
-                        item {Text("Empty rows are left out. Each cell keeps its text literally.",style=MaterialTheme.typography.bodySmall)}
-                        item {SigilButton({change("Preview")},Modifier.fillMaxWidth(),enabled=source.isNotEmpty()) {Text("Preview table")}}
+                        Text("Empty rows are left out. Each cell keeps its text literally.",style=MaterialTheme.typography.bodySmall)
+
                     }
                     }
                 }
-                else->Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()),verticalArrangement=Arrangement.spacedBy(12.dp)) {
+                else->Column(Modifier.fillMaxWidth(),verticalArrangement=Arrangement.spacedBy(12.dp)) {
                     if(preview!=null) {
                         Surface(shape=RoundedCornerShape(20.dp),color=MaterialTheme.colorScheme.primary) {
                             CompositionLocalProvider(LocalMessageSurface provides MaterialTheme.colorScheme.primary) {
                                 Box(Modifier.fillMaxWidth().padding(12.dp),contentAlignment=Alignment.Center) {TableCard(preview)}
                             }
                         }
-                        SigilButton({send(source)},Modifier.fillMaxWidth(),enabled=enabled) {Text(if(LocalBuilderAction.current=="Send")"Send table" else LocalBuilderAction.current)}
+
                     } else Text(if(resolve==null)"The builder is unavailable." else "Add a column name and at least one row. Tables support up to 64 columns and 256 rows within the message size limit.",style=MaterialTheme.typography.bodyMedium)
                 }
             }

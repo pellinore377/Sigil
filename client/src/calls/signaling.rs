@@ -1,6 +1,12 @@
 use super::*;
 use sigil_calls::{Answer, Connect, Layout, Relay, RelayRequest, SignedConnect};
 impl ClientStore {
+    pub fn call_transport_roster(&mut self, id: Id, now: u64) -> Result<(SignedRoster, Id), Error> {
+        let now = crate::conversations::time_floor(&self.db, &self.key, now)?;
+        let record = load(&self.db, &self.key, &id)?;
+        record.authorize(&self.db, &self.key, now)?;
+        Ok((record.state.roster.clone(), record.own_id()?))
+    }
     /// The adapter creates a fresh peer connection for each reconnect attempt.
     pub fn prepare_call_connection(
         &mut self,

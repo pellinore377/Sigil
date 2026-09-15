@@ -642,7 +642,7 @@ pub(crate) fn parse(lines: &[&str], limits: CardLimits) -> Result<Utility, Error
     })
 }
 
-fn choices(source: &str) -> Vec<&str> {
+pub(crate) fn choices(source: &str) -> Vec<&str> {
     let mut values = Vec::new();
     let mut start = 0;
     let mut escaped = false;

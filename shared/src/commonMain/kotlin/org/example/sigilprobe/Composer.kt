@@ -185,7 +185,7 @@ fun Composer(state: TextFieldState, analyze: (String) -> String, modifier: Modif
             modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp, max = 144.dp).testTag("composer")
                 .semantics { contentDescription = "Message" }
                 .focusRequester(editorFocus).onFocusChanged { editorFocused = it.isFocused; if (it.isFocused) onFocus() }
-                .background(MaterialTheme.colorScheme.background, androidx.compose.foundation.shape.RoundedCornerShape(16.dp)).padding(horizontal = 14.dp, vertical = 12.dp)
+                .background(if(showTools)MaterialTheme.colorScheme.background else Color.Transparent, androidx.compose.foundation.shape.RoundedCornerShape(16.dp)).padding(horizontal = 14.dp, vertical = 12.dp)
                 .onPreviewKeyEvent {
                     if (it.type != KeyEventType.KeyDown) false
                     else if (it.key == Key.Tab && !it.isCtrlPressed && !it.isAltPressed && !it.isMetaPressed) {

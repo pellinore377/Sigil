@@ -202,10 +202,8 @@ mod tests {
         let mut bytes = packet.clone().into_bytes();
         let last = bytes.last_mut().unwrap();
         *last = if *last == b'0' { b'1' } else { b'0' };
-        assert!(
-            owner
-                .open(std::str::from_utf8(&bytes).unwrap(), true)
-                .is_err()
-        );
+        assert!(owner
+            .open(std::str::from_utf8(&bytes).unwrap(), true)
+            .is_err());
     }
 }

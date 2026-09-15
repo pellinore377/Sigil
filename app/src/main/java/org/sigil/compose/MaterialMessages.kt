@@ -25,6 +25,8 @@ internal class MessageMaterialView(context:android.content.Context, private val 
     @Volatile private var active=true
     @Volatile private var generation=0
     private var nativeId=0L
+    private var bufferWidth=0
+    private var bufferHeight=0
     init { isOpaque=false;alpha=0f;surfaceTextureListener=this }
     fun update(frame:MaterialFrame,visible:Boolean) {
         val changed=latest.get()?.sameImage(frame)!=true
@@ -49,8 +51,9 @@ internal class MessageMaterialView(context:android.content.Context, private val 
         }
     }
     override fun onSurfaceTextureAvailable(texture:SurfaceTexture,width:Int,height:Int) {
-        val scale=minOf(1f,limit.toFloat()/maxOf(width,height))
+        val scale=limit.toFloat()/maxOf(width,height)
         val w=(width*scale).toInt().coerceAtLeast(1);val h=(height*scale).toInt().coerceAtLeast(1)
+        bufferWidth=w;bufferHeight=h
         texture.setDefaultBufferSize(w,h)
         val surface=Surface(texture);val token=++generation
         materialWorker.execute {
@@ -62,7 +65,8 @@ internal class MessageMaterialView(context:android.content.Context, private val 
         }
     }
     override fun onSurfaceTextureSizeChanged(texture:SurfaceTexture,width:Int,height:Int) {
-        onSurfaceTextureAvailable(texture,width,height)
+        if(bufferWidth==0 || kotlin.math.abs(width.toFloat()/height-bufferWidth.toFloat()/bufferHeight)>.02f)
+            onSurfaceTextureAvailable(texture,width,height)
     }
     override fun onSurfaceTextureUpdated(texture:SurfaceTexture) {}
     override fun onSurfaceTextureDestroyed(texture:SurfaceTexture):Boolean {

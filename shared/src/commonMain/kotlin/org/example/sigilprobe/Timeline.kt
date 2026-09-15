@@ -31,7 +31,7 @@ import kotlinx.coroutines.launch
 import kotlin.math.*
 
 @Composable
-fun Glyph(name: String, size: Int = 24, label: String? = null, filled: Boolean = true) {
+fun Glyph(name: String, size: Int = 24, label: String? = null, filled: Boolean = false) {
     val glyphSize = with(LocalDensity.current) { size.dp.toSp() }
     Text(name, fontFamily = if (name.any { it.code > 127 }) null else FontFamily(Font(if (filled) Res.font.material_symbols else Res.font.material_symbols_outline)), fontSize = glyphSize, lineHeight = glyphSize, maxLines = 1,
         modifier = Modifier.clearAndSetSemantics { if (label != null) contentDescription = label })
@@ -46,13 +46,13 @@ internal fun ConversationHeader(chat: ChatSummary, page: String, threaded: Boole
     Row(Modifier.fillMaxSize().padding(horizontal = 8.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
         Symbol("chevron_left", "Back", back)
         PresenceAvatar(chat, 42)
-        Column(Modifier.weight(1f).padding(start = 10.dp)) {
-            Text(if (threaded) "Thread" else chat.name, style = MaterialTheme.typography.titleLarge, maxLines = 1, overflow = TextOverflow.Ellipsis)
-            if (page.isNotEmpty()) Text(page, style = MaterialTheme.typography.labelSmall)
+        Column(Modifier.weight(1f).padding(start = 10.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            Text(if (threaded) "Thread" else page.ifEmpty { chat.name }, style = MaterialTheme.typography.titleLarge, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            if (threaded || page.isNotEmpty()) Text(chat.name, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis)
         }
-        if(LocalClientFeatures.current.calls) {
+        if(LocalClientFeatures.current.calls && chat.id != "self") {
         Symbol("call", "Start audio call") { command("call_start", mapOf("peer" to chat.id, "video" to false)) }
-        Symbol("videocam", "Start video call") { command("call_start", mapOf("peer" to chat.id, "video" to true)) }
+        if(LocalClientFeatures.current.videoCalls)Symbol("videocam", "Start video call") { command("call_start", mapOf("peer" to chat.id, "video" to true)) }
         }
         Box {
             Symbol("more_vert", "Conversation menu") { menu = true }
@@ -73,14 +73,13 @@ internal fun ConversationPage(chat: ChatSummary, state: MessengerState, draft: T
     var selected by remember(chat.id) { mutableStateOf<Pair<ChatMessage, Rect>?>(null) }
     var returnBounds by remember(chat.id) { mutableStateOf(Rect.Zero) }
     var details by remember(chat.id) { mutableStateOf<Pair<String, String>?>(null) }
-    var submitted by remember { mutableStateOf<String?>(null) }
+    var submitted by remember { mutableStateOf<Triple<String, String, Long>?>(null) }
     var localQuery by remember(page) { mutableStateOf("") }
     val scheme = MaterialTheme.colorScheme
     val list = rememberLazyListState()
     val clipboard = LocalClipboardManager.current
     val keyboard = LocalSoftwareKeyboardController.current
     val focus = LocalFocusManager.current
-    LaunchedEffect(state.sent) { submitted?.let { if (draft.text.toString() == it) draft.clearText(); submitted = null; reply = null; editing = null } }
     LaunchedEffect(state.editDraft) { state.editDraft?.let { edit ->
         if (edit.peer == chat.id) state.messages.firstOrNull { it.id == edit.message && it.author == edit.author }?.let {
             editing = it; reply = null; setThread(null); draft.edit { replace(0, length, edit.source) }
@@ -101,35 +100,70 @@ internal fun ConversationPage(chat: ChatSummary, state: MessengerState, draft: T
     textMotion.update(messages.map {it.author+it.id},state.timelineLoaded,!state.historical && page.isEmpty(),animated.keys)
     val visibleKeys by remember {derivedStateOf {list.layoutInfo.visibleItemsInfo.map {it.key}.toSet()}}
     val materialTimeline=remember(chat.id,page,thread) {MaterialTimeline()}
+    val previewLaunch = remember(chat.id, page, thread) { PreviewLaunch() }
+    LaunchedEffect(state.sent, previewLaunch.activeSource) {
+        submitted?.takeIf { state.sent > it.third && state.sentText == it.second && !previewLaunch.holding(it.second) }?.let {
+            if (draft.text.toString() == it.first) draft.clearText()
+            submitted = null; reply = null; editing = null
+        }
+    }
+    SideEffect { state.sentMessage?.let { previewLaunch.bind(state.sentText.orEmpty(), it, state.sent) } }
+    LaunchedEffect(previewLaunch.activeMessage) {
+        val message = previewLaunch.activeMessage ?: return@LaunchedEffect
+        kotlinx.coroutines.delay(5000)
+        if (previewLaunch.activeMessage == message) previewLaunch.cancel()
+    }
+    LaunchedEffect(state.issue) { if (state.issue != null) previewLaunch.cancel() }
     val materialOverlay=LocalMaterialOverlay.current
+    val canLaunch = materialOverlay != null && !motionPolicy.reduced && LocalMotionVisible.current && !state.historical && page.isEmpty()
+    MaterialRootOverlay(materialTimeline, materialOverlay, selected == null)
+    val composerInset = (LocalFooterHost.current?.height ?: 0.dp) + 16.dp
     val materialHeader=with(LocalDensity.current){LocalHeaderInset.current.toPx()}
     BackAction(thread != null) { setThread(null); if (state.historical) command("latest", emptyMap()) }
     fun respond(message: ChatMessage, threaded: Boolean) {
         if (threaded) { setThread(ThreadTarget(message.threadAuthor ?: message.author, message.threadMessage ?: message.id)); reply = null } else reply = message
         selected = null
     }
-    Box(Modifier.fillMaxSize()) {
-        if (LocalHeaderInset.current == 0.dp) LocalWallpaper.current(chat.id, Modifier.matchParentSize())
-        Column(Modifier.fillMaxSize().then(if (gradient && LocalHeaderInset.current == 0.dp) Modifier.background(Brush.verticalGradient(listOf(scheme.background.copy(alpha = .7f), scheme.primaryContainer.copy(alpha = .7f)))) else Modifier)) {
-            val motion = LocalPageMotion.current
-            val goingBack = LocalNavigationBack.current
+    val pageMotion = LocalPageMotion.current
+    val timelineMotion = if (pageMotion == null) Modifier else with(pageMotion) { Modifier.animateEnterExit(
+        enter = slideInVertically(motionPolicy.tween(MotionMillis)) { it },
+        exit = slideOutVertically(motionPolicy.tween(MotionMillis, if(LocalNavigationBack.current)160 else 0)) { it }) }
+    Box(Modifier.fillMaxSize().then(timelineMotion).background(scheme.background).testTag("conversation-page")) {
+        LocalWallpaper.current(chat.id, Modifier.matchParentSize())
+        Column(Modifier.align(Alignment.TopCenter).widthIn(max = 920.dp).fillMaxSize().then(if (gradient) Modifier.background(Brush.verticalGradient(listOf(scheme.background.copy(alpha = .7f), scheme.primaryContainer.copy(alpha = .7f)))) else Modifier)) {
             val headerInset = LocalHeaderInset.current
             val banner = !chat.group && (!chat.verified || chat.request == "incoming")
             val controls = page == "Search" || state.historical
-            val timelineMotion = if (motion == null) Modifier else with(motion) { Modifier.animateEnterExit(
-                enter = if (goingBack) fadeIn(motionPolicy.tween(MotionMillis)) else slideInVertically(motionPolicy.tween(MotionMillis)) { it }, exit = slideOutVertically(motionPolicy.tween(MotionMillis)) { it }) }
-            Column(Modifier.weight(1f).fillMaxWidth().then(timelineMotion).testTag("timeline-body")) {
+            Column(Modifier.weight(1f).fillMaxWidth().testTag("timeline-body")) {
             if (controls) Spacer(Modifier.height(headerInset))
                 if (page == "Search") OutlinedTextField(localQuery, { localQuery = it }, Modifier.fillMaxWidth().padding(12.dp), placeholder = { Text("Search this conversation") }, singleLine = true)
             if (state.historical) SigilTextButton({ command("latest", emptyMap()) }, Modifier.align(Alignment.CenterHorizontally)) { Text("Return to latest messages") }
             Box(Modifier.weight(1f).fillMaxWidth().clipToBounds().onGloballyPositioned {materialTimeline.viewport=it.boundsInWindow();val r=materialTimeline.viewport;if(materialHeader>0)materialTimeline.bubbles["header"]=Rect(r.left,r.top,r.right,r.top+materialHeader)}) {
-            CompositionLocalProvider(LocalMaterialTimeline provides materialTimeline.takeIf {materialOverlay!=null}) {
-            LazyColumn(Modifier.fillMaxSize().testTag("timeline"), state = list, reverseLayout = true, contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = (if (controls) 0.dp else headerInset) + 12.dp, bottom = 12.dp)) {
+            CompositionLocalProvider(LocalMaterialTimeline provides materialTimeline.takeIf {materialOverlay!=null}, LocalPreviewLaunch provides previewLaunch) {
+            LazyColumn(Modifier.fillMaxSize().testTag("timeline"), state = list, reverseLayout = true, contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = (if (controls) 0.dp else headerInset) + 12.dp, bottom = composerInset)) {
                 item("typing") { androidx.compose.animation.AnimatedVisibility(!threadsOverview && state.typing.isNotEmpty(), enter = expandVertically(motionPolicy.tween(MotionMillis)) + fadeIn(), exit = shrinkVertically(motionPolicy.tween(MotionMillis)) + fadeOut()) { TypingRow(state.typing.map { state.people[it] ?: if (chat.group) "Member" else chat.name }, chat.name, state.typing) } }
                 itemsIndexed(messages, key = { _, it -> it.author + it.id }) { index, message ->
-                    if (threadsOverview) {
-                        Surface(Modifier.fillMaxWidth().padding(vertical = 6.dp).clip(RoundedCornerShape(20.dp)).clickable { setThread(ThreadTarget(message.threadAuthor!!, message.threadMessage!!)) }, shape = RoundedCornerShape(20.dp), color = scheme.surfaceVariant) {
-                            Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    if (page == "Pins") {
+                        var pinBounds by remember(message.id) { mutableStateOf(Rect.Zero) }
+                        Surface(Modifier.fillMaxWidth().padding(vertical = 6.dp).onGloballyPositioned { pinBounds = it.boundsInWindow() }
+                            .clip(RoundedCornerShape(20.dp)).combinedClickable(onClick = { details = message.author to message.id }, onLongClick = { selected = message to pinBounds }),
+                            shape = RoundedCornerShape(20.dp), color = scheme.surfaceContainerHigh) {
+                            Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Avatar(state.people[message.author] ?: if (message.mine) "You" else chat.name, 28, message.author)
+                                    Column(Modifier.weight(1f).padding(start = 8.dp), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                                        Text(state.people[message.author] ?: if (message.mine) "You" else chat.name, style = MaterialTheme.typography.labelLarge)
+                                        Text(message.time, style = MaterialTheme.typography.labelSmall, color = scheme.onSurfaceVariant)
+                                    }
+                                    Symbol("push_pin", "Unpin message") { command("pin", mapOf("peer" to chat.id, "author" to message.author, "message" to message.id, "active" to false)) }
+                                }
+                                MessageBubble(message.copy(pinned = false), false, false, analyze, if (chat.verified && !state.busy) command else null)
+                            }
+                        }
+                        return@itemsIndexed
+                    } else if (threadsOverview) {
+                        Surface(Modifier.fillMaxWidth().padding(vertical = 6.dp).clip(RoundedCornerShape(20.dp)).clickable { setThread(ThreadTarget(message.threadAuthor!!, message.threadMessage!!)) }, shape = RoundedCornerShape(20.dp), color = scheme.surfaceContainerHigh) {
+                            Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                                 Text(message.threadPreview ?: "Earlier message", maxLines = 3, overflow = TextOverflow.Ellipsis)
                                 Row(verticalAlignment = Alignment.CenterVertically) { Glyph("forum", 18); Spacer(Modifier.width(8.dp)); Text(message.text, Modifier.weight(1f), maxLines = 2, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.bodySmall); Glyph("chevron_right", 20) }
                             }
@@ -198,13 +232,11 @@ internal fun ConversationPage(chat: ChatSummary, state: MessengerState, draft: T
             }
             if(selected==null)materialOverlay?.invoke(materialTimeline,Modifier.matchParentSize())
             }
-            if (banner) ContactRequestPanel(chat, state.busy, command)
+            if (banner) Column(Modifier.padding(bottom = composerInset)) { ContactRequestPanel(chat, state.busy, command) }
             }
-            val composerMotion = if (motion == null) Modifier else with(motion) { Modifier.animateEnterExit(
-                enter = if (goingBack) fadeIn(motionPolicy.tween(MotionMillis)) else slideInHorizontally(motionPolicy.tween(160, delayMillis = 80)) { it } + fadeIn(motionPolicy.tween(160, delayMillis = 80)),
-                exit = slideOutHorizontally(motionPolicy.tween(MotionMillis)) { it } + fadeOut(motionPolicy.tween(160))) }
             FooterContent {
-            Column(Modifier.fillMaxWidth().then(composerMotion)) {
+            CompositionLocalProvider(LocalPreviewLaunch provides previewLaunch) {
+            Column(Modifier.fillMaxWidth()) {
             val context = editing?.let { "Editing: ${it.text}" } ?: reply?.let { "Replying to ${it.text}" } ?: thread?.let { "Reply in thread" }
             state.transfers.filter { it.peer == chat.id && !it.draft }.forEach { transfer ->
                 Row(Modifier.fillMaxWidth().padding(start = 20.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -217,11 +249,12 @@ internal fun ConversationPage(chat: ChatSummary, state: MessengerState, draft: T
                 command(action, if (action in listOf("attachment_pick", "record_start")) fields + mapOf("reply_author" to reply?.author, "reply_message" to reply?.id, "thread_author" to thread?.author, "thread_message" to thread?.id) else fields)
             }
             if (!threadsOverview) ComposerPanel(draft, analyze, chat.verified && !state.busy, page == "Notes", inputCommand, chat.id, state.voice, state.sent, state.sentText, requestContact = if (!chat.verified && !chat.group && !state.busy && chat.request in listOf("none", "expired")) ({ command("contact_request", mapOf("peer" to chat.id, "action" to "send")) }) else null, attachments = state.transfers.filter { it.peer == chat.id }, editingCaption = editing?.attachment != null, attachmentTarget = mapOf("peer" to chat.id, "reply_author" to reply?.author, "reply_message" to reply?.id, "thread_author" to thread?.author, "thread_message" to thread?.id)) { text, rich, timezone ->
-                submitted = draft.text.toString()
+                submitted = Triple(draft.text.toString(), text, state.sent)
                 if (editing != null) command("edit", mapOf("peer" to chat.id, "author" to editing!!.author, "message" to editing!!.id, "text" to text, "formatted" to true))
-                else command("post", mapOf("peer" to chat.id, "text" to text, "rich" to rich, "formatted" to true, "timezone" to timezone,
-                    "reply_author" to reply?.author, "reply_message" to reply?.id, "thread_author" to thread?.author, "thread_message" to thread?.id))
+                else { if (canLaunch) previewLaunch.arm(text, state.sent); command("post", mapOf("peer" to chat.id, "text" to text, "rich" to rich, "formatted" to true, "timezone" to timezone,
+                    "reply_author" to reply?.author, "reply_message" to reply?.id, "thread_author" to thread?.author, "thread_message" to thread?.id)) }
             }
+        }
         }
         }
         }
@@ -250,24 +283,31 @@ internal fun ConversationPage(chat: ChatSummary, state: MessengerState, draft: T
 @Composable
 internal fun MessageBubble(message: ChatMessage, grouped: Boolean, followed: Boolean, analyze: (String) -> String, command: Command? = null) {
     val scheme = MaterialTheme.colorScheme
-    val objectOnly=message.reply==null && message.attachment==null && message.parts.size==1 && message.parts[0].utility?.motion?.kind in listOf("dice","coin","choice")
+    val objectOnly=message.bareRandomizers()
+    val bareImage=message.attachment?.mediaType?.let {it.startsWith("image/") || it.startsWith("video/")} == true
+    val bareLocation=message.attachment==null && message.parts.any {it.kind=="location"} && message.parts.all {it.kind in listOf("location","text")}
     val emoji = remember(message.text, message.kind, message.reply, message.parts) { if (message.kind == "Text" && message.reply == null && message.parts.all { it.kind == "text" && it.rich?.spans.orEmpty().isEmpty() }) animatedEmoji(message.text) else null }
     Box(Modifier.padding(top = if (message.reactions.isNotEmpty() || message.pinned) 8.dp else 0.dp)) {
         if (emoji != null) EmojiMessage(emoji)
         else
         Surface(shape = RoundedCornerShape(topStart = if (!message.mine && grouped) 5.dp else 20.dp, topEnd = if (message.mine && grouped) 5.dp else 20.dp,
             bottomStart = if (!message.mine && followed) 5.dp else 20.dp, bottomEnd = if (message.mine && followed) 5.dp else 20.dp),
-            color = if(objectOnly) Color.Transparent else if (message.mine) scheme.primary else scheme.surfaceVariant, contentColor = if(objectOnly) scheme.onBackground else if (message.mine) scheme.onPrimary else scheme.onSurfaceVariant) {
+            color = if(objectOnly || bareImage || bareLocation) Color.Transparent else if (message.mine) scheme.primary else scheme.surfaceVariant, contentColor = if(objectOnly || bareImage || bareLocation) scheme.onBackground else if (message.mine) scheme.onPrimary else scheme.onSurfaceVariant) {
             CompositionLocalProvider(LocalMaterialOutgoing provides message.mine,LocalMessageSurface provides if (message.mine) scheme.primary else scheme.surfaceVariant) {
-            Column(if (message.attachment == null) Modifier.padding(horizontal = if(objectOnly)0.dp else 14.dp, vertical = 10.dp) else Modifier) {
+            Column(if (message.attachment == null) Modifier.padding(horizontal = if(objectOnly || bareLocation)0.dp else 14.dp, vertical = if(bareLocation)0.dp else 10.dp) else Modifier) {
                 message.reply?.let { Surface(shape = RoundedCornerShape(12.dp), color = (if (message.mine) scheme.onPrimary else scheme.onSurface).copy(alpha = .09f)) { Text(it, Modifier.padding(9.dp), style = MaterialTheme.typography.bodySmall, maxLines = 2, overflow = TextOverflow.Ellipsis) }; Spacer(Modifier.height(6.dp)) }
-                if (message.attachment != null) LocalAttachmentContent.current(message) else if (message.parts.isNotEmpty()) MessageCards(message, analyze, command) else MessageText(message.text, analyze)
-                message.attachment?.caption?.takeIf { it.isNotEmpty() }?.let { Box(Modifier.padding(horizontal = 14.dp, vertical = 10.dp)) { MessageText(it, analyze) } }
+                if (message.attachment != null) LocalAttachmentContent.current(message) else if (message.parts.isNotEmpty()) MessageCards(message, analyze, command, objectOnly) else MessageText(message.text, analyze)
+                message.attachment?.caption?.takeIf { it.isNotEmpty() }?.let { caption ->
+                    if (bareImage) Surface(Modifier.padding(top=4.dp), shape=RoundedCornerShape(16.dp), color=if(message.mine)scheme.primary else scheme.surfaceVariant, contentColor=if(message.mine)scheme.onPrimary else scheme.onSurfaceVariant) {
+                        Box(Modifier.padding(horizontal=14.dp,vertical=10.dp)) { MessageText(caption,analyze) }
+                    } else Box(Modifier.padding(horizontal=14.dp,vertical=10.dp)) { MessageText(caption,analyze) }
+                }
+
             }
             }
         }
         if (message.reactions.isNotEmpty()) Text(message.reactions.distinct().joinToString(""), Modifier.align(if (message.mine) Alignment.TopStart else Alignment.TopEnd).offset(y = (-10).dp), fontSize = 20.sp)
-        if (message.pinned) Box(Modifier.align(if (message.mine) Alignment.TopEnd else Alignment.TopStart).offset(y = (-8).dp).background(scheme.background, CircleShape).padding(2.dp)) { Glyph("push_pin", 13, "Pinned message") }
+        if (message.pinned) Box(Modifier.align(if (message.mine) Alignment.TopEnd else Alignment.TopStart).offset(y = (-8).dp).background(scheme.background, CircleShape).padding(2.dp)) { Glyph("push_pin", 13, "Pinned message", filled=true) }
     }
 }
 @Composable

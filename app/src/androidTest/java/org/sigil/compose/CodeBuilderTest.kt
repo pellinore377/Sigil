@@ -20,23 +20,23 @@ class CodeBuilderTest {
         val body="\tlet x = \"👩🏽‍💻\";\n```\nredact::literal;\n"
         ui.onNodeWithContentDescription("Attachments").performClick()
         ui.onNodeWithContentDescription("Format").performClick()
-        ui.onNodeWithText("Code block").performScrollTo().performClick()
+        ui.onNodeWithContentDescription("Code block").performClick()
         ui.onNodeWithText("Plain text").performClick()
         ui.onNodeWithText("Rust").performClick()
         ui.onNode(hasSetTextAction() and hasText("Code",substring=false)).performTextInput(body)
-        ui.onNodeWithText("Preview code").assertIsDisplayed()
+        ui.onNodeWithContentDescription("Preview code").assertIsDisplayed()
         ui.onNodeWithContentDescription("Back to formatting").performClick()
-        ui.onNodeWithText("Code block").performScrollTo().performClick()
+        ui.onNodeWithContentDescription("Code block").performClick()
         ui.onNode(hasSetTextAction() and hasText("Code",substring=false)).assertTextContains(body)
         assertTrue(commands.none {it.first=="post"})
-        ui.onNodeWithText("Preview code").performClick()
+        ui.onNodeWithContentDescription("Preview code").performClick()
         ui.onNodeWithText(body,substring=false).assertExists()
         ui.onNodeWithContentDescription("Copy code").performClick()
         ui.runOnIdle {assertEquals(body,ui.activity.getSystemService(android.content.ClipboardManager::class.java).primaryClip!!.getItemAt(0).text.toString())}
         if(androidx.test.platform.app.InstrumentationRegistry.getArguments().getString("capture_builder")=="true") {
             java.io.File(ui.activity.cacheDir,"code-builder.png").outputStream().use {ui.onRoot().captureToImage().asAndroidBitmap().compress(android.graphics.Bitmap.CompressFormat.PNG,100,it)}
         }
-        ui.onNodeWithText("Add to message").assertIsDisplayed().performClick()
+        ui.onNodeWithContentDescription("Attach").assertIsDisplayed().performClick()
         assertTrue(commands.none {it.first=="post"})
         ui.onNodeWithContentDescription("Send message").performClick()
         val sent=commands.single {it.first=="post"}.second

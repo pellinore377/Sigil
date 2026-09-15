@@ -1,14 +1,16 @@
 use super::*;
 use rusqlite::OptionalExtension;
 use serde::Serialize;
-#[path="mobile_link_relay.rs"] mod relay;
-#[path="mobile_link_transport.rs"] mod transport_flow;
+#[path = "mobile_link_relay.rs"]
+mod relay;
+#[path = "mobile_link_transport.rs"]
+mod transport_flow;
 
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Flow {
     #[serde(default)]
-    relay:Option<relay::Relay>,
+    relay: Option<relay::Relay>,
     attempt: Id,
     sponsor: bool,
     stage: String,
@@ -83,7 +85,7 @@ impl ClientStore {
             self.identity()?;
             getrandom::fill(&mut attempt).map_err(|_| sigil_crypto::Error::Entropy)?;
             let initial = Flow {
-                relay:None,
+                relay: None,
                 attempt,
                 sponsor,
                 stage: if sponsor {
@@ -159,7 +161,7 @@ impl ClientStore {
                 self.save_link_flow(&flow)?;
             }
             "finish" if flow.stage == "show_response" => {
-                let(port,roots)=relay::endpoint();
+                let (port, roots) = relay::endpoint();
                 self.finish_device_link_online(flow.attempt, port, &roots)?;
                 flow.stage = "done".into();
                 flow.qr.clear();
@@ -327,10 +329,7 @@ mod tests {
             )
             .unwrap();
         // The platform's completion retries the already persisted receipt.
-        assert_eq!(
-            joining.link_step("finish", None).unwrap()["stage"],
-            "done"
-        );
+        assert_eq!(joining.link_step("finish", None).unwrap()["stage"], "done");
         assert_eq!(
             sponsor.connection_session().unwrap().unwrap().account_id,
             joining.connection_session().unwrap().unwrap().account_id
@@ -360,19 +359,13 @@ mod tests {
             .execute("UPDATE mobile_link SET state=?1", [raw])
             .unwrap();
         assert!(joining.link_step("status", None).is_err());
-        assert_eq!(
-            sponsor.link_step("cancel", None).unwrap()["stage"],
-            "none"
-        );
+        assert_eq!(sponsor.link_step("cancel", None).unwrap()["stage"], "none");
         assert!(matches!(
             sponsor.prepare_sponsored_link(attempt, &offer, conversations::now()),
             Err(Error::Cancelled)
         ));
         sponsor.link_step("sponsor", None).unwrap();
-        assert_eq!(
-            sponsor.link_step("cancel", None).unwrap()["stage"],
-            "none"
-        );
+        assert_eq!(sponsor.link_step("cancel", None).unwrap()["stage"], "none");
     }
 }
 

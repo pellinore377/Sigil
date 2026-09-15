@@ -210,11 +210,13 @@ fn status_is_bound_to_the_exact_request_owner_and_remote_receipt() {
         *value.lock().unwrap() = bad;
         assert_eq!(
             client.federated_outbound(&own, &request),
-            Err(Error::InvalidResponse), "GET case {n}"
+            Err(Error::InvalidResponse),
+            "GET case {n}"
         );
         assert_eq!(
             client.queue_federated_message(&own, &request),
-            Err(Error::InvalidResponse), "POST case {n}"
+            Err(Error::InvalidResponse),
+            "POST case {n}"
         );
     }
     *value.lock().unwrap() = good;

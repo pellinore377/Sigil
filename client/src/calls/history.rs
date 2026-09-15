@@ -21,6 +21,12 @@ pub struct History {
     pub phase: Phase,
     pub outgoing: bool,
     pub people: Vec<HistoryPerson>,
+    #[serde(default)]
+    pub missed: bool,
+    #[serde(default)]
+    pub duration: Option<u64>,
+    #[serde(default)]
+    pub video: Option<bool>,
 }
 fn aad(row: &Id) -> Vec<u8> {
     [b"Sigil/call-history/v1".as_slice(), row].concat()
@@ -52,8 +58,12 @@ pub(super) fn retain(db: &Connection, key: &StorageKey, record: &Record) -> Resu
             .as_ref()
             .is_some_and(|own| own.member.key == record.state.roster.roster.owner),
         people: Vec::new(),
+        missed: false,
+        duration: None,
+        video: None,
     });
     value.phase = record.phase;
+    value.missed |= record.missed;
     let own = record
         .own
         .as_ref()
@@ -102,6 +112,20 @@ pub(super) fn retain(db: &Connection, key: &StorageKey, record: &Record) -> Resu
     Ok(())
 }
 impl ClientStore {
+    pub fn record_call_media(&mut self, id: Id, duration: u64, video: bool) -> Result<(), Error> {
+        let tx = self.db.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let row = index(&self.key, &id)?;
+        let mut value = read(&tx, &self.key, &row)?;
+        if duration > value.expires.saturating_sub(value.created) || value.missed {
+            return Err(Error::InvalidEvent);
+        }
+        value.duration = Some(value.duration.unwrap_or(0).max(duration));
+        value.video = Some(value.video.unwrap_or(false) || video);
+        let raw = Zeroizing::new(serde_json::to_vec(&value).map_err(|_| Error::InvalidStore)?);
+        tx.execute("UPDATE call_history SET content=?1 WHERE id=?2", (self.key.seal(&raw, &aad(&row))?, row.as_slice()))?;
+        tx.commit()?;
+        Ok(())
+    }
     pub fn call_history(&self) -> Result<Vec<History>, Error> {
         let rows: Vec<Vec<u8>> = self
             .db
@@ -117,5 +141,20 @@ impl ClientStore {
                 )
             })
             .collect()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn legacy_history_has_unknown_media_without_inventing_a_missed_call() {
+        let legacy = serde_json::json!({"id":vec![0;32],"direct":true,"created":10,"expires":70,"phase":"ended","outgoing":false,"people":[]});
+        let value: History = serde_json::from_value(legacy).unwrap();
+        assert!(!value.missed);
+        assert_eq!(value.duration, None);
+        assert_eq!(value.video, None);
+        let restored: History = serde_json::from_slice(&serde_json::to_vec(&value).unwrap()).unwrap();
+        assert!(restored == value);
     }
 }

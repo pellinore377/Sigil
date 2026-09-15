@@ -31,9 +31,11 @@ struct Contact {
 }
 impl Contact {
     fn accepted(&self) -> bool {
-        self.linked_accepted || self.receipt
-            .as_ref()
-            .is_some_and(|r| r.state == RequestState::Accepted)
+        self.linked_accepted
+            || self
+                .receipt
+                .as_ref()
+                .is_some_and(|r| r.state == RequestState::Accepted)
             || self
                 .incoming
                 .as_ref()
@@ -124,7 +126,7 @@ impl ClientStore {
         load_contact(&self.db, &self.key, id)
     }
     fn save_contact(&mut self, value: &Contact) -> Result<(), Error> {
-        let own=self.own_device_binding()?;
+        let own = self.own_device_binding()?;
         let id = value.id();
         let bytes = Zeroizing::new(serde_json::to_vec(value).map_err(|_| Error::InvalidStore)?);
         if bytes.len() > 16000 || value.work_at > waiting() {
@@ -136,7 +138,7 @@ impl ClientStore {
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
         if tx.query_row("SELECT count(*)>=4096 AND NOT EXISTS(SELECT 1 FROM mobile_contacts WHERE id=?1) FROM mobile_contacts", [id.as_slice()], |r| r.get::<_,bool>(0))? { return Err(Error::Limit); }
         tx.execute("INSERT INTO mobile_contacts VALUES(?1,?2,?3) ON CONFLICT(id) DO UPDATE SET work_at=excluded.work_at,state=excluded.state", (id.as_slice(), value.work_at as i64, sealed))?;
-        catalog::publish(&tx,&self.key,&own,value)?;
+        catalog::publish(&tx, &self.key, &own, value)?;
         tx.commit()?;
         Ok(())
     }
@@ -272,7 +274,11 @@ impl ClientStore {
     pub(super) fn mobile_find(&mut self, address: &str) -> Result<Value, Error> {
         self.mobile_find_bound(address, None)
     }
-    pub(super) fn mobile_find_bound(&mut self, address: &str, expected: Option<Id>) -> Result<Value, Error> {
+    pub(super) fn mobile_find_bound(
+        &mut self,
+        address: &str,
+        expected: Option<Id>,
+    ) -> Result<Value, Error> {
         let found = self.discover_account_online(address)?;
         let (username, server) = address
             .strip_prefix('@')
@@ -311,7 +317,9 @@ impl ClientStore {
         self.save_contact(&contact)?;
         self.contact_peers(&mut contact, None)?;
         let mut state = self.mobile_state()?;
-        if expected.is_some() { state["open"] = json!(contact.display()); }
+        if expected.is_some() {
+            state["open"] = json!(contact.display());
+        }
         Ok(state)
     }
     pub(super) fn mobile_contact_chats(&mut self, chats: &mut Vec<Value>) -> Result<(), Error> {

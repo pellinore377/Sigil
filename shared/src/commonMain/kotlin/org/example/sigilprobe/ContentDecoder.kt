@@ -33,9 +33,12 @@ private fun previewPart(p:WireObject,date:(Long)->String):org.sigil.MessagePart 
     return org.sigil.MessagePart("preview",p.getString("kind"),p.getString("text"),
         items=if(items==null)emptyList() else (0 until items.length()).map { i ->
             val item=items.getJSONObject(i)
-            org.sigil.CardItem(item.getString("id"),item.getString("text"),item.getBoolean("checked"),false)
-        },rich=p.richText(),table=p.tableContent(),recipe=p.recipeContent(),chart=p.chartContent(),diagram=p.diagramContent(),utility=p.utilityContent(),service=p.serviceContent(),contact=p.contactContent(),at=p.optLong("at"),startedAt=p.optLong("started_at"),
-        date=if(p.has("at"))date(p.getLong("at"))else "")
+            org.sigil.CardItem(item.getString("id"),item.getString("text"),item.getBoolean("checked"),false,rich=item.richText())
+        },multiple=p.optBoolean("multiple"),rich=p.richText(),table=p.tableContent(),recipe=p.recipeContent(),chart=p.chartContent(),diagram=p.diagramContent(),utility=p.utilityContent(),service=p.serviceContent(),contact=p.contactContent(),at=p.optLong("at"),startedAt=p.optLong("started_at"),
+        date=if(p.has("at"))date(p.getLong("at"))else "",
+        previewParts=p.optJSONArray("parts")?.let {parts->(0 until parts.length()).map {previewPart(parts.getJSONObject(it),date)}} ?: emptyList(),
+        randomizerPreview=p.optJSONObject("randomizer")?.let {r->RandomizerPreview(r.getString("kind"),r.getJSONArray("sides").let {sides->(0 until sides.length()).map {sides.getInt(it)}})},
+        previewIntent=p.optJSONObject("intent")?.let {v->PreviewIntent(v.getString("tool"),v.getString("text"),v.getString("language"),v.getBoolean("forecast"),v.getBoolean("ready"),v.getInt("start"),v.getInt("end"))})
 }
 
 private fun WireObject.richText(): RichText? = optJSONObject("rich")?.let { it.richValue() }

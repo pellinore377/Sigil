@@ -7,6 +7,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.lifecycle.AndroidViewModel
 import kotlinx.coroutines.*
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import org.json.JSONArray
@@ -24,6 +25,7 @@ class Messenger(application: Application) : AndroidViewModel(application) {
         private set
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private val mutex = Mutex()
+    private val syncWake = Channel<Unit>(Channel.CONFLATED)
     private var submittingPost = false
     var signOutStage by mutableStateOf(NativeSignOut.stage(application))
         private set
@@ -34,11 +36,11 @@ class Messenger(application: Application) : AndroidViewModel(application) {
     internal val calls = NativeCalls(application, { history, active -> state = state.copy(calls = history, call = active) }, { state = state.copy(issue = it) })
     private val files = NativeFiles(application, scope, { uploads, sent ->
         state = state.copy(transfers = uploads)
-        if (sent) scope.launch { serialized(false) { refresh() } }
+        if (sent) { syncWake.trySend(Unit); scope.launch { serialized(false) { refresh() } } }
     }, { state = state.copy(issue = it) })
     private val voice = VoiceRecorder(scope, { peer, bytes, target ->
         bytes.inputStream().use { files.stage(target + ("peer" to peer), "Voice message.aac", "audio/aac", bytes.size.toLong(), it) }
-        withContext(Dispatchers.Main) { state = state.copy(sent = state.sent + 1, sentText = target["caption"] as? String) }
+        withContext(Dispatchers.Main) { state = state.copy(sent = state.sent + 1, sentText = target["caption"] as? String, sentMessage = null) }
     }, { state = state.copy(voice = it) }, { state = state.copy(issue = it) })
     var microphoneRequest by mutableStateOf<Pair<String, Map<String, Any?>>?>(null)
         private set
@@ -160,13 +162,17 @@ class Messenger(application: Application) : AndroidViewModel(application) {
         else NativeSync.enable(application, false)
         scope.launch {
             while (isActive) {
-                delay(1000)
-                if (signOutStage.isEmpty() && foreground && state.phase == "connected" && System.currentTimeMillis() / 1000 >= nextSync) {
+                val nudged = withTimeoutOrNull(if(foreground && state.phase=="connected") foregroundSyncWait(nextSync, System.currentTimeMillis()) else 1000) { syncWake.receive(); true } == true
+                if (signOutStage.isEmpty() && foreground && state.phase == "connected" && (nudged || System.currentTimeMillis() / 1000 >= nextSync)) {
                     attempt(false) {
                         if (!published) { execute("publish"); published = true }
                         val result = execute("sync", mapOf("interactive" to true))
                         nextSync = result.getLong("next_at")
                         val issue = result.optional("issue")
+                        if(issue!=syncIssue && issue!=null)Regex("sqlite-[0-9]+(?::group-[a-z-]+)?").find(issue)?.value?.let {code->
+                            val stage=Regex("Sync: (receiving messages|publishing keys|updating calls|updating invitations|updating groups|sharing history|sending retry controls|recovering sessions|starting conversations|sending messages|sending group messages)").find(issue)?.groupValues?.get(1) ?: if(issue.startsWith("Contact sync:"))"contact sync" else "scheduling"
+                            android.util.Log.w("SigilStorage","$stage: $code")
+                        }
                         if (issue != null || result.getBoolean("ran")) {
                             if (state.issue == syncIssue || issue != null) state = state.copy(issue = issue)
                             syncIssue = issue
@@ -175,7 +181,7 @@ class Messenger(application: Application) : AndroidViewModel(application) {
                         NativeSync.presence(getApplication(), state.call?.call?.phase in listOf("active", "joining"))
                     }
                     // Rust also persists backoff; an IO failure must not create a busy loop.
-                    nextSync = maxOf(nextSync, System.currentTimeMillis() / 1000 + 1)
+                    if (syncIssue != null) nextSync = maxOf(nextSync, System.currentTimeMillis() / 1000 + 1)
                 }
             }
         }
@@ -187,7 +193,7 @@ class Messenger(application: Application) : AndroidViewModel(application) {
         if (value) state = state.copy(notifications = NativeNotifications.settings(getApplication()))
         foreground = value; files.enabled = value && state.phase == "connected"
         NativeSync.enable(getApplication(), state.phase == "connected")
-        if (value) { nextSync = 0; published = false }
+        if (value) { nextSync = 0; published = false; syncWake.trySend(Unit) }
         else { if (state.voice.phase == "Recording") voice.stop(); voice.pausePreview(); if (state.phase == "connected") NativeSync.enqueue(getApplication()) }
         if (state.phase == "connected") scope.launch { try { NativeSync.presence(getApplication(), state.call?.call?.phase in listOf("active", "joining")) } catch (cancelled: CancellationException) { throw cancelled } catch (_: Exception) { } }
     }
@@ -264,7 +270,7 @@ class Messenger(application: Application) : AndroidViewModel(application) {
                 return
             }
             "file_cancel" -> { files.cancel(fields["request"] as String); return }
-            "file_send" -> { val caption = fields["caption"] as String; files.send(fields["request"] as String, caption) { state = state.copy(sent = state.sent + 1, sentText = caption) }; return }
+            "file_send" -> { val caption = fields["caption"] as String; files.send(fields["request"] as String, caption) { state = state.copy(sent = state.sent + 1, sentText = caption, sentMessage = null) }; return }
             "server_changed" -> {
                 if (state.phase != "new") return
                 discoveryGeneration++
@@ -327,6 +333,7 @@ class Messenger(application: Application) : AndroidViewModel(application) {
                     val alreadyQueued = retry && execute("post_status", mapOf("peer" to fields["peer"], "request" to JSONObject(raw).getString("request"))).getBoolean("queued")
                     if (name == "recover_account") recoveryPreference(true)
                     val result = if (alreadyQueued) JSONObject() else native(raw)
+                    if (name !in setOf("draft","profile","devices","storage","edit_source")) syncWake.trySend(Unit)
                     if (name == "cancel_login") recoveryPreference(false)
                     accountAccess(result)
                     result.optJSONObject("forward_file")?.let { files.forward(fields, it) }
@@ -352,7 +359,7 @@ class Messenger(application: Application) : AndroidViewModel(application) {
                         if (name in listOf("recovery_enable", "recovery_restore")) { dismissRecovery(); restoringRecovery = false; recoveryPreference(false); NativeSync.enqueue(getApplication()) }
                     }
                     result.optional("authorization_url")?.let { authorizationUrl = it }
-                    if (name in listOf("post", "edit")) { post = null; state = state.copy(sent = state.sent + 1, sentText = fields["text"] as? String) }
+                    if (name in listOf("post", "edit")) { post = null; state = state.copy(sent = state.sent + 1, sentText = fields["text"] as? String, sentMessage = if (name == "post") JSONObject(raw).getString("request") else null) }
                 }
                 refresh()
                 if (preference != null && pendingUiSettings[preference] == setting?.get("value")) pendingUiSettings.remove(preference)

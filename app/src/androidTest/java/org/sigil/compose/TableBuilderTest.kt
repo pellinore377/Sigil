@@ -19,13 +19,12 @@ class TableBuilderTest {
         }}
         ui.onNodeWithContentDescription("Attachments").performClick()
         ui.onNodeWithContentDescription("Create").performClick()
-        ui.onNodeWithContentDescription("Filter tools").performClick()
-        ui.onNodeWithContentDescription("Data & Visualize").performScrollTo().performClick()
+        ui.onNodeWithContentDescription("Create page 2").performClick()
         ui.onNodeWithContentDescription("Table").performScrollTo().performClick()
         ui.onNodeWithText("Column 1").performTextInput("Name")
         ui.onNodeWithText("Column 2").performScrollTo().performTextInput("Count")
         ui.onNode(hasScrollToIndexAction() and !hasTestTag("timeline")).performScrollToNode(hasText("Enter rows"))
-        ui.onNodeWithText("Enter rows").performClick()
+        ui.onNodeWithContentDescription("Enter rows").performClick()
         ui.onNodeWithText("Name").performTextInput("Fish |\nchips")
         ui.onNodeWithText("Count").performScrollTo().performTextInput("2")
         ui.onNodeWithContentDescription("Back to create").performClick()
@@ -33,12 +32,11 @@ class TableBuilderTest {
         ui.onNodeWithText("Rows").assertIsSelected()
         ui.onNodeWithText("Name").assertTextContains("Fish | chips")
         assertTrue(commands.none {it.first=="post"})
-        ui.onNode(hasScrollToIndexAction() and !hasTestTag("timeline")).performScrollToNode(hasText("Preview table"))
-        ui.onNodeWithText("Preview table").performClick()
+        ui.onNodeWithContentDescription("Preview table").performClick()
         if(androidx.test.platform.app.InstrumentationRegistry.getArguments().getString("capture_builder")=="true") {
             java.io.File(ui.activity.cacheDir,"table-builder.png").outputStream().use {ui.onRoot().captureToImage().asAndroidBitmap().compress(android.graphics.Bitmap.CompressFormat.PNG,100,it)}
         }
-        ui.onNodeWithText("Add to message").performScrollTo().performClick()
+        ui.onNodeWithContentDescription("Attach").performClick()
         assertTrue(commands.none {it.first=="post"})
         ui.onNodeWithContentDescription("Send message").performClick()
         val sent=commands.single {it.first=="post"}.second
