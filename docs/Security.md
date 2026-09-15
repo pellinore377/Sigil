@@ -15,6 +15,8 @@ These experimental profiles implement published designs independently; they are 
 
 `/versions` describes storage APIs. Empty messaging arrays do not certify unfinished interoperability. There is no opportunistic negotiation: future incompatible profiles need explicit versioned routes/framing and authenticated selection. An older binary must use a pre-upgrade server backup on separate storage, followed by restore sanitization; never open a migrated database or roll back live client state.
 
+Pairwise catch-up derives at most 512 skipped steps per component per packet, combined across old/new chains, while retaining only 128 skipped keys. This covers two 256-packet outbox chains; larger gaps still refuse. Candidate state and key eviction commit only after authentication. The larger work allowance increases worst-case receive CPU cost, not retained key storage.
+
 ## Browser device
 
 The Wasm client uses the existing Rust store and field encryption over OPFS SQLite. A nonextractable WebCrypto key in IndexedDB wraps the storage key; this is not hardware-backed isolation from same-origin code. HTTPS, cross-origin isolation and one active storage-owning tab are required. Fetch omits cookies and refuses redirects. Credentialed browser API requests require the exact configured public origin and the client marker; public discovery alone allows cross-origin reads.

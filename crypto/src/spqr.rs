@@ -12,6 +12,7 @@ use zeroize::Zeroizing;
 mod checkpoint;
 
 const INFO: &[u8] = b"Sigil/experimental/spqr/v0_MLKEM1024_SHA-256_RaptorQ64";
+const MAX_SKIP_WORK: usize = crate::skipped::MAX_WORK;
 const MAX_SKIPPED: usize = crate::skipped::MAX;
 
 pub(crate) struct Header {
@@ -254,7 +255,7 @@ impl Ratchet {
             .as_mut()
             .ok_or(Error::Replay)?;
         let gap = until.checked_sub(chain.n).ok_or(Error::Replay)? as usize;
-        if gap > MAX_SKIPPED || *work + gap > MAX_SKIPPED {
+        if gap > MAX_SKIP_WORK || *work + gap > MAX_SKIP_WORK {
             return Err(Error::Limit);
         }
         *work += gap;
@@ -370,7 +371,7 @@ mod tests {
     fn skip_budget_and_counter_overflow_are_checked() {
         let (mut alice, bob) = pair();
         let (mut header, _) = alice.send_key().unwrap();
-        header.number = MAX_SKIPPED as u32 + 2;
+        header.number = MAX_SKIP_WORK as u32 + 2;
         assert!(matches!(
             bob.candidate().receive_key(&header),
             Err(Error::Limit)

@@ -3,6 +3,8 @@
 use crate::{MessageKey, Secret32};
 use std::collections::{BTreeMap, VecDeque};
 pub(crate) const MAX: usize = 128;
+// Catch up across two 256-packet outbox chains without retaining all their keys.
+pub(crate) const MAX_WORK: usize = 512;
 pub(crate) struct Skipped<K> {
     keys: BTreeMap<K, MessageKey>,
     order: VecDeque<K>,
