@@ -14,10 +14,10 @@ internal fun StatusFade(statusInset: Dp, modifier: Modifier = Modifier) {
     val height = statusInset + 31.dp
     val background = MaterialTheme.colorScheme.background
     Box(modifier.fillMaxWidth().height(height).background(Brush.verticalGradient(
-        0f to background.copy(alpha = .72f),
-        .25f to background.copy(alpha = .61f),
-        .5f to background.copy(alpha = .36f),
-        .75f to background.copy(alpha = .11f),
+        0f to background.copy(alpha = .92f),
+        .25f to background.copy(alpha = .84f),
+        .5f to background.copy(alpha = .60f),
+        .75f to background.copy(alpha = .24f),
         1f to background.copy(alpha = 0f)
     )))
 }
