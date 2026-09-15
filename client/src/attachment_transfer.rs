@@ -92,52 +92,37 @@ impl ClientStore {
                 }
             }
             Phase::Uploading => {
-                let mut pending = None;
-                // Only small authenticated progress records are scanned; load at
-                // most one ciphertext chunk for the network operation.
-                let mut query =
-                    tx.prepare("SELECT part,state FROM chunks WHERE file=?1 ORDER BY part")?;
-                let mut rows = query.query([file.as_slice()])?;
-                let mut expected = 0;
-                while let Some(row) = rows.next()? {
-                    let index: u32 = row.get(0)?;
-                    if index != expected || index >= state.shape().chunks()? {
-                        return Err(Error::InvalidStore);
+                // Load pending chunks, release the store, transfer concurrently, then record them.
+                let total = state.shape().chunks()?;
+                let mut pending = Vec::new();
+                let mut uploaded = 0;
+                {
+                    let mut query =
+                        tx.prepare("SELECT part,state FROM chunks WHERE file=?1 ORDER BY part")?;
+                    let mut rows = query.query([file.as_slice()])?;
+                    let mut expected = 0;
+                    while let Some(row) = rows.next()? {
+                        let index: u32 = row.get(0)?;
+                        if index != expected || index >= total {
+                            return Err(Error::InvalidStore);
+                        }
+                        let sealed = row.get_ref(1)?.as_blob().map_err(|_| Error::InvalidStore)?;
+                        if sealed.len() > 256 {
+                            return Err(Error::InvalidStore);
+                        }
+                        let record: Part =
+                            serde_json::from_slice(&cache.key.open(sealed, &aad(&file, Some(index)))?)
+                                .map_err(|_| Error::InvalidStore)?;
+                        if record.uploaded {
+                            uploaded += 1;
+                        } else if pending.len() < TRANSFER_LANES {
+                            pending.push(index);
+                        }
+                        expected += 1;
                     }
-                    let sealed = row.get_ref(1)?.as_blob().map_err(|_| Error::InvalidStore)?;
-                    if sealed.len() > 256 {
-                        return Err(Error::InvalidStore);
-                    }
-                    let record: Part =
-                        serde_json::from_slice(&cache.key.open(sealed, &aad(&file, Some(index)))?)
-                            .map_err(|_| Error::InvalidStore)?;
-                    if !record.uploaded {
-                        pending = Some(index);
-                        break;
-                    }
-                    expected += 1;
                 }
-                drop(rows);
-                drop(query);
-                if let Some(index) = pending {
-                    let (mut record, data) =
-                        part(&tx, &cache.key, state.shape(), index)?.ok_or(Error::InvalidStore)?;
-                    client.put_attachment_chunk(state.shape(), index, &data)?;
-                    record.uploaded = true;
-                    let sealed = cache.key.seal(
-                        &serde_json::to_vec(&record).map_err(|_| Error::InvalidStore)?,
-                        &aad(&file, Some(index)),
-                    )?;
-                    if tx.execute(
-                        "UPDATE chunks SET state=?3 WHERE file=?1 AND part=?2",
-                        (file.as_slice(), index, sealed),
-                    )? != 1
-                    {
-                        return Err(Error::Conflict);
-                    }
-                    UploadStep::Chunk(index)
-                } else {
-                    if expected != state.shape().chunks()? {
+                if pending.is_empty() {
+                    if uploaded != total {
                         return Err(Error::InvalidStore);
                     }
                     let (_, root) = state.key()?;
@@ -151,6 +136,23 @@ impl ClientStore {
                     apply_status(&mut state, &status)?;
                     save(&tx, &cache.key, &state, false)?;
                     UploadStep::Published
+                } else {
+                    let mut records = Vec::new();
+                    let mut chunks = Vec::new();
+                    for index in pending {
+                        let (record, data) = part(&tx, &cache.key, state.shape(), index)?
+                            .ok_or(Error::InvalidStore)?;
+                        records.push(record);
+                        chunks.push((index, data));
+                    }
+                    let shape = state.shape();
+                    tx.commit()?;
+                    let results = client
+                        .put_attachment_chunks(shape, &chunks)
+                        .into_iter()
+                        .map(|result| result.map_err(Error::from))
+                        .collect();
+                    return self.record_uploaded_chunks(cache, file, chunks, records, results);
                 }
             }
             Phase::Cancelling => {
@@ -163,6 +165,51 @@ impl ClientStore {
         };
         tx.commit()?;
         Ok(step)
+    }
+    /// Marks transferred chunks; any success continues immediately, failures alone back off.
+    fn record_uploaded_chunks(
+        &self,
+        cache: &mut Cache,
+        file: Id,
+        chunks: Vec<(u32, Vec<u8>)>,
+        records: Vec<Part>,
+        results: Vec<Result<(), Error>>,
+    ) -> Result<UploadStep, Error> {
+        let tx = cache
+            .db
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        if load(&tx, &cache.key, file)?.phase != Phase::Uploading {
+            tx.commit()?;
+            return Ok(UploadStep::Idle);
+        }
+        let mut last = None;
+        let mut failure = None;
+        for (((index, _), mut record), result) in chunks.into_iter().zip(records).zip(results) {
+            match result {
+                Ok(()) => {
+                    record.uploaded = true;
+                    let sealed = cache.key.seal(
+                        &serde_json::to_vec(&record).map_err(|_| Error::InvalidStore)?,
+                        &aad(&file, Some(index)),
+                    )?;
+                    if tx.execute(
+                        "UPDATE chunks SET state=?3 WHERE file=?1 AND part=?2",
+                        (file.as_slice(), index, sealed),
+                    )? != 1
+                    {
+                        return Err(Error::Conflict);
+                    }
+                    last = Some(index);
+                }
+                Err(error) => failure = failure.or(Some(error)),
+            }
+        }
+        tx.commit()?;
+        match (last, failure) {
+            (Some(index), _) => Ok(UploadStep::Chunk(index)),
+            (None, Some(error)) => Err(error),
+            (None, None) => Ok(UploadStep::Idle),
+        }
     }
     /// Reconcile expiry/removal after a failed transfer. A restored checkpoint
     /// remains blocked; this operation never approves restoring file access.

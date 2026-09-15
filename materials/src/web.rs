@@ -1,4 +1,4 @@
-use crate::{geometry::Die, presentation::result_pose, Lettering, Mode, Object, Renderer, Scene};
+use crate::{geometry::Die, presentation::result_pose, Lettering, Mode, Object, Renderer, RendererResources, Scene};
 use serde::Deserialize;
 use std::{
     cell::{Cell, RefCell},
@@ -17,6 +17,7 @@ struct Gpu {
     queue: wgpu::Queue,
     failed: Arc<AtomicBool>,
     gl: Option<GlSurface>,
+    resources: RefCell<Vec<Arc<RendererResources>>>,
 }
 struct GlSurface {
     canvas: web_sys::HtmlCanvasElement,
@@ -125,6 +126,7 @@ async fn initialize_gpu(gl: bool) -> Result<Gpu, JsValue> {
         queue,
         failed,
         gl,
+        resources: RefCell::new(Vec::new()),
     })
 }
 #[derive(Deserialize)]
@@ -148,10 +150,16 @@ fn rgb(c: u32) -> [f32; 3] {
     ]
 }
 #[wasm_bindgen]
+pub fn material_view_available() -> bool {
+    VIEWS.with(|views| views.get() < 24)
+}
+
+#[wasm_bindgen]
 pub struct MaterialView {
     gpu: Rc<Gpu>,
     surface: Option<wgpu::Surface<'static>>,
-    canvas: Option<web_sys::CanvasRenderingContext2d>,
+    canvas: web_sys::CanvasRenderingContext2d,
+    source: Option<web_sys::HtmlCanvasElement>,
     renderer: Renderer,
     label: Option<(u32, String)>,
     pending: Arc<AtomicBool>,
@@ -171,16 +179,18 @@ impl MaterialView {
         }
         let width = canvas.width();
         let height = canvas.height();
-        let (surface, context, format) = if let Some(gl) = &gpu.gl {
-            let context = canvas
-                .get_context("2d")?
-                .ok_or_else(|| fail("Canvas unavailable"))?
-                .dyn_into::<web_sys::CanvasRenderingContext2d>()?;
-            (None, Some(context), gl.config.borrow().format)
+        let context = canvas.get_context("2d")?.ok_or_else(||fail("Canvas unavailable"))?.dyn_into::<web_sys::CanvasRenderingContext2d>()?;
+        let (surface, source, format) = if let Some(gl) = &gpu.gl {
+            (None, None, gl.config.borrow().format)
         } else {
+            // Keep display pixels independent of GPU ownership. Settled objects
+            // can release the render target without vanishing from the timeline.
+            let source=web_sys::window().and_then(|w|w.document()).ok_or_else(||fail("Document unavailable"))?
+                .create_element("canvas")?.dyn_into::<web_sys::HtmlCanvasElement>()?;
+            source.set_width(width);source.set_height(height);
             let surface = gpu
                 .instance
-                .create_surface(wgpu::SurfaceTarget::Canvas(canvas.clone()))
+                .create_surface(wgpu::SurfaceTarget::Canvas(source.clone()))
                 .map_err(|_| fail("Canvas unavailable"))?;
             let mut config = surface
                 .get_default_config(&gpu.adapter, canvas.width(), canvas.height())
@@ -193,14 +203,29 @@ impl MaterialView {
                 .ok_or_else(|| fail("Canvas format unavailable"))?;
             config.alpha_mode = wgpu::CompositeAlphaMode::PreMultiplied;
             surface.configure(&gpu.device, &config);
-            (Some(surface), None, config.format)
+            (Some(surface), Some(source), config.format)
         };
-        let renderer = Renderer::with_format(&gpu.device, &gpu.queue, width, height, format);
+        // Timeline rows are disposed and recreated while scrolling. Share the immutable
+        // shaders, artwork and font atlas across their short-lived render targets.
+        let resources = {
+            let mut cache = gpu.resources.borrow_mut();
+            if let Some(resources) = cache.iter().find(|value| value.format() == format) {
+                resources.clone()
+            } else {
+                let resources = Arc::new(RendererResources::new(&gpu.device, &gpu.queue, format));
+                if cache.len() < 4 {
+                    cache.push(resources.clone());
+                }
+                resources
+            }
+        };
+        let renderer = Renderer::with_resources(&gpu.device, &gpu.queue, width, height, &resources);
         VIEWS.with(|v| v.set(v.get() + 1));
         Ok(Self {
             gpu,
             surface,
             canvas: context,
+            source,
             renderer,
             label: None,
             pending: Arc::new(AtomicBool::new(false)),
@@ -345,16 +370,10 @@ impl MaterialView {
             &frame.texture.create_view(&Default::default()),
         );
         self.gpu.queue.present(frame);
-        if let (Some(gl), Some(context)) = (&self.gpu.gl, &self.canvas) {
-            context.clear_rect(
-                0.,
-                0.,
-                self.renderer.width as f64,
-                self.renderer.height as f64,
-            );
-            context.draw_image_with_html_canvas_element(&gl.canvas, 0., 0.)?;
-            return Ok(true);
-        }
+        let source=self.gpu.gl.as_ref().map(|gl|&gl.canvas).or(self.source.as_ref()).ok_or_else(||fail("Canvas unavailable"))?;
+        self.canvas.clear_rect(0.,0.,self.renderer.width as f64,self.renderer.height as f64);
+        self.canvas.draw_image_with_html_canvas_element(source,0.,0.)?;
+        if self.gpu.gl.is_some() { return Ok(true); }
         self.pending.store(true, Ordering::Relaxed);
         let pending = self.pending.clone();
         self.gpu

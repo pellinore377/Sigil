@@ -17,7 +17,14 @@ struct Host {
     timeout_id: i32,
 }
 thread_local! {static HOST:RefCell<Option<Host>>=const {RefCell::new(None)};}
+thread_local! {static WATCH:RefCell<Option<web_sys::AbortController>>=const {RefCell::new(None)};}
 fn shutdown() {
+    crate::files::clear_media_cache();
+    WATCH.with(|slot| {
+        if let Some(controller) = slot.borrow_mut().take() {
+            controller.abort();
+        }
+    });
     crate::rtc::browser_call_close();
     HOST.with(|slot| {
         if let Some(mut host) = slot.borrow_mut().take() {
@@ -145,6 +152,9 @@ pub async fn start_browser() -> Result<(), JsValue> {
 }
 #[wasm_bindgen]
 pub async fn browser_command(request: String) -> Result<String, JsValue> {
+    if serde_json::from_str::<serde_json::Value>(&request).ok().and_then(|v|v["command"].as_str().map(str::to_owned)).is_some_and(|command| matches!(command.as_str(),"browser_sign_out"|"browser_erase")) {
+        crate::files::clear_media_cache();
+    }
     rpc(request, None)
         .await?
         .as_string()
@@ -191,6 +201,70 @@ pub(crate) async fn rpc(
         .map_err(|_| fail("Browser command interrupted"))?
 }
 
+/// Holds a mailbox wait on the main thread so the worker stays free; true when mail is waiting.
+#[wasm_bindgen]
+pub async fn mailbox_watch() -> Result<bool, JsValue> {
+    let reply = rpc(r#"{"command":"watch_target"}"#.into(), None)
+        .await?
+        .as_string()
+        .ok_or_else(|| fail("Invalid command response"))?;
+    let reply: serde_json::Value =
+        serde_json::from_str(&reply).map_err(|_| fail("Invalid command response"))?;
+    if reply["ok"] != true {
+        return Err(fail(reply["error"].as_str().unwrap_or("Not connected")));
+    }
+    let target = &reply["value"];
+    let (Some(origin), Some(credential), Some(after)) = (
+        target["origin"].as_str(),
+        target["credential"].as_str(),
+        target["after"].as_i64(),
+    ) else {
+        return Err(fail("Invalid watch target"));
+    };
+    let url = format!("{origin}/client/v0/mailbox/wait?after={after}&timeout=25");
+    let options = web_sys::RequestInit::new();
+    options.set_method("GET");
+    options.set_redirect(web_sys::RequestRedirect::Error);
+    options.set_credentials(web_sys::RequestCredentials::Omit);
+    let headers = web_sys::Headers::new()?;
+    headers.set("X-Sigil-Client", "1")?;
+    headers.set("Authorization", &format!("Bearer {credential}"))?;
+    headers.set("Accept", "application/json")?;
+    options.set_headers(&headers);
+    let controller = web_sys::AbortController::new()?;
+    options.set_signal(Some(&controller.signal()));
+    WATCH.with(|slot| {
+        if let Some(previous) = slot.borrow_mut().replace(controller.clone()) {
+            previous.abort();
+        }
+    });
+    let window = web_sys::window().ok_or_else(|| fail("Missing window"))?;
+    let abort = controller.clone();
+    let timeout = Closure::<dyn FnMut()>::new(move || abort.abort());
+    let id = window.set_timeout_with_callback_and_timeout_and_arguments_0(
+        timeout.as_ref().unchecked_ref(),
+        35_000,
+    )?;
+    let result = wasm_bindgen_futures::JsFuture::from(window.fetch_with_str_and_init(&url, &options)).await;
+    window.clear_timeout_with_handle(id);
+    drop(timeout);
+    WATCH.with(|slot| {
+        let mut slot = slot.borrow_mut();
+        if slot.as_ref().is_some_and(|current| current == &controller) {
+            *slot = None;
+        }
+    });
+    let response = result?.dyn_into::<web_sys::Response>()?;
+    if response.status() != 200 {
+        return Err(fail(&format!("Mailbox wait failed (HTTP {})", response.status())));
+    }
+    let text = wasm_bindgen_futures::JsFuture::from(response.text()?)
+        .await?
+        .as_string()
+        .ok_or_else(|| fail("Invalid mailbox wait response"))?;
+    Ok(text.contains('{'))
+}
+
 #[wasm_bindgen]
 pub fn request_id() -> Result<String, JsValue> {
     let mut bytes = [0u8; 32];
@@ -217,6 +291,14 @@ fn lifecycle() -> Result<(), JsValue> {
             }
         }
     });
+    let document=window.document().ok_or_else(||fail("Missing document"))?;
+    crate::files::media_cache_visibility(get(&document,"visibilityState")?.as_string().as_deref()==Some("visible"));
+    let source=document.clone();
+    let visibility=Closure::<dyn FnMut(web_sys::Event)>::new(move |_| {
+        crate::files::media_cache_visibility(get(&source,"visibilityState").ok().and_then(|v|v.as_string()).as_deref()==Some("visible"));
+    });
+    document.add_event_listener_with_callback("visibilitychange",visibility.as_ref().unchecked_ref())?;
+    visibility.forget();
     window.add_event_listener_with_callback("pagehide", hide.as_ref().unchecked_ref())?;
     hide.forget();
     window.add_event_listener_with_callback("pageshow", show.as_ref().unchecked_ref())?;

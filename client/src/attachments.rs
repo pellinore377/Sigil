@@ -12,6 +12,8 @@ use sigil_crypto::{
 use std::path::Path;
 use zeroize::Zeroizing;
 
+/// Chunks transferred concurrently per worker step.
+pub const TRANSFER_LANES: usize = 4;
 const MAX_STATE: usize = 4096;
 const APP: i64 = 1397178691;
 const VAULT: &[u8] = b"Sigil/attachment-cache/v0";

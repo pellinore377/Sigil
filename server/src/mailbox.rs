@@ -20,7 +20,15 @@ use sigil_protocol::{
     accounts::valid_credential,
     mailbox::{Delivery, MAX_BODY, MAX_PAYLOAD_HEX, Receipt, Submit},
 };
+use std::time::Duration;
+use tokio::sync::broadcast::error::RecvError;
 use tower_http::limit::RequestBodyLimitLayer;
+
+pub(crate) const WAIT_PATH: &str = "/client/v0/mailbox/wait";
+/// Server-side deadline for a wait request; must exceed MAX_WAIT.
+pub(crate) const WAIT_DEADLINE: u64 = 35;
+pub(crate) const MAX_WAITERS: usize = 512;
+const MAX_WAIT: u64 = 25;
 
 pub(crate) const MIGRATION: &str = "
 CREATE TABLE mailbox (
@@ -141,6 +149,10 @@ impl Store {
         })
     }
 
+    pub fn mailbox_device(&mut self, credential: &str, now: u64) -> Result<String, StoreError> {
+        let tx = self.0.transaction()?;
+        authorize(&tx, credential, now)
+    }
     /// Reads at most 16 unacknowledged messages. Polling does not consume them.
     pub fn mailbox(&mut self, credential: &str, now: u64) -> Result<Vec<Delivery>, StoreError> {
         self.mailbox_after(credential, 0, now)
@@ -298,6 +310,7 @@ pub(crate) fn routes() -> Router<AppState> {
     Router::new()
         .route("/client/v0/messages", post(submit))
         .route("/client/v0/mailbox", get(poll))
+        .route(WAIT_PATH, get(wait))
         .route("/client/v0/mailbox/{sequence}", delete(ack))
         .layer(RequestBodyLimitLayer::new(MAX_BODY))
         .route_layer(middleware::from_fn(native_only))
@@ -333,7 +346,8 @@ async fn submit(
     };
     let log = state.ciphertext_log.clone();
     let record = log.capture(&request);
-    match with_store(state, move |store| match proof {
+    let recipient = request.recipient_device.clone();
+    match with_store(state.clone(), move |store| match proof {
         Some(proof) => store.submit_recovery_message(&token, request, &proof, now()?),
         None => store.submit_message(&token, request, now()?),
     })
@@ -341,6 +355,7 @@ async fn submit(
     {
         Ok(v) => {
             log.accepted(record, v.sequence);
+            let _ = state.mailbox_wake.send(recipient);
             (StatusCode::ACCEPTED, Json(v)).into_response()
         }
         Err(e) => store_error(e),
@@ -379,6 +394,72 @@ async fn poll(
     {
         Ok(v) => Json(v).into_response(),
         Err(e) => store_error(e),
+    }
+}
+/// Returns like poll, but holds the request until mail beyond `after` exists
+/// or `timeout` seconds pass. Waiters use their own slots so ordinary requests
+/// stay unaffected; when those run out the empty reply arrives immediately.
+async fn wait(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    RawQuery(query): RawQuery,
+) -> Response {
+    let token = match bearer(&headers) {
+        Ok(v) => v,
+        Err(e) => return store_error(e),
+    };
+    let mut after = 0i64;
+    let mut timeout = MAX_WAIT;
+    for pair in query.as_deref().unwrap_or("").split('&').filter(|v| !v.is_empty()) {
+        let number = |v: &str| {
+            (!v.is_empty() && v.len() <= 19 && v.bytes().all(|b| b.is_ascii_digit()))
+                .then(|| v.parse::<i64>().ok())
+                .flatten()
+        };
+        match pair.split_once('=') {
+            Some(("after", v)) if number(v).is_some() => after = number(v).unwrap_or(0),
+            Some(("timeout", v)) if number(v).is_some_and(|t| (1..=MAX_WAIT as i64).contains(&t)) => {
+                timeout = number(v).map_or(MAX_WAIT, |t| t as u64);
+            }
+            _ => return error(StatusCode::BAD_REQUEST, "invalid_request", "Invalid mailbox wait"),
+        }
+    }
+    let empty = || Json(Vec::<Delivery>::new()).into_response();
+    let Ok(_slot) = state.wait_slots.clone().try_acquire_owned() else {
+        return empty();
+    };
+    let mut wake = state.mailbox_wake.subscribe();
+    let credential = token.clone();
+    let device = match with_store(state.clone(), move |store| store.mailbox_device(&credential, now()?)).await {
+        Ok(v) => v,
+        Err(e) => return store_error(e),
+    };
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(timeout);
+    loop {
+        let credential = token.clone();
+        let list = match with_store(state.clone(), move |store| {
+            store.mailbox_after(&credential, after, now()?)
+        })
+        .await
+        {
+            Ok(v) => v,
+            Err(e) => return store_error(e),
+        };
+        if !list.is_empty() {
+            return Json(list).into_response();
+        }
+        loop {
+            let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+            if remaining.is_zero() {
+                return empty();
+            }
+            match tokio::time::timeout(remaining, wake.recv()).await {
+                Ok(Ok(target)) if target == "*" || target == device => break,
+                Ok(Ok(_)) => {}
+                Ok(Err(RecvError::Lagged(_))) => break,
+                Ok(Err(RecvError::Closed)) | Err(_) => return empty(),
+            }
+        }
     }
 }
 async fn ack(

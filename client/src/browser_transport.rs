@@ -4,11 +4,26 @@ use std::cell::RefCell;
 use zeroize::Zeroizing;
 
 type Transport = fn(Request<&[u8]>) -> Result<Response<Body>, Error>;
+type TransportMany = fn(Vec<Request<&[u8]>>) -> Vec<Result<Response<Body>, Error>>;
 thread_local! {static TRANSPORT:RefCell<Option<Transport>>=const {RefCell::new(None)};}
+thread_local! {static TRANSPORT_MANY:RefCell<Option<TransportMany>>=const {RefCell::new(None)};}
 
 /// The worker host must enforce redirect refusal, HTTPS and bounded responses.
 pub fn install(transport: Transport) {
     TRANSPORT.with(|slot| *slot.borrow_mut() = Some(transport));
+}
+/// Concurrent requests; results keep request order.
+pub fn install_many(transport: TransportMany) {
+    TRANSPORT_MANY.with(|slot| *slot.borrow_mut() = Some(transport));
+}
+pub(crate) fn send_many(requests: Vec<Request<&[u8]>>) -> Vec<Result<Response<Body>, Error>> {
+    if requests.iter().any(|r| r.uri().scheme_str() != Some("https")) {
+        return requests.iter().map(|_| Err(Error::Configuration)).collect();
+    }
+    match TRANSPORT_MANY.with(|slot| *slot.borrow()) {
+        Some(transport) => transport(requests),
+        None => requests.into_iter().map(send).collect(),
+    }
 }
 pub(crate) fn send(request: Request<&[u8]>) -> Result<Response<Body>, Error> {
     if request.uri().scheme_str() != Some("https") {

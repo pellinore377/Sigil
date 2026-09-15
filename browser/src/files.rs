@@ -5,6 +5,25 @@ use wasm_bindgen::{prelude::*, JsCast};
 use zeroize::Zeroizing;
 
 const CHUNK: u32 = 1024 * 1024;
+thread_local! {static MEDIA_CACHE: std::cell::RefCell<crate::media_cache::MediaCache<web_sys::Blob>> = const { std::cell::RefCell::new(crate::media_cache::MediaCache::new(24 * 1024 * 1024)) };}
+pub(crate) fn clear_media_cache() { MEDIA_CACHE.with(|cache| cache.borrow_mut().clear()); }
+pub(crate) fn media_cache_visibility(active: bool) { MEDIA_CACHE.with(|cache| cache.borrow_mut().set_active(active)); }
+async fn media_identity(peer: &str, author: &str, message: &str, length: f64, media_type: &str) -> Result<String, JsValue> {
+    // Revalidate the current message, access policy and encrypted file identity even
+    // on a hit. A cached Blob must never bypass expiry, deletion or replacement.
+    let raw = host::browser_command(serde_json::json!({"command":"file_get","peer":peer,"author":author,"message":message}).to_string()).await?;
+    let result: serde_json::Value = serde_json::from_str(&raw).map_err(|_|fail("Invalid attachment response"))?;
+    let value = &result["value"];
+    if result["ok"].as_bool()!=Some(true)
+        || value["length"].as_f64()!=Some(length)
+        || value["media_type"].as_str()!=Some(media_type)
+        || !matches!(value["phase"].as_str(),Some("Complete"|"Published"|"Restored")) {
+        return Err(fail("Attachment is unavailable"));
+    }
+    let identity=value["cache_id"].as_str().filter(|value| value.len()==64).ok_or_else(||fail("Attachment identity unavailable"))?;
+    Ok(format!("{identity}:{media_type}:{length}"))
+}
+
 #[wasm_bindgen]
 pub async fn pick_file(photos: bool) -> Result<JsValue, JsValue> {
     let document = web_sys::window()
@@ -94,6 +113,12 @@ pub async fn file_url(
             "Browser viewing and saving currently supports files up to 128 MiB",
         ));
     }
+    let cacheable = draft.is_empty() && media_type.starts_with("image/") && length <= 8.0 * 1024.0 * 1024.0;
+    let generation = MEDIA_CACHE.with(|cache| cache.borrow().generation);
+    let identity = if cacheable { Some(media_identity(&peer,&author,&message,length,&media_type).await?) } else { None };
+    if let Some(blob) = identity.as_ref().and_then(|id| MEDIA_CACHE.with(|cache| cache.borrow_mut().get(id))) {
+        return web_sys::Url::create_object_url_with_blob(&blob);
+    }
     let chunks = js_sys::Array::new();
     let mut total = 0u64;
     let mut index = 0;
@@ -127,6 +152,12 @@ pub async fn file_url(
     };
     properties.set_type(safe_type);
     let blob = web_sys::Blob::new_with_blob_sequence_and_options(&chunks, &properties)?;
+    if let Some(identity) = identity {
+        if media_identity(&peer,&author,&message,length,&media_type).await? != identity {
+            return Err(fail("Attachment changed while loading"));
+        }
+        MEDIA_CACHE.with(|cache| cache.borrow_mut().insert(identity,length as usize,blob.clone(),generation));
+    }
     web_sys::Url::create_object_url_with_blob(&blob)
 }
 

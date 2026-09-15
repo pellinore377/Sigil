@@ -255,6 +255,7 @@ impl ClientStore {
                 )?;
             }
         }
+        crate::schedule::nudge_queued_work(&tx, &self.key, &fingerprint, now)?;
         tx.commit()?;
         Ok(())
     }

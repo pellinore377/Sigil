@@ -39,6 +39,20 @@ class ImageCacheTest {
         cache.setActive(true);cache.load("new-account"){pixel()};assertTrue(cache.retainedBytes()>0)
         cache.clear();assertEquals(0,cache.retainedBytes())
     }
+    @Test fun generatedSnapshotsShareTheBudgetAndRejectStaleLifecycleAdmission()=runBlocking {
+        val cache=ImageCache(512)
+        val epoch=cache.materialGeneration()
+        val first=pixel();cache.rememberMaterial("first",first,epoch)
+        assertSame(first,cache.materialSnapshot("first"))
+        cache.load("photo"){pixel()};cache.rememberMaterial("second",pixel(),epoch)
+        assertNull(cache.materialSnapshot("first"));assertTrue(cache.retainedBytes()<=512)
+        cache.setActive(false);cache.rememberMaterial("hidden",pixel(),epoch)
+        assertEquals(0,cache.retainedMaterials())
+        cache.setActive(true);cache.rememberMaterial("old-owner",pixel(),epoch)
+        assertNull(cache.materialSnapshot("old-owner"))
+        cache.rememberMaterial("new-owner",pixel(),cache.materialGeneration())
+        assertEquals(1,cache.retainedMaterials())
+    }
     @Test fun syntheticThumbnailDecodeAvoidsRepeatedPixelAllocation()=runBlocking {
         val original=Bitmap.createBitmap(1600,1200,Bitmap.Config.ARGB_8888)
         val pixels=IntArray(1600*1200){i->0xff000000.toInt() or ((i*1103515245+12345) and 0xffffff)}

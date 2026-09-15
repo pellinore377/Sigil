@@ -4,6 +4,7 @@ import android.app.Application
 import android.net.Uri
 import android.provider.OpenableColumns
 import kotlinx.coroutines.*
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import org.json.JSONObject
@@ -17,26 +18,29 @@ internal class NativeFiles(private val app: Application, private val scope: Coro
     private val update: (List<Transfer>, Boolean) -> Unit, private val issue: (String) -> Unit) {
     private val mutex = Mutex()
     private val staging = java.util.concurrent.ConcurrentHashMap<String, Job>()
+    private val wake = Channel<Unit>(Channel.CONFLATED)
+    private val revision = java.util.concurrent.atomic.AtomicLong()
     @Volatile var enabled = false
-    private var next = 0L
+        set(value) { val changed = field != value; field = value; if (value && changed) wake.trySend(Unit) }
+    @Volatile private var next = 0L
+    private fun nudge() { revision.incrementAndGet(); next = 0; wake.trySend(Unit) }
     init {
         scope.launch(Dispatchers.IO) {
             while (isActive) {
-                delay(1000)
+                withTimeoutOrNull(if (enabled) org.sigil.foregroundSyncWait(next, System.currentTimeMillis()) else 1000) { wake.receive() }
                 if (!enabled) continue
+                val generation = revision.get()
                 try {
-                    mutex.withLock {
-                        var sent = false
-                        if (System.currentTimeMillis() / 1000 >= next) {
-                            val work = NativeSync.files(app)
-                            next = work.getLong("next_at")
-                            sent = work.getInt("sent") > 0
-                            if (!work.isNull("issue")) withContext(Dispatchers.Main) { issue(work.getString("issue")) }
-                        }
-                        publish(sent)
+                    var sent = false
+                    if (System.currentTimeMillis() / 1000 >= next) {
+                        val work = NativeSync.files(app)
+                        mutex.withLock { next = if (generation == revision.get()) work.getLong("next_at") else 0 }
+                        sent = work.getInt("sent") > 0
+                        if (!work.isNull("issue")) withContext(Dispatchers.Main) { issue(work.getString("issue")) }
                     }
+                    mutex.withLock { publish(sent) }
                 } catch (cancelled: CancellationException) { throw cancelled }
-                catch (_: Exception) { next = System.currentTimeMillis() / 1000 + 10 }
+                catch (_: Exception) { mutex.withLock { next = if (generation == revision.get()) System.currentTimeMillis() / 1000 + 10 else 0 } }
             }
         }
     }
@@ -58,7 +62,7 @@ internal class NativeFiles(private val app: Application, private val scope: Coro
     } } }
     fun send(request: String, caption: String, committed: () -> Unit) { scope.launch(Dispatchers.IO) { mutex.withLock {
         try {
-            execute("file_send", mapOf("request" to request, "caption" to caption)); next = 0; publish()
+            execute("file_send", mapOf("request" to request, "caption" to caption)); nudge(); publish()
             withContext(Dispatchers.Main) { committed() }
             NativeSync.enqueue(app)
         } catch (cancelled: CancellationException) { throw cancelled }
@@ -128,7 +132,7 @@ internal class NativeFiles(private val app: Application, private val scope: Coro
                 total += count; index++
             }
             check(stream.read() == -1)
-            mutex.withLock { execute("file_finish", mapOf("request" to request)); next = 0; publish() }
+            mutex.withLock { execute("file_finish", mapOf("request" to request)); nudge(); publish() }
             NativeSync.enqueue(app)
         } catch (error: Exception) {
             withContext(NonCancellable) { mutex.withLock { runCatching { execute("file_cancel", mapOf("request" to request)) }; publish() } }

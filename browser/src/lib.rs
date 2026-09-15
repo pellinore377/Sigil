@@ -12,6 +12,7 @@ mod call;
 mod rtc;
 mod display;
 mod files;
+mod media_cache;
 mod host;
 mod recording;
 mod transport;
@@ -77,6 +78,7 @@ pub async fn worker_start() -> Result<(), JsValue> {
     let store = ClientStore::open(std::path::Path::new("/sigil/messages.db"), key)
         .map_err(|_| fail("Cannot open encrypted browser storage"))?;
     sigil_client::browser_transport::install(transport::send);
+    sigil_client::browser_transport::install_many(transport::send_many);
     STORE.with(|slot| *slot.borrow_mut() = Some(store));
     let handler = Closure::<dyn FnMut(web_sys::MessageEvent)>::new(
         move |event: web_sys::MessageEvent| {

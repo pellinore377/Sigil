@@ -82,3 +82,15 @@ internal fun materialClipPath(visible: Rect, launch: Rect?, left: Float, top: Fl
     if(regions.isEmpty())return "inset(100%)"
     return "path('"+regions.joinToString(" "){rect->"M ${rect.left-left} ${rect.top-top} H ${rect.right-left} V ${rect.bottom-top} H ${rect.left-left} Z"}+"')"
 }
+
+/** Keeps GPU surfaces only for objects that can contribute pixels, including the launch corridor. */
+@Composable fun materialViewportVisible(bounds: () -> Rect): Boolean {
+    val timeline=LocalMaterialTimeline.current ?: return true
+    if(LocalObjectMenu.current)return true
+    val occlusion=LocalMaterialOcclusion.current
+    val source=LocalMaterialLaunchWindow.current
+    val currentBounds=rememberUpdatedState(bounds)
+    return remember(timeline,occlusion,source) { derivedStateOf {
+        materialClipRegions(occlusion?.visible(timeline.viewport) ?: timeline.viewport,occlusion?.launch(timeline.viewport,source),occlusion?.notice).any {it.overlaps(currentBounds.value())}
+    } }.value
+}

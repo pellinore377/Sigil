@@ -243,18 +243,18 @@ impl ClientStore {
             );
         }
         peers.insert(self.mobile_conversation("self")?, "self".into());
-        for group in self.mobile_groups()? {
-            let peer = group["id"].as_str().ok_or(Error::InvalidStore)?;
-            peers.insert(
-                id(peer.strip_prefix("group:").ok_or(Error::InvalidStore)?)?,
-                peer.to_owned(),
-            );
+        for (group, _) in self.mobile_group_scopes()? {
+            peers.insert(group, format!("group:{}", transport::hex(&group)));
         }
         let mut hits = Vec::new();
+        let mut hidden = std::collections::BTreeMap::new();
         for hit in page.hits {
             let m = &hit.message;
-            let prefs = self.conversation_preferences(hit.conversation)?;
-            if prefs.hidden {
+            let hidden = match hidden.entry(hit.conversation) {
+                std::collections::btree_map::Entry::Occupied(entry) => *entry.get(),
+                std::collections::btree_map::Entry::Vacant(entry) => *entry.insert(self.conversation_preferences(hit.conversation)?.hidden),
+            };
+            if hidden {
                 continue;
             }
             let noted = self.mobile_is_note(hit.conversation, m)?;

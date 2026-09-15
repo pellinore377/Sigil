@@ -206,6 +206,7 @@ impl ClientStore {
             (sealed, request.as_slice()),
         )?;
         tx.commit()?;
+        self.mobile_cache()?.wake_queued_work(conversations::now())?;
         Ok(json!({}))
     }
     pub(super) fn mobile_file_work(&mut self, steps: u8) -> Result<Value, Error> {
@@ -276,6 +277,11 @@ impl ClientStore {
             }
         }
         let now = conversations::now();
+        if sent > 0 {
+            // Publish the durable message before unrelated recovery/push I/O.
+            // Keep the worker scheduled so the next pass performs maintenance.
+            return Ok(json!({"next_at":now,"sent":sent,"issue":issue,"pending":true}));
+        }
         let mut next = result.next_at.min(now.saturating_add(30));
         let background = (|| -> Result<(), Error> {
             self.maintain_history(now)?;

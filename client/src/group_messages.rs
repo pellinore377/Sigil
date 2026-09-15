@@ -448,6 +448,7 @@ impl ClientStore {
             true,
             own_fields.identity,
         )?;
+        crate::schedule::nudge_queued_work(&tx, &self.key, &own, now)?;
         tx.commit()?;
         Ok(())
     }

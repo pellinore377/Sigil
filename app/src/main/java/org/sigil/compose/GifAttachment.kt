@@ -12,6 +12,7 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.foundation.layout.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.platform.LocalContext
@@ -33,6 +34,8 @@ internal fun GifAttachment(message: ChatMessage) {
     val appearance = LocalAppearance.current
     val reduced = LocalMotion.current.reduced
     var visible by remember { mutableStateOf(lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED)) }
+    var imageWidth by rememberSaveable(message.peer,message.author,message.id) { mutableIntStateOf(0) }
+    var imageHeight by rememberSaveable(message.peer,message.author,message.id) { mutableIntStateOf(0) }
     var drawable by remember(message.id) { mutableStateOf<Drawable?>(null) }
     var failed by remember(message.id) { mutableStateOf(false) }
     var retry by remember { mutableIntStateOf(0) }
@@ -56,6 +59,7 @@ internal fun GifAttachment(message: ChatMessage) {
                     decoder.setTargetSize((info.size.width / scale).toInt().coerceAtLeast(1), (info.size.height / scale).toInt().coerceAtLeast(1))
                 }
             }
+            imageWidth=drawable!!.intrinsicWidth;imageHeight=drawable!!.intrinsicHeight
             awaitCancellation()
         } catch (cancelled: CancellationException) { throw cancelled }
         catch (_: Exception) { failed = true }
@@ -71,7 +75,7 @@ internal fun GifAttachment(message: ChatMessage) {
                 (image as? AnimatedImageDrawable)?.let { animation -> if (playing) { animation.repeatCount = AnimatedImageDrawable.REPEAT_INFINITE; if (!animation.isRunning) animation.start() } else animation.stop() }
             })
     }
-    ImageMessageFrame(drawable?.intrinsicWidth ?: 0, drawable?.intrinsicHeight ?: 0) { frame ->
+    ImageMessageFrame(imageWidth,imageHeight) { frame ->
         Box(frame.clickable {
             drawable?.let { image ->
                 val snapshot = android.graphics.Bitmap.createBitmap(image.intrinsicWidth.coerceAtLeast(1), image.intrinsicHeight.coerceAtLeast(1), android.graphics.Bitmap.Config.ARGB_8888)

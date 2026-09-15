@@ -242,22 +242,19 @@ fn real_https_upload_resumes_ambiguous_receipts_and_cancellation() {
             .unwrap()
             .chunks
             .len(),
-        1
+        2
     );
     cache.db.execute_batch("DROP TRIGGER fail").unwrap();
     drop(cache);
     let mut cache = alice.open_attachment_cache(&path, BUDGET).unwrap();
+    // Both lanes re-upload the unrecorded chunks; the step reports the last one.
     assert_eq!(
         alice.upload_attachment_step(&mut cache, file).unwrap(),
-        UploadStep::Chunk(0)
+        UploadStep::Chunk(1)
     );
     assert_eq!(
         part(&cache.db, &cache.key, shape, 0).unwrap().unwrap().1,
         frozen
-    );
-    assert_eq!(
-        alice.upload_attachment_step(&mut cache, file).unwrap(),
-        UploadStep::Chunk(1)
     );
     cache.db.execute_batch("CREATE TRIGGER fail BEFORE UPDATE ON files BEGIN SELECT RAISE(ABORT,'synthetic'); END;").unwrap();
     assert!(matches!(
@@ -508,12 +505,7 @@ fn real_https_download_restarts_and_local_cancel_does_not_delete_senders_file() 
     sender.stage_chunk(file, 0, &vec![8; CHUNK_SIZE]).unwrap();
     sender.stage_chunk(file, 1, b"final").unwrap();
     sender.finish_staging(file).unwrap();
-    for expected in [
-        UploadStep::Begun,
-        UploadStep::Chunk(0),
-        UploadStep::Chunk(1),
-        UploadStep::Published,
-    ] {
+    for expected in [UploadStep::Begun, UploadStep::Chunk(1), UploadStep::Published] {
         assert_eq!(
             alice.upload_attachment_step(&mut sender, file).unwrap(),
             expected
@@ -540,16 +532,11 @@ fn real_https_download_restarts_and_local_cancel_does_not_delete_senders_file() 
     assert_eq!(
         bob.download_attachment_step(&mut receiver, file, now)
             .unwrap(),
-        DownloadStep::Chunk(0)
+        DownloadStep::Chunk(1)
     );
     assert!(receiver.completed_chunk(file, 0, now).is_err());
     drop(receiver);
     let mut receiver = bob.open_attachment_cache(&path, BUDGET).unwrap();
-    assert_eq!(
-        bob.download_attachment_step(&mut receiver, file, now)
-            .unwrap(),
-        DownloadStep::Chunk(1)
-    );
     assert_eq!(
         bob.download_attachment_step(&mut receiver, file, now)
             .unwrap(),

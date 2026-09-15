@@ -289,6 +289,22 @@ pub extern "system" fn Java_org_sigil_storage_NativeStorage_execute(
         .unwrap_or(std::ptr::null_mut())
 }
 
+/// Holds a mailbox wait off the UI thread; the store is closed before waiting.
+#[no_mangle]
+pub extern "system" fn Java_org_sigil_storage_NativeStorage_mailboxWait(
+    mut env: JNIEnv,
+    _: JObject,
+    directory: JString,
+    key: JByteArray,
+    seconds: jint,
+) -> jboolean {
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| -> Option<bool> {
+        let (client, after) = open(&mut env, &directory, &key)?.mailbox_watch().ok()?;
+        client.mailbox_wait(after, seconds.clamp(1, 25) as u64).ok()
+    }));
+    if result.ok().flatten() == Some(true) { JNI_TRUE } else { JNI_FALSE }
+}
+
 #[no_mangle]
 pub extern "system" fn Java_org_sigil_storage_NativeStorage_checkStore(
     mut env: JNIEnv,

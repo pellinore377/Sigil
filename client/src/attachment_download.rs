@@ -247,33 +247,58 @@ impl ClientStore {
         if state.phase != Phase::Downloading {
             return Ok(DownloadStep::Idle);
         }
-        let mut index = 0;
+        let total = state.shape().chunks()?;
+        let mut missing = Vec::new();
         {
             let mut query = tx.prepare("SELECT part FROM chunks WHERE file=?1 ORDER BY part")?;
             let mut rows = query.query([file.as_slice()])?;
+            let mut next = 0;
             while let Some(row) = rows.next()? {
                 let found: u32 = row.get(0)?;
-                if found < index || found >= state.shape().chunks()? {
+                if found < next || found >= total {
                     return Err(Error::InvalidStore);
                 }
-                if found != index {
-                    break;
+                missing.extend(next..found);
+                next = found + 1;
+            }
+            missing.extend(next..total);
+            missing.truncate(TRANSFER_LANES);
+        }
+        if missing.is_empty() {
+            finish(&tx, &cache.key, &mut state)?;
+            tx.commit()?;
+            return Ok(DownloadStep::Complete);
+        }
+        // Fetch the next missing chunks concurrently after releasing the store.
+        let shape = state.shape();
+        let source = state.source.clone();
+        let access = state.access.clone().ok_or(Error::InvalidStore)?;
+        tx.commit()?;
+        let results = client.attachment_chunks_at(source.as_deref(), shape, &missing, &access);
+        let tx = cache
+            .db
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let state = load(&tx, &cache.key, file)?;
+        live(&state, now)?;
+        if state.phase != Phase::Downloading {
+            tx.commit()?;
+            return Ok(DownloadStep::Idle);
+        }
+        let mut last = None;
+        let mut failure = None;
+        for (index, result) in missing.into_iter().zip(results) {
+            match result {
+                Ok(bytes) => {
+                    accept(&tx, &cache.key, &state, index, &bytes)?;
+                    last = Some(index);
                 }
-                index += 1;
+                Err(error) => failure = failure.or(Some(error)),
             }
         }
-        let step = if index == state.shape().chunks()? {
-            finish(&tx, &cache.key, &mut state)?;
-            DownloadStep::Complete
-        } else {
-            let bytes = client.attachment_chunk_at(
-                state.source.as_deref(),
-                state.shape(),
-                index,
-                state.access.as_ref().ok_or(Error::InvalidStore)?,
-            )?;
-            accept(&tx, &cache.key, &state, index, &bytes)?;
-            DownloadStep::Chunk(index)
+        let step = match (last, failure) {
+            (Some(index), _) => DownloadStep::Chunk(index),
+            (None, Some(error)) => return Err(error.into()),
+            (None, None) => DownloadStep::Idle,
         };
         tx.commit()?;
         Ok(step)

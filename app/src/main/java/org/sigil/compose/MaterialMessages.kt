@@ -16,10 +16,12 @@ internal object MaterialNative {
     @JvmStatic external fun destroy(id: Long)
 }
 internal data class MaterialFrame(val kind:Int,val sides:Int,val face:Int,val font:Int,val accent:Int,val backdrop:Int,val progress:Float,val rotation:FloatArray?=null,val label:String?=null,val transparent:Boolean=false,val style:FloatArray?=null) {
+    fun snapshotKey()=listOf(kind,sides,face,font,accent,backdrop,progress,rotation?.joinToString(","),label,transparent,style?.joinToString(",")).joinToString("") {if(it==null)"-1:" else it.toString().let {value->"${value.length}:$value"}}
     fun sameImage(other:MaterialFrame):Boolean = kind==other.kind && sides==other.sides && face==other.face && font==other.font && accent==other.accent && backdrop==other.backdrop && label==other.label && transparent==other.transparent && rotation.contentEquals(other.rotation) && style.contentEquals(other.style) && (if(rotation==null)progress==other.progress else (progress<1f)==(other.progress<1f))
 }
+private val materialUi = android.os.Handler(android.os.Looper.getMainLooper())
 private val materialWorker = Executors.newSingleThreadExecutor { task -> Thread(task,"Sigil materials").apply { isDaemon=true } }
-internal class MessageMaterialView(context:android.content.Context, private val limit:Int, private val failed:()->Unit):TextureView(context),TextureView.SurfaceTextureListener {
+internal class MessageMaterialView(context:android.content.Context, private val limit:Int, private val captured:((MaterialFrame,android.graphics.Bitmap)->Unit)?=null, private val failed:()->Unit):TextureView(context),TextureView.SurfaceTextureListener {
     private val latest=AtomicReference<MaterialFrame?>(null)
     private val queued=AtomicBoolean(false)
     @Volatile private var active=true
@@ -27,8 +29,12 @@ internal class MessageMaterialView(context:android.content.Context, private val 
     private var nativeId=0L
     private var bufferWidth=0
     private var bufferHeight=0
+    private var first:MaterialFrame?=null
+    private var pristine=true
+    private var snapshotTaken=false
     init { isOpaque=false;alpha=0f;surfaceTextureListener=this }
     fun update(frame:MaterialFrame,visible:Boolean) {
+        if(first==null)first=frame else if(first?.sameImage(frame)!=true)pristine=false
         val changed=latest.get()?.sameImage(frame)!=true
         val resumed=visible&&!active
         if(changed)latest.set(frame)
@@ -56,19 +62,39 @@ internal class MessageMaterialView(context:android.content.Context, private val 
         bufferWidth=w;bufferHeight=h
         texture.setDefaultBufferSize(w,h)
         val surface=Surface(texture);val token=++generation
-        materialWorker.execute {
-            if(nativeId!=0L)MaterialNative.destroy(nativeId)
-            nativeId=if(token==generation)MaterialNative.create(surface,w,h)else 0L
-            surface.release()
-            if(nativeId==0L && token==generation)post {failed()}
-            schedule()
+        fun create() {
+            materialWorker.execute {
+                if(token!=generation) {surface.release();return@execute}
+                if(nativeId>0L)MaterialNative.destroy(nativeId)
+                val created=MaterialNative.create(surface,w,h)
+                nativeId=created.coerceAtLeast(0L)
+                if(created==-1L) {
+                    // Lazy rows and the flight overlay briefly overlap. Keep the
+                    // surface alive and retry once departing rows release capacity.
+                    materialUi.postDelayed({create()},100)
+                } else {
+                    surface.release()
+                    if(created==0L)post {if(token==generation)failed()}
+                    else schedule()
+                }
+            }
         }
+        create()
     }
     override fun onSurfaceTextureSizeChanged(texture:SurfaceTexture,width:Int,height:Int) {
         if(bufferWidth==0 || kotlin.math.abs(width.toFloat()/height-bufferWidth.toFloat()/bufferHeight)>.02f)
             onSurfaceTextureAvailable(texture,width,height)
     }
-    override fun onSurfaceTextureUpdated(texture:SurfaceTexture) {}
+    override fun onSurfaceTextureUpdated(texture:SurfaceTexture) {
+        val capture=captured ?: return
+        val frame=first ?: return
+        // An unchanged, initially settled view has only ever submitted this exact
+        // image. Never read back an in-flight orientation as its final result.
+        if(!active || snapshotTaken || !pristine || frame.progress<1f || latest.get()?.sameImage(frame)!=true)return
+        val image=getBitmap(bufferWidth,bufferHeight) ?: return
+        snapshotTaken=true
+        capture(frame,image)
+    }
     override fun onSurfaceTextureDestroyed(texture:SurfaceTexture):Boolean {
         generation++
         materialWorker.execute {if(nativeId!=0L){MaterialNative.destroy(nativeId);nativeId=0L};texture.release()}

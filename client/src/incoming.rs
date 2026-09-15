@@ -466,6 +466,21 @@ impl ClientStore {
         }))
     }
 
+    /// Connection and mailbox cursor for a platform-owned wait request.
+    pub fn mailbox_watch(&self) -> Result<(network::HttpsClient, i64), Error> {
+        let network = self.connected_client()?;
+        let own = decode_id(
+            &self
+                .connection_session()?
+                .ok_or(Error::Unprepared)?
+                .device_id,
+        )?;
+        Ok((network, cursor(&self.db, &self.key, &own)?.0))
+    }
+    pub fn mailbox_watch_target(&self) -> Result<(String, Zeroizing<String>, i64), Error> {
+        let (network, after) = self.mailbox_watch()?;
+        Ok((network.api_origin()?, network.credential(), after))
+    }
     /// One bounded fetch. A durable scan cursor moves past individual failures
     /// without acknowledging them and wraps after reaching the end. No peer is
     /// trusted or key replaced by this operation. Acknowledge separately.

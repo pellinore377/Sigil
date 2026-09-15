@@ -2,6 +2,7 @@
 package org.sigil
 
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.detectTransformGestures
@@ -38,8 +39,8 @@ internal fun ChatMessage.webFile()=attachment?.let {WebFile(peer,author,id,it.na
     var url by remember(file) {mutableStateOf<String?>(null)}
     var issue by remember(file) {mutableStateOf<String?>(null)}
     var saving by remember(file){mutableStateOf(false)}
-    var imageWidth by remember(file){mutableIntStateOf(0)}
-    var imageHeight by remember(file){mutableIntStateOf(0)}
+    var imageWidth by rememberSaveable(file.peer,file.author,file.message,file.draft){mutableIntStateOf(0)}
+    var imageHeight by rememberSaveable(file.peer,file.author,file.message,file.draft){mutableIntStateOf(0)}
     val save=LocalWebFileSave.current
     var loading by remember(file) {mutableStateOf(false)}
     val scope=rememberCoroutineScope()
@@ -74,15 +75,20 @@ internal fun ChatMessage.webFile()=attachment?.let {WebFile(peer,author,id,it.na
             else MediaViewerFrame(imageWidth,imageHeight,Modifier.weight(1f)) { frame -> WebMedia(current,file.type,file.name,frame,interactive=expanded,onDimensions={w,h->imageWidth=w;imageHeight=h}) }
 
         }
-        else if(file.type.startsWith("image/") || file.type.startsWith("video/")) Box(Modifier.fillMaxWidth().height(200.dp).background(MaterialTheme.colorScheme.surfaceContainerHigh),contentAlignment=Alignment.Center) {
-            SigilIconButton({if(!expanded && file.draft.isEmpty())open(file) else scope.launch {fetch()}},enabled=(!expanded && file.draft.isEmpty()) || !loading && file.bytes<=128*1024*1024) {Glyph(if(issue!=null)"refresh" else if(file.type.startsWith("video/"))"play_arrow" else "download",28,if(issue!=null)"Retry attachment" else if(!expanded && file.draft.isEmpty())"Open attachment" else "Load attachment")}
-            if(file.type=="image/gif")GifChip(Modifier.align(Alignment.TopStart))
+        else if(file.type.startsWith("image/") || file.type.startsWith("video/")) {
+            @Composable fun placeholder(frame:Modifier) { Box(frame.background(MaterialTheme.colorScheme.surfaceContainerHigh),contentAlignment=Alignment.Center) {
+                if(loading) CircularProgressIndicator(Modifier.size(28.dp))
+                else SigilIconButton({if(!expanded && file.draft.isEmpty())open(file) else scope.launch {fetch()}},enabled=(!expanded && file.draft.isEmpty()) || file.bytes<=128*1024*1024) {Glyph(if(issue!=null)"refresh" else if(file.type.startsWith("video/"))"play_arrow" else "download",28,if(issue!=null)"Retry attachment" else if(!expanded && file.draft.isEmpty())"Open attachment" else "Load attachment")}
+                if(file.type=="image/gif")GifChip(Modifier.align(Alignment.TopStart))
+            } }
+            if(file.type.startsWith("image/") && !expanded) ImageMessageFrame(imageWidth,imageHeight) {placeholder(it)}
+            else placeholder(Modifier.fillMaxWidth().height(200.dp))
         }
         else Row(verticalAlignment=Alignment.CenterVertically,horizontalArrangement=Arrangement.spacedBy(12.dp)) {
             Glyph(if(media)"play_circle" else "description",32)
             Column(Modifier.weight(1f)) {Text(file.name,style=MaterialTheme.typography.titleSmall);Text("${file.bytes/1024} KiB",style=MaterialTheme.typography.labelSmall)}
         }
-        if(loading)LinearProgressIndicator(Modifier.fillMaxWidth())
+        if(loading && !file.type.startsWith("image/") && !file.type.startsWith("video/"))LinearProgressIndicator(Modifier.fillMaxWidth())
         issue?.let {Text(it,style=MaterialTheme.typography.bodySmall)}
         if(!file.type.startsWith("image/") && !file.type.startsWith("video/") && (current==null || !expanded)) Row(horizontalArrangement=Arrangement.spacedBy(8.dp)) {
             if(current==null)SigilTextButton({scope.launch {fetch()}},enabled=!loading && file.bytes<=128*1024*1024){Text(if(issue!=null)"Retry" else "Load attachment",color=ink)}

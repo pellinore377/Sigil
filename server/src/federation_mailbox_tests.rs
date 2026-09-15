@@ -618,3 +618,63 @@ fn remote_receipt_does_not_disclose_unrelated_local_mailbox_inserts() {
     let mut reopened = Store::open(&other_path).unwrap();
     assert_eq!(receive(&mut reopened, &key, &request, 1000, 2).unwrap(), a);
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn mailbox_wait_returns_on_new_mail_and_empties_on_timeout() {
+    use axum::{body::Body, http::Request};
+    use tower::ServiceExt;
+    let dir = tempfile::tempdir().unwrap();
+    let (mut s, key) = trusted(&dir.path().join("s.db"));
+    let now = crate::enrollment::now().unwrap();
+    let (c, p) = s.begin_federation_refresh("remote.example", now).unwrap();
+    s.finish_federation_refresh(
+        c.revision,
+        &p,
+        Some(sigil_protocol::federation::Discovery {
+            version: 0,
+            server: "remote.example".into(),
+            current: key.descriptor().clone(),
+            rotation: None,
+        }),
+        now,
+    )
+    .unwrap();
+    let token = enroll(&mut s, "recipient", now);
+    let target = s.session(&token, now).unwrap().device_id;
+    s.allow_federated_sender(&token, sender(1), now).unwrap();
+    let admin = crate::auth::AdminToken::load_or_create(&dir.path().join("admin")).unwrap();
+    let (app, state) = crate::application(s, admin);
+    let wait = |query: &str| {
+        Request::get(format!("/client/v0/mailbox/wait?{query}"))
+            .header("authorization", format!("Bearer {token}"))
+            .header("x-sigil-client", "1")
+            .body(Body::empty())
+            .unwrap()
+    };
+    let started = std::time::Instant::now();
+    let response = app.clone().oneshot(wait("timeout=1")).await.unwrap();
+    assert_eq!(response.status(), 200);
+    let body = axum::body::to_bytes(response.into_body(), 1 << 16).await.unwrap();
+    assert_eq!(serde_json::from_slice::<Vec<Delivery>>(&body).unwrap().len(), 0);
+    assert!(started.elapsed() >= std::time::Duration::from_millis(900));
+    assert_eq!(app.clone().oneshot(wait("timeout=0")).await.unwrap().status(), 400);
+    assert_eq!(app.clone().oneshot(wait("after=x")).await.unwrap().status(), 400);
+
+    let pending = tokio::spawn(app.clone().oneshot(wait("after=0&timeout=20")));
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    let message = message(&target, &sender(1), 1, now + 1000);
+    receive(&mut state.store.lock().unwrap(), &key, &message, now, 1).unwrap();
+    let woke = std::time::Instant::now();
+    state.mailbox_wake.send("*".into()).unwrap();
+    let response = pending.await.unwrap().unwrap();
+    assert!(woke.elapsed() < std::time::Duration::from_secs(2));
+    let body = axum::body::to_bytes(response.into_body(), 1 << 16).await.unwrap();
+    let list: Vec<Delivery> = serde_json::from_slice(&body).unwrap();
+    assert_eq!(list.len(), 1);
+    assert_eq!(list[0].message_id, message.message_id);
+    // Mail already past the cursor returns immediately.
+    let started = std::time::Instant::now();
+    let response = app.oneshot(wait(&format!("after={}&timeout=5", list[0].sequence - 1))).await.unwrap();
+    assert_eq!(response.status(), 200);
+    assert!(started.elapsed() < std::time::Duration::from_secs(2));
+}

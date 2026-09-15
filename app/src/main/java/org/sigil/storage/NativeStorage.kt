@@ -17,6 +17,7 @@ object NativeStorage {
     init { System.loadLibrary("sigil_android") }
     external fun checkStore(directory: String, key: ByteArray): Boolean
     external fun execute(directory: String, key: ByteArray, request: String): String
+    external fun mailboxWait(directory: String, key: ByteArray, seconds: Int): Boolean
     external fun stageFile(directory: String, key: ByteArray, request: String, index: Int, bytes: ByteArray): Boolean
     external fun readFileChunk(directory: String, key: ByteArray, peer: String, author: String, message: String, index: Int): ByteArray?
     external fun readDraftChunk(directory: String, key: ByteArray, request: String, index: Int): ByteArray?

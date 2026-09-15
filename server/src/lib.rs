@@ -77,12 +77,15 @@ use std::{
 };
 use store::{Store, StoreError};
 use tokio::sync::Semaphore;
-use tower_http::{limit::RequestBodyLimitLayer, timeout::TimeoutLayer};
+use tower_http::limit::RequestBodyLimitLayer;
 
 #[derive(Clone)]
 struct AppState {
     ciphertext_log: ciphertext_log::CiphertextLog,
     federation_wake: Arc<tokio::sync::Notify>,
+    /// Recipient device ids with newly stored mail; "*" wakes every waiter.
+    mailbox_wake: tokio::sync::broadcast::Sender<String>,
+    wait_slots: Arc<Semaphore>,
     calls: Arc<call_routes::Runtime>,
     services: Arc<service_routes::Runtime>,
     maps: Arc<map_routes::Runtime>,
@@ -128,6 +131,8 @@ fn application_with_log(
     let state = AppState {
         ciphertext_log,
         federation_wake: Arc::new(tokio::sync::Notify::new()),
+        mailbox_wake: tokio::sync::broadcast::channel(256).0,
+        wait_slots: Arc::new(Semaphore::new(mailbox::MAX_WAITERS)),
         calls: Arc::new(call_routes::Runtime::default()),
         services: Arc::new(service_routes::Runtime::default()),
         maps: Arc::new(map_routes::Runtime::default()),
@@ -249,10 +254,7 @@ fn application_with_log(
             )
         })
         .layer(middleware::from_fn_with_state(state.clone(), rate::limit))
-        .layer(TimeoutLayer::with_status_code(
-            StatusCode::REQUEST_TIMEOUT,
-            Duration::from_secs(5),
-        ))
+        .layer(middleware::from_fn(timeouts))
         .layer(middleware::from_fn_with_state(state.clone(), bounded))
         .layer(middleware::from_fn(security_headers))
         .with_state(state.clone());
@@ -280,7 +282,18 @@ async fn security_headers(request: Request, next: Next) -> Response {
     response
 }
 
+/// Mailbox waits hold their own bounded slots and a longer deadline.
+async fn timeouts(request: Request, next: Next) -> Response {
+    let limit = if request.uri().path() == mailbox::WAIT_PATH { mailbox::WAIT_DEADLINE } else { 5 };
+    match tokio::time::timeout(Duration::from_secs(limit), next.run(request)).await {
+        Ok(response) => response,
+        Err(_) => error(StatusCode::REQUEST_TIMEOUT, "timeout", "Request timed out"),
+    }
+}
 async fn bounded(State(state): State<AppState>, request: Request, next: Next) -> Response {
+    if request.uri().path() == mailbox::WAIT_PATH {
+        return next.run(request).await;
+    }
     let Ok(_permit) = state.slots.try_acquire() else {
         return error(
             StatusCode::SERVICE_UNAVAILABLE,
@@ -496,6 +509,8 @@ mod tests {
         let state = AppState {
             ciphertext_log: ciphertext_log::CiphertextLog::default(),
             federation_wake: Arc::new(tokio::sync::Notify::new()),
+            mailbox_wake: tokio::sync::broadcast::channel(256).0,
+            wait_slots: Arc::new(Semaphore::new(mailbox::MAX_WAITERS)),
             calls: Arc::new(call_routes::Runtime::default()),
             services: Arc::new(service_routes::Runtime::default()),
             maps: Arc::new(map_routes::Runtime::default()),

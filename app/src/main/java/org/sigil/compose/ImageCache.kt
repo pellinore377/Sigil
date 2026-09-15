@@ -22,6 +22,18 @@ internal class ImageCache(private val budget: Int = 24 * 1024 * 1024) {
     @Synchronized fun clear(){entries.clear();bytes=0;generation++}
     @Synchronized fun setActive(value:Boolean){active=value;if(!value)clear()}
     @Synchronized internal fun retainedBytes()=bytes
+    @Synchronized internal fun retainedMaterials()=entries.keys.count {it.startsWith("material:")}
+    @Synchronized internal fun materialGeneration()=generation
+    @Synchronized internal fun materialSnapshot(key:String)=if(active)entries["material:$key"] else null
+    @Synchronized internal fun rememberMaterial(key:String,bitmap:Bitmap,epoch:Long) {retain("material:$key",bitmap,epoch)}
+    private fun retain(key:String,bitmap:Bitmap,epoch:Long) {
+        if(active && epoch==generation && bitmap.allocationByteCount<=budget) {
+            entries.put(key,bitmap)?.let {bytes-=it.allocationByteCount}
+            bytes+=bitmap.allocationByteCount
+            val iterator=entries.entries.iterator()
+            while((bytes>budget || entries.size>64) && iterator.hasNext()){bytes-=iterator.next().value.allocationByteCount;iterator.remove()}
+        }
+    }
     suspend fun load(key:String,decode:suspend()->Bitmap):Bitmap {
         cached(key)?.let {return it}
         return loading.withLock {
@@ -29,12 +41,7 @@ internal class ImageCache(private val budget: Int = 24 * 1024 * 1024) {
             val epoch=synchronized(this){generation}
             val bitmap=decode()
             synchronized(this) {
-                if(active && epoch==generation && bitmap.allocationByteCount<=budget) {
-                    entries.put(key,bitmap)?.let {bytes-=it.allocationByteCount}
-                    bytes+=bitmap.allocationByteCount
-                    val iterator=entries.entries.iterator()
-                    while((bytes>budget || entries.size>64) && iterator.hasNext()){bytes-=iterator.next().value.allocationByteCount;iterator.remove()}
-                }
+                retain(key,bitmap,epoch)
             }
             bitmap
         }
