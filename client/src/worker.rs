@@ -79,8 +79,18 @@ pub struct SyncStep {
     /// Reports stage failure; inspect per-item results even when this is None.
     /// A failed stage can have partial durable effects; retry uses its journals.
     pub failure: Option<SyncFailure>,
+    /// Stage durations in milliseconds, in execution order; diagnostics only.
+    pub timings: Vec<(&'static str, u32)>,
+    started: Option<(&'static str, crate::clock::Instant)>,
 }
 impl SyncStep {
+    /// Closes the running stage's timing and starts the named one.
+    pub(super) fn begin(&mut self, name: &'static str) {
+        if let Some((previous, at)) = self.started.take() {
+            self.timings.push((previous, at.elapsed().as_millis() as u32));
+        }
+        self.started = Some((name, crate::clock::Instant::now()));
+    }
     pub(crate) fn issue(&self) -> Option<(&'static str, &Error)> {
         if let Some(error) = schedule::failure_error(self) {
             return Some((self.failure.as_ref()?.stage(), error));
@@ -156,6 +166,7 @@ impl ClientStore {
     }
     pub(super) fn sync_step_with_maintenance(&mut self, now: u64, maintenance: bool) -> SyncStep {
         let mut step = SyncStep::default();
+        step.begin("advance_structured_actions");
         match self.advance_structured_actions() {
             Ok(count) => step.structured = count,
             Err(error) => {
@@ -163,6 +174,7 @@ impl ClientStore {
                 return step;
             }
         }
+        step.begin("receive_mailbox_online");
         match self.receive_mailbox_online(now) {
             Ok(incoming) => step.incoming = incoming,
             Err(error) => {
@@ -170,6 +182,7 @@ impl ClientStore {
                 return step;
             }
         }
+        step.begin("acknowledge_incoming_online");
         match self.acknowledge_incoming_online() {
             Ok(count) => step.acknowledged = count,
             Err(error) => {
@@ -177,6 +190,7 @@ impl ClientStore {
                 return step;
             }
         }
+        step.begin("resume_prekey_publications_online");
         match self.resume_prekey_publications_online() {
             Ok(prekeys) => step.prekeys = prekeys,
             Err(error) => {
@@ -192,6 +206,7 @@ impl ClientStore {
             step.failure = Some(SyncFailure::PrekeyNetwork(index));
             return step;
         }
+        step.begin("resume_calls_online");
         match self.resume_calls_online(now) {
             Ok(calls) => step.calls = calls,
             Err(error) => {
@@ -212,6 +227,7 @@ impl ClientStore {
             step.failure = Some(SyncFailure::CallNetwork(index));
             return step;
         }
+        step.begin("resume_group_invitations_online");
         match self.resume_group_invitations_online(now) {
             Ok(invitations) => step.invitations = invitations,
             Err(error) => {
@@ -227,6 +243,7 @@ impl ClientStore {
             step.failure = Some(SyncFailure::InvitationNetwork(index));
             return step;
         }
+        step.begin("resume_groups_online");
         match self.resume_groups_online(now) {
             Ok(groups) => step.groups = groups,
             Err(error) => {
@@ -242,6 +259,7 @@ impl ClientStore {
             step.failure = Some(SyncFailure::GroupNetwork(index));
             return step;
         }
+        step.begin("resume_group_history_online");
         match self.resume_group_history_online(now) {
             Ok(history) => step.history = history,
             Err(error) => {
@@ -257,6 +275,7 @@ impl ClientStore {
             step.failure = Some(SyncFailure::HistoryNetwork(index));
             return step;
         }
+        step.begin("resume_retry_controls_online");
         match self.resume_retry_controls_online(now) {
             Ok(controls) => step.retry_controls = controls,
             Err(error) => {
@@ -272,6 +291,7 @@ impl ClientStore {
             step.failure = Some(SyncFailure::RetryControlNetwork(index));
             return step;
         }
+        step.begin("resume_retries_online");
         match self.resume_retries_online(now) {
             Ok(retries) => step.retries = retries,
             Err(error) => {
@@ -287,6 +307,7 @@ impl ClientStore {
             step.failure = Some(SyncFailure::RecoveryNetwork(index));
             return step;
         }
+        step.begin("resume_conversation_receipts");
         match self.resume_conversation_receipts(now) {
             Ok(count) => step.delivery_receipts = count,
             Err(error) => {
@@ -294,6 +315,7 @@ impl ClientStore {
                 return step;
             }
         }
+        step.begin("sync_conversation_devices");
         match self.sync_conversation_devices(now) {
             Ok(count) => step.conversation_copies = count,
             Err(error) => {
@@ -304,11 +326,13 @@ impl ClientStore {
         if !self.send_stages(now, &mut step) || !maintenance {
             return step;
         }
+        step.begin("replenish_prekey_online");
         step.prekey_supply = Some(self.replenish_prekey_online());
         if matches!(step.prekey_supply, Some(Err(Error::Network(_)))) {
             step.failure = Some(SyncFailure::PrekeySupplyNetwork);
             return step;
         }
+        step.begin("maintain_sessions_online");
         match self.maintain_sessions_online(now) {
             Ok(maintenance) => step.maintenance = Some(maintenance),
             Err(error) => step.failure = Some(SyncFailure::Maintenance(error)),
@@ -321,6 +345,7 @@ impl ClientStore {
     /// Own-device copies plus the three send stages; false stops the pass.
     pub(super) fn outbound_step(&mut self, now: u64) -> SyncStep {
         let mut step = SyncStep::default();
+        step.begin("sync_conversation_devices");
         match self.sync_conversation_devices(now) {
             Ok(count) => step.conversation_copies = count,
             Err(error) => {
@@ -332,6 +357,7 @@ impl ClientStore {
         step
     }
     fn send_stages(&mut self, now: u64, step: &mut SyncStep) -> bool {
+        step.begin("resume_send_intents_online");
         match self.resume_send_intents_online(now) {
             Ok(sends) => step.sends = sends,
             Err(error) => {
@@ -347,6 +373,7 @@ impl ClientStore {
             step.failure = Some(SyncFailure::SendIntentNetwork(index));
             return false;
         }
+        step.begin("resume_outbound_online");
         match self.resume_outbound_online(now) {
             Ok(outbound) => step.outbound = outbound,
             Err(error) => {
@@ -362,6 +389,7 @@ impl ClientStore {
             step.failure = Some(SyncFailure::OutboundNetwork(index));
             return false;
         }
+        step.begin("resume_group_outbound_online");
         match self.resume_group_outbound_online(now) {
             Ok(outbound) => step.group_outbound = outbound,
             Err(error) => {

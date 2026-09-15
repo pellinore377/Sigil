@@ -839,6 +839,28 @@ impl HttpsClient {
         }
         Ok(deliveries)
     }
+    /// Acknowledges several deliveries concurrently; results keep input order.
+    pub fn acknowledge_deliveries(&self, sequences: &[i64]) -> Vec<Result<(), Error>> {
+        let built: Vec<Result<_, Error>> = sequences
+            .iter()
+            .map(|sequence| {
+                if *sequence <= 0 {
+                    return Err(Error::Configuration);
+                }
+                self.build_request(Method::DELETE, &format!("/client/v0/mailbox/{sequence}"), &[], None, None)
+            })
+            .collect();
+        let mut responses = self
+            .send_many(built.iter().filter_map(|r| r.as_ref().ok().cloned()).collect())
+            .into_iter();
+        built
+            .into_iter()
+            .map(|request| match request {
+                Ok(_) => responses.next().unwrap_or(Err(Error::Transport)).and_then(|r| self.empty(r)),
+                Err(error) => Err(error),
+            })
+            .collect()
+    }
     pub fn acknowledge_delivery(&self, sequence: i64) -> Result<(), Error> {
         if sequence <= 0 {
             return Err(Error::Configuration);

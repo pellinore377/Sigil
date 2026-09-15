@@ -26,6 +26,8 @@ pub(super) struct Schedule {
     pub(super) last: u64,
     pub(super) next: u64,
     pub(super) failures: u8,
+    /// Last foreground pass that ran prekey supply and session maintenance.
+    pub(super) maintenance: u64,
     slot: Slot,
 }
 #[derive(Clone, Copy)]
@@ -107,7 +109,7 @@ fn read_slot(
 ) -> Result<(Schedule, Option<Vec<u8>>), Error> {
     let sealed: Option<Vec<u8>> = db
         .query_row(
-            "SELECT CASE WHEN length(state)=53 THEN state END FROM sync_schedule WHERE id=?1",
+            "SELECT CASE WHEN length(state) IN(53,61) THEN state END FROM sync_schedule WHERE id=?1",
             [slot as i64],
             |r| r.get(0),
         )
@@ -117,13 +119,18 @@ fn read_slot(
             last: 0,
             next: 0,
             failures: 0,
+            maintenance: 0,
             slot,
         },
         Some(bytes) => {
             let bytes = key.open(bytes, &binding(35, own, slot.role()))?;
-            if bytes.len() != 17 {
+            if bytes.len() != 17 && bytes.len() != 25 {
                 return Err(Error::InvalidStore);
             }
+            let maintenance = match bytes.get(17..25) {
+                Some(raw) => u64::from_be_bytes(raw.try_into().map_err(|_| Error::InvalidStore)?),
+                None => 0,
+            };
             let last = u64::from_be_bytes(bytes[..8].try_into().map_err(|_| Error::InvalidStore)?);
             let next =
                 u64::from_be_bytes(bytes[8..16].try_into().map_err(|_| Error::InvalidStore)?);
@@ -134,6 +141,7 @@ fn read_slot(
                 last,
                 next,
                 failures: bytes[16],
+                maintenance,
                 slot,
             }
         }
@@ -150,6 +158,7 @@ pub(super) fn write(
         state.last.to_be_bytes().as_slice(),
         state.next.to_be_bytes().as_slice(),
         &[state.failures],
+        state.maintenance.to_be_bytes().as_slice(),
     ]
     .concat();
     let sealed = key.seal(&bytes, &binding(35, own, state.slot.role()))?;
@@ -272,19 +281,21 @@ impl ClientStore {
                 scheduling_error: None,
             });
         }
+        let maintenance = poll != 0
+            && !matches!(pass, Pass::Outbound)
+            && (poll != 1 || now >= state.maintenance.saturating_add(MAINTENANCE_SECONDS));
         state.last = now;
         state.next = now + RESERVATION_SECONDS;
+        if maintenance {
+            state.maintenance = now;
+        }
         let reserved = write(&tx, &self.key, &own, &state)?;
         tx.commit()?;
-        let maintenance = poll != 0
-            && (poll != 1 || now >= self.maintenance_at.get().saturating_add(MAINTENANCE_SECONDS));
-        let step = match pass {
+        let mut step = match pass {
             Pass::Outbound => self.outbound_step(now),
             Pass::Full | Pass::Wake => self.sync_step_with_maintenance(now, maintenance),
         };
-        if maintenance && !matches!(pass, Pass::Outbound) && step.failure.is_none() {
-            self.maintenance_at.set(now);
-        }
+        step.begin("done");
         let (next_at, scheduling_error) = match clock().and_then(|finished| {
             complete(
                 &mut self.db,
@@ -396,6 +407,7 @@ pub(super) fn complete_with(
             last: now,
             next,
             failures,
+            maintenance: current.maintenance.max(before.maintenance),
             slot: before.slot,
         },
     )?;
@@ -476,7 +488,7 @@ mod tests {
         for (delay, failures, runs) in [(5, 0, true), (120, 1, false), (RESERVATION_SECONDS, 0, false)] {
             for pass in [Pass::Wake, Pass::Outbound] {
                 let tx = store.db.transaction().unwrap();
-                write(&tx, &store.key, &own, &Schedule { last: now, next: now + delay, failures, slot: Slot::Messaging }).unwrap();
+                write(&tx, &store.key, &own, &Schedule { last: now, next: now + delay, failures, maintenance: 0, slot: Slot::Messaging }).unwrap();
                 tx.commit().unwrap();
                 let result = store.sync_with_poll(|| Ok(now), 1, pass).unwrap();
                 assert_eq!(result.step.is_some(), runs, "delay {delay} failures {failures}");
@@ -493,9 +505,8 @@ mod tests {
             }
         }
         let tx = store.db.transaction().unwrap();
-        write(&tx, &store.key, &own, &Schedule { last: now, next: now + 1, failures: 0, slot: Slot::Messaging }).unwrap();
+        write(&tx, &store.key, &own, &Schedule { last: now, next: now + 1, failures: 0, maintenance: 0, slot: Slot::Messaging }).unwrap();
         tx.commit().unwrap();
-        store.maintenance_at.set(0);
         let full = store.sync_with_poll(|| Ok(now + 2), 1, Pass::Full).unwrap();
         assert!(full.step.unwrap().maintenance.is_some());
     }
@@ -505,7 +516,7 @@ mod tests {
         let own = device_fingerprint(&store.own_device_binding().unwrap()).unwrap();
         for (delay, failures, expected) in [(5, 0, 0), (1, 0, 0), (120, 1, 120), (RESERVATION_SECONDS, 0, RESERVATION_SECONDS)] {
             let tx = store.db.transaction().unwrap();
-            write(&tx, &store.key, &own, &Schedule { last: now, next: now + delay, failures, slot: Slot::Messaging }).unwrap();
+            write(&tx, &store.key, &own, &Schedule { last: now, next: now + delay, failures, maintenance: 0, slot: Slot::Messaging }).unwrap();
             nudge_queued_work(&tx, &store.key, &own, now).unwrap();
             tx.commit().unwrap();
             let (saved, _) = read(&store.db, &store.key, &own).unwrap();
@@ -698,6 +709,7 @@ mod tests {
                 last: now,
                 next: now + 500,
                 failures: 7,
+                maintenance: 0,
                 slot: Slot::Messaging,
             },
         )

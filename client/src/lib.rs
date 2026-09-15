@@ -137,8 +137,6 @@ pub struct ClientStore {
     db: Connection,
     key: StorageKey,
     connection: std::cell::RefCell<Option<(Vec<u8>, crate::clock::Instant, network::HttpsClient)>>,
-    /// Last foreground pass that ran prekey supply and session maintenance.
-    maintenance_at: std::cell::Cell<u64>,
 }
 fn binding(kind: u8, session: &Id, record: &[u8]) -> Vec<u8> {
     let mut bytes = b"Sigil/client/v0".to_vec();
@@ -472,7 +470,6 @@ impl ClientStore {
             db,
             key,
             connection: Default::default(),
-            maintenance_at: Default::default(),
         })
     }
 

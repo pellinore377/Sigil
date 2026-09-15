@@ -1549,6 +1549,7 @@ impl ClientStore {
                 call_setup,
                 wake,
             } => {
+                let started = crate::clock::Instant::now();
                 let result = if call_setup == Some(true) {
                     self.sync_call_setup_online()?
                 } else if wake == Some(true) {
@@ -1559,10 +1560,12 @@ impl ClientStore {
                     self.sync_due_online()?
                 };
                 let mut issue = result.scheduling_error.as_ref().map(error_message);
-                let contact_issue = self
-                    .mobile_contact_sync(false)
-                    .err()
-                    .map(|error| format!("Contact sync: {}", error_message(&error)));
+                // Wake passes stay short; the periodic contact poll rides regular passes.
+                let contact_issue = if wake == Some(true) { None } else {
+                    self.mobile_contact_sync(false)
+                        .err()
+                        .map(|error| format!("Contact sync: {}", error_message(&error)))
+                };
                 if let Some(step) = &result.step {
                     if let Some((stage, error)) = step.issue() {
                         issue = Some(format!("Sync: {} — {}", stage, error_message(error)));
@@ -1586,8 +1589,13 @@ impl ClientStore {
                     |row| row.get(0),
                 )?;
                 let contact_next = u64::try_from(contact_next).map_err(|_| Error::InvalidStore)?;
+                let timings: serde_json::Map<String, Value> = result
+                    .step
+                    .as_ref()
+                    .map(|step| step.timings.iter().map(|(name, ms)| ((*name).into(), (*ms).into())).collect())
+                    .unwrap_or_default();
                 Ok(
-                    json!({"next_at":result.next_at.min(contact_next),"ran":result.step.is_some(),"pending":pending || generated,"issue":issue}),
+                    json!({"next_at":result.next_at.min(contact_next),"ran":result.step.is_some(),"pending":pending || generated,"issue":issue,"ms":started.elapsed().as_millis() as u64,"timings":timings}),
                 )
             }
             Command::Publish {} => {
