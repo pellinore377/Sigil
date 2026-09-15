@@ -260,6 +260,20 @@ class FloatingShellTest {
         assertEquals(Color.Red, at(90))
     }
 
+    @Test fun status_fade_without_system_inset_preserves_browser_top_edge() {
+        ui.setContent { SigilTheme(Appearance(mode = "Light"), palette = NativeCore::palette) {
+            Box(Modifier.requiredSize(100.dp, 120.dp).background(Color.Red).testTag("browser-top-edge")) {
+                StatusFade(0.dp)
+            }
+        } }
+        val pixels = ui.onNodeWithTag("browser-top-edge").captureToImage().toPixelMap()
+        fun at(y: Int) = pixels[pixels.width / 2, y * pixels.height / 120]
+        assertTrue(at(0).green > .9f)
+        assertTrue(at(12).green > .85f)
+        assertTrue(at(20).green < at(12).green)
+        assertEquals(Color.Red, at(32))
+    }
+
     @Test fun main_headers_and_footer_keep_approved_proportions_and_grow_for_large_text() {
         val state = mutableStateOf(MessengerState(phase = "connected", chats = listOf(chat)))
         ui.setContent { Box(Modifier.requiredSize(390.dp, 740.dp)) {
