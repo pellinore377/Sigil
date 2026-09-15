@@ -25,8 +25,11 @@ class Messenger(application: Application) : AndroidViewModel(application) {
         private set
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private val mutex = Mutex()
+    private val placeMutex = Mutex()
     private val syncWake = Channel<Unit>(Channel.CONFLATED)
+    @Volatile private var forceSync = false
     private var submittingPost = false
+    private var busyOperations = 0
     var signOutStage by mutableStateOf(NativeSignOut.stage(application))
         private set
     var signOutBusy by mutableStateOf(false)
@@ -36,7 +39,7 @@ class Messenger(application: Application) : AndroidViewModel(application) {
     internal val calls = NativeCalls(application, { history, active -> state = state.copy(calls = history, call = active) }, { state = state.copy(issue = it) })
     private val files = NativeFiles(application, scope, { uploads, sent ->
         state = state.copy(transfers = uploads)
-        if (sent) { syncWake.trySend(Unit); scope.launch { serialized(false) { refresh() } } }
+        if (sent) { loadTimeline(); syncWake.trySend(Unit); scope.launch { serialized(false) { refresh() } } }
     }, { state = state.copy(issue = it) })
     private val voice = VoiceRecorder(scope, { peer, bytes, target ->
         bytes.inputStream().use { files.stage(target + ("peer" to peer), "Voice message.aac", "audio/aac", bytes.size.toLong(), it) }
@@ -116,7 +119,7 @@ class Messenger(application: Application) : AndroidViewModel(application) {
     } } }
     private fun changeWallpaper(peer: String, uri: Uri?) { scope.launch { serialized(true) { saveWallpaper(getApplication(), peer, uri); wallpaperRevision++ } } }
     private var pendingPlace: Pair<Map<String, Any?>, String>? = null
-    suspend fun sharePlace(fields: Map<String, Any?>): Boolean = mutex.withLock {
+    suspend fun sharePlace(fields: Map<String, Any?>): Boolean = placeMutex.withLock {
         if (NativeSignOut.pending(getApplication()) || !foreground) return@withLock false
         val live = fields["live"] != null
         try {
@@ -124,6 +127,8 @@ class Messenger(application: Application) : AndroidViewModel(application) {
             val raw = pendingPlace?.takeIf { it.first == fields }?.second ?: request("place", fields).also { pendingPlace = fields.toMap() to it }
             native(raw)
             pendingPlace = null
+            syncWake.trySend(Unit)
+            loadTimeline()
             NativeSync.enqueue(getApplication())
             scope.launch { serialized(false) { refresh() } }
             true
@@ -146,6 +151,7 @@ class Messenger(application: Application) : AndroidViewModel(application) {
     private var post: Pair<Map<String, Any?>, String>? = null
     private var groupCreate: Pair<Map<String, Any?>, String>? = null
     private var discoveryGeneration = 0L
+    private var searchJob: Job? = null
     private var searchGeneration = 0L
     private var searchAfter: Long? = null
     private var searchCategory = ""
@@ -166,7 +172,8 @@ class Messenger(application: Application) : AndroidViewModel(application) {
                 if (signOutStage.isEmpty() && foreground && state.phase == "connected" && (nudged || System.currentTimeMillis() / 1000 >= nextSync)) {
                     attempt(false) {
                         if (!published) { execute("publish"); published = true }
-                        val result = execute("sync", mapOf("interactive" to true))
+                        val force = forceSync; forceSync = false
+                        val result = execute("sync", mapOf("interactive" to true, "wake" to force))
                         nextSync = result.getLong("next_at")
                         val issue = result.optional("issue")
                         if(issue!=syncIssue && issue!=null)Regex("sqlite-[0-9]+(?::group-[a-z-]+)?").find(issue)?.value?.let {code->
@@ -177,12 +184,25 @@ class Messenger(application: Application) : AndroidViewModel(application) {
                             if (state.issue == syncIssue || issue != null) state = state.copy(issue = issue)
                             syncIssue = issue
                         }
-                        serialized(false) { refresh() }
+                        if (result.getBoolean("ran") || nudged) serialized(false) { refresh() }
                         NativeSync.presence(getApplication(), state.call?.call?.phase in listOf("active", "joining"))
                     }
                     // Rust also persists backoff; an IO failure must not create a busy loop.
                     if (syncIssue != null) nextSync = maxOf(nextSync, System.currentTimeMillis() / 1000 + 1)
                 }
+            }
+        }
+        // Server-held mailbox wait: new mail wakes a sync immediately instead of waiting for the poll.
+        scope.launch {
+            var last = 0L
+            while (isActive) {
+                if (!(signOutStage.isEmpty() && foreground && state.phase == "connected")) { delay(500); continue }
+                val started = System.currentTimeMillis()
+                val hit = try { withContext(Dispatchers.IO) { StorageKeyProvider(getApplication()).withKey { directory, key -> NativeStorage.mailboxWait(directory.path, key, 25) } } }
+                catch (cancelled: CancellationException) { throw cancelled }
+                catch (_: Exception) { false }
+                if (hit) { if (started - last < 1500) delay(2000); last = started; forceSync = true; syncWake.trySend(Unit) }
+                else if (System.currentTimeMillis() - started < 1000) delay(2000)
             }
         }
     }
@@ -293,7 +313,7 @@ class Messenger(application: Application) : AndroidViewModel(application) {
             "open" -> {
                 anchor = (fields["author"] as? String)?.let { author -> (fields["message"] as? String)?.let { author to it } }
                 val target = (fields["thread_author"] as? String)?.let { author -> (fields["thread_message"] as? String)?.let { ThreadTarget(author, it) } }
-                timelineFilter = mapOf("category" to "Timeline") + if (target == null) emptyMap() else mapOf("thread_author" to target.author, "thread_message" to target.id)
+                timelineFilter = mapOf("category" to (fields["category"] as? String ?: "Timeline")) + if (target == null) emptyMap() else mapOf("thread_author" to target.author, "thread_message" to target.id)
                 state = state.copy(selected = fields["peer"] as String, messages = emptyList(), historical = anchor != null, threadTarget = target, timelineLoaded=false); pages = 1
             }
             "timeline_filter" -> {
@@ -319,9 +339,9 @@ class Messenger(application: Application) : AndroidViewModel(application) {
         }
         scope.launch {
             try {
-            serialized(preference == null && name !in listOf("read", "typing", "draft", "open")) {
+            commandWork(preference == null && name !in listOf("read", "typing", "draft", "open"), local = name == "post") {
                 if (preference != null) {
-                    if (pendingUiSettings[preference] != setting?.get("value")) return@serialized
+                    if (pendingUiSettings[preference] != setting?.get("value")) return@commandWork
                 }
                 if (name == "open" && !(fields["peer"] as String).let { it == "self" || it.startsWith("group:") || it.startsWith("history:") }) execute("organize", mapOf("peer" to fields["peer"], "value" to mapOf("UiSetting" to mapOf("key" to "opened", "value" to "true"))))
                 if (name !in listOf("open", "older", "latest", "timeline_filter")) {
@@ -333,6 +353,7 @@ class Messenger(application: Application) : AndroidViewModel(application) {
                     val alreadyQueued = retry && execute("post_status", mapOf("peer" to fields["peer"], "request" to JSONObject(raw).getString("request"))).getBoolean("queued")
                     if (name == "recover_account") recoveryPreference(true)
                     val result = if (alreadyQueued) JSONObject() else native(raw)
+                    if (name == "post") { val flush = native(request("flush")); if (flush.getInt("sent") > 0) loadTimeline(); flush.optString("issue").takeIf { it.isNotEmpty() && !flush.isNull("issue") }?.let { state = state.copy(issue = it) } }
                     if (name !in setOf("draft","profile","devices","storage","edit_source")) syncWake.trySend(Unit)
                     if (name == "cancel_login") recoveryPreference(false)
                     accountAccess(result)
@@ -359,23 +380,30 @@ class Messenger(application: Application) : AndroidViewModel(application) {
                         if (name in listOf("recovery_enable", "recovery_restore")) { dismissRecovery(); restoringRecovery = false; recoveryPreference(false); NativeSync.enqueue(getApplication()) }
                     }
                     result.optional("authorization_url")?.let { authorizationUrl = it }
-                    if (name in listOf("post", "edit")) { post = null; state = state.copy(sent = state.sent + 1, sentText = fields["text"] as? String, sentMessage = if (name == "post") JSONObject(raw).getString("request") else null) }
+                    if (name in listOf("post", "edit")) {
+                        post = null
+                        state = state.copy(sent = state.sent + 1, sentText = fields["text"] as? String, sentMessage = if (name == "post") JSONObject(raw).getString("request") else null)
+                        loadTimeline()
+                    }
                 }
-                refresh()
+                if (name != "post") refresh()
                 if (preference != null && pendingUiSettings[preference] == setting?.get("value")) pendingUiSettings.remove(preference)
             }
-            } finally { if (name == "post") { submittingPost = false; state = state.copy(busy = false) } }
+            } finally { if (name == "post") { submittingPost = false; state = state.copy(busy = busyOperations > 0) } }
         }
     }
     private fun search(query: String, category: String, more: Boolean = false) {
+        searchJob?.cancel()
         val generation = ++searchGeneration
+        val previous = state.searchHits
+        val sameSearch = state.searchQuery == query && searchCategory == category
         if (!more) searchAfter = null
         searchCategory = category
-        state = state.copy(searchQuery = query, searchHits = if (more) state.searchHits else emptyList(), searching = true)
-        scope.launch {
+        state = state.copy(searchQuery = query, searchHits = if (more || sameSearch) previous else emptyList(), searching = true)
+        searchJob = scope.launch {
             try {
                 var after = searchAfter
-                val hits = state.searchHits.toMutableList()
+                val hits = if (more) previous.toMutableList() else mutableListOf<SearchHit>()
                 val initialSize = hits.size
                 do {
                     val result = mutex.withLock { execute("search", mapOf("query" to query, "after" to after, "category" to category)) }
@@ -383,7 +411,7 @@ class Messenger(application: Application) : AndroidViewModel(application) {
                     hits += result.getJSONArray("hits").objects().map { hit -> SearchHit(hit.getString("peer"), hit.getString("id"), hit.getString("author"), hit.getString("text"), clock(hit.getLong("timestamp")), hit.getBoolean("pinned"), hit.getBoolean("noted"), hit.getString("kind"), hit.getBoolean("thread"), hit.optional("thread_author")?.let { author -> hit.optional("thread_message")?.let { ThreadTarget(author, it) } }) }
                     after = if (result.isNull("next")) null else result.getLong("next")
                     searchAfter = after
-                    state = state.copy(searchHits = hits.toList(), searchMore = after != null, searching = after != null && hits.size - initialSize < 64)
+                    state = state.copy(searchHits = if (sameSearch && !more && hits.isEmpty() && after != null) previous else hits.toList(), searchMore = after != null, searching = after != null && hits.size - initialSize < 64)
                     yield()
                 } while (after != null && hits.size - initialSize < 64)
                 searchAfter = after
@@ -436,10 +464,12 @@ class Messenger(application: Application) : AndroidViewModel(application) {
             }
         } }
     }
+    private suspend fun commandWork(progress: Boolean, local: Boolean, work: suspend () -> Unit) =
+        if (local) attempt(progress, work) else serialized(progress, work)
     private suspend fun serialized(progress: Boolean, work: suspend () -> Unit) = mutex.withLock { attempt(progress, work) }
     private suspend fun attempt(progress: Boolean, work: suspend () -> Unit) {
         if (NativeSignOut.pending(getApplication())) return
-        if (progress) state = state.copy(busy = true, issue = null)
+        if (progress) { busyOperations++; state = state.copy(busy = true, issue = null) }
         try { work() } catch (cancelled: CancellationException) { throw cancelled }
         catch (error: Exception) {
             val issue = if (error is NativeFailure) error.message else "Cannot access this device's storage. Stored keys have not been reset."
@@ -448,7 +478,7 @@ class Messenger(application: Application) : AndroidViewModel(application) {
             }
             if (!progress) syncIssue = issue
             state = state.copy(issue = issue)
-        } finally { if (progress) state = state.copy(busy = false) }
+        } finally { if (progress) { busyOperations--; state = state.copy(busy = busyOperations > 0 || submittingPost) } }
     }
     private fun request(name: String, fields: Map<String, Any?> = emptyMap()): String {
         val value = JSONObject().put("command", name)
@@ -463,7 +493,7 @@ class Messenger(application: Application) : AndroidViewModel(application) {
         }
         return value.toString()
     }
-    private suspend fun execute(name: String, fields: Map<String, Any?> = emptyMap()) = if (name == "sync") NativeSync.run(getApplication(), fields["interactive"] == true) else native(request(name, fields))
+    private suspend fun execute(name: String, fields: Map<String, Any?> = emptyMap()) = if (name == "sync") NativeSync.run(getApplication(), fields["interactive"] == true, wake = fields["wake"] == true) else native(request(name, fields))
     suspend fun serviceRequest(raw:String):ServiceResponse=mutex.withLock {
         check(foreground && !NativeSignOut.pending(getApplication()))
         val result=native(raw)

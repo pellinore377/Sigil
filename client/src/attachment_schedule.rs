@@ -19,6 +19,14 @@ pub struct ScheduledTransfers {
     pub next_at: u64,
     pub scheduling_error: Option<Error>,
 }
+impl Cache {
+    pub(crate) fn wake_queued_work(&mut self, now: u64) -> Result<(), Error> {
+        let tx = self.db.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        schedule::nudge_queued_work(&tx, &self.key, &self.scope, now)?;
+        tx.commit()?;
+        Ok(())
+    }
+}
 fn select(store: &ClientStore, cache: &mut Cache, now: u64) -> Result<Option<(Id, Phase)>, Error> {
     if now == 0 || now > i64::MAX as u64 {
         return Err(Error::Expired);

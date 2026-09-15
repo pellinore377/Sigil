@@ -3,6 +3,8 @@ use super::*;
 
 pub(super) const RESERVATION_SECONDS: u64 = 60;
 const POLL_SECONDS: u64 = 5;
+/// Foreground passes run prekey supply and session maintenance this often.
+const MAINTENANCE_SECONDS: u64 = 60;
 
 pub struct ScheduledSync {
     /// None means deferred without running the sync step.
@@ -14,6 +16,12 @@ pub struct ScheduledSync {
     pub scheduling_error: Option<Error>,
 }
 
+#[derive(Clone, Copy)]
+enum Pass {
+    Full,
+    Wake,
+    Outbound,
+}
 pub(super) struct Schedule {
     pub(super) last: u64,
     pub(super) next: u64,
@@ -55,6 +63,24 @@ pub(super) fn read_push(
     scope: &Id,
 ) -> Result<(Schedule, Option<Vec<u8>>), Error> {
     read_slot(db, key, scope, Slot::Push)
+}
+pub(super) fn nudge_queued_work(
+    db: &Transaction<'_>,
+    key: &StorageKey,
+    own: &Id,
+    now: u64,
+) -> Result<(), Error> {
+    let (mut state, _) = read(db, key, own)?;
+    if now == 0 || now > i64::MAX as u64 - RESERVATION_SECONDS {
+        return Err(Error::Expired);
+    }
+    if now < state.last { return Ok(()); }
+    if state.failures == 0 && state.next != state.last.saturating_add(RESERVATION_SECONDS) {
+        state.last = now;
+        state.next = now;
+        write(db, key, own, &state)?;
+    }
+    Ok(())
 }
 pub(super) fn nudge_push(
     db: &Transaction<'_>,
@@ -187,23 +213,32 @@ impl ClientStore {
         self.sync_with_clock(clock)
     }
     pub fn sync_foreground_online(&mut self) -> Result<ScheduledSync, Error> {
-        self.sync_with_poll(clock, 1)
+        self.sync_with_poll(clock, 1, Pass::Full)
+    }
+    /// A platform wake (new mail signal or user send) makes a healthy schedule due now.
+    pub fn sync_wake_online(&mut self) -> Result<ScheduledSync, Error> {
+        self.sync_with_poll(clock, 1, Pass::Wake)
+    }
+    /// Sends queued packets only, ahead of the next full pass; backoff and reservations still apply.
+    pub fn flush_outbound_online(&mut self) -> Result<ScheduledSync, Error> {
+        self.sync_with_poll(clock, 1, Pass::Outbound)
     }
     /// The platform paces setup attempts; shared reservations and failures still apply.
     pub fn sync_call_setup_online(&mut self) -> Result<ScheduledSync, Error> {
-        self.sync_with_poll(clock, 0)
+        self.sync_with_poll(clock, 0, Pass::Full)
     }
 
     fn sync_with_clock(
         &mut self,
         clock: impl FnMut() -> Result<u64, Error>,
     ) -> Result<ScheduledSync, Error> {
-        self.sync_with_poll(clock, POLL_SECONDS)
+        self.sync_with_poll(clock, POLL_SECONDS, Pass::Full)
     }
     fn sync_with_poll(
         &mut self,
         mut clock: impl FnMut() -> Result<u64, Error>,
         poll: u64,
+        pass: Pass,
     ) -> Result<ScheduledSync, Error> {
         let now = clock()?;
         if now == 0 || now > i64::MAX as u64 - RESERVATION_SECONDS {
@@ -224,6 +259,12 @@ impl ClientStore {
         {
             state.next = state.last.saturating_add(poll);
         }
+        if matches!(pass, Pass::Wake | Pass::Outbound)
+            && state.failures == 0
+            && state.next != state.last.saturating_add(RESERVATION_SECONDS)
+        {
+            state.next = state.next.min(now);
+        }
         if now < state.next {
             return Ok(ScheduledSync {
                 step: None,
@@ -235,7 +276,15 @@ impl ClientStore {
         state.next = now + RESERVATION_SECONDS;
         let reserved = write(&tx, &self.key, &own, &state)?;
         tx.commit()?;
-        let step = self.sync_step_with_maintenance(now, poll != 0);
+        let maintenance = poll != 0
+            && (poll != 1 || now >= self.maintenance_at.get().saturating_add(MAINTENANCE_SECONDS));
+        let step = match pass {
+            Pass::Outbound => self.outbound_step(now),
+            Pass::Full | Pass::Wake => self.sync_step_with_maintenance(now, maintenance),
+        };
+        if maintenance && !matches!(pass, Pass::Outbound) && step.failure.is_none() {
+            self.maintenance_at.set(now);
+        }
         let (next_at, scheduling_error) = match clock().and_then(|finished| {
             complete(
                 &mut self.db,
@@ -420,11 +469,60 @@ mod tests {
         store.sync_with_clock(|| Ok(times.next().unwrap()))
     }
     #[test]
+    fn wake_and_outbound_passes_respect_backoff_and_skip_receive_work() {
+        let (_dir, _fixture, mut store, reject, _, now) = setup(120);
+        reject.store(false, Ordering::SeqCst);
+        let own = device_fingerprint(&store.own_device_binding().unwrap()).unwrap();
+        for (delay, failures, runs) in [(5, 0, true), (120, 1, false), (RESERVATION_SECONDS, 0, false)] {
+            for pass in [Pass::Wake, Pass::Outbound] {
+                let tx = store.db.transaction().unwrap();
+                write(&tx, &store.key, &own, &Schedule { last: now, next: now + delay, failures, slot: Slot::Messaging }).unwrap();
+                tx.commit().unwrap();
+                let result = store.sync_with_poll(|| Ok(now), 1, pass).unwrap();
+                assert_eq!(result.step.is_some(), runs, "delay {delay} failures {failures}");
+                if let Some(step) = result.step {
+                    assert!(step.failure.is_none());
+                    if matches!(pass, Pass::Outbound) {
+                        assert!(step.incoming.is_empty() && step.acknowledged == 0);
+                        assert!(step.prekey_supply.is_none() && step.maintenance.is_none());
+                    }
+                    assert_eq!(result.next_at, now + 1);
+                } else {
+                    assert_eq!(result.next_at, now + delay);
+                }
+            }
+        }
+        let tx = store.db.transaction().unwrap();
+        write(&tx, &store.key, &own, &Schedule { last: now, next: now + 1, failures: 0, slot: Slot::Messaging }).unwrap();
+        tx.commit().unwrap();
+        store.maintenance_at.set(0);
+        let full = store.sync_with_poll(|| Ok(now + 2), 1, Pass::Full).unwrap();
+        assert!(full.step.unwrap().maintenance.is_some());
+    }
+    #[test]
+    fn queued_work_wakes_healthy_poll_but_preserves_backoff_and_reservation() {
+        let (_dir, _fixture, mut store, _, _, now) = setup(120);
+        let own = device_fingerprint(&store.own_device_binding().unwrap()).unwrap();
+        for (delay, failures, expected) in [(5, 0, 0), (1, 0, 0), (120, 1, 120), (RESERVATION_SECONDS, 0, RESERVATION_SECONDS)] {
+            let tx = store.db.transaction().unwrap();
+            write(&tx, &store.key, &own, &Schedule { last: now, next: now + delay, failures, slot: Slot::Messaging }).unwrap();
+            nudge_queued_work(&tx, &store.key, &own, now).unwrap();
+            tx.commit().unwrap();
+            let (saved, _) = read(&store.db, &store.key, &own).unwrap();
+            assert_eq!(saved.next, now + expected);
+            assert_eq!(saved.failures, failures);
+            let tx = store.db.transaction().unwrap();
+            nudge_queued_work(&tx, &store.key, &own, now - 1).unwrap();
+            tx.commit().unwrap();
+            assert_eq!(read(&store.db, &store.key, &own).unwrap().0.next, saved.next);
+        }
+    }
+    #[test]
     fn foreground_does_not_inherit_a_healthy_background_poll_delay() {
         let (_dir, _fixture, mut store, reject, _, now) = setup(120);
         reject.store(false, Ordering::SeqCst);
         assert_eq!(run(&mut store, now, now).unwrap().next_at, now + 5);
-        let foreground = store.sync_with_poll(|| Ok(now + 1), 1).unwrap();
+        let foreground = store.sync_with_poll(|| Ok(now + 1), 1, Pass::Full).unwrap();
         assert!(foreground.step.is_some());
         assert_eq!(foreground.next_at, now + 2);
     }
@@ -432,15 +530,23 @@ mod tests {
     fn call_setup_shortens_healthy_waits_and_leaves_maintenance_to_regular_passes() {
         let (_dir, _fixture, mut store, reject, _, now) = setup(120);
         reject.store(false, Ordering::SeqCst);
-        let regular = store.sync_with_poll(|| Ok(now), 1).unwrap();
+        let regular = store.sync_with_poll(|| Ok(now), 1, Pass::Full).unwrap();
         assert!(regular.step.unwrap().maintenance.is_some());
-        let setup = store.sync_with_poll(|| Ok(now), 0).unwrap();
+        let setup = store.sync_with_poll(|| Ok(now), 0, Pass::Full).unwrap();
         let step = setup.step.unwrap();
         assert!(step.failure.is_none());
         assert!(step.maintenance.is_none() && step.prekey_supply.is_none());
         assert_eq!(setup.next_at, now);
+        // Foreground passes repeat maintenance only after MAINTENANCE_SECONDS.
         assert!(store
-            .sync_with_poll(|| Ok(now + 1), 1)
+            .sync_with_poll(|| Ok(now + 1), 1, Pass::Full)
+            .unwrap()
+            .step
+            .unwrap()
+            .maintenance
+            .is_none());
+        assert!(store
+            .sync_with_poll(|| Ok(now + MAINTENANCE_SECONDS), 1, Pass::Full)
             .unwrap()
             .step
             .unwrap()
@@ -450,11 +556,11 @@ mod tests {
     #[test]
     fn call_setup_preserves_backoff_and_incomplete_reservations() {
         let (_dir, _fixture, mut store, reject, hits, now) = setup(120);
-        let failed = store.sync_with_poll(|| Ok(now), 0).unwrap();
+        let failed = store.sync_with_poll(|| Ok(now), 0, Pass::Full).unwrap();
         assert_eq!(failed.next_at, now + 120);
         reject.store(false, Ordering::SeqCst);
         assert!(store
-            .sync_with_poll(|| Ok(now + 119), 0)
+            .sync_with_poll(|| Ok(now + 119), 0, Pass::Full)
             .unwrap()
             .step
             .is_none());
@@ -469,13 +575,13 @@ mod tests {
         write(&tx, &store.key, &own, &state).unwrap();
         tx.commit().unwrap();
         assert!(store
-            .sync_with_poll(|| Ok(now + 121), 0)
+            .sync_with_poll(|| Ok(now + 121), 0, Pass::Full)
             .unwrap()
             .step
             .is_none());
         assert_eq!(hits.load(Ordering::SeqCst), 1);
         assert!(store
-            .sync_with_poll(|| Ok(now + 180), 0)
+            .sync_with_poll(|| Ok(now + 180), 0, Pass::Full)
             .unwrap()
             .step
             .unwrap()
@@ -487,11 +593,11 @@ mod tests {
         let (_dir, _fixture, mut store, reject, hits, now) = setup(120);
         let mut times = [now, now + 1].into_iter();
         let failed = store
-            .sync_with_poll(|| Ok(times.next().unwrap()), 1)
+            .sync_with_poll(|| Ok(times.next().unwrap()), 1, Pass::Full)
             .unwrap();
         assert_eq!(failed.next_at, now + 121);
         assert!(store
-            .sync_with_poll(|| Ok(now + 120), 1)
+            .sync_with_poll(|| Ok(now + 120), 1, Pass::Full)
             .unwrap()
             .step
             .is_none());
@@ -499,7 +605,7 @@ mod tests {
         reject.store(false, Ordering::SeqCst);
         let mut times = [now + 121, now + 122].into_iter();
         let success = store
-            .sync_with_poll(|| Ok(times.next().unwrap()), 1)
+            .sync_with_poll(|| Ok(times.next().unwrap()), 1, Pass::Full)
             .unwrap();
         assert!(success.step.unwrap().failure.is_none());
         assert_eq!(success.next_at, now + 123);

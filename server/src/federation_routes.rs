@@ -101,12 +101,15 @@ async fn deliver(
             "federation query is not supported",
         ));
     }
-    match with_store(state, move |s| {
+    match with_store(state.clone(), move |s| {
         s.receive_federated_message(&body, &headers, now()?)
     })
     .await
     {
-        Ok(v) => (axum::http::StatusCode::ACCEPTED, Json(v)).into_response(),
+        Ok(v) => {
+            let _ = state.mailbox_wake.send("*".into());
+            (axum::http::StatusCode::ACCEPTED, Json(v)).into_response()
+        }
         Err(e) => store_error(e),
     }
 }

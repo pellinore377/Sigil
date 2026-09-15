@@ -139,10 +139,12 @@ fun SigilApp(palette: (Int, Boolean) -> String, analyze: (String) -> String, sta
         val remote = chat?.ui?.get("chat_theme") ?: read("chat.${chat?.id}")
         if (pendingChatTheme?.first != chat?.id || remote == pendingChatTheme?.second) { chatTheme = decodeChat(remote); pendingChatTheme = null }
     }
-    LaunchedEffect(page, query, category, conversationPage, state.sent) {
+    val globalQuery = if (page == "notes") "" else query
+    val globalCategory = if (page == "notes") "Notes" else category
+    LaunchedEffect(page, globalQuery, globalCategory, chat?.id, state.sent) {
         if (chat == null && page in listOf("search", "notes")) {
-            kotlinx.coroutines.delay(180)
-            command("search", mapOf("query" to if (page == "notes") "" else query, "category" to if (page == "notes") "Notes" else category))
+            if (page == "search") kotlinx.coroutines.delay(180)
+            command("search", mapOf("query" to globalQuery, "category" to globalCategory))
         }
     }
     val open: (String) -> Unit = { peer -> goingBack = false; focus.clearFocus(); keyboard?.hide(); command("open", mapOf("peer" to peer)) }
@@ -242,7 +244,7 @@ fun SigilApp(palette: (Int, Boolean) -> String, analyze: (String) -> String, sta
                                             "settings" -> SettingsPage(state, navigate)
                                             "calls" -> CallHistoryPage(state, dispatch, callDetail) { callDetail = it }
                                             "search" -> SearchPage(state, query, category, { category = it }, open, dispatch)
-                                            "notes" -> NotesGrid(state, query, sharedRead, sharedWrite, { peer -> open(peer); conversationPage = "Notes" }, dispatch)
+                                            "notes" -> NotesGrid(state, query, sharedRead, sharedWrite, { peer -> goingBack = false; focus.clearFocus(); keyboard?.hide(); conversationPage = "Notes"; command("open", mapOf("peer" to peer, "category" to "Notes")) }, dispatch)
                                             else -> Inbox(state, collection, { collection = it }, selected, { id -> selected = if (id in selected) selected - id else selected + id }, open, sharedRead)
                                         }
                                       }

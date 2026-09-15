@@ -365,4 +365,28 @@ class FloatingShellTest {
         ui.runOnIdle { assertTrue(commands.none { it.first in listOf("call_resume", "call_start", "call_redial") }) }
     }
 
+    @Test fun notes_load_immediately_and_local_filtering_does_not_restart_the_scan() {
+        val commands = mutableListOf<Pair<String, Map<String, Any?>>>()
+        ui.setContent { Box(Modifier.requiredSize(390.dp, 740.dp)) {
+            SigilApp(NativeCore::palette, NativeCore::analyze,
+                MessengerState(phase = "connected", chats = listOf(chat), searchHits = listOf(
+                    SearchHit(chat.id, "note", "author", "Ferry times", "", noted = true))),
+                { name, fields -> commands += name to fields })
+        } }
+        ui.mainClock.autoAdvance = false
+        ui.onNodeWithContentDescription("Notes").performClick()
+        ui.mainClock.advanceTimeBy(16)
+        ui.runOnIdle {
+            assertEquals(listOf(mapOf("query" to "", "category" to "Notes")), commands.filter { it.first == "search" }.map { it.second })
+        }
+        ui.mainClock.autoAdvance = true
+        ui.onNodeWithContentDescription("Search notes").performClick()
+        ui.onNode(hasSetTextAction()).performTextInput("Ferry")
+        ui.mainClock.advanceTimeBy(300)
+        ui.onNodeWithText("Ferry times").assertIsDisplayed()
+        ui.runOnIdle { assertEquals(1, commands.count { it.first == "search" }) }
+        ui.onNodeWithText("Ferry times").performClick()
+        ui.runOnIdle { assertEquals(mapOf("peer" to chat.id, "category" to "Notes"), commands.last { it.first == "open" }.second) }
+    }
+
 }

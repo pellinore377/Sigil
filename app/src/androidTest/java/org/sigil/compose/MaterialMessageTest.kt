@@ -5,6 +5,13 @@ import android.view.View
 import android.view.ViewGroup
 import androidx.activity.ComponentActivity
 import androidx.compose.runtime.*
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.size
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.viewinterop.AndroidView
 import androidx.compose.ui.test.*
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import org.junit.Assert.*
@@ -25,6 +32,46 @@ class MaterialMessageTest {
             java.io.File(instrumentation.targetContext.cacheDir,name).outputStream().use {bitmap.compress(android.graphics.Bitmap.CompressFormat.PNG,100,it)}
             bitmap.recycle()
         }
+    }
+    @Test fun more_than_the_gpu_capacity_settles_to_exact_bounded_snapshots() {
+        val cache=ImageCache()
+        var shown by mutableStateOf(true)
+        ui.runOnUiThread {ui.activity.setSigilContent {
+            CompositionLocalProvider(LocalImageCache provides cache) {
+                if(shown)Column {repeat(5) {row->Row {repeat(5) {column->
+                    val index=row*5+column
+                    MaterialObject(0,30,index+1,null,null,Modifier.size(48.dp).testTag("settled-$index"))
+                }}}}
+            }
+        }}
+        ui.waitUntil(30_000) {var complete=false;ui.runOnUiThread {complete=cache.retainedMaterials()==25 && textures(ui.activity.window.decorView).isEmpty()};complete}
+        fun signature(index:Int):Int {
+            val image=ui.onNodeWithTag("settled-$index",useUnmergedTree=true).captureToImage()
+            val pixels=IntArray(image.width*image.height);image.readPixels(pixels)
+            assertTrue("Object $index must contain rendered detail",pixels.toSet().size>8)
+            return pixels.contentHashCode()
+        }
+        val before=(0 until 25).map(::signature)
+        ui.runOnIdle {shown=false};ui.waitForIdle()
+        ui.runOnIdle {shown=true};ui.waitForIdle()
+        ui.runOnUiThread {assertTrue("Re-entering settled rows must not allocate GPU views",textures(ui.activity.window.decorView).isEmpty())}
+        assertEquals(before,(0 until 25).map(::signature))
+        assertTrue(cache.retainedBytes()<=24*1024*1024)
+    }
+    @Test fun a_departing_row_releases_capacity_for_a_waiting_object() {
+        var first by mutableIntStateOf(0)
+        var failures=0
+        ui.runOnUiThread {ui.activity.setSigilContent {
+            Column {for(index in first until 19) key(index) {
+                AndroidView(factory={context->MessageMaterialView(context,32){failures++}},
+                    update={it.update(MaterialFrame(0,6,index%6+1,0,0xff706080.toInt(),0,1f,transparent=true),true)},
+                    onRelease={it.close()},modifier=Modifier.size(20.dp))
+            }}
+        }}
+        ui.waitUntil(30_000) {var count=0;ui.runOnUiThread {count=textures(ui.activity.window.decorView).count {it.alpha==1f}};count==18}
+        ui.runOnUiThread {assertEquals("Capacity is temporary, not a renderer failure",0,failures);first=1}
+        ui.waitUntil(15_000) {var ready=false;ui.runOnUiThread {val views=textures(ui.activity.window.decorView);ready=views.size==18 && views.all {it.alpha==1f}};ready}
+        ui.runOnUiThread {assertEquals(0,failures)}
     }
     @Test fun settled_objects_keep_their_pose_and_row_offset_after_scrolling() {
         val chat=ChatSummary("self","Sample","","",true,emptyList())
@@ -90,11 +137,12 @@ class MaterialMessageTest {
         if(motion.kind=="choice")assertTrue("Replaying a card must show the fan",fan)
     }
     @Test fun new_message_rolls_across_the_real_timeline() {
+        val cache=ImageCache()
         val chat=ChatSummary("self","Sample","","",true,emptyList())
         val old=ChatMessage("old","sam","An earlier message",false,"9:33","sent",false,emptyList(),emptyList(),null,true,timestamp=1000)
         val part=MessagePart("card","dice","Dice",utility=UtilityContent("dice",display="5",motion=RandomizerMotion("dice",dice=listOf(DieFace(6,5)),result="5")))
         var state by mutableStateOf(MessengerState(phase="connected",chats=listOf(chat),selected="self",timelineLoaded=true,messages=listOf(old)))
-        ui.runOnUiThread {ui.activity.setSigilContent {SigilApp(NativeCore::palette,NativeCore::analyze,state,{_,_->})}}
+        ui.runOnUiThread {ui.activity.setSigilContent {CompositionLocalProvider(LocalImageCache provides cache) {SigilApp(NativeCore::palette,NativeCore::analyze,state,{_,_->})}}}
         ui.waitForIdle()
         ui.mainClock.autoAdvance=false
         ui.runOnUiThread {state=state.copy(messages=listOf(old.copy(id="new",mine=true,parts=listOf(part),timestamp=2000),old))}
@@ -108,6 +156,8 @@ class MaterialMessageTest {
         }
         screenshot("new-message.png")
         assertTrue("A fresh message must visibly travel through the timeline; observed $positions",positions.isNotEmpty() && positions.max()-positions.min()>200)
+        ui.mainClock.autoAdvance=true
+        ui.waitUntil(15_000) {var retired=false;ui.runOnUiThread {retired=cache.retainedMaterials()==1 && textures(ui.activity.window.decorView).isEmpty()};retired}
     }
     @Test fun stored_results_render_inside_messages_without_an_expanded_viewer() {
         assertTrue("Native material library must be packaged",MaterialNative.available)

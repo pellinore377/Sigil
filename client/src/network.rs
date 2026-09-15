@@ -245,7 +245,37 @@ impl HttpsClient {
         client.discover = true;
         Ok(client)
     }
-    fn api_origin(&self) -> Result<String, Error> {
+    pub fn credential(&self) -> Zeroizing<String> {
+        self.credential.clone()
+    }
+    /// Holds until mail beyond `after` exists or `seconds` pass; true when mail is waiting.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn mailbox_wait(&self, after: i64, seconds: u64) -> Result<bool, Error> {
+        if after < 0 || !(1..=25).contains(&seconds) {
+            return Err(Error::Configuration);
+        }
+        let path = format!("/client/v0/mailbox/wait?after={after}&timeout={seconds}");
+        let request = self.build_request(Method::GET, &path, &[], None, None)?;
+        let extended = Some(Duration::from_secs(seconds + 10));
+        let request = self
+            .agent
+            .configure_request(request)
+            .timeout_global(extended)
+            .timeout_recv_response(extended)
+            .build();
+        let mut response = self.agent.run(request).map_err(|_| Error::Transport)?;
+        if !response.status().is_success() {
+            let error = Error::Status {
+                code: response.status().as_u16(),
+                retry_after_seconds: retry_after(&response),
+            };
+            let _ = response.body_mut().with_config().limit(SMALL as u64).read_to_vec();
+            return Err(error);
+        }
+        let bytes = self.response_bytes(response, 200, MAILBOX_RESPONSE, "application/json")?;
+        Ok(bytes.contains(&b'{'))
+    }
+    pub(crate) fn api_origin(&self) -> Result<String, Error> {
         if !self.discover {
             return Ok(self.origin.clone());
         }
@@ -443,6 +473,24 @@ impl HttpsClient {
             builder = builder.header(sigil_protocol::attachments::ACCESS_HEADER, value);
         }
         builder.body(bytes).map_err(|_| Error::Configuration)
+    }
+    /// Runs requests concurrently; results keep request order.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn send_many(&self, requests: Vec<Request<&[u8]>>) -> Vec<Result<Response<Body>, Error>> {
+        std::thread::scope(|scope| {
+            let handles: Vec<_> = requests
+                .into_iter()
+                .map(|request| scope.spawn(move || self.send(request)))
+                .collect();
+            handles
+                .into_iter()
+                .map(|handle| handle.join().unwrap_or(Err(Error::Transport)))
+                .collect()
+        })
+    }
+    #[cfg(target_arch = "wasm32")]
+    fn send_many(&self, requests: Vec<Request<&[u8]>>) -> Vec<Result<Response<Body>, Error>> {
+        crate::browser_transport::send_many(requests)
     }
     #[cfg(not(target_arch = "wasm32"))]
     fn send(&self, request: Request<&[u8]>) -> Result<Response<Body>, Error> {

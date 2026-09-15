@@ -1,6 +1,7 @@
 package org.sigil.compose
 
 import org.sigil.SigilTextButton
+import org.sigil.SigilIconButton
 
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
@@ -19,6 +20,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.layout.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.asImageBitmap
@@ -144,6 +146,8 @@ internal fun AndroidAttachment(message: ChatMessage) {
     val imageCache=LocalImageCache.current
     val image = file.mediaType.startsWith("image/") && file.bytes <= 16 * 1024 * 1024
     val playable = file.mediaType.startsWith("video/")
+    var imageWidth by rememberSaveable(message.peer,message.author,message.id) { mutableIntStateOf(0) }
+    var imageHeight by rememberSaveable(message.peer,message.author,message.id) { mutableIntStateOf(0) }
     var requested by remember(message.id) { mutableStateOf(image) }
     var ready by remember(message.id) { mutableStateOf(false) }
     var failed by remember(message.id) { mutableStateOf(false) }
@@ -154,7 +158,10 @@ internal fun AndroidAttachment(message: ChatMessage) {
         if (!requested) return@LaunchedEffect
         failed = false
         try {
-            if(image) bitmap=historyBitmap(context,message,imageCache)
+            if(image) {
+                bitmap=historyBitmap(context,message,imageCache)
+                imageWidth=bitmap!!.width;imageHeight=bitmap!!.height
+            }
             else while (!withContext(Dispatchers.IO) { prepare(context, message) }) delay(1000)
             if (playable) bitmap = withContext(Dispatchers.IO) {
                 runCatching { EncryptedMedia(context, message).use { source ->
@@ -177,6 +184,12 @@ internal fun AndroidAttachment(message: ChatMessage) {
             else Surface(shape = androidx.compose.foundation.shape.CircleShape, color = androidx.compose.ui.graphics.Color.Black.copy(alpha = .6f), contentColor = androidx.compose.ui.graphics.Color.White) { Box(Modifier.size(48.dp), contentAlignment = Alignment.Center) { Glyph(if (failed) "refresh" else "play_arrow", 28, if (failed) "Retry video" else "Play video") } }
         } }
         else if (picture != null) org.sigil.ImageMessageFrame(picture.width, picture.height) { frame -> Box(frame.clickable { opened = true }) { Image(picture.asImageBitmap(), file.name, Modifier.fillMaxSize(), contentScale = ContentScale.Fit); if (file.mediaType == "image/gif") org.sigil.GifChip(Modifier.align(Alignment.TopStart)) } }
+        else if (image) org.sigil.ImageMessageFrame(imageWidth,imageHeight) { frame ->
+            Box(frame.background(MaterialTheme.colorScheme.surfaceContainerHigh),contentAlignment=Alignment.Center) {
+                if(failed) SigilIconButton({requested=true}) {Glyph("refresh",28,"Retry image")}
+                else CircularProgressIndicator(Modifier.size(28.dp))
+            }
+        }
         else {
             Text(file.name, maxLines = 2)
             Text(if (file.bytes >= 1024 * 1024) "${file.bytes / (1024 * 1024)} MB" else "${file.bytes / 1024} KB", style = MaterialTheme.typography.labelSmall)

@@ -945,6 +945,27 @@ fn attachment_drafts_survive_restart_and_commit_the_caption_only_on_send() {
     assert_eq!(run(&mut alice, json!({"command":"file_work"}))["sent"], 0);
 }
 #[test]
+fn attachment_publication_returns_before_maintenance_and_schedules_its_followup() {
+    let (_dir, _server, mut alice, _bob, now) = crate::claims::tests::pair();
+    let request = "83".repeat(32);
+    run(&mut alice, json!({"command":"file_begin","peer":"self","request":request,"timestamp":now,"length":1,"name":"synthetic.txt","media_type":"text/plain"}));
+    alice.mobile_file_stage(&request, 0, b"x").unwrap();
+    run(&mut alice, json!({"command":"file_finish","request":request}));
+    alice.db.execute_batch("CREATE TRIGGER fail_maintenance BEFORE INSERT ON conversation_cleanup BEGIN SELECT RAISE(ABORT,'synthetic maintenance failure'); END").unwrap();
+    let sent = run(&mut alice, json!({"command":"file_work"}));
+    assert_eq!(sent["sent"], 1);
+    assert!(sent["issue"].is_null());
+    assert_eq!(sent["pending"], true);
+    assert!(sent["next_at"].as_u64().unwrap() <= conversations::now());
+    assert_eq!(run(&mut alice, json!({"command":"timeline","peer":"self"}))["messages"].as_array().unwrap().len(), 1);
+    let followup = run(&mut alice, json!({"command":"file_work"}));
+    assert_eq!(followup["sent"], 0);
+    assert!(followup["issue"].is_string());
+    alice.db.execute_batch("DROP TRIGGER fail_maintenance").unwrap();
+    assert!(run(&mut alice, json!({"command":"file_work"}))["issue"].is_null());
+}
+
+#[test]
 fn uploaded_files_queue_from_encrypted_cache_and_deletion_revokes_chunk_access() {
     let (_dir, _server, mut alice, _bob, now) = crate::claims::tests::pair();
     let request = "84".repeat(32);
@@ -1515,4 +1536,37 @@ fn guided_builder_sources_keep_durable_acknowledgements_and_results() {
         before["messages"],
         run(&mut alice, json!({"command":"timeline","peer":"self"}))["messages"]
     );
+}
+
+#[test]
+fn notes_search_preserves_group_mapping_and_visibility_without_group_previews() {
+    let (dir, _server, mut alice, mut bob, now) = crate::claims::tests::pair();
+    sigil_server::store::Store::open(&dir.path().join("server.db"))
+        .unwrap()
+        .configure_groups(sigil_protocol::groups::Configure {
+            expected_revision: 0,
+            enabled: true,
+            storage_limit_bytes: 1024 * 1024,
+        })
+        .unwrap();
+    alice.publish_device_binding_online().unwrap();
+    bob.publish_device_binding_online().unwrap();
+    let (_, peer) = crate::incoming::tests::trust(&mut alice, &mut bob);
+    let group = run(&mut alice, json!({"command":"group_create","request":"d1".repeat(32),"timestamp":now,"name":"Study circle","description":"","peers":[transport::hex(&peer)]}))["open"].as_str().unwrap().to_owned();
+    for (request, peer, text, rich) in [
+        ("d2", group.as_str(), "Ordinary group message", false),
+        ("d3", group.as_str(), "note::Keep the meeting notes;", true),
+        ("d4", "self", "Personal reminder", false),
+    ] {
+        run(&mut alice, json!({"command":"post","peer":peer,"request":request.repeat(32),"timestamp":now,"text":text,"rich":rich}));
+    }
+    let notes = run(&mut alice, json!({"command":"search","query":"","category":"Notes"}));
+    let hits = notes["hits"].as_array().unwrap();
+    assert!(hits.iter().any(|hit| hit["peer"] == group && hit["id"] == "d3".repeat(32)));
+    assert!(hits.iter().any(|hit| hit["peer"] == "self" && hit["id"] == "d4".repeat(32)));
+    assert!(!hits.iter().any(|hit| hit["id"] == "d2".repeat(32)));
+    assert!(hits.iter().all(|hit| hit["noted"] == true));
+    run(&mut alice, json!({"command":"organize","peer":group,"request":"d5".repeat(32),"timestamp":now,"value":{"Hidden":true}}));
+    let notes = run(&mut alice, json!({"command":"search","query":"","category":"Notes"}));
+    assert!(notes["hits"].as_array().unwrap().iter().all(|hit| hit["peer"] != group));
 }

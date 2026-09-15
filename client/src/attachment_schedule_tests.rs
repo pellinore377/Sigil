@@ -18,6 +18,21 @@ fn run(store: &ClientStore, cache: &mut Cache, begin: u64, end: u64) -> Schedule
         .unwrap()
 }
 #[test]
+fn newly_staged_work_wakes_an_idle_transfer_scheduler() {
+    let (dir, _fixture, store, _bob, now) = crate::claims::tests::pair();
+    let mut cache = store.open_attachment_cache(&dir.path().join("cache.db"), BUDGET).unwrap();
+    let idle = run(&store, &mut cache, now, now);
+    assert!(idle.attempt.is_none());
+    assert_eq!(idle.next_at, now + 5);
+    let file = cache.prepare_upload(1, metadata(), None).unwrap();
+    cache.stage_chunk(file, 0, b"x").unwrap();
+    cache.finish_staging(file).unwrap();
+    assert!(run(&store, &mut cache, now, now).attempt.is_none());
+    cache.wake_queued_work(now).unwrap();
+    assert!(run(&store, &mut cache, now, now).attempt.is_some());
+}
+
+#[test]
 fn retry_after_and_failed_completion_preserve_reservation_across_restart() {
     let (dir, old, invite, now) = crate::connection::tests::setup();
     drop(old);

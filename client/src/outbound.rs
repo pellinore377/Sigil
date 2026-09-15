@@ -11,6 +11,10 @@ pub(crate) fn recipient_full(error: &network::Error) -> bool {
     )
 }
 
+pub(crate) fn recipient_unavailable(error: &network::Error) -> bool {
+    recipient_full(error) || matches!(error, network::Error::Status { code: 404, retry_after_seconds: None })
+}
+
 #[derive(Debug)]
 pub struct OutboundAttempt {
     pub session: Id,
@@ -43,7 +47,7 @@ fn cursor(
 impl ClientStore {
     /// Attempt up to four queued packets from each of at most 16 sessions. Queue order
     /// within each session is preserved. Local errors do not starve other sessions;
-    /// recipient capacity errors leave other sessions running; transport errors
+    /// unavailable/full recipients leave other sessions running; transport errors
     /// stop the pass so callers can honor Retry-After. Cursor wrap
     /// takes an empty pass. Unprepared packets require application intervention.
     pub fn resume_outbound_online(&mut self, now: u64) -> Result<Vec<OutboundAttempt>, Error> {
@@ -61,7 +65,7 @@ impl ClientStore {
         for bytes in ids {
             let session: Id = bytes.try_into().map_err(|_| Error::InvalidStore)?;
             let result = self.send_pending_limit(session, now, 4);
-            let stop = matches!(&result, Err(Error::Network(error)) if !recipient_full(error));
+            let stop = matches!(&result, Err(Error::Network(error)) if !recipient_unavailable(error));
             attempts.push(OutboundAttempt { session, result });
             next = session.to_vec();
             if stop {
@@ -96,6 +100,13 @@ mod tests {
     }
     #[test]
     fn full_recipient_does_not_stall_another_queue_or_discard_packets() {
+        recipient_failure(false)
+    }
+    #[test]
+    fn revoked_recipient_does_not_back_off_other_delivery_or_receiving() {
+        recipient_failure(true)
+    }
+    fn recipient_failure(revoked: bool) {
         use crate::connection::tests::{credential, prepare};
         use sigil_protocol::{accounts::InviteRequest, mailbox::Submit};
         let (dir, fixture, mut alice, mut bob, now) = pair();
@@ -134,7 +145,8 @@ mod tests {
         }
         let recipient = bob.connection_session().unwrap().unwrap().device_id;
         let mut receipts = Vec::new();
-        for n in 64..128u8 {
+        if revoked { server.revoke_device(&credential(&bob), &recipient, now).unwrap(); }
+        for n in if revoked {64..64u8} else {64..128u8} {
             receipts.push(
                 server
                     .submit_message(
@@ -153,7 +165,7 @@ mod tests {
         let frozen = serde_json::to_vec(&alice.pending_deliveries([0; 32], now).unwrap()).unwrap();
         let attempts = alice.resume_outbound_online(now).unwrap();
         assert_eq!(attempts.len(), 2);
-        assert!(matches!(&attempts[0].result,Err(Error::Network(error)) if recipient_full(error)));
+        assert!(matches!(&attempts[0].result,Err(Error::Network(error)) if recipient_unavailable(error)));
         assert_eq!(attempts[1].result.as_ref().unwrap().accepted, 1);
         assert_eq!(
             charlie.connected_client().unwrap().mailbox().unwrap().len(),
@@ -177,7 +189,7 @@ mod tests {
         assert!(step
             .outbound
             .iter()
-            .any(|a| matches!(&a.result,Err(Error::Network(e)) if recipient_full(e))));
+            .any(|a| matches!(&a.result,Err(Error::Network(e)) if recipient_unavailable(e))));
         step.incoming.push(IncomingAttempt {
             sequence: 1,
             result: Err(Error::Conflict),
@@ -187,6 +199,10 @@ mod tests {
             step.issue(),
             Some(("receiving messages", Error::Conflict))
         ));
+        if revoked {
+            assert_eq!(serde_json::to_vec(&alice.pending_deliveries([0; 32], now).unwrap()).unwrap(), frozen);
+            return;
+        }
         for receipt in receipts {
             server
                 .acknowledge_message(&credential(&bob), receipt.sequence, now)

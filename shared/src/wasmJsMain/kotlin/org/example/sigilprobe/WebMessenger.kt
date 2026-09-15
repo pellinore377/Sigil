@@ -96,6 +96,8 @@ private val stamped=setOf("post","place","group_create","react","pin","read","ma
     val scope=rememberCoroutineScope()
     val mutex=remember {Mutex()}
     val wake=remember {Channel<Unit>(Channel.CONFLATED)}
+    val fileWake=remember {Channel<Unit>(Channel.CONFLATED)}
+    var forceSync by remember {mutableStateOf(false)}
     var post by remember {mutableStateOf<Pair<Map<String,Any?>,String>?>(null)}
     var sending by remember {mutableStateOf(false)}
     var groupCreate by remember {mutableStateOf<Pair<Map<String,Any?>,String>?>(null)}
@@ -105,6 +107,7 @@ private val stamped=setOf("post","place","group_create","react","pin","read","ma
     var searchAfter by remember {mutableStateOf<Long?>(null)}
     var searchCategory by remember {mutableStateOf("")}
     var searchGeneration by remember {mutableStateOf(0)}
+    var searchJob by remember {mutableStateOf<Job?>(null)}
     var pages by remember {mutableStateOf(1)}
     suspend fun native(raw:String):JsonObject {
         val response=Json.parseToJsonElement(browserCommand(raw).awaitBrowser<JsString>().toString()).jsonObject
@@ -146,7 +149,7 @@ private val stamped=setOf("post","place","group_create","react","pin","read","ma
         val pending=webNotificationsPending().awaitBrowser<JsString>().toString()
         if(pending.isNotEmpty()) {
             val proof=Json.parseToJsonElement(pending).jsonObject
-            if(execute("browser_push",mapOf("action" to "receive","endpoint" to proof.string("endpoint"),"payload" to proof.string("payload"))).bool("accepted")){webNotificationsClear(pending).awaitBrowser<JsAny?>();fileNext=0;wake.trySend(Unit)}
+            if(execute("browser_push",mapOf("action" to "receive","endpoint" to proof.string("endpoint"),"payload" to proof.string("payload"))).bool("accepted")){webNotificationsClear(pending).awaitBrowser<JsAny?>();fileNext=0;fileWake.trySend(Unit);wake.trySend(Unit)}
         }
         if(state.push!=null)notificationStatus()
     }
@@ -211,7 +214,7 @@ private val stamped=setOf("post","place","group_create","react","pin","read","ma
                 finally {browserReleaseBytes(bytes)}
                 yield()
             }
-            mutex.withLock {execute("file_finish",mapOf("request" to id));fileNext=0;transfers();wake.trySend(Unit)}
+            mutex.withLock {execute("file_finish",mapOf("request" to id));fileNext=0;fileWake.trySend(Unit);transfers();wake.trySend(Unit)}
         }catch(error:Exception){
             withContext(NonCancellable){mutex.withLock {runCatching {execute("file_cancel",mapOf("request" to id));transfers()}}}
             throw error
@@ -224,7 +227,10 @@ private val stamped=setOf("post","place","group_create","react","pin","read","ma
             while(true) {
                 val phase=mutex.withLock {execute("file_get",mapOf("peer" to file.peer,"author" to file.author,"message" to file.message)).string("phase")}
                 if(phase in setOf("Complete","Published","Restored"))break
-                mutex.withLock {fileWork()};delay(1000)
+                mutex.withLock {fileWork()}
+                val completed=mutex.withLock {execute("file_get",mapOf("peer" to file.peer,"author" to file.author,"message" to file.message)).string("phase") in setOf("Complete","Published","Restored")}
+                if(completed)break
+                delay(foregroundSyncWait(fileNext,BrowserDate.now().toLong()))
             }
         }
     }
@@ -241,7 +247,7 @@ private val stamped=setOf("post","place","group_create","react","pin","read","ma
 
     }
     suspend fun refresh() {
-state=StateDecoder.state(execute("state"),state,::clock);if(state.phase=="connected"){timeline();transfers();calls.refresh(execute("calls"),::clock,{calendar(it).substringBeforeLast(", ")});if(state.storage!=null)storage(execute("storage"));if((BrowserDate.now()/1000).toLong()>=accessNext){account(execute("account_access"));accessNext=(BrowserDate.now()/1000).toLong()+30}}}
+state=StateDecoder.state(execute("state"),state,::clock);if(state.phase=="connected"){timeline();transfers();calls.refresh(execute("calls"),::clock,{calendar(it).substringBeforeLast(", ")});if(state.storage!=null)storage(execute("storage"));if((BrowserDate.now()/1000).toLong()>=accessNext){account(execute("account_access"));accessNext=(BrowserDate.now()/1000).toLong()+300}}}
     LaunchedEffect(Unit) {
         try {initializeBrowser().awaitBrowser<JsAny?>();startBrowser().awaitBrowser<JsAny?>();refresh();linking=execute("device_link",mapOf("action" to "status")).takeUnless{it.string("stage")=="none"};ready=true
             try{initializeNotificationWasm().awaitBrowser<JsAny?>();notificationsReady=webNotificationsSupported();if(state.phase!="connected" && notificationsReady)webNotificationsDisable().awaitBrowser<JsAny?>()}catch(_:Exception){}
@@ -252,7 +258,7 @@ state=StateDecoder.state(execute("state"),state,::clock);if(state.phase=="connec
         var nextSync=0L
         if(ready)while(isActive) {
             val active=browserDocument.visibilityState=="visible" || calls.visible!=null
-            withTimeoutOrNull(if(active && state.phase=="connected") foregroundSyncWait(nextSync,BrowserDate.now().toLong(),if(calls.visible!=null)250 else 1000) else 1500){wake.receive()}
+            val nudged=withTimeoutOrNull(if(active && state.phase=="connected") foregroundSyncWait(nextSync,BrowserDate.now().toLong(),if(calls.visible!=null)250 else 1000) else 1500){wake.receive();true}==true
             if(browserDocument.visibilityState=="visible" && state.phase=="oidc") {
                 try {mutex.withLock {refresh();if(state.phase=="connected")authorization=null}}
                 catch(cancelled:CancellationException){throw cancelled}
@@ -260,9 +266,10 @@ state=StateDecoder.state(execute("state"),state,::clock);if(state.phase=="connec
             }
             if((browserDocument.visibilityState=="visible" || calls.visible!=null) && state.phase=="connected") {
                 try {
-                    val result=mutex.withLock {execute("sync",mapOf("interactive" to true,"call_setup" to (calls.visible?.connection in setOf("connecting","securing","reconnecting"))))}
+                    val force=forceSync;forceSync=false
+                    val result=mutex.withLock {execute("sync",mapOf("interactive" to true,"wake" to force,"call_setup" to (calls.visible?.connection in setOf("connecting","securing","reconnecting"))))}
                     nextSync=result.long("next_at")
-                    mutex.withLock {refresh()}
+                    if((result.bool("ran") || nudged) && !sending)mutex.withLock {if(!sending)refresh()}
                     val issue=result.optional("issue")
                     if(issue!=null || result.bool("ran")){if(state.issue==syncIssue || issue!=null)state=state.copy(issue=issue);syncIssue=issue}
                 } catch(cancelled:CancellationException){throw cancelled}
@@ -270,9 +277,24 @@ state=StateDecoder.state(execute("state"),state,::clock);if(state.phase=="connec
             }
         }
     }
+    LaunchedEffect(ready,visible,state.phase) {
+        if(ready && visible && state.phase=="connected")fileWake.trySend(Unit)
+    }
+    LaunchedEffect(ready,visible,state.phase) {
+        if(!(ready && visible && state.phase=="connected"))return@LaunchedEffect
+        var last=0.0
+        while(isActive) {
+            val started=BrowserDate.now()
+            val hit=try {browserMailboxWatch().awaitBrowser<JsBoolean>().toBoolean()}
+            catch(cancelled:CancellationException){throw cancelled}
+            catch(_:Exception){delay(5000);continue}
+            if(hit){if(started-last<1500)delay(2000);last=started;forceSync=true;wake.trySend(Unit)}
+            else if(BrowserDate.now()-started<1000)delay(2000)
+        }
+    }
     LaunchedEffect(ready) {
         if(ready)while(isActive) {
-            delay(if(visible && state.phase=="connected") foregroundSyncWait(fileNext,BrowserDate.now().toLong()) else 1500)
+            withTimeoutOrNull(if(visible && state.phase=="connected") foregroundSyncWait(fileNext,BrowserDate.now().toLong()) else 1500){fileWake.receive()}
             if(visible && state.phase=="connected") {
                 try {
                     if((BrowserDate.now()/1000).toLong()>=fileNext)mutex.withLock {fileWork()}
@@ -307,6 +329,35 @@ state=StateDecoder.state(execute("state"),state,::clock);if(state.phase=="connec
     }
     DisposableEffect(Unit){onDispose{browserVoiceCancel()}}
     fun finishRemoval() {ready=false;browserCameraStop();val keys=(0 until window.localStorage.length).mapNotNull{window.localStorage.key(it)};keys.filter{it.startsWith("messenger.")}.forEach{window.localStorage.removeItem(it)};window.location.reload()}
+    fun search(query: String, category: String, more: Boolean = false) {
+        if (!ready || more && (state.searching || !state.searchMore)) return
+        searchJob?.cancel()
+        val generation = ++searchGeneration
+        val previous = state.searchHits
+        val sameSearch = state.searchQuery == query && searchCategory == category
+        if (!more) searchAfter = null
+        searchCategory = category
+        state = state.copy(searchQuery = query, searchHits = if (more || sameSearch) previous else emptyList(), searching = true)
+        searchJob = scope.launch {
+            try {
+                var after = searchAfter
+                val hits = if (more) previous.toMutableList() else mutableListOf<SearchHit>()
+                val initialSize = hits.size
+                do {
+                    val value = mutex.withLock { execute("search", mapOf("query" to query, "category" to category, "after" to after)) }
+                    if (generation != searchGeneration) return@launch
+                    hits += StateDecoder.search(value, ::clock)
+                    after = value["next"]?.jsonPrimitive?.longOrNull
+                    searchAfter = after
+                    state = state.copy(searchHits = if (sameSearch && !more && hits.isEmpty() && after != null) previous else hits.toList(),
+                        searchMore = after != null, searching = after != null && hits.size - initialSize < 64)
+                    yield()
+                } while (after != null && hits.size - initialSize < 64)
+                state = state.copy(searching = false, searchMore = after != null)
+            } catch (cancelled: CancellationException) { throw cancelled }
+            catch (_: Exception) { if (generation == searchGeneration) state = state.copy(searching = false, issue = "Search could not finish.") }
+        }
+    }
     val command:Command=command@{name,fields->
         if(calls.handle(name,fields))return@command
         when(name) {
@@ -369,14 +420,14 @@ state=StateDecoder.state(execute("state"),state,::clock);if(state.phase=="connec
                     val providers=mutex.withLock{execute("browser_push",mapOf("action" to "providers"))}
                     check(providers.bool("unified_push")){"Your administrator must enable Web Push in server notification settings."}
                     val target=Json.parseToJsonElement(webNotificationsSubscribe(providers.string("vapid_public_key")).awaitBrowser<JsString>().toString())
-                    mutex.withLock{execute("browser_push",mapOf("action" to "register","target" to target));notificationStatus()};notificationNext=0.0;fileNext=0;wake.trySend(Unit)
+                    mutex.withLock{execute("browser_push",mapOf("action" to "register","target" to target));notificationStatus()};notificationNext=0.0;fileNext=0;fileWake.trySend(Unit);wake.trySend(Unit)
                 }catch(cancelled:CancellationException){throw cancelled}catch(e:Exception){state=state.copy(issue=e.message?:"Could not enable notifications. Check your browser permissions and server settings.")}
                 finally{state=state.copy(busy=false)}};return@command
             }
             "push_disable"->{
                 if(state.busy || !notificationsReady)return@command
                 state=state.copy(busy=true)
-                scope.launch{try{webNotificationsDisable().awaitBrowser<JsAny?>();mutex.withLock{execute("browser_push",mapOf("action" to "disable"));notificationStatus()};fileNext=0;wake.trySend(Unit)}catch(cancelled:CancellationException){throw cancelled}catch(_:Exception){state=state.copy(issue="Could not finish disabling notifications. Try again.")}finally{state=state.copy(busy=false)}};return@command
+                scope.launch{try{webNotificationsDisable().awaitBrowser<JsAny?>();mutex.withLock{execute("browser_push",mapOf("action" to "disable"));notificationStatus()};fileNext=0;fileWake.trySend(Unit);wake.trySend(Unit)}catch(cancelled:CancellationException){throw cancelled}catch(_:Exception){state=state.copy(issue="Could not finish disabling notifications. Try again.")}finally{state=state.copy(busy=false)}};return@command
             }
             "recovery_account_open"->{
 recoverAccount=true;return@command}
@@ -407,15 +458,14 @@ recoverAccount=true;return@command}
             "edit_source_used"->{state=state.copy(editDraft=null);return@command}
             "dismiss"->{state=state.copy(issue=null);return@command}
             "server_changed"->{state=state.copy(loginAddress=fields["server"] as String,loginMethods=null,discoveryIssue=null);return@command}
+            "search"->{search(fields["query"] as String, fields["category"] as? String ?: "");return@command}
+            "search_more"->{search(state.searchQuery, searchCategory, true);return@command}
             "close"->{state=state.copy(selected=null,messages=emptyList(),timelineLoaded=false);return@command}
-            "open"->{state=state.copy(selected=fields["peer"] as String,messages=emptyList(),timelineLoaded=false);pages=1;filter=mapOf("category" to "Timeline")+fields.filterKeys{it in setOf("author","message","thread_author","thread_message")};state=state.copy(threadTarget=(fields["thread_author"] as? String)?.let {a->(fields["thread_message"] as? String)?.let{ThreadTarget(a,it)}})}
-            "timeline_filter"->{filter=fields.filterKeys {it!="peer"};pages=1}
+            "open"->{state=state.copy(selected=fields["peer"] as String,messages=emptyList(),timelineLoaded=false);pages=1;filter=mapOf("category" to (fields["category"] as? String ?: "Timeline"))+fields.filterKeys{it in setOf("author","message","thread_author","thread_message")};state=state.copy(threadTarget=(fields["thread_author"] as? String)?.let {a->(fields["thread_message"] as? String)?.let{ThreadTarget(a,it)}})}
+            "timeline_filter"->{val next=fields.filter { (key,value)->key!="peer" && value!=null };if(filter==next)return@command;filter=next;pages=1}
             "older"->{if(pages<Int.MAX_VALUE)pages++}
             "latest"->{pages=1}
         }
-        if(name=="search_more") {if(state.searching || !state.searchMore)return@command;state=state.copy(searching=true)}
-        if(name=="search") {searchGeneration++;searchAfter=null;searchCategory=fields["category"] as? String ?: "";state=state.copy(searchQuery=fields["query"] as String,searching=true,searchHits=emptyList())}
-        val searchVersion=searchGeneration
         if(!ready)return@command
         if(name=="post" && sending)return@command
         if(name=="post")sending=true
@@ -445,12 +495,6 @@ recoverAccount=true;return@command}
     if(fields["action"]=="scan" && fields["qr"]==null)contactQr=(json(context+mapOf("stage" to "scan")) as JsonObject)
     else {val value=execute(name,context+fields);value.optional("open")?.let{state=state.copy(selected=it);pages=1};contactQr=value.takeUnless{it.string("stage") in listOf("done","none")}?.let{JsonObject(it+(json(context) as JsonObject))};refresh()}
 }
-"search","search_more"->{
-    if(searchVersion==searchGeneration) {
-        val value=execute("search",mapOf("query" to state.searchQuery,"category" to searchCategory,"after" to searchAfter))
-        if(searchVersion==searchGeneration){searchAfter=value["next"]?.jsonPrimitive?.longOrNull;state=state.copy(searchHits=state.searchHits+StateDecoder.search(value,::clock),searching=false,searchMore=searchAfter!=null)}
-    }
-}
                     "discover"->{
                         val address=fields["server"] as String
                         if(address==state.loginAddress) {
@@ -461,7 +505,7 @@ recoverAccount=true;return@command}
                     }
                     "attachment_open","wallpaper_choose"->state=state.copy(issue="This browser integration is not available yet.")
                     else->{
-                        if(name in setOf("file_send","file_cancel"))fileNext=0
+                        if(name in setOf("file_send","file_cancel")){fileNext=0;fileWake.trySend(Unit)}
                         val raw=when {
                             name=="post" && post?.first==fields->post!!.second
                             name=="group_create" && groupCreate?.first==fields->groupCreate!!.second
@@ -483,7 +527,8 @@ recoverAccount=true;return@command}
 if(name=="edit_source")state=state.copy(editDraft=EditDraft(fields["peer"] as String,fields["author"] as String,fields["message"] as String,value.string("edit_source")))
 if(name in setOf("devices","revoke_device"))state=StateDecoder.devices(value,state,fields["cursor"]!=null)
 if(name=="contact_policy")state=state.copy(allowRequests=value.bool("enabled"))
-                        refresh()
+                        if(name in setOf("post","edit"))timeline() else if(name in setOf("file_send","file_cancel"))transfers() else refresh()
+                        if(name=="post"){val flush=execute("flush");if(flush.long("sent")>0)timeline();flush.optional("issue")?.let {state=state.copy(issue=it)}}
                     }
                 }
             }}catch(e:Exception) {state=state.copy(searching=if(name in setOf("search","search_more"))false else state.searching,issue=e.message?:"Could not complete this action. Your draft is preserved.")}
@@ -512,7 +557,7 @@ if(name=="contact_policy")state=state.copy(allowRequests=value.bool("enabled"))
         }while(isActive)
     }
     DisposableEffect(Unit){onDispose {locations.stop()}}
-    CompositionLocalProvider(LocalMediaCommand provides command, LocalMediaSender provides {message->state.people[message.author] ?: if(message.mine)"You" else state.chats.firstOrNull {it.id==message.peer}?.name ?: ""}, LocalMediaMessage provides {peer,author,id->state.messages.firstOrNull {it.peer==peer && it.author==author && it.id==id}}, LocalLocationContent provides {message,part,action->WebLocationCard(message,part,state.people[message.author] ?: if(message.mine)"You" else "Shared place",action)},LocalPlacePanel provides {target,back,done->WebPlacePanel(target,locations,back,photo=state.profileAvatar) {fields->mutex.withLock {execute("place",fields);locations.shared(if(fields["live"]!=null)"live" else if(fields["pin"]==true)"pin" else "once",visible);runCatching {refresh()}};wake.trySend(Unit);done()}},LocalNotificationPanel provides {value,action->WebNotificationSettings(value,action)},LocalWallpaper provides {peer,modifier->WebWallpaper(peer,wallpaperRevision,modifier)},LocalWebFileSave provides ::saveFile,LocalMaterialPlatform provides WebMaterials,LocalSolidMaterial provides (if(materialsReady) {value,progress,modifier->MaterialMessages(value,progress,modifier)} else null),LocalMaterialOverlay provides (if(materialsReady) {timeline,modifier->MaterialTimelineOverlay(timeline,modifier)} else null),LocalProfilePhoto provides {reference,modifier->WebProfilePhoto(reference,photoRevision,modifier)},LocalMathContent provides {mathml,expression,modifier->WebMath(mathml,expression,modifier)},LocalMotionVisible provides visible,LocalClientFeatures provides ClientFeatures(calls=calls.available,videoCalls=false,files=true,voice=true,locations=true,notifications=notificationsReady,recovery=true),LocalServiceAccess provides ::service,LocalDraftId provides ::browserRequestId,LocalRecipeScale provides ::recipe,LocalTemporalPreview provides {kind,input->val result=rustTemporal("$kind\n${(BrowserDate.now()/1000).toLong()}\n$timezone\n$dateOrder\n$input").split('\n');if(result.size!=3)null else result[1].toLongOrNull()?.let {TemporalPreview(result[0],timezone,if(kind=="Timer")"$it seconds" else calendar(it)+" · "+timezone)}},LocalCameraPanel provides {target,back,done->WebCameraPanel(back) {file->stage(file,target);done()}},LocalAttachmentContent provides {message->message.webFile()?.let {WebAttachment(it,::loadFile,{viewing=it},outgoing=message.mine)}},LocalAttachmentDraft provides {file,modifier->WebAttachment(WebFile(file.peer,"","",file.name,file.mediaType,file.bytes,draft=file.request,levels=voiceWaves[file.request]?.first.orEmpty(),duration=voiceWaves[file.request]?.second ?: 0),::loadFile,{viewing=it},modifier)},LocalBuilderSource provides ::rustBuilder,LocalStructuredPreview provides {source->runCatching {ContentDecoder.part(rustPreview(buildJsonObject {put("source",source);put("now",(BrowserDate.now()/1000).toLong());put("timezone",timezone)}.toString()),::clock)}.getOrNull()},LocalBuilderTimezone provides timezone,LocalCodePreview provides ::rustCode,LocalEditorAnalysis provides ::rustEditor,LocalHelpCatalog provides ::rustHelp,LocalTextMotionSeeds provides ::rustMotionSeeds) {
+    CompositionLocalProvider(LocalMediaCommand provides command, LocalMediaSender provides {message->state.people[message.author] ?: if(message.mine)"You" else state.chats.firstOrNull {it.id==message.peer}?.name ?: ""}, LocalMediaMessage provides {peer,author,id->state.messages.firstOrNull {it.peer==peer && it.author==author && it.id==id}}, LocalLocationContent provides {message,part,action->WebLocationCard(message,part,state.people[message.author] ?: if(message.mine)"You" else "Shared place",action)},LocalPlacePanel provides {target,back,done->WebPlacePanel(target,locations,back,photo=state.profileAvatar) {fields->mutex.withLock {execute("place",fields);locations.shared(if(fields["live"]!=null)"live" else if(fields["pin"]==true)"pin" else "once",visible);runCatching {timeline()}};wake.trySend(Unit);done()}},LocalNotificationPanel provides {value,action->WebNotificationSettings(value,action)},LocalWallpaper provides {peer,modifier->WebWallpaper(peer,wallpaperRevision,modifier)},LocalWebFileSave provides ::saveFile,LocalMaterialPlatform provides WebMaterials,LocalSolidMaterial provides (if(materialsReady) {value,progress,modifier->MaterialMessages(value,progress,modifier)} else null),LocalMaterialOverlay provides (if(materialsReady) {timeline,modifier->MaterialTimelineOverlay(timeline,modifier)} else null),LocalProfilePhoto provides {reference,modifier->WebProfilePhoto(reference,photoRevision,modifier)},LocalMathContent provides {mathml,expression,modifier->WebMath(mathml,expression,modifier)},LocalMotionVisible provides visible,LocalClientFeatures provides ClientFeatures(calls=calls.available,videoCalls=false,files=true,voice=true,locations=true,notifications=notificationsReady,recovery=true),LocalServiceAccess provides ::service,LocalDraftId provides ::browserRequestId,LocalRecipeScale provides ::recipe,LocalTemporalPreview provides {kind,input->val result=rustTemporal("$kind\n${(BrowserDate.now()/1000).toLong()}\n$timezone\n$dateOrder\n$input").split('\n');if(result.size!=3)null else result[1].toLongOrNull()?.let {TemporalPreview(result[0],timezone,if(kind=="Timer")"$it seconds" else calendar(it)+" · "+timezone)}},LocalCameraPanel provides {target,back,done->WebCameraPanel(back) {file->stage(file,target);done()}},LocalAttachmentContent provides {message->message.webFile()?.let {WebAttachment(it,::loadFile,{viewing=it},outgoing=message.mine)}},LocalAttachmentDraft provides {file,modifier->WebAttachment(WebFile(file.peer,"","",file.name,file.mediaType,file.bytes,draft=file.request,levels=voiceWaves[file.request]?.first.orEmpty(),duration=voiceWaves[file.request]?.second ?: 0),::loadFile,{viewing=it},modifier)},LocalBuilderSource provides ::rustBuilder,LocalStructuredPreview provides {source->runCatching {ContentDecoder.part(rustPreview(buildJsonObject {put("source",source);put("now",(BrowserDate.now()/1000).toLong());put("timezone",timezone)}.toString()),::clock)}.getOrNull()},LocalBuilderTimezone provides timezone,LocalCodePreview provides ::rustCode,LocalEditorAnalysis provides ::rustEditor,LocalHelpCatalog provides ::rustHelp,LocalTextMotionSeeds provides ::rustMotionSeeds) {
         SigilTheme(decodeAppearance(state.ui["appearance"]),palette=::rustPalette) { Column(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
 recoveryKey?.let {key->RecoverySetup(key,state.busy,{recoveryKey=null},{command("recovery_enable",mapOf("secret" to key))})}
 if(restoreHistory && state.phase=="connected")RecoveryRestore(state.busy,state.issue,{restoreHistory=false},{command("recovery_restore",mapOf("secret" to it,"accept_unanchored" to true))})

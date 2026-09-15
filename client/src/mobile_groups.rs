@@ -112,7 +112,7 @@ impl ClientStore {
         }
         Ok(json!({"open":format!("group:{}", transport::hex(&group))}))
     }
-    pub(super) fn mobile_groups(&mut self) -> Result<Vec<Value>, Error> {
+    pub(super) fn mobile_group_scopes(&mut self) -> Result<Vec<(Id, crate::groups::GroupStatus)>, Error> {
         let ids = {
             let mut query = self.db.prepare("SELECT id FROM groups ORDER BY id")?;
             let ids = query
@@ -121,7 +121,7 @@ impl ClientStore {
             ids
         };
         let own = device_fingerprint(&self.own_device_binding()?)?;
-        let mut chats = Vec::new();
+        let mut groups = Vec::new();
         for raw in ids {
             let group: Id = raw.try_into().map_err(|_| Error::InvalidStore)?;
             let status = self.group_status(group)?;
@@ -134,6 +134,13 @@ impl ClientStore {
             {
                 continue;
             }
+            groups.push((group, status));
+        }
+        Ok(groups)
+    }
+    pub(super) fn mobile_groups(&mut self) -> Result<Vec<Value>, Error> {
+        let mut chats = Vec::new();
+        for (group, status) in self.mobile_group_scopes()? {
             let page = self.recent_conversation_page(group, None, conversations::now())?;
             let message = page.messages.first();
             let peer = format!("group:{}", transport::hex(&group));

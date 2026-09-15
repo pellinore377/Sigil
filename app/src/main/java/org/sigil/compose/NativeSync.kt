@@ -50,10 +50,10 @@ internal object NativeSync {
             check(result.getBoolean("ok")); result.getJSONObject("value")
         }
     }
-    suspend fun run(context: Context, interactive: Boolean = false, callSetup: Boolean = false): JSONObject = withContext(Dispatchers.IO) {
+    suspend fun run(context: Context, interactive: Boolean = false, callSetup: Boolean = false, wake: Boolean = false): JSONObject = withContext(Dispatchers.IO) {
         sync.withLock {
             check(!NativeSignOut.pending(context))
-            val request = JSONObject().put("command", "sync").put("interactive", interactive).put("call_setup", callSetup).toString()
+            val request = JSONObject().put("command", "sync").put("interactive", interactive).put("call_setup", callSetup).put("wake", wake).toString()
             val result = StorageKeyProvider(context).withKey { directory, key -> JSONObject(NativeStorage.execute(directory.path, key, request)) }
             check(result.getBoolean("ok")); result.getJSONObject("value")
         }

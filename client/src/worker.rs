@@ -91,7 +91,9 @@ impl SyncStep {
                     .iter()
                     .filter_map(|item| item.result.as_ref().err())
                     .find(|error| !matches!(error, Error::Obsolete)
-                        && !matches!(error, Error::Network(error) if outbound::recipient_full(error)))
+                        && !matches!(error, Error::Network(error) if outbound::recipient_full(error)
+                            || matches!($stage, "sending messages" | "sending group messages")
+                                && outbound::recipient_unavailable(error)))
                 {
                     return Some(($stage, error));
                 }
@@ -297,52 +299,7 @@ impl ClientStore {
                 return step;
             }
         }
-        match self.resume_send_intents_online(now) {
-            Ok(sends) => step.sends = sends,
-            Err(error) => {
-                step.failure = Some(SyncFailure::SendIntents(error));
-                return step;
-            }
-        }
-        if let Some(index) = step
-            .sends
-            .iter()
-            .position(|item| matches!(&item.result, Err(Error::Network(e)) if !crate::outbound::recipient_full(e)))
-        {
-            step.failure = Some(SyncFailure::SendIntentNetwork(index));
-            return step;
-        }
-        match self.resume_outbound_online(now) {
-            Ok(outbound) => step.outbound = outbound,
-            Err(error) => {
-                step.failure = Some(SyncFailure::Outbound(error));
-                return step;
-            }
-        }
-        if let Some(index) = step
-            .outbound
-            .iter()
-            .position(|item| matches!(&item.result, Err(Error::Network(e)) if !crate::outbound::recipient_full(e)))
-        {
-            step.failure = Some(SyncFailure::OutboundNetwork(index));
-            return step;
-        }
-        match self.resume_group_outbound_online(now) {
-            Ok(outbound) => step.group_outbound = outbound,
-            Err(error) => {
-                step.failure = Some(SyncFailure::GroupOutbound(error));
-                return step;
-            }
-        }
-        if let Some(index) = step
-            .group_outbound
-            .iter()
-            .position(|item| matches!(item.result, Err(Error::Network(_))))
-        {
-            step.failure = Some(SyncFailure::GroupOutboundNetwork(index));
-            return step;
-        }
-        if !maintenance {
+        if !self.send_stages(now, &mut step) || !maintenance {
             return step;
         }
         step.prekey_supply = Some(self.replenish_prekey_online());
@@ -355,6 +312,70 @@ impl ClientStore {
             Err(error) => step.failure = Some(SyncFailure::Maintenance(error)),
         }
         step
+    }
+}
+
+impl ClientStore {
+    /// Own-device copies plus the three send stages; false stops the pass.
+    pub(super) fn outbound_step(&mut self, now: u64) -> SyncStep {
+        let mut step = SyncStep::default();
+        match self.sync_conversation_devices(now) {
+            Ok(count) => step.conversation_copies = count,
+            Err(error) => {
+                step.failure = Some(SyncFailure::Conversations(error));
+                return step;
+            }
+        }
+        self.send_stages(now, &mut step);
+        step
+    }
+    fn send_stages(&mut self, now: u64, step: &mut SyncStep) -> bool {
+        match self.resume_send_intents_online(now) {
+            Ok(sends) => step.sends = sends,
+            Err(error) => {
+                step.failure = Some(SyncFailure::SendIntents(error));
+                return false;
+            }
+        }
+        if let Some(index) = step
+            .sends
+            .iter()
+            .position(|item| matches!(&item.result, Err(Error::Network(e)) if !crate::outbound::recipient_full(e)))
+        {
+            step.failure = Some(SyncFailure::SendIntentNetwork(index));
+            return false;
+        }
+        match self.resume_outbound_online(now) {
+            Ok(outbound) => step.outbound = outbound,
+            Err(error) => {
+                step.failure = Some(SyncFailure::Outbound(error));
+                return false;
+            }
+        }
+        if let Some(index) = step
+            .outbound
+            .iter()
+            .position(|item| matches!(&item.result, Err(Error::Network(e)) if !crate::outbound::recipient_unavailable(e)))
+        {
+            step.failure = Some(SyncFailure::OutboundNetwork(index));
+            return false;
+        }
+        match self.resume_group_outbound_online(now) {
+            Ok(outbound) => step.group_outbound = outbound,
+            Err(error) => {
+                step.failure = Some(SyncFailure::GroupOutbound(error));
+                return false;
+            }
+        }
+        if let Some(index) = step
+            .group_outbound
+            .iter()
+            .position(|item| matches!(&item.result, Err(Error::Network(error)) if !outbound::recipient_unavailable(error)))
+        {
+            step.failure = Some(SyncFailure::GroupOutboundNetwork(index));
+            return false;
+        }
+        true
     }
 }
 

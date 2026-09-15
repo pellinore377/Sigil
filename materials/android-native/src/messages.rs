@@ -24,7 +24,9 @@ pub extern "system" fn Java_org_sigil_compose_MaterialNative_create(
         VIEWS.with(|views| {
             let mut views = views.borrow_mut();
             if views.len() >= 18 {
-                return None;
+                // A departing timeline row may still own its surface. The caller
+                // retries after disposal instead of permanently losing this object.
+                return Some(-1);
             }
             // JNI surface is live during this call; the returned window owns a native reference.
             let window = unsafe { NativeWindow::from_surface(env.get_raw(), surface.as_raw()) }?;

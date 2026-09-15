@@ -12,7 +12,24 @@ const PREFIX: usize = 16;
 pub fn send(request: Request<&[u8]>) -> Result<Response<Body>, Error> {
     worker_request(request).map_err(|_| Error::Transport)
 }
+/// Posts every request before waiting so the main thread fetches them concurrently.
+pub fn send_many(requests: Vec<Request<&[u8]>>) -> Vec<Result<Response<Body>, Error>> {
+    let deadline = js_sys::Date::now() + 30_000.0;
+    let posted: Vec<_> = requests.into_iter().map(post_request).collect();
+    posted
+        .into_iter()
+        .map(|posted| {
+            let (buffer, state) = posted.map_err(|_| Error::Transport)?;
+            let remaining = (deadline - js_sys::Date::now()).max(0.0);
+            collect_response(&buffer, &state, remaining).map_err(|_| Error::Transport)
+        })
+        .collect()
+}
 fn worker_request(request: Request<&[u8]>) -> Result<Response<Body>, JsValue> {
+    let (buffer, state) = post_request(request)?;
+    collect_response(&buffer, &state, 30_000.0)
+}
+fn post_request(request: Request<&[u8]>) -> Result<(SharedArrayBuffer, Int32Array), JsValue> {
     if request.body().len() > BODY {
         return Err(fail("Request too large"));
     }
@@ -39,21 +56,28 @@ fn worker_request(request: Request<&[u8]>) -> Result<Response<Body>, JsValue> {
     js_sys::global()
         .dyn_into::<web_sys::DedicatedWorkerGlobalScope>()?
         .post_message(&packet)?;
-    js_sys::Atomics::wait_with_timeout(&state, 0, 0, 30_000.0)?;
-    if js_sys::Atomics::load(&state, 0)? != 1 {
-        let _ = js_sys::Atomics::compare_exchange(&state, 0, 0, 2);
+    Ok((buffer, state))
+}
+fn collect_response(
+    buffer: &SharedArrayBuffer,
+    state: &Int32Array,
+    timeout: f64,
+) -> Result<Response<Body>, JsValue> {
+    js_sys::Atomics::wait_with_timeout(state, 0, 0, timeout)?;
+    if js_sys::Atomics::load(state, 0)? != 1 {
+        let _ = js_sys::Atomics::compare_exchange(state, 0, 0, 2);
         return Err(fail("Network request failed or timed out"));
     }
-    let status = js_sys::Atomics::load(&state, 1)?;
-    let header_len = js_sys::Atomics::load(&state, 2)?;
-    let body_len = js_sys::Atomics::load(&state, 3)?;
+    let status = js_sys::Atomics::load(state, 1)?;
+    let header_len = js_sys::Atomics::load(state, 2)?;
+    let body_len = js_sys::Atomics::load(state, 3)?;
     if !(100..=599).contains(&status)
         || !(0..=HEADER as i32).contains(&header_len)
         || !(0..=BODY as i32).contains(&body_len)
     {
         return Err(fail("Invalid transport response"));
     }
-    let bytes = Uint8Array::new(&buffer);
+    let bytes = Uint8Array::new(buffer);
     let headers: Vec<(String, String)> = serde_json::from_slice(
         &bytes
             .slice(PREFIX as u32, (PREFIX + header_len as usize) as u32)

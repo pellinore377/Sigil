@@ -25,7 +25,9 @@ internal object WebMaterials:MaterialPlatform {
         val appearance=LocalAppearance.current
         val accent=(if(appearance.objectMode=="Global")LocalGlobalAccent.current else MaterialTheme.colorScheme.primary).toArgb()
         val style=remember(appearance,kind){appearance.objectStyle(kind).parameters(appearance.objectMode)}
-        val visible=LocalMotionVisible.current
+        val active=LocalMotionVisible.current
+        var inViewport by remember {mutableStateOf(timeline==null)}
+        val visible=active && inViewport
         val frame=buildJsonObject {
             put("kind",kind);put("sides",sides);put("face",face);put("font",if(appearance.font=="Google Sans Flex")1 else 0)
             put("accent",accent.toUInt().toLong());put("label",label.orEmpty());put("progress",progress)
@@ -34,10 +36,10 @@ internal object WebMaterials:MaterialPlatform {
         }.toString()
         var failed by remember {mutableStateOf(false)}
         val canvas=remember {(document.createElement("canvas") as HTMLCanvasElement).apply {width=if(kind==2)130 else 192;height=192;setAttribute("style","display:block;width:100%;height:100%;pointer-events:none");setAttribute("data-sigil-material","canvas");if(timeline!=null)this.style.setProperty("clip-path","inset(100%)")}}
-        LaunchedEffect(canvas, timeline, occlusion, density, visible) {
+        LaunchedEffect(canvas, timeline, occlusion, density, active) {
             if (timeline == null) { canvas.style.removeProperty("clip-path"); return@LaunchedEffect }
             var previous = ""
-            while (isActive && visible) {
+            while (isActive && active) {
                 withFrameNanos { }
                 webInteropPointerPassThrough(canvas)
                 val bounds = occlusion?.visible(timeline.viewport) ?: timeline.viewport
@@ -46,6 +48,8 @@ internal object WebMaterials:MaterialPlatform {
                 val insets = materialClipInsets(clip, element.left.toFloat(), element.top.toFloat(), element.width.toFloat(), element.height.toFloat())
                 val launch = occlusion?.launch(timeline.viewport, launchWindow)?.let { Rect(it.left / density, it.top / density, it.right / density, it.bottom / density) }
                 val notice=occlusion?.notice?.takeIf {it.width>0 && it.height>0}?.let {Rect(it.left/density,it.top/density,it.right/density,it.bottom/density)}
+                val elementBounds=Rect(element.left.toFloat(),element.top.toFloat(),element.right.toFloat(),element.bottom.toFloat())
+                inViewport=materialClipRegions(clip,launch,notice).any {it.overlaps(elementBounds)}
                 val value = if (launch == null && notice == null) "inset(" + insets.joinToString(" ") { "${it}%" } + ")"
                     else materialClipPath(clip, launch, element.left.toFloat(), element.top.toFloat(), notice)
                 if (value != previous) { canvas.style.setProperty("clip-path", value); previous = value }
@@ -54,11 +58,20 @@ internal object WebMaterials:MaterialPlatform {
         val opacity=LocalMaterialOpacity.current
         SideEffect {canvas.style.opacity=opacity.coerceIn(0f,1f).toString()}
         val holder=remember {arrayOf<BrowserMaterialView?>(null)}
+        val rendered=remember {arrayOf<String?>(null)}
         DisposableEffect(Unit){onDispose{holder[0]?.free();holder[0]=null}}
         LaunchedEffect(frame,visible) {
-            if(visible && !failed)try {
+            if(!visible) {holder[0]?.free();holder[0]=null}
+            if(visible && !failed && rendered[0]!=frame)try {
+                // Handoff and departing LazyColumn rows can temporarily occupy the
+                // bounded GPU pool. Cancellation stops waiting when this row leaves.
+                while(holder[0]==null && !browserMaterialViewAvailable())delay(100)
                 val view=holder[0] ?: BrowserMaterialView(canvas).also{holder[0]=it}
                 withTimeout(5000){while(!view.draw(frame)){delay(16)}}
+                rendered[0]=frame
+                // The display canvas keeps exact final pixels; the bounded GPU
+                // pool belongs to moving/new objects, not settled history rows.
+                if(progress>=1f){view.free();holder[0]=null}
             }catch(cancelled:CancellationException){if(cancelled !is TimeoutCancellationException)throw cancelled;failed=true}
             catch(_:Exception){failed=true}
             if(failed){holder[0]?.free();holder[0]=null}

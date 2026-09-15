@@ -79,6 +79,88 @@ impl HttpsClient {
             None,
         )?)
     }
+    /// Uploads chunks concurrently; results keep input order.
+    pub fn put_attachment_chunks(
+        &self,
+        shape: Shape,
+        chunks: &[(u32, Vec<u8>)],
+    ) -> Vec<Result<(), Error>> {
+        let built: Vec<Result<_, Error>> = chunks
+            .iter()
+            .map(|(index, ciphertext)| {
+                if ciphertext.len()
+                    != shape.chunk_length(*index).map_err(|_| Error::Configuration)? + CHUNK_OVERHEAD
+                {
+                    return Err(Error::Configuration);
+                }
+                self.build_request(
+                    Method::PUT,
+                    &format!("{}/chunks/{index}", path(&shape.file)),
+                    ciphertext,
+                    Some("application/octet-stream"),
+                    None,
+                )
+            })
+            .collect();
+        let mut responses = self
+            .send_many(built.iter().filter_map(|r| r.as_ref().ok().cloned()).collect())
+            .into_iter();
+        built
+            .into_iter()
+            .map(|request| match request {
+                Ok(_) => responses.next().unwrap_or(Err(Error::Transport)).and_then(|r| self.empty(r)),
+                Err(error) => Err(error),
+            })
+            .collect()
+    }
+    /// Downloads own-server chunks concurrently; federated sources stay sequential.
+    pub(crate) fn attachment_chunks_at(
+        &self,
+        source: Option<&str>,
+        shape: Shape,
+        indexes: &[u32],
+        access: &str,
+    ) -> Vec<Result<Zeroizing<Vec<u8>>, Error>> {
+        if source.is_some_and(|s| s != self.server) {
+            return indexes
+                .iter()
+                .map(|index| self.attachment_chunk_at(source, shape, *index, access))
+                .collect();
+        }
+        let built: Vec<Result<_, Error>> = indexes
+            .iter()
+            .map(|index| {
+                self.build_request(
+                    Method::GET,
+                    &format!("{}/chunks/{index}", path(&shape.file)),
+                    &[],
+                    None,
+                    Some(access),
+                )
+            })
+            .collect();
+        let mut responses = self
+            .send_many(built.iter().filter_map(|r| r.as_ref().ok().cloned()).collect())
+            .into_iter();
+        built
+            .into_iter()
+            .zip(indexes)
+            .map(|(request, index)| {
+                request?;
+                let length = shape.chunk_length(*index).map_err(|_| Error::Configuration)? + CHUNK_OVERHEAD;
+                let bytes = self.response_bytes(
+                    responses.next().unwrap_or(Err(Error::Transport))?,
+                    200,
+                    length,
+                    "application/octet-stream",
+                )?;
+                if bytes.len() != length {
+                    return Err(Error::InvalidResponse);
+                }
+                Ok(bytes)
+            })
+            .collect()
+    }
     /// Returns bounded ciphertext only; callers must authenticate before processing.
     pub fn attachment_chunk(
         &self,

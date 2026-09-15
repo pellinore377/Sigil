@@ -420,7 +420,7 @@ impl ClientStore {
         for (sequence, id) in rows {
             let id: Id = id.try_into().map_err(|_| Error::InvalidStore)?;
             let result = self.send_group_delivery(id, now);
-            let stop = matches!(result, Err(Error::Network(_)));
+            let stop = matches!(&result, Err(Error::Network(error)) if !crate::outbound::recipient_unavailable(error));
             attempts.push(GroupSendAttempt {
                 delivery: id,
                 result,

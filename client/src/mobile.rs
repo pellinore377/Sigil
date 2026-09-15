@@ -325,7 +325,10 @@ enum Command {
     Sync {
         interactive: Option<bool>,
         call_setup: Option<bool>,
+        wake: Option<bool>,
     },
+    Flush {},
+    WatchTarget {},
     Publish {},
     Find {
         address: String,
@@ -1061,7 +1064,9 @@ impl ClientStore {
             }),
             Command::FileFinish { request } => {
                 let upload = self.mobile_upload(id(&request)?)?;
-                self.mobile_cache()?.finish_staging(upload.file)?;
+                let mut cache = self.mobile_cache()?;
+                cache.finish_staging(upload.file)?;
+                cache.wake_queued_work(conversations::now())?;
                 Ok(json!({}))
             }
             Command::FileSend { request, caption } => self.mobile_file_send(id(&request)?, caption),
@@ -1523,12 +1528,31 @@ impl ClientStore {
                 self.mobile_calls()
             }
             Command::Calls {} => self.mobile_calls(),
+            Command::Flush {} => {
+                let result = self.flush_outbound_online()?;
+                let step = result.step.as_ref();
+                let issue = step
+                    .and_then(SyncStep::issue)
+                    .map(|(stage, error)| format!("Sync: {} — {}", stage, error_message(error)));
+                let sent = step.map_or(0, |step| {
+                    step.outbound.iter().filter(|item| item.result.is_ok()).count()
+                        + step.group_outbound.iter().filter(|item| item.result.is_ok()).count()
+                });
+                Ok(json!({"ran":step.is_some(),"sent":sent,"next_at":result.next_at,"issue":issue}))
+            }
+            Command::WatchTarget {} => {
+                let (origin, credential, after) = self.mailbox_watch_target()?;
+                Ok(json!({"origin":origin,"credential":credential.as_str(),"after":after}))
+            }
             Command::Sync {
                 interactive,
                 call_setup,
+                wake,
             } => {
                 let result = if call_setup == Some(true) {
                     self.sync_call_setup_online()?
+                } else if wake == Some(true) {
+                    self.sync_wake_online()?
                 } else if interactive == Some(true) {
                     self.sync_foreground_online()?
                 } else {
