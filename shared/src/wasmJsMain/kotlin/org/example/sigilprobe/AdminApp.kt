@@ -75,16 +75,20 @@ fun AdminApp() {
     }
     LaunchedEffect(Unit) { run {} }
     SigilTheme(appearance, palette = ::rustPalette) {
-        Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
+        Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.surfaceContainerLowest) {
             AdminMenuHost {
-            Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal = 32.dp, vertical = 24.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-                Row(Modifier.fillMaxWidth().widthIn(max = 1180.dp), verticalAlignment = Alignment.CenterVertically) {
+            BoxWithConstraints(Modifier.fillMaxSize()) {
+            val inset = if (maxWidth < 600.dp) 16.dp else 28.dp
+            val messageLabel = maxWidth >= 480.dp
+            Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(inset), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(24.dp)) {
+                Surface(Modifier.widthIn(max = 1280.dp).fillMaxWidth(), shape = RoundedCornerShape(24.dp), color = MaterialTheme.colorScheme.surface, shadowElevation = 2.dp) {
+                Row(Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 12.dp), verticalAlignment = Alignment.CenterVertically) {
                     Image(painterResource(if (appearance.mode == "Dark" || (appearance.mode == "System" && isSystemInDarkTheme())) Res.drawable.sigil_dark else Res.drawable.sigil_light), null, Modifier.height(46.dp).width(28.dp))
                     Spacer(Modifier.width(12.dp))
-                    Text("Sigil", style = MaterialTheme.typography.headlineLarge)
+                    Text("Sigil", style = MaterialTheme.typography.headlineMedium)
                     Spacer(Modifier.weight(1f))
                     if (status?.flag("authenticated") == true && status?.flag("complete") == true) {
-                        SigilTextButton(onClick = { window.location.assign("/messenger") }, enabled = !busy) { Glyph("forum",20); Spacer(Modifier.width(8.dp)); Text("Messages") }
+                        SigilTextButton(onClick = { window.location.assign("/messenger") }, enabled = !busy) { Glyph("forum",20,if (messageLabel) null else "Messages"); if (messageLabel) { Spacer(Modifier.width(8.dp)); Text("Messages") } }
                         Spacer(Modifier.width(12.dp))
                     }
                     if (status?.flag("authenticated") == true) HeaderAccount(checkNotNull(status), busy,
@@ -92,7 +96,7 @@ fun AdminApp() {
                         { run { api("/auth/v0/admin/logout", "POST"); accountOpen = false; appearanceOpen = false } })
                     else SigilTextButton(onClick = { appearanceOpen = true }) { Text("Appearance") }
                 }
-                HorizontalDivider(Modifier.padding(top = 18.dp, bottom = 32.dp))
+                }
                 if (error.isNotEmpty()) Text(error, color = MaterialTheme.colorScheme.error, modifier = Modifier.widthIn(max = 680.dp).padding(bottom = 24.dp))
                 val current = status
                 if (appearanceOpen) AdminAppearance(appearance, { appearanceOpen = false }) { appearance = it; window.localStorage.setItem("appearance", it.encode()) }
@@ -105,21 +109,23 @@ fun AdminApp() {
                 if (busy) LinearProgressIndicator(Modifier.widthIn(max = 680.dp).fillMaxWidth().padding(top = 20.dp))
             }
             }
+            }
         }
     }
 }
 @Composable
 private fun Page(title: String, subtitle: String, content: @Composable ColumnScope.() -> Unit) {
-    Column(Modifier.widthIn(max = 680.dp).fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(18.dp)) {
-        Text(title, style = MaterialTheme.typography.displaySmall)
-        Text(subtitle, color = MaterialTheme.colorScheme.onSurfaceVariant, style = MaterialTheme.typography.bodyLarge)
-        Spacer(Modifier.height(8.dp))
+    Surface(Modifier.widthIn(max = 720.dp).fillMaxWidth(), shape = RoundedCornerShape(24.dp), color = MaterialTheme.colorScheme.surface) {
+    Column(Modifier.padding(24.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
+        Text(title, style = MaterialTheme.typography.headlineLarge)
+        if (subtitle.isNotBlank()) Text(subtitle, color = MaterialTheme.colorScheme.onSurfaceVariant, style = MaterialTheme.typography.bodyMedium)
         content()
+    }
     }
 }
 @Composable
 private fun Action(label: String, enabled: Boolean, action: () -> Unit) {
-    SigilButton(action, Modifier.heightIn(min = 48.dp), enabled = enabled, shape = RoundedCornerShape(10.dp)) { Text(label) }
+    SigilButton(action, Modifier.heightIn(min = 48.dp), enabled = enabled) { Text(label) }
 }
 @Composable
 private fun ClaimPage(busy: Boolean, run: (suspend () -> Unit) -> Unit) {
@@ -130,7 +136,7 @@ private fun ClaimPage(busy: Boolean, run: (suspend () -> Unit) -> Unit) {
         api("/setup/v0/claim", "POST", obj("code" to str(code), "password" to str(password), "server_name" to str(server), "public_origin" to str(window.location.origin)))
         code = ""; password = ""; confirm = ""
     } }
-    Page("A place for your correspondence.", "Welcome to your Sigil server. Let’s make it yours.") {
+    Page("Set up Sigil", "") {
         Text("1 / 3   ·   Secure your server", style = MaterialTheme.typography.labelLarge)
         Field("One-time code from container logs", code, { code = it }, secret = true, enabled = !busy)
         Field("Identity domain", server, { server = it }, enabled = !busy)
@@ -145,7 +151,7 @@ private fun LoginPage(status: JsonElement, busy: Boolean, run: (suspend () -> Un
     var username by remember { mutableStateOf("") }; var password by remember { mutableStateOf("") }
     val ready = !busy && password.isNotEmpty()
     val submit: () -> Unit = { if (ready) run { api("/auth/v0/admin/login", "POST", obj("username" to str(username), "password" to str(password))); password = "" } }
-    Page("Welcome back.", "Sign in to look after your Sigil server.") {
+    Page("Sign in", "Administration") {
         if (status.flag("oidc_login")) Action("Sign in with your identity provider", !busy) { run { val result = api("/auth/v0/admin/oidc", "POST"); window.location.assign(result.text("authorization_url")) } }
         if (status.flag("password_login")) {
             if (status.flag("complete")) Field("Administrator username", username, { username = it }, enabled = !busy)
@@ -161,7 +167,7 @@ private fun IdentityPage(status: JsonElement, busy: Boolean, run: (suspend () ->
     var displayName by remember(status.text("suggested_display_name")) { mutableStateOf(status.text("suggested_display_name")) }
     val ready = !busy && username.isNotBlank()
     val submit: () -> Unit = { if (ready) run { api("/auth/v0/admin/finish", "POST", obj("username" to str(username), "display_name" to str(displayName.trim()))) } }
-    Page("Your administrator account.", "Choose how you’ll sign in to administer this server.") {
+    Page("Administrator account", "") {
         Text("2 / 3   ·   Your identity", style = MaterialTheme.typography.labelLarge)
         if (step != "local" && !status.flag("oidc_linked")) {
             if (step == "provider") {
@@ -197,7 +203,7 @@ private fun IdentityPage(status: JsonElement, busy: Boolean, run: (suspend () ->
 }
 @Composable
 private fun IdentityChoice(title: String, description: String, modifier: Modifier, enabled: Boolean, action: () -> Unit) {
-    OutlinedCard(modifier) {
+    Surface(modifier, shape = RoundedCornerShape(20.dp), color = MaterialTheme.colorScheme.surfaceContainerHigh) {
         Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
             Text(title, style = MaterialTheme.typography.headlineSmall)
             Text(description)
@@ -216,7 +222,7 @@ private fun CopyableCallback(url: String, label: String = "Copy callback URL") {
             catch (_: Exception) { feedback = "Could not copy. Clipboard access was not granted." }
         }
     }.padding(vertical = 8.dp), style = MaterialTheme.typography.bodyMedium)
-    Text(feedback.ifEmpty { "Click to copy." }, style = MaterialTheme.typography.bodySmall)
+    if (feedback.isNotEmpty()) Text(feedback, style = MaterialTheme.typography.bodySmall)
 }
 @Composable
 private fun OidcForm(status: JsonElement, busy: Boolean, run: (suspend () -> Unit) -> Unit, onSaved: (() -> Unit)? = null) {
@@ -296,13 +302,22 @@ private fun OidcForm(status: JsonElement, busy: Boolean, run: (suspend () -> Uni
 @Composable
 private fun Dashboard(status: JsonElement, busy: Boolean, run: (suspend () -> Unit) -> Unit) {
     var page by remember { mutableStateOf("Overview") }
-    Column(Modifier.widthIn(max = 1100.dp).fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(24.dp)) {
-        Text("Administration", style = MaterialTheme.typography.displaySmall)
-        Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            for (tab in listOf("Overview", "Users", "Groups", "Authentication", "Server")) AdminTab(tab, page == tab, !busy) { page = tab }
+    BoxWithConstraints(Modifier.widthIn(max = 1280.dp).fillMaxWidth()) {
+        val wide = maxWidth >= 1000.dp
+        val navigation: @Composable () -> Unit = {
+            Surface(Modifier.fillMaxWidth(), shape = RoundedCornerShape(24.dp), color = MaterialTheme.colorScheme.surface) {
+                Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
+                    Text("Administration", style = MaterialTheme.typography.titleLarge)
+                    AdminNavigation(page, !busy, wide) { page = it }
+                }
+            }
         }
+        val content: @Composable () -> Unit = {
+        Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(20.dp)) {
+        if (page == "Overview") AdminOverview { page = it }
+        else Surface(Modifier.fillMaxWidth(), shape = RoundedCornerShape(24.dp), color = MaterialTheme.colorScheme.surface) {
+        Column(Modifier.padding(24.dp), verticalArrangement = Arrangement.spacedBy(18.dp)) {
         when (page) {
-            "Overview" -> AdminOverview { page=it }
             "Users" -> Users(busy, run)
             "Groups" -> GroupRecords(busy, run)
             "Authentication" -> Column(Modifier.widthIn(max = 680.dp), verticalArrangement = Arrangement.spacedBy(18.dp)) {
@@ -316,6 +331,14 @@ private fun Dashboard(status: JsonElement, busy: Boolean, run: (suspend () -> Un
             }
             "Server" -> ServerSettings(busy, run)
         }
+        }
+        }
+        }
+        }
+        if (wide) Row(horizontalArrangement = Arrangement.spacedBy(24.dp), verticalAlignment = Alignment.Top) {
+            Box(Modifier.width(224.dp)) { navigation() }
+            Box(Modifier.weight(1f)) { content() }
+        } else Column(verticalArrangement = Arrangement.spacedBy(20.dp)) { navigation(); content() }
     }
 }
 @Composable
@@ -331,6 +354,7 @@ private fun UserPasswordPolicy(busy: Boolean, run: (suspend () -> Unit) -> Unit)
     }
     Text("Users with a password can sign in even when SSO is enabled. Set passwords under Users → Account access. Disabling this leaves existing devices signed in.", style = MaterialTheme.typography.bodySmall)
 }
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun Users(busy: Boolean, run: (suspend () -> Unit) -> Unit) {
     var deleting by remember { mutableStateOf<JsonElement?>(null) }
@@ -343,15 +367,19 @@ private fun Users(busy: Boolean, run: (suspend () -> Unit) -> Unit) {
     Text("People on your server", style = MaterialTheme.typography.headlineMedium)
     if (users.isEmpty()) Text("No users to display.")
     for (user in users) {
-        Row(Modifier.fillMaxWidth().padding(vertical = 10.dp), verticalAlignment = Alignment.CenterVertically) {
-            Column(Modifier.weight(1f)) { Text(user.text("username"), style = MaterialTheme.typography.titleMedium); Text(if (user.flag("disabled")) "Disabled" else user.text("role"), style = MaterialTheme.typography.bodySmall) }
+        Surface(Modifier.fillMaxWidth(), shape = RoundedCornerShape(18.dp), color = MaterialTheme.colorScheme.surfaceContainerHigh) {
+        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Text(user.text("username"), style = MaterialTheme.typography.titleMedium)
+            Text(if (user.flag("disabled")) "Disabled" else user.text("role"), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             if (user.flag("deleted")) Text("Deleted") else {
+                FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 SigilTextButton(enabled = !busy && !user.flag("disabled"), onClick = { access = user }) { Text("Account access") }
                 SigilTextButton(enabled = !busy, onClick = { selected = user }) { Text(if (user.flag("disabled")) "Enable" else "Disable") }
-                SigilTextButton(enabled = !busy, onClick = { deleting = user }) { Text("Delete") }
+                SigilTextButton(enabled = !busy, onClick = { deleting = user }) { Text("Delete", color = MaterialTheme.colorScheme.error) }
+                }
             }
         }
-        HorizontalDivider()
+        }
     }
     if (next.isNotEmpty()) SigilTextButton(enabled = !busy, onClick = { run { val result = api("/admin/v0/accounts?after=$next"); users = users + result.jsonObject.getValue("accounts").jsonArray; next = result.text("next_after") } }) { Text("Load more") }
     }
@@ -395,8 +423,7 @@ private fun ServerSettings(busy: Boolean, run: (suspend () -> Unit) -> Unit) {
         policy = api("/admin/v0/policy", "PUT", updated).jsonObject
     } }
     Column(Modifier.widthIn(max = 680.dp), verticalArrangement = Arrangement.spacedBy(18.dp)) {
-        Text("A considered welcome.", style = MaterialTheme.typography.headlineMedium)
-        Text("Choose who can join, and how quickly your server can grow.")
+        Text("Registration", style = MaterialTheme.typography.headlineMedium)
         for ((value, label) in listOf("closed" to "Registration closed", "invitations" to "Invitation only", "oidc" to "Identity provider")) Row(verticalAlignment = Alignment.CenterVertically) { RadioButton(registration == value, { registration = value }, modifier = Modifier.semantics { contentDescription = label }, enabled = !busy); Text(label) }
         Field("Maximum accounts", limit, { limit = it }, enabled = !busy)
         Field("New accounts per day", daily, { daily = it }, enabled = !busy, onSubmit = submit)
@@ -430,7 +457,7 @@ private fun CallingSettings(busy: Boolean, run: (suspend () -> Unit) -> Unit) {
     }
     LaunchedEffect(Unit) { run { load(api("/admin/v0/calls")); status = api("/admin/v0/calls/status") } }
     Text("Voice and video calls", style = MaterialTheme.typography.headlineMedium)
-    Row(verticalAlignment = Alignment.CenterVertically) {
+    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
         Switch(enabled, { enabled = it }, enabled = !busy && configuration != null, modifier = Modifier.semantics { contentDescription = "Enable calling" })
         Text("Enable calling")
     }
@@ -544,7 +571,7 @@ private fun AccountPage(status: JsonElement, busy: Boolean, run: (suspend () -> 
         profile = api("/auth/v0/admin/profile", "PUT", obj("revision" to checkNotNull(profile).jsonObject.getValue("revision"), "display_name" to str(name.trim())))
         name = checkNotNull(profile).text("display_name"); saved = true
     } }
-    Page("Your account.", "Personal settings for your Sigil account.") {
+    Page("Your account", "") {
         Text("@${status.text("username")}:${status.text("server_name")}", style = MaterialTheme.typography.bodyLarge)
         Field("Display name", name, { name = it; saved = false }, enabled = !busy && profile != null, onSubmit = submit)
         Text("Your display name is separate from your permanent Sigil address. Leave it empty to use your username.", style = MaterialTheme.typography.bodySmall)
@@ -577,35 +604,43 @@ private fun ChangePassword(busy: Boolean, run: (suspend () -> Unit) -> Unit) {
 
 @Composable
 private fun AdminAppearance(appearance: Appearance, close: () -> Unit, change: (Appearance) -> Unit) {
-    var accent by remember { mutableStateOf(accentText(appearance.accent)) }
-    Page("Make it feel like you.", "Appearance for this browser. Preview uses sample messages.") {
-            Text("Typography")
-            for (font in listOf("Newsreader", "Google Sans Flex")) Row(verticalAlignment = Alignment.CenterVertically) { RadioButton(appearance.font == font, { change(appearance.copy(font = font)) }, modifier = Modifier.semantics { contentDescription = font }); Text(font) }
-            Text("Appearance")
-            for (mode in listOf("System", "Light", "Dark")) Row(verticalAlignment = Alignment.CenterVertically) { RadioButton(appearance.mode == mode, { change(appearance.copy(mode = mode)) }, modifier = Modifier.semantics { contentDescription = mode }); Text(mode) }
-            Field("Accent color · hex", accent, { accent = it; parseAccent(it)?.let { color -> change(appearance.copy(accent = color)) } }, onSubmit = close)
-            SigilTextButton(onClick = { change(Appearance()); accent = accentText(Appearance().accent) }) { Text("Restore Sigil defaults") }
+    Page("Appearance", "Saved in this browser.") {
         TimelinePreview()
+        AppearanceChoices("Mode", listOf("Light" to "light_mode", "Dark" to "dark_mode", "System" to "devices"), appearance.mode) { change(appearance.copy(mode = it)) }
+        AccentPicker(appearance.accent) { change(appearance.copy(accent = it, dynamic = false)) }
+        AppearanceChoices("Typography", listOf("Newsreader" to "text_format", "Google Sans Flex" to "text_format"), appearance.font) { change(appearance.copy(font = it)) }
+        SigilTextButton(onClick = { change(Appearance()) }) { Text("Restore defaults") }
         Action("Done", true, close)
     }
 }
 @Composable
 private fun TimelinePreview() {
-    OutlinedCard(Modifier.fillMaxWidth()) {
+    Surface(Modifier.fillMaxWidth(), shape = RoundedCornerShape(24.dp), color = MaterialTheme.colorScheme.background) {
         Column(Modifier.fillMaxWidth().padding(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-            Text("Preview · sample conversation", style = MaterialTheme.typography.labelLarge)
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                Avatar("Sam", 36)
+                Spacer(Modifier.width(12.dp))
+                Text("Sam", style = MaterialTheme.typography.titleLarge)
+            }
             Surface(shape = RoundedCornerShape(14.dp), color = MaterialTheme.colorScheme.surfaceContainerHighest) {
                 Text("Shall we meet at the bookshop?", Modifier.padding(14.dp))
             }
             Surface(Modifier.align(Alignment.End), shape = RoundedCornerShape(14.dp), color = MaterialTheme.colorScheme.primaryContainer) {
-                Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Text("Sounds good. See you at six.")
-                    Text("https://example.com", color = MaterialTheme.colorScheme.primary)
-                }
+                Text("Sounds good. See you at six.", Modifier.padding(14.dp))
             }
-            Text("♥ 1", style = MaterialTheme.typography.labelMedium)
             Surface(shape = RoundedCornerShape(10.dp), color = MaterialTheme.colorScheme.surfaceContainerHighest) {
                 Text("let greeting = \"Hello, Sigil\";", Modifier.padding(14.dp), fontFamily = LocalCodeFont.current, style = MaterialTheme.typography.bodySmall)
+            }
+            Row(Modifier.fillMaxWidth().padding(top = 12.dp), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                Surface(Modifier.size(44.dp), shape = RoundedCornerShape(16.dp), color = MaterialTheme.colorScheme.surfaceContainerHigh) {
+                    Box(contentAlignment = Alignment.Center) { Glyph("add", 24) }
+                }
+                Surface(Modifier.weight(1f), shape = RoundedCornerShape(18.dp), color = MaterialTheme.colorScheme.surfaceContainerHigh) {
+                    Text("Message", Modifier.padding(horizontal = 16.dp, vertical = 12.dp), color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+                Surface(Modifier.size(44.dp), shape = RoundedCornerShape(16.dp), color = MaterialTheme.colorScheme.primaryContainer) {
+                    Box(contentAlignment = Alignment.Center) { Glyph("graphic_eq", 24) }
+                }
             }
         }
     }

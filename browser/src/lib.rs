@@ -7,6 +7,9 @@ use std::{cell::RefCell, time::Duration};
 use wasm_bindgen::{prelude::*, JsCast};
 mod auth;
 mod camera;
+mod location;
+mod call;
+mod rtc;
 mod display;
 mod files;
 mod host;
@@ -77,7 +80,7 @@ pub async fn worker_start() -> Result<(), JsValue> {
     STORE.with(|slot| *slot.borrow_mut() = Some(store));
     let handler = Closure::<dyn FnMut(web_sys::MessageEvent)>::new(
         move |event: web_sys::MessageEvent| {
-            if files::receive(&event) {
+            if call::receive(&event) || files::receive(&event) {
                 return;
             }
             let Some(raw) = event.data().as_string() else {
@@ -170,6 +173,7 @@ async fn erase(
         }
     }
     vault::mark_removal().await?;
+    call::clear();
     STORE.with(|slot| slot.borrow_mut().take());
     pool.clear_all()
         .await

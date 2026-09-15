@@ -215,6 +215,7 @@ pub(crate) fn install(
                 own: None,
                 secret: None,
                 phase: Phase::Ringing,
+                missed: false,
                 ring_until: Some(wire.expires),
                 invites: Vec::new(),
                 joining: Vec::new(),
@@ -306,6 +307,7 @@ pub(crate) fn install(
             record.transfer = None;
             record.shares.clear();
             if record.state.roster.roster.closed {
+                record.missed |= record.phase == Phase::Ringing;
                 record.finish(Phase::Ended);
             } else if let Some(own) = &record.own {
                 if let Some(member) = record

@@ -203,12 +203,11 @@ impl ClientStore {
                 )
                 .map_err(|_| Error::Limit)?;
                 value["width"] = json!(qr.width());
-                value["cells"] = json!(
-                    qr.to_colors()
-                        .into_iter()
-                        .map(|c| if c == qrcode::Color::Dark { '1' } else { '0' })
-                        .collect::<String>()
-                );
+                value["cells"] = json!(qr
+                    .to_colors()
+                    .into_iter()
+                    .map(|c| if c == qrcode::Color::Dark { '1' } else { '0' })
+                    .collect::<String>());
             }
             "show_offer" => value["stage"] = json!("prepare_offer"),
             "show_proposal" => value["stage"] = json!("exchanging"),
@@ -272,12 +271,10 @@ mod tests {
         let approval = phone.mobile_link("poll", None, None).unwrap();
         assert_eq!(approval["stage"], "confirm_sponsor");
         let correct = waiting["emoji"][0].as_str().unwrap();
-        assert!(
-            approval["choices"]
-                .as_array()
-                .unwrap()
-                .contains(&json!(correct))
-        );
+        assert!(approval["choices"]
+            .as_array()
+            .unwrap()
+            .contains(&json!(correct)));
         assert!(approval.get("emoji").is_none());
         assert!(phone.mobile_link("confirm", Some("wrong"), None).is_err());
         assert_eq!(server.admin_diagnostics(now).unwrap()["devices"], 1);

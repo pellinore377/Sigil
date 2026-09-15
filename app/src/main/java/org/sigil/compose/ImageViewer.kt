@@ -12,7 +12,6 @@ import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.foundation.layout.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
-import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.geometry.Offset
@@ -20,13 +19,13 @@ import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.semantics.CustomAccessibilityAction
+import androidx.compose.ui.semantics.customActions
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.*
 import kotlinx.coroutines.*
 import org.sigil.ChatMessage
-import org.sigil.Glyph
-import org.sigil.SigilIconButton
 import kotlin.math.roundToInt
 
 internal class RegionSource(private val bytes: ByteArray) : AutoCloseable {
@@ -76,7 +75,7 @@ internal fun ImageViewer(message: ChatMessage, preview: Bitmap, modifier: Modifi
     var pan by remember { mutableStateOf(Offset.Zero) }
     val width = source?.width ?: preview.width
     val height = source?.height ?: preview.height
-    val fit = minOf(size.width.toFloat() / width, size.height.toFloat() / height, 1f)
+    val fit = minOf(size.width.toFloat() / width, size.height.toFloat() / height)
     val scale = fit * zoom
     fun bounded(value: Offset, z: Float) = Offset(value.x.coerceIn(-maxOf(0f, (width * fit * z - size.width) / 2), maxOf(0f, (width * fit * z - size.width) / 2)),
         value.y.coerceIn(-maxOf(0f, (height * fit * z - size.height) / 2), maxOf(0f, (height * fit * z - size.height) / 2)))
@@ -110,7 +109,7 @@ internal fun ImageViewer(message: ChatMessage, preview: Bitmap, modifier: Modifi
     }
     Column(modifier) {
         Canvas(Modifier.weight(1f).fillMaxWidth().clipToBounds().onSizeChanged { size = it }
-            .semantics { contentDescription = message.attachment!!.name }
+            .semantics { contentDescription = message.attachment!!.name; customActions = listOf(CustomAccessibilityAction("Zoom in") { zoom = (zoom * 2).coerceAtMost(32f); true }, CustomAccessibilityAction("Zoom out") { zoom = (zoom / 2).coerceAtLeast(1f); pan = bounded(pan, zoom); true }, CustomAccessibilityAction("Reset image") { zoom = 1f; pan = Offset.Zero; true }) }
             .pointerInput(width, height, size) { detectTransformGestures { centroid, movement, change, _ ->
                 val next = (zoom * change).coerceIn(1f, 32f)
                 val focus = centroid - Offset(size.width / 2f, size.height / 2f)
@@ -122,12 +121,6 @@ internal fun ImageViewer(message: ChatMessage, preview: Bitmap, modifier: Modifi
             drawImage(preview.asImageBitmap(), dstOffset = IntOffset(left.roundToInt(), top.roundToInt()), dstSize = IntSize((width * scale).roundToInt().coerceAtLeast(1), (height * scale).roundToInt().coerceAtLeast(1)))
             tile?.let { current -> drawImage(current.bitmap.asImageBitmap(), dstOffset = IntOffset((left + current.rect.left * scale).roundToInt(), (top + current.rect.top * scale).roundToInt()),
                 dstSize = IntSize((current.rect.width() * scale).roundToInt().coerceAtLeast(1), (current.rect.height() * scale).roundToInt().coerceAtLeast(1))) }
-        }
-        Row(Modifier.align(Alignment.CenterHorizontally), verticalAlignment = Alignment.CenterVertically) {
-            SigilIconButton({ zoom = (zoom / 2).coerceAtLeast(1f); pan = bounded(pan, zoom) }, enabled = zoom > 1) { Glyph("zoom_out", 24, "Zoom out") }
-            Text("${(scale * 100).roundToInt()}%", style = MaterialTheme.typography.labelSmall)
-            SigilIconButton({ zoom = (zoom * 2).coerceAtMost(32f) }, enabled = zoom < 32) { Glyph("zoom_in", 24, "Zoom in") }
-            SigilIconButton({ zoom = 1f; pan = Offset.Zero }) { Glyph("fit_screen", 24, "Fit image") }
         }
         issue?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
     }

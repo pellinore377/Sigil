@@ -18,6 +18,7 @@ struct Host {
 }
 thread_local! {static HOST:RefCell<Option<Host>>=const {RefCell::new(None)};}
 fn shutdown() {
+    crate::rtc::browser_call_close();
     HOST.with(|slot| {
         if let Some(mut host) = slot.borrow_mut().take() {
             if let Some(window) = web_sys::window() {
@@ -64,7 +65,7 @@ pub async fn start_browser() -> Result<(), JsValue> {
                             if get(&data, "ok").ok().and_then(|v| v.as_bool()) == Some(true) {
                                 get(&data, "data")
                             } else {
-                                Err(fail("Attachment operation failed"))
+                                Err(fail("Media operation could not complete"))
                             };
                         let _ = reply.send(result);
                     }

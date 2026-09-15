@@ -103,7 +103,8 @@ internal fun CallPage(active: ActiveCall, contacts: List<ChatSummary>, command: 
                 }
             }
         }
-        Row(Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 24.dp), horizontalArrangement = Arrangement.SpaceEvenly) {
+        Surface(Modifier.fillMaxWidth().padding(12.dp), shape = RoundedCornerShape(24.dp), color = MaterialTheme.colorScheme.surfaceContainerHigh, shadowElevation = 4.dp) {
+        Row(Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 16.dp), horizontalArrangement = Arrangement.SpaceEvenly) {
             if (incoming) {
                 CallControl("call_end", "Decline", true) { command("call_decline", mapOf("call" to call.id)) }
                 CallControl("call", "Answer") { command("call_answer", mapOf("call" to call.id)) }
@@ -116,14 +117,15 @@ internal fun CallPage(active: ActiveCall, contacts: List<ChatSummary>, command: 
                 CallControl("call_end", if (call.direct) "End" else "Leave", true) { command("call_end", mapOf("call" to call.id)) }
             }
         }
+        }
     }
 }
 @Composable
 private fun RowScope.CallControl(icon: String, label: String, destructive: Boolean = false, state: String? = null, action: () -> Unit) {
     Column(Modifier.weight(1f).padding(horizontal = 4.dp).clip(RoundedCornerShape(22.dp)).clickable(role = Role.Button, onClickLabel = label, onClick = action).semantics { state?.let { stateDescription = it } }, horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        Surface(Modifier.size(64.dp), shape = RoundedCornerShape(22.dp),
+        Surface(Modifier.widthIn(max = 64.dp).fillMaxWidth().aspectRatio(1f), shape = RoundedCornerShape(20.dp),
             color = if (destructive) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.surfaceVariant, contentColor = if (destructive) MaterialTheme.colorScheme.onError else MaterialTheme.colorScheme.onSurface) { Box(contentAlignment = Alignment.Center) { Glyph(icon, 30) } }
-        Text(label, style = MaterialTheme.typography.bodyMedium, textAlign = androidx.compose.ui.text.style.TextAlign.Center)
+        Text(label, style = MaterialTheme.typography.labelMedium, textAlign = androidx.compose.ui.text.style.TextAlign.Center)
     }
 }
 @Composable

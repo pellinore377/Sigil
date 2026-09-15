@@ -2,6 +2,7 @@
 package org.sigil
 
 import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.animateContentSize
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.foundation.*
 import androidx.compose.foundation.layout.*
@@ -12,8 +13,6 @@ import androidx.compose.ui.*
 import androidx.compose.ui.semantics.*
 import androidx.compose.ui.state.ToggleableState
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.window.Dialog
-import androidx.compose.ui.window.DialogProperties
 
 @Composable internal fun StandardCard(message:ChatMessage,part:MessagePart,analyze:(String)->String,command:Command?) {
     var expanded by remember(part.id){mutableStateOf(false)}
@@ -48,10 +47,9 @@ import androidx.compose.ui.window.DialogProperties
             }
         }}
         if(part.kind=="poll")Text(if(part.closed)"Voting closed"else part.voters?.let {"$it ${if(it==1L)"voter"else"voters"}"}?:"Vote to see results",style=MaterialTheme.typography.labelSmall)
-        if(!full && (part.items.size>5 || part.kind in listOf("note","timer","countdown","ago")))SigilTextButton({expanded=true}) {Glyph("open_in_full",18);Spacer(Modifier.width(6.dp));Text(if(part.items.size>5)"View all ${part.items.size}"else"Expand")}
+        if (part.items.size > 5) SigilTextButton({ expanded = !expanded }) { Text(if (expanded) "Show less" else "Show all ${part.items.size}") }
     }
-    Column(Modifier.widthIn(min=200.dp,max=280.dp),verticalArrangement=Arrangement.spacedBy(8.dp)) {body(false)}
-    if(expanded)Dialog({expanded=false},DialogProperties(usePlatformDefaultWidth=false)) {Surface(Modifier.fillMaxSize()) {Column(Modifier.fillMaxSize().safeDrawingPadding().verticalScroll(rememberScrollState()).padding(20.dp),verticalArrangement=Arrangement.spacedBy(16.dp)) {Row {Symbol("close","Close card") {expanded=false}};body(true)}}}
+    Column(Modifier.widthIn(min=200.dp,max=320.dp).animateContentSize(LocalMotion.current.tween(MotionMillis)),verticalArrangement=Arrangement.spacedBy(8.dp)) {body(expanded)}
     confirming?.let {item->AlertDialog(onDismissRequest={confirming=null},title={Text("Complete this task?")},text={Text("You can undo your completion for 30 seconds.")},confirmButton={SigilTextButton({confirming=null;part.items.firstOrNull {it.id==item.id && !it.checked && it.enabled}?.let(::act)}){Text("Complete")}},dismissButton={SigilTextButton({confirming=null}){Text("Cancel")}})}
 }
 @Composable private fun CardClock(part:MessagePart) {

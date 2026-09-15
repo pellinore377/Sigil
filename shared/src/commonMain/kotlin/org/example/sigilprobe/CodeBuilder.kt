@@ -50,25 +50,28 @@ internal fun CodeBuilder(enabled:Boolean,back:()->Unit,send:(String)->Unit) {
     val choices=listOf("Plain text" to "","Rust" to "rust","Kotlin" to "kotlin","C" to "c","C++" to "cpp","JSON" to "json")
     fun previous() {if(showingPreview)showingPreview=false else back()}
     BackAction(showingPreview,::previous)
-    Column(Modifier.fillMaxSize().padding(horizontal=20.dp,vertical=8.dp),verticalArrangement=Arrangement.spacedBy(8.dp)) {
-        Row(verticalAlignment=Alignment.CenterVertically) {
+    val sizing=rememberBuilderSizing(16.dp)
+    Column(Modifier.fillMaxSize().padding(start=8.dp,end=8.dp,top=8.dp),verticalArrangement=Arrangement.spacedBy(8.dp)) {
+        Row(sizing.measure("header"),verticalAlignment=Alignment.CenterVertically) {
             Symbol("chevron_left",if(showingPreview)"Edit code" else "Back to formatting",::previous)
             Text("Code block",Modifier.weight(1f),style=MaterialTheme.typography.titleLarge)
         }
-        AnimatedContent(showingPreview,Modifier.weight(1f),transitionSpec={
+        if(showingPreview)BuilderConfirm(if(LocalBuilderAction.current=="Send")"Send code" else LocalBuilderAction.current,enabled && preview!=null && source.isNotEmpty()) {send(source)}
+        else BuilderConfirm("Preview code",code.isNotBlank()) {focus.clearFocus();keyboard?.hide();previewInput=input;showingPreview=true}
+        AnimatedContent(showingPreview,Modifier.weight(1f).verticalScroll(rememberScrollState()).wrapContentHeight(unbounded=true).then(sizing.measure("body")),transitionSpec={
             (slideInHorizontally(motion.tween(MotionMillis)){if(targetState)it else -it}+fadeIn(motion.tween(MotionMillis))) togetherWith
                 (slideOutHorizontally(motion.tween(MotionMillis)){if(targetState)-it else it}+fadeOut(motion.tween(MotionMillis)))
         },label="Code form") {shown->
-            if(shown)Column(Modifier.fillMaxSize(),verticalArrangement=Arrangement.spacedBy(8.dp)) {
-                Column(Modifier.weight(1f).fillMaxWidth().verticalScroll(rememberScrollState()),verticalArrangement=Arrangement.spacedBy(12.dp)) {
+            if(shown)Column(Modifier.fillMaxWidth(),verticalArrangement=Arrangement.spacedBy(8.dp)) {
+                Column(Modifier.fillMaxWidth(),verticalArrangement=Arrangement.spacedBy(12.dp)) {
                     if(preview!=null)Surface(shape=RoundedCornerShape(20.dp),color=MaterialTheme.colorScheme.primary) {
                         CompositionLocalProvider(LocalMessageSurface provides MaterialTheme.colorScheme.primary) {
                             Box(Modifier.fillMaxWidth().padding(12.dp),contentAlignment=Alignment.Center) {CodeBlock(preview.second,preview.first)}
                         }
                     } else Text(if(resolve==null || render==null)"The code builder is unavailable." else "Check the language name and code. Language names use letters, numbers, hyphens or underscores.",color=MaterialTheme.colorScheme.error,style=MaterialTheme.typography.bodyMedium)
                 }
-                SigilButton({if(preview!=null && source.isNotEmpty())send(source)},Modifier.fillMaxWidth(),enabled=enabled && preview!=null && source.isNotEmpty()) {Text(if(LocalBuilderAction.current=="Send")"Send code" else LocalBuilderAction.current)}
-            } else Column(Modifier.fillMaxSize(),verticalArrangement=Arrangement.spacedBy(8.dp)) {
+
+            } else Column(Modifier.fillMaxWidth(),verticalArrangement=Arrangement.spacedBy(8.dp)) {
                 Row(verticalAlignment=Alignment.CenterVertically) {
                     Box {
                         SigilTextButton({languages=true}) {Text(if(custom)"Custom language" else choices.firstOrNull {it.second==language}?.first ?: "Language");Glyph("expand_more",20)}
@@ -83,8 +86,8 @@ internal fun CodeBuilder(enabled:Boolean,back:()->Unit,send:(String)->Unit) {
                 OutlinedTextField(code,{value->
                     val normalized=value.replace("\r\n","\n").replace('\r','\n')
                     if(normalized.length>16300 || normalized.encodeToByteArray().size>16300)tooLarge=true else {code=normalized;tooLarge=false}
-                },Modifier.weight(1f).fillMaxWidth(),shape=RoundedCornerShape(16.dp),label={Text("Code")},textStyle=MaterialTheme.typography.bodyMedium.copy(fontFamily=LocalCodeFont.current),keyboardOptions=KeyboardOptions(capitalization=KeyboardCapitalization.None,autoCorrectEnabled=false))
-                SigilButton({focus.clearFocus();keyboard?.hide();previewInput=input;showingPreview=true},Modifier.fillMaxWidth(),enabled=code.isNotBlank()) {Text("Preview code")}
+                },Modifier.fillMaxWidth(),minLines=4,maxLines=10,shape=RoundedCornerShape(16.dp),label={Text("Code")},textStyle=MaterialTheme.typography.bodyMedium.copy(fontFamily=LocalCodeFont.current),keyboardOptions=KeyboardOptions(capitalization=KeyboardCapitalization.None,autoCorrectEnabled=false))
+
             }
         }
     }

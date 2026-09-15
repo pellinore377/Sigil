@@ -203,7 +203,7 @@ impl ClientStore {
                 value["kind"] = json!("timer");
                 value["text"] = json!("Timer");
                 value["at"] = json!(timer.ends_at);
-                value["started_at"]=json!(timer.started_at);
+                value["started_at"] = json!(timer.started_at);
             }
             Construct::Location(_) => {
                 let location = state.location.as_ref().ok_or(Error::InvalidStore)?;
@@ -221,7 +221,10 @@ impl ClientStore {
                 value["accuracy_cm"] = json!(location.share.point.accuracy_cm);
                 value["until"] = json!(location.until);
                 value["stopped"] = json!(location.stopped);
-                value["can_stop"] = json!(location.active(conversations::now()) && card.creator == self.account_reference()?);
+                value["can_stop"] = json!(
+                    location.active(conversations::now())
+                        && card.creator == self.account_reference()?
+                );
             }
             Construct::Data(sigil_protocol::text::data::Data::Table(table)) => {
                 value["kind"] = json!("table");
@@ -241,7 +244,9 @@ impl ClientStore {
             }
             Construct::Service(snapshot) => {
                 value["kind"] = json!("service");
-                value["service"] = snapshot.presentation(conversations::now()).map_err(|_| Error::InvalidStore)?;
+                value["service"] = snapshot
+                    .presentation(conversations::now())
+                    .map_err(|_| Error::InvalidStore)?;
             }
             Construct::Utility(utility) => {
                 value["kind"] = json!("utility");
@@ -254,20 +259,37 @@ impl ClientStore {
         }
         Ok(value)
     }
-    pub(super) fn mobile_card_reference(&mut self, conversation: Id, target: Reference, card: Id) -> Result<CardReference, Error> {
+    pub(super) fn mobile_card_reference(
+        &mut self,
+        conversation: Id,
+        target: Reference,
+        card: Id,
+    ) -> Result<CardReference, Error> {
         let message = self.conversation_message(conversation, target, conversations::now())?;
-        if message.deleted || message.view_once { return Err(Error::Obsolete); }
-        let card = parts(message.body.as_ref())?.into_iter().find_map(|part| match part {
-            Part::Card(value) if value.id == card => Some(value),
-            _ => None,
-        }).ok_or(Error::NotFound)?;
+        if message.deleted || message.view_once {
+            return Err(Error::Obsolete);
+        }
+        let card = parts(message.body.as_ref())?
+            .into_iter()
+            .find_map(|part| match part {
+                Part::Card(value) if value.id == card => Some(value),
+                _ => None,
+            })
+            .ok_or(Error::NotFound)?;
         CardReference::of(&card).map_err(|_| Error::InvalidStore)
     }
-    pub(super) fn mobile_open_contact_card(&mut self, peer: &str, target: Reference, card: Id) -> Result<Value, Error> {
+    pub(super) fn mobile_open_contact_card(
+        &mut self,
+        peer: &str,
+        target: Reference,
+        card: Id,
+    ) -> Result<Value, Error> {
         let conversation = self.mobile_conversation(peer)?;
         let reference = self.mobile_card_reference(conversation, target, card)?;
         let state = self.card_state(conversation, reference)?;
-        let Construct::Contact(contact) = state.definition.content else { return Err(Error::InvalidEvent) };
+        let Construct::Contact(contact) = state.definition.content else {
+            return Err(Error::InvalidEvent);
+        };
         self.mobile_find_bound(&contact.address, Some(contact.user_id))
     }
     #[allow(clippy::too_many_arguments)]
@@ -350,7 +372,12 @@ impl ClientStore {
 }
 
 pub(super) fn card_display_body(card: &Card) -> Result<String, Error> {
-    if matches!(&card.content, Construct::Utility(sigil_protocol::text::utility::Utility::Qr(_))) {
+    if matches!(
+        &card.content,
+        Construct::Utility(sigil_protocol::text::utility::Utility::Qr(_))
+    ) {
         Ok("QR code".into())
-    } else { card.body().map_err(|_| Error::InvalidStore) }
+    } else {
+        card.body().map_err(|_| Error::InvalidStore)
+    }
 }

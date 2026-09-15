@@ -14,13 +14,13 @@ import kotlinx.serialization.json.*
 class ServiceResponse(val json:String,val preview:MessagePart?=null)
 val LocalServiceAccess=staticCompositionLocalOf<(suspend (String)->ServiceResponse)?> {null}
 val LocalDraftId=staticCompositionLocalOf<(() -> String)?> {null}
-@Composable internal fun ServiceBuilder(kind:String,back:()->Unit,discard:(String)->Unit,stage:(String,MessagePart,Boolean)->Unit) {
+@Composable internal fun ServiceBuilder(kind:String,back:()->Unit,discard:(String)->Unit,initial:PreviewIntent?=null,stage:(String,MessagePart,Boolean)->Unit) {
     val access=LocalServiceAccess.current;val newId=LocalDraftId.current;val scope=rememberCoroutineScope()
     var catalog by remember {mutableStateOf<JsonObject?>(null)}
     var provider by rememberSaveable {mutableStateOf("")}
-    var text by rememberSaveable {mutableStateOf("")}
-    var language by rememberSaveable {mutableStateOf("en")}
-    var forecast by rememberSaveable {mutableStateOf(false)}
+    var text by rememberSaveable(kind,initial) {mutableStateOf(initial?.text.orEmpty())}
+    var language by rememberSaveable(kind,initial) {mutableStateOf(initial?.language?.takeIf {it.isNotEmpty()} ?: "en")}
+    var forecast by rememberSaveable(kind,initial) {mutableStateOf(initial?.forecast ?: false)}
     var place by remember {mutableStateOf<JsonObject?>(null)}
     var places by remember {mutableStateOf(emptyList<JsonObject>())}
     var busy by remember {mutableStateOf(false)}
@@ -34,9 +34,10 @@ val LocalDraftId=staticCompositionLocalOf<(() -> String)?> {null}
     val eligible=when {locating->listOf("geocoder");kind=="Weather"->listOf("open_meteo");kind=="Translation"->listOf("google_translate","libre_translate");else->listOf("wiktionary","dictionary_index")}
     val providers=catalog?.get("providers")?.jsonArray?.map {it.jsonObject}?.filter {it["kind"]?.jsonPrimitive?.content in eligible}.orEmpty()
     val selected=providers.firstOrNull {it["id"]?.jsonPrimitive?.content==provider} ?: providers.firstOrNull()
-    Column(Modifier.fillMaxSize().padding(horizontal=20.dp,vertical=8.dp),verticalArrangement=Arrangement.spacedBy(8.dp)) {
-        Row(verticalAlignment=Alignment.CenterVertically) {Symbol("chevron_left","Back to create",back);Text(kind,Modifier.weight(1f),style=MaterialTheme.typography.titleLarge)}
-        Column(Modifier.weight(1f).verticalScroll(rememberScrollState()),verticalArrangement=Arrangement.spacedBy(10.dp)) {
+    val sizing=rememberBuilderSizing(16.dp)
+    Column(Modifier.fillMaxSize().padding(start=8.dp,end=8.dp,top=8.dp),verticalArrangement=Arrangement.spacedBy(8.dp)) {
+        Row(sizing.measure("header"),verticalAlignment=Alignment.CenterVertically) {Symbol("chevron_left","Back to create",back);Text(kind,Modifier.weight(1f),style=MaterialTheme.typography.titleLarge)}
+        Column(Modifier.weight(1f).verticalScroll(rememberScrollState()).wrapContentHeight(unbounded=true).then(sizing.measure("body")),verticalArrangement=Arrangement.spacedBy(10.dp)) {
             if(access==null)Text("Connect to your account to use configured providers.")
             else if(kind!="Contact" && catalog!=null && providers.isEmpty())Text(if(locating)"Your server needs an address lookup provider to find a place." else "Your server has no provider configured for this tool.")
             else {
@@ -49,7 +50,7 @@ val LocalDraftId=staticCompositionLocalOf<(() -> String)?> {null}
             }
             issue?.let {Text(it,color=MaterialTheme.colorScheme.error);SigilTextButton({retry++}){Text("Reload providers")}}
         }
-        SigilButton({scope.launch {
+        BuilderConfirm(if(busy)"Working…" else if(locating)"Find place" else "Look up and attach",enabled=!busy && (selected!=null || kind=="Contact" && access!=null) && newId!=null && (place!=null || text.isNotBlank())) {scope.launch {
             if(kind=="Contact") {busy=true;try {val result=access!!.invoke(buildJsonObject {put("command","contact_preview");put("address",text.trim())}.toString());result.preview?.let {stage(Json.parseToJsonElement(result.json).jsonObject.getValue("contact").toString(),it,true)}} catch(e:kotlinx.coroutines.CancellationException){throw e} catch(_:Exception){issue="Could not find this account. Check the full address and discovery settings."} finally {busy=false};return@launch}
             val form=buildJsonObject {put("kind",if(locating)"Locate" else kind);put("text",text);put("language",language);put("forecast",forecast);place?.let {put("place",it)}}
             val definition=buildJsonObject {put("command","service");put("action","resolve");put("catalog",catalog!!);put("provider",selected!!.getValue("id"));put("form",form)}
@@ -62,6 +63,6 @@ val LocalDraftId=staticCompositionLocalOf<(() -> String)?> {null}
                 if(locating) {places=data.getValue("places").jsonArray.map {it.jsonObject};if(places.isEmpty())issue="No places found. Try a more specific name.";access.invoke("{\"command\":\"service\",\"action\":\"discard\",\"request\":\"$request\"}");pending=null}
                 else result.preview?.let {transferred=true;stage(request,it,false)} ?: run {issue="The provider returned no usable card."}
             } catch(e:kotlinx.coroutines.CancellationException){throw e} catch(_:Exception){issue="The lookup failed. Your text is kept; try again."} finally {busy=false}
-        }},Modifier.fillMaxWidth(),enabled=!busy && (selected!=null || kind=="Contact" && access!=null) && newId!=null && (place!=null || text.isNotBlank())) {if(busy)Text("Working…")else Text(if(locating)"Find place" else "Look up and add")}
+        }}
     }
 }

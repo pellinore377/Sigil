@@ -298,8 +298,10 @@ impl ClientStore {
             }
             if let Some(stop) = job.stop {
                 stops.push((job.conversation, stop));
-            } else if !matches!(state.share.mode,Mode::Live{device:owner,..} if owner==device(&self.db,&self.key)?) {
-                self.db.execute("DELETE FROM location_jobs WHERE id=?1", [index.as_slice()])?;
+            } else if !matches!(state.share.mode,Mode::Live{device:owner,..} if owner==device(&self.db,&self.key)?)
+            {
+                self.db
+                    .execute("DELETE FROM location_jobs WHERE id=?1", [index.as_slice()])?;
             } else if state.stopped {
                 let stop = self.stop_location(job.conversation, job.reference, now)?;
                 stops.push((job.conversation, stop));

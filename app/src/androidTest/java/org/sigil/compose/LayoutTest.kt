@@ -55,7 +55,7 @@ class LayoutTest {
             assertFalse(bars.isAppearanceLightStatusBars)
             assertFalse(bars.isAppearanceLightNavigationBars)
         }
-        ui.onNodeWithContentDescription("Back").performClick()
+        ui.onNode(hasContentDescription("Back") and hasAnyAncestor(hasTestTag("main-header"))).performClick()
         ui.onNodeWithText("Reset app appearance").performScrollTo().assertIsDisplayed()
         capture("large-appearance-dark")
     }
@@ -71,10 +71,10 @@ class LayoutTest {
         ui.onNodeWithTag("composer").assertIsDisplayed()
         capture("large-timeline")
         ui.onNodeWithContentDescription("Voice message").performClick()
-        ui.onNodeWithText("Record").performScrollTo().assertIsDisplayed()
-        ui.onNodeWithText("Cancel", substring = false).performScrollTo().assertIsDisplayed()
+        ui.onNodeWithContentDescription("Discard recording").assertIsDisplayed()
+        ui.onNodeWithText("0:00", substring = false).assertIsDisplayed()
         val layouts = mutableListOf<androidx.compose.ui.text.TextLayoutResult>()
-        ui.onNodeWithText("Cancel", substring = false).performSemanticsAction(androidx.compose.ui.semantics.SemanticsActions.GetTextLayoutResult) { it(layouts) }
+        ui.onNodeWithText("0:00", substring = false).performSemanticsAction(androidx.compose.ui.semantics.SemanticsActions.GetTextLayoutResult) { it(layouts) }
         capture("large-voice")
         val layout = layouts.single()
         assertEquals(1, layout.lineCount)
@@ -91,10 +91,44 @@ class LayoutTest {
     }
     @Test fun mockupSurfacesKeepTheirContentAndActionsAcrossAppearanceChanges() {
         val contacts = listOf(contact, contact.copy(id = "lee", address = "@lee:example.com", displayName = "Lee", presence = "away"), contact.copy(id = "group", address = "", displayName = "Library club", group = true, unread = 0))
-        val state = mutableStateOf(MessengerState(phase = "connected", chats = contacts, collectionsEnabled = true, collections = listOf(CollectionItem("friends", "Friends", "group"), CollectionItem("work", "Work", "work")), profileName = "Alex", address = "@alex:example.com"))
+        val state = mutableStateOf(MessengerState(phase = "connected", chats = contacts, collectionsEnabled = true, collections = listOf(CollectionItem("friends", "Friends", "group"), CollectionItem("work", "Work", "work")), profileName = "Alex", address = "@alex:example.com", searchHits = listOf(SearchHit("peer", "note", "sam", "Bring a notebook to the library.", "9:33", noted = true)), calls = listOf(CallSummary("history", "ended", true, 3000, listOf(CallParticipant("sam", "peer", "Sam", false, true, true, false, false)), name = "Sam", outgoing = true, time = "9:41", day = "Today", duration = 245, video = false), CallSummary("missed", "declined", true, 2000, emptyList(), name = "Lee", time = "8:20", day = "Today", missed = true), CallSummary("video", "ended", true, 1000, emptyList(), name = "Library club", outgoing = true, time = "17:30", day = "Yesterday", duration = 724, video = true))))
         ui.runOnUiThread { ui.activity.setSigilContent { SigilApp(NativeCore::palette, NativeCore::analyze, state.value, { _, _ -> }) } }
         ui.onNodeWithContentDescription("New conversation").assertIsDisplayed()
         capture("inbox")
+        for (mode in listOf("Light", "Dark")) {
+            ui.runOnIdle { state.value = state.value.copy(ui = mapOf("appearance" to "Newsreader|$mode|555555|false")) }
+            ui.onNodeWithContentDescription("Messages").performClick()
+            capture("inbox-${mode.lowercase()}")
+            ui.onNodeWithText("Sam", substring = false).performTouchInput { longClick() }
+            ui.onNodeWithText("1 selected", substring = false).assertIsDisplayed()
+            capture("selection-${mode.lowercase()}")
+            ui.onNodeWithContentDescription("More conversation actions").performClick()
+            capture("selection-menu-${mode.lowercase()}")
+            androidx.test.espresso.Espresso.pressBack()
+            ui.onNodeWithContentDescription("Cancel selection").performClick()
+            ui.onNodeWithContentDescription("Calls").performClick()
+            ui.onNodeWithContentDescription("New call").assertIsDisplayed().performClick()
+            ui.onNodeWithText("New call").assertIsDisplayed()
+            ui.onNodeWithText("Cancel").performClick()
+            capture("calls-${mode.lowercase()}")
+            ui.onNode(hasText("Missed") and isSelectable()).performClick()
+            ui.onNodeWithText("Sam", substring = false).assertDoesNotExist()
+            capture("missed-${mode.lowercase()}")
+            ui.onNodeWithText("All", substring = false).performClick()
+            ui.onNodeWithText("Sam", substring = false).performClick()
+            ui.onNodeWithContentDescription("Audio call").assertIsDisplayed()
+            ui.onNodeWithContentDescription("Message", substring = false).assertIsDisplayed()
+            capture("call-detail-${mode.lowercase()}")
+            ui.onNode(hasContentDescription("Back to calls")).performClick()
+            ui.onNodeWithContentDescription("Notes").performClick()
+            ui.onNodeWithContentDescription("Notes").assertIsSelected()
+            capture("notes-${mode.lowercase()}")
+            ui.onNodeWithContentDescription("Settings").performClick()
+            capture("settings-${mode.lowercase()}")
+            ui.onNodeWithText("Privacy", substring = false).performScrollTo().performClick()
+            capture("privacy-${mode.lowercase()}")
+            ui.onNode(hasContentDescription("Back") and hasAnyAncestor(hasTestTag("main-header"))).performClick()
+        }
         ui.onNodeWithContentDescription("Settings").performClick()
         capture("settings")
         ui.onNodeWithText("Theme, typography, and layout").performScrollTo().performClick()
@@ -117,5 +151,53 @@ class LayoutTest {
             ui.onNodeWithText(if (direct) "12:36" else "4 in call · 12:36").assertIsDisplayed()
             capture("${if (direct) "direct" else "group"}-${if (camera) "video" else "audio"}")
         }
+    }
+    @Test fun composerKeepsOneSurfaceAcrossPanelsAndKeyboard() {
+        val state = mutableStateOf(MessengerState(phase = "connected", selected = "self", chats = listOf(contact.copy(id = "self", displayName = "Note to Self")), ui = mapOf("appearance" to "Newsreader|Light|555555|false")))
+        ui.runOnUiThread { ui.activity.setSigilContent { SigilApp(NativeCore::palette, NativeCore::analyze, state.value, { _, _ -> }) } }
+        capture("composer-closed-light")
+        ui.onNodeWithContentDescription("Attachments").performClick()
+        ui.onNodeWithContentDescription("One-time location").assertIsDisplayed()
+        capture("composer-attachments-light")
+        ui.onNodeWithContentDescription("Close attachment panel").performClick()
+        ui.onNodeWithTag("composer").performClick().performTextInput("A synthetic caption")
+        capture("composer-keyboard-light")
+        androidx.test.espresso.Espresso.pressBack()
+        ui.runOnIdle { state.value = state.value.copy(voice = VoiceState(phase = "Ready", peer = "self", seconds = 4, levels = List(20) { .3f }, duration = 4000)) }
+        ui.onNodeWithContentDescription("Send voice message").assertIsDisplayed()
+        capture("composer-voice-light")
+        ui.runOnIdle { state.value = state.value.copy(ui = mapOf("appearance" to "Newsreader|Dark|555555|false")) }
+        capture("composer-voice-dark")
+    }
+    @Test fun mainChromeFrostOverScrolledContent() {
+        val contacts = (1..24).map { contact.copy(id = "peer-$it", displayName = "Library contact $it", pinned = false) }
+        val calls = (1..24).map { CallSummary("call-$it", "ended", true, 1000L - it, emptyList(), name = "Library contact $it", outgoing = true, time = "9:41", day = "Today", duration = 74) }
+        val state = mutableStateOf(MessengerState(phase = "connected", chats = contacts, calls = calls, profileName = "Alex", address = "@alex:example.com"))
+        ui.runOnUiThread { ui.activity.setSigilContent { SigilApp(NativeCore::palette, NativeCore::analyze, state.value, { _, _ -> }) } }
+        for (mode in listOf("Light", "Dark")) {
+            ui.runOnIdle { state.value = state.value.copy(ui = mapOf("appearance" to "Newsreader|$mode|555555|false")) }
+            for (tab in listOf("Messages", "Calls", "Settings")) {
+                ui.onNodeWithContentDescription(tab).performClick()
+                ui.onRoot().performTouchInput { swipeUp(startY = height * .75f, endY = height * .3f, durationMillis = 400) }
+                capture("frost-${tab.lowercase()}-${mode.lowercase()}")
+            }
+        }
+    }
+    @Test fun glassChromeHasNoRectangularBandsBehindItsContent() {
+        ui.runOnUiThread { ui.activity.setSigilContent {
+            SigilApp(NativeCore::palette, NativeCore::analyze, MessengerState(phase = "connected", profileName = "Alex", ui = mapOf("appearance" to "Newsreader|Light|555555|false")), { _, _ -> })
+        } }
+        ui.onNodeWithContentDescription("Settings").performClick()
+        capture("glass-regression")
+        val screenshot = androidx.test.platform.app.InstrumentationRegistry.getInstrumentation().uiAutomation.takeScreenshot()
+        try {
+            for ((tag, x) in listOf("main-header" to .8f, "main-navigation" to .08f)) {
+                val bounds = ui.onNodeWithTag(tag).fetchSemanticsNode().boundsInWindow
+                val samples = listOf(.3f, .5f, .7f).map { y -> screenshot.getPixel((bounds.left + bounds.width * x).toInt(), (bounds.top + bounds.height * y).toInt()) }
+                for (channel in listOf<(Int) -> Int>(android.graphics.Color::red, android.graphics.Color::green, android.graphics.Color::blue)) {
+                    assertTrue("Rectangular band in $tag: $samples", samples.maxOf(channel) - samples.minOf(channel) <= 4)
+                }
+            }
+        } finally { screenshot.recycle() }
     }
 }

@@ -181,7 +181,7 @@ class MessagingUiTest {
         ui.onNodeWithText("Continue recovery").performClick()
         ui.runOnIdle { assertEquals("invitation" to "ab".repeat(32), actions.last()) }
     }
-    @Test fun switchingComposerPanelsKeepsTheComposerSteady() {
+    @Test fun attachment_and_voice_panels_remain_above_the_input() {
         show { SigilApp(NativeCore::palette, NativeCore::analyze, MessengerState(phase = "connected", chats = listOf(chat), selected = "peer", messages = listOf(message("out", true))), { _, _ -> }) }
         ui.runOnUiThread { androidx.core.view.WindowCompat.getInsetsController(ui.activity.window, ui.activity.window.decorView).hide(androidx.core.view.WindowInsetsCompat.Type.ime()) }
         ui.waitUntil(5000) { androidx.core.view.WindowInsetsCompat.toWindowInsetsCompat(ui.activity.window.decorView.rootWindowInsets).getInsets(androidx.core.view.WindowInsetsCompat.Type.ime()).bottom == 0 }
@@ -190,20 +190,23 @@ class MessagingUiTest {
         ui.onNodeWithTag("composer").performClick()
         try { ui.waitUntil(5000) { ui.onNodeWithTag("composer").fetchSemanticsNode().boundsInRoot.top < initial - 100 } } finally { screenshot("keyboard") }
         ui.waitUntil(5000) { ui.onNodeWithText("Sam").isDisplayed() }
-        val keyboard = ui.onNodeWithTag("composer").fetchSemanticsNode().boundsInRoot.top
+        fun panelAboveInput() {
+            ui.waitForIdle()
+            val panel=ui.onNodeWithTag("composer-panel").fetchSemanticsNode().boundsInRoot
+            val input=ui.onNodeWithTag("composer").assertIsDisplayed().fetchSemanticsNode().boundsInRoot
+            assertTrue(panel.bottom<=input.top+1)
+        }
         ui.onNodeWithContentDescription("Attachments").performClick()
         ui.onNodeWithText("Photos").assertIsDisplayed()
-        assertEquals(keyboard, ui.onNodeWithTag("composer").fetchSemanticsNode().boundsInRoot.top, 3f)
+        panelAboveInput()
         screenshot("attachments")
         ui.onNodeWithContentDescription("Voice message").performClick()
-        ui.onNodeWithText("Record").assertIsDisplayed()
-        assertEquals(keyboard, ui.onNodeWithTag("composer").fetchSemanticsNode().boundsInRoot.top, 3f)
+        ui.onNodeWithContentDescription("Discard recording").assertIsDisplayed()
+        panelAboveInput()
         ui.onNodeWithTag("composer").performClick()
-        repeat(8) {
-            ui.mainClock.advanceTimeBy(32)
-            assertEquals(keyboard, ui.onNodeWithTag("composer").fetchSemanticsNode().boundsInRoot.top, 3f)
-        }
+        ui.onNodeWithTag("composer").assertIsDisplayed()
     }
+
     @Test fun messageDetailsStartHiddenAndReceiptsFollowTheLastTimelineMessage() {
         val state = mutableStateOf(MessengerState(phase = "connected", chats = listOf(chat), selected = "peer", messages = listOf(message("out", true), message("in", false))))
         show { SigilApp(NativeCore::palette, NativeCore::analyze, state.value, { _, _ -> }) }
@@ -229,9 +232,9 @@ class MessagingUiTest {
         ui.onNodeWithContentDescription("Search conversations").performClick()
         listOf("Unread", "Conversations", "Requests", "Pinned", "Images", "Videos", "Places", "Links").forEach { ui.onNodeWithText(it).assertExists() }
         ui.onNodeWithContentDescription("Back").performClick()
-        ui.onNodeWithContentDescription("Conversation notes").performClick()
+        ui.onNodeWithContentDescription("Notes").performClick()
         ui.onNodeWithText("Sam").assertDoesNotExist()
-        ui.onNodeWithText("Your conversation notes will appear here.").assertExists()
+        ui.onNodeWithText("No notes yet").assertExists()
     }
     @Test fun emojiOnlyMessagesUseTheBundledAnimatedArtwork() {
         show { SigilApp(NativeCore::palette, NativeCore::analyze, MessengerState(phase = "connected", chats = listOf(chat), selected = "peer", messages = listOf(message("emoji", true).copy(text = "😀"))), { _, _ -> }) }

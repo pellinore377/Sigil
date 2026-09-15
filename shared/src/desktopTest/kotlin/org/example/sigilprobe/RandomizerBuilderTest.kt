@@ -13,10 +13,23 @@ import kotlin.test.*
 
 class RandomizerBuilderTest {
     @get:Rule val ui=createComposeRule()
+    @Test fun direct_cards_entry_has_choices_without_a_redundant_mode_picker() {
+        val sent=mutableListOf<String>()
+        ui.setContent {MaterialTheme {CompositionLocalProvider(LocalBuilderSource provides NativeCore::builderSource) {
+            Box(Modifier.width(380.dp).height(500.dp)) {RandomizerBuilder(true,{},initialMode="Choice",send=sent::add)}
+        }}}
+        ui.onNodeWithText("Cards").assertIsDisplayed()
+        ui.onNodeWithText("Dice").assertDoesNotExist()
+        ui.onNodeWithText("Choice").assertDoesNotExist()
+        ui.onNodeWithText("Choice 1").performTextInput("Red")
+        ui.onNodeWithText("Choice 2").performTextInput("Blue")
+        ui.onNodeWithText("Pick a choice").performScrollTo().performClick()
+        assertEquals(listOf(NativeCore.builderSource("Choice\nRed\nBlue")),sent)
+    }
     @Test fun guided_fields_keep_each_modes_draft_and_only_send_valid_explicit_actions() {
         val sent=mutableListOf<String>()
         ui.setContent {MaterialTheme {CompositionLocalProvider(LocalBuilderSource provides NativeCore::builderSource) {
-            Box(Modifier.width(380.dp).height(700.dp)) {RandomizerBuilder(true,{},sent::add)}
+            Box(Modifier.width(380.dp).height(700.dp)) {RandomizerBuilder(true,{},send=sent::add)}
         }}}
         ui.onNodeWithText("Count 1").performTextReplacement("3")
         ui.onNodeWithText("Sides 1").performTextReplacement("20")

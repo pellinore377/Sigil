@@ -61,7 +61,7 @@ internal object NativeMaps {
 }
 
 @Composable
-internal fun ServerMap(modifier: Modifier, latitude: Double = 0.0, longitude: Double = 0.0, movable: Boolean = true, selected: Boolean = true, recenter: Int = 0, marker: (@Composable () -> Unit)? = null, chosen: (Double, Double) -> Unit = { _, _ -> }, failure: () -> Unit = {}) {
+internal fun ServerMap(modifier: Modifier, latitude: Double = 0.0, longitude: Double = 0.0, movable: Boolean = true, selected: Boolean = true, recenter: Int = 0, center: Pair<Double, Double>? = null, marker: (@Composable () -> Unit)? = null, chosen: (Double, Double) -> Unit = { _, _ -> }, failure: () -> Unit = {}) {
     val context = LocalContext.current
     val lifecycle = LocalLifecycleOwner.current.lifecycle
     val currentChosen by rememberUpdatedState(chosen)
@@ -95,8 +95,8 @@ internal fun ServerMap(modifier: Modifier, latitude: Double = 0.0, longitude: Do
         lifecycle.addObserver(observer)
         onDispose { disposed = true; lifecycle.removeObserver(observer); view.removeOnDidFailLoadingMapListener(error); view.removeOnDidFinishRenderingFrameListener(frame); view.onPause(); view.onStop(); view.onDestroy() }
     }
-    LaunchedEffect(map, latitude, longitude, selected, recenter, marker != null) { map?.let { controller ->
-        controller.cameraPosition = CameraPosition.Builder().target(LatLng(latitude, longitude)).zoom(if (selected) 14.0 else 1.0).build()
+    LaunchedEffect(map, latitude, longitude, selected, recenter, center, marker != null) { map?.let { controller ->
+        controller.cameraPosition = CameraPosition.Builder().target(LatLng(center?.first ?: latitude, center?.second ?: longitude)).zoom(if (selected || center != null) 14.0 else 1.0).build()
         controller.clear()
         if (selected && marker == null) controller.addMarker(org.maplibre.android.annotations.MarkerOptions().position(LatLng(latitude, longitude)))
         anchor = markerPoint?.let { controller.projection.toScreenLocation(it) }

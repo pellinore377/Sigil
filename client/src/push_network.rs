@@ -153,24 +153,41 @@ mod tests {
     use std::sync::{Arc, Mutex};
     #[test]
     fn android_configuration_rejects_unknown_destinations_and_mismatched_sender_ids() {
-        let value=Arc::new(Mutex::new(serde_json::json!({"android":null})));
-        let response=value.clone();
-        let fixture=Fixture::new(Router::new().route("/client/v0/push/android",get(move || {
-            let value=response.lock().unwrap().clone();
-            async move {Json(value)}
-        })));
-        let client=HttpsClient::new("chat.example",fixture.port(),&"ab".repeat(32),&[CA.to_vec()]).unwrap();
+        let value = Arc::new(Mutex::new(serde_json::json!({"android":null})));
+        let response = value.clone();
+        let fixture = Fixture::new(Router::new().route(
+            "/client/v0/push/android",
+            get(move || {
+                let value = response.lock().unwrap().clone();
+                async move { Json(value) }
+            }),
+        ));
+        let client = HttpsClient::new(
+            "chat.example",
+            fixture.port(),
+            &"ab".repeat(32),
+            &[CA.to_vec()],
+        )
+        .unwrap();
         assert!(client.push_android().unwrap().android.is_none());
-        let good=serde_json::json!({"android":{
+        let good = serde_json::json!({"android":{
             "project_id":"synthetic-project","application_id":"1:123456789:android:0123456789abcdef",
             "api_key":format!("AIza{}","x".repeat(35)),"sender_id":"123456789"
         }});
-        *value.lock().unwrap()=good.clone();
-        assert_eq!(client.push_android().unwrap().android.unwrap().project_id,"synthetic-project");
-        for (field,bad) in [("sender_id","987654321"),("api_key","invalid"),("token_uri","https://attacker.example")]{
-            let mut changed=good.clone();changed["android"][field]=bad.into();
-            *value.lock().unwrap()=changed;
-            assert_eq!(client.push_android(),Err(Error::InvalidResponse));
+        *value.lock().unwrap() = good.clone();
+        assert_eq!(
+            client.push_android().unwrap().android.unwrap().project_id,
+            "synthetic-project"
+        );
+        for (field, bad) in [
+            ("sender_id", "987654321"),
+            ("api_key", "invalid"),
+            ("token_uri", "https://attacker.example"),
+        ] {
+            let mut changed = good.clone();
+            changed["android"][field] = bad.into();
+            *value.lock().unwrap() = changed;
+            assert_eq!(client.push_android(), Err(Error::InvalidResponse));
         }
     }
 }

@@ -13,7 +13,7 @@ data class ChatMessage(val id: String, val author: String, val text: String, val
     val timestamp: Long = 0, val separator: String = "", val readers: List<String> = emptyList(), val noted: Boolean = false,
     val threadAuthor: String? = null, val threadMessage: String? = null, val editable: Boolean = true, val kind: String = "Text", val peer: String = "", val attachment: AttachmentDetails? = null, val parts: List<MessagePart> = emptyList(), val threadPreview: String? = null)
 data class MessagePart(val id: String, val kind: String, val text: String, val items: List<CardItem> = emptyList(), val multiple: Boolean = false, val closed: Boolean = false, val voters: Long? = null, val date: String = "", val latitude: Double = 0.0, val longitude: Double = 0.0, val rich: RichText? = null,
-    val locationMode: String = "pin", val sampledAt: Long = 0, val accuracyCm: Long? = null, val until: Long? = null, val stopped: Boolean = false, val canStop: Boolean = false, val table: TableContent? = null, val recipe: RecipeContent? = null, val chart: ChartContent? = null, val diagram: DiagramContent? = null, val utility: UtilityContent? = null, val service: ServiceContent? = null, val contact: ContactContent? = null, val at:Long=0, val startedAt:Long=0)
+    val locationMode: String = "pin", val sampledAt: Long = 0, val accuracyCm: Long? = null, val until: Long? = null, val stopped: Boolean = false, val canStop: Boolean = false, val table: TableContent? = null, val recipe: RecipeContent? = null, val chart: ChartContent? = null, val diagram: DiagramContent? = null, val utility: UtilityContent? = null, val service: ServiceContent? = null, val contact: ContactContent? = null, val at:Long=0, val startedAt:Long=0, val previewParts:List<MessagePart> = emptyList(), val randomizerPreview:RandomizerPreview?=null, val previewIntent:PreviewIntent?=null)
 data class ContactContent(val address: String,val name: RichText,val identity: String,val vcard: String?)
 data class TableContent(val columns: List<RichText>, val rows: List<List<RichText>>, val numericOrder: List<List<Int>?>, val copyRows: List<String?>, val copyTable: String?)
 data class RecipeContent(val title: RichText, val serves: Int?, val originalServes: Int?, val seconds: Long?, val ingredients: List<RichText>, val scaled: List<Boolean>, val steps: List<RichText>)
@@ -36,8 +36,8 @@ data class GroupInvitation(val id: String, val peer: String, val group: String)
 data class Transfer(val request: String, val peer: String, val name: String, val bytes: Long, val phase: String, val draft: Boolean = false, val mediaType: String = "application/octet-stream")
 data class VoiceState(val phase: String = "Idle", val peer: String = "", val seconds: Long = 0, val levels: List<Float> = emptyList(), val playing: Boolean = false,
     val paused: Boolean = false, val position: Long = 0, val duration: Long = 0)
-data class CallParticipant(val id: String, val peer: String, val name: String, val own: Boolean, val verified: Boolean, val audio: Boolean, val camera: Boolean, val screen: Boolean, val fingerprint: String = "")
-data class CallSummary(val id: String, val phase: String, val direct: Boolean, val created: Long, val participants: List<CallParticipant>, val canInvite: Boolean = false, val name: String = "", val outgoing: Boolean = false, val time: String = "")
+data class CallParticipant(val id: String, val peer: String, val name: String, val own: Boolean, val verified: Boolean, val audio: Boolean, val camera: Boolean, val screen: Boolean, val fingerprint: String = "", val address: String = "")
+data class CallSummary(val id: String, val phase: String, val direct: Boolean, val created: Long, val participants: List<CallParticipant>, val canInvite: Boolean = false, val name: String = "", val outgoing: Boolean = false, val time: String = "", val day: String = "", val missed: Boolean = false, val duration: Long? = null, val video: Boolean? = null)
 data class ActiveCall(val call: CallSummary, val name: String, val connection: String = "connecting", val seconds: Long = 0, val muted: Boolean = false, val speaker: Boolean = false, val camera: Boolean = false, val screen: Boolean = false, val levels: Map<String, Float> = emptyMap())
 data class ThreadTarget(val author: String, val id: String)
 data class AccountDevice(val id: String, val current: Boolean, val label: String? = null, val revoked: Boolean? = null, val expires: Long? = null, val fingerprint: String? = null, val verified: Boolean = false)
@@ -51,7 +51,7 @@ data class SearchHit(val peer: String, val id: String, val author: String, val t
 data class EditDraft(val peer: String, val author: String, val message: String, val source: String)
 data class MessengerState(val phase: String = "loading", val address: String = "", val fingerprint: String = "", val device: String = "",
     val chats: List<ChatSummary> = emptyList(), val selected: String? = null, val messages: List<ChatMessage> = emptyList(),
-    val more: Boolean = false, val busy: Boolean = false, val issue: String? = null, val sent: Long = 0, val sentText: String? = null, val editDraft: EditDraft? = null, val timelineLoaded:Boolean=false,
+    val more: Boolean = false, val busy: Boolean = false, val issue: String? = null, val sent: Long = 0, val sentText: String? = null, val sentMessage: String? = null, val editDraft: EditDraft? = null, val timelineLoaded:Boolean=false,
     val loginAddress: String = "", val loginMethods: LoginMethods? = null, val discovering: Boolean = false, val discoveryIssue: String? = null,
     val collectionsEnabled: Boolean = false, val collections: List<CollectionItem> = emptyList(),
     val searchHits: List<SearchHit> = emptyList(), val searching: Boolean = false, val searchQuery: String = "",
@@ -71,3 +71,6 @@ data class ServiceContent(val kind: String, val title: RichText, val attribution
 data class DefinitionSense(val part: RichText, val definition: RichText, val example: RichText?, val etymology: RichText?, val synonyms: List<RichText>, val antonyms: List<RichText>, val copy: String?)
 data class WeatherConditions(val date: String, val key: String, val temperature: List<String>, val feelsLike: List<String>?, val description: RichText, val icon: String, val rain: String?, val chance: String?, val wind: List<String>, val humidity: String?, val uv: String?)
 data class WeatherDay(val date: String, val key: String, val low: List<String>, val high: List<String>, val icon: String, val chance: String, val description: RichText, val charts: List<ChartContent> = emptyList())
+
+data class RandomizerPreview(val kind:String,val sides:List<Int>)
+data class PreviewIntent(val tool:String,val text:String,val language:String,val forecast:Boolean,val ready:Boolean,val start:Int,val end:Int)

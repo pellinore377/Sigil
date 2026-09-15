@@ -17,10 +17,12 @@ class FormBuilderTest {
         val sent=mutableListOf<String>()
         ui.setContent {MaterialTheme {CompositionLocalProvider(LocalBuilderSource provides NativeCore::builderSource) {Box(Modifier.width(420.dp).height(760.dp)) {FormBuilder("Recipe",true,{}){source,_->sent+=source}}}}}
         ui.onNodeWithText("Title").performTextInput("Dinner")
-        ui.onNodeWithText("Servings (optional)").performTextInput("4")
+        ui.onNodeWithText("Servings").assertDoesNotExist()
         ui.onNodeWithText("Ingredient 1").performScrollTo().performTextInput("redact::literal;")
         ui.onNodeWithText("Ingredient 2").assertExists()
         ui.onNodeWithText("Step 1").performScrollTo().performTextInput("Stir")
+        ui.onNodeWithText("Options").performScrollTo().performClick()
+        ui.onNodeWithText("Servings").performScrollTo().performTextInput("4")
         ui.waitUntil(5000){ui.onAllNodes(isEnabled() and hasText("Send")).fetchSemanticsNodes().size==1}
         ui.onNodeWithText("Send").performClick()
         assertEquals(1,sent.size)

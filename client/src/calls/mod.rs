@@ -23,7 +23,7 @@ pub(crate) mod network_tests;
 mod rtc_transport;
 mod signaling;
 #[cfg(feature = "rtc-client")]
-pub use rtc_transport::{ReceivedFrame, RtcCall};
+pub use rtc_transport::{ReceivedFrame, RtcCall, RtcTransmission};
 #[cfg(test)]
 mod tests;
 pub(crate) use control::{
@@ -72,6 +72,8 @@ struct Record {
     own: Option<Attestation>,
     secret: Option<Vec<u8>>,
     phase: Phase,
+    #[serde(default)]
+    missed: bool,
     ring_until: Option<u64>,
     invites: Vec<Invite>,
     joining: Vec<Attestation>,
@@ -229,10 +231,12 @@ impl Record {
     }
     fn expire(&mut self, now: u64) -> bool {
         if now >= self.state.roster.roster.expires {
+            self.missed |= self.phase == Phase::Ringing;
             self.finish(Phase::Ended);
             return true;
         }
         if self.phase == Phase::Ringing && self.ring_until.is_some_and(|until| now >= until) {
+            self.missed = true;
             self.finish(Phase::Declined);
             return true;
         }
@@ -243,6 +247,7 @@ impl Record {
         self.lease = [0; 32];
     }
     fn finish(&mut self, phase: Phase) {
+        self.missed |= self.phase == Phase::Ringing && phase == Phase::Ended;
         self.phase = phase;
         self.ring_until = None;
         self.secret = None;
@@ -422,6 +427,7 @@ impl ClientStore {
                 secret.seal_checkpoint(&self.key, &[aad(&id), b"participant".to_vec()].concat())?,
             ),
             phase: Phase::Active,
+            missed: false,
             ring_until: None,
             invites: Vec::new(),
             joining: Vec::new(),

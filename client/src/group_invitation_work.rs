@@ -9,6 +9,60 @@ struct PacketRecord {
     receipt: Vec<u8>,
     cancelled: bool,
 }
+fn next_invitation(db: &mut Connection, key: &StorageKey, own: &Id) -> Result<Option<Id>, Error> {
+    let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    let cursor = super::super::work::load(&tx, key, own, b"invitations")?;
+    let next: Option<Vec<u8>> = tx
+        .query_row(
+            "SELECT id FROM group_invitations WHERE id>?1 ORDER BY id LIMIT 1",
+            [cursor.after.map(|v| v.to_vec()).unwrap_or_default()],
+            |r| r.get(0),
+        )
+        .optional()?;
+    let id = next
+        .map(|v| v.try_into().map_err(|_| Error::InvalidStore))
+        .transpose()?;
+    super::super::work::save(
+        &tx,
+        key,
+        own,
+        b"invitations",
+        &super::super::work::Cursor {
+            after: id,
+            relay: None,
+        },
+    )?;
+    tx.commit()?;
+    Ok(id)
+}
+#[cfg(test)]
+#[test]
+fn invitation_cursor_waits_for_a_concurrent_writer() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+    let path = dir.path().join("invitations.db");
+    let mut db = crate::private_db::open(&path, 1024 * 1024).unwrap();
+    db.execute_batch("CREATE TABLE group_work(id BLOB PRIMARY KEY,state BLOB NOT NULL); CREATE TABLE group_invitations(id BLOB PRIMARY KEY);").unwrap();
+    let id = [3u8; 32];
+    db.execute("INSERT INTO group_invitations VALUES(?1)", [id.as_slice()])
+        .unwrap();
+    let (ready, wait) = std::sync::mpsc::channel();
+    let writer = std::thread::spawn(move || {
+        let db = Connection::open(path).unwrap();
+        db.execute_batch("BEGIN IMMEDIATE").unwrap();
+        ready.send(()).unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(150));
+        db.execute_batch("COMMIT").unwrap();
+    });
+    wait.recv().unwrap();
+    let key = StorageKey::new(sigil_crypto::Secret32::from_bytes([9; 32])).unwrap();
+    let result = next_invitation(&mut db, &key, &[7; 32]);
+    writer.join().unwrap();
+    assert_eq!(result.unwrap(), Some(id));
+    assert_eq!(next_invitation(&mut db, &key, &[7; 32]).unwrap(), None);
+    assert_eq!(next_invitation(&mut db, &key, &[7; 32]).unwrap(), Some(id));
+}
 fn packet_aad(own: &Id, id: &Id) -> Vec<u8> {
     [b"Sigil/group-invitation-packet/v0".as_slice(), own, id].concat()
 }
@@ -350,30 +404,7 @@ impl ClientStore {
             return Err(Error::Expired);
         }
         let own = device_fingerprint(&self.own_device_binding()?)?;
-        let tx = self.db.transaction()?;
-        let cursor = super::super::work::load(&tx, &self.key, &own, b"invitations")?;
-        let after = cursor.after.map(|v| v.to_vec()).unwrap_or_default();
-        let next: Option<Vec<u8>> = tx
-            .query_row(
-                "SELECT id FROM group_invitations WHERE id>?1 ORDER BY id LIMIT 1",
-                [after],
-                |r| r.get(0),
-            )
-            .optional()?;
-        let id = next
-            .map(|v| v.try_into().map_err(|_| Error::InvalidStore))
-            .transpose()?;
-        super::super::work::save(
-            &tx,
-            &self.key,
-            &own,
-            b"invitations",
-            &super::super::work::Cursor {
-                after: id,
-                relay: None,
-            },
-        )?;
-        tx.commit()?;
+        let id = next_invitation(&mut self.db, &self.key, &own)?;
         Ok(id
             .map(|id| InvitationAttempt {
                 id,

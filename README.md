@@ -38,7 +38,7 @@ described in [Administration.md](docs/Administration.md). Advanced service and m
 
 Download the ARM64 APK from [GitHub releases](https://github.com/pellinore377/Sigil/releases), or add this repository in Obtainium and enable prereleases. Testing releases use `org.sigil.compose`; they install separately from Sigil Development and require signing in. Keep the development app until any needed device linking or recovery is finished. These are experimental builds; current limitations are in [Status.md](docs/Status.md).
 
-To publish an update, increment Android's `versionCode` and `versionName` in `app/build.gradle.kts`. Set `JAVA_HOME` (JDK 21), `ANDROID_HOME`, `ANDROID_NDK_HOME`, optionally `GRADLE`, and `SIGIL_ANDROID_KEYSTORE` / `SIGIL_ANDROID_PASSWORD_FILE` to the private release keystore and password file outside the repository. The signing alias is `sigil`. Run `bash app/release.sh`; upload the APK and `SHA256SUMS` from `app/build/release/` to a GitHub prerelease. Preserve and back up the signing key: updates must retain the same key and increase the version code.
+To publish an update, increment Android's `versionCode` and `versionName` in `app/build.gradle.kts`. Set `JAVA_HOME` (JDK 21), `ANDROID_HOME`, `ANDROID_NDK_HOME`, and optionally `GRADLE`. Signing uses `sigil/android-signing/release.p12` and `password` under `$XDG_DATA_HOME` (default `~/.local/share`); override with `SIGIL_ANDROID_KEYSTORE` / `SIGIL_ANDROID_PASSWORD_FILE`. The signing alias is `sigil`. Run `bash app/release.sh`; upload the APK and `SHA256SUMS` from `app/build/release/` to a GitHub prerelease. Preserve and back up the signing key: updates must retain the same key and increase the version code.
 
 ## Developer checks
 

@@ -10,6 +10,8 @@ crate-type = ["cdylib"]
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 sigil-client = { path = "../client" }
 sigil-crypto = { path = "../crypto" }
+sigil-calls = { path = "../calls" }
+web-time = "=1.1.0"
 serde.workspace = true
 serde_json.workspace = true
 zeroize = "=1.9.0"
@@ -22,4 +24,4 @@ js-sys = "=0.3.104"
 futures-channel = "=0.3.34"
 sqlite-wasm-vfs = "=0.2.0"
 rsqlite-vfs = "=0.1.1"
-web-sys = { version = "=0.3.104", features = ["ImageBitmap","DomParser","SupportedType","NodeList","NamedNodeMap","Attr","MediaRecorder","MediaRecorderOptions","RecordingState","BlobEvent","FilePropertyBag","AudioContext","AudioContextState","AudioNode","AnalyserNode","MediaStreamAudioSourceNode","Blob","BlobPropertyBag","File","FileList","HtmlInputElement","HtmlAnchorElement","Url","Node","BroadcastChannel","History","HtmlVideoElement","HtmlMediaElement","HtmlCanvasElement","CanvasRenderingContext2d","ImageData","Document","Element","HtmlElement","Navigator","MediaDevices","MediaStream","MediaStreamTrack","MediaStreamConstraints","Window","Worker","WorkerOptions","WorkerType","DedicatedWorkerGlobalScope","WorkerGlobalScope","WorkerNavigator","StorageManager","MessageEvent","Event","EventTarget","ErrorEvent","DomException","IdbFactory","IdbDatabase","IdbObjectStore","IdbOpenDbRequest","IdbRequest","IdbTransaction","IdbTransactionMode","IdbTransactionOptions","IdbTransactionDurability","Crypto","CryptoKey","SubtleCrypto","Request","RequestInit","RequestMode","RequestCredentials","RequestRedirect","Response","Headers","AbortController","AbortSignal","ReadableStream","ReadableStreamDefaultReader","Location","WorkerLocation"] }
+web-sys = { version = "=0.3.104", features = ["Geolocation","Position","PositionError","PositionOptions","Coordinates","ImageBitmap","DomParser","SupportedType","NodeList","NamedNodeMap","Attr","MediaRecorder","MediaRecorderOptions","RecordingState","BlobEvent","FilePropertyBag","AudioContext","AudioContextState","AudioNode","AnalyserNode","MediaStreamAudioSourceNode","Blob","BlobPropertyBag","File","FileList","HtmlInputElement","HtmlAnchorElement","Url","Node","BroadcastChannel","History","HtmlVideoElement","HtmlMediaElement","HtmlCanvasElement","CanvasRenderingContext2d","ImageData","Document","Element","HtmlElement","Navigator","MediaDevices","MediaStream","MediaStreamTrack","MediaStreamConstraints","Window","Worker","WorkerOptions","WorkerType","DedicatedWorkerGlobalScope","WorkerGlobalScope","WorkerNavigator","StorageManager","MessageEvent","Event","EventTarget","ErrorEvent","DomException","IdbFactory","IdbDatabase","IdbObjectStore","IdbOpenDbRequest","IdbRequest","IdbTransaction","IdbTransactionMode","IdbTransactionOptions","IdbTransactionDurability","Crypto","CryptoKey","SubtleCrypto","Request","RequestInit","RequestMode","RequestCredentials","RequestRedirect","Response","Headers","AbortController","AbortSignal","ReadableStream","ReadableStreamDefaultReader","Location","WorkerLocation"] }

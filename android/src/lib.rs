@@ -9,8 +9,8 @@ use sigil_client::ClientStore;
 use sigil_crypto::{storage::StorageKey, Secret32};
 use zeroize::Zeroizing;
 mod calls;
-mod qr;
 mod preview;
+mod qr;
 
 #[no_mangle]
 pub extern "system" fn Java_org_sigil_storage_NativeStorage_stageProfilePhoto(

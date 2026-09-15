@@ -42,13 +42,12 @@ class UtilityTest {
         val clipboard=ui.activity.getSystemService(android.content.ClipboardManager::class.java)
         ui.runOnIdle { assertEquals("WIFI:T:WPA;S:Synthetic;P:synthetic-secret;;",clipboard.primaryClip!!.getItemAt(0).text.toString()); assertTrue(clipboard.primaryClipDescription!!.extras!!.getBoolean("android.content.extra.IS_SENSITIVE")) }
     }
-    @Test fun expanded_utilities_preserve_exact_values_and_math_disables_active_content() {
+    @Test fun inline_utilities_preserve_exact_values_and_math_disables_active_content() {
         show(UtilityContent("calculation",display="0.333333",copy="0.3333333333333333",rich=RichText("1 / 3")))
-        ui.onNodeWithText("Open calculation").performClick()
+        ui.onNodeWithText("Open calculation").assertDoesNotExist()
         ui.onNodeWithContentDescription("Copy calculation").performClick()
         val clipboard=ui.activity.getSystemService(android.content.ClipboardManager::class.java)
         ui.runOnIdle { assertEquals("0.3333333333333333",clipboard.primaryClip!!.getItemAt(0).text.toString()) }
-        ui.onNodeWithContentDescription("Close calculation").performClick()
         ui.runOnIdle { utility=UtilityContent("conversion",display="5 km",alternate="3.1069 mi",copy="3.1068559611866697 mi") }
         ui.onNodeWithText("Swap display").performClick()
         val input=ui.onNodeWithText("5 km", useUnmergedTree=true).fetchSemanticsNode().boundsInRoot

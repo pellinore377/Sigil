@@ -1,10 +1,13 @@
 //! Validated HTTPS transport. Blocking adapters run on a dedicated worker.
+#[cfg(target_arch = "wasm32")]
+use crate::browser_transport::Body;
+use http::{header, HeaderValue, Method, Request, Response};
 use serde::{de::DeserializeOwned, Serialize};
 use sha2::{Digest, Sha256};
 use sigil_crypto::recovery::Object;
 use sigil_protocol::{accounts, mailbox, prekeys, recovery};
 use std::time::Duration;
-#[cfg(not(target_arch="wasm32"))]
+#[cfg(not(target_arch = "wasm32"))]
 use std::{
     net::{SocketAddr, ToSocketAddrs},
     sync::{
@@ -12,19 +15,17 @@ use std::{
         mpsc,
     },
 };
-#[cfg(not(target_arch="wasm32"))]
+#[cfg(not(target_arch = "wasm32"))]
 use ureq::unversioned::{
     resolver::{ResolvedSocketAddrs, Resolver},
     transport::{DefaultConnector, NextTimeout},
 };
-#[cfg(not(target_arch="wasm32"))]
+#[cfg(not(target_arch = "wasm32"))]
 use ureq::{
     tls::{Certificate, RootCerts, TlsConfig},
     Agent, Body,
 };
 use zeroize::Zeroizing;
-use http::{header,HeaderValue,Method,Request,Response};
-#[cfg(target_arch="wasm32")] use crate::browser_transport::Body;
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum Error {
@@ -40,7 +41,7 @@ pub enum Error {
 
 #[derive(Clone)]
 pub struct HttpsClient {
-    #[cfg(not(target_arch="wasm32"))]
+    #[cfg(not(target_arch = "wasm32"))]
     agent: Agent,
     origin: String,
     server: String,
@@ -72,7 +73,7 @@ mod services;
 pub use calls::CallAvailability;
 pub(crate) use push::{target_fields as push_target_fields, valid_status as valid_push_status};
 pub use services::{MapAvailability, MapTile};
-#[cfg(all(test,not(target_arch="wasm32")))]
+#[cfg(all(test, not(target_arch = "wasm32")))]
 #[path = "network_tests.rs"]
 pub(crate) mod tests;
 
@@ -119,31 +120,56 @@ fn same_https_origin(left: &str, right: &str) -> bool {
     }
 }
 
-#[cfg(not(target_arch="wasm32"))]
-#[path="network_native.rs"]
+#[cfg(not(target_arch = "wasm32"))]
+#[path = "network_native.rs"]
 mod native;
-#[cfg(not(target_arch="wasm32"))]
+#[cfg(not(target_arch = "wasm32"))]
 use native::*;
 
 impl HttpsClient {
-    pub(crate) fn reserve_link_relay(&self,value:&sigil_protocol::link::RelayCreate)->Result<(),Error>{
-        let response=self.request(Method::POST,"/client/v0/link-relay/create",Some(value))?;
-        let _:serde_json::Value=self.json(response,200,SMALL)?;Ok(())
+    pub(crate) fn reserve_link_relay(
+        &self,
+        value: &sigil_protocol::link::RelayCreate,
+    ) -> Result<(), Error> {
+        let response = self.request(Method::POST, "/client/v0/link-relay/create", Some(value))?;
+        let _: serde_json::Value = self.json(response, 200, SMALL)?;
+        Ok(())
     }
-    pub(crate) fn exchange_link_relay(&self,value:&sigil_protocol::link::RelayExchange)->Result<sigil_protocol::link::RelayReply,Error>{
-        let response=self.request(Method::POST,"/client/v0/link-relay/exchange",Some(value))?;
-        self.json(response,200,16384)
+    pub(crate) fn exchange_link_relay(
+        &self,
+        value: &sigil_protocol::link::RelayExchange,
+    ) -> Result<sigil_protocol::link::RelayReply, Error> {
+        let response = self.request(Method::POST, "/client/v0/link-relay/exchange", Some(value))?;
+        self.json(response, 200, 16384)
     }
-    #[cfg(target_arch="wasm32")]
-    pub fn new(server:&str,port:u16,credential:&str,roots:&[Vec<u8>])->Result<Self,Error> {
-        super::recovery::account_scope(server,[0;32]).map_err(|_|Error::Configuration)?;
-        if port==0 || !roots.is_empty() || !accounts::valid_credential(credential) {return Err(Error::Configuration);}
-        Ok(Self {origin:format!("https://{server}:{port}"),server:server.into(),credential:Zeroizing::new(credential.into()),discover:false,resolved:DiscoveryCache::default()})
+    #[cfg(target_arch = "wasm32")]
+    pub fn new(
+        server: &str,
+        port: u16,
+        credential: &str,
+        roots: &[Vec<u8>],
+    ) -> Result<Self, Error> {
+        super::recovery::account_scope(server, [0; 32]).map_err(|_| Error::Configuration)?;
+        if port == 0 || !roots.is_empty() || !accounts::valid_credential(credential) {
+            return Err(Error::Configuration);
+        }
+        Ok(Self {
+            origin: format!("https://{server}:{port}"),
+            server: server.into(),
+            credential: Zeroizing::new(credential.into()),
+            discover: false,
+            resolved: DiscoveryCache::default(),
+        })
     }
-    #[cfg(target_arch="wasm32")]
-    fn send(&self,request:Request<&[u8]>)->Result<Response<Body>,Error> {
-        let response=crate::browser_transport::send(request)?;
-        if !response.status().is_success() {return Err(Error::Status {code:response.status().as_u16(),retry_after_seconds:retry_after(&response)});}
+    #[cfg(target_arch = "wasm32")]
+    fn send(&self, request: Request<&[u8]>) -> Result<Response<Body>, Error> {
+        let response = crate::browser_transport::send(request)?;
+        if !response.status().is_success() {
+            return Err(Error::Status {
+                code: response.status().as_u16(),
+                retry_after_seconds: retry_after(&response),
+            });
+        }
         Ok(response)
     }
 
@@ -256,7 +282,7 @@ impl HttpsClient {
     /// Names are canonical homeserver DNS names; schemes, paths, credentials and
     /// IP literals are rejected. Empty roots uses bundled WebPKI roots. Explicit
     /// DER roots replace them for a privately administered CA; verification stays on.
-    #[cfg(not(target_arch="wasm32"))]
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn new(
         server: &str,
         port: u16,
@@ -418,7 +444,7 @@ impl HttpsClient {
         }
         builder.body(bytes).map_err(|_| Error::Configuration)
     }
-    #[cfg(not(target_arch="wasm32"))]
+    #[cfg(not(target_arch = "wasm32"))]
     fn send(&self, request: Request<&[u8]>) -> Result<Response<Body>, Error> {
         let mut response = self.agent.run(request).map_err(|_| Error::Transport)?;
         if !response.status().is_success() {
@@ -708,13 +734,18 @@ impl HttpsClient {
         }
         let bytes = serde_json::to_vec(request).map_err(|_| Error::Configuration)?;
         let mut http = self.build_request(
-            Method::POST, "/client/v0/messages", &bytes, Some("application/json"), None,
+            Method::POST,
+            "/client/v0/messages",
+            &bytes,
+            Some("application/json"),
+            None,
         )?;
         if let Some(proof) = proof {
             sigil_protocol::retry::Request::from_bytes(proof).map_err(|_| Error::Configuration)?;
             http.headers_mut().insert(
                 mailbox::RECOVERY_HEADER,
-                HeaderValue::from_str(&crate::transport::hex(proof)).map_err(|_| Error::Configuration)?,
+                HeaderValue::from_str(&crate::transport::hex(proof))
+                    .map_err(|_| Error::Configuration)?,
             );
         }
         let receipt: mailbox::Receipt = self.json(self.send(http)?, 202, SMALL)?;

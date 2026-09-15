@@ -22,6 +22,7 @@ internal class NativeCalls(private val app: Application, private val update: (Li
     private var visible: ActiveCall? = null
     private var name = ""
     private var video = false
+    private var usedVideo = false
     private var cameraReady = false
     private var starting = false
     val occupied get() = starting || desired != null || ending?.isActive == true || permissions != null
@@ -76,8 +77,8 @@ internal class NativeCalls(private val app: Application, private val update: (Li
             val call = array.getJSONObject(index); val people = call.getJSONArray("participants")
             CallSummary(call.getString("id"), call.getString("phase"), call.getBoolean("direct"), call.getLong("created"), (0 until people.length()).map { i ->
                 val person = people.getJSONObject(i)
-                CallParticipant(person.getString("member"), person.getString("peer"), person.getString("name"), person.getBoolean("own"), person.getBoolean("verified"), person.getBoolean("audio"), person.getBoolean("camera"), person.getBoolean("screen"), person.getString("fingerprint"))
-            }, call.getBoolean("can_invite"), call.optString("name"), call.optBoolean("outgoing"), java.text.DateFormat.getDateTimeInstance(java.text.DateFormat.MEDIUM, java.text.DateFormat.SHORT).format(java.util.Date(call.getLong("created") * 1000)))
+                CallParticipant(person.getString("member"), person.getString("peer"), person.getString("name"), person.getBoolean("own"), person.getBoolean("verified"), person.getBoolean("audio"), person.getBoolean("camera"), person.getBoolean("screen"), person.getString("fingerprint"), person.optString("address"))
+            }, call.getBoolean("can_invite"), call.optString("name"), call.optBoolean("outgoing"), java.text.DateFormat.getTimeInstance(java.text.DateFormat.SHORT).format(java.util.Date(call.getLong("created") * 1000)), callDay(call.getLong("created")), call.optBoolean("missed"), if(call.isNull("duration")) null else call.getLong("duration"), if(call.isNull("video")) null else call.getBoolean("video"))
         }
         val current = desired?.let { id -> history.find { it.id == id } } ?: history.firstOrNull { it.phase == "ringing" }
         visible = current?.let { call ->
@@ -97,7 +98,7 @@ internal class NativeCalls(private val app: Application, private val update: (Li
                 if (ending?.isActive == true) { issue("Finishing the previous call. Try again shortly."); return }
                 starting = true
                 generation++; val current = generation
-                video = needsCamera; muted = false; loud = needsCamera; started = 0; name = fields["name"] as? String ?: ""
+                video = needsCamera; usedVideo = false; muted = false; loud = needsCamera; started = 0; name = fields["name"] as? String ?: ""
                 scope.launch {
                     try {
                         val id = if (action == "call_start" || action == "call_redial") {
@@ -187,6 +188,7 @@ internal class NativeCalls(private val app: Application, private val update: (Li
                         }
                         var received = false
                         if (status == 1) {
+                            usedVideo = usedVideo || video || history.find { it.id == id }?.participants?.any { it.camera } == true
                             retry = 1000
                             if (started == 0L && history.find { it.id == id }?.participants?.size?.let { it > 1 } == true) started = SystemClock.elapsedRealtime()
                             if (microphone == null) microphone = CallMicrophone({ timestamp, bytes -> send(0, timestamp, false, bytes) }, { amplitude -> scope.launch { levels = levels + ("self" to amplitude) } }, { scope.launch { issue("Microphone capture stopped."); end() } }).apply { muted = this@NativeCalls.muted }
@@ -232,6 +234,8 @@ internal class NativeCalls(private val app: Application, private val update: (Li
         if (ending?.isActive == true) return
         if (requested != null && desired != null && requested != desired) return
         val id = requested ?: desired
+        val duration = if (id == desired && started > 0) (SystemClock.elapsedRealtime() - started) / 1000 else null
+        val wasVideo = usedVideo
         generation++; desired = null; cameraReady = false; token = 0; control?.cancel(); control = null; media?.cancel()
         microphone?.close(); microphone = null
         camera?.close(); camera = null
@@ -243,6 +247,7 @@ internal class NativeCalls(private val app: Application, private val update: (Li
         ending = scope.launch {
             var saved = false
             try {
+                if (duration != null) runCatching { native("call_history_media", mapOf("call" to id, "duration" to duration, "video" to wasVideo)) }
                 refresh(native("call_leave", mapOf("call" to id)))
                 saved = true
                 NativeSync.presence(app, false)
@@ -269,4 +274,10 @@ internal class NativeCalls(private val app: Application, private val update: (Li
         check(result.getBoolean("ok")); result.getJSONObject("value")
     }
     fun close() { closing = true; end() }
+}
+
+private fun callDay(seconds: Long): String {
+    val date = java.time.Instant.ofEpochSecond(seconds).atZone(java.time.ZoneId.systemDefault()).toLocalDate()
+    val today = java.time.LocalDate.now()
+    return when (date) { today -> "Today"; today.minusDays(1) -> "Yesterday"; else -> java.text.DateFormat.getDateInstance(java.text.DateFormat.MEDIUM).format(java.util.Date(seconds * 1000)) }
 }

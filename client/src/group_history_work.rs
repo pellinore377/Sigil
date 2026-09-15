@@ -204,9 +204,7 @@ impl ClientStore {
                 }
                 status => status,
             };
-            let tx = self.db.transaction()?;
-            terminal(&tx, &self.key, &own, &mut w, status)?;
-            tx.commit()?;
+            finish_history(&mut self.db, &self.key, &own, &mut w, status)?;
             return Ok(status);
         }
         if matches!(
@@ -226,9 +224,13 @@ impl ClientStore {
         }
         let status = self.group_status(g.group)?;
         if status.frozen || g.verify(&status.state).is_err() {
-            let tx = self.db.transaction()?;
-            terminal(&tx, &self.key, &own, &mut w, HistoryShareStatus::Revoked)?;
-            tx.commit()?;
+            finish_history(
+                &mut self.db,
+                &self.key,
+                &own,
+                &mut w,
+                HistoryShareStatus::Revoked,
+            )?;
             return Ok(w.status);
         }
         if own == g.issuer {
@@ -456,29 +458,7 @@ impl ClientStore {
     }
     pub fn resume_group_history_online(&mut self, now: u64) -> Result<Vec<HistoryAttempt>, Error> {
         let own = device_fingerprint(&self.own_device_binding()?)?;
-        let tx = self.db.transaction()?;
-        let cursor = super::super::work::load(&tx, &self.key, &own, b"history")?;
-        let next: Option<Vec<u8>> = tx
-            .query_row(
-                "SELECT id FROM group_history_work WHERE active=1 AND id>?1 ORDER BY id LIMIT 1",
-                [cursor.after.map(|v| v.to_vec()).unwrap_or_default()],
-                |r| r.get(0),
-            )
-            .optional()?;
-        let id = next
-            .map(|v| v.try_into().map_err(|_| Error::InvalidStore))
-            .transpose()?;
-        super::super::work::save(
-            &tx,
-            &self.key,
-            &own,
-            b"history",
-            &super::super::work::Cursor {
-                after: id,
-                relay: None,
-            },
-        )?;
-        tx.commit()?;
+        let id = next_history(&mut self.db, &self.key, &own)?;
         Ok(id
             .map(|id| HistoryAttempt {
                 id,
@@ -487,4 +467,140 @@ impl ClientStore {
             .into_iter()
             .collect())
     }
+}
+
+fn next_history(
+    db: &mut rusqlite::Connection,
+    key: &StorageKey,
+    own: &Id,
+) -> Result<Option<Id>, Error> {
+    let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    let cursor = super::super::work::load(&tx, key, own, b"history")?;
+    let next: Option<Vec<u8>> = tx
+        .query_row(
+            "SELECT id FROM group_history_work WHERE active=1 AND id>?1 ORDER BY id LIMIT 1",
+            [cursor.after.map(|v| v.to_vec()).unwrap_or_default()],
+            |r| r.get(0),
+        )
+        .optional()?;
+    let id = next
+        .map(|v| v.try_into().map_err(|_| Error::InvalidStore))
+        .transpose()?;
+    super::super::work::save(
+        &tx,
+        key,
+        own,
+        b"history",
+        &super::super::work::Cursor {
+            after: id,
+            relay: None,
+        },
+    )?;
+    tx.commit()?;
+    Ok(id)
+}
+#[test]
+fn history_cursor_waits_for_a_concurrent_writer_and_keeps_round_robin_order() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+    let path = dir.path().join("history.db");
+    let mut db = crate::private_db::open(&path, 1024 * 1024).unwrap();
+    db.execute_batch("CREATE TABLE group_work(id BLOB PRIMARY KEY,state BLOB NOT NULL); CREATE TABLE group_history_work(id BLOB PRIMARY KEY,active INTEGER NOT NULL);").unwrap();
+    for (id, active) in [(1u8, 1), (2, 0), (3, 1)] {
+        db.execute(
+            "INSERT INTO group_history_work VALUES(?1,?2)",
+            ([id; 32].as_slice(), active),
+        )
+        .unwrap();
+    }
+    let (ready, wait) = std::sync::mpsc::channel();
+    let writer = std::thread::spawn(move || {
+        let db = rusqlite::Connection::open(path).unwrap();
+        db.execute_batch("BEGIN IMMEDIATE; UPDATE group_history_work SET active=1 WHERE id=x'0303030303030303030303030303030303030303030303030303030303030303'").unwrap();
+        ready.send(()).unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(150));
+        db.execute_batch("COMMIT").unwrap();
+    });
+    wait.recv().unwrap();
+    let key = StorageKey::new(sigil_crypto::Secret32::from_bytes([9; 32])).unwrap();
+    let result = next_history(&mut db, &key, &[7; 32]);
+    writer.join().unwrap();
+    assert_eq!(result.unwrap(), Some([1; 32]));
+    assert_eq!(
+        next_history(&mut db, &key, &[7; 32]).unwrap(),
+        Some([3; 32])
+    );
+    assert_eq!(next_history(&mut db, &key, &[7; 32]).unwrap(), None);
+    assert_eq!(
+        next_history(&mut db, &key, &[7; 32]).unwrap(),
+        Some([1; 32])
+    );
+}
+
+fn finish_history(
+    db: &mut Connection,
+    key: &StorageKey,
+    own: &Id,
+    w: &mut Work,
+    status: HistoryShareStatus,
+) -> Result<(), Error> {
+    let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    terminal(&tx, key, own, w, status)?;
+    tx.commit()?;
+    Ok(())
+}
+#[test]
+fn terminal_history_waits_for_writer_after_reading_a_prior_delivery_job() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+    let path = dir.path().join("history.db");
+    let mut db = crate::private_db::open(&path, 1024 * 1024).unwrap();
+    db.execute_batch("CREATE TABLE group_history_work(id BLOB PRIMARY KEY,group_id BLOB NOT NULL,state BLOB NOT NULL,active INTEGER NOT NULL); CREATE TABLE group_key_outbox(id BLOB PRIMARY KEY,group_id BLOB NOT NULL,state BLOB NOT NULL);").unwrap();
+    let key = StorageKey::new(sigil_crypto::Secret32::from_bytes([9; 32])).unwrap();
+    let own = [7; 32];
+    let grant = Grant {
+        id: [1; 32],
+        group: [2; 32],
+        head: [3; 32],
+        epoch: 1,
+        issuer: own,
+        source: own,
+        target: [8; 32],
+        member: [4; 32],
+        from: 1,
+        until: 2,
+        expires: 3,
+        signature: [0; 64],
+    };
+    let mut work = Work::new(grant.bytes().unwrap());
+    work.active = Some([6; 32]);
+    {
+        let tx = db.transaction().unwrap();
+        save(&tx, &key, &own, &work).unwrap();
+        tx.commit().unwrap();
+    }
+    let (ready, wait) = std::sync::mpsc::channel();
+    let writer = std::thread::spawn(move || {
+        let db = Connection::open(path).unwrap();
+        db.execute_batch("BEGIN IMMEDIATE; UPDATE group_history_work SET active=active")
+            .unwrap();
+        ready.send(()).unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(150));
+        db.execute_batch("COMMIT").unwrap();
+    });
+    wait.recv().unwrap();
+    let result = finish_history(
+        &mut db,
+        &key,
+        &own,
+        &mut work,
+        HistoryShareStatus::Unavailable,
+    );
+    writer.join().unwrap();
+    result.unwrap();
+    let retained = load(&db, &key, &own, &grant.id).unwrap();
+    assert_eq!(retained.status, HistoryShareStatus::Unavailable);
+    assert!(!retained.active());
 }

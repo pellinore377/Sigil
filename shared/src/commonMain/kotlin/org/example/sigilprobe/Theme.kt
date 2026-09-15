@@ -14,6 +14,7 @@ import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.PlatformTextStyle
 import androidx.compose.ui.text.style.LineHeightStyle
 import androidx.compose.ui.graphics.lerp
+import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.text.font.*
 import androidx.compose.ui.unit.sp
 import org.jetbrains.compose.resources.Font
@@ -26,8 +27,21 @@ data class Appearance(val font: String = "Newsreader", val mode: String = "Syste
 data class ChatTheme(val accent: Int? = null, val gradient: Boolean? = null)
 private data class ThemeTarget(val seed: Int, val dark: Boolean, val chat: String?, val tinted: Boolean)
 
+internal fun secondaryInk(ink: Color, surface: Color, backgrounds: List<Color>): Color {
+    for (step in 20 downTo 0) {
+        val candidate = lerp(ink, surface, step / 100f)
+        if (backgrounds.all {
+            val a = candidate.luminance(); val b = it.luminance()
+            (maxOf(a, b) + .05f) / (minOf(a, b) + .05f) >= 4.5f
+        }) return candidate
+    }
+    return ink
+}
+
 internal val LocalChatTint = staticCompositionLocalOf { 0f }
 val LocalAppearance = staticCompositionLocalOf { Appearance() }
+internal val LocalGlobalBackground = staticCompositionLocalOf { Color(0xff111111) }
+internal val LocalGlobalWorkspace = staticCompositionLocalOf { Color(0xff111111) }
 val LocalGlobalAccent = staticCompositionLocalOf { Color(0xff555555) }
 val LocalCodeFont = staticCompositionLocalOf<FontFamily> { FontFamily.Monospace }
 val LocalSystemAppearance = staticCompositionLocalOf<(Boolean) -> Unit> { {} }
@@ -83,13 +97,13 @@ internal fun SigilTheme(appearance: Appearance, chat: ChatTheme? = null, dynamic
     }
     val base = if (dark) darkColorScheme() else lightColorScheme()
     val scheme = base.copy(
-        background = lerp(colors[0], Color.Black, if (dark) .12f else .025f), onBackground = colors[1], surface = colors[0], onSurface = colors[1],
+        background = colors[0], onBackground = colors[1], surface = lerp(colors[0], Color.White, if (dark) .045f else .35f), onSurface = colors[1],
         primary = colors[4], onPrimary = colors[5], primaryContainer = colors[6], onPrimaryContainer = colors[7],
         secondary = colors[4], onSecondary = colors[5], secondaryContainer = colors[6], onSecondaryContainer = colors[7],
         tertiary = colors[4], onTertiary = colors[5], tertiaryContainer = colors[6], onTertiaryContainer = colors[7],
-        surfaceVariant = colors[6], onSurfaceVariant = colors[7], outline = colors[8], outlineVariant = colors[8].copy(alpha = .3f),
-        surfaceTint = Color.Transparent, surfaceContainer = colors[2], surfaceContainerHigh = colors[2],
-        surfaceContainerHighest = colors[6], surfaceContainerLow = colors[0], surfaceContainerLowest = colors[0],
+        surfaceVariant = colors[6], onSurfaceVariant = secondaryInk(colors[7], colors[6], listOf(colors[0], colors[2], colors[6])), outline = colors[8], outlineVariant = colors[8].copy(alpha = .3f),
+        surfaceTint = Color.Transparent, surfaceContainer = colors[2], surfaceContainerHigh = lerp(colors[0], Color.White, if (dark) .10f else .72f),
+        surfaceContainerHighest = colors[6], surfaceContainerLow = colors[0], surfaceContainerLowest = lerp(colors[0], Color.Black, if (dark) .26f else .075f),
         inverseSurface = colors[1], inverseOnSurface = colors[0], inversePrimary = colors[0],
     )
     val family = if (appearance.font == "Newsreader") FontFamily(
@@ -107,7 +121,8 @@ internal fun SigilTheme(appearance: Appearance, chat: ChatTheme? = null, dynamic
     )
     val globalSeed=if(appearance.dynamic)dynamicAccent ?: appearance.accent else appearance.accent
     val globalAccent=remember(globalSeed,dark,palette) {Color(0xff000000L or palette(globalSeed,dark).split(',')[4].toLong(16))}
-    CompositionLocalProvider(LocalGlobalAccent provides globalAccent, LocalCodeFont provides FontFamily(Font(Res.font.google_sans_code)), LocalChatTint provides tint, LocalAppearance provides appearance, LocalMotion provides motionPolicy) {
+    val globalBackground = remember(globalSeed, dark, palette) { Color(0xff000000L or palette(globalSeed, dark).split(",")[0].toLong(16)) }
+    CompositionLocalProvider(LocalGlobalBackground provides globalBackground, LocalGlobalWorkspace provides lerp(globalBackground, Color.Black, if (dark) .26f else .075f), LocalGlobalAccent provides globalAccent, LocalCodeFont provides FontFamily(Font(Res.font.google_sans_code)), LocalChatTint provides tint, LocalAppearance provides appearance, LocalMotion provides motionPolicy) {
         MaterialTheme(colorScheme = scheme, typography = typography) {
             CompositionLocalProvider(LocalContentColor provides scheme.onBackground, LocalTextSelectionColors provides TextSelectionColors(scheme.primary, scheme.primary.copy(alpha = .3f)), content = content)
         }

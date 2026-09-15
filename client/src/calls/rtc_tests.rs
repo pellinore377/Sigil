@@ -415,6 +415,83 @@ fn adapter_transports_only_authenticated_frames_and_rejects_ended_handles() {
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
         assert_eq!(received, [[true; 3]; 2]);
+        let delayed = alice
+            .rtc_prepare_send(&mut a, MediaKind::Camera, 10_000_000, true, &[7; 8192], now)
+            .unwrap();
+        let gate = Arc::new(tokio::sync::Notify::new());
+        let release = gate.clone();
+        let (entered, waiting) = tokio::sync::oneshot::channel();
+        let pending = tokio::spawn(async move {
+            let mut entered = Some(entered);
+            send_packets(delayed.packets, |packet| {
+                let signal = entered.take();
+                let gate = gate.clone();
+                let track = delayed.track.clone();
+                async move {
+                    if let Some(signal) = signal {
+                        let _ = signal.send(());
+                        gate.notified().await;
+                    }
+                    track
+                        .write_rtp(packet)
+                        .await
+                        .map(|_| ())
+                        .map_err(|_| Error::Unprepared)
+                }
+            })
+            .await
+        });
+        waiting.await.unwrap();
+        assert!(!pending.is_finished());
+        assert_eq!(alice.rtc_media_state(&mut a, now).unwrap(), "connected");
+        let first = alice
+            .rtc_prepare_send(
+                &mut a,
+                MediaKind::Audio,
+                10_000_001,
+                false,
+                b"audio during blocked video",
+                now,
+            )
+            .unwrap();
+        let second = alice
+            .rtc_prepare_send(
+                &mut a,
+                MediaKind::Audio,
+                10_020_001,
+                false,
+                b"next audio frame",
+                now,
+            )
+            .unwrap();
+        assert_eq!(
+            first
+                .packets
+                .last()
+                .unwrap()
+                .header
+                .sequence_number
+                .wrapping_add(1),
+            second.packets[0].header.sequence_number
+        );
+        first.send().await.unwrap();
+        second.send().await.unwrap();
+        let mut timestamps = Vec::new();
+        for _ in 0..100 {
+            for value in bob.rtc_receive(&mut b, now).unwrap() {
+                if value.frame.kind == MediaKind::Audio && value.frame.timestamp >= 10_000_001 {
+                    timestamps.push(value.frame.timestamp);
+                }
+            }
+            if timestamps.len() >= 2 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert_eq!(timestamps, vec![10_000_001, 10_020_001]);
+        assert!(!pending.is_finished());
+        release.notify_one();
+        pending.await.unwrap().unwrap();
         assert!(bob.rtc_receive(&mut a, now).is_err());
         alice.leave_call(id, now).unwrap();
         assert!(alice

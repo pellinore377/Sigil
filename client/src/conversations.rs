@@ -1621,7 +1621,11 @@ fn history_id(e: &Entry) -> Id {
     .into()
 }
 fn archive_new(tx: &Transaction<'_>, key: &StorageKey, e: &Entry) -> Result<(), Error> {
-    if e.conversation==crate::mobile::contacts::catalog::scope(e.author,e.operation.version.device) {return Ok(());}
+    if e.conversation
+        == crate::mobile::contacts::catalog::scope(e.author, e.operation.version.device)
+    {
+        return Ok(());
+    }
     if !recovery::configured(tx)? || copyable(tx, key, e)? != Some(true) {
         return Ok(());
     }

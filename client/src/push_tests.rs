@@ -152,37 +152,77 @@ fn activate(dir: &tempfile::TempDir, client: &mut ClientStore, now: u64) {
 #[test]
 fn browser_subscription_proofs_survive_restart_and_reject_replacement_and_disable() {
     let (dir, _fixture, mut client, now, _) = setup();
-    let endpoint="https://push.example/browser";
-    let secret=p256::SecretKey::from_slice(&[7;32]).unwrap();
-    let target=Target::UnifiedPush {
-        endpoint:endpoint.into(),
-        public_key:B64::encode_string(secret.public_key().to_encoded_point(false).as_bytes()),
-        auth_secret:B64::encode_string(&[8;16]),
-        vapid_key:client.connected_client().unwrap().push_providers().unwrap().vapid_public_key.unwrap(),
+    let endpoint = "https://push.example/browser";
+    let secret = p256::SecretKey::from_slice(&[7; 32]).unwrap();
+    let target = Target::UnifiedPush {
+        endpoint: endpoint.into(),
+        public_key: B64::encode_string(secret.public_key().to_encoded_point(false).as_bytes()),
+        auth_secret: B64::encode_string(&[8; 16]),
+        vapid_key: client
+            .connected_client()
+            .unwrap()
+            .push_providers()
+            .unwrap()
+            .vapid_public_key
+            .unwrap(),
     };
-    client.set_browser_push(target.clone(),now).unwrap();
-    register(&mut client,now);
-    let (proof, registered)=server_push(&dir,&client);
-    assert!(registered==target);
+    client.set_browser_push(target.clone(), now).unwrap();
+    register(&mut client, now);
+    let (proof, registered) = server_push(&dir, &client);
+    assert!(registered == target);
     drop(client);
-    let mut client=open(&dir.path().join("client.db"));
-    assert_eq!(client.receive_browser_push("https://push.example/other",&proof,now).unwrap(),ReceivedHint::Ignored);
-    let mut wrong=proof.clone();wrong[9]^=1;
-    assert_eq!(client.receive_browser_push(endpoint,&wrong,now).unwrap(),ReceivedHint::Ignored);
-    assert!(client.receive_browser_push(endpoint,&proof[..72],now).is_err());
-    assert_eq!(client.receive_browser_push(endpoint,&proof,now).unwrap(),ReceivedHint::ConfirmationQueued);
-    assert!(matches!(client.push_step(now).unwrap(),Progress::Updated(s) if s.state==RemoteState::Active));
-    let revision=client.push_state().unwrap().remote.unwrap().revision;
-    client.set_browser_push(target.clone(),now).unwrap();
+    let mut client = open(&dir.path().join("client.db"));
+    assert_eq!(
+        client
+            .receive_browser_push("https://push.example/other", &proof, now)
+            .unwrap(),
+        ReceivedHint::Ignored
+    );
+    let mut wrong = proof.clone();
+    wrong[9] ^= 1;
+    assert_eq!(
+        client.receive_browser_push(endpoint, &wrong, now).unwrap(),
+        ReceivedHint::Ignored
+    );
+    assert!(client
+        .receive_browser_push(endpoint, &proof[..72], now)
+        .is_err());
+    assert_eq!(
+        client.receive_browser_push(endpoint, &proof, now).unwrap(),
+        ReceivedHint::ConfirmationQueued
+    );
+    assert!(
+        matches!(client.push_step(now).unwrap(),Progress::Updated(s) if s.state==RemoteState::Active)
+    );
+    let revision = client.push_state().unwrap().remote.unwrap().revision;
+    client.set_browser_push(target.clone(), now).unwrap();
     assert!(!client.push_state().unwrap().updating);
-    let mut changed=target;
-    if let Target::UnifiedPush{endpoint,..}=&mut changed{*endpoint="https://push.example/new".into();}
-    client.set_browser_push(changed,now).unwrap();
-    assert_eq!(client.receive_browser_push(endpoint,&proof,now).unwrap(),ReceivedHint::Ignored);
-    assert_eq!(client.receive_browser_push("https://push.example/new",&proof,now).unwrap(),ReceivedHint::Ignored);
+    let mut changed = target;
+    if let Target::UnifiedPush { endpoint, .. } = &mut changed {
+        *endpoint = "https://push.example/new".into();
+    }
+    client.set_browser_push(changed, now).unwrap();
+    assert_eq!(
+        client.receive_browser_push(endpoint, &proof, now).unwrap(),
+        ReceivedHint::Ignored
+    );
+    assert_eq!(
+        client
+            .receive_browser_push("https://push.example/new", &proof, now)
+            .unwrap(),
+        ReceivedHint::Ignored
+    );
     client.disable_push(now).unwrap();
-    assert_eq!(client.receive_browser_push("https://push.example/new",&Payload::Wake.to_bytes(),now).unwrap(),ReceivedHint::Ignored);
-    assert_eq!(client.push_state().unwrap().remote.unwrap().revision,revision);
+    assert_eq!(
+        client
+            .receive_browser_push("https://push.example/new", &Payload::Wake.to_bytes(), now)
+            .unwrap(),
+        ReceivedHint::Ignored
+    );
+    assert_eq!(
+        client.push_state().unwrap().remote.unwrap().revision,
+        revision
+    );
 }
 
 #[test]
@@ -558,24 +598,41 @@ fn unifiedpush_uses_persisted_rust_keys_and_ignores_obsolete_connectors() {
 
 #[test]
 fn initial_opt_out_or_missing_endpoint_does_not_delay_first_registration() {
-    for awaiting_endpoint in [false,true] {
-        let (_dir,_fixture,mut client,now,_)=setup();
+    for awaiting_endpoint in [false, true] {
+        let (_dir, _fixture, mut client, now, _) = setup();
         if awaiting_endpoint {
-            let providers=client.connected_client().unwrap().push_providers().unwrap();
-            client.prepare_unified_push(&providers.vapid_public_key.unwrap(),false,now).unwrap();
-        } else {client.disable_push(now).unwrap();}
+            let providers = client.connected_client().unwrap().push_providers().unwrap();
+            client
+                .prepare_unified_push(&providers.vapid_public_key.unwrap(), false, now)
+                .unwrap();
+        } else {
+            client.disable_push(now).unwrap();
+        }
         client.push_step(now).unwrap();
         client.push_step(now).unwrap();
-        let before=client.push_state().unwrap();
-        client.set_fcm_push_token("synthetic-first-token",now+1).unwrap();
-        let registered=client.push_step(now+1).expect("First registration should not inherit a no-op disable cooldown");
-        assert!(matches!(registered,Progress::Updated(s) if s.state==RemoteState::Pending && s.revision==1));
-        assert_eq!(before.remote.unwrap().revision,0);
+        let before = client.push_state().unwrap();
+        client
+            .set_fcm_push_token("synthetic-first-token", now + 1)
+            .unwrap();
+        let registered = client
+            .push_step(now + 1)
+            .expect("First registration should not inherit a no-op disable cooldown");
+        assert!(
+            matches!(registered,Progress::Updated(s) if s.state==RemoteState::Pending && s.revision==1)
+        );
+        assert_eq!(before.remote.unwrap().revision, 0);
         assert!(!before.pending && !before.updating);
-        client.disable_push(now+2).unwrap();
-        assert!(matches!(client.push_step(now+2).unwrap(),Progress::Updated(s) if s.state==RemoteState::Disabled));
-        client.set_fcm_push_token("synthetic-replacement-token",now+3).unwrap();
-        assert!(matches!(client.push_step(now+3),Err(Error::Network(network::Error::Status {code:503,..}))));
+        client.disable_push(now + 2).unwrap();
+        assert!(
+            matches!(client.push_step(now+2).unwrap(),Progress::Updated(s) if s.state==RemoteState::Disabled)
+        );
+        client
+            .set_fcm_push_token("synthetic-replacement-token", now + 3)
+            .unwrap();
+        assert!(matches!(
+            client.push_step(now + 3),
+            Err(Error::Network(network::Error::Status { code: 503, .. }))
+        ));
     }
 }
 
@@ -596,8 +653,11 @@ fn push_scheduler_preserves_retry_after_and_new_preferences_survive_old_completi
         })))
     ));
     assert_eq!(failed.next_at, now + 106);
-    let status=client.push_state().unwrap();
-    assert_eq!((status.scheduled_at,status.next_attempt_at,status.failures),(now+7,now+106,1));
+    let status = client.push_state().unwrap();
+    assert_eq!(
+        (status.scheduled_at, status.next_attempt_at, status.failures),
+        (now + 7, now + 106, 1)
+    );
     client.set_fcm_push_token("synthetic-new", now + 8).unwrap();
     drop(client);
     let mut client = open(&dir.path().join("client.db"));

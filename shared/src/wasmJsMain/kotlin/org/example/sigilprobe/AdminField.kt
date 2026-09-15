@@ -105,7 +105,12 @@ internal fun Field(label: String, value: String, change: (String) -> Unit, secre
                 label = { Text(label) }, singleLine = true, enabled = enabled,
                 keyboardOptions = KeyboardOptions(keyboardType = if (secret) KeyboardType.Password else KeyboardType.Text, autoCorrectEnabled = false, imeAction = if (onSubmit == null) ImeAction.Next else ImeAction.Done),
                 keyboardActions = KeyboardActions(onNext = { enter() }, onDone = { enter() }),
-                shape = RoundedCornerShape(10.dp), visualTransformation = if (secret) PasswordVisualTransformation() else VisualTransformation.None)
+                colors = OutlinedTextFieldDefaults.colors(
+                    unfocusedContainerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
+                    focusedContainerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
+                    unfocusedBorderColor = Color.Transparent,
+                ),
+                shape = RoundedCornerShape(14.dp), visualTransformation = if (secret) PasswordVisualTransformation() else VisualTransformation.None)
             if (menu != null && enabled) AdminMenu(checkNotNull(menu), { menu = null }) {
                 items.forEachIndexed { index, item ->
                     DropdownMenuItem(text = { Text(item) }, onClick = { choose(item) }, enabled = item != "Select all" || editing.text.isNotEmpty(),

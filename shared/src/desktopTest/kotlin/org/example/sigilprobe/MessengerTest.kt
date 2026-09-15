@@ -58,6 +58,23 @@ class MessengerTest {
         ui.onNodeWithTag("composer").assertTextContains("A new thought")
     }
 
+    @Test fun text_draft_only_clears_after_its_matching_new_commit() {
+        val state = mutableStateOf(MessengerState(phase = "connected", chats = listOf(chat(true)), selected = "peer"))
+        ui.setContent { SigilApp(NativeCore::palette, NativeCore::analyze, state.value, { _, _ -> }) }
+        val input = ui.onNodeWithTag("composer")
+        input.performTextInput("First draft")
+        ui.onNodeWithContentDescription("Send message").performClick()
+        input.assertTextContains("First draft")
+        ui.runOnIdle { state.value = state.value.copy(sent = 1, sentText = "Other operation") }
+        input.assertTextContains("First draft")
+        input.performTextReplacement("A newer thought")
+        ui.runOnIdle { state.value = state.value.copy(sent = 2, sentText = "First draft") }
+        input.assertTextContains("A newer thought")
+        ui.onNodeWithContentDescription("Send message").performClick()
+        ui.runOnIdle { state.value = state.value.copy(sent = 3, sentText = "A newer thought") }
+        input.assert(SemanticsMatcher.expectValue(androidx.compose.ui.semantics.SemanticsProperties.EditableText, androidx.compose.ui.text.AnnotatedString("")))
+    }
+
     @Test fun conversation_settings_are_separate_and_keep_changes_in_the_conversation() {
         val commands = mutableListOf<Pair<String, Map<String, Any?>>>()
         ui.setContent { SigilApp(NativeCore::palette, NativeCore::analyze, MessengerState(phase = "connected", chats = listOf(chat(true)), selected = "peer"), { name, fields -> commands += name to fields }) }
@@ -74,20 +91,20 @@ class MessengerTest {
     @Test fun attachment_forms_keep_unsent_content_until_the_matching_post_succeeds() {
         val state = mutableStateOf(MessengerState(phase = "connected", chats = listOf(chat(true)), selected = "peer"))
         ui.setContent { SigilApp(NativeCore::palette, NativeCore::analyze, state.value, { _, _ -> }) }
-        fun note() { ui.onNodeWithContentDescription("Create").performClick(); ui.onNodeWithText("Search tools").performTextReplacement("Note"); ui.onNodeWithContentDescription("Note").performClick() }
+        fun note() { ui.onNodeWithContentDescription("Create").performClick(); ui.onNodeWithContentDescription("Note").performClick() }
         ui.onNodeWithContentDescription("Attachments").performClick(); note()
         ui.onNodeWithText("Your note").performTextInput("Keep this thought")
         ui.onNodeWithContentDescription("Back to create").performClick()
         ui.onNodeWithContentDescription("Note").performClick()
         ui.onNodeWithText("Keep this thought").assertExists()
-        ui.onNodeWithText("Add to message", useUnmergedTree = true).performScrollTo().performClick()
+        ui.onNodeWithContentDescription("Attach").performClick()
         ui.onNodeWithContentDescription("Send message").performClick()
         ui.runOnIdle { state.value = state.value.copy(issue = "Synthetic storage failure") }
         ui.onNodeWithContentDescription("Edit Note").performClick()
         ui.onNodeWithText("Keep this thought").assertExists()
         ui.runOnIdle { state.value = state.value.copy(sent = 1, sentText = "Unrelated post", issue = null) }
         ui.onNodeWithText("Keep this thought").assertExists()
-        ui.onNodeWithText("Add to message", useUnmergedTree = true).performScrollTo().performClick()
+        ui.onNodeWithContentDescription("Attach").performClick()
         ui.runOnIdle { state.value = state.value.copy(sent = 2, sentText = "note::Keep this thought;") }
         ui.onNodeWithContentDescription("Attachments").performClick(); note()
         ui.onNodeWithText("Keep this thought").assertDoesNotExist()
@@ -98,14 +115,13 @@ class MessengerTest {
         ui.setContent { SigilApp(NativeCore::palette, NativeCore::analyze, state.value, { _, _ -> }) }
         ui.onNodeWithContentDescription("Attachments").performClick()
         ui.onNodeWithContentDescription("Create").performClick()
-        ui.onNodeWithText("Search tools").performTextReplacement("Note")
         ui.onNodeWithContentDescription("Note").performClick()
         ui.onNodeWithText("Your note").performTextInput("First thought")
-        ui.onNodeWithText("Add to message", useUnmergedTree = true).performScrollTo().performClick()
+        ui.onNodeWithContentDescription("Attach").performClick()
         ui.onNodeWithContentDescription("Send message").performClick()
         ui.onNodeWithContentDescription("Edit Note").performClick()
         ui.onNodeWithText("First thought").performTextReplacement("New thought")
-        ui.onNodeWithText("Add to message", useUnmergedTree = true).performScrollTo().performClick()
+        ui.onNodeWithContentDescription("Attach").performClick()
         ui.runOnIdle { state.value = state.value.copy(sent = 1, sentText = "note::First thought;") }
         ui.onNodeWithContentDescription("Edit Note").performClick()
         ui.onNodeWithText("New thought").assertExists()
@@ -128,13 +144,13 @@ class MessengerTest {
         ui.onNodeWithContentDescription("Send message").performClick()
         ui.runOnIdle { assertEquals("hello", commands.single { it.first == "post" }.second["text"]); state.value = state.value.copy(issue = "Synthetic storage failure") }
         ui.onNodeWithTag("composer").assertTextContains("hello")
-        ui.runOnIdle { state.value = state.value.copy(sent = 1, issue = null) }
+        ui.runOnIdle { state.value = state.value.copy(sent = 1, sentText = "hello", issue = null) }
         ui.waitForIdle()
         ui.onNodeWithTag("composer").assert(SemanticsMatcher.expectValue(androidx.compose.ui.semantics.SemanticsProperties.EditableText, androidx.compose.ui.text.AnnotatedString("")))
     }
     @Test fun empty_account_has_no_sample_conversations() {
         ui.setContent { SigilApp(NativeCore::palette, NativeCore::analyze, MessengerState(phase = "connected"), { _, _ -> }) }
-        ui.onNodeWithText("Your correspondence starts here.").assertExists()
+        ui.onNodeWithText("No conversations yet").assertExists()
         ui.onNodeWithText("Alex Morgan").assertDoesNotExist()
         ui.onNodeWithText("Send locally").assertDoesNotExist()
     }

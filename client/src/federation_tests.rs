@@ -378,7 +378,11 @@ fn two_servers_exchange_messages_groups_and_files_across_restart_and_outage() {
     let incoming = command(&mut bob, serde_json::json!({"command":"contact_refresh"}));
     assert_eq!(incoming["chats"][0]["request"], "incoming");
     let source = incoming["chats"][0]["id"].as_str().unwrap().to_owned();
-    assert!(bob.connected_client().unwrap().contact_profile(&bob_session, "chat.example", &alice_session.account_id).is_err());
+    assert!(bob
+        .connected_client()
+        .unwrap()
+        .contact_profile(&bob_session, "chat.example", &alice_session.account_id)
+        .is_err());
     command(
         &mut bob,
         serde_json::json!({"command":"contact_request","peer":source,"action":"accept"}),

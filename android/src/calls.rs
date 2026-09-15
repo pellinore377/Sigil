@@ -2,9 +2,13 @@ use super::*;
 use jni::sys::jlong;
 use sigil_client::calls::RtcCall;
 use std::sync::{Arc, Mutex, OnceLock};
+#[path = "call_lanes.rs"]
+mod call_lanes;
+use call_lanes::SendLanes;
 struct NativeCall {
     store: sigil_client::ClientStore,
     call: RtcCall,
+    send_lanes: Arc<SendLanes>,
 }
 type Handle = Arc<Mutex<NativeCall>>;
 static ACTIVE: Mutex<Option<(i64, Option<Handle>)>> = Mutex::new(None);
@@ -107,7 +111,11 @@ pub extern "system" fn Java_org_sigil_storage_NativeStorage_openCall(
         {
             let mut active = ACTIVE.lock().ok()?;
             let slot = active.as_mut().filter(|(id, _)| *id == token)?;
-            slot.1 = Some(Arc::new(Mutex::new(NativeCall { store, call: value })));
+            slot.1 = Some(Arc::new(Mutex::new(NativeCall {
+                store,
+                call: value,
+                send_lanes: Arc::new(SendLanes::default()),
+            })));
         }
         std::mem::forget(reservation);
         Some(token)
@@ -133,7 +141,7 @@ pub extern "system" fn Java_org_sigil_storage_NativeStorage_callState(
     std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| -> Option<jint> {
         let handle = handle(token)?;
         let mut active = handle.lock().ok()?;
-        let NativeCall { store, call } = &mut *active;
+        let NativeCall { store, call, .. } = &mut *active;
         Some(match store.rtc_media_state(call, now()).ok()? {
             "connected" => 1,
             "disconnected" => 2,
@@ -157,7 +165,7 @@ pub extern "system" fn Java_org_sigil_storage_NativeStorage_callTracks(
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| -> Option<()> {
         let handle = handle(token)?;
         let mut active = handle.lock().ok()?;
-        let NativeCall { store, call } = &mut *active;
+        let NativeCall { store, call, .. } = &mut *active;
         store.rtc_set_tracks(call, tracks(enabled)?, now()).ok()
     }));
     if result.ok().flatten().is_some() {
@@ -181,19 +189,23 @@ pub extern "system" fn Java_org_sigil_storage_NativeStorage_sendCallFrame(
             return None;
         }
         let bytes = Zeroizing::new(env.convert_byte_array(&data).ok()?);
-        let handle = handle(token)?;
-        let mut active = handle.lock().ok()?;
-        let NativeCall { store, call } = &mut *active;
-        runtime()?
-            .block_on(store.rtc_send(
-                call,
-                kind(media)?,
-                timestamp as u64,
-                keyframe != 0,
-                &bytes,
-                now(),
-            ))
-            .ok()
+        let media = kind(media)?;
+        let current = handle(token)?;
+        let lanes = current.lock().ok()?.send_lanes.clone();
+        lanes.run(media as usize, || {
+            let handle = handle(token)?;
+            if !Arc::ptr_eq(&current, &handle) {
+                return None;
+            }
+            let transmission = {
+                let mut active = handle.lock().ok()?;
+                let NativeCall { store, call, .. } = &mut *active;
+                store
+                    .rtc_prepare_send(call, media, timestamp as u64, keyframe != 0, &bytes, now())
+                    .ok()?
+            };
+            runtime()?.block_on(transmission.send()).ok()
+        })?
     }));
     if result.ok().flatten().is_some() {
         JNI_TRUE
@@ -211,7 +223,7 @@ pub extern "system" fn Java_org_sigil_storage_NativeStorage_receiveCallFrames(
         || -> Option<Zeroizing<Vec<u8>>> {
             let handle = handle(token)?;
             let mut active = handle.lock().ok()?;
-            let NativeCall { store, call } = &mut *active;
+            let NativeCall { store, call, .. } = &mut *active;
             let frames = store.rtc_receive(call, now()).ok()?;
             let mut bytes = Zeroizing::new(Vec::with_capacity(
                 frames.iter().map(|v| 46 + v.frame.data.len()).sum(),

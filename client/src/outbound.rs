@@ -169,15 +169,24 @@ mod tests {
             step.failure.is_none(),
             "A recipient limit must not become a server outage"
         );
-        assert!(step.issue().is_none(), "Queued delivery must not flash a global sync warning");
-        assert!(step.maintenance.is_some());
         assert!(
-            step.outbound
-                .iter()
-                .any(|a| matches!(&a.result,Err(Error::Network(e)) if recipient_full(e)))
+            step.issue().is_none(),
+            "Queued delivery must not flash a global sync warning"
         );
-        step.incoming.push(IncomingAttempt {sequence:1,result:Err(Error::Conflict),recovery:RecoveryAdvice::None});
-        assert!(matches!(step.issue(),Some(("receiving messages",Error::Conflict))));
+        assert!(step.maintenance.is_some());
+        assert!(step
+            .outbound
+            .iter()
+            .any(|a| matches!(&a.result,Err(Error::Network(e)) if recipient_full(e))));
+        step.incoming.push(IncomingAttempt {
+            sequence: 1,
+            result: Err(Error::Conflict),
+            recovery: RecoveryAdvice::None,
+        });
+        assert!(matches!(
+            step.issue(),
+            Some(("receiving messages", Error::Conflict))
+        ));
         for receipt in receipts {
             server
                 .acknowledge_message(&credential(&bob), receipt.sequence, now)
@@ -192,12 +201,11 @@ mod tests {
                 .accepted,
             1
         );
-        assert!(
-            bob.receive_mailbox_online(now)
-                .unwrap()
-                .iter()
-                .all(|a| a.result.is_ok())
-        );
+        assert!(bob
+            .receive_mailbox_online(now)
+            .unwrap()
+            .iter()
+            .all(|a| a.result.is_ok()));
     }
     #[test]
     fn cursor_bounds_errors_includes_zero_and_survives_restart() {

@@ -5,28 +5,28 @@ use crate::{
     *,
 };
 use serde::Deserialize;
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 use sigil_crypto::Secret32;
 #[path = "mobile_account.rs"]
 mod account;
 #[path = "mobile_cards.rs"]
 mod cards;
-#[path="mobile_services.rs"]
-mod mobile_services;
 #[path = "mobile_contacts.rs"]
 pub(crate) mod contacts;
 #[path = "mobile_link.rs"]
 mod device_link;
 #[path = "mobile_files.rs"]
 mod files;
-#[path = "mobile_maps.rs"]
-mod maps;
 #[path = "mobile_locations.rs"]
 mod locations;
+#[path = "mobile_maps.rs"]
+mod maps;
 #[path = "mobile_calls.rs"]
 mod mobile_calls;
 #[path = "mobile_groups.rs"]
 mod mobile_groups;
+#[path = "mobile_services.rs"]
+mod mobile_services;
 #[cfg(test)]
 #[path = "mobile_tests.rs"]
 mod presentation_tests;
@@ -42,9 +42,22 @@ mod wallpaper;
 #[derive(Deserialize)]
 #[serde(tag = "command", rename_all = "snake_case", deny_unknown_fields)]
 enum Command {
-    BrowserPush { action: String, target: Option<sigil_protocol::push::Target>, endpoint: Option<String>, payload: Option<String> },
-    ContactPreview {address:String},
-    Service { action:String, request:Option<String>, catalog:Option<sigil_protocol::services::Catalog>, provider:Option<String>, form:Option<mobile_services::ServiceForm> },
+    BrowserPush {
+        action: String,
+        target: Option<sigil_protocol::push::Target>,
+        endpoint: Option<String>,
+        payload: Option<String>,
+    },
+    ContactPreview {
+        address: String,
+    },
+    Service {
+        action: String,
+        request: Option<String>,
+        catalog: Option<sigil_protocol::services::Catalog>,
+        provider: Option<String>,
+        form: Option<mobile_services::ServiceForm>,
+    },
     Push {
         action: String,
         connection: Option<String>,
@@ -97,7 +110,7 @@ enum Command {
         action: String,
         qr: Option<String>,
         choice: Option<String>,
-        server:Option<String>,
+        server: Option<String>,
     },
     Devices {
         cursor: Option<String>,
@@ -143,6 +156,11 @@ enum Command {
     CallAnswer {
         call: String,
         accept: bool,
+    },
+    CallHistoryMedia {
+        call: String,
+        duration: u64,
+        video: bool,
     },
     CallLeave {
         call: String,
@@ -222,7 +240,9 @@ enum Command {
         request: String,
     },
     Files {},
-    FileWork {},
+    FileWork {
+        steps: Option<u8>,
+    },
     FileGet {
         peer: String,
         author: String,
@@ -424,11 +444,14 @@ enum Command {
     },
 }
 fn inline_body(source: String) -> Result<Body, Error> {
-    let text = sigil_protocol::text::parse(&source, Default::default()).map_err(|_| Error::InvalidEvent)?;
+    let text = sigil_protocol::text::parse(&source, Default::default())
+        .map_err(|_| Error::InvalidEvent)?;
     if text.body() == source && text.spans().is_empty() && text.blocks().is_empty() {
         Ok(Body::Text(source))
     } else {
-        Ok(Body::Rich(text.to_bytes().map_err(|_| Error::InvalidEvent)?))
+        Ok(Body::Rich(
+            text.to_bytes().map_err(|_| Error::InvalidEvent)?,
+        ))
     }
 }
 fn reference(author: &str, message: &str) -> Result<Reference, Error> {
@@ -502,7 +525,10 @@ fn error_message(error: &Error) -> String {
         Error::RetiredSession => "This encrypted session has been retired (session-retired). Your stored keys have not been reset.",
         Error::InvalidStore => "Stored device state could not be validated (storage-state). Your stored keys have not been reset.",
         Error::ReceiveAuthentication { sessions, replay, limit, other } => return format!("Message authentication failed (receive-s{sessions}-r{replay}-l{limit}-o{other}). Your stored keys have not been reset."),
-        Error::Storage(rusqlite::Error::SqliteFailure(code, _)) => return format!("Device storage could not complete the operation (sqlite-{}). Your stored keys have not been reset.",code.extended_code),
+        Error::Storage(rusqlite::Error::SqliteFailure(code, message)) => {
+            let stage=message.as_deref().and_then(crate::groups::storage_stage).map(|stage|format!(":group-{stage}")).unwrap_or_default();
+            return format!("Device storage could not complete the operation (sqlite-{}{stage}). Your stored keys have not been reset.",code.extended_code);
+        },
         Error::Storage(rusqlite::Error::QueryReturnedNoRows) => "A required storage record was not found (storage-missing). Your stored keys have not been reset.",
         Error::Storage(_) => "A storage operation failed (storage-query). Your stored keys have not been reset.",
         Error::Io(_) => "A device file operation failed (device-io). Your stored keys have not been reset.",
@@ -665,7 +691,12 @@ impl ClientStore {
     }
     fn mobile_execute(&mut self, command: Command) -> Result<Value, Error> {
         match command {
-            Command::BrowserPush { action, target, endpoint, payload } => self.mobile_browser_push(&action,target,endpoint.as_deref(),payload.as_deref()),
+            Command::BrowserPush {
+                action,
+                target,
+                endpoint,
+                payload,
+            } => self.mobile_browser_push(&action, target, endpoint.as_deref(), payload.as_deref()),
             Command::Push {
                 action,
                 connection,
@@ -747,9 +778,12 @@ impl ClientStore {
                 self.mobile_accept_identity(&peer, id(&review)?)
             }
             Command::ContactRequest { peer, action } => self.mobile_request(&peer, &action),
-            Command::ContactOpen { peer, author, message, card } => {
-                self.mobile_open_contact_card(&peer, reference(&author, &message)?, id(&card)?)
-            }
+            Command::ContactOpen {
+                peer,
+                author,
+                message,
+                card,
+            } => self.mobile_open_contact_card(&peer, reference(&author, &message)?, id(&card)?),
             Command::ContactRefresh {} => {
                 self.mobile_contact_sync(true)?;
                 self.mobile_state()
@@ -775,7 +809,20 @@ impl ClientStore {
                 Ok(json!({}))
             }
             Command::LeaveGroup { peer } => self.mobile_leave_group(&peer),
-            Command::DeviceLink { action, qr, choice, server } => self.mobile_link(&action, if action == "confirm" { choice.as_deref() } else { qr.as_deref() }, server.as_deref()),
+            Command::DeviceLink {
+                action,
+                qr,
+                choice,
+                server,
+            } => self.mobile_link(
+                &action,
+                if action == "confirm" {
+                    choice.as_deref()
+                } else {
+                    qr.as_deref()
+                },
+                server.as_deref(),
+            ),
             Command::Devices { cursor } => self.mobile_devices(cursor),
             Command::SignOut {} => {
                 let session = self.connection_session()?.ok_or(Error::Unprepared)?;
@@ -890,7 +937,9 @@ impl ClientStore {
                 let card = self.location_card(
                     id(&request)?,
                     if let Some(duration) = live {
-                        if pin { return Err(Error::InvalidEvent); }
+                        if pin {
+                            return Err(Error::InvalidEvent);
+                        }
                         structured::LocationKind::Live(duration)
                     } else if pin {
                         structured::LocationKind::Pin
@@ -915,20 +964,54 @@ impl ClientStore {
                     },
                 )
             }
-            Command::LocationWork { after, point, stop } => self.mobile_location_work(after.map(|v| id(&v)).transpose()?, point, stop),
-            Command::LocationStop { peer, author, message, card } => {
+            Command::LocationWork { after, point, stop } => {
+                self.mobile_location_work(after.map(|v| id(&v)).transpose()?, point, stop)
+            }
+            Command::LocationStop {
+                peer,
+                author,
+                message,
+                card,
+            } => {
                 let conversation = self.mobile_conversation(&peer)?;
-                let reference = self.mobile_card_reference(conversation, Reference { author: id(&author)?, message: id(&message)? }, id(&card)?)?;
+                let reference = self.mobile_card_reference(
+                    conversation,
+                    Reference {
+                        author: id(&author)?,
+                        message: id(&message)?,
+                    },
+                    id(&card)?,
+                )?;
                 let action = self.stop_location(conversation, reference, conversations::now())?;
                 self.mobile_location_queue(conversation, action)?;
                 Ok(json!({}))
             }
-            Command::RecipeView { peer, author, message, card, serves } => {
+            Command::RecipeView {
+                peer,
+                author,
+                message,
+                card,
+                serves,
+            } => {
                 let conversation = self.mobile_conversation(&peer)?;
-                let reference = self.mobile_card_reference(conversation, Reference { author: id(&author)?, message: id(&message)? }, id(&card)?)?;
+                let reference = self.mobile_card_reference(
+                    conversation,
+                    Reference {
+                        author: id(&author)?,
+                        message: id(&message)?,
+                    },
+                    id(&card)?,
+                )?;
                 let state = self.card_state(conversation, reference)?;
-                let sigil_protocol::text::structured::Construct::Data(sigil_protocol::text::data::Data::Recipe(recipe)) = state.definition.content else { return Err(Error::InvalidEvent); };
-                Ok(json!({"recipe":recipe.presentation(Some(serves)).map_err(|_| Error::InvalidEvent)?}))
+                let sigil_protocol::text::structured::Construct::Data(
+                    sigil_protocol::text::data::Data::Recipe(recipe),
+                ) = state.definition.content
+                else {
+                    return Err(Error::InvalidEvent);
+                };
+                Ok(
+                    json!({"recipe":recipe.presentation(Some(serves)).map_err(|_| Error::InvalidEvent)?}),
+                )
             }
             Command::CardAction {
                 peer,
@@ -993,7 +1076,7 @@ impl ClientStore {
                 Ok(json!({}))
             }
             Command::Files {} => self.mobile_files(),
-            Command::FileWork {} => self.mobile_file_work(),
+            Command::FileWork { steps } => self.mobile_file_work(steps.unwrap_or(8)),
             Command::FileGet {
                 peer,
                 author,
@@ -1218,17 +1301,32 @@ impl ClientStore {
                 Ok(json!({}))
             }
             Command::Block { peer, active } => self.mobile_block(&peer, active),
-            Command::EditSource { peer, author, message } => {
-                let target = reference(&author,&message)?;
+            Command::EditSource {
+                peer,
+                author,
+                message,
+            } => {
+                let target = reference(&author, &message)?;
                 let conversation = self.mobile_conversation(&peer)?;
                 let own = self.account_reference()?;
-                let original = self.conversation_message(conversation,target.clone(),conversations::now())?;
-                if target.author != own || original.deleted || original.view_once { return Err(Error::Obsolete); }
+                let original =
+                    self.conversation_message(conversation, target.clone(), conversations::now())?;
+                if target.author != own || original.deleted || original.view_once {
+                    return Err(Error::Obsolete);
+                }
                 let source = match original.body.ok_or(Error::Obsolete)? {
                     Body::Text(source) => source,
-                    Body::File(bytes) => sigil_protocol::file::File::from_bytes(&bytes).map_err(|_|Error::InvalidStore)?.caption.to_owned(),
-                    Body::Rich(bytes) => match sigil_protocol::text::Document::from_bytes(&bytes).map_err(|_|Error::InvalidStore)? {
-                        sigil_protocol::text::Document::Text(text) => sigil_protocol::text::editing::text_source(&text).ok_or(Error::UnsupportedTextEdit)?,
+                    Body::File(bytes) => sigil_protocol::file::File::from_bytes(&bytes)
+                        .map_err(|_| Error::InvalidStore)?
+                        .caption
+                        .to_owned(),
+                    Body::Rich(bytes) => match sigil_protocol::text::Document::from_bytes(&bytes)
+                        .map_err(|_| Error::InvalidStore)?
+                    {
+                        sigil_protocol::text::Document::Text(text) => {
+                            sigil_protocol::text::editing::text_source(&text)
+                                .ok_or(Error::UnsupportedTextEdit)?
+                        }
                         _ => return Err(Error::UnsupportedTextEdit),
                     },
                 };
@@ -1407,6 +1505,10 @@ impl ClientStore {
             Command::CallAnswer { call, accept } => {
                 self.answer_call(id(&call)?, accept, conversations::now())?;
                 self.mobile_calls()
+            }
+            Command::CallHistoryMedia { call, duration, video } => {
+                self.record_call_media(id(&call)?, duration, video)?;
+                Ok(json!({}))
             }
             Command::CallLeave { call } => {
                 self.leave_call(id(&call)?, conversations::now())?;
@@ -1596,8 +1698,19 @@ impl ClientStore {
                     "typing":activity.iter().filter(|v|v.typing && v.author != own).map(|v|transport::hex(&v.author)).collect::<Vec<_>>()}),
                 )
             }
-            Command::ContactPreview {address}=>{let contact=self.mobile_contact_preview(&address)?;Ok(json!({"contact":contact,"preview":{"id":"preview","kind":"contact","text":"","contact":contact.presentation().map_err(|_|Error::InvalidEvent)?}}))},
-            Command::Service {action,request,catalog,provider,form}=>self.mobile_service(&action,request,catalog,provider,form),
+            Command::ContactPreview { address } => {
+                let contact = self.mobile_contact_preview(&address)?;
+                Ok(
+                    json!({"contact":contact,"preview":{"id":"preview","kind":"contact","text":"","contact":contact.presentation().map_err(|_|Error::InvalidEvent)?}}),
+                )
+            }
+            Command::Service {
+                action,
+                request,
+                catalog,
+                provider,
+                form,
+            } => self.mobile_service(&action, request, catalog, provider, form),
             Command::Post {
                 service_query,
                 shared_contact,
@@ -1615,8 +1728,14 @@ impl ClientStore {
             } => {
                 let reply = optional_reference(reply_author, reply_message)?;
                 let thread = optional_reference(thread_author, thread_message)?;
-                if service_query.is_some() && shared_contact.is_some(){return Err(Error::InvalidEvent);}
-                let body = if let Some(contact)=shared_contact.as_ref() {self.mobile_shared_contact_body(contact,&request,timestamp,&text)?} else if let Some(query)=service_query.as_deref() {self.mobile_service_body(query,&request,timestamp,&text)?} else if rich {
+                if service_query.is_some() && shared_contact.is_some() {
+                    return Err(Error::InvalidEvent);
+                }
+                let body = if let Some(contact) = shared_contact.as_ref() {
+                    self.mobile_shared_contact_body(contact, &request, timestamp, &text)?
+                } else if let Some(query) = service_query.as_deref() {
+                    self.mobile_service_body(query, &request, timestamp, &text)?
+                } else if rich {
                     let conversation = self.mobile_conversation(&peer)?;
                     let doc = self.prepare_sigiltext(crate::rich_text::SigilTextDraft {
                         conversation,
@@ -1626,9 +1745,13 @@ impl ClientStore {
                         timezone: timezone.as_deref(),
                         date_order: None,
                     })?;
-                    let help = text.trim_end().strip_prefix("help::")
+                    let help = text
+                        .trim_end()
+                        .strip_prefix("help::")
                         .and_then(|value| value.strip_suffix(';'))
-                        .is_some_and(|query| sigil_protocol::text::help::sheet(query, Default::default()).is_ok());
+                        .is_some_and(|query| {
+                            sigil_protocol::text::help::sheet(query, Default::default()).is_ok()
+                        });
                     if matches!(doc, sigil_protocol::text::Document::Text(_)) && !help {
                         self.discard_sigiltext_draft(conversation, id(&request)?)?;
                         return Err(Error::InvalidEvent);
@@ -1651,7 +1774,9 @@ impl ClientStore {
                         view_once: false,
                     },
                 )?;
-                if let Some(query)=service_query {self.discard_service_query(id(&query)?)?;} else if rich && shared_contact.is_none() {
+                if let Some(query) = service_query {
+                    self.discard_service_query(id(&query)?)?;
+                } else if rich && shared_contact.is_none() {
                     let conversation = self.mobile_conversation(&peer)?;
                     self.discard_sigiltext_draft(conversation, id(&request)?)?;
                 }
@@ -1747,15 +1872,20 @@ fn body_text(body: &Body) -> Result<String, Error> {
                 .map_err(|_| Error::InvalidStore)?
             {
                 sigil_protocol::text::Document::Text(v) => v.body().to_owned(),
-                sigil_protocol::text::Document::Card(c) => {
-                    cards::card_display_body(&c)?
-                }
-                sigil_protocol::text::Document::Composition(c) => {
-                    c.parts.iter().map(|part| match part {
-                        sigil_protocol::text::composition::Part::Text(text) => Ok(text.body().to_owned()),
-                        sigil_protocol::text::composition::Part::Card(card) => cards::card_display_body(card),
-                    }).collect::<Result<Vec<_>, Error>>()?.join("\n")
-                }
+                sigil_protocol::text::Document::Card(c) => cards::card_display_body(&c)?,
+                sigil_protocol::text::Document::Composition(c) => c
+                    .parts
+                    .iter()
+                    .map(|part| match part {
+                        sigil_protocol::text::composition::Part::Text(text) => {
+                            Ok(text.body().to_owned())
+                        }
+                        sigil_protocol::text::composition::Part::Card(card) => {
+                            cards::card_display_body(card)
+                        }
+                    })
+                    .collect::<Result<Vec<_>, Error>>()?
+                    .join("\n"),
                 _ => "Structured message".into(),
             }
         }
@@ -1824,16 +1954,14 @@ mod tests {
         alice.confirm_peer(known.id, known.fingerprint).unwrap();
         let own = alice.own_device_binding().unwrap();
         let unverified = alice.observe_peer_binding(&own).unwrap();
-        assert!(
-            alice
-                .queue_peer_contents(
-                    &[(known.id, [71; 32]), (unverified.id, [72; 32])],
-                    sigil_protocol::event::Content::Text("atomic"),
-                    now,
-                    now
-                )
-                .is_err()
-        );
+        assert!(alice
+            .queue_peer_contents(
+                &[(known.id, [71; 32]), (unverified.id, [72; 32])],
+                sigil_protocol::event::Content::Text("atomic"),
+                now,
+                now
+            )
+            .is_err());
         assert_eq!(
             alice
                 .db
@@ -1947,4 +2075,21 @@ mod privacy_tests {
         assert_eq!(value["value"]["messages"][1]["read_by_me"], true);
         assert!(!result.contains("never-preview-this"));
     }
+}
+
+#[test]
+fn group_storage_diagnostic_displays_only_static_stage_and_numeric_code() {
+    let error = Error::Storage(rusqlite::Error::SqliteFailure(
+        rusqlite::ffi::Error::new(5),
+        Some("Sigil/group/service\nprivate SQL cause".into()),
+    ));
+    let message = error_message(&error);
+    assert!(message.contains("sqlite-5:group-service"));
+    assert!(!message.contains("private SQL"));
+    let error = Error::Storage(rusqlite::Error::SqliteFailure(
+        rusqlite::ffi::Error::new(517),
+        Some("Sigil/group/user@example\nprivate SQL cause".into()),
+    ));
+    assert!(error_message(&error).contains("sqlite-517)"));
+    assert!(!error_message(&error).contains("user@example"));
 }

@@ -1727,26 +1727,78 @@ fn linked_history_skips_superseded_appearance_settings() {
 
 #[test]
 fn forwarded_archival_catalog_does_not_restore_contact_trust() {
-    let (_dir,_fixture,mut a,mut b,_,bp,now)=linked();
-    let own=a.own_device_binding().unwrap();
-    let binding=peers::parse(&own).unwrap().binding;
-    let author=event::account(&binding);
-    let key=sigil_crypto::IdentityKey::generate().unwrap();
-    let mut contact=binding.clone();
-    contact.username="charlie".into();contact.account=[90;32];contact.device=[91;32];contact.identity=key.public_key();
-    let signed=sigil_protocol::device::SignedBinding {signature:key.sign(&contact.signing_bytes().unwrap()).unwrap(),binding:contact.clone()};
-    let reference=event::account(&contact);
+    let (_dir, _fixture, mut a, mut b, _, bp, now) = linked();
+    let own = a.own_device_binding().unwrap();
+    let binding = peers::parse(&own).unwrap().binding;
+    let author = event::account(&binding);
+    let key = sigil_crypto::IdentityKey::generate().unwrap();
+    let mut contact = binding.clone();
+    contact.username = "charlie".into();
+    contact.account = [90; 32];
+    contact.device = [91; 32];
+    contact.identity = key.public_key();
+    let signed = sigil_protocol::device::SignedBinding {
+        signature: key.sign(&contact.signing_bytes().unwrap()).unwrap(),
+        binding: contact.clone(),
+    };
+    let reference = event::account(&contact);
     let data=serde_json::to_vec(&serde_json::json!({"server":contact.server,"username":contact.username,"account":contact.account,"blocked":false,"anchors":[{"statement":transport::hex(&signed.to_bytes().unwrap()),"verified":true}]})).unwrap();
-    let name=format!("contact.{}",transport::hex(&reference));
-    let manifest=serde_json::json!({"parts":1,"digest":<Id>::from(Sha256::digest(&data))}).to_string();
-    let archived_device=[222;32];
-    for (n,(name,value)) in [(format!("{name}.0"),transport::hex(&data)),(name,manifest)].into_iter().enumerate() {
-        let conversation=crate::mobile::contacts::catalog::scope(author,archived_device);
-        let e=Entry {conversation,author,identity:binding.identity,timestamp:now,seen:now,operation:Operation {id:[223+n as u8;32],version:Version {device:archived_device,counter:n as u64+1},action:Action::Private {conversation,value:Private::UiSetting {key:name,value:Some(value)}}}};
-        let raw=serde_json::to_vec(&e).unwrap();
-        let op=a.conversation_operation([230+n as u8;32],Action::SyncPart {transfer:[240+n as u8;32],index:0,total:1,digest:Sha256::digest(&raw).into(),payload:transport::hex(&raw)}).unwrap();
-        deliver(&mut a,&mut b,bp,&op,now);
+    let name = format!("contact.{}", transport::hex(&reference));
+    let manifest =
+        serde_json::json!({"parts":1,"digest":<Id>::from(Sha256::digest(&data))}).to_string();
+    let archived_device = [222; 32];
+    for (n, (name, value)) in [
+        (format!("{name}.0"), transport::hex(&data)),
+        (name, manifest),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let conversation = crate::mobile::contacts::catalog::scope(author, archived_device);
+        let e = Entry {
+            conversation,
+            author,
+            identity: binding.identity,
+            timestamp: now,
+            seen: now,
+            operation: Operation {
+                id: [223 + n as u8; 32],
+                version: Version {
+                    device: archived_device,
+                    counter: n as u64 + 1,
+                },
+                action: Action::Private {
+                    conversation,
+                    value: Private::UiSetting {
+                        key: name,
+                        value: Some(value),
+                    },
+                },
+            },
+        };
+        let raw = serde_json::to_vec(&e).unwrap();
+        let op = a
+            .conversation_operation(
+                [230 + n as u8; 32],
+                Action::SyncPart {
+                    transfer: [240 + n as u8; 32],
+                    index: 0,
+                    total: 1,
+                    digest: Sha256::digest(&raw).into(),
+                    payload: transport::hex(&raw),
+                },
+            )
+            .unwrap();
+        deliver(&mut a, &mut b, bp, &op, now);
     }
-    assert!(matches!(b.peer(peers::reference(&contact.server,&contact.device)),Err(Error::NotFound)));
-    assert_eq!(b.db.query_row("SELECT count(*) FROM mobile_contacts",[],|r|r.get::<_,u32>(0)).unwrap(),0);
+    assert!(matches!(
+        b.peer(peers::reference(&contact.server, &contact.device)),
+        Err(Error::NotFound)
+    ));
+    assert_eq!(
+        b.db.query_row("SELECT count(*) FROM mobile_contacts", [], |r| r
+            .get::<_, u32>(0))
+            .unwrap(),
+        0
+    );
 }

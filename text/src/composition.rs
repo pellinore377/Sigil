@@ -207,17 +207,81 @@ pub fn parse_with_contacts(
             });
         }
     }
-    let (eligible, terminators) = crate::parse::construct_positions(source)?;
+    let (ranges, incomplete) = construct_ranges(source)?;
     let mut parts = Vec::new();
     let mut hints = Vec::new();
     let mut consumed = 0;
     let mut cards = 0;
+    for range in ranges {
+        let start = range.start;
+        let stop = range.end;
+        let child = Origin {
+            message: card_id(&origin.message, cards),
+            ..origin
+        };
+        let draft = match crate::contact::parse_card(&source[start..stop], child, limits, known)? {
+            Some(draft) => draft,
+            None => crate::parse_card_with_dates(&source[start..stop], child, limits, order)?,
+        };
+        hints.extend(draft.hints);
+        if let crate::Parsed::Card(card) = draft.content {
+            if consumed < start {
+                let text = crate::parse(&source[consumed..start], limits.text)?;
+                if !text.body().is_empty() {
+                    parts.push(Part::Text(text));
+                }
+            }
+            parts.push(Part::Card(card));
+            consumed = stop;
+            cards += 1;
+            if parts.len() > 64 {
+                return Err(Error::Limit);
+            }
+        }
+    }
+    if incomplete { hints.push(crate::Hint::Incomplete); }
+    if cards == 0 {
+        return Ok(Draft {
+            content: crate::Document::Text(crate::parse(source, limits.text)?),
+            hints,
+        });
+    }
+    if consumed < source.len() {
+        let text = crate::parse(&source[consumed..], limits.text)?;
+        if !text.body().is_empty() {
+            parts.push(Part::Text(text));
+        }
+    }
+    let composition = Composition {
+        id: origin.message,
+        creator: origin.creator,
+        created_at: origin.created_at,
+        parts,
+    };
+    composition.validate(limits)?;
+    composition.to_bytes()?;
+    Ok(Draft {
+        content: crate::Document::Composition(composition),
+        hints,
+    })
+}
+
+pub(crate) fn construct_ranges(source: &str) -> Result<(Vec<std::ops::Range<usize>>, bool), Error> {
+    scan_ranges(source, false)
+}
+pub(crate) fn preview_ranges(source: &str) -> Result<(Vec<std::ops::Range<usize>>, bool), Error> {
+    scan_ranges(source, true)
+}
+fn scan_ranges(source: &str, preview: bool) -> Result<(Vec<std::ops::Range<usize>>, bool), Error> {
+    let (eligible, terminators) = if preview {crate::parse::preview_construct_positions(source)?}else{crate::parse::construct_positions(source)?};
+    let mut ranges = Vec::new();
+    let mut incomplete = false;
     let mut scanned = 0;
     for start in 0..source.len() {
         if start < scanned
             || !source.is_char_boundary(start)
             || !eligible[start]
-            || !crate::help::structured_prefix(&source[start..])
+            || !(crate::help::structured_prefix(&source[start..]) || preview && ["translate::", "define::", "weather::"].iter().any(|prefix|source[start..].starts_with(prefix)))
             || source[..start]
                 .chars()
                 .next_back()
@@ -244,56 +308,11 @@ pub fn parse_with_contacts(
             break;
         }
         let Some(stop) = stop else {
-            hints.push(crate::Hint::Incomplete);
+            incomplete = true;
             break;
         };
         scanned = stop;
-        let child = Origin {
-            message: card_id(&origin.message, cards),
-            ..origin
-        };
-        let draft = match crate::contact::parse_card(&source[start..stop], child, limits, known)? {
-            Some(draft) => draft,
-            None => crate::parse_card_with_dates(&source[start..stop], child, limits, order)?,
-        };
-        hints.extend(draft.hints);
-        if let crate::Parsed::Card(card) = draft.content {
-            if consumed < start {
-                let text = crate::parse(&source[consumed..start], limits.text)?;
-                if !text.body().is_empty() {
-                    parts.push(Part::Text(text));
-                }
-            }
-            parts.push(Part::Card(card));
-            consumed = stop;
-            cards += 1;
-            if parts.len() > 64 {
-                return Err(Error::Limit);
-            }
-        }
+        ranges.push(start..stop);
     }
-    if cards == 0 {
-        return Ok(Draft {
-            content: crate::Document::Text(crate::parse(source, limits.text)?),
-            hints,
-        });
-    }
-    if consumed < source.len() {
-        let text = crate::parse(&source[consumed..], limits.text)?;
-        if !text.body().is_empty() {
-            parts.push(Part::Text(text));
-        }
-    }
-    let composition = Composition {
-        id: origin.message,
-        creator: origin.creator,
-        created_at: origin.created_at,
-        parts,
-    };
-    composition.validate(limits)?;
-    composition.to_bytes()?;
-    Ok(Draft {
-        content: crate::Document::Composition(composition),
-        hints,
-    })
+    Ok((ranges, incomplete))
 }

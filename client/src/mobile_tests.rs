@@ -4,10 +4,21 @@ mod content_acceptance;
 
 #[test]
 fn error_diagnostics_do_not_expose_storage_or_file_details() {
-    let private="synthetic private content";
-    let errors=[Error::Storage(rusqlite::Error::SqliteFailure(rusqlite::ffi::Error::new(5),Some(private.into()))),Error::Io(std::io::Error::other(private))];
-    for error in errors {assert!(!error_message(&error).contains(private));}
-    assert!(error_message(&Error::Crypto(sigil_crypto::Error::Authentication)).contains("crypto-authentication"));
+    let private = "synthetic private content";
+    let errors = [
+        Error::Storage(rusqlite::Error::SqliteFailure(
+            rusqlite::ffi::Error::new(5),
+            Some(private.into()),
+        )),
+        Error::Io(std::io::Error::other(private)),
+    ];
+    for error in errors {
+        assert!(!error_message(&error).contains(private));
+    }
+    assert!(
+        error_message(&Error::Crypto(sigil_crypto::Error::Authentication))
+            .contains("crypto-authentication")
+    );
 }
 
 fn run(store: &mut ClientStore, value: Value) -> Value {
@@ -210,6 +221,8 @@ fn call_history_survives_expiry_and_redial_preserves_group_kind_and_trust() {
     let call = [91; 32];
     alice.create_group_call(call, now, 60).unwrap();
     alice.invite_to_call(call, peer, now).unwrap();
+    run(&mut alice, json!({"command":"call_history_media","call":transport::hex(&call),"duration":25,"video":true}));
+    assert!(alice.record_call_media(call, 61, false).is_err());
     alice.leave_call(call, now).unwrap();
     let before = run(&mut alice, json!({"command":"calls"}));
     assert_eq!(before["calls"][0]["name"], "bob");
@@ -226,6 +239,9 @@ fn call_history_survives_expiry_and_redial_preserves_group_kind_and_trust() {
     let archived = run(&mut alice, json!({"command":"calls"}));
     assert_eq!(archived["calls"][0]["name"], "bob");
     assert_eq!(archived["calls"][0]["phase"], "ended");
+    assert_eq!(archived["calls"][0]["duration"], 25);
+    assert_eq!(archived["calls"][0]["video"], true);
+    assert_eq!(archived["calls"][0]["missed"], false);
     // The restored clock floor is deliberately ahead of wall time in this fixture.
     let request = [92; 32];
     run(
@@ -369,20 +385,35 @@ fn filtered_history_advances_and_search_opens_the_original_message() {
 }
 #[test]
 fn mobile_help_sharing_preserves_literal_examples_and_rejects_invalid_rich_input() {
-    let (_dir,_server,mut alice,_bob,now)=crate::claims::tests::pair();
-    let source="help::redact;";
-    let post=json!({"command":"post","peer":"self","request":"e8".repeat(32),"timestamp":now,"text":source,"rich":true});
-    run(&mut alice,post.clone());run(&mut alice,post);
-    let timeline=run(&mut alice,json!({"command":"timeline","peer":"self"}));
-    assert_eq!(timeline["messages"].as_array().unwrap().len(),1);
-    let expected=sigil_protocol::text::help::sheet("redact",Default::default()).unwrap();
-    assert_eq!(timeline["messages"][0]["text"],expected.body());
-    assert!(timeline["messages"][0]["text"].as_str().unwrap().contains("redact::private;"));
-    for source in ["help::UNKNOWN_SECRET;","help::redact::SECRET;","just text","timer::not a duration;"] {
+    let (_dir, _server, mut alice, _bob, now) = crate::claims::tests::pair();
+    let source = "help::redact;";
+    let post = json!({"command":"post","peer":"self","request":"e8".repeat(32),"timestamp":now,"text":source,"rich":true});
+    run(&mut alice, post.clone());
+    run(&mut alice, post);
+    let timeline = run(&mut alice, json!({"command":"timeline","peer":"self"}));
+    assert_eq!(timeline["messages"].as_array().unwrap().len(), 1);
+    let expected = sigil_protocol::text::help::sheet("redact", Default::default()).unwrap();
+    assert_eq!(timeline["messages"][0]["text"], expected.body());
+    assert!(timeline["messages"][0]["text"]
+        .as_str()
+        .unwrap()
+        .contains("redact::private;"));
+    for source in [
+        "help::UNKNOWN_SECRET;",
+        "help::redact::SECRET;",
+        "just text",
+        "timer::not a duration;",
+    ] {
         let result:Value=serde_json::from_str(&alice.mobile_command(&json!({"command":"post","peer":"self","request":"e9".repeat(32),"timestamp":now,"text":source,"rich":true}).to_string())).unwrap();
-        assert_eq!(result["ok"],false);
+        assert_eq!(result["ok"], false);
     }
-    assert_eq!(run(&mut alice,json!({"command":"timeline","peer":"self"}))["messages"].as_array().unwrap().len(),1);
+    assert_eq!(
+        run(&mut alice, json!({"command":"timeline","peer":"self"}))["messages"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
 }
 #[test]
 fn mobile_formatted_posts_redact_before_queueing_and_keep_legacy_retries_unchanged() {
@@ -391,47 +422,104 @@ fn mobile_formatted_posts_redact_before_queueing_and_keep_legacy_retries_unchang
     let post = json!({"command":"post","peer":"self","request":"67".repeat(32),"timestamp":now,"text":source,"formatted":true});
     run(&mut alice, post.clone());
     run(&mut alice, post);
-    let timeline = run(&mut alice,json!({"command":"timeline","peer":"self"}));
-    assert_eq!(timeline["messages"].as_array().unwrap().len(),1);
+    let timeline = run(&mut alice, json!({"command":"timeline","peer":"self"}));
+    assert_eq!(timeline["messages"].as_array().unwrap().len(), 1);
     let message = &timeline["messages"][0];
     let rich = &message["parts"][0]["rich"];
-    assert_eq!(rich["text"],"Hello café [REDACTED]");
+    assert_eq!(rich["text"], "Hello café [REDACTED]");
     assert!(!timeline.to_string().contains("SYNTHETIC_SECRET"));
-    let reference = reference(message["author"].as_str().unwrap(),message["id"].as_str().unwrap()).unwrap();
+    let reference = reference(
+        message["author"].as_str().unwrap(),
+        message["id"].as_str().unwrap(),
+    )
+    .unwrap();
     let conversation = alice.mobile_conversation("self").unwrap();
-    let Some(Body::Rich(bytes)) = alice.conversation_message(conversation,reference,now).unwrap().body else { panic!() };
+    let Some(Body::Rich(bytes)) = alice
+        .conversation_message(conversation, reference, now)
+        .unwrap()
+        .body
+    else {
+        panic!()
+    };
     assert!(!String::from_utf8_lossy(&bytes).contains("SYNTHETIC_SECRET"));
     let doc = sigil_protocol::text::Document::from_bytes(&bytes).unwrap();
-    let sigil_protocol::text::Document::Text(text) = doc else { panic!() };
-    assert!(text.spans().iter().any(|span| span.effects.bold && span.effects.underline));
-    let edit = run(&mut alice,json!({"command":"edit_source","peer":"self","author":message["author"],"message":message["id"]}));
-    let restored = sigil_protocol::text::parse(edit["edit_source"].as_str().unwrap(),Default::default()).unwrap();
+    let sigil_protocol::text::Document::Text(text) = doc else {
+        panic!()
+    };
+    assert!(text
+        .spans()
+        .iter()
+        .any(|span| span.effects.bold && span.effects.underline));
+    let edit = run(
+        &mut alice,
+        json!({"command":"edit_source","peer":"self","author":message["author"],"message":message["id"]}),
+    );
+    let restored =
+        sigil_protocol::text::parse(edit["edit_source"].as_str().unwrap(), Default::default())
+            .unwrap();
     assert!(restored == text);
     assert!(!edit.to_string().contains("SYNTHETIC_SECRET"));
-    run(&mut alice,json!({"command":"edit","peer":"self","request":"68".repeat(32),"timestamp":now+1,"author":message["author"],"message":message["id"],"text":"italic::Revised; redact::SECOND_SECRET;","formatted":true}));
-    let edited = run(&mut alice,json!({"command":"timeline","peer":"self"}));
-    assert_eq!(edited["messages"][0]["parts"][0]["rich"]["text"],"Revised [REDACTED]");
+    run(
+        &mut alice,
+        json!({"command":"edit","peer":"self","request":"68".repeat(32),"timestamp":now+1,"author":message["author"],"message":message["id"],"text":"italic::Revised; redact::SECOND_SECRET;","formatted":true}),
+    );
+    let edited = run(&mut alice, json!({"command":"timeline","peer":"self"}));
+    assert_eq!(
+        edited["messages"][0]["parts"][0]["rich"]["text"],
+        "Revised [REDACTED]"
+    );
     assert!(!edited.to_string().contains("SECOND_SECRET"));
     let legacy = json!({"command":"post","peer":"self","request":"69".repeat(32),"timestamp":now+2,"text":"underline::literal;"});
-    run(&mut alice,legacy.clone());
-    run(&mut alice,legacy);
-    let timeline = run(&mut alice,json!({"command":"timeline","peer":"self"}));
-    assert_eq!(timeline["messages"][0]["text"],"underline::literal;");
-    assert!(timeline["messages"][0]["parts"].as_array().unwrap().is_empty());
+    run(&mut alice, legacy.clone());
+    run(&mut alice, legacy);
+    let timeline = run(&mut alice, json!({"command":"timeline","peer":"self"}));
+    assert_eq!(timeline["messages"][0]["text"], "underline::literal;");
+    assert!(timeline["messages"][0]["parts"]
+        .as_array()
+        .unwrap()
+        .is_empty());
     let legacy = &timeline["messages"][0];
-    run(&mut alice,json!({"command":"edit","peer":"self","request":"6a".repeat(32),"timestamp":now+3,"author":legacy["author"],"message":legacy["id"],"text":"underline::literal;","formatted":true}));
-    let unchanged = run(&mut alice,json!({"command":"timeline","peer":"self"}));
-    assert!(unchanged["messages"][0]["parts"].as_array().unwrap().is_empty());
+    run(
+        &mut alice,
+        json!({"command":"edit","peer":"self","request":"6a".repeat(32),"timestamp":now+3,"author":legacy["author"],"message":legacy["id"],"text":"underline::literal;","formatted":true}),
+    );
+    let unchanged = run(&mut alice, json!({"command":"timeline","peer":"self"}));
+    assert!(unchanged["messages"][0]["parts"]
+        .as_array()
+        .unwrap()
+        .is_empty());
     let wrong_author: Value = serde_json::from_str(&alice.mobile_command(&json!({"command":"edit_source","peer":"self","author":"99".repeat(32),"message":message["id"]}).to_string())).unwrap();
-    assert_eq!(wrong_author["ok"],false);
-    run(&mut alice,json!({"command":"delete","peer":"self","request":"6c".repeat(32),"timestamp":now+4,"author":message["author"],"message":message["id"]}));
+    assert_eq!(wrong_author["ok"], false);
+    run(
+        &mut alice,
+        json!({"command":"delete","peer":"self","request":"6c".repeat(32),"timestamp":now+4,"author":message["author"],"message":message["id"]}),
+    );
     let removed: Value = serde_json::from_str(&alice.mobile_command(&json!({"command":"edit_source","peer":"self","author":message["author"],"message":message["id"]}).to_string())).unwrap();
-    assert_eq!(removed["ok"],false);
-    alice.mobile_action("self",&"6d".repeat(32),now,Action::Post{body:Body::Text("Synthetic view-once text".into()),reply:None,thread:None,expires_at:None,view_once:true}).unwrap();
+    assert_eq!(removed["ok"], false);
+    alice
+        .mobile_action(
+            "self",
+            &"6d".repeat(32),
+            now,
+            Action::Post {
+                body: Body::Text("Synthetic view-once text".into()),
+                reply: None,
+                thread: None,
+                expires_at: None,
+                view_once: true,
+            },
+        )
+        .unwrap();
     let once: Value = serde_json::from_str(&alice.mobile_command(&json!({"command":"edit_source","peer":"self","author":message["author"],"message":"6d".repeat(32)}).to_string())).unwrap();
-    assert_eq!(once["ok"],false);
-    assert!(matches!(inline_body("A plain letter".into()).unwrap(),Body::Text(_)));
-    assert!(matches!(inline_body(r"\*literal\*".into()).unwrap(),Body::Rich(_)));
+    assert_eq!(once["ok"], false);
+    assert!(matches!(
+        inline_body("A plain letter".into()).unwrap(),
+        Body::Text(_)
+    ));
+    assert!(matches!(
+        inline_body(r"\*literal\*".into()).unwrap(),
+        Body::Rich(_)
+    ));
 }
 #[test]
 fn mobile_preserves_canonical_formatting_without_reparsing_or_losing_unicode_ranges() {
@@ -497,26 +585,35 @@ fn mobile_preserves_canonical_formatting_without_reparsing_or_losing_unicode_ran
 #[test]
 fn mobile_table_projection_preserves_numeric_order_rich_cells_and_copy_privacy() {
     let (_dir, _server, mut alice, _bob, now) = crate::claims::tests::pair();
-    run(&mut alice, json!({"command":"post","peer":"self","request":"99".repeat(32),"timestamp":now,"rich":true,
-        "text":"table::Name | Count\n- **A** | 10\n- spoiler::Hidden cell | 2;"}));
+    run(
+        &mut alice,
+        json!({"command":"post","peer":"self","request":"99".repeat(32),"timestamp":now,"rich":true,
+        "text":"table::Name | Count\n- **A** | 10\n- spoiler::Hidden cell | 2;"}),
+    );
     let timeline = run(&mut alice, json!({"command":"timeline","peer":"self"}));
     let part = &timeline["messages"][0]["parts"][0];
     assert_eq!(part["kind"], "table");
     let table = &part["table"];
-    assert_eq!(table["numeric_order"][1], json!([1,0]));
+    assert_eq!(table["numeric_order"][1], json!([1, 0]));
     assert_eq!(table["rows"][0][0]["text"], "A");
     assert!(!table["rows"][0][0]["spans"].as_array().unwrap().is_empty());
     assert_eq!(table["copy_rows"][0], "A\t10");
     assert!(table["copy_rows"][1].is_null());
     assert!(table["copy_table"].is_null());
-    assert_eq!(table["rows"][1][0]["spans"][0]["effects"][0]["kind"], "reveal");
+    assert_eq!(
+        table["rows"][1][0]["spans"][0]["effects"][0]["kind"],
+        "reveal"
+    );
 }
 #[test]
 fn recipe_serving_views_are_local_and_cannot_read_another_message_card() {
     let (_dir, _server, mut alice, _bob, now) = crate::claims::tests::pair();
     let request = "98".repeat(32);
-    run(&mut alice, json!({"command":"post","peer":"self","request":request,"timestamp":now,"rich":true,
-        "text":"recipe::Dinner\nserves::4\ntime::25 min\ningredients:\n- 200g flour\n- 1-2 eggs\nsteps:\n- Combine ingredients\n- Bake;"}));
+    run(
+        &mut alice,
+        json!({"command":"post","peer":"self","request":request,"timestamp":now,"rich":true,
+        "text":"recipe::Dinner\nserves::4\ntime::25 min\ningredients:\n- 200g flour\n- 1-2 eggs\nsteps:\n- Combine ingredients\n- Bake;"}),
+    );
     let timeline = run(&mut alice, json!({"command":"timeline","peer":"self"}));
     let message = &timeline["messages"][0];
     let part = &message["parts"][0];
@@ -536,42 +633,66 @@ fn recipe_serving_views_are_local_and_cannot_read_another_message_card() {
 #[test]
 fn all_chart_types_project_exact_values_and_bounded_coordinates() {
     let (_dir, _server, mut alice, _bob, now) = crate::claims::tests::pair();
-    for (index, kind) in ["pie", "donut", "bar", "line", "area", "scatter"].iter().enumerate() {
+    for (index, kind) in ["pie", "donut", "bar", "line", "area", "scatter"]
+        .iter()
+        .enumerate()
+    {
         let request = format!("{:064x}", index + 500);
-        let rows = if *kind == "scatter" { "- -2 = 3\n- 4 = -1" } else { "- red::A = 2\n- B = 6" };
-        run(&mut alice, json!({"command":"post","peer":"self","request":request,"timestamp":now,"rich":true,"text":format!("chart::{kind}::Values\n{rows};")}));
+        let rows = if *kind == "scatter" {
+            "- -2 = 3\n- 4 = -1"
+        } else {
+            "- red::A = 2\n- B = 6"
+        };
+        run(
+            &mut alice,
+            json!({"command":"post","peer":"self","request":request,"timestamp":now,"rich":true,"text":format!("chart::{kind}::Values\n{rows};")}),
+        );
         let timeline = run(&mut alice, json!({"command":"timeline","peer":"self"}));
         let part = &timeline["messages"][0]["parts"][0];
         assert_eq!(part["kind"], "chart");
         let chart = &part["chart"];
         assert_eq!(chart["kind"], *kind);
-        assert_eq!(chart["points"][0]["value"], if *kind == "scatter" { "3" } else { "2" });
+        assert_eq!(
+            chart["points"][0]["value"],
+            if *kind == "scatter" { "3" } else { "2" }
+        );
         for point in chart["points"].as_array().unwrap() {
-            for axis in ["x", "y", "share"] { assert!((0.0..=1.0).contains(&point[axis].as_f64().unwrap())); }
+            for axis in ["x", "y", "share"] {
+                assert!((0.0..=1.0).contains(&point[axis].as_f64().unwrap()));
+            }
         }
     }
 }
 #[test]
 fn diagram_projection_keeps_directed_edges_rich_labels_and_timeline_order() {
     let (_dir, _server, mut alice, _bob, now) = crate::claims::tests::pair();
-    run(&mut alice,json!({"command":"post","peer":"self","request":"78".repeat(32),"timestamp":now,"rich":true,
-        "text":"diagram::sequence::Delivery\n- Client -> Server: **send**\n- Server --> Client: reply;"}));
-    let timeline=run(&mut alice,json!({"command":"timeline","peer":"self"}));
-    let diagram=&timeline["messages"][0]["parts"][0]["diagram"];
-    assert_eq!(diagram["kind"],"sequence");
-    assert_eq!(diagram["nodes"][0]["y"],diagram["nodes"][1]["y"]);
-    assert_eq!(diagram["edges"][0]["from"],diagram["edges"][1]["to"]);
-    assert_eq!(diagram["edges"][0]["to"],diagram["edges"][1]["from"]);
-    assert_eq!(diagram["edges"][0]["dashed"],false);
-    assert_eq!(diagram["edges"][1]["dashed"],true);
-    assert_eq!(diagram["edges"][0]["label"]["text"],"send");
-    assert!(!diagram["edges"][0]["label"]["spans"].as_array().unwrap().is_empty());
-    run(&mut alice,json!({"command":"post","peer":"self","request":"79".repeat(32),"timestamp":now,"rich":true,
-        "text":"diagram::timeline::Project\n- September = Later\n- March = Earlier;"}));
-    let timeline=run(&mut alice,json!({"command":"timeline","peer":"self"}));
-    let entries=&timeline["messages"][0]["parts"][0]["diagram"]["entries"];
-    assert_eq!(entries[0]["date"]["text"],"September");
-    assert_eq!(entries[1]["date"]["text"],"March");
+    run(
+        &mut alice,
+        json!({"command":"post","peer":"self","request":"78".repeat(32),"timestamp":now,"rich":true,
+        "text":"diagram::sequence::Delivery\n- Client -> Server: **send**\n- Server --> Client: reply;"}),
+    );
+    let timeline = run(&mut alice, json!({"command":"timeline","peer":"self"}));
+    let diagram = &timeline["messages"][0]["parts"][0]["diagram"];
+    assert_eq!(diagram["kind"], "sequence");
+    assert_eq!(diagram["nodes"][0]["y"], diagram["nodes"][1]["y"]);
+    assert_eq!(diagram["edges"][0]["from"], diagram["edges"][1]["to"]);
+    assert_eq!(diagram["edges"][0]["to"], diagram["edges"][1]["from"]);
+    assert_eq!(diagram["edges"][0]["dashed"], false);
+    assert_eq!(diagram["edges"][1]["dashed"], true);
+    assert_eq!(diagram["edges"][0]["label"]["text"], "send");
+    assert!(!diagram["edges"][0]["label"]["spans"]
+        .as_array()
+        .unwrap()
+        .is_empty());
+    run(
+        &mut alice,
+        json!({"command":"post","peer":"self","request":"79".repeat(32),"timestamp":now,"rich":true,
+        "text":"diagram::timeline::Project\n- September = Later\n- March = Earlier;"}),
+    );
+    let timeline = run(&mut alice, json!({"command":"timeline","peer":"self"}));
+    let entries = &timeline["messages"][0]["parts"][0]["diagram"]["entries"];
+    assert_eq!(entries[0]["date"]["text"], "September");
+    assert_eq!(entries[1]["date"]["text"], "March");
 }
 #[test]
 fn forwarding_preserves_text_and_notes_and_snapshots_current_checklist_state() {
@@ -727,6 +848,13 @@ fn mobile_cards_use_authorized_state_and_hide_poll_results_until_voting() {
 #[test]
 fn attachment_drafts_survive_restart_and_commit_the_caption_only_on_send() {
     let (dir, _server, mut alice, _bob, now) = crate::claims::tests::pair();
+    for steps in [0, 9, 256] {
+        let reply: Value = serde_json::from_str(
+            &alice.mobile_command(&json!({"command":"file_work","steps":steps}).to_string()),
+        )
+        .unwrap();
+        assert_eq!(reply["ok"], false);
+    }
     let request = "86".repeat(32);
     run(
         &mut alice,
@@ -749,7 +877,10 @@ fn attachment_drafts_survive_restart_and_commit_the_caption_only_on_send() {
         &*alice.mobile_file_draft_chunk(&request, 0).unwrap(),
         b"hello"
     );
-    assert_eq!(run(&mut alice, json!({"command":"file_work"}))["sent"], 0);
+    assert_eq!(
+        run(&mut alice, json!({"command":"file_work","steps":1}))["sent"],
+        0
+    );
     assert!(
         run(&mut alice, json!({"command":"timeline","peer":"self"}))["messages"]
             .as_array()
@@ -781,12 +912,10 @@ fn attachment_drafts_survive_restart_and_commit_the_caption_only_on_send() {
     assert!(alice.mobile_file_draft_chunk(&request, 0).is_err());
     run(&mut alice, send);
     assert_eq!(serde_json::from_str::<Value>(&alice.mobile_command(&json!({"command":"file_send","request":request,"caption":"Do not change a committed send"}).to_string())).unwrap()["ok"], false);
-    assert!(
-        !std::fs::read(dir.path().join("alice.db"))
-            .unwrap()
-            .windows(20)
-            .any(|v| v == b"A caption kept with ")
-    );
+    assert!(!std::fs::read(dir.path().join("alice.db"))
+        .unwrap()
+        .windows(20)
+        .any(|v| v == b"A caption kept with "));
     assert_eq!(run(&mut alice, json!({"command":"file_work"}))["sent"], 1);
     let timeline = run(&mut alice, json!({"command":"timeline","peer":"self"}));
     assert_eq!(timeline["messages"].as_array().unwrap().len(), 1);
@@ -851,19 +980,36 @@ fn uploaded_files_queue_from_encrypted_cache_and_deletion_revokes_chunk_access()
 fn disabled_calling_does_not_queue_a_mobile_call() {
     let (dir, _server, mut alice, mut bob, now) = crate::claims::tests::pair();
     let (_, peer) = crate::incoming::tests::trust(&mut alice, &mut bob);
-    assert!(matches!(alice.mobile_call_start(&transport::hex(&peer), [86; 32], now), Err(Error::CallingUnavailable)));
-    assert_eq!(alice.db.query_row("SELECT count(*) FROM calls", [], |r| r.get::<_, u32>(0)).unwrap(), 0);
+    assert!(matches!(
+        alice.mobile_call_start(&transport::hex(&peer), [86; 32], now),
+        Err(Error::CallingUnavailable)
+    ));
+    assert_eq!(
+        alice
+            .db
+            .query_row("SELECT count(*) FROM calls", [], |r| r.get::<_, u32>(0))
+            .unwrap(),
+        0
+    );
     enable_calls(dir.path());
-    assert!(alice.mobile_call_start(&transport::hex(&peer), [86; 32], now).is_ok());
+    assert!(alice
+        .mobile_call_start(&transport::hex(&peer), [86; 32], now)
+        .is_ok());
 }
 fn enable_calls(dir: &std::path::Path) {
-    sigil_server::store::Store::open(&dir.join("server.db")).unwrap().configure_calls(sigil_server::call_config::Configure {
-        expected_revision: 0,
-        settings: Some(sigil_server::call_config::Settings {
-            bind: "127.0.0.1:34780".parse().unwrap(), advertised: "127.0.0.1:34780".parse().unwrap(), max_calls: 1, turn_urls: Vec::new(),
-        }),
-        turn_secret: sigil_server::service_config::SecretUpdate::Clear,
-    }).unwrap();
+    sigil_server::store::Store::open(&dir.join("server.db"))
+        .unwrap()
+        .configure_calls(sigil_server::call_config::Configure {
+            expected_revision: 0,
+            settings: Some(sigil_server::call_config::Settings {
+                bind: "127.0.0.1:34780".parse().unwrap(),
+                advertised: "127.0.0.1:34780".parse().unwrap(),
+                max_calls: 1,
+                turn_urls: Vec::new(),
+            }),
+            turn_secret: sigil_server::service_config::SecretUpdate::Clear,
+        })
+        .unwrap();
 }
 #[test]
 fn queued_attachment_keeps_reply_and_thread_across_restart() {
@@ -1114,16 +1260,22 @@ fn mobile_live_locations_keep_device_jobs_and_retry_stops_without_resampling() {
     let (dir, _server, mut alice, _bob, _) = crate::claims::tests::pair();
     let now = conversations::now();
     let request = "d1".repeat(32);
-    run(&mut alice, json!({"command":"place","peer":"self","request":request,"timestamp":now-30,
+    run(
+        &mut alice,
+        json!({"command":"place","peer":"self","request":request,"timestamp":now-30,
         "latitude_e6":0,"longitude_e6":0,"accuracy_cm":2500,"sampled_at":now-30,
-        "label":"Synthetic location","pin":false,"live":"fifteen_minutes"}));
+        "label":"Synthetic location","pin":false,"live":"fifteen_minutes"}),
+    );
     let jobs = run(&mut alice, json!({"command":"location_work"}));
     assert_eq!(jobs["active"], 1);
-    assert_eq!(jobs["until"], now-30+900);
+    assert_eq!(jobs["until"], now - 30 + 900);
     let point = json!({"coordinates":{"latitude_e6":1250000,"longitude_e6":-2500000},"accuracy_cm":1200,"sampled_at":now});
     let updated = run(&mut alice, json!({"command":"location_work","point":point}));
     assert_eq!(updated["queued"], 1);
-    assert_eq!(run(&mut alice, json!({"command":"location_work","point":point}))["queued"], 0);
+    assert_eq!(
+        run(&mut alice, json!({"command":"location_work","point":point}))["queued"],
+        0
+    );
     let timeline = run(&mut alice, json!({"command":"timeline","peer":"self"}));
     let message = &timeline["messages"][0];
     let card = &message["parts"][0];
@@ -1132,24 +1284,47 @@ fn mobile_live_locations_keep_device_jobs_and_retry_stops_without_resampling() {
     assert_eq!(card["sampled_at"], now);
     assert_eq!(card["can_stop"], true);
     let stop = json!({"command":"location_stop","peer":"self","author":message["author"],"message":request,"card":card["id"]});
-    let mut wrong = stop.clone(); wrong["message"] = json!("d2".repeat(32));
-    assert_eq!(serde_json::from_str::<Value>(&alice.mobile_command(&wrong.to_string())).unwrap()["ok"], false);
-    for sampled_at in [now+600, now-600] {
-        let mut invalid = point.clone(); invalid["sampled_at"] = json!(sampled_at);
-        assert_eq!(serde_json::from_str::<Value>(&alice.mobile_command(&json!({"command":"location_work","point":invalid}).to_string())).unwrap()["ok"], false);
+    let mut wrong = stop.clone();
+    wrong["message"] = json!("d2".repeat(32));
+    assert_eq!(
+        serde_json::from_str::<Value>(&alice.mobile_command(&wrong.to_string())).unwrap()["ok"],
+        false
+    );
+    for sampled_at in [now + 600, now - 600] {
+        let mut invalid = point.clone();
+        invalid["sampled_at"] = json!(sampled_at);
+        assert_eq!(
+            serde_json::from_str::<Value>(
+                &alice.mobile_command(
+                    &json!({"command":"location_work","point":invalid}).to_string()
+                )
+            )
+            .unwrap()["ok"],
+            false
+        );
     }
     alice.db.execute_batch("CREATE TRIGGER fail BEFORE INSERT ON conversation_ops BEGIN SELECT RAISE(ABORT,'synthetic'); END").unwrap();
-    assert_eq!(serde_json::from_str::<Value>(&alice.mobile_command(&stop.to_string())).unwrap()["ok"], false);
+    assert_eq!(
+        serde_json::from_str::<Value>(&alice.mobile_command(&stop.to_string())).unwrap()["ok"],
+        false
+    );
     assert!(alice.location_jobs(None, now).unwrap().jobs.is_empty());
     assert_eq!(alice.location_jobs(None, now).unwrap().stops.len(), 1);
     alice.db.execute_batch("DROP TRIGGER fail").unwrap();
     drop(alice);
-    let mut alice = ClientStore::open(&dir.path().join("alice.db"), StorageKey::new(Secret32::from_bytes([9;32])).unwrap()).unwrap();
+    let mut alice = ClientStore::open(
+        &dir.path().join("alice.db"),
+        StorageKey::new(Secret32::from_bytes([9; 32])).unwrap(),
+    )
+    .unwrap();
     let retry = run(&mut alice, json!({"command":"location_work","point":point}));
     assert_eq!(retry["active"], 0);
     assert_eq!(retry["queued"], 1);
     assert!(retry["issue"].is_null());
-    assert_eq!(run(&mut alice, json!({"command":"location_work"}))["queued"], 0);
+    assert_eq!(
+        run(&mut alice, json!({"command":"location_work"}))["queued"],
+        0
+    );
     let timeline = run(&mut alice, json!({"command":"timeline","peer":"self"}));
     assert_eq!(timeline["messages"][0]["parts"][0]["stopped"], true);
     assert_eq!(timeline["messages"][0]["parts"][0]["can_stop"], false);
@@ -1159,71 +1334,185 @@ fn mobile_live_locations_keep_device_jobs_and_retry_stops_without_resampling() {
 fn utility_projection_preserves_values_and_keeps_wifi_secrets_out_of_previews() {
     let (_dir, _server, mut alice, _bob, now) = crate::claims::tests::pair();
     for (index, (source, kind)) in [
-        ("calc::1 / 3;", "calculation"), ("convert::5 km;", "conversion"),
-        ("math::\\frac{1}{2};", "math"), ("roll::2d20;", "dice"),
-        ("pick::A, B;", "pick"), ("pick::number::1-10;", "random"),
-        ("swatch::#12345680;", "swatch"), ("kbd::Ctrl+C;", "keys"),
-        ("rate::4/5;", "rating"), ("progress::65;", "progress"),
-        ("quote::Sam::Hello;", "quote"), ("qr::wifi::Synthetic::synthetic-secret;", "qr"),
-    ].iter().enumerate() {
-        run(&mut alice,json!({"command":"post","peer":"self","request":format!("{:064x}",index+600),"timestamp":now,"rich":true,"text":source}));
-        let timeline=run(&mut alice,json!({"command":"timeline","peer":"self"}));
-        let part=&timeline["messages"][0]["parts"][0];
-        assert_eq!(part["kind"],"utility","{source}");
-        assert_eq!(part["utility"]["kind"],*kind);
-        if *kind=="calculation" { assert_eq!(part["utility"]["copy"],"0.3333333333333333"); }
-        if *kind=="qr" {
-            assert!(!timeline["messages"][0]["text"].as_str().unwrap().contains("synthetic-secret"));
-            assert!(part["utility"]["qr"]["payload"].as_str().unwrap().contains("synthetic-secret"));
+        ("calc::1 / 3;", "calculation"),
+        ("convert::5 km;", "conversion"),
+        ("math::\\frac{1}{2};", "math"),
+        ("roll::2d20;", "dice"),
+        ("pick::A, B;", "pick"),
+        ("pick::number::1-10;", "random"),
+        ("swatch::#12345680;", "swatch"),
+        ("kbd::Ctrl+C;", "keys"),
+        ("rate::4/5;", "rating"),
+        ("progress::65;", "progress"),
+        ("quote::Sam::Hello;", "quote"),
+        ("qr::wifi::Synthetic::synthetic-secret;", "qr"),
+    ]
+    .iter()
+    .enumerate()
+    {
+        run(
+            &mut alice,
+            json!({"command":"post","peer":"self","request":format!("{:064x}",index+600),"timestamp":now,"rich":true,"text":source}),
+        );
+        let timeline = run(&mut alice, json!({"command":"timeline","peer":"self"}));
+        let part = &timeline["messages"][0]["parts"][0];
+        assert_eq!(part["kind"], "utility", "{source}");
+        assert_eq!(part["utility"]["kind"], *kind);
+        if *kind == "calculation" {
+            assert_eq!(part["utility"]["copy"], "0.3333333333333333");
         }
-        if *kind=="dice" || *kind=="random" {
-            let again=run(&mut alice,json!({"command":"timeline","peer":"self"}));
-            assert_eq!(part["utility"],again["messages"][0]["parts"][0]["utility"]);
+        if *kind == "qr" {
+            assert!(!timeline["messages"][0]["text"]
+                .as_str()
+                .unwrap()
+                .contains("synthetic-secret"));
+            assert!(part["utility"]["qr"]["payload"]
+                .as_str()
+                .unwrap()
+                .contains("synthetic-secret"));
+        }
+        if *kind == "dice" || *kind == "random" {
+            let again = run(&mut alice, json!({"command":"timeline","peer":"self"}));
+            assert_eq!(part["utility"], again["messages"][0]["parts"][0]["utility"]);
         }
     }
 }
 
 #[test]
 fn stored_service_cards_project_without_a_provider_configuration() {
-    use sigil_protocol::text::{service::{Provider, Snapshot, ResultData}, structured::{Card, Construct}, Text};
-    let (_dir, _server, mut alice, _bob, now)=crate::claims::tests::pair();
-    let t=|s|Text::plain(s,Default::default()).unwrap();
-    let card=Card{id:[0x82;32],creator:alice.account_reference().unwrap(),created_at:now,
-        content:Construct::Service(Box::new(Snapshot{provider:Provider{id:"offline".into(),version:None,attribution:t("Synthetic provider"),source_url:Some("https://example.test/source".into())},resolved_at:now,
-            content:ResultData::Translation{original:t("Hello"),source_language:"en".into(),target_language:"es".into(),detected:false,translated:t("Hola")}}))};
-    alice.mobile_action("self",&"82".repeat(32),now,Action::Post{body:Body::Rich(card.to_bytes().unwrap()),reply:None,thread:None,expires_at:None,view_once:false}).unwrap();
-    let timeline=run(&mut alice,json!({"command":"timeline","peer":"self"}));
-    let part=&timeline["messages"][0]["parts"][0];
-    assert_eq!(part["kind"],"service");
-    assert_eq!(part["service"]["title"]["text"],"Hola");
-    assert_eq!(part["service"]["original"]["text"],"Hello");
-    assert_eq!(part["service"]["copy"],"Hola");
-    assert_eq!(part["service"]["source"],"https://example.test/source");
+    use sigil_protocol::text::{
+        service::{Provider, ResultData, Snapshot},
+        structured::{Card, Construct},
+        Text,
+    };
+    let (_dir, _server, mut alice, _bob, now) = crate::claims::tests::pair();
+    let t = |s| Text::plain(s, Default::default()).unwrap();
+    let card = Card {
+        id: [0x82; 32],
+        creator: alice.account_reference().unwrap(),
+        created_at: now,
+        content: Construct::Service(Box::new(Snapshot {
+            provider: Provider {
+                id: "offline".into(),
+                version: None,
+                attribution: t("Synthetic provider"),
+                source_url: Some("https://example.test/source".into()),
+            },
+            resolved_at: now,
+            content: ResultData::Translation {
+                original: t("Hello"),
+                source_language: "en".into(),
+                target_language: "es".into(),
+                detected: false,
+                translated: t("Hola"),
+            },
+        })),
+    };
+    alice
+        .mobile_action(
+            "self",
+            &"82".repeat(32),
+            now,
+            Action::Post {
+                body: Body::Rich(card.to_bytes().unwrap()),
+                reply: None,
+                thread: None,
+                expires_at: None,
+                view_once: false,
+            },
+        )
+        .unwrap();
+    let timeline = run(&mut alice, json!({"command":"timeline","peer":"self"}));
+    let part = &timeline["messages"][0]["parts"][0];
+    assert_eq!(part["kind"], "service");
+    assert_eq!(part["service"]["title"]["text"], "Hola");
+    assert_eq!(part["service"]["original"]["text"], "Hello");
+    assert_eq!(part["service"]["copy"], "Hola");
+    assert_eq!(part["service"]["source"], "https://example.test/source");
 }
 
 #[test]
 fn guided_builder_sources_keep_durable_acknowledgements_and_results() {
-    let (dir,_server,mut alice,_bob,now)=crate::claims::tests::pair();
-    for (index,input) in ["Dice\n20\n20","Choice\nFish, chips\nredact::literal;","Number\n-5\n-1","Coin","Table\nName\tCount\nFish | chips\t2\nredact::literal;\t10","Code\nrust\n\tlet x = \"👩🏽‍💻\";\n```\nredact::literal;\n"].iter().enumerate() {
-        let source=sigil_protocol::text::builder::source(input).unwrap();
-        let request=format!("{:064x}",700+index);
-        assert_eq!(run(&mut alice,json!({"command":"post_status","peer":"self","request":request}))["queued"],false);
-        run(&mut alice,json!({"command":"post","peer":"self","request":request,"timestamp":now,"text":source,"rich":!input.starts_with("Code\n"),"formatted":true}));
-        assert_eq!(run(&mut alice,json!({"command":"post_status","peer":"self","request":request}))["queued"],true);
+    let (dir, _server, mut alice, _bob, now) = crate::claims::tests::pair();
+    for (index, input) in [
+        "Dice\n20\n20",
+        "Choice\nFish, chips\nredact::literal;",
+        "Number\n-5\n-1",
+        "Coin",
+        "Table\nName\tCount\nFish | chips\t2\nredact::literal;\t10",
+        "Code\nrust\n\tlet x = \"👩🏽‍💻\";\n```\nredact::literal;\n",
+    ]
+    .iter()
+    .enumerate()
+    {
+        let source = sigil_protocol::text::builder::source(input).unwrap();
+        let request = format!("{:064x}", 700 + index);
+        assert_eq!(
+            run(
+                &mut alice,
+                json!({"command":"post_status","peer":"self","request":request})
+            )["queued"],
+            false
+        );
+        run(
+            &mut alice,
+            json!({"command":"post","peer":"self","request":request,"timestamp":now,"text":source,"rich":!input.starts_with("Code\n"),"formatted":true}),
+        );
+        assert_eq!(
+            run(
+                &mut alice,
+                json!({"command":"post_status","peer":"self","request":request})
+            )["queued"],
+            true
+        );
     }
-    let before=run(&mut alice,json!({"command":"timeline","peer":"self"}));
-    let table=before["messages"].as_array().unwrap().iter().find_map(|message|message["parts"].as_array()?.iter().find_map(|part|part.get("table"))).unwrap();
-    assert_eq!(table["rows"][0][0]["text"],"Fish | chips");
-    assert_eq!(table["rows"][1][0]["text"],"redact::literal;");
-    assert_eq!(table["numeric_order"][1],json!([0,1]));
-    let code=before["messages"].as_array().unwrap().iter().flat_map(|m|m["parts"].as_array().unwrap()).filter_map(|p|p.get("rich")).find(|r|r["blocks"].as_array().is_some_and(|b|b.iter().any(|b|b["kind"]["kind"]=="code"))).unwrap();
-    assert_eq!(code["text"],"\tlet x = \"👩🏽‍💻\";\n```\nredact::literal;\n");
-    assert_eq!(code["blocks"][0]["kind"]["language"],"rust");
+    let before = run(&mut alice, json!({"command":"timeline","peer":"self"}));
+    let table = before["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find_map(|message| {
+            message["parts"]
+                .as_array()?
+                .iter()
+                .find_map(|part| part.get("table"))
+        })
+        .unwrap();
+    assert_eq!(table["rows"][0][0]["text"], "Fish | chips");
+    assert_eq!(table["rows"][1][0]["text"], "redact::literal;");
+    assert_eq!(table["numeric_order"][1], json!([0, 1]));
+    let code = before["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .flat_map(|m| m["parts"].as_array().unwrap())
+        .filter_map(|p| p.get("rich"))
+        .find(|r| {
+            r["blocks"]
+                .as_array()
+                .is_some_and(|b| b.iter().any(|b| b["kind"]["kind"] == "code"))
+        })
+        .unwrap();
+    assert_eq!(code["text"], "\tlet x = \"👩🏽‍💻\";\n```\nredact::literal;\n");
+    assert_eq!(code["blocks"][0]["kind"]["language"], "rust");
     assert!(!code["code_tokens"].as_array().unwrap().is_empty());
     drop(alice);
-    let mut alice=ClientStore::open(&dir.path().join("alice.db"),StorageKey::new(Secret32::from_bytes([9;32])).unwrap()).unwrap();
+    let mut alice = ClientStore::open(
+        &dir.path().join("alice.db"),
+        StorageKey::new(Secret32::from_bytes([9; 32])).unwrap(),
+    )
+    .unwrap();
     for index in 0..6 {
-        assert_eq!(run(&mut alice,json!({"command":"post_status","peer":"self","request":format!("{:064x}",700+index)}))["queued"],true);
+        assert_eq!(
+            run(
+                &mut alice,
+                json!({"command":"post_status","peer":"self","request":format!("{:064x}",700+index)})
+            )["queued"],
+            true
+        );
     }
-    assert_eq!(before["messages"],run(&mut alice,json!({"command":"timeline","peer":"self"}))["messages"]);
+    assert_eq!(
+        before["messages"],
+        run(&mut alice, json!({"command":"timeline","peer":"self"}))["messages"]
+    );
 }

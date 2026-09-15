@@ -1,9 +1,9 @@
 use jni::{
-    JNIEnv,
     objects::{JObject, JString},
-    sys::{JNI_FALSE, JNI_TRUE, jboolean, jint},
+    sys::{jboolean, jint, JNI_FALSE, JNI_TRUE},
+    JNIEnv,
 };
-use sigil_media::{Request, decode, formats::Format};
+use sigil_media::{decode, formats::Format, Request};
 use std::{fs::File, os::fd::FromRawFd};
 
 fn duplicate(fd: jint) -> Option<File> {

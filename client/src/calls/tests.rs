@@ -161,6 +161,9 @@ fn unanswered_direct_call_expires_without_leaving_the_caller_active() {
     }
     assert!(alice.call(id, now + 60).unwrap().phase == Phase::Ended);
     assert!(bob.call(id, now + 60).unwrap().phase == Phase::Declined);
+    let missed = bob.call_history().unwrap().into_iter().find(|entry| entry.id == id).unwrap();
+    assert!(missed.missed);
+    assert_eq!(missed.duration, None);
     assert!(alice.refresh_call_media(&mut media, now + 60).is_err());
 }
 #[test]
@@ -365,4 +368,21 @@ fn authenticated_call_control_keys_replay_and_new_receiver_handle() {
             now
         )
         .is_err());
+}
+
+#[test]
+fn explicit_decline_is_not_a_missed_call() {
+    let (dir, _fixture, mut alice, mut bob, now) = pair();
+    configure(dir.path());
+    let (_, peer) = trust(&mut alice, &mut bob);
+    let id = [107; 32];
+    alice.create_direct_call(id, now, 3600).unwrap();
+    alice.invite_to_call(id, peer, now).unwrap();
+    pump(&mut alice, &mut bob, now);
+    bob.answer_call(id, false, now).unwrap();
+    let entry = bob.call_history().unwrap().into_iter().find(|entry| entry.id == id).unwrap();
+    assert!(entry.phase == Phase::Declined);
+    assert!(!entry.missed);
+    assert_eq!(entry.duration, None);
+    assert_eq!(entry.video, None);
 }

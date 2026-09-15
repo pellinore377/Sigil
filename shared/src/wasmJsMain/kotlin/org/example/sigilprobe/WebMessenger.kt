@@ -8,6 +8,9 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.background
 import androidx.compose.material3.*
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.blur
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.unit.dp
 import kotlinx.browser.window
@@ -118,6 +121,10 @@ private val stamped=setOf("post","place","group_create","react","pin","read","ma
         return json(values).toString()
     }
     suspend fun execute(name:String,fields:Map<String,Any?> = emptyMap())=native(request(name,fields))
+    val locations=remember {WebLocations()}
+    val calls=remember {WebCalls(scope,{name,fields->mutex.withLock{execute(name,fields)}},{wake.trySend(Unit)},{message->state=state.copy(issue=message)})}
+    LaunchedEffect(Unit){calls.initialize()}
+    DisposableEffect(Unit){val listener:(org.w3c.dom.events.Event)->Unit={calls.close();locations.stop();locations.live=false};window.addEventListener("pagehide",listener);onDispose{window.removeEventListener("pagehide",listener);calls.close()}}
     suspend fun notificationStatus() {
         if(!notificationsReady)return
         val local=webNotificationsEnabled().awaitBrowser<JsBoolean>().toBoolean()
@@ -181,12 +188,15 @@ private val stamped=setOf("post","place","group_create","react","pin","read","ma
         state=state.copy(transfers=value["uploads"]?.jsonArray?.map {item->item.jsonObject.let {Transfer(it.string("request"),it.string("peer"),it.string("name"),it.long("length"),it.string("phase"),it.bool("draft"),it.string("media_type"))}}.orEmpty())
     }
     suspend fun fileWork() {
-        val work=execute("file_work");fileNext=work.long("next_at")
+        val work=execute("file_work",mapOf("steps" to 1));fileNext=work.long("next_at")
         work.optional("issue")?.let {state=state.copy(issue=it)}
         transfers()
         if(work.long("sent")>0){timeline();wake.trySend(Unit)}
     }
-    suspend fun stageChunks(metadata:JsonObject,fields:Map<String,Any?>,draft:Boolean=true,read:suspend (Int)->JsAny) {
+    val voiceWaves=remember {mutableStateMapOf<String,Pair<List<Float>,Long>>()}
+    val recordedLevels=remember {mutableListOf<Float>()}
+    LaunchedEffect(state.transfers.map {it.request}) {voiceWaves.keys.toList().filter {id->state.transfers.none {it.request==id}}.forEach {voiceWaves.remove(it)}}
+    suspend fun stageChunks(metadata:JsonObject,fields:Map<String,Any?>,draft:Boolean=true,read:suspend (Int)->JsAny):String {
         val id=browserRequestId()
         try {
             mutex.withLock {
@@ -206,6 +216,7 @@ private val stamped=setOf("post","place","group_create","react","pin","read","ma
             withContext(NonCancellable){mutex.withLock {runCatching {execute("file_cancel",mapOf("request" to id));transfers()}}}
             throw error
         }
+        return id
     }
     suspend fun stage(file:JsAny,fields:Map<String,Any?>) = stageChunks(Json.parseToJsonElement(browserFileMetadata(file)).jsonObject,fields) {browserFileSlice(file,it).awaitBrowser<JsAny>()}
     suspend fun download(file:WebFile) {
@@ -230,7 +241,7 @@ private val stamped=setOf("post","place","group_create","react","pin","read","ma
 
     }
     suspend fun refresh() {
-state=StateDecoder.state(execute("state"),state,::clock);if(state.phase=="connected"){timeline();transfers();if(state.storage!=null)storage(execute("storage"));if((BrowserDate.now()/1000).toLong()>=accessNext){account(execute("account_access"));accessNext=(BrowserDate.now()/1000).toLong()+30}}}
+state=StateDecoder.state(execute("state"),state,::clock);if(state.phase=="connected"){timeline();transfers();calls.refresh(execute("calls"),::clock,{calendar(it).substringBeforeLast(", ")});if(state.storage!=null)storage(execute("storage"));if((BrowserDate.now()/1000).toLong()>=accessNext){account(execute("account_access"));accessNext=(BrowserDate.now()/1000).toLong()+30}}}
     LaunchedEffect(Unit) {
         try {initializeBrowser().awaitBrowser<JsAny?>();startBrowser().awaitBrowser<JsAny?>();refresh();linking=execute("device_link",mapOf("action" to "status")).takeUnless{it.string("stage")=="none"};ready=true
             try{initializeNotificationWasm().awaitBrowser<JsAny?>();notificationsReady=webNotificationsSupported();if(state.phase!="connected" && notificationsReady)webNotificationsDisable().awaitBrowser<JsAny?>()}catch(_:Exception){}
@@ -238,25 +249,48 @@ state=StateDecoder.state(execute("state"),state,::clock);if(state.phase=="connec
         catch(_:Exception){startupError="Could not open this browser device. Close other Sigil tabs and reload. A current browser with private storage and cross-origin isolation is required."}
     }
     LaunchedEffect(ready) {
+        var nextSync=0L
         if(ready)while(isActive) {
-            withTimeoutOrNull(1500){wake.receive()}
-if(browserDocument.visibilityState=="visible" && state.phase=="oidc" && !mutex.isLocked) {
-    try {mutex.withLock {refresh();if(state.phase=="connected")authorization=null}}
-    catch(_:Exception){}
-}
-            if(browserDocument.visibilityState=="visible" && state.phase=="connected" && !mutex.isLocked) {
-                try {mutex.withLock {val result=execute("sync",mapOf("interactive" to true));refresh();if((BrowserDate.now()/1000).toLong()>=fileNext)fileWork();runCatching{notificationWork()};val issue=result.optional("issue");if(issue!=null || result.bool("ran")){if(state.issue==syncIssue || issue!=null)state=state.copy(issue=issue);syncIssue=issue}}}
-                catch(e:Exception){syncIssue=e.message?:"Synchronization failed. Your queued messages are preserved.";state=state.copy(issue=syncIssue)}
+            val active=browserDocument.visibilityState=="visible" || calls.visible!=null
+            withTimeoutOrNull(if(active && state.phase=="connected") foregroundSyncWait(nextSync,BrowserDate.now().toLong(),if(calls.visible!=null)250 else 1000) else 1500){wake.receive()}
+            if(browserDocument.visibilityState=="visible" && state.phase=="oidc") {
+                try {mutex.withLock {refresh();if(state.phase=="connected")authorization=null}}
+                catch(cancelled:CancellationException){throw cancelled}
+                catch(_:Exception){}
+            }
+            if((browserDocument.visibilityState=="visible" || calls.visible!=null) && state.phase=="connected") {
+                try {
+                    val result=mutex.withLock {execute("sync",mapOf("interactive" to true,"call_setup" to (calls.visible?.connection in setOf("connecting","securing","reconnecting"))))}
+                    nextSync=result.long("next_at")
+                    mutex.withLock {refresh()}
+                    val issue=result.optional("issue")
+                    if(issue!=null || result.bool("ran")){if(state.issue==syncIssue || issue!=null)state=state.copy(issue=issue);syncIssue=issue}
+                } catch(cancelled:CancellationException){throw cancelled}
+                catch(e:Exception){nextSync=(BrowserDate.now()/1000).toLong()+1;syncIssue=e.message?:"Synchronization failed. Your queued messages are preserved.";state=state.copy(issue=syncIssue)}
             }
         }
     }
+    LaunchedEffect(ready) {
+        if(ready)while(isActive) {
+            delay(if(visible && state.phase=="connected") foregroundSyncWait(fileNext,BrowserDate.now().toLong()) else 1500)
+            if(visible && state.phase=="connected") {
+                try {
+                    if((BrowserDate.now()/1000).toLong()>=fileNext)mutex.withLock {fileWork()}
+                    mutex.withLock {notificationWork()}
+                } catch(cancelled:CancellationException){throw cancelled}
+                catch(_:Exception){fileNext=(BrowserDate.now()/1000).toLong()+1}
+            }
+        }
+    }
+    val voiceTarget=remember {VoiceDraftTarget()}
+    var pendingVoiceFile by remember {mutableStateOf<JsAny?>(null)}
     fun stopRecording() {
-        if(state.voice.phase!="Recording")return
-        val peer=state.voice.peer;state=state.copy(voice=state.voice.copy(phase="Saving"))
+        if(state.voice.phase !in setOf("Recording","Save failed"))return
+        state=state.copy(voice=state.voice.copy(phase="Saving"))
         recordingJob=scope.launch {
-            try {val file=browserVoiceFinish().awaitBrowser<JsAny>();stage(file,mapOf("peer" to peer));state=state.copy(voice=VoiceState())}
+            try {val file=pendingVoiceFile ?: browserVoiceFinish().awaitBrowser<JsAny>().also {pendingVoiceFile=it};val id=stage(file,voiceTarget.fields);voiceWaves[id]=recordedLevels.toList() to (state.voice.seconds*1000);recordedLevels.clear();pendingVoiceFile=null;voiceTarget.clear();state=state.copy(voice=VoiceState())}
             catch(cancelled:CancellationException){throw cancelled}
-            catch(_:Exception){state=state.copy(voice=VoiceState(),issue="Could not save the voice recording. Please try again.")}
+            catch(_:Exception){state=state.copy(voice=state.voice.copy(phase=if(pendingVoiceFile!=null)"Save failed" else "Idle"),issue="Could not save the voice recording. Retry or discard it.")}
         }
     }
     LaunchedEffect(state.voice.phase) {
@@ -266,7 +300,7 @@ if(browserDocument.visibilityState=="visible" && state.phase=="oidc" && !mutex.i
                 delay(100)
                 try {
                     val voice=state.voice;val now=BrowserDate.now()
-                    if(!voice.paused){elapsed+=now-last;state=state.copy(voice=voice.copy(seconds=(elapsed/1000).toLong(),levels=(voice.levels+browserVoiceLevel()).takeLast(80)))};last=now
+                    if(!voice.paused){elapsed+=now-last;val level=browserVoiceLevel();if(recordedLevels.size<6000)recordedLevels.add(level);state=state.copy(voice=voice.copy(seconds=(elapsed/1000).toLong(),levels=(voice.levels+level).takeLast(80)))};last=now
                 }catch(_:Exception){stopRecording()}
             }
         }
@@ -274,6 +308,7 @@ if(browserDocument.visibilityState=="visible" && state.phase=="oidc" && !mutex.i
     DisposableEffect(Unit){onDispose{browserVoiceCancel()}}
     fun finishRemoval() {ready=false;browserCameraStop();val keys=(0 until window.localStorage.length).mapNotNull{window.localStorage.key(it)};keys.filter{it.startsWith("messenger.")}.forEach{window.localStorage.removeItem(it)};window.location.reload()}
     val command:Command=command@{name,fields->
+        if(calls.handle(name,fields))return@command
         when(name) {
             "device_link"->{
                 if(linkingBusy)return@command
@@ -348,7 +383,7 @@ recoverAccount=true;return@command}
             "recovery_restore_open"->{restoreHistory=true;return@command}
             "record_start"->{
                 if(state.voice.phase!="Idle")return@command
-                state=state.copy(voice=VoiceState(phase="Starting",peer=fields["peer"] as String))
+                voiceTarget.start(fields);recordedLevels.clear();state=state.copy(voice=VoiceState(phase="Starting",peer=fields["peer"] as String))
                 recordingJob=scope.launch {
                     try {browserVoiceStart().awaitBrowser<JsAny?>();state=state.copy(voice=state.voice.copy(phase="Recording"))}
                     catch(cancelled:CancellationException){throw cancelled}
@@ -356,7 +391,7 @@ recoverAccount=true;return@command}
                 };return@command
             }
             "record_pause"->{runCatching {state=state.copy(voice=state.voice.copy(paused=browserVoicePause()))};return@command}
-            "record_cancel"->{recordingJob?.cancel();browserVoiceCancel();state=state.copy(voice=VoiceState());return@command}
+            "record_cancel"->{recordingJob?.cancel();browserVoiceCancel();pendingVoiceFile=null;recordedLevels.clear();voiceTarget.clear();state=state.copy(voice=VoiceState());return@command}
             "record_stop"->{stopRecording();return@command}
             "attachment_pick"->{
                 val wallpaper=fields["kind"]=="Wallpaper"
@@ -424,7 +459,7 @@ recoverAccount=true;return@command}
                             if(address==state.loginAddress)state=state.copy(loginMethods=LoginMethods(value.string("server_name"),value.bool("sso"),value.bool("password"),value.bool("invitation")))
                         }
                     }
-                    "attachment_open","call_start","call_prepare","wallpaper_choose"->state=state.copy(issue="This browser integration is not available yet.")
+                    "attachment_open","wallpaper_choose"->state=state.copy(issue="This browser integration is not available yet.")
                     else->{
                         if(name in setOf("file_send","file_cancel"))fileNext=0
                         val raw=when {
@@ -442,7 +477,7 @@ recoverAccount=true;return@command}
                         value.optional("authorization_url")
 ?.let {authorization=it}
                         value.optional("open")?.let {state=state.copy(selected=it);pages=1}
-                        if(name in setOf("post","edit","file_send")) {state=state.copy(sent=state.sent+1,sentText=(fields["text"]?:fields["caption"]) as? String);post=null}
+                        if(name in setOf("post","edit","file_send")) {state=state.copy(sent=state.sent+1,sentText=(fields["text"]?:fields["caption"]) as? String,sentMessage=if(name=="post")Json.parseToJsonElement(raw).jsonObject.string("request")else null);post=null}
                         if(name in setOf("photo_publish","photo_retry","photo_cancel"))photoRevision++
                         if(name in setOf("profile","set_profile"))state=state.copy(profileName=value.string("display_name"),profileRevision=value.long("revision"))
 if(name=="edit_source")state=state.copy(editDraft=EditDraft(fields["peer"] as String,fields["author"] as String,fields["message"] as String,value.string("edit_source")))
@@ -455,7 +490,29 @@ if(name=="contact_policy")state=state.copy(allowRequests=value.bool("enabled"))
             finally {state=state.copy(busy=false,discovering=false);if(name=="post")sending=false;if(name=="group_create")creatingGroup=false;if(name !in setOf("open","older","latest","timeline_filter","search","search_more","discover","storage","devices","profile"))wake.trySend(Unit)}
         }
     }
-    CompositionLocalProvider(LocalNotificationPanel provides {value,action->WebNotificationSettings(value,action)},LocalWallpaper provides {peer,modifier->WebWallpaper(peer,wallpaperRevision,modifier)},LocalWebFileSave provides ::saveFile,LocalMaterialPlatform provides WebMaterials,LocalSolidMaterial provides (if(materialsReady) {value,progress,modifier->MaterialMessages(value,progress,modifier)} else null),LocalMaterialOverlay provides (if(materialsReady) {timeline,modifier->MaterialTimelineOverlay(timeline,modifier)} else null),LocalProfilePhoto provides {reference,modifier->WebProfilePhoto(reference,photoRevision,modifier)},LocalMathContent provides {mathml,expression,modifier->WebMath(mathml,expression,modifier)},LocalMotionVisible provides visible,LocalClientFeatures provides ClientFeatures(calls=false,files=true,voice=true,locations=false,notifications=notificationsReady,recovery=true),LocalServiceAccess provides ::service,LocalDraftId provides ::browserRequestId,LocalRecipeScale provides ::recipe,LocalTemporalPreview provides {kind,input->val result=rustTemporal("$kind\n${(BrowserDate.now()/1000).toLong()}\n$timezone\n$dateOrder\n$input").split('\n');if(result.size!=3)null else result[1].toLongOrNull()?.let {TemporalPreview(result[0],timezone,if(kind=="Timer")"$it seconds" else calendar(it)+" · "+timezone)}},LocalCameraPanel provides {target,back,done->WebCameraPanel(back) {file->stage(file,target);done()}},LocalAttachmentContent provides {message->message.webFile()?.let {WebAttachment(it,::loadFile,{viewing=it},outgoing=message.mine)}},LocalAttachmentDraft provides {file,modifier->WebAttachment(WebFile(file.peer,"","",file.name,file.mediaType,file.bytes,draft=file.request),::loadFile,{viewing=it},modifier)},LocalBuilderSource provides ::rustBuilder,LocalStructuredPreview provides {source->runCatching {ContentDecoder.part(rustPreview(buildJsonObject {put("source",source);put("now",(BrowserDate.now()/1000).toLong());put("timezone",timezone)}.toString()),::clock)}.getOrNull()},LocalBuilderTimezone provides timezone,LocalCodePreview provides ::rustCode,LocalEditorAnalysis provides ::rustEditor,LocalHelpCatalog provides ::rustHelp,LocalTextMotionSeeds provides ::rustMotionSeeds) {
+    LaunchedEffect(ready,visible,locations.live,locations.completion) {
+        if(!ready){locations.stop();locations.live=false;return@LaunchedEffect}
+        val updating=visible && locations.live
+        if(!updating) {locations.stop();locations.live=false}
+        do {
+            try {
+            var after:String?=null
+            var active=0
+            do {
+                val result=mutex.withLock {execute("location_work",mapOf("after" to after,"point" to if(updating)locations.fresh() else null,"stop" to !updating))}
+                active+=result.long("active").toInt()
+                after=result.optional("next")
+                if(result.long("queued")>0)wake.trySend(Unit)
+            }while(after!=null)
+            if(!updating || active==0){locations.live=false;locations.stop();break}
+            if(locations.issue!=null){locations.live=false;break}
+            }catch(cancelled:CancellationException){throw cancelled}
+            catch(_:Exception){state=state.copy(issue="Location updates are waiting to sync.")}
+            delay(5000)
+        }while(isActive)
+    }
+    DisposableEffect(Unit){onDispose {locations.stop()}}
+    CompositionLocalProvider(LocalMediaCommand provides command, LocalMediaSender provides {message->state.people[message.author] ?: if(message.mine)"You" else state.chats.firstOrNull {it.id==message.peer}?.name ?: ""}, LocalMediaMessage provides {peer,author,id->state.messages.firstOrNull {it.peer==peer && it.author==author && it.id==id}}, LocalLocationContent provides {message,part,action->WebLocationCard(message,part,state.people[message.author] ?: if(message.mine)"You" else "Shared place",action)},LocalPlacePanel provides {target,back,done->WebPlacePanel(target,locations,back,photo=state.profileAvatar) {fields->mutex.withLock {execute("place",fields);locations.shared(if(fields["live"]!=null)"live" else if(fields["pin"]==true)"pin" else "once",visible);runCatching {refresh()}};wake.trySend(Unit);done()}},LocalNotificationPanel provides {value,action->WebNotificationSettings(value,action)},LocalWallpaper provides {peer,modifier->WebWallpaper(peer,wallpaperRevision,modifier)},LocalWebFileSave provides ::saveFile,LocalMaterialPlatform provides WebMaterials,LocalSolidMaterial provides (if(materialsReady) {value,progress,modifier->MaterialMessages(value,progress,modifier)} else null),LocalMaterialOverlay provides (if(materialsReady) {timeline,modifier->MaterialTimelineOverlay(timeline,modifier)} else null),LocalProfilePhoto provides {reference,modifier->WebProfilePhoto(reference,photoRevision,modifier)},LocalMathContent provides {mathml,expression,modifier->WebMath(mathml,expression,modifier)},LocalMotionVisible provides visible,LocalClientFeatures provides ClientFeatures(calls=calls.available,videoCalls=false,files=true,voice=true,locations=true,notifications=notificationsReady,recovery=true),LocalServiceAccess provides ::service,LocalDraftId provides ::browserRequestId,LocalRecipeScale provides ::recipe,LocalTemporalPreview provides {kind,input->val result=rustTemporal("$kind\n${(BrowserDate.now()/1000).toLong()}\n$timezone\n$dateOrder\n$input").split('\n');if(result.size!=3)null else result[1].toLongOrNull()?.let {TemporalPreview(result[0],timezone,if(kind=="Timer")"$it seconds" else calendar(it)+" · "+timezone)}},LocalCameraPanel provides {target,back,done->WebCameraPanel(back) {file->stage(file,target);done()}},LocalAttachmentContent provides {message->message.webFile()?.let {WebAttachment(it,::loadFile,{viewing=it},outgoing=message.mine)}},LocalAttachmentDraft provides {file,modifier->WebAttachment(WebFile(file.peer,"","",file.name,file.mediaType,file.bytes,draft=file.request,levels=voiceWaves[file.request]?.first.orEmpty(),duration=voiceWaves[file.request]?.second ?: 0),::loadFile,{viewing=it},modifier)},LocalBuilderSource provides ::rustBuilder,LocalStructuredPreview provides {source->runCatching {ContentDecoder.part(rustPreview(buildJsonObject {put("source",source);put("now",(BrowserDate.now()/1000).toLong());put("timezone",timezone)}.toString()),::clock)}.getOrNull()},LocalBuilderTimezone provides timezone,LocalCodePreview provides ::rustCode,LocalEditorAnalysis provides ::rustEditor,LocalHelpCatalog provides ::rustHelp,LocalTextMotionSeeds provides ::rustMotionSeeds) {
         SigilTheme(decodeAppearance(state.ui["appearance"]),palette=::rustPalette) { Column(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
 recoveryKey?.let {key->RecoverySetup(key,state.busy,{recoveryKey=null},{command("recovery_enable",mapOf("secret" to key))})}
 if(restoreHistory && state.phase=="connected")RecoveryRestore(state.busy,state.issue,{restoreHistory=false},{command("recovery_restore",mapOf("secret" to it,"accept_unanchored" to true))})
@@ -466,7 +523,7 @@ if(signOut)AlertDialog(onDismissRequest={if(!state.busy)signOut=false},title={Te
     if(signOutFailed)Text("Server revocation was not confirmed. Retry, or remove local data and revoke this device from another signed-in device.")
 }},confirmButton={SigilTextButton(onClick={scope.launch {mutex.withLock {
     state=state.copy(busy=true)
-    try {if(notificationsReady)webNotificationsDisable().awaitBrowser<JsAny?>();execute("browser_sign_out");finishRemoval()}
+    try {if(notificationsReady)webNotificationsDisable().awaitBrowser<JsAny?>();calls.close();execute("browser_sign_out");finishRemoval()}
     catch(_:Exception){signOutFailed=true;state=state.copy(busy=false)}
 }}},enabled=signOutSaved&&!state.busy){Text(if(signOutFailed)"Retry revocation" else "Sign out")}},dismissButton={Row {
     if(signOutFailed)SigilTextButton(onClick={scope.launch {mutex.withLock {
@@ -483,8 +540,7 @@ if(signOut)AlertDialog(onDismissRequest={if(!state.busy)signOut=false},title={Te
             }}
 Box(Modifier.weight(1f).fillMaxWidth(),contentAlignment=Alignment.Center) {
     val qr=linking?:contactQr
-    if(viewing!=null)WebFileViewer(viewing!!,::loadFile){viewing=null}
-    else if(qr!=null) {
+    if(qr!=null) {
         val device=linking!=null
         val close={if(!state.busy)command(if(device)"device_link" else "contact_qr",mapOf("action" to if(!device || qr.string("stage")=="done")"close" else if(qr.bool("can_cancel",true))"cancel" else "pause"))}
         Box(Modifier.widthIn(max=600.dp).fillMaxWidth().fillMaxHeight(.94f).onPreviewKeyEvent {if(it.type==KeyEventType.KeyDown && it.key==Key.Escape){close();true}else false}) {
@@ -492,8 +548,14 @@ Box(Modifier.weight(1f).fillMaxWidth(),contentAlignment=Alignment.Center) {
             else ContactPanel(qr.toString(),state.busy,state.issue,{action,payload->command("contact_qr",mapOf("action" to action,"qr" to payload))}) {found->WebQrScanner(found)}
         }
     } else screens.SaveableStateProvider("messenger") {
-        Box(if(state.phase=="connected")Modifier.fillMaxSize() else Modifier.widthIn(max=540.dp).fillMaxSize()) {
-            SigilApp(::rustPalette,::rustAnalyze,state,command,wideLayout=true,read={window.localStorage.getItem("messenger.$it")},write={k,v->window.localStorage.setItem("messenger.$k",v)})
+        Box((if(state.phase=="connected")Modifier.fillMaxSize() else Modifier.widthIn(max=540.dp).fillMaxSize()).then(if(viewing!=null)Modifier.blur(16.dp)else Modifier)) {
+            SigilApp(::rustPalette,::rustAnalyze,state.copy(calls=calls.history,call=calls.visible),command,wideLayout=true,read={window.localStorage.getItem("messenger.$it")},write={k,v->window.localStorage.setItem("messenger.$k",v)})
+        }
+    }
+    viewing?.let { file ->
+        val chat=state.chats.firstOrNull {it.id==file.peer}
+        SigilTheme(decodeAppearance(state.ui["appearance"]),decodeChat(chat?.ui?.get("chat_theme") ?: window.localStorage.getItem("messenger.chat.${file.peer}")),palette=::rustPalette,chatKey=file.peer) {
+            Dialog({viewing=null},DialogProperties(usePlatformDefaultWidth=false)) { WebFileViewer(file,::loadFile){viewing=null} }
         }
     }
 }

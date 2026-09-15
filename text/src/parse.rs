@@ -258,12 +258,18 @@ fn overlap(a: &Range<usize>, b: &Range<usize>) -> bool {
     a.start < b.end && b.start < a.end
 }
 pub(crate) fn construct_positions(source: &str) -> Result<(Vec<bool>, Vec<bool>), Error> {
+    positions(source, false)
+}
+pub(crate) fn preview_construct_positions(source: &str) -> Result<(Vec<bool>, Vec<bool>), Error> {
+    positions(source, true)
+}
+fn positions(source: &str, conceal: bool) -> Result<(Vec<bool>, Vec<bool>), Error> {
     let syntax = syntax(source)?;
     let ordinary: Vec<_> = (0..source.len())
         .map(|at| syntax.eligible[at] && !syntax.code[at] && !escaped(source, at))
         .collect();
     let openers = (0..source.len())
-        .map(|at| ordinary[at] && !syntax.redacted(&(at..at + 1)))
+        .map(|at| ordinary[at] && !syntax.redacted(&(at..at + 1)) && !(conceal && syntax.spans.iter().any(|span|span.effects.reveal.is_some() && span.range.contains(&at))))
         .collect();
     Ok((openers, ordinary))
 }
