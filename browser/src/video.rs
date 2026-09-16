@@ -44,6 +44,9 @@ struct Viewer {
     decoder: Option<JsValue>,
     size: (u32, u32),
     rotation: u32,
+    last: u64,
+    interval: u64,
+    awaiting_key: bool,
     _output: Closure<dyn FnMut(JsValue)>,
     _error: Closure<dyn FnMut(JsValue)>,
 }
@@ -56,6 +59,7 @@ impl Drop for Viewer {
 }
 thread_local! {
     static CAPTURE: RefCell<Option<Capture>> = const { RefCell::new(None) };
+    static FORCE_KEY: Cell<bool> = const { Cell::new(false) };
     static GENERATION: Cell<u32> = const { Cell::new(0) };
     static FAILED: Cell<bool> = const { Cell::new(false) };
     static VIEWERS: RefCell<HashMap<String, Viewer>> = RefCell::new(HashMap::new());
@@ -172,7 +176,11 @@ pub async fn video_camera_start(video: HtmlVideoElement, front: bool) -> Result<
         let keyframe = get(&chunk, "type").ok().and_then(|v| v.as_string()).as_deref() == Some("key");
         let timestamp = number(&chunk, "timestamp").unwrap_or(-1.0).floor();
         wasm_bindgen_futures::spawn_local(async move {
-            let _ = crate::rtc::browser_call_send(1, timestamp, keyframe, bytes).await;
+            // A frame the transport drops leaves the peer decoding against a reference it
+            // never received; the next capture becomes a keyframe instead of smearing.
+            if !matches!(crate::rtc::browser_call_send(1, timestamp, keyframe, bytes).await, Ok(true)) {
+                FORCE_KEY.with(|f| f.set(true));
+            }
         });
     });
     let error = Closure::<dyn FnMut(JsValue)>::new(move |_| {
@@ -193,7 +201,7 @@ pub async fn video_camera_start(video: HtmlVideoElement, front: bool) -> Result<
         "configure",
         &[object(serde_json::json!({
             "codec": "vp8", "width": width, "height": height,
-            "bitrate": 700000, "framerate": RATE, "latencyMode": "realtime"
+            "bitrate": 1_100_000, "framerate": RATE, "latencyMode": "realtime"
         }))?],
     )?;
     let tick = Closure::<dyn FnMut()>::new(move || {
@@ -228,7 +236,7 @@ pub async fn video_camera_start(video: HtmlVideoElement, front: bool) -> Result<
                 &capture.canvas,
                 &object(serde_json::json!({"timestamp": timestamp}))?,
             )?;
-            let keyframe = capture.frames % RATE as u64 == 0;
+            let keyframe = capture.frames % (RATE as u64 / 2) == 0 || FORCE_KEY.with(Cell::take);
             capture.frames += 1;
             let result = invoke(
                 &capture.encoder,
@@ -323,6 +331,9 @@ pub fn video_attach(sender: String, canvas: HtmlCanvasElement) -> Result<(), JsV
                 decoder: None,
                 size: (0, 0),
                 rotation: 0,
+                last: 0,
+                interval: 0,
+                awaiting_key: false,
                 _output: output,
                 _error: error,
             },
@@ -359,6 +370,27 @@ pub fn video_receive(sender: String, frame: Uint8Array) -> Result<bool, JsValue>
         let Some(viewer) = viewers.get_mut(&sender) else {
             return Ok(true);
         };
+        // A lost fragment costs the whole frame, so decoding the next delta against a
+        // reference that never arrived smears the picture. Hold for a keyframe instead.
+        if keyframe {
+            viewer.awaiting_key = false;
+        } else if viewer.last > 0 {
+            let delta = timestamp.saturating_sub(viewer.last);
+            if delta == 0 {
+                return Ok(true);
+            }
+            if viewer.interval == 0 {
+                viewer.interval = delta;
+            } else if delta > viewer.interval * 3 / 2 {
+                viewer.awaiting_key = true;
+            } else {
+                viewer.interval = (viewer.interval * 7 + delta) / 8;
+            }
+        }
+        viewer.last = timestamp;
+        if viewer.awaiting_key {
+            return Ok(true);
+        }
         let closed = viewer
             .decoder
             .as_ref()
@@ -378,10 +410,15 @@ pub fn video_receive(sender: String, frame: Uint8Array) -> Result<bool, JsValue>
             invoke(
                 &decoder,
                 "configure",
-                &[object(serde_json::json!({"codec":"vp8","codedWidth":width,"codedHeight":height}))?],
+                &[object(serde_json::json!({
+                    "codec": "vp8", "codedWidth": width, "codedHeight": height,
+                    // Some hardware VP8 decoders hand back blank frames; call video is small.
+                    "hardwareAcceleration": "prefer-software", "optimizeForLatency": true
+                }))?],
             )?;
             viewer.decoder = Some(decoder);
             viewer.size = (width, height);
+            viewer.interval = 0;
         }
         viewer.rotation = rotation;
         let decoder = viewer.decoder.clone().ok_or_else(|| fail("Missing decoder"))?;

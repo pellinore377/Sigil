@@ -26,9 +26,10 @@ internal class Vp8Encoder(val width: Int, val height: Int, private val rotation:
             format.setInteger(MediaFormat.KEY_PRIORITY, 0)
             format.setInteger(MediaFormat.KEY_OPERATING_RATE, 24)
             format.setInteger(MediaFormat.KEY_COLOR_FORMAT, MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface)
-            format.setInteger(MediaFormat.KEY_BIT_RATE, 700000)
+            format.setInteger(MediaFormat.KEY_BIT_RATE, 1_100_000)
             format.setInteger(MediaFormat.KEY_FRAME_RATE, 24)
-            format.setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, 1)
+            // Half-second keyframes bound how long a lost frame can hold the picture.
+            format.setFloat(MediaFormat.KEY_I_FRAME_INTERVAL, 0.5f)
             codec.configure(format, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
             surface = codec.createInputSurface(); codec.start()
         } catch (error: Exception) { codec.release(); throw error }
@@ -194,12 +195,28 @@ internal class CallVideoDecoder(private val surface: Surface, private val geomet
         catch (_: Exception) { }
         finally { synchronized(queue) { running.set(false); drain() }; reset(); surface.release() }
     }, "Sigil video decoder").apply { start() }
+    private var offered = 0L
+    private var interval = 0L
+    private var awaitingKey = false
     fun offer(timestamp: Long, keyframe: Boolean, bytes: ByteArray) = synchronized(queue) {
         if (!running.get()) return
+        // A lost fragment costs a whole frame; decoding the next delta against a reference
+        // that never arrived smears the picture, so hold until the sender's next keyframe.
+        if (keyframe) awaitingKey = false
+        else if (offered > 0L) {
+            val delta = timestamp - offered
+            if (delta <= 0L) return
+            if (interval == 0L) interval = delta
+            else if (delta > interval * 3 / 2) awaitingKey = true
+            else interval = (interval * 7 + delta) / 8
+        }
+        offered = timestamp
+        if (awaitingKey) return
         val packet = VideoPacket(timestamp, keyframe, bytes.copyOf())
         if (!queue.offer(packet)) {
             drain()
             lostFrame.set(true)
+            awaitingKey = !keyframe
             if (!keyframe || !queue.offer(packet)) packet.bytes.fill(0)
         }
     }
