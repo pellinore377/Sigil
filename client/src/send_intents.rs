@@ -301,6 +301,17 @@ impl ClientStore {
             return Err(Error::Expired);
         }
         let text = Direct::from_bytes(&intent.text).map_err(|_| Error::InvalidStore)?;
+        // A notice describing a moment that has passed must not be sent, and must not
+        // hold up the messages queued behind it.
+        if crate::event::ephemeral_lifetime(text.content)
+            .is_some_and(|life| now > intent.started.saturating_add(life))
+        {
+            self.db.execute(
+                "DELETE FROM send_intents WHERE id=?1 AND state=?2",
+                (id.as_slice(), expected),
+            )?;
+            return Err(Error::Obsolete);
+        }
         if context(&self.db, &self.key, &own, &intent.peer)?.encode(
             id,
             text.content,
@@ -435,7 +446,7 @@ impl ClientStore {
                     "INSERT INTO send_intent_backoff VALUES(?1,?2) ON CONFLICT(id) DO UPDATE SET until=excluded.until",
                     (id.as_slice(), (now + wait) as i64),
                 )?;
-            } else if result.is_ok() {
+            } else if result.is_ok() || matches!(result, Err(Error::Obsolete)) {
                 self.db.execute("DELETE FROM send_intent_backoff WHERE id=?1", [id.as_slice()])?;
             }
             results.push(SendIntentAttempt { id, result });
