@@ -1,5 +1,6 @@
 use super::*;
 use rtc::{
+    interceptor::Registry,
     media_stream::MediaStreamTrack,
     peer_connection::{
         configuration::{
@@ -184,6 +185,12 @@ impl ClientStore {
         engine
             .register_default_codecs()
             .map_err(|_| Error::Unprepared)?;
+        // A lost fragment discards its whole frame, so video asks for retransmission of
+        // the packets it misses and answers the same request from the forwarder.
+        let interceptors = rtc::peer_connection::configuration::interceptor_registry::configure_nack(
+            Registry::new(),
+            &mut engine,
+        );
         let mut settings = SettingEngine::default();
         settings.set_multicast_dns_mode(rtc::ice::mdns::MulticastDnsMode::Disabled);
         let (gathered, gather_rx) = mpsc::channel(1);
@@ -192,6 +199,7 @@ impl ClientStore {
         let pc = PeerConnectionBuilder::new()
             .with_configuration(config.build())
             .with_media_engine(engine)
+            .with_interceptor_registry(interceptors)
             .with_setting_engine(settings)
             .with_runtime(runtime)
             .with_handler(Arc::new(Handler {
