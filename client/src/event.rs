@@ -320,7 +320,7 @@ impl ClientStore {
 /// Typing and presence describe a moment and are stale within seconds. Holding a
 /// week-long slot in the recipient's queue for them crowds out messages that still
 /// matter, so they lapse on their own shortly after they stop being true.
-fn ephemeral_lifetime(body: Content<'_>) -> Option<u64> {
+pub(crate) fn ephemeral_lifetime(body: Content<'_>) -> Option<u64> {
     let Content::Conversation(raw) = body else {
         return None;
     };
