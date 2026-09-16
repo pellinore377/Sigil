@@ -11,6 +11,12 @@ pub(crate) fn recipient_full(error: &network::Error) -> bool {
     )
 }
 
+/// A failure that belongs to one recipient rather than to the server, so the rest of
+/// the pass can still proceed and there is nothing here for the reader to act on.
+pub(crate) fn recipient_specific(error: &network::Error) -> bool {
+    recipient_full(error)
+        || matches!(error, network::Error::Status { code: 404 | 507, .. })
+}
 pub(crate) fn recipient_unavailable(error: &network::Error) -> bool {
     recipient_full(error) || matches!(error, network::Error::Status { code: 404, retry_after_seconds: None })
 }
