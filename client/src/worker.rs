@@ -104,7 +104,7 @@ impl SyncStep {
                         // A recipient awaiting acceptance or identity consent is shown in its conversation, not as a sync failure.
                         && !(matches!(error, Error::Unprepared) && $stage == "sending messages")
                         // A peer whose inbox stopped draining keeps its queue; the bubble shows the pending state.
-                        && !(matches!(error, Error::Limit) && matches!($stage, "starting conversations" | "sending messages"))
+                        && !(matches!(error, Error::Limit) && matches!($stage, "starting conversations" | "sending messages" | "recovering sessions" | "sending retry controls"))
                         && !matches!(error, Error::Network(error) if outbound::recipient_full(error)
                             // A recipient the server no longer knows cannot be reached by
                             // any lane; that is a fact about them, not a failure here.
