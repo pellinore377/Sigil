@@ -164,6 +164,9 @@ impl ClientStore {
         record.authorize(&self.db, &self.key, now)?;
         let roster = record.state.roster.roster;
         let own = record.own.as_ref().ok_or(Error::Unprepared)?.member.id;
+        // The readiness and key exchange runs over the mailbox and costs a round trip each
+        // way, so it starts here and overlaps candidate gathering instead of following it.
+        let media = self.start_call_media(id, tracks, crate::conversations::now())?;
         let relay = self.call_relay_online(id, now)?;
         let mut config = RTCConfigurationBuilder::new();
         let mut runtime: Arc<dyn webrtc::runtime::Runtime> =
@@ -332,7 +335,6 @@ impl ClientStore {
             )
             .await
             .map_err(|_| Error::Unprepared)?;
-        let media = self.start_call_media(id, tracks, crate::conversations::now())?;
         Ok(RtcCall {
             transport,
             media,
