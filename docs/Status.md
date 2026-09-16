@@ -59,7 +59,7 @@ Moving objects now request motion rendering and refine at rest. Proportional dis
 - Real two-phone call setup, quality, idle ringing and large media timing; live recording/location and complete send-to-timeline animation acceptance through the production client. Isolated UI and codec tests do not establish these end-to-end results.
 - Release signing automatically uses the existing local Sigil signing directory, with environment overrides supported. The signing key matches the previously installed app. Android alpha.23 and its matching container are published; alpha.24 performance changes are not yet released.
 - Browser video/screen sharing, complete native/browser viewer parity, contact import, graphical round-trip editing/mention completion, map search/style catalogs/download setup and remaining Admin service controls.
-- Live FCM needs actual server Firebase configuration; provider delivery/Doze behavior is not established by registration tests. Desktop messaging still lacks a storage adapter.
+- Live FCM is configured on the operator's server with its own Firebase project; a normal-priority push reached the phone 2–3 minutes late under Doze, and high-priority wake pushes await live confirmation. Desktop messaging still lacks a storage adapter.
 - Alpha.18 catch-up recovery needs live receiver confirmation. Recipient-signed full-mailbox allowance publication/deployment is not confirmed in this workspace summary. Never reset stored encryption keys to hide a receive failure.
 
 ## Security and operations
