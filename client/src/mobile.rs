@@ -1606,6 +1606,25 @@ impl ClientStore {
                 } else {
                     self.sync_due_online()?
                 };
+                // Undecryptable mail from a trusted peer asks for a resend at once, so a
+                // desynchronized session cannot jam the pair; identity changes still need consent.
+                let offers: Vec<RecoveryAction> = result
+                    .step
+                    .as_ref()
+                    .map(|step| {
+                        step.incoming
+                            .iter()
+                            .filter_map(|item| match &item.recovery {
+                                RecoveryAdvice::Offer(action) => Some(action.clone()),
+                                _ => None,
+                            })
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                let recovered = !offers.is_empty();
+                for action in offers {
+                    let _ = self.approve_recovery(&action, conversations::now());
+                }
                 let mut issue = result.scheduling_error.as_ref().map(error_message);
                 // Wake passes stay short; the periodic contact poll rides regular passes.
                 let contact_issue = if wake == Some(true) { None } else {
@@ -1642,7 +1661,7 @@ impl ClientStore {
                     .map(|step| step.timings.iter().map(|(name, ms)| ((*name).into(), (*ms).into())).collect())
                     .unwrap_or_default();
                 Ok(
-                    json!({"next_at":result.next_at.min(contact_next),"ran":result.step.is_some(),"pending":pending || generated,"issue":issue,"ms":started.elapsed().as_millis() as u64,"timings":timings}),
+                    json!({"next_at":if recovered { conversations::now() } else { result.next_at.min(contact_next) },"ran":result.step.is_some(),"pending":pending || generated || recovered,"issue":issue,"ms":started.elapsed().as_millis() as u64,"timings":timings}),
                 )
             }
             Command::Publish {} => {

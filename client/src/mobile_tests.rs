@@ -1234,7 +1234,10 @@ fn reading_with_receipts_disabled_updates_unread_without_disclosing_a_receipt() 
     assert_eq!(before["chats"][0]["unread"], 1);
     let alert = run(&mut bob, json!({"command":"notifications"}));
     assert_eq!(alert["unread"], 1);
-    assert_eq!(alert.as_object().unwrap().len(), 3);
+    assert_eq!(alert.as_object().unwrap().len(), 5);
+    assert_eq!(alert["chats"][0]["unread"], 1);
+    assert_eq!(alert["chats"][0]["messages"].as_array().unwrap().len(), 1);
+    assert!(alert["missed"].is_null());
     run(
         &mut bob,
         json!({"command":"snooze","peer":peer,"seconds":3600,"request":"48".repeat(32),"timestamp":now}),

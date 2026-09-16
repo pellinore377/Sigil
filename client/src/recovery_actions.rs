@@ -18,6 +18,7 @@ pub enum RecoveryAdvice {
     Offer(RecoveryAction),
     Refused(RecoveryBlock),
 }
+#[derive(Clone)]
 pub struct RecoveryAction {
     delivery: Delivery,
     fingerprint: Id,

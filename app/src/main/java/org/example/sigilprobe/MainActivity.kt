@@ -86,6 +86,11 @@ class MainActivity : ComponentActivity() {
                     messenger.pickerOpened()
                 }
             }
+            // A ringing or active call may show over the lock screen; ringing also wakes the screen.
+            LaunchedEffect(messenger.state.call?.call?.id, messenger.state.call?.call?.phase) {
+                val call = messenger.state.call?.call
+                if (Build.VERSION.SDK_INT >= 27) { setShowWhenLocked(call != null); setTurnScreenOn(call?.phase == "ringing") }
+            }
             LaunchedEffect(messenger.microphoneRequest) { if (messenger.microphoneRequest != null) microphone.launch(android.Manifest.permission.RECORD_AUDIO) }
             LaunchedEffect(messenger.notificationPermission) { if (messenger.notificationPermission && Build.VERSION.SDK_INT >= 33) notifications.launch(android.Manifest.permission.POST_NOTIFICATIONS) }
             LaunchedEffect(messenger.calls.permissions) { messenger.calls.permissions?.let { (_, fields) -> callPermissions.launch(if (fields["video"] == true) arrayOf(android.Manifest.permission.RECORD_AUDIO, android.Manifest.permission.CAMERA) else arrayOf(android.Manifest.permission.RECORD_AUDIO)) } }
