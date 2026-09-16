@@ -655,10 +655,15 @@ impl ClientStore {
             .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
             .collect::<Result<_, _>>()?;
         let mut count = 0;
-        // Ordinary deliveries validate in order, then acknowledge concurrently.
+        // Ordinary deliveries validate in order; controls are independent of them.
         let mut ready = Vec::new();
         let mut halted = None;
+        let mut failure = None;
         for (sequence, control) in sequences {
+            // One unusable ordinary delivery stops the ordered chain, not the controls.
+            if control == 0 && halted.is_some() {
+                continue;
+            }
             let result = match control {
                 4 => self.acknowledge_abandoned_online(sequence),
                 3 => groups::acknowledge_group(self, sequence),
@@ -667,14 +672,17 @@ impl ClientStore {
                 _ => self.commit_incoming(&own_statement, &own, sequence).map(|()| ready.push(sequence)),
             };
             if let Err(error) = result {
-                halted = Some(error);
-                break;
+                if control == 0 {
+                    halted = Some(error);
+                } else {
+                    failure = failure.or(Some(error));
+                }
+                continue;
             }
             if control != 0 {
                 count += 1;
             }
         }
-        let mut failure = None;
         for (sequence, result) in ready.iter().zip(network.acknowledge_deliveries(&ready)) {
             match result {
                 Ok(()) => {
