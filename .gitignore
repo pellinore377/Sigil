@@ -12,3 +12,6 @@ google-services.json
 fuzz/corpus/
 fuzz/artifacts/
 fuzz/coverage/
+
+# Local build-host settings for deploy-server.sh
+deploy-server.conf

@@ -1,7 +1,7 @@
 name: Server image
+# Routine development builds run on the server host via ./deploy-server.sh; this
+# hosted build is for published releases, so it runs only when asked.
 on:
-  push:
-    branches: [main]
   workflow_dispatch:
 permissions:
   contents: read
