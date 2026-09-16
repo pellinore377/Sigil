@@ -4,6 +4,8 @@ package org.sigil
 import androidx.compose.runtime.*
 import kotlinx.coroutines.*
 import kotlinx.browser.window
+import kotlinx.browser.document
+import org.w3c.dom.HTMLVideoElement
 import kotlinx.serialization.json.*
 import kotlin.js.*
 
@@ -22,6 +24,12 @@ internal class WebCalls(private val scope:CoroutineScope,private val command:sus
     private var members=listOf<String>()
     private var audio:WebAudioEngine?=null
     private var muted=false
+    private var video=false
+    private var usedVideo=false
+    var front=true;private set
+    private var cameraJob:Job?=null
+    /** Local camera preview; the encoder samples this element. */
+    val selfVideo:HTMLVideoElement by lazy {(document.createElement("video") as HTMLVideoElement).apply {setAttribute("style","display:block;width:100%;height:100%;object-fit:cover;background:#000;transform:scaleX(-1)");setAttribute("aria-label","Your camera");muted=true;setAttribute("playsinline","")}}
     private var start=0.0
     private var retry=0.0
     private var failures=0
@@ -29,14 +37,14 @@ internal class WebCalls(private val scope:CoroutineScope,private val command:sus
     private var maintenance:Job?=null
     suspend fun initialize(){try{initializeAudioWasm().awaitBrowser<JsAny?>();available=webAudioSupported().awaitBrowser<JsBoolean>().toBoolean()}catch(_:Exception){available=false}}
     private suspend fun control(operation:String,call:String?=null,tracks:Boolean=false):JsonObject {
-        val raw=buildJsonObject {put("operation",operation);call?.let{put("call",it)};if(tracks)put("tracks",buildJsonObject{put("audio",!muted);put("camera",false);put("screen",false)})}
+        val raw=buildJsonObject {put("operation",operation);call?.let{put("call",it)};if(tracks)put("tracks",buildJsonObject{put("audio",!muted);put("camera",video);put("screen",false)})}
         return Json.parseToJsonElement(browserCallControl(raw.toString()).awaitBrowser<JsString>().toString()).jsonObject
     }
     fun refresh(value:JsonObject,clock:(Long)->String,day:(Long)->String={""}){
         history=value["calls"]?.jsonArray?.map {item->val call=item.jsonObject;CallSummary(call.string("id"),call.string("phase"),call.bool("direct"),call.long("created"),call["participants"]!!.jsonArray.map {entry->val person=entry.jsonObject;CallParticipant(person.string("member"),person.string("peer"),person.string("name"),person.bool("own"),person.bool("verified"),person.bool("audio"),person.bool("camera"),person.bool("screen"),person.string("fingerprint"),person.string("address"))},call.bool("can_invite"),call.string("name"),call.bool("outgoing"),clock(call.long("created")),day(call.long("created")),call.bool("missed"),call["duration"]?.jsonPrimitive?.longOrNull,call["video"]?.jsonPrimitive?.booleanOrNull)}.orEmpty()
         val current=desired?.let {id->history.find {it.id==id}}?:history.firstOrNull {it.phase=="ringing"}
         if(current!=null && current.phase !in setOf("active","joining","ringing")){close();return}
-        visible=current?.let{ActiveCall(it,it.name.ifBlank{it.participants.filterNot{p->p.own}.joinToString(", "){p->p.name}.ifBlank{"Call"}},visible?.connection?:"connecting",if(start==0.0)0 else ((window.performance.now()-start)/1000).toLong(),muted)}
+        visible=current?.let{ActiveCall(it,it.name.ifBlank{it.participants.filterNot{p->p.own}.joinToString(", "){p->p.name}.ifBlank{"Call"}},visible?.connection?:"connecting",if(start==0.0)0 else ((window.performance.now()-start)/1000).toLong(),muted,camera=video)}
         if(current?.phase=="active" && desired==current.id && !connecting && connected!=current.id && CallClock.now()>=retry)connect(current)
     }
     private fun createAudio(){
@@ -55,19 +63,22 @@ internal class WebCalls(private val scope:CoroutineScope,private val command:sus
         scope.launch {
             try {
                 members=call.participants.filterNot{it.own}.map{it.id}
-                browserCallConnect(call.id){sender,frame->if(current==generation){val index=members.indexOf(sender);if(index>=0)runCatching{audio?.receive_frame(index,frame)}}}.awaitBrowser<JsAny?>()
+                browserCallConnect(call.id){sender,frame->if(current==generation){val index=members.indexOf(sender);if(index>=0 && runCatching{browserVideoReceive(sender,frame)}.getOrDefault(true)==false)runCatching{audio?.receive_frame(index,frame)}}}.awaitBrowser<JsAny?>()
                 check(current==generation){"Call changed"}
                 control("call_start",call.id,true)
                 check(current==generation){"Call changed"}
                 connected=call.id;failures=0
+                if(video && cameraJob==null)applyCamera()
                 maintenance?.cancel()
                 maintenance=scope.launch {
                     while(isActive && current==generation && desired==call.id){
                         val state=browserCallTransportState()
-                        if(state in setOf("failed","closed","disconnected")){reconnect();break}
+                        if(state in setOf("failed","closed","disconnected")){reconnect(backoff=state!="closed");break}
                         val receivers=runCatching{control("call_refresh",call.id).long("receivers")}.getOrDefault(0)
                         if(state=="connected" && receivers>=members.size && members.isNotEmpty()){
                             if(start==0.0)start=window.performance.now()
+                            usedVideo=usedVideo||video||history.find{it.id==call.id}?.participants?.any{it.camera}==true
+                            if(video && browserVideoFailed()){video=false;browserVideoStop();cameraJob=null;visible=visible?.copy(camera=false);issue("Camera capture stopped.");desired?.let{id->scope.launch{runCatching{control("call_tracks",id,true)};wake()}}}
                             visible=visible?.copy(connection="connected",seconds=((window.performance.now()-start)/1000).toLong())
                             audio?.mute(muted)
                             if(pumping==null)pumping=scope.launch {
@@ -82,17 +93,20 @@ internal class WebCalls(private val scope:CoroutineScope,private val command:sus
             finally{if(current==generation)connecting=false}
         }
     }
-    private fun reconnect(){audio?.mute(true);pumping?.cancel();pumping=null;connected=null;runCatching{browserCallClose()};failures++;retry=CallClock.now()+(1000L shl failures.coerceAtMost(3));visible=visible?.copy(connection="reconnecting")}
+    /** A closed transport means the roster changed: rejoin now. Failures back off. */
+    private fun reconnect(backoff:Boolean=true){audio?.mute(true);pumping?.cancel();pumping=null;connected=null;runCatching{browserCallClose()};if(backoff){failures++;retry=CallClock.now()+(1000L shl failures.coerceAtMost(3))}else{failures=0;retry=0.0};visible=visible?.copy(connection="reconnecting");wake()}
     fun handle(action:String,fields:Map<String,Any?>):Boolean {
         if(!action.startsWith("call_"))return false
         when(action){
+            "call_camera"->{video=!video;visible=visible?.copy(camera=video);applyCamera()}
+            "call_flip"->{front=!front;selfVideo.style.transform=if(front)"scaleX(-1)" else "none";if(video)applyCamera()}
             "call_mute"->{muted=!muted;audio?.mute(muted);visible=visible?.copy(muted=muted);desired?.let{id->scope.launch{runCatching{control("call_tracks",id,true)};wake()}}}
             "call_end"->{val id=desired?:fields["call"] as? String;close();if(id!=null)scope.launch{runCatching{command("call_leave",mapOf("call" to id))}.onFailure{issue("Call ended locally; the server update is pending.")};wake()}}
             "call_decline"->scope.launch{runCatching{command("call_answer",mapOf("call" to fields["call"],"accept" to false))}.onFailure{issue("Could not decline the call. Try again.")};wake()}
             "call_start","call_redial","call_answer","call_prepare","call_resume"->{
                 if(!available || starting || desired!=null)return true
-                if(fields["video"]==true){issue("Browser video calls are not connected yet.");return true}
-                starting=true;generation++;val current=generation;muted=false;start=0.0
+                if(fields["video"]==true && !browserVideoSupported()){issue("This browser cannot send call video.");return true}
+                starting=true;generation++;val current=generation;muted=false;start=0.0;video=fields["video"]==true;usedVideo=false
                 scope.launch {
                     try{
                         createAudio()
@@ -117,5 +131,19 @@ internal class WebCalls(private val scope:CoroutineScope,private val command:sus
         }
         return true
     }
-    fun close(){val stopped=desired;val duration=if(start>0)((window.performance.now()-start)/1000).toLong() else null;generation++;val stoppedGeneration=generation;starting=false;connecting=false;desired=null;connected=null;visible=null;start=0.0;retry=0.0;failures=0;pumping?.cancel();pumping=null;maintenance?.cancel();maintenance=null;audio?.let{it.close();it.free()};audio=null;runCatching{browserCallClose()};scope.launch{if(stopped!=null && duration!=null)runCatching{command("call_history_media",mapOf("call" to stopped,"duration" to duration,"video" to false))};if(generation==stoppedGeneration && stopped!=null)runCatching{control("call_stop",stopped)}}}
+    /** Starts or stops the camera to match `video`; the tracks control tells peers. */
+    private fun applyCamera(){
+        cameraJob?.cancel()
+        cameraJob=scope.launch {
+            val id=desired
+            if(video){
+                try{browserVideoStart(selfVideo,front).awaitBrowser<JsAny?>()}
+                catch(cancelled:CancellationException){throw cancelled}
+                catch(_:Exception){video=false;browserVideoStop();visible=visible?.copy(camera=false);issue("Could not enable the camera. Allow camera access and try again.")}
+            }else browserVideoStop()
+            if(id!=null && connected==id)runCatching{control("call_tracks",id,true)}
+            wake()
+        }
+    }
+    fun close(){val stopped=desired;val wasVideo=usedVideo;val duration=if(start>0)((window.performance.now()-start)/1000).toLong() else null;generation++;cameraJob?.cancel();cameraJob=null;browserVideoStop();video=false;usedVideo=false;val stoppedGeneration=generation;starting=false;connecting=false;desired=null;connected=null;visible=null;start=0.0;retry=0.0;failures=0;pumping?.cancel();pumping=null;maintenance?.cancel();maintenance=null;audio?.let{it.close();it.free()};audio=null;runCatching{browserCallClose()};scope.launch{if(stopped!=null && duration!=null)runCatching{command("call_history_media",mapOf("call" to stopped,"duration" to duration,"video" to wasVideo))};if(generation==stoppedGeneration && stopped!=null)runCatching{control("call_stop",stopped)}}}
 }

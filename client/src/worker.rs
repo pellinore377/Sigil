@@ -103,6 +103,8 @@ impl SyncStep {
                     .find(|error| !matches!(error, Error::Obsolete)
                         // A recipient awaiting acceptance or identity consent is shown in its conversation, not as a sync failure.
                         && !(matches!(error, Error::Unprepared) && $stage == "sending messages")
+                        // A peer whose inbox stopped draining keeps its queue; the bubble shows the pending state.
+                        && !(matches!(error, Error::Limit) && matches!($stage, "starting conversations" | "sending messages"))
                         && !matches!(error, Error::Network(error) if outbound::recipient_full(error)
                             || matches!($stage, "sending messages" | "sending group messages")
                                 && outbound::recipient_unavailable(error)))
@@ -354,14 +356,7 @@ impl ClientStore {
                 return step;
             }
         }
-        step.begin("acknowledge_incoming_online");
-        match self.acknowledge_incoming_online() {
-            Ok(count) => step.acknowledged = count,
-            Err(error) => {
-                step.failure = Some(SyncFailure::Acknowledge(error));
-                return step;
-            }
-        }
+        // Call controls go out before the acknowledgement round trip; acks follow at the end.
         step.begin("resume_calls_online");
         match self.resume_calls_online(now) {
             Ok(calls) => step.calls = calls,
@@ -386,7 +381,14 @@ impl ClientStore {
                 return step;
             }
         }
-        self.send_stages(now, &mut step);
+        if !self.send_stages(now, &mut step) {
+            return step;
+        }
+        step.begin("acknowledge_incoming_online");
+        match self.acknowledge_incoming_online() {
+            Ok(count) => step.acknowledged = count,
+            Err(error) => step.failure = Some(SyncFailure::Acknowledge(error)),
+        }
         step
     }
     /// Own-device copies plus the three send stages; false stops the pass.

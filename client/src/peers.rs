@@ -254,10 +254,19 @@ fn decode_record(db: &Connection, key: &StorageKey, id: &Id) -> Result<Record, E
     })
 }
 fn save(db: &Connection, key: &StorageKey, id: &Id, record: &Record) -> Result<(), Error> {
-    if !record.blocked {
-        // Any trust or block change lets queued packets go out at once; group channel
-        // sessions carry no peer column, so the whole small table clears.
+    // A trust or block change lets queued work go out at once; group channel sessions
+    // carry no peer column, so the small tables clear whole. Plain saves keep backoffs.
+    let changed = match known(db, key, id) {
+        Ok(old) => {
+            old.trusted != record.trusted
+                || old.blocked != record.blocked
+                || old.verified != record.verified
+        }
+        Err(_) => true,
+    };
+    if changed && !record.blocked {
         db.execute("DELETE FROM outbound_backoff", [])?;
+        db.execute("DELETE FROM send_intent_backoff", [])?;
     }
     let raw = record.signed.to_bytes().map_err(|_| Error::InvalidStore)?;
     let mut bytes = Zeroizing::new(vec![

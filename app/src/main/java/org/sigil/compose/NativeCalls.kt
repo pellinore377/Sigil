@@ -27,6 +27,8 @@ internal class NativeCalls(private val app: Application, private val update: (Li
     private var cameraReady = false
     private var starting = false
     val occupied get() = starting || desired != null || ending?.isActive == true || permissions != null
+    /** A call is being set up: passes stay lean until media is secured. */
+    val settingUp get() = desired != null && visible?.connection != "connected"
     private var closing = false
     private var muted = false
     private var loud = false
@@ -224,7 +226,8 @@ internal class NativeCalls(private val app: Application, private val update: (Li
                         delay(if (received) 5 else 20)
                     }
                 } finally { token = 0; microphone?.close(); microphone = null; camera?.close(); camera = null; synchronized(speakers) { speakers.values.forEach { it.close() }; speakers.clear() }; NativeStorage.closeCall(handle) }
-                delay(500)
+                // A roster change reconnects at once; only failures wait.
+                delay(if (status == 4) 50 else 500)
             }
         } catch (cancelled: CancellationException) { throw cancelled }
         catch (_: Exception) { visible = visible?.copy(connection = "reconnecting"); emit(); delay(1000) }

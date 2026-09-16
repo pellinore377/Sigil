@@ -75,7 +75,7 @@ mod outbound;
 pub use outbound::OutboundAttempt;
 
 pub type Id = [u8; 32];
-pub const DATABASE_VERSION: u32 = 79;
+pub const DATABASE_VERSION: u32 = 80;
 #[derive(Debug)]
 pub enum Error {
     Storage(rusqlite::Error),
@@ -470,6 +470,9 @@ impl ClientStore {
             }
             tx.pragma_update(None, "user_version", 79)?;
         }
+        if version < 80 {
+            tx.execute_batch("CREATE TABLE IF NOT EXISTS send_intent_backoff(id BLOB PRIMARY KEY, until INTEGER NOT NULL); PRAGMA user_version=80;")?;
+        }
         if version < 63 {
             conversations::migrate(&tx, &key)?;
         }
@@ -818,8 +821,21 @@ fn wake_worthy(plaintext: &[u8]) -> bool {
     {
         return false;
     }
-    let visible = |content: sigil_protocol::event::Content<'_>| {
-        !matches!(content, sigil_protocol::event::Content::Conversation(_))
+    // Conversation operations carry posts as well as receipts, typing and presence;
+    // only content a person would want to be woken for counts.
+    let visible = |content: sigil_protocol::event::Content<'_>| match content {
+        sigil_protocol::event::Content::Conversation(raw) => {
+            sigil_protocol::conversation::Operation::from_bytes(raw).is_ok_and(|op| {
+                matches!(
+                    op.action,
+                    sigil_protocol::conversation::Action::Post { .. }
+                        | sigil_protocol::conversation::Action::Edit { .. }
+                        | sigil_protocol::conversation::Action::Reaction { .. }
+                        | sigil_protocol::conversation::Action::Note { .. }
+                )
+            })
+        }
+        _ => true,
     };
     if let Ok(event) = sigil_protocol::event::Direct::from_bytes(plaintext) {
         return visible(event.content);

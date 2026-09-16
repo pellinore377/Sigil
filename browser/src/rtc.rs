@@ -50,7 +50,7 @@ pub(crate) fn invoke(value: &JsValue, name: &str, args: &[JsValue]) -> Result<Js
 pub(crate) fn object(value: serde_json::Value) -> Result<JsValue, JsValue> {
     js_sys::JSON::parse(&value.to_string())
 }
-fn construct(name: &str, options: &JsValue) -> Result<JsValue, JsValue> {
+pub(crate) fn construct(name: &str, options: &JsValue) -> Result<JsValue, JsValue> {
     let args = Array::new();
     args.push(options);
     Reflect::construct(

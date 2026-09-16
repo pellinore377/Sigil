@@ -221,3 +221,42 @@ fn missing_stock_waits_across_restart_and_preparation_failure_leaves_no_intent()
         matches!(&bob.receive_mailbox_online(now).unwrap()[0].result,Ok(MailboxEvent::Text(t)) if t.text().unwrap().body=="waiting for stock")
     );
 }
+#[test]
+fn queued_direct_text_is_wake_worthy() {
+    let (_dir, _fixture, mut alice, mut bob, now) = pair();
+    let (_, b) = trust(&mut alice, &mut bob);
+    alice.queue_peer_text(b, [7; 32], "wake me", now, now).unwrap();
+    let step = alice.sync_step_online(now);
+    assert!(step.failure.is_none());
+    let wake = |alice: &ClientStore, id: [u8; 32]| -> Vec<bool> {
+        alice
+            .db
+            .prepare("SELECT wake FROM outbox WHERE id=?1")
+            .unwrap()
+            .query_map([id.as_slice()], |r| r.get(0))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap()
+    };
+    assert_eq!(wake(&alice, [7; 32]), vec![true]);
+    // Conversation posts (the mobile and browser send path) wake; receipts stay silent.
+    let peer_hex = crate::transport::hex(&b);
+    let post: serde_json::Value = serde_json::from_str(&alice.mobile_command(&format!(
+        r#"{{"command":"post","peer":"{peer_hex}","request":"{}","text":"conversation post","timestamp":{now}}}"#,
+        crate::transport::hex(&[8; 32])
+    )))
+    .unwrap();
+    assert_eq!(post["ok"], true, "{post}");
+    // The post command stamps intents with the wall clock.
+    let step = alice.sync_step_online(now.max(crate::conversations::now()) + 1);
+    assert!(step.failure.is_none());
+    let posted: Vec<bool> = alice
+        .db
+        .prepare("SELECT wake FROM outbox WHERE id<>x'0707070707070707070707070707070707070707070707070707070707070707'")
+        .unwrap()
+        .query_map([], |r| r.get(0))
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap();
+    assert_eq!(posted, vec![true]);
+}

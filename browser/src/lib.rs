@@ -10,6 +10,7 @@ mod camera;
 mod location;
 mod call;
 mod rtc;
+mod video;
 mod display;
 mod files;
 mod media_cache;

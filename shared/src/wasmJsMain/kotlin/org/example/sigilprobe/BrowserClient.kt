@@ -26,6 +26,13 @@ import kotlin.js.*
 @JsName("voice_cancel") external fun browserVoiceCancel()
 @JsName("camera_start_photo") external fun browserCameraStartPhoto(video:org.w3c.dom.HTMLVideoElement,front:Boolean):Promise<JsAny>
 @JsName("camera_photo") external fun browserCameraPhoto():Promise<JsAny>
+@JsName("video_supported") external fun browserVideoSupported():Boolean
+@JsName("video_camera_start") external fun browserVideoStart(video:org.w3c.dom.HTMLVideoElement,front:Boolean):Promise<JsAny?>
+@JsName("video_camera_stop") external fun browserVideoStop()
+@JsName("video_camera_failed") external fun browserVideoFailed():Boolean
+@JsName("video_attach") external fun browserVideoAttach(sender:String,canvas:org.w3c.dom.HTMLCanvasElement)
+@JsName("video_detach") external fun browserVideoDetach(sender:String)
+@JsName("video_receive") external fun browserVideoReceive(sender:String,frame:JsAny):Boolean
 @JsName("camera_photo_url") external fun browserCameraPhotoUrl(file:JsAny):String
 @JsName("render_math") external fun browserRenderMath(target:org.w3c.dom.HTMLElement,mathml:String)
 @JsName("profile_image") external fun browserProfileImage(reference:String):Promise<JsString>
