@@ -760,34 +760,26 @@ impl HttpsClient {
         self.session_response(result?, 201)
     }
     pub fn submit(&self, request: &mailbox::Submit) -> Result<mailbox::Receipt, Error> {
-        self.submit_recovery(request, None)
+        self.submit_recovery(request, None, false)
+    }
+    /// Silent submissions carry no user-visible content; the server sends no push for them.
+    pub fn submit_with(&self, request: &mailbox::Submit, silent: bool) -> Result<mailbox::Receipt, Error> {
+        self.submit_recovery(request, None, silent)
     }
     pub(crate) fn submit_recovery(
         &self,
         request: &mailbox::Submit,
         proof: Option<&[u8]>,
+        silent: bool,
     ) -> Result<mailbox::Receipt, Error> {
         if proof.is_some() {
-            match self.submit(request) {
+            match self.submit_with(request, silent) {
                 Err(error) if crate::outbound::recipient_full(&error) => {}
                 result => return result,
             }
         }
-        if !accounts::valid_credential(&request.recipient_device)
-            || !accounts::valid_credential(&request.message_id)
-            || !valid_hex(&request.payload, 32, mailbox::MAX_PAYLOAD_HEX)
-            || !valid_time(request.expires_at)
-        {
-            return Err(Error::Configuration);
-        }
-        let bytes = serde_json::to_vec(request).map_err(|_| Error::Configuration)?;
-        let mut http = self.build_request(
-            Method::POST,
-            "/client/v0/messages",
-            &bytes,
-            Some("application/json"),
-            None,
-        )?;
+        let bytes = Self::submit_body(request)?;
+        let mut http = self.submit_request(&bytes, silent)?;
         if let Some(proof) = proof {
             sigil_protocol::retry::Request::from_bytes(proof).map_err(|_| Error::Configuration)?;
             http.headers_mut().insert(
@@ -796,11 +788,67 @@ impl HttpsClient {
                     .map_err(|_| Error::Configuration)?,
             );
         }
-        let receipt: mailbox::Receipt = self.json(self.send(http)?, 202, SMALL)?;
+        self.submit_receipt(self.send(http)?, request)
+    }
+    fn submit_body(request: &mailbox::Submit) -> Result<Vec<u8>, Error> {
+        if !accounts::valid_credential(&request.recipient_device)
+            || !accounts::valid_credential(&request.message_id)
+            || !valid_hex(&request.payload, 32, mailbox::MAX_PAYLOAD_HEX)
+            || !valid_time(request.expires_at)
+        {
+            return Err(Error::Configuration);
+        }
+        serde_json::to_vec(request).map_err(|_| Error::Configuration)
+    }
+    fn submit_request<'a>(&self, bytes: &'a [u8], silent: bool) -> Result<Request<&'a [u8]>, Error> {
+        let mut http = self.build_request(
+            Method::POST,
+            "/client/v0/messages",
+            bytes,
+            Some("application/json"),
+            None,
+        )?;
+        if silent {
+            http.headers_mut().insert(mailbox::SILENT_HEADER, HeaderValue::from_static("1"));
+        }
+        Ok(http)
+    }
+    fn submit_receipt(
+        &self,
+        response: Response<Body>,
+        request: &mailbox::Submit,
+    ) -> Result<mailbox::Receipt, Error> {
+        let receipt: mailbox::Receipt = self.json(response, 202, SMALL)?;
         if receipt.sequence <= 0 || receipt.expires_at != request.expires_at {
             return Err(Error::InvalidResponse);
         }
         Ok(receipt)
+    }
+    /// Concurrent home-server submissions; results keep input order.
+    pub fn submit_many(&self, requests: &[(&mailbox::Submit, bool)]) -> Vec<Result<mailbox::Receipt, Error>> {
+        let bodies: Vec<Result<Vec<u8>, Error>> = requests.iter().map(|(r, _)| Self::submit_body(r)).collect();
+        let built: Vec<Result<Request<&[u8]>, Error>> = bodies
+            .iter()
+            .zip(requests)
+            .map(|(body, (_, silent))| match body {
+                Ok(bytes) => self.submit_request(bytes, *silent),
+                Err(_) => Err(Error::Configuration),
+            })
+            .collect();
+        let mut responses = self
+            .send_many(built.iter().filter_map(|r| r.as_ref().ok().cloned()).collect())
+            .into_iter();
+        built
+            .into_iter()
+            .zip(requests)
+            .map(|(request, (submit, _))| match request {
+                Ok(_) => responses
+                    .next()
+                    .unwrap_or(Err(Error::Transport))
+                    .and_then(|response| self.submit_receipt(response, submit)),
+                Err(error) => Err(error),
+            })
+            .collect()
     }
     pub fn mailbox(&self) -> Result<Vec<mailbox::Delivery>, Error> {
         self.mailbox_after(0)

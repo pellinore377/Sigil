@@ -48,7 +48,7 @@ impl Store {
         request: Submit,
         now: u64,
     ) -> Result<Receipt, StoreError> {
-        self.submit_message_inner(credential, request, None, now)
+        self.submit_message_inner(credential, request, None, false, now)
     }
     pub fn submit_recovery_message(
         &mut self,
@@ -57,13 +57,25 @@ impl Store {
         proof: &str,
         now: u64,
     ) -> Result<Receipt, StoreError> {
-        self.submit_message_inner(credential, request, Some(proof), now)
+        self.submit_message_inner(credential, request, Some(proof), false, now)
+    }
+    /// Silent traffic (receipts, controls, key shares) is stored without a push job.
+    pub fn submit_message_silent(
+        &mut self,
+        credential: &str,
+        request: Submit,
+        proof: Option<&str>,
+        silent: bool,
+        now: u64,
+    ) -> Result<Receipt, StoreError> {
+        self.submit_message_inner(credential, request, proof, silent, now)
     }
     fn submit_message_inner(
         &mut self,
         credential: &str,
         request: Submit,
         proof: Option<&str>,
+        silent: bool,
         now: u64,
     ) -> Result<Receipt, StoreError> {
         if !valid_credential(&request.recipient_device)
@@ -141,7 +153,9 @@ impl Store {
         }
         tx.execute("INSERT INTO mailbox(sender,message_id,recipient,payload,payload_hash,expires_at) VALUES(?1,?2,?3,?4,?5,?6)", (&sender,&request.message_id,&request.recipient_device,&request.payload,hash.as_slice(),request.expires_at as i64))?;
         let sequence = tx.last_insert_rowid();
-        crate::push::enqueue(&tx, &request.recipient_device, now)?;
+        if !silent {
+            crate::push::enqueue(&tx, &request.recipient_device, now)?;
+        }
         tx.commit()?;
         Ok(Receipt {
             sequence,
@@ -347,9 +361,11 @@ async fn submit(
     let log = state.ciphertext_log.clone();
     let record = log.capture(&request);
     let recipient = request.recipient_device.clone();
-    match with_store(state.clone(), move |store| match proof {
-        Some(proof) => store.submit_recovery_message(&token, request, &proof, now()?),
-        None => store.submit_message(&token, request, now()?),
+    let silent = headers
+        .get(sigil_protocol::mailbox::SILENT_HEADER)
+        .is_some_and(|value| value == "1");
+    match with_store(state.clone(), move |store| {
+        store.submit_message_silent(&token, request, proof.as_deref(), silent, now()?)
     })
     .await
     {

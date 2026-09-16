@@ -64,31 +64,89 @@ impl ClientStore {
             // Wrap within the pass so a fresh packet never waits for the next one.
             ids = self.db.prepare(query)?.query_map((Vec::new(), now as i64), |r| r.get(0))?.collect::<Result<_, _>>()?;
         }
+        // Up to four rounds; each round submits one packet per session concurrently, so
+        // per-session order holds while sessions no longer wait on each other.
+        struct Lane {
+            session: Id,
+            progress: SendProgress,
+            error: Option<Error>,
+            done: bool,
+        }
+        let mut lanes: Vec<Lane> = ids
+            .into_iter()
+            .map(|bytes| {
+                Ok(Lane {
+                    session: bytes.try_into().map_err(|_| Error::InvalidStore)?,
+                    progress: SendProgress { accepted: 0, expired: 0 },
+                    error: None,
+                    done: false,
+                })
+            })
+            .collect::<Result<_, Error>>()?;
+        let network = self.connected_client()?;
+        for _ in 0..4 {
+            let mut batch = Vec::new();
+            for index in 0..lanes.len() {
+                if lanes[index].done {
+                    continue;
+                }
+                let session = lanes[index].session;
+                match self.prepare_outgoing(session, now) {
+                    Ok((prepared, expired)) => {
+                        lanes[index].progress.expired += expired;
+                        match prepared {
+                            crate::connection::Prepared::Request(id, request, silent) => batch.push((index, id, request, silent)),
+                            crate::connection::Prepared::Accepted(id, receipt) => match self.acknowledge_sent(session, id, &receipt) {
+                                Ok(()) => lanes[index].progress.accepted += 1,
+                                Err(error) => { lanes[index].error = Some(error); lanes[index].done = true; }
+                            },
+                            crate::connection::Prepared::Pending | crate::connection::Prepared::Empty => lanes[index].done = true,
+                        }
+                    }
+                    Err(error) => { lanes[index].error = Some(error); lanes[index].done = true; }
+                }
+            }
+            if batch.is_empty() {
+                break;
+            }
+            let results = network.submit_many(&batch.iter().map(|(_, _, request, silent)| (request, *silent)).collect::<Vec<_>>());
+            let mut transport_failure = false;
+            for ((index, id, _, _), result) in batch.into_iter().zip(results) {
+                let session = lanes[index].session;
+                match result.map_err(Error::from).and_then(|receipt| self.acknowledge_sent(session, id, &receipt)) {
+                    Ok(()) => lanes[index].progress.accepted += 1,
+                    Err(error) => {
+                        transport_failure |= matches!(&error, Error::Network(e) if !recipient_unavailable(e));
+                        lanes[index].error = Some(error);
+                        lanes[index].done = true;
+                    }
+                }
+            }
+            if transport_failure {
+                break;
+            }
+        }
         let mut attempts = Vec::new();
         let mut next = Vec::new();
-        for bytes in ids {
-            let session: Id = bytes.try_into().map_err(|_| Error::InvalidStore)?;
-            let result = self.send_pending_limit(session, now, 4);
-            let stop = matches!(&result, Err(Error::Network(error)) if !recipient_unavailable(error));
+        for lane in lanes {
+            let result = match lane.error {
+                Some(error) => Err(error),
+                None => Ok(lane.progress),
+            };
             // Full and unknown recipients wait instead of costing every pass.
             let backoff = match &result {
                 Err(Error::Network(error)) if recipient_full(error) => 60,
                 Err(Error::Network(error)) if recipient_unavailable(error) => 300,
                 _ => 0,
             };
-            {
-                if backoff > 0 {
-                    self.db.execute(
-                        "INSERT INTO outbound_backoff VALUES(?1,?2) ON CONFLICT(session) DO UPDATE SET until=excluded.until",
-                        (session.as_slice(), (now + backoff) as i64),
-                    )?;
-                }
+            if backoff > 0 {
+                self.db.execute(
+                    "INSERT INTO outbound_backoff VALUES(?1,?2) ON CONFLICT(session) DO UPDATE SET until=excluded.until",
+                    (lane.session.as_slice(), (now + backoff) as i64),
+                )?;
             }
-            attempts.push(OutboundAttempt { session, result });
-            next = session.to_vec();
-            if stop {
-                break;
-            }
+            next = lane.session.to_vec();
+            attempts.push(OutboundAttempt { session: lane.session, result });
         }
         let tx = self
             .db
@@ -359,16 +417,17 @@ mod tests {
         drop(alice);
         let mut alice = reopen(&dir.path().join("alice.db"));
         drop(fixture);
+        // Sessions submit concurrently, so a transport failure surfaces on every lane of the round.
         let first = alice.resume_outbound_online(now).unwrap();
-        assert_eq!(first.len(), 1);
+        assert_eq!(first.len(), 2);
         assert_eq!(first[0].session, [0; 32]);
-        assert!(matches!(first[0].result, Err(Error::Network(_))));
+        assert_eq!(first[1].session, [1; 32]);
+        assert!(first.iter().all(|a| matches!(a.result, Err(Error::Network(_)))));
         drop(alice);
         let mut alice = reopen(&dir.path().join("alice.db"));
         let second = alice.resume_outbound_online(now).unwrap();
-        assert_eq!(second.len(), 1);
-        assert_eq!(second[0].session, [1; 32]);
-        assert!(matches!(second[0].result, Err(Error::Network(_))));
+        assert_eq!(second.len(), 2);
+        assert!(second.iter().all(|a| matches!(a.result, Err(Error::Network(_)))));
         assert_eq!(alice.pending_deliveries([0; 32], now).unwrap().len(), 1);
         assert_eq!(alice.pending_deliveries([1; 32], now).unwrap().len(), 1);
     }

@@ -164,6 +164,7 @@ class Messenger(application: Application) : AndroidViewModel(application) {
         private set
 
     init {
+        NativeSync.foregroundWake = { forceSync = true; syncWake.trySend(Unit) }
         if (signOutStage.isEmpty()) scope.launch { serialized(false) { refresh(); linkResult(execute("device_link", mapOf("action" to "status"))) } }
         else NativeSync.enable(application, false)
         scope.launch {

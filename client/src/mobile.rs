@@ -1662,13 +1662,24 @@ impl ClientStore {
                     |row| row.get(0),
                 )?;
                 let contact_next = u64::try_from(contact_next).map_err(|_| Error::InvalidStore)?;
+                let lanes = result.step.as_ref().map(|step| {
+                    let count = |items: usize, failed: usize| json!([items, failed]);
+                    json!({
+                        "incoming": count(step.incoming.len(), step.incoming.iter().filter(|i| i.result.is_err()).count()),
+                        "sends": count(step.sends.len(), step.sends.iter().filter(|i| i.result.is_err()).count()),
+                        "outbound": count(step.outbound.len(), step.outbound.iter().filter(|i| i.result.is_err()).count()),
+                        "calls": count(step.calls.len(), step.calls.iter().filter(|i| i.result.is_err()).count()),
+                        "receipts": step.delivery_receipts,
+                        "copies": step.conversation_copies,
+                    })
+                });
                 let timings: serde_json::Map<String, Value> = result
                     .step
                     .as_ref()
                     .map(|step| step.timings.iter().map(|(name, ms)| ((*name).into(), (*ms).into())).collect())
                     .unwrap_or_default();
                 Ok(
-                    json!({"next_at":if recovered { conversations::now() } else { result.next_at.min(contact_next) },"ran":result.step.is_some(),"pending":pending || generated || recovered,"issue":issue,"ms":started.elapsed().as_millis() as u64,"timings":timings}),
+                    json!({"next_at":if recovered { conversations::now() } else { result.next_at.min(contact_next) },"ran":result.step.is_some(),"pending":pending || generated || recovered,"issue":issue,"ms":started.elapsed().as_millis() as u64,"timings":timings,"lanes":lanes}),
                 )
             }
             Command::Publish {} => {

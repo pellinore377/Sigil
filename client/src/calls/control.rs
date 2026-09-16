@@ -64,6 +64,10 @@ fn parse(raw: &[u8]) -> Result<Option<Wire>, Error> {
     }
     Ok(Some(value))
 }
+/// Invitations deserve a push; other call controls ride the active call loop.
+pub(crate) fn is_invite(raw: &[u8]) -> bool {
+    matches!(parse(raw), Ok(Some(wire)) if matches!(wire.body, Body::Invite(_) | Body::DirectInvite(_)))
+}
 pub(crate) fn scoped_wire(raw: &[u8]) -> Result<bool, Error> {
     Ok(parse(raw)?.is_some_and(|wire| wire.scoped))
 }

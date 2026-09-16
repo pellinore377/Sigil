@@ -72,6 +72,7 @@ internal class NativeCalls(private val app: Application, private val update: (Li
     }
     private fun stopScreen() { sharing = false; projectionRequest = null; screen?.close(); screen = null; applyTracks() }
     fun videoOutput(member: String, screen: Boolean, decoder: CallVideoDecoder?) { val key = "$member:${if (screen) 2 else 1}"; if (decoder == null) videoOutputs.remove(key) else videoOutputs[key] = decoder }
+    private var lastMark: String? = null
     private var ringer: android.media.Ringtone? = null
     private var ringing: String? = null
     /** Rings in the app while an incoming call waits; the notification's own sound only plays once. */
@@ -102,6 +103,9 @@ internal class NativeCalls(private val app: Application, private val update: (Li
         }
         val current = desired?.let { id -> history.find { it.id == id } } ?: history.firstOrNull { it.phase == "ringing" }
         ring(current?.takeIf { desired == null && it.phase == "ringing" && !it.outgoing }?.id)
+        // Phase transitions only; call ids are truncated.
+        val mark = current?.let { "${it.id.take(8)} ${it.phase} ${visible?.connection ?: "-"} participants=${it.participants.size}" }
+        if (mark != lastMark) { lastMark = mark; android.util.Log.i("SigilTiming", "call ${mark ?: "none"}") }
         visible = current?.let { call ->
             ActiveCall(call, name.takeIf { desired == call.id && it.isNotBlank() } ?: call.participants.filter { !it.own }.joinToString(", ") { it.name }.ifEmpty { "Call" },
                 visible?.connection?.takeIf { visible?.call?.id == call.id } ?: "connecting", if (started == 0L) 0 else (SystemClock.elapsedRealtime() - started) / 1000, muted, loud, video, screen = sharing, levels = levels)
@@ -136,7 +140,7 @@ internal class NativeCalls(private val app: Application, private val update: (Li
                         refresh(native("calls"))
                         control = scope.launch { controlLoop(id, current) }
                     } catch (cancelled: CancellationException) { throw cancelled }
-                    catch (_: Exception) { issue("Could not start the call. Check connectivity and device verification."); end() }
+                    catch (error: Exception) { android.util.Log.w("SigilTiming", "call start failed: ${error.javaClass.simpleName}: ${error.message?.take(160)}"); issue("Could not start the call. Check connectivity and device verification."); end() }
                     finally { starting = false; if (closing && ending?.isActive != true) scope.cancel() }
                 }
             }
@@ -205,6 +209,7 @@ internal class NativeCalls(private val app: Application, private val update: (Li
                         if (status == 2) { if (disconnectedAt == 0L) disconnectedAt = SystemClock.elapsedRealtime(); if (SystemClock.elapsedRealtime() - disconnectedAt > 5000) break } else disconnectedAt = 0
                         val state = if (status == 1) "connected" else if (status == 2) "reconnecting" else if (status == 5) "securing call" else "connecting"
                         if (refreshStatus) {
+                            if (visible?.connection != state) android.util.Log.i("SigilTiming", "call media $state status=$status")
                             visible = visible?.copy(connection = state, seconds = if (started == 0L) 0 else (SystemClock.elapsedRealtime() - started) / 1000, levels = levels); emit()
                         }
                         var received = false

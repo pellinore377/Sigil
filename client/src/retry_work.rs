@@ -126,7 +126,7 @@ impl ClientStore {
             self.prepare_delivery(session, id, peer.binding.device, request.expires_at, now)?;
         let receipt = self
             .connected_client()?
-            .submit_recovery(&packet, Some(&record.packet))?;
+            .submit_recovery(&packet, Some(&record.packet), false)?;
         self.acknowledge_sent(session, id, &receipt)?;
         Ok(receipt)
     }

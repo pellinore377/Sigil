@@ -348,11 +348,13 @@ impl ClientStore {
         tx.commit()?;
         self.wrap_group_request(job.group, job.target.fingerprint, &mut request)?;
         let own_session = self.connection_session()?.ok_or(Error::Unprepared)?;
+        // Group envelopes may carry member messages, so they keep pushing.
         let result = crate::federation::submit(
             &network,
             &own_session,
             &known.binding.server,
             &request,
+            false,
             || {
                 self.refresh_group_authority_for_send(job.group, now)?;
                 crate::conversations::check_send(

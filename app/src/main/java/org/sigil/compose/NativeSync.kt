@@ -27,7 +27,10 @@ internal object NativeSync {
     @Volatile private var interaction = 0L
     private var presenceAt = 0L
     private var presenceStatus = ""
+    /** The foreground loop owns syncing while the app is visible; background jobs hand wakes to it. */
+    @Volatile var foregroundWake: (() -> Unit)? = null
     fun foreground(value: Boolean) { foreground = value; if (value) interaction() }
+    fun isForeground() = foreground
     fun interaction() { interaction = android.os.SystemClock.elapsedRealtime() }
     suspend fun presence(context: Context, inCall: Boolean) = withContext(Dispatchers.IO) {
         presence.withLock {
@@ -58,7 +61,7 @@ internal object NativeSync {
             val result = StorageKeyProvider(context).withKey { directory, key -> JSONObject(NativeStorage.execute(directory.path, key, request)) }
             check(result.getBoolean("ok"))
             val value = result.getJSONObject("value")
-            android.util.Log.i("SigilTiming", "sync ${android.os.SystemClock.elapsedRealtime() - started}ms native=${value.optLong("ms")} ran=${value.optBoolean("ran")} interactive=$interactive wake=$wake ${value.optJSONObject("timings")}")
+            android.util.Log.i("SigilTiming", "sync ${android.os.SystemClock.elapsedRealtime() - started}ms native=${value.optLong("ms")} ran=${value.optBoolean("ran")} interactive=$interactive wake=$wake setup=$callSetup lanes=${value.optJSONObject("lanes")} ${value.optJSONObject("timings")}")
             value
         }
     }
@@ -98,7 +101,8 @@ class SyncService : JobService() {
             var retry = false
             var nextDelay: Long? = null
             try {
-                if (!NativeSignOut.pending(this@SyncService) && File(noBackupFilesDir, "native/client.db").isFile) {
+                if (NativeSync.isForeground()) { NativeSync.foregroundWake?.invoke() }
+                else if (!NativeSignOut.pending(this@SyncService) && File(noBackupFilesDir, "native/client.db").isFile) {
                     val value = NativeSync.run(this@SyncService, wake = params.extras.getInt("wake", 0) == 1)
                     retry = !value.isNull("issue")
                     NativeNotifications.update(this@SyncService)
