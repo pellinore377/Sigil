@@ -924,7 +924,7 @@ impl ClientStore {
                         .or_else(|| chat["address"].as_str().map(|a| a.trim_start_matches('@').split(':').next().unwrap_or_default().to_owned()))
                         .filter(|v| !v.is_empty())
                         .unwrap_or_else(|| "Conversation".into());
-                    chats.push(json!({"id":id,"name":name,"group":chat["group"]==true,"unread":count,"messages":messages}));
+                    chats.push(json!({"id":id,"name":name,"group":chat["group"]==true,"avatar":chat["avatar"],"unread":count,"messages":messages}));
                 }
                 let revision = self.key.commitment(
                     &serde_json::to_vec(&stamp).map_err(|_| Error::InvalidStore)?,
@@ -941,7 +941,17 @@ impl ClientStore {
                         json!({"id":id,"until":call.ring_until,"name":name})
                     })
                     .collect::<Vec<_>>();
-                Ok(json!({"unread":unread,"chats":chats,"calls":calls,"revision":transport::hex(&revision)}))
+                // Newest missed incoming call of the last hour, for a device-local missed-call notice.
+                let missed = names["calls"]
+                    .as_array()
+                    .and_then(|list| {
+                        list.iter()
+                            .filter(|c| c["missed"] == true && c["outgoing"] != true && c["created"].as_u64().is_some_and(|t| t + 3600 > now))
+                            .max_by_key(|c| c["created"].as_u64().unwrap_or(0))
+                    })
+                    .map(|c| json!({"id":c["id"],"name":c["name"],"created":c["created"]}))
+                    .unwrap_or(Value::Null);
+                Ok(json!({"unread":unread,"chats":chats,"calls":calls,"missed":missed,"revision":transport::hex(&revision)}))
             }
             Command::Place {
                 peer,
