@@ -38,12 +38,16 @@ impl ClientStore {
         record.authorize(&tx, &self.key, now)?;
         record.lease = sigil_calls::random_id().map_err(failure)?;
         record.shares.clear();
-        ready(&tx, &self.key, &mut record, tracks, now)?;
+        let declared = ready(&tx, &self.key, &mut record, tracks, now)?;
+        let (state, sender) = match declared {
+            Some((digest, sender)) => (Some(digest), Some(sender)),
+            None => (None, None),
+        };
         let media = Media {
             call: id,
             lease: record.lease,
-            state: None,
-            sender: None,
+            state,
+            sender,
             receivers: BTreeMap::new(),
             assembly: sigil_calls::Assembly::default(),
         };
@@ -66,11 +70,19 @@ impl ClientStore {
         if record.lease != media.lease {
             return Err(Error::Obsolete);
         }
-        ready(&tx, &self.key, &mut record, tracks, now)?;
+        let declared = ready(&tx, &self.key, &mut record, tracks, now)?;
         save(&tx, &self.key, &record)?;
         tx.commit()?;
-        media.state = None;
-        media.sender = None;
+        match declared {
+            Some((digest, sender)) => {
+                media.state = Some(digest);
+                media.sender = Some(sender);
+            }
+            None => {
+                media.state = None;
+                media.sender = None;
+            }
+        }
         media.receivers.clear();
         media.assembly.clear();
         Ok(())
@@ -281,13 +293,17 @@ fn enabled(record: &Record, sender: Id, kind: sigil_calls::MediaKind) -> bool {
             sigil_calls::MediaKind::Screen => r.tracks.screen,
         })
 }
+/// A declaration of readiness, plus the sender key signed against the state the
+/// owner will commit for it. Sending both together saves a full round trip.
+type Declaration = Option<(Id, sigil_calls::Sender)>;
+
 fn ready(
     tx: &Transaction<'_>,
     key: &StorageKey,
     record: &mut Record,
     tracks: Tracks,
     now: u64,
-) -> Result<(), Error> {
+) -> Result<Declaration, Error> {
     record.ready_sequence = record.ready_sequence.checked_add(1).ok_or(Error::Limit)?;
     let ready = Ready::sign(
         &record.state.roster.roster,
@@ -297,14 +313,70 @@ fn ready(
         &record.key(key)?,
     )
     .map_err(failure)?;
-    if let Some(owner) = record.owner_peer {
-        jobs::queue(tx, key, record, owner, control::Body::Ready(ready), now)?;
-    } else {
+    let Some(owner) = record.owner_peer else {
         let mut state = record.state.clone();
         state.ready.retain(|r| r.member != ready.member);
         state.ready.push(ready);
         state.ready.sort_by_key(|r| r.member);
         record.change(key, state)?;
+        return Ok(None);
+    };
+    jobs::queue(tx, key, record, owner, control::Body::Ready(ready.clone()), now)?;
+    Ok(match anticipated(record, &ready) {
+        Some(state) => {
+            let declared = declare(tx, key, record, &state, now)?;
+            Some(declared)
+        }
+        None => None,
+    })
+}
+
+/// The state the owner commits when it applies our readiness: the digest covers the
+/// roster, epoch, participants and ready list, none of which we have to guess.
+fn anticipated(record: &Record, ready: &Ready) -> Option<State> {
+    let mut state = record.state.clone();
+    state.epoch = record.state.epoch.checked_add(1)?;
+    state.ready.retain(|r| r.member != ready.member);
+    state.ready.push(ready.clone());
+    state.ready.sort_by_key(|r| r.member);
+    state.digest().ok()?;
+    Some(state)
+}
+
+/// Sign a sender key against an anticipated state and send it with the declaration.
+/// The owner applies its usual checks; a state it does not commit simply drops the
+/// share and the ordinary refresh issues another one.
+fn declare(
+    tx: &Transaction<'_>,
+    key: &StorageKey,
+    record: &mut Record,
+    state: &State,
+    now: u64,
+) -> Result<(Id, sigil_calls::Sender), Error> {
+    let own = record.own_id()?;
+    record.generation = record.generation.checked_add(1).ok_or(Error::Limit)?;
+    let (sender, share_key) = sigil_calls::Sender::generate(sigil_calls::Context {
+        call: record.id(),
+        roster: record.state.roster.roster.digest().map_err(failure)?,
+        sender: own,
+        incarnation: sigil_calls::random_id().map_err(failure)?,
+    })
+    .map_err(failure)?;
+    let share = Share::sign(state, record.generation, share_key, &record.key(key)?)
+        .map_err(failure)?;
+    let digest = state.digest().map_err(failure)?;
+    record.shares.retain(|s| s.key.context.sender != own);
+    record.shares.push(share.clone());
+    record.anticipated = Some(digest);
+    if let Some(owner) = record.owner_peer {
+        jobs::queue(
+            tx,
+            key,
+            record,
+            owner,
+            control::Body::Shares(vec![share]),
+            now,
+        )?;
     }
-    Ok(())
+    Ok((digest, sender))
 }

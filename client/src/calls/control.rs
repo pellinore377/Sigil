@@ -228,6 +228,7 @@ pub(crate) fn install(
                 pins: Vec::new(),
                 commits: Vec::new(),
                 announced: None,
+                anticipated: None,
                 announced_media: None,
                 notify: Vec::new(),
                 ready_sequence: 0,

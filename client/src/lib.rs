@@ -75,7 +75,7 @@ mod outbound;
 pub use outbound::OutboundAttempt;
 
 pub type Id = [u8; 32];
-pub const DATABASE_VERSION: u32 = 81;
+pub const DATABASE_VERSION: u32 = 82;
 #[derive(Debug)]
 pub enum Error {
     Storage(rusqlite::Error),
@@ -475,6 +475,18 @@ impl ClientStore {
         }
         if version < 81 {
             tx.execute_batch("CREATE TABLE IF NOT EXISTS abandoned_deliveries(sequence INTEGER PRIMARY KEY); PRAGMA user_version=81;")?;
+        }
+        if version < 82 {
+            // Call controls must reach a peer in the order they were produced; the
+            // job id is a content commitment and does not sort by age.
+            if !tx.query_row(
+                "SELECT EXISTS(SELECT 1 FROM pragma_table_info('call_jobs') WHERE name='queued')",
+                [],
+                |r| r.get::<_, bool>(0),
+            )? {
+                tx.execute_batch("ALTER TABLE call_jobs ADD COLUMN queued INTEGER NOT NULL DEFAULT 0;")?;
+            }
+            tx.execute_batch("PRAGMA user_version=82;")?;
         }
         if version < 63 {
             conversations::migrate(&tx, &key)?;

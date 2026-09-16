@@ -246,3 +246,41 @@ fn sender_key_renewal_keeps_receiver_replay_state_and_failed_commit_keeps_live_h
     lifecycle(false);
     lifecycle(true);
 }
+
+/// Counts the mailbox round trips a direct call needs between answering and both
+/// sides holding each other's media key. Each trip is a poll plus a server hop on a
+/// real device, so this number is the floor on how long "securing" lasts: joining
+/// up, the roster back, readiness and our key up, the roster and their key back.
+#[test]
+fn direct_call_secures_within_four_round_trips_of_answering() {
+    let (dir, _fixture, mut alice, mut bob, now) = pair();
+    crate::calls::tests::configure(dir.path());
+    let (_alice_peer, peer) = trust(&mut alice, &mut bob);
+    let id = [83; 32];
+    alice.start_call(id, now, true, &[peer]).unwrap();
+    crate::calls::tests::pump(&mut alice, &mut bob, now);
+    bob.answer_call(id, true, now).unwrap();
+    let tracks = Tracks {
+        audio: true,
+        camera: false,
+        screen: false,
+    };
+    let mut a = Some(alice.start_call_media(id, tracks, now).unwrap());
+    let mut b = None;
+    let mut trips = 0;
+    for _ in 0..12 {
+        // Each device opens its media handle as soon as the call admits it.
+        if b.is_none() {
+            b = bob.start_call_media(id, tracks, now).ok();
+        }
+        let secured = |store: &mut ClientStore, media: Option<&mut Media>| {
+            media.is_some_and(|m| matches!(store.refresh_call_media(m, now), Ok(n) if n > 0))
+        };
+        if secured(&mut alice, a.as_mut()) && secured(&mut bob, b.as_mut()) {
+            break;
+        }
+        trips += 1;
+        crate::calls::tests::round_trip(&mut alice, &mut bob, now);
+    }
+    assert_eq!(trips, 4, "round trips from answering to secured");
+}

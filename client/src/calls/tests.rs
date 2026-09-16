@@ -30,6 +30,11 @@ fn pass(sender: &mut ClientStore, receiver: &mut ClientStore, now: u64) {
     }
     receiver.acknowledge_incoming_online().unwrap();
 }
+/// One exchange in each direction: what a single poll on each device achieves.
+pub(super) fn round_trip(a: &mut ClientStore, b: &mut ClientStore, now: u64) {
+    pass(a, b, now);
+    pass(b, a, now);
+}
 pub(super) fn pump(a: &mut ClientStore, b: &mut ClientStore, now: u64) {
     for _ in 0..4 {
         pass(a, b, now);
