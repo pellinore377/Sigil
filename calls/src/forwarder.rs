@@ -47,6 +47,10 @@ pub struct Forwarder {
     max_rooms: usize,
     dropped: u64,
 }
+/// Media fragments may be retransmitted, but only briefly: the buffering a peer can
+/// ask us to hold stays bounded, and a late fragment is useless past its frame anyway.
+const MAX_LIFETIME: u16 = 250;
+const MAX_RETRANSMITS: u16 = 5;
 fn mid(value: &str) -> Mid {
     value.into()
 }
@@ -315,13 +319,18 @@ impl Forwarder {
                                     .channel(channel)
                                     .and_then(|c| c.config().cloned())
                                     .is_some_and(|config| {
+                                        // Unordered only, and any retransmission must expire
+                                        // quickly so a stalled peer cannot grow our buffers.
                                         !config.ordered
-                                            && matches!(
-                                                config.reliability,
+                                            && match config.reliability {
                                                 str0m::channel::Reliability::MaxRetransmits {
-                                                    retransmits: 0
-                                                }
-                                            )
+                                                    retransmits,
+                                                } => retransmits <= MAX_RETRANSMITS,
+                                                str0m::channel::Reliability::MaxPacketLifetime {
+                                                    lifetime,
+                                                } => lifetime <= MAX_LIFETIME,
+                                                str0m::channel::Reliability::Reliable => false,
+                                            }
                                     });
                             if valid {
                                 peer.channel = Some(channel);
