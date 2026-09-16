@@ -254,6 +254,11 @@ fn decode_record(db: &Connection, key: &StorageKey, id: &Id) -> Result<Record, E
     })
 }
 fn save(db: &Connection, key: &StorageKey, id: &Id, record: &Record) -> Result<(), Error> {
+    if !record.blocked {
+        // Any trust or block change lets queued packets go out at once; group channel
+        // sessions carry no peer column, so the whole small table clears.
+        db.execute("DELETE FROM outbound_backoff", [])?;
+    }
     let raw = record.signed.to_bytes().map_err(|_| Error::InvalidStore)?;
     let mut bytes = Zeroizing::new(vec![
         u8::from(record.verified)
