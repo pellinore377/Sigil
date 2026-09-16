@@ -83,7 +83,9 @@ internal object NativeNotifications {
         if (NativeSignOut.pending(context) || visible || Build.VERSION.SDK_INT >= 33 && context.checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) return
         val state = StorageKeyProvider(context).withKey { directory, key -> JSONObject(NativeStorage.execute(directory.path, key, "{\"command\":\"notifications\"}")) }
         if (!state.getBoolean("ok") || visible) return
-        show(context, state.getJSONObject("value"))
+        val value = state.getJSONObject("value")
+        android.util.Log.i("SigilTiming", "notifications unread=${value.optLong("unread")} calls=${value.optJSONArray("calls")?.length() ?: 0} missed=${!value.isNull("missed")}")
+        show(context, value)
     }
     private fun channels(manager: NotificationManager) {
         manager.createNotificationChannel(NotificationChannel("messages", "Messages", NotificationManager.IMPORTANCE_HIGH))
