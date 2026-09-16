@@ -42,7 +42,7 @@ data class ActiveCall(val call: CallSummary, val name: String, val connection: S
 data class ThreadTarget(val author: String, val id: String)
 data class AccountDevice(val id: String, val current: Boolean, val label: String? = null, val revoked: Boolean? = null, val expires: Long? = null, val fingerprint: String? = null, val verified: Boolean = false)
 data class StorageDetails(val database: Long, val media: Long, val mediaUsed: Long, val budget: Long, val recovery: Boolean, val checkpoint: String?, val unprotected: Long, val historyDays: Int? = null, val restoring: Boolean = false)
-data class NotificationSettings(val enabled: Boolean, val messages: Boolean, val calls: Boolean, val content: String = "full")
+data class NotificationSettings(val enabled: Boolean, val messages: Boolean, val calls: Boolean, val content: String = "full", val fullScreen: Boolean = true)
 data class PushDistributor(val id: String, val name: String)
 data class PushSettings(val enabled: Boolean, val status: String, val distributor: String?, val distributors: List<PushDistributor>)
 data class AccountAccess(val configuration: Long, val transition: Long, val issuer: String?, val linked: Boolean, val retiring: Boolean, val acknowledged: Boolean, val linkPending: Boolean)

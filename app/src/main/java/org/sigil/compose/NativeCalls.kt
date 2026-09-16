@@ -4,6 +4,7 @@ import android.Manifest
 import android.app.Application
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.media.AudioAttributes
 import android.media.AudioManager
 import android.os.SystemClock
 import androidx.compose.runtime.*
@@ -71,6 +72,24 @@ internal class NativeCalls(private val app: Application, private val update: (Li
     }
     private fun stopScreen() { sharing = false; projectionRequest = null; screen?.close(); screen = null; applyTracks() }
     fun videoOutput(member: String, screen: Boolean, decoder: CallVideoDecoder?) { val key = "$member:${if (screen) 2 else 1}"; if (decoder == null) videoOutputs.remove(key) else videoOutputs[key] = decoder }
+    private var ringer: android.media.Ringtone? = null
+    private var ringing: String? = null
+    /** Rings in the app while an incoming call waits; the notification's own sound only plays once. */
+    private fun ring(call: String?) {
+        if (call == ringing) return
+        ringing = call
+        ringer?.stop(); ringer = null
+        val vibrator = app.getSystemService(android.os.VibratorManager::class.java)?.defaultVibrator
+        if (call == null || !NativeNotifications.settings(app).calls) { vibrator?.cancel(); return }
+        runCatching {
+            val tone = android.media.RingtoneManager.getRingtone(app, android.media.RingtoneManager.getDefaultUri(android.media.RingtoneManager.TYPE_RINGTONE)) ?: return
+            tone.audioAttributes = AudioAttributes.Builder().setUsage(AudioAttributes.USAGE_NOTIFICATION_RINGTONE).build()
+            tone.isLooping = true
+            if (audio.ringerMode == AudioManager.RINGER_MODE_NORMAL) tone.play()
+            ringer = tone
+            if (audio.ringerMode != AudioManager.RINGER_MODE_SILENT) vibrator?.vibrate(android.os.VibrationEffect.createWaveform(longArrayOf(0, 800, 1200), 0))
+        }
+    }
     fun refresh(value: JSONObject) {
         val array = value.getJSONArray("calls")
         history = (0 until array.length()).map { index ->
@@ -81,6 +100,7 @@ internal class NativeCalls(private val app: Application, private val update: (Li
             }, call.getBoolean("can_invite"), call.optString("name"), call.optBoolean("outgoing"), java.text.DateFormat.getTimeInstance(java.text.DateFormat.SHORT).format(java.util.Date(call.getLong("created") * 1000)), callDay(call.getLong("created")), call.optBoolean("missed"), if(call.isNull("duration")) null else call.getLong("duration"), if(call.isNull("video")) null else call.getBoolean("video"))
         }
         val current = desired?.let { id -> history.find { it.id == id } } ?: history.firstOrNull { it.phase == "ringing" }
+        ring(current?.takeIf { desired == null && it.phase == "ringing" && !it.outgoing }?.id)
         visible = current?.let { call ->
             ActiveCall(call, name.takeIf { desired == call.id && it.isNotBlank() } ?: call.participants.filter { !it.own }.joinToString(", ") { it.name }.ifEmpty { "Call" },
                 visible?.connection?.takeIf { visible?.call?.id == call.id } ?: "connecting", if (started == 0L) 0 else (SystemClock.elapsedRealtime() - started) / 1000, muted, loud, video, screen = sharing, levels = levels)

@@ -174,6 +174,7 @@ internal fun PersonalPage(page: String, state: MessengerState, command: Command,
                         if (!settings.enabled) { Text("Notifications are disabled in Android."); SigilButton({ command("notification_permission", emptyMap()) }) { Text("Enable notifications") } }
                         SettingsToggle("Message notifications", "Notify you of new messages", settings.messages, !state.busy) { command("notification_change", mapOf("key" to "messages", "enabled" to it)) }
                         SettingsToggle("Incoming call notifications", "Notify you of incoming calls", settings.calls, !state.busy) { command("notification_change", mapOf("key" to "incoming", "enabled" to it)) }
+                        if (!settings.fullScreen) { Text("Android needs permission to show incoming calls on the lock screen."); SigilButton({ command("notification_full_screen", emptyMap()) }) { Text("Allow full-screen call alerts") } }
                         SettingsChoice("Show in notifications", listOf("full" to "Name and message", "name" to "Name only", "none" to "No name or message"), settings.content, !state.busy) { command("notification_content", mapOf("level" to it)) }
                     }
                     SigilTextButton({ command("notification_system_settings", emptyMap()) }) { Text("Sounds and Android notification settings") }
