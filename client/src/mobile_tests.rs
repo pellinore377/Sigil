@@ -1581,6 +1581,7 @@ fn diagnostics_report_gives_counts_without_identifying_anyone() {
     let report = value["report"].as_str().unwrap();
     assert!(report.contains("schema"), "{report}");
     assert!(report.contains("unacknowledged"), "{report}");
+    assert!(report.contains("prekeys:") && report.contains("backoff:"), "{report}");
     // Counts and stage names only.
     assert!(!report.contains('@'), "{report}");
     assert!(!report.contains("watchtower"), "{report}");
