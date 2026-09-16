@@ -6,6 +6,7 @@ use crate::{
 };
 use serde::Deserialize;
 use serde_json::{json, Value};
+use views::body_kind;
 use sigil_crypto::Secret32;
 #[path = "mobile_account.rs"]
 mod account;
@@ -872,46 +873,75 @@ impl ClientStore {
             }
             Command::Notifications {} => {
                 let state = self.mobile_state()?;
-                let eligible = state["chats"]
-                    .as_array()
-                    .map(|chats| {
-                        chats
-                            .iter()
-                            .filter(|chat| {
-                                chat["snoozed"] != true
-                                    && chat["hidden"] != true
-                                    && chat["blocked"] != true
-                                    && chat["unread"].as_u64().unwrap_or(0) > 0
-                            })
-                            .collect::<Vec<_>>()
-                    })
-                    .unwrap_or_default();
-                let unread = eligible
-                    .iter()
-                    .map(|chat| chat["unread"].as_u64().unwrap_or(0))
-                    .sum::<u64>();
-                let stamp = eligible
-                    .iter()
-                    .map(|chat| {
-                        (
-                            &chat["conversation"],
-                            &chat["unread"],
-                            &chat["latest_message"],
-                        )
-                    })
-                    .collect::<Vec<_>>();
+                let (_, own) = structured::account_context(&self.db, &self.key)?;
+                let now = conversations::now();
+                let mut chats = Vec::new();
+                let mut unread = 0;
+                let mut stamp = Vec::new();
+                for chat in state["chats"].as_array().map(Vec::as_slice).unwrap_or_default() {
+                    if chat["snoozed"] == true || chat["hidden"] == true || chat["blocked"] == true {
+                        continue;
+                    }
+                    let count = chat["unread"].as_u64().unwrap_or(0);
+                    if count == 0 {
+                        continue;
+                    }
+                    unread += count;
+                    stamp.push((&chat["conversation"], &chat["unread"], &chat["latest_message"]));
+                    let id = chat["id"].as_str().unwrap_or_default().to_owned();
+                    // Recent incoming messages for the device-local notification; decrypted here, never pushed.
+                    let mut messages = Vec::new();
+                    if let Ok(page) = self
+                        .mobile_conversation(&id)
+                        .and_then(|conversation| self.recent_conversation_page(conversation, None, now))
+                    {
+                        // Pages list newest first; keep the newest unread, then show them oldest first.
+                        for m in page.messages.iter() {
+                            if m.reference.author == own || m.deleted || m.view_once {
+                                continue;
+                            }
+                            let text: String = m
+                                .body
+                                .as_ref()
+                                .map(body_text)
+                                .transpose()?
+                                .unwrap_or_default()
+                                .chars()
+                                .take(240)
+                                .collect();
+                            messages.push(json!({"author":transport::hex(&m.reference.author),"id":transport::hex(&m.reference.message),"text":text,"kind":body_kind(m.body.as_ref()),"timestamp":m.timestamp}));
+                            if messages.len() as u64 >= count.min(5) {
+                                break;
+                            }
+                        }
+                        messages.reverse();
+                    }
+                    // Same fallback as the inbox: display name, else the address's local part.
+                    let name = chat["name"]
+                        .as_str()
+                        .filter(|v| !v.is_empty())
+                        .map(str::to_owned)
+                        .or_else(|| chat["address"].as_str().map(|a| a.trim_start_matches('@').split(':').next().unwrap_or_default().to_owned()))
+                        .filter(|v| !v.is_empty())
+                        .unwrap_or_else(|| "Conversation".into());
+                    chats.push(json!({"id":id,"name":name,"group":chat["group"]==true,"unread":count,"messages":messages}));
+                }
                 let revision = self.key.commitment(
                     &serde_json::to_vec(&stamp).map_err(|_| Error::InvalidStore)?,
                     b"Sigil/notification-revision/v1",
                 )?;
-                let now = conversations::now();
+                let names = self.mobile_calls()?;
                 let calls = self
                     .calls(now)?
                     .into_iter()
                     .filter(|call| call.phase == calls::Phase::Ringing)
-                    .map(|call| json!({"id":transport::hex(&call.id),"until":call.ring_until}))
+                    .map(|call| {
+                        let id = transport::hex(&call.id);
+                        let name = names["calls"].as_array().and_then(|list| list.iter().find(|c| c["id"] == id)).map(|c| c["name"].clone()).unwrap_or(Value::Null);
+                        json!({"id":id,"until":call.ring_until,"name":name})
+                    })
                     .collect::<Vec<_>>();
-                Ok(json!({"unread":unread,"calls":calls,"revision":transport::hex(&revision)}))
+                Ok(json!({"unread":unread,"chats":chats,"calls":calls,"revision":transport::hex(&revision)}))
             }
             Command::Place {
                 peer,
