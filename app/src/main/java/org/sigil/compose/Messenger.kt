@@ -220,6 +220,21 @@ class Messenger(application: Application) : AndroidViewModel(application) {
         if (state.phase == "connected") scope.launch { try { NativeSync.presence(getApplication(), state.call?.call?.phase in listOf("active", "joining")) } catch (cancelled: CancellationException) { throw cancelled } catch (_: Exception) { } }
     }
     fun browserOpened() { authorizationUrl = null }
+    /** Notification taps: open a conversation or answer a ringing call once the account is connected. */
+    fun handleNotificationIntent(intent: android.content.Intent?) {
+        val peer = intent?.getStringExtra(NativeNotifications.EXTRA_PEER)
+        val answer = intent?.getStringExtra(NativeNotifications.EXTRA_ANSWER)
+        if (peer == null && answer == null) return
+        intent.removeExtra(NativeNotifications.EXTRA_PEER); intent.removeExtra(NativeNotifications.EXTRA_ANSWER)
+        scope.launch {
+            withTimeoutOrNull(15000) { while (state.phase != "connected") delay(100) } ?: return@launch
+            when {
+                answer != null -> calls.command("call_answer", mapOf("call" to answer, "name" to (state.calls.firstOrNull { it.id == answer }?.name ?: "")))
+                peer == "calls" -> {}
+                peer != null -> command("open", mapOf("peer" to peer))
+            }
+        }
+    }
     fun callback(uri: Uri?) {
         if (uri == null || uri.scheme != "sigil" || uri.host != "oidc" || uri.query != null || uri.fragment != null) return
         val parts = uri.pathSegments
@@ -273,6 +288,7 @@ class Messenger(application: Application) : AndroidViewModel(application) {
             "notification_permission" -> { if (android.os.Build.VERSION.SDK_INT >= 33) notificationPermission = true else NativeNotifications.systemSettings(getApplication()); return }
             "notification_system_settings" -> { NativeNotifications.systemSettings(getApplication()); return }
             "notification_change" -> { NativeNotifications.change(getApplication(), fields["key"] as String, fields["enabled"] as Boolean); notificationPermissionResult(); return }
+            "notification_content" -> { NativeNotifications.content(getApplication(), fields["level"] as String); notificationPermissionResult(); return }
             "record_start" -> { val peer = fields["peer"] as String; if (getApplication<Application>().checkSelfPermission(android.Manifest.permission.RECORD_AUDIO) == android.content.pm.PackageManager.PERMISSION_GRANTED) voice.start(peer, fields) else microphoneRequest = peer to fields.toMap(); return }
             "record_stop" -> { voice.stop(); return }
             "record_cancel" -> { voice.discard(); return }

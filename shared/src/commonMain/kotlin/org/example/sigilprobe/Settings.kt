@@ -2,6 +2,7 @@ package org.sigil
 
 import androidx.compose.foundation.*
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.*
@@ -78,6 +79,20 @@ internal fun SettingsToggle(title: String, detail: String, checked: Boolean, ena
             if (detail.isNotBlank()) Text(detail, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
         Switch(checked, onCheckedChange = null, enabled = enabled)
+    }
+}
+
+@Composable
+internal fun SettingsChoice(title: String, options: List<Pair<String, String>>, selected: String, enabled: Boolean = true, update: (String) -> Unit) {
+    Column(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+        Text(title, style = MaterialTheme.typography.titleMedium)
+        options.forEach { (value, label) ->
+            Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(14.dp)).selectable(value == selected, enabled = enabled, role = Role.RadioButton) { update(value) }
+                .heightIn(min = 48.dp).padding(horizontal = 4.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                RadioButton(value == selected, onClick = null, enabled = enabled)
+                Text(label, style = MaterialTheme.typography.bodyMedium)
+            }
+        }
     }
 }
 

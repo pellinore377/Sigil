@@ -48,6 +48,7 @@ class MainActivity : ComponentActivity() {
         savedInstanceState?.getBundle("attachment_target")?.let { saved -> pickerPeer = saved.keySet().associateWith { saved.getString(it) } }
         messenger.callback(intent.data)
         intent.data = null
+        messenger.handleNotificationIntent(intent)
         val preferences = getSharedPreferences("appearance", MODE_PRIVATE)
         setSigilContent {
             var backAvailable by remember { mutableStateOf(false) }
@@ -105,7 +106,7 @@ class MainActivity : ComponentActivity() {
             }
         }
     }
-    override fun onNewIntent(intent: Intent) { super.onNewIntent(intent); messenger.callback(intent.data); intent.data = null }
+    override fun onNewIntent(intent: Intent) { super.onNewIntent(intent); messenger.callback(intent.data); intent.data = null; messenger.handleNotificationIntent(intent) }
     override fun onSaveInstanceState(outState: Bundle) {
         pickerPeer?.let { target -> outState.putBundle("attachment_target", Bundle().apply { target.forEach { (key, value) -> putString(key, value as? String) } }) }
         super.onSaveInstanceState(outState)
