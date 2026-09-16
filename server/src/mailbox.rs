@@ -133,11 +133,15 @@ impl Store {
             (&request.recipient_device,now as i64),
             |r| r.get(0),
         )?;
-        let account: String = tx.query_row(
-            "SELECT account_id FROM devices WHERE id=?1",
+        // A revoked device never collects again, so refuse rather than hold a slot for it.
+        let (account, revoked): (String, bool) = tx.query_row(
+            "SELECT account_id,revoked FROM devices WHERE id=?1",
             [&request.recipient_device],
-            |r| r.get(0),
+            |r| Ok((r.get(0)?, r.get(1)?)),
         )?;
+        if revoked {
+            return Err(StoreError::NotFound);
+        }
         let used = crate::recovery::used(&tx, &account, now)?;
         let quota = crate::admin::quota(&tx, &account)?;
         let peer_pending: u32 = tx.query_row(

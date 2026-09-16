@@ -75,7 +75,7 @@ mod outbound;
 pub use outbound::OutboundAttempt;
 
 pub type Id = [u8; 32];
-pub const DATABASE_VERSION: u32 = 80;
+pub const DATABASE_VERSION: u32 = 81;
 #[derive(Debug)]
 pub enum Error {
     Storage(rusqlite::Error),
@@ -472,6 +472,9 @@ impl ClientStore {
         }
         if version < 80 {
             tx.execute_batch("CREATE TABLE IF NOT EXISTS send_intent_backoff(id BLOB PRIMARY KEY, until INTEGER NOT NULL); PRAGMA user_version=80;")?;
+        }
+        if version < 81 {
+            tx.execute_batch("CREATE TABLE IF NOT EXISTS abandoned_deliveries(sequence INTEGER PRIMARY KEY); PRAGMA user_version=81;")?;
         }
         if version < 63 {
             conversations::migrate(&tx, &key)?;

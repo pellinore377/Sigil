@@ -458,7 +458,14 @@ fn invalid_head_messages_do_not_starve_later_deliveries_and_scan_restarts_are_sa
     assert_eq!(first.len(), 16);
     assert!(first.iter().all(|v| v.result.is_err()));
     assert_eq!(count(&bob, "incoming"), 0);
-    assert_eq!(bob.acknowledge_incoming_online().unwrap(), 0);
+    // Ciphertext that can never authenticate releases its queue slot instead of holding
+    // one of the sender's few slots until it expires and jamming the pair.
+    assert_eq!(count(&bob, "abandoned_deliveries"), 16);
+    assert_eq!(bob.acknowledge_incoming_online().unwrap(), 16);
+    assert_eq!(count(&bob, "abandoned_deliveries"), 0);
+    assert_eq!(bob.connected_client().unwrap().mailbox().unwrap().len(), 1);
+
+    // Failing to record the scan position must leave the delivery recoverable.
     drop(bob);
     let mut bob = open(&dir.path().join("bob.db"));
     bob.db.execute_batch("CREATE TRIGGER fail BEFORE UPDATE ON incoming_cursor BEGIN SELECT RAISE(ABORT,'synthetic disk failure'); END;").unwrap();
@@ -467,28 +474,17 @@ fn invalid_head_messages_do_not_starve_later_deliveries_and_scan_restarts_are_sa
     assert_eq!(count(&bob, "inbox"), 1);
     bob.db.execute_batch("DROP TRIGGER fail;").unwrap();
     drop(bob);
+
+    // The later delivery is still readable: invalid heads never starved it.
     let mut bob = open(&dir.path().join("bob.db"));
     let later = bob.receive_mailbox_online(now).unwrap();
-    assert_eq!(later.len(), 1);
-    assert!(later[0].result.is_ok());
-    assert!(later[0].sequence > first[15].sequence);
-    assert_eq!(count(&bob, "inbox"), 1);
+    assert!(later.iter().all(|v| v.result.is_ok()));
+    assert!(later.iter().any(|v| v.sequence > first[15].sequence));
     assert_eq!(bob.acknowledge_incoming_online().unwrap(), 1);
-    assert!(bob.receive_mailbox_online(now).unwrap().is_empty()); // wraps to zero
-    let revisited = bob.receive_mailbox_online(now).unwrap();
-    assert_eq!(revisited.len(), 16);
-    assert_eq!(revisited[0].sequence, first[0].sequence);
-    assert!(revisited.iter().all(|v| v.result.is_err()));
-    assert_eq!(bob.connected_client().unwrap().mailbox().unwrap().len(), 16);
+    assert!(bob.connected_client().unwrap().mailbox().unwrap().is_empty());
     assert!(bob.connected_client().unwrap().mailbox_after(-1).is_err());
-    crate::test_schema::rewind(&bob.db, 15);
-    drop(bob);
-    let mut bob = open(&dir.path().join("bob.db"));
-    assert_eq!(count(&bob, "incoming"), 1);
-    assert_eq!(
-        bob.receive_mailbox_online(now).unwrap()[0].sequence,
-        first[0].sequence
-    );
+
+    // A corrupted scan position fails closed and acknowledges nothing.
     bob.db
         .execute("UPDATE incoming_cursor SET state=zeroblob(44)", [])
         .unwrap();
