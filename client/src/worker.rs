@@ -113,7 +113,7 @@ impl SyncStep {
                             // Recovery targets one device; if the server no longer offers
                             // it a session there is nothing here for the reader to fix.
                             || matches!($stage, "recovering sessions" | "sending retry controls")
-                                && matches!(error, network::Error::Status { code: 404, .. })))
+                                && outbound::recipient_specific(error)))
                 {
                     return Some(($stage, error));
                 }
@@ -294,7 +294,7 @@ impl ClientStore {
         if let Some(index) = step
             .retry_controls
             .iter()
-            .position(|item| matches!(item.result, Err(Error::Network(_))))
+            .position(|item| matches!(&item.result, Err(Error::Network(e)) if !outbound::recipient_specific(e)))
         {
             step.failure = Some(SyncFailure::RetryControlNetwork(index));
             return step;
@@ -310,7 +310,7 @@ impl ClientStore {
         if let Some(index) = step
             .retries
             .iter()
-            .position(|item| matches!(item.result, Err(Error::Network(_))))
+            .position(|item| matches!(&item.result, Err(Error::Network(e)) if !outbound::recipient_specific(e)))
         {
             step.failure = Some(SyncFailure::RecoveryNetwork(index));
             return step;
