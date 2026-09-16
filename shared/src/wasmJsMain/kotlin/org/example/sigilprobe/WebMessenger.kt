@@ -61,6 +61,8 @@ private fun json(value:Any?):JsonElement=when(value) {
 }
 private val stamped=setOf("post","place","group_create","react","pin","read","mark_read","snooze","forward","organize","edit","delete","clear_conversation","note","typing","draft")
 
+@JsFun("(m) => console.log(m)") private external fun browserTimingLog(message:String)
+
 @Composable internal fun WebMessenger() {
     var state by remember {mutableStateOf(MessengerState(loginAddress=window.location.hostname))}
     var visible by remember {mutableStateOf(browserDocument.visibilityState=="visible")}
@@ -270,7 +272,7 @@ state=StateDecoder.state(execute("state"),state,::clock);if(state.phase=="connec
                     val startedAt=BrowserDate.now()
                     val result=mutex.withLock {execute("sync",mapOf("interactive" to true,"wake" to force,"call_setup" to (calls.visible?.connection in setOf("connecting","securing","reconnecting"))))}
                     // Durations only, like the Android SigilTiming log; no content.
-                    console.log("SigilTiming sync ${(BrowserDate.now()-startedAt).toLong()}ms native=${result["ms"]?.jsonPrimitive?.longOrNull?:0} ran=${result.bool("ran")} wake=$force lanes=${result["lanes"]} ${result["timings"]}")
+                    browserTimingLog("SigilTiming sync ${(BrowserDate.now()-startedAt).toLong()}ms native=${result["ms"]?.jsonPrimitive?.longOrNull?:0} ran=${result.bool("ran")} wake=$force lanes=${result["lanes"]} ${result["timings"]}")
                     nextSync=result.long("next_at")
                     if((result.bool("ran") || nudged) && !sending)mutex.withLock {if(!sending)refresh()}
                     val issue=result.optional("issue")
