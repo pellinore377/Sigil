@@ -86,6 +86,11 @@ struct Record {
     generation: u64,
     shares: Vec<Share>,
     connect_sequence: u64,
+    /// Digest of the state the owner is expected to commit for our declared
+    /// readiness. Lets a sender key travel with the declaration instead of a round
+    /// trip behind it; the owner still applies every check before accepting it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    anticipated: Option<Id>,
 }
 pub struct Participant {
     pub member: Id,
@@ -293,6 +298,7 @@ impl Record {
         }
         self.state = state;
         self.shares.clear();
+        self.anticipated = None;
         self.announced = None;
         self.announced_media = None;
         Ok(())
@@ -433,6 +439,7 @@ impl ClientStore {
             pins: vec![(proof.fingerprint().map_err(failure)?, proof.member)],
             commits: vec![roster],
             announced: None,
+            anticipated: None,
             announced_media: None,
             notify: Vec::new(),
             ready_sequence: 0,

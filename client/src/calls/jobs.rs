@@ -38,7 +38,7 @@ fn save(db: &Connection, key: &StorageKey, job: &Job) -> Result<(), Error> {
     if raw.len() > 131072 {
         return Err(Error::Limit);
     }
-    db.execute("INSERT INTO call_jobs VALUES(?1,?2) ON CONFLICT(id) DO UPDATE SET content=excluded.content",(job.wire.message.as_slice(),key.seal(&raw,&aad(&job.wire.message))?))?;
+    db.execute("INSERT INTO call_jobs VALUES(?1,?2,(SELECT IFNULL(MAX(queued),0)+1 FROM call_jobs)) ON CONFLICT(id) DO UPDATE SET content=excluded.content",(job.wire.message.as_slice(),key.seal(&raw,&aad(&job.wire.message))?))?;
     Ok(())
 }
 pub(super) fn queue(
@@ -152,7 +152,10 @@ fn current(db: &Connection, key: &StorageKey, job: &Job, now: u64) -> Result<(),
             record.phase == Phase::Active
                 && !shares.is_empty()
                 && shares.iter().all(|share| {
-                    Some(share.state) == record.state.digest().ok()
+                    // Either the state we hold, or the one we have declared readiness
+                    // for and expect the owner to commit next.
+                    (Some(share.state) == record.state.digest().ok()
+                        || Some(share.state) == record.anticipated)
                         && record.shares.iter().any(|s| {
                             s.key.context.sender == share.key.context.sender
                                 && s.generation == share.generation
@@ -621,33 +624,56 @@ impl ClientStore {
                 return Ok(attempts);
             }
         }
-        let aad = b"Sigil/call-job-cursor/v1";
-        let raw:Option<Vec<u8>>=self.db.query_row("SELECT CASE WHEN length(content) IN(36,68) THEN content END FROM call_cursor WHERE id=1",[],|r|r.get(0)).optional()?;
-        let after = raw
-            .map(|r| self.key.open(&r, aad))
-            .transpose()?
-            .map(|r| r.to_vec())
-            .unwrap_or_default();
-        if !after.is_empty() && after.len() != 32 {
+        let aad = b"Sigil/call-job-cursor/v2";
+        let raw:Option<Vec<u8>>=self.db.query_row("SELECT CASE WHEN length(content)=44 THEN content END FROM call_cursor WHERE id=1",[],|r|r.get(0)).optional()?;
+        let after: i64 = match raw.map(|r| self.key.open(&r, aad)).transpose()? {
+            Some(value) => i64::from_be_bytes(
+                value.as_slice().try_into().map_err(|_| Error::InvalidStore)?,
+            ),
+            None => 0,
+        };
+        if after < 0 {
             return Err(Error::InvalidStore);
         }
-        let ids: Vec<Vec<u8>> = self
-            .db
-            .prepare("SELECT id FROM call_jobs WHERE id>?1 ORDER BY id LIMIT 16")?
-            .query_map([after], |r| r.get(0))?
-            .collect::<Result<_, _>>()?;
-        let mut next = Vec::new();
-        for id in ids {
-            let id: Id = id.try_into().map_err(|_| Error::InvalidStore)?;
-            let result = self.prepare_call_job_online(id, now);
-            let stop = matches!(result, Err(Error::Network(_)));
-            attempts.push(Attempt { id, result });
-            next = id.to_vec();
-            if stop {
+        // Job ids do not ascend with age, so a job queued during this pass can sort
+        // below the cursor. Sweep once more from the start rather than leaving it for
+        // the next poll: an announcement queued here then leaves in this same pass.
+        // Oldest first, and once the tail is reached sweep the front again so a job
+        // queued by this very pass still leaves in it. Successful jobs are removed,
+        // so the second sweep only sees work that is genuinely still pending.
+        let mut next = after;
+        let mut wrapped = after == 0;
+        loop {
+            let rows: Vec<(Vec<u8>, i64)> = self
+                .db
+                .prepare("SELECT id,queued FROM call_jobs WHERE queued>?1 ORDER BY queued LIMIT 16")?
+                .query_map([next], |r| Ok((r.get(0)?, r.get(1)?)))?
+                .collect::<Result<_, _>>()?;
+            if rows.is_empty() {
+                next = 0;
+                if wrapped {
+                    break;
+                }
+                wrapped = true;
+                continue;
+            }
+            let mut stopped = false;
+            for (id, queued) in rows {
+                let id: Id = id.try_into().map_err(|_| Error::InvalidStore)?;
+                let result = self.prepare_call_job_online(id, now);
+                let stop = matches!(result, Err(Error::Network(_)));
+                attempts.push(Attempt { id, result });
+                next = queued;
+                if stop {
+                    stopped = true;
+                    break;
+                }
+            }
+            if stopped {
                 break;
             }
         }
-        self.db.execute("INSERT INTO call_cursor VALUES(1,?1) ON CONFLICT(id) DO UPDATE SET content=excluded.content",[self.key.seal(&next,aad)?])?;
+        self.db.execute("INSERT INTO call_cursor VALUES(1,?1) ON CONFLICT(id) DO UPDATE SET content=excluded.content",[self.key.seal(&next.to_be_bytes(),aad)?])?;
         Ok(attempts)
     }
 }

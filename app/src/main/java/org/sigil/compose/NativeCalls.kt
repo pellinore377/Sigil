@@ -179,7 +179,8 @@ internal class NativeCalls(private val app: Application, private val update: (Li
                 if (call == null || call.phase in listOf("ended", "left", "declined")) { end(); return }
                 NativeSync.presence(app, true)
                 if (call.phase == "active" && media == null) media = scope.launch { mediaLoop(id, current) }
-                val until = (result.getLong("next_at") * 1000 - System.currentTimeMillis()).coerceIn(if (setup) 250 else 1000, 300000)
+                // Setting up costs a handful of round trips, and each poll is one of them.
+                val until = (result.getLong("next_at") * 1000 - System.currentTimeMillis()).coerceIn(if (setup) 100 else 1000, 300000)
                 delay(until)
             } catch (cancelled: CancellationException) { throw cancelled }
             catch (_: Exception) { visible = visible?.copy(connection = "reconnecting"); emit(); delay(5000) }
