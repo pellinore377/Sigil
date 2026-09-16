@@ -27,8 +27,7 @@ pub use rtc_transport::{ReceivedFrame, RtcCall, RtcTransmission};
 #[cfg(test)]
 mod tests;
 pub(crate) use control::{
-    install, receipt_call, receipt_message, retained, scoped_wire, validate_receipt,
-};
+    install, receipt_call, receipt_message, retained, scoped_wire, validate_receipt, is_invite};
 pub(crate) use jobs::check_retained;
 pub use jobs::Attempt;
 pub use media::Media;

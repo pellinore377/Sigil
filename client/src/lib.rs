@@ -75,7 +75,7 @@ mod outbound;
 pub use outbound::OutboundAttempt;
 
 pub type Id = [u8; 32];
-pub const DATABASE_VERSION: u32 = 78;
+pub const DATABASE_VERSION: u32 = 79;
 #[derive(Debug)]
 pub enum Error {
     Storage(rusqlite::Error),
@@ -464,6 +464,12 @@ impl ClientStore {
         if version < 78 {
             tx.execute_batch("CREATE TABLE IF NOT EXISTS outbound_backoff(session BLOB PRIMARY KEY, until INTEGER NOT NULL); PRAGMA user_version=78;")?;
         }
+        if version < 79 {
+            if !tx.prepare("PRAGMA table_info(outbox)")?.query_map([], |r| r.get::<_, String>(1))?.any(|c| c.as_deref() == Ok("wake")) {
+                tx.execute_batch("ALTER TABLE outbox ADD COLUMN wake INTEGER NOT NULL DEFAULT 1;")?;
+            }
+            tx.pragma_update(None, "user_version", 79)?;
+        }
         if version < 63 {
             conversations::migrate(&tx, &key)?;
         }
@@ -788,14 +794,38 @@ fn queue(
     let sealed = key.seal(packet, &binding(3, session, id))?;
     let content = key.seal(&retained_payload(key, plaintext)?, &binding(9, session, id))?;
     tx.execute(
-        "INSERT INTO outbox(session,id,tag,packet,content) VALUES(?1,?2,?3,?4,?5)",
+        "INSERT INTO outbox(session,id,tag,packet,content,wake) VALUES(?1,?2,?3,?4,?5,?6)",
         (
             session.as_slice(),
             id.as_slice(),
             tag.as_slice(),
             sealed,
             content,
+            wake_worthy(plaintext),
         ),
     )?;
     Ok(())
+}
+/// Whether a recipient should be pushed for this packet: messages, files and call
+/// invitations do; receipts, other call controls and key shares wait for a sync.
+fn wake_worthy(plaintext: &[u8]) -> bool {
+    if calls::is_invite(plaintext) {
+        return true;
+    }
+    if calls::scoped_wire(plaintext).unwrap_or(false)
+        || calls::receipt_message(plaintext).ok().flatten().is_some()
+        || groups::is_distribution_wire(plaintext)
+    {
+        return false;
+    }
+    let visible = |content: sigil_protocol::event::Content<'_>| {
+        !matches!(content, sigil_protocol::event::Content::Conversation(_))
+    };
+    if let Ok(event) = sigil_protocol::event::Direct::from_bytes(plaintext) {
+        return visible(event.content);
+    }
+    if let Ok(event) = sigil_protocol::event::Group::from_bytes(plaintext) {
+        return visible(event.content);
+    }
+    true
 }

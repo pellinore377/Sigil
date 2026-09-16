@@ -1,5 +1,11 @@
 /// Reconstruct historical schemas from a fresh current synthetic database.
 pub fn rewind(db: &rusqlite::Connection, version: u32) {
+    if version < 79 {
+        db.execute_batch("ALTER TABLE outbox DROP COLUMN wake;").unwrap();
+    }
+    if version < 78 {
+        db.execute_batch("DROP TABLE IF EXISTS outbound_backoff;").unwrap();
+    }
     if version < 76 {
         db.execute_batch("DROP TABLE IF EXISTS mobile_contact_invite;")
             .unwrap();

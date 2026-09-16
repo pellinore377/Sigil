@@ -467,6 +467,7 @@ impl ClientStore {
                 expires_at: request.expires_at,
             },
             Some(&record.packet),
+            true,
         )?;
         let tx = self
             .db

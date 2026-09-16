@@ -935,7 +935,7 @@ fn queued_receipt_polling_needs_no_new_send_authorization_but_new_submissions_do
     )
     .unwrap();
     assert!(matches!(
-        submit(&network, &own, "remote.example", &request, || Err(
+        submit(&network, &own, "remote.example", &request, false, || Err(
             Error::Cancelled
         )),
         Err(Error::Cancelled)
@@ -953,7 +953,7 @@ fn queued_receipt_polling_needs_no_new_send_authorization_but_new_submissions_do
     };
     *response.lock().unwrap() = Some(value.clone());
     assert!(
-        submit(&network, &own, "remote.example", &request, || panic!(
+        submit(&network, &own, "remote.example", &request, false, || panic!(
             "receipt polling attempted a send"
         ))
         .unwrap()
@@ -967,7 +967,7 @@ fn queued_receipt_polling_needs_no_new_send_authorization_but_new_submissions_do
     });
     *response.lock().unwrap() = Some(value);
     assert_eq!(
-        submit(&network, &own, "remote.example", &request, || panic!(
+        submit(&network, &own, "remote.example", &request, false, || panic!(
             "receipt polling attempted a send"
         ))
         .unwrap()

@@ -153,6 +153,7 @@ internal object NativeNotifications {
         } else clearMessages(context)
         val calls = value.getJSONArray("calls")
         val call = (0 until calls.length()).map { calls.getJSONObject(it) }.firstOrNull { it.optLong("until") * 1000 > System.currentTimeMillis() }
+        if (calls.length() > 0) android.util.Log.i("SigilTiming", "call notice ringing=${calls.length()} live=${call != null} until_in=${call?.let { it.optLong("until") - System.currentTimeMillis() / 1000 }} already=${preferences.getString("incoming_call", null) == call?.optString("id")} calls_on=${settings.calls}")
         if (call != null && settings.calls && preferences.getString("incoming_call", null) != call.getString("id")) {
             val id = call.getString("id")
             val caller = call.optString("name").ifBlank { "Sigil call" }

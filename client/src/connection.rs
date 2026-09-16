@@ -15,6 +15,12 @@ pub struct SendProgress {
     pub accepted: usize,
     pub expired: usize,
 }
+pub(super) enum Prepared {
+    Request(Id, sigil_protocol::mailbox::Submit, bool),
+    Accepted(Id, sigil_protocol::mailbox::Receipt),
+    Pending,
+    Empty,
+}
 #[cfg(test)]
 #[path = "connection_tests.rs"]
 pub(crate) mod tests;
@@ -775,6 +781,52 @@ impl ClientStore {
     pub fn send_pending_online(&mut self, session: Id, now: u64) -> Result<SendProgress, Error> {
         self.send_pending_limit(session, now, 16)
     }
+    /// Authorizes the next queued packet of a session; home-server packets are returned
+    /// for a concurrent round, federated ones are submitted here.
+    pub(super) fn prepare_outgoing(
+        &mut self,
+        session: Id,
+        now: u64,
+    ) -> Result<(Prepared, usize), Error> {
+        let network = self.connected_client()?;
+        let (pending, expired) = self.outgoing_batch(session, now, 1)?;
+        let Some(request) = pending.into_iter().next() else {
+            return Ok((Prepared::Empty, expired));
+        };
+        super::load(&self.db, &self.key, &session)?;
+        let id: Id = decode_id(&request.message_id)?;
+        let destination = self.delivery_destination(session, id, &request.recipient_device)?;
+        let own = self.connection_session()?.ok_or(Error::Unprepared)?;
+        let wake: bool = self
+            .db
+            .query_row(
+                "SELECT wake FROM outbox WHERE session=?1 AND id=?2",
+                (session.as_slice(), id.as_slice()),
+                |r| r.get(0),
+            )
+            .optional()?
+            .unwrap_or(true);
+        self.check_retry_send(id, now)?;
+        self.check_group_distribution_send(session, id, now)?;
+        self.check_group_invitation_send(session, id, now)?;
+        let raw: Option<Vec<u8>> = self.db.query_row(
+            "SELECT content FROM outbox WHERE session=?1 AND id=?2",
+            (session.as_slice(), id.as_slice()),
+            |r| r.get(0),
+        )?;
+        if let Some(raw) = raw {
+            let raw = self.key.open(&raw, &binding(9, &session, &id))?;
+            crate::conversations::check_send(&self.db, &self.key, &raw, now)?;
+        }
+        let home = own.address.split_once(':').ok_or(Error::InvalidStore)?.1;
+        if destination == home {
+            return Ok((Prepared::Request(id, request, !wake), expired));
+        }
+        match crate::federation::submit(&network, &own, &destination, &request, !wake, || Ok(()))? {
+            Some(receipt) => Ok((Prepared::Accepted(id, receipt), expired)),
+            None => Ok((Prepared::Pending, expired)),
+        }
+    }
     pub(super) fn send_pending_limit(
         &mut self,
         session: Id,
@@ -792,8 +844,17 @@ impl ClientStore {
             let id: Id = decode_id(&request.message_id)?;
             let destination = self.delivery_destination(session, id, &request.recipient_device)?;
             let own = self.connection_session()?.ok_or(Error::Unprepared)?;
+            let wake: bool = self
+                .db
+                .query_row(
+                    "SELECT wake FROM outbox WHERE session=?1 AND id=?2",
+                    (session.as_slice(), id.as_slice()),
+                    |r| r.get(0),
+                )
+                .optional()?
+                .unwrap_or(true);
             let Some(receipt) =
-                crate::federation::submit(&network, &own, &destination, &request, || {
+                crate::federation::submit(&network, &own, &destination, &request, !wake, || {
                     self.check_retry_send(id, now)?;
                     self.check_group_distribution_send(session, id, now)?;
                     self.check_group_invitation_send(session, id, now)?;

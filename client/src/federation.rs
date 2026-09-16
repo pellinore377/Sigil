@@ -31,12 +31,13 @@ pub(crate) fn submit(
     own: &sigil_protocol::accounts::Session,
     server: &str,
     request: &mailbox::Submit,
+    silent: bool,
     authorize: impl FnOnce() -> Result<(), Error>,
 ) -> Result<Option<mailbox::Receipt>, Error> {
     let home = own.address.split_once(':').ok_or(Error::InvalidStore)?.1;
     if server == home {
         authorize()?;
-        return Ok(Some(network.submit(request)?));
+        return Ok(Some(network.submit_with(request, silent)?));
     }
     let queue = wire::Queue {
         destination: server.into(),
