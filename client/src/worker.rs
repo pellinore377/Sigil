@@ -342,6 +342,53 @@ impl ClientStore {
 }
 
 impl ClientStore {
+    /// Call setup: receive, acknowledge, advance call jobs and send, skipping the
+    /// group, history, retry and maintenance stages that a 250 ms cadence cannot afford.
+    pub(super) fn call_setup_step(&mut self, now: u64) -> SyncStep {
+        let mut step = SyncStep::default();
+        step.begin("receive_mailbox_online");
+        match self.receive_mailbox_online(now) {
+            Ok(incoming) => step.incoming = incoming,
+            Err(error) => {
+                step.failure = Some(SyncFailure::Receive(error));
+                return step;
+            }
+        }
+        step.begin("acknowledge_incoming_online");
+        match self.acknowledge_incoming_online() {
+            Ok(count) => step.acknowledged = count,
+            Err(error) => {
+                step.failure = Some(SyncFailure::Acknowledge(error));
+                return step;
+            }
+        }
+        step.begin("resume_calls_online");
+        match self.resume_calls_online(now) {
+            Ok(calls) => step.calls = calls,
+            Err(error) => {
+                step.failure = Some(SyncFailure::Calls(error));
+                return step;
+            }
+        }
+        if let Some(index) = step
+            .calls
+            .iter()
+            .position(|item| matches!(item.result, Err(Error::Network(_))))
+        {
+            step.failure = Some(SyncFailure::CallNetwork(index));
+            return step;
+        }
+        step.begin("sync_conversation_devices");
+        match self.sync_conversation_devices(now) {
+            Ok(count) => step.conversation_copies = count,
+            Err(error) => {
+                step.failure = Some(SyncFailure::Conversations(error));
+                return step;
+            }
+        }
+        self.send_stages(now, &mut step);
+        step
+    }
     /// Own-device copies plus the three send stages; false stops the pass.
     pub(super) fn outbound_step(&mut self, now: u64) -> SyncStep {
         let mut step = SyncStep::default();

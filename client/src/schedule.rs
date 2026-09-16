@@ -21,6 +21,7 @@ enum Pass {
     Full,
     Wake,
     Outbound,
+    CallSetup,
 }
 pub(super) struct Schedule {
     pub(super) last: u64,
@@ -234,7 +235,7 @@ impl ClientStore {
     }
     /// The platform paces setup attempts; shared reservations and failures still apply.
     pub fn sync_call_setup_online(&mut self) -> Result<ScheduledSync, Error> {
-        self.sync_with_poll(clock, 0, Pass::Full)
+        self.sync_with_poll(clock, 0, Pass::CallSetup)
     }
 
     fn sync_with_clock(
@@ -304,6 +305,7 @@ impl ClientStore {
         tx.commit()?;
         let mut step = match pass {
             Pass::Outbound => self.outbound_step(now),
+            Pass::CallSetup => self.call_setup_step(now),
             Pass::Full | Pass::Wake => self.sync_step_with_maintenance(now, maintenance),
         };
         step.begin("done");

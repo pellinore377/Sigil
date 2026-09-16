@@ -291,6 +291,7 @@ class Messenger(application: Application) : AndroidViewModel(application) {
             "notification_system_settings" -> { NativeNotifications.systemSettings(getApplication()); return }
             "notification_change" -> { NativeNotifications.change(getApplication(), fields["key"] as String, fields["enabled"] as Boolean); notificationPermissionResult(); return }
             "notification_full_screen" -> { NativeNotifications.fullScreenSettings(getApplication()); return }
+            "notification_battery" -> { NativeNotifications.batterySettings(getApplication()); return }
             "notification_content" -> { NativeNotifications.content(getApplication(), fields["level"] as String); notificationPermissionResult(); return }
             "record_start" -> { val peer = fields["peer"] as String; if (getApplication<Application>().checkSelfPermission(android.Manifest.permission.RECORD_AUDIO) == android.content.pm.PackageManager.PERMISSION_GRANTED) voice.start(peer, fields) else microphoneRequest = peer to fields.toMap(); return }
             "record_stop" -> { voice.stop(); return }
