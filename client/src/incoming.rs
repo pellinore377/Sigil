@@ -611,6 +611,11 @@ impl ClientStore {
         if retryable {
             return Ok(());
         }
+        // The sequence comes from the server; one that cannot be acknowledged must
+        // never be recorded, or it fails every later acknowledgement in the pass.
+        if sequence <= 0 {
+            return Ok(());
+        }
         self.db.execute(
             "INSERT OR IGNORE INTO abandoned_deliveries(sequence) VALUES(?1)",
             [sequence],
@@ -618,7 +623,15 @@ impl ClientStore {
         Ok(())
     }
     fn acknowledge_abandoned_online(&mut self, sequence: i64) -> Result<(), Error> {
-        self.connected_client()?.acknowledge_delivery(sequence)?;
+        match self.connected_client()?.acknowledge_delivery(sequence) {
+            Ok(()) => {}
+            // The server no longer holds it, or it was never addressable at all. The
+            // slot is already free, and keeping the record would block every later
+            // acknowledgement, which in turn stops this device sending anything.
+            Err(crate::network::Error::Status { code: 404, .. })
+            | Err(crate::network::Error::Configuration) => {}
+            Err(error) => return Err(Error::Network(error)),
+        }
         self.db.execute(
             "DELETE FROM abandoned_deliveries WHERE sequence=?1",
             [sequence],
