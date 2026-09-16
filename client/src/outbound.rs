@@ -57,15 +57,34 @@ impl ClientStore {
         self.connected_client()?;
         let own = device_fingerprint(&self.own_device_binding()?)?;
         let (after, expected) = cursor(&self.db, &self.key, &own)?;
-        let ids: Vec<Vec<u8>> = self.db.prepare(
-            "SELECT DISTINCT o.session FROM outbox o JOIN sessions s ON s.id=o.session WHERE o.packet IS NOT NULL AND o.session>?1 AND (s.peer IS NOT NULL OR EXISTS(SELECT 1 FROM group_key_outbox g WHERE g.id=o.id) OR EXISTS(SELECT 1 FROM call_jobs c WHERE c.id=o.id)) AND s.suite=2 AND s.retired=0 ORDER BY o.session LIMIT 16"
-        )?.query_map([after], |r| r.get(0))?.collect::<Result<_, _>>()?;
+        // Sessions whose recipient answered full/unknown wait out their backoff before retrying.
+        let query = "SELECT DISTINCT o.session FROM outbox o JOIN sessions s ON s.id=o.session WHERE o.packet IS NOT NULL AND o.session>?1 AND (s.peer IS NOT NULL OR EXISTS(SELECT 1 FROM group_key_outbox g WHERE g.id=o.id) OR EXISTS(SELECT 1 FROM call_jobs c WHERE c.id=o.id)) AND s.suite=2 AND s.retired=0 AND NOT EXISTS(SELECT 1 FROM outbound_backoff b WHERE b.session=o.session AND b.until>?2) ORDER BY o.session LIMIT 16";
+        let mut ids: Vec<Vec<u8>> = self.db.prepare(query)?.query_map((&after, now as i64), |r| r.get(0))?.collect::<Result<_, _>>()?;
+        if ids.is_empty() && !after.is_empty() {
+            // Wrap within the pass so a fresh packet never waits for the next one.
+            ids = self.db.prepare(query)?.query_map((Vec::new(), now as i64), |r| r.get(0))?.collect::<Result<_, _>>()?;
+        }
         let mut attempts = Vec::new();
         let mut next = Vec::new();
         for bytes in ids {
             let session: Id = bytes.try_into().map_err(|_| Error::InvalidStore)?;
             let result = self.send_pending_limit(session, now, 4);
             let stop = matches!(&result, Err(Error::Network(error)) if !recipient_unavailable(error));
+            // Full, unknown and not-yet-trusted recipients wait instead of costing every pass.
+            let backoff = match &result {
+                Err(Error::Network(error)) if recipient_full(error) => 60,
+                Err(Error::Network(error)) if recipient_unavailable(error) => 300,
+                Err(Error::Unprepared) => 60,
+                _ => 0,
+            };
+            {
+                if backoff > 0 {
+                    self.db.execute(
+                        "INSERT INTO outbound_backoff VALUES(?1,?2) ON CONFLICT(session) DO UPDATE SET until=excluded.until",
+                        (session.as_slice(), (now + backoff) as i64),
+                    )?;
+                }
+            }
             attempts.push(OutboundAttempt { session, result });
             next = session.to_vec();
             if stop {
@@ -175,8 +194,8 @@ mod tests {
             serde_json::to_vec(&alice.pending_deliveries([0; 32], now).unwrap()).unwrap(),
             frozen
         );
-        assert!(alice.resume_outbound_online(now).unwrap().is_empty());
-        let mut step = alice.sync_step_online(now);
+        // The full recipient waits out its backoff; the next pass past it retries.
+        let mut step = alice.sync_step_online(now + if revoked { 301 } else { 61 });
         assert!(
             step.failure.is_none(),
             "A recipient limit must not become a server outage"
@@ -208,9 +227,8 @@ mod tests {
                 .acknowledge_message(&credential(&bob), receipt.sequence, now)
                 .unwrap();
         }
-        assert!(alice.resume_outbound_online(now).unwrap().is_empty());
         assert_eq!(
-            alice.resume_outbound_online(now).unwrap()[0]
+            alice.resume_outbound_online(now + 122).unwrap()[0]
                 .result
                 .as_ref()
                 .unwrap()
@@ -260,7 +278,6 @@ mod tests {
         assert_eq!(second[0].session, [16; 32]);
         assert_eq!(second[1].session, [30; 32]);
         assert_eq!(second[1].result.as_ref().unwrap().accepted, 1);
-        assert!(alice.resume_outbound_online(now).unwrap().is_empty());
         assert_eq!(
             alice.resume_outbound_online(now).unwrap()[0].session,
             [0; 32]
@@ -305,7 +322,6 @@ mod tests {
             serde_json::to_vec(&alice.pending_deliveries([3; 32], now).unwrap()[0]).unwrap(),
             frozen
         );
-        assert!(alice.resume_outbound_online(now).unwrap().is_empty());
         assert_eq!(
             alice.resume_outbound_online(now).unwrap()[0]
                 .result

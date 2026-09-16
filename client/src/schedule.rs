@@ -268,7 +268,18 @@ impl ClientStore {
         {
             state.next = state.last.saturating_add(poll);
         }
-        if matches!(pass, Pass::Wake | Pass::Outbound)
+        if matches!(pass, Pass::Outbound) {
+            // A flush runs beside a reserved pass; it honors failure backoff only and
+            // leaves the schedule untouched. Resent packets are idempotent server-side.
+            if state.failures > 0 && now < state.next {
+                return Ok(ScheduledSync { step: None, next_at: state.next, scheduling_error: None });
+            }
+            drop(tx);
+            let mut step = self.outbound_step(now);
+            step.begin("done");
+            return Ok(ScheduledSync { step: Some(step), next_at: state.next, scheduling_error: None });
+        }
+        if matches!(pass, Pass::Wake)
             && state.failures == 0
             && state.next != state.last.saturating_add(RESERVATION_SECONDS)
         {
@@ -491,14 +502,18 @@ mod tests {
                 write(&tx, &store.key, &own, &Schedule { last: now, next: now + delay, failures, maintenance: 0, slot: Slot::Messaging }).unwrap();
                 tx.commit().unwrap();
                 let result = store.sync_with_poll(|| Ok(now), 1, pass).unwrap();
-                assert_eq!(result.step.is_some(), runs, "delay {delay} failures {failures}");
+                // Flushes ignore a reservation but keep failure backoff and the schedule.
+                let outbound = matches!(pass, Pass::Outbound);
+                assert_eq!(result.step.is_some(), if outbound { failures == 0 } else { runs }, "delay {delay} failures {failures}");
                 if let Some(step) = result.step {
                     assert!(step.failure.is_none());
-                    if matches!(pass, Pass::Outbound) {
+                    if outbound {
                         assert!(step.incoming.is_empty() && step.acknowledged == 0);
                         assert!(step.prekey_supply.is_none() && step.maintenance.is_none());
+                        assert_eq!(read(&store.db, &store.key, &own).unwrap().0.next, now + delay);
+                    } else {
+                        assert_eq!(result.next_at, now + 1);
                     }
-                    assert_eq!(result.next_at, now + 1);
                 } else {
                     assert_eq!(result.next_at, now + delay);
                 }

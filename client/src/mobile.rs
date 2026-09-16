@@ -1538,7 +1538,14 @@ impl ClientStore {
                     step.outbound.iter().filter(|item| item.result.is_ok()).count()
                         + step.group_outbound.iter().filter(|item| item.result.is_ok()).count()
                 });
-                Ok(json!({"ran":step.is_some(),"sent":sent,"next_at":result.next_at,"issue":issue}))
+                // Per-session outcomes for diagnostics: short session id and result only.
+                let outbound: Vec<Value> = step.map_or_else(Vec::new, |step| {
+                    step.outbound
+                        .iter()
+                        .map(|item| json!({"session":transport::hex(&item.session)[..8],"result":match &item.result {Ok(progress) => format!("accepted {}", progress.accepted), Err(error) => error_message(error)}}))
+                        .collect()
+                });
+                Ok(json!({"ran":step.is_some(),"sent":sent,"next_at":result.next_at,"issue":issue,"outbound":outbound}))
             }
             Command::WatchTarget {} => {
                 let (origin, credential, after) = self.mailbox_watch_target()?;
