@@ -206,11 +206,17 @@ impl ClientStore {
                 return step;
             }
         }
-        if let Some(index) = step
-            .prekeys
-            .iter()
-            .position(|item| matches!(item.result, Err(Error::Network(_))))
-        {
+        if let Some(index) = step.prekeys.iter().position(|item| match &item.result {
+            // A refused publication must not stop messaging: this device's own keys
+            // are for others to reach it, and sending needs the recipient's. Preserve
+            // global backoff for authentication, throttling and outages.
+            Err(Error::Network(network::Error::Status {
+                code: 400 | 403 | 404 | 409 | 410 | 422,
+                retry_after_seconds: None,
+            })) => false,
+            Err(Error::Network(_)) => true,
+            _ => false,
+        }) {
             step.failure = Some(SyncFailure::PrekeyNetwork(index));
             return step;
         }
