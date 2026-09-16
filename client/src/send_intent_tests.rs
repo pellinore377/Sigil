@@ -108,9 +108,8 @@ fn first_send_resumes_exact_claim_and_packet_after_failed_local_commits() {
     drop(alice);
     let mut alice = reopen(&dir.path().join("alice.db"));
     alice.db.execute_batch("CREATE TRIGGER fail_finish BEFORE DELETE ON send_intents BEGIN SELECT RAISE(ABORT,'synthetic failure'); END;").unwrap();
-    // First pass wraps the durable cursor. Second creates the session, but fails
+    // The cursor wraps within the pass, which creates the session but fails
     // intent removal after packet commit; ordinary sending still uses that packet.
-    assert!(alice.sync_step_online(now).sends.is_empty());
     let failed = alice.sync_step_online(now);
     assert!(matches!(failed.sends[0].result, Err(Error::Storage(_))));
     assert_eq!(failed.outbound[0].result.as_ref().unwrap().accepted, 1);
@@ -172,7 +171,6 @@ fn expired_selection_starts_fresh_without_moving_old_packet_and_checks_queued_tr
     assert!(alice.pending([3; 32]).is_err());
     alice.block_peer(b, false).unwrap();
     assert_eq!(alice.pending([3; 32]).unwrap(), frozen);
-    assert!(alice.resume_send_intents_online(now).unwrap().is_empty());
     let next = alice.resume_send_intents_online(now).unwrap()[0]
         .result
         .as_ref()

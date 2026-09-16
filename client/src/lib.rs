@@ -75,7 +75,7 @@ mod outbound;
 pub use outbound::OutboundAttempt;
 
 pub type Id = [u8; 32];
-pub const DATABASE_VERSION: u32 = 77;
+pub const DATABASE_VERSION: u32 = 78;
 #[derive(Debug)]
 pub enum Error {
     Storage(rusqlite::Error),
@@ -460,6 +460,9 @@ impl ClientStore {
         }
         if version < 77 {
             tx.pragma_update(None, "user_version", 77)?;
+        }
+        if version < 78 {
+            tx.execute_batch("CREATE TABLE IF NOT EXISTS outbound_backoff(session BLOB PRIMARY KEY, until INTEGER NOT NULL); PRAGMA user_version=78;")?;
         }
         if version < 63 {
             conversations::migrate(&tx, &key)?;

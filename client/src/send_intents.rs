@@ -387,11 +387,19 @@ impl ClientStore {
         }
         let own = device_fingerprint(&self.own_device_binding()?)?;
         let (after, expected) = cursor(&self.db, &self.key, &own)?;
-        let ids: Vec<Vec<u8>> = self
+        let mut ids: Vec<Vec<u8>> = self
             .db
             .prepare("SELECT id FROM send_intents WHERE id>?1 ORDER BY id LIMIT 16")?
-            .query_map([after], |r| r.get(0))?
+            .query_map([&after], |r| r.get(0))?
             .collect::<Result<_, _>>()?;
+        if ids.is_empty() && !after.is_empty() {
+            // Wrap within the pass so a fresh intent never waits for the next one.
+            ids = self
+                .db
+                .prepare("SELECT id FROM send_intents WHERE id>?1 ORDER BY id LIMIT 16")?
+                .query_map([Vec::new()], |r| r.get(0))?
+                .collect::<Result<_, _>>()?;
+        }
         let mut results = Vec::new();
         let mut next = Vec::new();
         for raw in ids {

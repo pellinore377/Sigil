@@ -387,7 +387,7 @@ class Messenger(application: Application) : AndroidViewModel(application) {
                         loadTimeline()
                     }
                     // Send after the timeline shows the message; the flush pass reports only its own issue.
-                    if (name == "post") { val flush = native(request("flush")); if (flush.getInt("sent") > 0) loadTimeline(); flush.optString("issue").takeIf { it.isNotEmpty() && !flush.isNull("issue") }?.let { state = state.copy(issue = it) } }
+                    if (name == "post") { val flush = native(request("flush")); android.util.Log.i("SigilTiming", "flush result ${flush.optJSONArray("outbound")}"); if (flush.getInt("sent") > 0) loadTimeline(); flush.optString("issue").takeIf { it.isNotEmpty() && !flush.isNull("issue") }?.let { state = state.copy(issue = it) } }
                 }
                 if (name != "post") refresh()
                 if (preference != null && pendingUiSettings[preference] == setting?.get("value")) pendingUiSettings.remove(preference)
