@@ -70,11 +70,10 @@ impl ClientStore {
             let session: Id = bytes.try_into().map_err(|_| Error::InvalidStore)?;
             let result = self.send_pending_limit(session, now, 4);
             let stop = matches!(&result, Err(Error::Network(error)) if !recipient_unavailable(error));
-            // Full, unknown and not-yet-trusted recipients wait instead of costing every pass.
+            // Full and unknown recipients wait instead of costing every pass.
             let backoff = match &result {
                 Err(Error::Network(error)) if recipient_full(error) => 60,
                 Err(Error::Network(error)) if recipient_unavailable(error) => 300,
-                Err(Error::Unprepared) => 60,
                 _ => 0,
             };
             {
