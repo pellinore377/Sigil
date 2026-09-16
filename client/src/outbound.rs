@@ -208,11 +208,7 @@ mod tests {
             .outbound
             .iter()
             .any(|a| matches!(&a.result,Err(Error::Network(e)) if recipient_unavailable(e))));
-        step.incoming.push(IncomingAttempt {
-            sequence: 1,
-            result: Err(Error::Conflict),
-            recovery: RecoveryAdvice::None,
-        });
+        step.incoming.push(IncomingAttempt { sequence: 1, result: Err(Error::Conflict), recovery: RecoveryAdvice::None, kind: String::new() });
         assert!(matches!(
             step.issue(),
             Some(("receiving messages", Error::Conflict))

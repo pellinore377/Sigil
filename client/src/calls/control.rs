@@ -178,8 +178,10 @@ pub(crate) fn install(
             if !known.trusted {
                 return Err(Error::Unprepared);
             }
+            // A control for a call this device never saw (ended before the invite arrived,
+            // or cleaned up) is retained like an expired one; it must not block receiving.
             let (Body::Invite(state) | Body::DirectInvite(state)) = &wire.body else {
-                return Err(Error::NotFound);
+                return Ok(Some(marker));
             };
             state.verify().map_err(failure)?;
             state.roster.roster.active(now).map_err(failure)?;

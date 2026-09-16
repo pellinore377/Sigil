@@ -30,6 +30,8 @@ pub struct IncomingAttempt {
     pub sequence: i64,
     pub result: Result<MailboxEvent, Error>,
     pub recovery: crate::RecoveryAdvice,
+    /// Packet type tag (first four payload bytes as hex) for diagnostics.
+    pub kind: String,
 }
 pub enum MailboxEvent {
     Text(Incoming),
@@ -569,6 +571,7 @@ impl ClientStore {
                 let recovery = self.recovery_advice(delivery, &result, now);
                 IncomingAttempt {
                     sequence: delivery.sequence,
+                    kind: delivery.payload.get(..8).unwrap_or_default().to_owned(),
                     result,
                     recovery,
                 }
