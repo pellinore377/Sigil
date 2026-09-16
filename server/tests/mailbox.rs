@@ -391,14 +391,23 @@ fn pending_limits_allow_retained_history_and_restore_clears_payloads() {
     let sender = store.session(&alice, NOW).unwrap().device_id;
     let db = rusqlite::Connection::open(&path).unwrap();
     db.execute("WITH RECURSIVE n(x) AS (VALUES(1) UNION ALL SELECT x+1 FROM n WHERE x<64) INSERT INTO mailbox(sender,message_id,recipient,payload,payload_hash,expires_at) SELECT ?1,printf('%064x',x),?2,'abab',zeroblob(32),?3 FROM n", (&sender,&target,(NOW+60) as i64)).unwrap();
-    assert!(matches!(
-        store.submit_message(
+    // The allowance bounds storage; it does not silence the sender. The oldest
+    // undelivered message gives way so the newest still arrives.
+    store
+        .submit_message(
             &alice,
             message(&target, &random_secret().unwrap(), NOW + 60),
-            NOW
-        ),
-        Err(StoreError::MailboxFull)
-    ));
+            NOW,
+        )
+        .unwrap();
+    let live: i64 = db
+        .query_row(
+            "SELECT count(*) FROM mailbox WHERE payload IS NOT NULL AND expires_at>?1",
+            [NOW as i64],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(live, 64);
     let first = store.mailbox(&bob, NOW).unwrap().remove(0);
     store
         .acknowledge_message(&bob, first.sequence, NOW)

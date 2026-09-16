@@ -62,14 +62,12 @@ fn signing_out_a_device_frees_the_queue_it_can_never_collect_and_refuses_more() 
     let target = store.session(&bob, NOW).unwrap().device_id;
     store.allow_sender(&bob, &sender, NOW).unwrap();
 
-    // Fill the per-pair allowance, then confirm the sender is blocked.
+    // Fill the per-pair allowance. A recipient that stops collecting must not be
+    // able to silence its sender, so the oldest undelivered message gives way.
     for n in 0..64 {
         store.submit_message(&alice, message(&target, n), NOW).unwrap();
     }
-    assert!(matches!(
-        store.submit_message(&alice, message(&target, 64), NOW),
-        Err(StoreError::MailboxFull)
-    ));
+    store.submit_message(&alice, message(&target, 64), NOW).unwrap();
 
     let pending = |path: &std::path::Path| -> i64 {
         rusqlite::Connection::open(path)
@@ -81,7 +79,16 @@ fn signing_out_a_device_frees_the_queue_it_can_never_collect_and_refuses_more() 
             )
             .unwrap()
     };
-    assert_eq!(pending(&path), 64);
+    assert_eq!(pending(&path), 64, "the allowance bounds storage, it does not block");
+    let oldest: i64 = rusqlite::Connection::open(&path)
+        .unwrap()
+        .query_row(
+            "SELECT count(*) FROM mailbox WHERE payload IS NULL",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(oldest, 1, "the first message gave way to the newest");
 
     store.revoke_device(&bob, &target, NOW).unwrap();
     assert_eq!(pending(&path), 0, "a signed-out device must not hold its senders' slots");
