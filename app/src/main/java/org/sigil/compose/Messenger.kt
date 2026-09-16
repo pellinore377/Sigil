@@ -174,7 +174,7 @@ class Messenger(application: Application) : AndroidViewModel(application) {
                     attempt(false) {
                         if (!published) { execute("publish"); published = true }
                         val force = forceSync; forceSync = false
-                        val result = execute("sync", mapOf("interactive" to true, "wake" to force))
+                        val result = execute("sync", mapOf("interactive" to true, "wake" to force, "call_setup" to calls.settingUp))
                         nextSync = result.getLong("next_at")
                         val issue = result.optional("issue")
                         if (issue != null && issue != syncIssue) android.util.Log.i("SigilTiming", "issue: ${issue.take(200)}")
@@ -217,7 +217,7 @@ class Messenger(application: Application) : AndroidViewModel(application) {
         if (value) state = state.copy(notifications = NativeNotifications.settings(getApplication()))
         foreground = value; files.enabled = value && state.phase == "connected"
         NativeSync.enable(getApplication(), state.phase == "connected")
-        if (value) { nextSync = 0; published = false; syncWake.trySend(Unit) }
+        if (value) { nextSync = 0; published = false; syncWake.trySend(Unit); scope.launch { serialized(false) { refresh() } } }
         else { if (state.voice.phase == "Recording") voice.stop(); voice.pausePreview(); if (state.phase == "connected") NativeSync.enqueue(getApplication()) }
         if (state.phase == "connected") scope.launch { try { NativeSync.presence(getApplication(), state.call?.call?.phase in listOf("active", "joining")) } catch (cancelled: CancellationException) { throw cancelled } catch (_: Exception) { } }
     }
@@ -516,7 +516,7 @@ class Messenger(application: Application) : AndroidViewModel(application) {
         }
         return value.toString()
     }
-    private suspend fun execute(name: String, fields: Map<String, Any?> = emptyMap()) = if (name == "sync") NativeSync.run(getApplication(), fields["interactive"] == true, wake = fields["wake"] == true) else native(request(name, fields))
+    private suspend fun execute(name: String, fields: Map<String, Any?> = emptyMap()) = if (name == "sync") NativeSync.run(getApplication(), fields["interactive"] == true, fields["call_setup"] == true, wake = fields["wake"] == true) else native(request(name, fields))
     suspend fun serviceRequest(raw:String):ServiceResponse=mutex.withLock {
         check(foreground && !NativeSignOut.pending(getApplication()))
         val result=native(raw)

@@ -207,7 +207,23 @@ impl ClientStore {
         let tx = self
             .db
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let ephemeral = matches!(body, Content::Conversation(raw)
+            if sigil_protocol::conversation::Operation::from_bytes(raw).is_ok_and(|op| matches!(
+                op.action,
+                sigil_protocol::conversation::Action::Typing { .. }
+                    | sigil_protocol::conversation::Action::Presence { .. }
+            )));
         for &(peer, id) in recipients {
+            // Typing and presence expire in seconds; a peer whose queue is not draining skips them.
+            if ephemeral
+                && tx.query_row(
+                    "SELECT count(*) FROM outbox o JOIN sessions s ON s.id=o.session WHERE s.peer=?1 AND o.packet IS NOT NULL",
+                    [peer.as_slice()],
+                    |r| r.get::<_, i64>(0),
+                )? >= 32
+            {
+                continue;
+            }
             let text = context(&tx, &self.key, &own, &peer)?.encode(id, body, timestamp)?;
             if crate::conversations::cancelled(&tx, &self.key, &[0; 32], &id)? {
                 return Err(Error::Obsolete);
@@ -387,17 +403,19 @@ impl ClientStore {
         }
         let own = device_fingerprint(&self.own_device_binding()?)?;
         let (after, expected) = cursor(&self.db, &self.key, &own)?;
+        // Intents whose recipient answered full or is not ready wait out their backoff; missing stock retries.
+        let query = "SELECT id FROM send_intents WHERE id>?1 AND NOT EXISTS(SELECT 1 FROM send_intent_backoff b WHERE b.id=send_intents.id AND b.until>?2) ORDER BY id LIMIT 16";
         let mut ids: Vec<Vec<u8>> = self
             .db
-            .prepare("SELECT id FROM send_intents WHERE id>?1 ORDER BY id LIMIT 16")?
-            .query_map([&after], |r| r.get(0))?
+            .prepare(query)?
+            .query_map((&after, now as i64), |r| r.get(0))?
             .collect::<Result<_, _>>()?;
         if ids.is_empty() && !after.is_empty() {
             // Wrap within the pass so a fresh intent never waits for the next one.
             ids = self
                 .db
-                .prepare("SELECT id FROM send_intents WHERE id>?1 ORDER BY id LIMIT 16")?
-                .query_map([Vec::new()], |r| r.get(0))?
+                .prepare(query)?
+                .query_map((Vec::new(), now as i64), |r| r.get(0))?
                 .collect::<Result<_, _>>()?;
         }
         let mut results = Vec::new();
@@ -407,6 +425,19 @@ impl ClientStore {
             let result = self.prepare_send_intent_online(id, now);
             let stop =
                 matches!(&result, Err(Error::Network(e)) if !crate::outbound::recipient_full(e));
+            let wait = match &result {
+                Err(Error::Network(e)) if crate::outbound::recipient_full(e) => 60,
+                Err(Error::Unprepared | Error::Expired | Error::Limit) => 60,
+                _ => 0,
+            };
+            if wait > 0 {
+                self.db.execute(
+                    "INSERT INTO send_intent_backoff VALUES(?1,?2) ON CONFLICT(id) DO UPDATE SET until=excluded.until",
+                    (id.as_slice(), (now + wait) as i64),
+                )?;
+            } else if result.is_ok() {
+                self.db.execute("DELETE FROM send_intent_backoff WHERE id=?1", [id.as_slice()])?;
+            }
             results.push(SendIntentAttempt { id, result });
             next = id.to_vec();
             if stop {

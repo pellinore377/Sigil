@@ -3,6 +3,9 @@ pub fn rewind(db: &rusqlite::Connection, version: u32) {
     if version < 79 {
         db.execute_batch("ALTER TABLE outbox DROP COLUMN wake;").unwrap();
     }
+    if version < 80 {
+        db.execute_batch("DROP TABLE IF EXISTS send_intent_backoff;").unwrap();
+    }
     if version < 78 {
         db.execute_batch("DROP TABLE IF EXISTS outbound_backoff;").unwrap();
     }

@@ -1,0 +1,402 @@
+//! Browser call video: camera capture and VP8 WebCodecs over the sealed frame path.
+//! Frames carry the Android header (rotation, width, height, big-endian u16) before VP8 data.
+use crate::rtc::{construct, invoke, object};
+use crate::{fail, get};
+use js_sys::{Array, Function, Reflect, Uint8Array};
+use std::cell::{Cell, RefCell};
+use std::collections::HashMap;
+use wasm_bindgen::{prelude::*, JsCast};
+use wasm_bindgen_futures::JsFuture;
+use web_sys::*;
+
+const RATE: u32 = 24;
+struct Capture {
+    stream: MediaStream,
+    video: HtmlVideoElement,
+    canvas: HtmlCanvasElement,
+    context: CanvasRenderingContext2d,
+    encoder: JsValue,
+    width: u32,
+    height: u32,
+    frames: u64,
+    timer: i32,
+    _tick: Closure<dyn FnMut()>,
+    _output: Closure<dyn FnMut(JsValue, JsValue)>,
+    _error: Closure<dyn FnMut(JsValue)>,
+}
+impl Drop for Capture {
+    fn drop(&mut self) {
+        if let Some(window) = web_sys::window() {
+            window.clear_interval_with_handle(self.timer);
+        }
+        let _ = invoke(&self.encoder, "close", &[]);
+        for track in self.stream.get_tracks() {
+            if let Ok(track) = track.dyn_into::<MediaStreamTrack>() {
+                track.stop();
+            }
+        }
+        self.video.set_src_object(None);
+    }
+}
+struct Viewer {
+    canvas: HtmlCanvasElement,
+    context: CanvasRenderingContext2d,
+    decoder: Option<JsValue>,
+    size: (u32, u32),
+    rotation: u32,
+    _output: Closure<dyn FnMut(JsValue)>,
+    _error: Closure<dyn FnMut(JsValue)>,
+}
+impl Drop for Viewer {
+    fn drop(&mut self) {
+        if let Some(decoder) = self.decoder.take() {
+            let _ = invoke(&decoder, "close", &[]);
+        }
+    }
+}
+thread_local! {
+    static CAPTURE: RefCell<Option<Capture>> = const { RefCell::new(None) };
+    static GENERATION: Cell<u32> = const { Cell::new(0) };
+    static FAILED: Cell<bool> = const { Cell::new(false) };
+    static VIEWERS: RefCell<HashMap<String, Viewer>> = RefCell::new(HashMap::new());
+}
+fn construct2(name: &str, first: &JsValue, second: &JsValue) -> Result<JsValue, JsValue> {
+    let args = Array::new();
+    args.push(first);
+    args.push(second);
+    Reflect::construct(
+        &get(&js_sys::global(), name)?.dyn_into::<Function>()?,
+        &args,
+    )
+}
+fn number(value: &JsValue, key: &str) -> Option<f64> {
+    get(value, key).ok()?.as_f64()
+}
+#[wasm_bindgen]
+pub fn video_supported() -> bool {
+    let global = js_sys::global();
+    ["VideoEncoder", "VideoDecoder", "VideoFrame", "EncodedVideoChunk"]
+        .iter()
+        .all(|name| get(&global, name).map(|v| v.is_function()).unwrap_or(false))
+}
+#[wasm_bindgen]
+pub fn video_camera_stop() {
+    GENERATION.with(|g| g.set(g.get().wrapping_add(1)));
+    CAPTURE.with(|c| c.borrow_mut().take());
+}
+#[wasm_bindgen]
+pub fn video_camera_failed() -> bool {
+    FAILED.with(Cell::get)
+}
+#[wasm_bindgen]
+pub async fn video_camera_start(video: HtmlVideoElement, front: bool) -> Result<(), JsValue> {
+    if !video_supported() {
+        return Err(fail("This browser cannot encode call video"));
+    }
+    video_camera_stop();
+    FAILED.with(|f| f.set(false));
+    let generation = GENERATION.with(Cell::get);
+    let window = web_sys::window().ok_or_else(|| fail("Missing window"))?;
+    let document = window.document().ok_or_else(|| fail("Missing document"))?;
+    let constraints = MediaStreamConstraints::new();
+    constraints.set_audio(&false.into());
+    constraints.set_video(&object(serde_json::json!({
+        "facingMode": if front { "user" } else { "environment" },
+        "width": {"ideal": 640}, "height": {"ideal": 480}, "frameRate": {"ideal": RATE}
+    }))?);
+    let stream = JsFuture::from(
+        window
+            .navigator()
+            .media_devices()?
+            .get_user_media_with_constraints(&constraints)?,
+    )
+    .await?
+    .dyn_into::<MediaStream>()?;
+    let stop = |stream: &MediaStream| {
+        for track in stream.get_tracks() {
+            if let Ok(track) = track.dyn_into::<MediaStreamTrack>() {
+                track.stop();
+            }
+        }
+    };
+    if generation != GENERATION.with(Cell::get) {
+        stop(&stream);
+        return Err(fail("Camera cancelled"));
+    }
+    let track = stream
+        .get_video_tracks()
+        .get(0)
+        .dyn_into::<MediaStreamTrack>()
+        .map_err(|_| fail("Camera track unavailable"))?;
+    let settings = invoke(&track, "getSettings", &[]).unwrap_or(JsValue::UNDEFINED);
+    let mut width = number(&settings, "width").unwrap_or(640.0) as u32 & !1;
+    let mut height = number(&settings, "height").unwrap_or(480.0) as u32 & !1;
+    if !(16..=1280).contains(&width) || !(16..=1280).contains(&height) {
+        width = 640;
+        height = 480;
+    }
+    video.set_muted(true);
+    video.set_attribute("playsinline", "")?;
+    video.set_src_object(Some(&stream));
+    let played = JsFuture::from(video.play()?).await;
+    if generation != GENERATION.with(Cell::get) || played.is_err() {
+        stop(&stream);
+        video.set_src_object(None);
+        return Err(fail("Camera cancelled"));
+    }
+    let canvas = document
+        .create_element("canvas")?
+        .dyn_into::<HtmlCanvasElement>()?;
+    canvas.set_width(width);
+    canvas.set_height(height);
+    let context = canvas
+        .get_context("2d")?
+        .ok_or_else(|| fail("Camera pixels unavailable"))?
+        .dyn_into::<CanvasRenderingContext2d>()?;
+    let output = Closure::<dyn FnMut(JsValue, JsValue)>::new(move |chunk: JsValue, _| {
+        let Some(length) = number(&chunk, "byteLength") else {
+            return;
+        };
+        if length <= 0.0 || length > (1024 * 1024 - 6) as f64 {
+            return;
+        }
+        let length = length as u32;
+        let bytes = Uint8Array::new_with_length(6 + length);
+        bytes.set_index(2, (width >> 8) as u8);
+        bytes.set_index(3, width as u8);
+        bytes.set_index(4, (height >> 8) as u8);
+        bytes.set_index(5, height as u8);
+        if invoke(&chunk, "copyTo", &[bytes.subarray(6, 6 + length).into()]).is_err() {
+            return;
+        }
+        let keyframe = get(&chunk, "type").ok().and_then(|v| v.as_string()).as_deref() == Some("key");
+        let timestamp = number(&chunk, "timestamp").unwrap_or(-1.0).floor();
+        wasm_bindgen_futures::spawn_local(async move {
+            let _ = crate::rtc::browser_call_send(1, timestamp, keyframe, bytes).await;
+        });
+    });
+    let error = Closure::<dyn FnMut(JsValue)>::new(move |_| {
+        FAILED.with(|f| f.set(true));
+    });
+    let options = js_sys::Object::new();
+    Reflect::set(&options, &"output".into(), output.as_ref())?;
+    Reflect::set(&options, &"error".into(), error.as_ref())?;
+    let encoder = match construct("VideoEncoder", &options) {
+        Ok(encoder) => encoder,
+        Err(e) => {
+            stop(&stream);
+            return Err(e);
+        }
+    };
+    invoke(
+        &encoder,
+        "configure",
+        &[object(serde_json::json!({
+            "codec": "vp8", "width": width, "height": height,
+            "bitrate": 700000, "framerate": RATE, "latencyMode": "realtime"
+        }))?],
+    )?;
+    let tick = Closure::<dyn FnMut()>::new(move || {
+        let _ = CAPTURE.with(|slot| -> Result<(), JsValue> {
+            let mut slot = slot.borrow_mut();
+            let Some(capture) = slot.as_mut() else {
+                return Ok(());
+            };
+            if get(&capture.encoder, "state")?.as_string().as_deref() != Some("configured")
+                || number(&capture.encoder, "encodeQueueSize").unwrap_or(0.0) > 2.0
+                || capture.video.ready_state() < 2
+            {
+                return Ok(());
+            }
+            capture
+                .context
+                .draw_image_with_html_video_element_and_dw_and_dh(
+                    &capture.video,
+                    0.0,
+                    0.0,
+                    capture.width as f64,
+                    capture.height as f64,
+                )?;
+            let timestamp = (web_sys::window()
+                .and_then(|w| w.performance())
+                .map(|p| p.now())
+                .unwrap_or(0.0)
+                * 1000.0)
+                .floor();
+            let frame = construct2(
+                "VideoFrame",
+                &capture.canvas,
+                &object(serde_json::json!({"timestamp": timestamp}))?,
+            )?;
+            let keyframe = capture.frames % RATE as u64 == 0;
+            capture.frames += 1;
+            let result = invoke(
+                &capture.encoder,
+                "encode",
+                &[frame.clone(), object(serde_json::json!({"keyFrame": keyframe}))?],
+            );
+            let _ = invoke(&frame, "close", &[]);
+            result.map(|_| ())
+        });
+    });
+    let timer = window.set_interval_with_callback_and_timeout_and_arguments_0(
+        tick.as_ref().unchecked_ref(),
+        (1000 / RATE) as i32,
+    )?;
+    CAPTURE.with(|slot| {
+        *slot.borrow_mut() = Some(Capture {
+            stream,
+            video,
+            canvas,
+            context,
+            encoder,
+            width,
+            height,
+            frames: 0,
+            timer,
+            _tick: tick,
+            _output: output,
+            _error: error,
+        })
+    });
+    Ok(())
+}
+#[wasm_bindgen]
+pub fn video_attach(sender: String, canvas: HtmlCanvasElement) -> Result<(), JsValue> {
+    let context = canvas
+        .get_context("2d")?
+        .ok_or_else(|| fail("Video pixels unavailable"))?
+        .dyn_into::<CanvasRenderingContext2d>()?;
+    let key = sender.clone();
+    let output = Closure::<dyn FnMut(JsValue)>::new(move |frame: JsValue| {
+        let _ = VIEWERS.with(|viewers| -> Result<(), JsValue> {
+            let viewers = viewers.borrow();
+            let Some(viewer) = viewers.get(&key) else {
+                let _ = invoke(&frame, "close", &[]);
+                return Ok(());
+            };
+            let width = number(&frame, "displayWidth").unwrap_or(0.0);
+            let height = number(&frame, "displayHeight").unwrap_or(0.0);
+            let turned = viewer.rotation == 90 || viewer.rotation == 270;
+            let (cw, ch) = if turned { (height, width) } else { (width, height) };
+            if viewer.canvas.width() != cw as u32 || viewer.canvas.height() != ch as u32 {
+                viewer.canvas.set_width(cw as u32);
+                viewer.canvas.set_height(ch as u32);
+            }
+            viewer.context.save();
+            viewer.context.translate(cw / 2.0, ch / 2.0)?;
+            viewer
+                .context
+                .rotate(viewer.rotation as f64 * std::f64::consts::PI / 180.0)?;
+            let result = invoke(
+                &viewer.context,
+                "drawImage",
+                &[
+                    frame.clone(),
+                    (-width / 2.0).into(),
+                    (-height / 2.0).into(),
+                    width.into(),
+                    height.into(),
+                ],
+            );
+            viewer.context.restore();
+            let _ = invoke(&frame, "close", &[]);
+            result.map(|_| ())
+        });
+    });
+    let key = sender.clone();
+    let error = Closure::<dyn FnMut(JsValue)>::new(move |_| {
+        VIEWERS.with(|viewers| {
+            if let Some(viewer) = viewers.borrow_mut().get_mut(&key) {
+                if let Some(decoder) = viewer.decoder.take() {
+                    let _ = invoke(&decoder, "close", &[]);
+                }
+            }
+        });
+    });
+    VIEWERS.with(|viewers| {
+        viewers.borrow_mut().insert(
+            sender,
+            Viewer {
+                canvas,
+                context,
+                decoder: None,
+                size: (0, 0),
+                rotation: 0,
+                _output: output,
+                _error: error,
+            },
+        )
+    });
+    Ok(())
+}
+#[wasm_bindgen]
+pub fn video_detach(sender: String) {
+    VIEWERS.with(|viewers| viewers.borrow_mut().remove(&sender));
+}
+/// Returns true for video frames (consumed or dropped); audio frames return false.
+#[wasm_bindgen]
+pub fn video_receive(sender: String, frame: Uint8Array) -> Result<bool, JsValue> {
+    let length = frame.length();
+    if length < 17 || frame.get_index(0) == 0 {
+        return Ok(false);
+    }
+    let keyframe = frame.get_index(1) != 0;
+    let mut raw = [0; 8];
+    frame.subarray(2, 10).copy_to(&mut raw);
+    let timestamp = u64::from_be_bytes(raw);
+    let field = |at: u32| (frame.get_index(at) as u32) << 8 | frame.get_index(at + 1) as u32;
+    let (rotation, width, height) = (field(10), field(12), field(14));
+    if !matches!(rotation, 0 | 90 | 180 | 270)
+        || !(16..=1920).contains(&width)
+        || !(16..=1920).contains(&height)
+        || timestamp > 9_007_199_254_740_991
+    {
+        return Ok(true);
+    }
+    VIEWERS.with(|viewers| -> Result<bool, JsValue> {
+        let mut viewers = viewers.borrow_mut();
+        let Some(viewer) = viewers.get_mut(&sender) else {
+            return Ok(true);
+        };
+        let closed = viewer
+            .decoder
+            .as_ref()
+            .map(|d| get(d, "state").ok().and_then(|v| v.as_string()).as_deref() != Some("configured"))
+            .unwrap_or(true);
+        if closed || viewer.size != (width, height) {
+            if !keyframe {
+                return Ok(true);
+            }
+            if let Some(old) = viewer.decoder.take() {
+                let _ = invoke(&old, "close", &[]);
+            }
+            let options = js_sys::Object::new();
+            Reflect::set(&options, &"output".into(), viewer._output.as_ref())?;
+            Reflect::set(&options, &"error".into(), viewer._error.as_ref())?;
+            let decoder = construct("VideoDecoder", &options)?;
+            invoke(
+                &decoder,
+                "configure",
+                &[object(serde_json::json!({"codec":"vp8","codedWidth":width,"codedHeight":height}))?],
+            )?;
+            viewer.decoder = Some(decoder);
+            viewer.size = (width, height);
+        }
+        viewer.rotation = rotation;
+        let decoder = viewer.decoder.clone().ok_or_else(|| fail("Missing decoder"))?;
+        if number(&decoder, "decodeQueueSize").unwrap_or(0.0) > 8.0 && !keyframe {
+            return Ok(true);
+        }
+        let init = js_sys::Object::new();
+        Reflect::set(&init, &"type".into(), &if keyframe { "key" } else { "delta" }.into())?;
+        Reflect::set(&init, &"timestamp".into(), &(timestamp as f64).into())?;
+        Reflect::set(&init, &"data".into(), &frame.subarray(16, length))?;
+        let chunk = construct("EncodedVideoChunk", &init)?;
+        if invoke(&decoder, "decode", &[chunk]).is_err() {
+            let _ = invoke(&decoder, "close", &[]);
+            viewer.decoder = None;
+        }
+        Ok(true)
+    })
+}
