@@ -1573,3 +1573,15 @@ fn notes_search_preserves_group_mapping_and_visibility_without_group_previews() 
     let notes = run(&mut alice, json!({"command":"search","query":"","category":"Notes"}));
     assert!(notes["hits"].as_array().unwrap().iter().all(|hit| hit["peer"] != group));
 }
+
+#[test]
+fn diagnostics_report_gives_counts_without_identifying_anyone() {
+    let (_dir, _server, mut alice, _bob, _now) = crate::claims::tests::pair();
+    let value = run(&mut alice, json!({"command":"diagnostics"}));
+    let report = value["report"].as_str().unwrap();
+    assert!(report.contains("schema"), "{report}");
+    assert!(report.contains("unacknowledged"), "{report}");
+    // Counts and stage names only.
+    assert!(!report.contains('@'), "{report}");
+    assert!(!report.contains("watchtower"), "{report}");
+}

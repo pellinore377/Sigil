@@ -65,10 +65,9 @@ private fun DiagnosticsLink() {
         val request = access ?: return@SettingsLink
         scope.launch {
             val report = runCatching {
+                // The request layer already unwraps the reply to its value.
                 Json.parseToJsonElement(request("{\"command\":\"diagnostics\"}").json)
-                    .jsonObject["value"]
-                    ?.jsonObject
-                    ?.get("report")
+                    .jsonObject["report"]
                     ?.jsonPrimitive
                     ?.content
             }.getOrNull()
