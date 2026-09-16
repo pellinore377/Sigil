@@ -80,7 +80,8 @@ internal class NativeCalls(private val app: Application, private val update: (Li
         ringing = call
         ringer?.stop(); ringer = null
         val vibrator = app.getSystemService(android.os.VibratorManager::class.java)?.defaultVibrator
-        if (call == null || !NativeNotifications.settings(app).calls) { vibrator?.cancel(); return }
+        // Android mutes playback from a backgrounded app; the notification's ringtone covers that case.
+        if (call == null || !NativeNotifications.settings(app).calls || !NativeNotifications.visible) { vibrator?.cancel(); return }
         runCatching {
             val tone = android.media.RingtoneManager.getRingtone(app, android.media.RingtoneManager.getDefaultUri(android.media.RingtoneManager.TYPE_RINGTONE)) ?: return
             tone.audioAttributes = AudioAttributes.Builder().setUsage(AudioAttributes.USAGE_NOTIFICATION_RINGTONE).build()

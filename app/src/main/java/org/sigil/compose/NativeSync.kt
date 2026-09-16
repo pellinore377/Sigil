@@ -80,7 +80,8 @@ internal object NativeSync {
                 else existing.extras.getLong("due", 0L)
             if (deadline <= now + wait) return
         }
-        val timing = PersistableBundle().apply { putLong("due", now + wait); putInt("boot", boot) }
+        // Immediate work is a wake (push, app exit); the pass must run even if one just finished.
+        val timing = PersistableBundle().apply { putLong("due", now + wait); putInt("boot", boot); putInt("wake", if (wait == 0L) 1 else 0) }
         if (urgent && delay <= 0 && android.os.Build.VERSION.SDK_INT >= 31 &&
             jobs.schedule(base(context, id).setExtras(timing).setExpedited(true).build()) == JobScheduler.RESULT_SUCCESS) return
         jobs.schedule(base(context, id).setExtras(timing).setMinimumLatency(wait).build())
@@ -98,7 +99,7 @@ class SyncService : JobService() {
             var nextDelay: Long? = null
             try {
                 if (!NativeSignOut.pending(this@SyncService) && File(noBackupFilesDir, "native/client.db").isFile) {
-                    val value = NativeSync.run(this@SyncService)
+                    val value = NativeSync.run(this@SyncService, wake = params.extras.getInt("wake", 0) == 1)
                     retry = !value.isNull("issue")
                     NativeNotifications.update(this@SyncService)
                     val locations = NativeLocations.work(this@SyncService)

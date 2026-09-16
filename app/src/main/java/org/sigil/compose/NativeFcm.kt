@@ -64,6 +64,7 @@ internal object NativeFcm {
     }
     fun stop(context: Context) = FirebaseBootstrap.stop(context)
     fun receive(context: Context, payload: String, urgent: Boolean) {
+        android.util.Log.i("SigilTiming", "fcm received urgent=$urgent")
         if (payload.length > 98 || NativeSignOut.pending(context)) return
         val result = FirebaseBootstrap.ifCurrent(context) {NativePush.execute(context, "fcm_receive", mapOf("payload" to payload))} ?: return
         if (result.optBoolean("accepted")) {
