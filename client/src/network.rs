@@ -386,8 +386,10 @@ impl HttpsClient {
                 .max_response_header_size(SMALL)
                 .input_buffer_size(16384)
                 .output_buffer_size(16384)
-                .max_idle_connections(4)
-                .max_idle_connections_per_host(2)
+                // Keep the whole device fan-out pooled: dropping connections after
+                // each pass forced a fresh TLS handshake per device on the next send.
+                .max_idle_connections(16)
+                .max_idle_connections_per_host(8)
                 .user_agent("Sigil/experimental-v0")
                 .build();
             let agent = Agent::with_parts(config, DefaultConnector::default(), BoundedResolver);
@@ -896,33 +898,23 @@ impl HttpsClient {
         }
         Ok(deliveries)
     }
-    /// Acknowledges several deliveries concurrently; results keep input order.
+    /// Acknowledges several deliveries in order over the pooled connection.
     pub fn acknowledge_deliveries(&self, sequences: &[i64]) -> Vec<Result<(), Error>> {
-
-        let built: Vec<Result<_, Error>> = sequences
-            .iter()
-            .map(|sequence| {
-                if *sequence <= 0 {
-                    return Err(Error::Configuration);
-                }
-                self.build_request(Method::DELETE, &format!("/client/v0/mailbox/{sequence}"), &[], None, None)
-            })
-            .collect();
-        let mut responses = self
-            .send_many(built.iter().filter_map(|r| r.as_ref().ok().cloned()).collect())
-            .into_iter();
-        built
-            .into_iter()
-            .map(|request| match request {
-                Ok(_) => collected(
-                    responses
-                        .next()
-                        .unwrap_or(Err(Error::Transport))
-                        .and_then(|r| self.empty(r)),
-                ),
-                Err(error) => Err(error),
-            })
-            .collect()
+        // Sequential on purpose: a parallel fan-out opens one TLS connection per
+        // delivery, which times out on constrained networks and then wedges every
+        // acknowledgement behind it. Stop early once the link itself looks down.
+        let mut results = Vec::with_capacity(sequences.len());
+        let mut down = false;
+        for sequence in sequences {
+            if down {
+                results.push(Err(Error::Transport));
+                continue;
+            }
+            let result = self.acknowledge_delivery(*sequence);
+            down = matches!(result, Err(Error::Transport));
+            results.push(result);
+        }
+        results
     }
     pub fn acknowledge_delivery(&self, sequence: i64) -> Result<(), Error> {
         if sequence <= 0 {

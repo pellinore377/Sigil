@@ -492,15 +492,17 @@ fn mailbox_dispatch_commits_control_before_ack_and_recovers_lost_ack_receipt() {
     assert_eq!(count(&alice, "prekey_claims"), claims + 1);
     alice.db.execute_batch("CREATE TRIGGER fail BEFORE UPDATE ON retry_incoming BEGIN SELECT RAISE(ABORT,'synthetic failure'); END;").unwrap();
     assert!(alice.acknowledge_incoming_online().is_err());
+    // The failing control keeps its own record open; unrelated deliveries still clear.
+    assert_eq!(count(&alice, "retry_incoming"), 1);
     assert_eq!(
         alice.connected_client().unwrap().mailbox().unwrap().len(),
-        1
+        0
     );
     alice.db.execute_batch("DROP TRIGGER fail;").unwrap();
     drop(alice);
     let mut alice = open(&dir.path().join("alice.db"));
     assert_eq!(alice.retry_request(id, now).unwrap(), request);
-    assert_eq!(alice.acknowledge_incoming_online().unwrap(), 2);
+    assert_eq!(alice.acknowledge_incoming_online().unwrap(), 1);
     assert_eq!(alice.acknowledge_incoming_online().unwrap(), 0);
     assert!(alice
         .connected_client()

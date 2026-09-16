@@ -405,17 +405,18 @@ fn recovered_ack_requires_committed_proof_and_survives_lost_receipt() {
         )
         .unwrap();
     assert!(bob.acknowledge_incoming_online().is_err());
-    assert_eq!(bob.connected_client().unwrap().mailbox().unwrap().len(), 2);
+    // The unreadable control stays open; an unrelated delivery is not held behind it.
+    assert_eq!(bob.connected_client().unwrap().mailbox().unwrap().len(), 1);
     bob.db
         .execute("UPDATE recovered_deliveries SET state=?1", [state])
         .unwrap();
     bob.db.execute_batch("CREATE TRIGGER fail BEFORE UPDATE ON recovered_deliveries BEGIN SELECT RAISE(ABORT,'synthetic failure'); END;").unwrap();
     assert!(bob.acknowledge_incoming_online().is_err());
-    assert_eq!(bob.connected_client().unwrap().mailbox().unwrap().len(), 1);
+    assert_eq!(bob.connected_client().unwrap().mailbox().unwrap().len(), 0);
     bob.db.execute_batch("DROP TRIGGER fail;").unwrap();
     drop(bob);
     let mut bob = open(&dir.path().join("bob.db"));
-    assert_eq!(bob.acknowledge_incoming_online().unwrap(), 2);
+    assert_eq!(bob.acknowledge_incoming_online().unwrap(), 1);
     assert_eq!(bob.acknowledge_incoming_online().unwrap(), 0);
     assert!(bob
         .connected_client()
