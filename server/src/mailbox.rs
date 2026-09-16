@@ -41,6 +41,8 @@ CREATE INDEX mailbox_recipient ON mailbox(recipient,sequence);
 CREATE INDEX mailbox_expiry ON mailbox(expires_at) WHERE payload IS NOT NULL;
 ";
 
+/// An entry due to lapse this soon is a passing notice, not a message.
+const NOTICE_LIFETIME: u64 = 600;
 impl Store {
     pub fn submit_message(
         &mut self,
@@ -154,21 +156,26 @@ impl Store {
         {
             return Err(StoreError::MailboxFull);
         }
-        // A recipient that stops collecting must not silence the people writing to it,
-        // whatever the reason: an old build, a broken session, or a device left off.
-        // Retire their oldest undelivered message instead, which was expiring unread
-        // anyway, so a live conversation outlives a backlog nobody is collecting.
+        // A recipient that stops collecting fills up on traffic that describes a
+        // moment: typing and presence, which the sender marks to lapse within minutes.
+        // Those give way, so the allowance cannot be spent on notices nobody will read.
+        // Everything else keeps its place and a real backlog still refuses, rather than
+        // messages disappearing unseen.
         let allowance = 64 + u32::from(recovery);
         if peer_pending >= allowance {
-            tx.execute(
-                "UPDATE mailbox SET payload=NULL,expires_at=0 WHERE sequence IN (SELECT sequence FROM mailbox WHERE recipient=?1 AND sender=?2 AND payload IS NOT NULL AND expires_at>?3 ORDER BY sequence LIMIT ?4)",
+            let evicted = tx.execute(
+                "UPDATE mailbox SET payload=NULL,expires_at=0 WHERE sequence IN (SELECT sequence FROM mailbox WHERE recipient=?1 AND sender=?2 AND payload IS NOT NULL AND expires_at>?3 AND expires_at<?4 ORDER BY expires_at,sequence LIMIT ?5)",
                 (
                     &request.recipient_device,
                     &sender,
                     now as i64,
+                    crate::push_config::sql(now.saturating_add(NOTICE_LIFETIME))?,
                     i64::from(peer_pending + 1 - allowance),
                 ),
             )?;
+            if evicted == 0 {
+                return Err(StoreError::MailboxFull);
+            }
         }
         tx.execute("INSERT INTO mailbox(sender,message_id,recipient,payload,payload_hash,expires_at) VALUES(?1,?2,?3,?4,?5,?6)", (&sender,&request.message_id,&request.recipient_device,&request.payload,hash.as_slice(),request.expires_at as i64))?;
         let sequence = tx.last_insert_rowid();

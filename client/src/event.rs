@@ -317,6 +317,19 @@ impl ClientStore {
     }
 }
 
+/// Typing and presence describe a moment and are stale within seconds. Holding a
+/// week-long slot in the recipient's queue for them crowds out messages that still
+/// matter, so they lapse on their own shortly after they stop being true.
+fn ephemeral_lifetime(body: Content<'_>) -> Option<u64> {
+    let Content::Conversation(raw) = body else {
+        return None;
+    };
+    match sigil_protocol::conversation::Operation::from_bytes(raw).ok()?.action {
+        sigil_protocol::conversation::Action::Typing { .. } => Some(60),
+        sigil_protocol::conversation::Action::Presence { .. } => Some(180),
+        _ => None,
+    }
+}
 fn send_content_in(
     tx: &Transaction<'_>,
     key: &StorageKey,
@@ -328,6 +341,7 @@ fn send_content_in(
 ) -> Result<Vec<u8>, Error> {
     let peer = session_peer(tx, &session)?.ok_or(Error::Unprepared)?;
     let context = context(tx, key, own, &peer)?;
+    let expires = ephemeral_lifetime(body).map(|life| now.saturating_add(life));
     let plaintext = context.encode(message, body, timestamp)?;
     crate::conversations::check_send(tx, key, &plaintext, now)?;
     let packet = send_in(tx, key, session, message, &plaintext)?;
@@ -337,7 +351,7 @@ fn send_content_in(
         session,
         message,
         context.peer.binding.device,
-        None,
+        expires,
         now,
     )?;
     retain(tx, key, own, &peer, &plaintext, true)?;

@@ -62,12 +62,15 @@ fn signing_out_a_device_frees_the_queue_it_can_never_collect_and_refuses_more() 
     let target = store.session(&bob, NOW).unwrap().device_id;
     store.allow_sender(&bob, &sender, NOW).unwrap();
 
-    // Fill the per-pair allowance. A recipient that stops collecting must not be
-    // able to silence its sender, so the oldest undelivered message gives way.
+    // Fill the per-pair allowance. Messages that outlive each other keep their
+    // places, so the sender is refused rather than losing one unseen.
     for n in 0..64 {
         store.submit_message(&alice, message(&target, n), NOW).unwrap();
     }
-    store.submit_message(&alice, message(&target, 64), NOW).unwrap();
+    assert!(matches!(
+        store.submit_message(&alice, message(&target, 64), NOW),
+        Err(StoreError::MailboxFull)
+    ));
 
     let pending = |path: &std::path::Path| -> i64 {
         rusqlite::Connection::open(path)
@@ -79,16 +82,7 @@ fn signing_out_a_device_frees_the_queue_it_can_never_collect_and_refuses_more() 
             )
             .unwrap()
     };
-    assert_eq!(pending(&path), 64, "the allowance bounds storage, it does not block");
-    let oldest: i64 = rusqlite::Connection::open(&path)
-        .unwrap()
-        .query_row(
-            "SELECT count(*) FROM mailbox WHERE payload IS NULL",
-            [],
-            |r| r.get(0),
-        )
-        .unwrap();
-    assert_eq!(oldest, 1, "the first message gave way to the newest");
+    assert_eq!(pending(&path), 64);
 
     store.revoke_device(&bob, &target, NOW).unwrap();
     assert_eq!(pending(&path), 0, "a signed-out device must not hold its senders' slots");
@@ -98,4 +92,34 @@ fn signing_out_a_device_frees_the_queue_it_can_never_collect_and_refuses_more() 
         store.submit_message(&alice, message(&target, 65), NOW),
         Err(StoreError::NotFound)
     ));
+}
+
+#[test]
+fn short_lived_notices_give_way_to_a_message_that_outlives_them() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("server.db");
+    let (mut store, alice, bob) = setup(&path);
+    let sender = store.session(&alice, NOW).unwrap().device_id;
+    let target = store.session(&bob, NOW).unwrap().device_id;
+    store.allow_sender(&bob, &sender, NOW).unwrap();
+
+    // Typing and presence describe a moment and are sent short-lived.
+    for n in 0..64 {
+        let mut notice = message(&target, n);
+        notice.expires_at = NOW + 180;
+        store.submit_message(&alice, notice, NOW).unwrap();
+    }
+    // A conversation cannot be silenced by notices nobody will ever read.
+    store
+        .submit_message(&alice, message(&target, 64), NOW)
+        .unwrap();
+    let retired: i64 = rusqlite::Connection::open(&path)
+        .unwrap()
+        .query_row(
+            "SELECT count(*) FROM mailbox WHERE payload IS NULL",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(retired, 1, "exactly one notice gave way");
 }
