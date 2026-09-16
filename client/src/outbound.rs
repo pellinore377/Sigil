@@ -133,10 +133,12 @@ impl ClientStore {
                 Some(error) => Err(error),
                 None => Ok(lane.progress),
             };
-            // Full and unknown recipients wait instead of costing every pass.
+            // Full, unknown and not-yet-trusted recipients wait instead of costing every pass;
+            // granting trust clears the wait.
             let backoff = match &result {
                 Err(Error::Network(error)) if recipient_full(error) => 60,
                 Err(Error::Network(error)) if recipient_unavailable(error) => 300,
+                Err(Error::Unprepared) => 60,
                 _ => 0,
             };
             if backoff > 0 {
