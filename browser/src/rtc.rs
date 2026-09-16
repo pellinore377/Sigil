@@ -40,6 +40,8 @@ impl Drop for Session {
         self.assembly.clear();
     }
 }
+/// Retransmission deadline for media fragments, in milliseconds.
+const CHANNEL_LIFETIME: u16 = 120;
 thread_local! {static SESSION:RefCell<Option<Session>>=const {RefCell::new(None)};static GENERATION:Cell<u64>=const {Cell::new(0)};}
 pub(crate) fn invoke(value: &JsValue, name: &str, args: &[JsValue]) -> Result<JsValue, JsValue> {
     let args = args.iter().collect::<Array>();
@@ -147,7 +149,9 @@ pub async fn browser_call_connect(id: String, frames: Function) -> Result<(), Js
             "createDataChannel",
             &[
                 sigil_calls::channel::LABEL.into(),
-                object(serde_json::json!({"ordered":false,"maxRetransmits":0}))?,
+                // Unordered, but a lost fragment discards its whole frame, so allow
+                // retransmission inside a deadline well under the keyframe interval.
+                object(serde_json::json!({"ordered":false,"maxPacketLifeTime":CHANNEL_LIFETIME}))?,
             ],
         )?;
         set(&channel, "binaryType", &"arraybuffer".into())?;
