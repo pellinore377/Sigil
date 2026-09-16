@@ -9,10 +9,16 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.*
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.semantics.*
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import kotlinx.coroutines.launch
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
 
 @Composable
 internal fun SettingsPage(state: MessengerState, navigate: (String) -> Unit) {
@@ -39,9 +45,39 @@ internal fun SettingsPage(state: MessengerState, navigate: (String) -> Unit) {
             SettingsSection("Personalize") { SettingsLink("palette", "Appearance", "Theme, typography, and layout") { navigate("appearance") } }
             SettingsSection("Storage & support") {
                 if (LocalClientFeatures.current.files) SettingsLink("database", "Data and storage", "Media, downloads, and cache") { navigate("storage") }
+                DiagnosticsLink()
                 SettingsLink("info", "About", "Version, licenses, and support") { navigate("about") }
             }
             Spacer(Modifier.height(24.dp))
+        }
+    }
+}
+
+/// Counts and stage names only, so a report can be shared to explain a device that
+/// will not send or receive without disclosing anything that was said.
+@Composable
+private fun DiagnosticsLink() {
+    val access = LocalServiceAccess.current
+    val clipboard = LocalClipboardManager.current
+    val scope = rememberCoroutineScope()
+    var state by remember { mutableStateOf("Copy a report for troubleshooting") }
+    SettingsLink("bug_report", "Diagnostics", state) {
+        val request = access ?: return@SettingsLink
+        scope.launch {
+            val report = runCatching {
+                Json.parseToJsonElement(request("{\"command\":\"diagnostics\"}").json)
+                    .jsonObject["value"]
+                    ?.jsonObject
+                    ?.get("report")
+                    ?.jsonPrimitive
+                    ?.content
+            }.getOrNull()
+            state = if (report == null) {
+                "Could not read the report. Try again."
+            } else {
+                clipboard.setText(AnnotatedString(report))
+                "Copied. Paste it wherever you are reporting the problem."
+            }
         }
     }
 }

@@ -121,6 +121,7 @@ enum Command {
     },
     SignOut {},
     Storage {},
+    Diagnostics {},
     RecoveryGenerate {},
     RecoveryRestore {
         secret: Zeroizing<String>,
@@ -842,6 +843,7 @@ impl ClientStore {
                 self.mobile_devices(None)
             }
             Command::Storage {} => self.mobile_storage(),
+            Command::Diagnostics {} => self.mobile_diagnostics(),
             Command::RecoveryGenerate {} => self.mobile_recovery_generate(),
             Command::RecoveryRestore {
                 secret,
