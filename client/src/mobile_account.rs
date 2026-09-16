@@ -67,6 +67,51 @@ impl ClientStore {
             json!({"devices":devices,"next":page.next.map(|cursor| serde_json::to_string(&cursor).map_err(|_| Error::InvalidStore)).transpose()?}),
         )
     }
+    /// A report for troubleshooting a device that cannot be inspected directly.
+    /// Counts and stage names only: no message content, addresses, names, peer or
+    /// device identifiers, and no key material. Mailbox sequences are the server's
+    /// own numbering for this device and say nothing about what was said.
+    pub(super) fn mobile_diagnostics(&self) -> Result<Value, Error> {
+        let count = |sql: &str| -> Result<i64, Error> {
+            Ok(self.db.query_row(sql, [], |r| r.get(0)).unwrap_or(-1))
+        };
+        let oldest = |table: &str, filter: &str| -> Result<String, Error> {
+            let value: Option<i64> = self
+                .db
+                .query_row(
+                    &format!("SELECT min(sequence) FROM {table} {filter}"),
+                    [],
+                    |r| r.get(0),
+                )
+                .optional()?
+                .flatten();
+            Ok(value.map_or_else(|| "-".to_owned(), |v| v.to_string()))
+        };
+        let report = format!(
+            "Sigil diagnostics\nschema {schema}\nqueued: outbox {outbox}, intents {intents}, retries {retries}\nunacknowledged: incoming {incoming}, retry {retry}, recovered {recovered}, group {group}, abandoned {abandoned}\noldest unacknowledged: incoming {oi}, retry {orr}, recovered {orc}, group {og}, abandoned {oa}\nbackoff: outbound {ob}, intents {ib}\nstore: peers {peers}, sessions {sessions} (retired {retired}), prekey slots {slots}",
+            schema = crate::DATABASE_VERSION,
+            outbox = count("SELECT count(*) FROM outbox WHERE packet IS NOT NULL")?,
+            intents = count("SELECT count(*) FROM send_intents")?,
+            retries = count("SELECT count(*) FROM retry_requests WHERE finished=0")?,
+            incoming = count("SELECT count(*) FROM incoming WHERE acknowledged=0")?,
+            retry = count("SELECT count(*) FROM retry_incoming WHERE acknowledged=0")?,
+            recovered = count("SELECT count(*) FROM recovered_deliveries WHERE acknowledged=0")?,
+            group = count("SELECT count(*) FROM group_incoming WHERE acknowledged=0")?,
+            abandoned = count("SELECT count(*) FROM abandoned_deliveries")?,
+            oi = oldest("incoming", "WHERE acknowledged=0")?,
+            orr = oldest("retry_incoming", "WHERE acknowledged=0")?,
+            orc = oldest("recovered_deliveries", "WHERE acknowledged=0")?,
+            og = oldest("group_incoming", "WHERE acknowledged=0")?,
+            oa = oldest("abandoned_deliveries", "")?,
+            ob = count("SELECT count(*) FROM outbound_backoff")?,
+            ib = count("SELECT count(*) FROM send_intent_backoff")?,
+            peers = count("SELECT count(*) FROM peers")?,
+            sessions = count("SELECT count(*) FROM sessions")?,
+            retired = count("SELECT count(*) FROM sessions WHERE retired=1")?,
+            slots = count("SELECT count(*) FROM prekeys")?,
+        );
+        Ok(json!({ "report": report }))
+    }
     pub(super) fn mobile_storage(&self) -> Result<Value, Error> {
         let pages: i64 = self.db.query_row("PRAGMA page_count", [], |r| r.get(0))?;
         let page_size: i64 = self.db.query_row("PRAGMA page_size", [], |r| r.get(0))?;
