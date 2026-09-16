@@ -2,10 +2,36 @@ use crate::{
     auth::{digest, random_secret},
     store::{Store, StoreError},
 };
-use rusqlite::{OptionalExtension, TransactionBehavior};
+use rusqlite::{OptionalExtension, Transaction, TransactionBehavior};
 use sigil_protocol::accounts::{
     valid_credential, valid_username, Enrollment, Invitation, InviteRequest, Session,
 };
+
+/// Mail and prekeys held for a revoked device can never be collected or claimed.
+/// Leaving them costs every sender a queue slot per message until they lapse on
+/// their own, which is long enough to jam the pair, so they lapse immediately.
+pub(crate) fn retire_device_delivery(
+    tx: &Transaction<'_>,
+    device_id: &str,
+) -> Result<(), StoreError> {
+    tx.execute(
+        "UPDATE mailbox SET expires_at=0 WHERE recipient=?1 AND expires_at>0",
+        [device_id],
+    )?;
+    tx.execute(
+        "UPDATE prekeys SET expires_at=0 WHERE device_id=?1 AND expires_at>0",
+        [device_id],
+    )?;
+    Ok(())
+}
+pub(crate) fn retire_account_delivery(
+    tx: &Transaction<'_>,
+    account_id: &str,
+) -> Result<(), StoreError> {
+    tx.execute("UPDATE mailbox SET expires_at=0 WHERE expires_at>0 AND recipient IN (SELECT id FROM devices WHERE account_id=?1)", [account_id])?;
+    tx.execute("UPDATE prekeys SET expires_at=0 WHERE expires_at>0 AND device_id IN (SELECT id FROM devices WHERE account_id=?1)", [account_id])?;
+    Ok(())
+}
 
 pub(crate) const MIGRATION: &str = "
 CREATE TABLE invitations (
@@ -275,6 +301,7 @@ impl Store {
                 "UPDATE devices SET revoked=1,token_hash=NULL WHERE account_id=?1",
                 [&account_id],
             )?;
+            retire_account_delivery(&tx, &account_id)?;
         } else {
             crate::admin::register(&tx, now, oidc.is_some())?;
             let exists: bool = tx.query_row(
@@ -369,6 +396,7 @@ impl Store {
         if count == 0 {
             return Err(StoreError::NotFound);
         }
+        retire_device_delivery(&tx, device_id)?;
         tx.commit()?;
         Ok(())
     }
@@ -389,7 +417,12 @@ impl Store {
             "UPDATE devices SET revoked = 1, token_hash = NULL WHERE account_id = ?1",
             [account_id],
         )?;
+        retire_account_delivery(&tx, account_id)?;
         tx.commit()?;
         Ok(())
     }
 }
+
+#[cfg(test)]
+#[path = "revocation_tests.rs"]
+mod revocation_tests;

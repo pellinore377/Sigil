@@ -119,7 +119,9 @@ impl ClientStore {
             );
             match live {
                 Ok(false) => matches!(error, Error::ReceiveAuthentication { sessions: 0, .. }),
-                Ok(true) => false,
+                // A live session that cannot authenticate its peer's traffic has
+                // desynchronised: ask for a fresh copy rather than jamming the pair.
+                Ok(true) => matches!(error, Error::ReceiveAuthentication { .. }),
                 Err(_) => return RecoveryAdvice::Refused(RecoveryBlock::LocalState),
             }
         };

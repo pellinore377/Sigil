@@ -569,6 +569,9 @@ impl ClientStore {
                     }
                 };
                 let recovery = self.recovery_advice(delivery, &result, now);
+                if let Err(error) = &result {
+                    let _ = self.abandon_unreadable(delivery.sequence, error);
+                }
                 IncomingAttempt {
                     sequence: delivery.sequence,
                     kind: delivery.payload.get(..8).unwrap_or_default().to_owned(),
@@ -590,6 +593,33 @@ impl ClientStore {
 
     /// Retry at most 16 durable acknowledgements. Network success followed by a
     /// local failure safely retries the same sequence after restart.
+    /// Ciphertext that failed to authenticate can never become readable, and leaving it
+    /// on the server costs the sender one of its few queue slots until it expires, which
+    /// jams the pair. Record it so the next pass releases the slot; the recovery request
+    /// asks the sender for a fresh copy over a new session.
+    fn abandon_unreadable(&mut self, sequence: i64, error: &Error) -> Result<(), Error> {
+        if !matches!(
+            error,
+            Error::ReceiveAuthentication { .. }
+                | Error::Crypto(sigil_crypto::Error::Limit)
+                | Error::InvalidEvent
+        ) {
+            return Ok(());
+        }
+        self.db.execute(
+            "INSERT OR IGNORE INTO abandoned_deliveries(sequence) VALUES(?1)",
+            [sequence],
+        )?;
+        Ok(())
+    }
+    fn acknowledge_abandoned_online(&mut self, sequence: i64) -> Result<(), Error> {
+        self.connected_client()?.acknowledge_delivery(sequence)?;
+        self.db.execute(
+            "DELETE FROM abandoned_deliveries WHERE sequence=?1",
+            [sequence],
+        )?;
+        Ok(())
+    }
     pub fn acknowledge_incoming_online(&mut self) -> Result<usize, Error> {
         let network = self.connected_client()?;
         let own_statement = self.own_device_binding()?;
@@ -602,7 +632,7 @@ impl ClientStore {
         let sequences: Vec<(i64, u8)> = self
             .db
             .prepare(
-                "SELECT sequence,0 FROM incoming WHERE acknowledged=0 UNION ALL SELECT sequence,1 FROM retry_incoming WHERE acknowledged=0 UNION ALL SELECT sequence,2 FROM recovered_deliveries WHERE acknowledged=0 UNION ALL SELECT sequence,3 FROM group_incoming WHERE acknowledged=0 ORDER BY sequence LIMIT 16",
+                "SELECT sequence,0 FROM incoming WHERE acknowledged=0 UNION ALL SELECT sequence,1 FROM retry_incoming WHERE acknowledged=0 UNION ALL SELECT sequence,2 FROM recovered_deliveries WHERE acknowledged=0 UNION ALL SELECT sequence,3 FROM group_incoming WHERE acknowledged=0 UNION ALL SELECT sequence,4 FROM abandoned_deliveries ORDER BY sequence LIMIT 16",
             )?
             .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
             .collect::<Result<_, _>>()?;
@@ -612,6 +642,7 @@ impl ClientStore {
         let mut halted = None;
         for (sequence, control) in sequences {
             let result = match control {
+                4 => self.acknowledge_abandoned_online(sequence),
                 3 => groups::acknowledge_group(self, sequence),
                 2 => self.acknowledge_recovered_online(sequence),
                 1 => self.acknowledge_retry_online(sequence),

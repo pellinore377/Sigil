@@ -149,13 +149,18 @@ impl Store {
         Ok(serde_json::json!({"account":id,"devices":rows,"next_after":after}))
     }
     pub fn admin_revoke_device(&mut self, id: &str, device: &str) -> Result<(), StoreError> {
-        if self.0.execute(
+        let tx = self
+            .0
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        if tx.execute(
             "UPDATE devices SET revoked=1,token_hash=NULL WHERE id=?1 AND account_id=?2",
             (device, id),
         )? != 1
         {
             return Err(StoreError::NotFound);
         }
+        crate::accounts::retire_device_delivery(&tx, device)?;
+        tx.commit()?;
         Ok(())
     }
     pub fn admin_diagnostics(&mut self, now: u64) -> Result<serde_json::Value, StoreError> {
@@ -296,6 +301,7 @@ impl Store {
                 "UPDATE devices SET revoked=1,token_hash=NULL WHERE account_id=?1",
                 [id],
             )?;
+            crate::accounts::retire_account_delivery(&tx, id)?;
         }
         let result = account(&tx, id, now)?;
         tx.commit()?;
