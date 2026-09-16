@@ -1634,7 +1634,14 @@ impl ClientStore {
                 };
                 if let Some(step) = &result.step {
                     if let Some((stage, error)) = step.issue() {
-                        issue = Some(format!("Sync: {} — {}", stage, error_message(error)));
+                        let detail = step
+                            .incoming
+                            .iter()
+                            .find(|item| item.result.is_err())
+                            .filter(|_| stage == "receiving messages")
+                            .map(|item| format!(" [{} #{}]", item.kind, item.sequence))
+                            .unwrap_or_default();
+                        issue = Some(format!("Sync: {} — {}{detail}", stage, error_message(error)));
                     }
                 }
                 if let Some(contact_issue) = contact_issue {

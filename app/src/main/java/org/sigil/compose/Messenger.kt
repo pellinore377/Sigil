@@ -176,6 +176,7 @@ class Messenger(application: Application) : AndroidViewModel(application) {
                         val result = execute("sync", mapOf("interactive" to true, "wake" to force))
                         nextSync = result.getLong("next_at")
                         val issue = result.optional("issue")
+                        if (issue != null && issue != syncIssue) android.util.Log.i("SigilTiming", "issue: ${issue.take(200)}")
                         if(issue!=syncIssue && issue!=null)Regex("sqlite-[0-9]+(?::group-[a-z-]+)?").find(issue)?.value?.let {code->
                             val stage=Regex("Sync: (receiving messages|publishing keys|updating calls|updating invitations|updating groups|sharing history|sending retry controls|recovering sessions|starting conversations|sending messages|sending group messages)").find(issue)?.groupValues?.get(1) ?: if(issue.startsWith("Contact sync:"))"contact sync" else "scheduling"
                             android.util.Log.w("SigilStorage","$stage: $code")
