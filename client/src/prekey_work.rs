@@ -50,6 +50,10 @@ fn cursor(
     Ok((after, sealed))
 }
 
+/// A one-time key is consumed by every session a peer starts and is not returned if
+/// that session never forms, so a shallow pool can be drained faster than it recovers
+/// and leave this device unreachable. The server accepts at most 64 live keys.
+pub(crate) const PREKEY_TARGET: u32 = 32;
 impl ClientStore {
     /// Target eight available bundles, adding at most one per call. Inventory is
     /// a server hint, never erasure authority. Existing local/lifetime limits apply.
@@ -57,7 +61,7 @@ impl ClientStore {
     pub fn replenish_prekey_online(&mut self) -> Result<PrekeySupply, Error> {
         let before = generation(&self.db)?;
         let available = self.connected_client()?.prekey_inventory()?.available;
-        if available >= 8 {
+        if available >= PREKEY_TARGET {
             return Ok(PrekeySupply::Stocked { available });
         }
         let tx = self
@@ -67,6 +71,7 @@ impl ClientStore {
         if generation(&tx)? != before {
             return Err(Error::Conflict);
         }
+        // An ambiguous publication must still block a new allocation.
         let pending: bool = tx.query_row(
             "SELECT EXISTS(SELECT 1 FROM prekey_publications WHERE retire_at IS NULL)",
             [],
@@ -143,16 +148,18 @@ mod tests {
     }
 
     #[test]
-    fn supply_targets_eight_and_replaces_claimed_and_expired_server_stock() {
+    fn supply_fills_the_pool_and_replaces_claimed_and_expired_server_stock() {
         let (dir, _fixture, mut alice, _bob, _now) = pair();
-        for available in 0..8 {
+        for available in 0..PREKEY_TARGET {
             assert!(
                 matches!(alice.replenish_prekey_online().unwrap(),PrekeySupply::Published { available_before, .. } if available_before == available)
             );
         }
         assert!(matches!(
             alice.replenish_prekey_online().unwrap(),
-            PrekeySupply::Stocked { available: 8 }
+            PrekeySupply::Stocked {
+                available: PREKEY_TARGET
+            }
         ));
         let device =
             sigil_protocol::device::SignedBinding::from_bytes(&alice.own_device_binding().unwrap())
@@ -164,15 +171,12 @@ mod tests {
             .unwrap()
             .claim_prekey(&transport::hex(&device), &transport::hex(&[90; 32]))
             .unwrap();
-        assert_eq!(generation(&alice.db).unwrap(), 8);
+        assert_eq!(generation(&alice.db).unwrap(), PREKEY_TARGET as i64);
         assert!(matches!(
             alice.replenish_prekey_online().unwrap(),
-            PrekeySupply::Published {
-                available_before: 7,
-                ..
-            }
+            PrekeySupply::Published { available_before, .. } if available_before == PREKEY_TARGET - 1
         ));
-        assert_eq!(generation(&alice.db).unwrap(), 9);
+        assert_eq!(generation(&alice.db).unwrap(), PREKEY_TARGET as i64 + 1);
         let server = Connection::open(dir.path().join("server.db")).unwrap();
         server
             .execute(
@@ -188,13 +192,14 @@ mod tests {
             }
         ));
         // Inventory never authorizes private-key deletion, even when it reports zero.
+        // The pool plus the claimed and the expired key it replaced.
         assert_eq!(
             alice
                 .db
                 .query_row("SELECT count(state) FROM prekeys", [], |r| r
                     .get::<_, i64>(0))
                 .unwrap(),
-            10
+            i64::from(PREKEY_TARGET) + 2
         );
     }
 
