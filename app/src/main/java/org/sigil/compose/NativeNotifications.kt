@@ -18,7 +18,8 @@ import java.security.SecureRandom
 
 /** Device-local notifications: content is decrypted here after a wake; push never carries it. */
 internal object NativeNotifications {
-    @Volatile private var visible = false
+    @Volatile var visible = false
+        private set
     private const val MESSAGES = 40
     private const val INCOMING = 41
     private const val MISSED = 44
@@ -80,12 +81,13 @@ internal object NativeNotifications {
     }
     private fun chatNotificationId(peer: String) = 1000 + (peer.hashCode() and 0x7fff)
     fun update(context: Context) {
-        if (NativeSignOut.pending(context) || visible || Build.VERSION.SDK_INT >= 33 && context.checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) return
+        if (NativeSignOut.pending(context) || visible || Build.VERSION.SDK_INT >= 33 && context.checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) { android.util.Log.i("SigilTiming", "notifications skipped visible=$visible"); return }
         val state = StorageKeyProvider(context).withKey { directory, key -> JSONObject(NativeStorage.execute(directory.path, key, "{\"command\":\"notifications\"}")) }
         if (!state.getBoolean("ok") || visible) return
         val value = state.getJSONObject("value")
-        android.util.Log.i("SigilTiming", "notifications unread=${value.optLong("unread")} calls=${value.optJSONArray("calls")?.length() ?: 0} missed=${!value.isNull("missed")}")
-        show(context, value)
+        val flags = settings(context)
+        android.util.Log.i("SigilTiming", "notifications unread=${value.optLong("unread")} calls=${value.optJSONArray("calls")?.length() ?: 0} missed=${!value.isNull("missed")} enabled=${flags.enabled} messages=${flags.messages} calls_on=${flags.calls} fullscreen=${flags.fullScreen}")
+        try { show(context, value) } catch (error: Exception) { android.util.Log.w("SigilTiming", "notifications failed: ${error.javaClass.simpleName}: ${error.message?.take(160)}"); throw error }
     }
     private fun channels(manager: NotificationManager) {
         manager.createNotificationChannel(NotificationChannel("messages", "Messages", NotificationManager.IMPORTANCE_HIGH))

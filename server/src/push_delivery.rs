@@ -394,6 +394,17 @@ async fn worker(state: AppState) {
             continue;
         };
         provider = returned;
+        // Provider outcome and queue age only; no device, token or payload.
+        eprintln!(
+            "sigil.push {} {} queued_for={}s",
+            if job.fcm() { "fcm" } else { "webpush" },
+            match &delivery.outcome {
+                Outcome::Accepted => "accepted".to_owned(),
+                Outcome::InvalidRegistration => "invalid_registration".to_owned(),
+                Outcome::Retry { not_before, .. } => format!("retry_at={not_before}"),
+            },
+            now().map(|t| t.saturating_sub(job.started)).unwrap_or(0)
+        );
         match with_store(state.clone(), move |store| {
             store.finish_push(&job, delivery, now()?)
         })
