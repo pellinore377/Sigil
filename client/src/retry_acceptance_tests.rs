@@ -182,7 +182,8 @@ fn lost_prekey_recovers_across_restart_key_unavailability_and_cleanup() {
         .remove(0)
         .result
         .is_err());
-    assert_eq!(bob.acknowledge_incoming_online().unwrap(), 0);
+    // The undecryptable copy releases its slot; recovery works from the local record.
+    assert_eq!(bob.acknowledge_incoming_online().unwrap(), 1);
     let id = bob.prepare_retry_request(&original, now).unwrap();
     bob.send_retry_request_online(id, now).unwrap();
     let MailboxEvent::Retry(request) = alice
@@ -223,18 +224,15 @@ fn lost_prekey_recovers_across_restart_key_unavailability_and_cleanup() {
     assert!(!received.duplicate);
     assert_eq!(count(&bob, "archive_records"), 1);
     assert_eq!(bob.acknowledge_incoming_online().unwrap(), 1);
-    assert_eq!(bob.connected_client().unwrap().mailbox().unwrap().len(), 1);
-    assert!(bob.receive_mailbox_online(now).unwrap().is_empty()); // wraps
-    assert!(
-        matches!(bob.receive_mailbox_online(now).unwrap().remove(0).result, Ok(MailboxEvent::RecoveredDelivery(message)) if message == [4; 32])
-    );
-    assert_eq!(bob.acknowledge_incoming_online().unwrap(), 1);
+    // The undecryptable original released its slot when it first failed, so the
+    // recovered copy was the only one left and the queue drains completely.
     assert!(bob
         .connected_client()
         .unwrap()
         .mailbox()
         .unwrap()
         .is_empty());
+    assert!(bob.receive_mailbox_online(now).unwrap().is_empty());
     assert!(!alice.session_peer_confirmed(work::session(&id)).unwrap());
     let (reply_session, _) = bob
         .send_peer_text(a, [88; 32], "synthetic recovered reply", now, now)

@@ -593,17 +593,22 @@ impl ClientStore {
 
     /// Retry at most 16 durable acknowledgements. Network success followed by a
     /// local failure safely retries the same sequence after restart.
-    /// Ciphertext that failed to authenticate can never become readable, and leaving it
-    /// on the server costs the sender one of its few queue slots until it expires, which
-    /// jams the pair. Record it so the next pass releases the slot; the recovery request
-    /// asks the sender for a fresh copy over a new session.
+    /// A delivery keeps its slot only while another attempt could still succeed: a local
+    /// storage fault, a network fault, or a peer this device has yet to accept. Anything
+    /// else has failed for good, and leaving it on the server costs the sender one of its
+    /// few queue slots until it expires, which jams the pair. Record it so the next pass
+    /// releases the slot; where recovery applies, the sender is asked for a fresh copy.
     fn abandon_unreadable(&mut self, sequence: i64, error: &Error) -> Result<(), Error> {
-        if !matches!(
+        let retryable = matches!(
             error,
-            Error::ReceiveAuthentication { .. }
-                | Error::Crypto(sigil_crypto::Error::Limit)
-                | Error::InvalidEvent
-        ) {
+            Error::Storage(_)
+                | Error::Io(_)
+                | Error::InvalidStore
+                | Error::Network(_)
+                | Error::Unprepared
+                | Error::Crypto(sigil_crypto::Error::Entropy | sigil_crypto::Error::State)
+        );
+        if retryable {
             return Ok(());
         }
         self.db.execute(
