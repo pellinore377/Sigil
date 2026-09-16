@@ -267,7 +267,10 @@ state=StateDecoder.state(execute("state"),state,::clock);if(state.phase=="connec
             if((browserDocument.visibilityState=="visible" || calls.visible!=null) && state.phase=="connected") {
                 try {
                     val force=forceSync;forceSync=false
+                    val startedAt=BrowserDate.now()
                     val result=mutex.withLock {execute("sync",mapOf("interactive" to true,"wake" to force,"call_setup" to (calls.visible?.connection in setOf("connecting","securing","reconnecting"))))}
+                    // Durations only, like the Android SigilTiming log; no content.
+                    console.log("SigilTiming sync ${(BrowserDate.now()-startedAt).toLong()}ms native=${result["ms"]?.jsonPrimitive?.longOrNull?:0} ran=${result.bool("ran")} wake=$force lanes=${result["lanes"]} ${result["timings"]}")
                     nextSync=result.long("next_at")
                     if((result.bool("ran") || nudged) && !sending)mutex.withLock {if(!sending)refresh()}
                     val issue=result.optional("issue")
