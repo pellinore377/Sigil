@@ -149,11 +149,26 @@ impl Store {
             (&request.recipient_device, &sender, now as i64),
             |r| r.get(0),
         )?;
-        if peer_pending >= 64 + u32::from(recovery)
-            || pending >= 256 + 4 * u32::from(recovery)
+        if pending >= 256 + 4 * u32::from(recovery)
             || used.saturating_add(request.payload.len() as u64) > quota
         {
             return Err(StoreError::MailboxFull);
+        }
+        // A recipient that stops collecting must not silence the people writing to it,
+        // whatever the reason: an old build, a broken session, or a device left off.
+        // Retire their oldest undelivered message instead, which was expiring unread
+        // anyway, so a live conversation outlives a backlog nobody is collecting.
+        let allowance = 64 + u32::from(recovery);
+        if peer_pending >= allowance {
+            tx.execute(
+                "UPDATE mailbox SET payload=NULL,expires_at=0 WHERE sequence IN (SELECT sequence FROM mailbox WHERE recipient=?1 AND sender=?2 AND payload IS NOT NULL AND expires_at>?3 ORDER BY sequence LIMIT ?4)",
+                (
+                    &request.recipient_device,
+                    &sender,
+                    now as i64,
+                    i64::from(peer_pending + 1 - allowance),
+                ),
+            )?;
         }
         tx.execute("INSERT INTO mailbox(sender,message_id,recipient,payload,payload_hash,expires_at) VALUES(?1,?2,?3,?4,?5,?6)", (&sender,&request.message_id,&request.recipient_device,&request.payload,hash.as_slice(),request.expires_at as i64))?;
         let sequence = tx.last_insert_rowid();
