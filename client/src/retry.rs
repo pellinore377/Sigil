@@ -528,7 +528,17 @@ impl ClientStore {
         let tx = self
             .db
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
-        let (result, known, obsolete) = inspect_evidence(&tx, &self.key, &own, peer, &request)?;
+        let (result, known, obsolete) = match inspect_evidence(&tx, &self.key, &own, peer, &request) {
+            Ok(evidence) => evidence,
+            // Unknown or erased message (often sent by another of our devices): record and
+            // discard so one request cannot fail every receive pass.
+            Err(Error::NotFound) if allow_discard => {
+                journal(&tx, &self.key, &own, delivery.sequence, id)?;
+                tx.commit()?;
+                return Ok(MailboxEvent::DiscardedRetry(id));
+            }
+            Err(error) => return Err(error),
+        };
         if let Some(prior) = gc::accepted_retired(&tx, &self.key, &id, &device_fingerprint(&own)?)?
         {
             if prior.peer != peer
