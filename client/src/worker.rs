@@ -109,7 +109,11 @@ impl SyncStep {
                             // A recipient the server no longer knows cannot be reached by
                             // any lane; that is a fact about them, not a failure here.
                             || matches!($stage, "sending messages" | "sending group messages" | "recovering sessions" | "sending retry controls")
-                                && outbound::recipient_unavailable(error)))
+                                && outbound::recipient_unavailable(error)
+                            // Recovery targets one device; if the server no longer offers
+                            // it a session there is nothing here for the reader to fix.
+                            || matches!($stage, "recovering sessions" | "sending retry controls")
+                                && matches!(error, network::Error::Status { code: 404, .. })))
                 {
                     return Some(($stage, error));
                 }
