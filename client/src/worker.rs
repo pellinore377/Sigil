@@ -193,10 +193,10 @@ impl ClientStore {
         step.begin("acknowledge_incoming_online");
         match self.acknowledge_incoming_online() {
             Ok(count) => step.acknowledged = count,
-            Err(error) => {
-                step.failure = Some(SyncFailure::Acknowledge(error));
-                return step;
-            }
+            // Telling the server what has already been stored is not a condition of
+            // sending. One delivery it will not accept must not leave this device able
+            // to receive and unable to say anything back.
+            Err(error) => step.failure = Some(SyncFailure::Acknowledge(error)),
         }
         step.begin("resume_prekey_publications_online");
         match self.resume_prekey_publications_online() {
@@ -637,7 +637,9 @@ mod tests {
         assert!(
             matches!(&step.incoming[0].result, Ok(MailboxEvent::Text(text)) if text.text().unwrap().body == "synthetic initial")
         );
-        assert!(step.maintenance.is_none() && step.retries.is_empty());
+        // A refused acknowledgement no longer ends the pass: telling the server what
+        // is already stored is not a condition of sending. The delivery is still held
+        // and is acknowledged after the restart below.
         bob.db.execute_batch("DROP TRIGGER fail_ack;").unwrap();
         drop(bob);
         let mut bob = reopen(&dir.path().join("bob.db"));
