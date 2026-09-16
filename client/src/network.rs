@@ -126,6 +126,15 @@ mod native;
 #[cfg(not(target_arch = "wasm32"))]
 use native::*;
 
+/// A delivery the server no longer holds needs no acknowledgement: it has lapsed or
+/// was already collected. Reporting that as a failure would stall every acknowledgement
+/// queued behind it.
+fn collected(result: Result<(), Error>) -> Result<(), Error> {
+    match result {
+        Err(Error::Status { code: 404, .. }) => Ok(()),
+        other => other,
+    }
+}
 impl HttpsClient {
     pub(crate) fn reserve_link_relay(
         &self,
@@ -889,6 +898,7 @@ impl HttpsClient {
     }
     /// Acknowledges several deliveries concurrently; results keep input order.
     pub fn acknowledge_deliveries(&self, sequences: &[i64]) -> Vec<Result<(), Error>> {
+
         let built: Vec<Result<_, Error>> = sequences
             .iter()
             .map(|sequence| {
@@ -904,7 +914,12 @@ impl HttpsClient {
         built
             .into_iter()
             .map(|request| match request {
-                Ok(_) => responses.next().unwrap_or(Err(Error::Transport)).and_then(|r| self.empty(r)),
+                Ok(_) => collected(
+                    responses
+                        .next()
+                        .unwrap_or(Err(Error::Transport))
+                        .and_then(|r| self.empty(r)),
+                ),
                 Err(error) => Err(error),
             })
             .collect()
@@ -913,11 +928,11 @@ impl HttpsClient {
         if sequence <= 0 {
             return Err(Error::Configuration);
         }
-        self.empty(self.request(
+        collected(self.empty(self.request(
             Method::DELETE,
             &format!("/client/v0/mailbox/{sequence}"),
             None::<&()>,
-        )?)
+        )?))
     }
     pub fn allow_mailbox_sender(&self, device: &str) -> Result<(), Error> {
         if !accounts::valid_credential(device) {
