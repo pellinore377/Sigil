@@ -438,7 +438,7 @@ fn actual_https_carries_only_fcm_hint_or_encrypted_unifiedpush_payload() {
     let fcm_body: serde_json::Value = serde_json::from_slice(&seen[1].1).unwrap();
     assert_eq!(
         fcm_body,
-        serde_json::json!({"message":{"token":"synthetic-registration","data":{"sigil":B64::encode_string(&Payload::Wake.to_bytes())},"android":{"priority":"normal","ttl":"60s","collapse_key":"sigil-wake-v0"}}})
+        serde_json::json!({"message":{"token":"synthetic-registration","data":{"sigil":B64::encode_string(&Payload::Wake.to_bytes())},"android":{"priority":"high","ttl":"60s","collapse_key":"sigil-wake-v0"}}})
     );
     assert!(fcm
         .request(&token(1000), &target, &Payload::Wake, 4540, 60)

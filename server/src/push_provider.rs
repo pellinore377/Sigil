@@ -339,9 +339,10 @@ impl Fcm {
                 data: Data {
                     sigil: Zeroizing::new(B64::encode_string(&payload.to_bytes())),
                 },
-                // Silent sync can include receipts/key traffic; it cannot promise a visible notification.
+                // Wake pushes precede a visible message notification, so they may use high
+                // priority and bypass Doze; ownership challenges stay normal.
                 android: Android {
-                    priority: "normal",
+                    priority: if matches!(payload, Payload::Wake) { "high" } else { "normal" },
                     ttl: format!("{ttl}s"),
                     collapse_key: matches!(payload, Payload::Wake).then_some("sigil-wake-v0"),
                 },
