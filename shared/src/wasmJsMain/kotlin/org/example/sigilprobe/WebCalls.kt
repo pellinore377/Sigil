@@ -63,9 +63,11 @@ internal class WebCalls(private val scope:CoroutineScope,private val command:sus
         scope.launch {
             try {
                 members=call.participants.filterNot{it.own}.map{it.id}
-                browserCallConnect(call.id){sender,frame->if(current==generation){val index=members.indexOf(sender);if(index>=0 && runCatching{browserVideoReceive(sender,frame)}.getOrDefault(true)==false)runCatching{audio?.receive_frame(index,frame)}}}.awaitBrowser<JsAny?>()
-                check(current==generation){"Call changed"}
+                // Readiness and keys travel over the mailbox; start them before the transport
+                // so the round trips overlap candidate gathering instead of following it.
                 control("call_start",call.id,true)
+                wake()
+                browserCallConnect(call.id){sender,frame->if(current==generation){val index=members.indexOf(sender);if(index>=0 && runCatching{browserVideoReceive(sender,frame)}.getOrDefault(true)==false)runCatching{audio?.receive_frame(index,frame)}}}.awaitBrowser<JsAny?>()
                 check(current==generation){"Call changed"}
                 connected=call.id;failures=0
                 if(video && cameraJob==null)applyCamera()
