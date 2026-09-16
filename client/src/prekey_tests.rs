@@ -63,7 +63,8 @@ fn online_retirement_defers_unread_initial_and_sync_processes_it_before_cleanup(
 #[test]
 fn scheduled_prekey_cleanup_rolls_back_with_maintenance_and_resumes_bounded_batches() {
     let (dir, _fixture, mut alice, _bob, now) = crate::claims::tests::pair();
-    for n in 0..17u8 {
+    // A full pool keeps replenishment quiet, so the cleanup counts stay exact.
+    for n in 0..crate::prekeys::work::PREKEY_TARGET as u8 {
         alice
             .prepare_prekey_publication([n; 32], true, 3600)
             .unwrap();
@@ -84,7 +85,7 @@ fn scheduled_prekey_cleanup_rolls_back_with_maintenance_and_resumes_bounded_batc
             .query_row("SELECT count(state) FROM prekeys", [], |r| r
                 .get::<_, i64>(0))
             .unwrap(),
-        17
+        32
     );
     assert_eq!(
         alice
@@ -123,7 +124,7 @@ fn scheduled_prekey_cleanup_rolls_back_with_maintenance_and_resumes_bounded_batc
             .query_row("SELECT count(state) FROM prekeys", [], |r| r
                 .get::<_, i64>(0))
             .unwrap(),
-        1
+        16
     );
     drop(alice);
     let mut alice = open(&dir.path().join("alice.db"));
@@ -133,7 +134,7 @@ fn scheduled_prekey_cleanup_rolls_back_with_maintenance_and_resumes_bounded_batc
             .maintenance
             .unwrap()
             .prekeys_retired,
-        1
+        16
     );
     assert_eq!(
         alice
@@ -148,7 +149,7 @@ fn scheduled_prekey_cleanup_rolls_back_with_maintenance_and_resumes_bounded_batc
             .db
             .query_row("SELECT count(*) FROM prekeys", [], |r| r.get::<_, i64>(0))
             .unwrap(),
-        17
+        32
     );
 }
 fn open(path: &Path) -> ClientStore {
