@@ -31,7 +31,12 @@ internal object NativeNotifications {
         val manager = context.getSystemService(NotificationManager::class.java)
         val preferences = preferences(context)
         return NotificationSettings(manager.areNotificationsEnabled(), preferences.getBoolean("messages", true), preferences.getBoolean("incoming", true), preferences.getString("content", "full") ?: "full",
-            Build.VERSION.SDK_INT < 34 || manager.canUseFullScreenIntent())
+            Build.VERSION.SDK_INT < 34 || manager.canUseFullScreenIntent(),
+            context.getSystemService(android.os.PowerManager::class.java).isIgnoringBatteryOptimizations(context.packageName))
+    }
+    /** Doze holds pushes and network for optimized apps; the system prompt grants the exemption. */
+    fun batterySettings(context: Context) {
+        context.startActivity(Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS).setData(android.net.Uri.parse("package:" + context.packageName)).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
     }
     fun fullScreenSettings(context: Context) {
         if (Build.VERSION.SDK_INT >= 34) context.startActivity(Intent(Settings.ACTION_MANAGE_APP_USE_FULL_SCREEN_INTENT).setData(android.net.Uri.parse("package:" + context.packageName)).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
