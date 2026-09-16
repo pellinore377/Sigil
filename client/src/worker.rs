@@ -106,7 +106,9 @@ impl SyncStep {
                         // A peer whose inbox stopped draining keeps its queue; the bubble shows the pending state.
                         && !(matches!(error, Error::Limit) && matches!($stage, "starting conversations" | "sending messages"))
                         && !matches!(error, Error::Network(error) if outbound::recipient_full(error)
-                            || matches!($stage, "sending messages" | "sending group messages")
+                            // A recipient the server no longer knows cannot be reached by
+                            // any lane; that is a fact about them, not a failure here.
+                            || matches!($stage, "sending messages" | "sending group messages" | "recovering sessions" | "sending retry controls")
                                 && outbound::recipient_unavailable(error)))
                 {
                     return Some(($stage, error));
@@ -653,7 +655,8 @@ mod tests {
             step.issue().map(|(stage, _)| stage),
             Some("receiving messages")
         );
-        assert_eq!(step.acknowledged, 0);
+        // The pass releases the slot the undecryptable copy was holding.
+        assert_eq!(step.acknowledged, 1);
         assert_eq!(
             bob.db
                 .query_row("SELECT count(*) FROM retry_outbox", [], |r| r
