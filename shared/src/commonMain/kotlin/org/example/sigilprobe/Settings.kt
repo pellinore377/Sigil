@@ -45,7 +45,7 @@ internal fun SettingsPage(state: MessengerState, navigate: (String) -> Unit) {
             SettingsSection("Personalize") { SettingsLink("palette", "Appearance", "Theme, typography, and layout") { navigate("appearance") } }
             SettingsSection("Storage & support") {
                 if (LocalClientFeatures.current.files) SettingsLink("database", "Data and storage", "Media, downloads, and cache") { navigate("storage") }
-                DiagnosticsLink()
+                DiagnosticsLink(state.issue)
                 SettingsLink("info", "About", "Version, licenses, and support") { navigate("about") }
             }
             Spacer(Modifier.height(24.dp))
@@ -56,7 +56,7 @@ internal fun SettingsPage(state: MessengerState, navigate: (String) -> Unit) {
 /// Counts and stage names only, so a report can be shared to explain a device that
 /// will not send or receive without disclosing anything that was said.
 @Composable
-private fun DiagnosticsLink() {
+private fun DiagnosticsLink(issue: String?) {
     val access = LocalServiceAccess.current
     val clipboard = LocalClipboardManager.current
     val scope = rememberCoroutineScope()
@@ -74,7 +74,9 @@ private fun DiagnosticsLink() {
             state = if (report == null) {
                 "Could not read the report. Try again."
             } else {
-                clipboard.setText(AnnotatedString(report))
+                // The stage that is failing is the first thing anyone reading this needs.
+                val stage = issue?.let { "\n$it" }.orEmpty()
+                clipboard.setText(AnnotatedString(report + stage))
                 "Copied. Paste it wherever you are reporting the problem."
             }
         }
