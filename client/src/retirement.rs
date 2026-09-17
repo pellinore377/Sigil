@@ -15,7 +15,7 @@ impl ClientStore {
         Ok(())
     }
 }
-fn retire(tx: &Transaction<'_>, key: &StorageKey, id: Id) -> Result<(), Error> {
+pub(super) fn retire(tx: &Transaction<'_>, key: &StorageKey, id: Id) -> Result<(), Error> {
     let (revision, state, suite, retired): (i64, Vec<u8>, i64, bool) = tx
         .query_row(
             "SELECT revision,state,suite,retired FROM sessions WHERE id=?1 AND length(state)<=?2",

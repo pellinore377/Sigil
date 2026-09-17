@@ -590,6 +590,31 @@ pub(super) fn block(
     record.blocked = blocked;
     save(tx, key, id, &record)
 }
+/// Retire an idle session for a peer that has reached its limit. Refuses when every
+/// session still has a packet queued or a handshake open, which keeps the guarantee
+/// that retirement never discards work that is still on its way out.
+fn reclaim_session_slot(tx: &Transaction<'_>, key: &StorageKey, peer: &Id) -> Result<(), Error> {
+    let live = selection::selected(tx, key, peer).ok().flatten();
+    let candidates: Vec<Vec<u8>> = tx
+        .prepare(
+            "SELECT id FROM sessions WHERE peer=?1 AND retired=0 AND NOT EXISTS(SELECT 1 FROM outbox o WHERE o.session=sessions.id AND o.packet IS NOT NULL) AND NOT EXISTS(SELECT 1 FROM initiations i WHERE i.session=sessions.id) ORDER BY id",
+        )?
+        .query_map([peer.as_slice()], |r| r.get(0))?
+        .collect::<Result<_, _>>()?;
+    for raw in candidates {
+        let id: Id = raw.try_into().map_err(|_| Error::InvalidStore)?;
+        if live == Some(id) {
+            continue;
+        }
+        match super::retirement::retire(tx, key, id) {
+            Ok(()) => return Ok(()),
+            Err(Error::Conflict | Error::NotFound | Error::UnsupportedSession) => continue,
+            Err(error) => return Err(error),
+        }
+    }
+    Err(Error::Limit)
+}
+
 pub(super) fn bind_session(
     tx: &Transaction<'_>,
     key: &StorageKey,
@@ -610,7 +635,11 @@ pub(super) fn bind_session(
         |r| r.get::<_, i64>(0),
     )? >= MAX_SESSIONS as i64
     {
-        return Err(Error::Limit);
+        // A peer that has reached its limit would otherwise never accept another
+        // session, so every later recovery fails and the pair stops healing. Reclaim
+        // one slot from a session that has nothing queued and is not the one we send
+        // on. Retirement is the ordinary policy, only applied on demand here.
+        reclaim_session_slot(tx, key, peer)?;
     }
     let (revision, state) = super::load(tx, key, session)?;
     let sealed = state.seal_checkpoint(key, &state_binding(session, revision, Some(*peer)))?;

@@ -75,7 +75,7 @@ mod outbound;
 pub use outbound::OutboundAttempt;
 
 pub type Id = [u8; 32];
-pub const DATABASE_VERSION: u32 = 82;
+pub const DATABASE_VERSION: u32 = 83;
 #[derive(Debug)]
 pub enum Error {
     Storage(rusqlite::Error),
@@ -487,6 +487,22 @@ impl ClientStore {
                 tx.execute_batch("ALTER TABLE call_jobs ADD COLUMN queued INTEGER NOT NULL DEFAULT 0;")?;
             }
             tx.execute_batch("PRAGMA user_version=82;")?;
+        }
+        if version < 83 {
+            // Remember when a recipient first answered that it does not exist, so
+            // packets for a device that is gone stop occupying the queue forever.
+            for column in ["since", "attempts"] {
+                if !tx.query_row(
+                    "SELECT EXISTS(SELECT 1 FROM pragma_table_info('outbound_backoff') WHERE name=?1)",
+                    [column],
+                    |r| r.get::<_, bool>(0),
+                )? {
+                    tx.execute_batch(&format!(
+                        "ALTER TABLE outbound_backoff ADD COLUMN {column} INTEGER NOT NULL DEFAULT 0;"
+                    ))?;
+                }
+            }
+            tx.execute_batch("PRAGMA user_version=83;")?;
         }
         if version < 63 {
             conversations::migrate(&tx, &key)?;

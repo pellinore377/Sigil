@@ -94,8 +94,8 @@ impl ClientStore {
              unacknowledged: incoming {incoming}, retry {retry}, recovered {recovered}, group {group}, abandoned {abandoned}\n\
              oldest unacknowledged: incoming {oi}, retry {orr}, recovered {orc}, group {og}, abandoned {oa}\n\
              prekeys: slots {slots}, publications pending {pubs}, initiations {inits}\n\
-             backoff: outbound {ob}, intents {ib}\n\
-             store: peers {peers}, sessions {sessions} (retired {retired}, deepest peer {perpeer}), inbox {inbox}, deliveries {deliveries}\n\
+             backoff: outbound {ob} (unknown recipient {unknown}), intents {ib}\n\
+             store: peers {peers}, sessions {sessions} (retired {retired}, deepest peer {perpeer}, unbound {unbound}), inbox {inbox}, deliveries {deliveries}\n\
              recovery: retry incoming {retryin}, retired requests {retiredreq}",
             schema = crate::DATABASE_VERSION,
             client = env!("CARGO_PKG_VERSION"),
@@ -119,11 +119,13 @@ impl ClientStore {
             pubs = scalar("SELECT count(*) FROM prekey_publications WHERE retire_at IS NULL"),
             inits = scalar("SELECT count(*) FROM initiations"),
             ob = count("SELECT count(*) FROM outbound_backoff")?,
+            unknown = scalar("SELECT count(*) FROM outbound_backoff WHERE since>0"),
             ib = count("SELECT count(*) FROM send_intent_backoff")?,
             peers = count("SELECT count(*) FROM peers")?,
             sessions = count("SELECT count(*) FROM sessions")?,
             retired = count("SELECT count(*) FROM sessions WHERE retired=1")?,
             perpeer = scalar("SELECT coalesce(max(n),0) FROM (SELECT count(*) n FROM sessions WHERE retired=0 AND peer IS NOT NULL GROUP BY peer)"),
+            unbound = scalar("SELECT count(*) FROM sessions WHERE retired=0 AND peer IS NULL"),
             inbox = scalar("SELECT count(*) FROM inbox"),
             deliveries = scalar("SELECT count(*) FROM deliveries"),
             retryin = count("SELECT count(*) FROM retry_incoming")?,
