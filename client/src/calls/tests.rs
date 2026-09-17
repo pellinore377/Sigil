@@ -391,3 +391,37 @@ fn explicit_decline_is_not_a_missed_call() {
     assert_eq!(entry.duration, None);
     assert_eq!(entry.video, None);
 }
+
+/// A device that has already polled once carries a cursor written under the old
+/// shape. Upgrading must resume the sweep, not fail every pass with a storage error.
+#[test]
+fn a_cursor_left_by_an_earlier_release_does_not_fail_the_call_stage() {
+    let (dir, _fixture, mut alice, mut bob, now) = pair();
+    configure(dir.path());
+    let (_, peer) = trust(&mut alice, &mut bob);
+    let id = [91; 32];
+    alice.start_call(id, now, true, &[peer]).unwrap();
+    for content in [vec![7u8; 36], vec![7u8; 68]] {
+        alice
+            .db
+            .execute(
+                "INSERT INTO call_cursor VALUES(1,?1) ON CONFLICT(id) DO UPDATE SET content=excluded.content",
+                [content],
+            )
+            .unwrap();
+        for attempt in alice.resume_calls_online(now).unwrap() {
+            attempt.result.unwrap();
+        }
+    }
+    pump(&mut alice, &mut bob, now);
+    bob.answer_call(id, true, now).unwrap();
+    pump(&mut alice, &mut bob, now);
+    assert_eq!(
+        load(&alice.db, &alice.key, &id)
+            .unwrap()
+            .state
+            .participants
+            .len(),
+        2
+    );
+}

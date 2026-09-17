@@ -625,7 +625,9 @@ impl ClientStore {
             }
         }
         let aad = b"Sigil/call-job-cursor/v2";
-        let raw:Option<Vec<u8>>=self.db.query_row("SELECT CASE WHEN length(content)=44 THEN content END FROM call_cursor WHERE id=1",[],|r|r.get(0)).optional()?;
+        // A cursor left by an older shape reads as absent, which just restarts the
+        // sweep from the front. Selecting it as NULL must not fail the whole stage.
+        let raw:Option<Vec<u8>>=self.db.query_row("SELECT CASE WHEN length(content)=44 THEN content END FROM call_cursor WHERE id=1",[],|r|r.get::<_,Option<Vec<u8>>>(0)).optional()?.flatten();
         let after: i64 = match raw.map(|r| self.key.open(&r, aad)).transpose()? {
             Some(value) => i64::from_be_bytes(
                 value.as_slice().try_into().map_err(|_| Error::InvalidStore)?,
