@@ -14,7 +14,7 @@ import androidx.compose.ui.state.ToggleableState
 import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.unit.dp
 
-private val effects=listOf("shake","wave","pulse","glow","typewriter","sparkle","glitch","scatter","flip","barrel")
+private val effects=listOf("shake","wave","pulse","glow","typewriter","sparkle","glitch","scatter","assemble","flip","barrel")
 
 @Composable
 private fun FormatSymbol(icon:String,label:String,armed:Boolean,action:()->Unit) {
