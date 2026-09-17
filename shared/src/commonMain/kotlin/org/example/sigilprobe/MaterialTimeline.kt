@@ -27,9 +27,12 @@ class MaterialAnchor(val value:RandomizerMotion,val outgoing:Boolean,val progres
 internal class PreviewLaunch {
     var source = ""
     var bounds = Rect.Zero
+    var panel = Rect.Zero
     val visibleOrigins = mutableMapOf<Int, Rect>()
     private var pending: Triple<String, Map<Int,Rect>, Long>? = null
+    private var pendingPanel: Triple<String, Rect, Long>? = null
     private val origins = mutableStateMapOf<String, Map<Int,Rect>>()
+    private val panelOrigins = mutableStateMapOf<String, Rect>()
     var activeSource by mutableStateOf<String?>(null)
         private set
     var activeMessage by mutableStateOf<String?>(null)
@@ -52,6 +55,20 @@ internal class PreviewLaunch {
         activeMessage=message
         pending = null
     }
+    // Cards and bubbles fly from the preview panel itself; objects already carry their own per-object origins.
+    fun armPanel(value: String, sent: Long) {
+        if (activeSource != null) return
+        pendingPanel = panel.takeIf { value == source && it.width > 0 && it.height > 0 }?.let { Triple(value, it, sent) }
+    }
+    fun bindPanel(value: String, message: String, sent: Long) {
+        val flight = pendingPanel ?: return
+        if (flight.first != value || sent <= flight.third) return
+        if (panelOrigins.size >= 16) panelOrigins.remove(panelOrigins.keys.first())
+        panelOrigins[message] = flight.second
+        pendingPanel = null
+    }
+    fun panelOrigin(message: String) = panelOrigins[message]
+    fun landed(message: String) { panelOrigins.remove(message) }
     fun origin(message: String, ordinal:Int=0) = origins[message]?.get(ordinal)
     fun started(message:String?,ordinal:Int) {if(isActive(message))lifted[ordinal]=true}
     fun departed(message:String?,ordinal:Int) {
@@ -59,7 +76,7 @@ internal class PreviewLaunch {
         departed[ordinal]=true
         if(origins[message]?.keys?.all {departed[it]==true}==true){activeSource=null;activeMessage=null}
     }
-    fun cancel() { pending = null;activeSource=null;activeMessage=null;lifted.clear();departed.clear() }
+    fun cancel() { pending = null;pendingPanel = null;activeSource=null;activeMessage=null;lifted.clear();departed.clear() }
 }
 internal val LocalMaterialHandoffPass=staticCompositionLocalOf {false}
 internal val LocalPreviewLaunch = staticCompositionLocalOf<PreviewLaunch?> { null }

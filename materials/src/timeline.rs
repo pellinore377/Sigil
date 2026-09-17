@@ -413,6 +413,13 @@ fn simulate(
             .wrapping_mul(747796405)
             .rotate_left(13) as f32
             / u32::MAX as f32;
+        // A second stream so the three spin axes and the lateral fan never move in lockstep.
+        let w = seed
+            .wrapping_add(i as u32 * 6151)
+            .wrapping_mul(2_654_435_761)
+            .rotate_left(7) as f32
+            / u32::MAX as f32;
+        let fan = if i % 2 == 0 { 1. } else { -1. };
         let coin = item.object == Object::Coin;
         let start = starts.map_or(targets[i], |s| s[i]);
         let landing = launch_landing(bounds, obstacles, i, items.len()).unwrap_or(targets[i]);
@@ -434,7 +441,7 @@ fn simulate(
         } else if coin {
             Vec3::new(-std::f32::consts::FRAC_PI_2, 0., 0.)
         } else {
-            Vec3::new(0.6 + v, 0.2, 1.1)
+            Vec3::new(0.6 + v, 0.2 + w * 2.4, 1.1 + v * 1.7)
         };
         let height = if starts.is_some() {
             let orientation = Quat::from_scaled_axis(rotation);
@@ -452,7 +459,7 @@ fn simulate(
         } else if coin {
             -1.16
         } else {
-            -0.15 + i as f32 * 0.04
+            0.5 + i as f32 * 0.14
         };
         let h = bodies.insert(
             RigidBodyBuilder::dynamic()
@@ -466,23 +473,23 @@ fn simulate(
                     } else if coin {
                         0.
                     } else if outgoing {
-                        -5.5 - v * 1.5
+                        -7.5 - v * 3.5
                     } else {
-                        5.5 + v * 1.5
+                        7.5 + v * 3.5
                     },
                     if coin {
                         9.
                     } else if starts.is_some() {
                         3.2
                     } else {
-                        1.5
+                        2.4 + w * 1.6
                     },
                     if starts.is_some() {
                         travel.z
                     } else if coin {
                         0.
                     } else {
-                        -5.5 - v * 1.5
+                        fan * (4. + w * 2.4)
                     },
                 ))
                 .angvel(if coin {
@@ -490,10 +497,14 @@ fn simulate(
                 } else if starts.is_some() {
                     Vector::new(travel.z * 1.2, 1.5, -travel.x * 1.2)
                 } else {
-                    Vector::new(-7. - v * 2., 1.5, if outgoing { 7. } else { -7. })
+                    Vector::new(
+                        -9. - v * 8.,
+                        (w - 0.5) * 12.,
+                        (if outgoing { 8. } else { -8. }) + (v - 0.5) * 14.,
+                    )
                 })
                 .linear_damping(0.25)
-                .angular_damping(if coin { 0.3 } else { 0.5 })
+                .angular_damping(if coin { 0.3 } else { 0.42 })
                 .ccd_enabled(true),
         );
         if coin {
@@ -1065,6 +1076,45 @@ mod tests {
             }
             assert!((end.position.x - 3.).abs() < 0.001);
             assert!((end.position.z - 4.).abs() < 0.001);
+        }
+    }
+    #[test]
+    fn dice_tumble_and_take_separate_paths_instead_of_moving_in_lockstep() {
+        let bounds = Rect {
+            left: -5.,
+            right: 5.,
+            top: -7.,
+            bottom: 7.,
+        };
+        let items = [Die::D6, Die::D20, Die::D8].map(|die| Item {
+            object: Object::Die,
+            die,
+            face: 1,
+        });
+        let targets = [
+            Vec3::new(-2., 0., 2.),
+            Vec3::new(0., 0., 2.),
+            Vec3::new(2., 0., 2.),
+        ];
+        let play = record(&items, bounds, &[], &targets, false, 17).unwrap();
+        let apex = |i: usize| {
+            play.frames
+                .iter()
+                .map(|f| f[i].position.y)
+                .fold(f32::NEG_INFINITY, f32::max)
+        };
+        let spin = |i: usize| {
+            play.frames
+                .windows(2)
+                .map(|w| w[0][i].rotation.angle_between(w[1][i].rotation))
+                .sum::<f32>()
+        };
+        // Lateral launch must fan, so neighbouring dice never leave along the same line.
+        let leave = |i: usize| play.frames[6][i].position.z - play.frames[0][i].position.z;
+        for i in 0..items.len() {
+            assert!(apex(i) - play.frames.last().unwrap()[i].position.y > 0.8);
+            assert!(spin(i) > std::f32::consts::PI);
+            assert!(i == 0 || leave(i - 1) * leave(i) < 0.);
         }
     }
 }

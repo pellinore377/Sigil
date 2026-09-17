@@ -1,6 +1,7 @@
 package org.sigil
 
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.text.LinkAnnotation
 import androidx.compose.ui.text.font.FontFamily
@@ -38,6 +39,46 @@ class RichTextTest {
         assertEquals(8, style.start)
         assertEquals(19, style.end)
         assertEquals(FontFamily.Monospace, style.item.fontFamily)
+    }
+    private fun ratio(a: Color, b: Color): Float {
+        val x = a.luminance(); val y = b.luminance()
+        return (maxOf(x, y) + .05f) / (minOf(x, y) + .05f)
+    }
+    @Test fun ink_clears_every_background_the_glyph_can_land_on() {
+        val bubble = Color(0xff302b35)
+        val grounds = listOf(Color(0xff14121a), Color(0xff3a3550))
+        for (hue in listOf("red", "yellow", "green", "blue", "gray")) {
+            val ink = textColor("${hue}2", bubble, grounds)
+            for (ground in grounds + bubble) assertTrue(ratio(ink, ground) >= 4.5f, "${hue}2 on $ground")
+        }
+    }
+    @Test fun inline_code_ink_is_corrected_against_its_own_tint_not_the_bare_bubble() {
+        val value = RichText("say hello now", listOf(RichSpan(4, 9, flags = setOf("code"), colors = listOf("blue2"))))
+        val shown = richPresentation(value, emptySet(), FontFamily.Monospace, Color.White, Color.Black) {}
+        val ink = shown.spanStyles.first { it.start == 4 && it.item.color != Color.Unspecified }.item.color
+        assertTrue(ratio(ink, lerp(Color.White, Color.Black, .08f)) >= 4.5f, "code ink $ink")
+    }
+    @Test fun a_gradient_paints_its_whole_ramp_however_short_the_span_is() {
+        val value = RichText("Just a little gradient feeling goes a long way.", listOf(RichSpan(23, 30, colors = listOf("blue1", "purple2", "pink3"))))
+        val shown = richPresentation(value, emptySet(), FontFamily.Monospace, Color.White, Color.Black) {}
+        val runs = shown.spanStyles.filter { it.end - it.start == 1 && it.start >= 23 }
+        assertEquals(7, runs.size)
+        assertEquals(textColor("blue1", Color.White), runs.first().item.color)
+        assertEquals(textColor("pink3", Color.White), runs.last().item.color)
+        assertEquals(7, runs.map { it.item.color }.distinct().size)
+        assertTrue(shown.spanStyles.none { it.item.brush != null })
+    }
+    @Test fun a_paint_never_splits_a_grapheme_cluster() {
+        assertEquals(listOf(0, 7, 8, 9), graphemeCuts("\uD83D\uDC69\uD83C\uDFFD\u200D\uD83D\uDCBBab"))
+        assertEquals(listOf(0, 4, 5), graphemeCuts("\uD83C\uDDEC\uD83C\uDDE7x"))
+        assertEquals(listOf(0, 2, 3), graphemeCuts("e\u0301x"))
+    }
+    @Test fun concealed_spans_carry_no_visible_ink_and_no_link_decoration() {
+        val value = RichText("A secret end", listOf(RichSpan(2, 8, reveal = "scratch")))
+        val shown = richPresentation(value, emptySet(), FontFamily.Monospace, Color.White, Color.Black) {}
+        assertEquals("A Scratch to reveal end", shown.text)
+        assertEquals(Color.Transparent, shown.spanStyles.single().item.color)
+        assertNull((shown.getLinkAnnotations(0, shown.length).single().item as LinkAnnotation.Clickable).styles)
     }
     @Test fun every_named_shade_remains_readable_on_light_and_dark_bubbles() {
         for (surface in listOf(Color.White, Color.Black, Color(0xffe7dfea), Color(0xff302b35))) {

@@ -6,7 +6,6 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
-import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.text.style.TextOverflow
@@ -17,16 +16,11 @@ import androidx.compose.ui.unit.dp
     val now=temporalNow(part.at,120L)
     val fired=part.at in 1..now
     val settled by animateFloatAsState(if(fired).75f else 1f,motion.tween(MotionMillis),label="Reminder completion")
-    CardFrame("notifications_active","Reminder") {
-        if(part.rich!=null)RichMessageText(part.rich,style=MaterialTheme.typography.titleMedium)else MessageText(part.text,analyze)
+    TemporalFrame(if(fired)"check_circle" else "notifications_active","Reminder",part,analyze) {
         if(part.at>0)AnimatedContent(fired,transitionSpec={(fadeIn(motion.enter(MotionMillis))+scaleIn(motion.enter(MotionMillis),initialScale=.96f)) togetherWith fadeOut(motion.exit(MotionExit)) using SizeTransform(false) {_,_->motion.tween(MotionMillis)}},label="Reminder state") {done->
-            Column(verticalArrangement=Arrangement.spacedBy(4.dp)) {
-                if(done)Row(Modifier.alpha(settled),verticalAlignment=Alignment.CenterVertically,horizontalArrangement=Arrangement.spacedBy(8.dp)) {
-                    Glyph("check_circle",20)
-                    Text("Reminded ${temporalSpan(now-part.at)} ago",style=MaterialTheme.typography.bodyMedium,maxLines=2,overflow=TextOverflow.Ellipsis)
-                }
-                else temporalScale(maxOf(part.at-now,60L)).let {(count,unit)->TemporalFigure("$count","$unit from now")}
-                TemporalCaption(if(part.date.isEmpty())"" else if(done)part.date else "Due ${part.date}")
+            Column(Modifier.alpha(if(done)settled else 1f),verticalArrangement=Arrangement.spacedBy(2.dp)) {
+                if(part.date.isNotEmpty())Text(part.date,style=MaterialTheme.typography.bodyMedium,maxLines=2,overflow=TextOverflow.Ellipsis)
+                Text(if(done)"Reminded ${temporalSpan(now-part.at)} ago" else "in ${temporalSpan(maxOf(part.at-now,60L))}",style=MaterialTheme.typography.labelSmall,maxLines=2,overflow=TextOverflow.Ellipsis)
             }
         }
         else Text("No reminder time set.",style=MaterialTheme.typography.bodyMedium)

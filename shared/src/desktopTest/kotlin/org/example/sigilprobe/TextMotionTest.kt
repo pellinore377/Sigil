@@ -1,5 +1,6 @@
 package org.sigil
 
+import androidx.compose.foundation.layout.Box
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
@@ -127,6 +128,59 @@ class TextMotionTest {
         assertNotEquals(initial,pixels())
         ui.runOnIdle {clock.elapsed=12000f}
         assertEquals(initial,pixels())
+    }
+    @Test fun brushing_only_clears_grid_cells_inside_the_concealed_rectangles() {
+        val cells=inkCells(listOf(androidx.compose.ui.geometry.Rect(0f,0f,32f,16f)),8f)
+        assertEquals(8,cells.size)
+        assertTrue(brushedCells(androidx.compose.ui.geometry.Offset(4f,4f),6f,8f,cells).isNotEmpty())
+        assertTrue(brushedCells(androidx.compose.ui.geometry.Offset(200f,200f),6f,8f,cells).isEmpty())
+        assertTrue(brushedCells(androidx.compose.ui.geometry.Offset(4f,4f),400f,8f,cells).size<=cells.size)
+    }
+    @Test fun invisible_ink_and_the_spoiler_slab_do_not_conceal_alike() {
+        var kind by mutableStateOf("scratch")
+        ui.setContent {MaterialTheme {CompositionLocalProvider(LocalMotion provides MotionPolicy(true)) {
+            Box(Modifier.testTag("effect")) {RichMessageText(RichText("A secret end",listOf(RichSpan(2,8,reveal=kind))))}
+        }}}
+        val grain=pixels().toSet()
+        ui.runOnIdle {kind="spoiler"}
+        val slab=pixels().toSet()
+        assertTrue(grain.size>24 && grain.size>slab.size*2,"grain ${grain.size} tones, slab ${slab.size} tones")
+    }
+    @Test fun concealment_survives_reduced_motion_and_disabled_effects() {
+        var concealed by mutableStateOf(true)
+        ui.setContent {MaterialTheme {CompositionLocalProvider(LocalMotion provides MotionPolicy(true),LocalAppearance provides Appearance(messageEffects=false)) {
+            Box(Modifier.testTag("effect")) {RichMessageText(if(concealed)RichText("A secret end",listOf(RichSpan(2,8,reveal="spoiler"))) else RichText("A Hidden text end"))}
+        }}}
+        val veiled=pixels()
+        ui.runOnIdle {concealed=false}
+        assertNotEquals(veiled,pixels())
+    }
+    @Test fun assemble_begins_dispersed_and_settles_into_the_original_text() {
+        val clock=TextPlayback()
+        val rich=RichText("abc",motion=listOf(TextMotion("assemble",1600,1,900,30,1000,22,0,listOf(0 to 1,1 to 2,2 to 3),stiffness=60,damping=10)))
+        ui.setContent {MaterialTheme {CompositionLocalProvider(LocalTextMotionSeeds provides {List(192) {"458752"}.joinToString(",")}) {
+            MessageMotion("synthetic",clock,false) {RichMessageText(rich,Modifier.testTag("effect"))}
+        }}}
+        val settled=pixels()
+        ui.runOnIdle {clock.elapsed=0f}
+        assertNotEquals(settled,pixels())
+        ui.runOnIdle {clock.elapsed=12000f}
+        assertEquals(settled,pixels())
+        ui.onNodeWithText("abc").assertExists()
+    }
+    @Test fun sparkle_takes_its_colour_from_the_span_it_decorates() {
+        val clock=TextPlayback()
+        var painted by mutableStateOf(true)
+        val motion=TextMotion("sparkle",1100,1,600,0,1000,0,12,listOf(0 to 1,1 to 2,2 to 3),particleLifetime=650)
+        ui.setContent {MaterialTheme {CompositionLocalProvider(LocalTextMotionSeeds provides {List(192) {"458752"}.joinToString(",")}) {
+            MessageMotion("synthetic",clock,false) {
+                RichMessageText(RichText("abc",if(painted)listOf(RichSpan(0,3,colors=listOf("red1","blue3"))) else emptyList(),motion=listOf(motion)),Modifier.testTag("effect"))
+            }
+        }}}
+        ui.runOnIdle {clock.elapsed=400f}
+        val coloured=pixels().toSet()
+        ui.runOnIdle {painted=false}
+        assertNotEquals(coloured,pixels().toSet())
     }
     @Test fun upside_down_glyphs_are_settled_in_history_and_reduced_motion() {
         var flipped by mutableStateOf(true)

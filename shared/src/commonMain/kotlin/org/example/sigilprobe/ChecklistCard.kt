@@ -22,6 +22,7 @@ import androidx.compose.ui.unit.dp
 
 @Composable internal fun ChecklistCard(message:ChatMessage,part:MessagePart,analyze:(String)->String,command:Command?) {
     val task=part.kind=="task"
+    val recurring=part.kind=="recurring"
     var expanded by remember(part.id){mutableStateOf(false)}
     var confirming by remember(part.id){mutableStateOf<CardItem?>(null)}
     val motion=LocalMotion.current
@@ -30,13 +31,15 @@ import androidx.compose.ui.unit.dp
     val fraction by animateFloatAsState(if(part.items.isEmpty())0f else done.toFloat()/part.items.size,motion.tween(MotionMillis),label="Checklist progress")
     val lines=with(LocalDensity.current){MaterialTheme.typography.bodyMedium.lineHeight.toDp()*3}
     fun act(item:CardItem) {command?.invoke("card_action",mapOf("peer" to message.peer,"author" to message.author,"message" to message.id,"card" to part.id,"item" to item.id,"checked" to !item.checked))}
-    CardFrame(if(task)"assignment" else "checklist",if(task)"Task" else "Checklist") {
+    CardFrame(if(task)"assignment" else if(recurring)"event_repeat" else "checklist",if(task)"Task" else if(recurring)"Recurring" else "Checklist") {
         if(part.rich!=null)RichMessageText(part.rich,style=MaterialTheme.typography.titleMedium)else MessageText(part.text,analyze)
-        if(part.items.isNotEmpty()) {
+        if(task)Text("Confirm to complete · 30 seconds to undo",style=MaterialTheme.typography.labelMedium)
+        else if(part.items.isNotEmpty()) {
             Text(if(done==part.items.size)"All ${part.items.size} complete"else"$done of ${part.items.size} complete",style=MaterialTheme.typography.labelMedium)
             Box(Modifier.fillMaxWidth().height(4.dp).clip(RoundedCornerShape(6.dp)).background(LocalContentColor.current.copy(alpha=.16f))) {
                 Box(Modifier.fillMaxHeight().fillMaxWidth(fraction).clip(RoundedCornerShape(6.dp)).background(LocalContentColor.current))
             }
+            if(recurring && part.date.isNotEmpty())Text("Resets ${part.date}",style=MaterialTheme.typography.labelMedium)
         }
         Column(verticalArrangement=Arrangement.spacedBy(if(compact)4.dp else 6.dp)) {
             (if(expanded)part.items else part.items.take(5)).forEach {item->key(item.id) {
@@ -47,11 +50,15 @@ import androidx.compose.ui.unit.dp
                     .semantics {toggleableState=ToggleableState(item.checked);if(task && item.checked)stateDescription=if(undoable)"Completed, undo available"else"Completed"}) {
                     Row(Modifier.padding(horizontal=10.dp,vertical=if(compact)8.dp else 10.dp),verticalAlignment=Alignment.CenterVertically,horizontalArrangement=Arrangement.spacedBy(8.dp)) {
                         AnimatedContent(item.checked,transitionSpec={(fadeIn(motion.enter(MotionInline))+scaleIn(motion.enter(MotionInline),initialScale=.8f)) togetherWith fadeOut(motion.exit(MotionExit))},label="Checklist mark") {checked->
-                            Glyph(if(checked)"check_box"else"check_box_outline_blank",20)
+                            if(task)Glyph(if(checked)"task_alt"else"radio_button_unchecked",20)
+                            else Glyph(if(checked)"check_box"else"check_box_outline_blank",20)
                         }
-                        Box(Modifier.weight(1f).alpha(if(item.checked).65f else 1f)) {
-                            if(item.rich!=null)RichMessageText(item.rich,Modifier.heightIn(max=if(expanded)Dp.Unspecified else lines).clipToBounds(),MaterialTheme.typography.bodyMedium)
-                            else Text(item.text,style=MaterialTheme.typography.bodyMedium,maxLines=if(expanded)Int.MAX_VALUE else 3,overflow=TextOverflow.Ellipsis)
+                        Column(Modifier.weight(1f),verticalArrangement=Arrangement.spacedBy(2.dp)) {
+                            Box(Modifier.alpha(if(item.checked).65f else 1f)) {
+                                if(item.rich!=null)RichMessageText(item.rich,Modifier.heightIn(max=if(expanded)Dp.Unspecified else lines).clipToBounds(),MaterialTheme.typography.bodyMedium)
+                                else Text(item.text,style=MaterialTheme.typography.bodyMedium,maxLines=if(expanded)Int.MAX_VALUE else 3,overflow=TextOverflow.Ellipsis)
+                            }
+                            if(task && item.checked)Text(if(undoable)"Completed"else"Completed · final",style=MaterialTheme.typography.labelSmall,color=LocalContentColor.current.copy(alpha=.6f))
                         }
                         if(undoable)Row(verticalAlignment=Alignment.CenterVertically,horizontalArrangement=Arrangement.spacedBy(8.dp)) {Glyph("undo",18);Text("Undo",style=MaterialTheme.typography.labelSmall)}
                         else if(task && item.checked)Glyph("lock",14)

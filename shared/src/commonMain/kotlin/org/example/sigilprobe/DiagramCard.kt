@@ -34,30 +34,35 @@ private fun DiagramContent.descendants(node: Int): Set<Int> {
 
 @Composable
 internal fun DiagramCard(diagram: DiagramContent) {
-    var expanded by remember(diagram) { mutableStateOf(false) }
+    val kindName = when (diagram.kind) { "org" -> "Org chart"; "mindmap" -> "Mind map"; else -> diagram.kind.replaceFirstChar { it.uppercase() } }
+    val large = diagram.nodes.size > 12 || diagram.edges.size > 24 || diagram.width > 480 || diagram.height > 400
+    // The preview box takes the fitted aspect so a tall diagram stops leaving dead side margins.
+    val plotZoom = min(280f / diagram.width, 220f / diagram.height).coerceIn(.0001f, 1f).coerceAtLeast(.65f)
+    Column(Modifier.widthIn(max = 280.dp).animateContentSize(LocalMotion.current.tween(MotionMillis)), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) { Glyph(diagramGlyph(diagram.kind), 20); Text("Diagram", style = MaterialTheme.typography.labelMedium) }
+        RichMessageText(diagram.title, style = MaterialTheme.typography.titleMedium)
+        if (diagram.kind == "timeline") diagram.entries.take(2).forEach { entry -> Column { RichMessageText(entry.date, style = MaterialTheme.typography.labelMedium); RichMessageText(entry.label, Modifier.heightIn(max = 72.dp).clipToBounds(), MaterialTheme.typography.bodyMedium) } }
+        else if (!large) DiagramPlot(diagram, emptySet(), null, {}, Modifier.align(Alignment.CenterHorizontally).width((diagram.width * plotZoom).coerceIn(140f, 280f).dp).height(220.dp), false)
+        else diagram.nodes.take(3).forEach { RichMessageText(it.label, Modifier.heightIn(max = 56.dp).clipToBounds(), MaterialTheme.typography.bodyMedium) }
+        Text(if (diagram.kind == "timeline") "$kindName · ${diagram.entries.size} ${if (diagram.entries.size == 1) "entry" else "entries"}"
+            else "$kindName · ${diagram.nodes.size} ${if (diagram.nodes.size == 1) "node" else "nodes"} · ${diagram.edges.size} ${if (diagram.edges.size == 1) "connection" else "connections"}", style = MaterialTheme.typography.labelSmall)
+    }
+}
+
+@Composable
+internal fun DiagramDetails(diagram: DiagramContent, dismiss: () -> Unit) {
     var focused by remember(diagram) { mutableStateOf<Int?>(null) }
     var collapsed by remember(diagram) { mutableStateOf(emptySet<Int>()) }
     var branch by remember(diagram) { mutableStateOf<Int?>(null) }
     var outline by remember(diagram) { mutableStateOf(false) }
     val hidden = remember(diagram, collapsed, branch) { collapsed.flatMap { diagram.descendants(it) - it }.toSet() + (branch?.let { diagram.nodes.indices.toSet() - diagram.descendants(it) } ?: emptySet()) }
     val kindName = when (diagram.kind) { "org" -> "Org chart"; "mindmap" -> "Mind map"; else -> diagram.kind.replaceFirstChar { it.uppercase() } }
-    val large = diagram.nodes.size > 12 || diagram.edges.size > 24 || diagram.width > 480 || diagram.height > 400
-    Column(Modifier.widthIn(min = 200.dp, max = 280.dp).animateContentSize(LocalMotion.current.tween(MotionMillis)), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) { Glyph(diagramGlyph(diagram.kind), 20); Text("Diagram", style = MaterialTheme.typography.labelMedium) }
-        RichMessageText(diagram.title, style = MaterialTheme.typography.titleMedium)
-        if (diagram.kind == "timeline") diagram.entries.take(2).forEach { entry -> Column { RichMessageText(entry.date, style = MaterialTheme.typography.labelMedium); RichMessageText(entry.label, Modifier.heightIn(max = 72.dp).clipToBounds(), MaterialTheme.typography.bodyMedium) } }
-        else if (!large) DiagramPlot(diagram, emptySet(), null, { focused = it; expanded = true }, Modifier.fillMaxWidth().height(220.dp), false)
-        else diagram.nodes.take(3).forEach { RichMessageText(it.label, Modifier.heightIn(max = 56.dp).clipToBounds(), MaterialTheme.typography.bodyMedium) }
-        Text(if (diagram.kind == "timeline") "$kindName · ${diagram.entries.size} ${if (diagram.entries.size == 1) "entry" else "entries"}"
-            else "$kindName · ${diagram.nodes.size} ${if (diagram.nodes.size == 1) "node" else "nodes"} · ${diagram.edges.size} ${if (diagram.edges.size == 1) "connection" else "connections"}", style = MaterialTheme.typography.labelSmall)
-        SigilTextButton({ expanded = true }) { Glyph("open_in_full", 18); Spacer(Modifier.width(8.dp)); Text("Open diagram") }
-    }
-    if (expanded) Dialog({ expanded = false }, DialogProperties(usePlatformDefaultWidth = false)) {
+    Dialog(dismiss, DialogProperties(usePlatformDefaultWidth = false)) {
         Surface(Modifier.fillMaxSize()) {
             CompositionLocalProvider(LocalMessageSurface provides MaterialTheme.colorScheme.surface) {
                 Column(Modifier.fillMaxSize().safeDrawingPadding().padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
-                        SigilIconButton({ expanded = false }) { Glyph("close", 24, "Close diagram") }
+                        SigilIconButton(dismiss) { Glyph("close", 24, "Close diagram") }
                         Text(kindName, Modifier.weight(1f), style = MaterialTheme.typography.titleLarge)
                         if (diagram.kind != "timeline") SigilIconButton({ outline = !outline }) { Glyph(if (outline) "schema" else "format_list_bulleted", 24, if (outline) "Show diagram" else "List nodes") }
                     }
@@ -165,34 +170,45 @@ private fun DiagramPlot(diagram: DiagramContent, hidden: Set<Int>, focused: Int?
                         start=at(from.x+160,from.y+36);end=at(to.x+160,to.y+36);val side=max(start.x,end.x)+48.dp.toPx()*zoom;control1=Offset(side,start.y-36.dp.toPx()*zoom);control2=Offset(side,end.y+36.dp.toPx()*zoom)
                     }
                     val path=Path().apply { moveTo(start.x,start.y);cubicTo(control1.x,control1.y,control2.x,control2.y,end.x,end.y) }
-                    drawPath(path,color,style=Stroke(1.5.dp.toPx(),pathEffect=if(edge.dashed)PathEffect.dashPathEffect(floatArrayOf(6.dp.toPx(),4.dp.toPx()))else null))
-                    val direction=end-(if(control2==end)start else control2);val angle=atan2(direction.y,direction.x);val size=7.dp.toPx()
-                    drawLine(color,end,end-Offset(cos(angle-.5f),sin(angle-.5f))*size,1.5.dp.toPx());drawLine(color,end,end-Offset(cos(angle+.5f),sin(angle+.5f))*size,1.5.dp.toPx())
+                    drawPath(path,color,style=Stroke(if(strong)2.dp.toPx() else 1.5.dp.toPx(),pathEffect=if(edge.dashed)PathEffect.dashPathEffect(floatArrayOf(6.dp.toPx(),4.dp.toPx()))else null))
+                    val direction=end-(if(control2==end)start else control2);val angle=atan2(direction.y,direction.x);val head=8.dp.toPx()
+                    drawPath(Path().apply {moveTo(end.x,end.y);lineTo(end.x-cos(angle-.42f)*head,end.y-sin(angle-.42f)*head);lineTo(end.x-cos(angle+.42f)*head,end.y-sin(angle+.42f)*head);close()},color)
                 }
             }
+            // An edge label is a UI chip, not geometry: it keeps its theme size at every zoom and rides a plate so the line cannot cut through it.
             diagram.edges.forEachIndexed { index, edge ->
                 if(zoom < .45f || edge.from in hidden || edge.to in hidden || edge.label.text.isBlank()) return@forEachIndexed
                 val from=diagram.nodes[edge.from];val to=diagram.nodes[edge.to]
-                val width=if(diagram.kind=="sequence")max(96f,abs(from.x-to.x)) else 128f
-                val labelAt=when {
-                    diagram.kind=="sequence" -> at(min(from.x,to.x)+80,edge.y-40)
-                    diagram.kind=="mindmap" -> at((from.x+to.x)/2+80-width/2,(from.y+to.y)/2+20)
-                    to.y>from.y -> at((from.x+to.x)/2+80-width/2,(from.y+72+to.y)/2-20)
-                    else -> at(max(from.x,to.x)+168,(from.y+to.y)/2+16)
+                val lane=if(diagram.kind=="sequence")max(96f,abs(from.x-to.x)) else 128f
+                val middle=when {
+                    diagram.kind=="sequence" -> at((from.x+to.x)/2+80,edge.y-40)
+                    diagram.kind=="mindmap" -> at((from.x+to.x)/2+80,(from.y+to.y)/2+20)
+                    to.y>from.y -> at((from.x+to.x)/2+80,(from.y+72+to.y)/2-20)
+                    else -> at(max(from.x,to.x)+168+lane/2,(from.y+to.y)/2+16)
                 }
-                if(shown(Rect(labelAt,Size(width*density*zoom,40*density*zoom)))) Box(Modifier.offset { IntOffset(labelAt.x.roundToInt(),labelAt.y.roundToInt()) }.width((width*zoom).dp).heightIn(max=(44*zoom).dp).clipToBounds().background(surface)
-                    .clickable(role=Role.Button) { focus(edge.from) }.semantics { contentDescription="Connection ${index+1}" }) { RichMessageText(edge.label,style=MaterialTheme.typography.labelSmall.let { it.copy(fontSize=(it.fontSize.value*zoom).coerceAtLeast(11f).sp) }) }
+                val plate=max(96f,lane*zoom)
+                val left=middle.x-plate*density/2
+                if(!shown(Rect(Offset(left,middle.y),Size(plate*density,40*density)))) return@forEachIndexed
+                Box(Modifier.offset { IntOffset(left.roundToInt(),middle.y.roundToInt()) }.width(plate.dp)
+                    .semantics { contentDescription="Connection ${index+1}" },contentAlignment=Alignment.Center) {
+                    Surface(shape=RoundedCornerShape(6.dp),color=surface,contentColor=ink,
+                        modifier=if(interactive)Modifier.clickable(role=Role.Button) { focus(edge.from) } else Modifier) {
+                        RichMessageText(edge.label,Modifier.padding(horizontal=6.dp,vertical=2.dp),MaterialTheme.typography.labelSmall)
+                    }
+                }
             }
             diagram.nodes.forEachIndexed { index,node ->
                 if(zoom < .45f || index in hidden) return@forEachIndexed
                 val position=at(node.x,node.y)
                 if(!shown(Rect(position,Size(160*density*zoom,72*density*zoom)))) return@forEachIndexed
                 val shape=when { node.shape=="decision" -> GenericShape { size,_ -> moveTo(size.width/2,0f);lineTo(size.width,size.height/2);lineTo(size.width/2,size.height);lineTo(0f,size.height/2);close() }; node.shape=="process" -> RoundedCornerShape(4.dp); else -> RoundedCornerShape(16.dp) }
-                Surface(Modifier.offset { IntOffset(position.x.roundToInt(),position.y.roundToInt()) }.size((160*zoom).dp,(72*zoom).dp).alpha(if(index in connected)1f else .3f)
-                    .combinedClickable(onClick={focus(index)},onLongClickLabel="Focus node",onLongClick={focus(index)}).semantics { contentDescription="Node ${index+1}"; selected=focused==index }, shape=shape,
+                Surface(Modifier.offset { IntOffset(position.x.roundToInt(),position.y.roundToInt()) }
+                    .graphicsLayer { scaleX=zoom;scaleY=zoom;transformOrigin=TransformOrigin(0f,0f);alpha=if(index in connected)1f else .3f }.size(160.dp,72.dp)
+                    .then(if(interactive)Modifier.combinedClickable(onClick={focus(index)},onLongClickLabel="Focus node",onLongClick={focus(index)}) else Modifier)
+                    .semantics { contentDescription="Node ${index+1}"; selected=focused==index }, shape=shape,
                     color=MaterialTheme.colorScheme.surfaceVariant,contentColor=MaterialTheme.colorScheme.onSurfaceVariant,border=BorderStroke(if(focused==index)2.dp else 1.dp,ink.copy(alpha=if(focused==index).8f else .2f))) {
                     CompositionLocalProvider(LocalMessageSurface provides MaterialTheme.colorScheme.surfaceVariant) {
-                        Box(Modifier.padding(horizontal=if(node.shape=="decision")28.dp else 10.dp,vertical=8.dp).clipToBounds(),contentAlignment=Alignment.Center) { RichMessageText(node.label,style=MaterialTheme.typography.bodyMedium.let { it.copy(fontSize=(it.fontSize.value*zoom).coerceAtLeast(12f).sp) }) }
+                        Box(Modifier.padding(horizontal=if(node.shape=="decision")28.dp else 10.dp,vertical=8.dp).clipToBounds(),contentAlignment=Alignment.Center) { RichMessageText(node.label,style=MaterialTheme.typography.bodyMedium) }
                     }
                 }
             }

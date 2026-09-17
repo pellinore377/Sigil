@@ -135,7 +135,7 @@ private fun WireObject.utilityContent(): org.sigil.UtilityContent? = optJSONObje
             }}.orEmpty()
             val frames=m.optJSONArray("frames")?.let {a->(0 until minOf(12,a.length())).map(a::getString)}.orEmpty()
             org.sigil.RandomizerMotion(m.getString("kind"),dice,frames,m.optInt("selected"),m.optString("result"))
-        })
+        }, u.optBoolean("block", true))
 }
 
 private fun WireObject.serviceContent(): org.sigil.ServiceContent? = optJSONObject("service")?.let { s ->
@@ -161,7 +161,7 @@ private class WireObject(private val value:JsonObject=JsonObject(emptyMap())) {
     fun optLong(key:String)=value[key]?.jsonPrimitive?.longOrNull ?: 0L
     fun getDouble(key:String)=value.getValue(key).jsonPrimitive.double
     fun getBoolean(key:String)=value.getValue(key).jsonPrimitive.boolean
-    fun optBoolean(key:String)=value[key]?.jsonPrimitive?.booleanOrNull ?: false
+    fun optBoolean(key:String,fallback:Boolean=false)=value[key]?.jsonPrimitive?.booleanOrNull ?: fallback
     fun getJSONObject(key:String)=WireObject(value.getValue(key).jsonObject)
     fun optJSONObject(key:String)=(value[key] as? JsonObject)?.let(::WireObject)
     fun getJSONArray(key:String)=WireArray(value.getValue(key).jsonArray)

@@ -54,14 +54,14 @@ import kotlin.math.roundToInt
                             AnimatedContent(item.checked,transitionSpec={(fadeIn(motion.enter(MotionInline))+scaleIn(motion.enter(MotionInline),initialScale=.8f)) togetherWith fadeOut(motion.exit(MotionExit))},label="Poll choice") {checked->
                                 Glyph(if(part.multiple)if(checked)"check_box"else"check_box_outline_blank"else if(checked)"radio_button_checked"else"radio_button_unchecked",20)
                             }
+                            if(voters!=null)Column(Modifier.widthIn(min=44.dp),horizontalAlignment=Alignment.Start) {
+                                Text("${(amount*100).roundToInt()}%",style=MaterialTheme.typography.labelMedium)
+                                if(!compact)Text("$votes ${if(votes==1L)"vote"else"votes"}",style=MaterialTheme.typography.labelSmall,maxLines=1)
+                            }
                             Column(Modifier.weight(1f),verticalArrangement=Arrangement.spacedBy(4.dp)) {
                                 if(item.rich!=null)RichMessageText(item.rich,Modifier.heightIn(max=if(expanded)Dp.Unspecified else lines).clipToBounds(),MaterialTheme.typography.bodyMedium)
                                 else Text(item.text,style=MaterialTheme.typography.bodyMedium,maxLines=if(expanded)Int.MAX_VALUE else 3,overflow=TextOverflow.Ellipsis)
                                 if(won)Text("Most votes",Modifier.clearAndSetSemantics{},style=MaterialTheme.typography.labelSmall)
-                            }
-                            if(voters!=null)Column(horizontalAlignment=Alignment.End) {
-                                Text("${(amount*100).roundToInt()}%",style=MaterialTheme.typography.labelMedium)
-                                if(!compact)Text("$votes ${if(votes==1L)"vote"else"votes"}",style=MaterialTheme.typography.labelSmall,maxLines=1)
                             }
                         }
                     }

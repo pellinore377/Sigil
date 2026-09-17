@@ -8,6 +8,19 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 
+// The only five kinds the owner kept an expanded view for; everything else reads in place.
+internal fun ChatMessage.detailsPart() = parts.firstOrNull { it.chart != null || it.diagram != null || it.table != null || it.recipe != null || it.utility?.qr != null }
+
+@Composable
+internal fun CardDetails(message: ChatMessage, dismiss: () -> Unit) {
+    val part = message.detailsPart() ?: return
+    if (part.chart != null) ChartDetails(part.chart, dismiss)
+    else if (part.diagram != null) DiagramDetails(part.diagram, dismiss)
+    else if (part.table != null) TableDetails(part.table, dismiss)
+    else if (part.recipe != null) RecipeDetails(message, part, dismiss)
+    else if (part.utility?.qr != null) QrDetails(part.utility, dismiss)
+}
+
 internal fun ChatMessage.bareRandomizers() = reply == null && attachment == null &&
     parts.any { it.utility?.motion?.kind in listOf("dice", "coin", "choice") } &&
     parts.all { it.kind == "text" || it.utility?.motion?.kind in listOf("dice", "coin", "choice") }
@@ -25,7 +38,7 @@ internal fun MessageCards(message: ChatMessage, analyze: (String) -> String, com
             }
             else if (part.kind == "location") LocationCard(message, part, analyze, command, bareObjects)
             else if (part.table != null) TableCard(part.table)
-            else if (part.recipe != null) RecipeCard(message, part)
+            else if (part.recipe != null) RecipeCard(part)
             else if (part.chart != null) ChartCard(part.chart)
             else if (part.diagram != null) DiagramCard(part.diagram)
             else if (part.utility != null) CompositionLocalProvider(LocalMaterialOrdinal provides message.parts.take(index).count {it.utility?.motion!=null}) {UtilityCard(part.utility)}
@@ -33,7 +46,7 @@ internal fun MessageCards(message: ChatMessage, analyze: (String) -> String, com
             else if (part.contact != null) ContactCard(part.contact, command?.let { action -> {
                 action("contact_open",mapOf("peer" to message.peer,"author" to message.author,"message" to message.id,"card" to part.id))
             } })
-            else if (part.kind == "checklist" || part.kind == "task") ChecklistCard(message,part,analyze,command)
+            else if (part.kind == "checklist" || part.kind == "task" || part.kind == "recurring") ChecklistCard(message,part,analyze,command)
             else if (part.kind == "poll") PollCard(message,part,analyze,command)
             else if (part.kind == "note") NoteCard(part,analyze)
             else if (part.kind == "reminder") ReminderCard(part,analyze)

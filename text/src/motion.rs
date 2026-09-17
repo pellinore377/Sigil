@@ -143,6 +143,14 @@ impl Animation {
                 p.rotation = 360;
                 p.displacement = 600;
             }
+            Self::Assemble => {
+                p.duration_ms = 1600;
+                p.displacement = 900;
+                p.rotation = 30;
+                p.stagger_ms = 22;
+                p.spring_stiffness = 60;
+                p.spring_damping = 10;
+            }
         }
         p
     }
@@ -197,5 +205,10 @@ mod tests {
         assert!(view.motion.is_empty());
         let barrel = crate::parse("barrel::whole words;", Default::default()).unwrap();
         assert_eq!(barrel.presentation().motion[0].units, vec![[0, 5], [6, 11]]);
+        let assemble = crate::parse("assemble::ab;", Default::default()).unwrap();
+        let run = &assemble.presentation().motion[0];
+        assert_eq!(run.animation, crate::Animation::Assemble);
+        assert_eq!(run.units, vec![[0, 1], [1, 2]]);
+        assert!(run.parameters.displacement > 0 && run.parameters.stagger_ms > 0);
     }
 }

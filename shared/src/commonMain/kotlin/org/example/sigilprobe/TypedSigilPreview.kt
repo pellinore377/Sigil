@@ -59,12 +59,14 @@ private fun MessagePart.previewEffects(): List<String> = buildList {
     val effects = parts.flatMap { it.previewEffects() }.distinct()
     val motion = LocalMotion.current
     val launch = LocalPreviewLaunch.current
-    DisposableEffect(launch) { onDispose { launch?.source = ""; launch?.bounds = Rect.Zero; launch?.visibleOrigins?.clear() } }
+    DisposableEffect(launch) { onDispose { launch?.source = ""; launch?.bounds = Rect.Zero; launch?.panel = Rect.Zero; launch?.visibleOrigins?.clear() } }
     SideEffect { launch?.source = source.takeIf {current}.orEmpty() }
     AnimatedVisibility(cards.isNotEmpty() || effects.isNotEmpty(), modifier,
         enter = expandVertically(motion.enter(MotionMillis)) + fadeIn(motion.enter(MotionMillis)),
         exit = shrinkVertically(motion.exit(MotionMillis)) + fadeOut(motion.exit(MotionExit)), label = "Draft preview") {
-        Column(Modifier.fillMaxWidth().heightIn(max = 280.dp).verticalScroll(rememberScrollState()).testTag("typed-sigil-preview"), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Column(Modifier.fillMaxWidth().heightIn(max = 280.dp).verticalScroll(rememberScrollState())
+            .onGloballyPositioned { launch?.panel = Rect(it.localToWindow(Offset.Zero), Size(it.size.width.toFloat(), it.size.height.toFloat())) }
+            .testTag("typed-sigil-preview"), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             CompositionLocalProvider(LocalTextMotion provides null) {
                 cards.forEachIndexed { index,part ->
                     if (part.previewIntent != null) IntentPreview(part.previewIntent, open?.takeIf {current}?.let {action->{action(part.previewIntent,source)}})

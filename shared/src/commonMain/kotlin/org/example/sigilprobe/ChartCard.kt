@@ -5,6 +5,8 @@ import androidx.compose.foundation.gestures.*
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.animation.animateContentSize
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -17,6 +19,7 @@ import androidx.compose.ui.graphics.drawscope.*
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.semantics.*
 import androidx.compose.ui.text.*
 import androidx.compose.ui.unit.*
@@ -24,45 +27,69 @@ import androidx.compose.ui.window.*
 import kotlin.math.*
 
 internal fun chartGlyph(kind: String) = when (kind) { "pie" -> "pie_chart"; "donut" -> "donut_small"; "line" -> "show_chart"; "area" -> "area_chart"; "scatter" -> "scatter_plot"; else -> "bar_chart" }
+// One source of truth for slice colour and legend swatch.
+internal fun chartPalette(count: Int, surface: Color) = List(count) { textColor(listOf("purple2", "blue2", "green2", "orange2", "pink2", "cyan2")[it % 6], surface) }
+
+@Composable
+private fun chartDetails(chart: ChartContent, index: Int) {
+    val point = chart.points[index]
+    Column(Modifier.fillMaxWidth().padding(vertical = 4.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) { Text("${index + 1}.", style = MaterialTheme.typography.labelLarge); RichMessageText(point.label, Modifier.weight(1f), MaterialTheme.typography.bodyMedium) }
+        Text(listOfNotNull(point.xValue?.let { "x = $it" }, point.value, point.percent.takeIf { chart.kind in listOf("pie", "donut") }?.let { "$it% of total" }).joinToString(" · "), style = MaterialTheme.typography.labelMedium, maxLines = 2, overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis)
+    }
+}
 
 @Composable
 internal fun ChartCard(chart: ChartContent) {
-    var expanded by remember(chart) { mutableStateOf(false) }
     var selected by remember(chart) { mutableStateOf<Int?>(null) }
-    var hidden by remember(chart) { mutableStateOf(emptySet<Int>()) }
-    val clipboard = LocalClipboardManager.current
-    @Composable fun details(index: Int) {
-        val point = chart.points[index]
-        Column(Modifier.fillMaxWidth().padding(vertical = 4.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) { Text("${index + 1}.", style = MaterialTheme.typography.labelLarge); RichMessageText(point.label, Modifier.weight(1f), MaterialTheme.typography.bodyMedium) }
-            Text(listOfNotNull(point.xValue?.let { "x = $it" }, point.value, point.percent.takeIf { chart.kind in listOf("pie", "donut") }?.let { "$it% of total" }).joinToString(" · "), style = MaterialTheme.typography.labelMedium, maxLines = 2, overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis)
-        }
-    }
+    val circular = chart.kind in listOf("pie", "donut")
+    val surface = LocalMessageSurface.current.takeOrElse { MaterialTheme.colorScheme.surface }
+    val colors = remember(chart, surface) { chartPalette(chart.points.size, surface) }
+    val line = with(LocalDensity.current) { MaterialTheme.typography.bodyMedium.lineHeight.toDp() }
     Column(Modifier.widthIn(min = 200.dp, max = 280.dp).animateContentSize(LocalMotion.current.tween(MotionMillis)), verticalArrangement = Arrangement.spacedBy(8.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) { Glyph(chartGlyph(chart.kind), 20); Text("Chart", style = MaterialTheme.typography.labelMedium) }
         RichMessageText(chart.title, style = MaterialTheme.typography.titleMedium)
         ChartPlot(chart, emptySet(), selected, { selected = it }, Modifier.fillMaxWidth().height(200.dp))
-        selected?.let { details(it) } ?: chart.points.indices.take(2).forEach { details(it) }
+        if (circular) {
+            // The value rides beside its own label; the swatch is the only key back to the slice.
+            val shown = remember(chart, selected) { (listOfNotNull(selected) + chart.points.indices).distinct().take(5).sorted() }
+            shown.forEach { index ->
+                val point = chart.points[index]
+                Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(8.dp)).background(LocalContentColor.current.copy(alpha = if (selected == index) .08f else 0f))
+                    .padding(horizontal = 4.dp, vertical = 2.dp).semantics { this.selected = selected == index }, verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Box(Modifier.size(10.dp).clip(CircleShape).background(colors[index]))
+                    RichMessageText(point.label, Modifier.weight(1f, fill = false).heightIn(max = line).clipToBounds(), MaterialTheme.typography.bodyMedium)
+                    Text("${point.value} · ${point.percent}%", style = MaterialTheme.typography.labelMedium, maxLines = 1)
+                }
+            }
+            if (chart.points.size > shown.size) Text("+${chart.points.size - shown.size} more", style = MaterialTheme.typography.labelSmall)
+        } else selected?.let { chartDetails(chart, it) } ?: chart.points.indices.take(2).forEach { chartDetails(chart, it) }
         Text("${chart.kind.replaceFirstChar { it.uppercase() }} · ${chart.points.size} ${if (chart.points.size == 1) "point" else "points"}", style = MaterialTheme.typography.labelSmall)
-        SigilTextButton({ expanded = true }) { Glyph("open_in_full", 18); Spacer(Modifier.width(8.dp)); Text("Open chart") }
     }
-    if (expanded) Dialog({ expanded = false }, DialogProperties(usePlatformDefaultWidth = false)) {
+}
+
+@Composable
+internal fun ChartDetails(chart: ChartContent, dismiss: () -> Unit) {
+    var selected by remember(chart) { mutableStateOf<Int?>(null) }
+    var hidden by remember(chart) { mutableStateOf(emptySet<Int>()) }
+    val clipboard = LocalClipboardManager.current
+    Dialog(dismiss, DialogProperties(usePlatformDefaultWidth = false)) {
         Surface(Modifier.fillMaxSize()) {
             CompositionLocalProvider(LocalMessageSurface provides MaterialTheme.colorScheme.surface) {
                 Column(Modifier.fillMaxSize().safeDrawingPadding().padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
-                        SigilIconButton({ expanded = false }) { Glyph("close", 24, "Close chart") }
+                        SigilIconButton(dismiss) { Glyph("close", 24, "Close chart") }
                         Text("Chart", Modifier.weight(1f), style = MaterialTheme.typography.titleLarge)
                         SigilIconButton({ chart.copyData?.let { clipboard.setText(AnnotatedString(it)) } }, enabled = chart.copyData != null) { Glyph("content_copy", 24, "Copy chart data") }
                     }
                     RichMessageText(chart.title, Modifier.heightIn(max = 100.dp).verticalScroll(rememberScrollState()), MaterialTheme.typography.titleMedium)
                     ChartPlot(chart, hidden, selected, { selected = it }, Modifier.fillMaxWidth().weight(1f), zoomable = true)
-                    selected?.let { index -> Box(Modifier.semantics { contentDescription = "Selected point ${index + 1}"; liveRegion = LiveRegionMode.Polite }) { details(index) } }
+                    selected?.let { index -> Box(Modifier.semantics { contentDescription = "Selected point ${index + 1}"; liveRegion = LiveRegionMode.Polite }) { chartDetails(chart, index) } }
                     LazyColumn(Modifier.fillMaxWidth().weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                         itemsIndexed(chart.points, key = { i, _ -> i }) { index, _ ->
                             val active = selected == index
                             Row(itemMotion().fillMaxWidth().clip(MaterialTheme.shapes.medium).semantics { this.selected = active }.background(if (active) MaterialTheme.colorScheme.surfaceVariant else Color.Transparent).clickable(role = Role.Button) { selected = index }.padding(8.dp), verticalAlignment = Alignment.CenterVertically) {
-                                Column(Modifier.weight(1f)) { details(index) }
+                                Column(Modifier.weight(1f)) { chartDetails(chart, index) }
                                 SigilIconButton({ hidden = if (index in hidden) hidden - index else hidden + index }) { Glyph(if (index in hidden) "visibility_off" else "visibility", 20, "${if (index in hidden) "Show" else "Hide"} point ${index + 1}") }
                             }
                         }
@@ -82,7 +109,7 @@ internal fun ChartPlot(chart: ChartContent, hidden: Set<Int>, selected: Int?, se
     val circular = chart.kind in listOf("pie", "donut")
     val ink = LocalContentColor.current
     val background = LocalMessageSurface.current.takeOrElse { MaterialTheme.colorScheme.surface }
-    val colors = remember(chart, background) { chart.points.indices.map { textColor(listOf("purple2", "blue2", "green2", "orange2", "pink2", "cyan2")[it % 6], background) } }
+    val colors = remember(chart, background) { chartPalette(chart.points.size, background) }
     val measurer = rememberTextMeasurer()
     val labelStyle = MaterialTheme.typography.labelSmall.copy(color = ink)
     val labels = remember(chart, labelStyle, measurer) { chart.points.indices.map { measurer.measure(AnnotatedString("${it + 1}"), style = labelStyle) } }
@@ -150,12 +177,8 @@ internal fun ChartPlot(chart: ChartContent, hidden: Set<Int>, selected: Int?, se
                         if (index !in hidden) {
                             val visibleSweep=min(sweep,(progress*360f-start-90f).coerceAtLeast(0f))
                             drawArc(colors[index], start, visibleSweep, chart.kind == "pie", topLeft = center - Offset(radius, radius), size = Size(radius * 2, radius * 2), style = if (chart.kind == "pie") Fill else Stroke(radius * .42f))
-                            if (visibleSweep>=sweep && (p.share > .04f || selected == index)) {
-                                val angle = (start + sweep / 2) * PI.toFloat() / 180f
-                                val at = center + Offset(cos(angle), sin(angle)) * (radius * if (chart.kind == "pie") .63f else 1f)
-                                drawCircle(background, 11.dp.toPx(), at)
-                                drawText(labels[index], topLeft = at - Offset(labels[index].size.width / 2f, labels[index].size.height / 2f))
-                            }
+                            if (visibleSweep>=sweep && selected == index)
+                                drawArc(ink, start, sweep, chart.kind == "pie", topLeft = center - Offset(radius, radius), size = Size(radius * 2, radius * 2), style = Stroke(2.dp.toPx()))
                         }
                         start += sweep
                     }

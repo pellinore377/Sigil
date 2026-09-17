@@ -32,7 +32,10 @@ pub enum Utility {
         value: Number,
         max: Number,
     },
-    Progress(Number),
+    Progress {
+        value: Number,
+        title: Option<Text>,
+    },
     Quote {
         author: Text,
         source: Option<Text>,
@@ -397,8 +400,10 @@ impl Utility {
                     return Err(Error::Invalid);
                 }
             }
-            Self::Progress(value) => {
-                if !(0.0..=100.0).contains(&value.value()) {
+            Self::Progress { value, title } => {
+                if !(0.0..=100.0).contains(&value.value())
+                    || title.as_ref().is_some_and(|t| t.body().trim().is_empty())
+                {
                     return Err(Error::Invalid);
                 }
             }
@@ -426,7 +431,10 @@ impl Utility {
             ),
             Self::Keys(keys) => keys.iter().map(Text::body).collect::<Vec<_>>().join("+"),
             Self::Rating { value, max } => format!("{}/{}", value.as_str(), max.as_str()),
-            Self::Progress(value) => format!("{}%", value.as_str()),
+            Self::Progress { value, title } => match title {
+                Some(title) => format!("{} · {}%", title.body(), value.as_str()),
+                None => format!("{}%", value.as_str()),
+            },
             Self::Quote {
                 author,
                 source,
@@ -616,11 +624,19 @@ pub(crate) fn parse(lines: &[&str], limits: CardLimits) -> Result<Utility, Error
                 max: Number::try_from(max.to_owned())?,
             }
         }
-        "progress" => Utility::Progress(Number::new(
-            Number::try_from(source.to_owned())?
-                .value()
-                .clamp(0.0, 100.0),
-        )?),
+        "progress" => {
+            let (percent, title) = source
+                .split_once("::")
+                .map_or((source, None), |(p, t)| (p, Some(t)));
+            Utility::Progress {
+                value: Number::new(
+                    Number::try_from(percent.to_owned())?
+                        .value()
+                        .clamp(0.0, 100.0),
+                )?,
+                title: title.map(text).transpose()?,
+            }
+        }
         "quote" => {
             let parts = source.splitn(3, "::").collect::<Vec<_>>();
             match parts.as_slice() {
