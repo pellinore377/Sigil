@@ -1675,6 +1675,7 @@ impl ClientStore {
                         "copies": step.conversation_copies,
                         "outbound_errors": step.outbound.iter().filter_map(|i| i.result.as_ref().err().map(|e| format!("{}: {}", &transport::hex(&i.session)[..8], error_message(e)))).collect::<Vec<_>>(),
                         "send_errors": step.sends.iter().filter_map(|i| i.result.as_ref().err().map(|e| format!("{}: {}", &transport::hex(&i.id)[..8], error_message(e)))).collect::<Vec<_>>(),
+                        "retry_errors": step.retries.iter().filter_map(|i| i.result.as_ref().err().map(|e| format!("{}: {e:?}", &transport::hex(&i.id)[..8]))).collect::<Vec<_>>(),
                     })
                 });
                 let timings: serde_json::Map<String, Value> = result

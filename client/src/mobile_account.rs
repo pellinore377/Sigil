@@ -96,7 +96,7 @@ impl ClientStore {
              prekeys: slots {slots}, publications pending {pubs}, initiations {inits}\n\
              backoff: outbound {ob} (unknown recipient {unknown}), intents {ib}\n\
              store: peers {peers}, sessions {sessions} (retired {retired}, deepest peer {perpeer}, unbound {unbound}), inbox {inbox}, deliveries {deliveries}\n\
-             recovery: retry incoming {retryin}, retired requests {retiredreq}",
+             recovery: retry incoming {retryin}, unfinished responses {unfinished}, retired requests {retiredreq}",
             schema = crate::DATABASE_VERSION,
             client = env!("CARGO_PKG_VERSION"),
             outbox = count("SELECT count(*) FROM outbox WHERE packet IS NOT NULL")?,
@@ -129,6 +129,7 @@ impl ClientStore {
             inbox = scalar("SELECT count(*) FROM inbox"),
             deliveries = scalar("SELECT count(*) FROM deliveries"),
             retryin = count("SELECT count(*) FROM retry_incoming")?,
+            unfinished = scalar("SELECT count(*) FROM retry_requests WHERE finished=0"),
             retiredreq = scalar("SELECT count(*) FROM retired_retry_requests"),
         );
         Ok(json!({ "report": report }))

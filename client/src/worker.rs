@@ -105,6 +105,9 @@ impl SyncStep {
                         && !(matches!(error, Error::Unprepared) && $stage == "sending messages")
                         // A peer whose inbox stopped draining keeps its queue; the bubble shows the pending state.
                         && !(matches!(error, Error::Limit) && matches!($stage, "starting conversations" | "sending messages" | "recovering sessions" | "sending retry controls"))
+                        // A deadline the clock has not reached yet is deliberately kept
+                        // rather than cancelled, so it is a wait, not something to report.
+                        && !(matches!(error, Error::Expired) && matches!($stage, "recovering sessions" | "sending retry controls"))
                         && !matches!(error, Error::Network(error) if outbound::recipient_full(error)
                             // A recipient the server no longer knows cannot be reached by
                             // any lane; that is a fact about them, not a failure here.
