@@ -325,6 +325,11 @@ impl ClientStore {
         }
         let retargeted =
             context(&tx, &self.key, &own, &replacement)?.encode(id, text.content, text.timestamp)?;
+        // The claim and session ids derive from the generation; the old ones point at
+        // the superseded record, so release that claim and move to fresh ids.
+        let identity = crate::handshake::identity(&tx, &self.key)?.public_key();
+        abandon_intent_claim(&tx, &self.key, fingerprint, &identity, &id, intent.generation)?;
+        intent.generation = intent.generation.checked_add(1).ok_or(Error::Limit)?;
         intent.peer = replacement;
         intent.text = retargeted;
         let resealed = seal(&self.key, fingerprint, &id, intent)?;

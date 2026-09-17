@@ -209,11 +209,14 @@ fn missing_stock_waits_across_restart_and_preparation_failure_leaves_no_intent()
     server
         .execute("UPDATE prekeys SET bundle=NULL", [])
         .unwrap();
+    // Out of stock is an answer about the recipient: the item waits, but the pass is
+    // neither halted nor counted as failed, which would back the schedule off.
     let failed = alice.sync_step_online(now);
     assert!(matches!(
-        failed.failure,
-        Some(SyncFailure::SendIntentNetwork(0))
+        &failed.sends[0].result,
+        Err(Error::Network(e)) if crate::outbound::recipient_specific(e)
     ));
+    assert!(failed.failure.is_none(), "{:?}", failed.failure.as_ref().map(|f| f.stage()));
     drop(alice);
     let mut alice = reopen(&dir.path().join("alice.db"));
     bob.replenish_prekey_online().unwrap();
@@ -407,4 +410,95 @@ fn a_cancelled_intent_releases_its_pending_prekey_claim() {
     let second = alice.resume_send_intents_online(now + 61).unwrap();
     assert!(matches!(second[0].result, Err(Error::Obsolete)));
     assert_eq!((intents(&alice), pending(&alice)), (0, 0));
+}
+
+/// Only the send stages drain a full intent table, so a pass that finds it full must
+/// still reach them, and must not tell the reader a wait is a failure.
+#[test]
+fn a_full_intent_table_still_reaches_the_send_stage_and_is_not_a_failure() {
+    let (_dir, _fixture, mut alice, mut bob, now) = pair();
+    let key = IdentityKey::generate().unwrap();
+    let mut forged = crate::peers::parse(&bob.own_device_binding().unwrap()).unwrap();
+    forged.binding.device = [90; 32];
+    forged.binding.identity = key.public_key();
+    forged.signature = key
+        .sign(&forged.binding.signing_bytes().unwrap())
+        .unwrap();
+    let peer = alice
+        .observe_peer_binding(&forged.to_bytes().unwrap())
+        .unwrap();
+    alice.confirm_peer(peer.id, peer.fingerprint).unwrap();
+    for n in 0..=255u32 {
+        let mut id = [0u8; 32];
+        id[..4].copy_from_slice(&n.to_be_bytes());
+        alice
+            .queue_peer_text(peer.id, id, "queued", now, now)
+            .unwrap();
+    }
+    assert!(matches!(
+        alice.queue_peer_text(peer.id, [255; 32], "one more", now, now),
+        Err(Error::Limit)
+    ));
+    let step = alice.sync_step_online(now);
+    assert!(
+        !step.sends.is_empty(),
+        "the send stage must run while the table is full: {:?}",
+        step.failure.as_ref().map(|f| f.stage())
+    );
+    // A wait is neither reported as a conversations failure nor counted against the
+    // schedule, which would otherwise back every later pass off to its ceiling.
+    assert!(
+        step.failure.is_none(),
+        "a full table must not count as a failed pass: {:?}",
+        step.failure.as_ref().map(|f| f.stage())
+    );
+    assert!(
+        !matches!(step.issue(), Some(("synchronizing conversations", _))),
+        "a full table is a wait, not something to report"
+    );
+}
+
+/// Claims aimed at a device that is gone can never complete. They must not hold the
+/// 64-claim cap shut against every later new-session send.
+#[test]
+fn claims_for_a_replaced_device_are_released_instead_of_filling_the_cap() {
+    let (_dir, _fixture, mut alice, mut bob, now) = pair();
+    let old_bytes = bob.own_device_binding().unwrap();
+    let old = alice.observe_peer_binding(&old_bytes).unwrap();
+    alice.confirm_peer(old.id, old.fingerprint).unwrap();
+    let pending = |store: &ClientStore| -> i64 {
+        store
+            .db
+            .query_row("SELECT count(*) FROM prekey_claims WHERE phase=0", [], |r| r.get(0))
+            .unwrap()
+    };
+    for n in 0..64u32 {
+        let mut claim = [7u8; 32];
+        claim[..4].copy_from_slice(&n.to_be_bytes());
+        alice.prepare_peer_claim(claim, old.id).unwrap();
+    }
+    assert_eq!(pending(&alice), 64);
+    // The cap is shut while the record still stands.
+    assert!(matches!(
+        alice.prepare_peer_claim([9; 32], old.id),
+        Err(Error::Limit)
+    ));
+    // Approving a replacement is an authenticated local fact about that device.
+    let key = IdentityKey::generate().unwrap();
+    let mut replacement = crate::peers::parse(&old_bytes).unwrap();
+    replacement.binding.device = [90; 32];
+    replacement.binding.identity = key.public_key();
+    replacement.signature = key
+        .sign(&replacement.binding.signing_bytes().unwrap())
+        .unwrap();
+    let new = alice
+        .observe_peer_binding(&replacement.to_bytes().unwrap())
+        .unwrap();
+    alice
+        .approve_peer_replacement(old.id, new.id, old.fingerprint, new.fingerprint)
+        .unwrap();
+    assert_eq!(alice.release_unreachable_claims().unwrap(), 64);
+    assert_eq!(pending(&alice), 0);
+    alice.prepare_peer_claim([9; 32], new.id).unwrap();
+    let _ = now;
 }
