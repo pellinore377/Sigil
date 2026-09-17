@@ -209,6 +209,18 @@ impl ClientStore {
         Ok(response)
     }
 
+    /// Release pending claims that can never complete because their peer record is
+    /// replaced, revoked or gone. Runs in maintenance; the cap check runs it too.
+    pub fn release_unreachable_claims(&mut self) -> Result<usize, Error> {
+        let identity = self.identity()?;
+        let tx = self
+            .db
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let released = release_unreachable(&tx, &self.key, &identity)?;
+        tx.commit()?;
+        Ok(released)
+    }
+
     /// Abandonment retains a local request-ID tombstone; it cannot unclaim a
     /// remote key or authorize reuse of that request ID for another assignment.
     pub fn abandon_prekey_claim(&mut self, id: Id) -> Result<(), Error> {
@@ -256,6 +268,40 @@ impl ClientStore {
         tx.commit()?;
         Ok(packet)
     }
+}
+
+/// Abandon every pending claim whose peer record is replaced, revoked or gone. Those
+/// are authenticated local facts, so the claim can never complete and only counts
+/// against the cap. Returns how many were released.
+pub(super) fn release_unreachable(
+    tx: &Transaction<'_>,
+    key: &StorageKey,
+    identity: &Id,
+) -> Result<usize, Error> {
+    let ids: Vec<Vec<u8>> = tx
+        .prepare("SELECT id FROM prekey_claims WHERE phase=0")?
+        .query_map([], |r| r.get(0))?
+        .collect::<Result<_, _>>()?;
+    let mut released = 0;
+    for raw in ids {
+        let id: Id = raw.try_into().map_err(|_| Error::InvalidStore)?;
+        let (claim, _) = match load(tx, key, &id, identity) {
+            Ok(value) => value,
+            Err(Error::NotFound | Error::InvalidStore) => continue,
+            Err(error) => return Err(error),
+        };
+        let Some(peer) = claim.peer else { continue };
+        let dead = match peers::known(tx, key, &peer) {
+            Ok(known) => known.replaced_by.is_some() || known.revoked,
+            Err(Error::NotFound) => true,
+            Err(error) => return Err(error),
+        };
+        if dead {
+            abandon(tx, key, &id, identity)?;
+            released += 1;
+        }
+    }
+    Ok(released)
 }
 
 pub(super) fn abandon(
@@ -364,11 +410,15 @@ pub(super) fn prepare(
         Err(Error::NotFound) => {}
         Err(error) => return Err(error),
     }
-    let pending: i64 = tx.query_row(
+    let mut pending: i64 = tx.query_row(
         "SELECT count(*) FROM prekey_claims WHERE phase=0",
         [],
         |r| r.get(0),
     )?;
+    if pending >= 64 {
+        // Claims aimed at a device that is gone can never complete; release them first.
+        pending -= release_unreachable(tx, key, identity)? as i64;
+    }
     if pending >= 64 {
         return Err(Error::Limit);
     }

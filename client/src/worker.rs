@@ -341,9 +341,14 @@ impl ClientStore {
             step.failure = Some(SyncFailure::RecoveryNetwork(index));
             return step;
         }
+        // A full intent table is only ever drained by the send stages below, so a
+        // capacity limit here is recorded and the pass carries on to them.
         step.begin("resume_conversation_receipts");
         match self.resume_conversation_receipts(now) {
             Ok(count) => step.delivery_receipts = count,
+            // Only the send stages drain a full intent table. Recording a failure here
+            // would also back the whole schedule off, so the pass simply carries on.
+            Err(Error::Limit) => {}
             Err(error) => {
                 step.failure = Some(SyncFailure::Conversations(error));
                 return step;
@@ -352,6 +357,9 @@ impl ClientStore {
         step.begin("sync_conversation_devices");
         match self.sync_conversation_devices(now) {
             Ok(count) => step.conversation_copies = count,
+            // Only the send stages drain a full intent table. Recording a failure here
+            // would also back the whole schedule off, so the pass simply carries on.
+            Err(Error::Limit) => {}
             Err(error) => {
                 step.failure = Some(SyncFailure::Conversations(error));
                 return step;
@@ -372,6 +380,10 @@ impl ClientStore {
             // An unreachable inventory changes nothing; the next pass reads it again.
             Err(Error::Network(_)) => {}
             Err(error) => step.failure = Some(SyncFailure::Maintenance(error)),
+        }
+        step.begin("release_unreachable_claims");
+        if let Err(error) = self.release_unreachable_claims() {
+            step.failure = Some(SyncFailure::Maintenance(error));
         }
         step.begin("maintain_sessions_online");
         match self.maintain_sessions_online(now) {
@@ -458,6 +470,9 @@ impl ClientStore {
         step.begin("sync_conversation_devices");
         match self.sync_conversation_devices(now) {
             Ok(count) => step.conversation_copies = count,
+            // Only the send stages drain a full intent table. Recording a failure here
+            // would also back the whole schedule off, so the pass simply carries on.
+            Err(Error::Limit) => {}
             Err(error) => {
                 step.failure = Some(SyncFailure::Conversations(error));
                 return step;
@@ -482,6 +497,9 @@ impl ClientStore {
         step.begin("sync_conversation_devices");
         match self.sync_conversation_devices(now) {
             Ok(count) => step.conversation_copies = count,
+            // Only the send stages drain a full intent table. Recording a failure here
+            // would also back the whole schedule off, so the pass simply carries on.
+            Err(Error::Limit) => {}
             Err(error) => {
                 step.failure = Some(SyncFailure::Conversations(error));
                 return step;
@@ -499,10 +517,13 @@ impl ClientStore {
                 return false;
             }
         }
+        // A recipient answering full or unknown is about them, not the server: it must
+        // not halt the pass nor back the whole schedule off, as the outbound lane below
+        // already treats it.
         if let Some(index) = step
             .sends
             .iter()
-            .position(|item| matches!(&item.result, Err(Error::Network(e)) if !crate::outbound::recipient_full(e)))
+            .position(|item| matches!(&item.result, Err(Error::Network(e)) if !crate::outbound::recipient_specific(e)))
         {
             step.failure = Some(SyncFailure::SendIntentNetwork(index));
             return false;
