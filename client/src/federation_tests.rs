@@ -976,3 +976,95 @@ fn queued_receipt_polling_needs_no_new_send_authorization_but_new_submissions_do
         9
     );
 }
+/// A delivery the home server has marked terminal is cancelled locally instead of
+/// being fetched, refused and reported on every pass while it holds its session.
+#[test]
+fn a_delivery_the_home_server_marked_terminal_is_cancelled_not_retried() {
+    let (dir, _fixture, mut alice, mut bob, time) = crate::claims::tests::pair();
+    // Bob's device as a remote peer: same identity and prekeys, reached through federation.
+    let mut foreign = peers::parse(&bob.own_device_binding().unwrap()).unwrap();
+    foreign.binding.server = "remote.example".into();
+    let tx = bob.db.transaction().unwrap();
+    foreign.signature = handshake::identity(&tx, &bob.key)
+        .unwrap()
+        .sign(&foreign.binding.signing_bytes().unwrap())
+        .unwrap();
+    tx.commit().unwrap();
+    let remote = alice
+        .observe_peer_binding(&foreign.to_bytes().unwrap())
+        .unwrap();
+    alice.confirm_peer(remote.id, remote.fingerprint).unwrap();
+    let device = crate::connection::decode_id(&bob.connection_session().unwrap().unwrap().device_id).unwrap();
+    alice
+        .prepare_prekey_claim([1; 32], device, bob.identity().unwrap())
+        .unwrap();
+    alice.claim_prekey_online([1; 32], time).unwrap();
+    alice
+        .start_claimed_initial([1; 32], [3; 32], [4; 32], b"to remote", time)
+        .unwrap();
+    let tx = alice.db.transaction().unwrap();
+    peers::bind_session(&tx, &alice.key, &[3; 32], &remote.id).unwrap();
+    tx.commit().unwrap();
+    let mut server = Store::open(&dir.path().join("server.db")).unwrap();
+    server
+        .configure_federation(
+            Configure {
+                expected_revision: 0,
+                enabled: true,
+                exceptions: vec![],
+                peer_quota_bytes: 64 * 1024 * 1024,
+                rotate_key: false,
+            },
+            time,
+        )
+        .unwrap();
+    server
+        .configure_federation_peer(
+            "remote.example",
+            ConfigurePeer {
+                expected_revision: 0,
+                allowed: true,
+                port: 443,
+                approve_key: None,
+            },
+        )
+        .unwrap();
+    let queued = alice.resume_outbound_online(time).unwrap();
+    assert_eq!(queued.len(), 1);
+    assert!(queued[0].result.is_ok(), "{:?}", queued[0].result);
+    let credential = crate::connection::tests::credential(&alice);
+    let id = transport::hex(&[4; 32]);
+    assert_eq!(
+        server.federated_outbound(&credential, &id, time).unwrap().state,
+        wire::OutboundState::Pending
+    );
+    // The remote refused the device; the home server dropped the body for good.
+    let db = Connection::open(dir.path().join("server.db")).unwrap();
+    assert_eq!(
+        db.execute(
+            "UPDATE federation_outbox SET body=NULL,state=2,error='remote_rejected',lease=NULL,lease_until=0 WHERE message_id=?1",
+            [&id],
+        )
+        .unwrap(),
+        1
+    );
+    let attempts = alice.resume_outbound_online(time).unwrap();
+    assert_eq!(attempts.len(), 1);
+    assert_eq!(attempts[0].session, [3; 32]);
+    assert!(
+        matches!(attempts[0].result, Err(Error::Obsolete)),
+        "{:?}",
+        attempts[0].result
+    );
+    let packet: Option<Vec<u8>> = alice
+        .db
+        .query_row(
+            "SELECT packet FROM outbox WHERE session=?1 AND id=?2",
+            ([3u8; 32].as_slice(), [4u8; 32].as_slice()),
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert!(packet.is_none());
+    assert!(conversations::cancelled(&alice.db, &alice.key, &[3; 32], &[4; 32]).unwrap());
+    assert!(alice.resume_outbound_online(time).unwrap().is_empty());
+}

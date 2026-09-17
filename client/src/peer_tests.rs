@@ -27,7 +27,7 @@ fn review(store: &ClientStore) -> Result<Vec<DeviceReview>, Error> {
         }
     }
 }
-fn changed(original: &[u8], key: &IdentityKey) -> Vec<u8> {
+pub(crate) fn changed(original: &[u8], key: &IdentityKey) -> Vec<u8> {
     let mut signed = parse(original).unwrap();
     signed.binding.identity = key.public_key();
     signed.signature = key.sign(&signed.binding.signing_bytes().unwrap()).unwrap();
@@ -127,6 +127,7 @@ fn superseded_peer_history_turnover_preserves_approval_and_retained_text() {
                 verified: true,
                 blocked: false,
                 replacement: Some((old.id, old.fingerprint)),
+                revoked: false,
             },
         )
         .unwrap();
@@ -676,6 +677,58 @@ fn replacement_approval_is_atomic_and_old_trust_cannot_be_revived() {
     assert!(alice
         .approve_peer_replacement(new.id, old.id, new.fingerprint, old.fingerprint)
         .is_err());
+    // Approval released the old device's queued packet and retired its session, so
+    // outbound no longer spends a lane on work that can never leave.
+    let count = |sql: &str| -> i64 {
+        alice
+            .db
+            .query_row(sql, [queued.0.as_slice()], |r| r.get(0))
+            .unwrap()
+    };
+    assert_eq!(
+        count("SELECT count(*) FROM outbox WHERE packet IS NOT NULL AND session=?1"),
+        0
+    );
+    assert_eq!(count("SELECT retired FROM sessions WHERE id=?1"), 1);
+    assert_eq!(count("SELECT count(*) FROM outbound_backoff WHERE session=?1"), 0);
+    assert!(crate::conversations::cancelled(&alice.db, &alice.key, &queued.0, &[80; 32]).unwrap());
+    assert!(alice.resume_outbound_online(now).unwrap().is_empty());
+}
+
+/// A store whose replacement predates release-on-approval still holds live sessions
+/// to the old device; the outbound lane retires them instead of retrying forever.
+#[test]
+fn replacement_recorded_without_release_is_retired_by_outbound() {
+    let (_dir, _fixture, mut alice, mut bob, now) = crate::claims::tests::pair();
+    let old_bytes = bob.own_device_binding().unwrap();
+    let old = alice.observe_peer_binding(&old_bytes).unwrap();
+    alice.confirm_peer(old.id, old.fingerprint).unwrap();
+    crate::incoming::tests::start(&mut alice, old.id, now);
+    let queued = alice
+        .send_peer_text(old.id, [80; 32], "pending old device", now, now)
+        .unwrap();
+    {
+        let tx = alice.db.transaction().unwrap();
+        let mut record = load(&tx, &alice.key, &old.id).unwrap();
+        record.replacement = Some(([90; 32], [91; 32]));
+        save(&tx, &alice.key, &old.id, &record).unwrap();
+        tx.commit().unwrap();
+    }
+    let attempts = alice.resume_outbound_online(now).unwrap();
+    assert_eq!(attempts.len(), 1);
+    assert!(matches!(attempts[0].result, Err(Error::Obsolete)));
+    assert_eq!(
+        alice
+            .db
+            .query_row(
+                "SELECT retired FROM sessions WHERE id=?1",
+                [queued.0.as_slice()],
+                |r| r.get::<_, i64>(0)
+            )
+            .unwrap(),
+        1
+    );
+    assert!(alice.resume_outbound_online(now).unwrap().is_empty());
 }
 
 #[test]
@@ -760,7 +813,7 @@ fn reviewed_link_endorsement_requires_existing_trust_and_preserves_quarantine() 
         .is_err());
 }
 
-fn directory(bindings: &[Vec<u8>]) -> sigil_protocol::admin::ContactDirectory {
+pub(crate) fn directory(bindings: &[Vec<u8>]) -> sigil_protocol::admin::ContactDirectory {
     let parsed: Vec<_> = bindings.iter().map(|v| parse(v).unwrap()).collect();
     let owner = &parsed[0].binding;
     let mut devices: Vec<_> = parsed
@@ -962,4 +1015,192 @@ fn recycled_username_requires_approval_and_cannot_restore_the_old_account() {
         )
         .is_err());
     assert!(alice.peer(new_id).unwrap().trusted);
+}
+
+/// A save that changes nothing visible keeps every wait; only a real grant clears them.
+#[test]
+fn no_op_save_of_a_suspended_peer_keeps_backoffs_and_a_grant_clears_them() {
+    let (_dir, _fixture, mut alice, mut bob, _) = crate::claims::tests::pair();
+    let original = bob.own_device_binding().unwrap();
+    let peer = alice.observe_peer_binding(&original).unwrap();
+    alice.confirm_peer(peer.id, peer.fingerprint).unwrap();
+    {
+        let tx = alice.db.transaction().unwrap();
+        let mut record = load(&tx, &alice.key, &peer.id).unwrap();
+        record.suspended = true;
+        save(&tx, &alice.key, &peer.id, &record).unwrap();
+        tx.commit().unwrap();
+    }
+    alice
+        .db
+        .execute("INSERT INTO outbound_backoff VALUES(x'01',9999,777,1)", [])
+        .unwrap();
+    alice
+        .db
+        .execute("INSERT INTO send_intent_backoff VALUES(x'02',9999)", [])
+        .unwrap();
+    let count = |s: &ClientStore| -> (i64, i64, i64) {
+        let scalar = |sql| s.db.query_row(sql, [], |r| r.get::<_, i64>(0)).unwrap();
+        (
+            scalar("SELECT count(*) FROM outbound_backoff"),
+            scalar("SELECT count(*) FROM send_intent_backoff"),
+            scalar("SELECT coalesce(max(since),0) FROM outbound_backoff"),
+        )
+    };
+    alice.observe_peer_binding(&original).unwrap();
+    assert_eq!(count(&alice), (1, 1, 777));
+    // Observing a stranger grants nothing, so nothing is released either.
+    let key = IdentityKey::generate().unwrap();
+    let mut other = parse(&original).unwrap();
+    other.binding.device = [90; 32];
+    other.binding.identity = key.public_key();
+    other.signature = key.sign(&other.binding.signing_bytes().unwrap()).unwrap();
+    let fresh = alice
+        .observe_peer_binding(&other.to_bytes().unwrap())
+        .unwrap();
+    assert_eq!(count(&alice), (1, 1, 777));
+    alice.confirm_peer(fresh.id, fresh.fingerprint).unwrap();
+    assert_eq!(count(&alice), (0, 0, 0));
+}
+
+/// Server revocation of another own-account device is the only fact that ends its
+/// local sessions and copies; an unreachable inventory changes nothing.
+#[test]
+fn server_revoked_own_device_is_suspended_and_its_sessions_released() {
+    use sigil_protocol::conversation::{Action, Body};
+    let (dir, fixture, mut a, b, _ap, bp, now) = crate::conversations::tests::linked();
+    let post = |text: &str| Action::Post {
+        body: Body::Text(text.into()),
+        reply: None,
+        thread: None,
+        expires_at: None,
+        view_once: false,
+    };
+    crate::incoming::tests::start(&mut a, bp, now);
+    let queued = a
+        .send_peer_text(bp, [80; 32], "queued to a device that signs out", now, now)
+        .unwrap();
+    let op = a.conversation_operation([185; 32], post("copied note")).unwrap();
+    a.note_to_self(&op, now, now).unwrap();
+    assert!(a.sync_conversation_devices(now).unwrap() > 0);
+    let scalar = |s: &ClientStore, sql: &str| -> i64 {
+        s.db
+            .query_row(sql, [bp.as_slice()], |r| r.get(0))
+            .unwrap()
+    };
+    assert!(scalar(&a, "SELECT count(*) FROM send_intents WHERE ?1=?1") > 0);
+    let b_device = b.connection_session().unwrap().unwrap().device_id;
+    let mut server = Store::open(&dir.path().join("server.db")).unwrap();
+    server
+        .revoke_device(&credential(&a), &b_device, now)
+        .unwrap();
+    assert_eq!(a.reconcile_own_devices_online().unwrap(), 1);
+    let peer = a.peer(bp).unwrap();
+    assert!(!peer.active && !peer.trusted && peer.revoked);
+    assert_eq!(
+        scalar(&a, "SELECT count(*) FROM outbox o JOIN sessions s ON s.id=o.session WHERE s.peer=?1 AND o.packet IS NOT NULL"),
+        0
+    );
+    assert_eq!(scalar(&a, "SELECT count(*) FROM sessions WHERE peer=?1 AND retired=0"), 0);
+    assert_eq!(
+        scalar(&a, "SELECT count(*) FROM outbound_backoff WHERE session IN (SELECT id FROM sessions WHERE peer=?1)"),
+        0
+    );
+    assert!(crate::conversations::cancelled(&a.db, &a.key, &queued.0, &[80; 32]).unwrap());
+    // Intents pinned to the revoked device are cancelled, not claimed again and again.
+    let sends = a.resume_send_intents_online(now).unwrap();
+    assert!(!sends.is_empty());
+    assert!(sends.iter().all(|s| matches!(s.result, Err(Error::Obsolete))), "{:?}", sends.iter().map(|s| &s.result).collect::<Vec<_>>());
+    assert_eq!(scalar(&a, "SELECT count(*) FROM send_intents WHERE ?1=?1"), 0);
+    assert_eq!(scalar(&a, "SELECT count(*) FROM send_intent_backoff WHERE ?1=?1"), 0);
+    // No further copies fan out to it.
+    let op = a.conversation_operation([186; 32], post("later note")).unwrap();
+    a.note_to_self(&op, now, now).unwrap();
+    assert_eq!(a.sync_conversation_devices(now).unwrap(), 0);
+    // Idempotent, and never triggered by absence: a full pass is clean.
+    let step = a.sync_step_online(now);
+    assert!(step.failure.is_none(), "{:?}", step.issue());
+    assert_eq!(step.revoked_devices, 0);
+    // Reopen: the revoked bit is durable.
+    drop(a);
+    let mut a = open(&dir.path().join("sponsor.db"));
+    assert!(a.peer(bp).unwrap().revoked);
+    // An unreachable inventory leaves the pass failure-free and maintenance running.
+    let port = fixture.port();
+    drop(fixture);
+    let (router, maintenance) = sigil_server::router_with_maintenance(
+        Store::open(&dir.path().join("server.db")).unwrap(),
+        sigil_server::auth::AdminToken::load_or_create(&dir.path().join("admin.token")).unwrap(),
+    );
+    let router = router.layer(axum::middleware::from_fn(
+        |request: axum::extract::Request, next: axum::middleware::Next| async move {
+            if request.uri().path() == "/client/v0/devices" {
+                return axum::http::Response::builder()
+                    .status(503)
+                    .body(axum::body::Body::empty())
+                    .unwrap();
+            }
+            next.run(request).await
+        },
+    ));
+    let _fixture = crate::network::tests::Fixture::maintained_at(router, maintenance, port);
+    let step = a.sync_step_online(now);
+    assert!(step.failure.is_none(), "{:?}", step.issue());
+    assert!(step.maintenance.is_some());
+}
+
+
+/// Revoking another own device from Settings applies the same release at once.
+#[test]
+fn revoke_device_command_suspends_the_device_locally() {
+    let (_dir, _fixture, mut a, b, _ap, bp, now) = crate::conversations::tests::linked();
+    crate::incoming::tests::start(&mut a, bp, now);
+    let queued = a
+        .send_peer_text(bp, [80; 32], "queued to a device being revoked", now, now)
+        .unwrap();
+    let b_device = b.connection_session().unwrap().unwrap().device_id;
+    let reply: serde_json::Value = serde_json::from_str(
+        &a.mobile_command(&serde_json::json!({"command":"revoke_device","device":b_device}).to_string()),
+    )
+    .unwrap();
+    assert_eq!(reply["ok"], true, "{reply}");
+    let peer = a.peer(bp).unwrap();
+    assert!(!peer.active && peer.revoked);
+    assert_eq!(
+        a.db
+            .query_row(
+                "SELECT retired FROM sessions WHERE id=?1",
+                [queued.0.as_slice()],
+                |r| r.get::<_, i64>(0)
+            )
+            .unwrap(),
+        1
+    );
+    assert!(crate::conversations::cancelled(&a.db, &a.key, &queued.0, &[80; 32]).unwrap());
+}
+
+/// Revocation is durable on its own: a cleared suspension does not revive the device
+/// and a fresh link endorsement of the same binding is refused.
+#[test]
+fn revoked_own_device_cannot_be_revived_by_suspension_clear_or_link() {
+    let (dir, _fixture, mut a, mut b, _ap, bp, now) = crate::conversations::tests::linked();
+    let b_device = b.connection_session().unwrap().unwrap().device_id;
+    let mut server = Store::open(&dir.path().join("server.db")).unwrap();
+    server
+        .revoke_device(&credential(&a), &b_device, now)
+        .unwrap();
+    assert_eq!(a.reconcile_own_devices_online().unwrap(), 1);
+    let signed = parse(&b.own_device_binding().unwrap()).unwrap();
+    let expected = fingerprint(&signed.binding).unwrap();
+    let tx = a.db.transaction().unwrap();
+    let mut record = load(&tx, &a.key, &bp).unwrap();
+    record.suspended = false;
+    save(&tx, &a.key, &bp, &record).unwrap();
+    assert!(matches!(
+        link_trust(&tx, &a.key, signed, expected),
+        Err(Error::Conflict)
+    ));
+    tx.commit().unwrap();
+    let peer = a.peer(bp).unwrap();
+    assert!(peer.revoked && !peer.trusted && !peer.active && !peer.verified);
 }

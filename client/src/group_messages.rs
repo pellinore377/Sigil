@@ -487,6 +487,8 @@ pub(crate) fn erase_journals(
 ) -> Result<(), Error> {
     let own = device_fingerprint(&peers::own(tx, key)?)?;
     let after = crate::erasure::cursor(tx, key, 2)?;
+    // Only messages unacknowledged deliveries still reference stay routable after a crash.
+    let pending = delivery::unacknowledged(tx, key, &own)?;
     let rows = tx
         .prepare("SELECT rowid,id FROM group_messages WHERE rowid>?1 ORDER BY rowid LIMIT 16")?
         .query_map([after], |r| {
@@ -506,7 +508,15 @@ pub(crate) fn erase_journals(
             Ok(()) => continue,
             Err(e) => return Err(e),
         }
-        if tx.query_row("SELECT EXISTS(SELECT 1 FROM group_delivery WHERE message=?1 AND status=0) OR EXISTS(SELECT 1 FROM group_incoming WHERE acknowledged=0)", [id.as_slice()], |r| r.get::<_,bool>(0))? { continue; }
+        if pending.as_ref().is_none_or(|pending| pending.contains(&id))
+            || tx.query_row(
+                "SELECT EXISTS(SELECT 1 FROM group_delivery WHERE message=?1 AND status=0)",
+                [id.as_slice()],
+                |r| r.get::<_, bool>(0),
+            )?
+        {
+            continue;
+        }
         let mut bytes = Zeroizing::new(vec![u8::from(stored.message.outgoing)]);
         bytes.extend_from_slice(&context_bytes(&stored.message.context));
         bytes.extend_from_slice(&stored.digest);

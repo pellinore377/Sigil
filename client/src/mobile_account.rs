@@ -88,15 +88,18 @@ impl ClientStore {
             Ok(value.map_or_else(|| "-".to_owned(), |v| v.to_string()))
         };
         let scalar = |sql: &str| -> i64 { self.db.query_row(sql, [], |r| r.get(0)).unwrap_or(-1) };
+        let outgoing_gc = self.control_cleanup_progress(0);
+        let accepted_gc = self.control_cleanup_progress(1);
         let report = format!(
             "Sigil diagnostics\nschema {schema}, client {client}\n\
-             queued: outbox {outbox} (deepest session {deepest}, at cap {atcap}), intents {intents}, retry requests {retryout}, call jobs {calls}\n\
+             queued: outbox {outbox} (deepest session {deepest}, at cap {atcap}), intents {intents}, retry requests {retryout}, call jobs {calls} (waiting on recipient {callwait})\n\
              unacknowledged: incoming {incoming}, retry {retry}, recovered {recovered}, group {group}, abandoned {abandoned}\n\
              oldest unacknowledged: incoming {oi}, retry {orr}, recovered {orc}, group {og}, abandoned {oa}\n\
              prekeys: slots {slots}, publications pending {pubs}, initiations {inits}\n\
              backoff: outbound {ob} (unknown recipient {unknown}), intents {ib}\n\
              store: peers {peers}, sessions {sessions} (retired {retired}, deepest peer {perpeer}, unbound {unbound}), inbox {inbox}, deliveries {deliveries}\n\
-             recovery: retry incoming {retryin}, unfinished responses {unfinished}, retired requests {retiredreq}",
+             recovery: retry incoming {retryin}, unfinished responses {unfinished}, retired requests {retiredreq}\n\
+             retry gc: pending controls {pendingout}, retired controls {retiredout}, cursor outgoing {c0}/{r0} ahead, accepted {c1}/{r1} ahead",
             schema = crate::DATABASE_VERSION,
             client = env!("CARGO_PKG_VERSION"),
             outbox = count("SELECT count(*) FROM outbox WHERE packet IS NOT NULL")?,
@@ -105,6 +108,10 @@ impl ClientStore {
             intents = count("SELECT count(*) FROM send_intents")?,
             retryout = count("SELECT count(*) FROM retry_outbox")?,
             calls = scalar("SELECT count(*) FROM call_jobs"),
+            callwait = scalar(&format!(
+                "SELECT count(*) FROM call_job_backoff WHERE until>{}",
+                crate::conversations::now()
+            )),
             incoming = count("SELECT count(*) FROM incoming WHERE acknowledged=0")?,
             retry = count("SELECT count(*) FROM retry_incoming WHERE acknowledged=0")?,
             recovered = count("SELECT count(*) FROM recovered_deliveries WHERE acknowledged=0")?,
@@ -131,6 +138,12 @@ impl ClientStore {
             retryin = count("SELECT count(*) FROM retry_incoming")?,
             unfinished = scalar("SELECT count(*) FROM retry_requests WHERE finished=0"),
             retiredreq = scalar("SELECT count(*) FROM retired_retry_requests"),
+            pendingout = scalar("SELECT count(*) FROM retry_outbox WHERE complete=0"),
+            retiredout = scalar("SELECT count(*) FROM retired_retry_outbox"),
+            c0 = outgoing_gc.0,
+            r0 = outgoing_gc.1,
+            c1 = accepted_gc.0,
+            r1 = accepted_gc.1,
         );
         // One line per session with packets waiting: which peer, how many, and why
         // it is not draining. Identifiers are truncated; nothing said is included.
@@ -167,12 +180,13 @@ impl ClientStore {
                 let peer_note = match peer.as_deref().and_then(|p| <[u8; 32]>::try_from(p).ok()) {
                     Some(id) => match crate::peers::known(&self.db, &self.key, &id) {
                         Ok(known) => format!(
-                            "peer {} trusted={} blocked={} changed={} replaced={} own-account={}",
+                            "peer {} trusted={} blocked={} changed={} replaced={} revoked={} own-account={}",
                             &transport::hex(&id)[..8],
                             known.trusted,
                             known.blocked,
                             known.changed_fingerprint.is_some(),
                             known.replaced_by.is_some(),
+                            known.revoked,
                             own_account.as_ref().is_some_and(|a| *a == crate::event::account(&known.binding)),
                         ),
                         Err(_) => format!("peer {} (unreadable)", &transport::hex(&id)[..8]),

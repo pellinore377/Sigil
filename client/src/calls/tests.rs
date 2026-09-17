@@ -425,3 +425,92 @@ fn a_cursor_left_by_an_earlier_release_does_not_fail_the_call_stage() {
         2
     );
 }
+
+/// A recipient without a claimable bundle answers 404 to every claim. After one free
+/// retry the job waits out a growing backoff instead of claiming on each poll, then
+/// retries once due.
+#[test]
+fn unclaimable_recipient_defers_the_call_job_instead_of_claiming_every_pass() {
+    let (dir, _fixture, mut alice, mut bob, now) = pair();
+    configure(dir.path());
+    let (_, peer) = trust(&mut alice, &mut bob);
+    let binding = crate::peers::parse(&bob.own_device_binding().unwrap())
+        .unwrap()
+        .binding;
+    alice
+        .prepare_prekey_claim([61; 32], binding.device, binding.identity)
+        .unwrap();
+    alice.claim_prekey_online([61; 32], now).unwrap();
+    let id = [62; 32];
+    alice.start_call(id, now, true, &[peer]).unwrap();
+    let job = alice
+        .resume_calls_online(now)
+        .unwrap()
+        .into_iter()
+        .find(|a| {
+            matches!(
+                a.result,
+                Err(Error::Network(crate::network::Error::Status { code: 404, .. }))
+            )
+        })
+        .expect("claim answered 404")
+        .id;
+    let waiting = |store: &ClientStore, at: u64| -> i64 {
+        store
+            .db
+            .query_row(
+                "SELECT count(*) FROM call_job_backoff WHERE until>?1",
+                [at as i64],
+                |r| r.get(0),
+            )
+            .unwrap()
+    };
+    assert_eq!(waiting(&alice, now), 0);
+    let retried = alice.resume_calls_online(now).unwrap();
+    assert!(retried.iter().any(|a| a.id == job && a.result.is_err()));
+    assert_eq!(waiting(&alice, now), 1);
+    let held = alice.resume_calls_online(now).unwrap();
+    assert!(held.iter().all(|a| a.id != job && a.result.is_ok()));
+    bob.replenish_prekey_online().unwrap();
+    let due = alice.resume_calls_online(now + 1).unwrap();
+    assert!(due.iter().any(|a| a.id == job && a.result.is_ok()));
+    assert_eq!(
+        alice
+            .db
+            .query_row("SELECT count(*) FROM call_job_backoff", [], |r| r.get::<_, i64>(0))
+            .unwrap(),
+        0
+    );
+    pump(&mut alice, &mut bob, now + 1);
+    assert!(bob.call(id, now + 1).unwrap().phase == Phase::Ringing);
+}
+
+/// Finished calls stay stored until their roster expires; a pass reads each of them
+/// once, while one still holding a closed roster to publish is fully processed.
+#[test]
+fn finished_calls_are_read_once_per_pass_while_pending_commits_still_publish() {
+    let (dir, _fixture, mut alice, _bob, now) = pair();
+    configure(dir.path());
+    for n in 0..3u8 {
+        let id = [40 + n; 32];
+        alice.create_direct_call(id, now, 3600).unwrap();
+        alice.leave_call(id, now).unwrap();
+    }
+    for attempt in alice.resume_calls_online(now).unwrap() {
+        attempt.result.unwrap();
+    }
+    let late = [50; 32];
+    alice.create_direct_call(late, now, 3600).unwrap();
+    alice.leave_call(late, now).unwrap();
+    assert!(!load(&alice.db, &alice.key, &late).unwrap().commits.is_empty());
+    for attempt in alice.resume_calls_online(now).unwrap() {
+        attempt.result.unwrap();
+    }
+    let record = load(&alice.db, &alice.key, &late).unwrap();
+    assert!(record.phase == Phase::Ended && record.commits.is_empty());
+    LOADS.with(|loads| loads.set(0));
+    for attempt in alice.resume_calls_online(now).unwrap() {
+        attempt.result.unwrap();
+    }
+    assert_eq!(LOADS.with(|loads| loads.get()), 4);
+}

@@ -1458,3 +1458,46 @@ fn conversation_operations_use_group_authentication_and_atomic_sender_keys() {
         Err(Error::Obsolete)
     ));
 }
+
+#[test]
+fn group_acknowledgement_survives_an_approved_binding_change_for_the_sender() {
+    let (_dir, _fixture, mut alice, mut bob, now) = crate::claims::tests::pair();
+    let authority = IdentityKey::generate().unwrap();
+    let (group, b) = setup(&mut alice, &mut bob, &authority, now);
+    distribution(&mut alice, &mut bob, group, b, now);
+    alice
+        .queue_group_text(group, [50; 32], "group hello", now, now)
+        .unwrap();
+    let result = alice.resume_group_outbound_online(now).unwrap();
+    assert_eq!(
+        result[0].result.as_ref().unwrap(),
+        &GroupDeliveryStatus::Accepted
+    );
+    bob.accept_group_delivery(&next(&bob)).unwrap();
+    bob.db.execute_batch("CREATE TRIGGER fail BEFORE UPDATE ON group_incoming BEGIN SELECT RAISE(ABORT,'synthetic ack failure'); END;").unwrap();
+    assert!(matches!(
+        bob.acknowledge_incoming_online(),
+        Err(Error::Storage(_))
+    ));
+    bob.db.execute_batch("DROP TRIGGER fail;").unwrap();
+    let original = alice.own_device_binding().unwrap();
+    crate::incoming::tests::approve_changed_binding(&mut bob, &original);
+    let sender = peers::parse(&original).unwrap().binding;
+    assert_ne!(
+        fingerprint_id(&bob, peers::reference(&sender.server, &sender.device)),
+        device_fingerprint(&original).unwrap()
+    );
+    // The row was authenticated against the binding current at accept; the approval must not strand it.
+    assert_eq!(bob.acknowledge_incoming_online().unwrap(), 1);
+    assert_eq!(
+        bob.db
+            .query_row(
+                "SELECT count(*) FROM group_incoming WHERE acknowledged=0",
+                [],
+                |r| r.get::<_, i64>(0)
+            )
+            .unwrap(),
+        0
+    );
+    assert_eq!(bob.acknowledge_incoming_online().unwrap(), 0);
+}

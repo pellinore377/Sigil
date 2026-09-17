@@ -44,7 +44,7 @@ pub use structured::{
 mod federation;
 mod handshake;
 mod incoming;
-pub use incoming::{Incoming, IncomingAttempt, MailboxEvent};
+pub use incoming::{AcknowledgeAttempt, Acknowledgements, Incoming, IncomingAttempt, MailboxEvent};
 pub mod link;
 pub mod network;
 mod peers;
@@ -67,7 +67,7 @@ pub mod recovery;
 mod test_schema;
 mod transport;
 mod worker;
-pub use worker::{BackendWork, SyncFailure, SyncStep};
+pub use worker::{BackendWork, RetryCleanup, SyncFailure, SyncStep};
 mod schedule;
 pub use schedule::ScheduledSync;
 mod lifetime;
@@ -75,7 +75,7 @@ mod outbound;
 pub use outbound::OutboundAttempt;
 
 pub type Id = [u8; 32];
-pub const DATABASE_VERSION: u32 = 83;
+pub const DATABASE_VERSION: u32 = 84;
 #[derive(Debug)]
 pub enum Error {
     Storage(rusqlite::Error),
@@ -503,6 +503,10 @@ impl ClientStore {
                 }
             }
             tx.execute_batch("PRAGMA user_version=83;")?;
+        }
+        if version < 84 {
+            // A call job whose recipient cannot be claimed waits instead of retrying every poll.
+            tx.execute_batch("CREATE TABLE IF NOT EXISTS call_job_backoff(id BLOB PRIMARY KEY, until INTEGER NOT NULL, attempts INTEGER NOT NULL DEFAULT 0); PRAGMA user_version=84;")?;
         }
         if version < 63 {
             conversations::migrate(&tx, &key)?;

@@ -334,7 +334,7 @@ fn migration_adds_no_acknowledgements_and_forged_rows_cannot_delete_mail() {
 }
 
 #[test]
-fn routing_handles_eight_sessions_without_mutating_wrong_candidates_and_refuses_a_ninth() {
+fn routing_handles_eight_sessions_without_mutating_wrong_candidates_and_a_ninth_reclaims_one() {
     let (_dir, _fixture, mut alice, mut bob, now) = pair();
     let (_a, b) = trust(&mut alice, &mut bob);
     let mut replies = Vec::new();
@@ -400,20 +400,38 @@ fn routing_handles_eight_sessions_without_mutating_wrong_candidates_and_refuses_
     bob.publish_prekey_online([29; 32]).unwrap();
     alice.prepare_peer_claim([9; 32], b).unwrap();
     alice.claim_prekey_online([9; 32], now).unwrap();
-    assert!(matches!(
-        alice.start_claimed_initial([9; 32], [9; 32], [9; 32], b"ninth", now),
-        Err(Error::Limit)
-    ));
-    assert_eq!(count(&alice, "sessions"), 8);
-    assert_eq!(count(&alice, "outbox"), 8);
-    assert_eq!(count(&alice, "initiations"), 8);
-    // Corruption of even a nonmatching candidate is an error, never hidden by
+    // A ninth handshake at the limit retires one idle confirmed session rather than
+    // refusing forever; the limit on live sessions still holds.
+    alice
+        .start_claimed_initial([9; 32], [9; 32], [9; 32], b"ninth", now)
+        .unwrap();
+    assert_eq!(count(&alice, "sessions"), 9);
+    assert_eq!(count(&alice, "outbox"), 9);
+    assert_eq!(count(&alice, "initiations"), 9);
+    let live: i64 = alice
+        .db
+        .query_row(
+            "SELECT count(*) FROM sessions WHERE peer=?1 AND retired=0",
+            [b.as_slice()],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(live, 8);
+    // Corruption of even a nonmatching live candidate is an error, never hidden by
     // trying another session. Accepted historical results remain readable.
+    let victim: Vec<u8> = alice
+        .db
+        .query_row(
+            "SELECT id FROM sessions WHERE peer=?1 AND retired=0 AND id<>?2 ORDER BY id LIMIT 1",
+            (b.as_slice(), [9; 32].as_slice()),
+            |r| r.get(0),
+        )
+        .unwrap();
     let state: Vec<u8> = alice
         .db
         .query_row(
             "SELECT state FROM sessions WHERE id=?1",
-            [[1; 32].as_slice()],
+            [victim.as_slice()],
             |r| r.get(0),
         )
         .unwrap();
@@ -421,7 +439,7 @@ fn routing_handles_eight_sessions_without_mutating_wrong_candidates_and_refuses_
         .db
         .execute(
             "UPDATE sessions SET state=zeroblob(length(state)) WHERE id=?1",
-            [[1; 32].as_slice()],
+            [victim.as_slice()],
         )
         .unwrap();
     let mut forged = replies.pop().unwrap();
@@ -431,7 +449,7 @@ fn routing_handles_eight_sessions_without_mutating_wrong_candidates_and_refuses_
         .db
         .execute(
             "UPDATE sessions SET state=?1 WHERE id=?2",
-            (state, [1; 32].as_slice()),
+            (state, victim.as_slice()),
         )
         .unwrap();
 }
@@ -739,4 +757,112 @@ fn initial_deadline_write_is_atomic_and_legacy_headers_do_not_reset_it() {
     alice
         .start_claimed_text([1; 32], [3; 32], [4; 32], "initial", now, now + 1)
         .unwrap();
+}
+
+#[test]
+fn deliveries_from_a_replaced_device_are_abandoned_instead_of_retried_forever() {
+    let (_dir, _fixture, mut alice, mut bob, now) = pair();
+    let (a, b) = trust(&mut alice, &mut bob);
+    start(&mut alice, b, now);
+    let old = bob.peer(a).unwrap();
+    let key = sigil_crypto::IdentityKey::generate().unwrap();
+    let mut signed = peers::parse(&alice.own_device_binding().unwrap()).unwrap();
+    signed.binding.device = [77; 32];
+    signed.binding.identity = key.public_key();
+    signed.signature = key.sign(&signed.binding.signing_bytes().unwrap()).unwrap();
+    let new = bob
+        .observe_peer_binding(&signed.to_bytes().unwrap())
+        .unwrap();
+    bob.approve_peer_replacement(a, new.id, old.fingerprint, new.fingerprint)
+        .unwrap();
+    assert_eq!(bob.peer(a).unwrap().replaced_by, Some(new.id));
+    let attempts = bob.receive_mailbox_online(now).unwrap();
+    assert_eq!(attempts.len(), 1);
+    assert!(matches!(attempts[0].result, Err(Error::Obsolete)));
+    assert_eq!(count(&bob, "incoming"), 0);
+    assert_eq!(count(&bob, "abandoned_deliveries"), 1);
+    let mut step = SyncStep::default();
+    step.incoming = attempts;
+    assert!(step.issue().is_none(), "{:?}", step.issue());
+    assert_eq!(bob.acknowledge_incoming_online().unwrap(), 1);
+    assert_eq!(count(&bob, "abandoned_deliveries"), 0);
+    assert!(bob
+        .connected_client()
+        .unwrap()
+        .mailbox()
+        .unwrap()
+        .is_empty());
+}
+
+/// Approves a new identity for the same peer device; the accepted deliveries predate it.
+pub(crate) fn approve_changed_binding(store: &mut ClientStore, original: &[u8]) {
+    use crate::peers::tests::{changed, directory};
+    let binding = peers::parse(original).unwrap().binding;
+    let replacement = directory(&[changed(
+        original,
+        &sigil_crypto::IdentityKey::generate().unwrap(),
+    )]);
+    let address = (
+        binding.server.as_str(),
+        binding.username.as_str(),
+        binding.account,
+    );
+    let review = store
+        .reconcile_contact_trust(&replacement, address, true, None, 1)
+        .unwrap()
+        .unwrap();
+    store
+        .reconcile_contact_trust(&replacement, address, true, Some(review), 1)
+        .unwrap();
+}
+
+#[test]
+fn acknowledgement_chain_releases_a_delivery_retired_after_acceptance() {
+    let (_dir, _fixture, mut alice, mut bob, now) = pair();
+    let (a, b) = trust(&mut alice, &mut bob);
+    start(&mut alice, b, now);
+    let first = bob.accept_delivery(&next(&bob)).unwrap();
+    bob.acknowledge_incoming_online().unwrap();
+    bob.send_peer_text(a, [89; 32], "confirmation", now, now)
+        .unwrap();
+    bob.send_pending_online(first.session, now).unwrap();
+    alice.receive_mailbox_online(now).unwrap();
+    alice.acknowledge_incoming_online().unwrap();
+    alice.send_text([3; 32], [90; 32], "first", now, now).unwrap();
+    alice.send_text([3; 32], [91; 32], "second", now, now).unwrap();
+    alice.send_pending_online([3; 32], now).unwrap();
+    let deliveries = bob.connected_client().unwrap().mailbox().unwrap();
+    assert_eq!(deliveries.len(), 2);
+    bob.accept_delivery(&deliveries[0]).unwrap();
+    bob.db.execute_batch("CREATE TRIGGER fail BEFORE UPDATE ON incoming BEGIN SELECT RAISE(ABORT,'synthetic disk failure'); END;").unwrap();
+    assert!(matches!(
+        bob.acknowledge_incoming_online(),
+        Err(Error::Storage(_))
+    ));
+    bob.db.execute_batch("DROP TRIGGER fail;").unwrap();
+    bob.accept_delivery(&deliveries[1]).unwrap();
+    let original = alice.own_device_binding().unwrap();
+    approve_changed_binding(&mut bob, &original);
+    let peer = bob.peer(a).unwrap();
+    assert!(peer.trusted);
+    assert_ne!(peer.fingerprint, device_fingerprint(&original).unwrap());
+    // The live binding no longer matches the stored sender: neither row can validate again.
+    bob.acknowledge_incoming_online().unwrap();
+    assert_eq!(
+        bob.db
+            .query_row("SELECT count(*) FROM incoming WHERE acknowledged=0", [], |r| r
+                .get::<_, i64>(0))
+            .unwrap(),
+        0
+    );
+    assert_eq!(count(&bob, "abandoned_deliveries"), 2);
+    assert_eq!(bob.acknowledge_incoming_online().unwrap(), 2);
+    assert_eq!(count(&bob, "abandoned_deliveries"), 0);
+    assert!(bob
+        .connected_client()
+        .unwrap()
+        .mailbox()
+        .unwrap()
+        .is_empty());
+    assert_eq!(bob.acknowledge_incoming_online().unwrap(), 0);
 }

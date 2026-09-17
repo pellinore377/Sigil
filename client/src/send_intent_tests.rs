@@ -1,5 +1,6 @@
 use super::*;
 use crate::{claims::tests::pair, incoming::tests::trust};
+use sigil_crypto::IdentityKey;
 fn reopen(path: &Path) -> ClientStore {
     ClientStore::open(
         path,
@@ -259,4 +260,151 @@ fn queued_direct_text_is_wake_worthy() {
         .collect::<Result<_, _>>()
         .unwrap();
     assert_eq!(posted, vec![true]);
+}
+#[test]
+fn intent_row_consumed_before_prepare_is_not_reported_as_local_missing() {
+    let (_dir, _fixture, mut alice, mut bob, now) = pair();
+    let (_, b) = trust(&mut alice, &mut bob);
+    alice.queue_peer_text(b, [1; 32], "first", now, now).unwrap();
+    alice.queue_peer_text(b, [2; 32], "second", now, now).unwrap();
+    // Simulate another pass consuming the second row after this pass selected it.
+    alice.db.execute_batch("CREATE TRIGGER consume AFTER DELETE ON send_intents WHEN old.id=x'0101010101010101010101010101010101010101010101010101010101010101' BEGIN DELETE FROM send_intents WHERE id=x'0202020202020202020202020202020202020202020202020202020202020202'; END;").unwrap();
+    let step = alice.sync_step_online(now);
+    assert!(step.failure.is_none());
+    assert_eq!(step.sends.len(), 2);
+    assert!(step.sends[0].result.is_ok());
+    // The row was consumed by the first send's trigger; a gone row is Obsolete, not missing.
+    assert!(matches!(step.sends[1].result, Err(Error::Obsolete)), "{:?}", step.sends[1].result);
+    assert!(step.issue().is_none(), "{:?}", step.issue());
+}
+#[test]
+fn intent_to_replaced_peer_waits_untrusted_then_retargets_to_trusted_replacement() {
+    let (dir, _fixture, mut alice, mut bob, now) = pair();
+    let old_bytes = bob.own_device_binding().unwrap();
+    let old = alice.observe_peer_binding(&old_bytes).unwrap();
+    alice.confirm_peer(old.id, old.fingerprint).unwrap();
+    crate::incoming::tests::start(&mut alice, old.id, now);
+    alice
+        .queue_peer_text(old.id, [5; 32], "to replacement", now, now)
+        .unwrap();
+    let key = IdentityKey::generate().unwrap();
+    let mut replacement = crate::peers::parse(&old_bytes).unwrap();
+    replacement.binding.device = [90; 32];
+    replacement.binding.identity = key.public_key();
+    replacement.signature = key
+        .sign(&replacement.binding.signing_bytes().unwrap())
+        .unwrap();
+    let new = alice
+        .observe_peer_binding(&replacement.to_bytes().unwrap())
+        .unwrap();
+    alice
+        .approve_peer_replacement(old.id, new.id, old.fingerprint, new.fingerprint)
+        .unwrap();
+    let own = device_fingerprint(&alice.own_device_binding().unwrap()).unwrap();
+    let target = |a: &ClientStore| read(&a.db, &a.key, &own, &[5; 32]).unwrap().0.peer;
+    let retired = |a: &ClientStore| {
+        a.db.query_row(
+            "SELECT retired FROM sessions WHERE id=?1",
+            [[3u8; 32].as_slice()],
+            |r| r.get::<_, i64>(0),
+        )
+        .unwrap()
+    };
+    // Approval itself retires the old device's session; the intent survives it.
+    assert_eq!(retired(&alice), 1);
+    // Replacement not yet trusted: wait, never re-point, never cancel.
+    alice.block_peer(new.id, true).unwrap();
+    let waited = alice.resume_send_intents_online(now).unwrap();
+    assert!(matches!(waited[0].result, Err(Error::Unprepared)));
+    assert_eq!(target(&alice), old.id);
+    drop(waited);
+    // Trusted replacement: re-point the intent to the new device.
+    alice.block_peer(new.id, false).unwrap();
+    let _ = alice.resume_send_intents_online(now);
+    assert_eq!(target(&alice), new.id);
+    assert_eq!(retired(&alice), 1);
+    let _ = dir;
+}
+#[test]
+fn fresh_intent_precedes_due_backlog_in_the_same_pass() {
+    let (_dir, _fixture, mut alice, mut bob, now) = pair();
+    let (_, b) = trust(&mut alice, &mut bob);
+    bob.prepare_prekey_publication([0x81; 32], true, 3600).unwrap();
+    bob.publish_prekey_online([0x81; 32]).unwrap();
+    let own = device_fingerprint(&alice.own_device_binding().unwrap()).unwrap();
+    // Cursor parked mid-range with a due backlog intent ahead of it.
+    let sealed = alice
+        .key
+        .seal(&[0x80; 32], &binding(37, &own, b"send intents"))
+        .unwrap();
+    alice
+        .db
+        .execute("INSERT INTO send_intent_cursor VALUES(1,?1)", [sealed])
+        .unwrap();
+    alice.queue_peer_text(b, [0x90; 32], "backlog", now, now).unwrap();
+    alice
+        .db
+        .execute(
+            "INSERT INTO send_intent_backoff VALUES(?1,?2)",
+            ([0x90u8; 32].as_slice(), now as i64),
+        )
+        .unwrap();
+    alice.queue_peer_text(b, [0x10; 32], "fresh", now, now).unwrap();
+    let step = alice.sync_step_online(now);
+    assert!(step.failure.is_none(), "{:?}", step.failure);
+    assert_eq!(step.sends[0].id, [0x10; 32], "fresh intent must go first");
+    assert!(step.sends.iter().any(|s| s.id == [0x10; 32] && s.result.is_ok()));
+    assert!(step
+        .timings
+        .iter()
+        .any(|(name, _)| *name == "resume_send_intents_online"));
+}
+
+/// A cancelled intent must not keep holding its prekey claim: pending claims are
+/// capped at 64, and every dead one starves a later new-session send.
+#[test]
+fn a_cancelled_intent_releases_its_pending_prekey_claim() {
+    let (_dir, _fixture, mut alice, mut bob, now) = pair();
+    // A trusted binding for a device the server does not stock keeps every claim pending.
+    let key = IdentityKey::generate().unwrap();
+    let mut forged = crate::peers::parse(&bob.own_device_binding().unwrap()).unwrap();
+    forged.binding.device = [90; 32];
+    forged.binding.identity = key.public_key();
+    forged.signature = key
+        .sign(&forged.binding.signing_bytes().unwrap())
+        .unwrap();
+    let peer = alice
+        .observe_peer_binding(&forged.to_bytes().unwrap())
+        .unwrap();
+    alice.confirm_peer(peer.id, peer.fingerprint).unwrap();
+    let pending = |store: &ClientStore| -> i64 {
+        store
+            .db
+            .query_row("SELECT count(*) FROM prekey_claims WHERE phase=0", [], |r| r.get(0))
+            .unwrap()
+    };
+    let intents = |store: &ClientStore| -> i64 {
+        store
+            .db
+            .query_row("SELECT count(*) FROM send_intents", [], |r| r.get(0))
+            .unwrap()
+    };
+    let op = alice
+        .conversation_operation(
+            [86; 32],
+            sigil_protocol::conversation::Action::Typing {
+                active: true,
+                until: now + 30,
+            },
+        )
+        .unwrap();
+    alice.queue_peer_operation(peer.id, &op, now, now).unwrap();
+    let first = alice.resume_send_intents_online(now).unwrap();
+    assert_eq!(first.len(), 1);
+    assert!(first[0].result.is_err());
+    assert_eq!((intents(&alice), pending(&alice)), (1, 1));
+    // The notice lapses, the intent is dropped, and its claim goes with it.
+    let second = alice.resume_send_intents_online(now + 61).unwrap();
+    assert!(matches!(second[0].result, Err(Error::Obsolete)));
+    assert_eq!((intents(&alice), pending(&alice)), (0, 0));
 }

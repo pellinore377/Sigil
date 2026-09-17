@@ -57,11 +57,20 @@ impl SyncFailure {
         }
     }
 }
+/// Totals over the four retry GC passes; the first failing pass is in SyncStep::failure.
+#[derive(Debug, Default)]
+pub struct RetryCleanup {
+    pub scanned: usize,
+    pub reclaimed: usize,
+    pub failed: usize,
+}
 #[derive(Default)]
 pub struct SyncStep {
     pub calls: Vec<calls::Attempt>,
     pub incoming: Vec<IncomingAttempt>,
     pub acknowledged: usize,
+    /// Acknowledgements refused per item; they never feed the schedule's failure streak.
+    pub acknowledgements: Vec<AcknowledgeAttempt>,
     pub prekeys: Vec<PrekeyAttempt>,
     pub prekey_supply: Option<Result<PrekeySupply, Error>>,
     pub sends: Vec<SendIntentAttempt>,
@@ -73,6 +82,10 @@ pub struct SyncStep {
     pub invitations: Vec<groups::InvitationAttempt>,
     pub history: Vec<groups::HistoryAttempt>,
     pub maintenance: Option<SessionMaintenance>,
+    /// Retry GC passes run this step; None when maintenance was skipped.
+    pub retry_cleanup: Option<RetryCleanup>,
+    /// Own-account devices newly suspended because the server reports them revoked.
+    pub revoked_devices: usize,
     pub structured: usize,
     pub conversation_copies: usize,
     pub delivery_receipts: usize,
@@ -123,6 +136,7 @@ impl SyncStep {
             };
         }
         lane!(self.incoming, "receiving messages");
+        lane!(self.acknowledgements, "acknowledging messages");
         lane!(self.prekeys, "publishing keys");
         if let Some(Err(error)) = &self.prekey_supply {
             if !matches!(error, Error::Obsolete) {
@@ -194,8 +208,11 @@ impl ClientStore {
             }
         }
         step.begin("acknowledge_incoming_online");
-        match self.acknowledge_incoming_online() {
-            Ok(count) => step.acknowledged = count,
+        match self.acknowledge_incoming_report_online() {
+            Ok(report) => {
+                step.acknowledged = report.acknowledged;
+                step.acknowledgements = report.rejected;
+            }
             // Telling the server what has already been stored is not a condition of
             // sending. One delivery it will not accept must not leave this device able
             // to receive and unable to say anything back.
@@ -349,12 +366,62 @@ impl ClientStore {
             step.failure = Some(SyncFailure::PrekeySupplyNetwork);
             return step;
         }
+        step.begin("reconcile_own_devices_online");
+        match self.reconcile_own_devices_online() {
+            Ok(count) => step.revoked_devices = count,
+            // An unreachable inventory changes nothing; the next pass reads it again.
+            Err(Error::Network(_)) => {}
+            Err(error) => step.failure = Some(SyncFailure::Maintenance(error)),
+        }
         step.begin("maintain_sessions_online");
         match self.maintain_sessions_online(now) {
             Ok(maintenance) => step.maintenance = Some(maintenance),
             Err(error) => step.failure = Some(SyncFailure::Maintenance(error)),
         }
+        // Each GC pass is bounded and independent; one failing must not hide the others.
+        let mut cleanup = RetryCleanup::default();
+        step.begin("reclaim_outgoing_retry_controls");
+        cleanup.record(
+            self.reclaim_outgoing_retry_controls(now)
+                .map(|c| (c.scanned, c.retired)),
+            &mut step,
+        );
+        step.begin("reclaim_accepted_retry_controls");
+        cleanup.record(
+            self.reclaim_accepted_retry_controls(now)
+                .map(|c| (c.scanned, c.retired)),
+            &mut step,
+        );
+        step.begin("reclaim_retry_journals");
+        cleanup.record(
+            self.reclaim_retry_journals(now)
+                .map(|c| (c.scanned, c.reclaimed)),
+            &mut step,
+        );
+        step.begin("reclaim_recovered_journals");
+        cleanup.record(
+            self.reclaim_recovered_journals(now)
+                .map(|c| (c.scanned, c.reclaimed)),
+            &mut step,
+        );
+        step.retry_cleanup = Some(cleanup);
         step
+    }
+}
+impl RetryCleanup {
+    fn record(&mut self, result: Result<(usize, usize), Error>, step: &mut SyncStep) {
+        match result {
+            Ok((scanned, reclaimed)) => {
+                self.scanned += scanned;
+                self.reclaimed += reclaimed;
+            }
+            Err(error) => {
+                self.failed += 1;
+                if step.failure.is_none() {
+                    step.failure = Some(SyncFailure::Maintenance(error));
+                }
+            }
+        }
     }
 }
 
@@ -400,8 +467,11 @@ impl ClientStore {
             return step;
         }
         step.begin("acknowledge_incoming_online");
-        match self.acknowledge_incoming_online() {
-            Ok(count) => step.acknowledged = count,
+        match self.acknowledge_incoming_report_online() {
+            Ok(report) => {
+                step.acknowledged = report.acknowledged;
+                step.acknowledgements = report.rejected;
+            }
             Err(error) => step.failure = Some(SyncFailure::Acknowledge(error)),
         }
         step
@@ -656,6 +726,32 @@ mod tests {
             .mailbox()
             .unwrap()
             .is_empty());
+    }
+    #[test]
+    fn refused_acknowledgement_is_reported_without_throttling_the_schedule() {
+        let (_dir, _fixture, mut alice, mut bob, _now) = pair();
+        trust(&mut alice, &mut bob);
+        // A sealed state that never opens: no later attempt can succeed.
+        bob.db
+            .execute("INSERT INTO incoming VALUES(?1,0,zeroblob(173))", [7i64])
+            .unwrap();
+        let own = device_fingerprint(&bob.own_device_binding().unwrap()).unwrap();
+        let before = schedule::clock().unwrap();
+        let result = bob.sync_due_online().unwrap();
+        let step = result.step.unwrap();
+        assert!(step.failure.is_none(), "{:?}", step.failure);
+        assert_eq!(step.issue().map(|(stage, _)| stage), Some("acknowledging messages"));
+        assert!(step
+            .acknowledgements
+            .iter()
+            .any(|item| item.sequence == 7 && item.result.is_err()));
+        assert!(step.maintenance.is_some());
+        assert_eq!(schedule::read(&bob.db, &bob.key, &own).unwrap().0.failures, 0);
+        assert!(result.next_at >= before + schedule::POLL_SECONDS);
+        assert!(result.next_at <= schedule::clock().unwrap() + schedule::POLL_SECONDS);
+        // A healthy streak lets a wake pull the next pass forward for a fresh send.
+        assert!(bob.sync_wake_online().unwrap().step.is_some());
+        assert!(bob.acknowledge_incoming_online().is_err());
     }
     #[test]
     fn explicit_recovery_resumes_without_automatic_requests_for_receive_failures() {

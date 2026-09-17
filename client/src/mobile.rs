@@ -840,6 +840,8 @@ impl ClientStore {
                     return Err(Error::InvalidEvent);
                 }
                 self.revoke_device_online(&device)?;
+                // The 2xx above is the confirmation; end its sessions and copies now.
+                self.suspend_revoked_own_device(&crate::connection::decode_id(&device)?)?;
                 self.mobile_devices(None)
             }
             Command::Storage {} => self.mobile_storage(),
@@ -1652,7 +1654,27 @@ impl ClientStore {
                         |issue| format!("{issue}\n{contact_issue}"),
                     ));
                 }
-                let pending: bool = self.db.query_row("SELECT EXISTS(SELECT 1 FROM send_intents) OR EXISTS(SELECT 1 FROM outbox o JOIN sessions s ON s.id=o.session WHERE o.packet IS NOT NULL AND s.retired=0) OR EXISTS(SELECT 1 FROM group_delivery WHERE status=0) OR EXISTS(SELECT 1 FROM call_jobs)", [], |row| row.get(0))?;
+                // Work counts as pending only if a pass at next_at could attempt it.
+                let horizon = i64::try_from(result.next_at).map_err(|_| Error::InvalidStore)?;
+                let pending: bool = self.db.query_row(
+                    "SELECT EXISTS(SELECT 1 FROM send_intents i LEFT JOIN send_intent_backoff b ON b.id=i.id WHERE b.until IS NULL OR b.until<=?1) \
+                     OR EXISTS(SELECT 1 FROM outbox o JOIN sessions s ON s.id=o.session LEFT JOIN outbound_backoff b ON b.session=o.session WHERE o.packet IS NOT NULL AND s.retired=0 AND (b.until IS NULL OR b.until<=?1)) \
+                     OR EXISTS(SELECT 1 FROM group_delivery WHERE status=0) \
+                     OR EXISTS(SELECT 1 FROM call_jobs c LEFT JOIN call_job_backoff b ON b.id=c.id WHERE b.until IS NULL OR b.until<=?1)",
+                    [horizon],
+                    |row| row.get(0),
+                )?;
+                // Only backed-off work left: wake when the earliest backoff ends, not every pass.
+                let waiting: Option<i64> = if pending { None } else {
+                    self.db.query_row(
+                        "SELECT MIN(until) FROM (SELECT b.until FROM send_intent_backoff b JOIN send_intents i ON i.id=b.id \
+                         UNION ALL SELECT b.until FROM outbound_backoff b WHERE EXISTS(SELECT 1 FROM outbox o JOIN sessions s ON s.id=o.session WHERE o.session=b.session AND o.packet IS NOT NULL AND s.retired=0) \
+                         UNION ALL SELECT b.until FROM call_job_backoff b JOIN call_jobs c ON c.id=b.id)",
+                        [],
+                        |row| row.get(0),
+                    )?
+                };
+                let waiting = waiting.and_then(|until| u64::try_from(until).ok()).map(|until| until.max(result.next_at));
                 let generated = result.step.as_ref().is_some_and(|step| {
                     step.conversation_copies > 0
                         || step.delivery_receipts > 0
@@ -1668,6 +1690,8 @@ impl ClientStore {
                     let count = |items: usize, failed: usize| json!([items, failed]);
                     json!({
                         "incoming": count(step.incoming.len(), step.incoming.iter().filter(|i| i.result.is_err()).count()),
+                        "acknowledgements": count(step.acknowledged + step.acknowledgements.len(), step.acknowledgements.len()),
+                        "acknowledge_errors": step.acknowledgements.iter().map(|i| format!("#{}: {}", i.sequence, error_message(i.result.as_ref().err().unwrap_or(&Error::InvalidStore)))).collect::<Vec<_>>(),
                         "sends": count(step.sends.len(), step.sends.iter().filter(|i| i.result.is_err()).count()),
                         "outbound": count(step.outbound.len(), step.outbound.iter().filter(|i| i.result.is_err()).count()),
                         "calls": count(step.calls.len(), step.calls.iter().filter(|i| i.result.is_err()).count()),
@@ -1683,8 +1707,16 @@ impl ClientStore {
                     .as_ref()
                     .map(|step| step.timings.iter().map(|(name, ms)| ((*name).into(), (*ms).into())).collect())
                     .unwrap_or_default();
+                let pending = pending || generated || recovered;
+                let next_at = if recovered {
+                    conversations::now()
+                } else if let (false, Some(until)) = (pending, waiting) {
+                    until.min(contact_next)
+                } else {
+                    result.next_at.min(contact_next)
+                };
                 Ok(
-                    json!({"next_at":if recovered { conversations::now() } else { result.next_at.min(contact_next) },"ran":result.step.is_some(),"pending":pending || generated || recovered,"issue":issue,"ms":started.elapsed().as_millis() as u64,"timings":timings,"lanes":lanes}),
+                    json!({"next_at":next_at,"ran":result.step.is_some(),"pending":pending || waiting.is_some(),"issue":issue,"ms":started.elapsed().as_millis() as u64,"timings":timings,"lanes":lanes}),
                 )
             }
             Command::Publish {} => {
@@ -2018,6 +2050,34 @@ mod tests {
     use super::*;
     fn command(store: &mut ClientStore, value: Value) -> Value {
         serde_json::from_str(&store.mobile_command(&value.to_string())).unwrap()
+    }
+    #[test]
+    fn backed_off_work_reports_its_wake_time_instead_of_every_pass() {
+        let (_dir, _server, mut alice, mut bob, now) = crate::claims::tests::pair();
+        let (_, b) = crate::incoming::tests::trust(&mut alice, &mut bob);
+        alice
+            .queue_peer_text(b, [0x61; 32], "synthetic held", now, now)
+            .unwrap();
+        // A blocked recipient yields Unprepared: the intent waits 60 s.
+        alice.block_peer(b, true).unwrap();
+        let first = command(&mut alice, json!({"command":"sync"}));
+        assert_eq!(first["ok"], true, "{first}");
+        assert_eq!(first["value"]["ran"], true);
+        assert!(first["value"]["lanes"]["sends"][1].as_u64().unwrap() >= 1, "{first}");
+        let until: i64 = alice
+            .db
+            .query_row("SELECT until FROM send_intent_backoff WHERE id=?1", [[0x61u8; 32].as_slice()], |r| r.get(0))
+            .unwrap();
+        assert!(until >= now as i64 + 60);
+        let second = command(&mut alice, json!({"command":"sync"}));
+        assert_eq!(second["ok"], true, "{second}");
+        assert!(second["value"]["next_at"].as_i64().unwrap() >= until, "{second}");
+        assert_eq!(second["value"]["pending"], true);
+        // Nothing queued at all: no wake is requested beyond the schedule.
+        alice.db.execute("DELETE FROM send_intents", []).unwrap();
+        let third = command(&mut alice, json!({"command":"sync"}));
+        assert_eq!(third["value"]["pending"], false, "{third}");
+        assert!(third["value"]["next_at"].as_i64().unwrap() < until, "{third}");
     }
     #[test]
     fn presentation_preserves_trust_and_reopens_the_same_queued_message() {

@@ -91,6 +91,10 @@ struct Record {
     /// trip behind it; the owner still applies every check before accepting it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     anticipated: Option<Id>,
+    /// Shares naming a state not yet committed, with the delivering fingerprint;
+    /// verified exactly as an in-order arrival once that state lands.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pending_shares: Vec<(Id, Share)>,
 }
 pub struct Participant {
     pub member: Id,
@@ -121,7 +125,13 @@ fn index(key: &StorageKey, id: &Id) -> Result<Id, Error> {
 fn load(db: &Connection, key: &StorageKey, id: &Id) -> Result<Record, Error> {
     load_index(db, key, &index(key, id)?)
 }
+#[cfg(test)]
+thread_local! {
+    pub(super) static LOADS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
 fn load_index(db: &Connection, key: &StorageKey, row: &Id) -> Result<Record, Error> {
+    #[cfg(test)]
+    LOADS.with(|loads| loads.set(loads.get() + 1));
     let raw: Vec<u8> = db
         .query_row(
             "SELECT CASE WHEN length(content)<=262180 THEN content END FROM calls WHERE id=?1",
@@ -137,6 +147,7 @@ fn load_index(db: &Connection, key: &StorageKey, row: &Id) -> Result<Record, Err
         || record.invites.len() > 32
         || record.joining.len() > 7
         || record.shares.len() > 8
+        || record.pending_shares.len() > 8
         || record.commits.len() > 16
         || record.notify.len() > 256
         || record.control_grants.len() > 8
@@ -248,7 +259,64 @@ impl Record {
     }
     fn erase_media(&mut self) {
         self.shares.clear();
+        self.pending_shares.clear();
         self.lease = [0; 32];
+    }
+    /// Hold a share for a state not yet committed: one per sender, newest generation.
+    fn hold(&mut self, via: Id, share: Share) {
+        let sender = share.key.context.sender;
+        if let Some(i) = self
+            .pending_shares
+            .iter()
+            .position(|(_, s)| s.key.context.sender == sender)
+        {
+            let held = &self.pending_shares[i].1;
+            if held.generation > share.generation {
+                return;
+            }
+            // Equal generation must be the same share; the in-order path refuses a differing one.
+            if held.generation == share.generation
+                && (held.key.context != share.key.context || held.signature != share.signature)
+            {
+                return;
+            }
+            self.pending_shares.remove(i);
+        } else if self.pending_shares.len() >= 8 {
+            return;
+        }
+        self.pending_shares.push((via, share));
+    }
+    /// Adopt held shares naming the state just committed; `owner` is the fingerprint
+    /// they must have arrived through, or None when this device is the owner.
+    fn adopt(&mut self, owner: Option<Id>) -> Result<(), Error> {
+        let digest = self.state.digest().map_err(failure)?;
+        let held = std::mem::take(&mut self.pending_shares);
+        for (via, share) in held {
+            if share.state != digest {
+                self.pending_shares.push((via, share));
+                continue;
+            }
+            if share.verify(&self.state).is_err() {
+                continue;
+            }
+            let expected = match owner {
+                Some(fingerprint) => Some(fingerprint),
+                None => self
+                    .state
+                    .participants
+                    .iter()
+                    .find(|p| p.member.id == share.key.context.sender)
+                    .map(|p| p.fingerprint().map_err(failure))
+                    .transpose()?,
+            };
+            if expected != Some(via) {
+                continue;
+            }
+            self.shares
+                .retain(|v| v.key.context.sender != share.key.context.sender);
+            self.shares.push(share);
+        }
+        Ok(())
     }
     fn finish(&mut self, phase: Phase) {
         self.missed |= self.phase == Phase::Ringing && phase == Phase::Ended;
@@ -301,7 +369,7 @@ impl Record {
         self.anticipated = None;
         self.announced = None;
         self.announced_media = None;
-        Ok(())
+        self.adopt(None)
     }
     fn view(&self, db: &Connection, key: &StorageKey) -> Result<Call, Error> {
         let mut participants = Vec::new();
@@ -447,6 +515,7 @@ impl ClientStore {
             generation: 0,
             shares: Vec::new(),
             connect_sequence: 0,
+            pending_shares: Vec::new(),
         };
         for recipient in recipients {
             invite(&tx, &self.key, &mut record, *recipient, now)?;

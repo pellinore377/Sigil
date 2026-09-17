@@ -110,6 +110,42 @@ impl ClientStore {
     }
 }
 
+impl ClientStore {
+    /// Diagnostics: (cursor hex prefix, rows still ahead of it) per control GC kind.
+    pub(crate) fn control_cleanup_progress(&self, kind: u8) -> (String, i64) {
+        let table = if kind == 0 {
+            "retry_outbox"
+        } else {
+            "retry_requests"
+        };
+        let after = self
+            .db
+            .unchecked_transaction()
+            .ok()
+            .and_then(|tx| peers::own(&tx, &self.key).ok())
+            .and_then(|own| device_fingerprint(&own).ok())
+            .and_then(|own| {
+                let sealed: Option<Vec<u8>> = self.db.query_row("SELECT CASE WHEN length(state) IN (36,68) THEN state END FROM control_cleanup_cursor WHERE kind=?1",[kind],|r|r.get(0)).optional().ok().flatten();
+                sealed.and_then(|s| self.key.open(&s, &binding(39, &own, &[kind])).ok())
+            })
+            .unwrap_or_default();
+        let remaining = self
+            .db
+            .query_row(
+                &format!("SELECT count(*) FROM {table} WHERE id>?1"),
+                [after.as_slice()],
+                |r| r.get(0),
+            )
+            .unwrap_or(-1);
+        let position = if after.len() == 32 {
+            transport::hex(&after[..4])
+        } else {
+            "-".to_owned()
+        };
+        (position, remaining)
+    }
+}
+
 pub struct ControlCleanup {
     /// At most 16 full controls inspected per call, with a durable cyclic cursor.
     pub scanned: usize,
@@ -187,8 +223,9 @@ impl ClientStore {
         for id in ids {
             let record = read(&tx, &self.key, "retry_outbox", &id)?.ok_or(Error::InvalidStore)?;
             let request = Request::from_bytes(&record.packet).map_err(|_| Error::InvalidStore)?;
+            // A foreign or already-retired row is skipped, not a batch error, so the cursor still advances.
             if request.requester != own || retired(&tx, &self.key, &id, &own)?.is_some() {
-                return Err(Error::InvalidStore);
+                continue;
             }
             controls.push((id, request.expires_at));
         }
@@ -282,11 +319,12 @@ impl ClientStore {
         for id in ids {
             let record = read(&tx, &self.key, "retry_requests", &id)?.ok_or(Error::InvalidStore)?;
             let request = Request::from_bytes(&record.packet).map_err(|_| Error::InvalidStore)?;
+            // A foreign, receipted or already-retired row is skipped, not a batch error, so the cursor still advances.
             if request.target != fingerprint
                 || record.receipt.is_some()
                 || accepted_retired(&tx, &self.key, &id, &fingerprint)?.is_some()
             {
-                return Err(Error::InvalidStore);
+                continue;
             }
             records.push((id, record, request.expires_at));
         }

@@ -2,7 +2,7 @@
 use super::*;
 
 pub(super) const RESERVATION_SECONDS: u64 = 60;
-const POLL_SECONDS: u64 = 5;
+pub(super) const POLL_SECONDS: u64 = 5;
 /// Foreground passes run prekey supply and session maintenance this often.
 const MAINTENANCE_SECONDS: u64 = 60;
 

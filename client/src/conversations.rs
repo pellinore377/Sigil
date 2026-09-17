@@ -1054,7 +1054,7 @@ pub(crate) use retention::archive_tombstone;
 pub use retention::HistoryCleanup;
 #[cfg(test)]
 #[path = "conversation_tests.rs"]
-mod tests;
+pub(crate) mod tests;
 
 fn origin_index(key: &StorageKey, conversation: &Id, sender: &Id, id: &Id) -> Result<Id, Error> {
     index(
