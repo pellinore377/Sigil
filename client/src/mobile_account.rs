@@ -132,6 +132,70 @@ impl ClientStore {
             unfinished = scalar("SELECT count(*) FROM retry_requests WHERE finished=0"),
             retiredreq = scalar("SELECT count(*) FROM retired_retry_requests"),
         );
+        // One line per session with packets waiting: which peer, how many, and why
+        // it is not draining. Identifiers are truncated; nothing said is included.
+        let mut lines = Vec::new();
+        {
+            let own_account = self
+                .db
+                .unchecked_transaction()
+                .ok()
+                .and_then(|tx| crate::peers::own(&tx, &self.key).ok())
+                .and_then(|own| crate::peers::parse(&own).ok())
+                .map(|own| crate::event::account(&own.binding));
+            let mut stmt = self.db.prepare(
+                "SELECT o.session, s.peer, count(*), s.retired, \
+                 (SELECT until FROM outbound_backoff b WHERE b.session=o.session), \
+                 (SELECT since FROM outbound_backoff b WHERE b.session=o.session), \
+                 EXISTS(SELECT 1 FROM initiations i WHERE i.session=o.session) \
+                 FROM outbox o JOIN sessions s ON s.id=o.session WHERE o.packet IS NOT NULL \
+                 GROUP BY o.session ORDER BY count(*) DESC LIMIT 8",
+            )?;
+            let rows = stmt.query_map([], |r| {
+                Ok((
+                    r.get::<_, Vec<u8>>(0)?,
+                    r.get::<_, Option<Vec<u8>>>(1)?,
+                    r.get::<_, i64>(2)?,
+                    r.get::<_, bool>(3)?,
+                    r.get::<_, Option<i64>>(4)?,
+                    r.get::<_, Option<i64>>(5)?,
+                    r.get::<_, bool>(6)?,
+                ))
+            })?;
+            for row in rows {
+                let (session, peer, pending, retired, until, since, initiating) = row?;
+                let peer_note = match peer.as_deref().and_then(|p| <[u8; 32]>::try_from(p).ok()) {
+                    Some(id) => match crate::peers::known(&self.db, &self.key, &id) {
+                        Ok(known) => format!(
+                            "peer {} trusted={} blocked={} changed={} replaced={} own-account={}",
+                            &transport::hex(&id)[..8],
+                            known.trusted,
+                            known.blocked,
+                            known.changed_fingerprint.is_some(),
+                            known.replaced_by.is_some(),
+                            own_account.as_ref().is_some_and(|a| *a == crate::event::account(&known.binding)),
+                        ),
+                        Err(_) => format!("peer {} (unreadable)", &transport::hex(&id)[..8]),
+                    },
+                    None => "no peer".to_string(),
+                };
+                lines.push(format!(
+                    "  session {} pending {} retired={} initiating={} backoff-until={} unknown-since={} {}",
+                    &transport::hex(&session)[..8],
+                    pending,
+                    retired,
+                    initiating,
+                    until.map(|v| v.to_string()).unwrap_or_else(|| "-".into()),
+                    since.filter(|v| *v > 0).map(|v| v.to_string()).unwrap_or_else(|| "-".into()),
+                    peer_note
+                ));
+            }
+        }
+        let report = if lines.is_empty() {
+            report
+        } else {
+            format!("{report}\nwaiting sessions:\n{}", lines.join("\n"))
+        };
         Ok(json!({ "report": report }))
     }
     pub(super) fn mobile_storage(&self) -> Result<Value, Error> {
