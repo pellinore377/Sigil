@@ -163,6 +163,7 @@ pub fn editor(source: &str) -> String {
                 sigil_text::Animation::Sparkle => "sparkle",
                 sigil_text::Animation::Glitch => "glitch",
                 sigil_text::Animation::Scatter => "scatter",
+                sigil_text::Animation::Assemble => "assemble",
                 sigil_text::Animation::Flip => "flip",
                 sigil_text::Animation::Barrel => "barrel",
             };
