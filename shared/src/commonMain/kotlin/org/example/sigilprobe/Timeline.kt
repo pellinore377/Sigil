@@ -72,6 +72,7 @@ internal fun ConversationPage(chat: ChatSummary, state: MessengerState, draft: T
     var editing by remember(chat.id) { mutableStateOf<ChatMessage?>(null) }
     var selected by remember(chat.id) { mutableStateOf<Pair<ChatMessage, Rect>?>(null) }
     var returnBounds by remember(chat.id) { mutableStateOf(Rect.Zero) }
+    var cardDetails by remember(chat.id) { mutableStateOf<ChatMessage?>(null) }
     var details by remember(chat.id) { mutableStateOf<Pair<String, String>?>(null) }
     var submitted by remember { mutableStateOf<Triple<String, String, Long>?>(null) }
     var localQuery by remember(page) { mutableStateOf("") }
@@ -107,7 +108,7 @@ internal fun ConversationPage(chat: ChatSummary, state: MessengerState, draft: T
             submitted = null; reply = null; editing = null
         }
     }
-    SideEffect { state.sentMessage?.let { previewLaunch.bind(state.sentText.orEmpty(), it, state.sent) } }
+    SideEffect { state.sentMessage?.let { previewLaunch.bind(state.sentText.orEmpty(), it, state.sent); previewLaunch.bindPanel(state.sentText.orEmpty(), it, state.sent) } }
     LaunchedEffect(previewLaunch.activeMessage) {
         val message = previewLaunch.activeMessage ?: return@LaunchedEffect
         kotlinx.coroutines.delay(5000)
@@ -115,7 +116,8 @@ internal fun ConversationPage(chat: ChatSummary, state: MessengerState, draft: T
     }
     LaunchedEffect(state.issue) { if (state.issue != null) previewLaunch.cancel() }
     val materialOverlay=LocalMaterialOverlay.current
-    val canLaunch = materialOverlay != null && !motionPolicy.reduced && LocalMotionVisible.current && !state.historical && page.isEmpty()
+    val canFly = !motionPolicy.reduced && LocalMotionVisible.current && !state.historical && page.isEmpty()
+    val canLaunch = materialOverlay != null && canFly
     MaterialRootOverlay(materialTimeline, materialOverlay, selected == null)
     val composerInset = (LocalFooterHost.current?.height ?: 0.dp) + 16.dp
     val materialHeader=with(LocalDensity.current){LocalHeaderInset.current.toPx()}
@@ -198,6 +200,14 @@ internal fun ConversationPage(chat: ChatSummary, state: MessengerState, draft: T
                             horizontalArrangement = if (message.mine) Arrangement.End else Arrangement.Start) {
                             Column(Modifier.widthIn(max = 330.dp).fillMaxWidth(.88f), horizontalAlignment = if (message.mine) Alignment.End else Alignment.Start) {
                                 val lifted = selected?.first?.let { it.id == message.id && it.author == message.author } == true
+                                val launched = previewLaunch.panelOrigin(message.id).takeIf { message.mine }
+                                val arrival = remember(message.id) { Animatable(1f) }
+                                LaunchedEffect(launched) {
+                                    if (launched == null) return@LaunchedEffect
+                                    arrival.snapTo(0f)
+                                    arrival.animateTo(1f, motionPolicy.tween(MotionMillis))
+                                    previewLaunch.landed(message.id)
+                                }
                                 Box(Modifier.fillMaxWidth(), contentAlignment = if (message.mine) Alignment.CenterEnd else Alignment.CenterStart) {
                                   if (abs(offset) > 1f && !lifted) {
                                     val action = swipeAction(message.mine, offset)
@@ -210,7 +220,19 @@ internal fun ConversationPage(chat: ChatSummary, state: MessengerState, draft: T
                                         Text(if (action == "reply") "Reply" else "Reply in thread", style = MaterialTheme.typography.labelSmall, textAlign = androidx.compose.ui.text.style.TextAlign.Center, color = scheme.onBackground)
                                     }
                                   }
-                                  Box(Modifier.graphicsLayer { translationX = offset; alpha = if (lifted) 0f else 1f }.then(if (lifted) Modifier.clearAndSetSemantics { } else Modifier).onGloballyPositioned { bounds = it.boundsInWindow(); materialTimeline.bubbles[materialKey]=bounds; if (lifted) returnBounds = bounds }
+                                  Box(Modifier.graphicsLayer {
+                                    translationX = offset; alpha = if (lifted) 0f else 1f
+                                    // The sent card carries on from where the preview panel left it, rather than arriving from nowhere.
+                                    val from = launched
+                                    if (from != null && bounds != Rect.Zero && bounds.width > 0f) {
+                                        val remaining = 1f - arrival.value
+                                        transformOrigin = TransformOrigin(0f, 0f)
+                                        scaleX = 1f + ((from.width / bounds.width).coerceIn(.5f, 2f) - 1f) * remaining
+                                        scaleY = scaleX
+                                        translationX += (from.left - bounds.left) * remaining
+                                        translationY = (from.top - bounds.top) * remaining
+                                    }
+                                  }.then(if (lifted) Modifier.clearAndSetSemantics { } else Modifier).onGloballyPositioned { bounds = it.boundsInWindow(); materialTimeline.bubbles[materialKey]=bounds; if (lifted) returnBounds = bounds }
                                     .pointerInput(message.id) { awaitPointerEventScope { while (true) { val event = awaitPointerEvent(); if (event.type == PointerEventType.Press && event.buttons.isSecondaryPressed) selected = message to bounds } } }) {
                                     CompositionLocalProvider(LocalMaterialPress provides {selected=message to bounds}) {
                                     if(message.author+message.id in animated) MessageMotion(message.id,textMotion.state(message.author+message.id),message.author+message.id in visibleKeys && selected==null,animated.getValue(message.author+message.id)) {
@@ -251,7 +273,7 @@ internal fun ConversationPage(chat: ChatSummary, state: MessengerState, draft: T
             if (!threadsOverview) ComposerPanel(draft, analyze, chat.verified && !state.busy, page == "Notes", inputCommand, chat.id, state.voice, state.sent, state.sentText, requestContact = if (!chat.verified && !chat.group && !state.busy && chat.request in listOf("none", "expired")) ({ command("contact_request", mapOf("peer" to chat.id, "action" to "send")) }) else null, attachments = state.transfers.filter { it.peer == chat.id }, editingCaption = editing?.attachment != null, attachmentTarget = mapOf("peer" to chat.id, "reply_author" to reply?.author, "reply_message" to reply?.id, "thread_author" to thread?.author, "thread_message" to thread?.id)) { text, rich, timezone ->
                 submitted = Triple(draft.text.toString(), text, state.sent)
                 if (editing != null) command("edit", mapOf("peer" to chat.id, "author" to editing!!.author, "message" to editing!!.id, "text" to text, "formatted" to true))
-                else { if (canLaunch) previewLaunch.arm(text, state.sent); command("post", mapOf("peer" to chat.id, "text" to text, "rich" to rich, "formatted" to true, "timezone" to timezone,
+                else { if (canLaunch) previewLaunch.arm(text, state.sent); if (canFly) previewLaunch.armPanel(text, state.sent); command("post", mapOf("peer" to chat.id, "text" to text, "rich" to rich, "formatted" to true, "timezone" to timezone,
                     "reply_author" to reply?.author, "reply_message" to reply?.id, "thread_author" to thread?.author, "thread_message" to thread?.id)) }
             }
         }
@@ -268,6 +290,7 @@ internal fun ConversationPage(chat: ChatSummary, state: MessengerState, draft: T
                     "copy" -> { clipboard.setText(AnnotatedString(message.text)); selected = null }
                     "edit" -> { command("edit_source", mapOf("peer" to chat.id, "author" to message.author, "message" to message.id)); selected = null }
                     "replay" -> {textMotion.state(message.author+message.id).replay();selected=null}
+                    "details" -> { cardDetails = message; selected = null }
                     "forward" -> { command("forward_picker", mapOf("peer" to chat.id, "author" to message.author, "message" to message.id)); selected = null }
                     else -> {
                         val fields = mutableMapOf<String, Any?>("peer" to chat.id, "author" to message.author, "message" to message.id)
@@ -278,6 +301,7 @@ internal fun ConversationPage(chat: ChatSummary, state: MessengerState, draft: T
             }
             LaunchedEffect(message.id) { focus.clearFocus(); keyboard?.hide() }
         }
+        cardDetails?.let { CardDetails(it) { cardDetails = null } }
     }
 }
 @Composable
@@ -397,10 +421,11 @@ private fun MessageMenu(message: ChatMessage, origin: Rect, returnTo: Rect, grou
                 Surface(Modifier.widthIn(min = 232.dp).alpha(progress.value), shape = RoundedCornerShape(20.dp), color = MaterialTheme.colorScheme.surfaceVariant) {
                     Column(Modifier.padding(vertical = 6.dp)) {
                         val entries = listOf("reply" to "Reply", "forward" to "Forward", "copy" to "Copy", "thread" to "Reply in thread", "pin" to if (message.pinned) "Unpin" else "Pin", "note" to if (message.noted) "Remove from notes" else "Add to notes") +
+                            (if(message.detailsPart()!=null)listOf("details" to "Details") else emptyList()) +
                             (if(message.hasMessageMotion())listOf("replay" to "Replay animation") else emptyList()) +
                             (if (message.mine && message.editable) listOf("edit" to "Edit") else emptyList()) + (if (message.mine) listOf("delete" to "Delete") else emptyList())
                         entries.forEach { (key, label) -> DropdownMenuItem({ Text(label, color = if (key == "delete") MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurface) }, { choose(key, "") },
-                            leadingIcon = { Glyph(when(key) { "thread" -> "forum"; "pin" -> "push_pin"; "note" -> "description"; "copy" -> "content_copy"; else -> key }, 20) }) }
+                            leadingIcon = { Glyph(when(key) { "thread" -> "forum"; "pin" -> "push_pin"; "note" -> "description"; "copy" -> "content_copy"; "details" -> "info"; else -> key }, 20) }) }
                     }
                 }
             }

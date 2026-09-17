@@ -21,9 +21,27 @@ import kotlinx.coroutines.CancellationException
 import kotlin.math.abs
 
 @Composable
-internal fun RecipeCard(message: ChatMessage, part: MessagePart) {
+internal fun RecipeCard(part: MessagePart) {
     val original = part.recipe ?: return
-    var expanded by remember(original) { mutableStateOf(false) }
+    Column(Modifier.widthIn(min = 200.dp, max = 280.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) { Glyph("skillet", 20); Text("Recipe", style = MaterialTheme.typography.labelMedium) }
+        RichMessageText(original.title, style = MaterialTheme.typography.titleMedium)
+        RecipeMetadata(original)
+        original.ingredients.take(3).forEach { RichMessageText(it, Modifier.heightIn(max = 64.dp).clipToBounds(), MaterialTheme.typography.bodyMedium) }
+        original.steps.firstOrNull()?.let { Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) { Text("1.", style = MaterialTheme.typography.bodyMedium); RichMessageText(it, Modifier.weight(1f).heightIn(max = 72.dp).clipToBounds(), MaterialTheme.typography.bodyMedium) } }
+        Text("${original.ingredients.size} ingredients · ${original.steps.size} steps", style = MaterialTheme.typography.labelSmall)
+    }
+}
+
+@Composable
+private fun RecipeMetadata(value: RecipeContent) {
+    val pieces = listOfNotNull(value.serves?.let { "Serves $it" }, value.seconds?.let { if (it < 60) "$it sec" else if (it % 60 == 0L) "${it / 60} min" else "${it / 60} min ${it % 60} sec" })
+    if (pieces.isNotEmpty()) Text(pieces.joinToString(" · "), style = MaterialTheme.typography.labelMedium)
+}
+
+@Composable
+internal fun RecipeDetails(message: ChatMessage, part: MessagePart, dismiss: () -> Unit) {
+    val original = part.recipe ?: return
     var checked by remember(original) { mutableStateOf(emptySet<Int>()) }
     var step by remember(original) { mutableIntStateOf(0) }
     var ingredients by remember(original) { mutableStateOf(true) }
@@ -46,31 +64,18 @@ internal fun RecipeCard(message: ChatMessage, part: MessagePart) {
         catch (_: Exception) { issue = true }
         finally { loading = false }
     }
-    @Composable fun metadata(value: RecipeContent) {
-        val pieces = listOfNotNull(value.serves?.let { "Serves $it" }, value.seconds?.let { if (it < 60) "$it sec" else if (it % 60 == 0L) "${it / 60} min" else "${it / 60} min ${it % 60} sec" })
-        if (pieces.isNotEmpty()) Text(pieces.joinToString(" · "), style = MaterialTheme.typography.labelMedium)
-    }
-    Column(Modifier.widthIn(min = 200.dp, max = 280.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) { Glyph("skillet", 20); Text("Recipe", style = MaterialTheme.typography.labelMedium) }
-        RichMessageText(original.title, style = MaterialTheme.typography.titleMedium)
-        metadata(original)
-        original.ingredients.take(3).forEach { RichMessageText(it, Modifier.heightIn(max = 64.dp).clipToBounds(), MaterialTheme.typography.bodyMedium) }
-        original.steps.firstOrNull()?.let { Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) { Text("1.", style = MaterialTheme.typography.bodyMedium); RichMessageText(it, Modifier.weight(1f).heightIn(max = 72.dp).clipToBounds(), MaterialTheme.typography.bodyMedium) } }
-        Text("${original.ingredients.size} ingredients · ${original.steps.size} steps", style = MaterialTheme.typography.labelSmall)
-        SigilTextButton({ expanded = true }) { Glyph("open_in_full", 18); Spacer(Modifier.width(8.dp)); Text("Open recipe") }
-    }
-    if (expanded) Dialog({ expanded = false; awake = false }, DialogProperties(usePlatformDefaultWidth = false)) {
+    Dialog({ awake = false; dismiss() }, DialogProperties(usePlatformDefaultWidth = false)) {
         Surface(Modifier.fillMaxSize()) {
             CompositionLocalProvider(LocalMessageSurface provides MaterialTheme.colorScheme.surface) {
                 keepAwake?.invoke(awake)
                 Column(Modifier.fillMaxSize().safeDrawingPadding().padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
-                        SigilIconButton({ expanded = false; awake = false }) { Glyph("close", 24, "Close recipe") }
+                        SigilIconButton({ awake = false; dismiss() }) { Glyph("close", 24, "Close recipe") }
                         Text("Recipe", Modifier.weight(1f), style = MaterialTheme.typography.titleLarge)
                     }
                     RichMessageText(original.title, Modifier.heightIn(max = 120.dp).verticalScroll(rememberScrollState()), MaterialTheme.typography.titleMedium)
                     Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        Column(Modifier.weight(1f)) { metadata(value) }
+                        Column(Modifier.weight(1f)) { RecipeMetadata(value) }
                         if (original.serves != null && scale != null) {
                             SigilIconButton({ requested = (value.serves ?: original.serves) - 1; attempt++ }, enabled = !loading && (value.serves ?: 0) > 1) { Glyph("remove", 20, "Fewer servings") }
                             SigilIconButton({ requested = (value.serves ?: original.serves) + 1; attempt++ }, enabled = !loading && (value.serves ?: 65535) < 65535) { Glyph("add", 20, "More servings") }

@@ -247,6 +247,15 @@ pub const TOPICS: &[Topic] = &[
         false
     ),
     topic!(
+        "assemble",
+        "animations",
+        "Every letter finds its place",
+        "assemble::<text>;",
+        [],
+        "assemble::Hello;",
+        false
+    ),
+    topic!(
         "@",
         "text",
         "Select a known identity; ambiguous names require a choice",
@@ -459,10 +468,10 @@ pub const TOPICS: &[Topic] = &[
     topic!(
         "progress",
         "utility",
-        "Clamped progress percentage",
-        "progress::<percent>;",
+        "Clamped progress percentage with an optional title",
+        "progress::<percent>[::<title>];",
         [],
-        "progress::75;",
+        "progress::75::Sprint burndown;",
         true
     ),
     topic!(

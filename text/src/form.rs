@@ -54,7 +54,7 @@ if r[0]==section {s.push_str(&format!("\n- {}",literal(&r[1])));}}}
         "Calculation"=>format!("calc::{}",line(0)),
         "Conversion"=>format!("convert::{} {}",line(0),line(1)),
         "Rating"=>format!("rate::{}/{}",field(0).trim(),field(1).trim()),
-        "Progress"=>format!("progress::{}",field(0).trim()),
+        "Progress"=>format!("progress::{}{}",field(0).trim(),if title.is_empty(){String::new()}else{format!("::{title}")}),
         "Color swatch"=>format!("swatch::{}",field(0).trim()),
         "Keyboard shortcut"=>format!("kbd::{}",field(0).split('+').map(|v|literal(v.trim())).collect::<Vec<_>>().join("+")),
         "Quote"=>format!("quote::{}::{}{}",line(0),if field(1).trim().is_empty(){String::new()}else{format!("{}::",line(1))},line(2)),

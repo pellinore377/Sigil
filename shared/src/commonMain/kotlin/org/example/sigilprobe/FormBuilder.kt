@@ -39,7 +39,7 @@ internal val formSpecs=mapOf(
     "Recurring checklist" to FormSpec(emptyList(),modes=listOf("weekly","monthly","yearly"),title=true,rows=listOf("Item")),
     "Countdown" to FormSpec(listOf("When"),title=true),"Elapsed time" to FormSpec(listOf("Since when"),title=true),
     "Calculation" to FormSpec(listOf("Expression")),"Conversion" to FormSpec(listOf("Value","Unit"),listOf("","miles")),
-    "Rating" to FormSpec(listOf("Rating","Out of"),listOf("","5")),"Progress" to FormSpec(listOf("Percent"),listOf("0")),
+    "Rating" to FormSpec(listOf("Rating","Out of"),listOf("","5")),"Progress" to FormSpec(listOf("Percent"),listOf("0"),title=true),
     "Color swatch" to FormSpec(listOf("Color"),listOf("#808080")),"Keyboard shortcut" to FormSpec(listOf("Keys, e.g. Ctrl+Shift+P")),
     "Quote" to FormSpec(listOf("Author","Source (optional)","Quotation")),"QR code" to FormSpec(listOf("Content / Network name","Wi-Fi password"),modes=listOf("text","link","wifi")),
     "Math" to FormSpec(listOf("Formula (LaTeX)")),"ASCII art" to FormSpec(listOf("Your artwork"))

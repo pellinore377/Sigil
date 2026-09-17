@@ -2,21 +2,20 @@ package org.sigil
 
 import androidx.compose.foundation.*
 import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.text.selection.SelectionContainer
-import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.*
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.lerp
+import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.graphics.takeOrElse
-import androidx.compose.ui.platform.LocalClipboardManager
-import androidx.compose.ui.platform.LocalDensity
-import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.*
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.window.*
+
+private const val CodeLineCap = 24
 
 internal fun visibleCodeBlocks(value: RichText) = value.blocks.filter { block ->
     block.kind == "code" && block.start >= 0 && block.end <= value.text.length && block.start < block.end &&
@@ -29,41 +28,36 @@ internal fun richSlice(value: RichText, start: Int, end: Int) = RichText(value.t
     value.motion.mapNotNull { run ->run.copy(units=run.units.filter {it.first>=start && it.second<=end}.map {it.first-start to it.second-start}).takeIf {it.units.isNotEmpty()} })
 
 @Composable
-internal fun CodeBlock(value: RichText, language: String) {
-    var expanded by remember(value) { mutableStateOf(false) }
-    var wrap by remember { mutableStateOf(false) }
-    val clipboard = LocalClipboardManager.current
+internal fun CodeBlock(value: RichText, language: String) = CodePanel(value, language, false)
+
+@Composable
+internal fun AsciiArt(value: RichText) = CodePanel(value, "", true)
+
+// An opaque panel, not an alpha wash: the block must read identically on a primary bubble and on a surfaceVariant one.
+@Composable
+private fun CodePanel(value: RichText, language: String, hug: Boolean) {
+    val scheme = MaterialTheme.colorScheme
+    val panel = lerp(scheme.background, scheme.onBackground, if (scheme.background.luminance() < .18f) .07f else .90f)
+    val ink = listOf(scheme.onBackground, scheme.background).maxByOrNull { contrastWith(it, panel) } ?: scheme.onBackground
     val lines = remember(value.text) { value.text.count { it == '\n' } + if (value.text.endsWith('\n')) 0 else 1 }
-    val copy = { clipboard.setText(AnnotatedString(value.text)) }
-    val previewCap = with(LocalDensity.current) { MaterialTheme.typography.bodyMedium.lineHeight.toDp() * 8 }
-    val count = listOfNotNull(language.takeIf { it.isNotEmpty() }?.replaceFirstChar { it.uppercase() }, "$lines ${if (lines == 1) "line" else "lines"}").joinToString(" · ")
-    Column(Modifier.widthIn(min = 200.dp, max = 280.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            Glyph("code", 20); Text("Code", Modifier.weight(1f), style = MaterialTheme.typography.labelMedium)
-        }
-        Box(Modifier.fillMaxWidth().heightIn(max = previewCap).clip(RoundedCornerShape(12.dp)).horizontalScroll(rememberScrollState())
-            .clickable(role = Role.Button, onClickLabel = "Open code") { expanded = true }) {
-            CodeText(value, false, 8)
-        }
-        Text(count, style = MaterialTheme.typography.labelSmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
-        SigilTextButton({ expanded = true }) { Glyph("open_in_full", 18); Spacer(Modifier.width(8.dp)); Text("Open code") }
-    }
-    if (expanded) Dialog({ expanded = false }, DialogProperties(usePlatformDefaultWidth = false)) {
-        Surface(Modifier.fillMaxSize()) {
-            Column(Modifier.fillMaxSize().safeDrawingPadding().padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    SigilIconButton({ expanded = false }) { Glyph("close", 24, "Close code") }
-                    Text("Code", Modifier.weight(1f), style = MaterialTheme.typography.titleLarge)
-                    SigilIconButton(copy) { Glyph("content_copy", 24, "Copy code") }
-                }
-                Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(14.dp)).toggleable(wrap, role = Role.Checkbox) { wrap = it }.heightIn(min = 48.dp).padding(horizontal = 4.dp),
-                    verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) { Checkbox(wrap, null); Text("Wrap lines", style = MaterialTheme.typography.bodyMedium) }
-                SelectionContainer(Modifier.weight(1f).fillMaxWidth().verticalScroll(rememberScrollState()).then(if (wrap) Modifier else Modifier.horizontalScroll(rememberScrollState()))) {
-                    CompositionLocalProvider(LocalMessageSurface provides MaterialTheme.colorScheme.surface) { CodeText(value, wrap, Int.MAX_VALUE) }
-                }
+    val hidden = lines - CodeLineCap
+    val caption = language.takeIf { it.isNotEmpty() }?.replaceFirstChar { it.uppercase() }
+    Column(Modifier.then(if (hug) Modifier.widthIn(max = 280.dp) else Modifier.fillMaxWidth()).clip(RoundedCornerShape(12.dp)).background(panel)
+        .padding(horizontal = 12.dp, vertical = if (hug) 8.dp else 10.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        CompositionLocalProvider(LocalMessageSurface provides panel, LocalContentColor provides ink) {
+            Box(Modifier.then(if (hug) Modifier else Modifier.fillMaxWidth()).horizontalScroll(rememberScrollState())) { CodeText(value, false, CodeLineCap) }
+            if (caption != null || hidden > 0) Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                if (hidden > 0) Text("+$hidden more ${if (hidden == 1) "line" else "lines"}", style = MaterialTheme.typography.labelSmall, color = ink.copy(alpha = .55f), maxLines = 1)
+                Spacer(Modifier.weight(1f))
+                if (caption != null) Text(caption, style = MaterialTheme.typography.labelSmall, color = ink.copy(alpha = .55f), maxLines = 1)
             }
         }
     }
+}
+
+private fun contrastWith(a: Color, b: Color): Float {
+    val x = a.luminance(); val y = b.luminance()
+    return (maxOf(x, y) + .05f) / (minOf(x, y) + .05f)
 }
 
 @Composable

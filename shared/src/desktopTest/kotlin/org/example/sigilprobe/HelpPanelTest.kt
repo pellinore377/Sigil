@@ -32,6 +32,28 @@ class HelpPanelTest {
         ui.onNodeWithText("No matching topics.").assertExists()
         assertEquals(1,sent.size)
     }
+    @Test fun a_topic_asks_for_a_taller_panel_rather_than_scrolling_inside_a_fixed_one() {
+        var natural=0.dp
+        var width by mutableStateOf(400.dp)
+        ui.setContent {MaterialTheme {CompositionLocalProvider(LocalHelpCatalog provides NativeCore::helpCatalog,LocalComposerPanelHeight provides {natural=it}) {
+            Box(Modifier.size(width,200.dp)) {HelpPanel(true,{},send={})}
+        }}}
+        ui.waitForIdle()
+        assertEquals(420.dp,natural)
+        ui.onNodeWithText("Search SigilText").performTextInput("resolve a choice once")
+        ui.onNodeWithText("pick").performClick()
+        ui.waitForIdle()
+        val wide=natural
+        ui.runOnIdle {width=240.dp}
+        ui.waitForIdle()
+        println("Help topic natural height: $wide at 400.dp wide, $natural at 240.dp wide; viewport: 200.dp")
+        assertTrue(wide>200.dp,"Help topic natural height: $wide")
+        assertTrue(natural>wide,"Wrapping the topic must ask for more room, not scroll: $wide then $natural")
+        ui.onNodeWithText("Send cheat sheet").performScrollTo().assertIsDisplayed()
+        ui.onNodeWithContentDescription("Back to help").performClick()
+        ui.waitForIdle()
+        assertEquals(420.dp,natural)
+    }
     @Test fun typed_reference_supports_keyboard_navigation_and_escape() {
         var closed by mutableStateOf(false)
         ui.setContent {MaterialTheme {CompositionLocalProvider(LocalHelpCatalog provides NativeCore::helpCatalog) {

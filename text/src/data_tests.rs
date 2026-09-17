@@ -89,6 +89,7 @@ fn utility_results_are_fixed_validated_and_never_executed() {
         "kbd::Ctrl+Shift+P;",
         "rate::4/5;",
         "progress::120;",
+        "progress::75::Sprint burndown;",
         "quote::Author::Source::redact::secret;",
     ] {
         let draft = parse_card(source, origin(), Default::default()).unwrap();

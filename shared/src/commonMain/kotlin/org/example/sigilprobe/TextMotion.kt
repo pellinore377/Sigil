@@ -4,10 +4,14 @@ import androidx.compose.runtime.*
 import androidx.compose.animation.core.CubicBezierEasing
 import androidx.compose.animation.core.Easing
 import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.drawWithCache
+import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.*
 import androidx.compose.ui.graphics.drawscope.*
 import androidx.compose.ui.graphics.layer.drawLayer
@@ -97,12 +101,108 @@ internal fun MessageMotion(message:String,clock:TextPlayback,visible:Boolean,dur
 internal fun motionOffsets(value:RichText,revealed:Set<Int>,offset:Int):Int {
     var delta=0
     for(span in value.spans) if(span.reveal.isNotEmpty() && span.start !in revealed && span.end<=offset) {
-        delta+=(if(span.reveal=="scratch")"Scratch to reveal" else "Hidden text").length-(span.end-span.start)
+        delta+=revealPlaceholder(span.reveal).length-(span.end-span.start)
     }
     return offset+delta
 }
 
-private data class MotionCell(val path:Path,val center:Offset,val height:Float,val run:TextMotion,val index:Int,val count:Int,val seed:Long,val easing:Easing)
+internal val InkBrush=15.dp
+internal val InkCell=8.dp
+
+/** Per-line rectangles a reveal span occupies in the laid-out presentation. */
+internal fun revealRects(value:RichText,revealed:Set<Int>,layout:TextLayoutResult,span:RichSpan,inflate:Float):List<Rect> {
+    val start=motionOffsets(value,revealed,span.start)
+    val end=if(span.start in revealed)motionOffsets(value,revealed,span.end) else start+revealPlaceholder(span.reveal).length
+    if(start<0 || start>=end || end>layout.layoutInput.text.length)return emptyList()
+    return (layout.getLineForOffset(start)..layout.getLineForOffset(end-1)).mapNotNull {line->
+        val from=maxOf(start,layout.getLineStart(line))
+        val to=minOf(end,layout.getLineEnd(line,true))
+        if(from>=to)null else {
+            val a=layout.getHorizontalPosition(from,true);val b=layout.getHorizontalPosition(to,true)
+            Rect(minOf(a,b)-inflate,layout.getLineTop(line),maxOf(a,b)+inflate,layout.getLineBottom(line))
+        }
+    }.filter {it.width>0f && it.height>0f}
+}
+private fun key(x:Int,y:Int)=(x.toLong() shl 32) or (y.toLong() and 0xffffffffL)
+internal fun inkCells(rects:List<Rect>,cell:Float):Set<Long> = buildSet {
+    if(cell<=0f)return@buildSet
+    rects.forEach {rect->
+        var x=floor(rect.left/cell).toInt()
+        while(x*cell<rect.right) {
+            var y=floor(rect.top/cell).toInt()
+            while(y*cell<rect.bottom) {add(key(x,y));y++}
+            x++
+        }
+    }
+}
+internal fun brushedCells(point:Offset,radius:Float,cell:Float,eligible:Set<Long>):Set<Long> = buildSet {
+    if(cell<=0f || eligible.isEmpty())return@buildSet
+    var x=floor((point.x-radius)/cell).toInt()
+    while(x*cell<=point.x+radius) {
+        var y=floor((point.y-radius)/cell).toInt()
+        while(y*cell<=point.y+radius) {
+            val dx=(x+.5f)*cell-point.x;val dy=(y+.5f)*cell-point.y
+            if(dx*dx+dy*dy<radius*radius)key(x,y).takeIf {it in eligible}?.let(::add)
+            y++
+        }
+        x++
+    }
+}
+
+private class InkGrain(val x:Float,val y:Float,val radius:Float,val alpha:Float,val phase:Float,val speed:Float)
+private class InkVeil(val span:RichSpan,val rects:List<Rect>,val grain:List<InkGrain>)
+
+/** Scratch conceals under drifting grain brushed away by the finger; spoiler under one flat slab wiped off by a tap. */
+@Composable
+internal fun revealVeil(value:RichText,revealed:Set<Int>,layout:TextLayoutResult?,ink:Color,surface:Color,brushed:List<Offset>,wiping:Int?,wipe:Float):Modifier {
+    val hidden=value.spans.filter {it.reveal.isNotEmpty() && (it.start !in revealed || it.start==wiping)}
+    if(hidden.isEmpty() || layout==null)return Modifier
+    val motion=LocalMotion.current
+    val still=motion.reduced || !LocalAppearance.current.messageEffects || !LocalMotionVisible.current
+    val drift=if(still)null else rememberInfiniteTransition("Invisible ink").animateFloat(0f,2f*PI.toFloat(),motion.loop(MotionLoop*6),label="Ink drift")
+    return Modifier.drawWithCache {
+        val unit=1.dp.toPx()
+        var budget=360
+        val veils=hidden.map {span->
+            val scratch=span.reveal=="scratch"
+            val rects=revealRects(value,revealed,layout,span,if(scratch)2f*unit else 0f)
+            InkVeil(span,rects,if(!scratch)emptyList() else buildList {
+                var state=((span.start.toLong()*2654435761L) xor value.text.hashCode().toLong()) and 0xffffffffL
+                fun next():Float {state=(state*1664525L+1013904223L) and 0xffffffffL;return state/4294967296f}
+                rects.forEach {rect->
+                    val count=minOf(budget,(rect.width*rect.height/(unit*unit*34f)).toInt().coerceIn(0,220))
+                    budget-=count
+                    repeat(count) {add(InkGrain(rect.left+next()*rect.width,rect.top+next()*rect.height,(.30f+next()*.75f)*unit,.24f+next()*.57f,next()*2f*PI.toFloat(),.55f+next()*.45f))}
+                }
+            })
+        }
+        val slab=lerp(surface,ink,.22f)
+        val corner=CornerRadius(6.dp.toPx())
+        val brush=InkBrush.toPx()
+        onDrawWithContent {
+            drawContent()
+            val time=drift?.value ?: 0f
+            veils.forEach {veil->
+                val gone=if(veil.span.start==wiping)wipe else 0f
+                if(gone>=1f)return@forEach
+                if(veil.span.reveal=="scratch") {
+                    fun grains() {veil.grain.forEach {grain->
+                        val alpha=grain.alpha*(.81f+.19f*sin(time*1.8f+grain.phase))*(1f-gone)
+                        drawCircle(ink.copy(alpha=alpha.coerceIn(0f,1f)),grain.radius,
+                            Offset(grain.x+sin(time*.8f*grain.speed+grain.phase)*.72f*unit,grain.y+cos(time*.7f*grain.speed+grain.phase)*.66f*unit))
+                    }}
+                    if(brushed.isEmpty())grains()
+                    else clipPath(Path().apply {brushed.forEach {addOval(Rect(it.x-brush,it.y-brush,it.x+brush,it.y+brush))}},ClipOp.Difference) {grains()}
+                } else veil.rects.forEach {rect->
+                    val left=rect.left+rect.width*gone
+                    if(left<rect.right)drawRoundRect(slab,Offset(left,rect.top+unit),Size(rect.right-left,(rect.height-2f*unit).coerceAtLeast(1f)),corner)
+                }
+            }
+        }
+    }
+}
+
+private data class MotionCell(val path:Path,val clip:Path,val center:Offset,val height:Float,val line:Int,val scale:Float,val ink:Color,val run:TextMotion,val index:Int,val count:Int,val seed:Long,val easing:Easing)
 
 private fun springRest(seconds:Float,run:TextMotion):Float {
     val half=run.damping.coerceIn(0,1000)/2f
@@ -115,11 +215,11 @@ private fun springRest(seconds:Float,run:TextMotion):Float {
 }
 
 @Composable
-internal fun textMotion(value:RichText,revealed:Set<Int>,layout:TextLayoutResult?,color:Color):Modifier {
+internal fun textMotion(value:RichText,revealed:Set<Int>,layout:TextLayoutResult?,color:Color,surface:Color=Color.Unspecified):Modifier {
     val context=LocalTextMotion.current
     if(value.motion.isEmpty())return Modifier
     val source=LocalTextMotionSeeds.current
-    val random=value.motion.any {it.kind in listOf("scatter","sparkle","glitch")}
+    val random=value.motion.any {it.kind in listOf("scatter","sparkle","glitch","assemble")}
     val seeds=remember(context?.message,source,random) {if(random && source!=null && context!=null)source("${context.message}/192").split(',').mapNotNull(String::toLongOrNull) else emptyList()}
     val playing=context!=null && !LocalMotion.current.reduced && LocalAppearance.current.messageEffects && (!random || seeds.size==192)
     val flipped=value.motion.any {it.kind=="flip"}
@@ -128,6 +228,8 @@ internal fun textMotion(value:RichText,revealed:Set<Int>,layout:TextLayoutResult
     val glowLayer=if(LocalMotionBlur.current && value.motion.any {it.kind=="glow"})rememberGraphicsLayer() else null
     return Modifier.drawWithCache {
         var seedIndex=0
+        val palette=HashMap<String,Color>()
+        val ground=surface.takeOrElse {color}
         val cells=value.motion.flatMap {run->
             run.units.mapIndexedNotNull {index,unit->
                 val seed=seeds.getOrElse((seedIndex++).coerceAtMost(191)) {0L}
@@ -140,10 +242,17 @@ internal fun textMotion(value:RichText,revealed:Set<Int>,layout:TextLayoutResult
                     val bounds=path.getBounds()
                     val line=layout.getLineForOffset(start)
                     val easing=if(run.easing.size==4)CubicBezierEasing(run.easing[0],run.easing[1],run.easing[2],run.easing[3]) else LinearEasing
-                    MotionCell(path,bounds.center,(layout.getLineBottom(line)-layout.getLineTop(line)).coerceAtLeast(1f),run,index,run.units.size,seed,easing)
+                    val span=value.spans.lastOrNull {it.start<=unit.first && it.end>unit.first}
+                    // Selection rectangles clip an italic's overhang the moment a glyph moves, so widen the drawn slice only.
+                    val overhang=if(span!=null && "italic" in span.flags)bounds.height*.12f else 0f
+                    val ink=span?.colors?.takeIf {it.isNotEmpty()}?.let {names->gradientStop(names.map {name->palette.getOrPut(name) {textColor(name,ground)}},index,run.units.size)} ?: color
+                    MotionCell(path,if(overhang<=0f)path else Path().apply {addRect(Rect(bounds.left-overhang,bounds.top,bounds.right+overhang,bounds.bottom))},
+                        bounds.center,(layout.getLineBottom(line)-layout.getLineTop(line)).coerceAtLeast(1f),line,1f+(span?.size ?: 0)*.12f,ink,run,index,run.units.size,seed,easing)
                 }
             }
         }.take(192)
+        // Amplitude is thousandths of an em; normalise the line box by the largest span sharing the line.
+        val lineScale=cells.groupBy {it.line}.mapValues {(_,group)->group.maxOf {it.scale}}
         val mask=Path().apply {cells.forEach {addPath(it.path)}}
         val glow=cells.filter {it.run.kind=="glow"}
         val glowMask=Path().apply {glow.forEach {addPath(it.path)}}
@@ -182,7 +291,7 @@ internal fun textMotion(value:RichText,revealed:Set<Int>,layout:TextLayoutResult
                     val p=cell.easing.transform(raw)
                     val phase=p*2f*PI.toFloat()*run.cycles
                     val envelope=sin(p*PI.toFloat()).coerceAtLeast(0f)
-                    val distance=run.displacement/1000f*cell.height
+                    val distance=run.displacement/1000f*cell.height*cell.scale/(lineScale[cell.line] ?: 1f)
                     val random=((cell.seed and 65535)/32767.5f)-1f
                     val other=(((cell.seed ushr 16) and 65535)/32767.5f)-1f
                     var dx=0f;var dy=0f;var angle=if(run.kind=="flip")p*run.rotation else 0f;var sx=1f;var sy=1f
@@ -197,6 +306,7 @@ internal fun textMotion(value:RichText,revealed:Set<Int>,layout:TextLayoutResult
                         }
                         "typewriter"->{val step=minOf(run.stagger.takeIf {it>0}?.toFloat() ?: Float.MAX_VALUE,run.duration.toFloat()/cell.count.coerceAtLeast(1));show=elapsed>=(cell.index+1)*step}
                         "scatter"->{val rest=if(p<.12f)sin(p/.12f*PI.toFloat()/2f) else springRest((p-.12f)*run.duration/1000f,run);dx=random*distance*rest;dy=other*distance*rest;angle=random*run.rotation*rest}
+                        "assemble"->{val lead=minOf(cell.index.toFloat()*run.stagger,run.duration*.35f);val rest=if(elapsed<=lead)1f else springRest((elapsed-lead)/1000f,run);dx=random*distance*rest;dy=other*distance*rest;angle=random*run.rotation*rest}
                         "barrel"->{dy=-distance*envelope;sy=cos(p*run.rotation*PI.toFloat()/180f);sx=.9f+.1f*abs(sy)}
                         "glitch"->{dx=if(sin(phase)>0)distance*random*envelope else -distance*random*envelope;dy=other*distance*envelope}
                         "sparkle"->repeat(run.particles.coerceIn(0,32)) {particle->if(particle%cell.count.coerceAtLeast(1)==cell.index) {
@@ -207,13 +317,13 @@ internal fun textMotion(value:RichText,revealed:Set<Int>,layout:TextLayoutResult
                             val theta=particle*2.399963f+random*PI.toFloat()
                             val center=cell.center+Offset(cos(theta),sin(theta))*distance*(.4f+life*.6f)
                             val radius=cell.height*.08f*strength
-                            drawLine(color.copy(alpha=strength),center-Offset(radius,0f),center+Offset(radius,0f),1.5.dp.toPx())
-                            drawLine(color.copy(alpha=strength),center-Offset(0f,radius),center+Offset(0f,radius),1.5.dp.toPx())
+                            drawLine(cell.ink.copy(alpha=strength),center-Offset(radius,0f),center+Offset(radius,0f),1.5.dp.toPx())
+                            drawLine(cell.ink.copy(alpha=strength),center-Offset(0f,radius),center+Offset(0f,radius),1.5.dp.toPx())
                         }
                         }
                     }
                     if(show) withTransform({translate(dx,dy);rotate(angle,cell.center);scale(sx,sy,cell.center)}) {
-                        clipPath(cell.path) {drawLayer(layer)}
+                        clipPath(cell.clip) {drawLayer(layer)}
                     }
                 }
             }

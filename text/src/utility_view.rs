@@ -18,7 +18,7 @@ impl Utility {
                 json!({"kind":"conversion","display":format!("{} {}",value.input.as_str(),value.from),"alternate":format!("{} {}",value.output.fixed(4)?,value.to),"copy":format!("{} {}",value.output.as_str(),value.to)})
             }
             Self::Math { expression, block } => {
-                json!({"kind":"math","display":expression,"copy":expression,"mathml":crate::math::html(expression,*block)?})
+                json!({"kind":"math","display":expression,"copy":expression,"block":*block,"mathml":crate::math::html(expression,*block)?})
             }
             Self::Art(value) => json!({"kind":"art","display":value,"copy":value}),
             Self::Qr(value) => {
@@ -123,8 +123,9 @@ impl Utility {
             Self::Rating { value, max } => {
                 json!({"kind":"rating","display":self.body()?,"copy":self.body()?,"ratio":value.value()/max.value()})
             }
-            Self::Progress(value) => {
-                json!({"kind":"progress","display":self.body()?,"copy":self.body()?,"ratio":value.value()/100.0})
+            Self::Progress { value, title } => {
+                json!({"kind":"progress","display":format!("{}%",value.as_str()),"copy":self.body()?,"ratio":value.value()/100.0,
+                    "rich":title.as_ref().map(Text::presentation)})
             }
             Self::Quote {
                 author,
@@ -202,6 +203,22 @@ mod tests {
             .as_str()
             .unwrap()
             .contains("<mfrac>"));
+        // A title rides beside the figure without displacing it: the percentage stays the display value.
+        let bare = Utility::Progress {
+            value: crate::numeric::Number::new(75.0).unwrap(),
+            title: None,
+        };
+        assert_eq!(bare.presentation().unwrap()["display"], "75%");
+        assert!(bare.presentation().unwrap()["rich"].is_null());
+        assert_eq!(bare.body().unwrap(), "75%");
+        let titled = Utility::Progress {
+            value: crate::numeric::Number::new(75.0).unwrap(),
+            title: Some(plain("Sprint burndown")),
+        };
+        let view = titled.presentation().unwrap();
+        assert_eq!(view["display"], "75%");
+        assert_eq!(view["rich"]["text"], "Sprint burndown");
+        assert_eq!(titled.body().unwrap(), "Sprint burndown · 75%");
     }
     #[test]
     fn randomizer_motion_is_bounded_and_never_reveals_concealed_candidates() {

@@ -210,7 +210,7 @@ internal fun AndroidAttachment(message: ChatMessage) {
         else Dialog({ opened = false }) {
             Surface(shape = androidx.compose.foundation.shape.RoundedCornerShape(24.dp)) {
                 Column(Modifier.fillMaxWidth().heightIn(max = 600.dp).verticalScroll(rememberScrollState()).padding(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                    Glyph("draft", 32)
+                    Glyph("file_present", 32)
                     Text(file.name, style = MaterialTheme.typography.titleMedium)
                     Text("${file.bytes} bytes · ${file.mediaType}", style = MaterialTheme.typography.bodySmall)
                     Text("An in-app preview is unavailable for this file.", style = MaterialTheme.typography.bodyMedium)

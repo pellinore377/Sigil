@@ -63,7 +63,7 @@ data class MessengerState(val phase: String = "loading", val address: String = "
     val allowRequests: Boolean? = null, val devices: List<AccountDevice> = emptyList(), val devicesNext: String? = null, val storage: StorageDetails? = null, val notifications: NotificationSettings? = null, val accountAccess: AccountAccess? = null, val push: PushSettings? = null)
 data class LoginMethods(val server: String, val sso: Boolean, val password: Boolean, val invitation: Boolean)
 
-data class UtilityContent(val kind: String, val display: String = "", val alternate: String = "", val copy: String? = null, val rich: RichText? = null, val secondary: RichText? = null, val details: List<RichText> = emptyList(), val selected: Int? = null, val ratio: Float? = null, val rgba: Long? = null, val mathml: String? = null, val qr: QrContent? = null, val motion:RandomizerMotion?=null)
+data class UtilityContent(val kind: String, val display: String = "", val alternate: String = "", val copy: String? = null, val rich: RichText? = null, val secondary: RichText? = null, val details: List<RichText> = emptyList(), val selected: Int? = null, val ratio: Float? = null, val rgba: Long? = null, val mathml: String? = null, val qr: QrContent? = null, val motion:RandomizerMotion?=null, val block: Boolean = true)
 data class DieFace(val sides:Int,val face:Int,val marking:String="")
 data class RandomizerMotion(val kind:String,val dice:List<DieFace> = emptyList(),val frames:List<String> = emptyList(),val selected:Int=0,val result:String="")
 data class QrContent(val kind: String, val width: Int, val cells: String, val payload: String, val password: RichText? = null, val concealed: Boolean = false)

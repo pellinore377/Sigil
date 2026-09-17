@@ -41,6 +41,7 @@ pub enum Animation {
     Scatter,
     Flip,
     Barrel,
+    Assemble,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -156,6 +157,7 @@ impl Effects {
             "scatter" => self.animation = Some(Animation::Scatter),
             "flip" => self.animation = Some(Animation::Flip),
             "barrel" => self.animation = Some(Animation::Barrel),
+            "assemble" => self.animation = Some(Animation::Assemble),
             "rainbow" => self.paint = Some(Paint::Rainbow),
             _ => {
                 if let Some(color) = Color::parse(s) {
