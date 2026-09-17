@@ -33,6 +33,21 @@ fn read(db: &Connection, key: &StorageKey, id: &Id) -> Result<Job, Error> {
     job.wire.bytes()?;
     Ok(job)
 }
+/// Every pending job's body and session, so tests can reorder deliveries.
+#[cfg(test)]
+pub(super) fn pending(db: &Connection, key: &StorageKey) -> Result<Vec<(Body, Id)>, Error> {
+    let ids: Vec<Vec<u8>> = db
+        .prepare("SELECT id FROM call_jobs ORDER BY queued")?
+        .query_map([], |r| r.get(0))?
+        .collect::<Result<_, _>>()?;
+    ids.into_iter()
+        .map(|id| {
+            let id: Id = id.try_into().map_err(|_| Error::InvalidStore)?;
+            let job = read(db, key, &id)?;
+            Ok((job.wire.body, job.session))
+        })
+        .collect()
+}
 fn save(db: &Connection, key: &StorageKey, job: &Job) -> Result<(), Error> {
     let raw = Zeroizing::new(serde_json::to_vec(job).map_err(|_| Error::InvalidStore)?);
     if raw.len() > 131072 {
@@ -245,6 +260,33 @@ pub(crate) fn check_retained(
     }
     current(db, key, &job, now)
 }
+/// Wait before claiming this recipient again, longer each time up to a minute; the
+/// first failure retries next pass because a peer's own next pass usually clears it.
+fn defer(db: &Connection, id: &Id, now: u64) -> Result<(), Error> {
+    let attempts: i64 = db
+        .query_row(
+            "SELECT attempts FROM call_job_backoff WHERE id=?1",
+            [id.as_slice()],
+            |r| r.get(0),
+        )
+        .optional()?
+        .unwrap_or(0i64)
+        .saturating_add(1);
+    let wait = match attempts {
+        ..=1 => 0,
+        n => 1u64 << (n - 2).min(6),
+    }
+    .min(60);
+    db.execute(
+        "INSERT INTO call_job_backoff VALUES(?1,?2,?3) ON CONFLICT(id) DO UPDATE SET until=excluded.until,attempts=excluded.attempts",
+        (id.as_slice(), now.saturating_add(wait) as i64, attempts),
+    )?;
+    Ok(())
+}
+fn settle(db: &Connection, id: &Id) -> Result<(), Error> {
+    db.execute("DELETE FROM call_job_backoff WHERE id=?1", [id.as_slice()])?;
+    Ok(())
+}
 fn discard(tx: &Transaction<'_>, key: &StorageKey, id: Id) -> Result<(), Error> {
     let session: Option<Vec<u8>> = tx
         .query_row(
@@ -264,7 +306,7 @@ fn discard(tx: &Transaction<'_>, key: &StorageKey, id: Id) -> Result<(), Error> 
         }
     }
     tx.execute("DELETE FROM call_jobs WHERE id=?1", [id.as_slice()])?;
-    Ok(())
+    settle(tx, &id)
 }
 fn share_digest(shares: &[Share]) -> Result<Id, Error> {
     use sha2::{Digest, Sha256};
@@ -284,8 +326,8 @@ fn share_digest(shares: &[Share]) -> Result<Id, Error> {
     Ok(Sha256::digest(serde_json::to_vec(&values).map_err(|_| Error::InvalidStore)?).into())
 }
 impl ClientStore {
-    fn allow_call_controls(&mut self, id: Id) -> Result<(), Error> {
-        let record = load(&self.db, &self.key, &id)?;
+    fn allow_call_controls(&mut self, record: &Record) -> Result<(), Error> {
+        let id = record.id();
         if record.phase != Phase::Active
             || record.transfer.is_none() && record.state.roster.delegations.is_empty()
         {
@@ -304,7 +346,7 @@ impl ClientStore {
             {
                 continue;
             }
-            let known = channels::authorized(&self.db, &self.key, &record, recipient)?;
+            let known = channels::authorized(&self.db, &self.key, record, recipient)?;
             self.allow_known_sender_online(&known)?;
             let tx = self
                 .db
@@ -341,6 +383,7 @@ impl ClientStore {
             if self.delivery_receipt(job.session, id)?.is_some() {
                 self.db
                     .execute("DELETE FROM call_jobs WHERE id=?1", [id.as_slice()])?;
+                settle(&self.db, &id)?;
             }
             return Ok(());
         }
@@ -371,6 +414,7 @@ impl ClientStore {
                         job.session = session;
                         job.queued = true;
                         save(&tx, &self.key, &job)?;
+                        settle(&tx, &id)?;
                         tx.commit()?;
                         return Ok(());
                     }
@@ -400,6 +444,17 @@ impl ClientStore {
         )?;
         tx.commit()?;
         if let Err(error) = self.claim_prekey_online(job.claim, now) {
+            // 404 also covers exhausted bundles and 403 a grant still in flight, so the
+            // job waits rather than ends.
+            if matches!(
+                error,
+                Error::Network(crate::network::Error::Status {
+                    code: 403 | 404 | 507,
+                    ..
+                })
+            ) {
+                defer(&self.db, &id, now)?;
+            }
             if job.wire.scoped
                 && matches!(
                     error,
@@ -447,6 +502,7 @@ impl ClientStore {
         )?;
         job.queued = true;
         save(&tx, &self.key, &job)?;
+        settle(&tx, &id)?;
         tx.commit()?;
         Ok(())
     }
@@ -472,7 +528,16 @@ impl ClientStore {
             if record.expire(now) {
                 super::save(&self.db, &self.key, &record)?;
             }
-            if let Err(error) = self.allow_call_controls(record.id()) {
+            // A finished call with nothing left to publish or announce needs no more reads.
+            if matches!(record.phase, Phase::Declined | Phase::Left | Phase::Ended)
+                && record.commits.is_empty()
+                && record.notify.is_empty()
+                && record.shares.is_empty()
+                && record.joining.is_empty()
+            {
+                continue;
+            }
+            if let Err(error) = self.allow_call_controls(&record) {
                 attempts.push(Attempt {
                     id: record.id(),
                     result: Err(error),
@@ -648,8 +713,8 @@ impl ClientStore {
         loop {
             let rows: Vec<(Vec<u8>, i64)> = self
                 .db
-                .prepare("SELECT id,queued FROM call_jobs WHERE queued>?1 ORDER BY queued LIMIT 16")?
-                .query_map([next], |r| Ok((r.get(0)?, r.get(1)?)))?
+                .prepare("SELECT id,queued FROM call_jobs WHERE queued>?1 AND NOT EXISTS(SELECT 1 FROM call_job_backoff b WHERE b.id=call_jobs.id AND b.until>?2) ORDER BY queued LIMIT 16")?
+                .query_map((next, now as i64), |r| Ok((r.get(0)?, r.get(1)?)))?
                 .collect::<Result<_, _>>()?;
             if rows.is_empty() {
                 next = 0;

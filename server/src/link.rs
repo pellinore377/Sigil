@@ -243,7 +243,18 @@ impl Store {
                 (&sponsor, &raw),
             )?;
         }
-        tx.execute("UPDATE devices SET revoked=1,token_hash=NULL WHERE id IN (SELECT target FROM device_links WHERE sponsor=?1 AND challenge=?2)",(&sponsor,&raw))?;
+        let targets: Vec<String> = tx
+            .prepare("SELECT target FROM device_links WHERE sponsor=?1 AND challenge=?2")?
+            .query_map((&sponsor, &raw), |r| r.get(0))?
+            .collect::<Result<_, _>>()?;
+        for target in &targets {
+            tx.execute(
+                "UPDATE devices SET revoked=1,token_hash=NULL WHERE id=?1",
+                [target],
+            )?;
+            // Same transaction as the revoked write, mirroring revoke_device.
+            crate::accounts::retire_device_delivery(&tx, target)?;
+        }
         tx.commit()?;
         Ok(())
     }

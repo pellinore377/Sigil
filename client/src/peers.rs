@@ -5,6 +5,8 @@ use sigil_crypto::verify_signature;
 use sigil_protocol::device::{Binding, SignedBinding, Statement};
 #[path = "device_review.rs"]
 mod device_review;
+#[path = "own_devices.rs"]
+mod own_devices;
 pub use device_review::{DeviceReview, DeviceReviewCursor, DeviceReviewPage};
 pub(super) const MAX_SESSIONS: usize = 8;
 pub(super) fn trusted(db: &Connection, key: &StorageKey, id: &Id) -> Result<Peer, Error> {
@@ -30,7 +32,7 @@ CREATE TABLE peers(id BLOB PRIMARY KEY, state BLOB NOT NULL);
 PRAGMA user_version=13;";
 #[cfg(test)]
 #[path = "peer_tests.rs"]
-mod tests;
+pub(crate) mod tests;
 
 pub struct Peer {
     pub id: Id,
@@ -42,6 +44,8 @@ pub struct Peer {
     pub blocked: bool,
     pub changed_fingerprint: Option<Id>,
     pub replaced_by: Option<Id>,
+    /// The server revoked this own-account device; irreversible, unlike a suspension.
+    pub revoked: bool,
 }
 struct Record {
     signed: SignedBinding,
@@ -51,6 +55,7 @@ struct Record {
     suspended: bool,
     blocked: bool,
     replacement: Option<(Id, Id)>,
+    revoked: bool,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -158,15 +163,17 @@ impl Record {
             id: peer_id(&self.signed.binding),
             binding: self.signed.binding.clone(),
             fingerprint: fingerprint(&self.signed.binding)?,
-            active: !self.suspended && self.replacement.is_none(),
+            active: !self.suspended && !self.revoked && self.replacement.is_none(),
             trusted: self.trusted
                 && !self.suspended
+                && !self.revoked
                 && !self.blocked
                 && self.candidate.is_none()
                 && self.replacement.is_none(),
             verified: self.verified
                 && self.trusted
                 && !self.suspended
+                && !self.revoked
                 && !self.blocked
                 && self.candidate.is_none()
                 && self.replacement.is_none(),
@@ -177,6 +184,7 @@ impl Record {
                 .map(|v| fingerprint(&v.binding))
                 .transpose()?,
             replaced_by: self.replacement.map(|(peer, _)| peer),
+            revoked: self.revoked,
         })
     }
 }
@@ -202,7 +210,7 @@ fn decode_record(db: &Connection, key: &StorageKey, id: &Id) -> Result<Record, E
         .optional()?
         .ok_or(Error::NotFound)?;
     let bytes = key.open(&sealed, &binding(15, id, b"peer"))?;
-    if bytes.len() < 4 || bytes[0] > 15 || bytes[1] > 1 {
+    if bytes.len() < 4 || bytes[0] > 31 || bytes[1] > 1 {
         return Err(Error::InvalidStore);
     }
     let size =
@@ -251,17 +259,19 @@ fn decode_record(db: &Connection, key: &StorageKey, id: &Id) -> Result<Record, E
         suspended: bytes[0] & 8 != 0,
         blocked: bytes[1] == 1,
         replacement,
+        revoked: bytes[0] & 16 != 0,
     })
 }
 fn save(db: &Connection, key: &StorageKey, id: &Id, record: &Record) -> Result<(), Error> {
     // A trust or block change lets queued work go out at once; group channel sessions
     // carry no peer column, so the small tables clear whole. Plain saves keep backoffs.
+    // Compare public views: a suspended or replaced record reads untrusted either way.
+    let new = record.public()?;
     let changed = match known(db, key, id) {
         Ok(old) => {
-            old.trusted != record.trusted
-                || old.blocked != record.blocked
-                || old.verified != record.verified
+            old.trusted != new.trusted || old.blocked != new.blocked || old.verified != new.verified
         }
+        Err(Error::NotFound) => new.trusted,
         Err(_) => true,
     };
     if changed && !record.blocked {
@@ -273,7 +283,8 @@ fn save(db: &Connection, key: &StorageKey, id: &Id, record: &Record) -> Result<(
         u8::from(record.verified)
             | if record.trusted { 4 } else { 0 }
             | if record.replacement.is_some() { 2 } else { 0 }
-            | if record.suspended { 8 } else { 0 },
+            | if record.suspended { 8 } else { 0 }
+            | if record.revoked { 16 } else { 0 },
         u8::from(record.blocked),
     ]);
     bytes.extend_from_slice(&(raw.len() as u16).to_be_bytes());
@@ -434,6 +445,7 @@ pub(crate) fn observe(tx: &Transaction<'_>, key: &StorageKey, bytes: &[u8]) -> R
                 suspended: false,
                 blocked: false,
                 replacement: None,
+                revoked: false,
             }
         }
         Err(error) => return Err(error),
@@ -519,6 +531,7 @@ impl ClientStore {
         next.verified = true;
         save(&tx, &self.key, &old, &previous)?;
         save(&tx, &self.key, &new, &next)?;
+        release_sessions(&tx, &self.key, &old)?;
         tx.commit()?;
         Ok(())
     }
@@ -590,20 +603,51 @@ pub(super) fn block(
     record.blocked = blocked;
     save(tx, key, id, &record)
 }
+/// A replaced or revoked reference can never carry mail again: cancel the packets
+/// queued to its live sessions, drop their waits and retire them. History is kept.
+pub(super) fn release_sessions(
+    tx: &Transaction<'_>,
+    key: &StorageKey,
+    peer: &Id,
+) -> Result<usize, Error> {
+    let ids: Vec<Vec<u8>> = tx
+        .prepare("SELECT id FROM sessions WHERE peer=?1 AND retired=0 ORDER BY id")?
+        .query_map([peer.as_slice()], |r| r.get(0))?
+        .collect::<Result<_, _>>()?;
+    let mut released = 0;
+    for raw in ids {
+        let session: Id = raw.try_into().map_err(|_| Error::InvalidStore)?;
+        super::outbound::cancel_queued(tx, key, &session)?;
+        tx.execute(
+            "DELETE FROM outbound_backoff WHERE session=?1",
+            [session.as_slice()],
+        )?;
+        match super::retirement::retire(tx, key, session) {
+            Ok(()) => released += 1,
+            Err(Error::NotFound | Error::Conflict | Error::UnsupportedSession) => {}
+            Err(error) => return Err(error),
+        }
+    }
+    Ok(released)
+}
 /// Retire an idle session for a peer that has reached its limit. Refuses when every
 /// session still has a packet queued or a handshake open, which keeps the guarantee
 /// that retirement never discards work that is still on its way out.
 fn reclaim_session_slot(tx: &Transaction<'_>, key: &StorageKey, peer: &Id) -> Result<(), Error> {
     let live = selection::selected(tx, key, peer).ok().flatten();
-    let candidates: Vec<Vec<u8>> = tx
+    let candidates: Vec<(Vec<u8>, bool)> = tx
         .prepare(
-            "SELECT id FROM sessions WHERE peer=?1 AND retired=0 AND NOT EXISTS(SELECT 1 FROM outbox o WHERE o.session=sessions.id AND o.packet IS NOT NULL) AND NOT EXISTS(SELECT 1 FROM initiations i WHERE i.session=sessions.id) ORDER BY id",
+            "SELECT id, EXISTS(SELECT 1 FROM initiations i WHERE i.session=sessions.id) FROM sessions WHERE peer=?1 AND retired=0 AND NOT EXISTS(SELECT 1 FROM outbox o WHERE o.session=sessions.id AND o.packet IS NOT NULL) ORDER BY id",
         )?
-        .query_map([peer.as_slice()], |r| r.get(0))?
+        .query_map([peer.as_slice()], |r| Ok((r.get::<_, Vec<u8>>(0)?, r.get::<_, bool>(1)?)))?
         .collect::<Result<_, _>>()?;
-    for raw in candidates {
+    for (raw, initiated) in candidates {
         let id: Id = raw.try_into().map_err(|_| Error::InvalidStore)?;
         if live == Some(id) {
+            continue;
+        }
+        // An initiation row outlives the handshake; only an unconfirmed one is still open.
+        if initiated && !super::load(tx, key, &id)?.1.peer_confirmed() {
             continue;
         }
         match super::retirement::retire(tx, key, id) {
@@ -681,14 +725,17 @@ pub(super) fn link_trust(
                 suspended: false,
                 blocked: false,
                 replacement: None,
+                revoked: false,
             }
         }
         Err(error) => return Err(error),
     };
+    // A server-revoked device can never be re-linked; revocation is irreversible.
     if record.signed.binding != signed.binding
         || record.candidate.is_some()
         || record.blocked
         || record.replacement.is_some()
+        || record.revoked
     {
         return Err(Error::Conflict);
     }
@@ -862,6 +909,9 @@ impl ClientStore {
                 record.replacement = Some((*next, fingerprint(&signed.binding)?));
             }
             save(&tx, &self.key, id, record)?;
+            if record.replacement.is_some() {
+                release_sessions(&tx, &self.key, id)?;
+            }
         }
         for (id, signed) in &current {
             let raw = signed.to_bytes().map_err(|_| Error::InvalidStore)?;
@@ -901,6 +951,9 @@ impl ClientStore {
                 record.replacement = Some((*next, fingerprint(&signed.binding)?));
             }
             save(&tx, &self.key, id, record)?;
+            if record.replacement.is_some() {
+                release_sessions(&tx, &self.key, id)?;
+            }
         }
         tx.commit()?;
         Ok(paused.then_some(digest))

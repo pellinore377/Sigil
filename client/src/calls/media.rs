@@ -109,7 +109,11 @@ impl ClientStore {
         }
         let digest = record.state.digest().map_err(failure)?;
         let mut replacement = None;
-        if media.state != Some(digest) || media.sender.is_none() {
+        // The owner's fan-out for this state lacking our key means it never got it.
+        let unshared = record.owner_peer.is_some()
+            && !record.shares.is_empty()
+            && !record.shares.iter().any(|s| s.key.context.sender == own);
+        if media.state != Some(digest) || media.sender.is_none() || unshared {
             record.generation = record.generation.checked_add(1).ok_or(Error::Limit)?;
             let (sender, key) = sigil_calls::Sender::generate(sigil_calls::Context {
                 call: record.id(),
@@ -345,7 +349,8 @@ fn anticipated(record: &Record, ready: &Ready) -> Option<State> {
 
 /// Sign a sender key against an anticipated state and send it with the declaration.
 /// The owner applies its usual checks; a state it does not commit simply drops the
-/// share and the ordinary refresh issues another one.
+/// share and the ordinary refresh issues another one. A share that overtakes its
+/// declaration is dropped too; the refresh notices the owner's fan-out lacks it.
 fn declare(
     tx: &Transaction<'_>,
     key: &StorageKey,

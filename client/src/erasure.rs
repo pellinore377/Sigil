@@ -58,11 +58,17 @@ pub(crate) fn advance(
 impl ClientStore {
     /// Bounded removal of obsolete bodies; retain packet commitments and replay IDs.
     pub fn erase_obsolete_journals(&mut self, now: u64) -> Result<JournalErasure, Error> {
+        let own = self
+            .connection_session()?
+            .map(|session| crate::connection::decode_id(&session.device_id))
+            .transpose()?;
         let tx = self
             .db
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
         let now = conversations::time_floor(&tx, &self.key, now)?;
         let mut result = JournalErasure::default();
+        // Only the rows unacknowledged deliveries still reference stay routable after a crash.
+        let pending = crate::incoming::unacknowledged(&tx, &self.key, own.as_ref())?;
         for (kind, table, domain) in [(0, "inbox", 2), (1, "outbox", 9)] {
             let after = cursor(&tx, &self.key, kind)?;
             let rows = tx.prepare(&format!("SELECT rowid,session,id,CASE WHEN content IS NULL THEN NULL WHEN length(content)<=65572 THEN content ELSE X'' END FROM {table} WHERE rowid>?1 ORDER BY rowid LIMIT 16"))?.query_map([after], |r| Ok((r.get::<_,i64>(0)?, r.get::<_,Vec<u8>>(1)?, r.get::<_,Vec<u8>>(2)?, r.get::<_,Option<Vec<u8>>>(3)?)))?.collect::<Result<Vec<_>,_>>()?;
@@ -86,13 +92,10 @@ impl ClientStore {
                     Ok(()) => continue,
                     Err(e) => return Err(e),
                 }
-                // An unacknowledged incoming result must remain routable after a crash.
                 if kind == 0
-                    && tx.query_row(
-                        "SELECT EXISTS(SELECT 1 FROM incoming WHERE acknowledged=0)",
-                        [],
-                        |r| r.get::<_, bool>(0),
-                    )?
+                    && pending
+                        .as_ref()
+                        .is_none_or(|pending| pending.contains(&(session, id)))
                 {
                     continue;
                 }

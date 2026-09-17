@@ -372,7 +372,8 @@ impl ClientStore {
             .collect::<Result<Vec<_>, _>>()?;
         let mut count = 0;
         let mut last = [0; 32];
-        for id in ids {
+        let mut full = false;
+        'peers: for id in ids {
             let peer: Id = id.try_into().map_err(|_| Error::InvalidStore)?;
             last = peer;
             let known = peers::known(&self.db, &self.key, &peer)?;
@@ -510,7 +511,16 @@ impl ClientStore {
                 let expected = cursor.clone();
                 let transfer = cursor.transfer.as_mut().ok_or(Error::InvalidStore)?;
                 let op = transfer.pending.as_ref().ok_or(Error::InvalidStore)?;
-                self.queue_peer_operation(peer, op, 1, now)?;
+                match self.queue_peer_operation(peer, op, 1, now) {
+                    Ok(()) => {}
+                    // The intent table is full and only the send stages drain it; the
+                    // saved cursor keeps this fragment pending for the next pass.
+                    Err(Error::Limit) => {
+                        full = true;
+                        break 'peers;
+                    }
+                    Err(error) => return Err(error),
+                }
                 transfer.pending = None;
                 transfer.next += 1;
                 if transfer.next == transfer.total {
@@ -527,7 +537,9 @@ impl ClientStore {
                 break;
             }
         }
-        save(&self.db, &self.key, "conversation_sync", &[0; 32], &last)?;
+        if !full {
+            save(&self.db, &self.key, "conversation_sync", &[0; 32], &last)?;
+        }
         Ok(count)
     }
 }

@@ -258,6 +258,11 @@ fn deleted_transport_bodies_are_erased_atomically_and_replay_stays_obsolete() {
     ));
 }
 fn deliver(c: &mut ClientStore, other: &mut ClientStore, peer: Id, op: &Operation, now: u64) {
+    send(c, peer, op, now);
+    other.accept_delivery(&next(other)).unwrap();
+    other.acknowledge_incoming_online().unwrap();
+}
+fn send(c: &mut ClientStore, peer: Id, op: &Operation, now: u64) {
     c.queue_peer_operation(peer, op, now, now).unwrap();
     let mut sent = c.resume_send_intents_online(now).unwrap();
     if sent.is_empty() {
@@ -267,8 +272,42 @@ fn deliver(c: &mut ClientStore, other: &mut ClientStore, peer: Id, op: &Operatio
         let session = v.result.unwrap();
         c.send_pending_online(session, now).unwrap();
     }
-    other.accept_delivery(&next(other)).unwrap();
-    other.acknowledge_incoming_online().unwrap();
+}
+#[test]
+fn an_unacknowledged_delivery_retains_only_its_own_inbox_row() {
+    let (_dir, _fixture, mut a, mut b, now) = pair();
+    let (_, peer) = trust(&mut a, &mut b);
+    let author = account(&mut a);
+    let first = a
+        .conversation_operation([250; 32], post("erase this one"))
+        .unwrap();
+    deliver(&mut a, &mut b, peer, &first, now);
+    let second = a
+        .conversation_operation([251; 32], post("keep this one"))
+        .unwrap();
+    send(&mut a, peer, &second, now);
+    b.accept_delivery(&next(&b)).unwrap();
+    b.db.execute_batch("CREATE TRIGGER fail BEFORE UPDATE ON incoming BEGIN SELECT RAISE(ABORT,'synthetic'); END;").unwrap();
+    assert!(b.acknowledge_incoming_online().is_err());
+    let remove = a
+        .conversation_operation(
+            [252; 32],
+            Action::Delete {
+                target: Reference {
+                    author,
+                    message: first.id,
+                },
+            },
+        )
+        .unwrap();
+    send(&mut a, peer, &remove, now);
+    b.accept_delivery(&next(&b)).unwrap();
+    b.maintain_history(now).unwrap();
+    // The stuck row keeps only its own body; the deleted one still erases.
+    assert_eq!(b.erase_obsolete_journals(now).unwrap().erased, 1);
+    b.db.execute_batch("DROP TRIGGER fail").unwrap();
+    assert_eq!(b.acknowledge_incoming_online().unwrap(), 2);
+    assert_eq!(b.erase_obsolete_journals(now).unwrap().erased, 0);
 }
 #[test]
 fn direct_actions_survive_reordering_forgery_replay_and_restart() {
@@ -523,7 +562,7 @@ fn remote_private_state_and_device_spoofing_roll_back() {
     );
 }
 
-fn linked() -> (
+pub(crate) fn linked() -> (
     tempfile::TempDir,
     crate::network::tests::Fixture,
     ClientStore,
@@ -1801,4 +1840,25 @@ fn forwarded_archival_catalog_does_not_restore_contact_trust() {
             .unwrap(),
         0
     );
+}
+
+/// A full intent table stops the copy fan-out for the pass instead of failing it, so
+/// the send stages that drain intents still run and the kept fragment goes out next.
+#[test]
+fn full_send_intent_table_stops_copy_fanout_without_failing_the_pass() {
+    let (_dir, _fixture, mut a, _b, _ap, bp, now) = linked();
+    for n in 0..256u32 {
+        let mut id = [7; 32];
+        id[..4].copy_from_slice(&n.to_be_bytes());
+        a.queue_peer_text(bp, id, "filler", now, now).unwrap();
+    }
+    let op = a.conversation_operation([185; 32], post("copied note")).unwrap();
+    a.note_to_self(&op, now, now).unwrap();
+    let step = a.sync_step_online(now);
+    assert!(step.failure.is_none(), "{:?}", step.issue());
+    assert_eq!(step.conversation_copies, 0);
+    assert!(!step.sends.is_empty());
+    let step = a.sync_step_online(now);
+    assert!(step.failure.is_none(), "{:?}", step.issue());
+    assert!(step.conversation_copies > 0);
 }

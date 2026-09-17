@@ -485,10 +485,12 @@ struct Received {
     digest: Id,
     expires: u64,
     acknowledged: bool,
+    /// Sender fingerprint at accept time; None for rows sealed before it was recorded.
+    sender: Option<Id>,
 }
 impl Received {
     fn seal(&self, key: &StorageKey, own: &Id, sequence: i64) -> Result<Vec<u8>, Error> {
-        let mut bytes = Vec::with_capacity(169);
+        let mut bytes = Vec::with_capacity(201);
         for id in [
             &self.message,
             &self.group,
@@ -500,8 +502,32 @@ impl Received {
         }
         bytes.extend_from_slice(&self.expires.to_be_bytes());
         bytes.push(self.acknowledged as u8);
+        if let Some(sender) = &self.sender {
+            bytes.extend_from_slice(sender);
+        }
         Ok(key.seal(&bytes, &crate::binding(53, own, &sequence.to_be_bytes()))?)
     }
+}
+/// Message ids of every unacknowledged group delivery; None when any cannot be decoded.
+pub(super) fn unacknowledged(
+    db: &Connection,
+    key: &StorageKey,
+    own: &Id,
+) -> Result<Option<std::collections::BTreeSet<Id>>, Error> {
+    let sequences: Vec<i64> = db
+        .prepare("SELECT sequence FROM group_incoming WHERE acknowledged=0")?
+        .query_map([], |r| r.get(0))?
+        .collect::<Result<_, _>>()?;
+    let mut pending = std::collections::BTreeSet::new();
+    for sequence in sequences {
+        match received(db, key, own, sequence) {
+            Ok(Some(record)) => {
+                pending.insert(record.message);
+            }
+            _ => return Ok(None),
+        }
+    }
+    Ok(Some(pending))
 }
 fn received(
     db: &Connection,
@@ -509,16 +535,17 @@ fn received(
     own: &Id,
     sequence: i64,
 ) -> Result<Option<Received>, Error> {
-    let row: Option<(Vec<u8>,bool)> = db.query_row("SELECT CASE WHEN length(state)=205 THEN state END,acknowledged FROM group_incoming WHERE sequence=?1", [sequence], |r| Ok((r.get(0)?,r.get(1)?))).optional()?;
+    let row: Option<(Vec<u8>,bool)> = db.query_row("SELECT CASE WHEN length(state) IN (205,237) THEN state END,acknowledged FROM group_incoming WHERE sequence=?1", [sequence], |r| Ok((r.get(0)?,r.get(1)?))).optional()?;
     let Some((sealed, ack)) = row else {
         return Ok(None);
     };
     let bytes = key.open(&sealed, &crate::binding(53, own, &sequence.to_be_bytes()))?;
-    if bytes.len() != 169 || bytes[168] != ack as u8 {
+    if !matches!(bytes.len(), 169 | 201) || bytes[168] != ack as u8 {
         return Err(Error::InvalidStore);
     }
     let id = |n| <Id>::try_from(&bytes[n..n + 32]).map_err(|_| Error::InvalidStore);
     let record = Received {
+        sender: (bytes.len() == 201).then(|| id(169)).transpose()?,
         message: id(0)?,
         group: id(32)?,
         peer: id(64)?,
@@ -544,9 +571,10 @@ fn committed(
 ) -> Result<GroupMessage, Error> {
     let stored = load(db, key, own, &record.message)?.ok_or(Error::InvalidStore)?;
     let known = peers::known(db, key, &record.peer)?;
+    // Compare against the fingerprint authenticated at accept; a later approved binding change must not strand the row.
     if stored.message.outgoing
         || stored.message.context.group != record.group
-        || stored.message.context.sender != known.fingerprint
+        || stored.message.context.sender != record.sender.unwrap_or(known.fingerprint)
         || stored.digest != record.digest
         || transport_id(
             &stored.message.context,
@@ -719,6 +747,7 @@ impl ClientStore {
             digest,
             expires: delivery.expires_at,
             acknowledged: false,
+            sender: Some(context.sender),
         };
         tx.execute(
             "INSERT INTO group_incoming VALUES(?1,0,?2)",

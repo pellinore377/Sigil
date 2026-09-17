@@ -236,6 +236,7 @@ pub(crate) fn install(
                 generation: 0,
                 shares: Vec::new(),
                 connect_sequence: 0,
+                pending_shares: Vec::new(),
             };
             record.pin(state)?;
             for p in &state.participants {
@@ -313,6 +314,7 @@ pub(crate) fn install(
             record.state = state;
             record.transfer = None;
             record.shares.clear();
+            record.adopt(Some(known.fingerprint))?;
             if record.state.roster.roster.closed {
                 record.missed |= record.phase == Phase::Ringing;
                 record.finish(Phase::Ended);
@@ -487,7 +489,17 @@ pub(crate) fn install(
                     return Err(Error::InvalidEvent);
                 }
                 if share.state != record.state.digest().map_err(failure)? {
-                    return Ok(Some(marker));
+                    // Held until the named state lands: a member takes them from the owner,
+                    // the owner only a participant's own share.
+                    let own_share = record.owner_peer.is_none()
+                        && record.state.participants.iter().any(|p| {
+                            p.member.id == share.key.context.sender
+                                && p.fingerprint().ok() == Some(known.fingerprint)
+                        });
+                    if record.owner_peer == Some(*peer_id) || own_share {
+                        record.hold(known.fingerprint, share);
+                    }
+                    continue;
                 }
                 share.verify(&record.state).map_err(failure)?;
                 if let Some(owner) = record.owner_peer {

@@ -33,6 +33,18 @@ pub struct IncomingAttempt {
     /// Packet type tag (first four payload bytes as hex) for diagnostics.
     pub kind: String,
 }
+/// One acknowledgement the pass could not complete; the slot waits for its condition to change.
+#[derive(Debug)]
+pub struct AcknowledgeAttempt {
+    pub sequence: i64,
+    pub result: Result<(), Error>,
+}
+/// Per-item verdicts stay here; only transport and store faults fail the stage.
+#[derive(Debug, Default)]
+pub struct Acknowledgements {
+    pub acknowledged: usize,
+    pub rejected: Vec<AcknowledgeAttempt>,
+}
 pub enum MailboxEvent {
     Text(Incoming),
     File(Incoming),
@@ -117,6 +129,29 @@ fn record(
         ),
         acknowledged,
     }))
+}
+
+/// (session, message) of every unacknowledged delivery; None when any cannot be decoded.
+pub(crate) fn unacknowledged(
+    db: &Connection,
+    key: &StorageKey,
+    own: Option<&Id>,
+) -> Result<Option<std::collections::BTreeSet<(Id, Id)>>, Error> {
+    let sequences: Vec<i64> = db
+        .prepare("SELECT sequence FROM incoming WHERE acknowledged=0")?
+        .query_map([], |r| r.get(0))?
+        .collect::<Result<_, _>>()?;
+    let mut pending = std::collections::BTreeSet::new();
+    for sequence in sequences {
+        let Some(own) = own else { return Ok(None) };
+        match record(db, key, own, sequence) {
+            Ok(Some(record)) => {
+                pending.insert((record.session, record.message));
+            }
+            _ => return Ok(None),
+        }
+    }
+    Ok(Some(pending))
 }
 
 impl ClientStore {
@@ -491,12 +526,14 @@ impl ClientStore {
             return Err(Error::Expired);
         }
         let network = self.connected_client()?;
-        let own = decode_id(
-            &self
-                .connection_session()?
-                .ok_or(Error::Unprepared)?
-                .device_id,
-        )?;
+        let connection = self.connection_session()?.ok_or(Error::Unprepared)?;
+        let own = decode_id(&connection.device_id)?;
+        let server = connection
+            .address
+            .split_once(':')
+            .ok_or(Error::InvalidStore)?
+            .1
+            .to_owned();
         let (after, expected) = cursor(&self.db, &self.key, &own)?;
         let deliveries = network.mailbox_after(after)?;
         let next = deliveries.last().map_or(0, |delivery| delivery.sequence);
@@ -559,6 +596,10 @@ impl ClientStore {
                             }
                         }
                         Err(Error::Obsolete) => Ok(MailboxEvent::Conversation),
+                        // A replaced device never regains acceptance; release its slot.
+                        Err(Error::Unprepared) if self.sender_replaced(&server, delivery) => {
+                            Err(Error::Obsolete)
+                        }
                         Err(error) => match self.resolve_failed_delivery(delivery) {
                             Ok(true) => {
                                 decode_id(&delivery.message_id).map(MailboxEvent::RecoveredDelivery)
@@ -591,6 +632,12 @@ impl ClientStore {
         Ok(attempts)
     }
 
+    /// Replacement is approved from the peer's device inventory and never cleared.
+    fn sender_replaced(&self, server: &str, delivery: &Delivery) -> bool {
+        crate::federation::delivery_peer(&self.db, &self.key, server, delivery)
+            .and_then(|peer| peers::known(&self.db, &self.key, &peer))
+            .is_ok_and(|known| known.replaced_by.is_some())
+    }
     /// Retry at most 16 durable acknowledgements. Network success followed by a
     /// local failure safely retries the same sequence after restart.
     /// A delivery keeps its slot only while another attempt could still succeed: a local
@@ -638,7 +685,16 @@ impl ClientStore {
         )?;
         Ok(())
     }
+    /// The first rejected item is the error, as before; the report form keeps them apart.
     pub fn acknowledge_incoming_online(&mut self) -> Result<usize, Error> {
+        let report = self.acknowledge_incoming_report_online()?;
+        match report.rejected.into_iter().next() {
+            Some(attempt) => Err(attempt.result.err().ok_or(Error::InvalidStore)?),
+            None => Ok(report.acknowledged),
+        }
+    }
+    /// Err only for faults a backoff can help; per-item verdicts are reported, not raised.
+    pub fn acknowledge_incoming_report_online(&mut self) -> Result<Acknowledgements, Error> {
         let network = self.connected_client()?;
         let own_statement = self.own_device_binding()?;
         let own = decode_id(
@@ -658,7 +714,7 @@ impl ClientStore {
         // Ordinary deliveries validate in order; controls are independent of them.
         let mut ready = Vec::new();
         let mut halted = None;
-        let mut failure = None;
+        let mut failures = Vec::new();
         for (sequence, control) in sequences {
             // One unusable ordinary delivery stops the ordered chain, not the controls.
             if control == 0 && halted.is_some() {
@@ -669,13 +725,18 @@ impl ClientStore {
                 3 => groups::acknowledge_group(self, sequence),
                 2 => self.acknowledge_recovered_online(sequence),
                 1 => self.acknowledge_retry_online(sequence),
-                _ => self.commit_incoming(&own_statement, &own, sequence).map(|()| ready.push(sequence)),
+                _ => match self.commit_incoming(&own_statement, &own, sequence) {
+                    Ok(()) => Ok(ready.push(sequence)),
+                    // Accepted and sealed already; a later owner action or deadline retired it.
+                    Err(error) if terminal(&error) => self.abandon_committed(&own, sequence),
+                    Err(error) => Err(error),
+                },
             };
             if let Err(error) = result {
                 if control == 0 {
-                    halted = Some(error);
+                    halted = Some((sequence, error));
                 } else {
-                    failure = failure.or(Some(error));
+                    failures.push((sequence, error));
                 }
                 continue;
             }
@@ -699,15 +760,39 @@ impl ClientStore {
                     tx.commit()?;
                     count += 1;
                 }
-                Err(error) => {
-                    failure = failure.or(Some(Error::from(error)));
-                }
+                Err(error) => failures.push((*sequence, Error::from(error))),
             }
         }
-        if let Some(error) = halted.or(failure) {
-            return Err(error);
+        let mut rejected: Vec<AcknowledgeAttempt> = halted
+            .into_iter()
+            .chain(failures)
+            .map(|(sequence, error)| AcknowledgeAttempt { sequence, result: Err(error) })
+            .collect();
+        // Transport and store faults fail the stage so the schedule backs off; verdicts do not.
+        if let Some(index) = rejected
+            .iter()
+            .position(|item| matches!(item.result, Err(Error::Network(_) | Error::Storage(_) | Error::Io(_))))
+        {
+            return Err(rejected.swap_remove(index).result.err().ok_or(Error::InvalidStore)?);
         }
-        Ok(count)
+        Ok(Acknowledgements { acknowledged: count, rejected })
+    }
+    /// The sealed record proves acceptance; release the slot without re-validating.
+    fn abandon_committed(&mut self, own: &Id, sequence: i64) -> Result<(), Error> {
+        let tx = self
+            .db
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let mut current = record(&tx, &self.key, own, sequence)?.ok_or(Error::InvalidStore)?;
+        current.acknowledged = true;
+        tx.execute(
+            "UPDATE incoming SET acknowledged=1,state=?1 WHERE sequence=?2",
+            (current.seal(&self.key, own, sequence)?, sequence),
+        )?;
+        tx.execute(
+            "INSERT OR IGNORE INTO abandoned_deliveries(sequence) VALUES(?1)",
+            [sequence],
+        )?;
+        Ok(tx.commit()?)
     }
     /// Validates and remembers a delivery before its acknowledgement leaves.
     fn commit_incoming(&mut self, own_statement: &[u8], own: &Id, sequence: i64) -> Result<(), Error> {
@@ -735,6 +820,13 @@ impl ClientStore {
         )?;
         Ok(tx.commit()?)
     }
+}
+/// Failures no retry can clear; local, network and crypto faults stay retryable.
+fn terminal(error: &Error) -> bool {
+    matches!(
+        error,
+        Error::Obsolete | Error::Expired | Error::InvalidEvent | Error::Conflict
+    )
 }
 fn cursor(db: &Connection, key: &StorageKey, own: &Id) -> Result<(i64, Option<Vec<u8>>), Error> {
     let sealed: Option<Vec<u8>> = db

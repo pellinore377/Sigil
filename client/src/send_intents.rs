@@ -55,6 +55,22 @@ fn seal(key: &StorageKey, own: &Id, id: &Id, intent: &Intent) -> Result<Vec<u8>,
     );
     Ok(key.seal(&raw, &binding(36, id, own))?)
 }
+/// An intent that will never send must not keep holding its prekey claim: pending
+/// claims are capped at 64, and a dead one starves every later new-session send.
+fn abandon_intent_claim(
+    tx: &Transaction<'_>,
+    key: &StorageKey,
+    own: &Id,
+    identity: &Id,
+    id: &Id,
+    generation: u32,
+) -> Result<(), Error> {
+    let claim = work_id(own, id, generation, b"claim");
+    match claims::abandon(tx, key, &claim, identity) {
+        Ok(()) | Err(Error::NotFound) => Ok(()),
+        Err(error) => Err(error),
+    }
+}
 fn work_id(own: &Id, id: &Id, generation: u32, role: &[u8]) -> Id {
     Sha256::digest(
         [
@@ -275,24 +291,97 @@ impl ClientStore {
         tx.commit()?;
         Ok(())
     }
+    /// A replaced peer is an authenticated local fact: move the frozen intent to the
+    /// trusted replacement (keeping generation), or wait if it is not yet trusted.
+    fn retarget_replaced_intent(
+        &mut self,
+        fingerprint: &Id,
+        id: Id,
+        intent: &mut Intent,
+        expected: &mut Vec<u8>,
+    ) -> Result<(), Error> {
+        let Some(replacement) = peers::known(&self.db, &self.key, &intent.peer)?.replaced_by else {
+            return Ok(());
+        };
+        // A delivery already frozen to the old record is never rerouted.
+        if self.db.query_row(
+            "SELECT EXISTS(SELECT 1 FROM deliveries WHERE id=?1)",
+            [id.as_slice()],
+            |r| r.get::<_, bool>(0),
+        )? {
+            return Ok(());
+        }
+        if !peers::known(&self.db, &self.key, &replacement)?.trusted {
+            return Err(Error::Unprepared);
+        }
+        let own = self.own_device_binding()?;
+        let text = Direct::from_bytes(&intent.text).map_err(|_| Error::InvalidStore)?;
+        let old = intent.peer;
+        let tx = self
+            .db
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        if read(&tx, &self.key, fingerprint, &id)?.1 != *expected {
+            return Err(Error::Conflict);
+        }
+        let retargeted =
+            context(&tx, &self.key, &own, &replacement)?.encode(id, text.content, text.timestamp)?;
+        intent.peer = replacement;
+        intent.text = retargeted;
+        let resealed = seal(&self.key, fingerprint, &id, intent)?;
+        tx.execute(
+            "UPDATE send_intents SET state=?1 WHERE id=?2",
+            (resealed.as_slice(), id.as_slice()),
+        )?;
+        // Release and retire an initiating session bound to the superseded record.
+        let sessions: Vec<Vec<u8>> = tx
+            .prepare("SELECT s.id FROM sessions s WHERE s.peer=?1 AND s.retired=0 AND EXISTS(SELECT 1 FROM initiations i WHERE i.session=s.id)")?
+            .query_map([old.as_slice()], |r| r.get(0))?
+            .collect::<Result<_, _>>()?;
+        for raw in sessions {
+            let session: Id = raw.try_into().map_err(|_| Error::InvalidStore)?;
+            // Same path as every other release, so each message reads Cancelled, not Pending.
+            crate::outbound::cancel_queued(&tx, &self.key, &session)?;
+            match crate::retirement::retire(&tx, &self.key, session) {
+                Ok(()) | Err(Error::NotFound | Error::Conflict | Error::UnsupportedSession) => {}
+                Err(error) => return Err(error),
+            }
+        }
+        tx.commit()?;
+        *expected = resealed;
+        Ok(())
+    }
+    /// Drop an intent that can never send and record the cancellation for its reader.
+    fn cancel_send_intent(&mut self, id: Id, expected: &[u8], generation: u32) -> Result<(), Error> {
+        let identity = self.identity()?;
+        let fingerprint = device_fingerprint(&self.own_device_binding()?)?;
+        let tx = self
+            .db
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        if tx.execute(
+            "DELETE FROM send_intents WHERE id=?1 AND state=?2",
+            (id.as_slice(), expected),
+        )? == 1
+        {
+            crate::conversations::mark_cancelled(&tx, &self.key, &[0; 32], &id)?;
+            abandon_intent_claim(&tx, &self.key, &fingerprint, &identity, &id, generation)?;
+        }
+        tx.commit()?;
+        Ok(())
+    }
     fn prepare_send_intent_online(&mut self, id: Id, now: u64) -> Result<Id, Error> {
         let own = self.own_device_binding()?;
         let fingerprint = device_fingerprint(&own)?;
         let (mut intent, mut expected) = read(&self.db, &self.key, &fingerprint, &id)?;
+        self.retarget_replaced_intent(&fingerprint, id, &mut intent, &mut expected)?;
+        // A device the server revoked never serves a prekey again; the claim would 404 forever.
+        if peers::known(&self.db, &self.key, &intent.peer)?.revoked {
+            self.cancel_send_intent(id, &expected, intent.generation)?;
+            return Err(Error::Obsolete);
+        }
         match crate::conversations::check_send(&self.db, &self.key, &intent.text, now) {
             Ok(()) => {}
             Err(Error::Obsolete) => {
-                let tx = self
-                    .db
-                    .transaction_with_behavior(TransactionBehavior::Immediate)?;
-                if tx.execute(
-                    "DELETE FROM send_intents WHERE id=?1 AND state=?2",
-                    (id.as_slice(), expected),
-                )? == 1
-                {
-                    crate::conversations::mark_cancelled(&tx, &self.key, &[0; 32], &id)?;
-                }
-                tx.commit()?;
+                self.cancel_send_intent(id, &expected, intent.generation)?;
                 return Err(Error::Obsolete);
             }
             Err(e) => return Err(e),
@@ -306,10 +395,18 @@ impl ClientStore {
         if crate::event::ephemeral_lifetime(text.content)
             .is_some_and(|life| now > intent.started.saturating_add(life))
         {
-            self.db.execute(
+            let identity = self.identity()?;
+            let tx = self
+                .db
+                .transaction_with_behavior(TransactionBehavior::Immediate)?;
+            if tx.execute(
                 "DELETE FROM send_intents WHERE id=?1 AND state=?2",
                 (id.as_slice(), expected),
-            )?;
+            )? == 1
+            {
+                abandon_intent_claim(&tx, &self.key, &fingerprint, &identity, &id, intent.generation)?;
+            }
+            tx.commit()?;
             return Err(Error::Obsolete);
         }
         if context(&self.db, &self.key, &own, &intent.peer)?.encode(
@@ -414,32 +511,62 @@ impl ClientStore {
         }
         let own = device_fingerprint(&self.own_device_binding()?)?;
         let (after, expected) = cursor(&self.db, &self.key, &own)?;
-        // Intents whose recipient answered full or is not ready wait out their backoff; missing stock retries.
-        let query = "SELECT id FROM send_intents WHERE id>?1 AND NOT EXISTS(SELECT 1 FROM send_intent_backoff b WHERE b.id=send_intents.id AND b.until>?2) ORDER BY id LIMIT 16";
+        // Never-attempted intents carry no backoff row; take them first, oldest first,
+        // so a fresh message goes out in the pass that created it.
+        let fresh = "SELECT id FROM send_intents s WHERE NOT EXISTS(SELECT 1 FROM send_intent_backoff b WHERE b.id=s.id) ORDER BY rowid LIMIT 16";
         let mut ids: Vec<Vec<u8>> = self
             .db
-            .prepare(query)?
-            .query_map((&after, now as i64), |r| r.get(0))?
+            .prepare(fresh)?
+            .query_map([], |r| r.get(0))?
             .collect::<Result<_, _>>()?;
-        if ids.is_empty() && !after.is_empty() {
-            // Wrap within the pass so a fresh intent never waits for the next one.
-            ids = self
+        // Fill the remaining slots from due backed-off intents, round-robin by id cursor.
+        if ids.len() < 16 {
+            let remaining = (16 - ids.len()) as i64;
+            let due = "SELECT id FROM send_intents WHERE id>?1 AND EXISTS(SELECT 1 FROM send_intent_backoff b WHERE b.id=send_intents.id AND b.until<=?2) ORDER BY id LIMIT ?3";
+            let mut backlog: Vec<Vec<u8>> = self
                 .db
-                .prepare(query)?
-                .query_map((Vec::new(), now as i64), |r| r.get(0))?
+                .prepare(due)?
+                .query_map((&after, now as i64, remaining), |r| r.get(0))?
                 .collect::<Result<_, _>>()?;
+            if backlog.is_empty() && !after.is_empty() {
+                backlog = self
+                    .db
+                    .prepare(due)?
+                    .query_map((Vec::new(), now as i64, remaining), |r| r.get(0))?
+                    .collect::<Result<_, _>>()?;
+            }
+            ids.extend(backlog);
         }
         let mut results = Vec::new();
-        let mut next = Vec::new();
+        let mut next = after.clone();
         for raw in ids {
             let id: Id = raw.try_into().map_err(|_| Error::InvalidStore)?;
-            let result = self.prepare_send_intent_online(id, now);
+            let backlog = self.db.query_row(
+                "SELECT EXISTS(SELECT 1 FROM send_intent_backoff WHERE id=?1)",
+                [id.as_slice()],
+                |r| r.get::<_, bool>(0),
+            )?;
+            let mut result = self.prepare_send_intent_online(id, now);
+            // A row a concurrent pass already delivered or cancelled is gone, not missing.
+            if matches!(result, Err(Error::NotFound))
+                && !self.db.query_row(
+                    "SELECT EXISTS(SELECT 1 FROM send_intents WHERE id=?1)",
+                    [id.as_slice()],
+                    |r| r.get::<_, bool>(0),
+                )?
+            {
+                result = Err(Error::Obsolete);
+            }
             let stop =
                 matches!(&result, Err(Error::Network(e)) if !crate::outbound::recipient_full(e));
+            // Every local or recipient failure waits, so a failing row never occupies the
+            // fresh window on the next pass; missing stock (network 404) stays retriable.
             let wait = match &result {
-                Err(Error::Network(e)) if crate::outbound::recipient_full(e) => 60,
-                Err(Error::Unprepared | Error::Expired | Error::Limit) => 60,
-                _ => 0,
+                Ok(_) | Err(Error::Obsolete) => 0,
+                Err(Error::Network(e)) if !crate::outbound::recipient_full(e) => 0,
+                // Store failures are transient or catastrophic, never per-item; retry promptly.
+                Err(Error::Storage(_) | Error::InvalidStore) => 0,
+                _ => 60,
             };
             if wait > 0 {
                 self.db.execute(
@@ -449,8 +576,10 @@ impl ClientStore {
             } else if result.is_ok() || matches!(result, Err(Error::Obsolete)) {
                 self.db.execute("DELETE FROM send_intent_backoff WHERE id=?1", [id.as_slice()])?;
             }
+            if backlog {
+                next = id.to_vec();
+            }
             results.push(SendIntentAttempt { id, result });
-            next = id.to_vec();
             if stop {
                 break;
             }

@@ -1495,3 +1495,135 @@ fn a_deadline_the_clock_has_not_reached_is_kept_without_reporting_a_failure() {
         1
     );
 }
+
+/// A control past its signed deadline is dead work: the maintenance pass must
+/// tombstone it so it stops occupying a scan slot and quota on every pass.
+#[test]
+fn expired_outgoing_controls_are_retired_by_the_maintenance_pass() {
+    let (_dir, _fixture, mut alice, mut bob, now) = pair();
+    let (_a, b) = trust(&mut alice, &mut bob);
+    start(&mut alice, b, now);
+    bob.prepare_retry_request(&next(&bob), now).unwrap();
+    let later = now + 604800;
+    let step = bob.sync_step_with_maintenance(later, true);
+    assert!(step.failure.is_none(), "{:?}", step.failure);
+    let cleanup = step.retry_cleanup.as_ref().expect("gc ran");
+    assert_eq!((cleanup.reclaimed, cleanup.failed), (1, 0));
+    // The final stage's timing is closed only by a following begin, as elsewhere.
+    for name in [
+        "reclaim_outgoing_retry_controls",
+        "reclaim_accepted_retry_controls",
+        "reclaim_retry_journals",
+    ] {
+        assert!(step.timings.iter().any(|(n, _)| *n == name), "{name} timed");
+    }
+    assert_eq!(count(&bob, "retired_retry_outbox"), 1);
+    assert_eq!(count(&bob, "retry_outbox"), 0);
+    assert!(bob.resume_retry_controls_online(later).unwrap().is_empty());
+    assert!(bob
+        .sync_step_with_maintenance(later, false)
+        .retry_cleanup
+        .is_none());
+}
+
+/// One row the scan cannot retire must not hold the cursor on the same batch forever.
+#[test]
+fn outgoing_control_gc_skips_an_already_retired_row_and_still_advances() {
+    let (_dir, _fixture, mut alice, mut bob, now) = pair();
+    let (_a, b) = trust(&mut alice, &mut bob);
+    start(&mut alice, b, now);
+    let mut failed = next(&bob);
+    let first = bob.prepare_retry_request(&failed, now).unwrap();
+    failed.message_id = transport::hex(&[101; 32]);
+    bob.prepare_retry_request(&failed, now).unwrap();
+    let own = device_fingerprint(&bob.own_device_binding().unwrap()).unwrap();
+    let mut bytes = own.to_vec();
+    bytes.extend_from_slice(&(now + 604800).to_be_bytes());
+    let state = bob
+        .key
+        .seal(&bytes, &binding(25, &first, b"outgoing retry retired"))
+        .unwrap();
+    bob.db
+        .execute(
+            "INSERT INTO retired_retry_outbox VALUES(?1,?2)",
+            (first.as_slice(), state),
+        )
+        .unwrap();
+    let progress = bob.reclaim_outgoing_retry_controls(now + 604800).unwrap();
+    assert_eq!((progress.scanned, progress.retired), (1, 1));
+    assert_eq!(count(&bob, "retry_outbox"), 1);
+    assert_eq!(count(&bob, "retired_retry_outbox"), 2);
+    // The cursor moved past both rows: the next call wraps rather than rescanning.
+    assert_eq!(
+        bob.reclaim_outgoing_retry_controls(now + 604800)
+            .unwrap()
+            .scanned,
+        0
+    );
+}
+
+/// A recipient the server refuses is a fact about that control; the rest of the
+/// batch must still be attempted in the same pass.
+#[test]
+fn a_refused_recipient_does_not_stop_the_control_batch() {
+    use crate::connection::tests::credential;
+    let (dir, _fixture, mut alice, mut bob, now) = pair();
+    let (_a, b) = trust(&mut alice, &mut bob);
+    start(&mut alice, b, now);
+    let mut failed = next(&bob);
+    bob.prepare_retry_request(&failed, now).unwrap();
+    failed.message_id = transport::hex(&[102; 32]);
+    bob.prepare_retry_request(&failed, now).unwrap();
+    let mut server = sigil_server::store::Store::open(&dir.path().join("server.db")).unwrap();
+    let target = alice.connection_session().unwrap().unwrap().device_id;
+    server
+        .revoke_device(&credential(&alice), &target, now)
+        .unwrap();
+    let attempts = bob.resume_retry_controls_online(now).unwrap();
+    assert_eq!(attempts.len(), 2, "both controls attempted in one pass");
+    for attempt in &attempts {
+        assert!(
+            matches!(&attempt.result, Err(Error::Network(e)) if crate::outbound::recipient_specific(e)),
+            "{:?}",
+            attempt.result
+        );
+    }
+    let mut step = crate::worker::SyncStep::default();
+    step.retry_controls = attempts;
+    assert!(step.issue().is_none());
+}
+
+/// Same for accepted requests whose requester the server no longer knows.
+#[test]
+fn a_refused_requester_does_not_stop_the_recovery_batch() {
+    use crate::connection::tests::credential;
+    let (dir, _fixture, mut alice, mut bob, now) = pair();
+    let (_a, b) = trust(&mut alice, &mut bob);
+    start(&mut alice, b, now);
+    alice
+        .send_text([3; 32], [5; 32], "second", now, now)
+        .unwrap();
+    alice.send_pending_online([3; 32], now).unwrap();
+    let deliveries = bob.connected_client().unwrap().mailbox().unwrap();
+    assert_eq!(deliveries.len(), 2);
+    for failed in &deliveries {
+        let id = bob.prepare_retry_request(failed, now).unwrap();
+        bob.send_retry_request_online(id, now).unwrap();
+        alice.accept_retry_request(&next(&alice), now).unwrap();
+        alice.acknowledge_incoming_online().unwrap();
+    }
+    let mut server = sigil_server::store::Store::open(&dir.path().join("server.db")).unwrap();
+    let requester = bob.connection_session().unwrap().unwrap().device_id;
+    server
+        .revoke_device(&credential(&bob), &requester, now)
+        .unwrap();
+    let attempts = alice.resume_retries_online(now).unwrap();
+    assert_eq!(attempts.len(), 2, "both requests attempted in one pass");
+    for attempt in &attempts {
+        assert!(
+            matches!(&attempt.result, Err(Error::Network(e)) if crate::outbound::recipient_specific(e)),
+            "{:?}",
+            attempt.result
+        );
+    }
+}

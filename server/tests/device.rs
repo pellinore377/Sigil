@@ -231,9 +231,17 @@ fn link_proof(
     token: &str,
     nonce: u8,
 ) -> sigil_protocol::link::Proof {
+    link_proof_for(session, identity, &IdentityKey::generate().unwrap(), token, nonce)
+}
+fn link_proof_for(
+    session: &Session,
+    identity: &IdentityKey,
+    target: &IdentityKey,
+    token: &str,
+    nonce: u8,
+) -> sigil_protocol::link::Proof {
     use sha2::{Digest, Sha256};
     let sponsor = signed(session, identity);
-    let target = IdentityKey::generate().unwrap();
     let mut binding = sponsor.binding.clone();
     binding.device = [nonce; 32];
     binding.identity = target.public_key();
@@ -407,4 +415,80 @@ fn cancellation_is_sponsor_scoped_and_wins_a_race_with_link_authorization() {
     assert!(store
         .authorize_device_link(alice, link_request(&proof), 1000)
         .is_err());
+}
+#[test]
+fn cancelling_a_live_link_retires_the_joined_devices_mail_and_prekeys() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("server.db");
+    let (mut store, users) = setup(&path, 1000);
+    let (alice, session, key) = &users[0];
+    let (bob, bob_session, _) = &users[1];
+    let token = random_secret().unwrap();
+    let target_key = IdentityKey::generate().unwrap();
+    let proof = link_proof_for(session, key, &target_key, &token, 83);
+    store
+        .publish_device_binding(alice, request(&proof.sponsor), 1000)
+        .unwrap();
+    let joined = store
+        .authorize_device_link(alice, link_request(&proof), 1000)
+        .unwrap();
+    let target = joined.device_id.clone();
+    // The joined device goes live: it publishes a bundle and receives a copy.
+    let receiver = Receiver::generate(&target_key, false).unwrap();
+    let bundle = receiver.bundle().unwrap();
+    store
+        .publish_prekey(
+            &token,
+            &hex(&bundle.prekey_id()),
+            PublishPrekey {
+                bundle: hex(&bundle.to_bytes()),
+                expires_in_seconds: 604800,
+            },
+            1000,
+        )
+        .unwrap();
+    store
+        .allow_sender(&token, &bob_session.device_id, 1000)
+        .unwrap();
+    let message = |n: u64| sigil_protocol::mailbox::Submit {
+        recipient_device: target.clone(),
+        message_id: format!("{n:064x}"),
+        payload: "ab".repeat(32),
+        expires_at: 101_000,
+    };
+    for n in 0..3 {
+        store.submit_message(bob, message(n), 1000).unwrap();
+    }
+    let db = rusqlite::Connection::open(&path).unwrap();
+    let pending = |db: &rusqlite::Connection| -> i64 {
+        db.query_row(
+            "SELECT count(*) FROM mailbox WHERE recipient=?1 AND payload IS NOT NULL AND expires_at>1000",
+            [&target],
+            |r| r.get(0),
+        )
+        .unwrap()
+    };
+    let bundles = |db: &rusqlite::Connection| -> i64 {
+        db.query_row(
+            "SELECT count(*) FROM prekeys WHERE device_id=?1 AND bundle IS NOT NULL AND claimant IS NULL AND expires_at>1000",
+            [&target],
+            |r| r.get(0),
+        )
+        .unwrap()
+    };
+    assert_eq!((pending(&db), bundles(&db)), (3, 1));
+
+    store
+        .cancel_device_link(alice, &hex(&proof.transcript.sponsor_challenge), 1000)
+        .unwrap();
+    assert!(store.session(&token, 1000).is_err());
+    assert_eq!(
+        (pending(&db), bundles(&db)),
+        (0, 0),
+        "a cancelled device must not keep its senders' slots or its bundles live"
+    );
+    assert!(matches!(
+        store.submit_message(bob, message(3), 1000),
+        Err(StoreError::NotFound)
+    ));
 }

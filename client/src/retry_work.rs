@@ -66,7 +66,8 @@ impl ClientStore {
                     [id.as_slice()],
                 )?;
             }
-            let stop = matches!(result, Err(Error::Network(_)));
+            // A 404/507 is about that one recipient; only wider outages stop the batch.
+            let stop = matches!(&result, Err(Error::Network(e)) if !crate::outbound::recipient_specific(e));
             results.push(RetryAttempt { id, result });
             next = id.to_vec();
             if stop {
@@ -131,8 +132,8 @@ impl ClientStore {
         Ok(receipt)
     }
     /// Resume at most 16 accepted controls using a trusted caller clock. Failures
-    /// remain per-item results; a sealed cyclic cursor prevents starvation. Network
-    /// errors stop the batch so callers can honor Retry-After before invoking again.
+    /// remain per-item results; a sealed cyclic cursor prevents starvation. Non-recipient
+    /// network errors stop the batch so callers can honor Retry-After before invoking again.
     pub fn resume_retries_online(&mut self, now: u64) -> Result<Vec<RetryAttempt>, Error> {
         if now == 0 || now > i64::MAX as u64 {
             return Err(Error::Expired);
@@ -152,7 +153,8 @@ impl ClientStore {
         for bytes in ids {
             let id: Id = bytes.try_into().map_err(|_| Error::InvalidStore)?;
             let result = self.resume_retry_online(id, now);
-            let stop = matches!(result, Err(Error::Network(_)));
+            // A 404/507 is about that one recipient; only wider outages stop the batch.
+            let stop = matches!(&result, Err(Error::Network(e)) if !crate::outbound::recipient_specific(e));
             attempts.push(RetryAttempt { id, result });
             next = id;
             if stop {

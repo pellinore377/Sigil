@@ -39,6 +39,23 @@ pub(crate) fn recipient_unknown(error: &network::Error) -> bool {
 /// deployment blip rather than an offline phone.
 const UNKNOWN_RECIPIENT_GRACE: u64 = 3600;
 
+/// Record the cancellation of every queued packet in a session, then release them.
+pub(crate) fn cancel_queued(tx: &Transaction<'_>, key: &StorageKey, session: &Id) -> Result<(), Error> {
+    let ids: Vec<Vec<u8>> = tx
+        .prepare("SELECT id FROM outbox WHERE session=?1 AND packet IS NOT NULL")?
+        .query_map([session.as_slice()], |r| r.get(0))?
+        .collect::<Result<_, _>>()?;
+    for raw in ids {
+        let id: Id = raw.try_into().map_err(|_| Error::InvalidStore)?;
+        conversations::mark_cancelled(tx, key, session, &id)?;
+    }
+    tx.execute(
+        "UPDATE outbox SET packet=NULL WHERE session=?1 AND packet IS NOT NULL",
+        [session.as_slice()],
+    )?;
+    Ok(())
+}
+
 #[derive(Debug)]
 pub struct OutboundAttempt {
     pub session: Id,
@@ -153,10 +170,15 @@ impl ClientStore {
         let mut attempts = Vec::new();
         let mut next = Vec::new();
         for lane in lanes {
-            let result = match lane.error {
+            let mut result = match lane.error {
                 Some(error) => Err(error),
                 None => Ok(lane.progress),
             };
+            // A replaced peer never regains trust, so its packets can never leave.
+            if matches!(result, Err(Error::Unprepared)) && self.session_peer_replaced(lane.session)? {
+                self.release_replaced_peer_session(lane.session)?;
+                result = Err(Error::Obsolete);
+            }
             // Full, unknown and not-yet-trusted recipients wait instead of costing every pass;
             // granting trust clears the wait.
             let unknown = matches!(&result, Err(Error::Network(error)) if recipient_unknown(error));
@@ -200,6 +222,35 @@ impl ClientStore {
         Ok(attempts)
     }
 
+    /// Whether the session's peer record carries an approved, irreversible replacement.
+    fn session_peer_replaced(&self, session: Id) -> Result<bool, Error> {
+        let Some(peer) = session_peer(&self.db, &session)? else {
+            return Ok(false);
+        };
+        match peers::known(&self.db, &self.key, &peer) {
+            Ok(known) => Ok(known.replaced_by.is_some()),
+            Err(Error::NotFound) => Ok(false),
+            Err(error) => Err(error),
+        }
+    }
+    /// Packets sealed to a replaced device can never be read by its replacement:
+    /// cancel them, drop the wait and retire the session so it frees its peer slot.
+    fn release_replaced_peer_session(&mut self, session: Id) -> Result<(), Error> {
+        let tx = self
+            .db
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        cancel_queued(&tx, &self.key, &session)?;
+        tx.execute(
+            "DELETE FROM outbound_backoff WHERE session=?1",
+            [session.as_slice()],
+        )?;
+        match retirement::retire(&tx, &self.key, session) {
+            Ok(()) | Err(Error::NotFound | Error::Conflict | Error::UnsupportedSession) => {}
+            Err(error) => return Err(error),
+        }
+        tx.commit()?;
+        Ok(())
+    }
     /// Give up on packets addressed to a device the server has kept refusing as
     /// unknown. They can never be delivered, and until they are released they hold a
     /// session at its queue limit, which refuses every later message to that peer.
@@ -219,10 +270,8 @@ impl ClientStore {
         let tx = self
             .db
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
-        tx.execute(
-            "UPDATE outbox SET packet=NULL WHERE session=?1 AND packet IS NOT NULL",
-            [session.as_slice()],
-        )?;
+        // The release is already decided; the marker only makes it visible.
+        cancel_queued(&tx, &self.key, &session)?;
         tx.execute(
             "DELETE FROM outbound_backoff WHERE session=?1",
             [session.as_slice()],
@@ -314,6 +363,63 @@ mod tests {
                 .unwrap(),
             0
         );
+        // The release is recorded, so the message reads as cancelled rather than sending.
+        assert!(conversations::cancelled(&alice.db, &alice.key, &[0; 32], &[0; 32]).unwrap());
+    }
+    /// A replaced device never regains trust, so packets sealed to it are cancelled
+    /// and the dead session frees its slot instead of waiting out a backoff forever.
+    #[test]
+    fn packets_to_a_replaced_peer_are_cancelled_and_the_session_retired() {
+        use sigil_crypto::IdentityKey;
+        use sigil_protocol::conversation::{Action, Body};
+        let (_dir, _fixture, mut alice, mut bob, now) = pair();
+        let old_bytes = bob.own_device_binding().unwrap();
+        let (_, old) = trust(&mut alice, &mut bob);
+        let old_fingerprint = device_fingerprint(&old_bytes).unwrap();
+        start(&mut alice, old, now);
+        let op = alice
+            .conversation_operation(
+                [115; 32],
+                Action::Post {
+                    body: Body::Text("queued".into()),
+                    reply: None,
+                    thread: None,
+                    expires_at: None,
+                    view_once: false,
+                },
+            )
+            .unwrap();
+        alice.queue_peer_operation(old, &op, now, now).unwrap();
+        let sends = alice.resume_send_intents_online(now).unwrap();
+        assert_eq!(sends[0].result.as_ref().unwrap(), &[3; 32]);
+        let key = IdentityKey::generate().unwrap();
+        let mut replacement = crate::peers::parse(&old_bytes).unwrap();
+        replacement.binding.device = [90; 32];
+        replacement.binding.identity = key.public_key();
+        replacement.signature = key
+            .sign(&replacement.binding.signing_bytes().unwrap())
+            .unwrap();
+        let new = alice
+            .observe_peer_binding(&replacement.to_bytes().unwrap())
+            .unwrap();
+        alice
+            .approve_peer_replacement(old, new.id, old_fingerprint, new.fingerprint)
+            .unwrap();
+        // Approval itself released the packet and retired the session; nothing is left to walk.
+        assert!(alice.resume_outbound_online(now).unwrap().is_empty());
+        let count = |sql: &str| -> i64 { alice.db.query_row(sql, [], |r| r.get(0)).unwrap() };
+        assert_eq!(count("SELECT count(*) FROM outbox WHERE packet IS NOT NULL"), 0);
+        assert_eq!(count("SELECT count(*) FROM outbound_backoff"), 0);
+        assert_eq!(
+            count("SELECT retired FROM sessions WHERE id=x'0303030303030303030303030303030303030303030303030303030303030303'"),
+            1
+        );
+        assert_eq!(
+            alice.operation_delivery_state(old, op.id).unwrap(),
+            conversations::DeliveryState::Cancelled
+        );
+        // Nothing is left for the next pass to walk.
+        assert!(alice.resume_outbound_online(now).unwrap().is_empty());
     }
 
     fn recipient_failure(revoked: bool) {

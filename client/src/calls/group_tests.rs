@@ -58,13 +58,16 @@ fn group_creator_can_leave_and_unverified_participants_continue_with_new_keys() 
 fn group_handoff_cancels_pending_invitations_and_answers() {
     group_call(true, true);
 }
-fn group_call(continuation: bool, pending: bool) {
-    let (dir, fixture, alice, bob, _) = pair();
-    super::tests::configure(dir.path());
-    let mut clients = vec![alice, bob];
-    for n in 2..8 {
+/// Enroll `count` further guests on the shared server, each allowed to reach the owner.
+fn guests(
+    dir: &std::path::Path,
+    fixture: &crate::network::tests::Fixture,
+    clients: &mut Vec<ClientStore>,
+    count: usize,
+) {
+    for n in 2..2 + count {
         let now = crate::conversations::now();
-        let mut server = sigil_server::store::Store::open(&dir.path().join("server.db")).unwrap();
+        let mut server = sigil_server::store::Store::open(&dir.join("server.db")).unwrap();
         let invitation = server
             .invite(
                 sigil_protocol::accounts::InviteRequest {
@@ -75,11 +78,11 @@ fn group_call(continuation: bool, pending: bool) {
             )
             .unwrap();
         let mut client = ClientStore::open(
-            &dir.path().join(format!("guest{n}.db")),
+            &dir.join(format!("guest{n}.db")),
             StorageKey::new(sigil_crypto::Secret32::from_bytes([9; 32])).unwrap(),
         )
         .unwrap();
-        prepare(&mut client, &fixture, &invitation.secret);
+        prepare(&mut client, fixture, &invitation.secret);
         loop {
             match client.enroll_online() {
                 Ok(_) => break,
@@ -105,6 +108,12 @@ fn group_call(continuation: bool, pending: bool) {
         client.publish_prekey_online(slot).unwrap();
         clients.push(client);
     }
+}
+fn group_call(continuation: bool, pending: bool) {
+    let (dir, fixture, alice, bob, _) = pair();
+    super::tests::configure(dir.path());
+    let mut clients = vec![alice, bob];
+    guests(dir.path(), &fixture, &mut clients, 6);
     let mut invitees = Vec::new();
     let (owner, guests) = clients.split_first_mut().unwrap();
     for guest in guests {
@@ -568,5 +577,191 @@ fn group_call(continuation: bool, pending: bool) {
             .db
             .query_row("SELECT count(*) FROM sessions", [], |r| r.get::<_, i64>(0))
             .unwrap()
+    );
+}
+
+/// Scoped channels carry each control on its own session, so a member's anticipated
+/// share can land before the declaration it belongs to and the owner's share fan-out
+/// before the state it names. Neither may be lost: both sides hold such a share and
+/// verify it once that state is committed.
+#[test]
+fn shares_overtaking_their_state_on_a_scoped_channel_are_adopted_once_it_lands() {
+    let (dir, fixture, alice, bob, _) = pair();
+    super::tests::configure(dir.path());
+    let mut clients = vec![alice, bob];
+    guests(dir.path(), &fixture, &mut clients, 1);
+    let mut invitees = Vec::new();
+    let (owner, rest) = clients.split_first_mut().unwrap();
+    for guest in rest {
+        invitees.push(trust(owner, guest).1);
+    }
+    let now = crate::conversations::now();
+    let id = [93; 32];
+    clients[0].create_group_call(id, now, 3600).unwrap();
+    for peer in invitees {
+        clients[0].invite_to_call(id, peer, now).unwrap();
+    }
+    for _ in 0..4 {
+        round(&mut clients, now);
+    }
+    for guest in &mut clients[1..] {
+        guest.answer_call(id, true, now).unwrap();
+    }
+    for _ in 0..8 {
+        round(&mut clients, now);
+        if clients
+            .iter()
+            .all(|c| load(&c.db, &c.key, &id).unwrap().state.participants.len() == 3)
+        {
+            break;
+        }
+    }
+    clients[0].leave_call(id, now).unwrap();
+    for _ in 0..24 {
+        round(&mut clients, now);
+        if clients[1..].iter().all(|c| {
+            let record = load(&c.db, &c.key, &id).unwrap();
+            record.phase == Phase::Active
+                && record.state.participants.len() == 2
+                && record.transfer.is_none()
+        }) {
+            break;
+        }
+    }
+    let controller = (1..3)
+        .find(|&i| {
+            load(&clients[i].db, &clients[i].key, &id)
+                .unwrap()
+                .owner_peer
+                .is_none()
+        })
+        .unwrap();
+    let member = 3 - controller;
+    let tracks = Tracks {
+        audio: true,
+        ..Default::default()
+    };
+    // The owner declares first, so the member anticipates exactly the state it commits.
+    let mut owner_media = clients[controller]
+        .start_call_media(id, tracks, now)
+        .unwrap();
+    clients[controller]
+        .refresh_call_media(&mut owner_media, now)
+        .unwrap();
+    for _ in 0..4 {
+        round(&mut clients[1..], now);
+    }
+    let digest = |c: &ClientStore| load(&c.db, &c.key, &id).unwrap().state.digest().unwrap();
+    assert_eq!(digest(&clients[controller]), digest(&clients[member]));
+    let member_id = load(&clients[member].db, &clients[member].key, &id)
+        .unwrap()
+        .own_id()
+        .unwrap();
+    let mut member_media = clients[member].start_call_media(id, tracks, now).unwrap();
+    retry(|| {
+        clients[member]
+            .resume_calls_online(now)?
+            .into_iter()
+            .try_for_each(|a| a.result)
+    });
+    // Hold the declaration's session back so the share is delivered first.
+    let declaration = jobs::pending(&clients[member].db, &clients[member].key)
+        .unwrap()
+        .into_iter()
+        .find_map(|(body, session)| matches!(body, control::Body::Ready(_)).then_some(session))
+        .unwrap();
+    clients[member]
+        .db
+        .execute(
+            "INSERT INTO outbound_backoff VALUES(?1,?2,0,1)",
+            (declaration.as_slice(), (now + 600) as i64),
+        )
+        .unwrap();
+    retry(|| {
+        clients[member]
+            .resume_outbound_online(now)?
+            .into_iter()
+            .try_for_each(|a| a.result.map(|_| ()))
+    });
+    for attempt in retry(|| clients[controller].receive_mailbox_online(now)) {
+        attempt.result.unwrap();
+    }
+    retry(|| clients[controller].acknowledge_incoming_online());
+    let early = load(&clients[controller].db, &clients[controller].key, &id).unwrap();
+    assert!(early.shares.iter().all(|s| s.key.context.sender != member_id));
+    assert_eq!(early.pending_shares.len(), 1);
+    clients[member]
+        .db
+        .execute("DELETE FROM outbound_backoff", [])
+        .unwrap();
+    for _ in 0..24 {
+        round(&mut clients[1..], now);
+        clients[controller]
+            .refresh_call_media(&mut owner_media, now)
+            .unwrap();
+        match clients[member].refresh_call_media(&mut member_media, now) {
+            Ok(_) | Err(Error::Unprepared) => (),
+            Err(error) => panic!("member media: {error:?}"),
+        }
+        let owner = load(&clients[controller].db, &clients[controller].key, &id).unwrap();
+        let held = load(&clients[member].db, &clients[member].key, &id).unwrap();
+        if owner.shares.iter().any(|s| s.key.context.sender == member_id)
+            && held.shares.len() == 2
+        {
+            break;
+        }
+    }
+    let owner = load(&clients[controller].db, &clients[controller].key, &id).unwrap();
+    assert!(owner.shares.iter().any(|s| s.key.context.sender == member_id));
+    assert!(owner.pending_shares.is_empty());
+    let held = load(&clients[member].db, &clients[member].key, &id).unwrap();
+    assert_eq!(held.shares.len(), 2);
+    assert!(held.pending_shares.is_empty());
+    let frame = clients[member]
+        .seal_call_frame(
+            &mut member_media,
+            sigil_calls::MediaKind::Audio,
+            1,
+            false,
+            b"adopted share",
+            now,
+        )
+        .unwrap();
+    assert_eq!(
+        &*clients[controller]
+            .open_call_frame(
+                &mut owner_media,
+                member_id,
+                sigil_calls::MediaKind::Audio,
+                &frame,
+                now
+            )
+            .unwrap()
+            .data,
+        b"adopted share"
+    );
+    let owner_id = owner.own_id().unwrap();
+    let reply = clients[controller]
+        .seal_call_frame(
+            &mut owner_media,
+            sigil_calls::MediaKind::Audio,
+            2,
+            false,
+            b"owner audio",
+            now,
+        )
+        .unwrap();
+    assert_eq!(
+        &*clients[member]
+            .open_call_frame(
+                &mut member_media,
+                owner_id,
+                sigil_calls::MediaKind::Audio,
+                &reply,
+                now
+            )
+            .unwrap()
+            .data,
+        b"owner audio"
     );
 }

@@ -822,9 +822,24 @@ impl ClientStore {
         if destination == home {
             return Ok((Prepared::Request(id, request, !wake), expired));
         }
-        match crate::federation::submit(&network, &own, &destination, &request, !wake, || Ok(()))? {
-            Some(receipt) => Ok((Prepared::Accepted(id, receipt), expired)),
-            None => Ok((Prepared::Pending, expired)),
+        match crate::federation::submit(&network, &own, &destination, &request, !wake, || Ok(())) {
+            Ok(Some(receipt)) => Ok((Prepared::Accepted(id, receipt), expired)),
+            Ok(None) => Ok((Prepared::Pending, expired)),
+            // The home server holds this exact request in a terminal state and has
+            // discarded its body; it will never be sent or re-queued under this id.
+            Err(Error::Cancelled) => {
+                let tx = self
+                    .db
+                    .transaction_with_behavior(TransactionBehavior::Immediate)?;
+                crate::conversations::mark_cancelled(&tx, &self.key, &session, &id)?;
+                tx.execute(
+                    "UPDATE outbox SET packet=NULL WHERE session=?1 AND id=?2",
+                    (session.as_slice(), id.as_slice()),
+                )?;
+                tx.commit()?;
+                Err(Error::Obsolete)
+            }
+            Err(error) => Err(error),
         }
     }
     pub(super) fn send_pending_limit(
