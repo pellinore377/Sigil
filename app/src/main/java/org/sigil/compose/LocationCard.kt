@@ -37,7 +37,7 @@ internal fun LocationCard(message: ChatMessage, part: MessagePart, name: String,
             .clickable(role = Role.Button) { opened = true }.semantics { contentDescription = "Open $title" }, contentAlignment = Alignment.Center) {
             if (!mapFailed && !opened) ServerMap(Modifier.matchParentSize().clearAndSetSemantics {}, part.latitude, part.longitude, movable = false, marker = if (part.locationMode != "pin") { { LocationAvatar(name, message.author, fresh) } } else null, failure = { mapFailed = true })
             if (part.locationMode != "pin" && (mapFailed || opened)) LocationAvatar(name, message.author, fresh)
-            else if (mapFailed) Glyph("location_on", 36)
+            else if (mapFailed) Glyph("place", 36)
             // The map's native view must not consume the card's open action.
             Box(Modifier.matchParentSize().clickable { opened = true }.clearAndSetSemantics {})
             if (part.locationMode == "live") LocationMapChip(remaining, Modifier.align(Alignment.TopStart).padding(10.dp))

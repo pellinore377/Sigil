@@ -87,7 +87,7 @@ internal fun ConversationPage(chat: ChatSummary, state: MessengerState, draft: T
         command("edit_source_used", emptyMap())
     } }
     val atLatest by remember { derivedStateOf { list.firstVisibleItemIndex == 0 && list.firstVisibleItemScrollOffset < 80 } }
-    LaunchedEffect(state.typing, state.messages.firstOrNull()?.id) { if (atLatest) list.animateScrollToItem(0) }
+    LaunchedEffect(state.typing, state.messages.firstOrNull()?.id) { if (atLatest) { if (motionPolicy.reduced) list.scrollToItem(0) else list.animateScrollToItem(0) } }
     LaunchedEffect(chat.id, page, localQuery, thread?.id, thread?.author) {
         if (page == "Search") kotlinx.coroutines.delay(180)
         command("timeline_filter", mapOf("peer" to chat.id, "category" to page.takeIf { it in listOf("Notes", "Pins", "Threads", "Search") }.orEmpty().ifEmpty { "Timeline" },
@@ -126,8 +126,8 @@ internal fun ConversationPage(chat: ChatSummary, state: MessengerState, draft: T
     }
     val pageMotion = LocalPageMotion.current
     val timelineMotion = if (pageMotion == null) Modifier else with(pageMotion) { Modifier.animateEnterExit(
-        enter = slideInVertically(motionPolicy.tween(MotionMillis)) { it },
-        exit = slideOutVertically(motionPolicy.tween(MotionMillis, if(LocalNavigationBack.current)160 else 0)) { it }) }
+        enter = slideInVertically(motionPolicy.enter(MotionMillis)) { it },
+        exit = slideOutVertically(motionPolicy.exit(MotionMillis, if(LocalNavigationBack.current)MotionQuick else 0)) { it }) }
     Box(Modifier.fillMaxSize().then(timelineMotion).background(scheme.background).testTag("conversation-page")) {
         LocalWallpaper.current(chat.id, Modifier.matchParentSize())
         Column(Modifier.align(Alignment.TopCenter).widthIn(max = 920.dp).fillMaxSize().then(if (gradient) Modifier.background(Brush.verticalGradient(listOf(scheme.background.copy(alpha = .7f), scheme.primaryContainer.copy(alpha = .7f)))) else Modifier)) {
@@ -141,7 +141,7 @@ internal fun ConversationPage(chat: ChatSummary, state: MessengerState, draft: T
             Box(Modifier.weight(1f).fillMaxWidth().clipToBounds().onGloballyPositioned {materialTimeline.viewport=it.boundsInWindow();val r=materialTimeline.viewport;if(materialHeader>0)materialTimeline.bubbles["header"]=Rect(r.left,r.top,r.right,r.top+materialHeader)}) {
             CompositionLocalProvider(LocalMaterialTimeline provides materialTimeline.takeIf {materialOverlay!=null}, LocalPreviewLaunch provides previewLaunch) {
             LazyColumn(Modifier.fillMaxSize().testTag("timeline"), state = list, reverseLayout = true, contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = (if (controls) 0.dp else headerInset) + 12.dp, bottom = composerInset)) {
-                item("typing") { androidx.compose.animation.AnimatedVisibility(!threadsOverview && state.typing.isNotEmpty(), enter = expandVertically(motionPolicy.tween(MotionMillis)) + fadeIn(), exit = shrinkVertically(motionPolicy.tween(MotionMillis)) + fadeOut()) { TypingRow(state.typing.map { state.people[it] ?: if (chat.group) "Member" else chat.name }, chat.name, state.typing) } }
+                item("typing") { androidx.compose.animation.AnimatedVisibility(!threadsOverview && state.typing.isNotEmpty(), enter = expandVertically(motionPolicy.enter(MotionMillis)) + fadeIn(motionPolicy.enter(MotionMillis)), exit = shrinkVertically(motionPolicy.exit(MotionQuick)) + fadeOut(motionPolicy.exit(MotionExit))) { TypingRow(state.typing.map { state.people[it] ?: if (chat.group) "Member" else chat.name }, chat.name, state.typing) } }
                 itemsIndexed(messages, key = { _, it -> it.author + it.id }) { index, message ->
                     if (page == "Pins") {
                         var pinBounds by remember(message.id) { mutableStateOf(Rect.Zero) }
@@ -177,11 +177,11 @@ internal fun ConversationPage(chat: ChatSummary, state: MessengerState, draft: T
                     val materialKey=message.author+message.id
                     DisposableEffect(materialKey) {onDispose {materialTimeline.bubbles.remove(materialKey)}}
                     var drag by remember { mutableFloatStateOf(0f) }
-                    val offset by animateFloatAsState(drag, motionPolicy.tween(90), label = "Reply swipe")
+                    val offset by animateFloatAsState(drag, motionPolicy.tween(MotionFeedback), label = "Reply swipe")
                     val density = LocalDensity.current
                     val haptic = LocalHapticFeedback.current
                     val threshold = with(density) { 52.dp.toPx() }
-                    Column(Modifier.fillMaxWidth().animateItem().padding(top = if (grouped) 3.dp else 12.dp)) {
+                    Column(itemMotion().fillMaxWidth().padding(top = if (grouped) 3.dp else 12.dp)) {
                         if (showSeparator(message, older)) Text(message.separator.ifEmpty { message.time }, Modifier.align(Alignment.CenterHorizontally).padding(top = 6.dp, bottom = 14.dp), style = MaterialTheme.typography.labelMedium, color = scheme.onSurfaceVariant)
                         if (chat.group && !message.mine && !grouped) Row(Modifier.padding(bottom = 4.dp), verticalAlignment = Alignment.CenterVertically) { val name = state.people[message.author] ?: "Former member"; Avatar(name, 20, message.author); Text(name, Modifier.padding(start = 6.dp), style = MaterialTheme.typography.bodySmall) }
                         Row(Modifier.fillMaxWidth().combinedClickable(interactionSource = remember { androidx.compose.foundation.interaction.MutableInteractionSource() }, indication = null, onClick = { details = message.author to message.id }, onLongClick = { selected = message to bounds })
@@ -315,7 +315,7 @@ internal fun MessageDetails(message: ChatMessage, expanded: Boolean, receipt: Bo
     val motionPolicy = LocalMotion.current
     Row(Modifier.animateContentSize(motionPolicy.tween(MotionMillis)).padding(top = if (expanded || receipt) 4.dp else 0.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(5.dp)) {
         if (receipt) DeliveryReceipt(message, chat, people)
-        AnimatedVisibility(expanded, enter = fadeIn(motionPolicy.tween(180)) + expandHorizontally(motionPolicy.tween(MotionMillis), expandFrom = Alignment.End), exit = fadeOut(motionPolicy.tween(100)) + shrinkHorizontally(motionPolicy.tween(MotionMillis))) {
+        AnimatedVisibility(expanded, enter = fadeIn(motionPolicy.enter(MotionInline)) + expandHorizontally(motionPolicy.enter(MotionMillis), expandFrom = Alignment.End), exit = fadeOut(motionPolicy.exit(MotionExit)) + shrinkHorizontally(motionPolicy.exit(MotionQuick))) {
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(5.dp)) {
                 if (receipt) Text("·", style = MaterialTheme.typography.labelSmall)
                 Text(message.time, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -327,19 +327,21 @@ internal fun MessageDetails(message: ChatMessage, expanded: Boolean, receipt: Bo
 @Composable
 private fun DeliveryReceipt(message: ChatMessage, chat: ChatSummary, people: Map<String, String>) {
     val motionPolicy = LocalMotion.current
-    if (message.delivery == "Read") AvatarStack(message.readers.map { people[it] ?: if (chat.group) "Member" else chat.name }.ifEmpty { listOf(chat.name) }, 17, message.readers.ifEmpty { listOf(chat.avatar) })
-    else if (message.delivery in listOf("Queued", "Sending")) {
+    Crossfade(if (message.delivery in listOf("Queued", "Sending")) "Sending" else message.delivery, animationSpec = motionPolicy.tween(MotionInline), label = "Delivery state") { stage ->
+    if (stage == "Read") AvatarStack(message.readers.map { people[it] ?: if (chat.group) "Member" else chat.name }.ifEmpty { listOf(chat.name) }, 17, message.readers.ifEmpty { listOf(chat.avatar) })
+    else if (stage == "Sending") {
         val angle = if (motionPolicy.reduced) 0f else {
             val transition = rememberInfiniteTransition(label = "Sending")
-            transition.animateFloat(0f, 360f, infiniteRepeatable(motionPolicy.tween(900, easing = LinearEasing)), label = "Sending dots").value
+            transition.animateFloat(0f, 360f, motionPolicy.loop(), label = "Sending dots").value
         }
         val color = MaterialTheme.colorScheme.onSurfaceVariant
         Canvas(Modifier.size(17.dp).semantics { contentDescription = "Sending" }) {
             repeat(8) { index -> val r = (index * 45f + angle) * PI / 180; drawCircle(color, 1.dp.toPx(), Offset(center.x + cos(r).toFloat() * size.width * .36f, center.y + sin(r).toFloat() * size.height * .36f)) }
         }
-    } else Surface(Modifier.size(17.dp).semantics { contentDescription = message.delivery }, shape = CircleShape,
-        color = if (message.delivery in listOf("Failed", "Expired", "Cancelled")) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant,
-        contentColor = MaterialTheme.colorScheme.background) { Box(contentAlignment = Alignment.Center) { Glyph(if (message.delivery in listOf("Failed", "Expired", "Cancelled")) "priority_high" else "check", 12) } }
+    } else Surface(Modifier.size(17.dp).semantics { contentDescription = stage }, shape = CircleShape,
+        color = if (stage in listOf("Failed", "Expired", "Cancelled")) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant,
+        contentColor = MaterialTheme.colorScheme.background) { Box(contentAlignment = Alignment.Center) { Glyph(if (stage in listOf("Failed", "Expired", "Cancelled")) "priority_high" else "check", 12) } }
+    }
 }
 @Composable
 internal fun AvatarStack(people: List<String>, size: Int = 22, photos: List<String> = emptyList()) {
@@ -352,7 +354,7 @@ private fun TypingRow(people: List<String>, name: String, photos: List<String>) 
     val motionPolicy = LocalMotion.current
     val phase = if (motionPolicy.reduced) 0f else {
         val animation = rememberInfiniteTransition(label = "Typing")
-        animation.animateFloat(0f, 2f * PI.toFloat(), infiniteRepeatable(motionPolicy.tween(1000, easing = LinearEasing)), label = "Typing dots").value
+        animation.animateFloat(0f, 2f * PI.toFloat(), motionPolicy.loop(), label = "Typing dots").value
     }
     Row(Modifier.padding(top = 8.dp, bottom = 4.dp).semantics { contentDescription = "$name is typing" }, verticalAlignment = Alignment.CenterVertically) {
         AvatarStack(people, 22, photos); Spacer(Modifier.width(10.dp))

@@ -11,6 +11,7 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.*
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
+import androidx.compose.ui.semantics.*
 import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.unit.dp
 
@@ -39,10 +40,13 @@ internal fun CodeBuilder(enabled:Boolean,back:()->Unit,send:(String)->Unit) {
     var previewInput by rememberSaveable {mutableStateOf<String?>(null)}
     var languages by remember {mutableStateOf(false)}
     var tooLarge by remember {mutableStateOf(false)}
+    var syntax by rememberSaveable {mutableStateOf(false)}
     val input="Code\n$language\n$code"
     val resolve=LocalBuilderSource.current
     val render=LocalCodePreview.current
     val source=remember(previewInput,resolve) {previewInput?.let {resolve?.invoke(it)}.orEmpty()}
+    var syntaxSource by remember {mutableStateOf("")}
+    LaunchedEffect(input,resolve,syntax) {if(syntax) {kotlinx.coroutines.delay(120);syntaxSource=kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Default) {resolve?.invoke(input).orEmpty()}}}
     val preview=remember(previewInput,render) {previewInput?.let {render?.invoke(it)}?.let(::codePreview)}
     val motion=LocalMotion.current
     val keyboard=LocalSoftwareKeyboardController.current
@@ -55,26 +59,28 @@ internal fun CodeBuilder(enabled:Boolean,back:()->Unit,send:(String)->Unit) {
         Row(sizing.measure("header"),verticalAlignment=Alignment.CenterVertically) {
             Symbol("chevron_left",if(showingPreview)"Edit code" else "Back to formatting",::previous)
             Text("Code block",Modifier.weight(1f),style=MaterialTheme.typography.titleLarge)
+            SyntaxToggle(syntax) {syntax=!syntax}
         }
-        if(showingPreview)BuilderConfirm(if(LocalBuilderAction.current=="Send")"Send code" else LocalBuilderAction.current,enabled && preview!=null && source.isNotEmpty()) {send(source)}
-        else BuilderConfirm("Preview code",code.isNotBlank()) {focus.clearFocus();keyboard?.hide();previewInput=input;showingPreview=true}
-        AnimatedContent(showingPreview,Modifier.weight(1f).verticalScroll(rememberScrollState()).wrapContentHeight(unbounded=true).then(sizing.measure("body")),transitionSpec={
-            (slideInHorizontally(motion.tween(MotionMillis)){if(targetState)it else -it}+fadeIn(motion.tween(MotionMillis))) togetherWith
-                (slideOutHorizontally(motion.tween(MotionMillis)){if(targetState)-it else it}+fadeOut(motion.tween(MotionMillis)))
+        Column(Modifier.weight(1f).verticalScroll(rememberScrollState()).wrapContentHeight(unbounded=true).then(sizing.measure("body")),verticalArrangement=Arrangement.spacedBy(12.dp)) {
+        AnimatedContent(showingPreview,transitionSpec={
+            (slideInHorizontally(motion.enter(MotionMillis)){if(targetState)it else -it}+fadeIn(motion.enter(MotionMillis))) togetherWith
+                (slideOutHorizontally(motion.exit(MotionQuick)){if(targetState)-it else it}+fadeOut(motion.exit(MotionExit))) using
+                SizeTransform(clip=false) {_,_->motion.tween(MotionMillis)}
         },label="Code form") {shown->
             if(shown)Column(Modifier.fillMaxWidth(),verticalArrangement=Arrangement.spacedBy(8.dp)) {
                 Column(Modifier.fillMaxWidth(),verticalArrangement=Arrangement.spacedBy(12.dp)) {
-                    if(preview!=null)Surface(shape=RoundedCornerShape(20.dp),color=MaterialTheme.colorScheme.primary) {
+                    if(preview!=null)Surface(Modifier.align(Alignment.End),shape=RoundedCornerShape(20.dp),color=MaterialTheme.colorScheme.primary) {
                         CompositionLocalProvider(LocalMessageSurface provides MaterialTheme.colorScheme.primary) {
-                            Box(Modifier.fillMaxWidth().padding(12.dp),contentAlignment=Alignment.Center) {CodeBlock(preview.second,preview.first)}
+                            Box(Modifier.padding(horizontal=14.dp,vertical=10.dp)) {CodeBlock(preview.second,preview.first)}
                         }
-                    } else Text(if(resolve==null || render==null)"The code builder is unavailable." else "Check the language name and code. Language names use letters, numbers, hyphens or underscores.",color=MaterialTheme.colorScheme.error,style=MaterialTheme.typography.bodyMedium)
+                    } else Text(if(resolve==null || render==null)"The code builder is unavailable." else "Check the language name and code. Language names use letters, numbers, hyphens or underscores.",
+                        Modifier.semantics {liveRegion=LiveRegionMode.Polite},color=MaterialTheme.colorScheme.error,style=MaterialTheme.typography.bodyMedium)
                 }
 
             } else Column(Modifier.fillMaxWidth(),verticalArrangement=Arrangement.spacedBy(8.dp)) {
                 Row(verticalAlignment=Alignment.CenterVertically) {
                     Box {
-                        SigilTextButton({languages=true}) {Text(if(custom)"Custom language" else choices.firstOrNull {it.second==language}?.first ?: "Language");Glyph("expand_more",20)}
+                        SigilTextButton({languages=true}) {Text(if(custom)"Custom language" else choices.firstOrNull {it.second==language}?.first ?: "Language");Spacer(Modifier.width(8.dp));Glyph("expand_more",20)}
                         DropdownMenu(languages,{languages=false}) {
                             choices.forEach {(label,id)->DropdownMenuItem(text={Text(label)},onClick={language=id;custom=false;languages=false})}
                             DropdownMenuItem(text={Text("Other language")},onClick={custom=true;language="";languages=false})
@@ -82,7 +88,7 @@ internal fun CodeBuilder(enabled:Boolean,back:()->Unit,send:(String)->Unit) {
                     }
                     if(custom)OutlinedTextField(language,{language=it.replace('\n',' ').replace('\r',' ').take(32)},Modifier.weight(1f),shape=RoundedCornerShape(16.dp),singleLine=true,label={Text("Language")},keyboardOptions=KeyboardOptions(autoCorrectEnabled=false))
                 }
-                if(tooLarge)Text("That edit is too large. Shorten the code and try again.",color=MaterialTheme.colorScheme.error,style=MaterialTheme.typography.bodySmall)
+                if(tooLarge)Text("That edit is too large. Shorten the code and try again.",Modifier.semantics {liveRegion=LiveRegionMode.Polite},color=MaterialTheme.colorScheme.error,style=MaterialTheme.typography.bodySmall)
                 OutlinedTextField(code,{value->
                     val normalized=value.replace("\r\n","\n").replace('\r','\n')
                     if(normalized.length>16300 || normalized.encodeToByteArray().size>16300)tooLarge=true else {code=normalized;tooLarge=false}
@@ -90,5 +96,9 @@ internal fun CodeBuilder(enabled:Boolean,back:()->Unit,send:(String)->Unit) {
 
             }
         }
+        SyntaxSource(syntax,syntaxSource)
+        }
+        if(showingPreview)BuilderConfirm(if(LocalBuilderAction.current=="Send")"Send code" else LocalBuilderAction.current,enabled && preview!=null && source.isNotEmpty()) {send(source)}
+        else BuilderConfirm("Preview code",code.isNotBlank()) {focus.clearFocus();keyboard?.hide();previewInput=input;showingPreview=true}
     }
 }

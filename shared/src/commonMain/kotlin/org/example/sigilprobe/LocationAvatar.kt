@@ -14,9 +14,10 @@ import androidx.compose.ui.unit.dp
 fun LocationAvatar(name: String, photo: String, fresh: Boolean) {
     val motion = LocalMotion.current
     val visible = LocalMotionVisible.current
-    val pulse = if (fresh && visible && !motion.reduced) {
+    val effects = LocalAppearance.current.messageEffects
+    val pulse = if (fresh && visible && effects && !motion.reduced) {
         val transition = rememberInfiniteTransition(label = "Location signal")
-        transition.animateFloat(0f, 1f, infiniteRepeatable(tween(1800, easing = LinearEasing)), label = "Radio ring").value
+        transition.animateFloat(0f, 1f, motion.loop(), label = "Radio ring").value
     } else 0f
     val accent = MaterialTheme.colorScheme.primary
     Box(Modifier.size(64.dp), contentAlignment = Alignment.Center) {
@@ -26,8 +27,6 @@ fun LocationAvatar(name: String, photo: String, fresh: Boolean) {
                 drawCircle(accent.copy(alpha = (1f - progress) * .6f), radius = (20 + progress * 12).dp.toPx(), style = Stroke(1.5.dp.toPx()))
             }
         }
-        Surface(Modifier.size(40.dp), shape = CircleShape, color = MaterialTheme.colorScheme.surfaceVariant, border = BorderStroke(2.dp, MaterialTheme.colorScheme.surface)) {
-            Box(contentAlignment = Alignment.Center) { Text(name.take(1).uppercase()); LocalProfilePhoto.current(photo, Modifier.matchParentSize()) }
-        }
+        Box(Modifier.border(1.dp, MaterialTheme.colorScheme.background, CircleShape).padding(1.dp)) { Avatar(name, 38, photo) }
     }
 }

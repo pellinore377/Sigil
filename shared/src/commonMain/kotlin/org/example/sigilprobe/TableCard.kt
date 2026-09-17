@@ -1,5 +1,6 @@
 package org.sigil
 
+import androidx.compose.animation.animateContentSize
 import androidx.compose.foundation.*
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -50,13 +51,14 @@ internal fun TableCard(table: TableContent) {
             }
         }
     }
-    Column(Modifier.widthIn(min = 200.dp, max = 280.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+    Column(Modifier.widthIn(min = 200.dp, max = 280.dp).animateContentSize(LocalMotion.current.tween(MotionMillis)), verticalArrangement = Arrangement.spacedBy(8.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) { Glyph("table", 20); Text("Table", style = MaterialTheme.typography.labelMedium) }
         Column(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState())) {
             header(false)
             table.rows.indices.take(3).forEach { row(it, false) }
         }
-        SigilTextButton({ expanded = true }) { Glyph("open_in_full", 18); Spacer(Modifier.width(8.dp)); Text("Open table · ${table.rows.size} ${if (table.rows.size == 1) "row" else "rows"}") }
+        Text("${table.rows.size} ${if (table.rows.size == 1) "row" else "rows"} · ${table.columns.size} ${if (table.columns.size == 1) "column" else "columns"}", style = MaterialTheme.typography.labelSmall)
+        SigilTextButton({ expanded = true }) { Glyph("open_in_full", 18); Spacer(Modifier.width(8.dp)); Text("Open table") }
     }
     if (expanded) Dialog({ expanded = false }, DialogProperties(usePlatformDefaultWidth = false)) {
         Surface(Modifier.fillMaxSize()) {

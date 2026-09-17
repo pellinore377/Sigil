@@ -1,5 +1,6 @@
 package org.sigil
 
+import androidx.compose.animation.*
 import androidx.compose.animation.core.*
 import androidx.compose.foundation.*
 import androidx.compose.foundation.layout.*
@@ -131,7 +132,7 @@ private fun RowScope.CallControl(icon: String, label: String, destructive: Boole
 @Composable
 private fun CallWave(level: Float, modifier: Modifier) {
     val motionPolicy = LocalMotion.current
-    val amplitude by animateFloatAsState(level.coerceIn(0f, 1f), motionPolicy.tween(100), label = "Voice level")
+    val amplitude by animateFloatAsState(level.coerceIn(0f, 1f), motionPolicy.tween(MotionFeedback), label = "Voice level")
     val color = MaterialTheme.colorScheme.onSurfaceVariant
     Canvas(modifier.semantics { contentDescription = "Voice activity" }) {
         repeat(19) { i ->
@@ -151,13 +152,17 @@ internal fun CallHeader(active: ActiveCall, contacts: List<ChatSummary>, ownPhot
     val person = others.firstOrNull()
     val directPhoto = if (call.direct) { if (person?.own == true) ownPhoto else contacts.firstOrNull { it.id == person?.peer }?.avatar.orEmpty() } else ""
     val video = active.camera || active.screen || others.any { it.camera || it.screen }
+    val motionPolicy = LocalMotion.current
     var more by remember { mutableStateOf(false) }
         Row(Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
             Symbol("chevron_left", "Minimize call", minimize)
             Avatar(active.name, 42, directPhoto)
             Column(Modifier.weight(1f).padding(start = 10.dp)) {
                 Row(verticalAlignment = Alignment.CenterVertically) { Text(active.name, Modifier.weight(1f, false), maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.titleLarge); Spacer(Modifier.width(6.dp)); Glyph("lock", 16, "End-to-end encrypted call") }
-                Text(if (incoming) "Incoming call" else if (call.phase == "joining") "Joining…" else if (call.direct && others.isEmpty()) "Calling…" else if (active.connection != "connected") active.connection.replaceFirstChar { it.uppercase() } + "…" else (if (call.direct) "" else "${call.participants.size} in call · ") + "${active.seconds / 60}:${(active.seconds % 60).toString().padStart(2, '0')}", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                val stage = if (incoming) "Incoming call" else if (call.phase == "joining") "Joining…" else if (call.direct && others.isEmpty()) "Calling…" else if (active.connection != "connected") active.connection.replaceFirstChar { it.uppercase() } + "…" else ""
+                AnimatedContent(stage, transitionSpec = { fadeIn(motionPolicy.enter(MotionInline, delayMillis = MotionStagger)) togetherWith fadeOut(motionPolicy.exit(MotionExit)) }, label = "Call status") { phase ->
+                    Text(phase.ifEmpty { (if (call.direct) "" else "${call.participants.size} in call · ") + "${active.seconds / 60}:${(active.seconds % 60).toString().padStart(2, '0')}" }, maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
             }
             if (!video) Symbol("videocam", "Turn camera on") { command("call_camera", emptyMap()) }
             else if (call.canInvite) Symbol("person_add", "Add person") { panel("invite") }

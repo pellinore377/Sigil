@@ -1,11 +1,14 @@
 package org.sigil
 
+import androidx.compose.animation.animateContentSize
 import androidx.compose.foundation.*
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.*
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.platform.LocalClipboardManager
@@ -32,7 +35,8 @@ internal fun UtilityCard(value: UtilityContent) {
     val qr = value.qr
     val visible = qr?.concealed != true || revealed
     val clock=LocalTextMotion.current?.clock
-    val animate=LocalAppearance.current.messageEffects && !LocalMotion.current.reduced
+    val motion=LocalMotion.current
+    val animate=LocalAppearance.current.messageEffects && !motion.reduced
     val objectMessage=value.motion?.kind in listOf("dice","coin","choice")
     val canExpand=qr!=null || value.kind=="math"
     fun resultAlpha(full:Boolean)=if(!full && animate && value.motion!=null && (clock?.elapsed ?: 12000f)<(clock?.duration(randomizerDuration(value.motion)) ?: randomizerDuration(value.motion)))0f else 1f
@@ -43,11 +47,16 @@ internal fun UtilityCard(value: UtilityContent) {
         "dice" -> "Dice"; "pick" -> if(value.motion?.kind=="coin")"Coin flip" else "Choice"; "random" -> "Random number"; "swatch" -> "Color"
         "keys" -> "Keyboard shortcut"; "rating" -> "Rating"; "progress" -> "Progress"; "quote" -> "Quote"; else -> "Details"
     }
+    val icon = when (value.kind) {
+        "calculation" -> "calculate"; "conversion" -> "swap_horiz"; "math" -> "functions"; "qr" -> "qr_code"
+        "dice" -> "casino"; "pick" -> if (value.motion?.kind == "coin") "toll" else "playing_cards"; "random" -> "numbers"; "swatch" -> "palette"
+        "keys" -> "keyboard"; "rating" -> "star"; "progress" -> "data_usage"; "quote" -> "format_quote"; else -> "data_object"
+    }
     @Composable fun body(full: Boolean) {
         if(objectMessage) {
             RandomizerStage(value.motion!!,full,value.rich)
             if(value.motion.kind=="dice" && value.motion.dice.size>1) {
-                val alpha by androidx.compose.animation.core.animateFloatAsState(resultAlpha(full),label="Dice total")
+                val alpha by androidx.compose.animation.core.animateFloatAsState(resultAlpha(full),motion.tween(MotionMillis),label="Dice total")
                 Text(if(value.motion.result.isNotEmpty())"Total · ${value.motion.result}" else value.display,Modifier.fillMaxWidth().graphicsLayer {this.alpha=alpha},textAlign=androidx.compose.ui.text.style.TextAlign.End,style=MaterialTheme.typography.labelLarge)
             }
             if(value.details.size>6)Text("6 of ${value.details.size} dice shown",style=MaterialTheme.typography.bodySmall)
@@ -80,7 +89,7 @@ internal fun UtilityCard(value: UtilityContent) {
             if (value.kind == "swatch") {
                 val rgba = value.rgba ?: 0L
                 val color = Color((rgba shr 24 and 255).toInt(), (rgba shr 16 and 255).toInt(), (rgba shr 8 and 255).toInt(), (rgba and 255).toInt())
-                Canvas(Modifier.fillMaxWidth().height(if (full) 180.dp else 64.dp).semantics { contentDescription = "Color sample ${value.display}" }) {
+                Canvas(Modifier.fillMaxWidth().height(if (full) 180.dp else 64.dp).clip(RoundedCornerShape(12.dp)).semantics { contentDescription = "Color sample ${value.display}" }) {
                     val side = 12.dp.toPx()
                     for (y in 0..(size.height / side).toInt()) for (x in 0..(size.width / side).toInt())
                         drawRect(if ((x + y) % 2 == 0) Color.White else Color.LightGray, androidx.compose.ui.geometry.Offset(x * side, y * side), androidx.compose.ui.geometry.Size(side, side))
@@ -112,8 +121,9 @@ internal fun UtilityCard(value: UtilityContent) {
             }
         }
     }
-    Column(Modifier.widthIn(min = 200.dp, max = 280.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-        if(!objectMessage)Row(Modifier.fillMaxWidth(), verticalAlignment=Alignment.CenterVertically) {
+    Column(Modifier.widthIn(min = 200.dp, max = 280.dp).animateContentSize(motion.tween(MotionMillis)), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        if(!objectMessage)Row(Modifier.fillMaxWidth(), verticalAlignment=Alignment.CenterVertically, horizontalArrangement=Arrangement.spacedBy(8.dp)) {
+            Glyph(icon, 20)
             Text(label, Modifier.weight(1f), style = MaterialTheme.typography.labelMedium)
             if(!canExpand)value.copy?.let { copy -> SigilIconButton({clipboard.setText(AnnotatedString(copy))}) {Glyph("content_copy",18,"Copy ${label.lowercase()}")} }
         }

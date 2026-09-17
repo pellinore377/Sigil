@@ -1,5 +1,6 @@
 package org.sigil
 
+import androidx.compose.animation.animateContentSize
 import androidx.compose.foundation.*
 import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.foundation.gestures.detectTapGestures
@@ -22,6 +23,8 @@ import androidx.compose.ui.unit.*
 import androidx.compose.ui.window.*
 import kotlin.math.*
 
+internal fun diagramGlyph(kind: String) = when (kind) { "timeline" -> "timeline"; "org" -> "account_tree"; "mindmap" -> "hub"; "sequence" -> "conversion_path"; "state" -> "flowsheet"; else -> "schema" }
+
 private fun DiagramContent.descendants(node: Int): Set<Int> {
     val seen = mutableSetOf<Int>()
     val queue = ArrayDeque<Int>(); queue.add(node)
@@ -37,15 +40,16 @@ internal fun DiagramCard(diagram: DiagramContent) {
     var branch by remember(diagram) { mutableStateOf<Int?>(null) }
     var outline by remember(diagram) { mutableStateOf(false) }
     val hidden = remember(diagram, collapsed, branch) { collapsed.flatMap { diagram.descendants(it) - it }.toSet() + (branch?.let { diagram.nodes.indices.toSet() - diagram.descendants(it) } ?: emptySet()) }
+    val kindName = when (diagram.kind) { "org" -> "Org chart"; "mindmap" -> "Mind map"; else -> diagram.kind.replaceFirstChar { it.uppercase() } }
     val large = diagram.nodes.size > 12 || diagram.edges.size > 24 || diagram.width > 480 || diagram.height > 400
-    Column(Modifier.widthIn(min = 200.dp, max = 280.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+    Column(Modifier.widthIn(min = 200.dp, max = 280.dp).animateContentSize(LocalMotion.current.tween(MotionMillis)), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) { Glyph(diagramGlyph(diagram.kind), 20); Text("Diagram", style = MaterialTheme.typography.labelMedium) }
         RichMessageText(diagram.title, style = MaterialTheme.typography.titleMedium)
         if (diagram.kind == "timeline") diagram.entries.take(2).forEach { entry -> Column { RichMessageText(entry.date, style = MaterialTheme.typography.labelMedium); RichMessageText(entry.label, Modifier.heightIn(max = 72.dp).clipToBounds(), MaterialTheme.typography.bodyMedium) } }
         else if (!large) DiagramPlot(diagram, emptySet(), null, { focused = it; expanded = true }, Modifier.fillMaxWidth().height(220.dp), false)
-        else {
-            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) { Glyph("schema", 32); Text("${diagram.nodes.size} nodes · ${diagram.edges.size} connections", style = MaterialTheme.typography.bodyMedium) }
-            diagram.nodes.take(3).forEach { RichMessageText(it.label, Modifier.heightIn(max = 56.dp).clipToBounds(), MaterialTheme.typography.bodyMedium) }
-        }
+        else diagram.nodes.take(3).forEach { RichMessageText(it.label, Modifier.heightIn(max = 56.dp).clipToBounds(), MaterialTheme.typography.bodyMedium) }
+        Text(if (diagram.kind == "timeline") "$kindName · ${diagram.entries.size} ${if (diagram.entries.size == 1) "entry" else "entries"}"
+            else "$kindName · ${diagram.nodes.size} ${if (diagram.nodes.size == 1) "node" else "nodes"} · ${diagram.edges.size} ${if (diagram.edges.size == 1) "connection" else "connections"}", style = MaterialTheme.typography.labelSmall)
         SigilTextButton({ expanded = true }) { Glyph("open_in_full", 18); Spacer(Modifier.width(8.dp)); Text("Open diagram") }
     }
     if (expanded) Dialog({ expanded = false }, DialogProperties(usePlatformDefaultWidth = false)) {
@@ -54,7 +58,7 @@ internal fun DiagramCard(diagram: DiagramContent) {
                 Column(Modifier.fillMaxSize().safeDrawingPadding().padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         SigilIconButton({ expanded = false }) { Glyph("close", 24, "Close diagram") }
-                        Text(diagram.kind.replaceFirstChar { it.uppercase() }, Modifier.weight(1f), style = MaterialTheme.typography.titleLarge)
+                        Text(kindName, Modifier.weight(1f), style = MaterialTheme.typography.titleLarge)
                         if (diagram.kind != "timeline") SigilIconButton({ outline = !outline }) { Glyph(if (outline) "schema" else "format_list_bulleted", 24, if (outline) "Show diagram" else "List nodes") }
                     }
                     RichMessageText(diagram.title, Modifier.heightIn(max = 96.dp).verticalScroll(rememberScrollState()), MaterialTheme.typography.titleMedium)

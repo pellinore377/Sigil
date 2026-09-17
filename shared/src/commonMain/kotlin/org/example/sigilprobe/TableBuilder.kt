@@ -15,6 +15,7 @@ import androidx.compose.ui.*
 import androidx.compose.ui.focus.FocusDirection
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
+import androidx.compose.ui.semantics.*
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.unit.dp
 
@@ -28,10 +29,13 @@ internal fun TableBuilder(enabled:Boolean,back:()->Unit,send:(String)->Unit) {
     var row by rememberSaveable {mutableIntStateOf(0)}
     var remove by remember {mutableIntStateOf(-1)}
     var tooLarge by remember {mutableStateOf(false)}
+    var syntax by rememberSaveable {mutableStateOf(false)}
     val data=rows.filter {values->values.any {it.isNotBlank()}}
     val input=(listOf("Table",columns.joinToString("\t"))+data.map {it.joinToString("\t")}).joinToString("\n")
     val resolve=LocalBuilderSource.current
-    val source=remember(input,resolve) {resolve?.invoke(input).orEmpty()}
+    var source by remember {mutableStateOf("")}
+    var validated by remember {mutableStateOf("")}
+    LaunchedEffect(input,resolve) {kotlinx.coroutines.delay(120);source=kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Default) {resolve?.invoke(input).orEmpty()};validated=input}
     val preview=remember(columns,data,source) {
         if(source.isEmpty())null else TableContent(columns.map {RichText(it.trim())},data.map {values->values.map {RichText(it.trim())}},List(columns.size){null},List(data.size){null},null)
     }
@@ -56,42 +60,41 @@ internal fun TableBuilder(enabled:Boolean,back:()->Unit,send:(String)->Unit) {
         Row(sizing.measure("header"),verticalAlignment=Alignment.CenterVertically) {
             Symbol("chevron_left","Back to create",back)
             Text("Table",Modifier.weight(1f),style=MaterialTheme.typography.titleLarge)
+            SyntaxToggle(syntax) {syntax=!syntax}
         }
         Row(sizing.measure("pages"),horizontalArrangement=Arrangement.spacedBy(8.dp)) {
             pages.forEach {value->FilterChip(selected=page==value,onClick={change(value)},label={Text(value)},shape=RoundedCornerShape(12.dp))}
         }
-        if(tooLarge)Text("That edit is too large. Shorten the text and try again.",color=MaterialTheme.colorScheme.error,style=MaterialTheme.typography.bodySmall)
-        when(page) {
-            "Columns"->BuilderConfirm("Enter rows",columns.any {it.isNotBlank()}) {change("Rows")}
-            "Rows"->BuilderConfirm("Preview table",source.isNotEmpty()) {change("Preview")}
-            else->BuilderConfirm(if(LocalBuilderAction.current=="Send")"Send table" else LocalBuilderAction.current,enabled && preview!=null && source.isNotEmpty()) {send(source)}
-        }
-        AnimatedContent(page,Modifier.weight(1f).verticalScroll(rememberScrollState()).wrapContentHeight(unbounded=true).then(sizing.measure("body")),transitionSpec={
-            (slideInHorizontally(motion.tween(MotionMillis)){if(pages.indexOf(targetState)>pages.indexOf(initialState))it else -it}+fadeIn(motion.tween(MotionMillis))) togetherWith
-                (slideOutHorizontally(motion.tween(MotionMillis)){if(pages.indexOf(targetState)>pages.indexOf(initialState))-it else it}+fadeOut(motion.tween(MotionMillis)))
+        if(tooLarge)Text("That edit is too large. Shorten the text and try again.",Modifier.semantics {liveRegion=LiveRegionMode.Polite},color=MaterialTheme.colorScheme.error,style=MaterialTheme.typography.bodySmall)
+        Column(Modifier.weight(1f).verticalScroll(rememberScrollState()).wrapContentHeight(unbounded=true).then(sizing.measure("body")),verticalArrangement=Arrangement.spacedBy(12.dp)) {
+        AnimatedContent(page,transitionSpec={
+            (slideInHorizontally(motion.enter(MotionMillis)){if(pages.indexOf(targetState)>pages.indexOf(initialState))it else -it}+fadeIn(motion.enter(MotionMillis))) togetherWith
+                (slideOutHorizontally(motion.exit(MotionQuick)){if(pages.indexOf(targetState)>pages.indexOf(initialState))-it else it}+fadeOut(motion.exit(MotionExit))) using
+                SizeTransform(clip=false) {_,_->motion.tween(MotionMillis)}
         },label="Table form") {shown->
             when(shown) {
                 "Columns"->Column(verticalArrangement=Arrangement.spacedBy(12.dp)) {
-                    Text("Name the columns, then enter your rows.",style=MaterialTheme.typography.bodySmall)
+                    Text("Name the columns, then enter your rows.",style=MaterialTheme.typography.bodySmall,color=MaterialTheme.colorScheme.onSurfaceVariant)
                     columns.forEachIndexed {index,value->
                         Row(Modifier.animateContentSize(motion.tween(MotionMillis)),verticalAlignment=Alignment.CenterVertically) {
                             TableField(value,{update(columns.toMutableList().also {v->v[index]=it},rows)},"Column ${index+1}",Modifier.weight(1f))
-                            if(columns.size>1)SigilIconButton({if(rows.any {it[index].isNotBlank()})remove=index else deleteColumn(index)}) {Glyph("close",20,"Remove column ${index+1}")}
+                            if(columns.size>1)SigilIconButton({if(rows.any {it[index].isNotBlank()})remove=index else deleteColumn(index)}) {Glyph("close",24,"Remove column ${index+1}")}
                         }
                     }
-                    if(columns.size<64) {SigilTextButton({columns=columns+"";rows=rows.map {it+""}}) {Glyph("add",20);Text("Add column")}}
+                    if(columns.size<64) {SigilTextButton({columns=columns+"";rows=rows.map {it+""}}) {Glyph("add",20);Spacer(Modifier.width(8.dp));Text("Add column")}}
 
                 }
                 "Rows"->Column(verticalArrangement=Arrangement.spacedBy(8.dp)) {
                     Row(verticalAlignment=Alignment.CenterVertically) {
                         SigilIconButton({focus.clearFocus();row--},enabled=row>0) {Glyph("chevron_left",24,"Previous row")}
-                        Text("Row ${row+1} of ${rows.size}",Modifier.weight(1f),style=MaterialTheme.typography.titleSmall)
+                        Text("Row ${row+1} of ${rows.size}",Modifier.weight(1f).semantics {liveRegion=LiveRegionMode.Polite},style=MaterialTheme.typography.labelMedium,color=MaterialTheme.colorScheme.onSurfaceVariant)
                         SigilIconButton({focus.clearFocus();row++},enabled=row<rows.lastIndex) {Glyph("chevron_right",24,"Next row")}
-                        if(rows.size>1)SigilIconButton({rows=rows.filterIndexed {i,_->i!=row};row=row.coerceAtMost(rows.lastIndex)}) {Glyph("delete",20,"Remove row ${row+1}")}
+                        if(rows.size>1)SigilIconButton({rows=rows.filterIndexed {i,_->i!=row};row=row.coerceAtMost(rows.lastIndex)}) {Glyph("delete",24,"Remove row ${row+1}")}
                     }
                     AnimatedContent(row,transitionSpec={
-                        (slideInHorizontally(motion.tween(MotionMillis)){if(targetState>initialState)it else -it}+fadeIn(motion.tween(MotionMillis))) togetherWith
-                            (slideOutHorizontally(motion.tween(MotionMillis)){if(targetState>initialState)-it else it}+fadeOut(motion.tween(MotionMillis)))
+                        (slideInHorizontally(motion.enter(MotionMillis)){if(targetState>initialState)it else -it}+fadeIn(motion.enter(MotionMillis))) togetherWith
+                            (slideOutHorizontally(motion.exit(MotionQuick)){if(targetState>initialState)-it else it}+fadeOut(motion.exit(MotionExit))) using
+                            SizeTransform(clip=false) {_,_->motion.tween(MotionMillis)}
                     },label="Table row") {shownRow->
                     val cells=rows.getOrNull(shownRow)
                     if(cells!=null)Column(verticalArrangement=Arrangement.spacedBy(12.dp)) {
@@ -99,27 +102,35 @@ internal fun TableBuilder(enabled:Boolean,back:()->Unit,send:(String)->Unit) {
                             TableField(cells[index],{value->if(shownRow in rows.indices)update(columns,rows.toMutableList().also {v->v[shownRow]=v[shownRow].toMutableList().also {it[index]=value}})},name.ifBlank {"Column ${index+1}"},Modifier.fillMaxWidth())
                         }
                         if(rows.size<256) {
-                            SigilTextButton({focus.clearFocus();rows=rows+listOf(List(columns.size){""});row=rows.lastIndex},enabled=cells.any {it.isNotBlank()}) {Glyph("add",20);Text("Add row")}
+                            SigilTextButton({focus.clearFocus();rows=rows+listOf(List(columns.size){""});row=rows.lastIndex},enabled=cells.any {it.isNotBlank()}) {Glyph("add",20);Spacer(Modifier.width(8.dp));Text("Add row")}
                         }
-                        Text("Empty rows are left out. Each cell keeps its text literally.",style=MaterialTheme.typography.bodySmall)
+                        Text("Empty rows are left out. Each cell keeps its text literally.",style=MaterialTheme.typography.bodySmall,color=MaterialTheme.colorScheme.onSurfaceVariant)
 
                     }
                     }
                 }
                 else->Column(Modifier.fillMaxWidth(),verticalArrangement=Arrangement.spacedBy(12.dp)) {
                     if(preview!=null) {
-                        Surface(shape=RoundedCornerShape(20.dp),color=MaterialTheme.colorScheme.primary) {
+                        Surface(Modifier.align(Alignment.End),shape=RoundedCornerShape(20.dp),color=MaterialTheme.colorScheme.primary) {
                             CompositionLocalProvider(LocalMessageSurface provides MaterialTheme.colorScheme.primary) {
-                                Box(Modifier.fillMaxWidth().padding(12.dp),contentAlignment=Alignment.Center) {TableCard(preview)}
+                                Box(Modifier.padding(horizontal=14.dp,vertical=10.dp)) {TableCard(preview)}
                             }
                         }
 
-                    } else Text(if(resolve==null)"The builder is unavailable." else "Add a column name and at least one row. Tables support up to 64 columns and 256 rows within the message size limit.",style=MaterialTheme.typography.bodyMedium)
+                    } else Text(if(resolve==null)"The builder is unavailable." else "Add a column name and at least one row. Tables support up to 64 columns and 256 rows within the message size limit.",
+                        Modifier.semantics {liveRegion=LiveRegionMode.Polite},style=MaterialTheme.typography.bodyMedium,color=if(resolve==null)MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant)
                 }
             }
         }
+        SyntaxSource(syntax,source)
+        }
+        when(page) {
+            "Columns"->BuilderConfirm("Enter rows",columns.any {it.isNotBlank()}) {change("Rows")}
+            "Rows"->BuilderConfirm("Preview table",validated==input && source.isNotEmpty()) {change("Preview")}
+            else->BuilderConfirm(if(LocalBuilderAction.current=="Send")"Send table" else LocalBuilderAction.current,enabled && preview!=null && validated==input && source.isNotEmpty()) {send(source)}
+        }
     }
-    if(remove>=0)AlertDialog(onDismissRequest={remove=-1},title={Text("Remove column?")},text={Text("The values in this column will also be removed from your draft.")},confirmButton={SigilTextButton({deleteColumn(remove)}) {Text("Remove")}},dismissButton={SigilTextButton({remove=-1}) {Text("Keep column")}})
+    if(remove>=0)AlertDialog(onDismissRequest={remove=-1},title={Text("Remove column?")},text={Text("The values in this column will also be removed from your draft.")},confirmButton={SigilTextButton({deleteColumn(remove)}) {Text("Remove",color=MaterialTheme.colorScheme.error)}},dismissButton={SigilTextButton({remove=-1}) {Text("Keep column")}})
 }
 
 @Composable

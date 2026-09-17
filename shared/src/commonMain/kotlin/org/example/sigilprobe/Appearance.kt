@@ -10,6 +10,8 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.*
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 
@@ -24,7 +26,7 @@ internal fun AppearancePage(value: Appearance, analyze: (String) -> String, dyna
                 TimelinePreview(analyze, gradient = value.gradient)
                 AppearanceChoices("Appearance mode", listOf("Light" to "light_mode", "Dark" to "dark_mode", "System" to "devices"), value.mode) { update(value.copy(mode = it)) }
                 AccentPicker(value.accent) { update(value.copy(accent = it, dynamic = false)) }
-                if (dynamicAvailable) Toggle("Use Android wallpaper colors", value.dynamic) { update(value.copy(dynamic = it)) }
+                if (dynamicAvailable) SettingsToggle("Use Android wallpaper colors", "Follow your wallpaper accent", value.dynamic) { update(value.copy(dynamic = it)) }
                 AppearanceChoices("Chat background", listOf("Solid" to "circle", "Gradient" to "gradient"), if (value.gradient) "Gradient" else "Solid") { update(value.copy(gradient = it == "Gradient")) }
                 Text("Conversations follow this background unless you customize them.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
@@ -36,7 +38,7 @@ internal fun AppearancePage(value: Appearance, analyze: (String) -> String, dyna
                     Text("let greeting = \"Hello, world\";", Modifier.fillMaxWidth().padding(16.dp), fontFamily = LocalCodeFont.current, style = MaterialTheme.typography.bodyMedium)
                 }
                 Text("Text size · ${(value.textScale * 100).toInt()}%", style = MaterialTheme.typography.titleMedium)
-                Slider(value.textScale, { update(value.copy(textScale = it)) }, valueRange = .85f..1.3f, steps = 8)
+                Slider(value.textScale, { update(value.copy(textScale = it)) }, Modifier.semantics { contentDescription = "Text size" }, valueRange = .85f..1.3f, steps = 8)
                 Text("Also respects your device's text-size setting. Code uses Google Sans Code with either font.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
             "appearance-layout" -> {
@@ -52,9 +54,9 @@ internal fun AppearancePage(value: Appearance, analyze: (String) -> String, dyna
                 SettingsToggle("Play GIFs automatically", "Animate GIFs in the timeline", value.autoplayGifs) { update(value.copy(autoplayGifs = it)) }
                 SettingsToggle("Replay message effects automatically", "", value.replaySeconds>0) {update(value.copy(replaySeconds=if(it)20 else 0))}
                 Expandable(value.replaySeconds>0) {
-                    Column {
-                        Text("Wait ${value.replaySeconds} seconds between replays")
-                        Slider(value.replaySeconds.coerceIn(10,30).toFloat(),{update(value.copy(replaySeconds=it.toInt()))},valueRange=10f..30f,steps=19)
+                    Column(Modifier.padding(horizontal = 12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Text("Wait ${value.replaySeconds} seconds between replays", style = MaterialTheme.typography.titleMedium)
+                        Slider(value.replaySeconds.coerceIn(10,30).toFloat(),{update(value.copy(replaySeconds=it.toInt()))},Modifier.semantics { contentDescription = "Replay interval" },valueRange=10f..30f,steps=19)
                     }
                 }
                 Text("Your device’s reduced-motion setting is always respected. Videos and audio play only when you choose.", Modifier.padding(12.dp), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -65,11 +67,14 @@ internal fun AppearancePage(value: Appearance, analyze: (String) -> String, dyna
                 SettingsLink("view_agenda", "Layout", "Conversation spacing, previews and collections") { navigate("appearance-layout") }
                 SettingsLink("animation", "Motion & media", "Animation, message effects and GIF playback") { navigate("appearance-media") }
                 SettingsLink("casino", "Dice, coins & cards", "Materials, colors and a live playground") { navigate("appearance-objects") }
-                Spacer(Modifier.height(16.dp))
+                SettingsSectionLabel("This device")
                 var advanced by remember { mutableStateOf(false) }
-                SigilTextButton({ advanced = !advanced }, Modifier.fillMaxWidth()) { Text("Advanced", Modifier.weight(1f), textAlign = TextAlign.Start); Glyph(if (advanced) "expand_less" else "expand_more") }
+                SigilTextButton({ advanced = !advanced }, Modifier.fillMaxWidth()) {
+                    Text("Advanced", Modifier.weight(1f), textAlign = TextAlign.Start)
+                    Spacer(Modifier.width(8.dp))
+                    Glyph(if (advanced) "expand_less" else "expand_more", 20, if (advanced) "Hide advanced" else "Show advanced")
+                }
                 Expandable(advanced) { SettingsToggle("Follow account appearance on this device", "", followAccount, update = setFollowAccount) }
-                Spacer(Modifier.height(8.dp))
                 SigilOutlinedButton({ update(Appearance()) }, Modifier.fillMaxWidth(), shape = RoundedCornerShape(16.dp)) { Text("Reset app appearance") }
             }
         }
@@ -107,8 +112,8 @@ private fun AppearanceLayout(title: String, detail: String, back: () -> Unit, co
     Column(Modifier.fillMaxSize()) {
         Header(title, back)
         Column(Modifier.weight(1f).verticalScroll(rememberScrollState()).fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally) {
-            Column(Modifier.widthIn(max = 680.dp).padding(20.dp), verticalArrangement = Arrangement.spacedBy(20.dp)) {
-                Text(detail, Modifier.fillMaxWidth(), style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant, textAlign = TextAlign.Center)
+            Column(Modifier.widthIn(max = 680.dp).fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
+                Text(detail, Modifier.padding(horizontal = 12.dp, vertical = 16.dp), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 content()
             }
         }
@@ -118,7 +123,7 @@ private fun AppearanceLayout(title: String, detail: String, back: () -> Unit, co
 @Composable
 internal fun AppearanceChoices(label: String, choices: List<Pair<String, String>>, selected: String, update: (String) -> Unit) {
     Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-        Text(label, style = MaterialTheme.typography.titleLarge)
+        if (label.isNotBlank()) Text(label, style = MaterialTheme.typography.titleLarge)
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
             choices.forEach { (name, icon) ->
                 val active = selected == name

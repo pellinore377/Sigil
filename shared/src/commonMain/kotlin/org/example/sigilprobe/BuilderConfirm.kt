@@ -1,6 +1,8 @@
 package org.sigil
 
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.ui.unit.dp
 import androidx.compose.material3.Text
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
@@ -14,7 +16,7 @@ internal val LocalComposerConfirmation=staticCompositionLocalOf<ComposerConfirma
 @Composable
 fun BuilderConfirm(label:String=LocalBuilderAction.current,enabled:Boolean=true,onClick:()->Unit) {
     val host=LocalComposerConfirmation.current
-    if(host==null) {SigilButton(onClick,Modifier.fillMaxWidth(),enabled=enabled){Text(label)};return}
+    if(host==null) {SigilButton(onClick,Modifier.fillMaxWidth().heightIn(min=48.dp),enabled=enabled){Text(label)};return}
     val owner=remember {Any()}
     val current by rememberUpdatedState(onClick)
     val invoke=remember { {current()} }

@@ -1,5 +1,9 @@
 package org.sigil
 
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInVertically
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -9,7 +13,10 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.dropShadow
+import androidx.compose.ui.graphics.shadow.Shadow
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.DpOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.platform.LocalDensity
@@ -19,32 +26,46 @@ val LocalMediaCommand = staticCompositionLocalOf<Command?> { null }
 val LocalMediaSender = staticCompositionLocalOf<(ChatMessage) -> String> { { if (it.mine) "You" else it.author } }
 val LocalMediaMessage = staticCompositionLocalOf<(String, String, String) -> ChatMessage?> { { _, _, _ -> null } }
 
+private fun chromeShadow(shape: RoundedCornerShape) = Modifier.dropShadow(shape, Shadow(radius = 8.dp, color = Color.Black.copy(alpha = .15f), offset = DpOffset(0.dp, 3.dp)))
+
 @Composable
 fun MediaViewerChrome(message: ChatMessage?, close: () -> Unit, save: (() -> Unit)? = null, menu: (() -> Unit)? = null, saveEnabled: Boolean = true, content: @Composable BoxScope.() -> Unit) {
     val command = LocalMediaCommand.current
     val sender = LocalMediaSender.current
     val colors = MaterialTheme.colorScheme
+    val motionPolicy = LocalMotion.current
     val density=LocalDensity.current
     var headerHeight by remember {mutableStateOf(64.dp)}
     var reactionsHeight by remember {mutableStateOf(56.dp)}
-    Box(Modifier.fillMaxSize().background(Color.Black.copy(alpha = .78f)).systemBarsPadding().padding(12.dp)) {
+    var chrome by remember { mutableStateOf(false) }
+    LaunchedEffect(Unit) { chrome = true }
+    val headerShape = RoundedCornerShape(24.dp)
+    val reactionShape = RoundedCornerShape(28.dp)
+    Box(Modifier.fillMaxSize().background(colors.scrim.copy(alpha = .78f)).safeDrawingPadding().padding(12.dp)) {
+        // The scrim is black in both themes, so no scheme role stays legible over it.
         Box(Modifier.fillMaxSize().padding(top = headerHeight + 12.dp, bottom = if (message != null && command != null && message.attachment?.draft != true) reactionsHeight + 12.dp else 12.dp), contentAlignment = Alignment.Center) { CompositionLocalProvider(LocalContentColor provides Color.White) { content() } }
-        Surface(Modifier.align(Alignment.TopCenter).widthIn(max = 720.dp).fillMaxWidth().onSizeChanged {headerHeight=with(density){it.height.toDp()}}, shape = RoundedCornerShape(26.dp), color = colors.surfaceContainerHigh.copy(alpha = .94f), contentColor = colors.onSurface) {
-            Row(Modifier.padding(6.dp), verticalAlignment = Alignment.CenterVertically) {
-                SigilIconButton(close) { Glyph("close", 24, "Close media") }
-                Column(Modifier.weight(1f).padding(horizontal = 6.dp)) {
-                    Text(message?.let(sender).orEmpty(), maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.titleMedium)
-                    if (!message?.time.isNullOrBlank()) Text(message!!.time, style = MaterialTheme.typography.labelSmall, color = colors.onSurfaceVariant)
+        AnimatedVisibility(chrome, Modifier.align(Alignment.TopCenter), enter = fadeIn(motionPolicy.enter(MotionQuick, delayMillis = MotionStagger)) + slideInVertically(motionPolicy.enter(MotionQuick, delayMillis = MotionStagger)) { -it }, exit = fadeOut(motionPolicy.exit(MotionExit)), label = "Media chrome") {
+            Surface(Modifier.widthIn(max = 680.dp).fillMaxWidth().then(chromeShadow(headerShape)).onSizeChanged {headerHeight=with(density){it.height.toDp()}}, shape = headerShape, color = colors.surfaceContainerHigh.copy(alpha = .94f), contentColor = colors.onSurface, shadowElevation = 0.dp) {
+                Row(Modifier.padding(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                    SigilIconButton(close) { Glyph("close", 24, "Close media") }
+                    Column(Modifier.weight(1f).padding(start = 10.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                        Text(message?.let(sender).orEmpty(), maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.titleMedium)
+                        if (!message?.time.isNullOrBlank()) Text(message!!.time, style = MaterialTheme.typography.labelSmall, color = colors.onSurfaceVariant)
+                    }
+                    save?.let { SigilIconButton(it, enabled = saveEnabled) { Glyph("download", 24, if (saveEnabled) "Save attachment" else "Saving attachment") } }
+                    menu?.let { SigilIconButton(it) { Glyph("more_horiz", 24, "Media options") } }
                 }
-                save?.let { SigilIconButton(it, enabled = saveEnabled) { Glyph("download", 24, if (saveEnabled) "Save attachment" else "Saving attachment") } }
-                menu?.let { SigilIconButton(it) { Glyph("more_horiz", 24, "Media options") } }
             }
         }
         if (message != null && command != null && message.attachment?.draft != true) {
-            Surface(Modifier.align(Alignment.BottomCenter).widthIn(max = 380.dp).fillMaxWidth().onSizeChanged {reactionsHeight=with(density){it.height.toDp()}}, shape = RoundedCornerShape(28.dp), color = colors.surfaceContainerHigh.copy(alpha = .94f), contentColor = colors.onSurface) {
-                Row(Modifier.padding(4.dp), horizontalArrangement = Arrangement.SpaceEvenly) {
-                    listOf("❤️", "👍", "😂", "😮", "😢", "😡").forEach { emoji ->
-                        TextButton({ command("react", mediaReaction(message, emoji)) }, Modifier.weight(1f), contentPadding = PaddingValues(0.dp), colors = ButtonDefaults.textButtonColors(containerColor = if (emoji in message.myReactions) colors.secondaryContainer else Color.Transparent)) { Text(emoji, fontSize = 22.sp) }
+            AnimatedVisibility(chrome, Modifier.align(Alignment.BottomCenter), enter = fadeIn(motionPolicy.enter(MotionQuick, delayMillis = MotionStagger)) + slideInVertically(motionPolicy.enter(MotionQuick, delayMillis = MotionStagger)) { it }, exit = fadeOut(motionPolicy.exit(MotionExit)), label = "Media reactions") {
+                Surface(Modifier.widthIn(max = 360.dp).fillMaxWidth().then(chromeShadow(reactionShape)).onSizeChanged {reactionsHeight=with(density){it.height.toDp()}}, shape = reactionShape, color = colors.surfaceContainerHigh.copy(alpha = .94f), contentColor = colors.onSurface, shadowElevation = 0.dp) {
+                    Row(Modifier.padding(horizontal = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+                        listOf("❤️", "👍", "😂", "😮", "😢", "😡").forEach { emoji ->
+                            SigilTextButton({ command("react", mediaReaction(message, emoji)) },
+                                Modifier.weight(1f).background(if (emoji in message.myReactions) colors.primaryContainer else Color.Transparent, SigilButtonShape),
+                                contentPadding = PaddingValues(0.dp)) { Text(emoji, fontSize = 22.sp) }
+                        }
                     }
                 }
             }
@@ -54,8 +75,8 @@ fun MediaViewerChrome(message: ChatMessage?, close: () -> Unit, save: (() -> Uni
 
 @Composable
 fun GifChip(modifier: Modifier = Modifier) {
-    Surface(modifier.padding(8.dp), shape = RoundedCornerShape(8.dp), color = Color.Black.copy(alpha = .65f), contentColor = Color.White) {
-        Text("GIF", Modifier.padding(horizontal = 7.dp, vertical = 3.dp), style = MaterialTheme.typography.labelSmall)
+    Surface(modifier.padding(8.dp), shape = RoundedCornerShape(8.dp), color = MaterialTheme.colorScheme.scrim.copy(alpha = .65f), contentColor = Color.White) {
+        Text("GIF", Modifier.padding(horizontal = 8.dp, vertical = 4.dp), style = MaterialTheme.typography.labelSmall)
     }
 }
 

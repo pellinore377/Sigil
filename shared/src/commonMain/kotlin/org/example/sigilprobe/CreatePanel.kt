@@ -1,14 +1,18 @@
 package org.sigil
 
+import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.foundation.*
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.grid.*
 import androidx.compose.foundation.pager.*
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.*
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.semantics.*
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.unit.dp
@@ -30,9 +34,13 @@ private val createPages=createItems.filter {it.first!="Help"}.chunked(12)
 internal fun CreatePanel(back:()->Unit,open:(String)->Unit) {
     val pager=rememberPagerState {createPages.size}
     val scope=rememberCoroutineScope()
+    val motionPolicy=LocalMotion.current
     val preferred=LocalComposerPanelHeight.current
+    val density=LocalDensity.current
     BoxWithConstraints(Modifier.fillMaxWidth()) {
-    val height=toolGridHeight(createPages[pager.currentPage],maxWidth-16.dp)+96.dp
+    // Header line box, the 48.dp dot row, the 8.dp top padding and the two 4.dp gaps.
+    val chrome=with(density) {maxOf(48.dp,MaterialTheme.typography.titleMedium.lineHeight.toDp())}+64.dp
+    val height=toolGridHeight(createPages[pager.currentPage],maxWidth-16.dp)+chrome
     SideEffect {preferred?.invoke(height)}
     Column(Modifier.height(height).padding(start=8.dp,end=8.dp,top=8.dp),verticalArrangement=Arrangement.spacedBy(4.dp)) {
         Row(verticalAlignment=Alignment.CenterVertically) {
@@ -48,9 +56,13 @@ internal fun CreatePanel(back:()->Unit,open:(String)->Unit) {
         }
         Row(Modifier.align(Alignment.CenterHorizontally)) {
             repeat(createPages.size) {page->
-                Box(Modifier.size(32.dp).clip(RoundedCornerShape(12.dp)).clickable(role=Role.Tab){scope.launch {pager.animateScrollToPage(page)}}
-                    .semantics {contentDescription="Create page ${page+1}";selected=pager.currentPage==page},contentAlignment=Alignment.Center) {
-                    Box(Modifier.size(if(pager.currentPage==page)8.dp else 6.dp).background(if(pager.currentPage==page)MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outlineVariant,RoundedCornerShape(50)))
+                val active=pager.currentPage==page
+                val dot by animateDpAsState(if(active)8.dp else 6.dp,motionPolicy.tween(MotionMillis),label="Create page dot")
+                val tint by animateColorAsState(if(active)MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,motionPolicy.tween(MotionMillis),label="Create page dot tint")
+                Box(Modifier.sizeIn(minWidth=48.dp,minHeight=48.dp).clip(RoundedCornerShape(12.dp))
+                    .clickable(role=Role.Tab){scope.launch {if(motionPolicy.reduced)pager.scrollToPage(page) else pager.animateScrollToPage(page,animationSpec=motionPolicy.tween(MotionMillis))}}
+                    .semantics {contentDescription="Create page ${page+1}";selected=active},contentAlignment=Alignment.Center) {
+                    Box(Modifier.size(dot).background(tint,CircleShape))
                 }
             }
         }

@@ -1,14 +1,20 @@
 package org.sigil
 
+import androidx.compose.animation.animateContentSize
 import androidx.compose.foundation.*
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.*
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.*
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.*
 
@@ -22,54 +28,58 @@ internal fun ServiceCard(value: ServiceContent) {
     val unit = if (imperial) 1 else 0
     val clipboard = LocalClipboardManager.current
     val uri = LocalUriHandler.current
+    val density = LocalDensity.current
+    val titleCap = with(density) { MaterialTheme.typography.titleMedium.lineHeight.toDp()*3 }
+    val senseCap = with(density) { MaterialTheme.typography.bodyLarge.lineHeight.toDp()*3 }
+    val bodyCap = with(density) { MaterialTheme.typography.bodyMedium.lineHeight.toDp()*2 }
+    val lineCap = with(density) { MaterialTheme.typography.bodyMedium.lineHeight.toDp() }
+    val quietCap = with(density) { MaterialTheme.typography.labelSmall.lineHeight.toDp()*2 }
     val label = when(value.kind) { "translation"->"Translation"; "definition"->"Definition"; else->"Weather" }
+    val icon = when(value.kind) { "translation"->"translate"; "definition"->"dictionary"; else->"partly_cloudy_day" }
     @Composable fun sense(s: DefinitionSense, full: Boolean) {
         RichMessageText(s.part, style = MaterialTheme.typography.labelMedium)
-        RichMessageText(s.definition)
+        RichMessageText(s.definition, if(full) Modifier else Modifier.heightIn(max=senseCap).clipToBounds())
         if(full) {
             s.example?.let { Text("Example",style=MaterialTheme.typography.labelMedium); RichMessageText(it) }
             s.etymology?.let { Text("Origin",style=MaterialTheme.typography.labelMedium); RichMessageText(it) }
             if(s.synonyms.isNotEmpty()) { Text("Synonyms",style=MaterialTheme.typography.labelMedium); s.synonyms.forEach { RichMessageText(it) } }
             if(s.antonyms.isNotEmpty()) { Text("Antonyms",style=MaterialTheme.typography.labelMedium); s.antonyms.forEach { RichMessageText(it) } }
-            SigilTextButton({ s.copy?.let { clipboard.setText(AnnotatedString(it)) } },enabled=s.copy!=null) { Text("Copy definition") }
+            SigilTextButton({ s.copy?.let { clipboard.setText(AnnotatedString(it)) } },enabled=s.copy!=null) { Glyph("content_copy",18);Spacer(Modifier.width(8.dp));Text("Copy definition") }
         }
     }
     @Composable fun conditions(c: WeatherConditions, full: Boolean) {
-        Text(c.date,style=MaterialTheme.typography.labelMedium)
+        Text(c.date,style=MaterialTheme.typography.labelMedium,maxLines=2,overflow=TextOverflow.Ellipsis)
         Row(verticalAlignment=Alignment.CenterVertically,horizontalArrangement=Arrangement.spacedBy(12.dp)) {
-            Glyph(c.icon,36); Text(c.temperature[unit],style=MaterialTheme.typography.headlineMedium)
+            Glyph(c.icon,36); Text(c.temperature[unit],style=MaterialTheme.typography.headlineMedium,maxLines=1)
         }
-        RichMessageText(c.description)
-        c.feelsLike?.takeIf { it[unit]!=c.temperature[unit] }?.let { Text("Feels like ${it[unit]}",style=MaterialTheme.typography.bodyMedium) }
-        if(c.rain!=null || c.chance!=null) Text(listOfNotNull(c.chance?.let { "Precipitation $it" },c.rain).joinToString(" · "),style=MaterialTheme.typography.bodyMedium)
-        Text("Wind ${c.wind[unit]}",style=MaterialTheme.typography.bodyMedium)
-        if(full) {
-            c.humidity?.let { Text("Humidity $it",style=MaterialTheme.typography.bodyMedium) }
-            c.uv?.let { Text("UV index $it",style=MaterialTheme.typography.bodyMedium) }
-        }
+        RichMessageText(c.description,if(full) Modifier else Modifier.heightIn(max=bodyCap).clipToBounds(),MaterialTheme.typography.bodyMedium)
+        Text(listOfNotNull(c.feelsLike?.takeIf { it[unit]!=c.temperature[unit] }?.let { "Feels like ${it[unit]}" },c.chance?.let { "Precipitation $it" },c.rain,"Wind ${c.wind[unit]}",
+            c.humidity?.takeIf { full }?.let { "Humidity $it" },c.uv?.takeIf { full }?.let { "UV index $it" }).joinToString(" · "),style=MaterialTheme.typography.labelMedium)
     }
     @Composable fun heading(full: Boolean) {
-        if(value.language.isNotEmpty()) Text(value.language,style=MaterialTheme.typography.labelMedium)
-        RichMessageText(value.title,style=if(value.kind=="translation") MaterialTheme.typography.bodyLarge else MaterialTheme.typography.titleLarge)
-        value.pronunciation?.let { RichMessageText(it,style=MaterialTheme.typography.bodyMedium) }
+        RichMessageText(value.title,if(full) Modifier else Modifier.heightIn(max=titleCap).clipToBounds(),
+            if(value.kind=="translation") MaterialTheme.typography.bodyLarge else if(full) MaterialTheme.typography.titleLarge else MaterialTheme.typography.titleMedium)
+        value.pronunciation?.let { RichMessageText(it,if(full) Modifier else Modifier.heightIn(max=lineCap).clipToBounds(),MaterialTheme.typography.bodyMedium) }
+        if(value.language.isNotEmpty()) Text(value.language,style=MaterialTheme.typography.labelMedium,maxLines=1,overflow=TextOverflow.Ellipsis)
         if(value.kind=="translation") {
-            SigilTextButton({ original=!original }) { Text(if(original)"Hide original" else "Show original") }
+            SigilTextButton({ original=!original }) { Glyph(if(original)"expand_less" else "expand_more",18);Spacer(Modifier.width(8.dp));Text(if(original)"Hide original" else "Show original") }
             Expandable(original) { value.original?.let { RichMessageText(it) } }
         }
         if(value.kind=="weather") {
             if(value.historical) Text("Historical weather snapshot",style=MaterialTheme.typography.labelMedium)
             value.current?.let { conditions(it,full) }
-            value.days.firstOrNull { it.key==value.today }?.let { Text("High ${it.high[unit]} · Low ${it.low[unit]}",style=MaterialTheme.typography.bodyMedium) }
-            SigilTextButton({ imperial=!imperial }) { Text(if(imperial)"Use °C and km/h" else "Use °F and mph") }
+            value.days.firstOrNull { it.key==value.today }?.let { Text("High ${it.high[unit]} · Low ${it.low[unit]}",style=MaterialTheme.typography.labelMedium) }
+            SigilTextButton({ imperial=!imperial }) { Glyph("swap_horiz",18);Spacer(Modifier.width(8.dp));Text(if(imperial)"Use °C and km/h" else "Use °F and mph") }
         }
     }
     @Composable fun attribution(full: Boolean) {
-        RichMessageText(value.attribution,style=MaterialTheme.typography.labelSmall)
-        Text("Snapshot ${value.stamp}",style=MaterialTheme.typography.labelSmall)
-        if(full) value.source?.let { SigilTextButton({ uri.openUri(it) }) { Text("Open source") } }
+        RichMessageText(value.attribution,if(full) Modifier else Modifier.heightIn(max=quietCap).clipToBounds(),MaterialTheme.typography.labelSmall)
+        Text(listOfNotNull(if(value.senses.size>1)"${value.senses.size} definitions" else null,"Snapshot ${value.stamp}").joinToString(" · "),
+            style=MaterialTheme.typography.labelSmall,maxLines=2,overflow=TextOverflow.Ellipsis)
+        if(full) value.source?.let { SigilTextButton({ uri.openUri(it) }) { Glyph("open_in_new",18);Spacer(Modifier.width(8.dp));Text("Open source") } }
     }
-    Column(Modifier.widthIn(min=200.dp,max=280.dp),verticalArrangement=Arrangement.spacedBy(8.dp)) {
-        Text(label,style=MaterialTheme.typography.labelMedium)
+    Column(Modifier.widthIn(min=200.dp,max=280.dp).animateContentSize(LocalMotion.current.tween(MotionMillis)),verticalArrangement=Arrangement.spacedBy(8.dp)) {
+        Row(verticalAlignment=Alignment.CenterVertically,horizontalArrangement=Arrangement.spacedBy(8.dp)) { Glyph(icon,20);Text(label,style=MaterialTheme.typography.labelMedium) }
         heading(false)
         value.senses.firstOrNull()?.let { sense(it,false) }
         attribution(false)
@@ -87,29 +97,33 @@ internal fun ServiceCard(value: ServiceContent) {
                     LazyColumn(Modifier.weight(1f).fillMaxWidth(),verticalArrangement=Arrangement.spacedBy(16.dp)) {
                         item { Column(verticalArrangement=Arrangement.spacedBy(10.dp)) { heading(true) } }
                         items(value.senses) { Column(verticalArrangement=Arrangement.spacedBy(8.dp)) { sense(it,true) } }
-                        if(value.audio!=null) item { SigilTextButton({ uri.openUri(value.audio) }) { Glyph("volume_up",20); Text("Open pronunciation audio") } }
+                        if(value.audio!=null) item { SigilTextButton({ uri.openUri(value.audio) }) { Glyph("volume_up",18);Spacer(Modifier.width(8.dp));Text("Open pronunciation audio") } }
                         if(value.days.isNotEmpty()) item {
                             Text("Forecast",style=MaterialTheme.typography.titleMedium)
-                            LazyRow(horizontalArrangement=Arrangement.spacedBy(8.dp)) { items(value.days) { day ->
-                                Surface(onClick={selectedDay=day.key},shape=MaterialTheme.shapes.medium,color=if(selectedDay==day.key)MaterialTheme.colorScheme.secondaryContainer else MaterialTheme.colorScheme.surfaceVariant) {
-                                    Column(Modifier.width(180.dp).padding(14.dp),verticalArrangement=Arrangement.spacedBy(8.dp)) {
-                                        Text(day.date,style=MaterialTheme.typography.labelMedium); Glyph(day.icon,28)
-                                        Text("${day.high[unit]} / ${day.low[unit]}"); RichMessageText(day.description,style=MaterialTheme.typography.bodyMedium); Text("Precipitation ${day.chance}",style=MaterialTheme.typography.labelMedium)
+                            LazyRow(horizontalArrangement=Arrangement.spacedBy(8.dp)) { items(value.days,key={ it.key }) { day ->
+                                val active=selectedDay==day.key
+                                Surface(Modifier.width(180.dp).clip(RoundedCornerShape(16.dp)).selectableChoice(active) { selectedDay=day.key },shape=RoundedCornerShape(16.dp),
+                                    color=if(active)MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surfaceVariant,contentColor=if(active)MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurface) {
+                                    Column(Modifier.padding(14.dp),verticalArrangement=Arrangement.spacedBy(8.dp)) {
+                                        Text(day.date,style=MaterialTheme.typography.labelMedium,maxLines=1,overflow=TextOverflow.Ellipsis); Glyph(day.icon,28)
+                                        Text("${day.high[unit]} / ${day.low[unit]}",maxLines=1); RichMessageText(day.description,Modifier.heightIn(max=bodyCap).clipToBounds(),MaterialTheme.typography.bodyMedium)
+                                        Text("Precipitation ${day.chance}",style=MaterialTheme.typography.labelMedium,maxLines=1)
                                     }
                                 }
                             } }
                         }
                         if(value.kind=="weather") {
                             val hours=value.hours.filter { it.key==selectedDay }
-                            item { Text(if(hours.isEmpty())"No hourly forecast supplied for this day." else "Hourly forecast",style=MaterialTheme.typography.titleMedium) }
+                            if(hours.isEmpty()) item { Box(Modifier.fillMaxWidth().padding(32.dp),contentAlignment=Alignment.Center) { Text("No hourly forecast for this day.",style=MaterialTheme.typography.bodyMedium,color=MaterialTheme.colorScheme.onSurfaceVariant) } }
+                            else item { Text("Hourly forecast",style=MaterialTheme.typography.titleMedium) }
                             value.days.firstOrNull { it.key==selectedDay }?.charts?.getOrNull(unit)?.let { chart -> item {
                                 ChartPlot(chart,emptySet(),selectedHour,{selectedHour=it},Modifier.fillMaxWidth().height(220.dp))
                             } }
                             hours.getOrNull(selectedHour)?.let { c -> item { Column(verticalArrangement=Arrangement.spacedBy(8.dp)) {
                                 conditions(c,true)
                                 Row(horizontalArrangement=Arrangement.spacedBy(8.dp)) {
-                                    SigilTextButton({selectedHour--},enabled=selectedHour>0) { Text("Previous hour") }
-                                    SigilTextButton({selectedHour++},enabled=selectedHour<hours.lastIndex) { Text("Next hour") }
+                                    SigilTextButton({selectedHour--},enabled=selectedHour>0) { Glyph("chevron_left",18);Spacer(Modifier.width(8.dp));Text("Previous hour") }
+                                    SigilTextButton({selectedHour++},enabled=selectedHour<hours.lastIndex) { Text("Next hour");Spacer(Modifier.width(8.dp));Glyph("chevron_right",18) }
                                 }
                             } } }
                         }

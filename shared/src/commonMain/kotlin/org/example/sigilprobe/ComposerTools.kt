@@ -45,7 +45,7 @@ internal fun ComposerTool(name:String,icon:String,enabled:Boolean=true,primary:B
 @Composable
 internal fun AttachmentTools(hasAttachment:Boolean,hasStructured:Boolean,open:(String)->Unit) {
     val features=LocalClientFeatures.current
-    val tools=listOf("Photos" to "image","Camera" to "photo_camera","Files" to "draft","One-time location" to "my_location","Real-time location" to "sensors","Drop a pin" to "location_on","Create" to "add_notes","Format" to "text_format")
+    val tools=listOf("Photos" to "image","Camera" to "photo_camera","Files" to "draft","One-time location" to "my_location","Real-time location" to "sensors","Drop a pin" to "place","Create" to "add_notes","Format" to "text_format")
     val preferred=LocalComposerPanelHeight.current
     BoxWithConstraints(Modifier.widthIn(max=660.dp).fillMaxWidth()) {
         val height=toolGridHeight(tools,maxWidth-16.dp)+8.dp

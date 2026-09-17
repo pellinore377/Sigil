@@ -14,6 +14,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
+import androidx.compose.ui.semantics.*
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 
@@ -24,6 +25,7 @@ internal fun RandomizerBuilder(enabled:Boolean,back:()->Unit,initialMode:String?
     var choices by rememberSaveable {mutableStateOf(listOf(""))}
     var minimum by rememberSaveable {mutableStateOf("1")}
     var maximum by rememberSaveable {mutableStateOf("100")}
+    var syntax by rememberSaveable {mutableStateOf(false)}
     val resolve=LocalBuilderSource.current
     val input=when(kind) {"Dice"->listOf(kind)+dice;"Choice"->listOf(kind)+choices.filter {it.isNotBlank()};"Number"->listOf(kind,minimum,maximum);else->listOf(kind)}.joinToString("\n")
     val source=remember(input,resolve) {resolve?.invoke(input).orEmpty()}
@@ -37,43 +39,51 @@ internal fun RandomizerBuilder(enabled:Boolean,back:()->Unit,initialMode:String?
         Row(sizing.measure("header"),verticalAlignment=Alignment.CenterVertically) {
             Symbol("chevron_left","Back to create",back)
             Text(when(initialMode){"Choice"->"Cards";"Number"->"Random Number";null->"Randomizer";else->initialMode},Modifier.weight(1f),style=MaterialTheme.typography.titleLarge)
+            SyntaxToggle(syntax) {syntax=!syntax}
         }
         if(initialMode==null)LazyRow(sizing.measure("modes"),horizontalArrangement=Arrangement.spacedBy(8.dp)) {
             items(modes) {mode->FilterChip(selected=kind==mode,onClick={focus.clearFocus();keyboard?.hide();kind=mode},label={Text(mode)},shape=RoundedCornerShape(12.dp))}
         }
         Column(Modifier.weight(1f).verticalScroll(rememberScrollState()).wrapContentHeight(unbounded=true).then(sizing.measure("body")),verticalArrangement=Arrangement.spacedBy(12.dp)) {
         AnimatedContent(kind,transitionSpec={
-            (slideInHorizontally(motion.tween(MotionMillis)) {if(modes.indexOf(targetState)>modes.indexOf(initialState))it else -it}+fadeIn(motion.tween(MotionMillis))) togetherWith
-                (slideOutHorizontally(motion.tween(MotionMillis)) {if(modes.indexOf(targetState)>modes.indexOf(initialState))-it else it}+fadeOut(motion.tween(MotionMillis)))
+            (slideInHorizontally(motion.enter(MotionMillis)) {if(modes.indexOf(targetState)>modes.indexOf(initialState))it else -it}+fadeIn(motion.enter(MotionMillis))) togetherWith
+                (slideOutHorizontally(motion.exit(MotionQuick)) {if(modes.indexOf(targetState)>modes.indexOf(initialState))-it else it}+fadeOut(motion.exit(MotionExit))) using
+                SizeTransform(clip=false) {_,_->motion.tween(MotionMillis)}
         },label="Randomizer form") {mode->
             Column(verticalArrangement=Arrangement.spacedBy(12.dp)) {
                 when(mode) {
                     "Dice"->{
-                        Text("Set the count and sides for each group. Shapes: d4, d6, d8, d10, d12, d16, d20, d24 and d30. d100 uses a percentile pair.",style=MaterialTheme.typography.bodySmall)
+                        Text("Set the count and sides for each group. Shapes: d4, d6, d8, d10, d12, d16, d20, d24 and d30. d100 uses a percentile pair.",style=MaterialTheme.typography.bodyMedium,color=MaterialTheme.colorScheme.onSurfaceVariant)
                         dice.chunked(2).forEachIndexed {index,group->key(index) {
                             ExpandableRow(index) {
                                 NumberField(group[0],{dice=dice.toMutableList().also {v->v[index*2]=it}},"Count ${index+1}",Modifier.weight(1f))
                                 NumberField(group[1],{dice=dice.toMutableList().also {v->v[index*2+1]=it}},"Sides ${index+1}",Modifier.weight(1f))
-                                if(dice.size>2)SigilIconButton({dice=dice.filterIndexed {i,_->i/2!=index}}) {Glyph("close",20,"Remove dice group ${index+1}")}
+                                if(dice.size>2)SigilIconButton({dice=dice.filterIndexed {i,_->i/2!=index}}) {Glyph("close",24,"Remove dice group ${index+1}")}
                             }
                         }}
-                        if(dice.size<32)SigilTextButton({dice=dice+listOf("1","6")}) {Glyph("add",20);Text("Add dice group")}
+                        if(dice.size<32)SigilTextButton({dice=dice+listOf("1","6")}) {Glyph("add",20);Spacer(Modifier.width(8.dp));Text("Add dice group")}
                     }
                     "Choice"->{
-                        Text("Enter at least two choices. Exact duplicates count only once.",style=MaterialTheme.typography.bodySmall)
+                        Text("Enter at least two choices. Exact duplicates count only once.",style=MaterialTheme.typography.bodyMedium,color=MaterialTheme.colorScheme.onSurfaceVariant)
                         BuilderEntries(choices,"Choice","radio_button_unchecked") {choices=it}
                     }
                     "Number"->Row(horizontalArrangement=Arrangement.spacedBy(12.dp)) {
                         NumberField(minimum,{minimum=it},"Minimum",Modifier.weight(1f))
                         NumberField(maximum,{maximum=it},"Maximum",Modifier.weight(1f))
                     }
-                    "Coin"->Surface(shape=RoundedCornerShape(20.dp),color=MaterialTheme.colorScheme.primaryContainer) {
-                        Column(Modifier.fillMaxWidth().padding(20.dp),horizontalAlignment=Alignment.CenterHorizontally,verticalArrangement=Arrangement.spacedBy(8.dp)) {Glyph("toll",44);Text("Heads or tails")}
+                    "Coin"->Column(Modifier.fillMaxWidth(),horizontalAlignment=Alignment.CenterHorizontally,verticalArrangement=Arrangement.spacedBy(8.dp)) {
+                        val side=MaterialCoinUnit*MaterialObjectScale
+                        if(LocalSolidMaterial.current!=null)LocalMaterialPlatform.current.Object(1,0,0,null,"",Modifier.size(side).semantics {contentDescription="Coin"},1f)
+                        else Box(Modifier.size(side).semantics {contentDescription="Coin"},contentAlignment=Alignment.Center) {Glyph("toll",48)}
+                        Text("Heads or tails",style=MaterialTheme.typography.labelMedium,color=MaterialTheme.colorScheme.onSurfaceVariant)
                     }
                 }
             }
         }
-        Text(if(resolve==null)"The builder is unavailable." else if(source.isEmpty())when(kind) {"Dice"->"Use positive counts, 2–1,000,000 sides and no more than 256 dice.";"Choice"->"Add two different choices.";else->"Enter a valid inclusive range."} else "The result appears in the conversation after you send.",style=MaterialTheme.typography.bodySmall)
+        Text(if(resolve==null)"The builder is unavailable." else if(source.isEmpty())when(kind) {"Dice"->"Use positive counts, 2–1,000,000 sides and no more than 256 dice.";"Choice"->"Add two different choices.";else->"Enter a valid inclusive range."} else "The result appears in the conversation after you send.",
+            Modifier.fillMaxWidth().animateContentSize(motion.tween(MotionMillis)).semantics {liveRegion=LiveRegionMode.Polite},style=MaterialTheme.typography.bodySmall,
+            color=if(source.isEmpty() && (kind!="Choice" || choices.any {it.isNotBlank()}))MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant)
+        SyntaxSource(syntax,source)
         BuilderConfirm(if(LocalBuilderAction.current=="Send")action else LocalBuilderAction.current,enabled && source.isNotEmpty()) {send(source)}
         }
     }
@@ -88,7 +98,8 @@ private fun NumberField(value:String,change:(String)->Unit,label:String,modifier
 private fun ExpandableRow(index:Int,content:@Composable RowScope.()->Unit) {
     val motion=LocalMotion.current
     val visible=remember {androidx.compose.animation.core.MutableTransitionState(index==0).apply {targetState=true}}
-    AnimatedVisibility(visible,enter=expandVertically(motion.tween(MotionMillis),expandFrom=Alignment.Top)+slideInHorizontally(motion.tween(MotionMillis)) {it}+fadeIn(motion.tween(MotionMillis))) {
+    AnimatedVisibility(visible,enter=expandVertically(motion.enter(MotionMillis),expandFrom=Alignment.Top)+slideInHorizontally(motion.enter(MotionMillis)) {it}+fadeIn(motion.enter(MotionMillis)),
+        exit=shrinkVertically(motion.exit(MotionMillis),shrinkTowards=Alignment.Top)+fadeOut(motion.exit(MotionExit))) {
         Row(horizontalArrangement=Arrangement.spacedBy(10.dp),verticalAlignment=Alignment.CenterVertically,content=content)
     }
 }

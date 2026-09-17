@@ -24,13 +24,13 @@ import androidx.compose.foundation.background
     }
     var collapsed by remember { mutableStateOf(false) }
     val paneWidth by animateDpAsState(if (collapsed) 72.dp else 336.dp, LocalMotion.current.tween(MotionMillis), label = "Directory width")
-    Surface(Modifier.width(paneWidth).fillMaxHeight(), shape = RoundedCornerShape(24.dp), color = MaterialTheme.colorScheme.background) {
+    Surface(Modifier.width(paneWidth).fillMaxHeight(), shape = RoundedCornerShape(28.dp), color = MaterialTheme.colorScheme.background) {
       Column {
         if(!collapsed && selected.isNotEmpty())MainHeader("inbox",false,"",{},selected,state,command,clear,collections,{navigate("search")},{navigate("new")},{navigate("inbox")})
-        else Row(Modifier.fillMaxWidth().height(72.dp).padding(horizontal = 12.dp), verticalAlignment = Alignment.CenterVertically) {
+        else Row(Modifier.fillMaxWidth().heightIn(min = mainHeaderHeight()).padding(horizontal = 12.dp), verticalAlignment = Alignment.CenterVertically) {
             Symbol(if (collapsed) "chevron_right" else "chevron_left", if (collapsed) "Expand directory" else "Collapse directory") { collapsed = !collapsed }
             if (!collapsed) {
-                Text("Sigil", Modifier.weight(1f), style = MaterialTheme.typography.headlineMedium)
+                MainHeaderTitle("Sigil", Modifier.weight(1f).padding(start = 8.dp))
                 Symbol("search", "Search") { navigate("search") }
                 SigilIconButton({ navigate("new") }) { Glyph("edit_square", 24, "New conversation", filled = false) }
             }

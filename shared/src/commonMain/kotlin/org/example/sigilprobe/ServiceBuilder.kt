@@ -1,12 +1,18 @@
 package org.sigil
 
+import androidx.compose.animation.animateContentSize
 import androidx.compose.foundation.*
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.*
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.semantics.*
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.launch
 import kotlinx.serialization.json.*
@@ -34,21 +40,35 @@ val LocalDraftId=staticCompositionLocalOf<(() -> String)?> {null}
     val eligible=when {locating->listOf("geocoder");kind=="Weather"->listOf("open_meteo");kind=="Translation"->listOf("google_translate","libre_translate");else->listOf("wiktionary","dictionary_index")}
     val providers=catalog?.get("providers")?.jsonArray?.map {it.jsonObject}?.filter {it["kind"]?.jsonPrimitive?.content in eligible}.orEmpty()
     val selected=providers.firstOrNull {it["id"]?.jsonPrimitive?.content==provider} ?: providers.firstOrNull()
+    val loadingCatalog=kind!="Contact" && catalog==null && busy
+    val motion=LocalMotion.current
     val sizing=rememberBuilderSizing(16.dp)
     Column(Modifier.fillMaxSize().padding(start=8.dp,end=8.dp,top=8.dp),verticalArrangement=Arrangement.spacedBy(8.dp)) {
         Row(sizing.measure("header"),verticalAlignment=Alignment.CenterVertically) {Symbol("chevron_left","Back to create",back);Text(kind,Modifier.weight(1f),style=MaterialTheme.typography.titleLarge)}
-        Column(Modifier.weight(1f).verticalScroll(rememberScrollState()).wrapContentHeight(unbounded=true).then(sizing.measure("body")),verticalArrangement=Arrangement.spacedBy(10.dp)) {
-            if(access==null)Text("Connect to your account to use configured providers.")
-            else if(kind!="Contact" && catalog!=null && providers.isEmpty())Text(if(locating)"Your server needs an address lookup provider to find a place." else "Your server has no provider configured for this tool.")
+        Column(Modifier.weight(1f).verticalScroll(rememberScrollState()).wrapContentHeight(unbounded=true).then(sizing.measure("body")).animateContentSize(motion.tween(MotionMillis)),verticalArrangement=Arrangement.spacedBy(10.dp)) {
+            if(access==null)BuilderNotice("Connect to your account to use configured providers.")
+            else if(loadingCatalog)BuilderProgress("Loading providers")
+            else if(kind!="Contact" && catalog!=null && providers.isEmpty())BuilderNotice(if(locating)"Your server needs an address lookup provider to find a place." else "Your server has no provider configured for this tool.")
             else {
-                providers.forEach {p->val name=p.getValue("id").jsonPrimitive.content;FilterChip(selected==p,{provider=name},label={Text(name)},shape=RoundedCornerShape(12.dp))}
-                if(place!=null) {Text(place?.get("name")?.jsonPrimitive?.content.orEmpty());SigilTextButton({place=null;places=emptyList()}){Text("Change place")};Toggle("Include forecast",forecast){forecast=it}}
+                if(providers.isNotEmpty())LazyRow(horizontalArrangement=Arrangement.spacedBy(8.dp)) {
+                    items(providers) {p->val name=p.getValue("id").jsonPrimitive.content;FilterChip(selected==p,{provider=name},label={Text(name,maxLines=1,overflow=TextOverflow.Ellipsis)},shape=RoundedCornerShape(12.dp))}
+                }
+                if(place!=null) {
+                    Text(place?.get("name")?.jsonPrimitive?.content.orEmpty(),style=MaterialTheme.typography.titleMedium,maxLines=2,overflow=TextOverflow.Ellipsis)
+                    SigilTextButton({place=null;places=emptyList()}){Text("Change place")}
+                    Toggle("Include forecast",forecast){forecast=it}
+                }
                 else FormField(if(kind=="Contact")"Account address" else if(locating)"Place" else if(kind=="Definition")"Word" else "Text",text,{text=it},multiline=kind=="Translation")
                 if(kind!="Weather" && kind!="Contact")FormField(if(kind=="Translation")"Translate to (language code)" else "Language code",language,{language=it})
-                selected?.let {Text("This lookup sends your query through your server to ${it.getValue("endpoint").jsonPrimitive.content}. The resulting card is encrypted when sent to the conversation.",style=MaterialTheme.typography.bodySmall)}
-                places.forEach {p->SigilTextButton({place=p;places=emptyList();provider=""}){Text(listOfNotNull(p["name"]?.jsonPrimitive?.content,p["region"]?.jsonPrimitive?.content,p["country"]?.jsonPrimitive?.content).joinToString(", "))}}
+                selected?.let {Text("This lookup sends your query through your server to ${it.getValue("endpoint").jsonPrimitive.content}. The resulting card is encrypted when sent to the conversation.",
+                    style=MaterialTheme.typography.bodySmall,color=MaterialTheme.colorScheme.onSurfaceVariant,maxLines=4,overflow=TextOverflow.Ellipsis)}
+                Expandable(places.isNotEmpty()) {
+                    SectionLabel("Places")
+                    places.forEach {p->PlaceRow(p["name"]?.jsonPrimitive?.content.orEmpty(),listOfNotNull(p["region"]?.jsonPrimitive?.content,p["country"]?.jsonPrimitive?.content).joinToString(", ")) {place=p;places=emptyList();provider=""}}
+                }
             }
-            issue?.let {Text(it,color=MaterialTheme.colorScheme.error);SigilTextButton({retry++}){Text("Reload providers")}}
+            if(busy && !loadingCatalog)BuilderProgress(if(locating)"Finding places" else "Looking up")
+            issue?.let {Text(it,Modifier.semantics {liveRegion=LiveRegionMode.Polite},style=MaterialTheme.typography.bodySmall,color=MaterialTheme.colorScheme.error);SigilTextButton({retry++}){Text("Reload providers")}}
         }
         BuilderConfirm(if(busy)"Working…" else if(locating)"Find place" else "Look up and attach",enabled=!busy && (selected!=null || kind=="Contact" && access!=null) && newId!=null && (place!=null || text.isNotBlank())) {scope.launch {
             if(kind=="Contact") {busy=true;try {val result=access!!.invoke(buildJsonObject {put("command","contact_preview");put("address",text.trim())}.toString());result.preview?.let {stage(Json.parseToJsonElement(result.json).jsonObject.getValue("contact").toString(),it,true)}} catch(e:kotlinx.coroutines.CancellationException){throw e} catch(_:Exception){issue="Could not find this account. Check the full address and discovery settings."} finally {busy=false};return@launch}
@@ -64,5 +84,20 @@ val LocalDraftId=staticCompositionLocalOf<(() -> String)?> {null}
                 else result.preview?.let {transferred=true;stage(request,it,false)} ?: run {issue="The provider returned no usable card."}
             } catch(e:kotlinx.coroutines.CancellationException){throw e} catch(_:Exception){issue="The lookup failed. Your text is kept; try again."} finally {busy=false}
         }}
+    }
+}
+@Composable private fun BuilderNotice(message:String) {
+    Box(Modifier.fillMaxWidth().padding(32.dp),contentAlignment=Alignment.Center) {Text(message,style=MaterialTheme.typography.bodyMedium,color=MaterialTheme.colorScheme.onSurfaceVariant)}
+}
+@Composable private fun BuilderProgress(label:String) {
+    Box(Modifier.fillMaxWidth().padding(vertical=12.dp).semantics {liveRegion=LiveRegionMode.Polite;contentDescription=label},contentAlignment=Alignment.Center) {CircularProgressIndicator(Modifier.size(22.dp),strokeWidth=2.dp)}
+}
+@Composable private fun PlaceRow(name:String,detail:String,choose:()->Unit) {
+    Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(18.dp)).clickable(onClickLabel="Use this place",role=Role.Button,onClick=choose).heightIn(min=48.dp).padding(horizontal=12.dp,vertical=12.dp),verticalAlignment=Alignment.CenterVertically) {
+        CompositionLocalProvider(LocalContentColor provides MaterialTheme.colorScheme.onSurfaceVariant) {Glyph("place",24)}
+        Column(Modifier.weight(1f).padding(horizontal=12.dp),verticalArrangement=Arrangement.spacedBy(4.dp)) {
+            Text(name,style=MaterialTheme.typography.titleMedium,maxLines=1,overflow=TextOverflow.Ellipsis)
+            if(detail.isNotEmpty())Text(detail,style=MaterialTheme.typography.bodySmall,color=MaterialTheme.colorScheme.onSurfaceVariant,maxLines=1,overflow=TextOverflow.Ellipsis)
+        }
     }
 }

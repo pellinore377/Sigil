@@ -60,8 +60,8 @@ private fun MessagePart.previewEffects(): List<String> = buildList {
     DisposableEffect(launch) { onDispose { launch?.source = ""; launch?.bounds = Rect.Zero; launch?.visibleOrigins?.clear() } }
     SideEffect { launch?.source = source.takeIf {current}.orEmpty() }
     AnimatedVisibility(cards.isNotEmpty() || effects.isNotEmpty(), modifier,
-        enter = expandVertically(motion.tween(MotionMillis)) + fadeIn(motion.tween(MotionMillis)),
-        exit = shrinkVertically(motion.tween(MotionMillis)) + fadeOut(motion.tween(MotionMillis))) {
+        enter = expandVertically(motion.enter(MotionMillis)) + fadeIn(motion.enter(MotionMillis)),
+        exit = shrinkVertically(motion.exit(MotionMillis)) + fadeOut(motion.exit(MotionExit))) {
         Column(Modifier.fillMaxWidth().heightIn(max = 280.dp).verticalScroll(rememberScrollState()).testTag("typed-sigil-preview"), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             CompositionLocalProvider(LocalTextMotion provides null) {
                 cards.forEachIndexed { index,part ->

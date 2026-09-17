@@ -57,8 +57,8 @@ internal fun MainHeader(page: String, goingBack: Boolean, query: String, update:
     val height = mainHeaderHeight()
     Box(Modifier.fillMaxWidth().height(height).clipToBounds()) {
         AnimatedContent(if (page in listOf("calls", "notes", "settings")) page else "inbox", transitionSpec = {
-            (slideInHorizontally(motionPolicy.tween(160, delayMillis = 80)) { if (goingBack) -it else it } + fadeIn(motionPolicy.tween(160, delayMillis = 80))) togetherWith
-                (if (goingBack) slideOutHorizontally(motionPolicy.tween(MotionMillis)) { it } + fadeOut(motionPolicy.tween(100)) else fadeOut(motionPolicy.tween(100)))
+            (slideInHorizontally(motionPolicy.enter(MotionQuick, delayMillis = MotionStagger)) { if (goingBack) -it else it } + fadeIn(motionPolicy.enter(MotionQuick, delayMillis = MotionStagger))) togetherWith
+                (if (goingBack) slideOutHorizontally(motionPolicy.exit(MotionMillis)) { it } + fadeOut(motionPolicy.exit(MotionExit)) else fadeOut(motionPolicy.exit(MotionExit)))
         }, label = "Main header items") { tab ->
             if (tab == "inbox") InboxHeader(page, height, query, update, selected, state, command, clear, collections, search, create, back)
             else if (tab == "notes") NotesHeader(height, query, update)
@@ -80,7 +80,7 @@ private fun InboxHeader(page: String, height: Dp, query: String, update: (String
     val keyboard = LocalSoftwareKeyboardController.current
     LaunchedEffect(page) { if (page == "search") { delay(motionPolicy.delay(MotionMillis.toLong())); focus.requestFocus(); keyboard?.show() } }
     AnimatedContent(selected.isNotEmpty(), transitionSpec = {
-        (slideInHorizontally(motionPolicy.tween(MotionMillis)) { it } + fadeIn()) togetherWith (slideOutHorizontally(motionPolicy.tween(MotionMillis)) { -it } + fadeOut())
+        (slideInHorizontally(motionPolicy.enter(MotionMillis)) { it } + fadeIn(motionPolicy.enter(MotionMillis))) togetherWith (slideOutHorizontally(motionPolicy.exit(MotionMillis)) { -it } + fadeOut(motionPolicy.exit(MotionExit)))
     }, label = "Selection toolbar") { selecting ->
         if (selecting) {
             var menu by remember { mutableStateOf(false) }
@@ -115,8 +115,8 @@ private fun InboxHeader(page: String, height: Dp, query: String, update: (String
                     if (backIcon) Symbol("chevron_left", "Back", back) else Symbol("search", "Search conversations", search)
                 }
             }
-            AnimatedVisibility(!opened, Modifier.align(Alignment.CenterEnd), enter = fadeIn(motionPolicy.tween(MotionMillis)), exit = fadeOut(motionPolicy.tween(120))) { SigilIconButton(create) { Glyph("edit_square", 24, "New conversation", filled = false) } }
-            AnimatedVisibility(opened, Modifier.align(Alignment.CenterStart).padding(start = 56.dp, end = 8.dp).fillMaxWidth(), enter = fadeIn(motionPolicy.tween(MotionMillis)), exit = fadeOut(motionPolicy.tween(100))) {
+            AnimatedVisibility(!opened, Modifier.align(Alignment.CenterEnd), enter = fadeIn(motionPolicy.enter(MotionMillis)), exit = fadeOut(motionPolicy.exit(MotionExit))) { SigilIconButton(create) { Glyph("edit_square", 24, "New conversation", filled = false) } }
+            AnimatedVisibility(opened, Modifier.align(Alignment.CenterStart).padding(start = 56.dp, end = 8.dp).fillMaxWidth(), enter = fadeIn(motionPolicy.enter(MotionMillis)), exit = fadeOut(motionPolicy.exit(MotionExit))) {
               BasicTextField(query, update, Modifier.fillMaxWidth().focusRequester(focus),
                 cursorBrush = androidx.compose.ui.graphics.SolidColor(MaterialTheme.colorScheme.primary), singleLine = true, textStyle = MaterialTheme.typography.titleMedium.copy(color = MaterialTheme.colorScheme.onBackground),
                 decorationBox = { inner -> Box { if (query.isEmpty()) Text("Search all conversations", color = MaterialTheme.colorScheme.onSurfaceVariant, style = MaterialTheme.typography.titleMedium); inner() } })
@@ -174,7 +174,7 @@ internal fun Inbox(state: MessengerState, collection: String, choose: (String) -
             }
         }
         items(chats, key = { "chat:${it.id}" }) { chat ->
-            ChatRow(chat, chat.id in selected, Modifier.animateItem(), { if (selected.isNotEmpty()) select(chat.id) else open(chat.id) }, { select(chat.id) })
+            ChatRow(chat, chat.id in selected, itemMotion(), { if (selected.isNotEmpty()) select(chat.id) else open(chat.id) }, { select(chat.id) })
         }
         if (chats.isEmpty()) item(key = "empty") {
             Box(Modifier.fillMaxWidth().padding(horizontal = 32.dp, vertical = 64.dp), contentAlignment = Alignment.Center) {
@@ -216,7 +216,7 @@ internal fun PresenceAvatar(chat: ChatSummary, size: Int = 48, presence: Boolean
             .semantics { contentDescription = chat.presence })
     }
 }
-private val searchCategories = listOf("Unread" to "mark_chat_unread", "Conversations" to "chat", "Requests" to "person_add", "Pinned" to "push_pin", "Images" to "image", "Videos" to "movie", "Places" to "location_on", "Links" to "link")
+private val searchCategories = listOf("Unread" to "mark_chat_unread", "Conversations" to "chat", "Requests" to "person_add", "Pinned" to "push_pin", "Images" to "image", "Videos" to "movie", "Places" to "place", "Links" to "link")
 @Composable
 internal fun SearchPage(state: MessengerState, query: String, category: String, choose: (String) -> Unit, open: (String) -> Unit, command: Command) {
     LaunchedEffect(category) { if (category == "Requests") command("contact_refresh", emptyMap()) }
@@ -259,7 +259,7 @@ internal fun NotesGrid(state: MessengerState, query: String, read: (String) -> S
         LazyVerticalStaggeredGrid(columns = StaggeredGridCells.Fixed(if (maxWidth >= 840.dp) 4 else if (maxWidth >= 600.dp) 3 else 2), contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = LocalHomeContentPadding.current.calculateTopPadding() + 16.dp, bottom = LocalHomeContentPadding.current.calculateBottomPadding() + 16.dp), horizontalArrangement = Arrangement.spacedBy(12.dp), verticalItemSpacing = 12.dp) {
             items(chats, key = { it.id }) { chat ->
                 val pinned = read("note_pin.${chat.id}") == "true"
-                Surface(Modifier.animateItem().combinedClickable(onClick = { open(chat.id) }, onLongClick = { write("note_pin.${chat.id}", (!pinned).toString()); revision++ }), shape = RoundedCornerShape(18.dp), color = MaterialTheme.colorScheme.surfaceContainerHigh) {
+                Surface(itemMotion().combinedClickable(onClick = { open(chat.id) }, onLongClick = { write("note_pin.${chat.id}", (!pinned).toString()); revision++ }), shape = RoundedCornerShape(18.dp), color = MaterialTheme.colorScheme.surfaceContainerHigh) {
                     Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                         Row(verticalAlignment = Alignment.CenterVertically) { PresenceAvatar(chat, 28, false); Text(chat.name, Modifier.weight(1f).padding(start = 8.dp), style = MaterialTheme.typography.titleSmall, maxLines = 2); if (pinned) Glyph("push_pin", 16, filled=true) }
                         Text(notes[chat.id]?.firstOrNull()?.text.orEmpty(), maxLines = 9, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.bodyMedium)

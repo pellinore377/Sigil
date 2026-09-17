@@ -5,7 +5,7 @@ import androidx.compose.foundation.gestures.*
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
-import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.animateContentSize
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.*
@@ -22,6 +22,8 @@ import androidx.compose.ui.unit.*
 import androidx.compose.ui.window.*
 import kotlin.math.*
 
+internal fun chartGlyph(kind: String) = when (kind) { "pie" -> "pie_chart"; "donut" -> "donut_small"; "line" -> "show_chart"; "area" -> "area_chart"; "scatter" -> "scatter_plot"; else -> "bar_chart" }
+
 @Composable
 internal fun ChartCard(chart: ChartContent) {
     var expanded by remember(chart) { mutableStateOf(false) }
@@ -32,14 +34,16 @@ internal fun ChartCard(chart: ChartContent) {
         val point = chart.points[index]
         Column(Modifier.fillMaxWidth().padding(vertical = 4.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) { Text("${index + 1}.", style = MaterialTheme.typography.labelLarge); RichMessageText(point.label, Modifier.weight(1f), MaterialTheme.typography.bodyMedium) }
-            Text(listOfNotNull(point.xValue?.let { "x = $it" }, point.value, point.percent.takeIf { chart.kind in listOf("pie", "donut") }?.let { "$it% of total" }).joinToString(" · "), style = MaterialTheme.typography.labelMedium)
+            Text(listOfNotNull(point.xValue?.let { "x = $it" }, point.value, point.percent.takeIf { chart.kind in listOf("pie", "donut") }?.let { "$it% of total" }).joinToString(" · "), style = MaterialTheme.typography.labelMedium, maxLines = 2, overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis)
         }
     }
-    Column(Modifier.widthIn(min = 200.dp, max = 280.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+    Column(Modifier.widthIn(min = 200.dp, max = 280.dp).animateContentSize(LocalMotion.current.tween(MotionMillis)), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) { Glyph(chartGlyph(chart.kind), 20); Text("Chart", style = MaterialTheme.typography.labelMedium) }
         RichMessageText(chart.title, style = MaterialTheme.typography.titleMedium)
         ChartPlot(chart, emptySet(), selected, { selected = it }, Modifier.fillMaxWidth().height(200.dp))
         selected?.let { details(it) } ?: chart.points.indices.take(2).forEach { details(it) }
-        SigilTextButton({ expanded = true }) { Glyph("open_in_full", 18); Spacer(Modifier.width(8.dp)); Text("Open chart · ${chart.points.size} points") }
+        Text("${chart.kind.replaceFirstChar { it.uppercase() }} · ${chart.points.size} ${if (chart.points.size == 1) "point" else "points"}", style = MaterialTheme.typography.labelSmall)
+        SigilTextButton({ expanded = true }) { Glyph("open_in_full", 18); Spacer(Modifier.width(8.dp)); Text("Open chart") }
     }
     if (expanded) Dialog({ expanded = false }, DialogProperties(usePlatformDefaultWidth = false)) {
         Surface(Modifier.fillMaxSize()) {
@@ -123,7 +127,7 @@ internal fun ChartPlot(chart: ChartContent, hidden: Set<Int>, selected: Int?, se
             } }) {
             Canvas(Modifier.fillMaxSize().graphicsLayer { scaleX = zoom; scaleY = zoom; translationX = pan.x; translationY = pan.y }
                 .semantics { contentDescription = "${chart.kind.replaceFirstChar { it.uppercase() }} chart, ${chart.points.size} points. Values are listed below." }) {
-                val progress=FastOutSlowInEasing.transform(((playback?.elapsed ?: 2000f)/ChartMotionMillis).coerceIn(0f,1f))
+                val progress=MotionStandardEasing.transform(((playback?.elapsed ?: 2000f)/ChartMotionMillis).coerceIn(0f,1f))
                 val radius = min(size.width, size.height) * if (chart.kind == "donut") .36f else .42f
                 fun marker(index: Int, at: Offset, growth:Float=1f) {
                     if(growth<=0f)return

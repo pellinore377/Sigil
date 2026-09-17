@@ -94,8 +94,8 @@ internal fun RecipeCard(message: ChatMessage, part: MessagePart) {
                         }
                     } else {
                         AnimatedContent(step, Modifier.weight(1f).fillMaxWidth(), transitionSpec = {
-                            (slideInHorizontally(motion.tween(180)) { if (targetState > initialState) it else -it } + fadeIn(motion.tween(180))) togetherWith
-                                (slideOutHorizontally(motion.tween(180)) { if (targetState > initialState) -it else it } + fadeOut(motion.tween(180)))
+                            (slideInHorizontally(motion.enter(MotionInline)) { if (targetState > initialState) it else -it } + fadeIn(motion.enter(MotionInline))) togetherWith
+                                (slideOutHorizontally(motion.exit(MotionInline)) { if (targetState > initialState) -it else it } + fadeOut(motion.exit(MotionExit)))
                         }, label = "recipe-step") { index ->
                             Column(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.surfaceVariant, MaterialTheme.shapes.large).pointerInput(index) {
                                 var distance = 0f
