@@ -10,6 +10,8 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.semantics.*
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 
@@ -53,7 +55,8 @@ internal fun CallHistoryPage(state: MessengerState, command: Command, selectedCa
             item {
                 Column(Modifier.fillMaxWidth().padding(horizontal = 24.dp, vertical = 24.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(12.dp)) {
                     Avatar(person?.name ?: callName(selected), 80, person?.avatar.orEmpty())
-                    Text(person?.name ?: callName(selected), style = MaterialTheme.typography.headlineSmall)
+                    Text(person?.name ?: callName(selected), style = MaterialTheme.typography.headlineSmall,
+                        maxLines = 2, overflow = TextOverflow.Ellipsis, textAlign = TextAlign.Center)
                     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         CallDetailAction("call", when (selected.phase) { "active", "joining" -> "Return to call"; "ringing" -> "Answer"; else -> "Audio call" }, enabled(selected)) { activate(selected) }
                         if (features.videoCalls && selected.phase !in listOf("active", "joining", "ringing")) CallDetailAction("videocam", "Video call", enabled(selected)) { activate(selected, true) }
@@ -67,21 +70,25 @@ internal fun CallHistoryPage(state: MessengerState, command: Command, selectedCa
         val calls = state.calls.filter { !missedOnly || it.missed }.sortedByDescending { it.created }
         LazyColumn(Modifier.fillMaxSize(), contentPadding = LocalHomeContentPadding.current) {
             item {
-                Row(Modifier.padding(horizontal = 20.dp, vertical = 8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    FilterChip(!missedOnly, { missedOnly = false }, { Text("All") })
-                    FilterChip(missedOnly, { missedOnly = true }, { Text("Missed") })
+                Row(Modifier.padding(horizontal = 24.dp, vertical = 8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    FilterChip(!missedOnly, { missedOnly = false }, { Text("All") }, shape = RoundedCornerShape(12.dp))
+                    FilterChip(missedOnly, { missedOnly = true }, { Text("Missed") }, shape = RoundedCornerShape(12.dp))
                 }
             }
             if (calls.isEmpty()) item { Box(Modifier.fillMaxWidth().padding(32.dp), contentAlignment = Alignment.Center) { Text(if (missedOnly) "No missed calls." else "Your calls will appear here.", color = MaterialTheme.colorScheme.onSurfaceVariant) } }
             var previousDay: String? = null
             calls.forEach { call ->
-                if (call.day.isNotBlank() && call.day != previousDay) { item(key = "day:${call.id}") { CallDay(call.day) }; previousDay = call.day }
+                if (call.day.isNotBlank() && call.day != previousDay) { item(key = "day:${call.id}") { CallDay(call.day, itemMotion()) }; previousDay = call.day }
                 item(key = call.id) {
                     val person = callContact(call, state.chats)
-                    Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 2.dp), verticalAlignment = Alignment.CenterVertically) {
-                        Row(Modifier.weight(1f).clip(RoundedCornerShape(20.dp)).clickable { select(call.id) }.padding(12.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                            Avatar(person?.name ?: callName(call), 48, person?.avatar.orEmpty())
-                            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(5.dp)) {
+                    val appearance = LocalAppearance.current
+                    Row(itemMotion().fillMaxWidth().padding(horizontal = 12.dp, vertical = 2.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Row(Modifier.weight(1f).clip(RoundedCornerShape(18.dp)).clickable(role = Role.Button) { select(call.id) }
+                            .heightIn(min = if (appearance.compact) 64.dp else 88.dp)
+                            .padding(horizontal = 12.dp, vertical = if (appearance.compact) 6.dp else 16.dp),
+                            verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                            Avatar(person?.name ?: callName(call), if (appearance.compact) 48 else 56, person?.avatar.orEmpty())
+                            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                                 Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                                     Text(person?.name ?: callName(call), Modifier.weight(1f), style = MaterialTheme.typography.titleMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
                                     if (call.time.isNotBlank()) Text(call.time, style = MaterialTheme.typography.labelSmall, maxLines = 1, color = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -97,7 +104,7 @@ internal fun CallHistoryPage(state: MessengerState, command: Command, selectedCa
     }
 }
 
-@Composable private fun CallDay(day: String) { Text(day, Modifier.padding(start = 24.dp, end = 24.dp, top = 20.dp, bottom = 8.dp), style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant) }
+@Composable private fun CallDay(day: String, modifier: Modifier = Modifier) { Text(day, modifier.padding(start = 24.dp, end = 24.dp, top = 20.dp, bottom = 8.dp), style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant) }
 @Composable private fun CallMeta(call: CallSummary, active: ActiveCall?) {
     val ink = if (call.missed) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant
     CompositionLocalProvider(LocalContentColor provides ink) {
@@ -108,17 +115,20 @@ internal fun CallHistoryPage(state: MessengerState, command: Command, selectedCa
     }
 }
 @Composable private fun RowScope.CallDetailAction(icon: String, label: String, enabled: Boolean, click: () -> Unit) {
-    Column(Modifier.weight(1f), horizontalAlignment = Alignment.CenterHorizontally) {
-        FilledTonalIconButton(click, enabled = enabled, modifier = Modifier.size(48.dp)) { Glyph(icon, 24, label) }
-        Text(label, Modifier.padding(top = 6.dp), style = MaterialTheme.typography.labelSmall, textAlign = androidx.compose.ui.text.style.TextAlign.Center, maxLines = 2)
+    val ink = MaterialTheme.colorScheme.onSurface.let { if (enabled) it else it.copy(alpha = .38f) }
+    Column(Modifier.weight(1f).padding(horizontal = 4.dp).clip(RoundedCornerShape(22.dp)).clickable(enabled = enabled, role = Role.Button, onClick = click).semantics { contentDescription = label },
+        horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Surface(Modifier.widthIn(max = 64.dp).fillMaxWidth().aspectRatio(1f), shape = RoundedCornerShape(20.dp),
+            color = MaterialTheme.colorScheme.surfaceVariant, contentColor = ink) { Box(contentAlignment = Alignment.Center) { Glyph(icon, 30) } }
+        Text(label, style = MaterialTheme.typography.labelMedium, color = ink, textAlign = TextAlign.Center, maxLines = 2, overflow = TextOverflow.Ellipsis)
     }
 }
 private fun LazyListScope.callHistoryItems(calls: List<CallSummary>, active: ActiveCall?) {
     var previousDay: String? = null
     calls.forEach { call ->
-        if (call.day.isNotBlank() && call.day != previousDay) { item(key = "day:${call.id}") { CallDay(call.day) }; previousDay = call.day }
+        if (call.day.isNotBlank() && call.day != previousDay) { item(key = "day:${call.id}") { CallDay(call.day, itemMotion()) }; previousDay = call.day }
         item(key = call.id) {
-            Column(Modifier.fillMaxWidth().padding(horizontal = 24.dp, vertical = 14.dp), verticalArrangement = Arrangement.spacedBy(7.dp)) {
+            Column(itemMotion().fillMaxWidth().padding(horizontal = 24.dp, vertical = 14.dp), verticalArrangement = Arrangement.spacedBy(7.dp)) {
                 Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                     Glyph(if (call.video == true) "videocam" else "call", 24)
                     Text(when (call.video) { true -> "Video call"; false -> "Audio call"; null -> "Call" }, style = MaterialTheme.typography.titleMedium)

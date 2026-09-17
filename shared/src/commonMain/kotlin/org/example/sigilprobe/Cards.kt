@@ -23,12 +23,7 @@ internal fun MessageCards(message: ChatMessage, analyze: (String) -> String, com
                     Box(Modifier.padding(horizontal = 14.dp, vertical = 10.dp)) { text() }
                 } else text()
             }
-            else if (part.kind == "location") {
-                LocalLocationContent.current(message, part, command)
-                if(part.text.isNotBlank() && part.text !in listOf("My location","Dropped pin")) Surface(shape=RoundedCornerShape(16.dp),color=if(message.mine)MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surfaceVariant,contentColor=if(message.mine)MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurfaceVariant) {
-                    Box(Modifier.padding(horizontal=14.dp,vertical=10.dp)) {if(part.rich!=null)RichMessageText(part.rich) else MessageText(part.text,analyze)}
-                }
-            }
+            else if (part.kind == "location") LocationCard(message, part, analyze, command)
             else if (part.table != null) TableCard(part.table)
             else if (part.recipe != null) RecipeCard(message, part)
             else if (part.chart != null) ChartCard(part.chart)
@@ -38,6 +33,13 @@ internal fun MessageCards(message: ChatMessage, analyze: (String) -> String, com
             else if (part.contact != null) ContactCard(part.contact, command?.let { action -> {
                 action("contact_open",mapOf("peer" to message.peer,"author" to message.author,"message" to message.id,"card" to part.id))
             } })
+            else if (part.kind == "checklist" || part.kind == "task") ChecklistCard(message,part,analyze,command)
+            else if (part.kind == "poll") PollCard(message,part,analyze,command)
+            else if (part.kind == "note") NoteCard(part,analyze)
+            else if (part.kind == "reminder") ReminderCard(part,analyze)
+            else if (part.kind == "countdown") CountdownCard(part,analyze)
+            else if (part.kind == "ago") AgoCard(part,analyze)
+            else if (part.kind == "timer") TimerCard(part)
             else StandardCard(message,part,analyze,command)
         }
     }

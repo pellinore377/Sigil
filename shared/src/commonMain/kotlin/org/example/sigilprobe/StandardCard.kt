@@ -17,6 +17,7 @@ import androidx.compose.ui.unit.dp
 @Composable internal fun StandardCard(message:ChatMessage,part:MessagePart,analyze:(String)->String,command:Command?) {
     var expanded by remember(part.id){mutableStateOf(false)}
     var confirming by remember(part.id){mutableStateOf<CardItem?>(null)}
+    val motion=LocalMotion.current
     val icon=when(part.kind){"note"->"description";"checklist"->"checklist";"task"->"assignment";"poll"->"ballot";"reminder"->"notifications_active";else->"timer"}
     fun act(item:CardItem) {
         val fields=mutableMapOf<String,Any?>("peer" to message.peer,"author" to message.author,"message" to message.id,"card" to part.id)
@@ -31,9 +32,9 @@ import androidx.compose.ui.unit.dp
         if(full || part.kind=="reminder")if(part.date.isNotEmpty())Text(part.date,style=MaterialTheme.typography.bodySmall)
         if(part.kind in listOf("checklist","task") && part.items.isNotEmpty())Text("${part.items.count {it.checked}} of ${part.items.size} completed",style=MaterialTheme.typography.labelSmall)
         (if(full)part.items else part.items.take(5)).forEach {item->key(item.id) {
-            val tint by animateColorAsState(LocalContentColor.current.copy(alpha=if(item.checked).13f else .04f),label="Checked item")
+            val tint by animateColorAsState(LocalContentColor.current.copy(alpha=if(item.checked).13f else .04f),motion.tween(MotionInline),label="Checked item")
             val share=if(part.kind=="poll" && item.count!=null && part.voters!=null && part.voters>0)item.count.toFloat()/part.voters else 0f
-            val amount by animateFloatAsState(share.coerceIn(0f,1f),label="Poll result")
+            val amount by animateFloatAsState(share.coerceIn(0f,1f),motion.tween(MotionMillis),label="Poll result")
             Box(Modifier.fillMaxWidth().heightIn(min=44.dp).background(tint,RoundedCornerShape(12.dp)).clickable(enabled=command!=null && item.enabled,role=if(part.kind=="poll" && !part.multiple)Role.RadioButton else Role.Checkbox) {
                 if(part.kind=="task" && !item.checked)confirming=item else act(item)
             }.semantics {if(part.kind=="poll" && !part.multiple)selected=item.checked else toggleableState=ToggleableState(item.checked)}) {
@@ -49,7 +50,7 @@ import androidx.compose.ui.unit.dp
         if(part.kind=="poll")Text(if(part.closed)"Voting closed"else part.voters?.let {"$it ${if(it==1L)"voter"else"voters"}"}?:"Vote to see results",style=MaterialTheme.typography.labelSmall)
         if (part.items.size > 5) SigilTextButton({ expanded = !expanded }) { Text(if (expanded) "Show less" else "Show all ${part.items.size}") }
     }
-    Column(Modifier.widthIn(min=200.dp,max=320.dp).animateContentSize(LocalMotion.current.tween(MotionMillis)),verticalArrangement=Arrangement.spacedBy(8.dp)) {body(expanded)}
+    Column(Modifier.widthIn(min=200.dp,max=320.dp).animateContentSize(motion.tween(MotionMillis)),verticalArrangement=Arrangement.spacedBy(8.dp)) {body(expanded)}
     confirming?.let {item->AlertDialog(onDismissRequest={confirming=null},title={Text("Complete this task?")},text={Text("You can undo your completion for 30 seconds.")},confirmButton={SigilTextButton({confirming=null;part.items.firstOrNull {it.id==item.id && !it.checked && it.enabled}?.let(::act)}){Text("Complete")}},dismissButton={SigilTextButton({confirming=null}){Text("Cancel")}})}
 }
 @Composable private fun CardClock(part:MessagePart) {

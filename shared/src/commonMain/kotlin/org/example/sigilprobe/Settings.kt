@@ -24,11 +24,13 @@ import kotlinx.serialization.json.jsonPrimitive
 internal fun SettingsPage(state: MessengerState, navigate: (String) -> Unit) {
     Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(LocalHomeContentPadding.current),
         horizontalAlignment = Alignment.CenterHorizontally) {
+        val appearance = LocalAppearance.current
         Column(Modifier.widthIn(max = 680.dp).fillMaxWidth().padding(horizontal = 16.dp).testTag("settings-content")) {
-            Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(20.dp)).clickable { navigate("profile") }
-                .padding(horizontal = 8.dp, vertical = 20.dp), verticalAlignment = Alignment.CenterVertically) {
-                Avatar(state.profileName.ifEmpty { state.address.removePrefix("@") }, 60, state.profileAvatar)
-                Column(Modifier.weight(1f).padding(start = 16.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(18.dp)).clickable(role = Role.Button) { navigate("profile") }
+                .heightIn(min = if (appearance.compact) 72.dp else 88.dp).padding(horizontal = 12.dp, vertical = 12.dp),
+                verticalAlignment = Alignment.CenterVertically) {
+                Avatar(state.profileName.ifEmpty { state.address.removePrefix("@") }, if (appearance.compact) 48 else 56, state.profileAvatar)
+                Column(Modifier.weight(1f).padding(horizontal = 12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                     Text(state.profileName.ifEmpty { state.address.substringBefore(':').removePrefix("@") },
                         style = MaterialTheme.typography.headlineSmall, maxLines = 2, overflow = TextOverflow.Ellipsis)
                     Text(state.address, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -48,7 +50,6 @@ internal fun SettingsPage(state: MessengerState, navigate: (String) -> Unit) {
                 DiagnosticsLink(state.issue)
                 SettingsLink("info", "About", "Version, licenses, and support") { navigate("about") }
             }
-            Spacer(Modifier.height(24.dp))
         }
     }
 }
@@ -86,20 +87,31 @@ private fun DiagnosticsLink(issue: String?) {
 @Composable
 internal fun SettingsSection(title: String, content: @Composable ColumnScope.() -> Unit) {
     Column(Modifier.fillMaxWidth()) {
-        Text(title, Modifier.padding(start = 12.dp, top = 20.dp, bottom = 8.dp),
-            style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        SettingsSectionLabel(title)
         content()
     }
+}
+
+@Composable
+internal fun SettingsSectionLabel(title: String) {
+    Text(title, Modifier.padding(start = 12.dp, top = 20.dp, bottom = 8.dp),
+        style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+}
+
+@Composable
+internal fun SettingsNote(text: String) {
+    Text(text, Modifier.padding(horizontal = 12.dp), style = MaterialTheme.typography.bodyMedium,
+        color = MaterialTheme.colorScheme.onSurfaceVariant)
 }
 
 @Composable
 internal fun SettingsLink(icon: String, title: String, detail: String, click: () -> Unit) {
     Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(18.dp)).clickable(role = Role.Button, onClick = click)
         .heightIn(min = 72.dp).padding(horizontal = 12.dp, vertical = 12.dp), verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(15.dp)) {
+        horizontalArrangement = Arrangement.spacedBy(16.dp)) {
         CompositionLocalProvider(LocalContentColor provides MaterialTheme.colorScheme.onSurfaceVariant) { Glyph(icon, 24) }
-        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
-            Text(title, style = MaterialTheme.typography.titleMedium)
+        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            Text(title, style = MaterialTheme.typography.titleMedium, maxLines = 2, overflow = TextOverflow.Ellipsis)
             Text(detail, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
         CompositionLocalProvider(LocalContentColor provides MaterialTheme.colorScheme.onSurfaceVariant) { Glyph("chevron_right", 20) }
@@ -107,11 +119,11 @@ internal fun SettingsLink(icon: String, title: String, detail: String, click: ()
 }
 
 @Composable
-internal fun SettingsToggle(title: String, detail: String, checked: Boolean, enabled: Boolean = true, update: (Boolean) -> Unit) {
-    Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(18.dp)).toggleable(checked, enabled = enabled, role = Role.Switch, onValueChange = update).semantics { contentDescription = title }
+internal fun SettingsToggle(title: String, detail: String, checked: Boolean, enabled: Boolean = true, description: String = title, update: (Boolean) -> Unit) {
+    Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(18.dp)).toggleable(checked, enabled = enabled, role = Role.Switch, onValueChange = update).semantics { contentDescription = description }
         .heightIn(min = 76.dp).padding(horizontal = 12.dp, vertical = 12.dp), verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(16.dp)) {
-        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
             Text(title, style = MaterialTheme.typography.titleMedium)
             if (detail.isNotBlank()) Text(detail, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
@@ -122,7 +134,7 @@ internal fun SettingsToggle(title: String, detail: String, checked: Boolean, ena
 @Composable
 internal fun SettingsChoice(title: String, options: List<Pair<String, String>>, selected: String, enabled: Boolean = true, update: (String) -> Unit) {
     Column(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp), verticalArrangement = Arrangement.spacedBy(2.dp)) {
-        Text(title, style = MaterialTheme.typography.titleMedium)
+        Text(title, Modifier.padding(bottom = 8.dp), style = MaterialTheme.typography.titleLarge)
         options.forEach { (value, label) ->
             Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(14.dp)).selectable(value == selected, enabled = enabled, role = Role.RadioButton) { update(value) }
                 .heightIn(min = 48.dp).padding(horizontal = 4.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -135,8 +147,9 @@ internal fun SettingsChoice(title: String, options: List<Pair<String, String>>, 
 
 @Composable
 internal fun SettingsValue(label: String, value: String) {
-    Row(Modifier.fillMaxWidth().padding(vertical = 8.dp), horizontalArrangement = Arrangement.spacedBy(16.dp)) {
-        Text(label, Modifier.weight(1f), style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+    Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp), horizontalArrangement = Arrangement.spacedBy(16.dp)) {
+        Text(label, Modifier.weight(1f), style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant,
+            maxLines = 1, overflow = TextOverflow.Ellipsis)
         Text(value, style = MaterialTheme.typography.bodyMedium)
     }
 }

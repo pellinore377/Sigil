@@ -13,6 +13,6 @@ class ImageMessageFrameTest {
         }
     }
     @Test fun missingDimensionsHaveFiniteLoadingSpace() {
-        assertEquals(androidx.compose.ui.geometry.Size(300f,300f),imageMessageSize(0,0,400f))
+        assertEquals(androidx.compose.ui.geometry.Size(MessageBubbleMaxWidth,MessageBubbleMaxWidth),imageMessageSize(0,0,400f))
     }
 }

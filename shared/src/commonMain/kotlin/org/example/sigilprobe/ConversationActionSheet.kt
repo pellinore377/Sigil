@@ -1,11 +1,17 @@
 @file:OptIn(androidx.compose.material3.ExperimentalMaterial3Api::class)
 package org.sigil
 
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.*
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 
 @Composable
@@ -18,32 +24,52 @@ internal fun ConversationActionSheet(kind: String, fields: Map<String, Any?>, st
             Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 Text(if (blocking) "Messages and calls from the selected contacts will be blocked. Group memberships stay unchanged."
                     else "Delete existing history for your account, including linked devices. Other participants keep their copies. New messages can reopen the conversation.")
-                if (!blocking && chats.any { it.group }) Toggle("Also leave selected groups", leave) { leave = it }
+                if (!blocking && chats.any { it.group }) SettingsToggle("Also leave selected groups", "", leave) { leave = it }
             }
         }, dismissButton = { SigilTextButton(close) { Text("Cancel") } }, confirmButton = {
             SigilTextButton({
                 if (blocking) chats.filter { !it.group && it.id != "self" }.forEach { command("block", mapOf("peer" to it.id, "active" to true)) }
                 else chats.forEach { command("delete_conversation", mapOf("peer" to it.id, "leave" to (leave && it.group))) }
                 close()
-            }, enabled = !state.busy) { Text(if (blocking) "Block" else "Delete") }
+            }, enabled = !state.busy) { Text(if (blocking) "Block" else "Delete", color = MaterialTheme.colorScheme.error) }
         })
         return
     }
     ModalBottomSheet(close, containerColor = MaterialTheme.colorScheme.background) {
         Text(if (kind == "snooze_picker") "Snooze notifications" else "Forward to", Modifier.padding(24.dp), style = MaterialTheme.typography.headlineSmall)
         if (kind == "snooze_picker") {
-            listOf("Resume notifications" to null, "For one hour" to 3600L, "For eight hours" to 28800L, "For one day" to 86400L, "For one week" to 604800L).forEach { (label, seconds) ->
-                SigilTextButton({ (fields["peers"] as? List<*>)?.filterIsInstance<String>()?.forEach { command("snooze", mapOf("peer" to it, "seconds" to seconds)) }; close() }, Modifier.fillMaxWidth()) { Text(label) }
+            val snooze: (Long?) -> Unit = { seconds ->
+                (fields["peers"] as? List<*>)?.filterIsInstance<String>()?.forEach { command("snooze", mapOf("peer" to it, "seconds" to seconds)) }; close()
             }
+            SheetSection("Pause for")
+            listOf("For one hour" to 3600L, "For eight hours" to 28800L, "For one day" to 86400L, "For one week" to 604800L).forEach { (label, seconds) ->
+                SheetChoice(label) { snooze(seconds) }
+            }
+            SheetSection("Resume")
+            SheetChoice("Resume notifications") { snooze(null) }
         } else {
             Text("Send a copy. Interactive cards and mixed messages are sent as text snapshots.", Modifier.padding(horizontal = 24.dp, vertical = 8.dp), style = MaterialTheme.typography.bodySmall)
             LazyColumn(Modifier.heightIn(max = 440.dp)) {
-                item { SettingRow("edit_note", "Note to Self", "") { command("forward", mapOf("source" to fields["peer"], "peer" to "self", "author" to fields["author"], "message" to fields["message"])); close() } }
+                item { SettingsLink("edit_note", "Note to Self", "Keep a copy in your own notes") { command("forward", mapOf("source" to fields["peer"], "peer" to "self", "author" to fields["author"], "message" to fields["message"])); close() } }
                 items(state.chats.filter { it.verified && !it.hidden && it.id != "self" }, key = { it.id }) { chat -> ChatRow(chat, open = {
                     command("forward", mapOf("source" to fields["peer"], "peer" to chat.id, "author" to fields["author"], "message" to fields["message"])); close()
                 }) }
             }
         }
         Spacer(Modifier.height(16.dp))
+    }
+}
+
+@Composable
+private fun SheetSection(title: String) {
+    Text(title, Modifier.padding(start = 24.dp, end = 24.dp, top = 20.dp, bottom = 8.dp),
+        style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+}
+
+@Composable
+private fun SheetChoice(label: String, click: () -> Unit) {
+    Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(18.dp)).clickable(role = Role.Button, onClick = click)
+        .heightIn(min = 56.dp).padding(horizontal = 24.dp, vertical = 12.dp), verticalAlignment = Alignment.CenterVertically) {
+        Text(label, style = MaterialTheme.typography.titleMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
     }
 }

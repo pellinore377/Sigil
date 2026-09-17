@@ -1,7 +1,14 @@
 package org.sigil
 
+import androidx.compose.animation.Crossfade
+import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.background
 import androidx.compose.foundation.focusable
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsFocusedAsState
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.key.*
 import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
@@ -27,15 +34,25 @@ fun AudioPlayback(position: Long, duration: Long, playing: Boolean, levels: List
     preview: Boolean = false, modifier: Modifier = Modifier, play: () -> Unit, seek: (Long) -> Unit, expand: (() -> Unit)? = null) {
     var seeking by remember { mutableStateOf<Long?>(null) }
     val current = seeking ?: position
+    val motionPolicy = LocalMotion.current
+    val target = current.toFloat() / duration.coerceAtLeast(1)
+    val settled by animateFloatAsState(target, motionPolicy.tween(MotionFeedback), label = "Playback position")
+    val seekInteractions = remember { MutableInteractionSource() }
+    val focused by seekInteractions.collectIsFocusedAsState()
     Row(modifier, verticalAlignment = Alignment.CenterVertically) {
-        SigilIconButton(play, enabled = enabled) { Glyph(if (playing) "pause" else "play_arrow", 24,
-            if (preview) if (playing) "Pause voice preview" else "Play voice preview" else if (playing) "Pause audio message" else "Play audio message") }
+        SigilIconButton(play, enabled = enabled) {
+            Crossfade(playing, animationSpec = motionPolicy.tween(MotionExit), label = "Playback state") { on ->
+                Glyph(if (on) "pause" else "play_arrow", 24,
+                    if (preview) if (on) "Pause voice preview" else "Play voice preview" else if (on) "Pause audio message" else "Play audio message")
+            }
+        }
         Column(Modifier.weight(1f)) {
-            Box(Modifier.fillMaxWidth().height(48.dp), contentAlignment = Alignment.Center) {
+            Box(Modifier.fillMaxWidth().height(48.dp).background(if (focused) LocalContentColor.current.copy(alpha = .08f) else Color.Transparent, RoundedCornerShape(12.dp)), contentAlignment = Alignment.Center) {
                 AudioWaveform(levels, Modifier.fillMaxWidth().height(40.dp)
                     .testTag(if (preview) "voice-preview-seek" else "audio-seek")
                     .semantics {
                         contentDescription = "Playback position"
+                        stateDescription = "${audioTime(current)} of ${audioTime(duration)}"
                         progressBarRangeInfo = ProgressBarRangeInfo(current.toFloat(), 0f..duration.coerceAtLeast(1).toFloat())
                         if(enabled && duration>0)setProgress {value->seek(value.toLong().coerceIn(0,duration));true}
                     }
@@ -48,7 +65,7 @@ fun AudioPlayback(position: Long, duration: Long, playing: Boolean, levels: List
                             Key.MoveEnd->{seek(duration);true}
                             else->false
                         }
-                    }.focusable(enabled && duration>0)
+                    }.focusable(enabled && duration>0, seekInteractions)
                     .pointerInput(enabled,duration) {
                         if(enabled && duration>0)detectTapGestures {point->seek((point.x/size.width*duration).toLong().coerceIn(0,duration))}
                     }
@@ -57,7 +74,7 @@ fun AudioPlayback(position: Long, duration: Long, playing: Boolean, levels: List
                             onDragStart={point->seeking=(point.x/size.width*duration).toLong().coerceIn(0,duration)},
                             onDragEnd={seeking?.let(seek);seeking=null},onDragCancel={seeking=null}
                         ) {change,_->change.consume();seeking=(change.position.x/size.width*duration).toLong().coerceIn(0,duration)}
-                    },current.toFloat()/duration.coerceAtLeast(1))
+                    },if (seeking != null) target else settled)
 
             }
             Text("${audioTime(current)} / ${audioTime(duration)}", style = MaterialTheme.typography.labelSmall)

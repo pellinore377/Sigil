@@ -211,6 +211,7 @@ data class Flight(val data:FloatArray,val count:Int,val unit:Float,val viewport:
         anchor.ready(flight?.duration ?: 0)
     }
     var returning by remember(anchor) {mutableStateOf<List<FloatArray>?>(null)}
+    val motion=LocalMotion.current
     val dock=remember(anchor){Animatable(0f)}
     val geometryStable=flight?.let {abs(it.viewport.width-viewport.width)<2&&abs(it.viewport.height-viewport.height)<2} ?: true
     LaunchedEffect(flight) {
@@ -218,7 +219,7 @@ data class Flight(val data:FloatArray,val count:Int,val unit:Float,val viewport:
         if(plan!=null) {
             snapshotFlow {timeline.viewport}.first {v->abs(plan.viewport.width-v.width)>=2||abs(plan.viewport.height-v.height)>=2}
             returning=items.indices.map {plan.pose(it,anchor.progress())}
-            dock.animateTo(1f,tween(360,easing=FastOutSlowInEasing))
+            dock.animateTo(1f,motion.tween(MotionSettle))
             anchor.settle()
         }
     }

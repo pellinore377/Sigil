@@ -24,6 +24,7 @@ import androidx.compose.ui.platform.*
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.semantics.*
 import kotlinx.coroutines.flow.*
 
@@ -80,7 +81,7 @@ internal fun ComposerPanel(draft: TextFieldState, analyze: (String) -> String, e
     val available=(screenHeight-measured-navigation.toFloat().let {with(density){it.toDp()}}-180.dp).coerceAtLeast(120.dp)
     val preferredHeights=remember {mutableStateMapOf<String,Dp>()}
     val compactHeight=preferredHeights[panel] ?: when(panel){"Attachments"->204.dp;"Create"->380.dp;"Format"->104.dp;"Voice"->56.dp;"Camera"->maxOf(420.dp,available-12.dp);else->maxOf(keyboardHeight,420.dp)}
-    val contextual=panel in createItems.map {it.first}.filter {it!="Help"} || panel in listOf("Code block","Camera","One-time location","Real-time location","Drop a pin")
+    val contextual=panel in createItems.map {it.first}.filter {it!="Help"} || panel in listOf("Code block","Camera","One-time location","Real-time location","Drop a pin") || panel=="Help" && confirmation.action!=null
     val cameraLimit=if(panel=="Camera" && panelBottom>0f && headerBottom>0f)
         with(density){(panelBottom-headerBottom).coerceAtLeast(0f).toDp()}.minus(8.dp).coerceAtLeast(0.dp) else available
     val expandedHeight = if (panel.isNotEmpty()) minOf(compactHeight,available,cameraLimit) else 0.dp
@@ -135,12 +136,12 @@ internal fun ComposerPanel(draft: TextFieldState, analyze: (String) -> String, e
                 CompositionLocalProvider(LocalBuilderAction provides "Attach") {
                 AnimatedContent(panel, transitionSpec = {
                     when {
-                        initialState.isEmpty() -> (slideInHorizontally(motionPolicy.tween(MotionMillis)) { it } + fadeIn(motionPolicy.tween(MotionMillis))) togetherWith ExitTransition.None
-                        targetState.isEmpty() -> EnterTransition.None togetherWith (slideOutHorizontally(motionPolicy.tween(MotionMillis)) { it } + fadeOut(motionPolicy.tween(MotionMillis)))
+                        initialState.isEmpty() -> (slideInHorizontally(motionPolicy.enter(MotionMillis)) { it } + fadeIn(motionPolicy.enter(MotionMillis))) togetherWith ExitTransition.None
+                        targetState.isEmpty() -> EnterTransition.None togetherWith (slideOutHorizontally(motionPolicy.exit(MotionMillis)) { it } + fadeOut(motionPolicy.exit(MotionExit)))
                         else -> {
                             val back = targetState == "Attachments" || targetState == "Create" && createItems.any { it.first == initialState } || targetState == "Format" && initialState == "Code block"
-                            (slideInHorizontally(motionPolicy.tween(MotionMillis)) { if (back) -it else it } + fadeIn()) togetherWith
-                                (slideOutHorizontally(motionPolicy.tween(MotionMillis)) { if (back) it else -it } + fadeOut())
+                            (slideInHorizontally(motionPolicy.enter(MotionMillis)) { if (back) -it else it } + fadeIn(motionPolicy.enter(MotionMillis))) togetherWith
+                                (slideOutHorizontally(motionPolicy.exit(MotionMillis)) { if (back) it else -it } + fadeOut(motionPolicy.exit(MotionExit)))
                         }
                     }
                 }, label = "Composer panel") { shown ->
@@ -179,33 +180,33 @@ internal fun ComposerPanel(draft: TextFieldState, analyze: (String) -> String, e
                         in createItems.map { it.first } -> builders.SaveableStateProvider("$peer:$shown") {
                             StructuredBuilder(shown, enabled, { change("Create") }) { source, timezone -> stage(shown,source,true,timezone) }
                         }
-                        "Format" -> FormatPanel(draft,showSource,{showSource=it},{change("Attachments")},{change("Code block")},::showKeyboard)
+                        "Format" -> FormatPanel(draft,analyze,showSource,{showSource=it},{change("Attachments")},{change("Code block")},::showKeyboard)
                     }
                     }
                 }
             }
             }
-            Column(Modifier.fillMaxWidth().heightIn(max=minOf(if(hasStructured)320.dp else 240.dp,available)).verticalScroll(rememberScrollState()).padding(start=8.dp,end=8.dp,top=if(hasStructured || hasAttachment)8.dp else 0.dp),verticalArrangement=Arrangement.spacedBy(6.dp)) {
+            Column(Modifier.fillMaxWidth().heightIn(max=minOf(if(hasStructured)320.dp else 240.dp,available)).verticalScroll(rememberScrollState()).padding(start=8.dp,end=8.dp,top=if(hasStructured || hasAttachment)8.dp else 0.dp),verticalArrangement=Arrangement.spacedBy(12.dp)) {
                     if(panel.isEmpty() && !hasStructured && !hasAttachment && !editingCaption && !notes) TypedSigilPreview(draft.text.toString(),open={intent,original->pendingIntent=intent to original;change(intent.tool)})
                     if(hasStructured && panel.isEmpty()) {
-                        Row(verticalAlignment=Alignment.CenterVertically) {Text(stagedKind,Modifier.weight(1f),style=MaterialTheme.typography.labelLarge);if(stagedQuery==null && stagedContact==null)Symbol("edit","Edit $stagedKind") {change(stagedKind)};Symbol("close","Remove $stagedKind") {stagedSource="";stagedKind="";stagedQuery?.let {command("service",mapOf("action" to "discard","request" to it))};stagedQuery=null;stagedContact=null;stagedPreview=null}}
+                        Row(verticalAlignment=Alignment.CenterVertically,horizontalArrangement=Arrangement.spacedBy(8.dp)) {Glyph(createItems.firstOrNull {it.first==stagedKind}?.second ?: "draft",18);Text(stagedKind,Modifier.weight(1f),style=MaterialTheme.typography.labelMedium,maxLines=1,overflow=TextOverflow.Ellipsis);if(stagedQuery==null && stagedContact==null)Symbol("edit","Edit $stagedKind") {change(stagedKind)};Symbol("close","Remove $stagedKind") {stagedSource="";stagedKind="";stagedQuery?.let {command("service",mapOf("action" to "discard","request" to it))};stagedQuery=null;stagedContact=null;stagedPreview=null}}
                         stagedPreview?.let {if(stagedSource.isNotEmpty()){if(stagedPreviewSource==stagedSource)StructuredDraftPreview(it,stagedSource+draft.text.toString().takeIf {it.isNotBlank()}?.let {"\n\n$it"}.orEmpty())}else BuilderPreview(it)}
                     }
                     if (attachmentDrafts.any {!it.mediaType.startsWith("audio/")}) LazyRow(Modifier.fillMaxWidth().heightIn(max = 144.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         items(attachmentDrafts.filter {!it.mediaType.startsWith("audio/")}, key = { it.request }) { file ->
-                            Surface(shape = RoundedCornerShape(16.dp), color = MaterialTheme.colorScheme.surfaceVariant) {
+                            Surface(itemMotion(), shape = RoundedCornerShape(16.dp), color = MaterialTheme.colorScheme.surfaceVariant) {
                                 Box(Modifier.size(128.dp)) {
                                     if (file.phase != "Staging") LocalAttachmentDraft.current(file, Modifier.fillMaxSize())
                                     else CircularProgressIndicator(Modifier.size(24.dp).align(Alignment.Center),strokeWidth=2.dp)
                                     if(!file.mediaType.startsWith("image/"))Text(file.name,Modifier.align(Alignment.BottomStart).padding(8.dp),maxLines=2,style=MaterialTheme.typography.labelSmall)
-                                    Surface(Modifier.align(Alignment.TopEnd).padding(4.dp),shape=RoundedCornerShape(12.dp),color=MaterialTheme.colorScheme.surface.copy(alpha=.9f)) {
+                                    Surface(Modifier.align(Alignment.TopEnd).padding(4.dp),shape=RoundedCornerShape(12.dp),color=MaterialTheme.colorScheme.surfaceContainerHigh) {
                                         Symbol("close", "Remove ${file.name}") { command("file_cancel", mapOf("request" to file.request)) }
                                     }
                                 }
                             }
                         }
-                        item {
-                            Surface(onClick={command("attachment_pick",attachmentTarget+("kind" to "Photos"))},modifier=Modifier.size(128.dp),shape=RoundedCornerShape(16.dp),color=MaterialTheme.colorScheme.surfaceVariant) {
+                        item(key="add") {
+                            Surface(onClick={command("attachment_pick",attachmentTarget+("kind" to "Photos"))},modifier=itemMotion().size(128.dp),shape=RoundedCornerShape(16.dp),color=MaterialTheme.colorScheme.surfaceVariant) {
                                 Box(contentAlignment=Alignment.Center) {Glyph("add",28,"Add photos")}
                             }
                         }
@@ -222,15 +223,19 @@ internal fun ComposerPanel(draft: TextFieldState, analyze: (String) -> String, e
                     }
             }
             ComposerBar {
-                Symbol(if (panel.isEmpty()) "add" else "close", if (panel.isEmpty()) "Attachments" else "Close attachment panel") {
-                    if (panel.isEmpty()) change("Attachments") else { if (panel == "Voice") command("record_stop", emptyMap()); change("") }
+                Crossfade(if (panel.isEmpty()) "add" else "close", animationSpec = motionPolicy.tween(MotionMillis), label = "Attach toggle") { icon ->
+                    Symbol(icon, if (icon == "add") "Attachments" else "Close attachment panel") {
+                        if (panel.isEmpty()) change("Attachments") else { if (panel == "Voice") command("record_stop", emptyMap()); change("") }
+                    }
                 }
 
                 Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Composer(draft, analyze, Modifier.fillMaxWidth(), showTools = false, focusRequester = editor, namedFormatting = !hasAttachment && !editingCaption, showSource = showSource, onFocus = { if (panel == "Voice") command("record_stop", emptyMap()); if (panel == "Attachments") {keyboardPending=true;panel=""} })
                 }
 
-                FilledIconButton({ if(contextual){confirmation.action?.takeIf {it.enabled}?.invoke?.invoke()} else if (hasAttachment) {
+                val sendIcon=if(panel in listOf("One-time location","Real-time location","Drop a pin"))"send" else if(contextual)"check" else if(voice.peer==peer && voice.phase=="Save failed")"refresh" else if(voice.peer==peer && voice.phase=="Recording")"stop" else if(helpQuery!=null)"help" else if (hasAttachment || hasStructured || hasText) "send" else "graphic_eq"
+                val sendLabel=if(contextual)confirmation.action?.label ?: "Complete attachment" else if(voice.peer==peer && voice.phase=="Save failed")"Retry saving recording" else if(voice.peer==peer && voice.phase=="Recording")"Stop recording" else if(helpQuery!=null)"Open help" else if (editingCaption) "Save caption" else if (voiceReady) "Send voice message" else if (attachmentDrafts.isNotEmpty()) "Send attachments" else if(hasStructured)"Send message" else if (hasText) if (requestContact != null) "Send request" else "Send message" else "Voice message"
+                SigilFilledIconButton({ if(contextual){confirmation.action?.takeIf {it.enabled}?.invoke?.invoke()} else if (hasAttachment) {
                         val caption = draft.text.toString(); pendingCaption = caption
                         attachmentDrafts.forEach { command("file_send", mapOf("request" to it.request, "caption" to caption)) }
                         if (voiceReady) command("record_send", mapOf("peer" to peer, "caption" to caption))
@@ -244,9 +249,8 @@ internal fun ComposerPanel(draft: TextFieldState, analyze: (String) -> String, e
                         val structured=previewer?.invoke(source)?.previewLeaves()?.any {it.kind!="text" && it.previewIntent==null}==true
                         send(source,notes && !editingCaption || helpSource?.endsWith(';')==true || structured,null)
                     } else {change("Voice");command("record_start",mapOf("peer" to peer))} },
-                    Modifier.size(48.dp), enabled = if(launch?.activeSource!=null)false else if(contextual)confirmation.action?.enabled==true else voice.phase !in listOf("Starting","Saving") && if (hasAttachment) enabled && voice.phase != "Sending" && attachmentDrafts.none { it.phase == "Staging" } else if(hasStructured)enabled else if(helpQuery!=null)true else if (hasText) enabled || requestContact != null else LocalClientFeatures.current.voice, shape = RoundedCornerShape(16.dp),
-                    colors = IconButtonDefaults.filledIconButtonColors(containerColor = MaterialTheme.colorScheme.primary, contentColor = MaterialTheme.colorScheme.onPrimary)) {
-                    Glyph(if(panel in listOf("One-time location","Real-time location","Drop a pin"))"send" else if(contextual)"check" else if(voice.peer==peer && voice.phase=="Save failed")"refresh" else if(voice.peer==peer && voice.phase=="Recording")"stop" else if(helpQuery!=null)"help" else if (hasAttachment || hasStructured || hasText) "send" else "graphic_eq", 24, if(contextual)confirmation.action?.label ?: "Complete attachment" else if(voice.peer==peer && voice.phase=="Save failed")"Retry saving recording" else if(voice.peer==peer && voice.phase=="Recording")"Stop recording" else if(helpQuery!=null)"Open help" else if (editingCaption) "Save caption" else if (voiceReady) "Send voice message" else if (attachmentDrafts.isNotEmpty()) "Send attachments" else if(hasStructured)"Send message" else if (hasText) if (requestContact != null) "Send request" else "Send message" else "Voice message")
+                    Modifier.semantics {contentDescription=sendLabel}, enabled = if(launch?.activeSource!=null)false else if(contextual)confirmation.action?.enabled==true else voice.phase !in listOf("Starting","Saving") && if (hasAttachment) enabled && voice.phase != "Sending" && attachmentDrafts.none { it.phase == "Staging" } else if(hasStructured)enabled else if(helpQuery!=null)true else if (hasText) enabled || requestContact != null else LocalClientFeatures.current.voice) {
+                    Crossfade(sendIcon, animationSpec = motionPolicy.tween(MotionMillis), label = "Send action") { icon -> Glyph(icon, 24) }
                 }
             }
             if(LocalFooterHost.current==null)Spacer(Modifier.windowInsetsBottomHeight(WindowInsets.ime))
@@ -254,6 +258,17 @@ internal fun ComposerPanel(draft: TextFieldState, analyze: (String) -> String, e
     }
 }
 internal fun escapeField(value: String) = value.replace("\\", "\\\\").replace(";", "\\;")
+
+// Filled counterpart to SigilIconButton; disabled ink follows the palette, not Material's own alphas.
+@Composable
+private fun SigilFilledIconButton(onClick: () -> Unit, modifier: Modifier = Modifier, enabled: Boolean = true, content: @Composable () -> Unit) {
+    val scheme = MaterialTheme.colorScheme
+    Surface(onClick, modifier.semantics { role = Role.Button }, enabled, shape = SigilButtonShape,
+        color = if (enabled) scheme.primary else scheme.surfaceVariant,
+        contentColor = if (enabled) scheme.onPrimary else scheme.onSurfaceVariant.copy(alpha = .38f)) {
+        Box(Modifier.size(48.dp), contentAlignment = Alignment.Center) { content() }
+    }
+}
 @Composable
 internal fun StructuredBuilder(kind: String, enabled: Boolean, back: () -> Unit, send: (String, String?) -> Unit) {
     val motionPolicy = LocalMotion.current
@@ -311,9 +326,10 @@ internal fun BuilderEntries(entries:List<String>,label:String,icon:String,change
     Column {
         entries.forEachIndexed {index,entry->key(index) {
             val visible=remember {MutableTransitionState(index==0).apply {targetState=true}}
-            AnimatedVisibility(visible,enter=expandVertically(motion.tween(MotionMillis),expandFrom=Alignment.Top)+slideInHorizontally(motion.tween(MotionMillis)) {it}+fadeIn(motion.tween(MotionMillis))) {
+            AnimatedVisibility(visible,enter=expandVertically(motion.enter(MotionMillis),expandFrom=Alignment.Top)+slideInHorizontally(motion.enter(MotionMillis)) {it}+fadeIn(motion.enter(MotionMillis)),
+                exit=shrinkVertically(motion.exit(MotionMillis),shrinkTowards=Alignment.Top)+fadeOut(motion.exit(MotionExit))) {
                 OutlinedTextField(entry,{raw->val value=raw.replace('\n',' ').replace('\r',' ');change(entries.toMutableList().also {it[index]=value;if(index==it.lastIndex && value.isNotBlank() && it.size<256)it.add("")})},
-                    Modifier.fillMaxWidth().padding(top=if(index==0)0.dp else 16.dp),shape=RoundedCornerShape(16.dp),singleLine=true,label={Text("$label ${index+1}")},
+                    Modifier.fillMaxWidth().padding(top=if(index==0)0.dp else 12.dp),shape=RoundedCornerShape(16.dp),singleLine=true,label={Text("$label ${index+1}")},
                     leadingIcon={Glyph(icon,20,filled=false)},keyboardOptions=KeyboardOptions(imeAction=ImeAction.Next),keyboardActions=KeyboardActions(onNext={focus.moveFocus(FocusDirection.Next)}))
             }
         }}
@@ -322,9 +338,9 @@ internal fun BuilderEntries(entries:List<String>,label:String,icon:String,change
 @Composable
 private fun VoicePanel(command: Command, peer: String, voice: VoiceState, close: () -> Unit) {
     val recording=voice.peer==peer && voice.phase=="Recording"
-    Row(Modifier.fillMaxWidth().padding(start=8.dp,end=8.dp,top=8.dp),verticalAlignment=Alignment.CenterVertically,horizontalArrangement=Arrangement.spacedBy(10.dp)) {
+    Row(Modifier.fillMaxWidth().padding(start=8.dp,end=8.dp,top=8.dp).semantics {liveRegion=LiveRegionMode.Polite;stateDescription=if(!recording)"Stopped" else if(voice.paused)"Paused" else "Recording"},verticalAlignment=Alignment.CenterVertically,horizontalArrangement=Arrangement.spacedBy(8.dp)) {
         Symbol("delete","Discard recording",close)
-        Box(Modifier.size(7.dp).background(if(recording && !voice.paused)MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant,androidx.compose.foundation.shape.CircleShape))
+        Box(Modifier.size(8.dp).background(if(recording && !voice.paused)MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant,androidx.compose.foundation.shape.CircleShape))
         AudioWaveform(if(recording)voice.levels else emptyList(),Modifier.weight(1f).height(48.dp))
         Text(audioTime(voice.seconds*1000),style=MaterialTheme.typography.labelLarge)
         if(recording)Symbol(if(voice.paused)"play_arrow" else "pause",if(voice.paused)"Resume recording" else "Pause recording") {command("record_pause",emptyMap())}
@@ -333,7 +349,7 @@ private fun VoicePanel(command: Command, peer: String, voice: VoiceState, close:
 
 @Composable
 private fun VoiceDraft(voice: VoiceState, modifier: Modifier, play: () -> Unit, seek: (Long) -> Unit) {
-    Surface(modifier, shape = RoundedCornerShape(16.dp), color = MaterialTheme.colorScheme.background) {
+    Surface(modifier, shape = RoundedCornerShape(16.dp), color = MaterialTheme.colorScheme.surfaceContainerHigh) {
         AudioPlayback(voice.position, voice.duration.takeIf { it > 0 } ?: voice.seconds * 1000, voice.playing, voice.levels,
             enabled = voice.phase == "Ready", preview = true, modifier = Modifier.padding(end = 4.dp), play = play, seek = seek)
     }

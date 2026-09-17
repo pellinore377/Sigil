@@ -125,7 +125,7 @@ private val mapOwners = WebMapOwners()
         if(showMarker)anchor?.let {(x,y)->if(x in 0.0..width.toDouble() && y in 0.0..height.toDouble()) {
             val screenX=x/width*maxWidth.value;val screenY=y/height*maxHeight.value
             if(avatar!=null)Box(Modifier.offset((screenX-32).dp,(screenY-32).dp).size(64.dp)){avatar()}
-            else Surface(Modifier.offset((screenX-16).dp,(screenY-16).dp).size(32.dp),shape=RoundedCornerShape(16.dp),color=MaterialTheme.colorScheme.primary){Box(contentAlignment=Alignment.Center){Glyph(if(pin!=null || placeMarker)"location_on" else "my_location",22)}}
+            else Surface(Modifier.offset((screenX-16).dp,(screenY-16).dp).size(32.dp),shape=RoundedCornerShape(16.dp),color=MaterialTheme.colorScheme.primary){Box(contentAlignment=Alignment.Center){Glyph(if(pin!=null || placeMarker)"place" else "my_location",22)}}
         }}
         if(controls && !snapshot) Column(Modifier.align(Alignment.BottomEnd).padding(8.dp),verticalArrangement=Arrangement.spacedBy(4.dp)) {
             Surface(shape=RoundedCornerShape(16.dp),color=MaterialTheme.colorScheme.surface){Column {Symbol("add","Zoom in",{zoom=(zoom+1).coerceAtMost(maximum)});Symbol("remove","Zoom out",{zoom=(zoom-1).coerceAtLeast(minimum)})}}

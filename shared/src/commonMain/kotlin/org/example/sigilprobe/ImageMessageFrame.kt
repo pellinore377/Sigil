@@ -9,9 +9,11 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.unit.dp
 
+internal const val MessageBubbleMaxWidth = 330f
+
 internal fun imageMessageSize(width: Int, height: Int, available: Float): Size {
     val ratio = if (width > 0 && height > 0) width.toFloat() / height else 1f
-    val w = minOf(available.coerceAtLeast(1f), 300f, 360f * ratio)
+    val w = minOf(available.coerceAtLeast(1f), MessageBubbleMaxWidth, 360f * ratio)
     return Size(w, w / ratio)
 }
 
@@ -19,6 +21,6 @@ internal fun imageMessageSize(width: Int, height: Int, available: Float): Size {
 fun ImageMessageFrame(width: Int, height: Int, content: @Composable (Modifier) -> Unit) {
     BoxWithConstraints {
         val size = imageMessageSize(width, height, maxWidth.value)
-        content(Modifier.size(size.width.dp, size.height.dp).clip(RoundedCornerShape(18.dp)))
+        content(Modifier.size(size.width.dp, size.height.dp).clip(RoundedCornerShape(20.dp)))
     }
 }

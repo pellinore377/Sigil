@@ -10,6 +10,7 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.*
 import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.draw.clip
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.unit.dp
@@ -32,7 +33,7 @@ internal fun NewConversation(state: MessengerState, command: Command, back: () -
         if (creatingGroup) Column(Modifier.weight(1f).verticalScroll(rememberScrollState()).padding(24.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
             OutlinedTextField(title, { title = it }, Modifier.fillMaxWidth(), label = { Text("Group name") })
             OutlinedTextField(description, { description = it }, Modifier.fillMaxWidth(), label = { Text("Description · optional") })
-            Text("${selected.size} people will receive an invitation.")
+            Text("${selected.size} people will receive an invitation.", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
             val unverified = state.chats.filter { it.id in selected && !it.verified }
             unverified.forEach { person ->
                 Text(person.name, style = MaterialTheme.typography.titleMedium)
@@ -45,7 +46,7 @@ internal fun NewConversation(state: MessengerState, command: Command, back: () -
             }
             OutlinedTextField(query, { query = it }, Modifier.fillMaxWidth().padding(20.dp), label = { Text("Name or user address") }, placeholder = { Text("@someone:example.com") }, singleLine = true, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri, autoCorrectEnabled = false))
             LazyColumn(Modifier.weight(1f)) {
-                item { SettingRow("edit_note", "Note to Self", "A private space for your own thoughts") { selected = if ("self" in selected) selected - "self" else listOf("self") } }
+                item { SettingsLink("edit_note", "Note to Self", "A private space for your own thoughts") { selected = if ("self" in selected) selected - "self" else listOf("self") } }
                 items(state.chats.filter { it.id != "self" && !it.group && (it.name.contains(query, true) || it.address.contains(query, true)) }, key = { it.id }) { chat ->
                     ChatRow(chat, chat.id in selected, open = { selected = if (chat.id in selected) selected - chat.id else selected.filter { it != "self" } + chat.id })
                 }
@@ -90,6 +91,7 @@ internal fun NewCallDialog(state: MessengerState, command: Command, close: () ->
         }
     }, dismissButton = { SigilTextButton(close) { Text("Cancel") } })
 }
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 internal fun PersonalPage(page: String, state: MessengerState, command: Command, back: () -> Unit) {
     LaunchedEffect(page) { when (page) { "privacy" -> command("contact_policy", emptyMap()); "profile" -> command("profile", emptyMap()); "device" -> command("devices", emptyMap()); "storage" -> command("storage", emptyMap()); "notifications" -> command("notification_settings", emptyMap()) } }
@@ -110,27 +112,29 @@ internal fun PersonalPage(page: String, state: MessengerState, command: Command,
                 "device" -> {
                     state.devices.filter { state.ui["device_hidden.${it.id}"] != "true" }.forEach { device ->
                         var details by remember(device.id) { mutableStateOf(false) }
-                        Column {
-                            Column(Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                                Row(verticalAlignment = Alignment.CenterVertically) {
-                                    Glyph(if (device.current) "smartphone" else "devices", 28)
-                                    Column(Modifier.weight(1f).padding(start = 12.dp)) {
-                                        Text(nameOf(device), style = MaterialTheme.typography.titleMedium)
-                                        Text(when { device.revoked == true -> "Signed out"; device.current -> "This device"; device.revoked == false -> "Signed in"; else -> "Previously linked" }, style = MaterialTheme.typography.bodySmall)
-                                    }
-                                    Symbol("edit", "Rename ${nameOf(device)}") { deviceName = nameOf(device); renaming = device }
+                        Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(18.dp)).heightIn(min = 72.dp).padding(horizontal = 12.dp, vertical = 12.dp),
+                                verticalAlignment = Alignment.CenterVertically) {
+                                CompositionLocalProvider(LocalContentColor provides MaterialTheme.colorScheme.onSurfaceVariant) { Glyph(if (device.current) "smartphone" else "devices", 24) }
+                                Column(Modifier.weight(1f).padding(horizontal = 12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                                    Text(nameOf(device), style = MaterialTheme.typography.titleMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                    Text(when { device.revoked == true -> "Signed out"; device.current -> "This device"; device.revoked == false -> "Signed in"; else -> "Previously linked" },
+                                        style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                                 }
-                                Row {
-                                    if (device.current) SigilTextButton({ command("sign_out", emptyMap()) }, enabled = !state.busy) { Text("Sign out") }
-                                    else if (device.revoked != true) SigilTextButton({ revoking = device }, enabled = !state.busy) { Text("Remove device") }
-                                    else SigilTextButton({ command("organize", mapOf("peer" to null, "value" to mapOf("UiSetting" to mapOf("key" to "device_hidden.${device.id}", "value" to "true")))) }, enabled = !state.busy) { Text("Remove from list") }
-                                    SigilTextButton({ details = !details }) { Text("Details"); Glyph(if (details) "expand_less" else "expand_more", 18) }
-                                }
-                                Expandable(details) {
-                                    Text("Device ID", style = MaterialTheme.typography.labelMedium)
+                                Symbol("edit", "Rename ${nameOf(device)}") { deviceName = nameOf(device); renaming = device }
+                            }
+                            FlowRow(Modifier.padding(horizontal = 12.dp), horizontalArrangement = Arrangement.spacedBy(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                                if (device.current) SigilTextButton({ command("sign_out", emptyMap()) }, enabled = !state.busy) { Text("Sign out") }
+                                else if (device.revoked != true) SigilTextButton({ revoking = device }, enabled = !state.busy) { Text("Remove device") }
+                                else SigilTextButton({ command("organize", mapOf("peer" to null, "value" to mapOf("UiSetting" to mapOf("key" to "device_hidden.${device.id}", "value" to "true")))) }, enabled = !state.busy) { Text("Remove from list") }
+                                SigilTextButton({ details = !details }) { Text("Details"); Spacer(Modifier.width(8.dp)); Glyph(if (details) "expand_less" else "expand_more", 18, if (details) "Hide device details" else "Show device details") }
+                            }
+                            Expandable(details) {
+                                Column(Modifier.padding(horizontal = 12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                                    Text("Device ID", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
                                     androidx.compose.foundation.text.selection.SelectionContainer { Text(device.id, fontFamily = LocalCodeFont.current, style = MaterialTheme.typography.bodySmall) }
                                     (device.fingerprint ?: state.fingerprint.takeIf { device.current })?.let { fingerprint ->
-                                        Text("Encryption fingerprint", style = MaterialTheme.typography.labelMedium)
+                                        Text("Encryption fingerprint", Modifier.padding(top = 8.dp), style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
                                         androidx.compose.foundation.text.selection.SelectionContainer { Text(fingerprint.chunked(4).joinToString(" "), fontFamily = LocalCodeFont.current, style = MaterialTheme.typography.bodySmall) }
                                     }
                                 }
@@ -138,24 +142,31 @@ internal fun PersonalPage(page: String, state: MessengerState, command: Command,
                         }
                     }
                     state.devicesNext?.let { cursor -> SigilTextButton({ command("devices", mapOf("cursor" to cursor)) }, enabled = !state.busy) { Text("Load more devices") } }
-                    SigilButton({ command("device_link", mapOf("action" to "sponsor")) }, enabled = !state.busy) { Text("Link a new device") }
-                    SigilTextButton({ command("devices", emptyMap()) }, enabled = !state.busy) { Text("Refresh") }
+                    FlowRow(horizontalArrangement = Arrangement.spacedBy(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        SigilButton({ command("device_link", mapOf("action" to "sponsor")) }, enabled = !state.busy) { Text("Link a new device") }
+                        SigilTextButton({ command("devices", emptyMap()) }, enabled = !state.busy) { Text("Refresh") }
+                    }
                 }
                 "profile" -> {
                     Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) { Avatar(state.profileName.ifEmpty { state.address.removePrefix("@") }, 88, state.profileAvatar) }
-                    if(LocalClientFeatures.current.files)Row { SigilTextButton({ command("photo_choose", emptyMap()) }, enabled = !state.busy) { Text("Change photo") }; SigilTextButton({ command("photo_remove", emptyMap()) }, enabled = !state.busy) { Text("Remove photo") } }
-                    Text("Your name and photo are shared with approved contacts and are visible to your server. They do not change your encryption identity.", style = MaterialTheme.typography.bodySmall)
+                    if (LocalClientFeatures.current.files) FlowRow(Modifier.align(Alignment.CenterHorizontally), horizontalArrangement = Arrangement.spacedBy(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        SigilTextButton({ command("photo_choose", emptyMap()) }, enabled = !state.busy) { Text("Change photo") }
+                        SigilTextButton({ command("photo_remove", emptyMap()) }, enabled = !state.busy) { Text("Remove photo") }
+                    }
+                    SettingsNote("Your name and photo are shared with approved contacts and are visible to your server. They do not change your encryption identity.")
                     if (state.photoPending) {
-                        Text("Photo change waiting to upload")
-                        Row { SigilTextButton({ command("photo_retry", emptyMap()) }, enabled = !state.busy) { Text("Retry upload") }; SigilTextButton({ command("photo_cancel", emptyMap()) }, enabled = !state.busy) { Text("Discard change") } }
+                        SettingsNote("Photo change waiting to upload")
+                        FlowRow(horizontalArrangement = Arrangement.spacedBy(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                            SigilTextButton({ command("photo_retry", emptyMap()) }, enabled = !state.busy) { Text("Retry upload") }
+                            SigilTextButton({ command("photo_cancel", emptyMap()) }, enabled = !state.busy) { Text("Discard change") }
+                        }
                     }
                     var name by remember(state.profileRevision) { mutableStateOf(state.profileName) }
                     OutlinedTextField(name, { name = it }, Modifier.fillMaxWidth(), shape = RoundedCornerShape(16.dp), label = { Text("Display name") })
-                    Text(state.address)
+                    SettingsNote(state.address)
                     SigilButton({ command("set_profile", mapOf("revision" to state.profileRevision, "name" to name.trim())) }, enabled = !state.busy && state.profileRevision != null) { Text("Save name") }
-                    HorizontalDivider()
                     AccountAccessSection(state.accountAccess, state.busy, command)
-                    HorizontalDivider()
+                    SettingsSectionLabel("This device")
                     SigilTextButton({ command("sign_out", emptyMap()) }, enabled = !state.busy) { Text("Sign out of this device") }
                 }
                 "privacy" -> {
@@ -168,67 +179,78 @@ internal fun PersonalPage(page: String, state: MessengerState, command: Command,
                 "notifications" -> {
                     val panel=LocalNotificationPanel.current
                     if(panel!=null)panel(state,command) else {
-                    Text("On this device", style = MaterialTheme.typography.titleLarge)
-                    Text("Notifications keep message content private. Snoozed conversations do not produce message alerts.")
+                    SettingsSectionLabel("On this device")
+                    SettingsNote("Notifications keep message content private. Snoozed conversations do not produce message alerts.")
                     state.notifications?.let { settings ->
-                        if (!settings.enabled) { Text("Notifications are disabled in Android."); SigilButton({ command("notification_permission", emptyMap()) }) { Text("Enable notifications") } }
+                        if (!settings.enabled) { SettingsNote("Notifications are disabled in Android."); SigilButton({ command("notification_permission", emptyMap()) }) { Text("Enable notifications") } }
                         SettingsToggle("Message notifications", "Notify you of new messages", settings.messages, !state.busy) { command("notification_change", mapOf("key" to "messages", "enabled" to it)) }
                         SettingsToggle("Incoming call notifications", "Notify you of incoming calls", settings.calls, !state.busy) { command("notification_change", mapOf("key" to "incoming", "enabled" to it)) }
-                        if (!settings.fullScreen) { Text("Android needs permission to show incoming calls on the lock screen."); SigilButton({ command("notification_full_screen", emptyMap()) }) { Text("Allow full-screen call alerts") } }
-                        if (!settings.unrestricted) { Text("Battery optimization delays messages and calls while the phone sleeps."); SigilButton({ command("notification_battery", emptyMap()) }) { Text("Allow unrestricted battery use") } }
+                        if (!settings.fullScreen) { SettingsNote("Android needs permission to show incoming calls on the lock screen."); SigilButton({ command("notification_full_screen", emptyMap()) }) { Text("Allow full-screen call alerts") } }
+                        if (!settings.unrestricted) { SettingsNote("Battery optimization delays messages and calls while the phone sleeps."); SigilButton({ command("notification_battery", emptyMap()) }) { Text("Allow unrestricted battery use") } }
                         SettingsChoice("Show in notifications", listOf("full" to "Name and message", "name" to "Name only", "none" to "No name or message"), settings.content, !state.busy) { command("notification_content", mapOf("level" to it)) }
                     }
                     SigilTextButton({ command("notification_system_settings", emptyMap()) }) { Text("Sounds and Android notification settings") }
-                    HorizontalDivider()
-                    Text("Background delivery", style = MaterialTheme.typography.titleLarge)
+                    SettingsSectionLabel("Background delivery")
                     state.push?.let { push ->
-                        Text(push.status)
-                        Text("Push wakes Sigil to check for messages. It does not contain your messages or contact names. Without push, Android checks periodically and incoming calls can be delayed.", style = MaterialTheme.typography.bodySmall)
-                        if (push.distributors.isEmpty()) Text("Google notifications require a configured app build and server. UnifiedPush is also available with an installed distributor.", style = MaterialTheme.typography.bodySmall)
-                        push.distributors.forEach { service ->
-                            SigilTextButton({ command("push_select", mapOf("distributor" to service.id)) }, enabled = !state.busy) { Text(if (push.enabled && push.distributor == service.id) "Reconnect ${service.name}" else "Use ${service.name}") }
+                        SettingsNote(push.status)
+                        SettingsNote("Push wakes Sigil to check for messages. It does not contain your messages or contact names. Without push, Android checks periodically and incoming calls can be delayed.")
+                        if (push.distributors.isEmpty()) SettingsNote("Google notifications require a configured app build and server. UnifiedPush is also available with an installed distributor.")
+                        FlowRow(horizontalArrangement = Arrangement.spacedBy(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                            push.distributors.forEach { service ->
+                                SigilTextButton({ command("push_select", mapOf("distributor" to service.id)) }, enabled = !state.busy) { Text(if (push.enabled && push.distributor == service.id) "Reconnect ${service.name}" else "Use ${service.name}") }
+                            }
+                            if (push.enabled) SigilTextButton({ command("push_disable", emptyMap()) }, enabled = !state.busy) { Text("Use periodic sync instead") }
                         }
-                        if (push.enabled) SigilTextButton({ command("push_disable", emptyMap()) }, enabled = !state.busy) { Text("Use periodic sync instead") }
                     }
                     SigilTextButton({ command("notification_settings", emptyMap()) }, enabled = !state.busy) { Text("Refresh delivery status") }
                     }
                 }
                 "storage" -> {
-                    Text("This device", style = MaterialTheme.typography.titleLarge)
-                    Text("Messages and downloaded attachments are stored encrypted on this device.")
+                    SettingsSectionLabel("This device")
                     state.storage?.let { storage ->
-                        Text("${storageBytes(storage.database + storage.media)} on this device", style = MaterialTheme.typography.headlineSmall)
+                        Text("${storageBytes(storage.database + storage.media)} on this device", Modifier.padding(horizontal = 12.dp), style = MaterialTheme.typography.headlineSmall)
+                        SettingsNote("Messages and downloaded attachments are stored encrypted on this device.")
                         Column {
                             SettingsValue("Message database", storageBytes(storage.database))
                             SettingsValue("Media cache", storageBytes(storage.mediaUsed))
                             SettingsValue("Cache limit", storageBytes(storage.budget))
                         }
-                        Text("${storageBytes(storage.media)} allocated for media", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                        HorizontalDivider()
-                        Text("Encrypted history recovery", style = MaterialTheme.typography.titleMedium)
-                        Text(if (storage.restoring) "Restoring encrypted history…" else if (!storage.recovery) "Not enabled" else storage.checkpoint?.let { "Last backup · $it" } ?: "Waiting for the first backup")
-                        if (storage.restoring) { LinearProgressIndicator(Modifier.fillMaxWidth()); Text("You can leave this page. The import resumes after interruptions.", style = MaterialTheme.typography.bodySmall) }
-                        if (storage.recovery && storage.unprotected > 0) Text("${storage.unprotected} records waiting for backup", style = MaterialTheme.typography.bodySmall)
+                        Text("${storageBytes(storage.media)} allocated for media", Modifier.padding(horizontal = 12.dp), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        SettingsSectionLabel("Encrypted history recovery")
+                        SettingsNote(if (storage.restoring) "Restoring encrypted history…" else if (!storage.recovery) "Not enabled" else storage.checkpoint?.let { "Last backup · $it" } ?: "Waiting for the first backup")
+                        if (storage.restoring) { LinearProgressIndicator(Modifier.fillMaxWidth()); SettingsNote("You can leave this page. The import resumes after interruptions.") }
+                        if (storage.recovery && storage.unprotected > 0) SettingsNote("${storage.unprotected} records waiting for backup")
                         if (!storage.recovery) {
-                            Text("Keep a recovery key to restore your encrypted history after signing in on a replacement device.")
-                            SigilButton({ command("recovery_generate", emptyMap()) }, enabled = !state.busy) { Text("Set up recovery") }
-                            SigilTextButton({ command("recovery_restore_open", emptyMap()) }, enabled = !state.busy) { Text("Restore with a recovery key") }
-                        } else {
-                            Text("Keep backed-up history", style = MaterialTheme.typography.titleSmall)
-                            Text("This controls your encrypted backup. It does not delete messages on this device.", style = MaterialTheme.typography.bodySmall)
-                            listOf(null to "Until I delete it", 30 to "30 days", 90 to "90 days", 365 to "One year").forEach { (days, label) ->
-                                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                                    RadioButton(storage.historyDays == days, { command("recovery_policy", mapOf("days" to days)) }, enabled = !state.busy && !storage.restoring)
-                                    Text(label)
-                                }
+                            SettingsNote("Keep a recovery key to restore your encrypted history after signing in on a replacement device.")
+                            FlowRow(horizontalArrangement = Arrangement.spacedBy(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                                SigilButton({ command("recovery_generate", emptyMap()) }, enabled = !state.busy) { Text("Set up recovery") }
+                                SigilTextButton({ command("recovery_restore_open", emptyMap()) }, enabled = !state.busy) { Text("Restore with a recovery key") }
                             }
+                        } else {
+                            SettingsNote("This controls your encrypted backup. It does not delete messages on this device.")
+                            SettingsChoice("Keep backed-up history", listOf("" to "Until I delete it", "30" to "30 days", "90" to "90 days", "365" to "One year"),
+                                storage.historyDays?.toString().orEmpty(), enabled = !state.busy && !storage.restoring) { command("recovery_policy", mapOf("days" to it.toIntOrNull())) }
                         }
                     }
-                    SigilTextButton({ command("storage", emptyMap()) }, enabled = !state.busy) { Text("Refresh") }
-                    SigilTextButton({ command("history_open", emptyMap()) }) { Text("Browse saved history") }
-                    state.transfers.forEach { transfer -> SettingRow("upload_file", transfer.name, transfer.phase) { command("file_cancel", mapOf("request" to transfer.request)) } }
+                    FlowRow(horizontalArrangement = Arrangement.spacedBy(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        SigilTextButton({ command("storage", emptyMap()) }, enabled = !state.busy) { Text("Refresh") }
+                        SigilTextButton({ command("history_open", emptyMap()) }) { Text("Browse saved history") }
+                    }
+                    if (state.transfers.isNotEmpty()) SettingsSectionLabel("Transfers")
+                    state.transfers.forEach { transfer -> SettingsLink("upload_file", transfer.name, transfer.phase) { command("file_cancel", mapOf("request" to transfer.request)) } }
                 }
-                else -> { Text("Sigil", style = MaterialTheme.typography.displayMedium); Text("Modern correspondence."); Text("Development build · 0.1"); Text("Newsreader, Google Sans Flex, Google Sans Code, and Material Symbols."); Text("Animated Noto Emoji by Google · CC BY 4.0. Lottie by Airbnb · Apache 2.0."); androidx.compose.foundation.text.selection.SelectionContainer { Text("https://googlefonts.github.io/noto-emoji-animation/\nhttps://creativecommons.org/licenses/by/4.0/", style = MaterialTheme.typography.bodySmall) } }
+                else -> {
+                    Text("Sigil", Modifier.padding(horizontal = 12.dp), style = MaterialTheme.typography.headlineSmall)
+                    SettingsNote("Modern correspondence.")
+                    SettingsValue("Version", "Development build · 0.1")
+                    SettingsSectionLabel("Credits and licenses")
+                    Text("Newsreader, Google Sans Flex, Google Sans Code, and Material Symbols.", Modifier.padding(horizontal = 12.dp), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Text("Animated Noto Emoji by Google · CC BY 4.0. Lottie by Airbnb · Apache 2.0.", Modifier.padding(horizontal = 12.dp), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    androidx.compose.foundation.text.selection.SelectionContainer {
+                        Text("https://googlefonts.github.io/noto-emoji-animation/\nhttps://creativecommons.org/licenses/by/4.0/", Modifier.padding(horizontal = 12.dp),
+                            style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                }
             }
     }
 }

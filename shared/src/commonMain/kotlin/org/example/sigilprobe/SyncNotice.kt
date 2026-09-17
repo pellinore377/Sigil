@@ -1,6 +1,5 @@
 package org.sigil
 
-import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -33,7 +32,7 @@ internal fun noticeSummary(message:String):String = when {
                 Symbol(if(details)"expand_less" else "expand_more",if(details)"Hide error details" else "Show error details") {details=!details}
                 Symbol("close","Dismiss notice",dismiss)
             }
-            AnimatedVisibility(details) {
+            Expandable(details) {
                 Text(message,Modifier.fillMaxWidth().heightIn(max=160.dp).verticalScroll(rememberScrollState()).padding(top=4.dp,end=12.dp,bottom=12.dp),
                     style=MaterialTheme.typography.bodySmall,color=MaterialTheme.colorScheme.onSurfaceVariant)
             }

@@ -2,7 +2,6 @@
 
 package org.sigil
 
-import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.input.*
@@ -15,6 +14,7 @@ import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.input.key.*
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.clearAndSetSemantics
@@ -36,6 +36,11 @@ internal fun spans(wire: String) = wire.lineSequence().filter { it.isNotEmpty() 
     val v = it.split(',', limit = 6)
     FormatSpan(v[0].toInt(), v[1].toInt(), v[2].toInt(), v[3].toInt(), v[4].toInt(), v.getOrElse(5) { "" })
 }.toList()
+
+internal val formatNames = listOf("", "bold", "italic", "strike", "code", "underline", "highlight", "spoiler", "scratch", "size", "color", "highlight", "animation")
+
+internal fun activeFormats(formats: List<FormatSpan>, caret: Int) = formats.filter { caret in it.start until it.end }
+    .mapNotNull { formatNames.getOrNull(it.style)?.takeIf(String::isNotEmpty) }.distinct()
 
 // Keep unsupported presentation visible as source, including its modifier chain.
 internal fun editorFormats(wire: String): List<FormatSpan> {
@@ -159,11 +164,11 @@ fun Composer(state: TextFieldState, analyze: (String) -> String, modifier: Modif
     val surface = MaterialTheme.colorScheme.background
     val foreground = MaterialTheme.colorScheme.onSurface
     val output = remember(editorAnalysis, codeFont, surface, foreground) { presentation(editorAnalysis, codeFont, surface, foreground) }
-    val active = formats.filter { state.selection.start in it.start until it.end }
-        .mapNotNull { listOf("", "bold", "italic", "strike", "code", "underline", "highlight", "spoiler", "scratch", "size", "color", "highlight", "animation").getOrNull(it.style)?.takeIf(String::isNotEmpty) }.distinct()
+    val active = activeFormats(formats, state.selection.start)
+    val writingHeight = with(LocalDensity.current) { maxOf(144.dp, MaterialTheme.typography.bodyLarge.lineHeight.toDp() * 4 + 24.dp) }
     Column(modifier, verticalArrangement = Arrangement.spacedBy(4.dp)) {
         if (showTools) {
-        Row {
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             listOf("B" to "**", "I" to "*", "Strike" to "~~", "Code" to "`").forEach { (label, marker) ->
                 SigilTextButton({ state.format(marker, formattingSelection); editorFocus.requestFocus() }) {
                     Text(label, Modifier.clearAndSetSemantics {
@@ -172,20 +177,20 @@ fun Composer(state: TextFieldState, analyze: (String) -> String, modifier: Modif
                 }
             }
         }
-        Row {
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             SigilTextButton({ state.undoState.undo() }, enabled = state.undoState.canUndo) { Text("Undo") }
             SigilTextButton({ state.undoState.redo() }, enabled = state.undoState.canRedo) { Text("Redo") }
             SigilTextButton({ internalSourceMode = !sourceMode }) { Text(if (sourceMode) "Formatted" else "Source") }
         }
-        Text(if (active.isEmpty()) "Composer" else "Formatting: ${active.joinToString()}")
+        Text(if (active.isEmpty()) "No formatting at the cursor" else active.joinToString(" · "), style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
         if(!showTools && formats.any {it.style==12}) Text("Animated text",style=MaterialTheme.typography.labelSmall,color=MaterialTheme.colorScheme.onSurfaceVariant)
         LocalComposerInput.current(sourceMode) {
         BasicTextField(state, enabled = enabled, cursorBrush = androidx.compose.ui.graphics.SolidColor(MaterialTheme.colorScheme.primary),
-            modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp, max = 144.dp).testTag("composer")
+            modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp, max = writingHeight).testTag("composer")
                 .semantics { contentDescription = "Message" }
                 .focusRequester(editorFocus).onFocusChanged { editorFocused = it.isFocused; if (it.isFocused) onFocus() }
-                .background(if(showTools)MaterialTheme.colorScheme.background else Color.Transparent, androidx.compose.foundation.shape.RoundedCornerShape(16.dp)).padding(horizontal = 14.dp, vertical = 12.dp)
+                .padding(horizontal = 14.dp, vertical = 12.dp)
                 .onPreviewKeyEvent {
                     if (it.type != KeyEventType.KeyDown) false
                     else if (it.key == Key.Tab && !it.isCtrlPressed && !it.isAltPressed && !it.isMetaPressed) {
