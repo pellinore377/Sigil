@@ -1446,3 +1446,52 @@ fn accepted_control_gc_retains_active_live_and_prepared_response_evidence() {
 
 #[path = "retry_acceptance_tests.rs"]
 mod acceptance;
+
+/// A recovery request whose deadline the clock has not caught up to is deliberately
+/// kept, so it must not be reported as a sync failure on every pass either.
+#[test]
+fn a_deadline_the_clock_has_not_reached_is_kept_without_reporting_a_failure() {
+    let (_dir, _fixture, mut alice, mut bob, now) = pair();
+    let (_a, b) = trust(&mut alice, &mut bob);
+    start(&mut alice, b, now);
+    let mut failed = next(&bob);
+    failed.payload.replace_range(0..2, "00");
+    assert!(bob.accept_delivery(&failed).is_err());
+    let id = bob.prepare_retry_request(&failed, now).unwrap();
+    let control = bob.send_retry_request_online(id, now).unwrap();
+    let control = alice
+        .connected_client()
+        .unwrap()
+        .mailbox_after(control.sequence - 1)
+        .unwrap()
+        .remove(0);
+    alice.accept_retry_request(&control, now).unwrap();
+    // A clock far enough behind puts the deadline past the furthest we accept.
+    let early = now - 604800;
+    let mut step = crate::worker::SyncStep::default();
+    step.retries = alice.resume_retries_online(early).unwrap();
+    assert!(
+        step.retries
+            .iter()
+            .any(|a| matches!(a.result, Err(Error::Expired))),
+        "the request should still be waiting on the clock"
+    );
+    assert!(
+        step.issue().is_none(),
+        "waiting on a clock is not a failure the reader can act on: {:?}",
+        step.issue().map(|(stage, _)| stage)
+    );
+    // The work itself is kept rather than cancelled.
+    assert_eq!(count(&alice, "retry_requests"), 1);
+    assert_eq!(
+        alice
+            .db
+            .query_row(
+                "SELECT count(*) FROM retry_requests WHERE finished=0",
+                [],
+                |r| r.get::<_, i64>(0)
+            )
+            .unwrap(),
+        1
+    );
+}
