@@ -38,11 +38,11 @@ private fun FormatSymbol(icon:String,label:String,armed:Boolean,action:()->Unit)
     var highlight by rememberSaveable {mutableStateOf(false)}
     fun apply(name:String) {draft.edit {val range=selection;insert(range.max,";");insert(range.min,"$name::");selection=TextRange(range.min+name.length+2,range.max+name.length+2)};write()}
     Column(Modifier.fillMaxWidth().padding(start=8.dp,end=8.dp,top=8.dp)) {
-        Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),verticalAlignment=Alignment.CenterVertically) {
+        Row(Modifier.fillMaxWidth(),verticalAlignment=Alignment.CenterVertically) {
             Symbol("chevron_left","Back to attachments",back)
-            listOf(Triple("format_bold","Bold","bold"),Triple("format_italic","Italic","italic"),Triple("format_underlined","Underline","underline"),Triple("strikethrough_s","Strike","strike"),Triple("code","Monospace","mono"),Triple("visibility_off","Spoiler","spoiler"),Triple("ink_eraser","Scratch","scratch"),Triple("block","Redact","redact")).forEach {(icon,label,name)->FormatSymbol(icon,label,(if(name=="mono")"code" else name) in active){apply(name)}}
+            listOf(Triple("format_bold","Bold","bold"),Triple("format_italic","Italic","italic"),Triple("format_underlined","Underline","underline"),Triple("strikethrough_s","Strike","strike"),Triple("code","Monospace","mono"),Triple("visibility_off","Spoiler","spoiler")).forEach {(icon,label,name)->FormatSymbol(icon,label,(if(name=="mono")"code" else name) in active){apply(name)}}
         }
-        Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),verticalAlignment=Alignment.CenterVertically) {
+        Row(Modifier.fillMaxWidth(),verticalAlignment=Alignment.CenterVertically) {
             Box {
                 FormatSymbol("format_color_text","Text color","color" in active || "highlight" in active){menu="color"}
                 DropdownMenu(menu=="color",{menu=""}) {
@@ -66,9 +66,16 @@ private fun FormatSymbol(icon:String,label:String,armed:Boolean,action:()->Unit)
                     (1..3).forEach {size->DropdownMenuItem(text={Text("Larger $size")},onClick={apply("big$size");menu=""})}
                 }
             }
-            Symbol("data_object","Code block",code)
-            Symbol(if(showSource)"code_off" else "code","Show formatting syntax"){setSource(!showSource);write()}
-            Symbol("keyboard","Continue writing",write)
+            Box {
+                Symbol("more_horiz","More formatting"){menu="more"}
+                DropdownMenu(menu=="more",{menu=""}) {
+                    DropdownMenuItem(text={Text("Scratch")},leadingIcon={Glyph("ink_eraser",20)},onClick={apply("scratch");menu=""})
+                    DropdownMenuItem(text={Text("Redact")},leadingIcon={Glyph("block",20)},onClick={apply("redact");menu=""})
+                    DropdownMenuItem(text={Text("Code block")},leadingIcon={Glyph("data_object",20)},onClick={menu="";code()})
+                    DropdownMenuItem(text={Text("Show formatting syntax")},leadingIcon={Glyph(if(showSource)"code_off" else "code",20)},onClick={menu="";setSource(!showSource);write()})
+                    DropdownMenuItem(text={Text("Continue writing")},leadingIcon={Glyph("keyboard",20)},onClick={menu="";write()})
+                }
+            }
         }
     }
 }

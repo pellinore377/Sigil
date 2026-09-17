@@ -97,9 +97,9 @@ internal fun PushSettings(read:suspend ()->PushConfiguration, save:suspend (Push
                 }
             }
             SigilTextButton(onClick={advanced=!advanced},enabled=!busy) {
-                Text(if(advanced) "Hide advanced settings" else "Advanced notification settings")
+                Glyph(if(advanced) "expand_less" else "expand_more",20)
                 Spacer(Modifier.width(8.dp))
-                Glyph(if(advanced) "expand_less" else "expand_more",20,if(advanced) "Hide advanced settings" else "Show advanced settings")
+                Text(if(advanced) "Hide advanced settings" else "Advanced notification settings")
             }
             Expandable(advanced) {
                 Column(verticalArrangement=Arrangement.spacedBy(12.dp)) {

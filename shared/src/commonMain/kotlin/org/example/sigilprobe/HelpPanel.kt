@@ -57,7 +57,7 @@ internal fun HelpPanel(enabled:Boolean,back:()->Unit,initialQuery:String?=null,s
         }
         AnimatedContent(selected,transitionSpec={
             (slideInHorizontally(motion.enter(MotionMillis)) {if(targetState==null)-it else it}+fadeIn(motion.enter(MotionMillis))) togetherWith
-                (slideOutHorizontally(motion.exit(MotionMillis)) {if(targetState==null)it else -it}+fadeOut(motion.exit(MotionExit)))
+                (slideOutHorizontally(motion.exit(MotionQuick)) {if(targetState==null)it else -it}+fadeOut(motion.exit(MotionExit)))
         },label="Help topic") {name->
             val topic=all.firstOrNull {it.name==name}
             if(topic==null)Column(verticalArrangement=Arrangement.spacedBy(8.dp)) {
@@ -72,7 +72,7 @@ internal fun HelpPanel(enabled:Boolean,back:()->Unit,initialQuery:String?=null,s
                 },singleLine=true,shape=RoundedCornerShape(16.dp),label={Text("Search SigilText")},
                     keyboardOptions=KeyboardOptions(imeAction=ImeAction.Search),keyboardActions=KeyboardActions(onSearch={matches.firstOrNull()?.let {selected=it.name}}))
                 LazyRow(horizontalArrangement=Arrangement.spacedBy(8.dp)) {
-                    items(listOf("")+all.map {it.category}.distinct()) {value->
+                    items(listOf("")+all.map {it.category}.distinct(),key={it}) {value->
                         FilterChip(selected=category==value,onClick={category=value},label={Text(value.replaceFirstChar {it.uppercase()}.ifEmpty {"All"})},shape=RoundedCornerShape(12.dp))
                     }
                 }

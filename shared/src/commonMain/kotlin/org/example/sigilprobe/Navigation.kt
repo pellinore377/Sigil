@@ -203,7 +203,7 @@ fun SigilApp(palette: (Int, Boolean) -> String, analyze: (String) -> String, sta
                             val enter = if (targetState.destination == "conversation") EnterTransition.None
                                 else if (goingBack) fadeIn(motionPolicy.enter(MotionMillis)) else slideInVertically(motionPolicy.enter(MotionMillis)) { it } + fadeIn(motionPolicy.enter(MotionMillis))
                             val exit = if (initialState.destination == "conversation") ExitTransition.None
-                                else if (goingBack) slideOutVertically(motionPolicy.exit(MotionMillis)) { it } + fadeOut(motionPolicy.exit(MotionExit)) else fadeOut(motionPolicy.exit(MotionExit))
+                                else if (goingBack) slideOutVertically(motionPolicy.exit(MotionQuick)) { it } + fadeOut(motionPolicy.exit(MotionExit)) else fadeOut(motionPolicy.exit(MotionExit))
                             (enter togetherWith exit).apply { targetContentZIndex = if(initialState.destination=="conversation" && targetState.destination in listOf("home","welcome"))-1f else 0f }
                             }, label = "Page") { screen ->
                                 val target = screen.destination
@@ -234,10 +234,10 @@ fun SigilApp(palette: (Int, Boolean) -> String, analyze: (String) -> String, sta
                                       AnimatedContent(page, transitionSpec = {
                                           if (initialState in MainTabs && targetState in MainTabs) {
                                               (slideInHorizontally(motionPolicy.enter(MotionMillis)) { if (goingBack) -it else it } + fadeIn(motionPolicy.enter(MotionMillis))) togetherWith
-                                                  (slideOutHorizontally(motionPolicy.exit(MotionMillis)) { if (goingBack) it else -it } + fadeOut(motionPolicy.exit(MotionExit)))
+                                                  (slideOutHorizontally(motionPolicy.exit(MotionQuick)) { if (goingBack) it else -it } + fadeOut(motionPolicy.exit(MotionExit)))
                                           } else {
                                               (if (goingBack) fadeIn(motionPolicy.enter(MotionMillis)) else slideInVertically(motionPolicy.enter(MotionMillis)) { it } + fadeIn(motionPolicy.enter(MotionMillis))) togetherWith
-                                                  (if (goingBack) slideOutVertically(motionPolicy.exit(MotionMillis)) { it } + fadeOut(motionPolicy.exit(MotionExit)) else fadeOut(motionPolicy.exit(MotionExit)))
+                                                  (if (goingBack) slideOutVertically(motionPolicy.exit(MotionQuick)) { it } + fadeOut(motionPolicy.exit(MotionExit)) else fadeOut(motionPolicy.exit(MotionExit)))
                                           }
                                       }, label = "Inbox panel") { panel ->
                                         Box(Modifier.fillMaxSize().background(LocalGlobalBackground.current).testTag("main-page-$panel")) {
@@ -256,7 +256,7 @@ fun SigilApp(palette: (Int, Boolean) -> String, analyze: (String) -> String, sta
                         }
                             }
                             }
-                                androidx.compose.animation.AnimatedVisibility(!conversation && destination != "welcome" && conversationLayers==0, Modifier.align(Alignment.TopCenter).zIndex(4f), enter = fadeIn(motionPolicy.enter(MotionQuick)), exit = fadeOut(motionPolicy.exit(MotionExit))) {
+                                androidx.compose.animation.AnimatedVisibility(!conversation && destination != "welcome" && conversationLayers==0, Modifier.align(Alignment.TopCenter).zIndex(4f), enter = fadeIn(motionPolicy.enter(MotionQuick)), exit = fadeOut(motionPolicy.exit(MotionExit)), label = "Main chrome") {
                                 FloatingChrome(backdrop, Modifier.padding(top = headerTop).widthIn(max = 920.dp).fillMaxWidth().padding(horizontal = 12.dp).height(if (mainHeaderKey == "call") pageHeaderHeight() + 8.dp else mainHeaderHeight()).zIndex(4f).testTag("main-header"), shape = shape) {
                                     headerTransition.AnimatedContent(Modifier.fillMaxSize(), contentAlignment = Alignment.Center, transitionSpec = {
                                         (slideInHorizontally(motionPolicy.enter(MotionQuick, delayMillis = MotionStagger)) { if (goingBack) -it else it } + fadeIn(motionPolicy.enter(MotionQuick, delayMillis = MotionStagger))) togetherWith
@@ -289,13 +289,13 @@ fun SigilApp(palette: (Int, Boolean) -> String, analyze: (String) -> String, sta
                         SideEffect { if (conversation) retainedConversation = headerScreen }
                         androidx.compose.animation.AnimatedVisibility(conversation, Modifier.align(Alignment.TopCenter).zIndex(4f),
                             enter = slideInVertically(motionPolicy.enter(MotionInline, delayMillis = MotionMillis)) { -it } + fadeIn(motionPolicy.enter(MotionInline, delayMillis = MotionMillis)),
-                            exit = slideOutVertically(motionPolicy.exit(MotionQuick)) { -it } + fadeOut(motionPolicy.exit(MotionExit))) {
+                            exit = slideOutVertically(motionPolicy.exit(MotionQuick)) { -it } + fadeOut(motionPolicy.exit(MotionExit)), label = "Conversation header") {
                             val screen = if (conversation) headerScreen else retainedConversation
                             FloatingChrome(backdrop, Modifier.padding(top = if (wide) 12.dp else WindowInsets.statusBars.asPaddingValues().calculateTopPadding() + 12.dp).widthIn(max = 920.dp).fillMaxWidth().padding(horizontal = 12.dp).height(pageHeaderHeight() + 8.dp).testTag("conversation-header").onGloballyPositioned { materialOcclusion.header = it.boundsInWindow() }, RoundedCornerShape(24.dp)) {
                                 screen.chat?.let { ConversationHeader(it, screen.detail, screen.thread != null, dispatch, back) { goingBack = false; thread = null; conversationPage = it } }
                             }
                         }
-                        androidx.compose.animation.AnimatedVisibility(!wide && chat == null && page in listOf("inbox", "calls", "notes", "settings") && (state.call == null || callMinimized), modifier = Modifier.align(Alignment.BottomCenter).zIndex(3f), enter = slideInVertically(motionPolicy.enter(MotionMillis, if(goingBack)MotionQuick else 0)) { it } + fadeIn(motionPolicy.enter(MotionMillis, if(goingBack)MotionQuick else 0)), exit = slideOutVertically(motionPolicy.exit(MotionQuick)) { it } + fadeOut(motionPolicy.exit(MotionExit))) {
+                        androidx.compose.animation.AnimatedVisibility(!wide && chat == null && page in listOf("inbox", "calls", "notes", "settings") && (state.call == null || callMinimized), modifier = Modifier.align(Alignment.BottomCenter).zIndex(3f), enter = slideInVertically(motionPolicy.enter(MotionMillis, if(goingBack)MotionQuick else 0)) { it } + fadeIn(motionPolicy.enter(MotionMillis, if(goingBack)MotionQuick else 0)), exit = slideOutVertically(motionPolicy.exit(MotionQuick)) { it } + fadeOut(motionPolicy.exit(MotionExit)), label = "Main navigation") {
                                 FloatingChrome(backdrop, Modifier.padding(bottom = navigationInset + 8.dp).widthIn(max = 920.dp).fillMaxWidth().padding(horizontal = 16.dp).testTag("main-navigation"), RoundedCornerShape(24.dp)) {
                                     Row(Modifier.fillMaxWidth().padding(8.dp), horizontalArrangement = Arrangement.SpaceEvenly) {
                                         listOf(Triple("inbox", "chat_bubble", "Messages"), Triple("calls", "call", "Calls"), Triple("notes", "description", "Notes"), Triple("settings", "settings", "Settings")).filter { it.first != "calls" || LocalClientFeatures.current.calls }.forEach { (tab, icon, label) ->
@@ -307,7 +307,7 @@ fun SigilApp(palette: (Int, Boolean) -> String, analyze: (String) -> String, sta
                         val density = LocalDensity.current
                         androidx.compose.animation.AnimatedVisibility(conversation, Modifier.align(Alignment.BottomCenter).zIndex(3f),
                             enter = slideInVertically(motionPolicy.enter(MotionInline, delayMillis = MotionMillis)) { it } + fadeIn(motionPolicy.enter(MotionInline, delayMillis = MotionMillis)),
-                            exit = slideOutVertically(motionPolicy.exit(MotionQuick)) { it } + fadeOut(motionPolicy.exit(MotionExit))) {
+                            exit = slideOutVertically(motionPolicy.exit(MotionQuick)) { it } + fadeOut(motionPolicy.exit(MotionExit)), label = "Conversation footer") {
                         Box(Modifier.widthIn(max = 920.dp).fillMaxWidth().onSizeChanged { if (footer.content != null) footer.height = with(density) { it.height.toDp() } }.padding(horizontal = 12.dp).windowInsetsPadding(WindowInsets.ime.union(WindowInsets.navigationBars)).padding(bottom = 8.dp).zIndex(3f)) {
                             if (footer.content != null) FloatingChrome(backdrop, Modifier.testTag("conversation-footer").onGloballyPositioned { materialOcclusion.footer = it.boundsInWindow() }, RoundedCornerShape(24.dp)) { footer.content?.invoke() }
                         }

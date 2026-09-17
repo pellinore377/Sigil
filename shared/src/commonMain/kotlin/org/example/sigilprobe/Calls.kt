@@ -51,7 +51,7 @@ internal fun CallPage(active: ActiveCall, contacts: List<ChatSummary>, command: 
         AlertDialog({ setPanel("") }, title = { Text("Invite to call") }, text = {
             Column {
                 OutlinedTextField(query, { query = it }, label = { Text("Search contacts") }, singleLine = true)
-                if (choices.isEmpty()) Text("No other verified contacts.", Modifier.padding(vertical = 16.dp))
+                if (choices.isEmpty()) Box(Modifier.fillMaxWidth().padding(32.dp), contentAlignment = Alignment.Center) { Text("No other verified contacts.", color = MaterialTheme.colorScheme.onSurfaceVariant) }
                 androidx.compose.foundation.lazy.LazyColumn(Modifier.heightIn(max = 320.dp)) {
                     items(choices.size) { index -> val person = choices[index]; SettingRow("person", person.name, person.address) { command("call_invite", mapOf("call" to call.id, "peer" to person.id)); setPanel("") } }
                 }
@@ -91,7 +91,7 @@ internal fun CallPage(active: ActiveCall, contacts: List<ChatSummary>, command: 
                 if (remote != null && (remote.camera || remote.screen)) LocalCallVideo.current(remote.id, remote.screen, Modifier.fillMaxSize().clip(RoundedCornerShape(24.dp)))
                 else Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { Avatar(active.name, 120, directPhoto) }
                 if (active.camera || active.screen) Box(Modifier.align(Alignment.BottomEnd).width(112.dp).height(168.dp).clip(RoundedCornerShape(20.dp))) { LocalCallVideo.current("self", active.screen, Modifier.fillMaxSize()) }
-            } else LazyVerticalGrid(GridCells.Fixed(if (call.participants.size <= 2) 1 else 2), horizontalArrangement = Arrangement.spacedBy(10.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            } else LazyVerticalGrid(GridCells.Fixed(if (call.participants.size <= 2) 1 else 2), horizontalArrangement = Arrangement.spacedBy(12.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 items(call.participants, key = { it.id }) { person ->
                     val level = active.levels[if (person.own) "self" else person.id] ?: 0f
                     Surface(shape = RoundedCornerShape(22.dp), color = MaterialTheme.colorScheme.surfaceVariant, border = if (person.audio && level > .05f) BorderStroke(2.dp, MaterialTheme.colorScheme.primary) else null) {
@@ -125,7 +125,7 @@ internal fun CallPage(active: ActiveCall, contacts: List<ChatSummary>, command: 
 private fun RowScope.CallControl(icon: String, label: String, destructive: Boolean = false, state: String? = null, action: () -> Unit) {
     Column(Modifier.weight(1f).padding(horizontal = 4.dp).clip(RoundedCornerShape(22.dp)).clickable(role = Role.Button, onClickLabel = label, onClick = action).semantics { state?.let { stateDescription = it } }, horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(8.dp)) {
         Surface(Modifier.widthIn(max = 64.dp).fillMaxWidth().aspectRatio(1f), shape = RoundedCornerShape(20.dp),
-            color = if (destructive) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.surfaceVariant, contentColor = if (destructive) MaterialTheme.colorScheme.onError else MaterialTheme.colorScheme.onSurface) { Box(contentAlignment = Alignment.Center) { Glyph(icon, 30) } }
+            color = if (destructive) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.surfaceVariant, contentColor = if (destructive) MaterialTheme.colorScheme.onError else MaterialTheme.colorScheme.onSurfaceVariant) { Box(contentAlignment = Alignment.Center) { Glyph(icon, 30) } }
         Text(label, style = MaterialTheme.typography.labelMedium, textAlign = androidx.compose.ui.text.style.TextAlign.Center)
     }
 }
@@ -157,7 +157,7 @@ internal fun CallHeader(active: ActiveCall, contacts: List<ChatSummary>, ownPhot
         Row(Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
             Symbol("chevron_left", "Minimize call", minimize)
             Avatar(active.name, 42, directPhoto)
-            Column(Modifier.weight(1f).padding(start = 10.dp)) {
+            Column(Modifier.weight(1f).padding(start = 10.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                 Row(verticalAlignment = Alignment.CenterVertically) { Text(active.name, Modifier.weight(1f, false), maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.titleLarge); Spacer(Modifier.width(6.dp)); Glyph("lock", 16, "End-to-end encrypted call") }
                 val stage = if (incoming) "Incoming call" else if (call.phase == "joining") "Joining…" else if (call.direct && others.isEmpty()) "Calling…" else if (active.connection != "connected") active.connection.replaceFirstChar { it.uppercase() } + "…" else ""
                 AnimatedContent(stage, transitionSpec = { fadeIn(motionPolicy.enter(MotionInline, delayMillis = MotionStagger)) togetherWith fadeOut(motionPolicy.exit(MotionExit)) }, label = "Call status") { phase ->
@@ -169,9 +169,9 @@ internal fun CallHeader(active: ActiveCall, contacts: List<ChatSummary>, ownPhot
             Box {
                 Symbol("more_vert", "Call options") { more = true }
                 DropdownMenu(more, { more = false }) {
-                    DropdownMenuItem({ Text("Call security") }, { more = false; panel("security") }, leadingIcon = { Glyph("lock") })
-                    DropdownMenuItem({ Text(if (active.screen) "Stop sharing screen" else "Share screen") }, { more = false; command("call_screen", emptyMap()) }, leadingIcon = { Glyph("present_to_all") })
-                    if (active.camera) DropdownMenuItem({ Text("Switch camera") }, { more = false; command("call_flip", emptyMap()) }, leadingIcon = { Glyph("cameraswitch") })
+                    DropdownMenuItem({ Text("Call security") }, { more = false; panel("security") }, leadingIcon = { Glyph("lock", 22) })
+                    DropdownMenuItem({ Text(if (active.screen) "Stop sharing screen" else "Share screen") }, { more = false; command("call_screen", emptyMap()) }, leadingIcon = { Glyph("present_to_all", 22) })
+                    if (active.camera) DropdownMenuItem({ Text("Switch camera") }, { more = false; command("call_flip", emptyMap()) }, leadingIcon = { Glyph("cameraswitch", 22) })
                 }
             }
         }

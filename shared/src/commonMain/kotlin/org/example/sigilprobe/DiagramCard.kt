@@ -63,14 +63,14 @@ internal fun DiagramCard(diagram: DiagramContent) {
                     }
                     RichMessageText(diagram.title, Modifier.heightIn(max = 96.dp).verticalScroll(rememberScrollState()), MaterialTheme.typography.titleMedium)
                     if (diagram.kind == "timeline") LazyColumn(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(16.dp)) {
-                        itemsIndexed(diagram.entries) { index, entry -> Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                        itemsIndexed(diagram.entries, key = { index, _ -> index }) { index, entry -> Row(itemMotion(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                             Column(Modifier.width(88.dp)) { Text("${index + 1}", style = MaterialTheme.typography.labelSmall); RichMessageText(entry.date, style = MaterialTheme.typography.labelLarge) }
                             RichMessageText(entry.label, Modifier.weight(1f))
                         } }
                     } else {
                         if (outline) LazyColumn(Modifier.weight(1f).fillMaxWidth()) {
-                            itemsIndexed(diagram.nodes) { index,node ->
-                                Row(Modifier.fillMaxWidth().heightIn(min=48.dp).combinedClickable(onClick={ focused=index;outline=false;collapsed=emptySet();branch=null },onLongClickLabel="Focus node",onLongClick={ focused=index;outline=false;collapsed=emptySet();branch=null }).padding(12.dp),horizontalArrangement=Arrangement.spacedBy(12.dp)) {
+                            itemsIndexed(diagram.nodes, key = { index, _ -> index }) { index,node ->
+                                Row(itemMotion().fillMaxWidth().heightIn(min=48.dp).combinedClickable(onClick={ focused=index;outline=false;collapsed=emptySet();branch=null },onLongClickLabel="Focus node",onLongClick={ focused=index;outline=false;collapsed=emptySet();branch=null }).padding(12.dp),horizontalArrangement=Arrangement.spacedBy(12.dp)) {
                                     Text("${index+1}",style=MaterialTheme.typography.labelLarge)
                                     RichMessageText(node.label,Modifier.weight(1f))
                                 }
@@ -87,7 +87,7 @@ internal fun DiagramCard(diagram: DiagramContent) {
                                 if (diagram.kind == "org" && diagram.edges.any { it.from == index }) SigilTextButton({ branch = index }) { Text("Focus branch") }
                                 diagram.edges.filter { it.from == index || it.to == index }.forEach { edge ->
                                     val target = if (edge.from == index) edge.to else edge.from
-                                    Row(Modifier.fillMaxWidth().clickable(role = Role.Button) { focused = target }.padding(vertical = 8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                    Row(Modifier.fillMaxWidth().heightIn(min = 48.dp).clip(RoundedCornerShape(12.dp)).clickable(role = Role.Button) { focused = target }.padding(vertical = 8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
                                         Glyph(if (edge.from == index) "arrow_forward" else "arrow_back", 20, if (edge.from == index) "Connects to" else "Connected from")
                                         Column(Modifier.weight(1f)) { RichMessageText(diagram.nodes[target].label); if (edge.label.text.isNotBlank()) RichMessageText(edge.label, style = MaterialTheme.typography.bodySmall) }
                                     }
@@ -181,7 +181,7 @@ private fun DiagramPlot(diagram: DiagramContent, hidden: Set<Int>, focused: Int?
                     else -> at(max(from.x,to.x)+168,(from.y+to.y)/2+16)
                 }
                 if(shown(Rect(labelAt,Size(width*density*zoom,40*density*zoom)))) Box(Modifier.offset { IntOffset(labelAt.x.roundToInt(),labelAt.y.roundToInt()) }.width((width*zoom).dp).heightIn(max=(44*zoom).dp).clipToBounds().background(surface)
-                    .clickable(role=Role.Button) { focus(edge.from) }.semantics { contentDescription="Connection ${index+1}" }) { RichMessageText(edge.label,style=MaterialTheme.typography.labelSmall.copy(fontSize=(12*zoom).coerceAtLeast(11f).sp)) }
+                    .clickable(role=Role.Button) { focus(edge.from) }.semantics { contentDescription="Connection ${index+1}" }) { RichMessageText(edge.label,style=MaterialTheme.typography.labelSmall.let { it.copy(fontSize=(it.fontSize.value*zoom).coerceAtLeast(11f).sp) }) }
             }
             diagram.nodes.forEachIndexed { index,node ->
                 if(zoom < .45f || index in hidden) return@forEachIndexed
@@ -192,7 +192,7 @@ private fun DiagramPlot(diagram: DiagramContent, hidden: Set<Int>, focused: Int?
                     .combinedClickable(onClick={focus(index)},onLongClickLabel="Focus node",onLongClick={focus(index)}).semantics { contentDescription="Node ${index+1}"; selected=focused==index }, shape=shape,
                     color=MaterialTheme.colorScheme.surfaceVariant,contentColor=MaterialTheme.colorScheme.onSurfaceVariant,border=BorderStroke(if(focused==index)2.dp else 1.dp,ink.copy(alpha=if(focused==index).8f else .2f))) {
                     CompositionLocalProvider(LocalMessageSurface provides MaterialTheme.colorScheme.surfaceVariant) {
-                        Box(Modifier.padding(horizontal=if(node.shape=="decision")28.dp else 10.dp,vertical=8.dp).clipToBounds(),contentAlignment=Alignment.Center) { RichMessageText(node.label,style=MaterialTheme.typography.bodyMedium.copy(fontSize=(16*zoom).coerceAtLeast(12f).sp)) }
+                        Box(Modifier.padding(horizontal=if(node.shape=="decision")28.dp else 10.dp,vertical=8.dp).clipToBounds(),contentAlignment=Alignment.Center) { RichMessageText(node.label,style=MaterialTheme.typography.bodyMedium.let { it.copy(fontSize=(it.fontSize.value*zoom).coerceAtLeast(12f).sp) }) }
                     }
                 }
             }

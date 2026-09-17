@@ -102,7 +102,7 @@ private fun OperationalMetric(label: String,value: String,destination: String,op
 @Composable
 private fun DashboardSection(title: String,content: @Composable ColumnScope.() -> Unit) {
     Column(Modifier.fillMaxWidth(),verticalArrangement=Arrangement.spacedBy(12.dp)) {
-        Text(title,Modifier.padding(start=12.dp,bottom=8.dp),style=MaterialTheme.typography.labelMedium,color=MaterialTheme.colorScheme.onSurfaceVariant)
+        Text(title,Modifier.padding(start=12.dp,top=20.dp,bottom=8.dp),style=MaterialTheme.typography.labelMedium,color=MaterialTheme.colorScheme.onSurfaceVariant)
         content()
     }
 }
@@ -125,7 +125,7 @@ private fun QueueHistory(samples: List<OperationalSample>) {
     FlowRow(horizontalArrangement=Arrangement.spacedBy(8.dp)) {
         series.forEachIndexed { index,(name,_) ->
             SigilTextButton({enabled=if(index in enabled)enabled-index else enabled+index},modifier=Modifier.semantics { role=Role.Checkbox;stateDescription=if(index in enabled)"Shown" else "Hidden" }) {
-                Glyph(if(index in enabled)"check_circle" else "circle",18,filled=index in enabled);Spacer(Modifier.width(6.dp));Text("$name · ${listOf("solid","dashed","dotted")[index]}")
+                Glyph(if(index in enabled)"check_circle" else "circle",18,filled=index in enabled);Spacer(Modifier.width(8.dp));Text("$name · ${listOf("solid","dashed","dotted")[index]}")
             }
         }
     }

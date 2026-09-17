@@ -6,7 +6,9 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.*
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.text.*
 import androidx.compose.ui.text.font.*
 import androidx.compose.ui.text.style.*
@@ -66,7 +68,7 @@ internal fun richPresentation(value: RichText, revealed: Set<Int>, codeFont: Fon
     value.blocks.forEach { block ->
         val start = offsets[block.start]; val end = offsets[block.end]
         if (start < end) when (block.kind) {
-            "heading" -> addStyle(SpanStyle(fontSize = (1.55f - block.level * .075f).em, fontWeight = FontWeight.Bold), start, end)
+            "heading" -> addStyle(SpanStyle(fontSize = (1.28f - block.level * .075f).em, fontWeight = FontWeight.Bold), start, end)
             "code" -> addStyle(SpanStyle(fontFamily = codeFont, background = foreground.copy(alpha = .08f)), start, end)
             "quote" -> addStyle(SpanStyle(fontStyle = FontStyle.Italic), start, end)
         }
@@ -91,7 +93,8 @@ fun RichMessageText(value: RichText, modifier: Modifier = Modifier, style: TextS
 @Composable
 private fun RichInlineText(value: RichText, modifier: Modifier = Modifier, style: TextStyle = MaterialTheme.typography.bodyLarge) {
     var revealed by remember(value) { mutableStateOf(emptySet<Int>()) }
-    var layout by remember { mutableStateOf<TextLayoutResult?>(null) }
+    var layout by remember(value) { mutableStateOf<TextLayoutResult?>(null) }
+    val haptic = LocalHapticFeedback.current
     val font = LocalCodeFont.current
     val foreground = LocalContentColor.current
     val surface = LocalMessageSurface.current.takeOrElse { MaterialTheme.colorScheme.surface }
@@ -103,10 +106,15 @@ private fun RichInlineText(value: RichText, modifier: Modifier = Modifier, style
             val scratch = text.getStringAnnotations("scratch", offset, offset).firstOrNull() ?: return@awaitEachGesture
             val change = awaitHorizontalTouchSlopOrCancellation(down.id) { move, _ -> move.consume() } ?: return@awaitEachGesture
             var distance = abs(change.position.x - down.position.x)
+            val threshold = 24.dp.toPx()
             horizontalDrag(change.id) { move ->
+                val before = distance
                 distance += abs(move.position.x - move.previousPosition.x)
                 move.consume()
-                if (distance >= 24.dp.toPx()) revealed = revealed + scratch.item.toInt()
+                if (distance >= threshold) {
+                    if (before < threshold) haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                    revealed = revealed + scratch.item.toInt()
+                }
             }
         }
     }, style = style, onTextLayout = { layout = it })

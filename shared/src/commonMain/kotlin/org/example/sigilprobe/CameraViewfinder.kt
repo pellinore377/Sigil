@@ -32,8 +32,8 @@ fun CameraViewfinder(modifier:Modifier=Modifier,photo:Boolean,ready:Boolean,busy
                 Box(Modifier.fillMaxWidth()) {
                     if(taken)SigilIconButton(retake,Modifier.align(Alignment.BottomCenter).padding(bottom=16.dp),enabled=!busy){Glyph("refresh",24,"Retake")}
                     else {
-                        IconButton(capture,Modifier.align(Alignment.BottomCenter).padding(bottom=16.dp).size(72.dp).border(3.dp,Color.White.copy(alpha=if(ready)1f else .4f),CircleShape)
-                            .semantics {contentDescription=if(busy)"Taking photo" else "Take photo";role=Role.Button},enabled=ready&&!busy) {
+                        SigilIconButton(capture,Modifier.align(Alignment.BottomCenter).padding(bottom=16.dp).size(72.dp).border(3.dp,Color.White.copy(alpha=if(ready)1f else .4f),CircleShape)
+                            .semantics {contentDescription=if(busy)"Taking photo" else "Take photo"},enabled=ready&&!busy,shape=CircleShape) {
                             if(busy)CircularProgressIndicator(Modifier.size(40.dp),color=Color.White,strokeWidth=3.dp)
                             else Box(Modifier.size(56.dp).background(Color.White.copy(alpha=if(ready)1f else .4f),CircleShape))
                         }

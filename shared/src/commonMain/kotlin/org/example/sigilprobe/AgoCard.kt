@@ -6,11 +6,12 @@ import androidx.compose.runtime.Composable
 
 @Composable internal fun AgoCard(part:MessagePart,analyze:(String)->String) {
     val now=temporalNow(part.at)
-    TemporalCard("history","Elapsed time") {
+    CardFrame("history","Elapsed time") {
         if(part.rich!=null)RichMessageText(part.rich,style=MaterialTheme.typography.titleMedium)else MessageText(part.text,analyze)
         if(part.at>0) {
             temporalScale(now-part.at).let {(count,unit)->TemporalFigure("$count","$unit ago")}
             TemporalCaption(if(part.date.isEmpty())"" else "Since ${part.date}")
         }
+        else Text("No time set.",style=MaterialTheme.typography.bodyMedium)
     }
 }

@@ -91,7 +91,7 @@ private fun CustomColor(initial: Int, close: () -> Unit, apply: (Int) -> Unit) {
                 OutlinedTextField(text, { text = it.take(7); parseAccent(it)?.let(::select) }, singleLine = true, label = { Text("Hex") }, prefix = { Text("#") }, isError = parseAccent(text) == null)
                 listOf("Red" to 16, "Green" to 8, "Blue" to 0).forEach { (name, shift) ->
                     Row(verticalAlignment = Alignment.CenterVertically) {
-                        Text(name, Modifier.width(50.dp), style = MaterialTheme.typography.labelSmall)
+                        Text(name, Modifier.widthIn(min = 50.dp), style = MaterialTheme.typography.labelSmall)
                         Slider((rgb shr shift and 255).toFloat(), { select((rgb and (255 shl shift).inv()) or (it.roundToInt() shl shift)) }, valueRange = 0f..255f, modifier = Modifier.weight(1f).semantics { contentDescription = name })
                         Text((rgb shr shift and 255).toString(), style = MaterialTheme.typography.labelSmall)
                     }

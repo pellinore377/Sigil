@@ -17,8 +17,10 @@ import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
@@ -61,7 +63,7 @@ private fun MessagePart.previewEffects(): List<String> = buildList {
     SideEffect { launch?.source = source.takeIf {current}.orEmpty() }
     AnimatedVisibility(cards.isNotEmpty() || effects.isNotEmpty(), modifier,
         enter = expandVertically(motion.enter(MotionMillis)) + fadeIn(motion.enter(MotionMillis)),
-        exit = shrinkVertically(motion.exit(MotionMillis)) + fadeOut(motion.exit(MotionExit))) {
+        exit = shrinkVertically(motion.exit(MotionMillis)) + fadeOut(motion.exit(MotionExit)), label = "Draft preview") {
         Column(Modifier.fillMaxWidth().heightIn(max = 280.dp).verticalScroll(rememberScrollState()).testTag("typed-sigil-preview"), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             CompositionLocalProvider(LocalTextMotion provides null) {
                 cards.forEachIndexed { index,part ->
@@ -70,7 +72,7 @@ private fun MessagePart.previewEffects(): List<String> = buildList {
                     else BuilderPreview(part)
                 }
             }
-            if (effects.isNotEmpty()) Row(Modifier.padding(horizontal = 12.dp, vertical = 4.dp).semantics { contentDescription = "Animated text: ${effects.joinToString()}" },
+            if (effects.isNotEmpty()) Row(Modifier.padding(horizontal = 12.dp, vertical = 4.dp).clearAndSetSemantics { contentDescription = "Animated text: ${effects.joinToString()}" },
                 verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 Glyph("motion_photos_on", 18)
                 Text(effects.joinToString(" · ") { it.replaceFirstChar(Char::uppercase) }, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -80,10 +82,11 @@ private fun MessagePart.previewEffects(): List<String> = buildList {
 }
 
 @Composable private fun IntentPreview(intent: PreviewIntent, open: (() -> Unit)?) {
-    Column(Modifier.fillMaxWidth().padding(12.dp), verticalArrangement=Arrangement.spacedBy(6.dp)) {
-        Text(intent.tool,style=MaterialTheme.typography.titleSmall)
+    Column(Modifier.fillMaxWidth().padding(12.dp), verticalArrangement=Arrangement.spacedBy(8.dp)) {
+        Row(verticalAlignment=Alignment.CenterVertically,horizontalArrangement=Arrangement.spacedBy(8.dp)) {Glyph("pending",20);Text("Draft",style=MaterialTheme.typography.labelMedium)}
+        Text(intent.tool,style=MaterialTheme.typography.titleMedium)
         Text(when { intent.tool=="Contact QR" -> "Resolve this account in your contacts before creating its QR code."; !intent.ready -> "Complete the details in ${intent.tool.lowercase()}."; intent.tool=="Contact" -> "Choose and confirm this account before sharing."; intent.tool=="Weather" -> "Choose a place and provider before lookup."; else -> "Choose a provider before lookup." },style=MaterialTheme.typography.bodySmall,color=MaterialTheme.colorScheme.onSurfaceVariant)
-        if(open!=null && intent.tool in listOf("Translation","Definition","Weather","Contact"))SigilTextButton(open) {Glyph(if(intent.tool=="Contact")"person_search" else "arrow_forward",18);Spacer(Modifier.width(6.dp));Text("Set up ${intent.tool.lowercase()}")}
+        if(open!=null && intent.tool in listOf("Translation","Definition","Weather","Contact"))SigilTextButton(open) {Glyph(if(intent.tool=="Contact")"person_search" else "arrow_forward",18);Spacer(Modifier.width(8.dp));Text("Set up ${intent.tool.lowercase()}")}
     }
 }
 
@@ -92,7 +95,7 @@ private fun MessagePart.previewEffects(): List<String> = buildList {
     val objects = LocalSolidMaterial.current != null
     val launch = LocalPreviewLaunch.current
     DisposableEffect(launch,ordinal) {onDispose {launch?.visibleOrigins?.remove(ordinal)}}
-    Column(Modifier.fillMaxWidth().padding(vertical=8.dp).semantics { contentDescription = "${part.text}. Result chosen on send." }, horizontalAlignment = Alignment.CenterHorizontally) {
+    Column(Modifier.fillMaxWidth().padding(vertical=8.dp).semantics { contentDescription = "Result chosen on send." }, horizontalAlignment = Alignment.CenterHorizontally) {
         BoxWithConstraints(Modifier.fillMaxWidth(),contentAlignment=Alignment.Center) {
             val count=if(preview.kind=="dice")preview.sides.take(6).size else 1
             val columns=minOf(3,count).coerceAtLeast(1)
@@ -115,6 +118,6 @@ private fun MessagePart.previewEffects(): List<String> = buildList {
                 } else Box(Modifier.size(if(preview.kind=="number")48.dp else side),contentAlignment=Alignment.Center) {Glyph(when(preview.kind){"dice"->"casino";"coin"->"toll";"cards"->"style";else->"numbers"},48)}
             }
         }
-        Text(part.text,style=MaterialTheme.typography.labelMedium,color=MaterialTheme.colorScheme.onSurfaceVariant)
+        Text(part.text,style=MaterialTheme.typography.labelMedium,color=MaterialTheme.colorScheme.onSurfaceVariant,maxLines=2,overflow=TextOverflow.Ellipsis)
     }
 }

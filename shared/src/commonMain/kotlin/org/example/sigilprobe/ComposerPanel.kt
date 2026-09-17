@@ -198,7 +198,7 @@ internal fun ComposerPanel(draft: TextFieldState, analyze: (String) -> String, e
                                 Box(Modifier.size(128.dp)) {
                                     if (file.phase != "Staging") LocalAttachmentDraft.current(file, Modifier.fillMaxSize())
                                     else CircularProgressIndicator(Modifier.size(24.dp).align(Alignment.Center),strokeWidth=2.dp)
-                                    if(!file.mediaType.startsWith("image/"))Text(file.name,Modifier.align(Alignment.BottomStart).padding(8.dp),maxLines=2,style=MaterialTheme.typography.labelSmall)
+                                    if(!file.mediaType.startsWith("image/"))Text(file.name,Modifier.align(Alignment.BottomStart).padding(8.dp),maxLines=2,overflow=TextOverflow.Ellipsis,style=MaterialTheme.typography.labelSmall)
                                     Surface(Modifier.align(Alignment.TopEnd).padding(4.dp),shape=RoundedCornerShape(12.dp),color=MaterialTheme.colorScheme.surfaceContainerHigh) {
                                         Symbol("close", "Remove ${file.name}") { command("file_cancel", mapOf("request" to file.request)) }
                                     }
@@ -261,7 +261,7 @@ internal fun escapeField(value: String) = value.replace("\\", "\\\\").replace(";
 
 // Filled counterpart to SigilIconButton; disabled ink follows the palette, not Material's own alphas.
 @Composable
-private fun SigilFilledIconButton(onClick: () -> Unit, modifier: Modifier = Modifier, enabled: Boolean = true, content: @Composable () -> Unit) {
+internal fun SigilFilledIconButton(onClick: () -> Unit, modifier: Modifier = Modifier, enabled: Boolean = true, content: @Composable () -> Unit) {
     val scheme = MaterialTheme.colorScheme
     Surface(onClick, modifier.semantics { role = Role.Button }, enabled, shape = SigilButtonShape,
         color = if (enabled) scheme.primary else scheme.surfaceVariant,
@@ -327,7 +327,7 @@ internal fun BuilderEntries(entries:List<String>,label:String,icon:String,change
         entries.forEachIndexed {index,entry->key(index) {
             val visible=remember {MutableTransitionState(index==0).apply {targetState=true}}
             AnimatedVisibility(visible,enter=expandVertically(motion.enter(MotionMillis),expandFrom=Alignment.Top)+slideInHorizontally(motion.enter(MotionMillis)) {it}+fadeIn(motion.enter(MotionMillis)),
-                exit=shrinkVertically(motion.exit(MotionMillis),shrinkTowards=Alignment.Top)+fadeOut(motion.exit(MotionExit))) {
+                exit=shrinkVertically(motion.exit(MotionQuick),shrinkTowards=Alignment.Top)+slideOutHorizontally(motion.exit(MotionQuick)) {it}+fadeOut(motion.exit(MotionExit)),label="Builder entry") {
                 OutlinedTextField(entry,{raw->val value=raw.replace('\n',' ').replace('\r',' ');change(entries.toMutableList().also {it[index]=value;if(index==it.lastIndex && value.isNotBlank() && it.size<256)it.add("")})},
                     Modifier.fillMaxWidth().padding(top=if(index==0)0.dp else 12.dp),shape=RoundedCornerShape(16.dp),singleLine=true,label={Text("$label ${index+1}")},
                     leadingIcon={Glyph(icon,20,filled=false)},keyboardOptions=KeyboardOptions(imeAction=ImeAction.Next),keyboardActions=KeyboardActions(onNext={focus.moveFocus(FocusDirection.Next)}))

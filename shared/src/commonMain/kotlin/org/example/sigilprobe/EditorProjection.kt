@@ -2,8 +2,6 @@ package org.sigil
 
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.staticCompositionLocalOf
-import androidx.compose.ui.text.TextRange
-import androidx.compose.ui.text.input.TextFieldValue
 
 val LocalComposerInput = staticCompositionLocalOf<@Composable (Boolean, @Composable () -> Unit) -> Unit> {
     { _, content -> content() }
@@ -34,7 +32,4 @@ internal class EditorProjection(val source: String, formats: List<FormatSpan>) {
         }
     }
     fun sourceOffset(position: Int) = anchors[position.coerceIn(0, text.length)]
-    fun visible(value: TextFieldValue) = TextFieldValue(text,
-        TextRange(offsets[value.selection.start], offsets[value.selection.end]),
-        value.composition?.let { TextRange(offsets[it.start], offsets[it.end]) })
 }

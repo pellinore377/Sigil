@@ -81,20 +81,16 @@ internal fun TableCard(table: TableContent) {
     selected?.let { (row, column) ->
         val cell = table.rows[row][column]
         val copyable = cell.spans.none { it.reveal.isNotEmpty() }
-        Dialog(onDismissRequest = { selected = null }, properties = DialogProperties()) {
-            Surface(shape = MaterialTheme.shapes.large) {
-                CompositionLocalProvider(LocalMessageSurface provides MaterialTheme.colorScheme.surface) {
-                    Column(Modifier.heightIn(max = 560.dp).verticalScroll(rememberScrollState()).padding(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                        Text("Row ${row + 1}, column ${column + 1}", style = MaterialTheme.typography.labelLarge)
-                        RichMessageText(cell)
-                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            SigilTextButton({ clipboard.setText(AnnotatedString(cell.text)) }, enabled = copyable) { Text("Copy cell") }
-                            SigilTextButton({ table.copyRows.getOrNull(row)?.let { clipboard.setText(AnnotatedString(it)) } }, enabled = table.copyRows.getOrNull(row) != null) { Text("Copy row") }
-                        }
-                        SigilTextButton({ selected = null }) { Text("Done") }
+        AlertDialog({ selected = null }, title = { Text("Row ${row + 1}, column ${column + 1}") }, text = {
+            CompositionLocalProvider(LocalMessageSurface provides MaterialTheme.colorScheme.surface) {
+                Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(16.dp)) {
+                    RichMessageText(cell)
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        SigilTextButton({ clipboard.setText(AnnotatedString(cell.text)) }, enabled = copyable) { Text("Copy cell") }
+                        SigilTextButton({ table.copyRows.getOrNull(row)?.let { clipboard.setText(AnnotatedString(it)) } }, enabled = table.copyRows.getOrNull(row) != null) { Text("Copy row") }
                     }
                 }
             }
-        }
+        }, confirmButton = { SigilTextButton({ selected = null }) { Text("Done") } })
     }
 }

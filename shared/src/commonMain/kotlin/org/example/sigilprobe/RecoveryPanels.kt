@@ -36,7 +36,7 @@ fun RecoverySetup(secret:String,busy:Boolean,dismiss:()->Unit,enable:()->Unit,pr
     var saved by remember(secret){mutableStateOf(false)}
     var check by remember(secret){mutableStateOf("")}
     AlertDialog(onDismissRequest={if(!busy)dismiss()},properties=properties,title={Text("Save your recovery key")},text={Column(Modifier.verticalScroll(rememberScrollState()),verticalArrangement=Arrangement.spacedBy(12.dp)) {
-        Text("Keep this in your password manager or write it down somewhere safe. Your server cannot replace it. Anyone with this key and access to your backup can read that history.")
+        Text("Keep this in your password manager or write it down somewhere safe. Your server cannot replace it. Anyone with this key and access to your backup can read that history.",style=MaterialTheme.typography.bodyMedium)
         if(copy==null)androidx.compose.foundation.text.selection.SelectionContainer {Text(secret.chunked(4).joinToString(" "),fontFamily=LocalCodeFont.current,style=MaterialTheme.typography.bodySmall)}
         else Text(secret.chunked(4).joinToString(" "),fontFamily=LocalCodeFont.current,style=MaterialTheme.typography.bodySmall)
         copy?.let {SigilTextButton(it){Text("Copy for one minute")}}
@@ -49,11 +49,11 @@ fun RecoverySetup(secret:String,busy:Boolean,dismiss:()->Unit,enable:()->Unit,pr
 fun RecoveryRestore(busy:Boolean,issue:String?,dismiss:()->Unit,restore:(String)->Unit,properties:DialogProperties=DialogProperties()) {
     var secret by remember{mutableStateOf("")};var reviewed by remember{mutableStateOf(false)}
     AlertDialog(onDismissRequest={if(!busy)dismiss()},properties=properties,title={Text("Restore encrypted history")},text={Column(Modifier.verticalScroll(rememberScrollState()),verticalArrangement=Arrangement.spacedBy(12.dp)) {
-        Text("Enter the recovery key you saved for this account. It stays on this device and is never sent to the server.")
+        Text("Enter the recovery key you saved for this account. It stays on this device and is never sent to the server.",style=MaterialTheme.typography.bodyMedium)
         OutlinedTextField(secret,{if(it.length<=256)secret=it.filterNot(Char::isWhitespace).lowercase()},label={Text("Recovery key")},singleLine=true,enabled=!busy,visualTransformation=PasswordVisualTransformation(),keyboardOptions=KeyboardOptions(autoCorrectEnabled=false,keyboardType=KeyboardType.Password))
-        Text("This device can verify the backup’s integrity, but cannot independently confirm that the server supplied the newest backup. Restore only from a server you trust.")
+        Text("This device can verify the backup’s integrity, but cannot independently confirm that the server supplied the newest backup. Restore only from a server you trust.",style=MaterialTheme.typography.bodyMedium)
         RecoveryCheck("I understand and want to restore this backup.",reviewed,!busy){reviewed=it}
-        Text("Restoring history does not approve contacts or copy a previous device’s messaging keys.",style=MaterialTheme.typography.bodySmall)
+        Text("Restoring history does not approve contacts or copy a previous device’s messaging keys.",style=MaterialTheme.typography.bodySmall,color=MaterialTheme.colorScheme.onSurfaceVariant)
         RecoveryIssue(issue)
         Expandable(busy) {LinearProgressIndicator(Modifier.fillMaxWidth())}
     }},confirmButton={SigilTextButton({restore(secret)},enabled=!busy && reviewed && validRecoveryKey(secret)){Text("Restore history")}},dismissButton={SigilTextButton(dismiss,enabled=!busy){Text("Cancel")}})
@@ -63,8 +63,8 @@ fun RecoveryRestore(busy:Boolean,issue:String?,dismiss:()->Unit,restore:(String)
 fun AccountRecovery(sso:Boolean,busy:Boolean,issue:String?,dismiss:()->Unit,recover:(String,String?)->Unit,properties:DialogProperties=DialogProperties()) {
     var method by remember{mutableStateOf(if(sso)"sso" else "invitation")};var invitation by remember{mutableStateOf("")};var confirmed by remember{mutableStateOf(false)}
     AlertDialog(onDismissRequest={if(!busy)dismiss()},properties=properties,title={Text("Recover a lost account")},text={Column(Modifier.verticalScroll(rememberScrollState()),verticalArrangement=Arrangement.spacedBy(12.dp)) {
-        Text("Recovery signs out all previous devices and creates a new encryption identity on this device. Your contacts will need to accept the replacement. Your recovery key restores backed-up history after sign-in.")
-        Text("If you still have a signed-in device, you can use device linking instead.",style=MaterialTheme.typography.bodySmall)
+        Text("Recovery signs out all previous devices and creates a new encryption identity on this device. Your contacts will need to accept the replacement. Your recovery key restores backed-up history after sign-in.",style=MaterialTheme.typography.bodyMedium)
+        Text("If you still have a signed-in device, you can use device linking instead.",style=MaterialTheme.typography.bodySmall,color=MaterialTheme.colorScheme.onSurfaceVariant)
         SettingsChoice("How do you want to recover?",listOf("sso" to "Sign in with SSO","invitation" to "Administrator recovery invitation").filter{sso || it.first!="sso"},method,enabled= !busy){method=it}
         Expandable(method=="invitation") {
             OutlinedTextField(invitation,{if(it.length<=256)invitation=it.trim()},label={Text("Recovery invitation")},singleLine=true,enabled=!busy,visualTransformation=PasswordVisualTransformation(),keyboardOptions=KeyboardOptions(autoCorrectEnabled=false,keyboardType=KeyboardType.Password))

@@ -51,7 +51,7 @@ val LocalDraftId=staticCompositionLocalOf<(() -> String)?> {null}
             else if(kind!="Contact" && catalog!=null && providers.isEmpty())BuilderNotice(if(locating)"Your server needs an address lookup provider to find a place." else "Your server has no provider configured for this tool.")
             else {
                 if(providers.isNotEmpty())LazyRow(horizontalArrangement=Arrangement.spacedBy(8.dp)) {
-                    items(providers) {p->val name=p.getValue("id").jsonPrimitive.content;FilterChip(selected==p,{provider=name},label={Text(name,maxLines=1,overflow=TextOverflow.Ellipsis)},shape=RoundedCornerShape(12.dp))}
+                    items(providers,key={it.getValue("id").jsonPrimitive.content}) {p->val name=p.getValue("id").jsonPrimitive.content;FilterChip(selected==p,{provider=name},label={Text(name,maxLines=1,overflow=TextOverflow.Ellipsis)},shape=RoundedCornerShape(12.dp))}
                 }
                 if(place!=null) {
                     Text(place?.get("name")?.jsonPrimitive?.content.orEmpty(),style=MaterialTheme.typography.titleMedium,maxLines=2,overflow=TextOverflow.Ellipsis)
@@ -63,7 +63,7 @@ val LocalDraftId=staticCompositionLocalOf<(() -> String)?> {null}
                 selected?.let {Text("This lookup sends your query through your server to ${it.getValue("endpoint").jsonPrimitive.content}. The resulting card is encrypted when sent to the conversation.",
                     style=MaterialTheme.typography.bodySmall,color=MaterialTheme.colorScheme.onSurfaceVariant,maxLines=4,overflow=TextOverflow.Ellipsis)}
                 Expandable(places.isNotEmpty()) {
-                    SectionLabel("Places")
+                    SettingsSectionLabel("Places")
                     places.forEach {p->PlaceRow(p["name"]?.jsonPrimitive?.content.orEmpty(),listOfNotNull(p["region"]?.jsonPrimitive?.content,p["country"]?.jsonPrimitive?.content).joinToString(", ")) {place=p;places=emptyList();provider=""}}
                 }
             }

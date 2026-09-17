@@ -3,7 +3,6 @@ package org.sigil
 import androidx.compose.foundation.*
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.grid.*
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.*
@@ -31,8 +30,8 @@ internal fun toolGridHeight(items:List<Pair<String,String>>,width:Dp):Dp {
 
 @Composable
 internal fun ComposerTool(name:String,icon:String,enabled:Boolean=true,primary:Boolean=false,action:()->Unit) {
-    val shape=RoundedCornerShape(18.dp)
-    Column(Modifier.clip(RoundedCornerShape(12.dp)).clickable(enabled=enabled,role=Role.Button,onClick=action).semantics {contentDescription=name}.padding(vertical=2.dp),
+    val shape=SigilButtonShape
+    Column(Modifier.clip(shape).clickable(enabled=enabled,role=Role.Button,onClick=action).semantics {contentDescription=name}.padding(vertical=2.dp),
         horizontalAlignment=Alignment.CenterHorizontally,verticalArrangement=Arrangement.spacedBy(4.dp)) {
         Surface(Modifier.size(56.dp),shape=shape,color=if(primary)MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surfaceVariant,
             contentColor=if(primary)MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha=if(enabled)1f else .38f)) {

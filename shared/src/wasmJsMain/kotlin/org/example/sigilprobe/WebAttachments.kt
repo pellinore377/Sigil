@@ -198,8 +198,9 @@ internal suspend fun resolveWebAudioDuration(audio:HTMLAudioElement):Long {
             val bounds=occlusion?.visible(timeline.viewport) ?: timeline.viewport
             val clip=Rect(bounds.left/density,bounds.top/density,bounds.right/density,bounds.bottom/density)
             val element=viewport.getBoundingClientRect()
-            val notice=occlusion?.notice?.takeIf {it.width>0 && it.height>0}?.let {Rect(it.left/density,it.top/density,it.right/density,it.bottom/density)}
-            val value=if(notice!=null)materialClipPath(clip,null,element.left.toFloat(),element.top.toFloat(),notice) else "inset("+materialClipInsets(clip,element.left.toFloat(),element.top.toFloat(),element.width.toFloat(),element.height.toFloat()).joinToString(" "){"${it}%"}+")"
+            val covered=occlusion?.covered(timeline.viewport).orEmpty().filter {it.width>0 && it.height>0}
+                .map {Rect(it.left/density,it.top/density,it.right/density,it.bottom/density)}
+            val value=if(covered.isNotEmpty())materialClipPath(clip,null,element.left.toFloat(),element.top.toFloat(),covered) else "inset("+materialClipInsets(clip,element.left.toFloat(),element.top.toFloat(),element.width.toFloat(),element.height.toFloat()).joinToString(" "){"${it}%"}+")"
             if(value!=previous){viewport.style.setProperty("clip-path",value);previous=value}
         }
     }

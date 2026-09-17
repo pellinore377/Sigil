@@ -9,6 +9,7 @@ import androidx.compose.animation.animateContentSize
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.*
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.geometry.*
 import androidx.compose.ui.graphics.*
@@ -59,8 +60,9 @@ internal fun ChartCard(chart: ChartContent) {
                     selected?.let { index -> Box(Modifier.semantics { contentDescription = "Selected point ${index + 1}"; liveRegion = LiveRegionMode.Polite }) { details(index) } }
                     LazyColumn(Modifier.fillMaxWidth().weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                         itemsIndexed(chart.points, key = { i, _ -> i }) { index, _ ->
-                            Row(Modifier.fillMaxWidth().background(if (selected == index) MaterialTheme.colorScheme.surfaceVariant else Color.Transparent, MaterialTheme.shapes.medium).padding(8.dp), verticalAlignment = Alignment.CenterVertically) {
-                                Column(Modifier.weight(1f).clickable(role = Role.Button) { selected = index }) { details(index) }
+                            val active = selected == index
+                            Row(itemMotion().fillMaxWidth().clip(MaterialTheme.shapes.medium).semantics { this.selected = active }.background(if (active) MaterialTheme.colorScheme.surfaceVariant else Color.Transparent).clickable(role = Role.Button) { selected = index }.padding(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                                Column(Modifier.weight(1f)) { details(index) }
                                 SigilIconButton({ hidden = if (index in hidden) hidden - index else hidden + index }) { Glyph(if (index in hidden) "visibility_off" else "visibility", 20, "${if (index in hidden) "Show" else "Hide"} point ${index + 1}") }
                             }
                         }

@@ -47,11 +47,15 @@ internal object WebMaterials:MaterialPlatform {
                 val element = canvas.getBoundingClientRect()
                 val insets = materialClipInsets(clip, element.left.toFloat(), element.top.toFloat(), element.width.toFloat(), element.height.toFloat())
                 val launch = occlusion?.launch(timeline.viewport, launchWindow)?.let { Rect(it.left / density, it.top / density, it.right / density, it.bottom / density) }
-                val notice=occlusion?.notice?.takeIf {it.width>0 && it.height>0}?.let {Rect(it.left/density,it.top/density,it.right/density,it.bottom/density)}
+                val covered=occlusion?.covered(timeline.viewport).orEmpty().filter {it.width>0 && it.height>0}
+                    .map {Rect(it.left/density,it.top/density,it.right/density,it.bottom/density)}
                 val elementBounds=Rect(element.left.toFloat(),element.top.toFloat(),element.right.toFloat(),element.bottom.toFloat())
-                inViewport=materialClipRegions(clip,launch,notice).any {it.overlaps(elementBounds)}
-                val value = if (launch == null && notice == null) "inset(" + insets.joinToString(" ") { "${it}%" } + ")"
-                    else materialClipPath(clip, launch, element.left.toFloat(), element.top.toFloat(), notice)
+                // Retain the surface anywhere near the timeline; only drawing is clipped.
+                val margin=clip.height.coerceAtLeast(1f)
+                inViewport=Rect(clip.left,clip.top-margin,clip.right,clip.bottom+margin).overlaps(elementBounds) ||
+                    launch?.overlaps(elementBounds)==true
+                val value = if (launch == null && covered.isEmpty()) "inset(" + insets.joinToString(" ") { "${it}%" } + ")"
+                    else materialClipPath(clip, launch, element.left.toFloat(), element.top.toFloat(), covered)
                 if (value != previous) { canvas.style.setProperty("clip-path", value); previous = value }
             }
         }

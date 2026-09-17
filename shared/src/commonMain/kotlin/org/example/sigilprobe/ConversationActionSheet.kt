@@ -48,9 +48,9 @@ internal fun ConversationActionSheet(kind: String, fields: Map<String, Any?>, st
             SheetSection("Resume")
             SheetChoice("Resume notifications") { snooze(null) }
         } else {
-            Text("Send a copy. Interactive cards and mixed messages are sent as text snapshots.", Modifier.padding(horizontal = 24.dp, vertical = 8.dp), style = MaterialTheme.typography.bodySmall)
+            Text("Send a copy. Interactive cards and mixed messages are sent as text snapshots.", Modifier.padding(horizontal = 24.dp, vertical = 8.dp), style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
             LazyColumn(Modifier.heightIn(max = 440.dp)) {
-                item { SettingsLink("edit_note", "Note to Self", "Keep a copy in your own notes") { command("forward", mapOf("source" to fields["peer"], "peer" to "self", "author" to fields["author"], "message" to fields["message"])); close() } }
+                item(key = "note-to-self") { SettingsLink("edit_note", "Note to Self", "Keep a copy in your own notes") { command("forward", mapOf("source" to fields["peer"], "peer" to "self", "author" to fields["author"], "message" to fields["message"])); close() } }
                 items(state.chats.filter { it.verified && !it.hidden && it.id != "self" }, key = { it.id }) { chat -> ChatRow(chat, open = {
                     command("forward", mapOf("source" to fields["peer"], "peer" to chat.id, "author" to fields["author"], "message" to fields["message"])); close()
                 }) }

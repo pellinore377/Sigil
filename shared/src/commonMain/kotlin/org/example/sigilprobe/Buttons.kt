@@ -27,7 +27,9 @@ fun SigilButton(onClick: () -> Unit, modifier: Modifier = Modifier, enabled: Boo
 @Composable
 fun SigilOutlinedButton(onClick: () -> Unit, modifier: Modifier = Modifier, enabled: Boolean = true,
     shape: Shape = SigilButtonShape, content: @Composable RowScope.() -> Unit) {
-    OutlinedButton(onClick, modifier, enabled, shape = shape, content = content)
+    val ink = if (LocalMessageSurface.current.isSpecified) LocalContentColor.current else MaterialTheme.colorScheme.primary
+    OutlinedButton(onClick, modifier, enabled, shape = shape,
+        colors = ButtonDefaults.outlinedButtonColors(contentColor = ink, disabledContentColor = ink.copy(alpha = .38f)), content = content)
 }
 
 @Composable
@@ -40,9 +42,9 @@ fun SigilTextButton(onClick: () -> Unit, modifier: Modifier = Modifier, enabled:
 }
 
 @Composable
-fun SigilIconButton(onClick: () -> Unit, modifier: Modifier = Modifier, enabled: Boolean = true, content: @Composable () -> Unit) {
+fun SigilIconButton(onClick: () -> Unit, modifier: Modifier = Modifier, enabled: Boolean = true, shape: Shape = SigilButtonShape, content: @Composable () -> Unit) {
     val colors = IconButtonDefaults.iconButtonColors()
-    Surface(onClick, modifier.semantics { role = Role.Button }, enabled, shape = SigilButtonShape,
+    Surface(onClick, modifier.semantics { role = Role.Button }, enabled, shape = shape,
         color = if (enabled) colors.containerColor else colors.disabledContainerColor,
         contentColor = if (enabled) colors.contentColor else colors.disabledContentColor) {
         Box(Modifier.size(48.dp), contentAlignment = Alignment.Center, content = { content() })

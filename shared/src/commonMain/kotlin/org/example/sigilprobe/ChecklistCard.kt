@@ -30,13 +30,12 @@ import androidx.compose.ui.unit.dp
     val fraction by animateFloatAsState(if(part.items.isEmpty())0f else done.toFloat()/part.items.size,motion.tween(MotionMillis),label="Checklist progress")
     val lines=with(LocalDensity.current){MaterialTheme.typography.bodyMedium.lineHeight.toDp()*3}
     fun act(item:CardItem) {command?.invoke("card_action",mapOf("peer" to message.peer,"author" to message.author,"message" to message.id,"card" to part.id,"item" to item.id,"checked" to !item.checked))}
-    Column(Modifier.widthIn(min=200.dp,max=320.dp).animateContentSize(motion.tween(MotionMillis)),verticalArrangement=Arrangement.spacedBy(8.dp)) {
-        Row(verticalAlignment=Alignment.CenterVertically,horizontalArrangement=Arrangement.spacedBy(8.dp)) {Glyph(if(task)"task_alt" else "checklist",20);Text(if(task)"Tasks" else "Checklist",style=MaterialTheme.typography.labelMedium)}
+    CardFrame(if(task)"assignment" else "checklist",if(task)"Task" else "Checklist") {
         if(part.rich!=null)RichMessageText(part.rich,style=MaterialTheme.typography.titleMedium)else MessageText(part.text,analyze)
         if(part.items.isNotEmpty()) {
             Text(if(done==part.items.size)"All ${part.items.size} complete"else"$done of ${part.items.size} complete",style=MaterialTheme.typography.labelMedium)
-            Box(Modifier.fillMaxWidth().height(4.dp).clip(RoundedCornerShape(2.dp)).background(LocalContentColor.current.copy(alpha=.16f))) {
-                Box(Modifier.fillMaxHeight().fillMaxWidth(fraction).clip(RoundedCornerShape(2.dp)).background(LocalContentColor.current))
+            Box(Modifier.fillMaxWidth().height(4.dp).clip(RoundedCornerShape(6.dp)).background(LocalContentColor.current.copy(alpha=.16f))) {
+                Box(Modifier.fillMaxHeight().fillMaxWidth(fraction).clip(RoundedCornerShape(6.dp)).background(LocalContentColor.current))
             }
         }
         Column(verticalArrangement=Arrangement.spacedBy(if(compact)4.dp else 6.dp)) {
@@ -54,7 +53,7 @@ import androidx.compose.ui.unit.dp
                             if(item.rich!=null)RichMessageText(item.rich,Modifier.heightIn(max=if(expanded)Dp.Unspecified else lines).clipToBounds(),MaterialTheme.typography.bodyMedium)
                             else Text(item.text,style=MaterialTheme.typography.bodyMedium,maxLines=if(expanded)Int.MAX_VALUE else 3,overflow=TextOverflow.Ellipsis)
                         }
-                        if(undoable)Row(verticalAlignment=Alignment.CenterVertically,horizontalArrangement=Arrangement.spacedBy(5.dp)) {Glyph("undo",16);Text("Undo",style=MaterialTheme.typography.labelSmall)}
+                        if(undoable)Row(verticalAlignment=Alignment.CenterVertically,horizontalArrangement=Arrangement.spacedBy(8.dp)) {Glyph("undo",18);Text("Undo",style=MaterialTheme.typography.labelSmall)}
                         else if(task && item.checked)Glyph("lock",14)
                     }
                 }

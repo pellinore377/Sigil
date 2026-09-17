@@ -1,11 +1,13 @@
 package org.sigil
 
 import androidx.compose.foundation.layout.*
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 
 internal data class EmojiToken(val key: String, val text: String)
 private val animatedSequences by lazy {
@@ -31,12 +33,16 @@ internal fun animatedEmoji(text: String): List<EmojiToken>? {
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
 internal fun EmojiMessage(tokens: List<EmojiToken>) {
-    if (tokens.size > 8) { Text(tokens.joinToString("") { it.text }, fontSize = 24.sp); return }
+    if (tokens.size > 8) { Text(tokens.joinToString("") { it.text }, style = MaterialTheme.typography.headlineSmall); return }
+    val scale = LocalAppearance.current.textScale
     FlowRow(horizontalArrangement = Arrangement.spacedBy(4.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-        tokens.forEach { EmojiArtwork(it, Modifier.size(if (tokens.size == 1) 88.dp else 64.dp)) }
+        tokens.forEach { EmojiArtwork(it, Modifier.size((if (tokens.size == 1) 88.dp else 64.dp) * scale)) }
     }
 }
 @Composable
 internal expect fun EmojiArtwork(emoji: EmojiToken, modifier: Modifier)
 @Composable
-internal fun StaticEmoji(emoji: EmojiToken, modifier: Modifier) { Box(modifier, contentAlignment = androidx.compose.ui.Alignment.Center) { Text(emoji.text, fontSize = 48.sp) } }
+internal fun StaticEmoji(emoji: EmojiToken, modifier: Modifier) = BoxWithConstraints(modifier, contentAlignment = Alignment.Center) {
+    val glyph = with(LocalDensity.current) { (minOf(maxWidth, maxHeight) * .55f).toSp() }
+    Text(emoji.text, fontSize = glyph, lineHeight = glyph, maxLines = 1)
+}

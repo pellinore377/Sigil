@@ -10,7 +10,7 @@ import androidx.compose.ui.unit.dp
     val motion=LocalMotion.current
     val now=temporalNow(part.at)
     val reached=part.at in 1..now
-    TemporalCard("hourglass_bottom","Countdown") {
+    CardFrame("hourglass_bottom","Countdown") {
         if(part.rich!=null)RichMessageText(part.rich,style=MaterialTheme.typography.titleMedium)else MessageText(part.text,analyze)
         if(part.at>0)AnimatedContent(reached,transitionSpec={(fadeIn(motion.enter(MotionMillis))+scaleIn(motion.enter(MotionMillis),initialScale=.96f)) togetherWith fadeOut(motion.exit(MotionExit)) using SizeTransform(false) {_,_->motion.tween(MotionMillis)}},label="Countdown state") {passed->
             Column(verticalArrangement=Arrangement.spacedBy(4.dp)) {
@@ -18,5 +18,6 @@ import androidx.compose.ui.unit.dp
                 TemporalCaption(if(part.date.isEmpty())"" else if(passed)"Reached ${part.date}" else "Until ${part.date}")
             }
         }
+        else Text("No target time set.",style=MaterialTheme.typography.bodyMedium)
     }
 }

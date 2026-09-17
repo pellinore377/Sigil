@@ -79,7 +79,7 @@ internal val formSpecs=mapOf(
         Row(sizing.measure("header"),verticalAlignment=Alignment.CenterVertically) {Symbol("chevron_left","Back to create",back);Text(kind,Modifier.weight(1f),style=MaterialTheme.typography.titleLarge);SyntaxToggle(syntax) {syntax=!syntax}}
         Column(Modifier.weight(1f).verticalScroll(rememberScrollState()).wrapContentHeight(unbounded=true).then(sizing.measure("body")),verticalArrangement=Arrangement.spacedBy(12.dp)) {
             run {
-                if(spec.modes.isNotEmpty())LazyRow(horizontalArrangement=Arrangement.spacedBy(8.dp)) {items(spec.modes){m->FilterChip(mode==m,{mode=m},label={Text(m.replaceFirstChar {it.uppercase()})},shape=RoundedCornerShape(12.dp))}}
+                if(spec.modes.isNotEmpty())LazyRow(horizontalArrangement=Arrangement.spacedBy(8.dp)) {items(spec.modes,key={it}){m->FilterChip(mode==m,{mode=m},label={Text(m.replaceFirstChar {it.uppercase()})},shape=RoundedCornerShape(12.dp))}}
                 if(spec.title)FormField("Title",title,{title=it})
                 if(kind!="Recipe")spec.fields.forEachIndexed {i,label->
                     if(!(kind=="QR code" && i==1 && mode!="wifi")) {
@@ -96,8 +96,8 @@ internal val formSpecs=mapOf(
                     Modifier.fillMaxWidth().animateContentSize(motion.tween(MotionMillis)).semantics {liveRegion=LiveRegionMode.Polite},style=MaterialTheme.typography.bodySmall,
                     color=if(checkingTime || date!=null || fields[0].isBlank())MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.error)
                 if(kind=="Recipe") {
-                    SectionLabel("Ingredients");BuilderEntries(ingredients,"Ingredient","restaurant"){ingredients=it}
-                    SectionLabel("Steps");BuilderEntries(steps,"Step","format_list_numbered"){steps=it}
+                    SettingsSectionLabel("Ingredients");BuilderEntries(ingredients,"Ingredient","restaurant"){ingredients=it}
+                    SettingsSectionLabel("Steps");BuilderEntries(steps,"Step","format_list_numbered"){steps=it}
                     SigilTextButton({options=!options}) {Glyph(if(options)"expand_less" else "expand_more",20);Spacer(Modifier.width(8.dp));Text("Options")}
                     Expandable(options) {Column(verticalArrangement=Arrangement.spacedBy(8.dp)) {
                         spec.fields.forEachIndexed {i,label->FormField(label.removeSuffix(" (optional)"),fields[i],{v->fields=fields.toMutableList().also {it[i]=v}})}
@@ -135,9 +135,6 @@ internal val formSpecs=mapOf(
     Expandable(shown && source.isNotEmpty()) {
         SelectionContainer {Text(source,Modifier.fillMaxWidth(),fontFamily=LocalCodeFont.current,style=MaterialTheme.typography.bodySmall,color=MaterialTheme.colorScheme.onSurfaceVariant)}
     }
-}
-@Composable internal fun SectionLabel(title:String) {
-    Text(title,Modifier.padding(start=12.dp,top=20.dp,bottom=8.dp),style=MaterialTheme.typography.labelMedium,color=MaterialTheme.colorScheme.onSurfaceVariant)
 }
 @Composable internal fun BuilderPreview(part:MessagePart) {
     val message=remember(part){ChatMessage("preview","preview","",true,"","sent",false,emptyList(),emptyList(),null,true,parts=listOf(part))}

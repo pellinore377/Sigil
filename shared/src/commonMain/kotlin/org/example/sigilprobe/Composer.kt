@@ -17,7 +17,6 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.semantics.contentDescription
-import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.TextRange
@@ -169,12 +168,8 @@ fun Composer(state: TextFieldState, analyze: (String) -> String, modifier: Modif
     Column(modifier, verticalArrangement = Arrangement.spacedBy(4.dp)) {
         if (showTools) {
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            listOf("B" to "**", "I" to "*", "Strike" to "~~", "Code" to "`").forEach { (label, marker) ->
-                SigilTextButton({ state.format(marker, formattingSelection); editorFocus.requestFocus() }) {
-                    Text(label, Modifier.clearAndSetSemantics {
-                        contentDescription = when (label) { "B" -> "Bold"; "I" -> "Italic"; else -> label }
-                    })
-                }
+            listOf(Triple("format_bold", "Bold", "**"), Triple("format_italic", "Italic", "*"), Triple("strikethrough_s", "Strike", "~~"), Triple("code", "Code", "`")).forEach { (icon, label, marker) ->
+                Symbol(icon, label) { state.format(marker, formattingSelection); editorFocus.requestFocus() }
             }
         }
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {

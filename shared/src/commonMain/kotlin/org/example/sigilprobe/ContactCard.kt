@@ -32,7 +32,7 @@ internal fun ContactCard(contact: ContactContent,open: (() -> Unit)?) {
             ContactAvatar(contact.name,40)
             Column(Modifier.weight(1f),verticalArrangement=Arrangement.spacedBy(4.dp)) {
                 RichMessageText(contact.name,Modifier.heightIn(max=nameCap).clipToBounds(),MaterialTheme.typography.titleMedium)
-                Text(contact.address,style=MaterialTheme.typography.labelMedium,maxLines=1,overflow=TextOverflow.Ellipsis)
+                Text(contact.address,style=MaterialTheme.typography.bodySmall,color=LocalContentColor.current.copy(alpha=.7f),maxLines=1,overflow=TextOverflow.Ellipsis)
             }
         }
         FlowRow(horizontalArrangement=Arrangement.spacedBy(8.dp),verticalArrangement=Arrangement.spacedBy(8.dp)) {

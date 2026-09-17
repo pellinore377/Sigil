@@ -11,6 +11,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.unit.dp
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 internal fun AccountAccessSection(access: AccountAccess?, busy: Boolean, command: Command) {
     SettingsSectionLabel("Account access")
@@ -39,7 +40,7 @@ internal fun AccountAccessSection(access: AccountAccess?, busy: Boolean, command
         access.linked -> SettingsNote("SSO is linked to this account.")
         access.linkPending -> {
             SettingsNote("Finish linking in your browser. Your existing Sigil account will be kept.")
-            Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+            FlowRow(horizontalArrangement = Arrangement.spacedBy(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 SigilTextButton({ command("oidc_account", mapOf("action" to "resume")) }, enabled = !busy) { Text("Continue linking") }
                 SigilTextButton({ command("oidc_account", mapOf("action" to "cancel")) }, enabled = !busy) { Text("Cancel linking") }
             }

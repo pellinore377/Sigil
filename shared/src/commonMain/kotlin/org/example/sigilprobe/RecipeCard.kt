@@ -11,6 +11,7 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.*
 import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.semantics.Role
@@ -67,7 +68,7 @@ internal fun RecipeCard(message: ChatMessage, part: MessagePart) {
                         SigilIconButton({ expanded = false; awake = false }) { Glyph("close", 24, "Close recipe") }
                         Text("Recipe", Modifier.weight(1f), style = MaterialTheme.typography.titleLarge)
                     }
-                    RichMessageText(original.title, Modifier.heightIn(max = 120.dp).verticalScroll(rememberScrollState()), MaterialTheme.typography.titleLarge)
+                    RichMessageText(original.title, Modifier.heightIn(max = 120.dp).verticalScroll(rememberScrollState()), MaterialTheme.typography.titleMedium)
                     Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         Column(Modifier.weight(1f)) { metadata(value) }
                         if (original.serves != null && scale != null) {
@@ -82,7 +83,7 @@ internal fun RecipeCard(message: ChatMessage, part: MessagePart) {
                     if (ingredients) LazyColumn(Modifier.weight(1f).fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                         itemsIndexed(value.ingredients, key = { index, _ -> index }) { index, text ->
                             val done = index in checked
-                            Row(Modifier.fillMaxWidth().heightIn(min = 48.dp).background(MaterialTheme.colorScheme.surfaceVariant, MaterialTheme.shapes.medium)
+                            Row(Modifier.fillMaxWidth().heightIn(min = 48.dp).clip(MaterialTheme.shapes.medium).background(MaterialTheme.colorScheme.surfaceVariant)
                                 .toggleable(done, role = Role.Checkbox) { checked = if (done) checked - index else checked + index }.padding(12.dp),
                                 verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                                 Glyph(if (done) "check_box" else "check_box_outline_blank", 24)
@@ -95,8 +96,8 @@ internal fun RecipeCard(message: ChatMessage, part: MessagePart) {
                     } else {
                         AnimatedContent(step, Modifier.weight(1f).fillMaxWidth(), transitionSpec = {
                             (slideInHorizontally(motion.enter(MotionInline)) { if (targetState > initialState) it else -it } + fadeIn(motion.enter(MotionInline))) togetherWith
-                                (slideOutHorizontally(motion.exit(MotionInline)) { if (targetState > initialState) -it else it } + fadeOut(motion.exit(MotionExit)))
-                        }, label = "recipe-step") { index ->
+                                (slideOutHorizontally(motion.exit(MotionQuick)) { if (targetState > initialState) -it else it } + fadeOut(motion.exit(MotionExit)))
+                        }, label = "Recipe step") { index ->
                             Column(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.surfaceVariant, MaterialTheme.shapes.large).pointerInput(index) {
                                 var distance = 0f
                                 detectHorizontalDragGestures(onDragStart = { distance = 0f }, onDragCancel = { distance = 0f }, onDragEnd = {
@@ -108,8 +109,8 @@ internal fun RecipeCard(message: ChatMessage, part: MessagePart) {
                             }
                         }
                         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                            SigilTextButton({ step-- }, enabled = step > 0) { Glyph("chevron_left", 24); Text("Previous") }
-                            SigilTextButton({ step++ }, enabled = step < original.steps.lastIndex) { Text("Next"); Glyph("chevron_right", 24) }
+                            SigilTextButton({ step-- }, enabled = step > 0) { Glyph("chevron_left", 20); Spacer(Modifier.width(8.dp)); Text("Previous") }
+                            SigilTextButton({ step++ }, enabled = step < original.steps.lastIndex) { Text("Next"); Spacer(Modifier.width(8.dp)); Glyph("chevron_right", 20) }
                         }
                     }
                     if (keepAwake != null) Row(Modifier.fillMaxWidth().heightIn(min = 48.dp).toggleable(awake, role = Role.Switch) { awake = it }, verticalAlignment = Alignment.CenterVertically) {

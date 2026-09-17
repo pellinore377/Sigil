@@ -1,5 +1,8 @@
 package org.sigil
 
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.layout.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
@@ -30,13 +33,20 @@ internal val LocalMaterialOverlayHost = staticCompositionLocalOf<MaterialOverlay
 @Composable internal fun MaterialOverlayViewport(host: MaterialOverlayHost, modifier: Modifier) {
     var origin by remember { mutableStateOf(Offset.Zero) }
     val density = LocalDensity.current
+    val motion = LocalMotion.current
+    var last by remember { mutableStateOf<Pair<MaterialTimeline, @Composable (MaterialTimeline, Modifier) -> Unit>?>(null) }
+    val render = host.render
+    val scene = host.scene
+    if (render != null && scene != null) last = scene to render
     Box(modifier.onGloballyPositioned { origin = it.positionInWindow() }) {
-        host.scene?.let { scene ->
-            val viewport = scene.viewport
-            if (viewport.width > 0 && viewport.height > 0) {
-                Box(Modifier.offset { IntOffset((viewport.left - origin.x).roundToInt(), (viewport.top - origin.y).roundToInt()) }
-                    .size(with(density) { viewport.width.toDp() }, with(density) { viewport.height.toDp() }).clipToBounds()) {
-                    CompositionLocalProvider(LocalMaterialHandoffPass provides true) { host.render?.invoke(scene, Modifier.matchParentSize()) }
+        AnimatedVisibility(render != null, enter = fadeIn(motion.enter(MotionQuick)), exit = fadeOut(motion.exit(MotionExit)), label = "Object overlay") {
+            last?.let { (drawn, draw) ->
+                val viewport = drawn.viewport
+                if (viewport.width > 0 && viewport.height > 0) {
+                    Box(Modifier.offset { IntOffset((viewport.left - origin.x).roundToInt(), (viewport.top - origin.y).roundToInt()) }
+                        .size(with(density) { viewport.width.toDp() }, with(density) { viewport.height.toDp() }).clipToBounds()) {
+                        CompositionLocalProvider(LocalMaterialHandoffPass provides true) { draw(drawn, Modifier.matchParentSize()) }
+                    }
                 }
             }
         }
