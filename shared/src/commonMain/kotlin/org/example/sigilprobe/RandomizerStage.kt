@@ -1,5 +1,6 @@
 package org.sigil
 
+import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -52,32 +53,37 @@ internal fun RandomizerStage(value:RandomizerMotion,full:Boolean=false,rich:Rich
     val coin=value.kind=="coin" && value.frames.size==2 && value.selected in 0..1
     val solid=value.kind=="dice" && dice.isNotEmpty() || coin
     if(!solid) {
-        if(value.kind=="choice" && LocalSolidMaterial.current!=null) {MaterialSlot(value,{if(enabled)((context?.clock?.elapsed ?: 12000f)/(context?.clock?.duration(randomizerDuration(value)) ?: randomizerDuration(value))).coerceIn(0f,1f)else 1f},Modifier.fillMaxWidth().height(if(LocalObjectMenu.current)170.dp else 180.dp).semantics {contentDescription="Chosen: ${value.result}"});return}
+        if(value.kind=="choice" && LocalSolidMaterial.current!=null) {MaterialSlot(value,{if(enabled)((context?.clock?.elapsed ?: 12000f)/(context?.clock?.duration(randomizerDuration(value)) ?: randomizerDuration(value))).coerceIn(0f,1f)else 1f},Modifier.fillMaxWidth().heightIn(min=MaterialCardHeight+8.dp).clipToBounds().clearAndSetSemantics {contentDescription="Chosen: ${value.result}"});return}
         ChoiceReveal(value,rich,context,enabled);return
     }
     val material=LocalSolidMaterial.current
     if(material!=null && (coin || dice.all {it.sides in nativeDice})) {
         val rows=if(coin)1 else (dice.size+2)/3
         val description=if(coin)"Coin: ${value.result}" else "Dice: "+dice.joinToString {"d${it.sides} · ${it.face}"}
-        MaterialSlot(value.copy(dice=dice),{if(enabled)((context?.clock?.elapsed ?: 12000f)/(context?.clock?.duration(randomizerDuration(value)) ?: randomizerDuration(value))).coerceIn(0f,1f)else 1f},Modifier.fillMaxWidth().height((if(LocalObjectMenu.current) {if(coin)164 else rows*116} else if(coin)184 else rows*132).dp).clipToBounds().semantics {contentDescription=description})
+        MaterialSlot(value.copy(dice=dice),{if(enabled)((context?.clock?.elapsed ?: 12000f)/(context?.clock?.duration(randomizerDuration(value)) ?: randomizerDuration(value))).coerceIn(0f,1f)else 1f},Modifier.fillMaxWidth().height((if(LocalObjectMenu.current || LocalAppearance.current.compact) {if(coin)164 else rows*116} else if(coin)184 else rows*132).dp).clipToBounds().clearAndSetSemantics {contentDescription=description})
         return
     }
     val meshes=remember(dice,coin) {if(coin)listOf(coinGeometry()) else dice.map {diceGeometry(it.sides)}}
     val measure=rememberTextMeasurer(cacheSize=128)
     val style=MaterialTheme.typography.titleMedium
-    val ink=MaterialTheme.colorScheme.onPrimaryContainer
+    val caption=MaterialTheme.typography.labelSmall
+    val objectMaterial=LocalAppearance.current.objectStyle(if(coin)1 else 0)
+    val ink=Color(objectMaterial.ink or 0xff000000.toInt())
     val captionInk=LocalContentColor.current
-    val surface=MaterialTheme.colorScheme.primaryContainer
-    val edge=MaterialTheme.colorScheme.onSurface.copy(alpha=.28f)
+    val surface=Color(objectMaterial.color or 0xff000000.toInt())
+    val edge=LocalContentColor.current.copy(alpha=.28f)
     val density=androidx.compose.ui.platform.LocalDensity.current
     val description=if(coin)"Coin: ${value.result}" else if(solid)"Dice: "+dice.joinToString {"d${it.sides} · ${it.face}"} else "Chosen: ${value.result}"
     val columns=if(coin)1 else minOf(3,dice.size).coerceAtLeast(1)
     val rows=if(coin)1 else (dice.size+columns-1)/columns
     val layouts=remember(value,style,density) {
-        val labels=if(coin)value.frames else meshes.flatMapIndexed {i,m->m.map {if(dice[i].sides in supportedDice)it.number.toString() else dice[i].face.toString()}}+dice.map {"d${it.sides}"}
+        val labels=if(coin)value.frames else meshes.flatMapIndexed {i,m->m.map {if(dice[i].sides in supportedDice)it.number.toString() else dice[i].face.toString()}}
         labels.distinct().associateWith {measure.measure(AnnotatedString(it),style,overflow=TextOverflow.Ellipsis,maxLines=1,constraints=Constraints(maxWidth=with(density) {220.dp.roundToPx()}))}
     }
-    Canvas(Modifier.fillMaxWidth().height((if(LocalObjectMenu.current) {if(coin)164 else rows*116} else if(coin)184 else rows*132).dp).clipToBounds().clearAndSetSemantics {contentDescription=description}) {
+    val captions=remember(dice,coin,caption,density) {
+        if(coin)emptyMap() else dice.map {"d${it.sides}"}.distinct().associateWith {measure.measure(AnnotatedString(it),caption,overflow=TextOverflow.Ellipsis,maxLines=1)}
+    }
+    Canvas(Modifier.fillMaxWidth().height((if(LocalObjectMenu.current || LocalAppearance.current.compact) {if(coin)164 else rows*116} else if(coin)184 else rows*132).dp).clipToBounds().clearAndSetSemantics {contentDescription=description}) {
         val progress=if(enabled) ((context?.clock?.elapsed ?: 12000f)/(context?.clock?.duration(randomizerDuration(value)) ?: randomizerDuration(value))).coerceIn(0f,1f) else 1f
         fun project(v:Vertex,center:Offset,scale:Float):Offset {val perspective=4f/(4f-v.z);return center+Offset(v.x*scale*perspective,-v.y*scale*perspective)}
         meshes.forEachIndexed {index,mesh->
@@ -89,7 +95,7 @@ internal fun RandomizerStage(value:RandomizerMotion,full:Boolean=false,rich:Rich
             val center=Offset(side*(index%columns+.5f)+if(coin)0f else sin(p*3*PI.toFloat()+index)*side*.07f*fade,
                 height*(index/columns+.59f)-hop*height)
             val radius=minOf(side,height)*(if(coin).29f else .32f)
-            drawOval(Color.Black.copy(alpha=.13f*(1f-hop)),topLeft=Offset(side*(index%columns+.5f)-radius*.82f,height*(index/columns+.88f)),size=Size(radius*1.64f,radius*.19f))
+            drawOval(Color.Black.copy(alpha=.15f*(1f-hop)),topLeft=Offset(side*(index%columns+.5f)-radius*.82f,height*(index/columns+.88f)),size=Size(radius*1.64f,radius*.19f))
             val wanted=if(coin)value.selected else if(dice[index].sides in supportedDice)dice[index].face else mesh.first().number
             val normal=mesh.first {it.number==wanted}.normal
             val xr=(if(!coin && dice[index].sides==4).55f else .22f)+fade*(if(coin)6f else 3.2f)*PI.toFloat()
@@ -135,8 +141,8 @@ internal fun RandomizerStage(value:RandomizerMotion,full:Boolean=false,rich:Rich
                     clipPath(path) {withTransform({transform(matrix)}) {drawText(layout,ink,topLeft=Offset.Zero)}}
                 }
             }
-            if(!coin)layouts["d${dice[index].sides}"]?.let {label->
-                withTransform({translate(side*(index%columns+.5f),height*(index/columns+.94f));scale(.65f,.65f,Offset.Zero)}) {drawText(label,captionInk,topLeft=Offset(-label.size.width/2f,-label.size.height/2f))}
+            if(!coin)captions["d${dice[index].sides}"]?.let {label->
+                drawText(label,captionInk,topLeft=Offset(side*(index%columns+.5f)-label.size.width/2f,height*(index/columns+.94f)-label.size.height/2f))
             }
         }
     }
@@ -147,15 +153,14 @@ private fun ChoiceReveal(value:RandomizerMotion,rich:RichText?,context:TextMotio
     val moving by remember(context,enabled) {derivedStateOf {enabled && (context?.clock?.elapsed ?: 12000f)<randomizerDuration(value)}}
     val measure=rememberTextMeasurer()
     val style=if(value.kind=="number")MaterialTheme.typography.headlineSmall else MaterialTheme.typography.bodyLarge
-    val surface=MaterialTheme.colorScheme.primaryContainer
-    val ink=MaterialTheme.colorScheme.onPrimaryContainer
+    val ink=LocalContentColor.current
+    val surface=ink.copy(alpha=.09f)
+    val reveal by animateFloatAsState(if(moving)0f else 1f,LocalMotion.current.tween(MotionMillis),label="Choice reveal")
     val density=androidx.compose.ui.platform.LocalDensity.current
     val frames=remember(value,style,density) {value.frames.take(12).map {measure.measure(AnnotatedString(it),style,maxLines=1,overflow=TextOverflow.Ellipsis,constraints=Constraints(maxWidth=with(density) {220.dp.roundToPx()}))}}
-    Box(Modifier.fillMaxWidth().heightIn(min=64.dp).background(surface,RoundedCornerShape(18.dp)),contentAlignment=androidx.compose.ui.Alignment.Center) {
-        CompositionLocalProvider(LocalMessageSurface provides surface) {
-            RichMessageText(rich ?: RichText(value.result),Modifier.padding(12.dp).graphicsLayer {alpha=if(moving)0f else 1f},style)
-        }
-        if(moving && frames.isNotEmpty())Canvas(Modifier.matchParentSize()) {
+    Box(Modifier.fillMaxWidth().heightIn(min=64.dp).background(surface,RoundedCornerShape(12.dp)),contentAlignment=androidx.compose.ui.Alignment.Center) {
+        RichMessageText(rich ?: RichText(value.result),Modifier.padding(12.dp).graphicsLayer {alpha=reveal},style)
+        if(reveal<1f && frames.isNotEmpty())Canvas(Modifier.matchParentSize().graphicsLayer {alpha=1f-reveal}) {
             val p=((context?.clock?.elapsed ?: 12000f)/(context?.clock?.duration(randomizerDuration(value)) ?: randomizerDuration(value))).coerceIn(0f,1f)
             val travel=18f*(1f-(1f-p).pow(3))
             val frame=frames[travel.toInt()%frames.size]

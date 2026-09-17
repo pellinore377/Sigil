@@ -157,7 +157,7 @@ private fun TimelinePreview(analyze: (String) -> String, peer: String? = null, g
         }
         Column(Modifier.padding(12.dp)) {
             FloatingChrome(backdrop, Modifier, RoundedCornerShape(24.dp)) {
-                Box(Modifier.fillMaxWidth().height(72.dp)) { ConversationHeader(chat, "", false, { _, _ -> }, {}) {} }
+                Box(Modifier.fillMaxWidth().heightIn(min = pageHeaderHeight())) { ConversationHeader(chat, "", false, { _, _ -> }, {}) {} }
             }
             Box(Modifier.fillMaxWidth()) {
                 Column(Modifier.padding(horizontal = 16.dp, vertical = 12.dp)) {
@@ -175,7 +175,7 @@ private fun TimelinePreview(analyze: (String) -> String, peer: String? = null, g
                 ComposerBar {
                     Surface(shape = RoundedCornerShape(16.dp), color = scheme.surfaceVariant) { Symbol("add", "Preview attachments") {} }
                     Composer(remember { TextFieldState() }, analyze, Modifier.weight(1f), showTools = false, enabled = false)
-                    FilledIconButton({}, Modifier.size(48.dp), shape = RoundedCornerShape(16.dp), colors = IconButtonDefaults.filledIconButtonColors(containerColor = scheme.primary, contentColor = scheme.onPrimary)) { Glyph("graphic_eq", 25) }
+                    SigilFilledIconButton({}, Modifier.semantics { contentDescription = "Preview voice message" }) { Glyph("graphic_eq", 24) }
                 }
             }
         }

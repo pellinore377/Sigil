@@ -53,15 +53,18 @@ internal fun temporalClock(seconds:Long):Pair<String,String> {
     return now
 }
 
-@Composable internal fun TemporalCard(icon:String,label:String,content:@Composable ColumnScope.()->Unit) {
-    Column(Modifier.widthIn(min=200.dp,max=280.dp).animateContentSize(LocalMotion.current.tween(MotionMillis)),verticalArrangement=Arrangement.spacedBy(8.dp)) {
+@Composable internal fun CardColumn(content:@Composable ColumnScope.()->Unit) {
+    Column(Modifier.widthIn(min=200.dp,max=280.dp).animateContentSize(LocalMotion.current.tween(MotionMillis)),verticalArrangement=Arrangement.spacedBy(8.dp),content=content)
+}
+@Composable internal fun CardFrame(icon:String,label:String,content:@Composable ColumnScope.()->Unit) {
+    CardColumn {
         Row(verticalAlignment=Alignment.CenterVertically,horizontalArrangement=Arrangement.spacedBy(8.dp)) {Glyph(icon,20);Text(label,style=MaterialTheme.typography.labelMedium)}
         content()
     }
 }
 @Composable internal fun TemporalFigure(value:String,unit:String,modifier:Modifier=Modifier) {
     Row(modifier.clearAndSetSemantics {contentDescription=if(unit.isEmpty())value else "$value $unit"},horizontalArrangement=Arrangement.spacedBy(8.dp)) {
-        Text(value,Modifier.alignByBaseline(),style=MaterialTheme.typography.headlineMedium,fontFamily=LocalCodeFont.current,maxLines=1)
+        Text(value,Modifier.alignByBaseline(),style=MaterialTheme.typography.titleLarge,fontFamily=LocalCodeFont.current,maxLines=1)
         if(unit.isNotEmpty())Text(unit,Modifier.alignByBaseline().weight(1f,false),style=MaterialTheme.typography.labelMedium,maxLines=2,overflow=TextOverflow.Ellipsis)
     }
 }

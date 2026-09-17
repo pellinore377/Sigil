@@ -7,14 +7,13 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 
 @Composable
 internal fun RequestChip(label: String, icon: String = "person_add") {
     Surface(shape = RoundedCornerShape(8.dp), color = MaterialTheme.colorScheme.primaryContainer, contentColor = MaterialTheme.colorScheme.onPrimaryContainer) {
-        Row(Modifier.padding(horizontal = 9.dp, vertical = 5.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(5.dp)) {
+        Row(Modifier.padding(horizontal = 8.dp, vertical = 5.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(5.dp)) {
             Glyph(icon, 15); Text(label, style = MaterialTheme.typography.labelSmall)
         }
     }
@@ -28,17 +27,17 @@ internal fun ContactRequestPanel(chat: ChatSummary, busy: Boolean, command: Comm
     Column(Modifier.widthIn(max = 620.dp).fillMaxWidth().padding(horizontal = 24.dp, vertical = 24.dp).animateContentSize(motionPolicy.tween(MotionMillis)),
         horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(16.dp)) {
         if (chat.identityReview != null && chat.request == "accepted") {
-            Text("${chat.name}’s encryption identity changed. This can happen after account recovery or reinstalling.", textAlign = TextAlign.Center,
+            Text("${chat.name}’s encryption identity changed. This can happen after account recovery or reinstalling.",
                 style = MaterialTheme.typography.bodyMedium, maxLines = 4, overflow = TextOverflow.Ellipsis)
             SigilButton({ command("identity_accept", mapOf("peer" to chat.id, "review" to chat.identityReview)) }, enabled = !busy) { Text("Continue with new identity") }
-            FlowRow(horizontalArrangement = Arrangement.spacedBy(12.dp, Alignment.CenterHorizontally)) {
+            FlowRow(horizontalArrangement = Arrangement.spacedBy(12.dp, Alignment.CenterHorizontally), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 SigilOutlinedButton({ command("contact_qr", mapOf("action" to "scan", "peer" to chat.id, "review" to chat.identityReview)) }, enabled = !busy) { Text("Scan QR to confirm") }
                 SigilTextButton({ act("block") }, enabled = !busy) { Text("Block") }
             }
             return@Column
         }
         AnimatedContent(chat.request, transitionSpec = { fadeIn(motionPolicy.enter(MotionInline, delayMillis = MotionStagger)) togetherWith fadeOut(motionPolicy.exit(MotionExit)) }, label = "Contact request state") { request ->
-            Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(16.dp)) {
+            Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
                 Text(when(request) {
                     "incoming" -> "${chat.name} would like to connect."
                     "sending" -> "Your request is waiting to reach the server. Your message stays in your drafts."
@@ -50,9 +49,9 @@ internal fun ContactRequestPanel(chat: ChatSummary, busy: Boolean, command: Comm
                     "expired" -> "This request expired. You can send a new one."
                     "accepted" -> "Request accepted. Preparing your encrypted conversation…"
                     else -> "Send ${chat.name} a request to start an encrypted conversation."
-                }, textAlign = TextAlign.Center, style = MaterialTheme.typography.bodyMedium, maxLines = 4, overflow = TextOverflow.Ellipsis)
+                }, style = MaterialTheme.typography.bodyMedium, maxLines = 4, overflow = TextOverflow.Ellipsis)
                 when (request) {
-                    "incoming" -> FlowRow(horizontalArrangement = Arrangement.spacedBy(12.dp, Alignment.CenterHorizontally)) {
+                    "incoming" -> FlowRow(horizontalArrangement = Arrangement.spacedBy(12.dp, Alignment.CenterHorizontally), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                         SigilOutlinedButton({ act("decline") }, enabled = !busy) { Text("Decline") }
                         SigilButton({ act("accept") }, enabled = !busy) { Text("Accept") }
                     }

@@ -16,7 +16,8 @@ import androidx.compose.ui.unit.dp
 @Composable
 internal fun SavedHistoryPage(state: MessengerState, command: Command, back: () -> Unit, open: (String) -> Unit) {
     LaunchedEffect(Unit) { command("search", mapOf("query" to "", "category" to "History")) }
-    val compact = LocalAppearance.current.compact
+    val appearance = LocalAppearance.current
+    val compact = appearance.compact
     Column(Modifier.fillMaxSize(), horizontalAlignment = Alignment.CenterHorizontally) {
         Header("Saved history", back)
         Column(Modifier.widthIn(max = 680.dp).fillMaxWidth().weight(1f)) {
@@ -30,7 +31,7 @@ internal fun SavedHistoryPage(state: MessengerState, command: Command, back: () 
                         Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                             Text(state.chats.find { it.id == hit.peer }?.name ?: if (hit.peer == "self") "Note to Self" else "Saved conversation",
                                 style = MaterialTheme.typography.titleMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                            Text(hit.text, maxLines = 2, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            if (appearance.previewLines > 0) Text(hit.text, maxLines = appearance.previewLines.coerceAtLeast(1), overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
                             Text(hit.time, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                         }
                     }

@@ -13,6 +13,7 @@ import androidx.compose.ui.graphics.drawscope.*
 import androidx.compose.ui.graphics.layer.drawLayer
 import androidx.compose.ui.graphics.rememberGraphicsLayer
 import androidx.compose.ui.text.TextLayoutResult
+import androidx.compose.ui.unit.dp
 import kotlin.math.*
 
 val LocalTextMotionSeeds=staticCompositionLocalOf<((String)->String)?> {null}
@@ -21,8 +22,8 @@ val LocalMotionBlur=staticCompositionLocalOf {true}
 internal class TextPlayback(fresh:Boolean=false) {
     val preparing=mutableStateMapOf<Any,Unit>()
     var materialDuration by mutableIntStateOf(0)
-    fun duration(default:Int)=if(materialDuration>0)maxOf(minOf(default,2000),materialDuration)else default
-    var elapsed by mutableFloatStateOf(if(fresh)0f else 12000f)
+    fun duration(default:Int)=if(materialDuration>0)maxOf(minOf(default,TextMotionDefault),materialDuration)else default
+    var elapsed by mutableFloatStateOf(if(fresh)0f else TextMotionCap.toFloat())
     var generation by mutableIntStateOf(0)
     fun replay() {elapsed=0f;materialDuration=0;generation++}
 }
@@ -48,6 +49,8 @@ internal data class TextMotionContext(val message:String,val clock:TextPlayback)
 internal val LocalTextMotion=staticCompositionLocalOf<TextMotionContext?> {null}
 
 internal const val ChartMotionMillis=700
+internal const val TextMotionCap=12000
+internal const val TextMotionDefault=2000
 internal fun ChatMessage.messageMotionDuration()=parts.maxOfOrNull {p->
     val texts=buildList {
         p.rich?.let(::add);addAll(p.items.mapNotNull {it.rich})
@@ -68,20 +71,20 @@ internal fun ChatMessage.messageMotionDuration()=parts.maxOfOrNull {p->
 internal fun ChatMessage.hasMessageMotion()=messageMotionDuration()>0
 
 @Composable
-internal fun MessageMotion(message:String,clock:TextPlayback,visible:Boolean,duration:Int=2000,content:@Composable ()->Unit) {
+internal fun MessageMotion(message:String,clock:TextPlayback,visible:Boolean,duration:Int=TextMotionDefault,content:@Composable ()->Unit) {
     val active=visible && LocalMotionVisible.current
     val reduced=LocalMotion.current.reduced || !LocalAppearance.current.messageEffects
     val replaySeconds=LocalAppearance.current.replaySeconds
     LaunchedEffect(clock,active,reduced,clock.generation,duration,replaySeconds) {
-        if(reduced)clock.elapsed=12000f
+        if(reduced)clock.elapsed=TextMotionCap.toFloat()
         if(active && !reduced) {
             var last=withFrameNanos {it}
-            while(clock.elapsed<clock.duration(duration).coerceIn(1,12000)) {
+            while(clock.elapsed<clock.duration(duration).coerceIn(1,TextMotionCap)) {
                 val now=withFrameNanos {it}
-                if(clock.preparing.isEmpty())clock.elapsed=(clock.elapsed+(now-last).coerceAtLeast(0)/1_000_000f).coerceAtMost(12000f)
+                if(clock.preparing.isEmpty())clock.elapsed=(clock.elapsed+(now-last).coerceAtLeast(0)/1_000_000f).coerceAtMost(TextMotionCap.toFloat())
                 last=now
             }
-            clock.elapsed=12000f
+            clock.elapsed=TextMotionCap.toFloat()
             if(replaySeconds in 10..30) {
                 kotlinx.coroutines.delay(replaySeconds*1000L)
                 clock.replay()
@@ -146,8 +149,8 @@ internal fun textMotion(value:RichText,revealed:Set<Int>,layout:TextLayoutResult
         val glowMask=Path().apply {glow.forEach {addPath(it.path)}}
         val glowPaint=Paint()
         onDrawWithContent {
-            val elapsed=if(playing)checkNotNull(context).clock.elapsed else 12000f
-            if(cells.isEmpty() || (!flipped && (elapsed>=12000f || cells.all {elapsed>=it.run.duration})) || size.width>4096 || size.height>4096 || size.width*size.height>4_000_000f)drawContent()
+            val elapsed=if(playing)checkNotNull(context).clock.elapsed else TextMotionCap.toFloat()
+            if(cells.isEmpty() || (!flipped && (elapsed>=TextMotionCap.toFloat() || cells.all {elapsed>=it.run.duration})) || size.width>4096 || size.height>4096 || size.width*size.height>4_000_000f)drawContent()
             else {
                 layer.record {this@onDrawWithContent.drawContent()}
                 clipPath(mask,ClipOp.Difference) {drawLayer(layer)}
@@ -204,8 +207,8 @@ internal fun textMotion(value:RichText,revealed:Set<Int>,layout:TextLayoutResult
                             val theta=particle*2.399963f+random*PI.toFloat()
                             val center=cell.center+Offset(cos(theta),sin(theta))*distance*(.4f+life*.6f)
                             val radius=cell.height*.08f*strength
-                            drawLine(color.copy(alpha=strength),center-Offset(radius,0f),center+Offset(radius,0f),1.5f)
-                            drawLine(color.copy(alpha=strength),center-Offset(0f,radius),center+Offset(0f,radius),1.5f)
+                            drawLine(color.copy(alpha=strength),center-Offset(radius,0f),center+Offset(radius,0f),1.5.dp.toPx())
+                            drawLine(color.copy(alpha=strength),center-Offset(0f,radius),center+Offset(0f,radius),1.5.dp.toPx())
                         }
                         }
                     }

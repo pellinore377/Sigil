@@ -185,5 +185,5 @@ internal fun Toggle(label: String, checked: Boolean, update: (Boolean) -> Unit) 
 internal fun Expandable(visible: Boolean, content: @Composable ColumnScope.() -> Unit) {
     val motionPolicy = LocalMotion.current
     AnimatedVisibility(visible, enter = expandVertically(motionPolicy.enter(MotionMillis), expandFrom = Alignment.Top) + slideInHorizontally(motionPolicy.enter(MotionMillis)) { it } + fadeIn(motionPolicy.enter(MotionMillis)),
-        exit = shrinkVertically(motionPolicy.exit(MotionMillis), shrinkTowards = Alignment.Top) + slideOutHorizontally(motionPolicy.exit(MotionMillis)) { it } + fadeOut(motionPolicy.exit(MotionExit))) { Column(content = content) }
+        exit = shrinkVertically(motionPolicy.exit(MotionQuick), shrinkTowards = Alignment.Top) + slideOutHorizontally(motionPolicy.exit(MotionQuick)) { it } + fadeOut(motionPolicy.exit(MotionExit)), label = "Expandable section") { Column(content = content) }
 }

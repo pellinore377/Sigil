@@ -58,7 +58,7 @@ internal fun MainHeader(page: String, goingBack: Boolean, query: String, update:
     Box(Modifier.fillMaxWidth().height(height).clipToBounds()) {
         AnimatedContent(if (page in listOf("calls", "notes", "settings")) page else "inbox", transitionSpec = {
             (slideInHorizontally(motionPolicy.enter(MotionQuick, delayMillis = MotionStagger)) { if (goingBack) -it else it } + fadeIn(motionPolicy.enter(MotionQuick, delayMillis = MotionStagger))) togetherWith
-                (if (goingBack) slideOutHorizontally(motionPolicy.exit(MotionMillis)) { it } + fadeOut(motionPolicy.exit(MotionExit)) else fadeOut(motionPolicy.exit(MotionExit)))
+                (if (goingBack) slideOutHorizontally(motionPolicy.exit(MotionQuick)) { it } + fadeOut(motionPolicy.exit(MotionExit)) else fadeOut(motionPolicy.exit(MotionExit)))
         }, label = "Main header items") { tab ->
             if (tab == "inbox") InboxHeader(page, height, query, update, selected, state, command, clear, collections, search, create, back)
             else if (tab == "notes") NotesHeader(height, query, update)
@@ -80,7 +80,7 @@ private fun InboxHeader(page: String, height: Dp, query: String, update: (String
     val keyboard = LocalSoftwareKeyboardController.current
     LaunchedEffect(page) { if (page == "search") { delay(motionPolicy.delay(MotionMillis.toLong())); focus.requestFocus(); keyboard?.show() } }
     AnimatedContent(selected.isNotEmpty(), transitionSpec = {
-        (slideInHorizontally(motionPolicy.enter(MotionMillis)) { it } + fadeIn(motionPolicy.enter(MotionMillis))) togetherWith (slideOutHorizontally(motionPolicy.exit(MotionMillis)) { -it } + fadeOut(motionPolicy.exit(MotionExit)))
+        (slideInHorizontally(motionPolicy.enter(MotionMillis)) { it } + fadeIn(motionPolicy.enter(MotionMillis))) togetherWith (slideOutHorizontally(motionPolicy.exit(MotionQuick)) { -it } + fadeOut(motionPolicy.exit(MotionExit)))
     }, label = "Selection toolbar") { selecting ->
         if (selecting) {
             var menu by remember { mutableStateOf(false) }
@@ -115,8 +115,8 @@ private fun InboxHeader(page: String, height: Dp, query: String, update: (String
                     if (backIcon) Symbol("chevron_left", "Back", back) else Symbol("search", "Search conversations", search)
                 }
             }
-            AnimatedVisibility(!opened, Modifier.align(Alignment.CenterEnd), enter = fadeIn(motionPolicy.enter(MotionMillis)), exit = fadeOut(motionPolicy.exit(MotionExit))) { SigilIconButton(create) { Glyph("edit_square", 24, "New conversation", filled = false) } }
-            AnimatedVisibility(opened, Modifier.align(Alignment.CenterStart).padding(start = 56.dp, end = 8.dp).fillMaxWidth(), enter = fadeIn(motionPolicy.enter(MotionMillis)), exit = fadeOut(motionPolicy.exit(MotionExit))) {
+            AnimatedVisibility(!opened, Modifier.align(Alignment.CenterEnd), enter = fadeIn(motionPolicy.enter(MotionMillis)), exit = fadeOut(motionPolicy.exit(MotionExit)), label = "New conversation action") { SigilIconButton(create) { Glyph("edit_square", 24, "New conversation", filled = false) } }
+            AnimatedVisibility(opened, Modifier.align(Alignment.CenterStart).padding(start = 56.dp, end = 8.dp).fillMaxWidth(), enter = fadeIn(motionPolicy.enter(MotionMillis)), exit = fadeOut(motionPolicy.exit(MotionExit)), label = "Search field") {
               BasicTextField(query, update, Modifier.fillMaxWidth().focusRequester(focus),
                 cursorBrush = androidx.compose.ui.graphics.SolidColor(MaterialTheme.colorScheme.primary), singleLine = true, textStyle = MaterialTheme.typography.titleMedium.copy(color = MaterialTheme.colorScheme.onBackground),
                 decorationBox = { inner -> Box { if (query.isEmpty()) Text("Search all conversations", color = MaterialTheme.colorScheme.onSurfaceVariant, style = MaterialTheme.typography.titleMedium); inner() } })
@@ -199,7 +199,7 @@ internal fun ChatRow(chat: ChatSummary, selected: Boolean = false, modifier: Mod
             else if (chat.request in listOf("pending", "sending")) RequestChip("Pending", "schedule")
             Text(chat.time, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                if (chat.unread > 0) Surface(shape = RoundedCornerShape(6.dp), color = MaterialTheme.colorScheme.primary, contentColor = MaterialTheme.colorScheme.onPrimary) { Text(chat.unread.toString(), Modifier.padding(horizontal = 6.dp), style = MaterialTheme.typography.labelMedium) }
+                if (chat.unread > 0) Surface(shape = RoundedCornerShape(6.dp), color = MaterialTheme.colorScheme.primary, contentColor = MaterialTheme.colorScheme.onPrimary) { Text(chat.unread.toString(), Modifier.semantics { contentDescription = "${chat.unread} unread" }.padding(horizontal = 6.dp, vertical = 1.dp), style = MaterialTheme.typography.labelMedium) }
                 if (chat.snoozed) Glyph("snooze", 17, "Snoozed")
                 if (chat.pinned) Glyph("push_pin", 17, "Pinned conversation", filled=true)
             }
@@ -212,36 +212,37 @@ internal fun PresenceAvatar(chat: ChatSummary, size: Int = 48, presence: Boolean
         Avatar(chat.name, size, chat.avatar)
         if (presence && !chat.group && chat.id != "self") Box(Modifier.align(Alignment.BottomEnd).size((size / 4 + 2).dp)
             .background(MaterialTheme.colorScheme.background, CircleShape).padding(2.dp)
-            .background(when (chat.presence) { "active" -> Color(0xff4dba50); "away" -> Color(0xffe7ab37); "busy" -> Color(0xffce4545); else -> Color.Gray }, CircleShape)
+            .background(when (chat.presence) { "active" -> Color(0xff4dba50); "away" -> Color(0xffe7ab37); "busy" -> Color(0xffce4545); else -> MaterialTheme.colorScheme.outline }, CircleShape)
             .semantics { contentDescription = chat.presence })
     }
 }
 private val searchCategories = listOf("Unread" to "mark_chat_unread", "Conversations" to "chat", "Requests" to "person_add", "Pinned" to "push_pin", "Images" to "image", "Videos" to "movie", "Places" to "place", "Links" to "link")
 @Composable
 internal fun SearchPage(state: MessengerState, query: String, category: String, choose: (String) -> Unit, open: (String) -> Unit, command: Command) {
+    val insets = LocalHomeContentPadding.current
     LaunchedEffect(category) { if (category == "Requests") command("contact_refresh", emptyMap()) }
     Column(Modifier.fillMaxSize()) {
-        if (query.isEmpty() && category.isEmpty()) LazyVerticalGrid(GridCells.Fixed(2), contentPadding = PaddingValues(20.dp), horizontalArrangement = Arrangement.spacedBy(12.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-            items(searchCategories) { (label, icon) -> Surface(Modifier.clickable { choose(label) }, shape = RoundedCornerShape(16.dp), color = MaterialTheme.colorScheme.surfaceVariant) {
+        if (query.isEmpty() && category.isEmpty()) LazyVerticalGrid(GridCells.Fixed(2), contentPadding = PaddingValues(start = 20.dp, end = 20.dp, top = insets.calculateTopPadding() + 20.dp, bottom = maxOf(92.dp, insets.calculateBottomPadding())), horizontalArrangement = Arrangement.spacedBy(12.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            items(searchCategories) { (label, icon) -> Surface(onClick = { choose(label) }, shape = RoundedCornerShape(16.dp), color = MaterialTheme.colorScheme.surfaceVariant) {
                 Row(Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) { Glyph(icon, 24); Text(label, style = MaterialTheme.typography.bodyLarge) }
             } }
         } else {
             if (category.isNotEmpty()) InputChip(true, { choose("") }, { Text(category) }, Modifier.padding(horizontal = 20.dp), trailingIcon = { Glyph("close", 16) })
             if (state.searching) LinearProgressIndicator(Modifier.fillMaxWidth())
-            LazyColumn(contentPadding = PaddingValues(bottom = 16.dp)) {
-                if (category == "Requests") items(state.chats.filter { it.request == "incoming" && (it.name.contains(query, true) || it.address.contains(query, true)) }, key = { "request:${it.id}" }) { chat -> ChatRow(chat, open = { open(chat.id) }) }
+            LazyColumn(contentPadding = PaddingValues(top = insets.calculateTopPadding(), bottom = maxOf(92.dp, insets.calculateBottomPadding()))) {
+                if (category == "Requests") items(state.chats.filter { it.request == "incoming" && (it.name.contains(query, true) || it.address.contains(query, true)) }, key = { "request:${it.id}" }) { chat -> ChatRow(chat, modifier = itemMotion(), open = { open(chat.id) }) }
                 if (category == "Requests") items(state.invitations, key = { "invite:${it.id}" }) { invitation ->
-                    Column(Modifier.fillMaxWidth().padding(20.dp)) {
+                    Column(itemMotion().fillMaxWidth().padding(20.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                         Text("Group invitation", style = MaterialTheme.typography.titleMedium)
-                        Text("From ${state.chats.find { it.id == invitation.peer }?.name ?: "a contact"}")
-                        Row { SigilTextButton({ command("group_invitation", mapOf("invitation" to invitation.id, "accept" to false)) }) { Text("Decline") }; SigilButton({ command("group_invitation", mapOf("invitation" to invitation.id, "accept" to true)) }) { Text("Accept") } }
+                        Text("From ${state.chats.find { it.id == invitation.peer }?.name ?: "a contact"}", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) { SigilTextButton({ command("group_invitation", mapOf("invitation" to invitation.id, "accept" to false)) }) { Text("Decline") }; SigilButton({ command("group_invitation", mapOf("invitation" to invitation.id, "accept" to true)) }) { Text("Accept") } }
                     }
                 }
-                if (category in listOf("", "Conversations", "Unread", "Pinned")) items(state.chats.filter { chat -> !chat.hidden && chat.name.contains(query, true) && when(category) { "Unread" -> chat.unread > 0; "Pinned" -> chat.pinned; else -> true } }, key = { "chat:${it.id}" }) { chat -> ChatRow(chat, open = { open(chat.id) }) }
+                if (category in listOf("", "Conversations", "Unread", "Pinned")) items(state.chats.filter { chat -> !chat.hidden && chat.name.contains(query, true) && when(category) { "Unread" -> chat.unread > 0; "Pinned" -> chat.pinned; else -> true } }, key = { "chat:${it.id}" }) { chat -> ChatRow(chat, modifier = itemMotion(), open = { open(chat.id) }) }
                 items(state.searchHits.filter { hit -> when(category) { "Pinned" -> hit.pinned; "Images", "Videos", "Places", "Links" -> hit.kind == category; "Unread" -> state.chats.any { it.id == hit.peer && it.unread > 0 }; "Requests", "Conversations" -> false; else -> true } }, key = { it.author + it.id }) { hit ->
-                    Column(Modifier.fillMaxWidth().clickable { command("open", mapOf("peer" to hit.peer, "author" to hit.author, "message" to hit.id, "thread_author" to hit.threadTarget?.author, "thread_message" to hit.threadTarget?.id)) }.padding(horizontal = 24.dp, vertical = 12.dp)) {
+                    Column(itemMotion().fillMaxWidth().clickable { command("open", mapOf("peer" to hit.peer, "author" to hit.author, "message" to hit.id, "thread_author" to hit.threadTarget?.author, "thread_message" to hit.threadTarget?.id)) }.padding(horizontal = 24.dp, vertical = 12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                         Text(state.chats.find { it.id == hit.peer }?.name ?: "Conversation", style = MaterialTheme.typography.titleMedium)
-                        Text(hit.text, maxLines = 3, overflow = TextOverflow.Ellipsis); Text(hit.time, style = MaterialTheme.typography.labelSmall)
+                        Text(hit.text, maxLines = 3, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant); Text(hit.time, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
                 }
                 if (state.searchMore) item { SigilTextButton({ command("search_more", emptyMap()) }, Modifier.fillMaxWidth(), enabled = !state.searching) { Text("More results") } }
@@ -268,7 +269,9 @@ internal fun NotesGrid(state: MessengerState, query: String, read: (String) -> S
             }
             if (state.searchMore) item { SigilTextButton({ command("search_more", emptyMap()) }, enabled = !state.searching) { Text("More notes") } }
         }
-        if (chats.isEmpty()) Text(if (state.searching) "Finding notes…" else "No notes yet", Modifier.align(Alignment.Center).padding(32.dp))
+        if (chats.isEmpty()) Box(Modifier.align(Alignment.Center).fillMaxWidth().padding(horizontal = 32.dp, vertical = 64.dp), contentAlignment = Alignment.Center) {
+            Text(if (state.searching) "Finding notes…" else "No notes yet", style = MaterialTheme.typography.titleLarge)
+        }
     }
 }
 @Composable
@@ -278,7 +281,7 @@ internal fun CollectionSheet(state: MessengerState, selected: Set<String>, comma
         Text("Add to collection", Modifier.padding(horizontal = 24.dp), style = MaterialTheme.typography.headlineSmall)
         if (creating) Column(Modifier.padding(24.dp)) {
             OutlinedTextField(name, { name = it }, label = { Text("Collection name") }, singleLine = true)
-            LazyVerticalGrid(GridCells.Fixed(5), Modifier.height(160.dp)) { items(listOf("folder", "group", "work", "home", "menu_book", "favorite", "school", "music_note", "sports_esports", "pets")) { symbol -> SigilIconButton({ icon = symbol }) { Glyph(symbol, 26) } } }
+            LazyVerticalGrid(GridCells.Fixed(5), Modifier.heightIn(max = 160.dp)) { items(listOf("folder", "group", "work", "home", "menu_book", "favorite", "school", "music_note", "sports_esports", "pets")) { symbol -> SigilIconButton({ icon = symbol }, Modifier.semantics { this.selected = icon == symbol }) { Glyph(symbol, 26, symbol) } } }
             OutlinedTextField(icon, { icon = it }, label = { Text("Icon or emoji") }, singleLine = true)
             SigilButton({ command("create_collection", mapOf("name" to name.trim(), "icon" to icon, "peers" to selected.toList())); close() }, enabled = name.isNotBlank()) { Text("Create collection") }
         } else {

@@ -30,7 +30,7 @@ class CodeBuilderTest {
         ui.onNodeWithText("Code",substring=false).assertTextContains(body)
         ui.onNodeWithText("Preview code").performClick()
         ui.onNodeWithText(body,substring=false).assertExists()
-        ui.onNodeWithText("Open code · 3 lines").performScrollTo().performClick()
+        ui.onNodeWithText("Open code").performScrollTo().performClick()
         ui.onNodeWithContentDescription("Close code").performClick()
         var saved:Map<String,List<Any?>> = emptyMap()
         ui.runOnIdle {saved=registry.performSave();visible=false}

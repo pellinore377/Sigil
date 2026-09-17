@@ -53,7 +53,7 @@ import kotlin.math.roundToInt
     }
     if(kind==2)AppearanceChoices("Card border",listOf("Fine" to "crop_portrait","Ornate" to "filter_vintage","Geometric" to "hexagon"),listOf("Fine","Ornate","Geometric")[style.border]) {change(style.copy(border=listOf("Fine","Ornate","Geometric").indexOf(it)))}
     var advanced by remember(kind){mutableStateOf(false)}
-    SigilTextButton({advanced=!advanced}) {Text("Advanced");Spacer(Modifier.width(8.dp));Glyph(if(advanced)"expand_less" else "expand_more",20,if(advanced)"Hide advanced" else "Show advanced")}
+    SigilTextButton({advanced=!advanced}) {Glyph(if(advanced)"expand_less" else "expand_more",20);Spacer(Modifier.width(8.dp));Text("Advanced")}
     Expandable(advanced) {
         Column(verticalArrangement=Arrangement.spacedBy(12.dp)) {
             ObjectSlider("Engraving depth",style.engraving,0f..1f){change(style.copy(engraving=it))}

@@ -141,11 +141,11 @@ internal fun ConversationPage(chat: ChatSummary, state: MessengerState, draft: T
             Box(Modifier.weight(1f).fillMaxWidth().clipToBounds().onGloballyPositioned {materialTimeline.viewport=it.boundsInWindow();val r=materialTimeline.viewport;if(materialHeader>0)materialTimeline.bubbles["header"]=Rect(r.left,r.top,r.right,r.top+materialHeader)}) {
             CompositionLocalProvider(LocalMaterialTimeline provides materialTimeline.takeIf {materialOverlay!=null}, LocalPreviewLaunch provides previewLaunch) {
             LazyColumn(Modifier.fillMaxSize().testTag("timeline"), state = list, reverseLayout = true, contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = (if (controls) 0.dp else headerInset) + 12.dp, bottom = composerInset)) {
-                item("typing") { androidx.compose.animation.AnimatedVisibility(!threadsOverview && state.typing.isNotEmpty(), enter = expandVertically(motionPolicy.enter(MotionMillis)) + fadeIn(motionPolicy.enter(MotionMillis)), exit = shrinkVertically(motionPolicy.exit(MotionQuick)) + fadeOut(motionPolicy.exit(MotionExit))) { TypingRow(state.typing.map { state.people[it] ?: if (chat.group) "Member" else chat.name }, chat.name, state.typing) } }
+                item("typing") { androidx.compose.animation.AnimatedVisibility(!threadsOverview && state.typing.isNotEmpty(), enter = expandVertically(motionPolicy.enter(MotionMillis)) + fadeIn(motionPolicy.enter(MotionMillis)), exit = shrinkVertically(motionPolicy.exit(MotionQuick)) + fadeOut(motionPolicy.exit(MotionExit)), label = "Typing indicator") { TypingRow(state.typing.map { state.people[it] ?: if (chat.group) "Member" else chat.name }, chat.name, state.typing) } }
                 itemsIndexed(messages, key = { _, it -> it.author + it.id }) { index, message ->
                     if (page == "Pins") {
                         var pinBounds by remember(message.id) { mutableStateOf(Rect.Zero) }
-                        Surface(Modifier.fillMaxWidth().padding(vertical = 6.dp).onGloballyPositioned { pinBounds = it.boundsInWindow() }
+                        Surface(itemMotion().fillMaxWidth().padding(vertical = 6.dp).onGloballyPositioned { pinBounds = it.boundsInWindow() }
                             .clip(RoundedCornerShape(20.dp)).combinedClickable(onClick = { details = message.author to message.id }, onLongClick = { selected = message to pinBounds }),
                             shape = RoundedCornerShape(20.dp), color = scheme.surfaceContainerHigh) {
                             Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -162,8 +162,8 @@ internal fun ConversationPage(chat: ChatSummary, state: MessengerState, draft: T
                         }
                         return@itemsIndexed
                     } else if (threadsOverview) {
-                        Surface(Modifier.fillMaxWidth().padding(vertical = 6.dp).clip(RoundedCornerShape(20.dp)).clickable { setThread(ThreadTarget(message.threadAuthor!!, message.threadMessage!!)) }, shape = RoundedCornerShape(20.dp), color = scheme.surfaceContainerHigh) {
-                            Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                        Surface(itemMotion().fillMaxWidth().padding(vertical = 6.dp).clip(RoundedCornerShape(20.dp)).clickable { setThread(ThreadTarget(message.threadAuthor!!, message.threadMessage!!)) }, shape = RoundedCornerShape(20.dp), color = scheme.surfaceContainerHigh) {
+                            Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                                 Text(message.threadPreview ?: "Earlier message", maxLines = 3, overflow = TextOverflow.Ellipsis)
                                 Row(verticalAlignment = Alignment.CenterVertically) { Glyph("forum", 18); Spacer(Modifier.width(8.dp)); Text(message.text, Modifier.weight(1f), maxLines = 2, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.bodySmall); Glyph("chevron_right", 20) }
                             }
@@ -183,7 +183,7 @@ internal fun ConversationPage(chat: ChatSummary, state: MessengerState, draft: T
                     val threshold = with(density) { 52.dp.toPx() }
                     Column(itemMotion().fillMaxWidth().padding(top = if (grouped) 3.dp else 12.dp)) {
                         if (showSeparator(message, older)) Text(message.separator.ifEmpty { message.time }, Modifier.align(Alignment.CenterHorizontally).padding(top = 6.dp, bottom = 14.dp), style = MaterialTheme.typography.labelMedium, color = scheme.onSurfaceVariant)
-                        if (chat.group && !message.mine && !grouped) Row(Modifier.padding(bottom = 4.dp), verticalAlignment = Alignment.CenterVertically) { val name = state.people[message.author] ?: "Former member"; Avatar(name, 20, message.author); Text(name, Modifier.padding(start = 6.dp), style = MaterialTheme.typography.bodySmall) }
+                        if (chat.group && !message.mine && !grouped) Row(Modifier.padding(bottom = 4.dp), verticalAlignment = Alignment.CenterVertically) { val name = state.people[message.author] ?: "Former member"; Avatar(name, 20, message.author); Text(name, Modifier.padding(start = 6.dp), style = MaterialTheme.typography.bodySmall, color = scheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis) }
                         Row(Modifier.fillMaxWidth().combinedClickable(interactionSource = remember { androidx.compose.foundation.interaction.MutableInteractionSource() }, indication = null, onClick = { details = message.author to message.id }, onLongClick = { selected = message to bounds })
                             .pointerInput(message.id, message.mine) { detectHorizontalDragGestures(onDragEnd = {
                                 if (abs(drag) >= threshold) respond(message, swipeAction(message.mine, drag) == "thread")
@@ -296,7 +296,7 @@ internal fun MessageBubble(message: ChatMessage, grouped: Boolean, followed: Boo
             CompositionLocalProvider(LocalMaterialOutgoing provides message.mine,LocalMessageSurface provides if (message.mine) scheme.primary else scheme.surfaceVariant) {
             Column(if (message.attachment == null) Modifier.padding(horizontal = if(objectOnly || bareLocation)0.dp else 14.dp, vertical = if(bareLocation)0.dp else 10.dp) else Modifier) {
                 message.reply?.let { Surface(shape = RoundedCornerShape(12.dp), color = (if (message.mine) scheme.onPrimary else scheme.onSurface).copy(alpha = .09f)) { Text(it, Modifier.padding(9.dp), style = MaterialTheme.typography.bodySmall, maxLines = 2, overflow = TextOverflow.Ellipsis) }; Spacer(Modifier.height(6.dp)) }
-                if (message.attachment != null) LocalAttachmentContent.current(message) else if (message.parts.isNotEmpty()) MessageCards(message, analyze, command, objectOnly) else MessageText(message.text, analyze)
+                if (message.attachment != null) LocalAttachmentContent.current(message) else if (message.parts.isNotEmpty()) MessageCards(message, analyze, command, objectOnly || bareLocation) else MessageText(message.text, analyze)
                 message.attachment?.caption?.takeIf { it.isNotEmpty() }?.let { caption ->
                     if (bareImage) Surface(Modifier.padding(top=4.dp), shape=RoundedCornerShape(16.dp), color=if(message.mine)scheme.primary else scheme.surfaceVariant, contentColor=if(message.mine)scheme.onPrimary else scheme.onSurfaceVariant) {
                         Box(Modifier.padding(horizontal=14.dp,vertical=10.dp)) { MessageText(caption,analyze) }
@@ -315,7 +315,7 @@ internal fun MessageDetails(message: ChatMessage, expanded: Boolean, receipt: Bo
     val motionPolicy = LocalMotion.current
     Row(Modifier.animateContentSize(motionPolicy.tween(MotionMillis)).padding(top = if (expanded || receipt) 4.dp else 0.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(5.dp)) {
         if (receipt) DeliveryReceipt(message, chat, people)
-        AnimatedVisibility(expanded, enter = fadeIn(motionPolicy.enter(MotionInline)) + expandHorizontally(motionPolicy.enter(MotionMillis), expandFrom = Alignment.End), exit = fadeOut(motionPolicy.exit(MotionExit)) + shrinkHorizontally(motionPolicy.exit(MotionQuick))) {
+        AnimatedVisibility(expanded, enter = fadeIn(motionPolicy.enter(MotionInline)) + expandHorizontally(motionPolicy.enter(MotionMillis), expandFrom = Alignment.End), exit = fadeOut(motionPolicy.exit(MotionExit)) + shrinkHorizontally(motionPolicy.exit(MotionQuick)), label = "Message details") {
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(5.dp)) {
                 if (receipt) Text("·", style = MaterialTheme.typography.labelSmall)
                 Text(message.time, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -394,7 +394,7 @@ private fun MessageMenu(message: ChatMessage, origin: Rect, returnTo: Rect, grou
                         if (target != Rect.Zero && source != Rect.Zero) { translationX = (source.left - target.left) * (1f - progress.value); translationY = (source.top - target.top) * (1f - progress.value) }
                     }) { CompositionLocalProvider(LocalMaterialTimeline provides null, LocalTextMotion provides null, LocalObjectMenu provides true) {MessageBubble(message, grouped, followed, analyze)} }
                 }
-                Surface(Modifier.width(232.dp).alpha(progress.value), shape = RoundedCornerShape(20.dp), color = MaterialTheme.colorScheme.surfaceVariant) {
+                Surface(Modifier.widthIn(min = 232.dp).alpha(progress.value), shape = RoundedCornerShape(20.dp), color = MaterialTheme.colorScheme.surfaceVariant) {
                     Column(Modifier.padding(vertical = 6.dp)) {
                         val entries = listOf("reply" to "Reply", "forward" to "Forward", "copy" to "Copy", "thread" to "Reply in thread", "pin" to if (message.pinned) "Unpin" else "Pin", "note" to if (message.noted) "Remove from notes" else "Add to notes") +
                             (if(message.hasMessageMotion())listOf("replay" to "Replay animation") else emptyList()) +
@@ -406,7 +406,7 @@ private fun MessageMenu(message: ChatMessage, origin: Rect, returnTo: Rect, grou
             }
         }
     }
-    if (emojiPicker) AlertDialog({ emojiPicker = false }, title = { Text("React with an emoji") }, text = { OutlinedTextField(emoji, { emoji = it }, singleLine = true) }, confirmButton = { SigilTextButton({ if (emoji.isNotBlank()) { emojiPicker = false; choose("react", emoji) } }) { Text("React") } })
+    if (emojiPicker) AlertDialog({ emojiPicker = false }, title = { Text("React with an emoji") }, text = { OutlinedTextField(emoji, { emoji = it }, label = { Text("Emoji") }, singleLine = true) }, confirmButton = { SigilTextButton({ if (emoji.isNotBlank()) { emojiPicker = false; choose("react", emoji) } }) { Text("React") } })
 }
 @Composable
 internal fun VerificationDialog(chat: ChatSummary, busy: Boolean, command: Command, close: () -> Unit) {

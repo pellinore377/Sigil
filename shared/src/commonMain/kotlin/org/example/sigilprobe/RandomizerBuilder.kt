@@ -42,7 +42,7 @@ internal fun RandomizerBuilder(enabled:Boolean,back:()->Unit,initialMode:String?
             SyntaxToggle(syntax) {syntax=!syntax}
         }
         if(initialMode==null)LazyRow(sizing.measure("modes"),horizontalArrangement=Arrangement.spacedBy(8.dp)) {
-            items(modes) {mode->FilterChip(selected=kind==mode,onClick={focus.clearFocus();keyboard?.hide();kind=mode},label={Text(mode)},shape=RoundedCornerShape(12.dp))}
+            items(modes,key={it}) {mode->FilterChip(selected=kind==mode,onClick={focus.clearFocus();keyboard?.hide();kind=mode},label={Text(mode)},shape=RoundedCornerShape(12.dp))}
         }
         Column(Modifier.weight(1f).verticalScroll(rememberScrollState()).wrapContentHeight(unbounded=true).then(sizing.measure("body")),verticalArrangement=Arrangement.spacedBy(12.dp)) {
         AnimatedContent(kind,transitionSpec={
@@ -99,7 +99,7 @@ private fun ExpandableRow(index:Int,content:@Composable RowScope.()->Unit) {
     val motion=LocalMotion.current
     val visible=remember {androidx.compose.animation.core.MutableTransitionState(index==0).apply {targetState=true}}
     AnimatedVisibility(visible,enter=expandVertically(motion.enter(MotionMillis),expandFrom=Alignment.Top)+slideInHorizontally(motion.enter(MotionMillis)) {it}+fadeIn(motion.enter(MotionMillis)),
-        exit=shrinkVertically(motion.exit(MotionMillis),shrinkTowards=Alignment.Top)+fadeOut(motion.exit(MotionExit))) {
+        exit=shrinkVertically(motion.exit(MotionQuick),shrinkTowards=Alignment.Top)+slideOutHorizontally(motion.exit(MotionQuick)) {it}+fadeOut(motion.exit(MotionExit)),label="Dice group") {
         Row(horizontalArrangement=Arrangement.spacedBy(10.dp),verticalAlignment=Alignment.CenterVertically,content=content)
     }
 }

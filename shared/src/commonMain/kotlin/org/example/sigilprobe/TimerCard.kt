@@ -19,9 +19,9 @@ import androidx.compose.ui.unit.dp
     val total=(part.at-part.startedAt).coerceAtLeast(1)
     val settled by animateFloatAsState(if(ended).75f else 1f,motion.tween(MotionMillis),label="Timer completion")
     val swept by animateFloatAsState(if(part.startedAt<=0)0f else (1f-remaining.toFloat()/total).coerceIn(0f,1f),motion.tween(MotionMillis),label="Timer progress")
-    TemporalCard("timer","Timer") {
+    CardFrame("timer","Timer") {
         if(part.at>0) {
-            Row(Modifier.alpha(settled),verticalAlignment=Alignment.CenterVertically,horizontalArrangement=Arrangement.spacedBy(if(compact)10.dp else 14.dp)) {
+            Row(Modifier.alpha(settled),verticalAlignment=Alignment.CenterVertically,horizontalArrangement=Arrangement.spacedBy(12.dp)) {
                 CircularProgressIndicator(progress={swept},modifier=Modifier.size(if(compact)40.dp else 44.dp),color=LocalContentColor.current,trackColor=LocalContentColor.current.copy(alpha=.16f))
                 AnimatedContent(ended,transitionSpec={(fadeIn(motion.enter(MotionMillis))+scaleIn(motion.enter(MotionMillis),initialScale=.96f)) togetherWith fadeOut(motion.exit(MotionExit)) using SizeTransform(false) {_,_->motion.tween(MotionMillis)}},label="Timer state") {done->
                     if(done)TemporalFigure("0:00","finished") else temporalClock(remaining).let {(value,unit)->TemporalFigure(value,unit)}
@@ -29,5 +29,6 @@ import androidx.compose.ui.unit.dp
             }
             TemporalCaption(listOfNotNull(part.date.takeIf {it.isNotEmpty()}?.let {"${if(ended)"Ended" else "Ends"} $it"},temporalSpan(total).takeIf {part.startedAt>0}).joinToString(" · "))
         }
+        else Text("No timer set.",style=MaterialTheme.typography.bodyMedium)
     }
 }

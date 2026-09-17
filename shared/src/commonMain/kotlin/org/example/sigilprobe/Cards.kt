@@ -23,7 +23,7 @@ internal fun MessageCards(message: ChatMessage, analyze: (String) -> String, com
                     Box(Modifier.padding(horizontal = 14.dp, vertical = 10.dp)) { text() }
                 } else text()
             }
-            else if (part.kind == "location") LocationCard(message, part, analyze, command)
+            else if (part.kind == "location") LocationCard(message, part, analyze, command, bareObjects)
             else if (part.table != null) TableCard(part.table)
             else if (part.recipe != null) RecipeCard(message, part)
             else if (part.chart != null) ChartCard(part.chart)

@@ -4,11 +4,14 @@ import androidx.compose.foundation.*
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.selection.toggleable
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.*
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.takeOrElse
 import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.*
 import androidx.compose.ui.text.style.TextOverflow
@@ -30,28 +33,31 @@ internal fun CodeBlock(value: RichText, language: String) {
     var expanded by remember(value) { mutableStateOf(false) }
     var wrap by remember { mutableStateOf(false) }
     val clipboard = LocalClipboardManager.current
-    val label = language.ifEmpty { "Code" }
     val lines = remember(value.text) { value.text.count { it == '\n' } + if (value.text.endsWith('\n')) 0 else 1 }
     val copy = { clipboard.setText(AnnotatedString(value.text)) }
+    val previewCap = with(LocalDensity.current) { MaterialTheme.typography.bodyMedium.lineHeight.toDp() * 8 }
+    val count = listOfNotNull(language.takeIf { it.isNotEmpty() }?.replaceFirstChar { it.uppercase() }, "$lines ${if (lines == 1) "line" else "lines"}").joinToString(" · ")
     Column(Modifier.widthIn(min = 200.dp, max = 280.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Text(label, Modifier.weight(1f), style = MaterialTheme.typography.labelMedium)
-            SigilIconButton(copy) { Glyph("content_copy", 20, "Copy code") }
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Glyph("code", 20); Text("Code", Modifier.weight(1f), style = MaterialTheme.typography.labelMedium)
         }
-        Box(Modifier.fillMaxWidth().heightIn(max = 240.dp).horizontalScroll(rememberScrollState()).clickable(role = Role.Button) { expanded = true }) {
+        Box(Modifier.fillMaxWidth().heightIn(max = previewCap).clip(RoundedCornerShape(12.dp)).horizontalScroll(rememberScrollState())
+            .clickable(role = Role.Button, onClickLabel = "Open code") { expanded = true }) {
             CodeText(value, false, 8)
         }
-        SigilTextButton({ expanded = true }) { Glyph("open_in_full", 18); Spacer(Modifier.width(8.dp)); Text("Open code · $lines ${if (lines == 1) "line" else "lines"}") }
+        Text(count, style = MaterialTheme.typography.labelSmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
+        SigilTextButton({ expanded = true }) { Glyph("open_in_full", 18); Spacer(Modifier.width(8.dp)); Text("Open code") }
     }
     if (expanded) Dialog({ expanded = false }, DialogProperties(usePlatformDefaultWidth = false)) {
         Surface(Modifier.fillMaxSize()) {
             Column(Modifier.fillMaxSize().safeDrawingPadding().padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     SigilIconButton({ expanded = false }) { Glyph("close", 24, "Close code") }
-                    Text(label, Modifier.weight(1f), style = MaterialTheme.typography.titleLarge)
+                    Text("Code", Modifier.weight(1f), style = MaterialTheme.typography.titleLarge)
                     SigilIconButton(copy) { Glyph("content_copy", 24, "Copy code") }
                 }
-                Row(Modifier.toggleable(wrap, role = Role.Checkbox) { wrap = it }, verticalAlignment = Alignment.CenterVertically) { Checkbox(wrap, null); Text("Wrap lines", style = MaterialTheme.typography.bodyMedium) }
+                Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(14.dp)).toggleable(wrap, role = Role.Checkbox) { wrap = it }.heightIn(min = 48.dp).padding(horizontal = 4.dp),
+                    verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) { Checkbox(wrap, null); Text("Wrap lines", style = MaterialTheme.typography.bodyMedium) }
                 SelectionContainer(Modifier.weight(1f).fillMaxWidth().verticalScroll(rememberScrollState()).then(if (wrap) Modifier else Modifier.horizontalScroll(rememberScrollState()))) {
                     CompositionLocalProvider(LocalMessageSurface provides MaterialTheme.colorScheme.surface) { CodeText(value, wrap, Int.MAX_VALUE) }
                 }

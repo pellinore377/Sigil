@@ -52,7 +52,7 @@ internal fun CallHistoryPage(state: MessengerState, command: Command, selectedCa
         val person = callContact(selected, state.chats)
         val related = state.calls.filter { call -> call.id == selected.id || person != null && callContact(call, state.chats)?.id == person.id }.sortedByDescending { it.created }
         LazyColumn(Modifier.fillMaxSize(), contentPadding = LocalHomeContentPadding.current) {
-            item {
+            item(key = "detail-header") {
                 Column(Modifier.fillMaxWidth().padding(horizontal = 24.dp, vertical = 24.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(12.dp)) {
                     Avatar(person?.name ?: callName(selected), 80, person?.avatar.orEmpty())
                     Text(person?.name ?: callName(selected), style = MaterialTheme.typography.headlineSmall,
@@ -69,13 +69,13 @@ internal fun CallHistoryPage(state: MessengerState, command: Command, selectedCa
     } else {
         val calls = state.calls.filter { !missedOnly || it.missed }.sortedByDescending { it.created }
         LazyColumn(Modifier.fillMaxSize(), contentPadding = LocalHomeContentPadding.current) {
-            item {
+            item(key = "filters") {
                 Row(Modifier.padding(horizontal = 24.dp, vertical = 8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     FilterChip(!missedOnly, { missedOnly = false }, { Text("All") }, shape = RoundedCornerShape(12.dp))
                     FilterChip(missedOnly, { missedOnly = true }, { Text("Missed") }, shape = RoundedCornerShape(12.dp))
                 }
             }
-            if (calls.isEmpty()) item { Box(Modifier.fillMaxWidth().padding(32.dp), contentAlignment = Alignment.Center) { Text(if (missedOnly) "No missed calls." else "Your calls will appear here.", color = MaterialTheme.colorScheme.onSurfaceVariant) } }
+            if (calls.isEmpty()) item("empty") { Box(Modifier.fillMaxWidth().padding(32.dp), contentAlignment = Alignment.Center) { Text(if (missedOnly) "No missed calls." else "Your calls will appear here.", color = MaterialTheme.colorScheme.onSurfaceVariant) } }
             var previousDay: String? = null
             calls.forEach { call ->
                 if (call.day.isNotBlank() && call.day != previousDay) { item(key = "day:${call.id}") { CallDay(call.day, itemMotion()) }; previousDay = call.day }

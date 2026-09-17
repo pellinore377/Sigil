@@ -11,7 +11,9 @@ import androidx.compose.ui.*
 import androidx.compose.ui.geometry.*
 import androidx.compose.ui.graphics.*
 import androidx.compose.ui.graphics.drawscope.scale
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.*
 import androidx.compose.ui.text.style.TextAlign
@@ -21,17 +23,19 @@ import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.flow.debounce
 import kotlinx.coroutines.flow.first
-import org.sigil.*
 import kotlin.math.*
 
 internal val MaterialDiceUnit=54.dp
 internal val MaterialCoinUnit=80.dp
 internal val MaterialCardWidth=148.dp
+internal const val MaterialCardAspect=1.47f
+internal val MaterialCardHeight=MaterialCardWidth*MaterialCardAspect
 internal const val MaterialObjectScale=1.89f
 internal val LocalMaterialOpacity=staticCompositionLocalOf {1f}
 
 interface MaterialPlatform {
     val available:Boolean
+    // progress >= 1f means settled: the platform view may be released back to the pool.
     @Composable fun Object(kind:Int,sides:Int,face:Int,rotation:FloatArray?,label:String?,modifier:Modifier,progress:Float)
     suspend fun record(data:FloatArray):FloatArray?
     fun horizontalExtent(sides:Int,face:Int,rotation:FloatArray?,outgoing:Boolean):Float
@@ -72,7 +76,8 @@ private suspend fun awaitLayout(anchor:MaterialAnchor,timeline:MaterialTimeline)
     BoxWithConstraints(modifier) {
         val inline=LocalMaterialInline.current;val outgoing=LocalMaterialOutgoing.current
         val width=constraints.maxWidth.toFloat();val height=constraints.maxHeight.toFloat();val density=LocalDensity.current
-        val cardWidth=minOf(width*(if(LocalObjectMenu.current || LocalMaterialInline.current).9f else .46f),with(density){MaterialCardWidth.toPx()});val cardHeight=cardWidth*1.47f
+        val haptic=LocalHapticFeedback.current
+        val cardWidth=minOf(width*(if(LocalObjectMenu.current || LocalMaterialInline.current).9f else .46f),with(density){MaterialCardWidth.toPx()});val cardHeight=cardWidth*MaterialCardAspect
         val cy=centerY ?: height/2
         val raw=progress.coerceIn(0f,1f)
         val p=if(launch!=null)((raw-.22f)/.78f).coerceIn(0f,1f)else raw
@@ -127,7 +132,7 @@ private suspend fun awaitLayout(anchor:MaterialAnchor,timeline:MaterialTimeline)
             val sizeScale=1-.045f*distance.coerceAtMost(3f)
             val objectWidth=cardWidth*sizeScale;val objectHeight=cardHeight*sizeScale
             CompositionLocalProvider(LocalMaterialOpacity provides opacity) {
-                MaterialObject(2,0,0,q,if(chosen)value.result else "",Modifier.offset {IntOffset((x-objectWidth/2).roundToInt(),(y-objectHeight/2).roundToInt())}.size(with(density){objectWidth.toDp()},with(density){objectHeight.toDp()}).graphicsLayer {alpha=opacity}.testTag("picker-card-$i").then(if(press!=null)Modifier.pointerInput(press){detectTapGestures(onLongPress={press()})}else Modifier).zIndex(if(chosen&&p>.54f)10f else 4-distance),progress=raw)
+                MaterialObject(2,0,0,q,if(chosen)value.result else "",Modifier.offset {IntOffset((x-objectWidth/2).roundToInt(),(y-objectHeight/2).roundToInt())}.size(with(density){objectWidth.toDp()},with(density){objectHeight.toDp()}).graphicsLayer {alpha=opacity}.testTag("picker-card-$i").then(if(press!=null)Modifier.pointerInput(press){detectTapGestures(onLongPress={haptic.performHapticFeedback(HapticFeedbackType.LongPress);press()})}.semantics{onLongClick("Message actions"){press();true}}else Modifier).zIndex(if(chosen&&p>.54f)10f else 4-distance),progress=raw)
             }
         }
         SideEffect {departure?.invoke()}
@@ -139,9 +144,9 @@ data class Flight(val data:FloatArray,val count:Int,val unit:Float,val viewport:
     fun pose(index:Int,p:Float):FloatArray {
         val t=(p*(frames-1)).coerceIn(0f,(frames-1).toFloat())
         val a=t.toInt();val b=minOf(a+1,frames-1);val f=t-a
+        // Adjacent recorded orientations differ by much less than a half-turn.
         val dot=(3..6).sumOf {j->data[1+(a*count+index)*7+j].toDouble()*data[1+(b*count+index)*7+j]}
         val out=FloatArray(7) {j->val x=data[1+(a*count+index)*7+j];val y=data[1+(b*count+index)*7+j]*(if(j>=3&&dot<0)-1f else 1f);x+(y-x)*f}
-        // Adjacent recorded orientations differ by much less than a half-turn.
         val length=sqrt((3..6).sumOf {out[it].toDouble()*out[it]}.toFloat());for(j in 3..6)out[j]/=length
         return out
     }
@@ -179,6 +184,7 @@ data class Flight(val data:FloatArray,val count:Int,val unit:Float,val viewport:
 @Composable private fun FlightObjects(anchor:MaterialAnchor,timeline:MaterialTimeline,viewport:Rect,progress:Float) {
     val platform=LocalMaterialPlatform.current
     val interactive=!LocalMaterialHandoffPass.current
+    val haptic=LocalHapticFeedback.current
     val value=anchor.value;val coin=value.kind=="coin";val items=if(coin)listOf(0 to value.selected)else value.dice.take(6).map {it.sides to it.face}
     if(items.isEmpty())return
     val density=LocalDensity.current;val rect=anchor.bounds
@@ -265,11 +271,11 @@ data class Flight(val data:FloatArray,val count:Int,val unit:Float,val viewport:
         Box(Modifier.testTag(if(plan!=null)"material-flight-recorded" else "material-flight-still").offset {IntOffset((x-size/2).roundToInt(),(y-size/2).roundToInt())}.size(with(density){size.toDp()})) {
             Canvas(Modifier.fillMaxSize()) {
                 val radius=this.size.minDimension*(.38f+altitude*.035f)
-                drawCircle(Brush.radialGradient(listOf(Color.Black.copy(alpha=.22f/(1+altitude)),Color.Transparent),center=this.center,radius=radius),radius,this.center)
+                drawCircle(Brush.radialGradient(listOf(Color.Black.copy(alpha=.15f/(1+altitude)),Color.Transparent),center=this.center,radius=radius),radius,this.center)
             }
         }
         CompositionLocalProvider(LocalMaterialLaunchWindow provides window) {
-            MaterialObject(if(coin)1 else 0,items[i].first,items[i].second,q,if(coin)value.result else value.dice.getOrNull(i)?.marking?.takeIf {it.isNotEmpty()},Modifier.offset {IntOffset((x-size*scale/2).roundToInt(),(y-lift-size*scale/2).roundToInt())}.size(with(density){(size*scale).toDp()}).testTag("material-object-$i").then(if(interactive)Modifier.pointerInput(anchor){detectTapGestures(onLongPress={anchor.press?.invoke()})}else Modifier),if(progress<1f || source!=null && dock.value<1f).5f else 1f)
+            MaterialObject(if(coin)1 else 0,items[i].first,items[i].second,q,if(coin)value.result else value.dice.getOrNull(i)?.marking?.takeIf {it.isNotEmpty()},Modifier.offset {IntOffset((x-size*scale/2).roundToInt(),(y-lift-size*scale/2).roundToInt())}.size(with(density){(size*scale).toDp()}).testTag("material-object-$i").then(if(interactive)Modifier.pointerInput(anchor){detectTapGestures(onLongPress={haptic.performHapticFeedback(HapticFeedbackType.LongPress);anchor.press?.invoke()})}.semantics{onLongClick("Message actions"){anchor.press?.invoke();true}}else Modifier),if(progress<1f || source!=null && dock.value<1f).5f else 1f)
         }
     }
     SideEffect {
@@ -285,7 +291,7 @@ data class Flight(val data:FloatArray,val count:Int,val unit:Float,val viewport:
     val columns=minOf(3,items.size).coerceAtLeast(1)
     BoxWithConstraints(modifier) {
         val rows=(items.size+columns-1)/columns
-        val unit=minOf(if(coin)MaterialCoinUnit else MaterialDiceUnit,maxWidth/(columns*1.85f),if(org.sigil.LocalObjectMenu.current)100.dp else maxHeight/(rows.coerceAtLeast(1)*2.1f))
+        val unit=minOf(if(coin)MaterialCoinUnit else MaterialDiceUnit,maxWidth/(columns*1.85f),if(LocalObjectMenu.current)100.dp else maxHeight/(rows.coerceAtLeast(1)*2.1f))
         val inline=LocalMaterialInline.current;val outgoing=LocalMaterialOutgoing.current;val poses=LocalMaterialRestPoses.current
         items.forEachIndexed {i,(sides,face)->
             val q=poses.getOrNull(i)

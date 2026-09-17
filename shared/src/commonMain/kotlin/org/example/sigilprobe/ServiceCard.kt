@@ -40,17 +40,17 @@ internal fun ServiceCard(value: ServiceContent) {
         RichMessageText(s.part, style = MaterialTheme.typography.labelMedium)
         RichMessageText(s.definition, if(full) Modifier else Modifier.heightIn(max=senseCap).clipToBounds())
         if(full) {
-            s.example?.let { Text("Example",style=MaterialTheme.typography.labelMedium); RichMessageText(it) }
-            s.etymology?.let { Text("Origin",style=MaterialTheme.typography.labelMedium); RichMessageText(it) }
-            if(s.synonyms.isNotEmpty()) { Text("Synonyms",style=MaterialTheme.typography.labelMedium); s.synonyms.forEach { RichMessageText(it) } }
-            if(s.antonyms.isNotEmpty()) { Text("Antonyms",style=MaterialTheme.typography.labelMedium); s.antonyms.forEach { RichMessageText(it) } }
+            s.example?.let { Text("Example",style=MaterialTheme.typography.labelMedium,color=MaterialTheme.colorScheme.onSurfaceVariant); RichMessageText(it) }
+            s.etymology?.let { Text("Origin",style=MaterialTheme.typography.labelMedium,color=MaterialTheme.colorScheme.onSurfaceVariant); RichMessageText(it) }
+            if(s.synonyms.isNotEmpty()) { Text("Synonyms",style=MaterialTheme.typography.labelMedium,color=MaterialTheme.colorScheme.onSurfaceVariant); s.synonyms.forEach { RichMessageText(it) } }
+            if(s.antonyms.isNotEmpty()) { Text("Antonyms",style=MaterialTheme.typography.labelMedium,color=MaterialTheme.colorScheme.onSurfaceVariant); s.antonyms.forEach { RichMessageText(it) } }
             SigilTextButton({ s.copy?.let { clipboard.setText(AnnotatedString(it)) } },enabled=s.copy!=null) { Glyph("content_copy",18);Spacer(Modifier.width(8.dp));Text("Copy definition") }
         }
     }
     @Composable fun conditions(c: WeatherConditions, full: Boolean) {
         Text(c.date,style=MaterialTheme.typography.labelMedium,maxLines=2,overflow=TextOverflow.Ellipsis)
         Row(verticalAlignment=Alignment.CenterVertically,horizontalArrangement=Arrangement.spacedBy(12.dp)) {
-            Glyph(c.icon,36); Text(c.temperature[unit],style=MaterialTheme.typography.headlineMedium,maxLines=1)
+            Glyph(c.icon,20); Text(c.temperature[unit],style=MaterialTheme.typography.headlineMedium,maxLines=1,overflow=TextOverflow.Ellipsis)
         }
         RichMessageText(c.description,if(full) Modifier else Modifier.heightIn(max=bodyCap).clipToBounds(),MaterialTheme.typography.bodyMedium)
         Text(listOfNotNull(c.feelsLike?.takeIf { it[unit]!=c.temperature[unit] }?.let { "Feels like ${it[unit]}" },c.chance?.let { "Precipitation $it" },c.rain,"Wind ${c.wind[unit]}",
@@ -61,7 +61,7 @@ internal fun ServiceCard(value: ServiceContent) {
             if(value.kind=="translation") MaterialTheme.typography.bodyLarge else if(full) MaterialTheme.typography.titleLarge else MaterialTheme.typography.titleMedium)
         value.pronunciation?.let { RichMessageText(it,if(full) Modifier else Modifier.heightIn(max=lineCap).clipToBounds(),MaterialTheme.typography.bodyMedium) }
         if(value.language.isNotEmpty()) Text(value.language,style=MaterialTheme.typography.labelMedium,maxLines=1,overflow=TextOverflow.Ellipsis)
-        if(value.kind=="translation") {
+        if(full && value.kind=="translation") {
             SigilTextButton({ original=!original }) { Glyph(if(original)"expand_less" else "expand_more",18);Spacer(Modifier.width(8.dp));Text(if(original)"Hide original" else "Show original") }
             Expandable(original) { value.original?.let { RichMessageText(it) } }
         }
@@ -69,7 +69,7 @@ internal fun ServiceCard(value: ServiceContent) {
             if(value.historical) Text("Historical weather snapshot",style=MaterialTheme.typography.labelMedium)
             value.current?.let { conditions(it,full) }
             value.days.firstOrNull { it.key==value.today }?.let { Text("High ${it.high[unit]} · Low ${it.low[unit]}",style=MaterialTheme.typography.labelMedium) }
-            SigilTextButton({ imperial=!imperial }) { Glyph("swap_horiz",18);Spacer(Modifier.width(8.dp));Text(if(imperial)"Use °C and km/h" else "Use °F and mph") }
+            if(full) SigilTextButton({ imperial=!imperial }) { Glyph("swap_horiz",18);Spacer(Modifier.width(8.dp));Text(if(imperial)"Use °C and km/h" else "Use °F and mph") }
         }
     }
     @Composable fun attribution(full: Boolean) {
@@ -96,18 +96,18 @@ internal fun ServiceCard(value: ServiceContent) {
                     }
                     LazyColumn(Modifier.weight(1f).fillMaxWidth(),verticalArrangement=Arrangement.spacedBy(16.dp)) {
                         item { Column(verticalArrangement=Arrangement.spacedBy(10.dp)) { heading(true) } }
-                        items(value.senses) { Column(verticalArrangement=Arrangement.spacedBy(8.dp)) { sense(it,true) } }
+                        itemsIndexed(value.senses,key={ index,entry->"$index:${entry.part.text}" }) { _,entry-> Column(itemMotion(),verticalArrangement=Arrangement.spacedBy(8.dp)) { sense(entry,true) } }
                         if(value.audio!=null) item { SigilTextButton({ uri.openUri(value.audio) }) { Glyph("volume_up",18);Spacer(Modifier.width(8.dp));Text("Open pronunciation audio") } }
                         if(value.days.isNotEmpty()) item {
-                            Text("Forecast",style=MaterialTheme.typography.titleMedium)
+                            Text("Forecast",style=MaterialTheme.typography.labelMedium,color=MaterialTheme.colorScheme.onSurfaceVariant)
                             LazyRow(horizontalArrangement=Arrangement.spacedBy(8.dp)) { items(value.days,key={ it.key }) { day ->
                                 val active=selectedDay==day.key
-                                Surface(Modifier.width(180.dp).clip(RoundedCornerShape(16.dp)).selectableChoice(active) { selectedDay=day.key },shape=RoundedCornerShape(16.dp),
-                                    color=if(active)MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surfaceVariant,contentColor=if(active)MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurface) {
+                                Surface(Modifier.widthIn(min=180.dp).clip(RoundedCornerShape(16.dp)).selectableChoice(active) { selectedDay=day.key },shape=RoundedCornerShape(16.dp),
+                                    color=if(active)MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surfaceVariant,contentColor=if(active)MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurfaceVariant) {
                                     Column(Modifier.padding(14.dp),verticalArrangement=Arrangement.spacedBy(8.dp)) {
-                                        Text(day.date,style=MaterialTheme.typography.labelMedium,maxLines=1,overflow=TextOverflow.Ellipsis); Glyph(day.icon,28)
-                                        Text("${day.high[unit]} / ${day.low[unit]}",maxLines=1); RichMessageText(day.description,Modifier.heightIn(max=bodyCap).clipToBounds(),MaterialTheme.typography.bodyMedium)
-                                        Text("Precipitation ${day.chance}",style=MaterialTheme.typography.labelMedium,maxLines=1)
+                                        Text(day.date,style=MaterialTheme.typography.labelMedium,maxLines=1,overflow=TextOverflow.Ellipsis); Glyph(day.icon,20)
+                                        Text("${day.high[unit]} / ${day.low[unit]}",maxLines=1,overflow=TextOverflow.Ellipsis); RichMessageText(day.description,Modifier.heightIn(max=bodyCap).clipToBounds(),MaterialTheme.typography.bodyMedium)
+                                        Text("Precipitation ${day.chance}",style=MaterialTheme.typography.labelMedium,maxLines=1,overflow=TextOverflow.Ellipsis)
                                     }
                                 }
                             } }
@@ -115,7 +115,7 @@ internal fun ServiceCard(value: ServiceContent) {
                         if(value.kind=="weather") {
                             val hours=value.hours.filter { it.key==selectedDay }
                             if(hours.isEmpty()) item { Box(Modifier.fillMaxWidth().padding(32.dp),contentAlignment=Alignment.Center) { Text("No hourly forecast for this day.",style=MaterialTheme.typography.bodyMedium,color=MaterialTheme.colorScheme.onSurfaceVariant) } }
-                            else item { Text("Hourly forecast",style=MaterialTheme.typography.titleMedium) }
+                            else item { Text("Hourly forecast",style=MaterialTheme.typography.labelMedium,color=MaterialTheme.colorScheme.onSurfaceVariant) }
                             value.days.firstOrNull { it.key==selectedDay }?.charts?.getOrNull(unit)?.let { chart -> item {
                                 ChartPlot(chart,emptySet(),selectedHour,{selectedHour=it},Modifier.fillMaxWidth().height(220.dp))
                             } }

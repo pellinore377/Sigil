@@ -42,11 +42,11 @@ internal fun NewConversation(state: MessengerState, command: Command, back: () -
             SigilButton({ command("group_create", mapOf("name" to title.trim(), "description" to description, "peers" to selected)) }, enabled = title.isNotBlank() && unverified.isEmpty() && !state.busy) { Text("Create group") }
         } else {
             if (selected.isNotEmpty()) LazyRow(contentPadding = PaddingValues(horizontal = 20.dp), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                items(selected) { id -> InputChip(true, { selected = selected - id }, { Text(state.chats.find { it.id == id }?.name ?: "Note to Self") }, trailingIcon = { Glyph("close", 15) }) }
+                items(selected, key = { it }) { id -> InputChip(true, { selected = selected - id }, { Text(state.chats.find { it.id == id }?.name ?: "Note to Self") }, itemMotion(), trailingIcon = { Glyph("close", 15) }) }
             }
             OutlinedTextField(query, { query = it }, Modifier.fillMaxWidth().padding(20.dp), label = { Text("Name or user address") }, placeholder = { Text("@someone:example.com") }, singleLine = true, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri, autoCorrectEnabled = false))
             LazyColumn(Modifier.weight(1f)) {
-                item { SettingsLink("edit_note", "Note to Self", "A private space for your own thoughts") { selected = if ("self" in selected) selected - "self" else listOf("self") } }
+                item(key = "note-to-self") { SettingsLink("edit_note", "Note to Self", "A private space for your own thoughts") { selected = if ("self" in selected) selected - "self" else listOf("self") } }
                 items(state.chats.filter { it.id != "self" && !it.group && (it.name.contains(query, true) || it.address.contains(query, true)) }, key = { it.id }) { chat ->
                     ChatRow(chat, chat.id in selected, open = { selected = if (chat.id in selected) selected - chat.id else selected.filter { it != "self" } + chat.id })
                 }
@@ -86,8 +86,8 @@ internal fun NewCallDialog(state: MessengerState, command: Command, close: () ->
         }
     }, confirmButton = {
         FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-            SigilTextButton({ start(false) }, enabled = enabled) { Glyph("call", 20); Spacer(Modifier.width(6.dp)); Text("Audio call") }
-            if (features.videoCalls) SigilTextButton({ start(true) }, enabled = enabled) { Glyph("videocam", 20); Spacer(Modifier.width(6.dp)); Text("Video call") }
+            SigilTextButton({ start(false) }, enabled = enabled) { Glyph("call", 20); Spacer(Modifier.width(8.dp)); Text("Audio call") }
+            if (features.videoCalls) SigilTextButton({ start(true) }, enabled = enabled) { Glyph("videocam", 20); Spacer(Modifier.width(8.dp)); Text("Video call") }
         }
     }, dismissButton = { SigilTextButton(close) { Text("Cancel") } })
 }
@@ -127,7 +127,7 @@ internal fun PersonalPage(page: String, state: MessengerState, command: Command,
                                 if (device.current) SigilTextButton({ command("sign_out", emptyMap()) }, enabled = !state.busy) { Text("Sign out") }
                                 else if (device.revoked != true) SigilTextButton({ revoking = device }, enabled = !state.busy) { Text("Remove device") }
                                 else SigilTextButton({ command("organize", mapOf("peer" to null, "value" to mapOf("UiSetting" to mapOf("key" to "device_hidden.${device.id}", "value" to "true")))) }, enabled = !state.busy) { Text("Remove from list") }
-                                SigilTextButton({ details = !details }) { Text("Details"); Spacer(Modifier.width(8.dp)); Glyph(if (details) "expand_less" else "expand_more", 18, if (details) "Hide device details" else "Show device details") }
+                                SigilTextButton({ details = !details }) { Glyph(if (details) "expand_less" else "expand_more", 18); Spacer(Modifier.width(8.dp)); Text("Details") }
                             }
                             Expandable(details) {
                                 Column(Modifier.padding(horizontal = 12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
@@ -170,7 +170,7 @@ internal fun PersonalPage(page: String, state: MessengerState, command: Command,
                     SigilTextButton({ command("sign_out", emptyMap()) }, enabled = !state.busy) { Text("Sign out of this device") }
                 }
                 "privacy" -> {
-                    Text("Account preferences. Conversations can have their own overrides.", Modifier.padding(horizontal = 12.dp, vertical = 16.dp), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    SettingsNote("Account preferences. Conversations can have their own overrides.")
                     SettingsToggle("Read receipts", "Let contacts see when you read messages", state.readReceipts, !state.busy) { command("organize", mapOf("peer" to null, "value" to mapOf("ReadReceipts" to it))) }
                     SettingsToggle("Typing indicators", "Show when you are writing", state.typingIndicators, !state.busy) { command("organize", mapOf("peer" to null, "value" to mapOf("TypingIndicators" to it))) }
                     state.allowRequests?.let { enabled -> SettingsToggle("Allow message requests", "Let people request a conversation", enabled, !state.busy) { command("contact_policy", mapOf("enabled" to it)) } }
@@ -237,7 +237,16 @@ internal fun PersonalPage(page: String, state: MessengerState, command: Command,
                         SigilTextButton({ command("history_open", emptyMap()) }) { Text("Browse saved history") }
                     }
                     if (state.transfers.isNotEmpty()) SettingsSectionLabel("Transfers")
-                    state.transfers.forEach { transfer -> SettingsLink("upload_file", transfer.name, transfer.phase) { command("file_cancel", mapOf("request" to transfer.request)) } }
+                    state.transfers.forEach { transfer ->
+                        Row(Modifier.fillMaxWidth().heightIn(min = 72.dp).padding(horizontal = 12.dp, vertical = 12.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(16.dp)) {
+                            CompositionLocalProvider(LocalContentColor provides MaterialTheme.colorScheme.onSurfaceVariant) { Glyph("upload_file", 24) }
+                            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                                Text(transfer.name, style = MaterialTheme.typography.titleMedium, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                                Text(transfer.phase, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            }
+                            Symbol("close", "Cancel ${transfer.name}") { command("file_cancel", mapOf("request" to transfer.request)) }
+                        }
+                    }
                 }
                 else -> {
                     Text("Sigil", Modifier.padding(horizontal = 12.dp), style = MaterialTheme.typography.headlineSmall)
