@@ -18,8 +18,26 @@ pub(crate) fn recipient_specific(error: &network::Error) -> bool {
         || matches!(error, network::Error::Status { code: 404 | 507, .. })
 }
 pub(crate) fn recipient_unavailable(error: &network::Error) -> bool {
-    recipient_full(error) || matches!(error, network::Error::Status { code: 404, retry_after_seconds: None })
+    recipient_full(error) || recipient_unknown(error)
 }
+
+/// The server has no such recipient device. Unlike a full or unreachable recipient
+/// this does not resolve on its own: a device record is not restored once it is gone.
+pub(crate) fn recipient_unknown(error: &network::Error) -> bool {
+    matches!(
+        error,
+        network::Error::Status {
+            code: 404,
+            retry_after_seconds: None
+        }
+    )
+}
+
+/// How long a recipient must keep answering that it does not exist before its queued
+/// packets are given up on. A 404 is the server's statement about whether the device
+/// record exists, not about whether it is reachable, so this needs to outlast a
+/// deployment blip rather than an offline phone.
+const UNKNOWN_RECIPIENT_GRACE: u64 = 3600;
 
 #[derive(Debug)]
 pub struct OutboundAttempt {
@@ -141,6 +159,7 @@ impl ClientStore {
             };
             // Full, unknown and not-yet-trusted recipients wait instead of costing every pass;
             // granting trust clears the wait.
+            let unknown = matches!(&result, Err(Error::Network(error)) if recipient_unknown(error));
             let backoff = match &result {
                 Err(Error::Network(error)) if recipient_full(error) => 60,
                 Err(Error::Network(error)) if recipient_unavailable(error) => 300,
@@ -148,10 +167,24 @@ impl ClientStore {
                 _ => 0,
             };
             if backoff > 0 {
+                // Keep the first refusal's timestamp so a run of them can be measured.
                 self.db.execute(
-                    "INSERT INTO outbound_backoff VALUES(?1,?2) ON CONFLICT(session) DO UPDATE SET until=excluded.until",
-                    (lane.session.as_slice(), (now + backoff) as i64),
+                    "INSERT INTO outbound_backoff VALUES(?1,?2,?3,1) ON CONFLICT(session) DO UPDATE SET until=excluded.until, attempts=outbound_backoff.attempts+1, since=CASE WHEN ?4 AND outbound_backoff.since>0 THEN outbound_backoff.since ELSE excluded.since END",
+                    (
+                        lane.session.as_slice(),
+                        (now + backoff) as i64,
+                        if unknown { now as i64 } else { 0 },
+                        unknown,
+                    ),
                 )?;
+            } else {
+                self.db.execute(
+                    "DELETE FROM outbound_backoff WHERE session=?1",
+                    [lane.session.as_slice()],
+                )?;
+            }
+            if unknown {
+                self.abandon_unknown_recipient(lane.session, now)?;
             }
             next = lane.session.to_vec();
             attempts.push(OutboundAttempt { session: lane.session, result });
@@ -165,6 +198,41 @@ impl ClientStore {
         }
         tx.commit()?;
         Ok(attempts)
+    }
+
+    /// Give up on packets addressed to a device the server has kept refusing as
+    /// unknown. They can never be delivered, and until they are released they hold a
+    /// session at its queue limit, which refuses every later message to that peer.
+    fn abandon_unknown_recipient(&mut self, session: Id, now: u64) -> Result<(), Error> {
+        let since: Option<i64> = self
+            .db
+            .query_row(
+                "SELECT since FROM outbound_backoff WHERE session=?1 AND since>0",
+                [session.as_slice()],
+                |r| r.get(0),
+            )
+            .optional()?;
+        let Some(since) = since else { return Ok(()) };
+        if now.saturating_sub(since.max(0) as u64) < UNKNOWN_RECIPIENT_GRACE {
+            return Ok(());
+        }
+        let tx = self
+            .db
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        tx.execute(
+            "UPDATE outbox SET packet=NULL WHERE session=?1 AND packet IS NOT NULL",
+            [session.as_slice()],
+        )?;
+        tx.execute(
+            "DELETE FROM outbound_backoff WHERE session=?1",
+            [session.as_slice()],
+        )?;
+        tx.commit()?;
+        // A session whose recipient is gone should not hold one of the peer's slots.
+        match self.retire_session(session) {
+            Ok(()) | Err(Error::NotFound | Error::Conflict | Error::UnsupportedSession) => Ok(()),
+            Err(error) => Err(error),
+        }
     }
 }
 
@@ -190,6 +258,64 @@ mod tests {
     fn revoked_recipient_does_not_back_off_other_delivery_or_receiving() {
         recipient_failure(true)
     }
+    /// A device the server has forgotten never comes back, so its queued packets must
+    /// be released rather than holding the session at its limit forever.
+    #[test]
+    fn a_recipient_the_server_keeps_refusing_stops_holding_the_queue() {
+        use crate::connection::tests::credential;
+        let (dir, _fixture, mut alice, mut bob, now) = pair();
+        let mut server = sigil_server::store::Store::open(&dir.path().join("server.db")).unwrap();
+        let (_, b) = trust(&mut alice, &mut bob);
+        alice.prepare_peer_claim([0; 32], b).unwrap();
+        alice.claim_prekey_online([0; 32], now).unwrap();
+        alice
+            .start_claimed_text([0; 32], [0; 32], [0; 32], "queued", now, now)
+            .unwrap();
+        let recipient = bob.connection_session().unwrap().unwrap().device_id;
+        server
+            .revoke_device(&credential(&bob), &recipient, now)
+            .unwrap();
+        fn queued(store: &ClientStore) -> i64 {
+            store
+                .db
+                .query_row(
+                    "SELECT count(*) FROM outbox WHERE packet IS NOT NULL",
+                    [],
+                    |r| r.get(0),
+                )
+                .unwrap()
+        }
+        assert_eq!(queued(&alice), 1);
+        // Inside the grace window the packet is kept: a refusal may be a server blip.
+        for attempt in alice.resume_outbound_online(now).unwrap() {
+            assert!(attempt.result.is_err());
+        }
+        assert_eq!(queued(&alice), 1);
+        for attempt in alice
+            .resume_outbound_online(now + UNKNOWN_RECIPIENT_GRACE - 1)
+            .unwrap()
+        {
+            assert!(attempt.result.is_err());
+        }
+        assert_eq!(queued(&alice), 1);
+        // Past it the packet is released and the dead session frees its peer slot.
+        for attempt in alice
+            .resume_outbound_online(now + UNKNOWN_RECIPIENT_GRACE + 400)
+            .unwrap()
+        {
+            assert!(attempt.result.is_err());
+        }
+        assert_eq!(queued(&alice), 0);
+        assert_eq!(
+            alice
+                .db
+                .query_row("SELECT count(*) FROM outbound_backoff", [], |r| r
+                    .get::<_, i64>(0))
+                .unwrap(),
+            0
+        );
+    }
+
     fn recipient_failure(revoked: bool) {
         use crate::connection::tests::{credential, prepare};
         use sigil_protocol::{accounts::InviteRequest, mailbox::Submit};

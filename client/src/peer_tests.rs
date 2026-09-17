@@ -448,23 +448,35 @@ fn retired_sessions_free_peer_slots_even_when_peer_is_blocked() {
             .db
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .unwrap();
-        let result = bind_session(&tx, &client.key, &[n; 32], &peer.id);
-        if n <= 8 {
-            result.unwrap();
-            tx.commit().unwrap();
-        } else {
-            assert!(matches!(result, Err(Error::Limit)));
-        }
+        // Past the limit an idle session is retired to make room, so a peer never
+        // stops accepting sessions and never exceeds the limit either.
+        bind_session(&tx, &client.key, &[n; 32], &peer.id).unwrap();
+        tx.commit().unwrap();
+        assert!(
+            client
+                .db
+                .query_row(
+                    "SELECT count(*) FROM sessions WHERE peer=?1 AND retired=0",
+                    [peer.id.as_slice()],
+                    |r| r.get::<_, i64>(0)
+                )
+                .unwrap()
+                <= MAX_SESSIONS as i64
+        );
     }
     client.block_peer(peer.id, true).unwrap();
-    client.retire_session([1; 32]).unwrap();
-    client.retire_session([1; 32]).unwrap();
+    client.retire_session([2; 32]).unwrap();
+    client.retire_session([2; 32]).unwrap();
     client.block_peer(peer.id, false).unwrap();
+    let dh = sigil_crypto::DhKey::generate().unwrap();
+    let state =
+        Session::initiator(Secret32::from_bytes([7; 32]), dh.public_key(), [8; 32]).unwrap();
+    client.insert_session([10; 32], state).unwrap();
     let tx = client
         .db
         .transaction_with_behavior(TransactionBehavior::Immediate)
         .unwrap();
-    bind_session(&tx, &client.key, &[9; 32], &peer.id).unwrap();
+    bind_session(&tx, &client.key, &[10; 32], &peer.id).unwrap();
     tx.commit().unwrap();
     assert_eq!(
         client
@@ -486,7 +498,7 @@ fn retired_sessions_free_peer_slots_even_when_peer_is_blocked() {
                 |r| r.get::<_, i64>(0)
             )
             .unwrap(),
-        9
+        10
     );
 }
 
