@@ -9,6 +9,7 @@ import androidx.compose.ui.*
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.semantics.*
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.*
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.rememberTextMeasurer
@@ -37,20 +38,19 @@ internal fun ComposerTool(name:String,icon:String,enabled:Boolean=true,primary:B
             contentColor=if(primary)MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha=if(enabled)1f else .38f)) {
             Box(contentAlignment=Alignment.Center) {Glyph(icon,24)}
         }
-        Text(name,style=MaterialTheme.typography.labelSmall,textAlign=TextAlign.Center,color=MaterialTheme.colorScheme.onSurface.copy(alpha=if(enabled)1f else .38f))
+        Text(name,Modifier.fillMaxWidth(),style=MaterialTheme.typography.labelSmall,textAlign=TextAlign.Center,maxLines=2,overflow=TextOverflow.Ellipsis,color=MaterialTheme.colorScheme.onSurface.copy(alpha=if(enabled)1f else .38f))
     }
 }
+
+// The attachment and voice panels share one height, tall enough for two rows of tiles with wrapped labels.
+internal val ToolPanelHeight=252.dp
 
 @Composable
 internal fun AttachmentTools(hasAttachment:Boolean,hasStructured:Boolean,open:(String)->Unit) {
     val features=LocalClientFeatures.current
     val tools=listOf("Emoji" to "mood","Photos" to "image","Camera" to "photo_camera","Files" to "draft","One-time location" to "my_location","Real-time location" to "sensors","Drop a pin" to "place","Create" to "add_notes","Format" to "text_format")
-    val preferred=LocalComposerPanelHeight.current
-    BoxWithConstraints(Modifier.widthIn(max=660.dp).fillMaxWidth()) {
-        val height=toolGridHeight(tools,maxWidth-16.dp)+8.dp
-        SideEffect {preferred?.invoke(height)}
-
-        LazyVerticalGrid(GridCells.Fixed(5),modifier=Modifier.fillMaxWidth().height(height),contentPadding=PaddingValues(start=8.dp,end=8.dp,top=8.dp),verticalArrangement=Arrangement.spacedBy(4.dp),horizontalArrangement=Arrangement.spacedBy(8.dp)) {
+    Box(Modifier.widthIn(max=660.dp).fillMaxWidth()) {
+        LazyVerticalGrid(GridCells.Fixed(5),modifier=Modifier.fillMaxSize(),contentPadding=PaddingValues(start=8.dp,end=8.dp,top=8.dp,bottom=8.dp),verticalArrangement=Arrangement.spacedBy(4.dp),horizontalArrangement=Arrangement.spacedBy(8.dp)) {
             items(tools,key={it.first}) {(name,icon)->
                 val allowed=when(name){"Photos","Files","Camera"->!hasStructured&&features.files;"One-time location","Real-time location","Drop a pin"->!hasStructured&&features.locations;"Format","Emoji"->true;else->!hasAttachment}
                 ComposerTool(name,icon,allowed) {open(name)}
