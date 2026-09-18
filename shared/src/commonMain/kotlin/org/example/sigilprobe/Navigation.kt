@@ -23,6 +23,9 @@ import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.blur
+import androidx.compose.ui.graphics.TileMode
+import androidx.compose.ui.graphics.BlurEffect
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.style.TextOverflow
@@ -189,13 +192,18 @@ fun SigilApp(palette: (Int, Boolean) -> String, analyze: (String) -> String, sta
             Column(Modifier.fillMaxSize().windowInsetsPadding(WindowInsets.displayCutout.only(WindowInsetsSides.Horizontal)).onPreviewKeyEvent {
                 if (it.type == KeyEventType.KeyDown && it.key == Key.Escape) { back(); true } else false
             }) {
+                var welcomed by remember { mutableStateOf(read("welcomed") == "true") }
+                var sawSignIn by remember { mutableStateOf(false) }
                 when {
                     state.phase == "loading" -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { CircularProgressIndicator() }
                     state.phase == "unavailable" -> Box(Modifier.fillMaxSize().padding(32.dp), contentAlignment = Alignment.Center) { Text("Connected messaging is currently available in the Android development build.") }
                     state.phase != "connected" -> Box(Modifier.imePadding()) {
+                        SideEffect { sawSignIn = true }
                         SignIn(state, command)
                         state.issue?.let { issue -> Box(Modifier.align(Alignment.BottomCenter).padding(16.dp).widthIn(max = 620.dp)) { SyncNotice(issue) { command("dismiss", emptyMap()) } } }
                     }
+                    // Straight after a sign-in, once: what contacts may see, before the inbox.
+                    !welcomed && sawSignIn -> Box(Modifier.imePadding()) { WelcomePermissions(state, command) { write("welcomed", "true"); welcomed = true } }
                     else -> {
                         val accessNotice = state.accountAccess?.let { it.linked && it.retiring && !it.acknowledged } == true && page != "profile" && state.call == null
                         val destination = when { wide && chat == null && page == "inbox" -> "welcome"; state.call != null && !callMinimized -> "call"; chat?.archived == true -> "saved-conversation"; chat != null -> when (conversationPage) { "Chat theme" -> "theme"; "Settings" -> "chat-settings"; else -> "conversation" }; page in listOf("inbox", "search", "notes", "calls", "settings") -> "home"; else -> page }
@@ -219,7 +227,9 @@ fun SigilApp(palette: (Int, Boolean) -> String, analyze: (String) -> String, sta
                         SideEffect {footer.headerBottom=workspaceTop+settledHeaderExtent}
                         Box(Modifier.weight(1f).fillMaxWidth().background(LocalGlobalBackground.current).onGloballyPositioned {workspaceTop=it.positionInWindow().y}) {
                             // Everything beneath the message menu blurs as one layer, so the veil is contiguous across page and chrome.
-                            Box(Modifier.matchParentSize().blur(18.dp * footer.menu)) {
+                            // One layer that stays put: only its blur changes, so nothing beneath is re-rasterised when the menu closes.
+                            val menuBlur = with(LocalDensity.current) { (18.dp * footer.menu).toPx() }
+                            Box(Modifier.matchParentSize().graphicsLayer { renderEffect = if (menuBlur > 0f) BlurEffect(menuBlur, menuBlur, TileMode.Clamp) else null; clip = true }) {
                         AnimatedContent(Screen(destination, page, chat, conversationPage, state, newTitle, thread?.id), Modifier.fillMaxSize().captureBackdrop(backdrop), contentKey = { it.destination }, transitionSpec = {
                             val enter = if (targetState.destination == "conversation") EnterTransition.None
                                 else if (goingBack) fadeIn(motionPolicy.enter(MotionMillis)) else slideInVertically(motionPolicy.enter(MotionMillis)) { it } + fadeIn(motionPolicy.enter(MotionMillis))
