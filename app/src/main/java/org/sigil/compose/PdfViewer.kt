@@ -51,10 +51,7 @@ internal fun PdfViewer(message: ChatMessage, close: () -> Unit) {
     DisposableEffect(shown) { onDispose { shown?.bitmap?.recycle() } }
     val saver=rememberAttachmentSaver(message)
     Dialog(close,DialogProperties(usePlatformDefaultWidth=false,decorFitsSystemWindows=false)) {
-        DocumentViewerChrome(file.name,"PDF",file.bytes,close,saver.save,saver.saving,caption=file.caption,actions={
-            SigilIconButton({zoom=(zoom/1.5f).coerceAtLeast(1f);pan=Offset.Zero},enabled=zoom>1f) { Glyph("zoom_out",24,"Zoom out PDF") }
-            SigilIconButton({zoom=(zoom*1.5f).coerceAtMost(5f)},enabled=zoom<5f) { Glyph("zoom_in",24,"Zoom in PDF") }
-        }) {
+        DocumentViewerChrome(file.name,"PDF",file.bytes,close,saver.save,saver.saving,caption=file.caption) {
             saver.Notice()
             Column(Modifier.fillMaxSize().padding(horizontal=16.dp,vertical=8.dp),verticalArrangement=Arrangement.spacedBy(12.dp)) {
                 Box(Modifier.weight(1f).fillMaxWidth(),contentAlignment=Alignment.Center) {
@@ -73,6 +70,7 @@ internal fun PdfViewer(message: ChatMessage, close: () -> Unit) {
                     }) {
                         Image(shown.bitmap.asImageBitmap(),"PDF page ${shown.index+1}",Modifier.fillMaxSize().graphicsLayer { scaleX=zoom;scaleY=zoom;translationX=pan.x;translationY=pan.y },contentScale=ContentScale.Fit)
                     }
+                    if(shown!=null) ZoomControls({zoom=(zoom*1.5f).coerceAtMost(5f)},{zoom=(zoom/1.5f).coerceAtLeast(1f);pan=Offset.Zero},zoom<5f,zoom>1f,Modifier.align(Alignment.BottomEnd))
                 }
                 Row(Modifier.fillMaxWidth(),horizontalArrangement=Arrangement.SpaceBetween,verticalAlignment=Alignment.CenterVertically) {
                     SigilIconButton({index--},enabled=!loading && index>0) { Glyph("chevron_left",24,"Previous PDF page") }

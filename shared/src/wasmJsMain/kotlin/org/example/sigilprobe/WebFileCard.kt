@@ -160,8 +160,10 @@ private class WebTrackPlayback(private val audio: HTMLAudioElement, private val 
             text != null -> TextDocumentView(text!!, kind == AttachmentKind.Markdown)
             kind == AttachmentKind.Pdf -> {
                 // The browser's own PDF reader, framed on the file's object URL.
-                val frame = remember(current) { (document.createElement("iframe") as HTMLIFrameElement).apply { src = current; setAttribute("title", file.name); setAttribute("style", "border:0;width:100%;height:100%;background:#fff") } }
-                WebElementView(factory = { frame }, modifier = Modifier.fillMaxSize(), update = {})
+                var zoom by remember(current) { mutableStateOf(1f) }
+                val frame = remember(current) { (document.createElement("iframe") as HTMLIFrameElement).apply { src = current; setAttribute("title", file.name) } }
+                WebElementView(factory = { frame }, modifier = Modifier.fillMaxSize(), update = { it.setAttribute("style", "border:0;background:#fff;transform-origin:0 0;transform:scale($zoom);width:${100 / zoom}%;height:${100 / zoom}%") })
+                ZoomControls({ zoom = (zoom * 1.25f).coerceAtMost(4f) }, { zoom = (zoom / 1.25f).coerceAtLeast(1f) }, zoom < 4f, zoom > 1f, Modifier.align(Alignment.BottomEnd))
             }
             kind in setOf(AttachmentKind.Markdown, AttachmentKind.Text, AttachmentKind.Sheet) -> CircularProgressIndicator(Modifier.align(Alignment.Center))
             else -> Column(Modifier.align(Alignment.Center).padding(24.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(12.dp)) {

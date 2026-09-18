@@ -236,7 +236,7 @@ internal fun AndroidAttachment(message: ChatMessage) {
     }
     val captioned = file.caption.isNotBlank() && (image || playable)
     val frameShape = if (captioned) androidx.compose.ui.graphics.RectangleShape else androidx.compose.foundation.shape.RoundedCornerShape(20.dp)
-    val captionBlock: (@Composable () -> Unit)? = if (!captioned) null else { { Box(Modifier.padding(horizontal = 14.dp, vertical = 10.dp)) { org.sigil.MessageText(file.caption, org.sigil.NativeCore::analyze) } } }
+    val captionBlock: (@Composable () -> Unit)? = if (!captioned) null else { { Box(Modifier.fillMaxWidth().background(org.sigil.LocalBubbleGround.current).padding(horizontal = 14.dp, vertical = 10.dp)) { org.sigil.MessageText(file.caption, org.sigil.NativeCore::analyze) } } }
     Column(Modifier.widthIn(max = 300.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
         val picture = bitmap
         if (playable) org.sigil.ImageMessageFrame(if (imageWidth > 0) imageWidth else picture?.width ?: 16, if (imageHeight > 0) imageHeight else picture?.height ?: 9, frameShape, captionBlock) { frame ->

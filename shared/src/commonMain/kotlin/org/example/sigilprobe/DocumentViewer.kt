@@ -1,7 +1,9 @@
+@file:OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
 package org.sigil
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -11,18 +13,18 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
-import androidx.compose.runtime.Composable
-import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.layout.boundsInWindow
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.setValue
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 
@@ -30,7 +32,7 @@ internal val ViewerHeaderShape = RoundedCornerShape(24.dp)
 private val ViewerCaptionShape = RoundedCornerShape(28.dp)
 
 // The timeline's floating glass header, over whatever the page shows beneath it.
-@Composable internal fun ViewerHeader(backdrop: ChromeBackdrop, modifier: Modifier = Modifier, extent: (androidx.compose.ui.unit.Dp) -> Unit = {}, content: @Composable RowScope.() -> Unit) {
+@Composable internal fun ViewerHeader(backdrop: ChromeBackdrop, modifier: Modifier = Modifier, extent: (Dp) -> Unit = {}, content: @Composable RowScope.() -> Unit) {
     val density = androidx.compose.ui.platform.LocalDensity.current
     // The page learns how far the pill reaches, so nothing lands behind the glass.
     FloatingChrome(backdrop, modifier.padding(top = WindowInsets.statusBars.asPaddingValues().calculateTopPadding() + 12.dp).widthIn(max = 920.dp).fillMaxWidth().padding(horizontal = 12.dp).height(pageHeaderHeight())
@@ -47,12 +49,24 @@ private val ViewerCaptionShape = RoundedCornerShape(28.dp)
     }
 }
 
+// Zoom as two squircles stacked in the page's bottom corner, the same on every platform.
+@Composable fun ZoomControls(zoomIn: () -> Unit, zoomOut: () -> Unit, canZoomIn: Boolean, canZoomOut: Boolean, modifier: Modifier = Modifier) {
+    val scheme = MaterialTheme.colorScheme
+    Column(modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        listOf(Triple("zoom_in", zoomIn, canZoomIn), Triple("zoom_out", zoomOut, canZoomOut)).forEach { (glyph, action, enabled) ->
+            Box(Modifier.size(48.dp).background(scheme.surfaceContainerHigh.copy(alpha = .94f), SquircleShape).clip(SquircleShape).then(if (enabled) Modifier.combinedClickable(onClick = action) else Modifier), contentAlignment = Alignment.Center) {
+                CompositionLocalProvider(LocalContentColor provides scheme.onSurface.copy(alpha = if (enabled) 1f else .38f)) { Glyph(glyph, 24, if (glyph == "zoom_in") "Zoom in" else "Zoom out") }
+            }
+        }
+    }
+}
+
 // The image viewer's shape for a file: the timeline header naming and offering it, floating over the page itself.
 @Composable fun DocumentViewerChrome(name: String, kind: String, bytes: Long, close: () -> Unit, download: (() -> Unit)?, downloading: Boolean = false, caption: String? = null,
     actions: @Composable RowScope.() -> Unit = {}, content: @Composable BoxScope.() -> Unit) {
     val scheme = MaterialTheme.colorScheme
     val backdrop = rememberChromeBackdrop()
-    var reach by androidx.compose.runtime.remember { androidx.compose.runtime.mutableStateOf(112.dp) }
+    var reach by remember { mutableStateOf(112.dp) }
     val top = reach + 12.dp
     val bottom = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding() + if (caption.isNullOrBlank()) 12.dp else 84.dp
     Box(Modifier.fillMaxSize().background(scheme.background)) {
@@ -80,20 +94,32 @@ private val ViewerCaptionShape = RoundedCornerShape(28.dp)
     }
 }
 
-// Cells in a ruled grid that scrolls both ways; the first row is the header when there is more than one.
-@Composable fun TableDocumentView(cells: List<List<String>>, modifier: Modifier = Modifier) {
+// Cells in a ruled grid that scrolls both ways. A tap picks a cell out in the theme's colour; holding it offers a copy.
+@Composable fun TableDocumentView(cells: List<List<String>>, modifier: Modifier = Modifier, footer: (@Composable () -> Unit)? = null) {
     val columns = cells.maxOfOrNull { it.size } ?: 0
     val scheme = MaterialTheme.colorScheme
     val rule = scheme.outlineVariant
+    val clipboard = LocalClipboardManager.current
+    var selected by remember(cells) { mutableStateOf<Pair<Int, Int>?>(null) }
+    var menu by remember(cells) { mutableStateOf(false) }
     val scroll = rememberScrollState()
     LazyColumn(modifier.fillMaxSize().horizontalScroll(scroll).padding(12.dp)) {
         itemsIndexed(cells) { r, row ->
             Row(Modifier.then(if (r == 0 && cells.size > 1) Modifier.background(scheme.surfaceContainer) else Modifier)) {
                 for (c in 0 until columns) {
-                    Text(row.getOrNull(c).orEmpty(), Modifier.width(140.dp).border(.5.dp, rule).padding(horizontal = 8.dp, vertical = 6.dp),
-                        style = MaterialTheme.typography.bodySmall, fontWeight = if (r == 0 && cells.size > 1) FontWeight.SemiBold else FontWeight.Normal, maxLines = 3, overflow = TextOverflow.Ellipsis, fontSize = 12.sp)
+                    val picked = selected == r to c
+                    Box(Modifier.width(140.dp).border(.5.dp, rule).background(if (picked) scheme.primaryContainer else androidx.compose.ui.graphics.Color.Transparent)
+                        .combinedClickable(onClick = { selected = r to c; menu = false }, onLongClick = { selected = r to c; menu = true })) {
+                        Text(row.getOrNull(c).orEmpty(), Modifier.padding(horizontal = 8.dp, vertical = 6.dp), style = MaterialTheme.typography.bodySmall,
+                            color = if (picked) scheme.onPrimaryContainer else scheme.onBackground,
+                            fontWeight = if (r == 0 && cells.size > 1) FontWeight.SemiBold else FontWeight.Normal, maxLines = 3, overflow = TextOverflow.Ellipsis, fontSize = 12.sp)
+                        if (picked) DropdownMenu(menu, { menu = false }) {
+                            DropdownMenuItem({ Text("Copy") }, { clipboard.setText(AnnotatedString(row.getOrNull(c).orEmpty())); menu = false }, leadingIcon = { Glyph("content_copy", 20) })
+                        }
+                    }
                 }
             }
         }
+        footer?.let { item { Box(Modifier.padding(vertical = 12.dp)) { it() } } }
     }
 }

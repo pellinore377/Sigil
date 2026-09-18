@@ -206,7 +206,7 @@ fun RichMessageText(value: RichText, modifier: Modifier = Modifier, style: TextS
     Column(modifier) {
         chunks.forEach { chunk ->
             if (chunk.code != null) CodeBlock(chunk.value, chunk.code.language, Modifier.fillMaxWidth(), RectangleShape)
-            else Box(Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 10.dp)) {
+            else Box(Modifier.fillMaxWidth().background(LocalBubbleGround.current).padding(horizontal = 14.dp, vertical = 10.dp)) {
                 if (chunk.quote) QuoteBlock(chunk.value, style) else RichInlineText(chunk.value, style = style)
             }
         }
@@ -214,6 +214,8 @@ fun RichMessageText(value: RichText, modifier: Modifier = Modifier, style: TextS
 }
 /** True where the caller draws the surrounding bubble, so a code panel may replace it. */
 val LocalMessageBubble = staticCompositionLocalOf { false }
+// The bubble's own colour, painted by captions and text chunks; the surface itself stays clear under filled content so no fringe shows at the corners.
+val LocalBubbleGround = staticCompositionLocalOf { Color.Transparent }
 // A revealed spoiler stays revealed when its row is scrolled back or the conversation reopened.
 internal val LocalMessageKey = staticCompositionLocalOf<String?> { null }
 private val revealLedger = mutableStateMapOf<String, Set<Int>>()

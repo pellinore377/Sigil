@@ -81,7 +81,7 @@ private val PageInk = Color(0xff1c1b1a)
     val strip = lerp(ground, if (ink == Color.White) Color.Black else Color.White, .22f)
     Box(Modifier.widthIn(max = AttachmentCardWidth).fillMaxWidth().aspectRatio(1f).clip(shape).background(ground).clickable(onClick = onOpen).semanticsLabel("$title, $detail")) {
         if (art != null) Image(art, null, Modifier.fillMaxSize(), contentScale = ContentScale.Crop)
-        Box(Modifier.align(Alignment.Center).size(64.dp).background(if (art != null) Color.Black.copy(alpha = .5f) else lerp(ground, ink, .2f), FileGlyphShape), contentAlignment = Alignment.Center) {
+        Box(Modifier.align(Alignment.Center).size(64.dp).background(if (art != null) Color.Black.copy(alpha = .5f) else lerp(ground, ink, .2f), SquircleShape), contentAlignment = Alignment.Center) {
             Text("\u266b", color = if (art != null) Color.White else ink, fontSize = 30.sp, lineHeight = 30.sp)
         }
         Column(Modifier.align(Alignment.BottomCenter).fillMaxWidth().background(strip.copy(alpha = if (art != null) .82f else 1f)).padding(horizontal = 14.dp, vertical = 10.dp), verticalArrangement = Arrangement.spacedBy(2.dp)) {
@@ -92,10 +92,10 @@ private val PageInk = Color(0xff1c1b1a)
 }
 
 // Anything without a picture of itself: the reference's icon, name and size on one line.
-private val FileGlyphShape = androidx.compose.foundation.shape.GenericShape { size, _ -> addPath(squirclePath(androidx.compose.ui.geometry.Rect(androidx.compose.ui.geometry.Offset.Zero, size), size.minDimension * .42f)) }
+internal val SquircleShape = androidx.compose.foundation.shape.GenericShape { size, _ -> addPath(squirclePath(androidx.compose.ui.geometry.Rect(androidx.compose.ui.geometry.Offset.Zero, size), size.minDimension * .42f)) }
 @Composable fun FileChip(name: String, bytes: Long, progress: Boolean, onOpen: () -> Unit) {
     Row(Modifier.widthIn(max = AttachmentCardWidth).clickable(onClick = onOpen).padding(start = 4.dp, end = 18.dp, top = 10.dp, bottom = 10.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(16.dp)) {
-        Box(Modifier.size(46.dp).background(LocalContentColor.current.copy(alpha = .12f), FileGlyphShape), contentAlignment = Alignment.Center) {
+        Box(Modifier.size(46.dp).background(LocalContentColor.current.copy(alpha = .12f), SquircleShape), contentAlignment = Alignment.Center) {
             if (progress) CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp, color = LocalContentColor.current) else Glyph("draft", 22)
         }
         Column(Modifier.weight(1f, fill = false), verticalArrangement = Arrangement.spacedBy(1.dp)) {
