@@ -10,6 +10,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.semantics.*
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.layout.layout
 import androidx.compose.ui.unit.*
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.rememberTextMeasurer
@@ -30,9 +31,9 @@ internal fun toolGridHeight(items:List<Pair<String,String>>,width:Dp):Dp {
 }
 
 @Composable
-internal fun ComposerTool(name:String,icon:String,enabled:Boolean=true,primary:Boolean=false,action:()->Unit) {
+internal fun ComposerTool(name:String,icon:String,enabled:Boolean=true,primary:Boolean=false,modifier:Modifier=Modifier,action:()->Unit) {
     val shape=SigilButtonShape
-    Column(Modifier.clip(shape).clickable(enabled=enabled,role=Role.Button,onClick=action).semantics {contentDescription=name}.padding(vertical=2.dp),
+    Column(modifier.clip(shape).clickable(enabled=enabled,role=Role.Button,onClick=action).semantics {contentDescription=name}.padding(vertical=2.dp),
         horizontalAlignment=Alignment.CenterHorizontally,verticalArrangement=Arrangement.spacedBy(4.dp)) {
         Surface(Modifier.size(48.dp),shape=shape,color=if(primary)MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surfaceVariant,
             contentColor=if(primary)MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha=if(enabled)1f else .38f)) {
@@ -49,11 +50,13 @@ internal val ToolPanelHeight=252.dp
 internal fun AttachmentTools(hasAttachment:Boolean,hasStructured:Boolean,open:(String)->Unit) {
     val features=LocalClientFeatures.current
     val tools=listOf("Emoji" to "mood","Photos" to "image","Camera" to "photo_camera","Files" to "draft","One-time location" to "my_location","Real-time location" to "sensors","Drop a pin" to "place","Create" to "add_notes","Format" to "text_format")
-    Box(Modifier.widthIn(max=660.dp).fillMaxWidth()) {
+    BoxWithConstraints(Modifier.widthIn(max=660.dp).fillMaxWidth()) {
+        // Each tile takes its column's width outright, so long labels wrap instead of running past it.
+        val cell=(maxWidth-16.dp-32.dp)/5
         LazyVerticalGrid(GridCells.Fixed(5),modifier=Modifier.fillMaxSize(),contentPadding=PaddingValues(start=8.dp,end=8.dp,top=8.dp,bottom=8.dp),verticalArrangement=Arrangement.spacedBy(4.dp),horizontalArrangement=Arrangement.spacedBy(8.dp)) {
             items(tools,key={it.first}) {(name,icon)->
                 val allowed=when(name){"Photos","Files","Camera"->!hasStructured&&features.files;"One-time location","Real-time location","Drop a pin"->!hasStructured&&features.locations;"Format","Emoji"->true;else->!hasAttachment}
-                ComposerTool(name,icon,allowed) {open(name)}
+                ComposerTool(name,icon,allowed,modifier=Modifier.width(cell)) {open(name)}
             }
         }
     }

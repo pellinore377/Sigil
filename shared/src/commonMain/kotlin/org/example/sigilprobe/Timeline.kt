@@ -260,7 +260,8 @@ internal fun ConversationPage(chat: ChatSummary, state: MessengerState, draft: T
                     // One instance of the bubble: it renders here, or in the menu's slot, never in both.
                     val bubbleContent = remember(materialKey) { movableContentOf<ChatMessage, Boolean, Boolean, Command?> { m, g, f, c -> MessageBubble(m, g, f, analyze, c) } }
                     var bubbleSize by remember { mutableStateOf(IntSize.Zero) }
-                    fun hold() { heldContent.value = { bubbleContent(message, grouped, followed, cmd) }; selected = message to bounds }
+                    // The menu shows its own copy of the bubble, composed in the host's tree; the list keeps the bubble's room.
+                    fun hold() { heldContent.value = { MessageBubble(message, grouped, followed, analyze, cmd) }; selected = message to bounds }
                     Column(itemMotion().then(arrivalMotion(arrivals,materialKey)).fillMaxWidth().padding(top = if (grouped) 3.dp else 12.dp)) {
                         if (showSeparator(message, older)) Text(message.separator.ifEmpty { message.time }, Modifier.align(Alignment.CenterHorizontally).padding(top = 6.dp, bottom = 14.dp), style = MaterialTheme.typography.labelMedium, color = scheme.onSurfaceVariant)
                         if (chat.group && !message.mine && !grouped) Row(Modifier.padding(bottom = 4.dp), verticalAlignment = Alignment.CenterVertically) { val name = state.people[message.author] ?: "Former member"; Avatar(name, 20, message.author); Text(name, Modifier.padding(start = 6.dp), style = MaterialTheme.typography.bodySmall, color = scheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis) }
@@ -383,7 +384,8 @@ internal fun ConversationPage(chat: ChatSummary, state: MessengerState, draft: T
         }
         }
         // The menu lives above the blurred layer when a shell hosts it, else in the page.
-        val menuSlot = remember { movableContentWithReceiverOf<BoxScope> {
+        // The menu's body is a plain lambda: the host composes it in its own tree, reading this page's state.
+        val menuBody: @Composable BoxScope.() -> Unit = {
         selected?.let { (message, origin) ->
             val band = Rect(pageBounds.left, footerHost?.headerBottom ?: pageBounds.top, pageBounds.right, pageBounds.bottom - navigationInset - with(LocalDensity.current) { ((footerHost?.height ?: 0.dp) + 16.dp).toPx() })
             MessageMenu(message, origin, menu, footerHost?.overlayBounds ?: pageBounds, band, { CompositionLocalProvider(LocalMaterialTimeline provides materialTimeline.takeIf { materialOverlay != null }) { heldContent.value?.invoke() } },
@@ -406,12 +408,10 @@ internal fun ConversationPage(chat: ChatSummary, state: MessengerState, draft: T
             }
             LaunchedEffect(message.id) { focus.clearFocus(); keyboard?.hide() }
         }
-        } }
-        DisposableEffect(footerHost, selected != null) {
-            if (selected != null) footerHost?.menuOverlay = menuSlot
-            onDispose { if (footerHost?.menuOverlay === menuSlot) footerHost.menuOverlay = null }
         }
-        if (footerHost == null) menuSlot()
+        // The menu is presented over the page, above the blurred layer, through the same host the viewers use.
+        if (footerHost == null) menuBody()
+        else if (selected != null) Presented({ selected = null; heldContent.value = null }) { Box(Modifier.fillMaxSize()) { menuBody() } }
         cardDetails?.let { CardDetails(it) { cardDetails = null } }
     }
 }
