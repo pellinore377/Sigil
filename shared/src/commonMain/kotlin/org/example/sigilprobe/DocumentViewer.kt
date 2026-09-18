@@ -5,6 +5,10 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
+import androidx.compose.animation.core.Spring
+import androidx.compose.animation.core.animateOffsetAsState
+import androidx.compose.animation.core.snap
+import androidx.compose.animation.core.spring
 import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.horizontalScroll
@@ -101,7 +105,7 @@ private val ViewerCaptionShape = RoundedCornerShape(28.dp)
 }
 
 // The sheet as a window onto the grid: numbered rows and columns, zebra rows, cells that scroll both ways.
-// A tap picks a cell, a row number its row, a column number its column; the block's corner handles stretch it. Holding offers a copy.
+// A tap picks a cell, a row number its row, a column number its column; the block's corner handle stretches it. Holding offers a copy.
 @Composable fun TableDocumentView(cells: List<List<String>>, modifier: Modifier = Modifier, firstRow: Int = 0, footer: (@Composable () -> Unit)? = null) {
     val columns = cells.maxOfOrNull { it.size } ?: 0
     val scheme = MaterialTheme.colorScheme
@@ -160,23 +164,36 @@ private val ViewerCaptionShape = RoundedCornerShape(28.dp)
             }
             footer?.let { item { Box(Modifier.padding(12.dp)) { it() } } }
         }
-        // A round handle on each corner of the block; dragging one stretches the block to the cell beneath it.
+        // One round handle on the block's lower-right corner: it rides the finger while dragged, the block snaps to the cell beneath, and it settles back onto the corner.
         val r = rows; val c = cols
         if (r != null && c != null) {
             val header = list.layoutInfo.visibleItemsInfo.firstOrNull { it.index == 0 }?.size ?: 0
-            fun corner(row: Int, col: Int, end: Boolean): androidx.compose.ui.geometry.Offset? {
-                val item = list.layoutInfo.visibleItemsInfo.firstOrNull { it.index == row + 1 } ?: return null
-                val y = (if (end) item.offset + item.size else item.offset).toFloat()
-                return if (y < header) null else androidx.compose.ui.geometry.Offset(with(density) { (48 + (if (end) col + 1 else col) * 160).dp.toPx() }, y)
+            val corner = list.layoutInfo.visibleItemsInfo.firstOrNull { it.index == r.last + 1 }?.let { item ->
+                val y = (item.offset + item.size).toFloat()
+                if (y < header) null else androidx.compose.ui.geometry.Offset(with(density) { (48 + (c.last + 1) * 160).dp.toPx() }, y)
             }
-            for (end in listOf(false, true)) {
-                val at = (if (end) corner(r.last, c.last, true) else corner(r.first, c.first, false)) ?: continue
-                Box(Modifier.offset { androidx.compose.ui.unit.IntOffset((at.x - 12.dp.toPx()).toInt(), (at.y - 12.dp.toPx()).toInt()) }.size(24.dp).pointerInput(end) {
-                    var pos = androidx.compose.ui.geometry.Offset.Zero
-                    detectDragGestures(onDragStart = { start -> pos = start + androidx.compose.ui.geometry.Offset(at.x - 12.dp.toPx(), at.y - 12.dp.toPx()); anchor = r.first to c.first; focus = r.last to c.last; menu = false }) { change, drag ->
-                        pos += drag; cellAt(pos)?.let { if (end) focus = it else anchor = it }; change.consume()
+            var grip by remember(cells) { mutableStateOf<androidx.compose.ui.geometry.Offset?>(null) }
+            val target = grip ?: corner
+            if (target != null) {
+                val shown by animateOffsetAsState(target, if (grip != null) snap() else spring(stiffness = Spring.StiffnessMediumLow), label = "handle")
+                val handle = 44.dp
+                Box(Modifier.offset { androidx.compose.ui.unit.IntOffset((shown.x - handle.toPx() / 2).toInt(), (shown.y - handle.toPx() / 2).toInt()) }.size(handle).pointerInput(cells) {
+                    detectDragGestures(
+                        onDragStart = { at ->
+                            val a = anchor ?: return@detectDragGestures; val f = focus ?: return@detectDragGestures
+                            anchor = minOf(a.first, f.first) to minOf(a.second, f.second); focus = maxOf(a.first, f.first) to maxOf(a.second, f.second); menu = false
+                            grip = corner?.let { it + at - androidx.compose.ui.geometry.Offset(handle.toPx() / 2, handle.toPx() / 2) }
+                        },
+                        onDragEnd = { grip = null }, onDragCancel = { grip = null }) { change, drag ->
+                        val g = grip ?: return@detectDragGestures
+                        grip = g + drag
+                        // The corner cell is the one under the finger, but never above or left of the block's start.
+                        cellAt(g + drag - androidx.compose.ui.geometry.Offset(4.dp.toPx(), 4.dp.toPx()))?.let { anchor?.let { a -> focus = maxOf(it.first, a.first) to maxOf(it.second, a.second) } }
+                        change.consume()
                     }
-                }.padding(4.dp).background(scheme.surface, CircleShape).padding(2.dp).background(scheme.primary, CircleShape))
+                }, contentAlignment = Alignment.Center) {
+                    Box(Modifier.size(if (grip != null) 26.dp else 20.dp).background(scheme.surface, CircleShape).padding(2.dp).background(scheme.primary, CircleShape))
+                }
             }
         }
     }
