@@ -32,6 +32,7 @@ import androidx.compose.ui.window.*
 import org.jetbrains.compose.resources.Font
 import sigil.shared.generated.resources.*
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.flow.collect
 import kotlin.math.*
 
 @Composable
@@ -186,6 +187,8 @@ internal fun ConversationPage(chat: ChatSummary, state: MessengerState, draft: T
     var pageBounds by remember { mutableStateOf(Rect.Zero) }
     val footerHost = LocalFooterHost.current
     val navigationInset = WindowInsets.navigationBars.getBottom(LocalDensity.current)
+    // The header and composer blur and dim with the page while the menu is open.
+    LaunchedEffect(footerHost) { snapshotFlow { menu.value.coerceIn(0f, 1f) }.collect { footerHost?.menu = it } }
     Box(Modifier.fillMaxSize().then(timelineMotion).background(scheme.background)
         .onGloballyPositioned { pageBounds = it.boundsInWindow() }.testTag("conversation-page")) {
         LocalWallpaper.current(chat.id, Modifier.matchParentSize())
@@ -200,7 +203,7 @@ internal fun ConversationPage(chat: ChatSummary, state: MessengerState, draft: T
             Box(Modifier.weight(1f).fillMaxWidth().clipToBounds().onGloballyPositioned {materialTimeline.viewport=it.boundsInWindow();val r=materialTimeline.viewport;if(materialHeader>0)materialTimeline.bubbles["header"]=Rect(r.left,r.top,r.right,r.top+materialHeader)}) {
             val timelineMedia = remember(messages) { messages.filter { m -> m.attachment?.let { it.mediaType.startsWith("image/") || it.mediaType.startsWith("video/") } == true }.asReversed() }
             CompositionLocalProvider(LocalMaterialTimeline provides materialTimeline.takeIf {materialOverlay!=null}, LocalPreviewLaunch provides previewLaunch, LocalTimelineMedia provides timelineMedia) {
-            LazyColumn(Modifier.fillMaxSize().blur(18.dp * menu.value).testTag("timeline"), state = list, reverseLayout = true, userScrollEnabled = selected == null, contentPadding = PaddingValues(start = TimelineGutter, end = TimelineGutter, top = (if (controls) 0.dp else headerInset) + 12.dp, bottom = composerInset)) {
+            LazyColumn(Modifier.fillMaxSize().blur(18.dp * menu.value.coerceIn(0f, 1f)).testTag("timeline"), state = list, reverseLayout = true, userScrollEnabled = selected == null, contentPadding = PaddingValues(start = TimelineGutter, end = TimelineGutter, top = (if (controls) 0.dp else headerInset) + 12.dp, bottom = composerInset)) {
                 item("typing") { androidx.compose.animation.AnimatedVisibility(!threadsOverview && state.typing.isNotEmpty(), enter = expandVertically(motionPolicy.enter(MotionMillis)) + fadeIn(motionPolicy.enter(MotionMillis)), exit = shrinkVertically(motionPolicy.exit(MotionQuick)) + fadeOut(motionPolicy.exit(MotionExit)), label = "Typing indicator") { TypingRow(state.typing.map { state.people[it] ?: if (chat.group) "Member" else chat.name }, chat.name, state.typing) } }
                 itemsIndexed(messages, key = { _, it -> it.author + it.id }) { index, message ->
                     if (page == "Pins") {
@@ -468,15 +471,19 @@ internal fun MessageBubble(message: ChatMessage, grouped: Boolean, followed: Boo
 internal fun MessageDetails(message: ChatMessage, expanded: Boolean, receipt: Boolean, chat: ChatSummary, people: Map<String, String>) {
     val motionPolicy = LocalMotion.current
     // The delivery state of an own message, then time and lock; the last own message always carries its state.
+    // Details slide in from the right pushing the receipt; closing runs that in reverse, then the row folds away.
     val shown = receipt || expanded
-    Row(Modifier.animateContentSize(motionPolicy.tween(MotionMillis)).padding(top = if (shown) 4.dp else 0.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(5.dp)) {
-        if (receipt || expanded && message.mine) DeliveryReceipt(message, chat, people)
-        // Slides in from the right and back out to the right.
-        AnimatedVisibility(expanded, enter = fadeIn(motionPolicy.enter(MotionInline)) + expandHorizontally(motionPolicy.enter(MotionMillis), expandFrom = Alignment.End), exit = fadeOut(motionPolicy.exit(MotionMillis)) + shrinkHorizontally(motionPolicy.exit(MotionMillis), shrinkTowards = Alignment.End), label = "Message details") {
-            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(5.dp)) {
-                if (receipt || message.mine) Text("·", style = MaterialTheme.typography.labelSmall)
-                Text(message.time, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                Glyph("lock", 11, "Encrypted message")
+    AnimatedVisibility(shown, enter = expandVertically(motionPolicy.enter(MotionQuick)) + fadeIn(motionPolicy.enter(MotionQuick)),
+        exit = shrinkVertically(motionPolicy.exit(MotionQuick, MotionQuick)) + fadeOut(motionPolicy.exit(MotionQuick, MotionQuick)), label = "Details row") {
+        Row(Modifier.padding(top = 4.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(5.dp)) {
+            if (message.mine) DeliveryReceipt(message, chat, people)
+            AnimatedVisibility(expanded, enter = fadeIn(motionPolicy.enter(MotionQuick)) + expandHorizontally(motionPolicy.enter(MotionQuick), expandFrom = Alignment.End),
+                exit = fadeOut(motionPolicy.exit(MotionQuick)) + shrinkHorizontally(motionPolicy.exit(MotionQuick), shrinkTowards = Alignment.End), label = "Message details") {
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(5.dp)) {
+                    if (message.mine) Text("·", style = MaterialTheme.typography.labelSmall)
+                    Text(message.time, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Glyph("lock", 11, "Encrypted message")
+                }
             }
         }
     }
@@ -526,20 +533,22 @@ private fun BoxScope.MessageMenu(message: ChatMessage, origin: Rect, progress: A
     var closing by remember { mutableStateOf(false) }
     // The bubble's travel from where it was pressed to its slot in the sandwich, planned once; it opens as it travels and reverses as it returns.
     var plan by remember { mutableStateOf<Float?>(null) }
-    LaunchedEffect(plan) { if (plan != null) progress.animateTo(1f, motionPolicy.tween(MotionMillis)) }
+    // A touch of bounce both ways.
+    val bounce = spring<Float>(dampingRatio = .78f, stiffness = Spring.StiffnessMedium)
+    LaunchedEffect(plan) { if (plan != null) progress.animateTo(1f, if (motionPolicy.reduced) snap() else bounce) }
     fun finish(after: () -> Unit = {}) {
         if (closing) return
         closing = true
-        scope.launch { progress.animateTo(0f, motionPolicy.tween(MotionMillis)); dismiss(); after() }
+        scope.launch { progress.animateTo(0f, if (motionPolicy.reduced) snap() else bounce); dismiss(); after() }
     }
     fun choose(name: String, value: String) { finish { action(name, value) } }
     BackAction(true) { finish() }
     val local = origin.translate(-page.left, -page.top)
     val enter = Modifier.graphicsLayer {
-        alpha = progress.value; val scale = .92f + .08f * progress.value; scaleX = scale; scaleY = scale
+        alpha = progress.value.coerceIn(0f, 1f); val scale = .92f + .08f * progress.value; scaleX = scale; scaleY = scale
         transformOrigin = TransformOrigin(if (message.mine) 1f else 0f, .5f)
     }
-    Box(Modifier.matchParentSize().pointerInput(Unit) { detectTapGestures { finish() } }.background(scheme.scrim.copy(alpha = .5f * progress.value))) {
+    Box(Modifier.matchParentSize().pointerInput(Unit) { detectTapGestures { finish() } }.background(scheme.scrim.copy(alpha = .5f * progress.value.coerceIn(0f, 1f)))) {
         Layout({
             Surface(enter, shape = RoundedCornerShape(28.dp), color = scheme.surfaceContainerHigh) {
                 Row(Modifier.padding(horizontal = 4.dp), verticalAlignment = Alignment.CenterVertically) {
