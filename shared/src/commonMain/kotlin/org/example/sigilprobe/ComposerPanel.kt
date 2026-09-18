@@ -263,9 +263,9 @@ internal fun escapeField(value: String) = value.replace("\\", "\\\\").replace(";
 @Composable
 /// One tonal step off the ground, away from it in whichever direction the mode runs.
 internal fun sendTone(scheme: androidx.compose.material3.ColorScheme) =
-    androidx.compose.ui.graphics.lerp(scheme.background,
+    androidx.compose.ui.graphics.lerp(androidx.compose.ui.graphics.lerp(scheme.background,
         if (scheme.background.luminance() < .5f) androidx.compose.ui.graphics.Color.White else androidx.compose.ui.graphics.Color.Black,
-        if (scheme.background.luminance() < .5f) .217f else .081f)
+        if (scheme.background.luminance() < .5f) .217f else .081f), scheme.primary, .22f)
 @Composable
 internal fun SigilFilledIconButton(onClick: () -> Unit, modifier: Modifier = Modifier, enabled: Boolean = true, content: @Composable () -> Unit) {
     val scheme = MaterialTheme.colorScheme

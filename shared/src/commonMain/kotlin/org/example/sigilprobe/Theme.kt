@@ -108,7 +108,8 @@ internal fun SigilTheme(appearance: Appearance, chat: ChatTheme? = null, dynamic
         secondary = colors[4], onSecondary = colors[5], secondaryContainer = colors[6], onSecondaryContainer = colors[7],
         tertiary = colors[4], onTertiary = colors[5], tertiaryContainer = colors[6], onTertiaryContainer = colors[7],
         surfaceVariant = colors[6], onSurfaceVariant = secondaryInk(colors[7], colors[6], listOf(colors[0], colors[2], colors[6])), outline = colors[8], outlineVariant = colors[8].copy(alpha = .3f),
-        surfaceTint = Color.Transparent, surfaceContainer = colors[2], surfaceContainerHigh = lerp(colors[0], Color.White, if (dark) .10f else .72f),
+        // Chrome and incoming bubbles share the accent-hinted neutral, as the reference does.
+        surfaceTint = Color.Transparent, surfaceContainer = colors[2], surfaceContainerHigh = if (dark) lerp(colors[2], Color.White, .04f) else colors[2],
         surfaceContainerHighest = colors[6], surfaceContainerLow = colors[0], surfaceContainerLowest = lerp(colors[0], Color.Black, if (dark) .26f else .075f),
         inverseSurface = colors[1], inverseOnSurface = colors[0], inversePrimary = colors[0],
     )
