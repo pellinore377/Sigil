@@ -50,7 +50,7 @@ internal fun PdfViewer(message: ChatMessage, close: () -> Unit) {
     val shown=page
     DisposableEffect(shown) { onDispose { shown?.bitmap?.recycle() } }
     val saver=rememberAttachmentSaver(message)
-    Dialog(close,DialogProperties(usePlatformDefaultWidth=false,decorFitsSystemWindows=false)) {
+    Presented(close) {
         DocumentViewerChrome(file.name,"PDF",file.bytes,close,saver.save,saver.saving,caption=file.caption) {
             saver.Notice()
             Column(Modifier.fillMaxSize().padding(horizontal=16.dp,vertical=8.dp),verticalArrangement=Arrangement.spacedBy(12.dp)) {

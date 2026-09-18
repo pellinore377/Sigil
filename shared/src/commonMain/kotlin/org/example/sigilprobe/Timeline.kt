@@ -431,8 +431,8 @@ internal fun MessageBubble(message: ChatMessage, grouped: Boolean, followed: Boo
                         CompositionLocalProvider(LocalMessageSurface provides outgoing) { Box(Modifier.padding(horizontal = 14.dp, vertical = 10.dp)) { body() } }
                     } else Box(Modifier.padding(start = 14.dp, end = 14.dp, top = 6.dp, bottom = 10.dp)) { body() }
                 } else if (message.reply != null) { ReplyQuote(message); Spacer(Modifier.height(6.dp)); body() } else body()
-                if (!captioned) message.attachment?.caption?.takeIf { it.isNotEmpty() }?.let { caption ->
-                    Box(Modifier.fillMaxWidth().background(LocalBubbleGround.current).padding(horizontal=14.dp,vertical=10.dp)) { MessageText(caption,analyze) }
+                if (!captioned && !filled) message.attachment?.caption?.takeIf { it.isNotEmpty() }?.let { caption ->
+                    Box(Modifier.padding(horizontal=14.dp,vertical=10.dp)) { MessageText(caption,analyze) }
                 }
 
             }

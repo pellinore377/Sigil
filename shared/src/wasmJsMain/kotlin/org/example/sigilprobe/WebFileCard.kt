@@ -1,6 +1,7 @@
 @file:OptIn(androidx.compose.ui.ExperimentalComposeUiApi::class)
 package org.sigil
 
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.*
@@ -74,14 +75,17 @@ private suspend fun webPeek(file: WebFile, kind: AttachmentKind, url: String): F
     }
     val onOpen = { if (ready || file.bytes > 128L * 1024 * 1024) open(file) else { openWhenReady = true; requested = true } }
     val shape = androidx.compose.ui.graphics.RectangleShape
-    when (kind) {
-        AttachmentKind.Audio -> {
-            val track = peek as? FilePeek.Track
-            val tint = remember(track?.art) { track?.art?.let(::dominantColor) }
-            AudioCard(track?.tags?.title ?: file.name.substringBeforeLast('.'), listOfNotNull(track?.durationMs?.let(::trackTime), attachmentSize(file.bytes)).joinToString(" · "), track?.art, tint, shape, onOpen)
+    Column(Modifier.widthIn(max = AttachmentCardWidth)) {
+        when (kind) {
+            AttachmentKind.Audio -> {
+                val track = peek as? FilePeek.Track
+                val tint = remember(track?.art) { track?.art?.let(::dominantColor) }
+                AudioCard(track?.tags?.title ?: file.name.substringBeforeLast('.'), listOfNotNull(track?.durationMs?.let(::trackTime), attachmentSize(file.bytes)).joinToString(" · "), track?.art, tint, shape, onOpen)
+            }
+            AttachmentKind.File -> FileChip(file.name, file.bytes, requested && !ready, onOpen)
+            else -> DocumentCard(file.name, kind, file.bytes, peek, requested && (!ready || glimpsing), shape, onOpen)
         }
-        AttachmentKind.File -> FileChip(file.name, file.bytes, requested && !ready, onOpen)
-        else -> DocumentCard(file.name, kind, file.bytes, peek, requested && (!ready || glimpsing), shape, onOpen)
+        if (kind != AttachmentKind.File && file.caption.isNotBlank()) Box(Modifier.fillMaxWidth().background(LocalBubbleGround.current).padding(horizontal = 14.dp, vertical = 10.dp)) { Text(file.caption, style = MaterialTheme.typography.bodyLarge) }
     }
 }
 

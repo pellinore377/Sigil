@@ -26,7 +26,7 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 
-internal val AttachmentCardWidth = 300.dp
+val AttachmentCardWidth = 300.dp
 private val PageHeight = 176.dp
 private val PagePaper = Color(0xfff6f5f2)
 private val PageInk = Color(0xff1c1b1a)
@@ -82,7 +82,7 @@ private val PageInk = Color(0xff1c1b1a)
     Box(Modifier.widthIn(max = AttachmentCardWidth).fillMaxWidth().aspectRatio(1f).clip(shape).background(ground).clickable(onClick = onOpen).semanticsLabel("$title, $detail")) {
         if (art != null) Image(art, null, Modifier.fillMaxSize(), contentScale = ContentScale.Crop)
         Box(Modifier.align(Alignment.Center).size(64.dp).background(if (art != null) Color.Black.copy(alpha = .5f) else lerp(ground, ink, .2f), SquircleShape), contentAlignment = Alignment.Center) {
-            Text("\u266b", color = if (art != null) Color.White else ink, fontSize = 30.sp, lineHeight = 30.sp)
+            CompositionLocalProvider(LocalContentColor provides if (art != null) Color.White else ink) { Glyph("music_note", 30) }
         }
         Column(Modifier.align(Alignment.BottomCenter).fillMaxWidth().background(strip.copy(alpha = if (art != null) .82f else 1f)).padding(horizontal = 14.dp, vertical = 10.dp), verticalArrangement = Arrangement.spacedBy(2.dp)) {
             Text(title, color = ink, style = MaterialTheme.typography.titleSmall, maxLines = 1, overflow = TextOverflow.Ellipsis)

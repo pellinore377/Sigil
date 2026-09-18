@@ -64,7 +64,7 @@ internal fun FileViewer(message: ChatMessage,format: String,close: () -> Unit) {
     DisposableEffect(shown) { onDispose { shown?.close() } }
     val saver=rememberAttachmentSaver(message)
     val kind=attachmentKind(file.name,file.mediaType)
-    Dialog(close,DialogProperties(usePlatformDefaultWidth=false,decorFitsSystemWindows=false)) {
+    Presented(close) {
         DocumentViewerChrome(file.name,kind.chip,file.bytes,close,saver.save,saver.saving,caption=file.caption) {
             saver.Notice()
             Column(Modifier.fillMaxSize().padding(horizontal=16.dp,vertical=8.dp),verticalArrangement=Arrangement.spacedBy(12.dp)) {

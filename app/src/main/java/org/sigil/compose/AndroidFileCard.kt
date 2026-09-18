@@ -2,7 +2,12 @@ package org.sigil.compose
 
 import android.media.MediaMetadataRetriever
 import android.media.MediaPlayer
-import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.widthIn
+import androidx.compose.ui.Modifier
 import androidx.compose.runtime.*
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.platform.LocalContext
@@ -55,6 +60,7 @@ private const val AutoFetchBytes = 8L * 1024 * 1024
     }
     val open = { if (file.draft) Unit else if (ready) opened = true else { openWhenReady = true; requested = true } }
     val shape = androidx.compose.ui.graphics.RectangleShape
+    Column(Modifier.widthIn(max = AttachmentCardWidth)) {
     when (kind) {
         AttachmentKind.Audio -> {
             val track = peek as? FilePeek.Track
@@ -63,6 +69,9 @@ private const val AutoFetchBytes = 8L * 1024 * 1024
         }
         AttachmentKind.File -> FileChip(file.name, file.bytes, requested && !ready, open)
         else -> DocumentCard(file.name, kind, file.bytes, peek, requested && (!ready || glimpsing), shape, open)
+    }
+    // The caption sits on the bubble ground beneath the card, kept to the card's own width.
+    if (kind != AttachmentKind.File && !file.draft && file.caption.isNotBlank()) androidx.compose.foundation.layout.Box(Modifier.fillMaxWidth().background(LocalBubbleGround.current).padding(horizontal = 14.dp, vertical = 10.dp)) { MessageText(file.caption, NativeCore::analyze) }
     }
     if (opened) when {
         kind == AttachmentKind.Pdf && file.bytes <= 128L * 1024 * 1024 -> PdfViewer(message) { opened = false }
@@ -140,7 +149,7 @@ private class AndroidTrackPlayback(private val player: MediaPlayer) : TrackPlayb
     val saver = rememberAttachmentSaver(message)
     val track = TrackPresentation(peek?.tags?.title ?: file.name.substringBeforeLast('.'), peek?.tags?.artist, peek?.tags?.album, peek?.art, peek?.tags?.lyrics.orEmpty(),
         file.name.substringAfterLast('.', "").uppercase().ifEmpty { "AUDIO" }, file.bytes)
-    Dialog(close, DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false)) {
+    Presented(close) {
         TrackPlayerScreen(track, playback, close, saver.save, saver.saving, file.caption)
         saver.Notice()
     }
