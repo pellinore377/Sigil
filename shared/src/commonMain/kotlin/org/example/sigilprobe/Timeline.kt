@@ -470,21 +470,25 @@ internal fun MessageBubble(message: ChatMessage, grouped: Boolean, followed: Boo
 @Composable
 internal fun MessageDetails(message: ChatMessage, expanded: Boolean, receipt: Boolean, chat: ChatSummary, people: Map<String, String>) {
     val motionPolicy = LocalMotion.current
-    // The delivery state of an own message, then time and lock; the last own message always carries its state.
-    // Details slide in from the right pushing the receipt; closing runs that in reverse, then the row folds away.
-    val shown = receipt || expanded
-    AnimatedVisibility(shown, enter = expandVertically(motionPolicy.enter(MotionQuick)) + fadeIn(motionPolicy.enter(MotionQuick)),
-        exit = shrinkVertically(motionPolicy.exit(MotionQuick, MotionQuick)) + fadeOut(motionPolicy.exit(MotionQuick, MotionQuick)), label = "Details row") {
+    // The delivery state of an own message, then time and lock. The last own message always carries its state, so only
+    // the time and lock slide in from the right and push it; every other message slides the whole row in and out together.
+    val enterSlide = fadeIn(motionPolicy.enter(MotionQuick)) + expandHorizontally(motionPolicy.enter(MotionQuick), expandFrom = Alignment.End)
+    val exitSlide = fadeOut(motionPolicy.exit(MotionQuick)) + shrinkHorizontally(motionPolicy.exit(MotionQuick), shrinkTowards = Alignment.End)
+    val details: @Composable () -> Unit = {
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(5.dp)) {
+            if (message.mine) Text("·", style = MaterialTheme.typography.labelSmall)
+            Text(message.time, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Glyph("lock", 11, "Encrypted message")
+        }
+    }
+    if (receipt) Row(Modifier.padding(top = 4.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(5.dp)) {
+        DeliveryReceipt(message, chat, people)
+        AnimatedVisibility(expanded, enter = enterSlide, exit = exitSlide, label = "Message details") { details() }
+    } else AnimatedVisibility(expanded, enter = expandVertically(motionPolicy.enter(MotionQuick)) + enterSlide,
+        exit = exitSlide + shrinkVertically(motionPolicy.exit(MotionQuick, MotionQuick)), label = "Details row") {
         Row(Modifier.padding(top = 4.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(5.dp)) {
             if (message.mine) DeliveryReceipt(message, chat, people)
-            AnimatedVisibility(expanded, enter = fadeIn(motionPolicy.enter(MotionQuick)) + expandHorizontally(motionPolicy.enter(MotionQuick), expandFrom = Alignment.End),
-                exit = fadeOut(motionPolicy.exit(MotionQuick)) + shrinkHorizontally(motionPolicy.exit(MotionQuick), shrinkTowards = Alignment.End), label = "Message details") {
-                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(5.dp)) {
-                    if (message.mine) Text("·", style = MaterialTheme.typography.labelSmall)
-                    Text(message.time, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    Glyph("lock", 11, "Encrypted message")
-                }
-            }
+            details()
         }
     }
 }

@@ -24,6 +24,9 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.draw.blur
+import androidx.compose.ui.graphics.drawOutline
+import androidx.compose.ui.graphics.Shape
+import androidx.compose.ui.draw.BlurredEdgeTreatment
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -310,7 +313,7 @@ fun SigilApp(palette: (Int, Boolean) -> String, analyze: (String) -> String, sta
                             enter = slideInVertically(motionPolicy.enter(MotionInline, delayMillis = MotionMillis)) { -it } + fadeIn(motionPolicy.enter(MotionInline, delayMillis = MotionMillis)),
                             exit = slideOutVertically(motionPolicy.exit(MotionQuick)) { -it } + fadeOut(motionPolicy.exit(MotionExit)), label = "Conversation header") {
                             val screen = if (conversation) headerScreen else retainedConversation
-                            FloatingChrome(backdrop, Modifier.menuVeil(footer.menu).padding(top = if (wide) 12.dp else WindowInsets.statusBars.asPaddingValues().calculateTopPadding() + 12.dp).widthIn(max = 920.dp).fillMaxWidth().padding(horizontal = 12.dp).height(pageHeaderHeight() + 8.dp).testTag("conversation-header").onGloballyPositioned { materialOcclusion.header = it.boundsInWindow() }, RoundedCornerShape(24.dp)) {
+                            FloatingChrome(backdrop, Modifier.menuVeil(footer.menu, RoundedCornerShape(24.dp)).padding(top = if (wide) 12.dp else WindowInsets.statusBars.asPaddingValues().calculateTopPadding() + 12.dp).widthIn(max = 920.dp).fillMaxWidth().padding(horizontal = 12.dp).height(pageHeaderHeight() + 8.dp).testTag("conversation-header").onGloballyPositioned { materialOcclusion.header = it.boundsInWindow() }, RoundedCornerShape(24.dp)) {
                                 screen.chat?.let { ConversationHeader(it, screen.detail, screen.thread != null, dispatch, back) { goingBack = false; thread = null; conversationPage = it } }
                             }
                         }
@@ -331,7 +334,7 @@ fun SigilApp(palette: (Int, Boolean) -> String, analyze: (String) -> String, sta
                         Box(Modifier.widthIn(max = 920.dp).fillMaxWidth().onSizeChanged { if (footer.content != null) footer.height = with(density) { it.height.toDp() } }.padding(horizontal = 12.dp).windowInsetsPadding(WindowInsets.ime.union(WindowInsets.navigationBars)).padding(bottom = 8.dp).zIndex(3f)) {
                             Column(Modifier.fillMaxWidth()) {
                                 footer.panel?.invoke(backdrop)
-                                if (footer.content != null) FloatingChrome(backdrop, Modifier.menuVeil(footer.menu).testTag("conversation-footer").onGloballyPositioned { materialOcclusion.footer = it.boundsInWindow() }, RoundedCornerShape(24.dp)) { footer.content?.invoke() }
+                                if (footer.content != null) FloatingChrome(backdrop, Modifier.menuVeil(footer.menu, RoundedCornerShape(24.dp)).testTag("conversation-footer").onGloballyPositioned { materialOcclusion.footer = it.boundsInWindow() }, RoundedCornerShape(24.dp)) { footer.content?.invoke() }
                             }
                         }
                         }
@@ -386,7 +389,10 @@ private fun GlobalNotice(icon: String, label: String, action: () -> Unit) {
 
 // Blurred and dimmed by the menu's progress, like the page beneath.
 @Composable
-internal fun Modifier.menuVeil(progress: Float): Modifier {
+internal fun Modifier.menuVeil(progress: Float, shape: Shape): Modifier {
     val scrim = MaterialTheme.colorScheme.scrim
-    return if (progress <= 0f) this else blur(18.dp * progress).drawWithContent { drawContent(); drawRect(scrim.copy(alpha = .5f * progress)) }
+    // Blur and dim follow the chrome's own outline, not its rectangle.
+    return if (progress <= 0f) this else blur(18.dp * progress, BlurredEdgeTreatment(shape)).drawWithContent {
+        drawContent(); drawOutline(shape.createOutline(size, layoutDirection, this), scrim.copy(alpha = .5f * progress))
+    }
 }
