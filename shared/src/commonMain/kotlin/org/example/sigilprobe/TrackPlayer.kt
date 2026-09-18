@@ -99,7 +99,7 @@ private const val LyricsGlide = 900
     var lyricsHeight by remember { mutableIntStateOf(0) }
     // A scrolled list is placed, not redrawn; reading its position in draw keeps the glass and its source current.
     val follow = Modifier.drawBehind { list.firstVisibleItemIndex; list.firstVisibleItemScrollOffset }
-    BoxWithConstraints(Modifier.fillMaxSize().background(Brush.verticalGradient(listOf(room, floor)))) {
+    BoxWithConstraints(Modifier.fillMaxSize()) {
         val viewport = maxHeight
         val width = maxWidth
         val viewportPx = with(density) { viewport.toPx() }
@@ -114,7 +114,8 @@ private const val LyricsGlide = 900
         // The live line is followed only once the reader has gone down to the lyrics; the first screen stays put.
         LaunchedEffect(current) { if (current >= 0 && inLyrics) lineTops[current]?.let { list.animateScrollBy((it - viewportPx * .45f).coerceIn(0f, lyricsTop) - absolute, tween(500)) } }
         CompositionLocalProvider(LocalContentColor provides ink) {
-            LazyColumn(Modifier.fillMaxSize().then(follow).captureBackdrop(backdrop), list, horizontalAlignment = Alignment.CenterHorizontally) {
+            // The capture sits on a plain box around the list, as the timeline's does; the list itself keeps its own layers.
+            Box(Modifier.fillMaxSize().background(Brush.verticalGradient(listOf(room, floor))).then(follow).captureBackdrop(backdrop)) { LazyColumn(Modifier.fillMaxSize(), list, horizontalAlignment = Alignment.CenterHorizontally) {
                 item { Column(Modifier.fillMaxWidth().height(viewport).padding(top = reach + 12.dp, bottom = navigation + 12.dp), horizontalAlignment = Alignment.CenterHorizontally) {
                     val side = minOf(width - 72.dp, viewport - reach - 330.dp, 380.dp).coerceAtLeast(120.dp)
                     Spacer(Modifier.weight(1f))
@@ -170,7 +171,7 @@ private const val LyricsGlide = 900
                     } }
                     item { Spacer(Modifier.height(tail)) }
                 }
-            }
+            } }
             // The timeline's header, floating over the room like it floats over the conversation.
             ViewerHeader(backdrop, Modifier.align(Alignment.TopCenter).then(follow), { reach = it }) {
                 Symbol("chevron_left", "Back", close)

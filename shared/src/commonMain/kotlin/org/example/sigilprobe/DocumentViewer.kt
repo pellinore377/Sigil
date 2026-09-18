@@ -69,9 +69,9 @@ private val ViewerCaptionShape = RoundedCornerShape(28.dp)
     var reach by remember { mutableStateOf(112.dp) }
     val top = reach + 12.dp
     val bottom = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding() + if (caption.isNullOrBlank()) 12.dp else 84.dp
-    Box(Modifier.fillMaxSize().background(scheme.background)) {
+    Box(Modifier.fillMaxSize()) {
         CompositionLocalProvider(LocalContentColor provides scheme.onBackground) {
-            Box(Modifier.fillMaxSize().captureBackdrop(backdrop)) { Box(Modifier.fillMaxSize().padding(top = top, bottom = bottom), content = content) }
+            Box(Modifier.fillMaxSize().background(scheme.background).captureBackdrop(backdrop)) { Box(Modifier.fillMaxSize().padding(top = top, bottom = bottom), content = content) }
             ViewerHeader(backdrop, Modifier.align(Alignment.TopCenter), { reach = it }) {
                 Symbol("chevron_left", "Back", close)
                 Column(Modifier.weight(1f).padding(start = 10.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
