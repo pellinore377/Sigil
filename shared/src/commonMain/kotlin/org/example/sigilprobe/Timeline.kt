@@ -377,7 +377,7 @@ internal fun MessageBubble(message: ChatMessage, grouped: Boolean, followed: Boo
             }, shape = bubbleShape,
             color = if(bare) Color.Transparent else if (message.mine) outgoing else scheme.surfaceContainer, contentColor = if(bare) scheme.onBackground else if (message.mine) outgoingInk else scheme.onSurface) { body() } }
             frame {
-            CompositionLocalProvider(LocalBubbleCue provides cue,LocalMessageBubble provides panelled,LocalMaterialOutgoing provides message.mine,LocalContentColor provides if (bare) scheme.onBackground else if (message.mine) outgoingInk else scheme.onSurface,LocalMessageSurface provides if (bare) scheme.background else if (message.mine) outgoing else scheme.surfaceContainer) {
+            CompositionLocalProvider(LocalBubbleCue provides cue,LocalMessageKey provides message.author+message.id,LocalMessageBubble provides panelled,LocalMaterialOutgoing provides message.mine,LocalContentColor provides if (bare) scheme.onBackground else if (message.mine) outgoingInk else scheme.onSurface,LocalMessageSurface provides if (bare) scheme.background else if (message.mine) outgoing else scheme.surfaceContainer) {
             Column(if (message.attachment == null) Modifier.padding(horizontal = if(objectOnly || bareLocation || panelled)0.dp else 14.dp, vertical = if(bareLocation || panelled)0.dp else 10.dp) else Modifier) {
                 // The quoted block is the timeline ground set into the bubble.
                 message.reply?.let { Surface(shape = RoundedCornerShape(12.dp), color = scheme.background) { Text(it, Modifier.padding(9.dp), style = MaterialTheme.typography.bodySmall, maxLines = 2, overflow = TextOverflow.Ellipsis) }; Spacer(Modifier.height(6.dp)) }

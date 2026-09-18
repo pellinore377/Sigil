@@ -33,6 +33,9 @@ import org.sigil.*
     val snapshotKey=if(progress>=1f)frame.snapshotKey() else null
     val epoch=remember(cache,snapshotKey){cache?.materialGeneration() ?: 0L}
     var snapshot by remember(cache,snapshotKey) {mutableStateOf(snapshotKey?.let {cache?.materialSnapshot(it)})}
+    // The disk copy is checked before a surface is spent on a settled object.
+    var looked by remember(cache,snapshotKey) {mutableStateOf(snapshotKey==null || snapshot!=null)}
+    LaunchedEffect(cache,snapshotKey) {if(!looked) {snapshot=snapshotKey?.let {cache?.loadMaterial(it)};looked=true}}
     val capture by rememberUpdatedState<(MaterialFrame,android.graphics.Bitmap)->Unit> {rendered,image->
         if(snapshotKey!=null && rendered.sameImage(frame)) {
             cache?.rememberMaterial(snapshotKey,image,epoch)
@@ -42,7 +45,7 @@ import org.sigil.*
     var failed by remember {mutableStateOf(!MaterialNative.available)}
     if(failed)Box(modifier,contentAlignment=Alignment.Center) {Text(label ?: face.toString(),textAlign=TextAlign.Center)}
     else Box(modifier.onGloballyPositioned {bounds=it.boundsInWindow()}.clearAndSetSemantics {}) {
-        if(visible) {
+        if(visible && looked) {
             val image=snapshot
             if(image!=null) Image(image.asImageBitmap(),null,Modifier.fillMaxSize(),contentScale=ContentScale.FillBounds)
             else AndroidView(factory={MessageMaterialView(it,256,if(cache!=null)({rendered,image->capture(rendered,image)})else null){failed=true}},update={it.update(frame,true)},onRelease={it.close()},modifier=Modifier.fillMaxSize())
