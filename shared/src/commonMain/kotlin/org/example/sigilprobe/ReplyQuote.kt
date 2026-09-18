@@ -111,7 +111,9 @@ internal fun ReplyQuote(message: ChatMessage, topStart: androidx.compose.ui.unit
     val quoted = message.reply ?: return
     val scheme = MaterialTheme.colorScheme
     val name = message.replyAuthor?.let { LocalMediaSender.current(message.copy(author = it, mine = message.replyMine)) }
-    val source = if (message.replyAuthor != null && message.replyMessage != null) LocalMediaMessage.current(message.peer, message.replyAuthor, message.replyMessage) else null
+    // The quote names the file itself, so a thumbnail never depends on the quoted message being in the loaded list.
+    val source = if (message.replyAuthor != null && message.replyMessage != null) LocalMediaMessage.current(message.peer, message.replyAuthor, message.replyMessage)
+        ?: message.replyAttachment?.let { ChatMessage(message.replyMessage, message.replyAuthor, "", message.replyMine, "", "", false, emptyList(), emptyList(), null, true, peer = message.peer, attachment = it) } else null
     Surface(Modifier.fillMaxWidth().testTag("reply-quote"), shape = RoundedCornerShape(topStart, topEnd, 5.dp, 5.dp), color = scheme.background, contentColor = scheme.onBackground) {
         QuoteBody(name, quoted, message.replyAttachment, source, 4, Modifier.padding(horizontal = 12.dp, vertical = 10.dp), cardQuote(message.replyParts))
     }
