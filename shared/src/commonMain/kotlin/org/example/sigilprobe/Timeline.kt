@@ -4,7 +4,8 @@ package org.sigil
 import androidx.compose.animation.*
 import androidx.compose.animation.core.*
 import androidx.compose.foundation.*
-import androidx.compose.foundation.gestures.detectHorizontalDragGestures
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.*
 import androidx.compose.foundation.shape.*
@@ -40,6 +41,15 @@ fun Glyph(name: String, size: Int = 24, label: String? = null, filled: Boolean =
 internal fun showsReceipt(index: Int, messages: List<ChatMessage>) = index == 0 && messages.firstOrNull()?.mine == true
 internal fun showSeparator(message: ChatMessage, older: ChatMessage?) = older == null || message.timestamp - older.timestamp >= 900
 internal fun swipeAction(mine: Boolean, horizontal: Float) = if ((horizontal > 0) != mine) "reply" else "thread"
+// A one-line bubble's height, and the gap the chip keeps from the bubble.
+internal val SwipeChipSize = 46.dp
+internal val SwipeChipGap = 8.dp
+// True once a pull is clearly sideways, false once it is clearly a scroll, null while undecided.
+internal fun swipeStarts(dx: Float, dy: Float, slop: Float): Boolean? = when {
+    abs(dy) > slop && abs(dy) >= abs(dx) -> false
+    abs(dx) > slop * 1.5f && abs(dx) > abs(dy) * 2f -> true
+    else -> null
+}
 
 @Composable
 internal fun ConversationHeader(chat: ChatSummary, page: String, threaded: Boolean, command: Command, back: () -> Unit, navigate: (String) -> Unit) {
@@ -85,6 +95,7 @@ internal fun ConversationPage(chat: ChatSummary, state: MessengerState, draft: T
     // The window is asked on every measure, so the core's depth applies as soon as it answers.
     val buffer = rememberUpdatedState(state.timelineBuffer)
     val list = rememberLazyListState(remember { TimelineCacheWindow { buffer.value } })
+    val scope = rememberCoroutineScope()
     val clipboard = LocalClipboardManager.current
     val keyboard = LocalSoftwareKeyboardController.current
     val focus = LocalFocusManager.current
@@ -217,24 +228,47 @@ internal fun ConversationPage(chat: ChatSummary, state: MessengerState, draft: T
                     val onScreen by remember(materialKey) {derivedStateOf {materialKey in visibleKeys}}
                     DisposableEffect(materialKey) {onDispose {materialTimeline.bubbles.remove(materialKey)}}
                     var drag by remember { mutableFloatStateOf(0f) }
-                    val offset by animateFloatAsState(drag, motionPolicy.tween(MotionFeedback), label = "Reply swipe")
+                    var dragging by remember { mutableStateOf(false) }
+                    // Under the finger the bubble follows exactly; released, it springs home.
+                    val settle = remember { Animatable(0f) }
+                    val offset = if (dragging) drag else settle.value
                     val density = LocalDensity.current
                     val haptic = LocalHapticFeedback.current
-                    val threshold = with(density) { 52.dp.toPx() }
+                    val reveal = with(density) { (SwipeChipSize + SwipeChipGap).toPx() }
+                    val threshold = reveal
                     Column(itemMotion().then(arrivalMotion(arrivals,materialKey)).fillMaxWidth().padding(top = if (grouped) 3.dp else 12.dp)) {
                         if (showSeparator(message, older)) Text(message.separator.ifEmpty { message.time }, Modifier.align(Alignment.CenterHorizontally).padding(top = 6.dp, bottom = 14.dp), style = MaterialTheme.typography.labelMedium, color = scheme.onSurfaceVariant)
                         if (chat.group && !message.mine && !grouped) Row(Modifier.padding(bottom = 4.dp), verticalAlignment = Alignment.CenterVertically) { val name = state.people[message.author] ?: "Former member"; Avatar(name, 20, message.author); Text(name, Modifier.padding(start = 6.dp), style = MaterialTheme.typography.bodySmall, color = scheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis) }
                         Row(Modifier.fillMaxWidth().combinedClickable(interactionSource = remember { androidx.compose.foundation.interaction.MutableInteractionSource() }, indication = null, onClick = { details = message.author to message.id }, onLongClick = { selected = message to bounds })
-                            .pointerInput(message.id, message.mine) { detectHorizontalDragGestures(onDragEnd = {
-                                if (abs(drag) >= threshold) respond(message, swipeAction(message.mine, drag) == "thread")
-                                drag = 0f
-                            }, onDragCancel = { drag = 0f }) { change, amount ->
-                                change.consume()
-                                val before = drag
+                            .pointerInput(message.id, message.mine) {
+                                val slop = viewConfiguration.touchSlop
                                 val limit = with(density) { 110.dp.toPx() }
-                                drag = (drag + amount).coerceIn(-limit, limit)
-                                if (abs(before) < threshold && abs(drag) >= threshold) haptic.performHapticFeedback(androidx.compose.ui.hapticfeedback.HapticFeedbackType.LongPress)
-                            } },
+                                awaitEachGesture {
+                                    val down = awaitFirstDown(requireUnconsumed = false)
+                                    if (list.isScrollInProgress) return@awaitEachGesture
+                                    var dx = 0f; var dy = 0f; var started = false
+                                    while (true) {
+                                        val change = awaitPointerEvent().changes.firstOrNull { it.id == down.id } ?: break
+                                        if (!change.pressed) break
+                                        val delta = change.positionChange()
+                                        if (!started) {
+                                            if (change.isConsumed) break
+                                            dx += delta.x; dy += delta.y
+                                            when (swipeStarts(dx, dy, slop)) { false -> break; true -> { started = true; dragging = true; drag = 0f }; null -> continue }
+                                        }
+                                        change.consume()
+                                        val before = drag
+                                        // Past the chip the bubble resists, so a long pull stays near the chip.
+                                        drag = (drag + delta.x * if (abs(drag) >= threshold) .35f else 1f).coerceIn(-limit, limit)
+                                        if (abs(before) < threshold && abs(drag) >= threshold) haptic.performHapticFeedback(androidx.compose.ui.hapticfeedback.HapticFeedbackType.LongPress)
+                                    }
+                                    if (!started) return@awaitEachGesture
+                                    val release = drag
+                                    if (abs(release) >= threshold) respond(message, swipeAction(message.mine, release) == "thread")
+                                    // Hand over at the release point, never through zero, so the spring starts where the finger left.
+                                    scope.launch { settle.snapTo(release); dragging = false; drag = 0f; settle.animateTo(0f, if (motionPolicy.reduced) snap() else spring(dampingRatio = .82f, stiffness = Spring.StiffnessMediumLow)) }
+                                }
+                            },
                             horizontalArrangement = if (message.mine) Arrangement.End else Arrangement.Start) {
                             BoxWithConstraints(Modifier.weight(1f, false)) {
                             val bubbleWidth = ((maxWidth + TimelineGutter * 2) * BubbleWidthFraction).coerceAtMost(maxWidth)
@@ -251,13 +285,14 @@ internal fun ConversationPage(chat: ChatSummary, state: MessengerState, draft: T
                                 Box(Modifier.fillMaxWidth(), contentAlignment = if (message.mine) Alignment.CenterEnd else Alignment.CenterStart) {
                                   if (abs(offset) > 1f && !lifted) {
                                     val action = swipeAction(message.mine, offset)
-                                    val armed = abs(drag) >= threshold
-                                    Column(Modifier.align(if (offset > 0) Alignment.CenterStart else Alignment.CenterEnd).width(96.dp)
-                                        .graphicsLayer { alpha = (abs(offset) / threshold).coerceIn(0f, 1f) }, horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                                        Surface(shape = RoundedCornerShape(12.dp), color = if (armed) scheme.primary else scheme.surfaceVariant, contentColor = if (armed) scheme.onPrimary else scheme.onSurfaceVariant) {
-                                            Box(Modifier.padding(8.dp)) { Glyph(if (action == "reply") "reply" else "forum", 24) }
-                                        }
-                                        Text(if (action == "reply") "Reply" else "Reply in thread", style = MaterialTheme.typography.labelSmall, textAlign = androidx.compose.ui.text.style.TextAlign.Center, color = scheme.onBackground)
+                                    val armed = abs(offset) >= threshold
+                                    // The chip rides out from under the bubble's own edge and keeps one gap from it.
+                                    val slack = with(density) { bubbleWidth.toPx() } - bounds.width
+                                    val base = if (offset > 0) (if (message.mine) slack else 0f) else (if (message.mine) 0f else -slack)
+                                    Surface(Modifier.align(if (offset > 0) Alignment.CenterStart else Alignment.CenterEnd).size(SwipeChipSize)
+                                        .graphicsLayer { translationX = base + offset + if (offset > 0) -reveal else reveal; alpha = (abs(offset) / reveal).coerceIn(0f, 1f) },
+                                        shape = RoundedCornerShape(16.dp), color = if (armed) scheme.primary else scheme.surfaceContainerHigh, contentColor = if (armed) scheme.onPrimary else scheme.onSurface) {
+                                        Box(contentAlignment = Alignment.Center) { Glyph(if (action == "reply") "reply" else "forum", 22, if (action == "reply") "Reply" else "Reply in thread") }
                                     }
                                   }
                                   Box(Modifier.graphicsLayer {
@@ -300,8 +335,8 @@ internal fun ConversationPage(chat: ChatSummary, state: MessengerState, draft: T
             FooterContent {
             CompositionLocalProvider(LocalPreviewLaunch provides previewLaunch) {
             Column(Modifier.fillMaxWidth()) {
-            val context = editing?.let { "Editing" to it.text } ?: reply?.let { (state.people[it.author] ?: if (it.mine) "You" else chat.name) to it.text } ?: thread?.let { "Reply in thread" to null }
-            context?.let { (title, text) -> ContextChip(title, text) { reply = null; editing = null; setThread(null) } }
+            val context = editing?.let { "Editing" to it.text } ?: reply?.let { (state.people[it.author] ?: if (it.mine) "You" else chat.name) to it.text }
+            context?.let { (title, text) -> ContextChip(title, text, reply?.attachment, reply) { reply = null; editing = null } }
             val inputCommand: Command = { action, fields ->
                 command(action, if (action in listOf("attachment_pick", "record_start")) fields + mapOf("reply_author" to reply?.author, "reply_message" to reply?.id, "thread_author" to thread?.author, "thread_message" to thread?.id) else fields)
             }
@@ -364,31 +399,26 @@ internal fun MessageBubble(message: ChatMessage, grouped: Boolean, followed: Boo
         else
         {
             val bare = objectOnly || (bareImage && !captioned) || bareLocation
+            // A quoted bubble: the quote inset 6dp on the incoming tone; an own reply then carries its text as an outgoing band.
+            val quoted = message.reply != null && message.attachment == null && !objectOnly && !bareLocation && !panelled
             // Bare objects overhang their slot on purpose, so they get no clipping surface at all.
             val frame: @Composable (@Composable () -> Unit) -> Unit = { body -> if (objectOnly) Box { body() } else Surface(Modifier.drawBehind {
                 if (cue.floatValue >= 1f) return@drawBehind
                 val corners = floatArrayOf(bubbleShape.topStart.toPx(size, this), bubbleShape.topEnd.toPx(size, this), bubbleShape.bottomEnd.toPx(size, this), bubbleShape.bottomStart.toPx(size, this))
                 drawEndCue(cue.floatValue, cueInk, BubbleCueSpread.toPx(), BubbleCueSpread.toPx(), corners)
             }, shape = bubbleShape,
-            color = if(bare) Color.Transparent else if (message.mine) outgoing else scheme.surfaceContainer, contentColor = if(bare) scheme.onBackground else if (message.mine) outgoingInk else scheme.onSurface) { body() } }
+            color = if(bare) Color.Transparent else if (message.mine && !quoted) outgoing else scheme.surfaceContainer, contentColor = if(bare) scheme.onBackground else if (message.mine && !quoted) outgoingInk else scheme.onSurface) { body() } }
             frame {
-            CompositionLocalProvider(LocalBubbleCue provides cue,LocalMessageKey provides message.author+message.id,LocalMessageBubble provides panelled,LocalMaterialOutgoing provides message.mine,LocalContentColor provides if (bare) scheme.onBackground else if (message.mine) outgoingInk else scheme.onSurface,LocalMessageSurface provides if (bare) scheme.background else if (message.mine) outgoing else scheme.surfaceContainer) {
-            Column(if (message.attachment == null) Modifier.padding(horizontal = if(objectOnly || bareLocation || panelled)0.dp else 14.dp, vertical = if(bareLocation || panelled)0.dp else 10.dp) else Modifier) {
+            CompositionLocalProvider(LocalBubbleCue provides cue,LocalMessageKey provides message.author+message.id,LocalMessageBubble provides panelled,LocalMaterialOutgoing provides message.mine,LocalContentColor provides if (bare) scheme.onBackground else if (message.mine) outgoingInk else scheme.onSurface,LocalMessageSurface provides if (bare) scheme.background else if (message.mine && !quoted) outgoing else scheme.surfaceContainer) {
+            Column(if (message.attachment == null && !quoted) Modifier.padding(horizontal = if(objectOnly || bareLocation || panelled)0.dp else 14.dp, vertical = if(bareLocation || panelled)0.dp else 10.dp) else Modifier) {
                 // The quoted block is the timeline ground set into the bubble.
-                message.reply?.let { quoted ->
-                    val name = message.replyAuthor?.let { LocalMediaSender.current(message.copy(author = it, mine = message.replyMine)) }
-                    // A quote that wraps tightens its bottom corners to 5dp.
-                    var wrapped by remember(quoted) { mutableStateOf(false) }
-                    val bottom = if (wrapped) 5.dp else 12.dp
-                    Surface(Modifier.fillMaxWidth().testTag("reply-quote"), shape = RoundedCornerShape(12.dp, 12.dp, bottom, bottom), color = LocalContentColor.current.copy(alpha = .1f)) {
-                        Column(Modifier.padding(horizontal = 12.dp, vertical = 8.dp)) {
-                            if (name != null) Text(name, style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.SemiBold), maxLines = 1, overflow = TextOverflow.Ellipsis)
-                            Text(quoted, style = MaterialTheme.typography.bodySmall, maxLines = 4, overflow = TextOverflow.Ellipsis, onTextLayout = { wrapped = it.lineCount > 1 })
-                        }
-                    }
-                    Spacer(Modifier.height(8.dp))
-                }
-                if (message.attachment != null) LocalAttachmentContent.current(message) else if (message.parts.isNotEmpty()) MessageCards(message, analyze, command, objectOnly || bareLocation) else MessageText(message.text, analyze)
+                val body: @Composable () -> Unit = { if (message.attachment != null) LocalAttachmentContent.current(message) else if (message.parts.isNotEmpty()) MessageCards(message, analyze, command, objectOnly || bareLocation) else MessageText(message.text, analyze) }
+                if (quoted) {
+                    Box(Modifier.padding(start = 6.dp, end = 6.dp, top = 6.dp, bottom = if (message.mine) 6.dp else 0.dp)) { ReplyQuote(message, if (!message.mine && grouped) 5.dp else 14.dp, if (message.mine && grouped) 5.dp else 14.dp) }
+                    if (message.mine) Surface(Modifier.fillMaxWidth(), color = outgoing, contentColor = outgoingInk) {
+                        CompositionLocalProvider(LocalMessageSurface provides outgoing) { Box(Modifier.padding(horizontal = 14.dp, vertical = 10.dp)) { body() } }
+                    } else Box(Modifier.padding(start = 14.dp, end = 14.dp, top = 6.dp, bottom = 10.dp)) { body() }
+                } else if (message.reply != null) { ReplyQuote(message); Spacer(Modifier.height(6.dp)); body() } else body()
                 if (!captioned) message.attachment?.caption?.takeIf { it.isNotEmpty() }?.let { caption ->
                     Box(Modifier.padding(horizontal=14.dp,vertical=10.dp)) { MessageText(caption,analyze) }
                 }
@@ -512,18 +542,4 @@ internal fun VerificationDialog(chat: ChatSummary, busy: Boolean, command: Comma
             }
         }
     }, confirmButton = { SigilTextButton(close) { Text("Done") } })
-}
-
-// What the next message answers or replaces, as the pill above the writing field.
-@Composable
-internal fun ContextChip(title: String, text: String?, close: () -> Unit) {
-    Surface(Modifier.fillMaxWidth().padding(start = 8.dp, end = 8.dp, top = 8.dp).testTag("context-chip"), shape = RoundedCornerShape(20.dp), color = MaterialTheme.colorScheme.surfaceContainer) {
-        Row(Modifier.padding(start = 14.dp, end = 4.dp, top = 4.dp, bottom = 4.dp), verticalAlignment = Alignment.CenterVertically) {
-            Column(Modifier.weight(1f).padding(vertical = 4.dp)) {
-                Text(title, style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.SemiBold), maxLines = 1, overflow = TextOverflow.Ellipsis)
-                if (text != null) Text(text, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis)
-            }
-            Symbol("close", "Cancel reply or edit", close)
-        }
-    }
 }
