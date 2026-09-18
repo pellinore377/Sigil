@@ -1834,13 +1834,21 @@ impl ClientStore {
                     };
                     let reply = message.reply.as_ref().map(&mut preview).transpose()?;
                     let thread_preview = message.thread.as_ref().map(&mut preview).transpose()?;
+                    let reply_attachment = match message.reply.as_ref() {
+                        Some(target) => match self.conversation_message(conversation, target.clone(), conversations::now()) {
+                            Ok(m) if !m.view_once && !m.deleted => files::metadata(m.body.as_ref())?,
+                            Ok(_) | Err(Error::NotFound | Error::Obsolete) => None,
+                            Err(e) => return Err(e),
+                        },
+                        None => None,
+                    };
                     messages.push(json!({"id":transport::hex(&message.reference.message),"author":transport::hex(&message.reference.author),
                         "text":message.body.as_ref().map(body_text).transpose()?.unwrap_or_else(||"View-once message".into()),
                         "mine":mine,"timestamp":message.timestamp,"delivery":delivery,"pinned":message.pinned,"attachment":files::metadata(message.body.as_ref())?,
                         "reactions":message.reactions.iter().map(|(_,emoji)|emoji).collect::<Vec<_>>(),
                         "my_reactions":message.reactions.iter().filter(|(actor,_)| *actor == own).map(|(_,emoji)|emoji).collect::<Vec<_>>(),
                         "read_by_me": message.seen || message.view_once || message.read.contains(&own), "reply":reply,
-                        "reply_author":message.reply.as_ref().map(|v|transport::hex(&v.author)),"reply_mine":message.reply.as_ref().is_some_and(|v|v.author==own),
+                        "reply_author":message.reply.as_ref().map(|v|transport::hex(&v.author)),"reply_message":message.reply.as_ref().map(|v|transport::hex(&v.message)),"reply_mine":message.reply.as_ref().is_some_and(|v|v.author==own),"reply_attachment":reply_attachment,
                         "readers":message.read.iter().map(|v|transport::hex(v)).collect::<Vec<_>>(),
                         "noted":message.noted || self.mobile_is_note(conversation, &message)?,
                         "thread_author":message.thread.as_ref().map(|v|transport::hex(&v.author)),
@@ -2262,6 +2270,7 @@ mod privacy_tests {
         assert_eq!(value["value"]["messages"][0]["reply"], "Earlier message");
         assert_eq!(value["value"]["messages"][0]["reply_author"], transport::hex(&author));
         assert_eq!(value["value"]["messages"][0]["reply_mine"], true);
+        assert_eq!(value["value"]["messages"][0]["reply_attachment"], Value::Null);
         assert_eq!(value["value"]["messages"][1]["read_by_me"], true);
         assert!(!result.contains("never-preview-this"));
     }

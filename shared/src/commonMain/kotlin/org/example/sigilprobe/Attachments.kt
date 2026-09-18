@@ -15,6 +15,8 @@ val LocalAttachmentContent = staticCompositionLocalOf<@Composable (ChatMessage) 
 val LocalAttachmentDraft = staticCompositionLocalOf<@Composable (Transfer, Modifier) -> Unit> {
     { file, modifier -> Text(file.name, modifier, style = MaterialTheme.typography.bodyMedium, maxLines = 2, overflow = TextOverflow.Ellipsis) }
 }
+// Draws a cropped glimpse of a picture or video into the given bounds; false means the caller shows a glyph.
+val LocalAttachmentThumbnail = staticCompositionLocalOf<@Composable (ChatMessage, Modifier) -> Boolean> { { _, _ -> false } }
 val LocalCameraPanel = staticCompositionLocalOf<@Composable (Map<String, Any?>, () -> Unit, () -> Unit) -> Unit> {
     { _, back, _ -> PanelUnavailable("Camera unavailable on this device.", back) }
 }

@@ -37,4 +37,17 @@ class ReplyPresentationTest {
         assertEquals("b",messages.single().replyAuthor)
         assertTrue(messages.single().replyMine)
     }
+    @Test fun attachment_quotes_show_a_preview_and_type_and_a_memo_shows_a_microphone() {
+        val video=AttachmentDetails("clip.mp4","video/mp4",1200)
+        val memo=AttachmentDetails("Voice message.aac","audio/aac",800)
+        ui.setContent {MaterialTheme {Column(Modifier.width(360.dp)) {
+            MessageBubble(message("Video","a",false).copy(replyAttachment=video),false,false,{""})
+            ContextChip("You",null,memo,null) {}
+        }}}
+        ui.onNodeWithText("Video").assertIsDisplayed()
+        ui.onNodeWithText("Voice message").assertIsDisplayed()
+        assertEquals("Photo",attachmentLabel(AttachmentDetails("a.jpg","image/jpeg",1)))
+        assertEquals("GIF",attachmentLabel(AttachmentDetails("a.gif","image/gif",1)))
+        assertEquals("Pdf",attachmentLabel(AttachmentDetails("a.pdf","application/pdf",1)))
+    }
 }

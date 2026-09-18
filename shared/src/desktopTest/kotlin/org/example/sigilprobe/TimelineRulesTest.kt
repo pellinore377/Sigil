@@ -122,6 +122,12 @@ class TimelineRulesTest {
         assertEquals("reply", swipeAction(false, 60f))
         assertEquals("thread", swipeAction(false, -60f))
         assertEquals("reply", swipeAction(true, -60f))
+        // A sideways pull starts, a scroll never does, and a diagonal waits.
+        assertEquals(true, swipeStarts(40f, 5f, 16f))
+        assertEquals(false, swipeStarts(10f, 30f, 16f))
+        assertEquals(false, swipeStarts(30f, 30f, 16f))
+        assertEquals(null, swipeStarts(12f, 4f, 16f))
+        assertEquals(null, swipeStarts(30f, 20f, 16f))
         assertEquals("thread", swipeAction(true, 60f))
     }
 }

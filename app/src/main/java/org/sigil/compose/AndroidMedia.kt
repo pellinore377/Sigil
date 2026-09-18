@@ -349,3 +349,26 @@ internal fun VideoDialog(message: ChatMessage, close: () -> Unit) {
     }
 }
 private fun mediaTime(milliseconds: Long): String { val seconds = milliseconds / 1000; return "${seconds / 60}:${(seconds % 60).toString().padStart(2, '0')}" }
+
+// A cropped glimpse for reply previews: the picture, or a video's first frame.
+@Composable
+internal fun AndroidThumbnail(message: ChatMessage, modifier: Modifier): Boolean {
+    val file = message.attachment ?: return false
+    if (!file.mediaType.startsWith("image/") && !file.mediaType.startsWith("video/")) return false
+    val context = LocalContext.current
+    val cache = LocalImageCache.current
+    var bitmap by remember(message.id) { mutableStateOf<Bitmap?>(null) }
+    LaunchedEffect(message.id, cache) {
+        bitmap = runCatching {
+            if (file.mediaType.startsWith("image/")) historyBitmap(context, message, cache)
+            else withContext(Dispatchers.IO) { EncryptedMedia(context, message).use { source ->
+                android.media.MediaMetadataRetriever().let { retriever ->
+                    try { retriever.setDataSource(source); if (Build.VERSION.SDK_INT >= 27) retriever.getScaledFrameAtTime(0, android.media.MediaMetadataRetriever.OPTION_CLOSEST_SYNC, 200, 200) else null }
+                    finally { retriever.release() }
+                }
+            } }
+        }.getOrNull()
+    }
+    bitmap?.let { androidx.compose.foundation.Image(it.asImageBitmap(), null, modifier, contentScale = androidx.compose.ui.layout.ContentScale.Crop) }
+    return true
+}
