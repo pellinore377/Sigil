@@ -29,7 +29,7 @@ class VoicePanelTest {
         ui.runOnIdle {assertEquals("record_cancel",commands.last {it.startsWith("record_")})}
         ui.onNodeWithContentDescription("Tap to record your voice").assertDoesNotExist()
     }
-    @Test fun recording_offers_restart_pause_and_attach() {
+    @Test fun recording_offers_restart_stop_and_attach() {
         val commands=mutableListOf<String>()
         var voice by mutableStateOf(VoiceState())
         ui.setContent {MaterialTheme {Box(Modifier.width(412.dp).height(760.dp)) {
@@ -40,8 +40,8 @@ class VoicePanelTest {
         ui.runOnIdle {assertEquals(listOf("record_start"),commands.filter {it.startsWith("record_")});voice=VoiceState("Recording","peer",4,List(48){.5f})}
         ui.onNodeWithText("00:04").assertIsDisplayed()
         ui.onNodeWithContentDescription("Cancel").assertDoesNotExist()
-        ui.onNodeWithContentDescription("Pause recording").performClick()
-        ui.runOnIdle {assertEquals("record_pause",commands.last())}
+        ui.onNodeWithContentDescription("Stop").performClick()
+        ui.runOnIdle {assertEquals("record_stop",commands.last())}
         ui.onNodeWithContentDescription("Restart").performClick()
         ui.runOnIdle {assertEquals(listOf("record_cancel","record_start"),commands.takeLast(2))}
         ui.onNodeWithContentDescription("Attach").assertIsEnabled().performClick()

@@ -371,10 +371,10 @@ internal fun VoicePanel(command: Command, peer: String, voice: VoiceState, close
         Row(Modifier.fillMaxWidth().height(56.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             if (recording) VoiceAction("refresh", "Restart", Modifier.weight(1f), scheme.surfaceContainer, scheme.onSurface) { command("record_cancel", emptyMap()); start() }
             else VoiceAction("close", "Cancel", Modifier.weight(1f), scheme.surfaceContainer, scheme.onSurface) { command("record_cancel", emptyMap()); close() }
-            // The centre control is the microphone until it is live, then the pause; paused resumes.
-            VoiceAction(if (live) "pause" else "mic", if (live) "Pause recording" else if (recording) "Resume recording" else "Record", Modifier.weight(1.2f),
-                if (live) scheme.errorContainer else scheme.surfaceContainerHigh, if (live) scheme.onErrorContainer else scheme.onSurface, enabled = !starting, labelled = false) {
-                if (recording) command("record_pause", emptyMap()) else start()
+            // The centre control is the microphone until it is live, then the stop that ends into the draft.
+            VoiceAction(if (recording) "stop" else "mic", if (recording) "Stop" else "Record", Modifier.weight(1.2f),
+                if (recording) scheme.errorContainer else scheme.surfaceContainerHigh, if (recording) scheme.onErrorContainer else scheme.onSurface, enabled = !starting, labelled = false) {
+                if (recording) command("record_stop", emptyMap()) else start()
             }
             VoiceAction("check", "Attach", Modifier.weight(1f), scheme.surfaceContainerHigh, scheme.onSurface, enabled = recording && voice.seconds > 0) { command("record_stop", emptyMap()) }
         }
