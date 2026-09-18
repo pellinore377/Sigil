@@ -203,7 +203,7 @@ internal fun ConversationPage(chat: ChatSummary, state: MessengerState, draft: T
             Box(Modifier.weight(1f).fillMaxWidth().clipToBounds().onGloballyPositioned {materialTimeline.viewport=it.boundsInWindow();val r=materialTimeline.viewport;if(materialHeader>0)materialTimeline.bubbles["header"]=Rect(r.left,r.top,r.right,r.top+materialHeader)}) {
             val timelineMedia = remember(messages) { messages.filter { m -> m.attachment?.let { it.mediaType.startsWith("image/") || it.mediaType.startsWith("video/") } == true }.asReversed() }
             CompositionLocalProvider(LocalMaterialTimeline provides materialTimeline.takeIf {materialOverlay!=null}, LocalPreviewLaunch provides previewLaunch, LocalTimelineMedia provides timelineMedia) {
-            LazyColumn(Modifier.fillMaxSize().blur(18.dp * menu.value.coerceIn(0f, 1f)).testTag("timeline"), state = list, reverseLayout = true, userScrollEnabled = selected == null, contentPadding = PaddingValues(start = TimelineGutter, end = TimelineGutter, top = (if (controls) 0.dp else headerInset) + 12.dp, bottom = composerInset)) {
+            LazyColumn(Modifier.fillMaxSize().testTag("timeline"), state = list, reverseLayout = true, userScrollEnabled = selected == null, contentPadding = PaddingValues(start = TimelineGutter, end = TimelineGutter, top = (if (controls) 0.dp else headerInset) + 12.dp, bottom = composerInset)) {
                 item("typing") { androidx.compose.animation.AnimatedVisibility(!threadsOverview && state.typing.isNotEmpty(), enter = expandVertically(motionPolicy.enter(MotionMillis)) + fadeIn(motionPolicy.enter(MotionMillis)), exit = shrinkVertically(motionPolicy.exit(MotionQuick)) + fadeOut(motionPolicy.exit(MotionExit)), label = "Typing indicator") { TypingRow(state.typing.map { state.people[it] ?: if (chat.group) "Member" else chat.name }, chat.name, state.typing) } }
                 itemsIndexed(messages, key = { _, it -> it.author + it.id }) { index, message ->
                     if (page == "Pins") {
@@ -382,9 +382,11 @@ internal fun ConversationPage(chat: ChatSummary, state: MessengerState, draft: T
         }
         }
         }
+        // The menu lives above the blurred layer when a shell hosts it, else in the page.
+        val menuSlot = remember { movableContentWithReceiverOf<BoxScope> {
         selected?.let { (message, origin) ->
             val band = Rect(pageBounds.left, footerHost?.headerBottom ?: pageBounds.top, pageBounds.right, pageBounds.bottom - navigationInset - with(LocalDensity.current) { ((footerHost?.height ?: 0.dp) + 16.dp).toPx() })
-            MessageMenu(message, origin, menu, pageBounds, band, { CompositionLocalProvider(LocalMaterialTimeline provides materialTimeline.takeIf { materialOverlay != null }) { heldContent.value?.invoke() } },
+            MessageMenu(message, origin, menu, footerHost?.overlayBounds ?: pageBounds, band, { CompositionLocalProvider(LocalMaterialTimeline provides materialTimeline.takeIf { materialOverlay != null }) { heldContent.value?.invoke() } },
                 { materialTimeline.bubbles[message.author + message.id] = it }, { selected = null; heldContent.value = null }) { action, value ->
                 when (action) {
                     "reply" -> respond(message, false)
@@ -404,6 +406,12 @@ internal fun ConversationPage(chat: ChatSummary, state: MessengerState, draft: T
             }
             LaunchedEffect(message.id) { focus.clearFocus(); keyboard?.hide() }
         }
+        } }
+        DisposableEffect(footerHost, selected != null) {
+            if (selected != null) footerHost?.menuOverlay = menuSlot
+            onDispose { if (footerHost?.menuOverlay === menuSlot) footerHost.menuOverlay = null }
+        }
+        if (footerHost == null) menuSlot()
         cardDetails?.let { CardDetails(it) { cardDetails = null } }
     }
 }
@@ -487,15 +495,17 @@ internal fun MessageDetails(message: ChatMessage, expanded: Boolean, receipt: Bo
     } else AnimatedVisibility(expanded, enter = expandVertically(motionPolicy.enter(MotionQuick)) + enterSlide,
         exit = exitSlide + shrinkVertically(motionPolicy.exit(MotionQuick, MotionQuick)), label = "Details row") {
         Row(Modifier.padding(top = 4.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(5.dp)) {
-            if (message.mine) DeliveryReceipt(message, chat, people)
+            // Static here, so the state rides in and out with the row instead of fading on its own.
+            if (message.mine) DeliveryReceipt(message, chat, people, animated = false)
             details()
         }
     }
 }
 @Composable
-private fun DeliveryReceipt(message: ChatMessage, chat: ChatSummary, people: Map<String, String>) {
+private fun DeliveryReceipt(message: ChatMessage, chat: ChatSummary, people: Map<String, String>, animated: Boolean = true) {
     val motionPolicy = LocalMotion.current
-    Crossfade(if (message.delivery in listOf("Queued", "Sending")) "Sending" else message.delivery, animationSpec = motionPolicy.tween(MotionInline), label = "Delivery state") { stage ->
+    val current = if (message.delivery in listOf("Queued", "Sending")) "Sending" else message.delivery
+    val body: @Composable (String) -> Unit = { stage ->
     if (stage == "Read") AvatarStack(message.readers.map { people[it] ?: if (chat.group) "Member" else chat.name }.ifEmpty { listOf(chat.name) }, 17, message.readers.ifEmpty { listOf(chat.avatar) })
     else if (stage == "Sending") {
         val angle = if (motionPolicy.reduced) 0f else {
@@ -510,6 +520,7 @@ private fun DeliveryReceipt(message: ChatMessage, chat: ChatSummary, people: Map
         color = if (stage in listOf("Failed", "Expired", "Cancelled")) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary,
         contentColor = if (stage in listOf("Failed", "Expired", "Cancelled")) MaterialTheme.colorScheme.onError else MaterialTheme.colorScheme.onPrimary) { Box(contentAlignment = Alignment.Center) { Glyph(if (stage in listOf("Failed", "Expired", "Cancelled")) "priority_high" else "check", 12) } }
     }
+    if (animated) Crossfade(current, animationSpec = motionPolicy.tween(MotionInline), label = "Delivery state") { body(it) } else body(current)
 }
 @Composable
 internal fun AvatarStack(people: List<String>, size: Int = 22, photos: List<String> = emptyList()) {

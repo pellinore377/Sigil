@@ -22,11 +22,8 @@ import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.draw.blur
-import androidx.compose.ui.graphics.drawOutline
 import androidx.compose.ui.graphics.Shape
-import androidx.compose.ui.draw.BlurredEdgeTreatment
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -45,8 +42,10 @@ internal class FooterHost {
     var content: (@Composable () -> Unit)? by mutableStateOf(null)
     var height by mutableStateOf(68.dp)
     var headerBottom by mutableFloatStateOf(0f)
-    // How far the message menu is open; the conversation chrome blurs and dims by it.
+    // How far the message menu is open: the page and chrome blur as one layer by it, and the menu itself renders above that layer.
     var menu by mutableFloatStateOf(0f)
+    var menuOverlay: (@Composable BoxScope.() -> Unit)? by mutableStateOf(null)
+    var overlayBounds by mutableStateOf(Rect.Zero)
     var panel: (@Composable (ChromeBackdrop?) -> Unit)? by mutableStateOf(null)
     var chrome: ChromeBackdrop? by mutableStateOf(null)
 }
@@ -221,6 +220,8 @@ fun SigilApp(palette: (Int, Boolean) -> String, analyze: (String) -> String, sta
                         val settledHeaderExtent=with(LocalDensity.current){(statusInset+12.dp+pageHeaderHeight()+8.dp).toPx()}
                         SideEffect {footer.headerBottom=workspaceTop+settledHeaderExtent}
                         Box(Modifier.weight(1f).fillMaxWidth().background(LocalGlobalBackground.current).onGloballyPositioned {workspaceTop=it.positionInWindow().y}) {
+                            // Everything beneath the message menu blurs as one layer, so the veil is contiguous across page and chrome.
+                            Box(Modifier.matchParentSize().blur(18.dp * footer.menu)) {
                         AnimatedContent(Screen(destination, page, chat, conversationPage, state, newTitle, thread?.id), Modifier.fillMaxSize().captureBackdrop(backdrop), contentKey = { it.destination }, transitionSpec = {
                             val enter = if (targetState.destination == "conversation") EnterTransition.None
                                 else if (goingBack) fadeIn(motionPolicy.enter(MotionMillis)) else slideInVertically(motionPolicy.enter(MotionMillis)) { it } + fadeIn(motionPolicy.enter(MotionMillis))
@@ -313,7 +314,7 @@ fun SigilApp(palette: (Int, Boolean) -> String, analyze: (String) -> String, sta
                             enter = slideInVertically(motionPolicy.enter(MotionInline, delayMillis = MotionMillis)) { -it } + fadeIn(motionPolicy.enter(MotionInline, delayMillis = MotionMillis)),
                             exit = slideOutVertically(motionPolicy.exit(MotionQuick)) { -it } + fadeOut(motionPolicy.exit(MotionExit)), label = "Conversation header") {
                             val screen = if (conversation) headerScreen else retainedConversation
-                            FloatingChrome(backdrop, Modifier.menuVeil(footer.menu, RoundedCornerShape(24.dp)).padding(top = if (wide) 12.dp else WindowInsets.statusBars.asPaddingValues().calculateTopPadding() + 12.dp).widthIn(max = 920.dp).fillMaxWidth().padding(horizontal = 12.dp).height(pageHeaderHeight() + 8.dp).testTag("conversation-header").onGloballyPositioned { materialOcclusion.header = it.boundsInWindow() }, RoundedCornerShape(24.dp)) {
+                            FloatingChrome(backdrop, Modifier.padding(top = if (wide) 12.dp else WindowInsets.statusBars.asPaddingValues().calculateTopPadding() + 12.dp).widthIn(max = 920.dp).fillMaxWidth().padding(horizontal = 12.dp).height(pageHeaderHeight() + 8.dp).testTag("conversation-header").onGloballyPositioned { materialOcclusion.header = it.boundsInWindow() }, RoundedCornerShape(24.dp)) {
                                 screen.chat?.let { ConversationHeader(it, screen.detail, screen.thread != null, dispatch, back) { goingBack = false; thread = null; conversationPage = it } }
                             }
                         }
@@ -334,12 +335,14 @@ fun SigilApp(palette: (Int, Boolean) -> String, analyze: (String) -> String, sta
                         Box(Modifier.widthIn(max = 920.dp).fillMaxWidth().onSizeChanged { if (footer.content != null) footer.height = with(density) { it.height.toDp() } }.padding(horizontal = 12.dp).windowInsetsPadding(WindowInsets.ime.union(WindowInsets.navigationBars)).padding(bottom = 8.dp).zIndex(3f)) {
                             Column(Modifier.fillMaxWidth()) {
                                 footer.panel?.invoke(backdrop)
-                                if (footer.content != null) FloatingChrome(backdrop, Modifier.menuVeil(footer.menu, RoundedCornerShape(24.dp)).testTag("conversation-footer").onGloballyPositioned { materialOcclusion.footer = it.boundsInWindow() }, RoundedCornerShape(24.dp)) { footer.content?.invoke() }
+                                if (footer.content != null) FloatingChrome(backdrop, Modifier.testTag("conversation-footer").onGloballyPositioned { materialOcclusion.footer = it.boundsInWindow() }, RoundedCornerShape(24.dp)) { footer.content?.invoke() }
                             }
                         }
                         }
+                            }
                         MaterialOverlayViewport(materialOverlayHost, Modifier.matchParentSize().zIndex(3.5f))
                         PresentationViewport(presentationHost, Modifier.matchParentSize().zIndex(5f))
+                            footer.menuOverlay?.let { overlay -> Box(Modifier.matchParentSize().zIndex(6f).onGloballyPositioned { footer.overlayBounds = it.boundsInWindow() }) { overlay() } }
                         var lastIssue by remember { mutableStateOf("") }
                         SideEffect { state.issue?.let { lastIssue = it } }
                         Column(Modifier.align(Alignment.TopCenter).padding(top = headerHeight + headerTop + 12.dp, start = 16.dp, end = 16.dp).widthIn(max = 620.dp).zIndex(8f), verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -384,15 +387,5 @@ private fun GlobalNotice(icon: String, label: String, action: () -> Unit) {
             Text(label, Modifier.weight(1f), style = MaterialTheme.typography.bodyMedium, maxLines = 2, overflow = TextOverflow.Ellipsis)
             CompositionLocalProvider(LocalContentColor provides MaterialTheme.colorScheme.onSurfaceVariant) { Glyph("chevron_right", 20) }
         }
-    }
-}
-
-// Blurred and dimmed by the menu's progress, like the page beneath.
-@Composable
-internal fun Modifier.menuVeil(progress: Float, shape: Shape): Modifier {
-    val scrim = MaterialTheme.colorScheme.scrim
-    // Blur and dim follow the chrome's own outline, not its rectangle.
-    return if (progress <= 0f) this else blur(18.dp * progress, BlurredEdgeTreatment(shape)).drawWithContent {
-        drawContent(); drawOutline(shape.createOutline(size, layoutDirection, this), scrim.copy(alpha = .5f * progress))
     }
 }
