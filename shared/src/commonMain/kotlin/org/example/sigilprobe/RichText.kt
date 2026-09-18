@@ -214,6 +214,9 @@ fun RichMessageText(value: RichText, modifier: Modifier = Modifier, style: TextS
 }
 /** True where the caller draws the surrounding bubble, so a code panel may replace it. */
 val LocalMessageBubble = staticCompositionLocalOf { false }
+// A revealed spoiler stays revealed when its row is scrolled back or the conversation reopened.
+internal val LocalMessageKey = staticCompositionLocalOf<String?> { null }
+private val revealLedger = mutableStateMapOf<String, Set<Int>>()
 
 /** Trailing blank lines inside a fence would otherwise pad the panel with dead space. */
 private fun trimmedEnd(value: RichText, block: RichBlock): Int {
@@ -262,7 +265,10 @@ internal fun quoteBody(value: RichText): RichText {
 
 @Composable
 private fun RichInlineText(value: RichText, modifier: Modifier = Modifier, style: TextStyle = MaterialTheme.typography.bodyLarge) {
-    var revealed by remember(value) { mutableStateOf(emptySet<Int>()) }
+    val ledgerKey = LocalMessageKey.current?.let { "$it/${value.text.hashCode()}/${value.spans.size}" }
+    var local by remember(value) { mutableStateOf(emptySet<Int>()) }
+    val revealed = if (ledgerKey != null) revealLedger[ledgerKey].orEmpty() else local
+    fun reveal(set: Set<Int>) { if (ledgerKey != null) { if (revealLedger.size >= 4096) revealLedger.clear(); revealLedger[ledgerKey] = set } else local = set }
     var layout by remember(value) { mutableStateOf<TextLayoutResult?>(null) }
     var brushed by remember(value) { mutableStateOf(emptyList<Offset>()) }
     var wiping by remember(value) { mutableStateOf<Int?>(null) }
@@ -280,7 +286,7 @@ private fun RichInlineText(value: RichText, modifier: Modifier = Modifier, style
         val spoiler = value.spans.any { it.start == start && it.reveal == "spoiler" }
         scope.launch {
             wipe.snapTo(0f)
-            revealed = revealed + start; wiping = start
+            reveal(revealed + start); wiping = start
             wipe.animateTo(1f, motion.tween(if (spoiler) 650 else 600))
             if (wiping == start) wiping = null
         }

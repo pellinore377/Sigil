@@ -12,7 +12,10 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import org.sigil.MessengerState
 
-internal class ImageCache(private val budget: Int = 24 * 1024 * 1024) {
+private val materialWriter = java.util.concurrent.Executors.newSingleThreadExecutor()
+private const val MaterialFiles = 512
+
+internal class ImageCache(private val budget: Int = 24 * 1024 * 1024, private val store: java.io.File? = null) {
     private val entries=LinkedHashMap<String,Bitmap>(16,.75f,true)
     private val shapes=LinkedHashMap<String,Pair<Int,Int>>(16,.75f,true)
     private val loading=Mutex()
@@ -35,7 +38,28 @@ internal class ImageCache(private val budget: Int = 24 * 1024 * 1024) {
     @Synchronized internal fun retainedMaterials()=entries.keys.count {it.startsWith("material:")}
     @Synchronized internal fun materialGeneration()=generation
     @Synchronized internal fun materialSnapshot(key:String)=if(active)entries["material:$key"] else null
-    @Synchronized internal fun rememberMaterial(key:String,bitmap:Bitmap,epoch:Long) {retain("material:$key",bitmap,epoch)}
+    @Synchronized internal fun rememberMaterial(key:String,bitmap:Bitmap,epoch:Long) {
+        retain("material:$key",bitmap,epoch)
+        val file=materialFile(key)?.takeIf {active && !it.isFile} ?: return
+        materialWriter.execute {runCatching {
+            file.parentFile?.mkdirs()
+            file.outputStream().use {bitmap.compress(Bitmap.CompressFormat.PNG,100,it)}
+            val files=file.parentFile?.listFiles().orEmpty()
+            if(files.size>MaterialFiles)files.sortedBy {it.lastModified()}.take(files.size-MaterialFiles).forEach {it.delete()}
+        }}
+    }
+    /// A settled object drawn once is kept on disk, so a later launch shows it without a GPU surface.
+    suspend fun loadMaterial(key:String):Bitmap? {
+        materialSnapshot(key)?.let {return it}
+        val file=materialFile(key)?.takeIf {it.isFile} ?: return null
+        val bitmap=kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {android.graphics.BitmapFactory.decodeFile(file.path)} ?: return null
+        synchronized(this) {retain("material:$key",bitmap,generation)}
+        return bitmap
+    }
+    private fun materialFile(key:String)=store?.let {dir->
+        val digest=java.security.MessageDigest.getInstance("SHA-256").digest(key.toByteArray())
+        java.io.File(dir,"m-"+digest.take(16).joinToString("") {"%02x".format(it)}+".png")
+    }
     private fun retain(key:String,bitmap:Bitmap,epoch:Long) {
         if(active && epoch==generation && bitmap.allocationByteCount<=budget) {
             entries.put(key,bitmap)?.let {bytes-=it.allocationByteCount}
@@ -61,9 +85,9 @@ internal val LocalImageCache=staticCompositionLocalOf<ImageCache?> {null}
 
 @Composable internal fun rememberImageCache(state:MessengerState):ImageCache {
     val owner=if(state.phase=="connected")listOf(state.address,state.fingerprint,state.device) else emptyList()
-    val cache=remember(owner){ImageCache()}
-    val lifecycle=LocalLifecycleOwner.current.lifecycle
     val context=LocalContext.current.applicationContext
+    val cache=remember(owner){ImageCache(store=java.io.File(context.cacheDir,"materials"))}
+    val lifecycle=LocalLifecycleOwner.current.lifecycle
     DisposableEffect(cache,lifecycle,context) {
         cache.setActive(lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED))
         val observer=LifecycleEventObserver {_,event->when(event){Lifecycle.Event.ON_STOP->cache.setActive(false);Lifecycle.Event.ON_START->cache.setActive(true);else->Unit}}

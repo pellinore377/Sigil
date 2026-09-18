@@ -37,15 +37,19 @@ internal class TextPlayback(fresh:Boolean=false) {
     fun duration(default:Int)=if(materialDuration>0)maxOf(minOf(default,TextMotionDefault),materialDuration)else default
     var elapsed by mutableFloatStateOf(if(fresh)0f else TextMotionCap.toFloat())
     var generation by mutableIntStateOf(0)
-    fun replay() {elapsed=0f;materialDuration=0;generation++}
+    // Automatic replay follows a message that played in this session, never history settled on open.
+    var autoplay=fresh
+    fun replay() {elapsed=0f;materialDuration=0;generation++;autoplay=true}
 }
+private const val ArrivalBurst=8
 internal class MotionLedger {
     private var initialized=false
     private var previous=emptySet<String>()
     private val entries=linkedMapOf<String,TextPlayback>()
     fun update(ids:List<String>,loaded:Boolean,allowNew:Boolean,animated:Set<String> = ids.toSet()) {
         if(!loaded)return
-        val boundary=if(!initialized || !allowNew)0 else ids.indexOfFirst {it in previous}.let {if(it>=0)it else if(previous.isEmpty())ids.size else 0}
+        // Nothing known yet and a handful arriving is a new conversation; a whole page at once is history.
+        val boundary=if(!initialized || !allowNew)0 else ids.indexOfFirst {it in previous}.let {if(it>=0)it else if(previous.isEmpty() && ids.size<=ArrivalBurst)ids.size else 0}
         ids.take(boundary).filter {it in animated}.forEach {id->if(id !in entries)put(id,TextPlayback(true))}
         previous=ids.toSet();initialized=true
     }
@@ -97,7 +101,7 @@ internal fun MessageMotion(message:String,clock:TextPlayback,visible:Boolean,dur
                 last=now
             }
             clock.elapsed=TextMotionCap.toFloat()
-            if(replaySeconds in 10..30) {
+            if(clock.autoplay && replaySeconds in 10..30) {
                 kotlinx.coroutines.delay(replaySeconds*1000L)
                 clock.replay()
             }

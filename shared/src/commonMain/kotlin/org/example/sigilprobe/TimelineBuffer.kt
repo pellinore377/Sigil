@@ -43,7 +43,8 @@ internal class TimelineCacheWindow(private val depth: () -> TimelineBufferDepth?
 
 /// Whether a scan that holds `held` messages may publish them. It waits for what the reader can already see,
 /// but never past the target: a target below what is on screen means the reader left that history behind.
-fun timelinePublishes(held: Int, onScreen: Int, want: Int, last: Boolean) = last || held >= minOf(onScreen, want)
+// An empty first page would make the ledger treat the real one as arrivals, replaying every effect on open.
+fun timelinePublishes(held: Int, onScreen: Int, want: Int, last: Boolean) = last || (held > 0 && held >= minOf(onScreen, want))
 
 /// The index the reader's anchor moved to, or null when it is still where it was.
 internal fun anchorPlace(keys: List<String>, previous: List<String>, anchor: String?): Int? {
