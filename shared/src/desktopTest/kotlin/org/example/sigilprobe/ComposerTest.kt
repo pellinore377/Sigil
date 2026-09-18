@@ -66,7 +66,8 @@ class ComposerTest {
         assertEquals("first", rendered())
         field.performTextInputSelection(TextRange(state.text.length))
         field.performTextInput("; spoiler::secret; scratch::covered; shake::bold::moving; redact::deleted;")
-        assertEquals("first spoiler::secret; scratch::covered; moving redact::deleted;", rendered())
+        // An animated span shows a dot where its modifier chain was.
+        assertEquals("first spoiler::secret; scratch::covered; \u2022moving\u2022 redact::deleted;", rendered())
         ui.runOnIdle { assertEquals("underline::first; spoiler::secret; scratch::covered; shake::bold::moving; redact::deleted;", state.text.toString()) }
     }
 

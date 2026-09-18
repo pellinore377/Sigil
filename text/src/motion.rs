@@ -1,19 +1,17 @@
 use crate::Animation;
 
-/// Version-1 rendering parameters: distances are thousandths of an em, angles degrees.
+/// Version-1 rendering parameters, ported from the selected presentation recipes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
 pub struct Parameters {
     pub duration_ms: u16,
-    pub easing: [u16; 4],
-    pub cycles: u8,
-    pub displacement: u16,
-    pub rotation: u16,
-    pub scale_per_mille: u16,
+    pub mode: &'static str,
+    /// Amplitude x1000: pixels against a 64px reference em, or a unitless ratio for pulse.
+    pub amplitude_milli: u32,
     pub stagger_ms: u16,
     pub particles: u8,
-    pub particle_lifetime_ms: u16,
-    pub spring_stiffness: u16,
-    pub spring_damping: u16,
+    /// Shake and pulse move the whole run; the rest move glyph by glyph.
+    pub line_scope: bool,
+    pub caret: &'static str,
     pub substitutions: &'static str,
 }
 
@@ -44,8 +42,8 @@ pub(crate) fn presentation(text: &crate::Text) -> Vec<Run> {
         for word in source.split_word_bounds() {
             let end = at + word.encode_utf16().count() as u32;
             if !word.chars().all(char::is_whitespace) {
-                // Keep joined scripts and emoji intact; barrel moves complete words.
-                if word.is_ascii() && animation != Animation::Barrel {
+                // Keep joined scripts and emoji intact; everything else moves grapheme by grapheme.
+                if word.is_ascii() {
                     units.extend((at..end).map(|i| [i, i + 1]));
                 } else {
                     units.push([at, end]);
@@ -75,82 +73,88 @@ pub(crate) fn presentation(text: &crate::Text) -> Vec<Run> {
             runs.push(run);
         }
     }
+    // The staggered tail extends the timeline, exactly as the reference player measures it.
+    for run in &mut runs {
+        let n = run.units.len().saturating_sub(1) as u32;
+        let tail = (n * u32::from(run.parameters.stagger_ms)).min(640);
+        run.parameters.duration_ms = run.parameters.duration_ms.saturating_add(tail as u16);
+    }
     runs
 }
 impl Animation {
+    /// Flip is a static text transform and carries no timeline.
     pub fn parameters(self) -> Parameters {
         let mut p = Parameters {
-            duration_ms: 900,
-            easing: [220, 0, 200, 1000],
-            cycles: 1,
-            displacement: 0,
-            rotation: 0,
-            scale_per_mille: 1000,
+            duration_ms: 0,
+            mode: "",
+            amplitude_milli: 0,
             stagger_ms: 0,
             particles: 0,
-            particle_lifetime_ms: 0,
-            spring_stiffness: 180,
-            spring_damping: 24,
+            line_scope: false,
+            caret: "",
             substitutions: "",
         };
         match self {
             Self::Shake => {
-                p.duration_ms = 480;
-                p.cycles = 4;
-                p.displacement = 80;
+                p.duration_ms = 1550;
+                p.mode = "echo";
+                p.amplitude_milli = 5_000;
+                p.line_scope = true;
             }
             Self::Wave => {
-                p.duration_ms = 1200;
-                p.displacement = 140;
-                p.stagger_ms = 45;
+                p.duration_ms = 1300;
+                p.mode = "ribbon";
+                p.amplitude_milli = 15_000;
+                p.stagger_ms = 28;
             }
             Self::Pulse => {
-                p.cycles = 2;
-                p.scale_per_mille = 1080;
+                p.duration_ms = 1250;
+                p.mode = "elastic";
+                p.amplitude_milli = 100;
+                p.line_scope = true;
             }
             Self::Glow => {
-                p.duration_ms = 1200;
-                p.displacement = 180;
+                p.duration_ms = 1300;
+                p.mode = "travel";
+                p.amplitude_milli = 24_000;
+                p.stagger_ms = 48;
             }
             Self::Typewriter => {
-                p.duration_ms = 1600;
-                p.stagger_ms = 35;
+                p.duration_ms = 1950;
+                p.mode = "measured";
+                p.caret = "line";
             }
             Self::Sparkle => {
-                p.duration_ms = 1100;
-                p.particles = 12;
-                p.particle_lifetime_ms = 650;
-                p.displacement = 600;
+                p.duration_ms = 1900;
+                p.mode = "constellation";
+                p.amplitude_milli = 11_000;
+                p.particles = 9;
             }
             Self::Glitch => {
-                p.duration_ms = 420;
-                p.cycles = 3;
-                p.displacement = 60;
-                p.substitutions = "#%&?<>[]";
+                p.duration_ms = 1700;
+                p.mode = "fragment";
+                p.amplitude_milli = 4_000;
+                p.substitutions = "\u{2301}\u{2591}/\u{00a6}\u{2237}\u{2310}\u{2260}\u{2592}";
             }
             Self::Scatter => {
-                p.duration_ms = 1000;
-                p.displacement = 750;
-                p.rotation = 25;
-            }
-            Self::Flip => {
-                p.duration_ms = 700;
-                p.rotation = 180;
-                p.stagger_ms = 40;
-            }
-            Self::Barrel => {
-                p.duration_ms = 900;
-                p.rotation = 360;
-                p.displacement = 600;
+                p.duration_ms = 1800;
+                p.mode = "burst";
+                p.amplitude_milli = 94_000;
             }
             Self::Assemble => {
                 p.duration_ms = 1600;
-                p.displacement = 900;
-                p.rotation = 30;
-                p.stagger_ms = 22;
-                p.spring_stiffness = 60;
-                p.spring_damping = 10;
+                p.mode = "sort";
+                p.amplitude_milli = 74_000;
+                p.stagger_ms = 35;
             }
+            Self::Barrel => {
+                p.duration_ms = 1200;
+                p.mode = "ripple";
+                p.amplitude_milli = 27_000;
+                p.stagger_ms = 58;
+            }
+            // Static: the renderer turns each grapheme in place, over reversed text.
+            Self::Flip => p.mode = "plain",
         }
         p
     }
@@ -203,12 +207,21 @@ mod tests {
         let view = text.presentation();
         assert!(view.motion.iter().map(|r| r.units.len()).sum::<usize>() <= 192);
         assert!(view.motion.is_empty());
-        let barrel = crate::parse("barrel::whole words;", Default::default()).unwrap();
-        assert_eq!(barrel.presentation().motion[0].units, vec![[0, 5], [6, 11]]);
+        let barrel = crate::parse("barrel::ab cd;", Default::default()).unwrap();
+        assert_eq!(
+            barrel.presentation().motion[0].units,
+            vec![[0, 1], [1, 2], [3, 4], [4, 5]]
+        );
+        let flip = crate::parse("flip::abc;", Default::default()).unwrap();
+        let run = &flip.presentation().motion[0];
+        assert_eq!(run.parameters.duration_ms, 0);
+        assert_eq!(run.units, vec![[0, 1], [1, 2], [2, 3]]);
         let assemble = crate::parse("assemble::ab;", Default::default()).unwrap();
         let run = &assemble.presentation().motion[0];
         assert_eq!(run.animation, crate::Animation::Assemble);
         assert_eq!(run.units, vec![[0, 1], [1, 2]]);
-        assert!(run.parameters.displacement > 0 && run.parameters.stagger_ms > 0);
+        assert!(run.parameters.amplitude_milli > 0 && run.parameters.stagger_ms > 0);
+        // duration carries the staggered tail: 1600 + min(640, 1 * 35)
+        assert_eq!(run.parameters.duration_ms, 1635);
     }
 }

@@ -49,7 +49,12 @@ internal fun editorFormats(wire: String): List<FormatSpan> {
 }
 
 internal fun presentation(analyze: (String) -> String, codeFont: FontFamily = FontFamily.Monospace, surface: Color = Color.White, foreground: Color = Color.Black) = OutputTransformation {
-    val formats = editorFormats(analyze(toString()))
+    val analysed = editorFormats(analyze(toString()))
+    // The animation's last prefix glyph stays visible and becomes the dot: one glyph for one glyph, so no offset moves.
+    // Sibling effects on the same span carry the same prefix; all of them must leave that glyph visible.
+    val dotted = analysed.filter { it.style == 12 && it.prefix > 0 }.associate { it.start to it.prefix }
+    val closed = analysed.filter { it.style == 12 && it.prefix > 0 && it.suffix > 0 }.map { it.end }.toSet()
+    val formats = analysed.map { if (dotted[it.start] == it.prefix) FormatSpan(it.start, it.end, it.prefix - 1, if (it.end in closed) it.suffix - 1 else it.suffix, it.style, it.argument) else it }
     val projection = EditorProjection(toString(), formats)
     val hidden = projection.hidden
     val offsets = projection.offsets
@@ -61,13 +66,12 @@ internal fun presentation(analyze: (String) -> String, codeFont: FontFamily = Fo
         delete(start, end)
         end = start
     }
-    formats.filter { it.style != 3 && it.style != 5 }.forEach {
+    formats.filter { it.style != 3 && it.style != 5 && it.style != 12 && it.style != 13 }.forEach {
         val style = when (it.style) {
             1 -> SpanStyle(fontWeight = FontWeight.Bold)
             2 -> SpanStyle(fontStyle = FontStyle.Italic)
             4 -> SpanStyle(fontFamily = codeFont)
             6 -> SpanStyle(background = foreground.copy(alpha = .16f))
-            12 -> SpanStyle(textDecoration=TextDecoration.Underline,background=foreground.copy(alpha=.06f))
             9 -> SpanStyle(fontSize = (1f + (it.argument.toIntOrNull() ?: 0).coerceIn(-3, 3) * .12f).em)
             10, 11 -> {
                 val colors = it.argument.substringBefore('|').split(':').map { name -> textColor(name, surface) }
@@ -86,6 +90,18 @@ internal fun presentation(analyze: (String) -> String, codeFont: FontFamily = Fo
                 addStyle(SpanStyle(color = lerp(colors[stop], colors[minOf(stop + 1, colors.lastIndex)], position - stop)), start, end)
             }
         }
+    }
+    // One glyph for one glyph, applied last: no offset moves, so the caret does not either.
+    formats.filter { it.style == 13 }.sortedByDescending { it.start }.forEach {
+        val at = offsets[it.start]
+        if (at < length) replace(at, at + 1, "\u2022")
+    }
+    // A small raised dot at each end of the span, in the glyphs the modifier syntax already occupied.
+    val marker = SpanStyle(color = foreground.copy(alpha = .55f), fontSize = .5.em, baselineShift = androidx.compose.ui.text.style.BaselineShift(.35f))
+    formats.filter { it.style == 12 && it.start in dotted }.distinctBy { it.start }.sortedByDescending { it.start }.forEach {
+        val at = offsets[it.start + it.prefix]
+        if (at < length) { replace(at, at + 1, "\u2022"); addStyle(marker, at, at + 1) }
+        if (it.end in closed) { val end = offsets[it.end - 1]; if (end < length) { replace(end, end + 1, "\u2022"); addStyle(marker, end, end + 1) } }
     }
     val decorations = formats.filter { it.style == 3 || it.style == 5 }
     decorations.flatMap { listOf(it.start, it.end) }.distinct().sorted().zipWithNext().forEach { (start, end) ->
@@ -160,8 +176,11 @@ fun Composer(state: TextFieldState, analyze: (String) -> String, modifier: Modif
     val editorAnalysis = if (namedFormatting) LocalEditorAnalysis.current ?: analyze else analyze
     val formats = remember(source, editorAnalysis) { spans(editorAnalysis(source)) }
     val codeFont = LocalCodeFont.current
-    val surface = MaterialTheme.colorScheme.background
-    val foreground = MaterialTheme.colorScheme.onSurface
+    // One line of text plus its insets measures exactly the 48dp of the controls beside it, so the bar's insets stay even.
+    val fieldVertical = with(LocalDensity.current) { ((48.dp - MaterialTheme.typography.bodyLarge.lineHeight.toDp()) / 2).coerceAtLeast(8.dp) }
+    // What you type is what the bubble shows: resolve ink against the ground it will land on.
+    val surface = LocalOutgoingBubble.current
+    val foreground = LocalOutgoingInk.current
     val output = remember(editorAnalysis, codeFont, surface, foreground) { presentation(editorAnalysis, codeFont, surface, foreground) }
     val active = activeFormats(formats, state.selection.start)
     val writingHeight = with(LocalDensity.current) { maxOf(144.dp, MaterialTheme.typography.bodyLarge.lineHeight.toDp() * 4 + 24.dp) }
@@ -179,13 +198,13 @@ fun Composer(state: TextFieldState, analyze: (String) -> String, modifier: Modif
         }
         Text(if (active.isEmpty()) "No formatting at the cursor" else active.joinToString(" · "), style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
-        if(!showTools && formats.any {it.style==12}) Text("Animated text",style=MaterialTheme.typography.labelSmall,color=MaterialTheme.colorScheme.onSurfaceVariant)
         LocalComposerInput.current(sourceMode) {
         BasicTextField(state, enabled = enabled, cursorBrush = androidx.compose.ui.graphics.SolidColor(MaterialTheme.colorScheme.primary),
             modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp, max = writingHeight).testTag("composer")
                 .semantics { contentDescription = "Message" }
                 .focusRequester(editorFocus).onFocusChanged { editorFocused = it.isFocused; if (it.isFocused) onFocus() }
-                .padding(horizontal = 14.dp, vertical = 12.dp)
+                // 22dp from the text to the attach glyph (12dp inside its box) and to the send box (8dp gap): equal either side.
+                .padding(start = 10.dp, top = fieldVertical, end = 14.dp, bottom = fieldVertical)
                 .onPreviewKeyEvent {
                     if (it.type != KeyEventType.KeyDown) false
                     else if (it.key == Key.Tab && !it.isCtrlPressed && !it.isAltPressed && !it.isMetaPressed) {

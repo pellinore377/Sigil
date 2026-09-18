@@ -23,7 +23,7 @@ import kotlin.math.abs
 @Composable
 internal fun RecipeCard(part: MessagePart) {
     val original = part.recipe ?: return
-    Column(Modifier.widthIn(min = 200.dp, max = 280.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+    Column(Modifier.widthIn(min = MessageCardMinWidth, max = MessageCardMaxWidth), verticalArrangement = Arrangement.spacedBy(8.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) { Glyph("skillet", 20); Text("Recipe", style = MaterialTheme.typography.labelMedium) }
         RichMessageText(original.title, style = MaterialTheme.typography.titleMedium)
         RecipeMetadata(original)

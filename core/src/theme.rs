@@ -33,12 +33,19 @@ fn ink(surface: u32) -> u32 {
     }
 }
 
-// background, ink, surface, ink, accent, ink, outgoing, ink, outline.
-pub fn palette(accent: u32, dark: bool) -> [u32; 9] {
-    let base = if dark { 0x151515 } else { 0xfafafa };
-    let surface = mix(base, accent, if dark { 12 } else { 6 });
+// background, ink, surface, ink, accent, ink, tint, ink, outline, outgoing, ink.
+/// Dark anchors are fixed neutral steps, tinted toward the accent rather than mixed
+/// from it, so the ramp keeps its spacing whatever hue is chosen.
+pub fn palette(accent: u32, dark: bool) -> [u32; 11] {
+    let base = if dark { 0x131313 } else { 0xfcfcfc };
+    let surface = mix(if dark { 0x1a1a1a } else { 0xf1f1f1 }, accent, if dark { 8 } else { 5 });
     let background = mix(base, accent, 3);
-    let outgoing = mix(base, accent, if dark { 35 } else { 19 });
+    // The tonal container every secondary ink is measured against. It stays on the same
+    // side of the ground it always sat on; only the bubble below moves.
+    let tint = mix(base, accent, if dark { 35 } else { 19 });
+    // The outgoing bubble steps away from the ground: lighter in dark, darker in light,
+    // so its own ink flips with it.
+    let outgoing = mix(if dark { 0x474747 } else { 0x5e5e5e }, accent, 14);
     let mut primary = accent & 0xffffff;
     let target = if dark { 0xffffff } else { 0x000000 };
     for _ in 0..100 {
@@ -55,9 +62,11 @@ pub fn palette(accent: u32, dark: bool) -> [u32; 9] {
         ink(surface),
         primary,
         ink(primary),
+        tint,
+        ink(tint),
+        outline,
         outgoing,
         ink(outgoing),
-        outline,
     ]
 }
 
@@ -71,7 +80,7 @@ mod tests {
                 for g in (0..=255).step_by(17) {
                     for b in (0..=255).step_by(17) {
                         let p = palette(r << 16 | g << 8 | b, dark);
-                        for (fg, bg) in [(1, 0), (3, 2), (5, 4), (7, 6), (4, 0), (4, 2)] {
+                        for (fg, bg) in [(1, 0), (3, 2), (5, 4), (7, 6), (10, 9), (4, 0), (4, 2)] {
                             assert!(contrast(p[fg], p[bg]) >= 4.5, "{p:x?}");
                         }
                         assert!(contrast(p[8], p[0]) >= 3.0);

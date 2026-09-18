@@ -101,7 +101,7 @@ internal fun temporalBreakdown(from:Long,to:Long):String {
 }
 
 @Composable internal fun CardColumn(content:@Composable ColumnScope.()->Unit) {
-    Column(Modifier.widthIn(min=200.dp,max=280.dp).animateContentSize(LocalMotion.current.tween(MotionMillis)),verticalArrangement=Arrangement.spacedBy(8.dp),content=content)
+    Column(Modifier.widthIn(min = MessageCardMinWidth, max = MessageCardMaxWidth).animateContentSize(LocalMotion.current.tween(MotionMillis)),verticalArrangement=Arrangement.spacedBy(8.dp),content=content)
 }
 @Composable internal fun CardFrame(icon:String,label:String,content:@Composable ColumnScope.()->Unit) {
     CardColumn {

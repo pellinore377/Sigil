@@ -231,6 +231,7 @@ impl Text {
             .filter_map(|s| s.effects.link.as_deref())
             .collect();
         let original = self.runs(&offsets);
+        let removed = (range.end - range.start).min(u32::from(u16::MAX)) as u16;
         let mut result = Vec::new();
         let mut at = 0;
         let mut inserted = false;
@@ -254,9 +255,11 @@ impl Text {
                     });
                 }
                 if !inserted {
+                    let mut effects = run.effects.clone();
+                    effects.redaction = Some(removed);
                     result.push(Run {
                         text: "[REDACTED]",
-                        effects: run.effects.clone(),
+                        effects,
                     });
                     inserted = true;
                 }

@@ -65,6 +65,8 @@ pub struct Effects {
     pub animation: Option<Animation>,
     pub reveal: Option<Reveal>,
     pub link: Option<String>,
+    /// Graphemes a redaction removed. The body keeps a single placeholder; renderers size the bar from this.
+    pub redaction: Option<u16>,
 }
 impl Color {
     fn parse(s: &str) -> Option<Self> {
@@ -92,6 +94,7 @@ impl Effects {
         let valid_color = |c: &Color| (1..=3).contains(&c.shade);
         if self.size.is_some_and(|s| s == 0 || !(-3..=3).contains(&s))
             || self.link.as_ref().is_some_and(|s| !valid_link(s))
+            || self.redaction == Some(0)
         {
             return Err(Error::Invalid);
         }
@@ -115,6 +118,9 @@ impl Effects {
         self.mono |= other.mono;
         self.code |= other.code;
         self.mark |= other.mark;
+        if other.redaction.is_some() {
+            self.redaction = other.redaction
+        }
         if other.paint.is_some() {
             self.paint.clone_from(&other.paint)
         }
@@ -257,6 +263,7 @@ enum Descriptor {
     Animation(Animation),
     Reveal(Reveal),
     Link(String),
+    Redaction(u16),
 }
 impl From<Effects> for Vec<Descriptor> {
     fn from(e: Effects) -> Self {
@@ -290,13 +297,16 @@ impl From<Effects> for Vec<Descriptor> {
         if let Some(link) = e.link {
             result.push(Descriptor::Link(link))
         }
+        if let Some(removed) = e.redaction {
+            result.push(Descriptor::Redaction(removed))
+        }
         result
     }
 }
 impl TryFrom<Vec<Descriptor>> for Effects {
     type Error = &'static str;
     fn try_from(descriptors: Vec<Descriptor>) -> Result<Self, Self::Error> {
-        if descriptors.len() > 11 {
+        if descriptors.len() > 12 {
             return Err("too many effects");
         }
         let mut e = Effects::default();
@@ -347,6 +357,7 @@ impl TryFrom<Vec<Descriptor>> for Effects {
                 Descriptor::Animation(v) => value!(animation, v),
                 Descriptor::Reveal(v) => value!(reveal, v),
                 Descriptor::Link(v) => value!(link, v),
+                Descriptor::Redaction(v) => value!(redaction, v),
             }
         }
         e.validate().map_err(|_| "invalid effects")?;

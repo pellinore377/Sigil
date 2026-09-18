@@ -58,8 +58,8 @@ class RichTextTest {
         val content = ui.onNodeWithText(rich.text, useUnmergedTree = true).fetchSemanticsNode().config[SemanticsProperties.Text].single()
         assertEquals(rich.text, content.text)
         assertTrue(content.spanStyles.any { it.start == 8 && it.end == 19 && it.item.fontFamily != null })
-        ui.onNodeWithText("🙈", useUnmergedTree = true).assertDoesNotExist()
-        ui.onNodeWithText("Hidden text", useUnmergedTree = true).assertIsDisplayed().performTouchInput { click(center) }
+        // The spoiler is laid out as written under a veil; a tap on it uncovers it.
+        ui.onNodeWithText("🙈", useUnmergedTree = true).assertIsDisplayed().performTouchInput { click(center) }
         ui.waitForIdle()
         ui.onNodeWithText("🙈", useUnmergedTree = true).assertIsDisplayed()
         val layouts = mutableListOf<TextLayoutResult>()
@@ -74,11 +74,11 @@ class RichTextTest {
         val chat = ChatSummary("peer", "@sam:example.com", "", "", true, emptyList(), displayName = "Sam")
         val message = ChatMessage("1", "sam", rich.text, false, "9:33am", "", false, emptyList(), emptyList(), null, true, timestamp = 1000, parts = listOf(MessagePart("", "text", rich.text, rich = rich)))
         ui.runOnUiThread { ui.activity.setSigilContent { SigilApp(NativeCore::palette, NativeCore::analyze, MessengerState(phase = "connected", chats = listOf(chat), selected = "peer", messages = listOf(message)), { _, _ -> }) } }
-        val node = ui.onNodeWithText("A Scratch to reveal letter", useUnmergedTree = true)
+        val node = ui.onNodeWithText(rich.text, useUnmergedTree = true)
         val layouts = mutableListOf<TextLayoutResult>()
         node.performSemanticsAction(SemanticsActions.GetTextLayoutResult) { it(layouts) }
-        val start = layouts.single().getBoundingBox(4).center
-        val end = layouts.single().getBoundingBox(15).center
+        val start = layouts.single().getBoundingBox(3).center
+        val end = layouts.single().getBoundingBox(8).center
         node.performTouchInput { swipe(start, end, 350) }
         ui.onNodeWithText(rich.text, useUnmergedTree = true).assertIsDisplayed()
         ui.onNodeWithContentDescription("Cancel reply or edit").assertDoesNotExist()

@@ -54,13 +54,16 @@ private fun WireObject.richValue(): RichText {
         var size = 0
         var reveal = ""
         var link: String? = null
+        var redaction = 0
         span.getJSONArray("effects").objects().forEach { effect ->
             when (val kind = effect.getString("kind")) {
                 "emphasis", "decoration" -> flags += effect.getString("value")
                 "code", "monospace" -> flags += kind
+                "animation" -> if (effect.getString("value") == "flip") flags += "flip"
                 "size" -> size = effect.getInt("value")
                 "reveal" -> reveal = effect.getString("value")
                 "link" -> link = effect.getString("value")
+                "redaction" -> redaction = effect.getInt("value")
                 "color", "background" -> {
                     if (kind == "background") flags += "background"
                     val paint = effect.getJSONObject("value")
@@ -73,7 +76,7 @@ private fun WireObject.richValue(): RichText {
                 }
             }
         }
-        RichSpan(span.getInt("start"), span.getInt("end"), flags, colors, size, reveal, link)
+        RichSpan(span.getInt("start"), span.getInt("end"), flags, colors, size, reveal, link, redaction)
     }, rich.getJSONArray("blocks").objects().map { block ->
         val kind = block.getJSONObject("kind")
         RichBlock(block.getInt("start"), block.getInt("end"), kind.getString("kind"), kind.optInt("level"), if (kind.isNull("language")) "" else kind.getString("language"))
@@ -81,9 +84,9 @@ private fun WireObject.richValue(): RichText {
         rich.optJSONArray("motion")?.objects()?.map { run ->
             val p=run.getJSONObject("parameters")
             val units=run.getJSONArray("units")
-            org.sigil.TextMotion(run.getString("animation"),p.getInt("duration_ms"),p.getInt("cycles"),p.getInt("displacement"),p.getInt("rotation"),p.getInt("scale_per_mille"),p.getInt("stagger_ms"),p.getInt("particles"),
-                (0 until units.length()).map { units.getJSONArray(it).let { u->u.getInt(0) to u.getInt(1) } },
-                p.getJSONArray("easing").let {a->(0 until a.length()).map {a.getInt(it)/1000f}},p.getInt("particle_lifetime_ms"),p.getInt("spring_stiffness"),p.getInt("spring_damping"))
+            org.sigil.TextMotion(run.getString("animation"),p.getInt("duration_ms"),p.getString("mode"),p.getInt("amplitude_milli")/1000f,p.getInt("stagger_ms"),p.getInt("particles"),
+                p.optBoolean("line_scope"),p.getString("caret"),p.getString("substitutions"),
+                (0 until units.length()).map { units.getJSONArray(it).let { u->u.getInt(0) to u.getInt(1) } })
         }.orEmpty())
 }
 

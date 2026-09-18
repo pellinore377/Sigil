@@ -67,7 +67,7 @@ class TextMotionTest {
         val clock=TextPlayback(true)
         var visible by mutableStateOf(false)
         var reduced by mutableStateOf(false)
-        val rich=RichText("office العربية 👩🏽‍💻",motion=listOf(TextMotion("wave",1200,1,140,0,1000,45,0,listOf(0 to 6,7 to 14,15 to 22))))
+        val rich=RichText("office العربية 👩🏽‍💻",motion=listOf(TextMotion("wave",1300,"ribbon",15f,28,0,false,"","",listOf(0 to 6,7 to 14,15 to 22))))
         ui.mainClock.autoAdvance=false
         ui.setContent { MaterialTheme {
             CompositionLocalProvider(LocalMotion provides MotionPolicy(reduced),LocalTextMotionSeeds provides {List(192) {"12345"}.joinToString(",")}) {
@@ -95,8 +95,8 @@ class TextMotionTest {
         assertEquals(12000f,clock.elapsed)
     }
     @Test fun concealed_content_offsets_and_slices_keep_only_visible_motion_ranges() {
-        val rich=RichText("secret wave",listOf(RichSpan(0,6,reveal="spoiler")),motion=listOf(TextMotion("shake",480,4,80,0,1000,0,0,listOf(7 to 11))))
-        assertEquals(12,motionOffsets(rich,emptySet(),7))
+        val rich=RichText("secret wave",listOf(RichSpan(0,6,reveal="spoiler")),motion=listOf(TextMotion("shake",1550,"echo",5f,0,0,true,"","",listOf(7 to 11))))
+        assertEquals(7,motionOffsets(rich,emptySet(),7))
         assertEquals(7,motionOffsets(rich,setOf(0),7))
         val slice=richSlice(rich,7,11)
         assertEquals(listOf(0 to 4),slice.motion.single().units)
@@ -117,7 +117,7 @@ class TextMotionTest {
     @Test fun glyph_blur_and_the_portable_fallback_both_leave_the_final_text_unchanged() {
         val clock=TextPlayback(true)
         var native by mutableStateOf(true)
-        val rich=RichText("Light",motion=listOf(TextMotion("glow",1200,1,180,0,1000,0,0,listOf(0 to 5))))
+        val rich=RichText("Light",motion=listOf(TextMotion("glow",1300,"travel",24f,48,0,false,"","",listOf(0 to 5))))
         ui.setContent {MaterialTheme {CompositionLocalProvider(LocalMotionBlur provides native) {
             MessageMotion("synthetic",clock,false) {RichMessageText(rich,Modifier.testTag("effect"))}
         }}}
@@ -136,15 +136,15 @@ class TextMotionTest {
         assertTrue(brushedCells(androidx.compose.ui.geometry.Offset(200f,200f),6f,8f,cells).isEmpty())
         assertTrue(brushedCells(androidx.compose.ui.geometry.Offset(4f,4f),400f,8f,cells).size<=cells.size)
     }
-    @Test fun invisible_ink_and_the_spoiler_slab_do_not_conceal_alike() {
+    @Test fun invisible_ink_and_frosted_glass_do_not_conceal_alike() {
         var kind by mutableStateOf("scratch")
         ui.setContent {MaterialTheme {CompositionLocalProvider(LocalMotion provides MotionPolicy(true)) {
             Box(Modifier.testTag("effect")) {RichMessageText(RichText("A secret end",listOf(RichSpan(2,8,reveal=kind))))}
         }}}
         val grain=pixels().toSet()
         ui.runOnIdle {kind="spoiler"}
-        val slab=pixels().toSet()
-        assertTrue(grain.size>24 && grain.size>slab.size*2,"grain ${grain.size} tones, slab ${slab.size} tones")
+        val frost=pixels().toSet()
+        assertTrue(grain.size>24 && frost.size>24 && grain!=frost,"grain ${grain.size} tones, frost ${frost.size} tones")
     }
     @Test fun concealment_survives_reduced_motion_and_disabled_effects() {
         var concealed by mutableStateOf(true)
@@ -157,7 +157,7 @@ class TextMotionTest {
     }
     @Test fun assemble_begins_dispersed_and_settles_into_the_original_text() {
         val clock=TextPlayback()
-        val rich=RichText("abc",motion=listOf(TextMotion("assemble",1600,1,900,30,1000,22,0,listOf(0 to 1,1 to 2,2 to 3),stiffness=60,damping=10)))
+        val rich=RichText("abc",motion=listOf(TextMotion("assemble",1670,"sort",74f,35,0,false,"","",listOf(0 to 1,1 to 2,2 to 3))))
         ui.setContent {MaterialTheme {CompositionLocalProvider(LocalTextMotionSeeds provides {List(192) {"458752"}.joinToString(",")}) {
             MessageMotion("synthetic",clock,false) {RichMessageText(rich,Modifier.testTag("effect"))}
         }}}
@@ -171,7 +171,7 @@ class TextMotionTest {
     @Test fun sparkle_takes_its_colour_from_the_span_it_decorates() {
         val clock=TextPlayback()
         var painted by mutableStateOf(true)
-        val motion=TextMotion("sparkle",1100,1,600,0,1000,0,12,listOf(0 to 1,1 to 2,2 to 3),particleLifetime=650)
+        val motion=TextMotion("sparkle",1900,"constellation",11f,0,9,false,"","",listOf(0 to 1,1 to 2,2 to 3))
         ui.setContent {MaterialTheme {CompositionLocalProvider(LocalTextMotionSeeds provides {List(192) {"458752"}.joinToString(",")}) {
             MessageMotion("synthetic",clock,false) {
                 RichMessageText(RichText("abc",if(painted)listOf(RichSpan(0,3,colors=listOf("red1","blue3"))) else emptyList(),motion=listOf(motion)),Modifier.testTag("effect"))
@@ -182,16 +182,17 @@ class TextMotionTest {
         ui.runOnIdle {painted=false}
         assertNotEquals(coloured,pixels().toSet())
     }
-    @Test fun upside_down_glyphs_are_settled_in_history_and_reduced_motion() {
+    @Test fun upside_down_text_is_static_reversed_and_keeps_the_original_readable() {
         var flipped by mutableStateOf(true)
         var reduced by mutableStateOf(false)
-        val motion=TextMotion("flip",700,1,0,180,1000,40,0,listOf(0 to 1,1 to 2,2 to 3))
         ui.setContent {MaterialTheme {CompositionLocalProvider(LocalMotion provides MotionPolicy(reduced)) {
-            RichMessageText(RichText("abc",motion=if(flipped)listOf(motion) else emptyList()),Modifier.testTag("effect"))
+            RichMessageText(RichText("abc",if(flipped)listOf(RichSpan(0,3,flags=setOf("flip"))) else emptyList(),
+                motion=if(flipped)listOf(TextMotion("flip",0,"plain",0f,0,0,false,"","",listOf(0 to 1,1 to 2,2 to 3))) else emptyList()),Modifier.testTag("effect"))
         }}}
         val upsideDown=pixels()
         ui.runOnIdle {reduced=true}
         assertEquals(upsideDown,pixels())
+        ui.onNodeWithText("abc").assertExists()
         ui.runOnIdle {flipped=false}
         assertNotEquals(upsideDown,pixels())
         ui.onNodeWithText("abc").assertExists()

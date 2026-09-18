@@ -252,7 +252,10 @@ class FloatingShellTest {
         fun at(y: Int) = pixels[x, y * pixels.height / 120]
         assertTrue(at(0).red > at(0).green)
         val samples = listOf(0, 10, 20, 30, 40, 50, 60, 70, 78).map { at(it).green }
-        assertTrue(samples.zipWithNext().all { (above, below) -> above > below })
+        // Non-increasing, not strictly: eight bits cannot separate every sample of a
+        // fade this shallow. The span assertions below pin that it genuinely softens.
+        assertTrue(samples.zipWithNext().all { (above, below) -> above >= below })
+        assertTrue(samples.first() > samples.last())
         assertTrue(at(78).green < .03f)
         assertTrue(at(60) != at(40) && at(60) != Color.Red)
         assertTrue(at(70) != at(60) && at(70) != Color.Red)

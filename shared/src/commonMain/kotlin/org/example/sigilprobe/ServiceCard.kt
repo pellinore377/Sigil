@@ -66,7 +66,7 @@ internal fun ServiceCard(value: ServiceContent) {
             }
         }
     }
-    Column(Modifier.widthIn(min=200.dp,max=280.dp).animateContentSize(LocalMotion.current.tween(MotionMillis)),verticalArrangement=Arrangement.spacedBy(8.dp)) {
+    Column(Modifier.widthIn(min = MessageCardMinWidth, max = MessageCardMaxWidth).animateContentSize(LocalMotion.current.tween(MotionMillis)),verticalArrangement=Arrangement.spacedBy(8.dp)) {
         Row(verticalAlignment=Alignment.CenterVertically,horizontalArrangement=Arrangement.spacedBy(8.dp)) { Glyph(icon,20);Text(label,style=MaterialTheme.typography.labelMedium) }
         RichMessageText(value.title,style=if(value.kind=="definition") MaterialTheme.typography.titleLarge else MaterialTheme.typography.titleMedium)
         if(value.kind=="translation") value.original?.let { quietly { RichMessageText(it,style=MaterialTheme.typography.bodyMedium) } }

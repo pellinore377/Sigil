@@ -64,6 +64,10 @@ internal fun ConversationHeader(chat: ChatSummary, page: String, threaded: Boole
         }
     }
 }
+/// The list insets the bubbles, so the fraction is taken against the whole timeline.
+private val TimelineGutter = 16.dp
+private const val BubbleWidthFraction = .78f
+
 @Composable
 internal fun ConversationPage(chat: ChatSummary, state: MessengerState, draft: TextFieldState, analyze: (String) -> String, command: Command,
     page: String, gradient: Boolean, thread: ThreadTarget?, setThread: (ThreadTarget?) -> Unit) {
@@ -142,7 +146,7 @@ internal fun ConversationPage(chat: ChatSummary, state: MessengerState, draft: T
             if (state.historical) SigilTextButton({ command("latest", emptyMap()) }, Modifier.align(Alignment.CenterHorizontally)) { Text("Return to latest messages") }
             Box(Modifier.weight(1f).fillMaxWidth().clipToBounds().onGloballyPositioned {materialTimeline.viewport=it.boundsInWindow();val r=materialTimeline.viewport;if(materialHeader>0)materialTimeline.bubbles["header"]=Rect(r.left,r.top,r.right,r.top+materialHeader)}) {
             CompositionLocalProvider(LocalMaterialTimeline provides materialTimeline.takeIf {materialOverlay!=null}, LocalPreviewLaunch provides previewLaunch) {
-            LazyColumn(Modifier.fillMaxSize().testTag("timeline"), state = list, reverseLayout = true, contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = (if (controls) 0.dp else headerInset) + 12.dp, bottom = composerInset)) {
+            LazyColumn(Modifier.fillMaxSize().testTag("timeline"), state = list, reverseLayout = true, contentPadding = PaddingValues(start = TimelineGutter, end = TimelineGutter, top = (if (controls) 0.dp else headerInset) + 12.dp, bottom = composerInset)) {
                 item("typing") { androidx.compose.animation.AnimatedVisibility(!threadsOverview && state.typing.isNotEmpty(), enter = expandVertically(motionPolicy.enter(MotionMillis)) + fadeIn(motionPolicy.enter(MotionMillis)), exit = shrinkVertically(motionPolicy.exit(MotionQuick)) + fadeOut(motionPolicy.exit(MotionExit)), label = "Typing indicator") { TypingRow(state.typing.map { state.people[it] ?: if (chat.group) "Member" else chat.name }, chat.name, state.typing) } }
                 itemsIndexed(messages, key = { _, it -> it.author + it.id }) { index, message ->
                     if (page == "Pins") {
@@ -175,6 +179,8 @@ internal fun ConversationPage(chat: ChatSummary, state: MessengerState, draft: T
                     val older = messages.getOrNull(index + 1)
                     val newer = messages.getOrNull(index - 1)
                     val grouped = older?.author == message.author && !showSeparator(message, older)
+                    // The same test in both directions, or a separator below still tightens the corner above it.
+                    val followed = newer != null && newer.author == message.author && !showSeparator(newer, message)
                     var bounds by remember { mutableStateOf(Rect.Zero) }
                     val materialKey=message.author+message.id
                     DisposableEffect(materialKey) {onDispose {materialTimeline.bubbles.remove(materialKey)}}
@@ -198,7 +204,9 @@ internal fun ConversationPage(chat: ChatSummary, state: MessengerState, draft: T
                                 if (abs(before) < threshold && abs(drag) >= threshold) haptic.performHapticFeedback(androidx.compose.ui.hapticfeedback.HapticFeedbackType.LongPress)
                             } },
                             horizontalArrangement = if (message.mine) Arrangement.End else Arrangement.Start) {
-                            Column(Modifier.widthIn(max = 330.dp).fillMaxWidth(.88f), horizontalAlignment = if (message.mine) Alignment.End else Alignment.Start) {
+                            BoxWithConstraints(Modifier.weight(1f, false)) {
+                            val bubbleWidth = ((maxWidth + TimelineGutter * 2) * BubbleWidthFraction).coerceAtMost(maxWidth)
+                            Column(Modifier.width(bubbleWidth), horizontalAlignment = if (message.mine) Alignment.End else Alignment.Start) {
                                 val lifted = selected?.first?.let { it.id == message.id && it.author == message.author } == true
                                 val launched = previewLaunch.panelOrigin(message.id).takeIf { message.mine }
                                 val arrival = remember(message.id) { Animatable(1f) }
@@ -236,14 +244,15 @@ internal fun ConversationPage(chat: ChatSummary, state: MessengerState, draft: T
                                     .pointerInput(message.id) { awaitPointerEventScope { while (true) { val event = awaitPointerEvent(); if (event.type == PointerEventType.Press && event.buttons.isSecondaryPressed) selected = message to bounds } } }) {
                                     CompositionLocalProvider(LocalMaterialPress provides {selected=message to bounds}) {
                                     if(message.author+message.id in animated) MessageMotion(message.id,textMotion.state(message.author+message.id),message.author+message.id in visibleKeys && selected==null,animated.getValue(message.author+message.id)) {
-                                        MessageBubble(message, grouped, newer?.author == message.author, analyze, if (chat.verified && !state.busy) command else null)
-                                    } else MessageBubble(message, grouped, newer?.author == message.author, analyze, if (chat.verified && !state.busy) command else null)
+                                        MessageBubble(message, grouped, followed, analyze, if (chat.verified && !state.busy) command else null)
+                                    } else MessageBubble(message, grouped, followed, analyze, if (chat.verified && !state.busy) command else null)
                                     }
                                   }
                                 }
                                 MessageDetails(message, details == (message.author to message.id), !state.historical && page.isEmpty() && thread == null && showsReceipt(index, messages), chat, state.people)
                             }
                         }
+                            }
                     }
                     if (!message.mine && !message.readByMe && chat.verified && selected == null) LaunchedEffect(message.id) {
                         command("read", mapOf("peer" to chat.id, "author" to message.author, "message" to message.id))
@@ -307,24 +316,30 @@ internal fun ConversationPage(chat: ChatSummary, state: MessengerState, draft: T
 @Composable
 internal fun MessageBubble(message: ChatMessage, grouped: Boolean, followed: Boolean, analyze: (String) -> String, command: Command? = null) {
     val scheme = MaterialTheme.colorScheme
+    val outgoing = LocalOutgoingBubble.current
+    val outgoingInk = LocalOutgoingInk.current
     val objectOnly=message.bareRandomizers()
     val bareImage=message.attachment?.mediaType?.let {it.startsWith("image/") || it.startsWith("video/")} == true
     val bareLocation=message.attachment==null && message.parts.any {it.kind=="location"} && message.parts.all {it.kind in listOf("location","text")}
+    // A captioned picture is one bubble: the picture flush at the top, the caption on the ground beneath it.
+    val captioned=bareImage && message.attachment?.caption?.isNotBlank()==true
+    // A fenced block is its own bubble, so the message frame steps aside and the chunks group themselves.
+    val panelled=message.attachment==null && message.parts.any {p->p.rich?.let {visibleCodeBlocks(it).isNotEmpty()} == true}
     val emoji = remember(message.text, message.kind, message.reply, message.parts) { if (message.kind == "Text" && message.reply == null && message.parts.all { it.kind == "text" && it.rich?.spans.orEmpty().isEmpty() }) animatedEmoji(message.text) else null }
     Box(Modifier.padding(top = if (message.reactions.isNotEmpty() || message.pinned) 8.dp else 0.dp)) {
         if (emoji != null) EmojiMessage(emoji)
         else
         Surface(shape = RoundedCornerShape(topStart = if (!message.mine && grouped) 5.dp else 20.dp, topEnd = if (message.mine && grouped) 5.dp else 20.dp,
             bottomStart = if (!message.mine && followed) 5.dp else 20.dp, bottomEnd = if (message.mine && followed) 5.dp else 20.dp),
-            color = if(objectOnly || bareImage || bareLocation) Color.Transparent else if (message.mine) scheme.primary else scheme.surfaceVariant, contentColor = if(objectOnly || bareImage || bareLocation) scheme.onBackground else if (message.mine) scheme.onPrimary else scheme.onSurfaceVariant) {
-            CompositionLocalProvider(LocalMaterialOutgoing provides message.mine,LocalMessageSurface provides if (message.mine) scheme.primary else scheme.surfaceVariant) {
-            Column(if (message.attachment == null) Modifier.padding(horizontal = if(objectOnly || bareLocation)0.dp else 14.dp, vertical = if(bareLocation)0.dp else 10.dp) else Modifier) {
-                message.reply?.let { Surface(shape = RoundedCornerShape(12.dp), color = (if (message.mine) scheme.onPrimary else scheme.onSurface).copy(alpha = .09f)) { Text(it, Modifier.padding(9.dp), style = MaterialTheme.typography.bodySmall, maxLines = 2, overflow = TextOverflow.Ellipsis) }; Spacer(Modifier.height(6.dp)) }
+            color = if(objectOnly || (bareImage && !captioned) || bareLocation) Color.Transparent else if (message.mine) outgoing else scheme.surfaceContainer, contentColor = if(objectOnly || (bareImage && !captioned) || bareLocation) scheme.onBackground else if (message.mine) outgoingInk else scheme.onSurface) {
+            val bare = objectOnly || (bareImage && !captioned) || bareLocation
+            CompositionLocalProvider(LocalMessageBubble provides panelled,LocalMaterialOutgoing provides message.mine,LocalContentColor provides if (bare) scheme.onBackground else if (message.mine) outgoingInk else scheme.onSurface,LocalMessageSurface provides if (bare) scheme.background else if (message.mine) outgoing else scheme.surfaceContainer) {
+            Column(if (message.attachment == null) Modifier.padding(horizontal = if(objectOnly || bareLocation || panelled)0.dp else 14.dp, vertical = if(bareLocation || panelled)0.dp else 10.dp) else Modifier) {
+                // The quoted block is the timeline ground set into the bubble.
+                message.reply?.let { Surface(shape = RoundedCornerShape(12.dp), color = scheme.background) { Text(it, Modifier.padding(9.dp), style = MaterialTheme.typography.bodySmall, maxLines = 2, overflow = TextOverflow.Ellipsis) }; Spacer(Modifier.height(6.dp)) }
                 if (message.attachment != null) LocalAttachmentContent.current(message) else if (message.parts.isNotEmpty()) MessageCards(message, analyze, command, objectOnly || bareLocation) else MessageText(message.text, analyze)
-                message.attachment?.caption?.takeIf { it.isNotEmpty() }?.let { caption ->
-                    if (bareImage) Surface(Modifier.padding(top=4.dp), shape=RoundedCornerShape(16.dp), color=if(message.mine)scheme.primary else scheme.surfaceVariant, contentColor=if(message.mine)scheme.onPrimary else scheme.onSurfaceVariant) {
-                        Box(Modifier.padding(horizontal=14.dp,vertical=10.dp)) { MessageText(caption,analyze) }
-                    } else Box(Modifier.padding(horizontal=14.dp,vertical=10.dp)) { MessageText(caption,analyze) }
+                if (!captioned) message.attachment?.caption?.takeIf { it.isNotEmpty() }?.let { caption ->
+                    Box(Modifier.padding(horizontal=14.dp,vertical=10.dp)) { MessageText(caption,analyze) }
                 }
 
             }

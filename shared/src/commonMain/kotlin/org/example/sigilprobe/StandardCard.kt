@@ -63,7 +63,7 @@ import androidx.compose.ui.unit.dp
         if(part.kind=="poll")Text(if(part.closed)"Voting closed"else part.voters?.let {"$it ${if(it==1L)"voter"else"voters"}"}?:"Vote to see results",style=MaterialTheme.typography.labelSmall)
         if(part.items.size>5)SigilTextButton({expanded=!expanded}) {Glyph(if(expanded)"expand_less"else"expand_more",18);Spacer(Modifier.width(8.dp));Text(if(expanded)"Show less"else"Show all ${part.items.size}")}
     }
-    Column(Modifier.widthIn(min=200.dp,max=if(part.items.isEmpty())280.dp else 320.dp).animateContentSize(motion.tween(MotionMillis)),verticalArrangement=Arrangement.spacedBy(8.dp)) {body(expanded)}
+    Column(Modifier.widthIn(min=MessageCardMinWidth,max=MessageCardMaxWidth).animateContentSize(motion.tween(MotionMillis)),verticalArrangement=Arrangement.spacedBy(8.dp)) {body(expanded)}
     confirming?.let {item->AlertDialog(onDismissRequest={confirming=null},title={Text("Complete this task?")},text={Text("You can undo your completion for 30 seconds.")},confirmButton={SigilTextButton({confirming=null;part.items.firstOrNull {it.id==item.id && !it.checked && it.enabled}?.let(::act)}){Text("Complete")}},dismissButton={SigilTextButton({confirming=null}){Text("Cancel")}})}
 }
 @Composable private fun CardClock(part:MessagePart) {

@@ -6,6 +6,8 @@ import androidx.compose.animation.core.Easing
 import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.drawWithCache
 import androidx.compose.ui.geometry.CornerRadius
@@ -17,7 +19,13 @@ import androidx.compose.ui.graphics.drawscope.*
 import androidx.compose.ui.graphics.layer.drawLayer
 import androidx.compose.ui.graphics.rememberGraphicsLayer
 import androidx.compose.ui.text.TextLayoutResult
+import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.drawText
+import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.TextUnitType
+import androidx.compose.ui.unit.sp
 import kotlin.math.*
 
 val LocalTextMotionSeeds=staticCompositionLocalOf<((String)->String)?> {null}
@@ -100,27 +108,33 @@ internal fun MessageMotion(message:String,clock:TextPlayback,visible:Boolean,dur
 
 internal fun motionOffsets(value:RichText,revealed:Set<Int>,offset:Int):Int {
     var delta=0
-    for(span in value.spans) if(span.reveal.isNotEmpty() && span.start !in revealed && span.end<=offset) {
-        delta+=revealPlaceholder(span.reveal).length-(span.end-span.start)
+    for(span in value.spans) {
+        // A counted redaction is drawn as a run of its own length over a single placeholder in the body.
+        if(span.redaction>0 && span.end<=offset) delta+=span.redaction-(span.end-span.start)
     }
     return offset+delta
 }
 
-internal val InkBrush=15.dp
+internal val InkBrush=18.dp
 internal val InkCell=8.dp
 
 /** Per-line rectangles a reveal span occupies in the laid-out presentation. */
+/** Horizontal extent of [start, end) on one line. An offset sitting on a line break belongs to the next line,
+ *  so a span that runs to the break takes the line's own edge instead of a position from the line after it. */
+internal fun lineSpanEdges(layout:TextLayoutResult,line:Int,start:Int,end:Int):Pair<Float,Float>? {
+    val lineStart=layout.getLineStart(line);val lineEnd=layout.getLineEnd(line,true)
+    val from=maxOf(start,lineStart);val to=minOf(end,lineEnd)
+    if(from>=to)return null
+    val a=if(from<=lineStart)layout.getLineLeft(line) else layout.getHorizontalPosition(from,true)
+    val b=if(to>=lineEnd)layout.getLineRight(line) else layout.getHorizontalPosition(to,true)
+    return minOf(a,b) to maxOf(a,b)
+}
 internal fun revealRects(value:RichText,revealed:Set<Int>,layout:TextLayoutResult,span:RichSpan,inflate:Float):List<Rect> {
     val start=motionOffsets(value,revealed,span.start)
-    val end=if(span.start in revealed)motionOffsets(value,revealed,span.end) else start+revealPlaceholder(span.reveal).length
+    val end=motionOffsets(value,revealed,span.end)
     if(start<0 || start>=end || end>layout.layoutInput.text.length)return emptyList()
     return (layout.getLineForOffset(start)..layout.getLineForOffset(end-1)).mapNotNull {line->
-        val from=maxOf(start,layout.getLineStart(line))
-        val to=minOf(end,layout.getLineEnd(line,true))
-        if(from>=to)null else {
-            val a=layout.getHorizontalPosition(from,true);val b=layout.getHorizontalPosition(to,true)
-            Rect(minOf(a,b)-inflate,layout.getLineTop(line),maxOf(a,b)+inflate,layout.getLineBottom(line))
-        }
+        lineSpanEdges(layout,line,start,end)?.let {(a,b)->Rect(a-inflate,layout.getLineTop(line),b+inflate,layout.getLineBottom(line))}
     }.filter {it.width>0f && it.height>0f}
 }
 private fun key(x:Int,y:Int)=(x.toLong() shl 32) or (y.toLong() and 0xffffffffL)
@@ -149,69 +163,191 @@ internal fun brushedCells(point:Offset,radius:Float,cell:Float,eligible:Set<Long
     }
 }
 
-private class InkGrain(val x:Float,val y:Float,val radius:Float,val alpha:Float,val phase:Float,val speed:Float)
-private class InkVeil(val span:RichSpan,val rects:List<Rect>,val grain:List<InkGrain>)
+private class Tile(val rect:Rect,val phase:Float,val speed:Float)
+private class Veil(val span:RichSpan,val rects:List<Rect>,val cover:List<Rect>,val clip:Path,val tiles:List<Tile>)
 
-/** Scratch conceals under drifting grain brushed away by the finger; spoiler under one flat slab wiped off by a tap. */
+/** Spoiler is the chrome's glass laid over the text, clearing from the touch. Scratch is a mosaic of shimmering tiles the finger knocks out. */
 @Composable
-internal fun revealVeil(value:RichText,revealed:Set<Int>,layout:TextLayoutResult?,ink:Color,surface:Color,brushed:List<Offset>,wiping:Int?,wipe:Float):Modifier {
+internal fun revealVeil(value:RichText,revealed:Set<Int>,layout:TextLayoutResult?,ink:Color,surface:Color,brushed:List<Offset>,wiping:Int?,wipe:Float,tap:Offset):Modifier {
     val hidden=value.spans.filter {it.reveal.isNotEmpty() && (it.start !in revealed || it.start==wiping)}
     if(hidden.isEmpty() || layout==null)return Modifier
     val motion=LocalMotion.current
     val still=motion.reduced || !LocalAppearance.current.messageEffects || !LocalMotionVisible.current
     val drift=if(still)null else rememberInfiniteTransition("Invisible ink").animateFloat(0f,2f*PI.toFloat(),motion.loop(MotionLoop*6),label="Ink drift")
+    // The same glass as the floating header and footer: a 14dp blur under surfaceContainerHigh at 82%.
+    val glassTint=MaterialTheme.colorScheme.surfaceContainerHigh
+    val glassRadius=with(LocalDensity.current) {14.dp.toPx()}
+    val glassEffect=remember(glassRadius) {BlurEffect(glassRadius,glassRadius,TileMode.Clamp)}
+    val frost=if(LocalMotionBlur.current && glassEffect.isSupported() && hidden.any {it.reveal=="spoiler"})rememberGraphicsLayer() else null
     return Modifier.drawWithCache {
         val unit=1.dp.toPx()
-        var budget=360
+        val em=(layout.layoutInput.style.fontSize.takeIf {it.type==TextUnitType.Sp}?.toPx()) ?: 16.sp.toPx()
+        val cell=6.dp.toPx()
+        var budget=1400
         val veils=hidden.map {span->
-            val scratch=span.reveal=="scratch"
-            val rects=revealRects(value,revealed,layout,span,if(scratch)2f*unit else 0f)
-            InkVeil(span,rects,if(!scratch)emptyList() else buildList {
+            val start=motionOffsets(value,revealed,span.start);val end=motionOffsets(value,revealed,span.end)
+            // The same box as a redaction: the text's own extent, level with the em.
+            val lines=if(start<0 || start>=end || end>layout.layoutInput.text.length)emptyList() else (layout.getLineForOffset(start)..layout.getLineForOffset(end-1)).toList()
+            val rects=lines.mapNotNull {line->lineSpanEdges(layout,line,start,end)?.let {(a,b)->val base=layout.getLineBaseline(line);Rect(a,base-em*.89f,b,base+em*.29f)}}.filter {it.width>0f}
+            // Ascenders and the corners the squircle rounds off would show: the run's whole line box is painted in the
+            // bubble's own colour beneath the veil, invisible against it, so the bar can keep the redaction's box.
+            val cover=lines.mapNotNull {line->lineSpanEdges(layout,line,start,end)?.let {(a,b)->Rect(a-unit,layout.getLineTop(line),b+unit,layout.getLineBottom(line))}}
+            val clip=Path().apply {rects.forEach {addPath(squirclePath(it,em*.30f))}}
+            Veil(span,rects,cover,clip,if(span.reveal!="scratch")emptyList() else buildList {
                 var state=((span.start.toLong()*2654435761L) xor value.text.hashCode().toLong()) and 0xffffffffL
                 fun next():Float {state=(state*1664525L+1013904223L) and 0xffffffffL;return state/4294967296f}
                 rects.forEach {rect->
-                    val count=minOf(budget,(rect.width*rect.height/(unit*unit*34f)).toInt().coerceIn(0,220))
-                    budget-=count
-                    repeat(count) {add(InkGrain(rect.left+next()*rect.width,rect.top+next()*rect.height,(.30f+next()*.75f)*unit,.24f+next()*.57f,next()*2f*PI.toFloat(),.55f+next()*.45f))}
+                    val cols=ceil(rect.width/cell).toInt();val rows=ceil(rect.height/cell).toInt()
+                    for(y in 0 until rows)for(x in 0 until cols) {
+                        if(budget==0)return@forEach
+                        budget--
+                        val left=rect.left+x*cell;val top=rect.top+y*cell
+                        // Whole-number speeds keep every tile continuous when the drift loops.
+                        add(Tile(Rect(left,top,minOf(rect.right,left+cell),minOf(rect.bottom,top+cell)),next()*2f*PI.toFloat(),if(next()<.5f)1f else 2f))
+                    }
                 }
             })
         }
-        val slab=lerp(surface,ink,.22f)
-        val corner=CornerRadius(6.dp.toPx())
+        val low=lerp(surface,ink,.12f);val high=lerp(surface,ink,.28f)
         val brush=InkBrush.toPx()
         onDrawWithContent {
             drawContent()
             val time=drift?.value ?: 0f
             veils.forEach {veil->
                 val gone=if(veil.span.start==wiping)wipe else 0f
-                if(gone>=1f)return@forEach
+                if(gone>=1f || veil.rects.isEmpty())return@forEach
+                val bounds=veil.rects.reduce {a,c->a.expandToInclude(c)}
                 if(veil.span.reveal=="scratch") {
-                    fun grains() {veil.grain.forEach {grain->
-                        val alpha=grain.alpha*(.81f+.19f*sin(time*1.8f+grain.phase))*(1f-gone)
-                        drawCircle(ink.copy(alpha=alpha.coerceIn(0f,1f)),grain.radius,
-                            Offset(grain.x+sin(time*.8f*grain.speed+grain.phase)*.72f*unit,grain.y+cos(time*.7f*grain.speed+grain.phase)*.66f*unit))
+                    // Soft-edged holes punched out of the mosaic, as on the study page; the layer holds no blur, so it is safe here.
+                    drawContext.canvas.saveLayer(bounds.inflate(brush+unit*4f),Paint())
+                    veil.cover.forEach {drawRect(surface.copy(alpha=1f-gone),it.topLeft,it.size)}
+                    clipPath(veil.clip) {veil.tiles.forEach {tile->
+                        val k=(sin(time*tile.speed+tile.phase)+1f)/2f
+                        drawRect(lerp(low,high,k).copy(alpha=1f-gone),tile.rect.topLeft,tile.rect.size)
                     }}
-                    if(brushed.isEmpty())grains()
-                    else clipPath(Path().apply {brushed.forEach {addOval(Rect(it.x-brush,it.y-brush,it.x+brush,it.y+brush))}},ClipOp.Difference) {grains()}
-                } else veil.rects.forEach {rect->
-                    val left=rect.left+rect.width*gone
-                    if(left<rect.right)drawRoundRect(slab,Offset(left,rect.top+unit),Size(rect.right-left,(rect.height-2f*unit).coerceAtLeast(1f)),corner)
+                    brushed.forEach {p->drawCircle(Brush.radialGradient(0f to Color.Black,.5f to Color.Black,1f to Color.Transparent,center=p,radius=brush),brush,p,blendMode=BlendMode.DstOut)}
+                    drawContext.canvas.restore()
+                } else {
+                    // Defrosting clears a circle that grows from the touch while the glass fades.
+                    val reach=maxOf(hypot(tap.x-bounds.left,tap.y-bounds.top),hypot(bounds.right-tap.x,tap.y-bounds.top),hypot(tap.x-bounds.left,bounds.bottom-tap.y),hypot(bounds.right-tap.x,bounds.bottom-tap.y))
+                    val clear=Path().apply {if(gone>0f) {val r=reach*gone;addOval(Rect(tap.x-r,tap.y-r,tap.x+r,tap.y+r))}}
+                    clipPath(clear,ClipOp.Difference) {veil.cover.forEach {drawRect(surface.copy(alpha=1f-gone),it.topLeft,it.size)}}
+                    clipPath(veil.clip) {clipPath(clear,ClipOp.Difference) {
+                        if(frost!=null) {
+                            // Ground and text together, so the blurred capture is opaque, as the chrome's backdrop is.
+                            frost.record {drawRect(surface);clipPath(veil.clip) {this@onDrawWithContent.drawContent()}}
+                            frost.renderEffect=glassEffect
+                            frost.alpha=1f-gone
+                            drawLayer(frost)
+                        }
+                        drawRect(glassTint.copy(alpha=.62f*(1f-gone)),topLeft=Offset(bounds.left,bounds.top),size=Size(bounds.width,bounds.height))
+                    }}
                 }
             }
         }
     }
 }
 
-private data class MotionCell(val path:Path,val clip:Path,val center:Offset,val height:Float,val line:Int,val scale:Float,val ink:Color,val run:TextMotion,val index:Int,val count:Int,val seed:Long,val easing:Easing)
+/** One laid-out grapheme of an animated run. */
+private class MotionCell(val path:Path,val clip:Path,val bounds:Rect,val center:Offset,val height:Float,val fontPx:Float,val ink:Color,val index:Int,val baseline:Float)
+private class SparkleParticle(val x:Float,val y:Float,val size:Float,val dx:Float,val dy:Float,val delay:Float,val ink:Color)
 
-private fun springRest(seconds:Float,run:TextMotion):Float {
-    val half=run.damping.coerceIn(0,1000)/2f
-    val difference=run.stiffness.coerceIn(1,10000)-half*half
-    return when {
-        difference>0f->{val w=sqrt(difference);exp(-half*seconds)*(cos(w*seconds)+half/w*sin(w*seconds))}
-        difference<0f->{val w=sqrt(-difference);val a=-half+w;val b=-half-w;(b*exp(a*seconds)-a*exp(b*seconds))/(b-a)}
-        else->exp(-half*seconds)*(1f+half*seconds)
-    }.coerceIn(-1f,1f)
+private const val MotionReferenceEm=64f
+/** (ascent + descent) / 2 from each bundled font's hhea table, in em above the baseline. */
+private fun fontMidline(font:String)=if(font=="Newsreader").235f else .340f
+private val MotionSmooth=CubicBezierEasing(.4f,0f,.2f,1f)
+
+/** The reference player's LCG; renderers must not seed from wall time. */
+private class MotionRandom(seed:Long) {
+    private var state=seed and 0xffffffffL
+    fun next():Float {state=(state*1664525L+1013904223L) and 0xffffffffL;return state/4294967296f}
+}
+private fun ampScale(fontPx:Float)=(fontPx/MotionReferenceEm).coerceIn(.28f,1.8f)
+private fun smoothstep(t:Float)=t*t*(3f-2f*t)
+/** Unit-step response of the reference underdamped spring. */
+private fun springStep(u:Float)=exp(-7.8f*u)*(cos(9.4f*u)+7.8f/9.4f*sin(9.4f*u))
+private fun lerpFrames(t:Float,offsets:FloatArray,values:FloatArray):Float {
+    if(t<=offsets.first())return values.first()
+    if(t>=offsets.last())return values.last()
+    var i=1
+    while(i<offsets.size && offsets[i]<t)i++
+    val a=offsets[i-1];val b=offsets[i]
+    return values[i-1]+(values[i]-values[i-1])*if(b>a)(t-a)/(b-a) else 0f
+}
+
+/** Per-run timeline, random draw and derived geometry, all fixed at layout time. */
+private class MotionPlan(val run:TextMotion,val cells:List<MotionCell>,seed:Long) {
+    val n=cells.size
+    val tail=if(n<2)0f else minOf(640f,(n-1)*run.stagger.toFloat())
+    val span=(run.duration-tail).coerceAtLeast(1f)
+    val bounds=cells.fold(cells.first().bounds) {a,c->a.expandToInclude(c.bounds)}
+    fun delay(i:Int)=if(n<2)0f else tail*i/(n-1)
+    fun local(elapsed:Float,i:Int)=((elapsed-delay(i))/span).coerceIn(0f,1f)
+
+    val offsetX=FloatArray(n);val offsetY=FloatArray(n);val spin=FloatArray(n)
+    val faulted=BooleanArray(n);val faultX=FloatArray(n);val faultY=FloatArray(n);val symbol=arrayOfNulls<String>(n)
+    val particles=ArrayList<SparkleParticle>()
+    val reveal=FloatArray(n)
+
+    init {
+        val rand=MotionRandom(seed)
+        when(run.kind) {
+            "scatter","assemble"->for(i in 0 until n) {
+                val amp=run.amplitude*ampScale(cells[i].fontPx)
+                if(run.kind=="assemble") {
+                    // sort: a scattered band resolves left to right.
+                    offsetX[i]=(rand.next()-.5f)*amp*1.7f
+                    offsetY[i]=(if(i%2==1)1f else -1f)*amp*(.35f+rand.next()*.4f)
+                    spin[i]=(rand.next()-.5f)*66f*.4f
+                } else {
+                    val phase=rand.next()*2f*PI.toFloat()
+                    offsetX[i]=cos(phase)*amp*(.6f+rand.next()*.5f)
+                    offsetY[i]=sin(phase)*amp*(.5f+rand.next()*.5f)
+                    spin[i]=(rand.next()-.5f)*46f
+                }
+            }
+            "glitch"->{
+                val glyphs=run.substitutions.map(Char::toString)
+                for(i in 0 until n) {
+                    val amp=run.amplitude*ampScale(cells[i].fontPx)
+                    symbol[i]=glyphs.getOrNull((rand.next()*glyphs.size).toInt().coerceIn(0,glyphs.size-1))
+                    faulted[i]=i%3!=0
+                    faultX[i]=(if(rand.next()<.5f)-1f else 1f)*amp
+                    faultY[i]=(if(rand.next()<.5f)-1f else 1f)*amp
+                }
+            }
+            "sparkle"->repeat(run.particles.toInt().coerceIn(0,64)) {i->
+                val cell=cells[(rand.next()*n).toInt().coerceIn(0,n-1)]
+                val scale=ampScale(cell.fontPx)
+                val amp=run.amplitude*scale
+                val top=i%2==0
+                val x=cell.bounds.left+cell.bounds.width*(.15f+rand.next()*.7f)
+                val y=cell.bounds.top+cell.bounds.height*(if(top).13f else .83f)
+                val size=(12f+rand.next()*6f)*scale*1.7f
+                val angle=rand.next()*2f*PI.toFloat()
+                particles+=SparkleParticle(x,y,size,cos(angle)*amp,(if(top)-1f else 1f)*amp*(.4f+rand.next()*.7f),
+                    i.toFloat()/run.particles.coerceAtLeast(1)*run.duration*.62f,cell.ink)
+            }
+            "typewriter"->{
+                // Equal weights: a glyph appears at its own position along the run.
+                val from=cells.first().bounds.left;val to=cells.last().bounds.right
+                for(i in 0 until n) reveal[i]=.075f+(if(to>from)(cells[i].bounds.right-from)/(to-from) else (i+1f)/n)*.84f
+            }
+        }
+    }
+}
+private fun Rect.expandToInclude(other:Rect)=Rect(minOf(left,other.left),minOf(top,other.top),maxOf(right,other.right),maxOf(bottom,other.bottom))
+
+/** Four-point star, matching the reference particle clip path. */
+private fun starPath(center:Offset,size:Float):Path {
+    val points=floatArrayOf(.50f,0f, .61f,.37f, 1f,.50f, .61f,.61f, .50f,1f, .39f,.61f, 0f,.50f, .39f,.37f)
+    return Path().apply {
+        for(i in 0 until 8) {
+            val x=center.x+(points[i*2]-.5f)*size;val y=center.y+(points[i*2+1]-.5f)*size
+            if(i==0)moveTo(x,y) else lineTo(x,y)
+        }
+        close()
+    }
 }
 
 @Composable
@@ -219,20 +355,25 @@ internal fun textMotion(value:RichText,revealed:Set<Int>,layout:TextLayoutResult
     val context=LocalTextMotion.current
     if(value.motion.isEmpty())return Modifier
     val source=LocalTextMotionSeeds.current
-    val random=value.motion.any {it.kind in listOf("scatter","sparkle","glitch","assemble")}
-    val seeds=remember(context?.message,source,random) {if(random && source!=null && context!=null)source("${context.message}/192").split(',').mapNotNull(String::toLongOrNull) else emptyList()}
-    val playing=context!=null && !LocalMotion.current.reduced && LocalAppearance.current.messageEffects && (!random || seeds.size==192)
-    val flipped=value.motion.any {it.kind=="flip"}
-    if(!playing && !flipped)return Modifier
+    val seeded=value.motion.any {it.kind in listOf("scatter","assemble","sparkle","glitch")}
+    val seeds=remember(context?.message,source,seeded) {if(seeded && source!=null && context!=null)source("${context.message}/192").split(',').mapNotNull(String::toLongOrNull) else emptyList()}
+    // Flip is static, not motion: it renders with no playback context and under reduced motion alike.
+    val static=value.motion.any {it.kind=="flip"}
+    val playing=context!=null && !LocalMotion.current.reduced && LocalAppearance.current.messageEffects && !(seeded && seeds.size!=192)
+    if(!playing && !static)return Modifier
     val layer=rememberGraphicsLayer()
-    val glowLayer=if(LocalMotionBlur.current && value.motion.any {it.kind=="glow"})rememberGraphicsLayer() else null
+    val bloom=if(LocalMotionBlur.current && value.motion.any {it.kind=="glow"}) List(3) {rememberGraphicsLayer()} else null
+    val measurer=rememberTextMeasurer()
+    val codeFont=LocalCodeFont.current
+    val flipPivot=fontMidline(LocalAppearance.current.font)
     return Modifier.drawWithCache {
-        var seedIndex=0
         val palette=HashMap<String,Color>()
         val ground=surface.takeOrElse {color}
-        val cells=value.motion.flatMap {run->
-            run.units.mapIndexedNotNull {index,unit->
-                val seed=seeds.getOrElse((seedIndex++).coerceAtMost(191)) {0L}
+        val fallbackEm=(layout?.layoutInput?.style?.fontSize?.takeIf {it.type==TextUnitType.Sp}?.toPx()) ?: 16.sp.toPx()
+        var seedIndex=0
+        val plans=value.motion.mapNotNull {run->
+            val runSeed=seeds.getOrElse((seedIndex++).coerceAtMost(191)) {0L}
+            val cells=run.units.mapIndexedNotNull {index,unit->
                 val start=motionOffsets(value,revealed,unit.first)
                 val end=motionOffsets(value,revealed,unit.second)
                 if(layout==null || start<0 || end>layout.layoutInput.text.length || start>=end ||
@@ -241,92 +382,194 @@ internal fun textMotion(value:RichText,revealed:Set<Int>,layout:TextLayoutResult
                     val path=layout.getPathForRange(start,end)
                     val bounds=path.getBounds()
                     val line=layout.getLineForOffset(start)
-                    val easing=if(run.easing.size==4)CubicBezierEasing(run.easing[0],run.easing[1],run.easing[2],run.easing[3]) else LinearEasing
                     val span=value.spans.lastOrNull {it.start<=unit.first && it.end>unit.first}
                     // Selection rectangles clip an italic's overhang the moment a glyph moves, so widen the drawn slice only.
                     val overhang=if(span!=null && "italic" in span.flags)bounds.height*.12f else 0f
                     val ink=span?.colors?.takeIf {it.isNotEmpty()}?.let {names->gradientStop(names.map {name->palette.getOrPut(name) {textColor(name,ground)}},index,run.units.size)} ?: color
+                    val box=Rect(bounds.left,layout.getLineTop(line),bounds.right,layout.getLineBottom(line))
                     MotionCell(path,if(overhang<=0f)path else Path().apply {addRect(Rect(bounds.left-overhang,bounds.top,bounds.right+overhang,bounds.bottom))},
-                        bounds.center,(layout.getLineBottom(line)-layout.getLineTop(line)).coerceAtLeast(1f),line,1f+(span?.size ?: 0)*.12f,ink,run,index,run.units.size,seed,easing)
+                        box,bounds.center,box.height.coerceAtLeast(1f),fallbackEm*(1f+(span?.size ?: 0)*.12f),ink,index,layout.getLineBaseline(line))
                 }
-            }
-        }.take(192)
-        // Amplitude is thousandths of an em; normalise the line box by the largest span sharing the line.
-        val lineScale=cells.groupBy {it.line}.mapValues {(_,group)->group.maxOf {it.scale}}
-        val mask=Path().apply {cells.forEach {addPath(it.path)}}
-        val glow=cells.filter {it.run.kind=="glow"}
-        val glowMask=Path().apply {glow.forEach {addPath(it.path)}}
-        val glowPaint=Paint()
+            }.take(192)
+            if(cells.isEmpty())null else MotionPlan(run,cells,runSeed)
+        }
+        // Selection rectangles do not tile at whole pixels; a pixel of overlap keeps upright slivers from leaking through.
+        val mask=Path().apply {plans.forEach {plan->plan.cells.forEach {val b=it.path.getBounds();addRect(Rect(b.left-1f,b.top,b.right+1f,b.bottom))}}}
+        val still=plans.any {it.run.kind=="flip"}
+        val finish=plans.maxOfOrNull {it.run.duration.toFloat()} ?: 0f
         onDrawWithContent {
             val elapsed=if(playing)checkNotNull(context).clock.elapsed else TextMotionCap.toFloat()
-            if(cells.isEmpty() || (!flipped && (elapsed>=TextMotionCap.toFloat() || cells.all {elapsed>=it.run.duration})) || size.width>4096 || size.height>4096 || size.width*size.height>4_000_000f)drawContent()
-            else {
-                layer.record {this@onDrawWithContent.drawContent()}
-                clipPath(mask,ClipOp.Difference) {drawLayer(layer)}
-                glow.firstOrNull()?.let {cell->
-                    val p=(elapsed/cell.run.duration.coerceAtLeast(1)).coerceIn(0f,1f)
-                    val envelope=sin(p*PI.toFloat()).coerceAtLeast(0f)
-                    if(envelope>0f) {
-                        val radius=cell.run.displacement/1000f*cell.height*envelope
-                        if(glowLayer!=null) {
-                            glowLayer.record {clipPath(glowMask) {this@onDrawWithContent.drawContent()}}
-                            glowLayer.renderEffect=BlurEffect(radius.coerceAtLeast(.1f),radius.coerceAtLeast(.1f),TileMode.Decal)
-                            glowLayer.alpha=.65f*envelope
-                            drawLayer(glowLayer)
-                        } else repeat(3) {ring->
-                            val r=radius*(ring+1)/3f
-                            glowPaint.alpha=(.03f/(ring+1))*envelope
-                            repeat(8) {i->
-                                val angle=i*PI.toFloat()/4f
-                                drawContext.canvas.saveLayer(Rect(-r,-r,size.width+r,size.height+r),glowPaint)
-                                withTransform({translate(cos(angle)*r,sin(angle)*r)}) {clipPath(glowMask) {drawLayer(layer)}}
-                                drawContext.canvas.restore()
-                            }
-                        }
-                    }
+            if(plans.isEmpty() || (!still && elapsed>=finish) || size.width>4096 || size.height>4096 || size.width*size.height>4_000_000f) {drawContent();return@onDrawWithContent}
+            layer.record {this@onDrawWithContent.drawContent()}
+            clipPath(mask,ClipOp.Difference) {drawLayer(layer)}
+            plans.forEach {plan->drawPlan(plan,elapsed,layer,bloom,measurer,codeFont,flipPivot)}
+        }
+    }
+}
+
+private fun DrawScope.drawPlan(plan:MotionPlan,elapsed:Float,layer:androidx.compose.ui.graphics.layer.GraphicsLayer,
+    bloom:List<androidx.compose.ui.graphics.layer.GraphicsLayer>?,measurer:androidx.compose.ui.text.TextMeasurer,codeFont:FontFamily?,flipPivot:Float) {
+    val run=plan.run
+    val whole=(elapsed/plan.span).coerceIn(0f,1f)
+    fun paint(cell:MotionCell)=clipPath(cell.clip) {drawLayer(layer)}
+
+    when(run.kind) {
+        // echo: a short tremor, a breath, then one smaller aftershock, on the whole line.
+        "shake"->{
+            val amp=run.amplitude*ampScale(plan.cells.first().fontPx)
+            val steps=34
+            fun sample(j:Int):Float {
+                if(j<=0 || j>=steps)return 0f
+                val t=j.toFloat()/steps
+                val envelope=when {t<.40f->sin(t/.4f*PI.toFloat());t>.66f->sin((t-.66f)/.34f*PI.toFloat())*.48f;else->0f}
+                return amp*envelope*(if(j%2==1)-1f else 1f)*(.6f+.4f*abs(sin(j*7.17f)))
+            }
+            val u=whole*steps;val j=u.toInt().coerceIn(0,steps)
+            val dx=sample(j)+(sample(minOf(j+1,steps))-sample(j))*(u-j)
+            withTransform({translate(dx,0f)}) {plan.cells.forEach(::paint)}
+        }
+        // elastic: squash and stretch, on the whole line, geometry only.
+        "pulse"->{
+            val a=run.amplitude
+            val t=MotionSmooth.transform(whole)
+            val offsets=floatArrayOf(0f,.18f,.39f,.61f,.8f,1f)
+            val sx=lerpFrames(t,offsets,floatArrayOf(1f,1f+a*.42f,1f-a*.22f,1f+a*.14f,1f-a*.04f,1f))
+            val sy=lerpFrames(t,offsets,floatArrayOf(1f,1f-a*.85f,1f+a,1f-a*.23f,1f+a*.06f,1f))
+            withTransform({scale(sx,sy,plan.bounds.center)}) {plan.cells.forEach(::paint)}
+        }
+        // travel: light moves from character to character; the letterforms never do.
+        "glow"->{
+            val amp=run.amplitude*ampScale(plan.cells.first().fontPx)
+            val strengths=plan.cells.map {cell->
+                val t=MotionSmooth.transform(plan.local(elapsed,cell.index))
+                lerpFrames(t,floatArrayOf(0f,.38f,.58f,1f),floatArrayOf(0f,1f,.7f,0f))
+            }
+            // A text shadow is a blur of the glyph's own alpha. We have no outlines, so blur the whole
+            // rendered line -- that is the same thing -- and vary intensity with a gradient alpha mask
+            // whose stops sit on the glyph centres. Nothing is clipped, so nothing has a straight edge.
+            val lit=plan.cells.zip(strengths).filter {it.second>0f}
+            if(bloom!=null && lit.isNotEmpty()) {
+                val rings=listOf(.15f,.65f,1f)
+                rings.forEachIndexed {ring,spread->
+                    bloom[ring].record {drawLayer(layer)}
+                    bloom[ring].renderEffect=BlurEffect((amp*spread).coerceAtLeast(.1f),(amp*spread).coerceAtLeast(.1f),TileMode.Decal)
                 }
-                cells.forEach {cell->
-                    val run=cell.run
-                    val raw=(elapsed/run.duration.coerceAtLeast(1)).coerceIn(0f,1f)
-                    val p=cell.easing.transform(raw)
-                    val phase=p*2f*PI.toFloat()*run.cycles
-                    val envelope=sin(p*PI.toFloat()).coerceAtLeast(0f)
-                    val distance=run.displacement/1000f*cell.height*cell.scale/(lineScale[cell.line] ?: 1f)
-                    val random=((cell.seed and 65535)/32767.5f)-1f
-                    val other=(((cell.seed ushr 16) and 65535)/32767.5f)-1f
-                    var dx=0f;var dy=0f;var angle=if(run.kind=="flip")p*run.rotation else 0f;var sx=1f;var sy=1f
-                    var show=true
-                    if(p<1f)when(run.kind) {
-                        "shake"->dx=sin(phase)*distance*envelope
-                        "wave"->dy=sin(phase-cell.index*run.stagger/1000f*2f*PI.toFloat())*distance*envelope
-                        "pulse"->{
-                            val beat=(raw*run.cycles)%1f
-                            val response=if(beat<.2f)-.35f*sin(beat/.2f*PI.toFloat()) else sin(((beat-.2f)/.12f).coerceAtMost(1f)*PI.toFloat()/2f)*springRest((beat-.2f)*run.duration/1000f/run.cycles.coerceAtLeast(1),run)
-                            sx=1f+(run.scale-1000)/1000f*response*envelope;sy=sx
-                        }
-                        "typewriter"->{val step=minOf(run.stagger.takeIf {it>0}?.toFloat() ?: Float.MAX_VALUE,run.duration.toFloat()/cell.count.coerceAtLeast(1));show=elapsed>=(cell.index+1)*step}
-                        "scatter"->{val rest=if(p<.12f)sin(p/.12f*PI.toFloat()/2f) else springRest((p-.12f)*run.duration/1000f,run);dx=random*distance*rest;dy=other*distance*rest;angle=random*run.rotation*rest}
-                        "assemble"->{val lead=minOf(cell.index.toFloat()*run.stagger,run.duration*.35f);val rest=if(elapsed<=lead)1f else springRest((elapsed-lead)/1000f,run);dx=random*distance*rest;dy=other*distance*rest;angle=random*run.rotation*rest}
-                        "barrel"->{dy=-distance*envelope;sy=cos(p*run.rotation*PI.toFloat()/180f);sx=.9f+.1f*abs(sy)}
-                        "glitch"->{dx=if(sin(phase)>0)distance*random*envelope else -distance*random*envelope;dy=other*distance*envelope}
-                        "sparkle"->repeat(run.particles.coerceIn(0,32)) {particle->if(particle%cell.count.coerceAtLeast(1)==cell.index) {
-                            val lifetime=run.particleLifetime.coerceAtLeast(1)
-                            val start=particle*(run.duration-lifetime).coerceAtLeast(0).toFloat()/(run.particles-1).coerceAtLeast(1)
-                            val life=((elapsed-start)/lifetime).coerceIn(0f,1f)
-                            val strength=sin(life*PI.toFloat()).coerceAtLeast(0f)
-                            val theta=particle*2.399963f+random*PI.toFloat()
-                            val center=cell.center+Offset(cos(theta),sin(theta))*distance*(.4f+life*.6f)
-                            val radius=cell.height*.08f*strength
-                            drawLine(cell.ink.copy(alpha=strength),center-Offset(radius,0f),center+Offset(radius,0f),1.5.dp.toPx())
-                            drawLine(cell.ink.copy(alpha=strength),center-Offset(0f,radius),center+Offset(0f,radius),1.5.dp.toPx())
-                        }
-                        }
-                    }
-                    if(show) withTransform({translate(dx,dy);rotate(angle,cell.center);scale(sx,sy,cell.center)}) {
-                        clipPath(cell.clip) {drawLayer(layer)}
-                    }
+                val reach=amp.coerceAtLeast(.1f)
+                plan.cells.zip(strengths).groupBy {it.first.bounds.top}.forEach {(_,row)->
+                    if(row.none {it.second>0f})return@forEach
+                    val box=row.fold(row.first().first.bounds) {a,c->a.expandToInclude(c.first.bounds)}
+                    val left=box.left-reach;val right=box.right+reach
+                    val top=box.top-reach;val bottom=box.bottom+reach
+                    if(right<=left || bottom<=top)return@forEach
+                    val stops=buildList {
+                        add(0f to row.first().second)
+                        row.forEach {(cell,level)->add(((cell.center.x-left)/(right-left)).coerceIn(0f,1f) to level)}
+                        add(1f to row.last().second)
+                    }.sortedBy {it.first}.distinctBy {it.first}
+                        .map {(at,level)->at to Color.White.copy(alpha=level.coerceIn(0f,1f))}
+                    val area=Rect(left,top,right,bottom)
+                    drawContext.canvas.saveLayer(area,Paint())
+                    rings.indices.forEach {ring->clipRect(left,top,right,bottom) {drawLayer(bloom[ring])}}
+                    drawRect(Brush.horizontalGradient(*stops.toTypedArray(),startX=left,endX=right),
+                        topLeft=Offset(left,top),size=Size(right-left,bottom-top),blendMode=BlendMode.DstIn)
+                    drawContext.canvas.restore()
                 }
+            } else if(bloom==null) lit.forEach {(cell,level)->
+                repeat(4) {step->
+                    val angle=step*PI.toFloat()/2f
+                    layer.alpha=(level*.12f).coerceIn(0f,1f)
+                    withTransform({translate(cos(angle)*amp,sin(angle)*amp)}) {clipRect(cell.bounds.left,cell.bounds.top,cell.bounds.right,cell.bounds.bottom) {drawLayer(layer)}}
+                }
+                layer.alpha=1f
+            }
+            // The bloom is a shadow: it sits behind the letterforms, which never move.
+            plan.cells.forEach(::paint)
+        }
+        // ribbon: two close ripples through a tightly staggered line.
+        "wave"->plan.cells.forEach {cell->
+            val amp=run.amplitude*ampScale(cell.fontPx)
+            val t=plan.local(elapsed,cell.index)
+            val y=if(t>=1f)0f else -sin(t*PI.toFloat()*4f)*sin(PI.toFloat()*t).pow(.75f)*amp
+            withTransform({translate(0f,y)}) {paint(cell)}
+        }
+        // burst / sort: deterministic displacement returning to the exact original layout.
+        "scatter","assemble"->plan.cells.forEach {cell->
+            val i=cell.index
+            val t=plan.local(elapsed,i)
+            val f=when {
+                t>=1f->0f
+                run.kind=="assemble"->springStep(((t-.09f)/.91f).coerceIn(0f,1f))
+                t<.10f->-.035f*sin(t/.10f*PI.toFloat())
+                t<.34f->{val u=(t-.10f)/.24f;1f-(1f-u).pow(3)}
+                t<.46f->1f+.03f*sin((t-.34f)/.12f*PI.toFloat())
+                else->springStep((t-.46f)/.54f)
+            }
+            val alpha=if(run.kind=="assemble")minOf(1f,.20f+t*4.4f) else 1f
+            withTransform({translate(plan.offsetX[i]*f,plan.offsetY[i]*f);rotate(plan.spin[i]*f,cell.center)}) {
+                if(alpha>=1f)paint(cell) else {layer.alpha=alpha;paint(cell);layer.alpha=1f}
             }
         }
+        // ripple: every grapheme hops and rolls on its own, left to right.
+        "barrel"->plan.cells.forEach {cell->
+            val scale=ampScale(cell.fontPx)
+            val amp=run.amplitude*scale
+            val t=plan.local(elapsed,cell.index)
+            val flight=((t-.12f)/.68f).coerceIn(0f,1f)
+            val arc=sin(PI.toFloat()*flight)
+            val spin=360f*smoothstep(flight)
+            val landing=if(t>.80f)sin((t-.8f)/.2f*2f*PI.toFloat())*exp(-(t-.8f)*18f) else 0f
+            val y=-amp*arc+(if(t<.12f)sin(t/.12f*PI.toFloat())*2f*scale else -landing*amp*.13f)
+            val tilt=sin(flight*2f*PI.toFloat())*22f
+            withTransform({translate(0f,y);rotate(spin,cell.center);scale(cos(tilt*PI.toFloat()/180f),1f-landing*.07f,cell.center)}) {paint(cell)}
+        }
+        // fragment: two restrained faults substitute glyphs and displace them vertically.
+        "glitch"->{
+            val on=whole in .17f..<.31f || whole in .65f..<.78f
+            plan.cells.forEach {cell->
+                val i=cell.index
+                if(!on || !plan.faulted[i]) {paint(cell);return@forEach}
+                val glyph=plan.symbol[i]
+                if(glyph==null) {paint(cell);return@forEach}
+                val style=TextStyle(color=cell.ink,fontSize=(cell.fontPx*.9f).toSp(),fontFamily=codeFont)
+                val measured=measurer.measure(glyph,style)
+                drawText(measured,topLeft=Offset(cell.center.x-measured.size.width/2f+plan.faultX[i],cell.center.y-measured.size.height/2f+plan.faultY[i]))
+            }
+        }
+        // measured: complete graphemes at an even pace, behind a blinking caret.
+        "typewriter"->{
+            val shown=if(whole>=.93f)plan.n else plan.reveal.count {it<=whole}
+            plan.cells.forEach {cell->if(cell.index<shown)paint(cell)}
+            if(whole<.96f && shown>0) {
+                val last=plan.cells[(shown-1).coerceIn(0,plan.n-1)]
+                val alpha=if((elapsed/420f).toInt()%2==0)1f else .28f
+                drawRoundRect(last.ink.copy(alpha=alpha),Offset(last.bounds.right+2f,last.bounds.top+last.height*.14f),
+                    Size(2f,last.height*.72f),CornerRadius(1f))
+            }
+        }
+        // constellation: a handful of larger stars appear in a deliberate sequence.
+        "sparkle"->{
+            plan.cells.forEach(::paint)
+            plan.particles.forEach {particle->
+                val life=((elapsed-particle.delay)/980f).coerceIn(0f,1f)
+                if(life<=0f || life>=1f)return@forEach
+                val t=MotionSmooth.transform(life)
+                val offsets=floatArrayOf(0f,.28f,.61f,1f)
+                val alpha=lerpFrames(t,offsets,floatArrayOf(0f,.94f,.65f,0f))
+                val grow=lerpFrames(t,offsets,floatArrayOf(.15f,1f,.8f,.08f))
+                val turn=lerpFrames(t,offsets,floatArrayOf(0f,16f,34f,50f))
+                val dx=lerpFrames(t,offsets,floatArrayOf(0f,particle.dx*.35f,particle.dx*.7f,particle.dx))
+                val dy=lerpFrames(t,offsets,floatArrayOf(0f,particle.dy*.3f,particle.dy*.67f,particle.dy))
+                val at=Offset(particle.x+dx,particle.y+dy)
+                withTransform({rotate(turn,at)}) {drawPath(starPath(at,particle.size*grow),particle.ink.copy(alpha=alpha.coerceIn(0f,1f)))}
+            }
+        }
+        // A rigid 180-degree turn of each line's run, as typed: advances, bearings and kerning are the
+        // original's, mirrored. Pivoting on the font midline keeps the run in the same vertical band.
+        "flip"->plan.cells.groupBy {it.bounds.top}.values.forEach {row->
+            val box=row.fold(row.first().bounds) {acc,c->acc.expandToInclude(c.bounds)}
+            val pivot=Offset(box.center.x,row.first().baseline-row.first().fontPx*flipPivot)
+            withTransform({rotate(180f,pivot)}) {clipRect(box.left,box.top,box.right,box.bottom) {drawLayer(layer)}}
+        }
+        else->plan.cells.forEach(::paint)
     }
 }

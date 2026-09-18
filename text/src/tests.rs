@@ -65,6 +65,11 @@ fn modifiers_escapes_and_code_have_distinct_grammars() {
     assert!(parsed(r"\red::text;").spans().is_empty());
     assert_eq!(parsed("||text||").spans(), parsed("spoiler::text;").spans());
     assert_eq!(parsed("||redact::secret;||").body(), "[REDACTED]");
+    // The body never carries the secret's length; the span carries the count for the drawn bar.
+    let long = parsed("redact::Hello my name is pellinore;");
+    assert_eq!(long.body(), "[REDACTED]");
+    assert_eq!(long.spans()[0].effects.redaction, Some(26));
+    assert_eq!(long.to_bytes().unwrap(), crate::Text::from_bytes(&long.to_bytes().unwrap()).unwrap().to_bytes().unwrap());
     assert!(parsed("red::`code`;").spans()[0].effects.paint.is_none());
     assert!(parsed("red::**bold** and *italic*;")
         .spans()
@@ -116,8 +121,9 @@ fn unicode_17_normalization_and_style_boundaries_are_grapheme_safe() {
     assert_eq!(t.spans()[0].end, 1);
     check_wire(&t);
     let t = parsed("redact::secret;blue::👩🏽‍💻;");
-    assert_eq!(t.spans()[0].start, 10);
-    assert_eq!(t.spans()[0].end, 11);
+    // The placeholder is its own span carrying the count; the paint follows on the next grapheme.
+    assert_eq!((t.spans()[0].start, t.spans()[0].end, t.spans()[0].effects.redaction), (0, 10, Some(6)));
+    assert_eq!((t.spans()[1].start, t.spans()[1].end), (10, 11));
 }
 #[test]
 fn canonical_decode_rejects_forged_fallbacks_ranges_and_effects() {
@@ -251,7 +257,10 @@ fn graphical_redaction_uses_the_same_canonical_body_and_discards_empty_styles() 
     let styled = parsed("bold::A👩🏽‍💻B;")
         .redact_range(1..2, Limits::default())
         .unwrap();
-    assert_eq!(styled.spans()[0].end, 12);
+    // Bold on both sides, the counted placeholder between them; the styles around it are kept.
+    assert_eq!(styled.spans().len(), 3);
+    assert_eq!((styled.spans()[1].start, styled.spans()[1].end, styled.spans()[1].effects.redaction), (1, 11, Some(1)));
+    assert!(styled.spans().iter().all(|s| s.effects.bold));
     assert!(!styled
         .to_bytes()
         .unwrap()
@@ -294,7 +303,9 @@ fn entity_and_link_metadata_punctuation_cannot_terminate_text_modifiers() {
     assert_eq!(text.body(), "a & b");
     assert_eq!(text.spans()[0].end, 5);
     let text = parsed("redact::[link](https://example.org/;metadata) SYNTHETIC_SECRET;");
+    // One placeholder for the whole content: the metadata semicolon did not end the modifier.
     assert_eq!(text.body(), "[REDACTED]");
+    assert_eq!(text.spans()[0].effects.redaction, Some(54));
     let text = parsed("||[link](https://example.org/||metadata) visible||");
     assert_eq!(text.body(), "link visible");
     assert!(text
@@ -340,6 +351,7 @@ fn wire_effects_are_resolved_ordered_descriptors_with_theme_color_names() {
                 animation: Some(Animation::Wave),
                 reveal: Some(Reveal::Scratch),
                 link: Some("https://example.org".into()),
+                redaction: None,
             },
         }],
         Limits::default(),

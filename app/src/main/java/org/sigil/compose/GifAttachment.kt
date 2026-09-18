@@ -14,6 +14,7 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.unit.dp
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.semantics.contentDescription
@@ -75,7 +76,10 @@ internal fun GifAttachment(message: ChatMessage) {
                 (image as? AnimatedImageDrawable)?.let { animation -> if (playing) { animation.repeatCount = AnimatedImageDrawable.REPEAT_INFINITE; if (!animation.isRunning) animation.start() } else animation.stop() }
             })
     }
-    ImageMessageFrame(imageWidth,imageHeight) { frame ->
+    val captioned = message.attachment!!.caption.isNotBlank()
+    ImageMessageFrame(imageWidth,imageHeight,
+        if (captioned) androidx.compose.ui.graphics.RectangleShape else androidx.compose.foundation.shape.RoundedCornerShape(20.dp),
+        if (!captioned) null else { { Box(Modifier.padding(horizontal = 14.dp, vertical = 10.dp)) { MessageText(message.attachment!!.caption, NativeCore::analyze) } } }) { frame ->
         Box(frame.clickable {
             drawable?.let { image ->
                 val snapshot = android.graphics.Bitmap.createBitmap(image.intrinsicWidth.coerceAtLeast(1), image.intrinsicHeight.coerceAtLeast(1), android.graphics.Bitmap.Config.ARGB_8888)
