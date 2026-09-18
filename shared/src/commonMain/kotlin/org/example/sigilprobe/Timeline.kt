@@ -222,6 +222,8 @@ internal fun ConversationPage(chat: ChatSummary, state: MessengerState, draft: T
                     // The same test in both directions, or a separator below still tightens the corner above it.
                     val followed = newer != null && newer.author == message.author && !showSeparator(newer, message)
                     var bounds by remember { mutableStateOf(Rect.Zero) }
+                    // Window bounds clip at the screen edge; the chip anchors on the bubble's own measured width.
+                    var bubblePx by remember { mutableIntStateOf(0) }
                     val materialKey=message.author+message.id
                     // Derived per item, so a scroll invalidates only the rows whose own visibility changed,
                     // not every row the buffer holds composed.
@@ -242,7 +244,8 @@ internal fun ConversationPage(chat: ChatSummary, state: MessengerState, draft: T
                         Row(Modifier.fillMaxWidth().combinedClickable(interactionSource = remember { androidx.compose.foundation.interaction.MutableInteractionSource() }, indication = null, onClick = { details = message.author to message.id }, onLongClick = { selected = message to bounds })
                             .pointerInput(message.id, message.mine) {
                                 val slop = viewConfiguration.touchSlop
-                                val limit = with(density) { 110.dp.toPx() }
+                                // The bubble never travels further than the chip needs, so it stays on screen.
+                                val limit = reveal + with(density) { 16.dp.toPx() }
                                 awaitEachGesture {
                                     val down = awaitFirstDown(requireUnconsumed = false)
                                     if (list.isScrollInProgress) return@awaitEachGesture
@@ -283,20 +286,24 @@ internal fun ConversationPage(chat: ChatSummary, state: MessengerState, draft: T
                                     previewLaunch.landed(message.id)
                                 }
                                 Box(Modifier.fillMaxWidth(), contentAlignment = if (message.mine) Alignment.CenterEnd else Alignment.CenterStart) {
+                                  // Pulled toward its own edge the bubble has nowhere to go: it nudges a little and the chip slides out from under its inner edge.
+                                  val outward = (offset > 0) == message.mine
+                                  val nudge = with(density) { 12.dp.toPx() }
+                                  val bubbleShift = if (outward) (if (offset > 0) 1f else -1f) * minOf(abs(offset) * .25f, nudge) else offset
                                   if (abs(offset) > 1f && !lifted) {
                                     val action = swipeAction(message.mine, offset)
                                     val armed = abs(offset) >= threshold
-                                    // The chip rides out from under the bubble's own edge and keeps one gap from it.
-                                    val slack = with(density) { bubbleWidth.toPx() } - bounds.width
+                                    // Pulled inward the chip rides beside the bubble from the gutter, one gap away.
+                                    val slack = with(density) { bubbleWidth.toPx() } - bubblePx
                                     val base = if (offset > 0) (if (message.mine) slack else 0f) else (if (message.mine) 0f else -slack)
                                     Surface(Modifier.align(if (offset > 0) Alignment.CenterStart else Alignment.CenterEnd).size(SwipeChipSize)
-                                        .graphicsLayer { translationX = base + offset + if (offset > 0) -reveal else reveal; alpha = (abs(offset) / reveal).coerceIn(0f, 1f) },
+                                        .graphicsLayer { translationX = if (outward) base - (if (offset > 0) 1f else -1f) * minOf(abs(offset), reveal) + bubbleShift else base + offset + if (offset > 0) -reveal else reveal; alpha = (abs(offset) / reveal).coerceIn(0f, 1f) },
                                         shape = RoundedCornerShape(16.dp), color = if (armed) scheme.primary else scheme.surfaceContainerHigh, contentColor = if (armed) scheme.onPrimary else scheme.onSurface) {
                                         Box(contentAlignment = Alignment.Center) { Glyph(if (action == "reply") "reply" else "forum", 22, if (action == "reply") "Reply" else "Reply in thread") }
                                     }
                                   }
                                   Box(Modifier.graphicsLayer {
-                                    translationX = offset; alpha = if (lifted) 0f else 1f
+                                    translationX = bubbleShift; alpha = if (lifted) 0f else 1f
                                     // The sent card carries on from where the preview panel left it, rather than arriving from nowhere.
                                     val from = launched
                                     if (from != null && bounds != Rect.Zero && bounds.width > 0f) {
@@ -307,7 +314,7 @@ internal fun ConversationPage(chat: ChatSummary, state: MessengerState, draft: T
                                         translationX += (from.left - bounds.left) * remaining
                                         translationY = (from.top - bounds.top) * remaining
                                     }
-                                  }.then(if (lifted) Modifier.clearAndSetSemantics { } else Modifier).onGloballyPositioned { bounds = it.boundsInWindow(); materialTimeline.bubbles[materialKey]=bounds; if (lifted) returnBounds = bounds }
+                                  }.then(if (lifted) Modifier.clearAndSetSemantics { } else Modifier).onSizeChanged { bubblePx = it.width }.onGloballyPositioned { bounds = it.boundsInWindow(); materialTimeline.bubbles[materialKey]=bounds; if (lifted) returnBounds = bounds }
                                     .pointerInput(message.id) { awaitPointerEventScope { while (true) { val event = awaitPointerEvent(); if (event.type == PointerEventType.Press && event.buttons.isSecondaryPressed) selected = message to bounds } } }) {
                                     CompositionLocalProvider(LocalMaterialPress provides {selected=message to bounds},LocalItemVisible provides onScreen) {
                                     if(materialKey in animated) MessageMotion(message.id,textMotion.state(materialKey),onScreen && selected==null,animated.getValue(materialKey)) {
@@ -336,7 +343,7 @@ internal fun ConversationPage(chat: ChatSummary, state: MessengerState, draft: T
             CompositionLocalProvider(LocalPreviewLaunch provides previewLaunch) {
             Column(Modifier.fillMaxWidth()) {
             val context = editing?.let { "Editing" to it.text } ?: reply?.let { (state.people[it.author] ?: if (it.mine) "You" else chat.name) to it.text }
-            context?.let { (title, text) -> ContextChip(title, text, reply?.attachment, reply) { reply = null; editing = null } }
+            context?.let { (title, text) -> ContextChip(title, text, reply?.attachment, reply, reply?.let { cardQuote(it.parts) }) { reply = null; editing = null } }
             val inputCommand: Command = { action, fields ->
                 command(action, if (action in listOf("attachment_pick", "record_start")) fields + mapOf("reply_author" to reply?.author, "reply_message" to reply?.id, "thread_author" to thread?.author, "thread_message" to thread?.id) else fields)
             }

@@ -1834,13 +1834,13 @@ impl ClientStore {
                     };
                     let reply = message.reply.as_ref().map(&mut preview).transpose()?;
                     let thread_preview = message.thread.as_ref().map(&mut preview).transpose()?;
-                    let reply_attachment = match message.reply.as_ref() {
+                    let (reply_attachment, reply_parts) = match message.reply.as_ref() {
                         Some(target) => match self.conversation_message(conversation, target.clone(), conversations::now()) {
-                            Ok(m) if !m.view_once && !m.deleted => files::metadata(m.body.as_ref())?,
-                            Ok(_) | Err(Error::NotFound | Error::Obsolete) => None,
+                            Ok(m) if !m.view_once && !m.deleted => (files::metadata(m.body.as_ref())?, self.mobile_parts(conversation, m.body.as_ref())?),
+                            Ok(_) | Err(Error::NotFound | Error::Obsolete) => (None, Vec::new()),
                             Err(e) => return Err(e),
                         },
-                        None => None,
+                        None => (None, Vec::new()),
                     };
                     messages.push(json!({"id":transport::hex(&message.reference.message),"author":transport::hex(&message.reference.author),
                         "text":message.body.as_ref().map(body_text).transpose()?.unwrap_or_else(||"View-once message".into()),
@@ -1848,7 +1848,7 @@ impl ClientStore {
                         "reactions":message.reactions.iter().map(|(_,emoji)|emoji).collect::<Vec<_>>(),
                         "my_reactions":message.reactions.iter().filter(|(actor,_)| *actor == own).map(|(_,emoji)|emoji).collect::<Vec<_>>(),
                         "read_by_me": message.seen || message.view_once || message.read.contains(&own), "reply":reply,
-                        "reply_author":message.reply.as_ref().map(|v|transport::hex(&v.author)),"reply_message":message.reply.as_ref().map(|v|transport::hex(&v.message)),"reply_mine":message.reply.as_ref().is_some_and(|v|v.author==own),"reply_attachment":reply_attachment,
+                        "reply_author":message.reply.as_ref().map(|v|transport::hex(&v.author)),"reply_message":message.reply.as_ref().map(|v|transport::hex(&v.message)),"reply_mine":message.reply.as_ref().is_some_and(|v|v.author==own),"reply_attachment":reply_attachment,"reply_parts":reply_parts,
                         "readers":message.read.iter().map(|v|transport::hex(v)).collect::<Vec<_>>(),
                         "noted":message.noted || self.mobile_is_note(conversation, &message)?,
                         "thread_author":message.thread.as_ref().map(|v|transport::hex(&v.author)),

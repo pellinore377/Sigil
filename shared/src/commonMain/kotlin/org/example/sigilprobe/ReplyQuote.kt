@@ -32,6 +32,43 @@ private fun attachmentGlyph(file: AttachmentDetails): String = when {
     else -> attachmentKind(file.name, file.mediaType).glyph
 }
 
+// A quoted card: the Create panel's glyph for its kind, and its result where it has one.
+fun cardQuote(parts: List<MessagePart>): Pair<String, String>? {
+    val part = parts.firstOrNull { it.kind != "text" } ?: return null
+    val utility = part.utility
+    val service = part.service
+    val (name, glyph) = when {
+        part.kind == "poll" -> "Poll" to "ballot"
+        part.kind == "checklist" -> "Checklist" to "checklist"
+        part.kind == "task" -> "Task" to "assignment"
+        part.kind == "recurring" -> "Recurring checklist" to "event_repeat"
+        part.kind == "note" -> "Note" to "description"
+        part.kind == "reminder" -> "Reminder" to "notifications_active"
+        part.kind == "countdown" -> "Countdown" to "hourglass_bottom"
+        part.kind == "ago" -> "Elapsed time" to "history"
+        part.kind == "timer" -> "Timer" to "timer"
+        part.kind == "location" -> "Location" to "location_on"
+        part.table != null -> "Table" to "table"
+        part.recipe != null -> "Recipe" to "restaurant"
+        part.chart != null -> "Chart" to "bar_chart"
+        part.diagram != null -> "Diagram" to "account_tree"
+        part.contact != null -> "Contact" to "person"
+        service != null -> when (service.kind.lowercase()) { "translation" -> "Translation" to "translate"; "definition" -> "Definition" to "dictionary"; else -> "Weather" to "partly_cloudy_day" }
+        utility != null -> when (utility.kind) {
+            "calculation" -> "Calculation" to "calculate"; "conversion" -> "Conversion" to "swap_horiz"; "math", "formula" -> "Math" to "functions"
+            "qr" -> "QR code" to "qr_code"; "dice" -> "Dice" to "casino"; "coin" -> "Coin" to "toll"
+            "pick" -> if (utility.motion?.kind == "coin") "Coin" to "toll" else "Cards" to "playing_cards"
+            "random" -> "Random Number" to "numbers"; "swatch" -> "Color swatch" to "palette"; "keys" -> "Keyboard shortcut" to "keyboard"
+            "rating" -> "Rating" to "star"; "progress" -> "Progress" to "data_usage"; "quote" -> "Quote" to "format_quote"; "art" -> "ASCII art" to "draw"
+            else -> "Card" to "data_object"
+        }
+        else -> "Card" to "data_object"
+    }
+    // A picker or figure card quotes its result rather than its kind.
+    val result = utility?.display?.takeIf { it.isNotBlank() && utility.kind in listOf("calculation", "conversion", "math", "formula", "dice", "coin", "pick", "random", "rating", "progress") }
+    return (result ?: name) to glyph
+}
+
 // A squircle glimpse of the quoted file: the picture or poster where one can be drawn, otherwise its glyph.
 @Composable
 fun QuotePreview(file: AttachmentDetails, source: ChatMessage?) {
@@ -44,9 +81,16 @@ fun QuotePreview(file: AttachmentDetails, source: ChatMessage?) {
 
 // The body shared by the bubble quote and the composer chip: name over text, or a preview beside name and type.
 @Composable
-fun QuoteBody(name: String?, text: String?, file: AttachmentDetails?, source: ChatMessage?, lines: Int, modifier: Modifier = Modifier) {
+fun QuoteBody(name: String?, text: String?, file: AttachmentDetails?, source: ChatMessage?, lines: Int, modifier: Modifier = Modifier, card: Pair<String, String>? = null) {
     val title = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.SemiBold)
-    if (file != null) Row(modifier, verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+    if (file == null && card != null) Row(modifier, verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+        val ink = LocalContentColor.current
+        Box(Modifier.size(QuotePreviewSize).clip(RoundedCornerShape(12.dp)).background(ink.copy(alpha = .1f)), contentAlignment = Alignment.Center) { Glyph(card.second, 24) }
+        Column {
+            if (name != null) Text(name, style = title, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            Text(card.first, style = MaterialTheme.typography.bodySmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
+        }
+    } else if (file != null) Row(modifier, verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
         QuotePreview(file, source)
         Column {
             if (name != null) Text(name, style = title, maxLines = 1, overflow = TextOverflow.Ellipsis)
@@ -66,17 +110,17 @@ internal fun ReplyQuote(message: ChatMessage, topStart: androidx.compose.ui.unit
     val name = message.replyAuthor?.let { LocalMediaSender.current(message.copy(author = it, mine = message.replyMine)) }
     val source = if (message.replyAuthor != null && message.replyMessage != null) LocalMediaMessage.current(message.peer, message.replyAuthor, message.replyMessage) else null
     Surface(Modifier.fillMaxWidth().testTag("reply-quote"), shape = RoundedCornerShape(topStart, topEnd, 5.dp, 5.dp), color = scheme.background, contentColor = scheme.onBackground) {
-        QuoteBody(name, quoted, message.replyAttachment, source, 4, Modifier.padding(horizontal = 12.dp, vertical = 10.dp))
+        QuoteBody(name, quoted, message.replyAttachment, source, 4, Modifier.padding(horizontal = 12.dp, vertical = 10.dp), cardQuote(message.replyParts))
     }
 }
 
 // What the next message answers or replaces, above the writing field: the same block the bubble will show.
 @Composable
-internal fun ContextChip(title: String, text: String?, file: AttachmentDetails? = null, source: ChatMessage? = null, close: () -> Unit) {
+internal fun ContextChip(title: String, text: String?, file: AttachmentDetails? = null, source: ChatMessage? = null, card: Pair<String, String>? = null, close: () -> Unit) {
     val scheme = MaterialTheme.colorScheme
     Surface(Modifier.fillMaxWidth().padding(start = 8.dp, end = 8.dp, top = 8.dp).testTag("context-chip"), shape = RoundedCornerShape(14.dp, 14.dp, 5.dp, 5.dp), color = scheme.background, contentColor = scheme.onBackground) {
         Row(Modifier.padding(start = 12.dp, end = 4.dp, top = 2.dp, bottom = 2.dp), verticalAlignment = Alignment.CenterVertically) {
-            QuoteBody(title, text, file, source, 1, Modifier.weight(1f).padding(vertical = 8.dp))
+            QuoteBody(title, text, file, source, 1, Modifier.weight(1f).padding(vertical = 8.dp), card)
             Symbol("close", "Cancel reply or edit", close)
         }
     }

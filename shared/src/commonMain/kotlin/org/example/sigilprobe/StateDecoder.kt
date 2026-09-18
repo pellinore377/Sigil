@@ -30,6 +30,7 @@ fun search(value:JsonObject,clock:(Long)->String)=value.objects("hits").map {h->
             timestamp=m.long("timestamp"),separator=separator(m.long("timestamp")),readers=m.strings("readers"),noted=m.bool("noted"),threadAuthor=m.optional("thread_author"),threadMessage=m.optional("thread_message"),editable=m.bool("editable",true),kind=m.optional("kind")?:"Text",peer=peer,
             attachment=m["attachment"]?.takeUnless{it==JsonNull}?.jsonObject?.let {AttachmentDetails(it.string("name"),it.string("media_type"),it.long("length"),it.string("caption"))},
             parts=m.objects("parts").map {ContentDecoder.part(it.toString(),clock)},threadPreview=m.optional("thread_preview"),replyAuthor=m.optional("reply_author"),replyMine=m.bool("reply_mine"),replyMessage=m.optional("reply_message"),
-            replyAttachment=m["reply_attachment"]?.takeUnless{it==JsonNull}?.jsonObject?.let {AttachmentDetails(it.string("name"),it.string("media_type"),it.long("length"),it.string("caption"))})
+            replyAttachment=m["reply_attachment"]?.takeUnless{it==JsonNull}?.jsonObject?.let {AttachmentDetails(it.string("name"),it.string("media_type"),it.long("length"),it.string("caption"))},
+            replyParts=m.objects("reply_parts").map {ContentDecoder.part(it.toString(),clock)})
     }
 }
