@@ -70,6 +70,13 @@ fn cards_have_shared_builder_bytes_redacted_labels_and_authenticated_origins() {
     assert_ne!(item_id(&[1; 32], 0), item_id(&[2; 32], 0));
 }
 #[test]
+fn recurring_lists_take_the_interval_alone_as_their_mode() {
+    let parsed = card("checklist::weekly::Bins\n-r- Glass\n- Paper;");
+    assert!(matches!(parsed.content, Construct::Checklist(ref list) if matches!(list.mode, ListMode::Recurring(_))));
+    let same = card("checklist::recurr::weekly::Bins\n-r- Glass\n- Paper;");
+    assert!(matches!(same.content, Construct::Checklist(ref list) if matches!(list.mode, ListMode::Recurring(_))));
+}
+#[test]
 fn structured_grammar_preserves_code_escapes_and_line_scoped_effects() {
     let parsed = card("checklist::recurr::monthly::Groceries\n-r- bold::Milk\\; eggs\n- `red::literal;`\n- [link](https://example.invalid/a;b);");
     let Construct::Checklist(list) = &parsed.content else {

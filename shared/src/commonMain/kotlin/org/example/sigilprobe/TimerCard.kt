@@ -18,6 +18,9 @@ import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.geometry.Rect
+import androidx.compose.ui.geometry.RoundRect
+import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.TransformOrigin
 import androidx.compose.ui.graphics.drawscope.DrawScope
@@ -55,9 +58,10 @@ private fun bellAngle(t:Float):Float {
     return BellAngles[step]+(BellAngles[step+1]-BellAngles[step])*(span-step)
 }
 
-@Composable internal fun TimerCard(part:MessagePart) {
+@Composable internal fun TimerCard(part:MessagePart,preview:Boolean=false) {
     val motion=LocalMotion.current
-    val now=temporalNow(part.at,Long.MAX_VALUE,settles=true)
+    // A drafted timer holds its full span; it starts counting once it has been sent.
+    val now=if(preview)part.startedAt else temporalNow(part.at,Long.MAX_VALUE,settles=true)
     val ended=part.at in 1..now
     val remaining=(part.at-now).coerceAtLeast(0)
     val total=(part.at-part.startedAt).coerceAtLeast(1)
@@ -66,43 +70,34 @@ private fun bellAngle(t:Float):Float {
     // One cue on expiry, and only for a timer that was seen running.
     val ran=remember(part.id) {!ended}
     val cue=remember(part.id) {Animatable(1f)}
+    val bubbleCue=LocalBubbleCue.current
     val bell=remember(part.id) {Animatable(1f)}
     // The digits hold full strength through the cue, then settle to the ended face; a timer already ended starts settled.
     val settled=remember(part.id) {Animatable(if(ended)EndedAlpha else 1f)}
     LaunchedEffect(ended) {
         if(!ended)return@LaunchedEffect
         if(ran && !motion.reduced) {
-            cue.snapTo(0f);bell.snapTo(0f)
+            cue.snapTo(0f);bell.snapTo(0f);bubbleCue?.floatValue=0f
             launch {bell.animateTo(1f,motion.tween(MotionBell,MotionBellDelay,MotionInOutEasing))}
-            cue.animateTo(1f,motion.tween(MotionCue,easing=LinearEasing))
+            cue.animateTo(1f,motion.tween(MotionCue,easing=LinearEasing)) {bubbleCue?.floatValue=value}
             settled.animateTo(EndedAlpha,motion.tween(MotionSettle))
         }
         else settled.snapTo(EndedAlpha)
     }
     val ink=LocalContentColor.current
     // The flap sets the card's width, as in the reference; nothing is stretched to a card minimum.
-    // The cue is the reference's endCue around the whole card, drawn ahead of animateContentSize, which clips to its bounds.
+    // The bubble traces the end cue around its own outline; without one, the card draws it at its own edge.
     Column(Modifier.width(IntrinsicSize.Min)
         .drawBehind {
-            if(cue.value>=1f)return@drawBehind
-            val elapsed=cue.value*MotionCue
+            if(bubbleCue!=null)return@drawBehind
             val radius=CardRadius.toPx()
-            // The reference's box-shadow pulse: a band spreading outward from the edge, brightest at 0.38 of the cue.
-            val halo=(elapsed/MotionCue/.8f).coerceIn(0f,1f)
-            val peak=if(halo<=.475f)halo/.475f else (1f-halo)/.525f
-            val band=CueSpreadY.toPx()*halo
-            if(peak>0f && band>0f)drawCard(ink.copy(alpha=.13f*peak),band/2f,band/2f,radius,Stroke(band))
-            for(index in 0..1) {
-                val wave=MotionOutEasing.transform(((elapsed-index*MotionRingStagger)/MotionRing).coerceIn(0f,1f))
-                if(wave<=0f || wave>=1f)continue
-                drawCard(ink.copy(alpha=.45f*(1f-wave)),CueSpreadX.toPx()*wave,CueSpreadY.toPx()*wave,radius,Stroke(1.dp.toPx()))
-            }
+            drawEndCue(cue.value,ink,CueSpreadX.toPx(),CueSpreadY.toPx(),floatArrayOf(radius,radius,radius,radius))
         }.animateContentSize(motion.tween(MotionMillis)),verticalArrangement=Arrangement.spacedBy(9.dp)) {
         if(part.at<=0) {Text("No timer set.",style=MaterialTheme.typography.bodyMedium);return@Column}
         TimerFlap(temporalDigits(remaining),regular,{settled.value},if(ended)"Timer ended" else "${temporalSpan(remaining)} remaining")
         Row(verticalAlignment=Alignment.CenterVertically,horizontalArrangement=Arrangement.spacedBy(7.dp)) {
             Box(Modifier.graphicsLayer {rotationZ=if(bell.value>=1f)0f else bellAngle(bell.value);transformOrigin=TransformOrigin(.5f,.2f)}) {Glyph(if(ended)"notifications_active" else "schedule",14)}
-            Text(if(ended)"Time's up" else "Remaining",style=MaterialTheme.typography.labelMedium,color=LocalContentColor.current.copy(alpha=.68f),maxLines=1,overflow=TextOverflow.Ellipsis)
+            Text(if(ended)"Time's up" else if(preview)"Starts when sent" else "Remaining",style=MaterialTheme.typography.labelMedium,color=LocalContentColor.current.copy(alpha=.68f),maxLines=1,overflow=TextOverflow.Ellipsis)
         }
         if(!ended)Box(Modifier.fillMaxWidth().height(2.dp).clip(RoundedCornerShape(2.dp)).background(LocalContentColor.current.copy(alpha=.12f))) {
             Box(Modifier.fillMaxHeight().fillMaxWidth(swept).clip(RoundedCornerShape(2.dp)).background(LocalContentColor.current.copy(alpha=.5f)))
@@ -110,8 +105,25 @@ private fun bellAngle(t:Float):Float {
     }
 }
 
-private fun DrawScope.drawCard(color:Color,growX:Float,growY:Float,radius:Float,stroke:Stroke) {
-    drawRoundRect(color,Offset(-growX,-growY),Size(size.width+growX*2,size.height+growY*2),CornerRadius(radius+minOf(growX,growY)),style=stroke)
+// The reference's endCue: a box-shadow band spreading from the edge, brightest at 0.38 of the cue, then two rings; all follow the corners.
+internal fun DrawScope.drawEndCue(fraction:Float,ink:Color,spreadX:Float,spreadY:Float,corners:FloatArray) {
+    if(fraction>=1f)return
+    val elapsed=fraction*MotionCue
+    val halo=(elapsed/MotionCue/.8f).coerceIn(0f,1f)
+    val peak=if(halo<=.475f)halo/.475f else (1f-halo)/.525f
+    val band=spreadY*halo
+    if(peak>0f && band>0f)drawGrown(ink.copy(alpha=.13f*peak),band/2f,band/2f,corners,Stroke(band))
+    for(index in 0..1) {
+        val wave=MotionOutEasing.transform(((elapsed-index*MotionRingStagger)/MotionRing).coerceIn(0f,1f))
+        if(wave<=0f || wave>=1f)continue
+        drawGrown(ink.copy(alpha=.45f*(1f-wave)),spreadX*wave,spreadY*wave,corners,Stroke(1.dp.toPx()))
+    }
+}
+private fun DrawScope.drawGrown(color:Color,growX:Float,growY:Float,corners:FloatArray,stroke:Stroke) {
+    val grow=minOf(growX,growY)
+    val rect=Rect(Offset(-growX,-growY),Size(size.width+growX*2,size.height+growY*2))
+    val path=Path().apply {addRoundRect(RoundRect(rect,CornerRadius(corners[0]+grow),CornerRadius(corners[1]+grow),CornerRadius(corners[2]+grow),CornerRadius(corners[3]+grow)))}
+    drawPath(path,color,style=stroke)
 }
 
 @Composable private fun TimerFlap(value:String,animate:Boolean,settled:()->Float,description:String) {

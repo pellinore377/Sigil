@@ -344,6 +344,8 @@ internal fun ConversationPage(chat: ChatSummary, state: MessengerState, draft: T
         cardDetails?.let { CardDetails(it) { cardDetails = null } }
     }
 }
+private val BubbleCueSpread = 12.dp
+
 @Composable
 internal fun MessageBubble(message: ChatMessage, grouped: Boolean, followed: Boolean, analyze: (String) -> String, command: Command? = null) {
     val scheme = MaterialTheme.colorScheme
@@ -357,14 +359,25 @@ internal fun MessageBubble(message: ChatMessage, grouped: Boolean, followed: Boo
     // A fenced block is its own bubble, so the message frame steps aside and the chunks group themselves.
     val panelled=message.attachment==null && message.parts.any {p->p.rich?.let {visibleCodeBlocks(it).isNotEmpty()} == true}
     val emoji = remember(message.text, message.kind, message.reply, message.parts) { if (message.kind == "Text" && message.reply == null && message.parts.all { it.kind == "text" && it.rich?.spans.orEmpty().isEmpty() }) animatedEmoji(message.text) else null }
+    val bubbleShape = RoundedCornerShape(topStart = if (!message.mine && grouped) 5.dp else 20.dp, topEnd = if (message.mine && grouped) 5.dp else 20.dp,
+        bottomStart = if (!message.mine && followed) 5.dp else 20.dp, bottomEnd = if (message.mine && followed) 5.dp else 20.dp)
+    // A card's end cue is drawn here, outside the bubble's clip, tracing the bubble's own outline.
+    val cue = remember { mutableFloatStateOf(1f) }
+    val cueInk = scheme.onBackground
     Box(Modifier.padding(top = if (message.reactions.isNotEmpty() || message.pinned) 8.dp else 0.dp)) {
         if (emoji != null) EmojiMessage(emoji)
         else
-        Surface(shape = RoundedCornerShape(topStart = if (!message.mine && grouped) 5.dp else 20.dp, topEnd = if (message.mine && grouped) 5.dp else 20.dp,
-            bottomStart = if (!message.mine && followed) 5.dp else 20.dp, bottomEnd = if (message.mine && followed) 5.dp else 20.dp),
-            color = if(objectOnly || (bareImage && !captioned) || bareLocation) Color.Transparent else if (message.mine) outgoing else scheme.surfaceContainer, contentColor = if(objectOnly || (bareImage && !captioned) || bareLocation) scheme.onBackground else if (message.mine) outgoingInk else scheme.onSurface) {
+        {
             val bare = objectOnly || (bareImage && !captioned) || bareLocation
-            CompositionLocalProvider(LocalMessageBubble provides panelled,LocalMaterialOutgoing provides message.mine,LocalContentColor provides if (bare) scheme.onBackground else if (message.mine) outgoingInk else scheme.onSurface,LocalMessageSurface provides if (bare) scheme.background else if (message.mine) outgoing else scheme.surfaceContainer) {
+            // Bare objects overhang their slot on purpose, so they get no clipping surface at all.
+            val frame: @Composable (@Composable () -> Unit) -> Unit = { body -> if (objectOnly) Box { body() } else Surface(Modifier.drawBehind {
+                if (cue.floatValue >= 1f) return@drawBehind
+                val corners = floatArrayOf(bubbleShape.topStart.toPx(size, this), bubbleShape.topEnd.toPx(size, this), bubbleShape.bottomEnd.toPx(size, this), bubbleShape.bottomStart.toPx(size, this))
+                drawEndCue(cue.floatValue, cueInk, BubbleCueSpread.toPx(), BubbleCueSpread.toPx(), corners)
+            }, shape = bubbleShape,
+            color = if(bare) Color.Transparent else if (message.mine) outgoing else scheme.surfaceContainer, contentColor = if(bare) scheme.onBackground else if (message.mine) outgoingInk else scheme.onSurface) { body() } }
+            frame {
+            CompositionLocalProvider(LocalBubbleCue provides cue,LocalMessageBubble provides panelled,LocalMaterialOutgoing provides message.mine,LocalContentColor provides if (bare) scheme.onBackground else if (message.mine) outgoingInk else scheme.onSurface,LocalMessageSurface provides if (bare) scheme.background else if (message.mine) outgoing else scheme.surfaceContainer) {
             Column(if (message.attachment == null) Modifier.padding(horizontal = if(objectOnly || bareLocation || panelled)0.dp else 14.dp, vertical = if(bareLocation || panelled)0.dp else 10.dp) else Modifier) {
                 // The quoted block is the timeline ground set into the bubble.
                 message.reply?.let { Surface(shape = RoundedCornerShape(12.dp), color = scheme.background) { Text(it, Modifier.padding(9.dp), style = MaterialTheme.typography.bodySmall, maxLines = 2, overflow = TextOverflow.Ellipsis) }; Spacer(Modifier.height(6.dp)) }
@@ -373,6 +386,7 @@ internal fun MessageBubble(message: ChatMessage, grouped: Boolean, followed: Boo
                     Box(Modifier.padding(horizontal=14.dp,vertical=10.dp)) { MessageText(caption,analyze) }
                 }
 
+            }
             }
             }
         }

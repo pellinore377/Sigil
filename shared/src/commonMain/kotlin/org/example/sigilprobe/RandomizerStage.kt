@@ -60,7 +60,7 @@ internal fun RandomizerStage(value:RandomizerMotion,full:Boolean=false,rich:Rich
     if(material!=null && (coin || dice.all {it.sides in nativeDice})) {
         val rows=if(coin)1 else (dice.size+2)/3
         val description=if(coin)"Coin: ${value.result}" else "Dice: "+dice.joinToString {"d${it.sides} · ${it.face}"}
-        MaterialSlot(value.copy(dice=dice),{if(enabled)((context?.clock?.elapsed ?: 12000f)/(context?.clock?.duration(randomizerDuration(value)) ?: randomizerDuration(value))).coerceIn(0f,1f)else 1f},Modifier.fillMaxWidth().height((if(LocalObjectMenu.current || LocalAppearance.current.compact) {if(coin)164 else rows*116} else if(coin)184 else rows*132).dp).clipToBounds().clearAndSetSemantics {contentDescription=description})
+        MaterialSlot(value.copy(dice=dice),{if(enabled)((context?.clock?.elapsed ?: 12000f)/(context?.clock?.duration(randomizerDuration(value)) ?: randomizerDuration(value))).coerceIn(0f,1f)else 1f},Modifier.fillMaxWidth().height((if(LocalObjectMenu.current || LocalAppearance.current.compact) {if(coin)164 else rows*116} else if(coin)184 else rows*132).dp).then(if(LocalObjectMenu.current)Modifier.clipToBounds() else Modifier).clearAndSetSemantics {contentDescription=description})
         return
     }
     val meshes=remember(dice,coin) {if(coin)listOf(coinGeometry()) else dice.map {diceGeometry(it.sides)}}

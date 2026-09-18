@@ -25,6 +25,9 @@ internal fun ChatMessage.bareRandomizers() = reply == null && attachment == null
     parts.any { it.utility?.motion?.kind in listOf("dice", "coin", "choice") } &&
     parts.all { it.kind == "text" || it.utility?.motion?.kind in listOf("dice", "coin", "choice") }
 
+// The bubble draws a card's end cue around itself, so a ring can travel outside the clip a card lives in.
+internal val LocalBubbleCue=staticCompositionLocalOf<MutableFloatState?> {null}
+
 @Composable
 internal fun MessageCards(message: ChatMessage, analyze: (String) -> String, command: Command?, bareObjects: Boolean = false) {
     Column(verticalArrangement = Arrangement.spacedBy(12.dp), horizontalAlignment = if (bareObjects && message.mine) Alignment.End else Alignment.Start) {
@@ -52,7 +55,7 @@ internal fun MessageCards(message: ChatMessage, analyze: (String) -> String, com
             else if (part.kind == "reminder") ReminderCard(part,analyze)
             else if (part.kind == "countdown") CountdownCard(part,analyze)
             else if (part.kind == "ago") AgoCard(part,analyze)
-            else if (part.kind == "timer") TimerCard(part)
+            else if (part.kind == "timer") TimerCard(part,preview=message.id=="preview")
             else StandardCard(part,analyze)
         }
     }

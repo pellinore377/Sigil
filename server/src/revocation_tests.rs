@@ -64,11 +64,12 @@ fn signing_out_a_device_frees_the_queue_it_can_never_collect_and_refuses_more() 
 
     // Fill the per-pair allowance. Messages that outlive each other keep their
     // places, so the sender is refused rather than losing one unseen.
-    for n in 0..64 {
+    let allowance = u64::from(crate::mailbox::PEER_ALLOWANCE);
+    for n in 0..allowance {
         store.submit_message(&alice, message(&target, n), NOW).unwrap();
     }
     assert!(matches!(
-        store.submit_message(&alice, message(&target, 64), NOW),
+        store.submit_message(&alice, message(&target, allowance), NOW),
         Err(StoreError::MailboxFull)
     ));
 
@@ -82,14 +83,14 @@ fn signing_out_a_device_frees_the_queue_it_can_never_collect_and_refuses_more() 
             )
             .unwrap()
     };
-    assert_eq!(pending(&path), 64);
+    assert_eq!(pending(&path), allowance as i64);
 
     store.revoke_device(&bob, &target, NOW).unwrap();
     assert_eq!(pending(&path), 0, "a signed-out device must not hold its senders' slots");
 
     // Nothing new may be queued for it either, so the backlog cannot rebuild.
     assert!(matches!(
-        store.submit_message(&alice, message(&target, 65), NOW),
+        store.submit_message(&alice, message(&target, allowance + 1), NOW),
         Err(StoreError::NotFound)
     ));
 }
@@ -104,14 +105,15 @@ fn short_lived_notices_give_way_to_a_message_that_outlives_them() {
     store.allow_sender(&bob, &sender, NOW).unwrap();
 
     // Typing and presence describe a moment and are sent short-lived.
-    for n in 0..64 {
+    let allowance = u64::from(crate::mailbox::PEER_ALLOWANCE);
+    for n in 0..allowance {
         let mut notice = message(&target, n);
         notice.expires_at = NOW + 180;
         store.submit_message(&alice, notice, NOW).unwrap();
     }
     // A conversation cannot be silenced by notices nobody will ever read.
     store
-        .submit_message(&alice, message(&target, 64), NOW)
+        .submit_message(&alice, message(&target, allowance), NOW)
         .unwrap();
     let retired: i64 = rusqlite::Connection::open(&path)
         .unwrap()
