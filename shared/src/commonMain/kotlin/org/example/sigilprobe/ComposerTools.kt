@@ -52,8 +52,8 @@ internal fun AttachmentTools(hasAttachment:Boolean,hasStructured:Boolean,open:(S
     val tools=listOf("Emoji" to "mood","Photos" to "image","Camera" to "photo_camera","Files" to "draft","One-time location" to "my_location","Real-time location" to "sensors","Drop a pin" to "place","Create" to "add_notes","Format" to "text_format")
     BoxWithConstraints(Modifier.widthIn(max=660.dp).fillMaxWidth()) {
         // Each tile takes its column's width outright, so long labels wrap instead of running past it.
-        val cell=(maxWidth-16.dp-32.dp)/5
-        LazyVerticalGrid(GridCells.Fixed(5),modifier=Modifier.fillMaxSize(),contentPadding=PaddingValues(start=8.dp,end=8.dp,top=8.dp,bottom=8.dp),verticalArrangement=Arrangement.spacedBy(4.dp),horizontalArrangement=Arrangement.spacedBy(8.dp)) {
+        val cell=(maxWidth-12.dp-16.dp)/5
+        LazyVerticalGrid(GridCells.Fixed(5),modifier=Modifier.fillMaxSize(),contentPadding=PaddingValues(start=6.dp,end=6.dp,top=8.dp,bottom=8.dp),verticalArrangement=Arrangement.spacedBy(4.dp),horizontalArrangement=Arrangement.spacedBy(4.dp)) {
             items(tools,key={it.first}) {(name,icon)->
                 val allowed=when(name){"Photos","Files","Camera"->!hasStructured&&features.files;"One-time location","Real-time location","Drop a pin"->!hasStructured&&features.locations;"Format","Emoji"->true;else->!hasAttachment}
                 ComposerTool(name,icon,allowed,modifier=Modifier.width(cell)) {open(name)}

@@ -14,6 +14,8 @@ import androidx.compose.ui.semantics.*
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+
 
 internal fun callName(call: CallSummary) = call.name.ifEmpty { call.participants.filter { !it.own }.joinToString(", ") { it.name }.ifEmpty { "Call" } }
 internal fun callStatus(call: CallSummary) = when {
@@ -57,14 +59,19 @@ internal fun CallHistoryPage(state: MessengerState, command: Command, selectedCa
                     Avatar(person?.name ?: callName(selected), 80, person?.avatar.orEmpty())
                     Text(person?.name ?: callName(selected), style = MaterialTheme.typography.headlineSmall,
                         maxLines = 2, overflow = TextOverflow.Ellipsis, textAlign = TextAlign.Center)
-                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        CallDetailAction("call", when (selected.phase) { "active", "joining" -> "Return to call"; "ringing" -> "Answer"; else -> "Audio call" }, enabled(selected)) { activate(selected) }
+                    // The latest call, in a line: when it was, and how it went.
+                    related.firstOrNull()?.let { last ->
+                        Text(listOfNotNull(if (last.day.isNotBlank()) "Last call ${if (last.day in listOf("Today", "Yesterday")) last.day.lowercase() else last.day}" else null, last.time.takeIf { it.isNotBlank() }).joinToString(", "),
+                            style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, textAlign = TextAlign.Center)
+                    }
+                    Row(Modifier.fillMaxWidth().padding(top = 8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        CallDetailAction("call", when (selected.phase) { "active", "joining" -> "Return to call"; "ringing" -> "Answer"; else -> "Audio call" }, enabled(selected), primary = true) { activate(selected) }
                         if (features.videoCalls && selected.phase !in listOf("active", "joining", "ringing")) CallDetailAction("videocam", "Video call", enabled(selected)) { activate(selected, true) }
                         if (person != null) CallDetailAction("chat_bubble", "Message", !state.busy) { select(null); command("open", mapOf("peer" to person.id)) }
                     }
                 }
             }
-            callHistoryItems(related, state.call)
+            callRows(related, state, person, ::enabled, ::activate, select = null)
         }
     } else {
         val calls = state.calls.filter { !missedOnly || it.missed }.sortedByDescending { it.created }
@@ -76,67 +83,61 @@ internal fun CallHistoryPage(state: MessengerState, command: Command, selectedCa
                 }
             }
             if (calls.isEmpty()) item("empty") { Box(Modifier.fillMaxWidth().padding(32.dp), contentAlignment = Alignment.Center) { Text(if (missedOnly) "No missed calls." else "Your calls will appear here.", color = MaterialTheme.colorScheme.onSurfaceVariant) } }
-            var previousDay: String? = null
-            calls.forEach { call ->
-                if (call.day.isNotBlank() && call.day != previousDay) { item(key = "day:${call.id}") { CallDay(call.day, itemMotion()) }; previousDay = call.day }
-                item(key = call.id) {
-                    val person = callContact(call, state.chats)
-                    val appearance = LocalAppearance.current
-                    Row(itemMotion().fillMaxWidth().padding(horizontal = 12.dp, vertical = 2.dp), verticalAlignment = Alignment.CenterVertically) {
-                        Row(Modifier.weight(1f).clip(RoundedCornerShape(18.dp)).clickable(role = Role.Button) { select(call.id) }
-                            .heightIn(min = if (appearance.compact) 64.dp else 88.dp)
-                            .padding(horizontal = 12.dp, vertical = if (appearance.compact) 6.dp else 16.dp),
-                            verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                            Avatar(person?.name ?: callName(call), if (appearance.compact) 48 else 56, person?.avatar.orEmpty())
-                            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                                    Text(person?.name ?: callName(call), Modifier.weight(1f), style = MaterialTheme.typography.titleMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                                    if (call.time.isNotBlank()) Text(call.time, style = MaterialTheme.typography.labelSmall, maxLines = 1, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                                }
-                                CallMeta(call, state.call)
-                            }
-                        }
-                        SigilIconButton({ activate(call, call.video == true && features.videoCalls) }, enabled = enabled(call)) { Glyph(if (call.video == true) "videocam" else "call", 24, when (call.phase) { "active", "joining" -> "Return to call with ${callName(call)}"; "ringing" -> "Answer ${callName(call)}"; else -> "Call ${callName(call)}" }) }
+            callRows(calls, state, null, ::enabled, ::activate, select)
+        }
+    }
+}
+
+// The register: day labels in small capitals, then a row per call with the person, one quiet line of what happened, the time, and a key to call back.
+private fun LazyListScope.callRows(calls: List<CallSummary>, state: MessengerState, person: ChatSummary?, enabled: (CallSummary) -> Boolean, activate: (CallSummary, Boolean) -> Unit, select: ((String) -> Unit)?) {
+    var previousDay: String? = null
+    calls.forEach { call ->
+        if (call.day.isNotBlank() && call.day != previousDay) { item(key = "day:${call.id}") { CallDay(call.day, itemMotion()) }; previousDay = call.day }
+        item(key = call.id) {
+            val who = person ?: callContact(call, state.chats)
+            val features = LocalClientFeatures.current
+            Row(itemMotion().fillMaxWidth().padding(horizontal = 12.dp, vertical = 2.dp), verticalAlignment = Alignment.CenterVertically) {
+                Row(Modifier.weight(1f).clip(RoundedCornerShape(18.dp)).then(if (select != null) Modifier.clickable(role = Role.Button) { select(call.id) } else Modifier)
+                    .heightIn(min = 64.dp).padding(horizontal = 12.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                    Avatar(who?.name ?: callName(call), 48, who?.avatar.orEmpty())
+                    Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                        Text(who?.name ?: callName(call), style = MaterialTheme.typography.titleMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        CallMeta(call, state.call)
                     }
+                    if (call.time.isNotBlank()) Text(call.time, style = MaterialTheme.typography.labelSmall.copy(fontFeatureSettings = "tnum"), maxLines = 1, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
+                CallKey(if (call.video == true) "videocam" else "call", when (call.phase) { "active", "joining" -> "Return to call with ${callName(call)}"; "ringing" -> "Answer ${callName(call)}"; else -> "Call ${callName(call)}" }, enabled(call)) { activate(call, call.video == true && features.videoCalls) }
             }
         }
     }
 }
 
-@Composable private fun CallDay(day: String, modifier: Modifier = Modifier) { Text(day, modifier.padding(start = 24.dp, end = 24.dp, top = 20.dp, bottom = 8.dp), style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant) }
+@Composable private fun CallDay(day: String, modifier: Modifier = Modifier) {
+    Text(day.uppercase(), modifier.padding(start = 24.dp, end = 24.dp, top = 20.dp, bottom = 6.dp), style = MaterialTheme.typography.labelSmall.copy(letterSpacing = 1.4.sp), color = MaterialTheme.colorScheme.onSurfaceVariant)
+}
+// What happened, in the quiet ink; a missed call reads by its word and glyph, never by a warning colour.
 @Composable private fun CallMeta(call: CallSummary, active: ActiveCall?) {
-    val ink = if (call.missed) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant
-    CompositionLocalProvider(LocalContentColor provides ink) {
+    CompositionLocalProvider(LocalContentColor provides MaterialTheme.colorScheme.onSurfaceVariant) {
         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(5.dp)) {
-            Glyph(callDirection(call), 17)
-            Text(callDescription(call, active), style = MaterialTheme.typography.bodySmall)
+            Glyph(callDirection(call), 16)
+            Text(callDescription(call, active), style = MaterialTheme.typography.bodySmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
         }
     }
 }
-@Composable private fun RowScope.CallDetailAction(icon: String, label: String, enabled: Boolean, click: () -> Unit) {
-    val ink = MaterialTheme.colorScheme.onSurface.let { if (enabled) it else it.copy(alpha = .38f) }
+// The call-back key: a squircle tile, like the other tool keys.
+@Composable private fun CallKey(icon: String, label: String, enabled: Boolean, click: () -> Unit) {
+    val ink = MaterialTheme.colorScheme.onSurfaceVariant.let { if (enabled) it else it.copy(alpha = .38f) }
+    Surface(onClick = click, enabled = enabled, modifier = Modifier.size(44.dp).semantics { contentDescription = label }, shape = RoundedCornerShape(14.dp), color = MaterialTheme.colorScheme.surfaceVariant, contentColor = ink) {
+        Box(contentAlignment = Alignment.Center) { Glyph(icon, 22) }
+    }
+}
+@Composable private fun RowScope.CallDetailAction(icon: String, label: String, enabled: Boolean, primary: Boolean = false, click: () -> Unit) {
+    val scheme = MaterialTheme.colorScheme
+    val ink = (if (primary) scheme.onPrimary else scheme.onSurface).let { if (enabled) it else it.copy(alpha = .38f) }
     Column(Modifier.weight(1f).padding(horizontal = 4.dp).clip(RoundedCornerShape(22.dp)).clickable(enabled = enabled, role = Role.Button, onClick = click).semantics { contentDescription = label },
         horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(8.dp)) {
         Surface(Modifier.widthIn(max = 64.dp).fillMaxWidth().aspectRatio(1f), shape = RoundedCornerShape(20.dp),
-            color = MaterialTheme.colorScheme.surfaceVariant, contentColor = ink) { Box(contentAlignment = Alignment.Center) { Glyph(icon, 30) } }
-        Text(label, style = MaterialTheme.typography.labelMedium, color = ink, textAlign = TextAlign.Center, maxLines = 2, overflow = TextOverflow.Ellipsis)
-    }
-}
-private fun LazyListScope.callHistoryItems(calls: List<CallSummary>, active: ActiveCall?) {
-    var previousDay: String? = null
-    calls.forEach { call ->
-        if (call.day.isNotBlank() && call.day != previousDay) { item(key = "day:${call.id}") { CallDay(call.day, itemMotion()) }; previousDay = call.day }
-        item(key = call.id) {
-            Column(itemMotion().fillMaxWidth().padding(horizontal = 24.dp, vertical = 14.dp), verticalArrangement = Arrangement.spacedBy(7.dp)) {
-                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                    Glyph(if (call.video == true) "videocam" else "call", 24)
-                    Text(when (call.video) { true -> "Video call"; false -> "Audio call"; null -> "Call" }, style = MaterialTheme.typography.titleMedium)
-                    Spacer(Modifier.weight(1f))
-                    if (call.time.isNotBlank()) Text(call.time, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                }
-                CallMeta(call, active)
-            }
-        }
+            color = if (primary && enabled) scheme.primary else scheme.surfaceVariant, contentColor = ink) { Box(contentAlignment = Alignment.Center) { Glyph(icon, 30) } }
+        Text(label, style = MaterialTheme.typography.labelMedium, color = scheme.onSurface.let { if (enabled) it else it.copy(alpha = .38f) }, textAlign = TextAlign.Center, maxLines = 2, overflow = TextOverflow.Ellipsis)
     }
 }
