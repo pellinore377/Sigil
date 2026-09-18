@@ -34,6 +34,7 @@ internal fun GifAttachment(message: ChatMessage) {
     val lifecycle = LocalLifecycleOwner.current.lifecycle
     val appearance = LocalAppearance.current
     val reduced = LocalMotion.current.reduced
+    val cache = LocalImageCache.current
     var visible by remember { mutableStateOf(lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED)) }
     var imageWidth by rememberSaveable(message.peer,message.author,message.id) { mutableIntStateOf(0) }
     var imageHeight by rememberSaveable(message.peer,message.author,message.id) { mutableIntStateOf(0) }
@@ -42,7 +43,7 @@ internal fun GifAttachment(message: ChatMessage) {
     var retry by remember { mutableIntStateOf(0) }
     var expanded by remember { mutableStateOf(false) }
     var poster by remember(message.id) { mutableStateOf<android.graphics.Bitmap?>(null) }
-    val playing = visible && !reduced && (expanded || appearance.autoplayGifs)
+    val playing = visible && org.sigil.LocalItemVisible.current && !reduced && (expanded || appearance.autoplayGifs)
     DisposableEffect(lifecycle) {
         val observer = LifecycleEventObserver { _, _ -> visible = lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED) }
         lifecycle.addObserver(observer)
@@ -53,6 +54,8 @@ internal fun GifAttachment(message: ChatMessage) {
         try {
             failed = false
             while (!withContext(Dispatchers.IO) { prepare(context, message) }) delay(1000)
+            // The frame takes its shape from the file header first, so the animation lands in a space already its size.
+            if (imageWidth <= 0 || imageHeight <= 0) attachmentShape(context, message, cache)?.let { (w, h) -> imageWidth = w; imageHeight = h }
             drawable = withContext(Dispatchers.IO) {
                 bytes = mediaBytes(context, message, 16 * 1024 * 1024)
                 ImageDecoder.decodeDrawable(ImageDecoder.createSource(ByteBuffer.wrap(bytes!!))) { decoder, info, _ ->

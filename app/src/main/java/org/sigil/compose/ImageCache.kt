@@ -14,12 +14,22 @@ import org.sigil.MessengerState
 
 internal class ImageCache(private val budget: Int = 24 * 1024 * 1024) {
     private val entries=LinkedHashMap<String,Bitmap>(16,.75f,true)
+    private val shapes=LinkedHashMap<String,Pair<Int,Int>>(16,.75f,true)
     private val loading=Mutex()
     private var bytes=0
     private var generation=0L
     private var active=true
     @Synchronized private fun cached(key:String)=entries[key]
-    @Synchronized fun clear(){entries.clear();bytes=0;generation++}
+    @Synchronized fun clear(){entries.clear();shapes.clear();bytes=0;generation++}
+    /// A picture already decoded knows its own size; no header has to be read for it.
+    @Synchronized fun retained(key:String)=if(active)entries[key] else null
+    /// Picture dimensions outlive the decoded bitmap so a frame is the right size before its content arrives.
+    @Synchronized fun shape(key:String)=if(active)shapes[key] else null
+    @Synchronized fun rememberShape(key:String,width:Int,height:Int) {
+        if(!active || width<=0 || height<=0)return
+        shapes[key]=width to height
+        while(shapes.size>1024)shapes.remove(shapes.keys.first())
+    }
     @Synchronized fun setActive(value:Boolean){active=value;if(!value)clear()}
     @Synchronized internal fun retainedBytes()=bytes
     @Synchronized internal fun retainedMaterials()=entries.keys.count {it.startsWith("material:")}

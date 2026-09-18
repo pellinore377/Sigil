@@ -96,7 +96,7 @@ private fun InlineAudio(message: ChatMessage) {
     }
     fun seek(value: Long) { position = value; seeking = true; player.seekTo(value, MediaPlayer.SEEK_CLOSEST) }
     if (failed) Text("Couldn't play this audio", style = MaterialTheme.typography.bodySmall)
-    else if (!ready) LinearProgressIndicator(Modifier.fillMaxWidth())
+    else if (!ready) Box(Modifier.fillMaxWidth().height(inlineHeight), contentAlignment = Alignment.Center) { LinearProgressIndicator(Modifier.fillMaxWidth()) }
     else if (!expanded) AudioPlayback(position, duration, playing, levels, modifier = Modifier.onSizeChanged { inlineHeight = with(density) { it.height.toDp() } }, play = ::play, seek = ::seek, expand = { expanded = true })
     else Spacer(Modifier.fillMaxWidth().height(inlineHeight))
     if (expanded) androidx.compose.ui.window.Dialog({ expanded = false }) {

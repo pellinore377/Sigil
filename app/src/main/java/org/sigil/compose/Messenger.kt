@@ -71,7 +71,7 @@ class Messenger(application: Application) : AndroidViewModel(application) {
         }
         scope.launch { serialized(true) {
             val result = execute("contact_qr", fields + context)
-            result.optional("open")?.let { state = state.copy(selected = it); pages = 1 }
+            result.optional("open")?.let { state = state.copy(selected = it); resetPreload() }
             contactQr = result.takeUnless { it.getString("stage") in listOf("done", "none") }
             context.forEach { (k,v) -> if (v != null) contactQr?.put(k,v) }
             refresh()
@@ -147,7 +147,9 @@ class Messenger(application: Application) : AndroidViewModel(application) {
     private var nextAccess = 0L
     private var published = false
     private var syncIssue: String? = null
-    private var pages = 1
+    private var viewportEnd = 0
+    private var timelineWant = 0
+    private var timelineReloadAt = Int.MAX_VALUE
     private var post: Pair<Map<String, Any?>, String>? = null
     private var groupCreate: Pair<Map<String, Any?>, String>? = null
     private var discoveryGeneration = 0L
@@ -160,6 +162,7 @@ class Messenger(application: Application) : AndroidViewModel(application) {
     private val pendingUiSettings = mutableMapOf<Pair<String?, String>, Any?>()
     private var timelineFilter: Map<String, Any?> = mapOf("category" to "Timeline")
     private var timelineJob: Job? = null
+    private var viewportChase = false
     var authorizationUrl by mutableStateOf<String?>(null)
         private set
 
@@ -305,7 +308,7 @@ class Messenger(application: Application) : AndroidViewModel(application) {
                 scope.launch { serialized(true) {
                     if (fields["leave"] == true) execute("leave_group", mapOf("peer" to fields["peer"]))
                     execute("clear_conversation", mapOf("peer" to fields["peer"]))
-                    if (state.selected == fields["peer"]) { state = state.copy(selected = null, messages = emptyList()); anchor = null; pages = 1 }
+                    if (state.selected == fields["peer"]) { state = state.copy(selected = null, messages = emptyList()); anchor = null; resetPreload() }
                     refresh()
                     NativeSync.enqueue(getApplication())
                 } }
@@ -331,24 +334,27 @@ class Messenger(application: Application) : AndroidViewModel(application) {
                 return
             }
             "dismiss" -> { state = state.copy(issue = null); return }
-            "close" -> { timelineJob?.cancel(); state = state.copy(selected = null, messages = emptyList(), historical = false, timelineLoaded=false); anchor = null; pages = 1; return }
+            "close" -> { timelineJob?.cancel(); state = state.copy(selected = null, messages = emptyList(), historical = false, timelineLoaded=false); anchor = null; resetPreload(); return }
             "open" -> {
                 anchor = (fields["author"] as? String)?.let { author -> (fields["message"] as? String)?.let { author to it } }
                 val target = (fields["thread_author"] as? String)?.let { author -> (fields["thread_message"] as? String)?.let { ThreadTarget(author, it) } }
                 timelineFilter = mapOf("category" to (fields["category"] as? String ?: "Timeline")) + if (target == null) emptyMap() else mapOf("thread_author" to target.author, "thread_message" to target.id)
-                state = state.copy(selected = fields["peer"] as String, messages = emptyList(), historical = anchor != null, threadTarget = target, timelineLoaded=false); pages = 1
+                state = state.copy(selected = fields["peer"] as String, messages = emptyList(), historical = anchor != null, threadTarget = target, timelineLoaded=false); resetPreload()
             }
             "timeline_filter" -> {
                 val filter = fields.filter { (key, value) -> key != "peer" && value != null }
                 if (timelineFilter == filter) return
-                timelineFilter = filter; pages = 1; state = state.copy(messages = emptyList(),timelineLoaded=false)
+                timelineFilter = filter; resetPreload(); state = state.copy(messages = emptyList(),timelineLoaded=false)
             }
-            "latest" -> { anchor = null; state = state.copy(historical = false,timelineLoaded=false); pages = 1 }
-            "older" -> pages++
+            // Clearing history here as every other reset does: a viewport reported against it would re-deepen the target.
+            "latest" -> { anchor = null; state = state.copy(messages = emptyList(), historical = false,timelineLoaded=false); resetPreload() }
+            "older" -> viewportEnd = maxOf(viewportEnd, timelineWant)
+            // The list only reports where it is looking; the core decides when that needs more history.
+            "viewport" -> { reportViewport(fields["peer"] as? String, (fields["end"] as? Number)?.toInt() ?: 0); return }
             "read" -> if (!foreground) return
         }
         if (name in listOf("open", "older", "latest", "timeline_filter")) {
-            loadTimeline(name == "open")
+            loadTimeline()
             if (name != "open") return
         }
         val setting = (fields["value"] as? Map<*, *>)?.get("UiSetting") as? Map<*, *>
@@ -380,7 +386,7 @@ class Messenger(application: Application) : AndroidViewModel(application) {
                     accountAccess(result)
                     result.optJSONObject("forward_file")?.let { files.forward(fields, it) }
                     if (name == "oidc_account") nextAccess = 0
-                    result.optional("open")?.let { state = state.copy(selected = it); groupCreate = null; pages = 1 }
+                    result.optional("open")?.let { state = state.copy(selected = it); groupCreate = null; resetPreload() }
                     if (name == "edit_source" && state.selected == fields["peer"]) state = state.copy(editDraft = EditDraft(fields["peer"] as String, fields["author"] as String, fields["message"] as String, result.getString("edit_source")))
                     if (name in listOf("profile", "set_profile")) state = state.copy(profileName = result.getString("display_name"), profileRevision = result.getLong("revision"))
                     if (name in listOf("photo_publish", "photo_retry", "photo_cancel")) photoRevision++
@@ -567,31 +573,50 @@ class Messenger(application: Application) : AndroidViewModel(application) {
         state = state.copy(profileAvatar = value.optString("profile_avatar"), photoPending = value.optBoolean("photo_pending"), phase = phase, address = value.getString("address"), device = value.getString("device"), fingerprint = value.getString("fingerprint"), chats = chats, collectionsEnabled = value.optBoolean("collections_enabled"), collections = value.optJSONArray("collections")?.objects()?.map { CollectionItem(it.getString("id"), it.getString("name"), it.optString("icon", "folder")) }.orEmpty(), ui = pendingUi(null, value.optJSONObject("ui")?.stringMap().orEmpty()))
         if (timelineJob?.isActive != true) loadTimeline()
     }
-    private fun loadTimeline(firstPage: Boolean = false) {
+    private fun resetPreload() { viewportEnd = 0; timelineWant = 0; timelineReloadAt = Int.MAX_VALUE; viewportChase = false }
+    private fun reportViewport(peer: String?, end: Int) {
+        if (peer != null && peer != state.selected) return
+        if (end <= viewportEnd) return
+        viewportEnd = end
+        if (!state.more || end < timelineReloadAt) return
+        // A running load reads the viewport again on every page; restarting it would throw that page away.
+        if (timelineJob?.isActive == true) { viewportChase = true; return }
+        loadTimeline()
+    }
+    private fun loadTimeline() {
         val peer = state.selected ?: return
-        val filter = timelineFilter; val initialAnchor = anchor; val wanted = pages * 64
+        val filter = timelineFilter; val initialAnchor = anchor
+        viewportChase = false
         timelineJob?.cancel()
         timelineJob = scope.launch {
-            try { refreshTimeline(peer, filter, initialAnchor, wanted, firstPage) }
+            try { refreshTimeline(peer, filter, initialAnchor) }
             catch (cancelled: CancellationException) { throw cancelled }
             catch (error: Exception) { if (state.selected == peer) state = state.copy(issue = if (error is NativeFailure) error.message else "Cannot read this conversation from device storage.") }
         }
     }
-    private suspend fun refreshTimeline(peer: String, filter: Map<String, Any?>, initialAnchor: Pair<String, String>?, wanted: Int, firstPage: Boolean) {
+    private suspend fun refreshTimeline(peer: String, filter: Map<String, Any?>, initialAnchor: Pair<String, String>?) {
         if (NativeSignOut.pending(getApplication())) return
         val started = android.os.SystemClock.elapsedRealtime()
-        try { refreshTimelinePages(peer, filter, initialAnchor, wanted, firstPage) }
-        finally { android.util.Log.i("SigilTiming", "timeline ${android.os.SystemClock.elapsedRealtime() - started}ms") }
+        // One more scan only if the viewport went deeper than the last page could see.
+        try { do { viewportChase = false; refreshTimelinePages(peer, filter, initialAnchor) } while (viewportChase && state.selected == peer && state.more && viewportEnd >= timelineReloadAt) }
+        finally { android.util.Log.i("SigilTiming", "timeline ${android.os.SystemClock.elapsedRealtime() - started}ms held=${state.messages.size} want=$timelineWant visible=$viewportEnd") }
     }
-    private suspend fun refreshTimelinePages(peer: String, filter: Map<String, Any?>, initialAnchor: Pair<String, String>?, wanted: Int, firstPage: Boolean) {
+    private suspend fun refreshTimelinePages(peer: String, filter: Map<String, Any?>, initialAnchor: Pair<String, String>?) {
         if (peer.startsWith("history:") && state.chats.none { it.id == peer }) state = state.copy(chats = state.chats + ChatSummary(peer, "", "", "", false, emptyList(), displayName = "Saved conversation", archived = true))
         if (peer == "self" && state.chats.none { it.id == "self" }) state = state.copy(chats = state.chats + ChatSummary("self", state.address, "", "", true, emptyList(), displayName = "Note to Self"))
         val messages = mutableListOf<ChatMessage>()
+        // Publishing fewer messages than are already on screen would drop the reader's place.
+        val onScreen = if (state.selected == peer) state.messages.size else 0
         var before: Long? = null
         do {
-            val timeline = execute("timeline", filter + mapOf("peer" to peer, "before" to before, "author" to if (before == null) initialAnchor?.first else null, "message" to if (before == null) initialAnchor?.second else null))
+            val timeline = execute("timeline", filter + mapOf("peer" to peer, "before" to before, "author" to if (before == null) initialAnchor?.first else null, "message" to if (before == null) initialAnchor?.second else null, "visible_end" to viewportEnd))
             if (state.selected != peer || timelineFilter != filter || anchor != initialAnchor) return
-            if (before == null) state = state.copy(typing = timeline.optJSONArray("typing")?.strings().orEmpty())
+            if (before == null) {
+                state = state.copy(typing = timeline.optJSONArray("typing")?.strings().orEmpty())
+            }
+            // Read on every page, so a viewport that deepens mid-load extends this scan instead of restarting it.
+            timelineWant = timeline.getInt("want"); timelineReloadAt = timeline.getInt("reload_at")
+            val buffer = TimelineBufferDepth(timeline.getInt("cache_ahead") / 10f, timeline.getInt("cache_behind") / 10f)
             state = state.copy(people = timeline.getJSONObject("people").stringMap())
             messages += timeline.getJSONArray("messages").objects().map { message ->
                 ChatMessage(message.getString("id"), message.getString("author"), message.getString("text"), message.getBoolean("mine"), clock(message.getLong("timestamp")),
@@ -600,18 +625,10 @@ class Messenger(application: Application) : AndroidViewModel(application) {
                     message.optJSONArray("parts")?.objects()?.map { part -> MessagePart(part.optString("id"), part.getString("kind"), part.getString("text"), part.optJSONArray("items")?.objects()?.map { item -> CardItem(item.getString("id"), item.getString("text"), item.getBoolean("checked"), item.getBoolean("enabled"), if (item.isNull("count")) null else item.getLong("count"), item.richText()) }.orEmpty(), part.optBoolean("multiple"), part.optBoolean("closed"), if (part.isNull("voters")) null else part.getLong("voters"), if (part.has("at")) separator(part.getLong("at")) else "", part.optInt("latitude_e6") / 1_000_000.0, part.optInt("longitude_e6") / 1_000_000.0, part.richText(), part.optString("location_mode", "pin"), part.optLong("sampled_at"), if (part.isNull("accuracy_cm")) null else part.getLong("accuracy_cm"), if (part.isNull("until")) null else part.getLong("until"), part.optBoolean("stopped"), part.optBoolean("can_stop"), part.tableContent(), part.recipeContent(), part.chartContent(), part.diagramContent(), part.utilityContent(), part.serviceContent(), part.contactContent(),part.optLong("at"),part.optLong("started_at")) }.orEmpty(), message.optional("thread_preview"))
             }
             before = if (timeline.isNull("next")) null else timeline.getLong("next")
-            if (firstPage && (messages.isNotEmpty() || before == null)) {
-                state = state.copy(selected = peer, messages = messages.toList(), more = before != null,timelineLoaded=true)
-                return
-            }
-            if (before == null) {
-                if (state.selected == peer) state = state.copy(messages = messages, more = false,timelineLoaded=true)
-                return
-            }
-            if (messages.isNotEmpty()) state = state.copy(messages = messages.toList(), more = true,timelineLoaded=true)
+            if (timelinePublishes(messages.size, onScreen, timelineWant, before == null)) state = state.copy(selected = peer, messages = messages.toList(), more = before != null,timelineLoaded=true,timelineBuffer=buffer)
+            if (before == null) return
             yield()
-        } while (messages.size < wanted)
-        if (state.selected == peer) state = state.copy(messages = messages, more = true,timelineLoaded=true)
+        } while (messages.size < timelineWant)
     }
     private fun storage(result: JSONObject) {
         val recovery = result.getJSONObject("recovery")

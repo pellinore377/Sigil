@@ -110,7 +110,11 @@ private val stamped=setOf("post","place","group_create","react","pin","read","ma
     var searchCategory by remember {mutableStateOf("")}
     var searchGeneration by remember {mutableStateOf(0)}
     var searchJob by remember {mutableStateOf<Job?>(null)}
-    var pages by remember {mutableStateOf(1)}
+    var viewportEnd by remember {mutableStateOf(0)}
+    var timelineWant by remember {mutableStateOf(0)}
+    var timelineReloadAt by remember {mutableStateOf(Int.MAX_VALUE)}
+    var timelineJob by remember {mutableStateOf<Job?>(null)}
+    var viewportChase by remember {mutableStateOf(false)}
     suspend fun native(raw:String):JsonObject {
         val response=Json.parseToJsonElement(browserCommand(raw).awaitBrowser<JsString>().toString()).jsonObject
         check(response.bool("ok")) {response.string("error")}
@@ -161,16 +165,19 @@ private val stamped=setOf("post","place","group_create","react","pin","read","ma
         var before:Long?=null
         val messages=mutableListOf<ChatMessage>()
         var value:JsonObject
-        var remaining=pages
+        // Publishing fewer messages than are already on screen would drop the reader's place.
+        val onScreen=if(state.selected==peer)state.messages.size else 0
+        val chats=if(peer=="self" && state.chats.none {it.id==peer})state.chats+ChatSummary("self",state.address,"","",true,emptyList(),displayName="Note to Self") else state.chats
         do {
-            value=execute("timeline",requestFilter+mapOf("peer" to peer,"before" to before))
+            value=execute("timeline",requestFilter+mapOf("peer" to peer,"before" to before,"visible_end" to viewportEnd))
             if(state.selected!=peer || filter!=requestFilter)return
+            // Read on every page, so a viewport that deepens mid-load extends this scan instead of restarting it.
+            timelineWant=value.long("want").toInt();timelineReloadAt=value.long("reload_at").toInt()
+            val buffer=TimelineBufferDepth(value.long("cache_ahead")/10f,value.long("cache_behind")/10f)
             messages+=StateDecoder.messages(value,peer,::clock,::calendar)
             before=value["next"]?.jsonPrimitive?.longOrNull
-            remaining--
-        }while(before!=null && remaining>0)
-        val chats=if(peer=="self" && state.chats.none {it.id==peer})state.chats+ChatSummary("self",state.address,"","",true,emptyList(),displayName="Note to Self") else state.chats
-        state=state.copy(chats=chats,messages=messages,more=before!=null,timelineLoaded=true,typing=value.strings("typing"),people=value.settings("people"))
+            if(timelinePublishes(messages.size,onScreen,timelineWant,before==null))state=state.copy(chats=chats,messages=messages.toList(),more=before!=null,timelineLoaded=true,typing=value.strings("typing"),people=value.settings("people"),timelineBuffer=buffer)
+        }while(before!=null && messages.size<timelineWant)
     }
     fun storage(value:JsonObject) {
         val r=value["recovery"]!!.jsonObject
@@ -468,10 +475,26 @@ recoverAccount=true;return@command}
             "search"->{search(fields["query"] as String, fields["category"] as? String ?: "");return@command}
             "search_more"->{search(state.searchQuery, searchCategory, true);return@command}
             "close"->{state=state.copy(selected=null,messages=emptyList(),timelineLoaded=false);return@command}
-            "open"->{state=state.copy(selected=fields["peer"] as String,messages=emptyList(),timelineLoaded=false);pages=1;filter=mapOf("category" to (fields["category"] as? String ?: "Timeline"))+fields.filterKeys{it in setOf("author","message","thread_author","thread_message")};state=state.copy(threadTarget=(fields["thread_author"] as? String)?.let {a->(fields["thread_message"] as? String)?.let{ThreadTarget(a,it)}})}
-            "timeline_filter"->{val next=fields.filter { (key,value)->key!="peer" && value!=null };if(filter==next)return@command;filter=next;pages=1}
-            "older"->{if(pages<Int.MAX_VALUE)pages++}
-            "latest"->{pages=1}
+            "open"->{state=state.copy(selected=fields["peer"] as String,messages=emptyList(),timelineLoaded=false);viewportEnd=0;timelineWant=0;timelineReloadAt=Int.MAX_VALUE;viewportChase=false;filter=mapOf("category" to (fields["category"] as? String ?: "Timeline"))+fields.filterKeys{it in setOf("author","message","thread_author","thread_message")};state=state.copy(threadTarget=(fields["thread_author"] as? String)?.let {a->(fields["thread_message"] as? String)?.let{ThreadTarget(a,it)}})}
+            "timeline_filter"->{val next=fields.filter { (key,value)->key!="peer" && value!=null };if(filter==next)return@command;filter=next;viewportEnd=0;timelineWant=0;timelineReloadAt=Int.MAX_VALUE;viewportChase=false}
+            "older"->{viewportEnd=maxOf(viewportEnd,timelineWant)}
+            // Clearing history here as every other reset does: a viewport reported against it would re-deepen the target.
+            "latest"->{state=state.copy(messages=emptyList(),timelineLoaded=false);viewportEnd=0;timelineWant=0;timelineReloadAt=Int.MAX_VALUE;viewportChase=false}
+            // The list only reports where it is looking; the core decides when that needs more history.
+            "viewport"->{
+                val end=(fields["end"] as? Int) ?: 0
+                if(fields["peer"]!=null && fields["peer"]!=state.selected)return@command
+                if(end<=viewportEnd)return@command
+                viewportEnd=end
+                if(!state.more || end<timelineReloadAt)return@command
+                // One scan at a time: a running load reads the viewport again on every page.
+                if(timelineJob?.isActive==true) {viewportChase=true;return@command}
+                viewportChase=false
+                timelineJob=scope.launch {mutex.withLock {runCatching {
+                    do {viewportChase=false;timeline()} while(viewportChase && state.more && viewportEnd>=timelineReloadAt)
+                }}}
+                return@command
+            }
         }
         if(!ready)return@command
         if(name=="post" && sending)return@command
@@ -500,7 +523,7 @@ recoverAccount=true;return@command}
 "contact_qr"->{
     val context=mapOf("peer" to (fields["peer"]?:contactQr?.optional("peer")),"review" to (fields["review"]?:contactQr?.optional("review"))).filterValues{it!=null}
     if(fields["action"]=="scan" && fields["qr"]==null)contactQr=(json(context+mapOf("stage" to "scan")) as JsonObject)
-    else {val value=execute(name,context+fields);value.optional("open")?.let{state=state.copy(selected=it);pages=1};contactQr=value.takeUnless{it.string("stage") in listOf("done","none")}?.let{JsonObject(it+(json(context) as JsonObject))};refresh()}
+    else {val value=execute(name,context+fields);value.optional("open")?.let{state=state.copy(selected=it);viewportEnd=0;timelineWant=0;timelineReloadAt=Int.MAX_VALUE};contactQr=value.takeUnless{it.string("stage") in listOf("done","none")}?.let{JsonObject(it+(json(context) as JsonObject))};refresh()}
 }
                     "discover"->{
                         val address=fields["server"] as String
@@ -527,7 +550,7 @@ recoverAccount=true;return@command}
                         if(name in setOf("account_access","acknowledge_access","oidc_account","callback")){account(value);accessNext=0}
                         value.optional("authorization_url")
 ?.let {authorization=it}
-                        value.optional("open")?.let {state=state.copy(selected=it);pages=1}
+                        value.optional("open")?.let {state=state.copy(selected=it);viewportEnd=0;timelineWant=0;timelineReloadAt=Int.MAX_VALUE}
                         if(name in setOf("post","edit","file_send")) {state=state.copy(sent=state.sent+1,sentText=(fields["text"]?:fields["caption"]) as? String,sentMessage=if(name=="post")Json.parseToJsonElement(raw).jsonObject.string("request")else null);post=null}
                         if(name in setOf("photo_publish","photo_retry","photo_cancel"))photoRevision++
                         if(name in setOf("profile","set_profile"))state=state.copy(profileName=value.string("display_name"),profileRevision=value.long("revision"))

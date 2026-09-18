@@ -81,7 +81,9 @@ internal fun ConversationPage(chat: ChatSummary, state: MessengerState, draft: T
     var submitted by remember { mutableStateOf<Triple<String, String, Long>?>(null) }
     var localQuery by remember(page) { mutableStateOf("") }
     val scheme = MaterialTheme.colorScheme
-    val list = rememberLazyListState()
+    // The window is asked on every measure, so the core's depth applies as soon as it answers.
+    val buffer = rememberUpdatedState(state.timelineBuffer)
+    val list = rememberLazyListState(remember { TimelineCacheWindow { buffer.value } })
     val clipboard = LocalClipboardManager.current
     val keyboard = LocalSoftwareKeyboardController.current
     val focus = LocalFocusManager.current
@@ -100,9 +102,35 @@ internal fun ConversationPage(chat: ChatSummary, state: MessengerState, draft: T
     }
     val threadsOverview = page == "Threads" && thread == null
     val messages = if (threadsOverview) state.messages.filter { it.threadAuthor != null && it.threadMessage != null }.distinctBy { it.threadAuthor to it.threadMessage } else state.messages
+    val keys=remember(messages) {messages.map {it.author+it.id}}
+    val arrivals=remember(chat.id,page,thread,state.historical) {TimelineArrivals()}
+    arrivals.update(keys,state.timelineLoaded,!state.historical && page.isEmpty())
+    // Returning to the latest messages drops the place the reader held in history along with the history itself.
+    val anchor=remember(chat.id,page,thread,state.historical) {TimelineAnchor()}
+    // Watched outside composition: reading the layout while composing would rebuild the page on every scroll step.
+    LaunchedEffect(list,chat.id,page) {
+        // The key and the offset must come from the same item: content padding puts others in view before it.
+        snapshotFlow {list.layoutInfo}.collect {info->
+            anchor.record(info.visibleItemsInfo.firstOrNull {it.index==list.firstVisibleItemIndex}?.key,list.firstVisibleItemScrollOffset)
+        }
+    }
+    // The core counts messages; the list's deepest index also counts the items ahead of them. Only a new depth
+    // is worth a command, but a list that shrank is different history, so the mark it was taken against goes.
+    LaunchedEffect(list,chat.id,page) {
+        var reported=-1
+        snapshotFlow {((list.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: 0)-TimelineLead).coerceAtLeast(0) to list.layoutInfo.totalItemsCount-TimelineLead}
+            .collect {(end,held)->
+                if(held<=reported)reported=-1
+                if(end>reported) {reported=end;command("viewport",mapOf("peer" to chat.id,"end" to end))}
+            }
+    }
+    LaunchedEffect(keys) {
+        if(list.isScrollInProgress)return@LaunchedEffect
+        anchor.settle(keys,TimelineLead)?.let {(index,offset)->list.scrollToItem(index,offset)}
+    }
     val textMotion=remember(chat.id,page,thread,state.historical) {MotionLedger()}
     val animated=remember(messages) {messages.associate {it.author+it.id to it.messageMotionDuration()}.filterValues {it>0}}
-    textMotion.update(messages.map {it.author+it.id},state.timelineLoaded,!state.historical && page.isEmpty(),animated.keys)
+    textMotion.update(keys,state.timelineLoaded,!state.historical && page.isEmpty(),animated.keys)
     val visibleKeys by remember {derivedStateOf {list.layoutInfo.visibleItemsInfo.map {it.key}.toSet()}}
     val materialTimeline=remember(chat.id,page,thread) {MaterialTimeline()}
     val previewLaunch = remember(chat.id, page, thread) { PreviewLaunch() }
@@ -183,13 +211,16 @@ internal fun ConversationPage(chat: ChatSummary, state: MessengerState, draft: T
                     val followed = newer != null && newer.author == message.author && !showSeparator(newer, message)
                     var bounds by remember { mutableStateOf(Rect.Zero) }
                     val materialKey=message.author+message.id
+                    // Derived per item, so a scroll invalidates only the rows whose own visibility changed,
+                    // not every row the buffer holds composed.
+                    val onScreen by remember(materialKey) {derivedStateOf {materialKey in visibleKeys}}
                     DisposableEffect(materialKey) {onDispose {materialTimeline.bubbles.remove(materialKey)}}
                     var drag by remember { mutableFloatStateOf(0f) }
                     val offset by animateFloatAsState(drag, motionPolicy.tween(MotionFeedback), label = "Reply swipe")
                     val density = LocalDensity.current
                     val haptic = LocalHapticFeedback.current
                     val threshold = with(density) { 52.dp.toPx() }
-                    Column(itemMotion().fillMaxWidth().padding(top = if (grouped) 3.dp else 12.dp)) {
+                    Column(itemMotion().then(arrivalMotion(arrivals,materialKey)).fillMaxWidth().padding(top = if (grouped) 3.dp else 12.dp)) {
                         if (showSeparator(message, older)) Text(message.separator.ifEmpty { message.time }, Modifier.align(Alignment.CenterHorizontally).padding(top = 6.dp, bottom = 14.dp), style = MaterialTheme.typography.labelMedium, color = scheme.onSurfaceVariant)
                         if (chat.group && !message.mine && !grouped) Row(Modifier.padding(bottom = 4.dp), verticalAlignment = Alignment.CenterVertically) { val name = state.people[message.author] ?: "Former member"; Avatar(name, 20, message.author); Text(name, Modifier.padding(start = 6.dp), style = MaterialTheme.typography.bodySmall, color = scheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis) }
                         Row(Modifier.fillMaxWidth().combinedClickable(interactionSource = remember { androidx.compose.foundation.interaction.MutableInteractionSource() }, indication = null, onClick = { details = message.author to message.id }, onLongClick = { selected = message to bounds })
@@ -242,8 +273,8 @@ internal fun ConversationPage(chat: ChatSummary, state: MessengerState, draft: T
                                     }
                                   }.then(if (lifted) Modifier.clearAndSetSemantics { } else Modifier).onGloballyPositioned { bounds = it.boundsInWindow(); materialTimeline.bubbles[materialKey]=bounds; if (lifted) returnBounds = bounds }
                                     .pointerInput(message.id) { awaitPointerEventScope { while (true) { val event = awaitPointerEvent(); if (event.type == PointerEventType.Press && event.buttons.isSecondaryPressed) selected = message to bounds } } }) {
-                                    CompositionLocalProvider(LocalMaterialPress provides {selected=message to bounds}) {
-                                    if(message.author+message.id in animated) MessageMotion(message.id,textMotion.state(message.author+message.id),message.author+message.id in visibleKeys && selected==null,animated.getValue(message.author+message.id)) {
+                                    CompositionLocalProvider(LocalMaterialPress provides {selected=message to bounds},LocalItemVisible provides onScreen) {
+                                    if(materialKey in animated) MessageMotion(message.id,textMotion.state(materialKey),onScreen && selected==null,animated.getValue(materialKey)) {
                                         MessageBubble(message, grouped, followed, analyze, if (chat.verified && !state.busy) command else null)
                                     } else MessageBubble(message, grouped, followed, analyze, if (chat.verified && !state.busy) command else null)
                                     }
@@ -254,11 +285,11 @@ internal fun ConversationPage(chat: ChatSummary, state: MessengerState, draft: T
                         }
                             }
                     }
-                    if (!message.mine && !message.readByMe && chat.verified && selected == null) LaunchedEffect(message.id) {
+                    // Buffered items are composed before they are seen; only a message on screen is read.
+                    if (!message.mine && !message.readByMe && chat.verified && selected == null && onScreen) LaunchedEffect(message.id) {
                         command("read", mapOf("peer" to chat.id, "author" to message.author, "message" to message.id))
                     }
                 }
-                if (state.more) item { SigilTextButton({ command("older", emptyMap()) }, Modifier.fillMaxWidth(), enabled = !state.busy) { Text("Earlier messages") } }
             }
             }
             if(selected==null)materialOverlay?.invoke(materialTimeline,Modifier.matchParentSize())

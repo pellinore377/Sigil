@@ -348,6 +348,8 @@ enum Command {
         query: Option<String>,
         thread_author: Option<String>,
         thread_message: Option<String>,
+        /// Deepest item the viewport has reached; the preload target follows from it.
+        visible_end: Option<u32>,
     },
     Search {
         query: String,
@@ -1740,6 +1742,7 @@ impl ClientStore {
                 query,
                 thread_author,
                 thread_message,
+                visible_end,
             } => {
                 let conversation = self.mobile_conversation(&peer)?;
                 let before = match (before, author, message) {
@@ -1846,8 +1849,11 @@ impl ClientStore {
                         "kind":views::body_kind(message.body.as_ref()), "parts":self.mobile_parts(conversation, message.body.as_ref())?}));
                 }
                 let activity = self.conversation_activity(conversation, conversations::now())?;
+                let preload = crate::timeline_preload::preload(visible_end.unwrap_or(0) as usize);
                 Ok(
                     json!({"peer":peer,"messages":messages,"next":page.next,"people":self.mobile_names(&peer)?,
+                    "want":preload.want,"reload_at":preload.reload_at,
+                    "cache_ahead":preload.cache_ahead_tenths,"cache_behind":preload.cache_behind_tenths,
                     "typing":activity.iter().filter(|v|v.typing && v.author != own).map(|v|transport::hex(&v.author)).collect::<Vec<_>>()}),
                 )
             }
