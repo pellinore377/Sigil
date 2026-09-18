@@ -99,7 +99,5 @@ internal fun GifAttachment(message: ChatMessage) {
             GifChip(Modifier.align(Alignment.TopStart))
         }
     }
-    if (expanded) MediaDialog(message, { expanded = false }) {
-        MediaViewerFrame(drawable?.intrinsicWidth ?: 0, drawable?.intrinsicHeight ?: 0) { picture(it) }
-    }
+    if (expanded) MediaCarousel(message) { expanded = false }
 }

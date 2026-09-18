@@ -3,7 +3,10 @@ package org.sigil
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.gestures.detectDragGestures
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -18,6 +21,8 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.boundsInWindow
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.LocalClipboardManager
@@ -96,38 +101,83 @@ private val ViewerCaptionShape = RoundedCornerShape(28.dp)
 }
 
 // The sheet as a window onto the grid: numbered rows and columns, zebra rows, cells that scroll both ways.
-// A tap marks a cell with a border in the theme's colour; holding it offers a copy.
+// A tap picks a cell, a row number its row, a column number its column; the block's corner handles stretch it. Holding offers a copy.
 @Composable fun TableDocumentView(cells: List<List<String>>, modifier: Modifier = Modifier, firstRow: Int = 0, footer: (@Composable () -> Unit)? = null) {
     val columns = cells.maxOfOrNull { it.size } ?: 0
     val scheme = MaterialTheme.colorScheme
     val clipboard = LocalClipboardManager.current
-    var selected by remember(cells) { mutableStateOf<Pair<Int, Int>?>(null) }
+    val density = androidx.compose.ui.platform.LocalDensity.current
+    val list = androidx.compose.foundation.lazy.rememberLazyListState()
+    var anchor by remember(cells) { mutableStateOf<Pair<Int, Int>?>(null) }
+    var focus by remember(cells) { mutableStateOf<Pair<Int, Int>?>(null) }
     var menu by remember(cells) { mutableStateOf(false) }
+    val rows = anchor?.let { a -> focus?.let { f -> minOf(a.first, f.first)..maxOf(a.first, f.first) } }
+    val cols = anchor?.let { a -> focus?.let { f -> minOf(a.second, f.second)..maxOf(a.second, f.second) } }
+    fun pick(a: Pair<Int, Int>, f: Pair<Int, Int> = a) { anchor = a; focus = f; menu = false }
+    // The cell under a point on the grid: columns by their fixed width, rows by the list's own placement.
+    fun cellAt(at: androidx.compose.ui.geometry.Offset): Pair<Int, Int>? {
+        val c = with(density) { ((at.x - 48.dp.toPx()) / 160.dp.toPx()).toInt() }
+        if (c < 0 || c >= columns) return null
+        val item = list.layoutInfo.visibleItemsInfo.firstOrNull { at.y >= it.offset && at.y < it.offset + it.size } ?: return null
+        val r = item.index - 1
+        return if (r in cells.indices) r to c else null
+    }
+    fun copySelection() {
+        val r = rows ?: return; val c = cols ?: return
+        clipboard.setText(AnnotatedString(r.joinToString("\n") { row -> c.joinToString("\t") { col -> cells[row].getOrNull(col).orEmpty() } }))
+        menu = false
+    }
     Box(modifier.fillMaxSize().horizontalScroll(rememberScrollState())) {
-        LazyColumn(Modifier.width((48 + columns * 160).dp)) {
+        LazyColumn(Modifier.width((48 + columns * 160).dp), list) {
             stickyHeader {
                 Row(Modifier.background(scheme.surfaceContainer)) {
                     Text("#", Modifier.width(48.dp).padding(8.dp), style = MaterialTheme.typography.labelLarge)
-                    repeat(columns) { Text("${it + 1}", Modifier.width(160.dp).padding(8.dp), style = MaterialTheme.typography.labelLarge) }
+                    repeat(columns) { c -> Text("${c + 1}", Modifier.width(160.dp).combinedClickable(onClick = { pick(0 to c, cells.lastIndex to c) }, onLongClick = { pick(0 to c, cells.lastIndex to c); menu = true }).padding(8.dp), style = MaterialTheme.typography.labelLarge) }
                 }
             }
             itemsIndexed(cells) { r, row ->
                 Row(Modifier.background(scheme.onSurface.copy(alpha = if (r % 2 == 0) .025f else .055f))) {
-                    Text("${firstRow + r + 1}", Modifier.width(48.dp).padding(8.dp), style = MaterialTheme.typography.labelMedium)
+                    Text("${firstRow + r + 1}", Modifier.width(48.dp).combinedClickable(onClick = { pick(r to 0, r to columns - 1) }, onLongClick = { pick(r to 0, r to columns - 1); menu = true }).padding(8.dp), style = MaterialTheme.typography.labelMedium)
                     for (c in 0 until columns) {
                         val value = row.getOrNull(c).orEmpty()
-                        val picked = selected == r to c
-                        Box(Modifier.width(160.dp).heightIn(min = 56.dp).then(if (picked) Modifier.border(2.dp, scheme.primary) else Modifier)
-                            .combinedClickable(onClick = { selected = r to c; menu = false }, onLongClick = { selected = r to c; menu = true })) {
+                        val inside = rows != null && cols != null && r in rows && c in cols
+                        Box(Modifier.width(160.dp).heightIn(min = 56.dp).drawBehind {
+                            if (!inside) return@drawBehind
+                            // Only the block's outer edges are ruled, so a selection reads as one shape.
+                            val stroke = 2.dp.toPx(); val ink = scheme.primary
+                            if (r == rows!!.first) drawLine(ink, androidx.compose.ui.geometry.Offset(0f, stroke / 2), androidx.compose.ui.geometry.Offset(size.width, stroke / 2), stroke)
+                            if (r == rows.last) drawLine(ink, androidx.compose.ui.geometry.Offset(0f, size.height - stroke / 2), androidx.compose.ui.geometry.Offset(size.width, size.height - stroke / 2), stroke)
+                            if (c == cols!!.first) drawLine(ink, androidx.compose.ui.geometry.Offset(stroke / 2, 0f), androidx.compose.ui.geometry.Offset(stroke / 2, size.height), stroke)
+                            if (c == cols.last) drawLine(ink, androidx.compose.ui.geometry.Offset(size.width - stroke / 2, 0f), androidx.compose.ui.geometry.Offset(size.width - stroke / 2, size.height), stroke)
+                        }.combinedClickable(onClick = { pick(r to c) }, onLongClick = { if (!inside) pick(r to c); menu = true })) {
                             Text(value, Modifier.padding(12.dp), maxLines = 4, style = MaterialTheme.typography.bodyMedium)
-                            if (picked) DropdownMenu(menu, { menu = false }) {
-                                DropdownMenuItem({ Text("Copy") }, { clipboard.setText(AnnotatedString(value)); menu = false }, leadingIcon = { Glyph("content_copy", 20) })
+                            if (focus == r to c) DropdownMenu(menu, { menu = false }) {
+                                DropdownMenuItem({ Text(if (rows!!.count() * cols!!.count() > 1) "Copy ${rows.count() * cols.count()} cells" else "Copy") }, { copySelection() }, leadingIcon = { Glyph("content_copy", 20) })
                             }
                         }
                     }
                 }
             }
             footer?.let { item { Box(Modifier.padding(12.dp)) { it() } } }
+        }
+        // A round handle on each corner of the block; dragging one stretches the block to the cell beneath it.
+        val r = rows; val c = cols
+        if (r != null && c != null) {
+            val header = list.layoutInfo.visibleItemsInfo.firstOrNull { it.index == 0 }?.size ?: 0
+            fun corner(row: Int, col: Int, end: Boolean): androidx.compose.ui.geometry.Offset? {
+                val item = list.layoutInfo.visibleItemsInfo.firstOrNull { it.index == row + 1 } ?: return null
+                val y = (if (end) item.offset + item.size else item.offset).toFloat()
+                return if (y < header) null else androidx.compose.ui.geometry.Offset(with(density) { (48 + (if (end) col + 1 else col) * 160).dp.toPx() }, y)
+            }
+            for (end in listOf(false, true)) {
+                val at = (if (end) corner(r.last, c.last, true) else corner(r.first, c.first, false)) ?: continue
+                Box(Modifier.offset { androidx.compose.ui.unit.IntOffset((at.x - 12.dp.toPx()).toInt(), (at.y - 12.dp.toPx()).toInt()) }.size(24.dp).pointerInput(end) {
+                    var pos = androidx.compose.ui.geometry.Offset.Zero
+                    detectDragGestures(onDragStart = { start -> pos = start + androidx.compose.ui.geometry.Offset(at.x - 12.dp.toPx(), at.y - 12.dp.toPx()); anchor = r.first to c.first; focus = r.last to c.last; menu = false }) { change, drag ->
+                        pos += drag; cellAt(pos)?.let { if (end) focus = it else anchor = it }; change.consume()
+                    }
+                }.padding(4.dp).background(scheme.surface, CircleShape).padding(2.dp).background(scheme.primary, CircleShape))
+            }
         }
     }
 }

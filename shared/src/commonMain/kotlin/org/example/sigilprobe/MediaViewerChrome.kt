@@ -29,7 +29,7 @@ val LocalMediaMessage = staticCompositionLocalOf<(String, String, String) -> Cha
 private fun chromeShadow(shape: RoundedCornerShape) = Modifier.dropShadow(shape, Shadow(radius = 8.dp, color = Color.Black.copy(alpha = .15f), offset = DpOffset(0.dp, 3.dp)))
 
 @Composable
-fun MediaViewerChrome(message: ChatMessage?, close: () -> Unit, save: (() -> Unit)? = null, menu: (() -> Unit)? = null, saveEnabled: Boolean = true, content: @Composable BoxScope.() -> Unit) {
+fun MediaViewerChrome(message: ChatMessage?, close: () -> Unit, save: (() -> Unit)? = null, menu: (() -> Unit)? = null, saveEnabled: Boolean = true, backdrop: ChromeBackdrop? = null, content: @Composable BoxScope.() -> Unit) {
     val command = LocalMediaCommand.current
     val sender = LocalMediaSender.current
     val colors = MaterialTheme.colorScheme
@@ -41,11 +41,14 @@ fun MediaViewerChrome(message: ChatMessage?, close: () -> Unit, save: (() -> Uni
     LaunchedEffect(Unit) { chrome = true }
     val headerShape = RoundedCornerShape(24.dp)
     val reactionShape = RoundedCornerShape(28.dp)
-    Box(Modifier.fillMaxSize().background(colors.scrim.copy(alpha = .78f)).safeDrawingPadding().padding(12.dp)) {
+    // A caller that owns the backdrop feeds it from a page that draws only pixels; views in the capture would leave the blur holding dead render nodes.
+    val own = rememberChromeBackdrop()
+    val glass = backdrop ?: own
+    Box(Modifier.fillMaxSize().then(if (backdrop == null) Modifier.captureBackdrop(own) else Modifier).background(colors.scrim.copy(alpha = .92f)).safeDrawingPadding().padding(12.dp)) {
         // The scrim is black in both themes, so no scheme role stays legible over it.
         Box(Modifier.fillMaxSize().padding(top = headerHeight + 12.dp, bottom = if (message != null && command != null && message.attachment?.draft != true) reactionsHeight + 12.dp else 12.dp), contentAlignment = Alignment.Center) { CompositionLocalProvider(LocalContentColor provides Color.White) { content() } }
         AnimatedVisibility(chrome, Modifier.align(Alignment.TopCenter), enter = fadeIn(motionPolicy.enter(MotionQuick, delayMillis = MotionStagger)) + slideInVertically(motionPolicy.enter(MotionQuick, delayMillis = MotionStagger)) { -it }, exit = fadeOut(motionPolicy.exit(MotionExit)), label = "Media chrome") {
-            Surface(Modifier.widthIn(max = 680.dp).fillMaxWidth().then(chromeShadow(headerShape)).onSizeChanged {headerHeight=with(density){it.height.toDp()}}, shape = headerShape, color = colors.surfaceContainerHigh.copy(alpha = .94f), contentColor = colors.onSurface, shadowElevation = 0.dp) {
+            FloatingChrome(glass, Modifier.widthIn(max = 680.dp).fillMaxWidth().onSizeChanged {headerHeight=with(density){it.height.toDp()}}, headerShape) {
                 Row(Modifier.padding(8.dp), verticalAlignment = Alignment.CenterVertically) {
                     SigilIconButton(close) { Glyph("close", 24, "Close media") }
                     Column(Modifier.weight(1f).padding(start = 10.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
@@ -59,7 +62,7 @@ fun MediaViewerChrome(message: ChatMessage?, close: () -> Unit, save: (() -> Uni
         }
         if (message != null && command != null && message.attachment?.draft != true) {
             AnimatedVisibility(chrome, Modifier.align(Alignment.BottomCenter), enter = fadeIn(motionPolicy.enter(MotionQuick, delayMillis = MotionStagger)) + slideInVertically(motionPolicy.enter(MotionQuick, delayMillis = MotionStagger)) { it }, exit = fadeOut(motionPolicy.exit(MotionExit)), label = "Media reactions") {
-                Surface(Modifier.widthIn(max = 360.dp).fillMaxWidth().then(chromeShadow(reactionShape)).onSizeChanged {reactionsHeight=with(density){it.height.toDp()}}, shape = reactionShape, color = colors.surfaceContainerHigh.copy(alpha = .94f), contentColor = colors.onSurface, shadowElevation = 0.dp) {
+                FloatingChrome(glass, Modifier.widthIn(max = 360.dp).fillMaxWidth().onSizeChanged {reactionsHeight=with(density){it.height.toDp()}}, reactionShape) {
                     Row(Modifier.padding(horizontal = 4.dp), verticalAlignment = Alignment.CenterVertically) {
                         listOf("❤️", "👍", "😂", "😮", "😢", "😡").forEach { emoji ->
                             SigilTextButton({ command("react", mediaReaction(message, emoji)) },
