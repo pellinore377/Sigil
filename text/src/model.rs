@@ -168,7 +168,7 @@ impl Text {
         let mut code_tokens = Vec::new();
         if blocks
             .iter()
-            .any(|b| matches!(b.kind, crate::BlockKind::Code { language: Some(_) }))
+            .any(|b| matches!(b.kind, crate::BlockKind::Code { .. }))
         {
             let bytes: Vec<_> = self
                 .body
@@ -176,16 +176,19 @@ impl Text {
                 .map(|(i, _)| i)
                 .chain(std::iter::once(self.body.len()))
                 .collect();
-            for block in &blocks {
-                if let crate::BlockKind::Code {
-                    language: Some(language),
-                } = &block.kind
-                {
-                    code_tokens.extend(crate::code::highlight(
-                        &self.body[bytes[block.start as usize]..bytes[block.end as usize]],
-                        language,
-                        offsets[block.start as usize],
-                    ));
+            // An untagged fence is detected here only; the canonical block keeps its empty language.
+            for block in &mut blocks {
+                let start = offsets[block.start as usize];
+                let source = &self.body[bytes[block.start as usize]..bytes[block.end as usize]];
+                if let crate::BlockKind::Code { language } = &mut block.kind {
+                    if language.as_deref().is_some_and(crate::code::plain) {
+                        *language = None; // A plain-text fence shows no chip and no colour.
+                    } else if language.is_none() {
+                        *language = crate::code::detect(source).map(str::to_owned);
+                    }
+                    if let Some(language) = language {
+                        code_tokens.extend(crate::code::highlight(source, language, start));
+                    }
                 }
             }
         }
