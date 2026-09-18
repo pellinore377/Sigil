@@ -82,7 +82,7 @@ internal fun ComposerPanel(draft: TextFieldState, analyze: (String) -> String, e
     val screenHeight=with(density){LocalWindowInfo.current.containerSize.height.toDp()}
     val available=(screenHeight-measured-navigation.toFloat().let {with(density){it.toDp()}}-180.dp).coerceAtLeast(120.dp)
     val preferredHeights=remember {mutableStateMapOf<String,Dp>()}
-    val compactHeight=preferredHeights[panel] ?: when(panel){"Attachments"->204.dp;"Create"->380.dp;"Format"->104.dp;"Voice"->56.dp;"Camera"->maxOf(420.dp,available-12.dp);else->maxOf(keyboardHeight,420.dp)}
+    val compactHeight=preferredHeights[panel] ?: when(panel){"Attachments"->204.dp;"Create"->380.dp;"Format"->104.dp;"Voice"->224.dp;"Camera"->maxOf(420.dp,available-12.dp);else->maxOf(keyboardHeight,420.dp)}
     val contextual=panel in createItems.map {it.first}.filter {it!="Help"} || panel in listOf("Code block","Camera","One-time location","Real-time location","Drop a pin") || panel=="Help" && confirmation.action!=null
     val cameraLimit=if(panel=="Camera" && panelBottom>0f && headerBottom>0f)
         with(density){(panelBottom-headerBottom).coerceAtLeast(0f).toDp()}.minus(8.dp).coerceAtLeast(0.dp) else available
@@ -219,10 +219,7 @@ internal fun ComposerPanel(draft: TextFieldState, analyze: (String) -> String, e
                             Symbol("delete","Discard audio attachment") {command("file_cancel",mapOf("request" to file.request))}
                         }
                     }
-                    if (voiceReady) Row(verticalAlignment = Alignment.CenterVertically) {
-                        VoiceDraft(voice, Modifier.weight(1f), { command("record_preview", emptyMap()) }) { command("record_seek", mapOf("position" to it)) }
-                        Symbol("delete", "Discard voice message") { command("record_cancel", emptyMap()) }
-                    }
+                    if (voiceReady) VoiceDraft(voice, Modifier.fillMaxWidth(), { command("record_preview", emptyMap()) }, { command("record_cancel", emptyMap()) }) { command("record_seek", mapOf("position" to it)) }
             }
             val barTop by animateDpAsState(if (previewShown) 0.dp else 8.dp, motionPolicy.tween(MotionMillis), label = "Composer bar inset")
             ComposerBar(top = barTop) {
@@ -233,7 +230,7 @@ internal fun ComposerPanel(draft: TextFieldState, analyze: (String) -> String, e
                 }
 
                 Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Composer(draft, analyze, Modifier.fillMaxWidth(), showTools = false, focusRequester = editor, namedFormatting = !hasAttachment && !editingCaption, showSource = showSource, onFocus = { if (panel == "Voice") command("record_stop", emptyMap()); if (panel == "Attachments") {keyboardPending=true;panel=""} })
+                    Composer(draft, analyze, Modifier.fillMaxWidth(), showTools = false, focusRequester = editor, namedFormatting = !hasAttachment && !editingCaption, showSource = showSource, placeholder = if (hasAttachment) "Add text" else "Message", onFocus = { if (panel == "Voice") command("record_stop", emptyMap()); if (panel == "Attachments") {keyboardPending=true;panel=""} })
                 }
 
                 Spacer(Modifier.width(8.dp))
@@ -252,7 +249,7 @@ internal fun ComposerPanel(draft: TextFieldState, analyze: (String) -> String, e
                         val source=if(notes && !editingCaption) "note::${escapeField(draft.text.toString())};" else helpSource ?: draft.text.toString()
                         val structured=previewer?.invoke(source)?.previewLeaves()?.any {it.kind!="text" && it.previewIntent==null}==true
                         send(source,notes && !editingCaption || helpSource?.endsWith(';')==true || structured,null)
-                    } else {change("Voice");command("record_start",mapOf("peer" to peer))} },
+                    } else change("Voice") },
                     Modifier.semantics {contentDescription=sendLabel}, enabled = if(launch?.activeSource!=null)false else if(contextual)confirmation.action?.enabled==true else voice.phase !in listOf("Starting","Saving") && if (hasAttachment) enabled && voice.phase != "Sending" && attachmentDrafts.none { it.phase == "Staging" } else if(hasStructured)enabled else if(helpQuery!=null)true else if (hasText) enabled || requestContact != null else LocalClientFeatures.current.voice) {
                     Crossfade(sendIcon, animationSpec = motionPolicy.tween(MotionMillis), label = "Send action") { icon -> Glyph(icon, 24) }
                 }
@@ -347,22 +344,63 @@ internal fun BuilderEntries(entries:List<String>,label:String,icon:String,change
     }
 }
 @Composable
-private fun VoicePanel(command: Command, peer: String, voice: VoiceState, close: () -> Unit) {
-    val recording=voice.peer==peer && voice.phase=="Recording"
-    Row(Modifier.fillMaxWidth().padding(start=8.dp,end=8.dp,top=8.dp).semantics {liveRegion=LiveRegionMode.Polite;stateDescription=if(!recording)"Stopped" else if(voice.paused)"Paused" else "Recording"},verticalAlignment=Alignment.CenterVertically,horizontalArrangement=Arrangement.spacedBy(8.dp)) {
-        Symbol("delete","Discard recording",close)
-        Box(Modifier.size(8.dp).background(if(recording && !voice.paused)MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant,androidx.compose.foundation.shape.CircleShape))
-        AudioWaveform(if(recording)voice.levels else emptyList(),Modifier.weight(1f).height(48.dp))
-        Text(audioTime(voice.seconds*1000),style=MaterialTheme.typography.labelLarge)
-        if(recording)Symbol(if(voice.paused)"play_arrow" else "pause",if(voice.paused)"Resume recording" else "Pause recording") {command("record_pause",emptyMap())}
+internal fun VoicePanel(command: Command, peer: String, voice: VoiceState, close: () -> Unit) {
+    val scheme = MaterialTheme.colorScheme
+    val active = voice.peer == peer
+    val recording = active && voice.phase == "Recording"
+    val starting = active && voice.phase == "Starting"
+    val live = recording && !voice.paused
+    fun start() = command("record_start", mapOf("peer" to peer))
+    Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).wrapContentHeight(unbounded = true).then(naturalPanelHeight()).padding(start = 8.dp, end = 8.dp, top = 8.dp)
+        .semantics { liveRegion = LiveRegionMode.Polite; stateDescription = if (!recording) "Stopped" else if (voice.paused) "Paused" else "Recording" }, verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Surface(onClick = { if (!recording && !starting) start() }, enabled = !recording && !starting, shape = RoundedCornerShape(20.dp), color = scheme.surfaceContainerHigh,
+            modifier = Modifier.fillMaxWidth().height(148.dp).testTag("voice-stage").semantics { contentDescription = if (recording || starting) "Recording" else "Tap to record your voice" }) {
+            Box(contentAlignment = Alignment.Center) {
+                if (recording) Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Box(Modifier.size(8.dp).background(if (live) scheme.error else scheme.onSurfaceVariant, androidx.compose.foundation.shape.CircleShape))
+                        Text(audioTime(voice.seconds * 1000), style = MaterialTheme.typography.labelLarge)
+                    }
+                    AudioWaveform(voice.levels, Modifier.width(220.dp).height(40.dp))
+                } else Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    Glyph("graphic_eq", 48)
+                    Text(if (starting) "Starting…" else "Tap to record your voice", style = MaterialTheme.typography.bodyMedium, color = scheme.onSurfaceVariant)
+                }
+            }
+        }
+        Row(Modifier.fillMaxWidth().height(56.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            if (recording) VoiceAction("refresh", "Restart", Modifier.weight(1f), scheme.surfaceContainer, scheme.onSurface) { command("record_cancel", emptyMap()); start() }
+            else VoiceAction("close", "Cancel", Modifier.weight(1f), scheme.surfaceContainer, scheme.onSurface) { command("record_cancel", emptyMap()); close() }
+            // The centre control is the microphone until it is live, then the pause; paused resumes.
+            VoiceAction(if (live) "pause" else "mic", if (live) "Pause recording" else if (recording) "Resume recording" else "Record", Modifier.weight(1.2f),
+                if (live) scheme.errorContainer else scheme.surfaceContainerHigh, if (live) scheme.onErrorContainer else scheme.onSurface, enabled = !starting, labelled = false) {
+                if (recording) command("record_pause", emptyMap()) else start()
+            }
+            VoiceAction("check", "Attach", Modifier.weight(1f), scheme.surfaceContainerHigh, scheme.onSurface, enabled = recording && voice.seconds > 0) { command("record_stop", emptyMap()) }
+        }
     }
 }
 
 @Composable
-private fun VoiceDraft(voice: VoiceState, modifier: Modifier, play: () -> Unit, seek: (Long) -> Unit) {
-    Surface(modifier, shape = RoundedCornerShape(16.dp), color = MaterialTheme.colorScheme.surfaceContainerHigh) {
-        AudioPlayback(voice.position, voice.duration.takeIf { it > 0 } ?: voice.seconds * 1000, voice.playing, voice.levels,
-            enabled = voice.phase == "Ready", preview = true, modifier = Modifier.padding(end = 4.dp), play = play, seek = seek)
+private fun VoiceAction(icon: String, label: String, modifier: Modifier, color: androidx.compose.ui.graphics.Color, ink: androidx.compose.ui.graphics.Color, enabled: Boolean = true, labelled: Boolean = true, action: () -> Unit) {
+    Surface(action, modifier.fillMaxHeight().semantics { role = Role.Button; contentDescription = label }, enabled, shape = RoundedCornerShape(20.dp),
+        color = if (enabled) color else MaterialTheme.colorScheme.surfaceContainer, contentColor = if (enabled) ink else MaterialTheme.colorScheme.onSurface.copy(alpha = .38f)) {
+        Row(Modifier.fillMaxSize(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.Center) {
+            Glyph(icon, 22)
+            if (labelled) Text(label, Modifier.padding(start = 8.dp), style = MaterialTheme.typography.labelLarge, maxLines = 1)
+        }
+    }
+}
+
+// The draft is one pill: play squircle, waveform, length and its own discard, mirroring the bubble it becomes.
+@Composable
+private fun VoiceDraft(voice: VoiceState, modifier: Modifier, play: () -> Unit, discard: () -> Unit, seek: (Long) -> Unit) {
+    Surface(modifier, shape = RoundedCornerShape(20.dp), color = MaterialTheme.colorScheme.surfaceContainerHigh) {
+        Row(Modifier.padding(start = 8.dp, end = 4.dp, top = 4.dp, bottom = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+            AudioPlayback(voice.position, voice.duration.takeIf { it > 0 } ?: voice.seconds * 1000, voice.playing, voice.levels,
+                enabled = voice.phase == "Ready", preview = true, modifier = Modifier.weight(1f), play = play, seek = seek)
+            Symbol("close", "Discard voice message", discard)
+        }
     }
 }
 
