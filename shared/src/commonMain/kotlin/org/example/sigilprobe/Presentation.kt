@@ -4,6 +4,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 
@@ -29,6 +30,7 @@ internal val LocalPresentationHost = staticCompositionLocalOf<PresentationHost?>
     }
 }
 
+// The page covers the app: touches that its content does not take stop here rather than reaching what lies beneath.
 @Composable internal fun PresentationViewport(host: PresentationHost, modifier: Modifier) {
-    host.content?.let { Box(modifier.fillMaxSize()) { it() } }
+    host.content?.let { Box(modifier.fillMaxSize().pointerInput(Unit) { awaitPointerEventScope { while (true) awaitPointerEvent() } }) { it() } }
 }
