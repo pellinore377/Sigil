@@ -155,7 +155,8 @@ fun SigilApp(palette: (Int, Boolean) -> String, analyze: (String) -> String, sta
       val footer = remember { FooterHost() }
       val materialOcclusion = remember { MaterialOcclusion() }
       val materialOverlayHost = remember { MaterialOverlayHost() }
-      CompositionLocalProvider(LocalBackActions provides backActions, LocalFooterHost provides footer, LocalMaterialOcclusion provides materialOcclusion, LocalMaterialOverlayHost provides materialOverlayHost) {
+      val presentationHost = remember { PresentationHost() }
+      CompositionLocalProvider(LocalBackActions provides backActions, LocalFooterHost provides footer, LocalMaterialOcclusion provides materialOcclusion, LocalMaterialOverlayHost provides materialOverlayHost, LocalPresentationHost provides presentationHost) {
         BackAction(callDetail != null) { callDetail = null }
         BoxWithConstraints(Modifier.fillMaxSize()) {
         val wide = wideLayout && maxWidth >= 1000.dp && state.phase == "connected"
@@ -313,6 +314,7 @@ fun SigilApp(palette: (Int, Boolean) -> String, analyze: (String) -> String, sta
                         }
                         }
                         MaterialOverlayViewport(materialOverlayHost, Modifier.matchParentSize().zIndex(3.5f))
+                        PresentationViewport(presentationHost, Modifier.matchParentSize().zIndex(5f))
                         var lastIssue by remember { mutableStateOf("") }
                         SideEffect { state.issue?.let { lastIssue = it } }
                         Column(Modifier.align(Alignment.TopCenter).padding(top = headerHeight + headerTop + 12.dp, start = 16.dp, end = 16.dp).widthIn(max = 620.dp).zIndex(8f), verticalArrangement = Arrangement.spacedBy(8.dp)) {

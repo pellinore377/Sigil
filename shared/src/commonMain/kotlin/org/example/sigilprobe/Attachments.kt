@@ -12,6 +12,8 @@ import androidx.compose.ui.unit.dp
 val LocalAttachmentContent = staticCompositionLocalOf<@Composable (ChatMessage) -> Unit> {
     { message -> Text(message.attachment?.name ?: "Attachment", style = MaterialTheme.typography.bodyMedium, maxLines = 2, overflow = TextOverflow.Ellipsis) }
 }
+// Every picture, clip and gif in the open conversation, oldest first: the viewer pages through them.
+val LocalTimelineMedia = staticCompositionLocalOf<List<ChatMessage>> { emptyList() }
 val LocalAttachmentDraft = staticCompositionLocalOf<@Composable (Transfer, Modifier) -> Unit> {
     { file, modifier -> Text(file.name, modifier, style = MaterialTheme.typography.bodyMedium, maxLines = 2, overflow = TextOverflow.Ellipsis) }
 }

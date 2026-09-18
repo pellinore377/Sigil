@@ -14,7 +14,7 @@ import kotlinx.coroutines.*
 import org.sigil.*
 
 @Composable
-internal fun MediaDialog(message: ChatMessage, close: () -> Unit, content: @Composable BoxScope.() -> Unit) {
+internal fun MediaDialog(message: ChatMessage, close: () -> Unit, backdrop: ChromeBackdrop? = null, content: @Composable BoxScope.() -> Unit) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     var issue by remember { mutableStateOf<String?>(null) }
@@ -39,16 +39,8 @@ internal fun MediaDialog(message: ChatMessage, close: () -> Unit, content: @Comp
             finally { saving = false }
         }
     }
-    Dialog(close, DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false)) {
-        val window=(LocalView.current.parent as? DialogWindowProvider)?.window
-        DisposableEffect(window) {
-            if (android.os.Build.VERSION.SDK_INT >= 31) window?.let {
-                it.addFlags(android.view.WindowManager.LayoutParams.FLAG_BLUR_BEHIND)
-                it.attributes = it.attributes.apply { blurBehindRadius = (16 * context.resources.displayMetrics.density).toInt() }
-            }
-            onDispose { }
-        }
-        MediaViewerChrome(message, close, save = { destination.launch(message.attachment!!.name) }, menu = { menu = true }, saveEnabled = !saving, content = content)
+    Presented(close) {
+        MediaViewerChrome(message, close, save = { destination.launch(message.attachment!!.name) }, menu = { menu = true }, saveEnabled = !saving, backdrop = backdrop, content = content)
         if (menu) AlertDialog({ menu = false }, text = { SigilTextButton({ menu = false; NativeFileProvider.open(context, message) }) { Text("Open externally") } }, confirmButton = { SigilTextButton({ menu = false }) { Text("Close") } })
         issue?.let { text -> AlertDialog({ issue = null }, text = { Text(text) }, confirmButton = { SigilTextButton({ issue = null }) { Text("OK") } }) }
     }

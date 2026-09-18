@@ -1,5 +1,6 @@
 package org.sigil.compose
 
+import androidx.compose.foundation.background
 import android.graphics.ImageDecoder
 import android.graphics.drawable.AnimatedImageDrawable
 import android.graphics.drawable.Drawable
@@ -82,7 +83,7 @@ internal fun GifAttachment(message: ChatMessage) {
     val captioned = message.attachment!!.caption.isNotBlank()
     ImageMessageFrame(imageWidth,imageHeight,
         if (captioned) androidx.compose.ui.graphics.RectangleShape else androidx.compose.foundation.shape.RoundedCornerShape(20.dp),
-        if (!captioned) null else { { Box(Modifier.padding(horizontal = 14.dp, vertical = 10.dp)) { MessageText(message.attachment!!.caption, NativeCore::analyze) } } }) { frame ->
+        if (!captioned) null else { { Box(Modifier.fillMaxWidth().background(org.sigil.LocalBubbleGround.current).padding(horizontal = 14.dp, vertical = 10.dp)) { MessageText(message.attachment!!.caption, NativeCore::analyze) } } }) { frame ->
         Box(frame.clickable {
             drawable?.let { image ->
                 val snapshot = android.graphics.Bitmap.createBitmap(image.intrinsicWidth.coerceAtLeast(1), image.intrinsicHeight.coerceAtLeast(1), android.graphics.Bitmap.Config.ARGB_8888)
@@ -98,7 +99,5 @@ internal fun GifAttachment(message: ChatMessage) {
             GifChip(Modifier.align(Alignment.TopStart))
         }
     }
-    if (expanded) MediaDialog(message, { expanded = false }) {
-        MediaViewerFrame(drawable?.intrinsicWidth ?: 0, drawable?.intrinsicHeight ?: 0) { picture(it) }
-    }
+    if (expanded) MediaCarousel(message) { expanded = false }
 }

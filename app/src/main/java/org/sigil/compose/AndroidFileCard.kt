@@ -2,7 +2,12 @@ package org.sigil.compose
 
 import android.media.MediaMetadataRetriever
 import android.media.MediaPlayer
-import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.widthIn
+import androidx.compose.ui.Modifier
 import androidx.compose.runtime.*
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.platform.LocalContext
@@ -55,6 +60,7 @@ private const val AutoFetchBytes = 8L * 1024 * 1024
     }
     val open = { if (file.draft) Unit else if (ready) opened = true else { openWhenReady = true; requested = true } }
     val shape = androidx.compose.ui.graphics.RectangleShape
+    Column(Modifier.widthIn(max = AttachmentCardWidth)) {
     when (kind) {
         AttachmentKind.Audio -> {
             val track = peek as? FilePeek.Track
@@ -64,6 +70,9 @@ private const val AutoFetchBytes = 8L * 1024 * 1024
         AttachmentKind.File -> FileChip(file.name, file.bytes, requested && !ready, open)
         else -> DocumentCard(file.name, kind, file.bytes, peek, requested && (!ready || glimpsing), shape, open)
     }
+    // The caption sits on the bubble ground beneath the card, kept to the card's own width.
+    if (kind != AttachmentKind.File && !file.draft && file.caption.isNotBlank()) androidx.compose.foundation.layout.Box(Modifier.fillMaxWidth().background(LocalBubbleGround.current).padding(horizontal = 14.dp, vertical = 10.dp)) { MessageText(file.caption, NativeCore::analyze) }
+    }
     if (opened) when {
         kind == AttachmentKind.Pdf && file.bytes <= 128L * 1024 * 1024 -> PdfViewer(message) { opened = false }
         kind == AttachmentKind.Audio -> AndroidTrackPlayer(message, peek as? FilePeek.Track) { opened = false }
@@ -72,7 +81,7 @@ private const val AutoFetchBytes = 8L * 1024 * 1024
     }
 }
 
-private fun head(context: android.content.Context, message: ChatMessage, limit: Int): ByteArray = EncryptedMedia(context, message).use { media ->
+internal fun attachmentHead(context: android.content.Context, message: ChatMessage, limit: Int): ByteArray = EncryptedMedia(context, message).use { media ->
     val n = minOf(limit.toLong(), media.size).toInt()
     val out = ByteArray(n)
     var at = 0
@@ -84,8 +93,8 @@ private suspend fun androidPeek(context: android.content.Context, message: ChatM
     val file = message.attachment!!
     val extension = file.name.substringAfterLast('.', "").lowercase()
     return when (kind) {
-        AttachmentKind.Markdown, AttachmentKind.Text -> FilePeek.Text(head(context, message, 64 * 1024).decodeToString().take(4000), kind == AttachmentKind.Markdown)
-        AttachmentKind.Sheet -> if (extension == "csv" || extension == "tsv") FilePeek.Table(parseDelimited(head(context, message, 64 * 1024).decodeToString(), if (extension == "tsv") '\t' else ',', 16, 8))
+        AttachmentKind.Markdown, AttachmentKind.Text -> FilePeek.Text(attachmentHead(context, message, 64 * 1024).decodeToString().take(4000), kind == AttachmentKind.Markdown)
+        AttachmentKind.Sheet -> if (extension == "csv" || extension == "tsv") FilePeek.Table(parseDelimited(attachmentHead(context, message, 64 * 1024).decodeToString(), if (extension == "tsv") '\t' else ',', 16, 8))
             else FilePreviewSession(context).use { session ->
                 val table = session.render(NativeFileProvider.reader(context, message), "spreadsheet", JSONObject().put("view", "table").put("sheet", 0).put("row", 0).put("column", 0).toString()) as? FilePreview.Table
                 table?.let { FilePeek.Table(it.cells.take(16).map { row -> row.take(8) }) }
@@ -94,7 +103,7 @@ private suspend fun androidPeek(context: android.content.Context, message: ChatM
             FilePeek.Page(session.render(NativeFileProvider.reader(context, message), 0, 600).bitmap.asImageBitmap())
         }
         AttachmentKind.Audio -> {
-            val tags = readTrackTags(head(context, message, 2 * 1024 * 1024))
+            val tags = readTrackTags(attachmentHead(context, message, 2 * 1024 * 1024))
             val duration = runCatching { EncryptedMedia(context, message).use { source ->
                 MediaMetadataRetriever().let { retriever -> try { retriever.setDataSource(source); retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)?.toLongOrNull() } finally { retriever.release() } }
             } }.getOrNull() ?: tags?.lengthMs
@@ -140,7 +149,7 @@ private class AndroidTrackPlayback(private val player: MediaPlayer) : TrackPlayb
     val saver = rememberAttachmentSaver(message)
     val track = TrackPresentation(peek?.tags?.title ?: file.name.substringBeforeLast('.'), peek?.tags?.artist, peek?.tags?.album, peek?.art, peek?.tags?.lyrics.orEmpty(),
         file.name.substringAfterLast('.', "").uppercase().ifEmpty { "AUDIO" }, file.bytes)
-    Dialog(close, DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false)) {
+    Presented(close) {
         TrackPlayerScreen(track, playback, close, saver.save, saver.saving, file.caption)
         saver.Notice()
     }
