@@ -8,7 +8,7 @@ import android.graphics.Matrix
 import android.media.ExifInterface
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.gestures.detectTapGestures
-import androidx.compose.foundation.gestures.detectTransformGestures
+import androidx.compose.foundation.gestures.*
 import androidx.compose.foundation.layout.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -65,7 +65,7 @@ internal class RegionSource(private val bytes: ByteArray) : AutoCloseable {
 internal data class ImageTile(val rect: Rect, val bitmap: Bitmap)
 
 @Composable
-internal fun ImageViewer(message: ChatMessage, preview: Bitmap, modifier: Modifier) {
+internal fun ImageViewer(message: ChatMessage, preview: Bitmap, modifier: Modifier, onZoom: (Float) -> Unit = {}) {
     val context = LocalContext.current
     var source by remember(message.id) { mutableStateOf<RegionSource?>(null) }
     var tile by remember(message.id) { mutableStateOf<ImageTile?>(null) }
@@ -110,12 +110,21 @@ internal fun ImageViewer(message: ChatMessage, preview: Bitmap, modifier: Modifi
     Column(modifier) {
         Canvas(Modifier.weight(1f).fillMaxWidth().clipToBounds().onSizeChanged { size = it }
             .semantics { contentDescription = message.attachment!!.name; customActions = listOf(CustomAccessibilityAction("Zoom in") { zoom = (zoom * 2).coerceAtMost(32f); true }, CustomAccessibilityAction("Zoom out") { zoom = (zoom / 2).coerceAtLeast(1f); pan = bounded(pan, zoom); true }, CustomAccessibilityAction("Reset image") { zoom = 1f; pan = Offset.Zero; true }) }
-            .pointerInput(width, height, size) { detectTransformGestures { centroid, movement, change, _ ->
-                val next = (zoom * change).coerceIn(1f, 32f)
-                val focus = centroid - Offset(size.width / 2f, size.height / 2f)
-                pan = bounded(focus - (focus - pan) * (next / zoom) + movement, next); zoom = next
+            // At rest the picture leaves a plain drag to whoever holds it (a carousel); pinching or a zoomed picture takes the gesture.
+            .pointerInput(width, height, size) { awaitEachGesture {
+                awaitFirstDown(requireUnconsumed = false)
+                do {
+                    val event = awaitPointerEvent()
+                    if (event.changes.size > 1 || zoom > 1f) {
+                        val change = event.calculateZoom(); val movement = event.calculatePan(); val centroid = event.calculateCentroid()
+                        val next = (zoom * change).coerceIn(1f, 32f)
+                        val focus = centroid - Offset(size.width / 2f, size.height / 2f)
+                        pan = bounded(focus - (focus - pan) * (next / zoom) + movement, next); zoom = next; onZoom(next)
+                        event.changes.forEach { it.consume() }
+                    }
+                } while (event.changes.any { it.pressed })
             } }
-            .pointerInput(width, height, size) { detectTapGestures(onDoubleTap = { zoom = if (zoom > 1f) 1f else 2f; pan = Offset.Zero }) }) {
+            .pointerInput(width, height, size) { detectTapGestures(onDoubleTap = { zoom = if (zoom > 1f) 1f else 2f; pan = Offset.Zero; onZoom(zoom) }) }) {
             val left = (size.width - width * scale) / 2 + pan.x
             val top = (size.height - height * scale) / 2 + pan.y
             drawImage(preview.asImageBitmap(), dstOffset = IntOffset(left.roundToInt(), top.roundToInt()), dstSize = IntSize((width * scale).roundToInt().coerceAtLeast(1), (height * scale).roundToInt().coerceAtLeast(1)))
