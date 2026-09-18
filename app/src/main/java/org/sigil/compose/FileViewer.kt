@@ -90,7 +90,7 @@ internal fun FileViewer(message: ChatMessage,format: String,close: () -> Unit) {
                 }
                 val enabled=!loading && !failed
                 when(shown) {
-                    is FilePreview.Text -> Row(Modifier.fillMaxWidth(),horizontalArrangement=Arrangement.SpaceBetween,verticalAlignment=Alignment.CenterVertically) {
+                    is FilePreview.Text -> if(offsets.size>1 || shown.next!=null) Row(Modifier.fillMaxWidth(),horizontalArrangement=Arrangement.SpaceBetween,verticalAlignment=Alignment.CenterVertically) {
                         SigilIconButton({offsets=offsets.dropLast(1)},enabled=enabled && offsets.size>1) { Glyph("chevron_left",24,"Previous text page") }
                         Text("Page ${offsets.size}",style=MaterialTheme.typography.labelLarge)
                         SigilIconButton({shown.next?.let { offsets=offsets+it }},enabled=enabled && shown.next!=null) { Glyph("chevron_right",24,"Next text page") }

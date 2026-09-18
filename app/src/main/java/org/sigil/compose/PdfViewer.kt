@@ -48,7 +48,9 @@ internal fun PdfViewer(message: ChatMessage, close: () -> Unit) {
         finally { produced?.bitmap?.recycle(); loading=false }
     }
     val shown=page
-    DisposableEffect(shown) { onDispose { shown?.bitmap?.recycle() } }
+    // The last frame may still draw the page that was just replaced; it is freed a moment later, not at once.
+    val scope=rememberCoroutineScope()
+    DisposableEffect(shown) { onDispose { val old=shown; scope.launch { delay(1000); old?.bitmap?.recycle() } } }
     val saver=rememberAttachmentSaver(message)
     Presented(close) {
         DocumentViewerChrome(file.name,"PDF",file.bytes,close,saver.save,saver.saving,caption=file.caption) {
@@ -61,18 +63,29 @@ internal fun PdfViewer(message: ChatMessage, close: () -> Unit) {
                         SigilTextButton({retry++}) { Text("Retry PDF") }
                         SigilTextButton({NativeFileProvider.open(context,message)}) { Text("Open externally") }
                     }
-                    else if(shown!=null) Box(Modifier.fillMaxSize().graphicsLayer { clip=true }.pointerInput(index) {
-                        detectTransformGestures { _, movement, scale, _ ->
-                            zoom=(zoom*scale).coerceIn(1f,5f)
-                            val boundX=size.width*(zoom-1)/2; val boundY=size.height*(zoom-1)/2
-                            pan=Offset((pan.x+movement.x).coerceIn(-boundX,boundX),(pan.y+movement.y).coerceIn(-boundY,boundY))
+                    else if(shown!=null) Box(Modifier.fillMaxSize().graphicsLayer { clip=true }.pointerInput(index,shown.pages) {
+                        // One gesture loop: pinching or a zoomed page pans; at rest a horizontal swipe turns the page on release.
+                        awaitEachGesture {
+                            awaitFirstDown(requireUnconsumed=false)
+                            var travel=0f
+                            do {
+                                val event=awaitPointerEvent()
+                                val scale=event.calculateZoom(); val movement=event.calculatePan()
+                                if(event.changes.size>1 || zoom>1f) {
+                                    zoom=(zoom*scale).coerceIn(1f,5f)
+                                    val boundX=size.width*(zoom-1)/2; val boundY=size.height*(zoom-1)/2
+                                    pan=Offset((pan.x+movement.x).coerceIn(-boundX,boundX),(pan.y+movement.y).coerceIn(-boundY,boundY))
+                                    event.changes.forEach { it.consume() }
+                                } else travel+=movement.x
+                            } while(event.changes.any { it.pressed })
+                            if(zoom<=1f && kotlin.math.abs(travel)>size.width/5) { if(travel<0 && index+1<shown.pages) index++ else if(travel>0 && index>0) index-- }
                         }
                     }) {
                         Image(shown.bitmap.asImageBitmap(),"PDF page ${shown.index+1}",Modifier.fillMaxSize().graphicsLayer { scaleX=zoom;scaleY=zoom;translationX=pan.x;translationY=pan.y },contentScale=ContentScale.Fit)
                     }
-                    if(shown!=null) ZoomControls({zoom=(zoom*1.5f).coerceAtMost(5f)},{zoom=(zoom/1.5f).coerceAtLeast(1f);pan=Offset.Zero},zoom<5f,zoom>1f,Modifier.align(Alignment.BottomEnd))
+
                 }
-                Row(Modifier.fillMaxWidth(),horizontalArrangement=Arrangement.SpaceBetween,verticalAlignment=Alignment.CenterVertically) {
+                if(shown!=null && shown.pages>1) Row(Modifier.fillMaxWidth(),horizontalArrangement=Arrangement.SpaceBetween,verticalAlignment=Alignment.CenterVertically) {
                     SigilIconButton({index--},enabled=!loading && index>0) { Glyph("chevron_left",24,"Previous PDF page") }
                     Text(if(shown==null)"PDF" else "Page ${shown.index+1} of ${shown.pages}",Modifier.semantics { liveRegion=LiveRegionMode.Polite },style=MaterialTheme.typography.labelLarge)
                     SigilIconButton({index++},enabled=!loading && shown!=null && index+1<shown.pages) { Glyph("chevron_right",24,"Next PDF page") }
