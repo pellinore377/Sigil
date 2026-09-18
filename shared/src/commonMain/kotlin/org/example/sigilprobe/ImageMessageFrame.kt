@@ -17,8 +17,11 @@ internal const val MessageBubbleMaxWidth = 348f
 internal val MessageCardMinWidth = 200.dp
 internal val MessageCardMaxWidth = 340.dp
 
+/// A picture whose own shape is not known yet holds the commonest one rather than a full-width square.
+internal const val PendingPictureRatio = 4f / 3f
+
 internal fun imageMessageSize(width: Int, height: Int, available: Float): Size {
-    val ratio = if (width > 0 && height > 0) width.toFloat() / height else 1f
+    val ratio = if (width > 0 && height > 0) width.toFloat() / height else PendingPictureRatio
     val w = minOf(available.coerceAtLeast(1f), MessageBubbleMaxWidth, 360f * ratio)
     return Size(w, w / ratio)
 }

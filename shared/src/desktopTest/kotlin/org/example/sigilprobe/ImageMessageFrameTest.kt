@@ -12,7 +12,10 @@ class ImageMessageFrameTest {
             assertTrue(size.width<=280f && size.height<=360f)
         }
     }
-    @Test fun missingDimensionsHaveFiniteLoadingSpace() {
-        assertEquals(androidx.compose.ui.geometry.Size(MessageBubbleMaxWidth,MessageBubbleMaxWidth),imageMessageSize(0,0,400f))
+    @Test fun missingDimensionsHoldATypicalPictureHeightRatherThanAFullWidthSquare() {
+        val pending=imageMessageSize(0,0,400f)
+        assertEquals(MessageBubbleMaxWidth,pending.width)
+        assertEquals(PendingPictureRatio,pending.width/pending.height,.0001f)
+        assertTrue(pending.height<MessageBubbleMaxWidth,"a pending picture is shorter than a full-width square")
     }
 }

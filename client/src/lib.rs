@@ -31,6 +31,7 @@ pub mod mobile;
 mod notes;
 mod rich_text;
 pub mod services;
+pub mod timeline_preload;
 pub use notes::{NoteCard, NoteEntry, NoteKind, NotesPage};
 pub use rich_text::SigilTextDraft;
 mod structured;
