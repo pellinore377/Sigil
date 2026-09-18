@@ -69,7 +69,7 @@ Parsed with a CommonMark-compatible Markdown parser. Emit sanitized rich-text HT
 | Spoiler | `\|\|text\|\|` | Sigil spoiler span |
 | Line break | Shift+Enter | `<br>` |
 
-**Code is backticks only.** No `code::` modifier — a `;` terminator collides with `};` in most languages. Headings remain Markdown-only, as they are block-level.
+**Code is backticks only.** No `code::` modifier — a `;` terminator collides with `};` in most languages. An untagged fence keeps no language on the wire; the language is detected when the message is presented, and the tag wins whenever one is given. Detection answers only when one dialect is a clear winner, so ordinary text keeps no label. A `text` tag means verbatim: no label, no colour. Headings remain Markdown-only, as they are block-level.
 
 ---
 

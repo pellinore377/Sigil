@@ -22,8 +22,8 @@ class CodeBuilderTest {
             Box(Modifier.width(380.dp).height(600.dp)) {CodeBuilder(true,{},sent::add)}
         }}}
         ui.onNodeWithText("Preview code").assertIsNotEnabled()
-        ui.onNodeWithText("Plain text").performClick()
-        ui.onNodeWithText("Rust").performClick()
+        ui.onNodeWithText("Auto").performClick()
+        ui.onNodeWithText("Rust").performScrollTo().performClick()
         ui.onNodeWithText("Code",substring=false).performTextInput(body.replace("\n","\r\n"))
         ui.onNodeWithText("Code",substring=false).assertTextContains(body)
         ui.onNodeWithText("Code",substring=false).performTextReplacement("x".repeat(17000))
