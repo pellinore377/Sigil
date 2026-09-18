@@ -40,6 +40,8 @@ internal class FooterHost {
     var content: (@Composable () -> Unit)? by mutableStateOf(null)
     var height by mutableStateOf(68.dp)
     var headerBottom by mutableFloatStateOf(0f)
+    var panel: (@Composable (ChromeBackdrop?) -> Unit)? by mutableStateOf(null)
+    var chrome: ChromeBackdrop? by mutableStateOf(null)
 }
 internal val LocalFooterHost = staticCompositionLocalOf<FooterHost?> { null }
 @Composable
@@ -51,6 +53,18 @@ internal fun FooterContent(content: @Composable () -> Unit) {
     DisposableEffect(host) {
         host.content = slot
         onDispose { if (host.content === slot) host.content = null }
+    }
+}
+// A composer panel floats above the composer as its own glass; the slot receives the page's backdrop.
+@Composable
+internal fun FooterPanel(content: @Composable (ChromeBackdrop?) -> Unit) {
+    val host = LocalFooterHost.current
+    if (host == null) { content(null); return }
+    val current by rememberUpdatedState(content)
+    val slot = remember { movableContentOf { backdrop: ChromeBackdrop? -> current(backdrop) } }
+    DisposableEffect(host) {
+        host.panel = slot
+        onDispose { if (host.panel === slot) host.panel = null }
     }
 }
 internal typealias Command = (String, Map<String, Any?>) -> Unit
@@ -306,11 +320,15 @@ fun SigilApp(palette: (Int, Boolean) -> String, analyze: (String) -> String, sta
                                 }
                         }
                         val density = LocalDensity.current
+                        SideEffect { footer.chrome = backdrop }
                         androidx.compose.animation.AnimatedVisibility(conversation, Modifier.align(Alignment.BottomCenter).zIndex(3f),
                             enter = slideInVertically(motionPolicy.enter(MotionInline, delayMillis = MotionMillis)) { it } + fadeIn(motionPolicy.enter(MotionInline, delayMillis = MotionMillis)),
                             exit = slideOutVertically(motionPolicy.exit(MotionQuick)) { it } + fadeOut(motionPolicy.exit(MotionExit)), label = "Conversation footer") {
                         Box(Modifier.widthIn(max = 920.dp).fillMaxWidth().onSizeChanged { if (footer.content != null) footer.height = with(density) { it.height.toDp() } }.padding(horizontal = 12.dp).windowInsetsPadding(WindowInsets.ime.union(WindowInsets.navigationBars)).padding(bottom = 8.dp).zIndex(3f)) {
-                            if (footer.content != null) FloatingChrome(backdrop, Modifier.testTag("conversation-footer").onGloballyPositioned { materialOcclusion.footer = it.boundsInWindow() }, RoundedCornerShape(24.dp)) { footer.content?.invoke() }
+                            Column(Modifier.fillMaxWidth()) {
+                                footer.panel?.invoke(backdrop)
+                                if (footer.content != null) FloatingChrome(backdrop, Modifier.testTag("conversation-footer").onGloballyPositioned { materialOcclusion.footer = it.boundsInWindow() }, RoundedCornerShape(24.dp)) { footer.content?.invoke() }
+                            }
                         }
                         }
                         MaterialOverlayViewport(materialOverlayHost, Modifier.matchParentSize().zIndex(3.5f))

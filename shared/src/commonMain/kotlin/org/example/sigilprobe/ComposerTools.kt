@@ -44,7 +44,7 @@ internal fun ComposerTool(name:String,icon:String,enabled:Boolean=true,primary:B
 @Composable
 internal fun AttachmentTools(hasAttachment:Boolean,hasStructured:Boolean,open:(String)->Unit) {
     val features=LocalClientFeatures.current
-    val tools=listOf("Photos" to "image","Camera" to "photo_camera","Files" to "draft","One-time location" to "my_location","Real-time location" to "sensors","Drop a pin" to "place","Create" to "add_notes","Format" to "text_format")
+    val tools=listOf("Emoji" to "mood","Photos" to "image","Camera" to "photo_camera","Files" to "draft","One-time location" to "my_location","Real-time location" to "sensors","Drop a pin" to "place","Create" to "add_notes","Format" to "text_format")
     val preferred=LocalComposerPanelHeight.current
     BoxWithConstraints(Modifier.widthIn(max=660.dp).fillMaxWidth()) {
         val height=toolGridHeight(tools,maxWidth-16.dp)+8.dp
@@ -52,7 +52,7 @@ internal fun AttachmentTools(hasAttachment:Boolean,hasStructured:Boolean,open:(S
 
         LazyVerticalGrid(GridCells.Fixed(5),modifier=Modifier.fillMaxWidth().height(height),contentPadding=PaddingValues(start=8.dp,end=8.dp,top=8.dp),verticalArrangement=Arrangement.spacedBy(4.dp),horizontalArrangement=Arrangement.spacedBy(8.dp)) {
             items(tools,key={it.first}) {(name,icon)->
-                val allowed=when(name){"Photos","Files","Camera"->!hasStructured&&features.files;"One-time location","Real-time location","Drop a pin"->!hasStructured&&features.locations;"Format"->true;else->!hasAttachment}
+                val allowed=when(name){"Photos","Files","Camera"->!hasStructured&&features.files;"One-time location","Real-time location","Drop a pin"->!hasStructured&&features.locations;"Format","Emoji"->true;else->!hasAttachment}
                 ComposerTool(name,icon,allowed) {open(name)}
             }
         }

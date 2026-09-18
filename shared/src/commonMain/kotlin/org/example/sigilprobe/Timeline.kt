@@ -89,6 +89,8 @@ internal fun ConversationPage(chat: ChatSummary, state: MessengerState, draft: T
     var selected by remember(chat.id) { mutableStateOf<Pair<ChatMessage, Rect>?>(null) }
     var returnBounds by remember(chat.id) { mutableStateOf(Rect.Zero) }
     var cardDetails by remember(chat.id) { mutableStateOf<ChatMessage?>(null) }
+    var reactionPick by remember(chat.id) { mutableStateOf<ChatMessage?>(null) }
+    reactionPick?.let { target -> EmojiDrawer({ reactionPick = null }) { emoji -> command("react", mapOf("peer" to chat.id, "author" to target.author, "message" to target.id, "emoji" to emoji, "active" to (emoji !in target.myReactions))) } }
     // Each message keeps its own details open or closed, as the reference does.
     var details by remember(chat.id) { mutableStateOf(setOf<Pair<String, String>>()) }
     var submitted by remember { mutableStateOf<Triple<String, String, Long>?>(null) }
@@ -380,6 +382,7 @@ internal fun ConversationPage(chat: ChatSummary, state: MessengerState, draft: T
                     "edit" -> { command("edit_source", mapOf("peer" to chat.id, "author" to message.author, "message" to message.id)); selected = null }
                     "replay" -> {textMotion.state(message.author+message.id).replay();selected=null}
                     "details" -> { cardDetails = message; selected = null }
+                    "pick_reaction" -> { reactionPick = message; selected = null }
                     "forward" -> { command("forward_picker", mapOf("peer" to chat.id, "author" to message.author, "message" to message.id)); selected = null }
                     else -> {
                         val fields = mutableMapOf<String, Any?>("peer" to chat.id, "author" to message.author, "message" to message.id)
@@ -515,8 +518,6 @@ private fun MessageMenu(message: ChatMessage, originWindow: Rect, returnWindow: 
     val origin = originWindow.translate(correction)
     val returnTo = returnWindow.translate(correction)
     val band = bandWindow.translate(correction)
-    var emojiPicker by remember { mutableStateOf(false) }
-    var emoji by remember { mutableStateOf("") }
     var closing by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
     val density = LocalDensity.current
@@ -548,7 +549,7 @@ private fun MessageMenu(message: ChatMessage, originWindow: Rect, returnWindow: 
                 Surface(enter, shape = RoundedCornerShape(28.dp), color = scheme.surfaceContainerHigh) {
                     Row(Modifier.padding(horizontal = 4.dp), verticalAlignment = Alignment.CenterVertically) {
                         listOf("👍", "❤️", "😂", "😮", "😢", "😡").forEach { e -> SigilTextButton({ choose("react", e) }, contentPadding = PaddingValues(horizontal = 6.dp)) { Text(e, fontSize = 22.sp) } }
-                        Symbol("add_reaction", "Choose reaction") { emojiPicker = true }
+                        Symbol("add_reaction", "Choose reaction") { choose("pick_reaction", "") }
                     }
                 }
                 Box(Modifier.width(when(objectMotion?.kind) {"coin"->164.dp;"choice"->180.dp;"dice"->if(objectMotion.dice.size==1)132.dp else 232.dp;else->with(density){origin.width.toDp()}}).onGloballyPositioned { target = it.boundsInWindow() }
@@ -596,7 +597,6 @@ private fun MessageMenu(message: ChatMessage, originWindow: Rect, returnWindow: 
             }
         }
     }
-    if (emojiPicker) AlertDialog({ emojiPicker = false }, title = { Text("React with an emoji") }, text = { OutlinedTextField(emoji, { emoji = it }, label = { Text("Emoji") }, singleLine = true) }, confirmButton = { SigilTextButton({ if (emoji.isNotBlank()) { emojiPicker = false; choose("react", emoji) } }) { Text("React") } })
 }
 @Composable
 internal fun VerificationDialog(chat: ChatSummary, busy: Boolean, command: Command, close: () -> Unit) {

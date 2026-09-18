@@ -82,12 +82,15 @@ internal fun ComposerPanel(draft: TextFieldState, analyze: (String) -> String, e
     val screenHeight=with(density){LocalWindowInfo.current.containerSize.height.toDp()}
     val available=(screenHeight-measured-navigation.toFloat().let {with(density){it.toDp()}}-180.dp).coerceAtLeast(120.dp)
     val preferredHeights=remember {mutableStateMapOf<String,Dp>()}
-    val compactHeight=preferredHeights[panel] ?: when(panel){"Attachments"->204.dp;"Create"->380.dp;"Format"->104.dp;"Voice"->224.dp;"Camera"->maxOf(420.dp,available-12.dp);else->maxOf(keyboardHeight,420.dp)}
+    var emojiGrow by remember {mutableStateOf(0.dp)}
+    LaunchedEffect(panel) {if(panel!="Emoji")emojiGrow=0.dp}
+    val compactHeight=preferredHeights[panel] ?: when(panel){"Attachments"->204.dp;"Emoji"->320.dp+emojiGrow;"Create"->380.dp;"Format"->104.dp;"Voice"->224.dp;"Camera"->maxOf(420.dp,available-12.dp);else->maxOf(keyboardHeight,420.dp)}
     val contextual=panel in createItems.map {it.first}.filter {it!="Help"} || panel in listOf("Code block","Camera","One-time location","Real-time location","Drop a pin") || panel=="Help" && confirmation.action!=null
     val cameraLimit=if(panel=="Camera" && panelBottom>0f && headerBottom>0f)
         with(density){(panelBottom-headerBottom).coerceAtLeast(0f).toDp()}.minus(8.dp).coerceAtLeast(0.dp) else available
     val expandedHeight = if (panel.isNotEmpty()) minOf(compactHeight,available,cameraLimit) else 0.dp
-    val panelHeight by animateDpAsState(expandedHeight, if (measured > 0.dp || keyboardPending) snap() else motionPolicy.tween(MotionMillis), label = "Composer height")
+    val panelHeight by animateDpAsState(expandedHeight, if (measured > 0.dp || keyboardPending || emojiGrow > 0.dp) snap() else motionPolicy.tween(MotionMillis), label = "Composer height")
+    val panelGap by animateDpAsState(if (expandedHeight > 0.dp) 12.dp else 0.dp, if (measured > 0.dp || keyboardPending) snap() else motionPolicy.tween(MotionMillis), label = "Composer panel gap")
     LaunchedEffect(keyboardPending) { if (keyboardPending) { kotlinx.coroutines.delay(1500); keyboardPending = false } }
     LaunchedEffect(measured, keyboardPending) { if (keyboardPending && measured >= keyboardHeight - 2.dp) keyboardPending = false }
     fun change(value: String) { if (panel.isEmpty() && measured > 120.dp) keyboardHeight = measured; keyboardPending = false; panel = value; if(value=="Format"){editor.requestFocus();keyboard?.show()}else{focus.clearFocus();keyboard?.hide()} }
@@ -95,7 +98,7 @@ internal fun ComposerPanel(draft: TextFieldState, analyze: (String) -> String, e
     fun showKeyboard() { if (panel == "Voice") command("record_stop", emptyMap()); keyboardPending = panel.isNotEmpty(); if(panel!="Format")panel = ""; editor.requestFocus(); keyboard?.show() }
     BackAction(panel.isNotEmpty()) {
         when (panel) {
-            "Create", "Format", "Camera", "One-time location", "Real-time location", "Drop a pin" -> change("Attachments")
+            "Create", "Format", "Camera", "Emoji", "One-time location", "Real-time location", "Drop a pin" -> change("Attachments")
             "Code block" -> change("Format")
             "Help" -> change(if(draft.text.toString().trim().startsWith("help::"))"" else "Create")
             in createItems.map { it.first } -> change("Create")
@@ -132,8 +135,9 @@ internal fun ComposerPanel(draft: TextFieldState, analyze: (String) -> String, e
     val helpQuery=helpSource?.takeIf {';' !in it && '\n' !in it}?.removePrefix("help::")
     LaunchedEffect(helpQuery) {if(helpQuery!=null) {keyboardPending=false;panel="Help"}}
     LaunchedEffect(voice.phase) { if (voiceReady) change("") }
-    Surface(shape = RoundedCornerShape(24.dp), color = if (LocalFooterHost.current == null) MaterialTheme.colorScheme.surface else androidx.compose.ui.graphics.Color.Transparent) {
-        Column {
+    // The panel is its own glass above the composer, kept one composer margin away; without a footer host it stays inline.
+    val detached = LocalFooterHost.current != null
+    val panelContent: @Composable () -> Unit = {
             Box(Modifier.fillMaxWidth().height(if(panel=="Camera")minOf(panelHeight,cameraLimit)else panelHeight).onGloballyPositioned {panelBottom=it.boundsInWindow().bottom}.testTag("composer-panel")) {
                 CompositionLocalProvider(LocalBuilderAction provides "Attach") {
                 AnimatedContent(panel, transitionSpec = {
@@ -183,11 +187,24 @@ internal fun ComposerPanel(draft: TextFieldState, analyze: (String) -> String, e
                             StructuredBuilder(shown, enabled, { change("Create") }) { source, timezone -> stage(shown,source,true,timezone) }
                         }
                         "Format" -> FormatPanel(draft,analyze,showSource,{showSource=it},{change("Attachments")},{change("Code block")},::showKeyboard)
+                        "Emoji" -> EmojiSheet(Modifier.fillMaxSize(), grow = {delta->
+                            val step=with(density){delta.toDp()}
+                            val next=(emojiGrow+step).coerceIn(0.dp,(available-320.dp).coerceAtLeast(0.dp))
+                            val applied=next-emojiGrow; emojiGrow=next
+                            with(density){applied.toPx()}
+                        }) {emoji->draft.edit {val at=selection.min;replace(selection.min,selection.max,emoji);placeCursorBeforeCharAt(at+emoji.length)}}
                     }
                     }
                 }
             }
             }
+    }
+    if (detached) FooterPanel { backdrop ->
+        if (panelHeight > 0.dp) FloatingChrome(backdrop, Modifier.fillMaxWidth().padding(bottom = panelGap), RoundedCornerShape(24.dp)) { panelContent() }
+    }
+    Surface(shape = RoundedCornerShape(24.dp), color = if (!detached) MaterialTheme.colorScheme.surface else androidx.compose.ui.graphics.Color.Transparent) {
+        Column {
+            if (!detached) panelContent()
             Column(Modifier.fillMaxWidth().heightIn(max=minOf(if(hasStructured)320.dp else 240.dp,available)).verticalScroll(rememberScrollState()).padding(start=8.dp,end=8.dp,top=if(hasStructured || hasAttachment)8.dp else 0.dp),verticalArrangement=Arrangement.spacedBy(12.dp)) {
                     if(panel.isEmpty() && !hasStructured && !hasAttachment && !editingCaption && !notes) TypedSigilPreview(draft.text.toString(),open={intent,original->pendingIntent=intent to original;change(intent.tool)},onVisible={previewShown=it})
                     if(hasStructured && panel.isEmpty()) {
