@@ -4,14 +4,20 @@ import androidx.compose.animation.core.*
 import androidx.compose.foundation.lazy.LazyItemScope
 import androidx.compose.foundation.lazy.staggeredgrid.LazyStaggeredGridItemScope
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.IntOffset
+import androidx.compose.ui.unit.dp
 
 const val MotionFeedback = 90
 const val MotionExit = 120
 const val MotionQuick = 160
 const val MotionInline = 180
+const val MotionArrival = 200
 const val MotionMillis = 240
 const val MotionSettle = 360
 const val MotionStagger = 80
@@ -43,6 +49,20 @@ data class MotionPolicy(val reduced: Boolean = false) {
         infiniteRepeatable(androidx.compose.animation.core.tween(durationMillis, easing = LinearEasing))
     fun delay(milliseconds: Long) = if (reduced) 0L else milliseconds
 }
+/// How far a newly arrived message rises into place.
+val MessageArrivalRise = 12.dp
+
+/// A message that has just arrived rises and fades into place, once; one scrolled back to is simply there.
+@Composable
+internal fun arrivalMotion(arrivals: TimelineArrivals, key: String): Modifier {
+    val motion = LocalMotion.current
+    val play = remember(key) { arrivals.claim(key) }
+    if (!play || motion.reduced) return Modifier
+    val progress = remember { Animatable(0f) }
+    LaunchedEffect(Unit) { progress.animateTo(1f, motion.enter(MotionArrival)) }
+    val rise = with(LocalDensity.current) { MessageArrivalRise.toPx() }
+    return Modifier.graphicsLayer { alpha = progress.value; translationY = rise * (1f - progress.value) }
+}
 @Composable
 fun LazyItemScope.itemMotion(): Modifier {
     val motion = LocalMotion.current
@@ -55,3 +75,5 @@ fun LazyStaggeredGridItemScope.itemMotion(): Modifier {
 }
 val LocalMotion = staticCompositionLocalOf { MotionPolicy() }
 val LocalSystemReducedMotion = staticCompositionLocalOf { false }
+/// False for items the buffer has composed but the reader cannot see; nothing off screen should animate.
+val LocalItemVisible = staticCompositionLocalOf { true }
