@@ -54,6 +54,8 @@ class ReplyPresentationTest {
         assertEquals("Poll" to "ballot",cardQuote(listOf(MessagePart("p","poll","Lunch?"))))
         assertEquals("4/5" to "star",cardQuote(listOf(MessagePart("u","card","",utility=UtilityContent("rating",display="4/5")))))
         assertEquals("Rating" to "star",cardQuote(listOf(MessagePart("u","card","",utility=UtilityContent("rating")))))
+        assertEquals("Heads" to "toll",cardQuote(listOf(MessagePart("u","card","",utility=UtilityContent("pick",motion=RandomizerMotion("coin",frames=listOf("Heads","Tails"),selected=0))))))
+        assertEquals("89" to "casino",cardQuote(listOf(MessagePart("u","card","",utility=UtilityContent("dice",motion=RandomizerMotion("dice",result="89"))))))
         assertNull(cardQuote(listOf(MessagePart("t","text","hi"))))
     }
 }

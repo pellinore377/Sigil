@@ -64,8 +64,11 @@ fun cardQuote(parts: List<MessagePart>): Pair<String, String>? {
         }
         else -> "Card" to "data_object"
     }
-    // A picker or figure card quotes its result rather than its kind.
-    val result = utility?.display?.takeIf { it.isNotBlank() && utility.kind in listOf("calculation", "conversion", "math", "formula", "dice", "coin", "pick", "random", "rating", "progress") }
+    // A picker or figure card quotes its result rather than its kind; a randomizer's lives on its motion.
+    val motion = utility?.motion
+    val outcome = motion?.result?.takeIf { it.isNotBlank() } ?: motion?.frames?.getOrNull(motion.selected)?.takeIf { it.isNotBlank() }
+        ?: utility?.rich?.text?.takeIf { it.isNotBlank() && motion != null }
+    val result = outcome ?: utility?.display?.takeIf { it.isNotBlank() && utility.kind in listOf("calculation", "conversion", "math", "formula", "dice", "coin", "pick", "random", "rating", "progress") }
     return (result ?: name) to glyph
 }
 

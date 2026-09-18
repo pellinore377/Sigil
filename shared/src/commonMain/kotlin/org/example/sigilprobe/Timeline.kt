@@ -267,9 +267,15 @@ internal fun ConversationPage(chat: ChatSummary, state: MessengerState, draft: T
                                     }
                                     if (!started) return@awaitEachGesture
                                     val release = drag
-                                    if (abs(release) >= threshold) respond(message, swipeAction(message.mine, release) == "thread")
-                                    // Hand over at the release point, never through zero, so the spring starts where the finger left.
-                                    scope.launch { settle.snapTo(release); dragging = false; drag = 0f; settle.animateTo(0f, if (motionPolicy.reduced) snap() else spring(dampingRatio = .82f, stiffness = Spring.StiffnessMediumLow)) }
+                                    val action = if (abs(release) >= threshold) swipeAction(message.mine, release) else null
+                                    if (action == "thread") {
+                                        // The bubble lands at rest first, so the thread's placement motion starts from a whole bubble, never a clipped one.
+                                        scope.launch { settle.snapTo(0f); dragging = false; drag = 0f; respond(message, true) }
+                                    } else {
+                                        if (action == "reply") respond(message, false)
+                                        // Hand over at the release point, never through zero, so the spring starts where the finger left.
+                                        scope.launch { settle.snapTo(release); dragging = false; drag = 0f; settle.animateTo(0f, if (motionPolicy.reduced) snap() else spring(dampingRatio = .82f, stiffness = Spring.StiffnessMediumLow)) }
+                                    }
                                 }
                             },
                             horizontalArrangement = if (message.mine) Arrangement.End else Arrangement.Start) {
@@ -286,24 +292,20 @@ internal fun ConversationPage(chat: ChatSummary, state: MessengerState, draft: T
                                     previewLaunch.landed(message.id)
                                 }
                                 Box(Modifier.fillMaxWidth(), contentAlignment = if (message.mine) Alignment.CenterEnd else Alignment.CenterStart) {
-                                  // Pulled toward its own edge the bubble has nowhere to go: it nudges a little and the chip slides out from under its inner edge.
-                                  val outward = (offset > 0) == message.mine
-                                  val nudge = with(density) { 12.dp.toPx() }
-                                  val bubbleShift = if (outward) (if (offset > 0) 1f else -1f) * minOf(abs(offset) * .25f, nudge) else offset
                                   if (abs(offset) > 1f && !lifted) {
                                     val action = swipeAction(message.mine, offset)
                                     val armed = abs(offset) >= threshold
-                                    // Pulled inward the chip rides beside the bubble from the gutter, one gap away.
+                                    // The chip rides beside the bubble's own edge, one gap away, in either direction.
                                     val slack = with(density) { bubbleWidth.toPx() } - bubblePx
                                     val base = if (offset > 0) (if (message.mine) slack else 0f) else (if (message.mine) 0f else -slack)
                                     Surface(Modifier.align(if (offset > 0) Alignment.CenterStart else Alignment.CenterEnd).size(SwipeChipSize)
-                                        .graphicsLayer { translationX = if (outward) base - (if (offset > 0) 1f else -1f) * minOf(abs(offset), reveal) + bubbleShift else base + offset + if (offset > 0) -reveal else reveal; alpha = (abs(offset) / reveal).coerceIn(0f, 1f) },
+                                        .graphicsLayer { translationX = base + offset + if (offset > 0) -reveal else reveal; alpha = (abs(offset) / reveal).coerceIn(0f, 1f) },
                                         shape = RoundedCornerShape(16.dp), color = if (armed) scheme.primary else scheme.surfaceContainerHigh, contentColor = if (armed) scheme.onPrimary else scheme.onSurface) {
                                         Box(contentAlignment = Alignment.Center) { Glyph(if (action == "reply") "reply" else "forum", 22, if (action == "reply") "Reply" else "Reply in thread") }
                                     }
                                   }
                                   Box(Modifier.graphicsLayer {
-                                    translationX = bubbleShift; alpha = if (lifted) 0f else 1f
+                                    translationX = offset; alpha = if (lifted) 0f else 1f
                                     // The sent card carries on from where the preview panel left it, rather than arriving from nowhere.
                                     val from = launched
                                     if (from != null && bounds != Rect.Zero && bounds.width > 0f) {
