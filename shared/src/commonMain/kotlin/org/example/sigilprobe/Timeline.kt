@@ -22,6 +22,7 @@ import androidx.compose.ui.platform.*
 import androidx.compose.ui.semantics.*
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.*
 import androidx.compose.ui.window.*
@@ -299,14 +300,14 @@ internal fun ConversationPage(chat: ChatSummary, state: MessengerState, draft: T
             FooterContent {
             CompositionLocalProvider(LocalPreviewLaunch provides previewLaunch) {
             Column(Modifier.fillMaxWidth()) {
-            val context = editing?.let { "Editing: ${it.text}" } ?: reply?.let { "Replying to ${it.text}" } ?: thread?.let { "Reply in thread" }
+            val context = editing?.let { "Editing" to it.text } ?: reply?.let { (state.people[it.author] ?: if (it.mine) "You" else chat.name) to it.text } ?: thread?.let { "Reply in thread" to null }
             state.transfers.filter { it.peer == chat.id && !it.draft }.forEach { transfer ->
                 Row(Modifier.fillMaxWidth().padding(start = 20.dp), verticalAlignment = Alignment.CenterVertically) {
                     Column(Modifier.weight(1f)) { Text(transfer.name, maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.bodySmall); Text(if (transfer.phase == "Staging") "Importing…" else "Sending attachment…", style = MaterialTheme.typography.labelSmall) }
                     Symbol("close", "Cancel attachment") { command("file_cancel", mapOf("request" to transfer.request)) }
                 }
             }
-            context?.let { Row(Modifier.fillMaxWidth().padding(start = 20.dp), verticalAlignment = Alignment.CenterVertically) { Text(it, Modifier.weight(1f), maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.bodySmall); Symbol("close", "Cancel reply or edit") { reply = null; editing = null; setThread(null) } } }
+            context?.let { (title, text) -> ContextChip(title, text) { reply = null; editing = null; setThread(null) } }
             val inputCommand: Command = { action, fields ->
                 command(action, if (action in listOf("attachment_pick", "record_start")) fields + mapOf("reply_author" to reply?.author, "reply_message" to reply?.id, "thread_author" to thread?.author, "thread_message" to thread?.id) else fields)
             }
@@ -380,7 +381,16 @@ internal fun MessageBubble(message: ChatMessage, grouped: Boolean, followed: Boo
             CompositionLocalProvider(LocalBubbleCue provides cue,LocalMessageKey provides message.author+message.id,LocalMessageBubble provides panelled,LocalMaterialOutgoing provides message.mine,LocalContentColor provides if (bare) scheme.onBackground else if (message.mine) outgoingInk else scheme.onSurface,LocalMessageSurface provides if (bare) scheme.background else if (message.mine) outgoing else scheme.surfaceContainer) {
             Column(if (message.attachment == null) Modifier.padding(horizontal = if(objectOnly || bareLocation || panelled)0.dp else 14.dp, vertical = if(bareLocation || panelled)0.dp else 10.dp) else Modifier) {
                 // The quoted block is the timeline ground set into the bubble.
-                message.reply?.let { Surface(shape = RoundedCornerShape(12.dp), color = scheme.background) { Text(it, Modifier.padding(9.dp), style = MaterialTheme.typography.bodySmall, maxLines = 2, overflow = TextOverflow.Ellipsis) }; Spacer(Modifier.height(6.dp)) }
+                message.reply?.let { quoted ->
+                    val name = message.replyAuthor?.let { LocalMediaSender.current(message.copy(author = it, mine = message.replyMine)) }
+                    Surface(Modifier.fillMaxWidth().testTag("reply-quote"), shape = RoundedCornerShape(12.dp), color = LocalContentColor.current.copy(alpha = .1f)) {
+                        Column(Modifier.padding(horizontal = 12.dp, vertical = 8.dp)) {
+                            if (name != null) Text(name, style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.SemiBold), maxLines = 1, overflow = TextOverflow.Ellipsis)
+                            Text(quoted, style = MaterialTheme.typography.bodySmall, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                        }
+                    }
+                    Spacer(Modifier.height(8.dp))
+                }
                 if (message.attachment != null) LocalAttachmentContent.current(message) else if (message.parts.isNotEmpty()) MessageCards(message, analyze, command, objectOnly || bareLocation) else MessageText(message.text, analyze)
                 if (!captioned) message.attachment?.caption?.takeIf { it.isNotEmpty() }?.let { caption ->
                     Box(Modifier.padding(horizontal=14.dp,vertical=10.dp)) { MessageText(caption,analyze) }
@@ -505,4 +515,18 @@ internal fun VerificationDialog(chat: ChatSummary, busy: Boolean, command: Comma
             }
         }
     }, confirmButton = { SigilTextButton(close) { Text("Done") } })
+}
+
+// What the next message answers or replaces, as the pill above the writing field.
+@Composable
+internal fun ContextChip(title: String, text: String?, close: () -> Unit) {
+    Surface(Modifier.fillMaxWidth().padding(start = 8.dp, end = 8.dp, top = 8.dp).testTag("context-chip"), shape = RoundedCornerShape(20.dp), color = MaterialTheme.colorScheme.surfaceContainerHigh) {
+        Row(Modifier.padding(start = 14.dp, end = 4.dp, top = 4.dp, bottom = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+            Column(Modifier.weight(1f).padding(vertical = 4.dp)) {
+                Text(title, style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.SemiBold), maxLines = 1, overflow = TextOverflow.Ellipsis)
+                if (text != null) Text(text, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            }
+            Symbol("close", "Cancel reply or edit", close)
+        }
+    }
 }
