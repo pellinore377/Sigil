@@ -1,22 +1,29 @@
 package org.sigil
 
+import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.animateScrollBy
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
@@ -28,6 +35,7 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.layout.positionInParent
+import androidx.compose.ui.layout.positionInRoot
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -80,36 +88,46 @@ private const val LyricsGlide = 900
     val faint = scheme.onSurfaceVariant
     val synced = track.lyrics.isNotEmpty() && track.lyrics.all { it.atMs != null }
     val current = if (synced) track.lyrics.indexOfLast { (it.atMs ?: 0) <= playback.position } else -1
-    val scroll = rememberScrollState()
+    val list = rememberLazyListState()
     val scope = rememberCoroutineScope()
     val backdrop = rememberChromeBackdrop()
     val density = LocalDensity.current
     var reach by remember { mutableStateOf(112.dp) }
     val navigation = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
     val lineTops = remember { mutableMapOf<Int, Float>() }
+    var controlsTop by remember { mutableFloatStateOf(0f) }
+    var lyricsHeight by remember { mutableIntStateOf(0) }
+    // A scrolled list is placed, not redrawn; reading its position in draw keeps the glass and its source current.
+    val follow = Modifier.drawBehind { list.firstVisibleItemIndex; list.firstVisibleItemScrollOffset }
     BoxWithConstraints(Modifier.fillMaxSize().background(Brush.verticalGradient(listOf(room, floor)))) {
         val viewport = maxHeight
+        val width = maxWidth
         val viewportPx = with(density) { viewport.toPx() }
-        val lyricsTop = with(density) { (viewport - reach - 12.dp).toPx() }
-        val inLyrics = scroll.value > lyricsTop * .5f
+        // Reading position: the transport row tucked under the pill, lyrics beneath it, the key still in reach.
+        val lyricsTop = (controlsTop - with(density) { (reach + 12.dp).toPx() }).coerceAtLeast(0f)
+        // Where the list stands, in pixels from the top: the page is exactly one viewport tall, the lyrics follow it.
+        val absolute = when (list.firstVisibleItemIndex) { 0 -> list.firstVisibleItemScrollOffset.toFloat(); 1 -> viewportPx + list.firstVisibleItemScrollOffset; else -> viewportPx + lyricsHeight + list.firstVisibleItemScrollOffset }
+        val inLyrics = absolute > lyricsTop * .5f
         val glide = tween<Float>(LyricsGlide, easing = FastOutSlowInEasing)
+        // The page may only scroll as far as the reading position; nothing empty lies past the last line.
+        val tail = with(density) { (lyricsTop - lyricsHeight).coerceAtLeast(0f).toDp() }
         // The live line is followed only once the reader has gone down to the lyrics; the first screen stays put.
-        LaunchedEffect(current) { if (current >= 0 && inLyrics) lineTops[current]?.let { scroll.animateScrollTo((it - viewportPx * .35f).toInt().coerceAtLeast(0), tween(500)) } }
+        LaunchedEffect(current) { if (current >= 0 && inLyrics) lineTops[current]?.let { list.animateScrollBy((it - viewportPx * .45f).coerceIn(0f, lyricsTop) - absolute, tween(500)) } }
         CompositionLocalProvider(LocalContentColor provides ink) {
-            Column(Modifier.fillMaxSize().captureBackdrop(backdrop).verticalScroll(scroll), horizontalAlignment = Alignment.CenterHorizontally) {
-                Column(Modifier.fillMaxWidth().height(viewport).padding(top = reach + 12.dp, bottom = navigation + 12.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-                    BoxWithConstraints(Modifier.weight(1f).fillMaxWidth().padding(horizontal = 36.dp, vertical = 12.dp), contentAlignment = Alignment.Center) {
-                        val side = minOf(maxWidth, maxHeight, 380.dp)
-                        Box(Modifier.size(side).clip(RoundedCornerShape(18.dp)).background(lerp(tone, scheme.background, .3f)), contentAlignment = Alignment.Center) {
-                            if (track.art != null) Image(track.art, null, Modifier.fillMaxSize(), contentScale = ContentScale.Crop)
-                            else Box(Modifier.size(96.dp).background(ink.copy(alpha = .14f), SquircleShape), contentAlignment = Alignment.Center) { Text("♫", fontSize = 44.sp, lineHeight = 44.sp) }
-                        }
+            LazyColumn(Modifier.fillMaxSize().then(follow).captureBackdrop(backdrop), list, horizontalAlignment = Alignment.CenterHorizontally) {
+                item { Column(Modifier.fillMaxWidth().height(viewport).padding(top = reach + 12.dp, bottom = navigation + 12.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+                    val side = minOf(width - 72.dp, viewport - reach - 330.dp, 380.dp).coerceAtLeast(120.dp)
+                    Spacer(Modifier.weight(1f))
+                    Box(Modifier.size(side).clip(RoundedCornerShape(18.dp)).background(lerp(tone, scheme.background, .3f)), contentAlignment = Alignment.Center) {
+                        if (track.art != null) Image(track.art, null, Modifier.fillMaxSize(), contentScale = ContentScale.Crop)
+                        else Box(Modifier.size(96.dp).background(ink.copy(alpha = .14f), SquircleShape), contentAlignment = Alignment.Center) { Glyph("music_note", 48) }
                     }
-                    Column(Modifier.fillMaxWidth().padding(horizontal = 28.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                        Text(track.title, style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold, textAlign = TextAlign.Center, maxLines = 2, overflow = TextOverflow.Ellipsis)
-                        track.artist?.let { Text(it, style = MaterialTheme.typography.bodyLarge, color = faint, textAlign = TextAlign.Center, maxLines = 1, overflow = TextOverflow.Ellipsis) }
-                        if (!caption.isNullOrBlank()) Text(caption, Modifier.padding(top = 4.dp), style = MaterialTheme.typography.bodyMedium, color = faint, textAlign = TextAlign.Center, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                    // The words sit with the picture, and the pair floats midway between the header and the controls.
+                    Column(Modifier.fillMaxWidth().padding(horizontal = 28.dp, vertical = 18.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                        Text(track.title, style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold, textAlign = TextAlign.Center, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                        track.artist?.let { Text(it, style = MaterialTheme.typography.titleMedium, color = faint, textAlign = TextAlign.Center, maxLines = 1, overflow = TextOverflow.Ellipsis) }
                     }
+                    Spacer(Modifier.weight(1f))
                     val duration = playback.duration.coerceAtLeast(1)
                     var dragging by remember { mutableStateOf<Float?>(null) }
                     Column(Modifier.fillMaxWidth().padding(horizontal = 24.dp, vertical = 10.dp)) {
@@ -119,8 +137,8 @@ private const val LyricsGlide = 900
                             Text(trackTime(playback.duration), style = MaterialTheme.typography.labelSmall, color = faint)
                         }
                     }
-                    // Transport centred; the lyrics key on the far right, lit while the lyrics are in view.
-                    Box(Modifier.fillMaxWidth().padding(start = 24.dp, end = 24.dp, bottom = 8.dp)) {
+                    // Transport centred; the lyrics key at the end of the row, in the play key's colour while the lyrics are in view.
+                    Box(Modifier.fillMaxWidth().onGloballyPositioned { controlsTop = it.positionInRoot().y + absolute }.padding(start = 24.dp, end = 24.dp, bottom = 8.dp)) {
                         Row(Modifier.align(Alignment.Center), horizontalArrangement = Arrangement.spacedBy(28.dp), verticalAlignment = Alignment.CenterVertically) {
                             SigilIconButton({ playback.seek((playback.position - 10_000).coerceAtLeast(0)) }, enabled = playback.ready) { Glyph("replay_10", 30, "Back ten seconds") }
                             Box(Modifier.size(72.dp).background(scheme.primary, SquircleShape).clip(SquircleShape).clickable(enabled = playback.ready) { playback.toggle() }, contentAlignment = Alignment.Center) {
@@ -132,32 +150,44 @@ private const val LyricsGlide = 900
                             }
                             SigilIconButton({ playback.seek((playback.position + 10_000).coerceAtMost(playback.duration)) }, enabled = playback.ready) { Glyph("forward_10", 30, "Forward ten seconds") }
                         }
-                        if (track.lyrics.isNotEmpty()) Box(Modifier.align(Alignment.CenterEnd).size(48.dp).background(if (inLyrics) scheme.primaryContainer else scheme.surfaceContainerHigh, SquircleShape).clip(SquircleShape)
-                            .clickable { scope.launch { scroll.animateScrollTo(if (inLyrics) 0 else lyricsTop.toInt(), glide) } }, contentAlignment = Alignment.Center) {
-                            CompositionLocalProvider(LocalContentColor provides if (inLyrics) scheme.onPrimaryContainer else scheme.onSurface) { Glyph("lyrics", 22, if (inLyrics) "Back to the player" else "Show lyrics") }
+                        if (track.lyrics.isNotEmpty()) Box(Modifier.align(Alignment.CenterEnd).size(48.dp).then(if (inLyrics) Modifier.background(scheme.primary, SquircleShape) else Modifier).clip(SquircleShape)
+                            .clickable { scope.launch { list.animateScrollBy((if (inLyrics) 0f else lyricsTop) - absolute, glide) } }, contentAlignment = Alignment.Center) {
+                            CompositionLocalProvider(LocalContentColor provides if (inLyrics) scheme.onPrimary else scheme.onSurface) { Glyph("lyrics", 22, if (inLyrics) "Back to the player" else "Show lyrics") }
                         }
                     }
-                }
+                } }
                 if (track.lyrics.isNotEmpty()) {
-                    Text("Lyrics", Modifier.fillMaxWidth().padding(horizontal = 28.dp, vertical = 8.dp), style = MaterialTheme.typography.labelLarge, color = faint)
-                    track.lyrics.forEachIndexed { index, line ->
-                        val live = synced && index == current
-                        Text(line.text.ifEmpty { "…" }, Modifier.fillMaxWidth().onGloballyPositioned { lineTops[index] = it.positionInParent().y }
-                            .then(if (synced) Modifier.clickable { line.atMs?.let(playback::seek) } else Modifier).padding(horizontal = 28.dp, vertical = 6.dp),
-                            style = if (synced) MaterialTheme.typography.titleLarge else MaterialTheme.typography.bodyLarge, fontWeight = if (live) FontWeight.Bold else FontWeight.Medium,
-                            color = if (!synced || live) ink else ink.copy(alpha = .42f), fontSize = if (synced) 22.sp else 17.sp, lineHeight = if (synced) 30.sp else 26.sp)
-                    }
-                    Spacer(Modifier.height(viewport * .4f))
+                    item { Column(Modifier.fillMaxWidth().onSizeChanged { lyricsHeight = it.height }) {
+                        Text("Lyrics", Modifier.fillMaxWidth().padding(horizontal = 28.dp, vertical = 8.dp), style = MaterialTheme.typography.labelLarge, color = faint)
+                        track.lyrics.forEachIndexed { index, line ->
+                            val live = synced && index == current
+                            Text(line.text.ifEmpty { "…" }, Modifier.fillMaxWidth().onGloballyPositioned { lineTops[index] = viewportPx + it.positionInParent().y }
+                                .then(if (synced) Modifier.clickable { line.atMs?.let(playback::seek) } else Modifier).padding(horizontal = 28.dp, vertical = 6.dp),
+                                style = if (synced) MaterialTheme.typography.titleLarge else MaterialTheme.typography.bodyLarge, fontWeight = if (live) FontWeight.Bold else FontWeight.Medium,
+                                color = if (!synced || live) ink else ink.copy(alpha = .42f), fontSize = if (synced) 22.sp else 17.sp, lineHeight = if (synced) 30.sp else 26.sp)
+                        }
+                        Spacer(Modifier.height(navigation + 96.dp))
+                    } }
+                    item { Spacer(Modifier.height(tail)) }
                 }
             }
             // The timeline's header, floating over the room like it floats over the conversation.
-            ViewerHeader(backdrop, Modifier.align(Alignment.TopCenter), { reach = it }) {
+            ViewerHeader(backdrop, Modifier.align(Alignment.TopCenter).then(follow), { reach = it }) {
                 Symbol("chevron_left", "Back", close)
                 Column(Modifier.weight(1f).padding(start = 10.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                     Text("Now playing", style = MaterialTheme.typography.titleLarge, maxLines = 1, overflow = TextOverflow.Ellipsis)
                     Text("${track.kind} · ${attachmentSize(track.bytes)}", style = MaterialTheme.typography.labelMedium, color = scheme.onSurfaceVariant, maxLines = 1)
                 }
                 download?.let { Symbol("download", if (downloading) "Saving track" else "Save track", it) }
+            }
+            // The way back, sliding up from the foot once the lyrics are in view and away again when they are left.
+            val motion = LocalMotion.current
+            AnimatedVisibility(inLyrics, Modifier.align(Alignment.BottomCenter).padding(bottom = navigation + 16.dp),
+                enter = slideInVertically(motion.enter(MotionMillis)) { it * 2 } + fadeIn(motion.enter(MotionMillis)),
+                exit = slideOutVertically(motion.exit(MotionMillis)) { it * 2 } + fadeOut(motion.exit(MotionExit)), label = "Return to top") {
+                FloatingChrome(backdrop, follow.size(52.dp).clip(SquircleShape).clickable { scope.launch { list.animateScrollBy(-absolute, glide) } }, SquircleShape) {
+                    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { Glyph("keyboard_arrow_up", 26, "Return to top") }
+                }
             }
         }
     }
