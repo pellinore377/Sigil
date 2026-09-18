@@ -17,6 +17,7 @@ import androidx.compose.ui.*
 import androidx.compose.ui.draw.*
 import androidx.compose.ui.geometry.*
 import androidx.compose.ui.graphics.*
+import androidx.compose.ui.graphics.drawscope.clipRect
 import androidx.compose.ui.input.pointer.*
 import androidx.compose.ui.layout.*
 import androidx.compose.ui.platform.*
@@ -88,7 +89,8 @@ internal fun ConversationPage(chat: ChatSummary, state: MessengerState, draft: T
     var selected by remember(chat.id) { mutableStateOf<Pair<ChatMessage, Rect>?>(null) }
     var returnBounds by remember(chat.id) { mutableStateOf(Rect.Zero) }
     var cardDetails by remember(chat.id) { mutableStateOf<ChatMessage?>(null) }
-    var details by remember(chat.id) { mutableStateOf<Pair<String, String>?>(null) }
+    // Each message keeps its own details open or closed, as the reference does.
+    var details by remember(chat.id) { mutableStateOf(setOf<Pair<String, String>>()) }
     var submitted by remember { mutableStateOf<Triple<String, String, Long>?>(null) }
     var localQuery by remember(page) { mutableStateOf("") }
     val scheme = MaterialTheme.colorScheme
@@ -174,7 +176,14 @@ internal fun ConversationPage(chat: ChatSummary, state: MessengerState, draft: T
     val timelineMotion = if (pageMotion == null) Modifier else with(pageMotion) { Modifier.animateEnterExit(
         enter = slideInVertically(motionPolicy.enter(MotionMillis)) { it },
         exit = slideOutVertically(motionPolicy.exit(MotionMillis, if(LocalNavigationBack.current)MotionQuick else 0)) { it }) }
-    Box(Modifier.fillMaxSize().then(timelineMotion).background(scheme.background).testTag("conversation-page")) {
+    // The menu blurs the page behind it where the platform can; elsewhere the scrim alone dims it.
+    val menuBlur = remember { mutableFloatStateOf(0f) }
+    var windowShift by remember { mutableStateOf(Offset.Zero) }
+    var pageBounds by remember { mutableStateOf(Rect.Zero) }
+    val footerHost = LocalFooterHost.current
+    val navigationInset = WindowInsets.navigationBars.getBottom(LocalDensity.current)
+    Box(Modifier.fillMaxSize().then(timelineMotion).background(scheme.background).blur(18.dp * menuBlur.floatValue)
+        .onGloballyPositioned { windowShift = it.positionOnScreen() - it.positionInWindow(); pageBounds = it.boundsInWindow() }.testTag("conversation-page")) {
         LocalWallpaper.current(chat.id, Modifier.matchParentSize())
         Column(Modifier.align(Alignment.TopCenter).widthIn(max = 920.dp).fillMaxSize().then(if (gradient) Modifier.background(Brush.verticalGradient(listOf(scheme.background.copy(alpha = .7f), scheme.primaryContainer.copy(alpha = .7f)))) else Modifier)) {
             val headerInset = LocalHeaderInset.current
@@ -192,7 +201,7 @@ internal fun ConversationPage(chat: ChatSummary, state: MessengerState, draft: T
                     if (page == "Pins") {
                         var pinBounds by remember(message.id) { mutableStateOf(Rect.Zero) }
                         Surface(itemMotion().fillMaxWidth().padding(vertical = 6.dp).onGloballyPositioned { pinBounds = it.boundsInWindow() }
-                            .clip(RoundedCornerShape(20.dp)).combinedClickable(onClick = { details = message.author to message.id }, onLongClick = { selected = message to pinBounds }),
+                            .clip(RoundedCornerShape(20.dp)).combinedClickable(onClick = { val key = message.author to message.id; details = if (key in details) details - key else details + key }, onLongClick = { selected = message to pinBounds }),
                             shape = RoundedCornerShape(20.dp), color = scheme.surfaceContainerHigh) {
                             Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                                 Row(verticalAlignment = Alignment.CenterVertically) {
@@ -241,7 +250,7 @@ internal fun ConversationPage(chat: ChatSummary, state: MessengerState, draft: T
                     Column(itemMotion().then(arrivalMotion(arrivals,materialKey)).fillMaxWidth().padding(top = if (grouped) 3.dp else 12.dp)) {
                         if (showSeparator(message, older)) Text(message.separator.ifEmpty { message.time }, Modifier.align(Alignment.CenterHorizontally).padding(top = 6.dp, bottom = 14.dp), style = MaterialTheme.typography.labelMedium, color = scheme.onSurfaceVariant)
                         if (chat.group && !message.mine && !grouped) Row(Modifier.padding(bottom = 4.dp), verticalAlignment = Alignment.CenterVertically) { val name = state.people[message.author] ?: "Former member"; Avatar(name, 20, message.author); Text(name, Modifier.padding(start = 6.dp), style = MaterialTheme.typography.bodySmall, color = scheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis) }
-                        Row(Modifier.fillMaxWidth().combinedClickable(interactionSource = remember { androidx.compose.foundation.interaction.MutableInteractionSource() }, indication = null, onClick = { details = message.author to message.id }, onLongClick = { selected = message to bounds })
+                        Row(Modifier.fillMaxWidth().combinedClickable(interactionSource = remember { androidx.compose.foundation.interaction.MutableInteractionSource() }, indication = null, onClick = { val key = message.author to message.id; details = if (key in details) details - key else details + key }, onLongClick = { selected = message to bounds })
                             .pointerInput(message.id, message.mine) {
                                 val slop = viewConfiguration.touchSlop
                                 // The bubble never travels further than the chip needs, so it stays on screen.
@@ -282,7 +291,7 @@ internal fun ConversationPage(chat: ChatSummary, state: MessengerState, draft: T
                             BoxWithConstraints(Modifier.weight(1f, false)) {
                             val bubbleWidth = ((maxWidth + TimelineGutter * 2) * BubbleWidthFraction).coerceAtMost(maxWidth)
                             Column(Modifier.width(bubbleWidth), horizontalAlignment = if (message.mine) Alignment.End else Alignment.Start) {
-                                val lifted = selected?.first?.let { it.id == message.id && it.author == message.author } == true
+                                val lifted = selected?.first?.let { it.id == message.id && it.author == message.author } == true && menuBlur.floatValue > 0f
                                 val launched = previewLaunch.panelOrigin(message.id).takeIf { message.mine }
                                 val arrival = remember(message.id) { Animatable(1f) }
                                 LaunchedEffect(launched) {
@@ -325,7 +334,7 @@ internal fun ConversationPage(chat: ChatSummary, state: MessengerState, draft: T
                                     }
                                   }
                                 }
-                                MessageDetails(message, details == (message.author to message.id), !state.historical && page.isEmpty() && thread == null && showsReceipt(index, messages), chat, state.people)
+                                MessageDetails(message, (message.author to message.id) in details, !state.historical && page.isEmpty() && thread == null && showsReceipt(index, messages), chat, state.people)
                             }
                         }
                             }
@@ -362,7 +371,7 @@ internal fun ConversationPage(chat: ChatSummary, state: MessengerState, draft: T
         selected?.let { (message, bounds) ->
             val index = messages.indexOfFirst { it.id == message.id && it.author == message.author }
             val older = messages.getOrNull(index + 1)
-            MessageMenu(message, bounds, returnBounds.takeIf { it != Rect.Zero } ?: bounds, older?.author == message.author && !showSeparator(message, older), messages.getOrNull(index - 1)?.author == message.author, analyze, { selected = null; returnBounds = Rect.Zero }) { action, value ->
+            MessageMenu(message, bounds, returnBounds.takeIf { it != Rect.Zero } ?: bounds, menuBlur, windowShift, Rect(pageBounds.left, footerHost?.headerBottom ?: pageBounds.top, pageBounds.right, pageBounds.bottom - navigationInset - with(LocalDensity.current) { ((footerHost?.height ?: 0.dp) + 16.dp).toPx() }), older?.author == message.author && !showSeparator(message, older), messages.getOrNull(index - 1)?.author == message.author, analyze, { selected = null; returnBounds = Rect.Zero }) { action, value ->
                 when (action) {
                     "reply" -> respond(message, false)
                     "thread" -> respond(message, true)
@@ -443,15 +452,14 @@ internal fun MessageBubble(message: ChatMessage, grouped: Boolean, followed: Boo
 @Composable
 internal fun MessageDetails(message: ChatMessage, expanded: Boolean, receipt: Boolean, chat: ChatSummary, people: Map<String, String>) {
     val motionPolicy = LocalMotion.current
-    Row(Modifier.animateContentSize(motionPolicy.tween(MotionMillis)).padding(top = if (expanded || receipt) 4.dp else 0.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(5.dp)) {
-        if (receipt) DeliveryReceipt(message, chat, people)
-        AnimatedVisibility(expanded, enter = fadeIn(motionPolicy.enter(MotionInline)) + expandHorizontally(motionPolicy.enter(MotionMillis), expandFrom = Alignment.End), exit = fadeOut(motionPolicy.exit(MotionExit)) + shrinkHorizontally(motionPolicy.exit(MotionQuick)), label = "Message details") {
-            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(5.dp)) {
-                if (receipt) Text("·", style = MaterialTheme.typography.labelSmall)
-                Text(message.time, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                Glyph("lock", 11, "Encrypted message")
-            }
+    // Time, then the delivery state of an own message, then the lock; the last own message always carries its state.
+    val shown = receipt || expanded
+    Row(Modifier.animateContentSize(motionPolicy.tween(MotionMillis)).padding(top = if (shown) 4.dp else 0.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+        AnimatedVisibility(expanded, enter = fadeIn(motionPolicy.enter(MotionInline)) + expandHorizontally(motionPolicy.enter(MotionMillis), expandFrom = Alignment.End), exit = fadeOut(motionPolicy.exit(MotionExit)) + shrinkHorizontally(motionPolicy.exit(MotionExit), shrinkTowards = Alignment.End), label = "Message details") {
+            Text(message.time, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
+        if (receipt || expanded && message.mine) DeliveryReceipt(message, chat, people)
+        if (expanded) Glyph("lock", 11, "Encrypted message")
     }
 }
 @Composable
@@ -469,8 +477,8 @@ private fun DeliveryReceipt(message: ChatMessage, chat: ChatSummary, people: Map
             repeat(8) { index -> val r = (index * 45f + angle) * PI / 180; drawCircle(color, 1.dp.toPx(), Offset(center.x + cos(r).toFloat() * size.width * .36f, center.y + sin(r).toFloat() * size.height * .36f)) }
         }
     } else Surface(Modifier.size(17.dp).semantics { contentDescription = stage }, shape = CircleShape,
-        color = if (stage in listOf("Failed", "Expired", "Cancelled")) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant,
-        contentColor = MaterialTheme.colorScheme.background) { Box(contentAlignment = Alignment.Center) { Glyph(if (stage in listOf("Failed", "Expired", "Cancelled")) "priority_high" else "check", 12) } }
+        color = if (stage in listOf("Failed", "Expired", "Cancelled")) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary,
+        contentColor = if (stage in listOf("Failed", "Expired", "Cancelled")) MaterialTheme.colorScheme.onError else MaterialTheme.colorScheme.onPrimary) { Box(contentAlignment = Alignment.Center) { Glyph(if (stage in listOf("Failed", "Expired", "Cancelled")) "priority_high" else "check", 12) } }
     }
 }
 @Composable
@@ -492,11 +500,17 @@ private fun TypingRow(people: List<String>, name: String, photos: List<String>) 
     }
 }
 @Composable
-private fun MessageMenu(message: ChatMessage, origin: Rect, returnTo: Rect, grouped: Boolean, followed: Boolean, analyze: (String) -> String, dismiss: () -> Unit, action: (String, String) -> Unit) {
+private fun MessageMenu(message: ChatMessage, originWindow: Rect, returnWindow: Rect, blur: MutableFloatState, windowShift: Offset, bandWindow: Rect, grouped: Boolean, followed: Boolean, analyze: (String) -> String, dismiss: () -> Unit, action: (String, String) -> Unit) {
     val objectMotion=message.parts.singleOrNull()?.utility?.motion
     val motionPolicy = LocalMotion.current
     var target by remember { mutableStateOf(Rect.Zero) }
     val progress = remember { Animatable(0f) }
+    // The dialog is its own window; its coordinates meet the page's only through the screen.
+    var dialogShift by remember { mutableStateOf<Offset?>(null) }
+    val correction = windowShift - (dialogShift ?: windowShift)
+    val origin = originWindow.translate(correction)
+    val returnTo = returnWindow.translate(correction)
+    val band = bandWindow.translate(correction)
     var emojiPicker by remember { mutableStateOf(false) }
     var emoji by remember { mutableStateOf("") }
     var closing by remember { mutableStateOf(false) }
@@ -508,31 +522,72 @@ private fun MessageMenu(message: ChatMessage, origin: Rect, returnTo: Rect, grou
         scope.launch { progress.animateTo(0f, motionPolicy.tween(MotionMillis)); dismiss(); after() }
     }
     fun choose(name: String, value: String) { finish { action(name, value) } }
-    LaunchedEffect(Unit) { progress.animateTo(1f, motionPolicy.tween(MotionMillis)) }
+    // Nothing moves until the copy is placed exactly over the original.
+    val placed = target != Rect.Zero && dialogShift != null
+    LaunchedEffect(placed) { if (placed) progress.animateTo(1f, motionPolicy.tween(MotionMillis)) }
+    SideEffect { blur.floatValue = progress.value }
+    DisposableEffect(Unit) { onDispose { blur.floatValue = 0f } }
+    // The bubble stays where it was pressed; the reaction pill sits above it and the menu below, on its own side,
+    // and the group moves only as far as the safe area needs.
     Dialog({ finish() }, properties = DialogProperties(usePlatformDefaultWidth = false)) {
-        Box(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.scrim.copy(alpha = .48f * progress.value)).clickable { finish() }.safeDrawingPadding(), contentAlignment = Alignment.Center) {
-            Column(Modifier.widthIn(max = 360.dp).fillMaxWidth().padding(16.dp).verticalScroll(rememberScrollState()), horizontalAlignment = if (message.mine) Alignment.End else Alignment.Start, verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                Surface(Modifier.alpha(progress.value), shape = RoundedCornerShape(28.dp), color = MaterialTheme.colorScheme.surfaceVariant) {
+        var dialogOrigin by remember { mutableStateOf(Offset.Zero) }
+        val insets = WindowInsets.safeDrawing
+        val layoutDirection = LocalLayoutDirection.current
+        val scheme = MaterialTheme.colorScheme
+        val enter = Modifier.graphicsLayer {
+            alpha = progress.value; val scale = .92f + .08f * progress.value; scaleX = scale; scaleY = scale
+            transformOrigin = TransformOrigin(if (message.mine) 1f else 0f, .5f)
+        }
+        Box(Modifier.fillMaxSize().background(scheme.scrim.copy(alpha = .5f * progress.value)).clickable(remember { androidx.compose.foundation.interaction.MutableInteractionSource() }, null) { finish() }
+            .onGloballyPositioned { dialogOrigin = it.positionInWindow(); dialogShift = it.positionOnScreen() - it.positionInWindow() }) {
+            Layout({
+                Surface(enter, shape = RoundedCornerShape(28.dp), color = scheme.surfaceContainerHigh) {
                     Row(Modifier.padding(horizontal = 4.dp), verticalAlignment = Alignment.CenterVertically) {
-                        listOf("👍", "❤️", "😂", "😮", "😢", "😡").forEach { e -> SigilTextButton({ choose("react", e) }, Modifier.weight(1f), contentPadding = PaddingValues(0.dp)) { Text(e, fontSize = 22.sp) } }
+                        listOf("👍", "❤️", "😂", "😮", "😢", "😡").forEach { e -> SigilTextButton({ choose("react", e) }, contentPadding = PaddingValues(horizontal = 6.dp)) { Text(e, fontSize = 22.sp) } }
                         Symbol("add_reaction", "Choose reaction") { emojiPicker = true }
                     }
                 }
-                Box(Modifier.width(when(objectMotion?.kind) {"coin"->164.dp;"choice"->180.dp;"dice"->if(objectMotion.dice.size==1)132.dp else 232.dp;else->with(density){origin.width.toDp()}}).onGloballyPositioned { target = it.boundsInWindow() }) {
+                Box(Modifier.width(when(objectMotion?.kind) {"coin"->164.dp;"choice"->180.dp;"dice"->if(objectMotion.dice.size==1)132.dp else 232.dp;else->with(density){origin.width.toDp()}}).onGloballyPositioned { target = it.boundsInWindow() }
+                    .graphicsLayer { alpha = if (placed) 1f else 0f }
+                    .drawWithContent { if (closing) clipRect(top = band.top - target.top, bottom = band.bottom - target.top) { this@drawWithContent.drawContent() } else drawContent() }) {
                     Box(Modifier.graphicsLayer {
                         val source = if (closing) returnTo else origin
                         if (target != Rect.Zero && source != Rect.Zero) { translationX = (source.left - target.left) * (1f - progress.value); translationY = (source.top - target.top) * (1f - progress.value) }
                     }) { CompositionLocalProvider(LocalMaterialTimeline provides null, LocalTextMotion provides null, LocalObjectMenu provides true) {MessageBubble(message, grouped, followed, analyze)} }
                 }
-                Surface(Modifier.widthIn(min = 232.dp).alpha(progress.value), shape = RoundedCornerShape(20.dp), color = MaterialTheme.colorScheme.surfaceVariant) {
-                    Column(Modifier.padding(vertical = 6.dp)) {
+                // As wide as its longest label, with the same inset either side.
+                Surface(enter.width(IntrinsicSize.Max), shape = RoundedCornerShape(24.dp), color = scheme.surfaceContainerHigh) {
+                    Column(Modifier.padding(horizontal = 8.dp, vertical = 6.dp)) {
                         val entries = listOf("reply" to "Reply", "forward" to "Forward", "copy" to "Copy", "thread" to "Reply in thread", "pin" to if (message.pinned) "Unpin" else "Pin", "note" to if (message.noted) "Remove from notes" else "Add to notes") +
                             (if(message.detailsPart()!=null)listOf("details" to "Details") else emptyList()) +
                             (if(message.hasMessageMotion())listOf("replay" to "Replay animation") else emptyList()) +
                             (if (message.mine && message.editable) listOf("edit" to "Edit") else emptyList()) + (if (message.mine) listOf("delete" to "Delete") else emptyList())
-                        entries.forEach { (key, label) -> DropdownMenuItem({ Text(label, color = if (key == "delete") MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurface) }, { choose(key, "") },
+                        entries.forEach { (key, label) -> DropdownMenuItem({ Text(label, color = if (key == "delete") scheme.error else scheme.onSurface) }, { choose(key, "") },
                             leadingIcon = { Glyph(when(key) { "thread" -> "forum"; "pin" -> "push_pin"; "note" -> "description"; "copy" -> "content_copy"; "details" -> "info"; else -> key }, 20) }) }
                     }
+                }
+            }) { measurables, constraints ->
+                val gap = 10.dp.roundToPx()
+                val margin = 16.dp.roundToPx()
+                val loose = constraints.copy(minWidth = 0, minHeight = 0, maxWidth = constraints.maxWidth - margin * 2)
+                val (pill, bubble, menu) = measurables.map { it.measure(loose) }
+                val top = insets.getTop(this) + margin
+                val bottom = constraints.maxHeight - insets.getBottom(this) - margin
+                val left = (origin.left - dialogOrigin.x).roundToInt()
+                val right = (origin.right - dialogOrigin.x).roundToInt()
+                fun x(width: Int) = (if (message.mine) right - width else left).coerceIn(margin, (constraints.maxWidth - margin - width).coerceAtLeast(margin))
+                val bubbleTop = (origin.top - dialogOrigin.y).roundToInt()
+                val pillTop = bubbleTop - gap - pill.height
+                val menuTop = bubbleTop + bubble.height + gap
+                // Fit the menu first, then the pill; a bubble taller than the screen simply keeps its head.
+                var shift = 0
+                if (menuTop + menu.height > bottom) shift = bottom - (menuTop + menu.height)
+                if (pillTop + shift < top) shift = top - pillTop
+                if (menuTop + menu.height + shift > bottom) shift = bottom - (menuTop + menu.height)
+                layout(constraints.maxWidth, constraints.maxHeight) {
+                    pill.placeRelative(x(pill.width), pillTop + shift)
+                    bubble.placeRelative(x(bubble.width), bubbleTop + shift)
+                    menu.placeRelative(x(menu.width), menuTop + shift)
                 }
             }
         }

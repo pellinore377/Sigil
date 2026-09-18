@@ -34,19 +34,22 @@ fn ink(surface: u32) -> u32 {
 }
 
 // background, ink, surface, ink, accent, ink, tint, ink, outline, outgoing, ink.
-/// Dark anchors are fixed neutral steps, tinted toward the accent rather than mixed
-/// from it, so the ramp keeps its spacing whatever hue is chosen.
+/// Neutral anchors take a hint of the accent; the sent bubble is the accent itself, deepened
+/// until white reads on it, and every other tone stays where it sat whatever hue is chosen.
 pub fn palette(accent: u32, dark: bool) -> [u32; 11] {
-    let base = if dark { 0x131313 } else { 0xfcfcfc };
-    let surface = mix(if dark { 0x1a1a1a } else { 0xf1f1f1 }, accent, if dark { 8 } else { 5 });
+    let accent = accent & 0xffffff;
+    let base = if dark { 0x0f0f0f } else { 0xfafafa };
     let background = mix(base, accent, 3);
-    // The tonal container every secondary ink is measured against. It stays on the same
-    // side of the ground it always sat on; only the bubble below moves.
+    let surface = mix(if dark { 0x1e1e1e } else { 0xeeeeee }, accent, if dark { 5 } else { 3 });
     let tint = mix(base, accent, if dark { 35 } else { 19 });
-    // The outgoing bubble steps away from the ground: lighter in dark, darker in light,
-    // so its own ink flips with it.
-    let outgoing = mix(if dark { 0x474747 } else { 0x5e5e5e }, accent, 14);
-    let mut primary = accent & 0xffffff;
+    let mut outgoing = mix(accent, if dark { 0x1e1e1e } else { 0x4a4a4a }, if dark { 55 } else { 50 });
+    for _ in 0..100 {
+        if contrast(outgoing, 0xffffff) >= 4.5 {
+            break;
+        }
+        outgoing = mix(outgoing, 0x000000, 5);
+    }
+    let mut primary = accent;
     let target = if dark { 0xffffff } else { 0x000000 };
     for _ in 0..100 {
         if contrast(primary, background) >= 4.5 && contrast(primary, surface) >= 4.5 {
@@ -66,7 +69,7 @@ pub fn palette(accent: u32, dark: bool) -> [u32; 11] {
         ink(tint),
         outline,
         outgoing,
-        ink(outgoing),
+        0xffffff,
     ]
 }
 
