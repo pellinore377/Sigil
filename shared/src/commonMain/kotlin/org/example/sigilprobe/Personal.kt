@@ -252,6 +252,9 @@ internal fun PersonalPage(page: String, state: MessengerState, command: Command,
                     Text("Sigil", Modifier.padding(horizontal = 12.dp), style = MaterialTheme.typography.headlineSmall)
                     SettingsNote("Modern correspondence.")
                     SettingsValue("Version", "Development build · 0.1")
+                    var preview by remember { mutableStateOf(false) }
+                    SettingsLink("visibility", "Preview onboarding", "Every screen of the sign-in flow, with made-up state") { preview = true }
+                    if (preview) Presented({ preview = false }) { OnboardingPreview { preview = false } }
                     SettingsSectionLabel("Credits and licenses")
                     Text("Newsreader, Google Sans Flex, Google Sans Code, and Material Symbols.", Modifier.padding(horizontal = 12.dp), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     Text("Animated Noto Emoji by Google · CC BY 4.0. Lottie by Airbnb · Apache 2.0.", Modifier.padding(horizontal = 12.dp), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)

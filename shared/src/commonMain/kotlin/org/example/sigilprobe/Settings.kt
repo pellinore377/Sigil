@@ -15,6 +15,8 @@ import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.semantics.*
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.foundation.background
+import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.launch
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.jsonObject
@@ -91,6 +93,25 @@ internal fun SettingsSection(title: String, content: @Composable ColumnScope.() 
         content()
     }
 }
+
+// A tonal group: its rows sit on one faint surface with hairlines between them; a label in small capitals sits above.
+@Composable
+internal fun SettingsGroup(vararg rows: @Composable () -> Unit) {
+    Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(20.dp)).background(MaterialTheme.colorScheme.onSurface.copy(alpha = .045f)).padding(4.dp)) {
+        rows.forEachIndexed { index, row ->
+            if (index > 0) HorizontalDivider(Modifier.padding(horizontal = 12.dp), color = MaterialTheme.colorScheme.onSurface.copy(alpha = .08f))
+            row()
+        }
+    }
+}
+@Composable
+internal fun SettingsGroupLabel(title: String, inset: androidx.compose.ui.unit.Dp = 12.dp) {
+    Text(title.uppercase(), Modifier.padding(start = inset, top = 4.dp).clearAndSetSemantics { text = androidx.compose.ui.text.AnnotatedString(title) },
+        style = MaterialTheme.typography.labelSmall.copy(letterSpacing = 1.4.sp), color = MaterialTheme.colorScheme.onSurfaceVariant)
+}
+// A row inside a group that holds a control rather than a setting line.
+@Composable
+internal fun SettingsGroupContent(content: @Composable ColumnScope.() -> Unit) { Column(Modifier.fillMaxWidth().padding(12.dp), verticalArrangement = Arrangement.spacedBy(12.dp), content = content) }
 
 @Composable
 internal fun SettingsSectionLabel(title: String) {

@@ -17,64 +17,77 @@ import androidx.compose.ui.unit.dp
 
 @Composable
 internal fun AppearancePage(value: Appearance, analyze: (String) -> String, dynamicAvailable: Boolean, back: () -> Unit, collections: Boolean = false, setCollections: (Boolean) -> Unit = {}, collectionLabels: Boolean = true, setCollectionLabels: (Boolean) -> Unit = {}, followAccount: Boolean = true, setFollowAccount: (Boolean) -> Unit = {}, section: String = "appearance", navigate: (String) -> Unit = {}, update: (Appearance) -> Unit) {
-    SettingsDetailLayout(appearanceTitle(section), back, continuous = section == "appearance" || section == "appearance-media") {
+    SettingsDetailLayout(appearanceTitle(section), back) {
         Text(if (followAccount) "Account appearance · shared across your devices" else "Device appearance · only this device",
-            Modifier.padding(horizontal = 12.dp, vertical = 16.dp), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Modifier.padding(horizontal = 12.dp, vertical = 4.dp), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
         when (section) {
             "appearance-objects" -> ObjectAppearance(value,update)
             "appearance-colors" -> {
                 TimelinePreview(analyze, gradient = value.gradient)
-                AppearanceChoices("Appearance mode", listOf("Light" to "light_mode", "Dark" to "dark_mode", "System" to "devices"), value.mode) { update(value.copy(mode = it)) }
-                AccentPicker(value.accent) { update(value.copy(accent = it, dynamic = false)) }
-                if (dynamicAvailable) SettingsToggle("Use Android wallpaper colors", "Follow your wallpaper accent", value.dynamic) { update(value.copy(dynamic = it)) }
-                AppearanceChoices("Chat background", listOf("Solid" to "circle", "Gradient" to "gradient"), if (value.gradient) "Gradient" else "Solid") { update(value.copy(gradient = it == "Gradient")) }
-                Text("Conversations follow this background unless you customize them.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                SettingsGroupLabel("Appearance mode")
+                SettingsGroup({ SettingsGroupContent { AppearanceChoices("", listOf("Light" to "light_mode", "Dark" to "dark_mode", "System" to "devices"), value.mode) { update(value.copy(mode = it)) } } })
+                SettingsGroupLabel("Accent")
+                SettingsGroup({ SettingsGroupContent { AccentPicker(value.accent) { update(value.copy(accent = it, dynamic = false)) } } },
+                    *(if (dynamicAvailable) arrayOf<@Composable () -> Unit>({ SettingsToggle("Use Android wallpaper colors", "Follow your wallpaper accent", value.dynamic) { update(value.copy(dynamic = it)) } }) else emptyArray()))
+                SettingsGroupLabel("Chat background")
+                SettingsGroup({ SettingsGroupContent { AppearanceChoices("", listOf("Solid" to "circle", "Gradient" to "gradient"), if (value.gradient) "Gradient" else "Solid") { update(value.copy(gradient = it == "Gradient")) } } })
+                SettingsNote("Conversations follow this background unless you customize them.")
             }
             "appearance-type" -> {
-                AppearanceChoices("Font family", listOf("Newsreader" to "text_format", "Google Sans Flex" to "text_format"), value.font) { update(value.copy(font = it)) }
-                Text("A little room to think.", style = MaterialTheme.typography.headlineMedium)
-                Text("There is something lovely about an unhurried conversation. Leave a thought, send a photograph, or make a plan for tomorrow.", style = MaterialTheme.typography.bodyLarge)
-                Surface(shape = RoundedCornerShape(16.dp), color = MaterialTheme.colorScheme.surfaceContainer) {
-                    Text("let greeting = \"Hello, world\";", Modifier.fillMaxWidth().padding(16.dp), fontFamily = LocalCodeFont.current, style = MaterialTheme.typography.bodyMedium)
-                }
-                Text("Text size · ${(value.textScale * 100).toInt()}%", style = MaterialTheme.typography.titleMedium)
-                Slider(value.textScale, { update(value.copy(textScale = it)) }, Modifier.semantics { contentDescription = "Text size" }, valueRange = .85f..1.3f, steps = 8)
-                Text("Also respects your device's text-size setting. Code uses Google Sans Code with either font.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                SettingsGroupLabel("Font family")
+                SettingsGroup({ SettingsGroupContent { AppearanceChoices("", listOf("Newsreader" to "text_format", "Google Sans Flex" to "text_format"), value.font) { update(value.copy(font = it)) } } })
+                SettingsGroup({ SettingsGroupContent {
+                    Text("A little room to think.", style = MaterialTheme.typography.headlineMedium)
+                    Text("There is something lovely about an unhurried conversation. Leave a thought, send a photograph, or make a plan for tomorrow.", style = MaterialTheme.typography.bodyLarge)
+                    Surface(shape = RoundedCornerShape(16.dp), color = MaterialTheme.colorScheme.surfaceContainer) {
+                        Text("let greeting = \"Hello, world\";", Modifier.fillMaxWidth().padding(16.dp), fontFamily = LocalCodeFont.current, style = MaterialTheme.typography.bodyMedium)
+                    }
+                } })
+                SettingsGroupLabel("Text size")
+                SettingsGroup({ SettingsGroupContent {
+                    Text("${(value.textScale * 100).toInt()}%", style = MaterialTheme.typography.titleMedium)
+                    Slider(value.textScale, { update(value.copy(textScale = it)) }, Modifier.semantics { contentDescription = "Text size" }, valueRange = .85f..1.3f, steps = 8)
+                } })
+                SettingsNote("Also respects your device's text-size setting. Code uses Google Sans Code with either font.")
             }
             "appearance-layout" -> {
-                ChatRow(ChatSummary("preview", "Sam", "A little note for tomorrow.", "9:24am", true, emptyList()), modifier = Modifier.testTag("inbox-density-preview"), open = {})
-                AppearanceChoices("Conversation spacing", listOf("Comfortable" to "view_agenda", "Compact" to "view_headline"), if (value.compact) "Compact" else "Comfortable") { update(value.copy(compact = it == "Compact")) }
-                AppearanceChoices("Message previews", listOf("None" to "visibility_off", "1 line" to "short_text", "2 lines" to "notes"), listOf("None", "1 line", "2 lines")[value.previewLines]) { update(value.copy(previewLines = listOf("None", "1 line", "2 lines").indexOf(it))) }
-                SettingsToggle("Collections", "Show collections in the inbox", collections, update = setCollections)
-                Expandable(collections) { SettingsToggle("Show collection names", "Labels beneath collection icons", collectionLabels, update = setCollectionLabels) }
+                SettingsGroup({ Box(Modifier.padding(4.dp)) { ChatRow(ChatSummary("preview", "Sam", "A little note for tomorrow.", "9:24am", true, emptyList()), modifier = Modifier.testTag("inbox-density-preview"), open = {}) } })
+                SettingsGroupLabel("Conversation spacing")
+                SettingsGroup({ SettingsGroupContent { AppearanceChoices("", listOf("Comfortable" to "view_agenda", "Compact" to "view_headline"), if (value.compact) "Compact" else "Comfortable") { update(value.copy(compact = it == "Compact")) } } })
+                SettingsGroupLabel("Message previews")
+                SettingsGroup({ SettingsGroupContent { AppearanceChoices("", listOf("None" to "visibility_off", "1 line" to "short_text", "2 lines" to "notes"), listOf("None", "1 line", "2 lines")[value.previewLines]) { update(value.copy(previewLines = listOf("None", "1 line", "2 lines").indexOf(it))) } } })
+                SettingsGroupLabel("Inbox")
+                SettingsGroup({ SettingsToggle("Collections", "Show collections in the inbox", collections, update = setCollections) },
+                    { Expandable(collections) { SettingsToggle("Show collection names", "Labels beneath collection icons", collectionLabels, update = setCollectionLabels) } })
             }
             "appearance-media" -> {
-                SettingsToggle("Reduce motion", "Use still transitions and indicators", value.reducedMotion) { update(value.copy(reducedMotion = it)) }
-                SettingsToggle("Message effects", "Animate emoji and authored text effects", value.messageEffects) { update(value.copy(messageEffects = it)) }
-                SettingsToggle("Play GIFs automatically", "Animate GIFs in the timeline", value.autoplayGifs) { update(value.copy(autoplayGifs = it)) }
-                SettingsToggle("Replay message effects automatically", "", value.replaySeconds>0) {update(value.copy(replaySeconds=if(it)20 else 0))}
-                Expandable(value.replaySeconds>0) {
-                    Column(Modifier.padding(horizontal = 12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                        Text("Wait ${value.replaySeconds} seconds between replays", style = MaterialTheme.typography.titleMedium)
-                        Slider(value.replaySeconds.coerceIn(10,30).toFloat(),{update(value.copy(replaySeconds=it.toInt()))},Modifier.semantics { contentDescription = "Replay interval" },valueRange=10f..30f,steps=19)
-                    }
-                }
-                Text("Your device’s reduced-motion setting is always respected. Videos and audio play only when you choose.", Modifier.padding(12.dp), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                SettingsGroup({ SettingsToggle("Reduce motion", "Use still transitions and indicators", value.reducedMotion) { update(value.copy(reducedMotion = it)) } },
+                    { SettingsToggle("Message effects", "Animate emoji and authored text effects", value.messageEffects) { update(value.copy(messageEffects = it)) } },
+                    { SettingsToggle("Play GIFs automatically", "Animate GIFs in the timeline", value.autoplayGifs) { update(value.copy(autoplayGifs = it)) } })
+                SettingsGroupLabel("Replays")
+                SettingsGroup({ SettingsToggle("Replay message effects automatically", "", value.replaySeconds>0) {update(value.copy(replaySeconds=if(it)20 else 0))} },
+                    { Expandable(value.replaySeconds>0) {
+                        Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Text("Wait ${value.replaySeconds} seconds between replays", style = MaterialTheme.typography.titleMedium)
+                            Slider(value.replaySeconds.coerceIn(10,30).toFloat(),{update(value.copy(replaySeconds=it.toInt()))},Modifier.semantics { contentDescription = "Replay interval" },valueRange=10f..30f,steps=19)
+                        }
+                    } })
+                SettingsNote("Your device’s reduced-motion setting is always respected. Videos and audio play only when you choose.")
             }
             else -> {
-                SettingsLink("palette", "Colors & backgrounds", "Mode, accent and conversation backgrounds") { navigate("appearance-colors") }
-                SettingsLink("text_format", "Typography", "${value.font} · ${(value.textScale * 100).toInt()}%") { navigate("appearance-type") }
-                SettingsLink("view_agenda", "Layout", "Conversation spacing, previews and collections") { navigate("appearance-layout") }
-                SettingsLink("animation", "Motion & media", "Animation, message effects and GIF playback") { navigate("appearance-media") }
-                SettingsLink("casino", "Dice, coins & cards", "Materials, colors and a live playground") { navigate("appearance-objects") }
-                SettingsSectionLabel("This device")
+                SettingsGroup({ SettingsLink("palette", "Colors & backgrounds", "Mode, accent and conversation backgrounds") { navigate("appearance-colors") } },
+                    { SettingsLink("text_format", "Typography", "${value.font} · ${(value.textScale * 100).toInt()}%") { navigate("appearance-type") } },
+                    { SettingsLink("view_agenda", "Layout", "Conversation spacing, previews and collections") { navigate("appearance-layout") } },
+                    { SettingsLink("animation", "Motion & media", "Animation, message effects and GIF playback") { navigate("appearance-media") } },
+                    { SettingsLink("casino", "Dice, coins & cards", "Materials, colors and a live playground") { navigate("appearance-objects") } })
+                SettingsGroupLabel("This device")
                 var advanced by remember { mutableStateOf(false) }
-                SigilTextButton({ advanced = !advanced }, Modifier.fillMaxWidth()) {
-                    Text("Advanced", Modifier.weight(1f), textAlign = TextAlign.Start)
-                    Spacer(Modifier.width(8.dp))
-                    Glyph(if (advanced) "expand_less" else "expand_more", 20, if (advanced) "Hide advanced" else "Show advanced")
-                }
-                Expandable(advanced) { SettingsToggle("Follow account appearance on this device", "", followAccount, update = setFollowAccount) }
+                SettingsGroup({ SigilTextButton({ advanced = !advanced }, Modifier.fillMaxWidth()) {
+                        Text("Advanced", Modifier.weight(1f), textAlign = TextAlign.Start)
+                        Spacer(Modifier.width(8.dp))
+                        Glyph(if (advanced) "expand_less" else "expand_more", 20, if (advanced) "Hide advanced" else "Show advanced")
+                    } },
+                    { Expandable(advanced) { SettingsToggle("Follow account appearance on this device", "", followAccount, update = setFollowAccount) } })
                 SigilOutlinedButton({ update(Appearance()) }, Modifier.fillMaxWidth(), shape = RoundedCornerShape(16.dp)) { Text("Reset app appearance") }
             }
         }

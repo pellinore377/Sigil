@@ -17,7 +17,9 @@ import androidx.compose.ui.semantics.*
 import androidx.compose.ui.unit.dp
 import kotlin.math.*
 
-private val accents = listOf("Ink" to 0x555555, "Slate" to 0x8999a8, "Rose" to 0xb69795, "Sand" to 0xb29b7e, "Moss" to 0x919d90, "Dusk" to 0x808ca3, "Lavender" to 0xa296ad)
+private val accents = listOf("Ink" to 0x555555, "Slate" to 0x8999a8, "Rose" to 0xb69795, "Sand" to 0xb29b7e, "Moss" to 0x919d90, "Dusk" to 0x808ca3,
+    "Lavender" to 0xa296ad, "Clay" to 0xa9897d, "Olive" to 0x9d9c78, "Sea" to 0x7d9da1, "Plum" to 0x9e8494, "Copper" to 0xb08a6e)
+private const val AccentsAcross = 6
 private fun hsv(color: Int): FloatArray {
     val r = (color shr 16 and 255) / 255f; val g = (color shr 8 and 255) / 255f; val b = (color and 255) / 255f
     val maximum = maxOf(r, g, b); val minimum = minOf(r, g, b); val delta = maximum - minimum
@@ -29,22 +31,25 @@ private fun hsv(color: Int): FloatArray {
 internal fun AccentPicker(value: Int?, update: (Int) -> Unit) {
     var custom by remember { mutableStateOf(false) }
     Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-            Text("Accent color", style = MaterialTheme.typography.titleLarge)
-            Text(accents.find { it.second == value }?.first ?: if (value == null) "App default" else "Custom", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-        }
-        FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-            accents.forEach { (name, color) ->
-                Box(Modifier.size(48.dp).clip(RoundedCornerShape(16.dp)).semantics { contentDescription = name; selected = value == color; role = Role.RadioButton }.clickable { update(color) },
-                    contentAlignment = Alignment.Center) {
-                    Box(Modifier.size(44.dp).padding(2.dp).then(if (value == color) Modifier.border(1.dp, MaterialTheme.colorScheme.onSurface, RoundedCornerShape(13.dp)) else Modifier)
-                        .padding(3.dp).background(Color(0xff000000L or color.toLong()), RoundedCornerShape(10.dp)), contentAlignment = Alignment.Center) {
-                        if (value == color) CompositionLocalProvider(LocalContentColor provides if (Color(0xff000000L or color.toLong()).luminance() > .18f) Color.Black else Color.White) { Glyph("check", 20) }
+        // Six swatches to a row, each taking its share of the width, so every row fills and the set sits centred.
+        accents.chunked(AccentsAcross).forEach { row ->
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                row.forEach { (name, color) ->
+                    Box(Modifier.weight(1f).aspectRatio(1f).clip(RoundedCornerShape(16.dp)).semantics { contentDescription = name; selected = value == color; role = Role.RadioButton }.clickable { update(color) },
+                        contentAlignment = Alignment.Center) {
+                        Box(Modifier.fillMaxSize().padding(2.dp).then(if (value == color) Modifier.border(1.dp, MaterialTheme.colorScheme.onSurface, RoundedCornerShape(13.dp)) else Modifier)
+                            .padding(3.dp).background(Color(0xff000000L or color.toLong()), RoundedCornerShape(10.dp)), contentAlignment = Alignment.Center) {
+                            if (value == color) CompositionLocalProvider(LocalContentColor provides if (Color(0xff000000L or color.toLong()).luminance() > .18f) Color.Black else Color.White) { Glyph("check", 20) }
+                        }
                     }
                 }
+                repeat(AccentsAcross - row.size) { Spacer(Modifier.weight(1f)) }
             }
         }
-        SigilTextButton({ custom = true }) { Glyph("palette", 20); Spacer(Modifier.width(8.dp)); Text("Custom color") }
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+            Text(accents.find { it.second == value }?.first ?: if (value == null) "App default" else "Custom", Modifier.weight(1f), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            SigilTextButton({ custom = true }) { Glyph("palette", 20); Spacer(Modifier.width(8.dp)); Text("Custom color") }
+        }
     }
     if (custom) CustomColor(value ?: 0x555555, { custom = false }) { update(it); custom = false }
 }

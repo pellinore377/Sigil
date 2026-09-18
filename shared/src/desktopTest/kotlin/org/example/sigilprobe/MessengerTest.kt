@@ -175,9 +175,9 @@ class SignInTest {
     }
     @Test fun password_fields_are_disclosed_only_when_requested() {
         ui.setContent { SigilApp(NativeCore::palette, NativeCore::analyze, MessengerState(phase = "new", loginAddress = "example.test", loginMethods = LoginMethods("example.test", true, true, false)), { _, _ -> }) }
-        ui.onNodeWithText("Password").assertDoesNotExist()
-        ui.onNodeWithText("Sign in with password").performClick()
-        ui.onNodeWithText("Password").assertExists()
-        ui.onNodeWithText("Sign in with SSO").assertExists()
+        ui.onNodeWithText("Username").assertDoesNotExist()
+        ui.onNodeWithText("Password").performClick()
+        ui.onNodeWithText("Username").assertExists()
+        ui.onNodeWithText("Other ways to sign in").assertExists()
     }
 }
