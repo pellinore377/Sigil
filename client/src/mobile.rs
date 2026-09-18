@@ -1840,6 +1840,7 @@ impl ClientStore {
                         "reactions":message.reactions.iter().map(|(_,emoji)|emoji).collect::<Vec<_>>(),
                         "my_reactions":message.reactions.iter().filter(|(actor,_)| *actor == own).map(|(_,emoji)|emoji).collect::<Vec<_>>(),
                         "read_by_me": message.seen || message.view_once || message.read.contains(&own), "reply":reply,
+                        "reply_author":message.reply.as_ref().map(|v|transport::hex(&v.author)),"reply_mine":message.reply.as_ref().is_some_and(|v|v.author==own),
                         "readers":message.read.iter().map(|v|transport::hex(v)).collect::<Vec<_>>(),
                         "noted":message.noted || self.mobile_is_note(conversation, &message)?,
                         "thread_author":message.thread.as_ref().map(|v|transport::hex(&v.author)),
@@ -2259,6 +2260,8 @@ mod privacy_tests {
         let value: Value = serde_json::from_str(&result).unwrap();
         assert_eq!(value["ok"], true);
         assert_eq!(value["value"]["messages"][0]["reply"], "Earlier message");
+        assert_eq!(value["value"]["messages"][0]["reply_author"], transport::hex(&author));
+        assert_eq!(value["value"]["messages"][0]["reply_mine"], true);
         assert_eq!(value["value"]["messages"][1]["read_by_me"], true);
         assert!(!result.contains("never-preview-this"));
     }

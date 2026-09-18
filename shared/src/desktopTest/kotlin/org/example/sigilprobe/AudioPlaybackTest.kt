@@ -18,6 +18,7 @@ class AudioPlaybackTest {
         val seeks=mutableListOf<Long>()
         var plays=0
         ui.setContent {MaterialTheme {AudioPlayback(0,10000,false,List(24){.3f},preview=true,modifier=Modifier.width(360.dp),play={plays++},seek=seeks::add)}}
+        ui.onNodeWithTag("audio-time").assertTextEquals("00:10")
         ui.onNodeWithContentDescription("Play voice preview").performClick()
         assertEquals(1,plays)
         ui.onNodeWithTag("voice-preview-seek").performTouchInput {click(Offset(width*.75f,height/2f))}
