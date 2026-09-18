@@ -17,10 +17,12 @@ import kotlin.math.abs
 private val temporalLadder=listOf(31557600L to "year",2629800L to "month",86400L to "day",3600L to "hour",60L to "minute",1L to "second")
 private fun temporalUnit(count:Long,name:String)=if(count==1L)"$count $name" else "$count ${name}s"
 
-internal fun temporalScale(seconds:Long):Pair<Long,String> {
-    val span=seconds.coerceAtLeast(0)
-    for((size,name) in temporalLadder) {val count=span/size;if(count>0L)return count to if(count==1L)name else "${name}s"}
-    return 0L to "seconds"
+// The countdown ladder the owner read off the reference: days until a year is worth naming.
+internal fun temporalCalendarScale(seconds:Long):Pair<Long,String> {
+    val days=seconds.coerceAtLeast(0)/86400L
+    if(days<365L)return days to if(days==1L)"day" else "days"
+    val years=(days*10000L/3652425L).coerceAtLeast(1L)
+    return years to if(years==1L)"year" else "years"
 }
 internal fun temporalSpan(seconds:Long):String {
     val span=seconds.coerceAtLeast(0)
@@ -30,16 +32,11 @@ internal fun temporalSpan(seconds:Long):String {
     val rest=temporalLadder.getOrNull(index+1)?.let {(size,name)->((span-count*temporalLadder[index].first)/size).takeIf {it>0L}?.let {temporalUnit(it,name)}}
     return listOfNotNull(temporalUnit(count,temporalLadder[index].second),rest).joinToString(" ")
 }
-internal fun temporalClock(seconds:Long):Pair<String,String> {
-    val span=seconds.coerceAtLeast(0)
-    return if(span>=3600L)"${span/3600}:${((span%3600)/60).toString().padStart(2,'0')}" to "hours remaining"
-    else "${span/60}:${(span%60).toString().padStart(2,'0')}" to "minutes remaining"
-}
 // Fixed cell count within a regime so the split-flap never rebuilds mid-second.
 internal fun temporalDigits(seconds:Long):String {
     val span=seconds.coerceAtLeast(0)
-    val body="${(span/60)%60}".let {if(span>=3600L)it.padStart(2,'0') else it}+":"+"${span%60}".padStart(2,'0')
-    return if(span>=3600L)"${span/3600}:$body" else body
+    val body="${(span/60)%60}".padStart(2,'0')+":"+"${span%60}".padStart(2,'0')
+    return if(span>=3600L)"${span/3600}".padStart(2,'0')+":"+body else body
 }
 // Gregorian civil date (days since 1970-01-01); commonMain carries no date library.
 private fun civilFromDays(days:Long):Triple<Long,Int,Int> {
@@ -69,8 +66,8 @@ private fun addMonths(year:Long,month:Int,day:Int,count:Long):Triple<Long,Int,In
     return Triple(shiftedYear,shiftedMonth,minOf(day,monthLength(shiftedYear,shiftedMonth)))
 }
 // Calendar subtraction, so a years/months/days readout agrees with a calendar. Boundaries are UTC.
-internal fun temporalBreakdown(from:Long,to:Long):String {
-    if(to<=from)return ""
+internal fun temporalComponents(from:Long,to:Long):List<Pair<Long,String>> {
+    if(to<=from)return emptyList()
     var seconds=to.mod(86400L)-from.mod(86400L)
     var end=to.floorDiv(86400L)
     if(seconds<0L) {seconds+=86400L;end--}
@@ -79,9 +76,9 @@ internal fun temporalBreakdown(from:Long,to:Long):String {
     var months=(endYear*12+endMonth)-(fromYear*12+fromMonth)
     while(months>0L && addMonths(fromYear,fromMonth,fromDay,months).let {daysFromCivil(it.first,it.second,it.third)}>end)months--
     val days=end-addMonths(fromYear,fromMonth,fromDay,months).let {daysFromCivil(it.first,it.second,it.third)}
-    val steps=listOf(months/12 to "year",months%12 to "month",days to "day",seconds/3600 to "hour",(seconds%3600)/60 to "minute").filter {it.first>0L}
-    return if(steps.isEmpty())"Less than a minute" else steps.take(4).joinToString(" · ") {temporalUnit(it.first,it.second)}
+    return listOf(months/12 to "year",months%12 to "month",days to "day",seconds/3600 to "hour",(seconds%3600)/60 to "minute").filter {it.first>0L}
 }
+internal fun temporalPhrase(steps:List<Pair<Long,String>>)=steps.joinToString(" · ") {temporalUnit(it.first,it.second)}
 
 // Ticks on the wall-clock boundary, coarsening with distance; settles from absolute time when brought back into view.
 @Composable internal fun temporalNow(target:Long,fine:Long=3600L,settles:Boolean=false):Long {
@@ -109,27 +106,25 @@ internal fun temporalBreakdown(from:Long,to:Long):String {
         content()
     }
 }
-// Owner-ordered for the temporal family: the title takes line 1 beside the glyph, not the type word.
-@Composable internal fun TemporalFrame(icon:String,label:String,part:MessagePart,analyze:(String)->String,content:@Composable ColumnScope.()->Unit) {
+// Owner-ordered for the temporal family: the glyph and the title share line one; the type word is never printed.
+@Composable internal fun TemporalHeader(icon:String,label:String,part:MessagePart,analyze:(String)->String) {
     val motion=LocalMotion.current
-    CardColumn {
-        Row(verticalAlignment=Alignment.CenterVertically,horizontalArrangement=Arrangement.spacedBy(8.dp)) {
-            AnimatedContent(icon,transitionSpec={(fadeIn(motion.enter(MotionInline))+scaleIn(motion.enter(MotionInline),initialScale=.8f)) togetherWith fadeOut(motion.exit(MotionExit))},label="$label state") {Glyph(it,20,label)}
-            Box(Modifier.weight(1f)) {
-                if(part.rich!=null)RichMessageText(part.rich,style=MaterialTheme.typography.titleMedium)
-                else if(part.text.isNotBlank())MessageText(part.text,analyze)
-                else Text(label,style=MaterialTheme.typography.titleMedium)
-            }
+    Row(verticalAlignment=Alignment.CenterVertically,horizontalArrangement=Arrangement.spacedBy(10.dp)) {
+        AnimatedContent(icon,transitionSpec={(fadeIn(motion.enter(MotionInline))+scaleIn(motion.enter(MotionInline),initialScale=.8f)) togetherWith fadeOut(motion.exit(MotionExit))},label="$label state") {Glyph(it,20,label)}
+        // An untitled card shows only its glyph; the label stays on the glyph as its description.
+        Box(Modifier.weight(1f)) {
+            if(part.rich!=null)RichMessageText(part.rich,style=MaterialTheme.typography.titleMedium)
+            else if(part.text.isNotBlank())MessageText(part.text,analyze)
         }
-        content()
     }
 }
+// Owner-ordered: the figure and its unit sit side by side on one baseline, never stacked.
 @Composable internal fun TemporalFigure(value:String,unit:String,modifier:Modifier=Modifier) {
-    Row(modifier.clearAndSetSemantics {contentDescription=if(unit.isEmpty())value else "$value $unit"},horizontalArrangement=Arrangement.spacedBy(8.dp)) {
-        Text(value,Modifier.alignByBaseline(),style=MaterialTheme.typography.titleLarge,fontFamily=LocalCodeFont.current,maxLines=1)
-        if(unit.isNotEmpty())Text(unit,Modifier.alignByBaseline().weight(1f,false),style=MaterialTheme.typography.labelMedium,maxLines=1,overflow=TextOverflow.Ellipsis)
+    Row(modifier.clearAndSetSemantics {contentDescription=if(unit.isEmpty())value else "$value $unit"},horizontalArrangement=Arrangement.spacedBy(10.dp)) {
+        Text(value,Modifier.alignByBaseline(),style=MaterialTheme.typography.displaySmall,maxLines=1)
+        if(unit.isNotEmpty())Text(unit,Modifier.alignByBaseline().weight(1f,false),style=MaterialTheme.typography.bodyMedium,color=LocalContentColor.current.copy(alpha=.68f),maxLines=1,overflow=TextOverflow.Ellipsis)
     }
 }
 @Composable internal fun TemporalCaption(text:String) {
-    if(text.isNotBlank())Text(text,style=MaterialTheme.typography.labelSmall,maxLines=3,overflow=TextOverflow.Ellipsis)
+    if(text.isNotBlank())Text(text,style=MaterialTheme.typography.labelMedium,color=LocalContentColor.current.copy(alpha=.68f),maxLines=3,overflow=TextOverflow.Ellipsis)
 }
