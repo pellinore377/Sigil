@@ -115,7 +115,7 @@ private const val LyricsGlide = 900
         LaunchedEffect(current) { if (current >= 0 && inLyrics) lineTops[current]?.let { list.animateScrollBy((it - viewportPx * .45f).coerceIn(0f, lyricsTop) - absolute, tween(500)) } }
         CompositionLocalProvider(LocalContentColor provides ink) {
             // The capture sits on a plain box around the list, as the timeline's does; the list itself keeps its own layers.
-            Box(Modifier.fillMaxSize().background(Brush.verticalGradient(listOf(room, floor))).then(follow).captureBackdrop(backdrop)) { LazyColumn(Modifier.fillMaxSize(), list, horizontalAlignment = Alignment.CenterHorizontally) {
+            Box(Modifier.fillMaxSize().then(follow).captureBackdrop(backdrop).background(Brush.verticalGradient(listOf(room, floor)))) { LazyColumn(Modifier.fillMaxSize(), list, horizontalAlignment = Alignment.CenterHorizontally) {
                 item { Column(Modifier.fillMaxWidth().height(viewport).padding(top = reach + 12.dp, bottom = navigation + 12.dp), horizontalAlignment = Alignment.CenterHorizontally) {
                     val side = minOf(width - 72.dp, viewport - reach - 330.dp, 380.dp).coerceAtLeast(120.dp)
                     Spacer(Modifier.weight(1f))
