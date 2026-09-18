@@ -27,6 +27,7 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.semantics.*
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.flow.*
 
 @Composable
@@ -80,17 +81,27 @@ internal fun ComposerPanel(draft: TextFieldState, analyze: (String) -> String, e
     val headerBottom=LocalFooterHost.current?.headerBottom ?: 0f
     var panelBottom by remember {mutableFloatStateOf(0f)}
     val screenHeight=with(density){LocalWindowInfo.current.containerSize.height.toDp()}
-    val available=(screenHeight-measured-navigation.toFloat().let {with(density){it.toDp()}}-180.dp).coerceAtLeast(120.dp)
+    val footerHost=LocalFooterHost.current
+    val roughAvailable=(screenHeight-measured-navigation.toFloat().let {with(density){it.toDp()}}-180.dp).coerceAtLeast(120.dp)
+    // The true ceiling: the window less the header, the composer with its insets, and a gap on either side of the panel.
+    var panelHeightNow by remember {mutableStateOf(0.dp)}
+    var gapNow by remember {mutableStateOf(0.dp)}
+    val available=if(footerHost!=null && footerHost.headerBottom>0f) minOf(roughAvailable,(screenHeight-with(density){footerHost.headerBottom.toDp()}-(footerHost.height-panelHeightNow-gapNow).coerceAtLeast(56.dp)-24.dp).coerceAtLeast(120.dp)) else roughAvailable
     val preferredHeights=remember {mutableStateMapOf<String,Dp>()}
-    var emojiGrow by remember {mutableStateOf(0.dp)}
-    LaunchedEffect(panel) {if(panel!="Emoji")emojiGrow=0.dp}
-    val compactHeight=preferredHeights[panel] ?: when(panel){"Attachments"->204.dp;"Emoji"->320.dp+emojiGrow;"Create"->380.dp;"Format"->104.dp;"Voice"->224.dp;"Camera"->maxOf(420.dp,available-12.dp);else->maxOf(keyboardHeight,420.dp)}
+    // The emoji sheet has two heights, peek and full; a drag rides between them and settles on the nearer when let go.
+    var emojiGrow by remember {mutableStateOf(0f)}
+    LaunchedEffect(panel) {if(panel!="Emoji")emojiGrow=0f}
+    val compactHeight=preferredHeights[panel] ?: when(panel){"Attachments"->ToolPanelHeight;"Emoji"->320.dp+with(density){emojiGrow.toDp()};"Create"->380.dp;"Format"->104.dp;"Voice"->ToolPanelHeight;"Camera"->maxOf(420.dp,available-12.dp);else->maxOf(keyboardHeight,420.dp)}
     val contextual=panel in createItems.map {it.first}.filter {it!="Help"} || panel in listOf("Code block","Camera","One-time location","Real-time location","Drop a pin") || panel=="Help" && confirmation.action!=null
-    val cameraLimit=if(panel=="Camera" && panelBottom>0f && headerBottom>0f)
-        with(density){(panelBottom-headerBottom).coerceAtLeast(0f).toDp()}.minus(8.dp).coerceAtLeast(0.dp) else available
+    // A panel never rises past the header: the camera and the emoji sheet stop one gap beneath it.
+    val cameraLimit=if(panel in listOf("Camera","Emoji") && panelBottom>0f && headerBottom>0f)
+        with(density){(panelBottom-headerBottom).coerceAtLeast(0f).toDp()}.minus(12.dp).coerceAtLeast(0.dp) else available
     val expandedHeight = if (panel.isNotEmpty()) minOf(compactHeight,available,cameraLimit) else 0.dp
-    val panelHeight by animateDpAsState(expandedHeight, if (measured > 0.dp || keyboardPending || emojiGrow > 0.dp) snap() else motionPolicy.tween(MotionMillis), label = "Composer height")
+    val panelHeight by animateDpAsState(expandedHeight, if (measured > 0.dp || keyboardPending || emojiGrow > 0f) snap() else motionPolicy.tween(MotionMillis), label = "Composer height")
     val panelGap by animateDpAsState(if (expandedHeight > 0.dp) 12.dp else 0.dp, if (measured > 0.dp || keyboardPending) snap() else motionPolicy.tween(MotionMillis), label = "Composer panel gap")
+    SideEffect {panelHeightNow=panelHeight;gapNow=panelGap}
+    val scope=rememberCoroutineScope()
+    fun emojiReach()=with(density){(minOf(available,cameraLimit)-320.dp).coerceAtLeast(0.dp).toPx()}
     LaunchedEffect(keyboardPending) { if (keyboardPending) { kotlinx.coroutines.delay(1500); keyboardPending = false } }
     LaunchedEffect(measured, keyboardPending) { if (keyboardPending && measured >= keyboardHeight - 2.dp) keyboardPending = false }
     fun change(value: String) { if (panel.isEmpty() && measured > 120.dp) keyboardHeight = measured; keyboardPending = false; panel = value; if(value=="Format"){editor.requestFocus();keyboard?.show()}else{focus.clearFocus();keyboard?.hide()} }
@@ -134,11 +145,11 @@ internal fun ComposerPanel(draft: TextFieldState, analyze: (String) -> String, e
     val helpSource=draft.text.toString().trim().takeIf {!hasAttachment && !editingCaption && !notes && it.startsWith("help::")}
     val helpQuery=helpSource?.takeIf {';' !in it && '\n' !in it}?.removePrefix("help::")
     LaunchedEffect(helpQuery) {if(helpQuery!=null) {keyboardPending=false;panel="Help"}}
-    LaunchedEffect(voice.phase) { if (voiceReady) change("") }
+    LaunchedEffect(voice.phase) { if (voiceReady && panel != "Voice") change("") }
     // The panel is its own glass above the composer, kept one composer margin away; without a footer host it stays inline.
     val detached = LocalFooterHost.current != null
     val panelContent: @Composable () -> Unit = {
-            Box(Modifier.fillMaxWidth().height(if(panel=="Camera")minOf(panelHeight,cameraLimit)else panelHeight).onGloballyPositioned {panelBottom=it.boundsInWindow().bottom}.testTag("composer-panel")) {
+            Box(Modifier.fillMaxWidth().height(if(panel in listOf("Camera","Emoji"))minOf(panelHeight,cameraLimit)else panelHeight).onGloballyPositioned {panelBottom=it.boundsInWindow().bottom}.testTag("composer-panel")) {
                 CompositionLocalProvider(LocalBuilderAction provides "Attach") {
                 AnimatedContent(panel, transitionSpec = {
                     when {
@@ -158,7 +169,7 @@ internal fun ComposerPanel(draft: TextFieldState, analyze: (String) -> String, e
                         "Attachments" -> AttachmentTools(hasAttachment,hasStructured) {name->
                             if(name in listOf("Photos","Files"))command("attachment_pick",attachmentTarget+("kind" to name)) else change(name)
                         }
-                        "Voice" -> VoicePanel(command, peer, voice) { command("record_cancel", emptyMap()); panel = "" }
+                        "Voice" -> Box(Modifier.padding(bottom = 8.dp)) { VoicePanel(command, peer, voice, attach = { change("") }) { command("record_cancel", emptyMap()); panel = "" } }
                         "Camera" -> LocalCameraPanel.current(attachmentTarget, { change("Attachments") }, { change("") })
                         "One-time location", "Real-time location", "Drop a pin" -> {
                             val caption=draft.text.toString()
@@ -188,10 +199,11 @@ internal fun ComposerPanel(draft: TextFieldState, analyze: (String) -> String, e
                         }
                         "Format" -> FormatPanel(draft,analyze,showSource,{showSource=it},{change("Attachments")},{change("Code block")},::showKeyboard)
                         "Emoji" -> EmojiSheet(Modifier.fillMaxSize(), grow = {delta->
-                            val step=with(density){delta.toDp()}
-                            val next=(emojiGrow+step).coerceIn(0.dp,(available-320.dp).coerceAtLeast(0.dp))
-                            val applied=next-emojiGrow; emojiGrow=next
-                            with(density){applied.toPx()}
+                            val next=(emojiGrow+delta).coerceIn(0f,emojiReach())
+                            val applied=next-emojiGrow; emojiGrow=next; applied
+                        }, settle = {
+                            val reach=emojiReach(); val target=if(emojiGrow>reach/2f)reach else 0f
+                            scope.launch {androidx.compose.animation.core.animate(emojiGrow,target,animationSpec=motionPolicy.tween(MotionMillis)) {value,_->emojiGrow=value}}
                         }) {emoji->draft.edit {val at=selection.min;replace(selection.min,selection.max,emoji);placeCursorBeforeCharAt(at+emoji.length)}}
                     }
                     }
@@ -360,12 +372,16 @@ internal fun BuilderEntries(entries:List<String>,label:String,icon:String,change
     }
 }
 @Composable
-internal fun VoicePanel(command: Command, peer: String, voice: VoiceState, close: () -> Unit) {
+internal fun VoicePanel(command: Command, peer: String, voice: VoiceState, attach: () -> Unit = {}, close: () -> Unit) {
     val scheme = MaterialTheme.colorScheme
     val active = voice.peer == peer
     val recording = active && voice.phase == "Recording"
     val starting = active && voice.phase == "Starting"
     val live = recording && !voice.paused
+    // A stopped recording waits here until it is attached, recorded again, or discarded.
+    val ready = active && voice.phase == "Ready"
+    var attachOnStop by remember { mutableStateOf(false) }
+    LaunchedEffect(ready) { if (ready && attachOnStop) { attachOnStop = false; attach() } }
     fun start() = command("record_start", mapOf("peer" to peer))
     // The stop is SigilText's red on this ground, inked for contrast.
     val stopRed = textColor("red", scheme.surface)
@@ -373,9 +389,15 @@ internal fun VoicePanel(command: Command, peer: String, voice: VoiceState, close
     Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).wrapContentHeight(unbounded = true).then(naturalPanelHeight()).padding(start = 8.dp, end = 8.dp, top = 8.dp)
         .semantics { liveRegion = LiveRegionMode.Polite; stateDescription = if (!recording) "Stopped" else if (voice.paused) "Paused" else "Recording" }, verticalArrangement = Arrangement.spacedBy(8.dp)) {
         Surface(onClick = { if (!recording && !starting) start() }, enabled = !recording && !starting, shape = RoundedCornerShape(20.dp), color = scheme.surfaceContainer,
-            modifier = Modifier.fillMaxWidth().height(148.dp).testTag("voice-stage").semantics { contentDescription = if (recording || starting) "Recording" else "Tap to record your voice" }) {
+            modifier = Modifier.fillMaxWidth().height(148.dp).testTag("voice-stage").semantics { contentDescription = if (recording || starting) "Recording" else if (ready) "Recorded" else "Tap to record your voice" }) {
             Box(contentAlignment = Alignment.Center) {
-                if (recording) Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                if (ready) Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Glyph("check", 18)
+                        Text(audioTime(voice.seconds * 1000), style = MaterialTheme.typography.labelLarge)
+                    }
+                    AudioWaveform(voice.levels, Modifier.width(220.dp).height(40.dp))
+                } else if (recording) Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(12.dp)) {
                     Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         Box(Modifier.size(8.dp).background(if (live) scheme.error else scheme.onSurfaceVariant, androidx.compose.foundation.shape.CircleShape))
                         Text(audioTime(voice.seconds * 1000), style = MaterialTheme.typography.labelLarge)
@@ -391,11 +413,11 @@ internal fun VoicePanel(command: Command, peer: String, voice: VoiceState, close
             if (recording) VoiceAction("refresh", "Restart", Modifier.weight(1f), scheme.surfaceContainer, scheme.onSurface) { command("record_cancel", emptyMap()); start() }
             else VoiceAction("close", "Cancel", Modifier.weight(1f), scheme.surfaceContainer, scheme.onSurface) { command("record_cancel", emptyMap()); close() }
             // The centre control is the microphone until it is live, then the stop that ends into the draft.
-            VoiceAction(if (recording) "stop" else "mic", if (recording) "Stop" else "Record", Modifier.weight(1.2f),
+            VoiceAction(if (recording) "stop" else "mic", if (recording) "Stop" else if (ready) "Record again" else "Record", Modifier.weight(1.2f),
                 if (recording) stopRed else sendTone(scheme), if (recording) stopInk else scheme.onSurface, enabled = !starting, labelled = false) {
-                if (recording) command("record_stop", emptyMap()) else start()
+                if (recording) command("record_stop", emptyMap()) else if (ready) { command("record_cancel", emptyMap()); start() } else start()
             }
-            VoiceAction("check", "Attach", Modifier.weight(1f), sendTone(scheme), scheme.onSurface, enabled = recording && voice.seconds > 0) { command("record_stop", emptyMap()) }
+            VoiceAction("check", "Attach", Modifier.weight(1f), sendTone(scheme), scheme.onSurface, enabled = ready || recording && voice.seconds > 0) { if (ready) attach() else { attachOnStop = true; command("record_stop", emptyMap()) } }
         }
     }
 }

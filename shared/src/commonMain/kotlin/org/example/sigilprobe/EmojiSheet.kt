@@ -9,7 +9,11 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.gestures.detectVerticalDragGestures
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.layout.positionInWindow
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardOptions
@@ -34,6 +38,7 @@ import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.unit.Velocity
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.launch
@@ -41,7 +46,7 @@ import sigil.shared.generated.resources.Res
 
 // The emoji catalogue: the platform's own glyphs, named for search, grouped for the chips, and flagged when skin tones apply.
 internal class EmojiEntry(val emoji: String, val name: String, val group: Int, val toned: Boolean)
-internal val EmojiGroups = listOf("Smileys" to "mood", "People" to "emoji_people", "Nature" to "emoji_nature", "Food" to "emoji_food_beverage", "Travel" to "emoji_transportation", "Activities" to "sports_soccer", "Objects" to "emoji_objects", "Symbols" to "emoji_symbols", "Flags" to "flag")
+internal val EmojiGroups = listOf("Smileys" to "😀", "People" to "👋", "Nature" to "🐻", "Food" to "🍎", "Travel" to "🚗", "Activities" to "⚽", "Objects" to "💡", "Symbols" to "🔣", "Flags" to "🏁")
 internal val SkinTones = listOf("🏻", "🏼", "🏽", "🏾", "🏿")
 internal object EmojiCatalog {
     var entries by mutableStateOf<List<EmojiEntry>>(emptyList()); private set
@@ -60,7 +65,7 @@ private sealed class SheetRow(val group: Int) { class Cells(val cells: List<Emoj
 
 // The sheet: a search field, eight-across rows between hairline rules, and category chips pinned along the bottom.
 // Scrolling the rows past their top hands the overshoot to `grow`, so the surface holding the sheet can rise; `grow` returns what it took.
-@Composable internal fun EmojiSheet(modifier: Modifier, grow: (Float) -> Float, pick: (String) -> Unit) {
+@Composable internal fun EmojiSheet(modifier: Modifier, grow: (Float) -> Float, settle: () -> Unit = {}, pick: (String) -> Unit) {
     LaunchedEffect(Unit) { EmojiCatalog.load() }
     val entries = EmojiCatalog.entries
     val recents = EmojiCatalog.recents
@@ -70,8 +75,10 @@ private sealed class SheetRow(val group: Int) { class Cells(val cells: List<Emoj
     val list = rememberLazyListState()
     val scope = rememberCoroutineScope()
     val growth by rememberUpdatedState(grow)
+    val settling by rememberUpdatedState(settle)
     val connection = remember {
         object : NestedScrollConnection {
+            override suspend fun onPreFling(available: Velocity): Velocity { settling(); return Velocity.Zero }
             override fun onPreScroll(available: Offset, source: NestedScrollSource): Offset =
                 if (source == NestedScrollSource.UserInput && available.y < 0f) Offset(0f, -growth(-available.y)) else Offset.Zero
             override fun onPostScroll(consumed: Offset, available: Offset, source: NestedScrollSource): Offset =
@@ -143,17 +150,15 @@ private sealed class SheetRow(val group: Int) { class Cells(val cells: List<Emoj
             }
         }
         // Category chips along the bottom; the current one carries its name.
-        if (!searching && query.isEmpty()) Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(start = 10.dp, end = 10.dp, bottom = 8.dp), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-            val chips = (if (recents.isNotEmpty()) listOf(-1 to ("Recent" to "history")) else emptyList()) + EmojiGroups.mapIndexed { i, g -> i to g }
+        if (!searching && query.isEmpty()) Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(start = 10.dp, end = 10.dp, top = 8.dp, bottom = 10.dp), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            val chips = (if (recents.isNotEmpty()) listOf(-1 to ("Recent" to "🕘")) else emptyList()) + EmojiGroups.mapIndexed { i, g -> i to g }
             chips.forEach { (g, chip) ->
                 val on = current == g
                 Row(Modifier.height(32.dp).clip(RoundedCornerShape(10.dp)).background(if (on) scheme.primary else scheme.onSurface.copy(alpha = .07f))
                     .clickable { scope.launch { list.animateScrollToItem(if (g < 0) 0 else starts.getOrElse(g) { 0 }.coerceAtLeast(0)) } }.padding(horizontal = if (on) 10.dp else 8.dp).semantics { contentDescription = chip.first },
                     verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                    CompositionLocalProvider(LocalContentColor provides if (on) scheme.onPrimary else scheme.onSurfaceVariant) {
-                        Glyph(chip.second, 18, null, filled = on)
-                        if (on) Text(chip.first, style = MaterialTheme.typography.labelMedium, color = scheme.onPrimary)
-                    }
+                    Text(chip.second, fontSize = 16.sp, maxLines = 1, softWrap = false)
+                    if (on) Text(chip.first, style = MaterialTheme.typography.labelMedium, color = scheme.onPrimary)
                 }
             }
         }
@@ -162,25 +167,38 @@ private sealed class SheetRow(val group: Int) { class Cells(val cells: List<Emoj
 
 // The reaction drawer: frosted glass rising over the composer, peeking first and growing to a near-full page as its sheet scrolls.
 @Composable internal fun EmojiDrawer(close: () -> Unit, pick: (String) -> Unit) {
-    val chrome = LocalFooterHost.current?.chrome
+    val host = LocalFooterHost.current
+    val chrome = host?.chrome
     Presented(close) {
         BoxWithConstraints(Modifier.fillMaxSize()) {
             val density = LocalDensity.current
             val ime = with(density) { WindowInsets.ime.getBottom(density).toDp() }
+            var top by remember { mutableStateOf(0f) }
+            // The drawer stops one gap beneath the header, like every other panel.
+            val headerBottom = host?.headerBottom ?: 0f
+            val ceiling = if (headerBottom > top) maxHeight - with(density) { (headerBottom - top).toDp() } - 12.dp else maxHeight * .92f
             val peek = maxHeight * .46f
-            val full = maxHeight * .92f
-            var extra by remember { mutableStateOf(0.dp) }
-            val height = minOf(peek + extra, full, maxHeight - ime - 24.dp).coerceAtLeast(120.dp)
-            Box(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.scrim.copy(alpha = .42f)).clickable(remember { MutableInteractionSource() }, null) { close() })
+            val full = minOf(maxHeight * .92f, ceiling)
+            var extra by remember { mutableStateOf(0f) }
+            val scope = rememberCoroutineScope()
+            val reach = with(density) { (full - peek).coerceAtLeast(0.dp).toPx() }
+            fun settle() { val target = if (extra > reach / 2f) reach else 0f; scope.launch { androidx.compose.animation.core.animate(extra, target) { value, _ -> extra = value } } }
+            val height = minOf(peek + with(density) { extra.toDp() }, full, maxHeight - ime - 24.dp).coerceAtLeast(120.dp)
+            Box(Modifier.fillMaxSize().onGloballyPositioned { top = it.positionInWindow().y }.background(MaterialTheme.colorScheme.scrim.copy(alpha = .42f)).clickable(remember { MutableInteractionSource() }, null) { close() })
             FloatingChrome(chrome, Modifier.align(Alignment.BottomCenter).widthIn(max = 920.dp).fillMaxWidth().padding(horizontal = 6.dp).imePadding().height(height), RoundedCornerShape(topStart = 24.dp, topEnd = 24.dp)) {
-                Column(Modifier.fillMaxSize()) {
-                    Box(Modifier.align(Alignment.CenterHorizontally).padding(top = 8.dp).size(32.dp, 4.dp).background(MaterialTheme.colorScheme.onSurface.copy(alpha = .35f), RoundedCornerShape(2.dp)))
+                Column(Modifier.fillMaxSize().navigationBarsPadding()) {
+                    // The handle drags the drawer: up to grow, down to shrink, and further down past its peek to let it go.
+                    Box(Modifier.fillMaxWidth().height(24.dp).pointerInput(Unit) {
+                        detectVerticalDragGestures(
+                            onDragEnd = { if (extra < with(density) { (-72).dp.toPx() }) close() else settle() },
+                            onDragCancel = { settle() }) { change, drag ->
+                            extra = (extra - drag).coerceIn(with(density) { -(peek - 96.dp).toPx() }, reach); change.consume()
+                        }
+                    }, contentAlignment = Alignment.Center) { Box(Modifier.size(32.dp, 4.dp).background(MaterialTheme.colorScheme.onSurface.copy(alpha = .35f), RoundedCornerShape(2.dp))) }
                     EmojiSheet(Modifier.fillMaxSize(), grow = { delta ->
-                        val d = with(density) { delta.toDp() }
-                        val next = (extra + d).coerceIn(0.dp, full - peek)
-                        val applied = next - extra; extra = next
-                        with(density) { applied.toPx() }
-                    }) { pick(it); close() }
+                        val next = (extra + delta).coerceIn(0f, reach)
+                        val applied = next - extra; extra = next; applied
+                    }, settle = ::settle) { pick(it); close() }
                 }
             }
         }
