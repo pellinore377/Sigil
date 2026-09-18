@@ -200,7 +200,6 @@ internal fun ComposerPanel(draft: TextFieldState, analyze: (String) -> String, e
                                 Box(Modifier.size(128.dp)) {
                                     if (file.phase != "Staging") LocalAttachmentDraft.current(file, Modifier.fillMaxSize())
                                     else CircularProgressIndicator(Modifier.size(24.dp).align(Alignment.Center),strokeWidth=2.dp)
-                                    if(!file.mediaType.startsWith("image/"))Text(file.name,Modifier.align(Alignment.BottomStart).padding(8.dp),maxLines=2,overflow=TextOverflow.Ellipsis,style=MaterialTheme.typography.labelSmall)
                                     Surface(Modifier.align(Alignment.TopEnd).padding(4.dp),shape=RoundedCornerShape(12.dp),color=MaterialTheme.colorScheme.surfaceContainerHigh) {
                                         Symbol("close", "Remove ${file.name}") { command("file_cancel", mapOf("request" to file.request)) }
                                     }

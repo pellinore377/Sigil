@@ -49,16 +49,14 @@ internal fun PdfViewer(message: ChatMessage, close: () -> Unit) {
     }
     val shown=page
     DisposableEffect(shown) { onDispose { shown?.bitmap?.recycle() } }
-    Dialog(close,DialogProperties(usePlatformDefaultWidth=false)) {
-        Surface(Modifier.fillMaxSize()) {
-            Column(Modifier.fillMaxSize().safeDrawingPadding().padding(16.dp),verticalArrangement=Arrangement.spacedBy(12.dp)) {
-                Row(verticalAlignment=Alignment.CenterVertically) {
-                    SigilIconButton(close) { Glyph("close",24,"Close PDF") }
-                    Text(file.name,Modifier.weight(1f),style=MaterialTheme.typography.titleMedium,maxLines=2)
-                    SigilIconButton({zoom=(zoom/1.5f).coerceAtLeast(1f);pan=Offset.Zero},enabled=zoom>1f) { Glyph("zoom_out",24,"Zoom out PDF") }
-                    SigilIconButton({zoom=(zoom*1.5f).coerceAtMost(5f)},enabled=zoom<5f) { Glyph("zoom_in",24,"Zoom in PDF") }
-                    SigilIconButton({zoom=1f;pan=Offset.Zero}) { Glyph("fit_screen",24,"Fit page") }
-                }
+    val saver=rememberAttachmentSaver(message)
+    Dialog(close,DialogProperties(usePlatformDefaultWidth=false,decorFitsSystemWindows=false)) {
+        DocumentViewerChrome(file.name,"PDF",file.bytes,close,saver.save,saver.saving,caption=file.caption,actions={
+            SigilIconButton({zoom=(zoom/1.5f).coerceAtLeast(1f);pan=Offset.Zero},enabled=zoom>1f) { Glyph("zoom_out",24,"Zoom out PDF") }
+            SigilIconButton({zoom=(zoom*1.5f).coerceAtMost(5f)},enabled=zoom<5f) { Glyph("zoom_in",24,"Zoom in PDF") }
+        }) {
+            saver.Notice()
+            Column(Modifier.fillMaxSize().padding(horizontal=16.dp,vertical=8.dp),verticalArrangement=Arrangement.spacedBy(12.dp)) {
                 Box(Modifier.weight(1f).fillMaxWidth(),contentAlignment=Alignment.Center) {
                     if(loading) CircularProgressIndicator()
                     else if(failed) Column(horizontalAlignment=Alignment.CenterHorizontally) {
@@ -81,7 +79,6 @@ internal fun PdfViewer(message: ChatMessage, close: () -> Unit) {
                     Text(if(shown==null)"PDF" else "Page ${shown.index+1} of ${shown.pages}",Modifier.semantics { liveRegion=LiveRegionMode.Polite },style=MaterialTheme.typography.labelLarge)
                     SigilIconButton({index++},enabled=!loading && shown!=null && index+1<shown.pages) { Glyph("chevron_right",24,"Next PDF page") }
                 }
-                if(file.caption.isNotBlank()) Box(Modifier.heightIn(max=120.dp).verticalScroll(rememberScrollState())) { MessageText(file.caption,NativeCore::analyze) }
             }
         }
     }

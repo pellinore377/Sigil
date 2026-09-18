@@ -36,6 +36,8 @@ internal data class WebFile(val peer:String,val author:String,val message:String
 internal fun ChatMessage.webFile()=attachment?.let {WebFile(peer,author,id,it.name,it.mediaType,it.bytes,it.caption)}
 
 @Composable internal fun WebAttachment(file:WebFile,load:suspend(WebFile)->String,open:(WebFile)->Unit,modifier:Modifier=Modifier,expanded:Boolean=false,outgoing:Boolean?=null) {
+    // Delivered files that are not pictures, clips or voice notes take the card.
+    if(!expanded && file.draft.isEmpty() && !file.type.startsWith("image/") && !file.type.startsWith("video/") && !file.isVoiceNote()) {Box(modifier) {WebFileCard(file,load,open)};return}
     var url by remember(file) {mutableStateOf<String?>(null)}
     var issue by remember(file) {mutableStateOf<String?>(null)}
     var saving by remember(file){mutableStateOf(false)}
@@ -57,7 +59,7 @@ internal fun ChatMessage.webFile()=attachment?.let {WebFile(peer,author,id,it.na
         finally {created?.let(::browserRevokeFileUrl);loading=false}
     }
     LaunchedEffect(file,expanded) {if(media && (expanded && file.bytes<=128*1024*1024 || file.bytes<=8*1024*1024) && (expanded || file.type!="image/gif" || appearance.autoplayGifs && !appearance.reducedMotion))fetch()}
-    DisposableEffect(file) {onDispose {url?.let(::browserRevokeFileUrl)}}
+    DisposableEffect(file) {onDispose {if(file.draft.isNotEmpty())url?.let(::browserRevokeFileUrl)}}
     Column(modifier,verticalArrangement=Arrangement.spacedBy(8.dp)) {
         val current=url
         if(current!=null && media) {
@@ -228,6 +230,7 @@ internal suspend fun resolveWebAudioDuration(audio:HTMLAudioElement):Long {
         document.addEventListener("keydown",listener)
         onDispose{document.removeEventListener("keydown",listener)}
     }
+    if(file.draft.isEmpty() && !file.type.startsWith("image/") && !file.type.startsWith("video/") && !file.isVoiceNote()) {WebDocumentViewer(file,load,close);return}
     val message=LocalMediaMessage.current(file.peer,file.author,file.message)
     val save=LocalWebFileSave.current
     val scope=rememberCoroutineScope()
@@ -239,7 +242,7 @@ internal suspend fun resolveWebAudioDuration(audio:HTMLAudioElement):Long {
             saving=true
             try {
                 if(destination!=null)destination.awaitBrowser<JsAny?>()?.let {save(file,it)}
-                else {val url=load(file);try {browserSaveFileUrl(url,file.name)}finally {browserRevokeFileUrl(url)}}
+                else {val url=load(file);try {browserSaveFileUrl(url,file.name)}finally {if(file.draft.isNotEmpty())browserRevokeFileUrl(url)}}
             } catch(cancelled:CancellationException){throw cancelled}
             catch(_:Exception){issue="Could not save this attachment."}
             finally {saving=false}
