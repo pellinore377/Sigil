@@ -1,5 +1,6 @@
 package org.sigil
 
+import androidx.compose.animation.*
 import androidx.compose.foundation.*
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.*
@@ -13,6 +14,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.semantics.*
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 
@@ -50,7 +52,14 @@ internal fun CallHistoryPage(state: MessengerState, command: Command, selectedCa
         }
     }
     fun enabled(call: CallSummary) = features.calls && !state.busy && state.phase == "connected" && (state.call == null || state.call.call.id == call.id)
-    if (selected != null) {
+    val motionPolicy = LocalMotion.current
+    // The details slide in over the register and slide back out.
+    AnimatedContent(selected, Modifier.fillMaxSize(), contentKey = { it != null }, transitionSpec = {
+        if (targetState != null) (slideInHorizontally(motionPolicy.enter(MotionMillis)) { it } + fadeIn(motionPolicy.enter(MotionMillis))) togetherWith (slideOutHorizontally(motionPolicy.exit(MotionMillis)) { -it / 4 } + fadeOut(motionPolicy.exit(MotionExit)))
+        else (slideInHorizontally(motionPolicy.enter(MotionMillis)) { -it / 4 } + fadeIn(motionPolicy.enter(MotionMillis))) togetherWith (slideOutHorizontally(motionPolicy.exit(MotionMillis)) { it } + fadeOut(motionPolicy.exit(MotionExit)))
+    }, label = "Call pages") { shown ->
+    if (shown != null) {
+        val selected = shown
         val person = callContact(selected, state.chats)
         val related = state.calls.filter { call -> call.id == selected.id || person != null && callContact(call, state.chats)?.id == person.id }.sortedByDescending { it.created }
         LazyColumn(Modifier.fillMaxSize(), contentPadding = LocalHomeContentPadding.current) {
@@ -86,6 +95,7 @@ internal fun CallHistoryPage(state: MessengerState, command: Command, selectedCa
             callRows(calls, state, null, ::enabled, ::activate, select)
         }
     }
+    }
 }
 
 // The register: day labels in small capitals, then a row per call with the person, one quiet line of what happened, the time, and a key to call back.
@@ -113,7 +123,8 @@ private fun LazyListScope.callRows(calls: List<CallSummary>, state: MessengerSta
 }
 
 @Composable private fun CallDay(day: String, modifier: Modifier = Modifier) {
-    Text(day.uppercase(), modifier.padding(start = 24.dp, end = 24.dp, top = 20.dp, bottom = 6.dp), style = MaterialTheme.typography.labelSmall.copy(letterSpacing = 1.4.sp), color = MaterialTheme.colorScheme.onSurfaceVariant)
+    // Set in small capitals, read aloud as written.
+    Text(day.uppercase(), modifier.padding(start = 24.dp, end = 24.dp, top = 20.dp, bottom = 6.dp).clearAndSetSemantics { text = AnnotatedString(day) }, style = MaterialTheme.typography.labelSmall.copy(letterSpacing = 1.4.sp), color = MaterialTheme.colorScheme.onSurfaceVariant)
 }
 // What happened, in the quiet ink; a missed call reads by its word and glyph, never by a warning colour.
 @Composable private fun CallMeta(call: CallSummary, active: ActiveCall?) {
