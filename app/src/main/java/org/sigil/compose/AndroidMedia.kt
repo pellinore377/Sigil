@@ -11,6 +11,7 @@ import android.media.MediaPlayer
 import android.os.Build
 import android.view.Surface
 import android.view.TextureView
+import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.ui.Alignment
@@ -24,6 +25,7 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
@@ -116,6 +118,52 @@ internal fun decodeThumbnail(bytes:ByteArray):Bitmap {
             BitmapFactory.decodeByteArray(bytes, 0, bytes.size, options) ?: error("Unsupported image")
         }
 }
+/// A picture's dimensions read from its header, so its frame is the right size before the picture is decoded.
+private fun pictureShape(context: android.content.Context, message: ChatMessage): Pair<Int,Int>? {
+    // Most headers sit in the first few kilobytes; only a picture that hides its dimensions behind a large
+    // thumbnail or metadata block costs a deeper read, and none costs more than a quarter of a megabyte.
+    for (step in longArrayOf(16L * 1024, 64L * 1024, 256L * 1024)) {
+        val size = minOf(message.attachment!!.bytes, step).toInt()
+        if (size <= 0) return null
+        val head = ByteArray(size)
+        try {
+            EncryptedMedia(context, message).use { media ->
+                var at = 0
+                while (at < head.size) { val count = media.readAt(at.toLong(), head, at, head.size - at); if (count <= 0) break; at += count }
+            }
+            val options = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+            BitmapFactory.decodeByteArray(head, 0, head.size, options)
+            (options.outWidth to options.outHeight).takeIf { it.first > 0 && it.second > 0 }?.let { return it }
+        } finally { head.fill(0) }
+        if (message.attachment!!.bytes <= step) return null
+    }
+    return null
+}
+/// A video's own dimensions from its metadata; no frame is decoded to learn them.
+private fun videoShape(context: android.content.Context, message: ChatMessage): Pair<Int,Int>? =
+    EncryptedMedia(context, message).use { source ->
+        val retriever = android.media.MediaMetadataRetriever()
+        try {
+            retriever.setDataSource(source)
+            fun key(value: Int) = retriever.extractMetadata(value)?.toIntOrNull()
+            val width = key(android.media.MediaMetadataRetriever.METADATA_KEY_VIDEO_WIDTH) ?: return null
+            val height = key(android.media.MediaMetadataRetriever.METADATA_KEY_VIDEO_HEIGHT) ?: return null
+            val turned = (key(android.media.MediaMetadataRetriever.METADATA_KEY_VIDEO_ROTATION) ?: 0) % 180 != 0
+            (if (turned) height to width else width to height).takeIf { it.first > 0 && it.second > 0 }
+        } finally { retriever.release() }
+    }
+/// An attachment's shape before its content arrives, so the frame it fades into is already the right size.
+internal suspend fun attachmentShape(context: android.content.Context, message: ChatMessage, cache: ImageCache?): Pair<Int,Int>? = withContext(Dispatchers.IO) {
+    runCatching {
+        val prepared = prepareMedia(context, message)
+        if (!prepared.ready) return@withContext null
+        val identity = prepared.identity
+        identity?.let { cache?.shape(it) }?.let { return@withContext it }
+        identity?.let { cache?.retained(it) }?.let { return@withContext it.width to it.height }
+        val shape = if (message.attachment!!.mediaType.startsWith("video/")) videoShape(context, message) else pictureShape(context, message)
+        shape?.also { (w, h) -> identity?.let { cache?.rememberShape(it, w, h) } }
+    }.getOrNull()
+}
 internal suspend fun authorizedThumbnail(cache:ImageCache?,prepare:suspend()->PreparedMedia,decode:suspend()->Bitmap):Bitmap {
     while(true) {
         val prepared=prepare()
@@ -154,15 +202,24 @@ internal fun AndroidAttachment(message: ChatMessage) {
     var bitmap by remember(message.id) { mutableStateOf<Bitmap?>(null) }
     var opened by remember(message.id) { mutableStateOf(false) }
     var openWhenReady by remember(message.id) { mutableStateOf(false) }
+    // The video frame takes the file's own shape before anything is decoded, so its poster lands without a resize.
+    LaunchedEffect(message.id, playable, imageCache) {
+        if (!playable || imageWidth > 0 || imageHeight > 0) return@LaunchedEffect
+        attachmentShape(context, message, imageCache)?.let { (w, h) -> imageWidth = w; imageHeight = h }
+    }
     LaunchedEffect(message.id, requested, imageCache) {
         if (!requested) return@LaunchedEffect
         failed = false
         try {
             if(image) {
+                // The frame takes its shape from the file header first, so the picture fades into a space already its size.
+                if(imageWidth<=0 || imageHeight<=0) attachmentShape(context,message,imageCache)?.let {(w,h)->imageWidth=w;imageHeight=h}
                 bitmap=historyBitmap(context,message,imageCache)
                 imageWidth=bitmap!!.width;imageHeight=bitmap!!.height
             }
             else while (!withContext(Dispatchers.IO) { prepare(context, message) }) delay(1000)
+            // Read once the file is there: the shape must land before the poster, or the frame resizes under it.
+            if (playable && (imageWidth <= 0 || imageHeight <= 0)) attachmentShape(context, message, imageCache)?.let { (w, h) -> imageWidth = w; imageHeight = h }
             if (playable) bitmap = withContext(Dispatchers.IO) {
                 runCatching { EncryptedMedia(context, message).use { source ->
                     android.media.MediaMetadataRetriever().let { retriever ->
@@ -181,16 +238,22 @@ internal fun AndroidAttachment(message: ChatMessage) {
     val captionBlock: (@Composable () -> Unit)? = if (!captioned) null else { { Box(Modifier.padding(horizontal = 14.dp, vertical = 10.dp)) { org.sigil.MessageText(file.caption, org.sigil.NativeCore::analyze) } } }
     Column(Modifier.widthIn(max = 300.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
         val picture = bitmap
-        if (playable) org.sigil.ImageMessageFrame(picture?.width ?: 16, picture?.height ?: 9, frameShape, captionBlock) { frame -> Box(frame.clip(frameShape).background(MaterialTheme.colorScheme.surfaceContainerHigh).clickable(enabled = !requested || ready) { if (ready) opened = true else { openWhenReady = true; requested = true } }, contentAlignment = Alignment.Center) {
-            picture?.let { Image(it.asImageBitmap(), file.name, Modifier.fillMaxSize(), contentScale = ContentScale.Fit) }
+        if (playable) org.sigil.ImageMessageFrame(if (imageWidth > 0) imageWidth else picture?.width ?: 16, if (imageHeight > 0) imageHeight else picture?.height ?: 9, frameShape, captionBlock) { frame ->
+            val motion = org.sigil.LocalMotion.current
+            val poster by animateFloatAsState(if (picture != null) 1f else 0f, motion.enter(org.sigil.MotionMillis), label = "Poster")
+            Box(frame.clip(frameShape).background(MaterialTheme.colorScheme.surfaceContainerHigh).clickable(enabled = !requested || ready) { if (ready) opened = true else { openWhenReady = true; requested = true } }, contentAlignment = Alignment.Center) {
+            picture?.let { Image(it.asImageBitmap(), file.name, Modifier.fillMaxSize().graphicsLayer { alpha = poster }, contentScale = ContentScale.Fit) }
             if (requested && !ready) CircularProgressIndicator(Modifier.size(32.dp))
             else Surface(shape = androidx.compose.foundation.shape.CircleShape, color = androidx.compose.ui.graphics.Color.Black.copy(alpha = .6f), contentColor = androidx.compose.ui.graphics.Color.White) { Box(Modifier.size(48.dp), contentAlignment = Alignment.Center) { Glyph(if (failed) "refresh" else "play_arrow", 28, if (failed) "Retry video" else "Play video") } }
         } }
-        else if (picture != null) org.sigil.ImageMessageFrame(picture.width, picture.height, frameShape, captionBlock) { frame -> Box(frame.clickable { opened = true }) { Image(picture.asImageBitmap(), file.name, Modifier.fillMaxSize(), contentScale = ContentScale.Fit); if (file.mediaType == "image/gif") org.sigil.GifChip(Modifier.align(Alignment.TopStart)) } }
-        else if (image) org.sigil.ImageMessageFrame(imageWidth,imageHeight, frameShape, captionBlock) { frame ->
-            Box(frame.background(MaterialTheme.colorScheme.surfaceContainerHigh),contentAlignment=Alignment.Center) {
-                if(failed) SigilIconButton({requested=true}) {Glyph("refresh",28,"Retry image")}
-                else CircularProgressIndicator(Modifier.size(28.dp))
+        else if (image) org.sigil.ImageMessageFrame(picture?.width ?: imageWidth, picture?.height ?: imageHeight, frameShape, captionBlock) { frame ->
+            val motion = org.sigil.LocalMotion.current
+            val arrival by animateFloatAsState(if (picture != null) 1f else 0f, motion.enter(org.sigil.MotionMillis), label = "Picture")
+            Box(frame.background(MaterialTheme.colorScheme.surfaceContainerHigh).clickable(enabled = picture != null) { opened = true },contentAlignment=Alignment.Center) {
+                picture?.let { Image(it.asImageBitmap(), file.name, Modifier.fillMaxSize().graphicsLayer { alpha = arrival }, contentScale = ContentScale.Fit) }
+                if (picture != null) { if (file.mediaType == "image/gif") org.sigil.GifChip(Modifier.align(Alignment.TopStart)) }
+                else if(failed) SigilIconButton({requested=true}) {Glyph("refresh",28,"Retry image")}
+                else CircularProgressIndicator(Modifier.size(28.dp).graphicsLayer { alpha = 1f - arrival })
             }
         }
         else {
