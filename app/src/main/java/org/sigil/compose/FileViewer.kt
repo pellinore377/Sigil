@@ -34,6 +34,9 @@ internal fun FileViewer(message: ChatMessage,format: String,close: () -> Unit) {
     var yaw by remember { mutableIntStateOf(0) }
     var pitch by remember { mutableIntStateOf(0) }
     val table=format in listOf("csv","tsv","spreadsheet")
+    val delimited=format in listOf("csv","tsv")
+    var whole by remember(message.id) { mutableStateOf<List<List<String>>?>(null) }
+    LaunchedEffect(message.id,delimited) { if(delimited) whole=runCatching { withContext(Dispatchers.IO) { check(prepare(context,message)); parseDelimited(attachmentHead(context,message,4*1024*1024).decodeToString(),if(format=="tsv")'\t' else ',',8192,256) } }.getOrNull() }
     val mesh=format in listOf("stl","three_mf")
     val request=remember(offsets,sheet,row,column,yaw,pitch) { when {
         table -> JSONObject().put("view","table").put("sheet",sheet).put("row",row).put("column",column)
@@ -61,10 +64,8 @@ internal fun FileViewer(message: ChatMessage,format: String,close: () -> Unit) {
     DisposableEffect(shown) { onDispose { shown?.close() } }
     val saver=rememberAttachmentSaver(message)
     val kind=attachmentKind(file.name,file.mediaType)
-    Dialog(close,DialogProperties(usePlatformDefaultWidth=false,decorFitsSystemWindows=false)) {
-        DocumentViewerChrome(file.name,kind.chip,file.bytes,close,saver.save,saver.saving,caption=file.caption,actions={
-            if(shown is FilePreview.Text) SigilIconButton({clipboard.setText(AnnotatedString(shown.text))},enabled=!loading && !failed) { Glyph("content_copy",24,"Copy visible text") }
-        }) {
+    Presented(close) {
+        DocumentViewerChrome(file.name,kind.chip,file.bytes,close,saver.save,saver.saving,caption=file.caption) {
             saver.Notice()
             Column(Modifier.fillMaxSize().padding(horizontal=16.dp,vertical=8.dp),verticalArrangement=Arrangement.spacedBy(12.dp)) {
                 when(format) {
@@ -79,32 +80,22 @@ internal fun FileViewer(message: ChatMessage,format: String,close: () -> Unit) {
                         SigilTextButton({retry++}) { Text("Retry preview") }
                         SigilTextButton({NativeFileProvider.open(context,message)}) { Text("Open externally") }
                     }
+                    else if(delimited && whole!=null) TableDocumentView(whole!!)
                     else when(shown) {
                         is FilePreview.Text -> key(offsets.last()) { TextDocumentView(shown.text,kind==AttachmentKind.Markdown) }
-                        is FilePreview.Table -> FileTable(shown) { sheet=it;row=0;column=0 }
+                        is FilePreview.Table -> SheetView(shown,delimited,{sheet=it;row=0;column=0}) {row+=128}
                         is FilePreview.Mesh -> Image(shown.bitmap.asImageBitmap(),"3D geometry preview",Modifier.fillMaxSize(),contentScale=ContentScale.Fit)
                         null -> Unit
                     }
                 }
                 val enabled=!loading && !failed
                 when(shown) {
-                    is FilePreview.Text -> Row(Modifier.fillMaxWidth(),horizontalArrangement=Arrangement.SpaceBetween,verticalAlignment=Alignment.CenterVertically) {
+                    is FilePreview.Text -> if(offsets.size>1 || shown.next!=null) Row(Modifier.fillMaxWidth(),horizontalArrangement=Arrangement.SpaceBetween,verticalAlignment=Alignment.CenterVertically) {
                         SigilIconButton({offsets=offsets.dropLast(1)},enabled=enabled && offsets.size>1) { Glyph("chevron_left",24,"Previous text page") }
                         Text("Page ${offsets.size}",style=MaterialTheme.typography.labelLarge)
                         SigilIconButton({shown.next?.let { offsets=offsets+it }},enabled=enabled && shown.next!=null) { Glyph("chevron_right",24,"Next text page") }
                     }
-                    is FilePreview.Table -> {
-                        Row(Modifier.fillMaxWidth(),horizontalArrangement=Arrangement.SpaceBetween,verticalAlignment=Alignment.CenterVertically) {
-                            SigilIconButton({row=(row-128).coerceAtLeast(0)},enabled=enabled && row>0) { Glyph("expand_less",24,"Previous rows") }
-                            Text(if(shown.rows==0)"No rows" else "Rows ${shown.row+1}–${minOf(shown.row+128,shown.rows)} of ${shown.rows}",style=MaterialTheme.typography.labelLarge)
-                            SigilIconButton({row+=128},enabled=enabled && row+128<shown.rows) { Glyph("expand_more",24,"Next rows") }
-                        }
-                        Row(Modifier.fillMaxWidth(),horizontalArrangement=Arrangement.SpaceBetween,verticalAlignment=Alignment.CenterVertically) {
-                            SigilIconButton({column=(column-32).coerceAtLeast(0)},enabled=enabled && column>0) { Glyph("chevron_left",24,"Previous columns") }
-                            Text(if(shown.columns==0)"No columns" else "Columns ${shown.column+1}–${minOf(shown.column+32,shown.columns)} of ${shown.columns}",style=MaterialTheme.typography.labelLarge)
-                            SigilIconButton({column+=32},enabled=enabled && column+32<shown.columns) { Glyph("chevron_right",24,"Next columns") }
-                        }
-                    }
+                    is FilePreview.Table -> Unit
                     is FilePreview.Mesh -> {
                         Text("${shown.triangles} triangles · $yaw° / $pitch°",style=MaterialTheme.typography.labelLarge)
                         Row(Modifier.fillMaxWidth(),horizontalArrangement=Arrangement.SpaceEvenly) {
@@ -122,45 +113,16 @@ internal fun FileViewer(message: ChatMessage,format: String,close: () -> Unit) {
     }
 }
 
-@OptIn(ExperimentalFoundationApi::class)
+// Sheets from the sandbox arrive 128 rows at a time; the grid keeps what it has and asks for more at its foot.
 @Composable
-private fun FileTable(table: FilePreview.Table,selectSheet: (Int) -> Unit) {
-    var selected by remember(table) { mutableStateOf<Pair<String,String>?>(null) }
-    val clipboard=LocalClipboardManager.current
+private fun SheetView(table: FilePreview.Table,delimited: Boolean,selectSheet: (Int) -> Unit,more: () -> Unit) {
+    var rows by remember(table.sheet) { mutableStateOf<List<List<String>>>(emptyList()) }
+    LaunchedEffect(table) { rows=rows.take(table.row)+table.cells }
     Column(Modifier.fillMaxSize(),verticalArrangement=Arrangement.spacedBy(8.dp)) {
         if(table.sheets.size>1) LazyRow(horizontalArrangement=Arrangement.spacedBy(8.dp)) {
             itemsIndexed(table.sheets) { index,name -> SigilTextButton({selectSheet(index)},enabled=index!=table.sheet) { Text(name,maxLines=1) } }
         }
-        val columns=minOf(32,table.columns-table.column)
-        if(columns==0 || table.rows==0) Text("This sheet is empty.")
-        else Box(Modifier.fillMaxSize().horizontalScroll(rememberScrollState())) {
-            LazyColumn(Modifier.width((48+columns*160).dp)) {
-                stickyHeader {
-                    Row(Modifier.background(MaterialTheme.colorScheme.surfaceContainer)) {
-                        Text("#",Modifier.width(48.dp).padding(8.dp),style=MaterialTheme.typography.labelLarge)
-                        repeat(columns) { Text("${table.column+it+1}",Modifier.width(160.dp).padding(8.dp),style=MaterialTheme.typography.labelLarge) }
-                    }
-                }
-                itemsIndexed(table.cells) { index,cells ->
-                    Row(Modifier.background(MaterialTheme.colorScheme.onSurface.copy(alpha=if(index%2==0).025f else .055f))) {
-                        Text("${table.row+index+1}",Modifier.width(48.dp).padding(8.dp),style=MaterialTheme.typography.labelMedium)
-                        repeat(columns) { column ->
-                            val value=cells.getOrElse(column) { "" }
-                            val label="Row ${table.row+index+1}, column ${table.column+column+1}"
-                            Text(value,Modifier.width(160.dp).heightIn(min=56.dp).clickable { selected=label to value }.semantics { contentDescription=label }.padding(12.dp),maxLines=4,style=MaterialTheme.typography.bodyMedium)
-                        }
-                    }
-                }
-            }
-        }
-    }
-    selected?.let { (label,value) ->
-        Dialog({selected=null}) { Surface(shape=MaterialTheme.shapes.large) {
-            Column(Modifier.padding(20.dp),verticalArrangement=Arrangement.spacedBy(12.dp)) {
-                Text(label,style=MaterialTheme.typography.titleMedium)
-                SelectionContainer(Modifier.heightIn(max=360.dp).verticalScroll(rememberScrollState())) { Text(value) }
-                Row { SigilTextButton({clipboard.setText(AnnotatedString(value))}) { Text("Copy cell") };SigilTextButton({selected=null}) { Text("Close cell") } }
-            }
-        } }
+        if(table.rows==0 || table.columns==0) Text("This sheet is empty.")
+        else TableDocumentView(rows,footer=if(table.row+128<table.rows) ({ SigilTextButton(more) { Text("More rows · ${rows.size} of ${table.rows}") } }) else null)
     }
 }

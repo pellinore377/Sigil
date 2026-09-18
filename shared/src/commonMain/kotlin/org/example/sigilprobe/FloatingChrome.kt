@@ -19,16 +19,16 @@ import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.DpOffset
 import androidx.compose.ui.unit.dp
 
-internal class ChromeBackdrop(val layer: GraphicsLayer) {
+class ChromeBackdrop(val layer: GraphicsLayer) {
     var origin = Offset.Zero
 }
 
-@Composable internal fun rememberChromeBackdrop(): ChromeBackdrop {
+@Composable fun rememberChromeBackdrop(): ChromeBackdrop {
     val layer = rememberGraphicsLayer()
     return remember(layer) { ChromeBackdrop(layer) }
 }
 
-internal fun Modifier.captureBackdrop(backdrop: ChromeBackdrop) = onGloballyPositioned {
+fun Modifier.captureBackdrop(backdrop: ChromeBackdrop) = onGloballyPositioned {
     backdrop.origin = it.positionInWindow()
 }.drawWithContent {
     backdrop.layer.record { this@drawWithContent.drawContent() }

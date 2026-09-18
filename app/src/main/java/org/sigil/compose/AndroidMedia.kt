@@ -181,7 +181,7 @@ internal suspend fun authorizedThumbnail(cache:ImageCache?,prepare:suspend()->Pr
         delay(1000)
     }
 }
-private suspend fun historyBitmap(context:android.content.Context,message:ChatMessage,cache:ImageCache?) = authorizedThumbnail(
+internal suspend fun historyBitmap(context:android.content.Context,message:ChatMessage,cache:ImageCache?) = authorizedThumbnail(
     cache.takeUnless {message.attachment?.draft==true},
     prepare={withContext(Dispatchers.IO){prepareMedia(context,message)}},
     decode={withContext(Dispatchers.IO){bitmap(context,message)}})
@@ -236,7 +236,7 @@ internal fun AndroidAttachment(message: ChatMessage) {
     }
     val captioned = file.caption.isNotBlank() && (image || playable)
     val frameShape = if (captioned) androidx.compose.ui.graphics.RectangleShape else androidx.compose.foundation.shape.RoundedCornerShape(20.dp)
-    val captionBlock: (@Composable () -> Unit)? = if (!captioned) null else { { Box(Modifier.padding(horizontal = 14.dp, vertical = 10.dp)) { org.sigil.MessageText(file.caption, org.sigil.NativeCore::analyze) } } }
+    val captionBlock: (@Composable () -> Unit)? = if (!captioned) null else { { Box(Modifier.fillMaxWidth().background(org.sigil.LocalBubbleGround.current).padding(horizontal = 14.dp, vertical = 10.dp)) { org.sigil.MessageText(file.caption, org.sigil.NativeCore::analyze) } } }
     Column(Modifier.widthIn(max = 300.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
         val picture = bitmap
         if (playable) org.sigil.ImageMessageFrame(if (imageWidth > 0) imageWidth else picture?.width ?: 16, if (imageHeight > 0) imageHeight else picture?.height ?: 9, frameShape, captionBlock) { frame ->
@@ -268,9 +268,7 @@ internal fun AndroidAttachment(message: ChatMessage) {
         }
     }
     if (opened) {
-        if (image && bitmap != null) MediaDialog(message, { opened = false }) {
-            org.sigil.MediaViewerFrame(bitmap!!.width, bitmap!!.height) { frame -> ImageViewer(message, bitmap!!, frame) }
-        }
+        if (image && bitmap != null) MediaCarousel(message) { opened = false }
         else if (playable) VideoDialog(message) { opened = false }
         else if ((file.mediaType == "application/pdf" || file.name.endsWith(".pdf",ignoreCase=true)) && file.bytes <= 128L*1024*1024) PdfViewer(message) { opened = false }
         else if (portableFormat(file.name,file.mediaType)!=null && file.bytes<=128L*1024*1024) FileViewer(message,portableFormat(file.name,file.mediaType)!!) { opened=false }
@@ -290,7 +288,7 @@ internal fun AndroidAttachment(message: ChatMessage) {
     }
 }
 @Composable
-internal fun VideoDialog(message: ChatMessage, close: () -> Unit) {
+internal fun VideoPlayer(message: ChatMessage, active: Boolean, modifier: Modifier) {
     val context = LocalContext.current
     val media = remember(message.id) { EncryptedMedia(context, message) }
     val player = remember(message.id) { MediaPlayer() }
@@ -322,7 +320,9 @@ internal fun VideoDialog(message: ChatMessage, close: () -> Unit) {
         player.setOnErrorListener { _, _, _ -> failed = true; playing = false; true }
         onDispose { released = true; player.release(); media.close() }
     }
-    MediaDialog(message, close) {
+    // Only the page in view plays; a page swiped away falls silent.
+    LaunchedEffect(active) { if (!active && ready && !failed && playing) { player.pause(); playing = false } }
+    Box(modifier) {
         Column(Modifier.widthIn(max = 1000.dp).fillMaxSize(), verticalArrangement = Arrangement.spacedBy(12.dp)) {
             org.sigil.MediaViewerFrame((ratio * 1000).toInt(), 1000, Modifier.weight(1f)) { frame ->
                 AndroidView(factory = { context -> TextureView(context).apply {
@@ -348,6 +348,8 @@ internal fun VideoDialog(message: ChatMessage, close: () -> Unit) {
         }
     }
 }
+@Composable
+internal fun VideoDialog(message: ChatMessage, close: () -> Unit) = MediaCarousel(message, close)
 private fun mediaTime(milliseconds: Long): String { val seconds = milliseconds / 1000; return "${seconds / 60}:${(seconds % 60).toString().padStart(2, '0')}" }
 
 // A cropped glimpse for reply previews: the picture, or a video's first frame.

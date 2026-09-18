@@ -49,7 +49,7 @@ internal fun CreatePanel(back:()->Unit,open:(String)->Unit) {
             Symbol("help","Help") {open("Help")}
         }
         HorizontalPager(pager,Modifier.weight(1f).fillMaxWidth().testTag("create-pages"),verticalAlignment=Alignment.Top) {page->
-            LazyVerticalGrid(GridCells.Fixed(4),Modifier.fillMaxSize(),
+            LazyVerticalGrid(GridCells.Fixed(5),Modifier.fillMaxSize(),
                 verticalArrangement=Arrangement.spacedBy(4.dp),horizontalArrangement=Arrangement.spacedBy(8.dp)) {
                 items(createPages[page],key={it.first}) {(name,icon)->ComposerTool(name,icon) {open(name)}}
             }
