@@ -344,10 +344,12 @@ internal fun ConversationPage(chat: ChatSummary, state: MessengerState, draft: T
                                   }.onSizeChanged { bubblePx = it.width; bubbleSize = it }.onGloballyPositioned { bounds = it.boundsInWindow(); materialTimeline.bubbles[materialKey]=bounds }
                                     .pointerInput(message.id) { awaitPointerEventScope { while (true) { val event = awaitPointerEvent(); if (event.type == PointerEventType.Press && event.buttons.isSecondaryPressed) hold() } } }) {
                                     CompositionLocalProvider(LocalMaterialPress provides { hold() },LocalItemVisible provides onScreen) {
-                                    if (held) Spacer(Modifier.size(with(density) { bubbleSize.width.toDp() }, with(density) { bubbleSize.height.toDp() }))
-                                    else if(materialKey in animated) MessageMotion(message.id,textMotion.state(materialKey),onScreen && selected==null,animated.getValue(materialKey)) {
+                                    // While the menu shows its copy, the row's bubble stays composed but unseen, so nothing reloads when it returns.
+                                    Box(Modifier.alpha(if (held) 0f else 1f)) {
+                                    if(materialKey in animated) MessageMotion(message.id,textMotion.state(materialKey),onScreen && selected==null,animated.getValue(materialKey)) {
                                         bubbleContent(message, grouped, followed, cmd)
                                     } else bubbleContent(message, grouped, followed, cmd)
+                                    }
                                     }
                                   }
                                 }
@@ -566,8 +568,8 @@ private fun BoxScope.MessageMenu(message: ChatMessage, origin: Rect, progress: A
         transformOrigin = TransformOrigin(if (message.mine) 1f else 0f, .5f)
     }
     Box(Modifier.matchParentSize().pointerInput(Unit) { detectTapGestures { finish() } }.background(scheme.scrim.copy(alpha = .5f * progress.value.coerceIn(0f, 1f)))) {
-        // The sandwich lives in the band between header and composer; the bubble's travel is clipped to it, so it passes beneath the chrome.
-        Box(Modifier.matchParentSize().drawWithContent { clipRect(0f, band.top - page.top, size.width, band.bottom - page.top) { this@drawWithContent.drawContent() } }) {
+        // The bubble's travel is clipped to the band between header and composer, so it passes beneath the chrome; the pill and actions are never cut.
+        var bubbleTop by remember { mutableStateOf(Float.NaN) }
         Layout({
             Surface(enter, shape = RoundedCornerShape(28.dp), color = scheme.surfaceContainerHigh) {
                 Row(Modifier.padding(horizontal = 4.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -575,7 +577,8 @@ private fun BoxScope.MessageMenu(message: ChatMessage, origin: Rect, progress: A
                     Symbol("add_reaction", "Choose reaction") { choose("pick_reaction", "") }
                 }
             }
-            Box(Modifier.onGloballyPositioned { positioned(it.boundsInWindow()) }) { content() }
+            Box(Modifier.onGloballyPositioned { val b = it.boundsInWindow(); positioned(b); bubbleTop = b.top }
+                .drawWithContent { if (bubbleTop.isNaN()) drawContent() else clipRect(0f, band.top - bubbleTop, size.width, band.bottom - bubbleTop) { this@drawWithContent.drawContent() } }) { content() }
             // As wide as its longest label, with the same inset either side.
             Surface(enter.width(IntrinsicSize.Max), shape = RoundedCornerShape(24.dp), color = scheme.surfaceContainerHigh) {
                 Column(Modifier.padding(horizontal = 8.dp, vertical = 6.dp)) {
@@ -611,7 +614,6 @@ private fun BoxScope.MessageMenu(message: ChatMessage, origin: Rect, progress: A
                 slot.placeRelative(left, slotTop)
                 actions.placeRelative(x(actions.width), slotTop + slot.height + gap)
             }
-        }
         }
     }
 }
