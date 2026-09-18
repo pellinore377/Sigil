@@ -140,14 +140,24 @@ pub fn code_preview(input: &str) -> Result<String, Error> {
         return Err(Error::Invalid);
     }
     let text = crate::parse(&source(input)?, Default::default())?;
+    if !matches!(
+        text.blocks(),
+        [crate::Block {
+            kind: crate::BlockKind::Code { .. },
+            ..
+        }]
+    ) {
+        return Err(Error::Invalid);
+    }
+    let view = text.presentation();
+    // The chip shows the language actually used, detected one included.
     let [crate::Block {
         kind: crate::BlockKind::Code { language },
         ..
-    }] = text.blocks()
+    }] = view.blocks.as_slice()
     else {
         return Err(Error::Invalid);
     };
-    let view = text.presentation();
     let tokens = view
         .code_tokens
         .iter()
@@ -352,7 +362,7 @@ mod tests {
         }
         assert!(code_preview("Code\nrust\nlet x = 2;")
             .unwrap()
-            .starts_with("rust\n0,3,keyword;8,9,number\n"));
+            .starts_with("rust\n0,3,keyword;6,7,operator;8,9,number;9,10,punctuation\n"));
         assert!(code_preview("Code\nunknown\nx")
             .unwrap()
             .starts_with("unknown\n\n"));

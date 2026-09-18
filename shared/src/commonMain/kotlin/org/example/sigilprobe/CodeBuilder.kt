@@ -17,6 +17,19 @@ import androidx.compose.ui.unit.dp
 
 val LocalCodePreview=staticCompositionLocalOf<((String)->String)?> {null}
 
+/** Every dialect the tokenizer knows, plus Auto (detect from the code) and plain text (no chip, no colour). */
+internal val CodeLanguages=listOf("Auto" to "","Plain text" to "text",
+    "ActionScript" to "actionscript","AppleScript" to "applescript","ASP / VBScript" to "asp","Batch" to "batch",
+    "C" to "c","C#" to "csharp","C++" to "cpp","Clojure" to "clojure","CSS" to "css","D" to "d","Dart" to "dart",
+    "Diff" to "diff","DOT" to "dot","ERB" to "erb","Git" to "git","Go" to "go","Groovy" to "groovy",
+    "Haskell" to "haskell","HTML" to "html","Java" to "java","JavaScript" to "javascript","JSON" to "json",
+    "Kotlin" to "kotlin","LaTeX" to "latex","Lisp" to "lisp","Lua" to "lua","Makefile" to "makefile",
+    "Markdown" to "markdown","MATLAB" to "matlab","Objective-C" to "objective-c","OCaml" to "ocaml",
+    "Pascal" to "pascal","Perl" to "perl","PHP" to "php","PowerShell" to "powershell","Python" to "python",
+    "R" to "r","Regex" to "regex","reStructuredText" to "rst","Ruby" to "ruby","Rust" to "rust","Scala" to "scala",
+    "Shell" to "shell","SQL" to "sql","Swift" to "swift","Tcl" to "tcl","Textile" to "textile","TOML" to "toml",
+    "TypeScript" to "typescript","XML" to "xml","YAML" to "yaml")
+
 internal fun codePreview(value:String):Pair<String,RichText>? {
     val parts=value.split('\n',limit=3)
     if(parts.size!=3 || parts[2].isEmpty())return null
@@ -51,7 +64,7 @@ internal fun CodeBuilder(enabled:Boolean,back:()->Unit,send:(String)->Unit) {
     val motion=LocalMotion.current
     val keyboard=LocalSoftwareKeyboardController.current
     val focus=LocalFocusManager.current
-    val choices=listOf("Plain text" to "","Rust" to "rust","Kotlin" to "kotlin","C" to "c","C++" to "cpp","JSON" to "json")
+    val choices=CodeLanguages
     fun previous() {if(showingPreview)showingPreview=false else back()}
     BackAction(showingPreview,::previous)
     val sizing=rememberBuilderSizing(16.dp)

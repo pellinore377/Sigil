@@ -11,6 +11,7 @@ pub mod composition;
 pub mod contact;
 pub mod data;
 pub mod diagram;
+mod dialects;
 pub mod editing;
 mod effects;
 pub mod help;
@@ -84,6 +85,8 @@ impl Document {
 mod action_tests;
 #[cfg(test)]
 mod card_tests;
+#[cfg(test)]
+mod code_tests;
 #[cfg(test)]
 mod composition_tests;
 #[cfg(test)]
