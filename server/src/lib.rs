@@ -32,6 +32,7 @@ mod link;
 mod link_relay;
 mod login_routes;
 mod mailbox;
+pub use mailbox::{DEVICE_ALLOWANCE, PEER_ALLOWANCE};
 mod maintenance;
 mod map_routes;
 pub mod maps;

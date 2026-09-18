@@ -390,7 +390,7 @@ fn pending_limits_allow_retained_history_and_restore_clears_payloads() {
     let (mut store, alice, bob, target) = setup(&path, NOW);
     let sender = store.session(&alice, NOW).unwrap().device_id;
     let db = rusqlite::Connection::open(&path).unwrap();
-    db.execute("WITH RECURSIVE n(x) AS (VALUES(1) UNION ALL SELECT x+1 FROM n WHERE x<64) INSERT INTO mailbox(sender,message_id,recipient,payload,payload_hash,expires_at) SELECT ?1,printf('%064x',x),?2,'abab',zeroblob(32),?3 FROM n", (&sender,&target,(NOW+100_000) as i64)).unwrap();
+    db.execute(&format!("WITH RECURSIVE n(x) AS (VALUES(1) UNION ALL SELECT x+1 FROM n WHERE x<{}) INSERT INTO mailbox(sender,message_id,recipient,payload,payload_hash,expires_at) SELECT ?1,printf('%064x',x),?2,'abab',zeroblob(32),?3 FROM n", sigil_server::PEER_ALLOWANCE), (&sender,&target,(NOW+100_000) as i64)).unwrap();
     assert!(matches!(
         store.submit_message(
             &alice,
@@ -411,7 +411,7 @@ fn pending_limits_allow_retained_history_and_restore_clears_payloads() {
         )
         .unwrap();
     db.execute("UPDATE mailbox SET payload=NULL", []).unwrap();
-    db.execute("WITH RECURSIVE n(x) AS (VALUES(65) UNION ALL SELECT x+1 FROM n WHERE x<4095) INSERT INTO mailbox(sender,message_id,recipient,payload_hash,expires_at) SELECT ?1,printf('%064x',x),?2,zeroblob(32),0 FROM n", (&sender,&target)).unwrap();
+    db.execute(&format!("WITH RECURSIVE n(x) AS (VALUES({}) UNION ALL SELECT x+1 FROM n WHERE x<4095) INSERT INTO mailbox(sender,message_id,recipient,payload_hash,expires_at) SELECT ?1,printf('%064x',x),?2,zeroblob(32),0 FROM n", sigil_server::PEER_ALLOWANCE + 1), (&sender,&target)).unwrap();
     store
         .submit_message(
             &alice,

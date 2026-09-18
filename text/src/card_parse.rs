@@ -217,7 +217,8 @@ fn parse_recognized(
         let mode = if let Some(rest) = title.strip_prefix("task::") {
             title = rest;
             ListMode::Task
-        } else if let Some(rest) = title.strip_prefix("recurr::") {
+        } else if title.starts_with("recurr::") || ["weekly::", "monthly::", "yearly::"].iter().any(|p| title.starts_with(p)) {
+            let rest = title.strip_prefix("recurr::").unwrap_or(title);
             let Some((interval, rest)) = rest.split_once("::") else {
                 return literal(source, limits, Some(Hint::InvalidStructure));
             };

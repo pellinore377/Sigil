@@ -32,6 +32,7 @@ internal class MessageMaterialView(context:android.content.Context, private val 
     private var first:MaterialFrame?=null
     private var pristine=true
     private var snapshotTaken=false
+    private var shown=false
     init { isOpaque=false;alpha=0f;surfaceTextureListener=this }
     fun update(frame:MaterialFrame,visible:Boolean) {
         if(first==null)first=frame else if(first?.sameImage(frame)!=true)pristine=false
@@ -49,7 +50,7 @@ internal class MessageMaterialView(context:android.content.Context, private val 
             var result=1
             if(active && token==generation && nativeId!=0L && frame!=null) {
                 result=MaterialNative.draw(nativeId,frame.kind,frame.sides,frame.face,frame.font,frame.accent,frame.backdrop,frame.progress,frame.rotation,frame.label,frame.transparent,frame.style)
-                if(result==1)post {if(token==generation)alpha=1f}
+                if(result==1)post {if(token==generation && !shown) {shown=true;animate().alpha(1f).setDuration(160).start()}}
                 if(result==0)post {if(token==generation)failed()}
             }
             queued.set(false)

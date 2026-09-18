@@ -47,7 +47,7 @@ if r[0]==section {s.push_str(&format!("\n- {}",literal(&r[1])));}}}
         }
         "Recurring checklist"=> {
             if !["weekly","monthly","yearly"].contains(&f.mode.as_str()){return Err(Error::Invalid);}
-            let mut s=format!("checklist::recurr::{}::{title}",f.mode);
+            let mut s=format!("checklist::{}::{title}",f.mode);
             for r in &f.rows {if r.len()!=2{return Err(Error::Invalid);}s.push_str(&format!("\n{} {}",if r[1]=="true"{"-r-"}else{"-"},literal(&r[0])));}s
         }
         "Countdown"|"Elapsed time"=>format!("{}::{}::{title}",if f.kind=="Countdown"{"countdown"}else{"ago"},field(0).trim()),

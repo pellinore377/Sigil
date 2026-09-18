@@ -489,13 +489,13 @@ checklist::Things
 | Type | Syntax | Check behavior |
 |---|---|---|
 | Standard | `checklist::Title` | Freely checkable and uncheckable. Items removed manually. |
-| Recurring | `checklist::recurr::weekly::Title` | Items **cannot** be manually unchecked — only the scheduled reset unchecks them. |
+| Recurring | `checklist::weekly::Title` (also `monthly`, `yearly`; `recurr::weekly::` is accepted) | Items **cannot** be manually unchecked — only the scheduled reset unchecks them. |
 | Task | `checklist::task::Title` | Irreversible after a 30-second undo window. Records who completed it and when. |
 
 ### Recurring lists
 
 ```
-checklist::recurr::weekly::Groceries
+checklist::weekly::Groceries
 -r- Milk
 -r- Eggs
 - Bananas;

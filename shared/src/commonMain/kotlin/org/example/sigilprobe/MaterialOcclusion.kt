@@ -56,8 +56,11 @@ internal val LocalMaterialLaunchWindow = staticCompositionLocalOf<Rect?> { null 
     val occlusion = LocalMaterialOcclusion.current
     val source = LocalMaterialLaunchWindow.current
     var coordinates by remember { mutableStateOf<LayoutCoordinates?>(null) }
+    // A scrolled row is translated, not redrawn; counting placements makes the recorded clip follow it.
+    var placed by remember { mutableIntStateOf(0) }
     val path = remember { Path() }
-    return onGloballyPositioned { coordinates = it }.drawWithContent {
+    return onGloballyPositioned { coordinates = it; placed++ }.drawWithContent {
+        placed
         val layout = coordinates?.takeIf { it.isAttached } ?: return@drawWithContent
         path.reset()
         fun add(rect: Rect) {
@@ -105,7 +108,8 @@ internal fun materialClipPath(visible: Rect, launch: Rect?, left: Float, top: Fl
         val viewport=timeline.viewport
         val margin=viewport.height.coerceAtLeast(1f)
         val retained=Rect(viewport.left,viewport.top-margin,viewport.right,viewport.bottom+margin)
-        retained.overlaps(currentBounds.value()) ||
+        val bounds=currentBounds.value()
+        bounds==Rect.Zero || retained.overlaps(bounds) ||
             occlusion?.launch(viewport,source)?.overlaps(currentBounds.value())==true
     } }.value
 }

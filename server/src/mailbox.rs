@@ -43,6 +43,9 @@ CREATE INDEX mailbox_expiry ON mailbox(expires_at) WHERE payload IS NOT NULL;
 
 /// An entry due to lapse this soon is a passing notice, not a message.
 const NOTICE_LIFETIME: u64 = 600;
+// An offline recipient keeps receiving; only the storage quota and each message's own expiry bound the hold.
+pub const DEVICE_ALLOWANCE: u32 = 4096;
+pub const PEER_ALLOWANCE: u32 = 1024;
 impl Store {
     pub fn submit_message(
         &mut self,
@@ -151,7 +154,7 @@ impl Store {
             (&request.recipient_device, &sender, now as i64),
             |r| r.get(0),
         )?;
-        if pending >= 256 + 4 * u32::from(recovery)
+        if pending >= DEVICE_ALLOWANCE + 4 * u32::from(recovery)
             || used.saturating_add(request.payload.len() as u64) > quota
         {
             return Err(StoreError::MailboxFull);
@@ -161,7 +164,7 @@ impl Store {
         // Those give way, so the allowance cannot be spent on notices nobody will read.
         // Everything else keeps its place and a real backlog still refuses, rather than
         // messages disappearing unseen.
-        let allowance = 64 + u32::from(recovery);
+        let allowance = PEER_ALLOWANCE + u32::from(recovery);
         if peer_pending >= allowance {
             let evicted = tx.execute(
                 "UPDATE mailbox SET payload=NULL,expires_at=0 WHERE sequence IN (SELECT sequence FROM mailbox WHERE recipient=?1 AND sender=?2 AND payload IS NOT NULL AND expires_at>?3 AND expires_at<?4 ORDER BY expires_at,sequence LIMIT ?5)",

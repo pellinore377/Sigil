@@ -21,6 +21,7 @@ import androidx.compose.ui.state.ToggleableState
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import kotlinx.coroutines.delay
 
 // The reference caps the rendered list at eight rows (cards.js buildChecklist); the wire allows 256, and a
 // timeline bubble is no place for them. The remainder is counted, never expanded.
@@ -31,8 +32,16 @@ private const val ChecklistRows=8
     var confirming by remember(part.id){mutableStateOf<CardItem?>(null)}
     val motion=LocalMotion.current
     val compact=LocalAppearance.current.compact
-    val done=part.items.count {it.checked}
-    fun act(item:CardItem) {command?.invoke("card_action",mapOf("peer" to message.peer,"author" to message.author,"message" to message.id,"card" to part.id,"item" to item.id,"checked" to !item.checked))}
+    // A tap shows at once; the delivered state takes over as soon as it agrees, or the override lapses if the action never lands.
+    var pending by remember(part.id){mutableStateOf<Map<String,Boolean>>(emptyMap())}
+    LaunchedEffect(part.items) {pending=pending.filterNot {(id,checked)->part.items.any {it.id==id && it.checked==checked}}}
+    LaunchedEffect(pending) {if(pending.isNotEmpty()) {delay(8000);pending=emptyMap()}}
+    val items=part.items.map {item->pending[item.id]?.let {item.copy(checked=it)} ?: item}
+    val done=items.count {it.checked}
+    fun act(item:CardItem) {
+        pending=pending+(item.id to !item.checked)
+        command?.invoke("card_action",mapOf("peer" to message.peer,"author" to message.author,"message" to message.id,"card" to part.id,"item" to item.id,"checked" to !item.checked))
+    }
     CardColumn {
         Row(verticalAlignment=Alignment.Top,horizontalArrangement=Arrangement.spacedBy(12.dp)) {
             Box(Modifier.weight(1f)) {
@@ -43,14 +52,14 @@ private const val ChecklistRows=8
         }
         if(part.items.isNotEmpty()) {if(task && part.items.size<=ChecklistRows)TaskPips(part,done) else ChecklistRule(part,done)}
         Column(verticalArrangement=Arrangement.spacedBy(if(compact)2.dp else 4.dp)) {
-            part.items.take(ChecklistRows).forEachIndexed {index,item->key(item.id) {
+            items.take(ChecklistRows).forEachIndexed {index,item->key(item.id) {
                 if(task)TaskRow(index,item,command,{confirming=item},{act(item)})
                 else CheckRow(item,part.kind=="recurring",command) {act(item)}
             }}
         }
         if(part.items.size>ChecklistRows)Text("+${part.items.size-ChecklistRows} more",style=MaterialTheme.typography.labelMedium,color=LocalContentColor.current.copy(alpha=.68f),maxLines=1)
         if(task)TemporalCaption("Confirm to complete · 30s undo")
-        else if(part.kind=="recurring")TemporalCaption(part.date)
+        else if(part.kind=="recurring")Row(verticalAlignment=Alignment.CenterVertically,horizontalArrangement=Arrangement.spacedBy(6.dp)) {Glyph("autorenew",14);TemporalCaption(part.date)}
     }
     confirming?.let {item->AlertDialog(onDismissRequest={confirming=null},title={Text("Complete this task?")},text={Text("You can undo your completion for 30 seconds.")},confirmButton={SigilTextButton({confirming=null;part.items.firstOrNull {it.id==item.id && !it.checked && it.enabled}?.let(::act)}){Text("Complete")}},dismissButton={SigilTextButton({confirming=null}){Text("Cancel")}})}
 }
