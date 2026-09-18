@@ -410,15 +410,18 @@ internal fun MessageBubble(message: ChatMessage, grouped: Boolean, followed: Boo
             val bare = objectOnly || (bareImage && !captioned) || bareLocation
             // A quoted bubble: the quote inset 6dp on the incoming tone; an own reply then carries its text as an outgoing band.
             val quoted = message.reply != null && message.attachment == null && !objectOnly && !bareLocation && !panelled
+            val ground = if (message.mine && !quoted) outgoing else scheme.surfaceContainer
+            // Content that covers the bubble paints nothing underneath; captions and text chunks paint the ground themselves.
+            val filled = panelled || captioned || message.attachment?.let { a -> !a.mediaType.startsWith("image/") && !a.mediaType.startsWith("video/") && a.name != "Voice message.aac" && attachmentKind(a.name, a.mediaType) != AttachmentKind.File } == true
             // Bare objects overhang their slot on purpose, so they get no clipping surface at all.
             val frame: @Composable (@Composable () -> Unit) -> Unit = { body -> if (objectOnly) Box { body() } else Surface(Modifier.drawBehind {
                 if (cue.floatValue >= 1f) return@drawBehind
                 val corners = floatArrayOf(bubbleShape.topStart.toPx(size, this), bubbleShape.topEnd.toPx(size, this), bubbleShape.bottomEnd.toPx(size, this), bubbleShape.bottomStart.toPx(size, this))
                 drawEndCue(cue.floatValue, cueInk, BubbleCueSpread.toPx(), BubbleCueSpread.toPx(), corners)
             }, shape = bubbleShape,
-            color = if(bare) Color.Transparent else if (message.mine && !quoted) outgoing else scheme.surfaceContainer, contentColor = if(bare) scheme.onBackground else if (message.mine && !quoted) outgoingInk else scheme.onSurface) { body() } }
+            color = if(bare || filled) Color.Transparent else ground, contentColor = if(bare) scheme.onBackground else if (message.mine && !quoted) outgoingInk else scheme.onSurface) { body() } }
             frame {
-            CompositionLocalProvider(LocalBubbleCue provides cue,LocalMessageKey provides message.author+message.id,LocalMessageBubble provides panelled,LocalMaterialOutgoing provides message.mine,LocalContentColor provides if (bare) scheme.onBackground else if (message.mine) outgoingInk else scheme.onSurface,LocalMessageSurface provides if (bare) scheme.background else if (message.mine && !quoted) outgoing else scheme.surfaceContainer) {
+            CompositionLocalProvider(LocalBubbleCue provides cue,LocalBubbleGround provides ground,LocalMessageKey provides message.author+message.id,LocalMessageBubble provides panelled,LocalMaterialOutgoing provides message.mine,LocalContentColor provides if (bare) scheme.onBackground else if (message.mine) outgoingInk else scheme.onSurface,LocalMessageSurface provides if (bare) scheme.background else if (message.mine && !quoted) outgoing else scheme.surfaceContainer) {
             Column(if (message.attachment == null && !quoted) Modifier.padding(horizontal = if(objectOnly || bareLocation || panelled)0.dp else 14.dp, vertical = if(bareLocation || panelled)0.dp else 10.dp) else Modifier) {
                 // The quoted block is the timeline ground set into the bubble.
                 val body: @Composable () -> Unit = { if (message.attachment != null) LocalAttachmentContent.current(message) else if (message.parts.isNotEmpty()) MessageCards(message, analyze, command, objectOnly || bareLocation) else MessageText(message.text, analyze) }
@@ -429,7 +432,7 @@ internal fun MessageBubble(message: ChatMessage, grouped: Boolean, followed: Boo
                     } else Box(Modifier.padding(start = 14.dp, end = 14.dp, top = 6.dp, bottom = 10.dp)) { body() }
                 } else if (message.reply != null) { ReplyQuote(message); Spacer(Modifier.height(6.dp)); body() } else body()
                 if (!captioned) message.attachment?.caption?.takeIf { it.isNotEmpty() }?.let { caption ->
-                    Box(Modifier.padding(horizontal=14.dp,vertical=10.dp)) { MessageText(caption,analyze) }
+                    Box(Modifier.fillMaxWidth().background(LocalBubbleGround.current).padding(horizontal=14.dp,vertical=10.dp)) { MessageText(caption,analyze) }
                 }
 
             }
