@@ -1,3 +1,4 @@
+@file:OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
 package org.sigil.compose
 
 import org.sigil.SigilTextButton
@@ -16,6 +17,7 @@ import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.ui.Alignment
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.layout.*
@@ -242,7 +244,7 @@ internal fun AndroidAttachment(message: ChatMessage) {
         if (playable) org.sigil.ImageMessageFrame(if (imageWidth > 0) imageWidth else picture?.width ?: 16, if (imageHeight > 0) imageHeight else picture?.height ?: 9, frameShape, captionBlock) { frame ->
             val motion = org.sigil.LocalMotion.current
             val poster by animateFloatAsState(if (picture != null) 1f else 0f, motion.enter(org.sigil.MotionMillis), label = "Poster")
-            Box(frame.clip(frameShape).background(MaterialTheme.colorScheme.surfaceContainerHigh).clickable(enabled = !requested || ready) { if (ready) opened = true else { openWhenReady = true; requested = true } }, contentAlignment = Alignment.Center) {
+            Box(frame.clip(frameShape).background(MaterialTheme.colorScheme.surfaceContainerHigh).combinedClickable(enabled = !requested || ready, onLongClick = org.sigil.LocalMaterialPress.current) { if (ready) opened = true else { openWhenReady = true; requested = true } }, contentAlignment = Alignment.Center) {
             picture?.let { Image(it.asImageBitmap(), file.name, Modifier.fillMaxSize().graphicsLayer { alpha = poster }, contentScale = ContentScale.Fit) }
             if (requested && !ready) CircularProgressIndicator(Modifier.size(32.dp))
             else Surface(shape = androidx.compose.foundation.shape.CircleShape, color = androidx.compose.ui.graphics.Color.Black.copy(alpha = .6f), contentColor = androidx.compose.ui.graphics.Color.White) { Box(Modifier.size(48.dp), contentAlignment = Alignment.Center) { Glyph(if (failed) "refresh" else "play_arrow", 28, if (failed) "Retry video" else "Play video") } }
@@ -250,7 +252,7 @@ internal fun AndroidAttachment(message: ChatMessage) {
         else if (image) org.sigil.ImageMessageFrame(picture?.width ?: imageWidth, picture?.height ?: imageHeight, frameShape, captionBlock) { frame ->
             val motion = org.sigil.LocalMotion.current
             val arrival by animateFloatAsState(if (picture != null) 1f else 0f, motion.enter(org.sigil.MotionMillis), label = "Picture")
-            Box(frame.background(MaterialTheme.colorScheme.surfaceContainerHigh).clickable(enabled = picture != null) { opened = true },contentAlignment=Alignment.Center) {
+            Box(frame.background(MaterialTheme.colorScheme.surfaceContainerHigh).combinedClickable(enabled = picture != null, onLongClick = org.sigil.LocalMaterialPress.current) { opened = true },contentAlignment=Alignment.Center) {
                 picture?.let { Image(it.asImageBitmap(), file.name, Modifier.fillMaxSize().graphicsLayer { alpha = arrival }, contentScale = ContentScale.Fit) }
                 if (picture != null) { if (file.mediaType == "image/gif") org.sigil.GifChip(Modifier.align(Alignment.TopStart)) }
                 else if(failed) SigilIconButton({requested=true}) {Glyph("refresh",28,"Retry image")}

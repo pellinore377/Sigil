@@ -5,6 +5,7 @@ import androidx.compose.animation.*
 import androidx.compose.animation.core.*
 import androidx.compose.foundation.*
 import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.*
@@ -87,7 +88,6 @@ internal fun ConversationPage(chat: ChatSummary, state: MessengerState, draft: T
     var reply by remember(chat.id) { mutableStateOf<ChatMessage?>(null) }
     var editing by remember(chat.id) { mutableStateOf<ChatMessage?>(null) }
     var selected by remember(chat.id) { mutableStateOf<Pair<ChatMessage, Rect>?>(null) }
-    var returnBounds by remember(chat.id) { mutableStateOf(Rect.Zero) }
     var cardDetails by remember(chat.id) { mutableStateOf<ChatMessage?>(null) }
     // Each message keeps its own details open or closed, as the reference does.
     var details by remember(chat.id) { mutableStateOf(setOf<Pair<String, String>>()) }
@@ -177,13 +177,15 @@ internal fun ConversationPage(chat: ChatSummary, state: MessengerState, draft: T
         enter = slideInVertically(motionPolicy.enter(MotionMillis)) { it },
         exit = slideOutVertically(motionPolicy.exit(MotionMillis, if(LocalNavigationBack.current)MotionQuick else 0)) { it }) }
     // The menu blurs the page behind it where the platform can; elsewhere the scrim alone dims it.
-    val menuBlur = remember { mutableFloatStateOf(0f) }
-    var windowShift by remember { mutableStateOf(Offset.Zero) }
+    // The menu's progress: the page's other items blur by it, the scrim dims by it, the pill and actions scale by it.
+    val menu = remember { Animatable(0f) }
+    // The held bubble itself, moved out of its list item into the menu's slot while the menu is open, and back when it closes.
+    val heldContent = remember { mutableStateOf<(@Composable () -> Unit)?>(null) }
     var pageBounds by remember { mutableStateOf(Rect.Zero) }
     val footerHost = LocalFooterHost.current
     val navigationInset = WindowInsets.navigationBars.getBottom(LocalDensity.current)
-    Box(Modifier.fillMaxSize().then(timelineMotion).background(scheme.background).blur(18.dp * menuBlur.floatValue)
-        .onGloballyPositioned { windowShift = it.positionOnScreen() - it.positionInWindow(); pageBounds = it.boundsInWindow() }.testTag("conversation-page")) {
+    Box(Modifier.fillMaxSize().then(timelineMotion).background(scheme.background)
+        .onGloballyPositioned { pageBounds = it.boundsInWindow() }.testTag("conversation-page")) {
         LocalWallpaper.current(chat.id, Modifier.matchParentSize())
         Column(Modifier.align(Alignment.TopCenter).widthIn(max = 920.dp).fillMaxSize().then(if (gradient) Modifier.background(Brush.verticalGradient(listOf(scheme.background.copy(alpha = .7f), scheme.primaryContainer.copy(alpha = .7f)))) else Modifier)) {
             val headerInset = LocalHeaderInset.current
@@ -196,7 +198,7 @@ internal fun ConversationPage(chat: ChatSummary, state: MessengerState, draft: T
             Box(Modifier.weight(1f).fillMaxWidth().clipToBounds().onGloballyPositioned {materialTimeline.viewport=it.boundsInWindow();val r=materialTimeline.viewport;if(materialHeader>0)materialTimeline.bubbles["header"]=Rect(r.left,r.top,r.right,r.top+materialHeader)}) {
             val timelineMedia = remember(messages) { messages.filter { m -> m.attachment?.let { it.mediaType.startsWith("image/") || it.mediaType.startsWith("video/") } == true }.asReversed() }
             CompositionLocalProvider(LocalMaterialTimeline provides materialTimeline.takeIf {materialOverlay!=null}, LocalPreviewLaunch provides previewLaunch, LocalTimelineMedia provides timelineMedia) {
-            LazyColumn(Modifier.fillMaxSize().testTag("timeline"), state = list, reverseLayout = true, contentPadding = PaddingValues(start = TimelineGutter, end = TimelineGutter, top = (if (controls) 0.dp else headerInset) + 12.dp, bottom = composerInset)) {
+            LazyColumn(Modifier.fillMaxSize().blur(18.dp * menu.value).testTag("timeline"), state = list, reverseLayout = true, userScrollEnabled = selected == null, contentPadding = PaddingValues(start = TimelineGutter, end = TimelineGutter, top = (if (controls) 0.dp else headerInset) + 12.dp, bottom = composerInset)) {
                 item("typing") { androidx.compose.animation.AnimatedVisibility(!threadsOverview && state.typing.isNotEmpty(), enter = expandVertically(motionPolicy.enter(MotionMillis)) + fadeIn(motionPolicy.enter(MotionMillis)), exit = shrinkVertically(motionPolicy.exit(MotionQuick)) + fadeOut(motionPolicy.exit(MotionExit)), label = "Typing indicator") { TypingRow(state.typing.map { state.people[it] ?: if (chat.group) "Member" else chat.name }, chat.name, state.typing) } }
                 itemsIndexed(messages, key = { _, it -> it.author + it.id }) { index, message ->
                     if (page == "Pins") {
@@ -248,10 +250,16 @@ internal fun ConversationPage(chat: ChatSummary, state: MessengerState, draft: T
                     val haptic = LocalHapticFeedback.current
                     val reveal = with(density) { (SwipeChipSize + SwipeChipGap).toPx() }
                     val threshold = reveal
+                    val held = selected?.first?.let { it.id == message.id && it.author == message.author } == true
+                    val cmd = if (chat.verified && !state.busy) command else null
+                    // One instance of the bubble: it renders here, or in the menu's slot, never in both.
+                    val bubbleContent = remember(materialKey) { movableContentOf<ChatMessage, Boolean, Boolean, Command?> { m, g, f, c -> MessageBubble(m, g, f, analyze, c) } }
+                    var bubbleSize by remember { mutableStateOf(IntSize.Zero) }
+                    fun hold() { heldContent.value = { bubbleContent(message, grouped, followed, cmd) }; selected = message to bounds }
                     Column(itemMotion().then(arrivalMotion(arrivals,materialKey)).fillMaxWidth().padding(top = if (grouped) 3.dp else 12.dp)) {
                         if (showSeparator(message, older)) Text(message.separator.ifEmpty { message.time }, Modifier.align(Alignment.CenterHorizontally).padding(top = 6.dp, bottom = 14.dp), style = MaterialTheme.typography.labelMedium, color = scheme.onSurfaceVariant)
                         if (chat.group && !message.mine && !grouped) Row(Modifier.padding(bottom = 4.dp), verticalAlignment = Alignment.CenterVertically) { val name = state.people[message.author] ?: "Former member"; Avatar(name, 20, message.author); Text(name, Modifier.padding(start = 6.dp), style = MaterialTheme.typography.bodySmall, color = scheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis) }
-                        Row(Modifier.fillMaxWidth().combinedClickable(interactionSource = remember { androidx.compose.foundation.interaction.MutableInteractionSource() }, indication = null, onClick = { val key = message.author to message.id; details = if (key in details) details - key else details + key }, onLongClick = { selected = message to bounds })
+                        Row(Modifier.fillMaxWidth().combinedClickable(interactionSource = remember { androidx.compose.foundation.interaction.MutableInteractionSource() }, indication = null, onClick = { val key = message.author to message.id; details = if (key in details) details - key else details + key }, onLongClick = { hold() })
                             .pointerInput(message.id, message.mine) {
                                 val slop = viewConfiguration.touchSlop
                                 // The bubble never travels further than the chip needs, so it stays on screen.
@@ -292,7 +300,6 @@ internal fun ConversationPage(chat: ChatSummary, state: MessengerState, draft: T
                             BoxWithConstraints(Modifier.weight(1f, false)) {
                             val bubbleWidth = ((maxWidth + TimelineGutter * 2) * BubbleWidthFraction).coerceAtMost(maxWidth)
                             Column(Modifier.width(bubbleWidth), horizontalAlignment = if (message.mine) Alignment.End else Alignment.Start) {
-                                val lifted = selected?.first?.let { it.id == message.id && it.author == message.author } == true && menuBlur.floatValue > 0f
                                 val launched = previewLaunch.panelOrigin(message.id).takeIf { message.mine }
                                 val arrival = remember(message.id) { Animatable(1f) }
                                 LaunchedEffect(launched) {
@@ -302,7 +309,7 @@ internal fun ConversationPage(chat: ChatSummary, state: MessengerState, draft: T
                                     previewLaunch.landed(message.id)
                                 }
                                 Box(Modifier.fillMaxWidth(), contentAlignment = if (message.mine) Alignment.CenterEnd else Alignment.CenterStart) {
-                                  if (abs(offset) > 1f && !lifted) {
+                                  if (abs(offset) > 1f && !held) {
                                     val action = swipeAction(message.mine, offset)
                                     val armed = abs(offset) >= threshold
                                     // The chip rides beside the bubble's own edge, one gap away, in either direction.
@@ -315,7 +322,7 @@ internal fun ConversationPage(chat: ChatSummary, state: MessengerState, draft: T
                                     }
                                   }
                                   Box(Modifier.graphicsLayer {
-                                    translationX = offset; alpha = if (lifted) 0f else 1f
+                                    translationX = offset
                                     // The sent card carries on from where the preview panel left it, rather than arriving from nowhere.
                                     val from = launched
                                     if (from != null && bounds != Rect.Zero && bounds.width > 0f) {
@@ -326,12 +333,13 @@ internal fun ConversationPage(chat: ChatSummary, state: MessengerState, draft: T
                                         translationX += (from.left - bounds.left) * remaining
                                         translationY = (from.top - bounds.top) * remaining
                                     }
-                                  }.then(if (lifted) Modifier.clearAndSetSemantics { } else Modifier).onSizeChanged { bubblePx = it.width }.onGloballyPositioned { bounds = it.boundsInWindow(); materialTimeline.bubbles[materialKey]=bounds; if (lifted) returnBounds = bounds }
-                                    .pointerInput(message.id) { awaitPointerEventScope { while (true) { val event = awaitPointerEvent(); if (event.type == PointerEventType.Press && event.buttons.isSecondaryPressed) selected = message to bounds } } }) {
-                                    CompositionLocalProvider(LocalMaterialPress provides {selected=message to bounds},LocalItemVisible provides onScreen) {
-                                    if(materialKey in animated) MessageMotion(message.id,textMotion.state(materialKey),onScreen && selected==null,animated.getValue(materialKey)) {
-                                        MessageBubble(message, grouped, followed, analyze, if (chat.verified && !state.busy) command else null)
-                                    } else MessageBubble(message, grouped, followed, analyze, if (chat.verified && !state.busy) command else null)
+                                  }.onSizeChanged { bubblePx = it.width; bubbleSize = it }.onGloballyPositioned { bounds = it.boundsInWindow(); materialTimeline.bubbles[materialKey]=bounds }
+                                    .pointerInput(message.id) { awaitPointerEventScope { while (true) { val event = awaitPointerEvent(); if (event.type == PointerEventType.Press && event.buttons.isSecondaryPressed) hold() } } }) {
+                                    CompositionLocalProvider(LocalMaterialPress provides { hold() },LocalItemVisible provides onScreen) {
+                                    if (held) Spacer(Modifier.size(with(density) { bubbleSize.width.toDp() }, with(density) { bubbleSize.height.toDp() }))
+                                    else if(materialKey in animated) MessageMotion(message.id,textMotion.state(materialKey),onScreen && selected==null,animated.getValue(materialKey)) {
+                                        bubbleContent(message, grouped, followed, cmd)
+                                    } else bubbleContent(message, grouped, followed, cmd)
                                     }
                                   }
                                 }
@@ -369,10 +377,10 @@ internal fun ConversationPage(chat: ChatSummary, state: MessengerState, draft: T
         }
         }
         }
-        selected?.let { (message, bounds) ->
-            val index = messages.indexOfFirst { it.id == message.id && it.author == message.author }
-            val older = messages.getOrNull(index + 1)
-            MessageMenu(message, bounds, returnBounds.takeIf { it != Rect.Zero } ?: bounds, menuBlur, windowShift, Rect(pageBounds.left, footerHost?.headerBottom ?: pageBounds.top, pageBounds.right, pageBounds.bottom - navigationInset - with(LocalDensity.current) { ((footerHost?.height ?: 0.dp) + 16.dp).toPx() }), older?.author == message.author && !showSeparator(message, older), messages.getOrNull(index - 1)?.author == message.author, analyze, { selected = null; returnBounds = Rect.Zero }) { action, value ->
+        selected?.let { (message, origin) ->
+            val band = Rect(pageBounds.left, footerHost?.headerBottom ?: pageBounds.top, pageBounds.right, pageBounds.bottom - navigationInset - with(LocalDensity.current) { ((footerHost?.height ?: 0.dp) + 16.dp).toPx() })
+            MessageMenu(message, origin, menu, pageBounds, band, { CompositionLocalProvider(LocalMaterialTimeline provides materialTimeline.takeIf { materialOverlay != null }) { heldContent.value?.invoke() } },
+                { materialTimeline.bubbles[message.author + message.id] = it }, { selected = null; heldContent.value = null }) { action, value ->
                 when (action) {
                     "reply" -> respond(message, false)
                     "thread" -> respond(message, true)
@@ -456,14 +464,18 @@ internal fun MessageBubble(message: ChatMessage, grouped: Boolean, followed: Boo
 @Composable
 internal fun MessageDetails(message: ChatMessage, expanded: Boolean, receipt: Boolean, chat: ChatSummary, people: Map<String, String>) {
     val motionPolicy = LocalMotion.current
-    // Time, then the delivery state of an own message, then the lock; the last own message always carries its state.
+    // The delivery state of an own message, then time and lock; the last own message always carries its state.
     val shown = receipt || expanded
-    Row(Modifier.animateContentSize(motionPolicy.tween(MotionMillis)).padding(top = if (shown) 4.dp else 0.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-        AnimatedVisibility(expanded, enter = fadeIn(motionPolicy.enter(MotionInline)) + expandHorizontally(motionPolicy.enter(MotionMillis), expandFrom = Alignment.End), exit = fadeOut(motionPolicy.exit(MotionExit)) + shrinkHorizontally(motionPolicy.exit(MotionExit), shrinkTowards = Alignment.End), label = "Message details") {
-            Text(message.time, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-        }
+    Row(Modifier.animateContentSize(motionPolicy.tween(MotionMillis)).padding(top = if (shown) 4.dp else 0.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(5.dp)) {
         if (receipt || expanded && message.mine) DeliveryReceipt(message, chat, people)
-        if (expanded) Glyph("lock", 11, "Encrypted message")
+        // Slides in from the right and back out to the right.
+        AnimatedVisibility(expanded, enter = fadeIn(motionPolicy.enter(MotionInline)) + expandHorizontally(motionPolicy.enter(MotionMillis), expandFrom = Alignment.End), exit = fadeOut(motionPolicy.exit(MotionMillis)) + shrinkHorizontally(motionPolicy.exit(MotionMillis), shrinkTowards = Alignment.End), label = "Message details") {
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(5.dp)) {
+                if (receipt || message.mine) Text("·", style = MaterialTheme.typography.labelSmall)
+                Text(message.time, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Glyph("lock", 11, "Encrypted message")
+            }
+        }
     }
 }
 @Composable
@@ -504,95 +516,71 @@ private fun TypingRow(people: List<String>, name: String, photos: List<String>) 
     }
 }
 @Composable
-private fun MessageMenu(message: ChatMessage, originWindow: Rect, returnWindow: Rect, blur: MutableFloatState, windowShift: Offset, bandWindow: Rect, grouped: Boolean, followed: Boolean, analyze: (String) -> String, dismiss: () -> Unit, action: (String, String) -> Unit) {
-    val objectMotion=message.parts.singleOrNull()?.utility?.motion
+private fun BoxScope.MessageMenu(message: ChatMessage, origin: Rect, progress: Animatable<Float, AnimationVector1D>, page: Rect, band: Rect, content: @Composable () -> Unit, positioned: (Rect) -> Unit, dismiss: () -> Unit, action: (String, String) -> Unit) {
     val motionPolicy = LocalMotion.current
-    var target by remember { mutableStateOf(Rect.Zero) }
-    val progress = remember { Animatable(0f) }
-    // The dialog is its own window; its coordinates meet the page's only through the screen.
-    var dialogShift by remember { mutableStateOf<Offset?>(null) }
-    val correction = windowShift - (dialogShift ?: windowShift)
-    val origin = originWindow.translate(correction)
-    val returnTo = returnWindow.translate(correction)
-    val band = bandWindow.translate(correction)
+    val scheme = MaterialTheme.colorScheme
+    val scope = rememberCoroutineScope()
     var emojiPicker by remember { mutableStateOf(false) }
     var emoji by remember { mutableStateOf("") }
     var closing by remember { mutableStateOf(false) }
-    val scope = rememberCoroutineScope()
-    val density = LocalDensity.current
+    // The bubble's travel from where it was pressed to its slot in the sandwich, planned once; it opens as it travels and reverses as it returns.
+    var plan by remember { mutableStateOf<Float?>(null) }
+    LaunchedEffect(plan) { if (plan != null) progress.animateTo(1f, motionPolicy.tween(MotionMillis)) }
     fun finish(after: () -> Unit = {}) {
         if (closing) return
         closing = true
         scope.launch { progress.animateTo(0f, motionPolicy.tween(MotionMillis)); dismiss(); after() }
     }
     fun choose(name: String, value: String) { finish { action(name, value) } }
-    // Nothing moves until the copy is placed exactly over the original.
-    val placed = target != Rect.Zero && dialogShift != null
-    LaunchedEffect(placed) { if (placed) progress.animateTo(1f, motionPolicy.tween(MotionMillis)) }
-    SideEffect { blur.floatValue = progress.value }
-    DisposableEffect(Unit) { onDispose { blur.floatValue = 0f } }
-    // The bubble stays where it was pressed; the reaction pill sits above it and the menu below, on its own side,
-    // and the group moves only as far as the safe area needs.
-    Dialog({ finish() }, properties = DialogProperties(usePlatformDefaultWidth = false)) {
-        var dialogOrigin by remember { mutableStateOf(Offset.Zero) }
-        val insets = WindowInsets.safeDrawing
-        val layoutDirection = LocalLayoutDirection.current
-        val scheme = MaterialTheme.colorScheme
-        val enter = Modifier.graphicsLayer {
-            alpha = progress.value; val scale = .92f + .08f * progress.value; scaleX = scale; scaleY = scale
-            transformOrigin = TransformOrigin(if (message.mine) 1f else 0f, .5f)
-        }
-        Box(Modifier.fillMaxSize().background(scheme.scrim.copy(alpha = .5f * progress.value)).clickable(remember { androidx.compose.foundation.interaction.MutableInteractionSource() }, null) { finish() }
-            .onGloballyPositioned { dialogOrigin = it.positionInWindow(); dialogShift = it.positionOnScreen() - it.positionInWindow() }) {
-            Layout({
-                Surface(enter, shape = RoundedCornerShape(28.dp), color = scheme.surfaceContainerHigh) {
-                    Row(Modifier.padding(horizontal = 4.dp), verticalAlignment = Alignment.CenterVertically) {
-                        listOf("👍", "❤️", "😂", "😮", "😢", "😡").forEach { e -> SigilTextButton({ choose("react", e) }, contentPadding = PaddingValues(horizontal = 6.dp)) { Text(e, fontSize = 22.sp) } }
-                        Symbol("add_reaction", "Choose reaction") { emojiPicker = true }
-                    }
+    BackAction(true) { finish() }
+    val local = origin.translate(-page.left, -page.top)
+    val enter = Modifier.graphicsLayer {
+        alpha = progress.value; val scale = .92f + .08f * progress.value; scaleX = scale; scaleY = scale
+        transformOrigin = TransformOrigin(if (message.mine) 1f else 0f, .5f)
+    }
+    Box(Modifier.matchParentSize().pointerInput(Unit) { detectTapGestures { finish() } }.background(scheme.scrim.copy(alpha = .5f * progress.value))) {
+        Layout({
+            Surface(enter, shape = RoundedCornerShape(28.dp), color = scheme.surfaceContainerHigh) {
+                Row(Modifier.padding(horizontal = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+                    listOf("👍", "❤️", "😂", "😮", "😢", "😡").forEach { e -> SigilTextButton({ choose("react", e) }, contentPadding = PaddingValues(horizontal = 6.dp)) { Text(e, fontSize = 22.sp) } }
+                    Symbol("add_reaction", "Choose reaction") { emojiPicker = true }
                 }
-                Box(Modifier.width(when(objectMotion?.kind) {"coin"->164.dp;"choice"->180.dp;"dice"->if(objectMotion.dice.size==1)132.dp else 232.dp;else->with(density){origin.width.toDp()}}).onGloballyPositioned { target = it.boundsInWindow() }
-                    .graphicsLayer { alpha = if (placed) 1f else 0f }
-                    .drawWithContent { if (closing) clipRect(top = band.top - target.top, bottom = band.bottom - target.top) { this@drawWithContent.drawContent() } else drawContent() }) {
-                    Box(Modifier.graphicsLayer {
-                        val source = if (closing) returnTo else origin
-                        if (target != Rect.Zero && source != Rect.Zero) { translationX = (source.left - target.left) * (1f - progress.value); translationY = (source.top - target.top) * (1f - progress.value) }
-                    }) { CompositionLocalProvider(LocalMaterialTimeline provides null, LocalTextMotion provides null, LocalObjectMenu provides true) {MessageBubble(message, grouped, followed, analyze)} }
+            }
+            Box(Modifier.onGloballyPositioned { positioned(it.boundsInWindow()) }) { content() }
+            // As wide as its longest label, with the same inset either side.
+            Surface(enter.width(IntrinsicSize.Max), shape = RoundedCornerShape(24.dp), color = scheme.surfaceContainerHigh) {
+                Column(Modifier.padding(horizontal = 8.dp, vertical = 6.dp)) {
+                    val entries = listOf("reply" to "Reply", "forward" to "Forward", "copy" to "Copy", "thread" to "Reply in thread", "pin" to if (message.pinned) "Unpin" else "Pin", "note" to if (message.noted) "Remove from notes" else "Add to notes") +
+                        (if(message.detailsPart()!=null)listOf("details" to "Details") else emptyList()) +
+                        (if(message.hasMessageMotion())listOf("replay" to "Replay animation") else emptyList()) +
+                        (if (message.mine && message.editable) listOf("edit" to "Edit") else emptyList()) + (if (message.mine) listOf("delete" to "Delete") else emptyList())
+                    entries.forEach { (key, label) -> DropdownMenuItem({ Text(label, color = if (key == "delete") scheme.error else scheme.onSurface) }, { choose(key, "") },
+                        leadingIcon = { Glyph(when(key) { "thread" -> "forum"; "pin" -> "push_pin"; "note" -> "description"; "copy" -> "content_copy"; "details" -> "info"; else -> key }, 20) }) }
                 }
-                // As wide as its longest label, with the same inset either side.
-                Surface(enter.width(IntrinsicSize.Max), shape = RoundedCornerShape(24.dp), color = scheme.surfaceContainerHigh) {
-                    Column(Modifier.padding(horizontal = 8.dp, vertical = 6.dp)) {
-                        val entries = listOf("reply" to "Reply", "forward" to "Forward", "copy" to "Copy", "thread" to "Reply in thread", "pin" to if (message.pinned) "Unpin" else "Pin", "note" to if (message.noted) "Remove from notes" else "Add to notes") +
-                            (if(message.detailsPart()!=null)listOf("details" to "Details") else emptyList()) +
-                            (if(message.hasMessageMotion())listOf("replay" to "Replay animation") else emptyList()) +
-                            (if (message.mine && message.editable) listOf("edit" to "Edit") else emptyList()) + (if (message.mine) listOf("delete" to "Delete") else emptyList())
-                        entries.forEach { (key, label) -> DropdownMenuItem({ Text(label, color = if (key == "delete") scheme.error else scheme.onSurface) }, { choose(key, "") },
-                            leadingIcon = { Glyph(when(key) { "thread" -> "forum"; "pin" -> "push_pin"; "note" -> "description"; "copy" -> "content_copy"; "details" -> "info"; else -> key }, 20) }) }
-                    }
-                }
-            }) { measurables, constraints ->
-                val gap = 10.dp.roundToPx()
-                val margin = 16.dp.roundToPx()
-                val loose = constraints.copy(minWidth = 0, minHeight = 0, maxWidth = constraints.maxWidth - margin * 2)
-                val (pill, bubble, menu) = measurables.map { it.measure(loose) }
-                val top = insets.getTop(this) + margin
-                val bottom = constraints.maxHeight - insets.getBottom(this) - margin
-                val left = (origin.left - dialogOrigin.x).roundToInt()
-                val right = (origin.right - dialogOrigin.x).roundToInt()
-                fun x(width: Int) = (if (message.mine) right - width else left).coerceIn(margin, (constraints.maxWidth - margin - width).coerceAtLeast(margin))
-                val bubbleTop = (origin.top - dialogOrigin.y).roundToInt()
-                val pillTop = bubbleTop - gap - pill.height
-                val menuTop = bubbleTop + bubble.height + gap
-                // Fit the menu first, then the pill; a bubble taller than the screen simply keeps its head.
-                var shift = 0
-                if (menuTop + menu.height > bottom) shift = bottom - (menuTop + menu.height)
-                if (pillTop + shift < top) shift = top - pillTop
-                if (menuTop + menu.height + shift > bottom) shift = bottom - (menuTop + menu.height)
-                layout(constraints.maxWidth, constraints.maxHeight) {
-                    pill.placeRelative(x(pill.width), pillTop + shift)
-                    bubble.placeRelative(x(bubble.width), bubbleTop + shift)
-                    menu.placeRelative(x(menu.width), menuTop + shift)
-                }
+            }
+        }) { measurables, constraints ->
+            val gap = 10.dp.roundToPx()
+            val margin = 16.dp.roundToPx()
+            val loose = constraints.copy(minWidth = 0, minHeight = 0, maxWidth = constraints.maxWidth - margin * 2)
+            val pill = measurables[0].measure(loose)
+            // The bubble keeps the width it had in the list.
+            val slot = measurables[1].measure(Constraints(maxWidth = local.width.roundToInt().coerceAtLeast(1)))
+            val actions = measurables[2].measure(loose)
+            val left = local.left.roundToInt(); val right = local.right.roundToInt()
+            fun x(width: Int) = (if (message.mine) right - width else left).coerceIn(margin, (constraints.maxWidth - margin - width).coerceAtLeast(margin))
+            if (plan == null) {
+                // The sandwich sits centred in the band; the bubble travels from its spot to its slot.
+                val top = (band.top - page.top).roundToInt() + margin
+                val bottom = (band.bottom - page.top).roundToInt() - margin
+                val group = pill.height + gap + slot.height + gap + actions.height
+                val groupTop = (top + (bottom - top - group) / 2).coerceIn(top, (bottom - group).coerceAtLeast(top))
+                plan = (groupTop + pill.height + gap - local.top).toFloat()
+            }
+            val slotTop = (local.top + (plan ?: 0f) * progress.value).roundToInt()
+            layout(constraints.maxWidth, constraints.maxHeight) {
+                pill.placeRelative(x(pill.width), slotTop - gap - pill.height)
+                slot.placeRelative(left, slotTop)
+                actions.placeRelative(x(actions.width), slotTop + slot.height + gap)
             }
         }
     }

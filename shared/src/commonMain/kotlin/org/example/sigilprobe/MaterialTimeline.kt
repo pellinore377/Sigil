@@ -81,7 +81,7 @@ internal class PreviewLaunch {
 internal val LocalMaterialHandoffPass=staticCompositionLocalOf {false}
 internal val LocalPreviewLaunch = staticCompositionLocalOf<PreviewLaunch?> { null }
 internal val LocalMaterialOrdinal = staticCompositionLocalOf {0}
-internal val LocalMaterialPress=staticCompositionLocalOf<(() -> Unit)?> {null}
+val LocalMaterialPress=staticCompositionLocalOf<(() -> Unit)?> {null}
 val LocalMaterialOverlay=staticCompositionLocalOf<(@Composable (MaterialTimeline,Modifier)->Unit)?> {null}
 internal val LocalMaterialTimeline=staticCompositionLocalOf<MaterialTimeline?> {null}
 val LocalMaterialOutgoing=staticCompositionLocalOf {false}

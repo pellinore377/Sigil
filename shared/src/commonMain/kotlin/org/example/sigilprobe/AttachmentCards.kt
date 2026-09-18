@@ -1,9 +1,11 @@
+@file:OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
 package org.sigil
 
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -39,7 +41,7 @@ private val PageInk = Color(0xff1c1b1a)
 
 // A document arrives as the top of its own first page, cut by a fade and stamped with its type.
 @Composable fun DocumentCard(name: String, kind: AttachmentKind, bytes: Long, peek: FilePeek?, loading: Boolean, shape: Shape, onOpen: () -> Unit) {
-    Box(Modifier.widthIn(max = AttachmentCardWidth).fillMaxWidth().height(PageHeight).clip(shape).background(PagePaper).clickable(onClick = onOpen).semanticsLabel("$name, ${kind.chip} ${attachmentSize(bytes)}")) {
+    Box(Modifier.widthIn(max = AttachmentCardWidth).fillMaxWidth().height(PageHeight).clip(shape).background(PagePaper).combinedClickable(onClick = onOpen, onLongClick = LocalMaterialPress.current).semanticsLabel("$name, ${kind.chip} ${attachmentSize(bytes)}")) {
         when (peek) {
             is FilePeek.Text -> Text(if (peek.markdown) markdownPreview(peek.text) else androidx.compose.ui.text.AnnotatedString(peek.text),
                 Modifier.fillMaxSize().padding(horizontal = 16.dp, vertical = 14.dp).clipToBounds(), color = PageInk, fontSize = 11.sp, lineHeight = 15.sp, overflow = TextOverflow.Clip)
@@ -79,7 +81,7 @@ private val PageInk = Color(0xff1c1b1a)
     val ground = tint ?: scheme.surfaceContainerHigh
     val ink = if (ground.brightness() > .5f) Color(0xff1c1b1a) else Color.White
     val strip = lerp(ground, if (ink == Color.White) Color.Black else Color.White, .22f)
-    Box(Modifier.widthIn(max = AttachmentCardWidth).fillMaxWidth().aspectRatio(1f).clip(shape).background(ground).clickable(onClick = onOpen).semanticsLabel("$title, $detail")) {
+    Box(Modifier.widthIn(max = AttachmentCardWidth).fillMaxWidth().aspectRatio(1f).clip(shape).background(ground).combinedClickable(onClick = onOpen, onLongClick = LocalMaterialPress.current).semanticsLabel("$title, $detail")) {
         if (art != null) Image(art, null, Modifier.fillMaxSize(), contentScale = ContentScale.Crop)
         Box(Modifier.align(Alignment.Center).size(64.dp).background(if (art != null) Color.Black.copy(alpha = .5f) else lerp(ground, ink, .2f), SquircleShape), contentAlignment = Alignment.Center) {
             CompositionLocalProvider(LocalContentColor provides if (art != null) Color.White else ink) { Glyph("music_note", 30) }
@@ -94,7 +96,7 @@ private val PageInk = Color(0xff1c1b1a)
 // Anything without a picture of itself: the reference's icon, name and size on one line.
 internal val SquircleShape = androidx.compose.foundation.shape.GenericShape { size, _ -> addPath(squirclePath(androidx.compose.ui.geometry.Rect(androidx.compose.ui.geometry.Offset.Zero, size), size.minDimension * .42f)) }
 @Composable fun FileChip(name: String, bytes: Long, progress: Boolean, onOpen: () -> Unit) {
-    Row(Modifier.widthIn(max = AttachmentCardWidth).clickable(onClick = onOpen).padding(start = 4.dp, end = 18.dp, top = 10.dp, bottom = 10.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(16.dp)) {
+    Row(Modifier.widthIn(max = AttachmentCardWidth).combinedClickable(onClick = onOpen, onLongClick = LocalMaterialPress.current).padding(start = 4.dp, end = 18.dp, top = 10.dp, bottom = 10.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(16.dp)) {
         Box(Modifier.size(46.dp).background(LocalContentColor.current.copy(alpha = .12f), SquircleShape), contentAlignment = Alignment.Center) {
             if (progress) CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp, color = LocalContentColor.current) else Glyph("draft", 22)
         }

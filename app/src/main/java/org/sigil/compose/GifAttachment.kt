@@ -1,3 +1,4 @@
+@file:OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
 package org.sigil.compose
 
 import androidx.compose.foundation.background
@@ -7,6 +8,7 @@ import android.graphics.drawable.Drawable
 import android.widget.ImageView
 import androidx.annotation.RequiresApi
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.Image
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
@@ -84,7 +86,7 @@ internal fun GifAttachment(message: ChatMessage) {
     ImageMessageFrame(imageWidth,imageHeight,
         if (captioned) androidx.compose.ui.graphics.RectangleShape else androidx.compose.foundation.shape.RoundedCornerShape(20.dp),
         if (!captioned) null else { { Box(Modifier.fillMaxWidth().background(org.sigil.LocalBubbleGround.current).padding(horizontal = 14.dp, vertical = 10.dp)) { MessageText(message.attachment!!.caption, NativeCore::analyze) } } }) { frame ->
-        Box(frame.clickable {
+        Box(frame.combinedClickable(onLongClick = org.sigil.LocalMaterialPress.current) {
             drawable?.let { image ->
                 val snapshot = android.graphics.Bitmap.createBitmap(image.intrinsicWidth.coerceAtLeast(1), image.intrinsicHeight.coerceAtLeast(1), android.graphics.Bitmap.Config.ARGB_8888)
                 val bounds = android.graphics.Rect(image.bounds)
