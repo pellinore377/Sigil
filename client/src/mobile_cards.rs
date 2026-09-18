@@ -163,6 +163,25 @@ impl ClientStore {
                 value["text"] = json!(note.text.body());
                 value["rich"] = json!(note.text.presentation());
             }
+            Construct::Checklist(list) if matches!(list.mode, ListMode::Recurring(_)) => {
+                let ListMode::Recurring(rule) = &list.mode else {
+                    return Err(Error::InvalidStore);
+                };
+                let now = conversations::now();
+                let recurring = self.recurring_state(conversation, reference, now)?;
+                value["kind"] = json!("recurring");
+                value["text"] = json!(list.title.body());
+                value["rich"] = json!(list.title.presentation());
+                value["date"] = json!(rule.reset_label(now).map_err(|_| Error::InvalidStore)?);
+                value["items"] = json!(list
+                    .items
+                    .iter()
+                    .filter_map(|item| {
+                        let check = recurring.checks.iter().find(|s| s.item == item.id)?;
+                        Some(json!({"id":transport::hex(&item.id), "text":item.text.body(), "rich":item.text.presentation(), "checked":check.checked, "enabled":!check.checked, "persistent":item.persistent}))
+                    })
+                    .collect::<Vec<_>>());
+            }
             Construct::Checklist(list) => {
                 value["kind"] = json!(if list.mode == ListMode::Task {
                     "task"
@@ -306,7 +325,29 @@ impl ClientStore {
         let conversation = self.mobile_conversation(peer)?;
         let reference = self.mobile_card_reference(conversation, target, card)?;
         let state = self.card_state(conversation, reference)?;
+        let recurring = matches!(&state.definition.content,
+            Construct::Checklist(list) if matches!(list.mode, ListMode::Recurring(_)));
         let (previous, change) = match (item, checked, choices) {
+            // A recurring check is one-way within its period; the reset clears it.
+            (Some(item), Some(true), None) if recurring => {
+                let state = self.recurring_state(conversation, reference, timestamp)?;
+                let current = state
+                    .checks
+                    .iter()
+                    .find(|s| s.item == item)
+                    .ok_or(Error::InvalidEvent)?;
+                if current.checked {
+                    return Ok(json!({}));
+                }
+                (
+                    None,
+                    Change::RecurringCheck {
+                        item,
+                        period: state.period.start,
+                    },
+                )
+            }
+            (Some(_), Some(false), None) if recurring => return Err(Error::Obsolete),
             (Some(item), Some(checked), None) => {
                 if let Some(current) = state.checks.iter().find(|s| s.item == item) {
                     if current.checked == checked {

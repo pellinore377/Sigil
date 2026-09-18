@@ -23,7 +23,7 @@ data class DiagramContent(val kind: String, val title: RichText, val width: Floa
 data class DiagramNode(val label: RichText, val shape: String, val x: Float, val y: Float)
 data class DiagramEdge(val from: Int, val to: Int, val label: RichText, val dashed: Boolean, val y: Float)
 data class DiagramEntry(val date: RichText, val label: RichText)
-data class CardItem(val id: String, val text: String, val checked: Boolean, val enabled: Boolean, val count: Long? = null, val rich: RichText? = null)
+data class CardItem(val id: String, val text: String, val checked: Boolean, val enabled: Boolean, val count: Long? = null, val rich: RichText? = null, val persistent: Boolean = false)
 data class RichText(val text: String, val spans: List<RichSpan> = emptyList(), val blocks: List<RichBlock> = emptyList(), val codeTokens: List<CodeToken> = emptyList(), val motion: List<TextMotion> = emptyList())
 data class TextMotion(val kind:String,val duration:Int,val mode:String,val amplitude:Float,val stagger:Int,val particles:Int,val lineScope:Boolean,
     val caret:String,val substitutions:String,val units:List<Pair<Int,Int>>)

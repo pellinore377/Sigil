@@ -53,7 +53,7 @@ internal fun MessageCards(message: ChatMessage, analyze: (String) -> String, com
             else if (part.kind == "countdown") CountdownCard(part,analyze)
             else if (part.kind == "ago") AgoCard(part,analyze)
             else if (part.kind == "timer") TimerCard(part)
-            else StandardCard(message,part,analyze,command)
+            else StandardCard(part,analyze)
         }
     }
 }

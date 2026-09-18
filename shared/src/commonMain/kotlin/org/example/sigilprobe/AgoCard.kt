@@ -1,17 +1,21 @@
 package org.sigil
 
-import androidx.compose.foundation.layout.*
-import androidx.compose.material3.*
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 
 @Composable internal fun AgoCard(part:MessagePart,analyze:(String)->String) {
     val now=temporalNow(part.at)
-    TemporalFrame("history","Elapsed time",part,analyze) {
-        if(part.at>0) {
-            temporalScale(now-part.at).let {(count,unit)->TemporalFigure("$count","$unit ago")}
-            TemporalCaption(temporalBreakdown(part.at,now))
-            TemporalCaption(if(part.date.isEmpty())"" else "Since ${part.date}")
+    CardColumn {
+        if(part.at<=0) {Text("No origin date set.",style=MaterialTheme.typography.bodyMedium);return@CardColumn}
+        TemporalHeader("history","Elapsed time",part,analyze)
+        // The leading unit carries the figure; the rest of the calendar breakdown follows it.
+        val steps=temporalComponents(part.at,now)
+        val lead=steps.firstOrNull()
+        if(lead==null)TemporalFigure("Today","the date is here")
+        else {
+            TemporalFigure("${lead.first}","${lead.second}${if(lead.first==1L)"" else "s"} ago")
+            TemporalCaption(temporalPhrase(steps.drop(1)))
         }
-        else Text("No time set.",style=MaterialTheme.typography.bodyMedium)
     }
 }

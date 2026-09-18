@@ -1,23 +1,19 @@
 package org.sigil
 
-import androidx.compose.animation.*
-import androidx.compose.foundation.layout.*
-import androidx.compose.material3.*
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.ui.unit.dp
 
 @Composable internal fun CountdownCard(part:MessagePart,analyze:(String)->String) {
-    val motion=LocalMotion.current
-    val now=temporalNow(part.at)
-    val reached=part.at in 1..now
-    TemporalFrame("calendar_month","Countdown",part,analyze) {
-        if(part.at>0)AnimatedContent(reached,transitionSpec={(fadeIn(motion.enter(MotionMillis))+scaleIn(motion.enter(MotionMillis),initialScale=.96f)) togetherWith fadeOut(motion.exit(MotionExit)) using SizeTransform(false) {_,_->motion.tween(MotionMillis)}},label="Countdown state") {passed->
-            Column(verticalArrangement=Arrangement.spacedBy(4.dp)) {
-                temporalScale(if(passed)now-part.at else part.at-now).let {(count,unit)->TemporalFigure("$count",if(passed)"$unit ago" else "$unit to go")}
-                TemporalCaption(temporalBreakdown(if(passed)part.at else now,if(passed)now else part.at))
-                TemporalCaption(if(part.date.isEmpty())"" else if(passed)"Reached ${part.date}" else "Until ${part.date}")
-            }
-        }
-        else Text("No target time set.",style=MaterialTheme.typography.bodyMedium)
+    // Within a day the target is close enough to read out live, so the tick refines to the second.
+    val now=temporalNow(part.at,86400L)
+    val left=part.at-now
+    CardColumn {
+        if(part.at<=0) {Text("No target date set.",style=MaterialTheme.typography.bodyMedium);return@CardColumn}
+        TemporalHeader(if(left>0)"calendar_month" else "event_available","Countdown",part,analyze)
+        if(left>=86400L)temporalCalendarScale(left).let {(count,unit)->TemporalFigure("$count","$unit to go")}
+        else if(left>0L)TemporalFigure(temporalDigits(left),"to go")
+        else if(-left<86400L)TemporalFigure("Today","the date is here")
+        else temporalCalendarScale(-left).let {(count,unit)->TemporalFigure("$count","$unit ago")}
     }
 }
