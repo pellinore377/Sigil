@@ -1,29 +1,21 @@
 package org.sigil
 
-import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
-import androidx.compose.ui.draw.clipToBounds
-import androidx.compose.ui.platform.LocalDensity
-import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 
+// The notes-grid tile itself: same shape and surface role as Inbox's note tile, plus its leading glyph.
 @Composable internal fun NoteCard(part:MessagePart,analyze:(String)->String) {
-    val plain=part.rich?.text?:part.text
-    val long=plain.length>200 || plain.count {it=='\n'}>=4
-    var expanded by remember(part.id){mutableStateOf(false)}
-    val measure=with(LocalDensity.current){MaterialTheme.typography.bodyLarge.lineHeight.toDp()*5}
-    CardFrame("sticky_note_2","Note") {
-        // The notes-grid tile radius, so a note reads as a note and not as the bubble it sits in.
-        Box(Modifier.fillMaxWidth().clip(RoundedCornerShape(18.dp)).background(LocalContentColor.current.copy(alpha=.08f)).padding(12.dp)) {
-            Box(Modifier.heightIn(max=if(long && !expanded)measure else Dp.Unspecified).clipToBounds()) {
-                if(part.rich!=null)RichMessageText(part.rich)else MessageText(part.text,analyze)
+    CardColumn {
+        Surface(Modifier.fillMaxWidth(),shape=RoundedCornerShape(18.dp),color=MaterialTheme.colorScheme.surfaceContainerHigh) {
+            Row(Modifier.padding(16.dp),horizontalArrangement=Arrangement.spacedBy(10.dp),verticalAlignment=Alignment.Top) {
+                Box(Modifier.padding(top=2.dp)) {Glyph("sticky_note_2",18,"Note")}
+                Box(Modifier.weight(1f)) {if(part.rich!=null)RichMessageText(part.rich) else MessageText(part.text,analyze)}
             }
         }
-        if(long)SigilTextButton({expanded=!expanded}) {Glyph(if(expanded)"expand_less"else"expand_more",18);Spacer(Modifier.width(8.dp));Text(if(expanded)"Show less"else"Show more")}
     }
 }

@@ -97,7 +97,7 @@ pub fn preview(input:&str)->Result<String,Error> {
             Some(random_preview(raw)?)
         } else {
             match crate::parse_card(raw,origin,CardLimits::default())?.content {
-                Parsed::Card(card)=>Some(card_preview(&card,false)?),
+                Parsed::Card(card)=>Some(card_preview(&card,false,origin.created_at)?),
                 Parsed::Text(_)=>return Err(Error::Invalid),
             }
         };
@@ -164,7 +164,7 @@ fn random_preview(source:&str)->Result<Value,Error> {
     Ok(json!({"id":"preview","kind":"randomizer_preview","text":label,"randomizer":{"kind":kind,"sides":[]}}))
 }
 
-fn card_preview(card:&crate::structured::Card,random:bool)->Result<Value,Error> {
+fn card_preview(card:&crate::structured::Card,random:bool,now:u64)->Result<Value,Error> {
     let mut value=json!({"id":"preview","kind":"card","text":""});
     match &card.content {
         Construct::Data(Data::Chart(v))=>value["chart"]=v.presentation()?,
@@ -173,7 +173,13 @@ fn card_preview(card:&crate::structured::Card,random:bool)->Result<Value,Error> 
         Construct::Data(Data::Table(v))=>value["table"]=json!(v.presentation()),
         Construct::Utility(v)=>{if !random && matches!(v,crate::utility::Utility::Random(_)){return Err(Error::Invalid);}value["utility"]=v.presentation()?;}
         Construct::Note(v)=>{value["kind"]=json!("note");value["rich"]=json!(v.text.presentation());value["text"]=json!(v.text.body());}
-        Construct::Checklist(v)=>{value["kind"]=json!(if matches!(v.mode,crate::structured::ListMode::Task){"task"}else{"checklist"});value["text"]=json!(v.title.body());value["rich"]=json!(v.title.presentation());value["items"]=Value::Array(v.items.iter().enumerate().map(|(i,item)|json!({"id":i.to_string(),"text":item.text.body(),"rich":item.text.presentation(),"checked":item.checked,"enabled":false})).collect());}
+        Construct::Checklist(v)=>{
+            use crate::structured::ListMode;
+            value["kind"]=json!(match v.mode {ListMode::Task=>"task",ListMode::Recurring(_)=>"recurring",ListMode::Standard=>"checklist"});
+            if let ListMode::Recurring(rule)=&v.mode {value["date"]=json!(rule.reset_label(now)?);}
+            value["text"]=json!(v.title.body());value["rich"]=json!(v.title.presentation());
+            value["items"]=Value::Array(v.items.iter().enumerate().map(|(i,item)|json!({"id":i.to_string(),"text":item.text.body(),"rich":item.text.presentation(),"checked":item.checked,"enabled":false,"persistent":item.persistent})).collect());
+        }
         Construct::Poll(v)=>{value["kind"]=json!("poll");value["text"]=json!(v.question.body());value["rich"]=json!(v.question.presentation());value["multiple"]=json!(!matches!(v.selection,crate::structured::Selection::Single));value["items"]=Value::Array(v.options.iter().enumerate().map(|(i,item)|json!({"id":i.to_string(),"text":item.text.body(),"rich":item.text.presentation(),"checked":false,"enabled":false})).collect());}
         Construct::Countdown(v)|Construct::Ago(v)|Construct::Reminder(v)=>{value["kind"]=json!(match &card.content {Construct::Countdown(_)=>"countdown",Construct::Ago(_)=>"ago",_=>"reminder"});value["text"]=json!(v.text.body());value["at"]=json!(v.at);}
         Construct::Timer(v)=>{value["kind"]=json!("timer");value["text"]=json!("Timer");value["at"]=json!(v.ends_at);value["started_at"]=json!(v.started_at);}
@@ -191,8 +197,8 @@ pub fn playground(input:&str)->Result<String,Error> {
     let text=|v:crate::Text|json!({"id":"preview","kind":"text","text":v.body(),"rich":v.presentation()});
     let values=match doc {
         crate::Document::Text(v)=>vec![text(v)],
-        crate::Document::Card(v)=>vec![card_preview(&v,true)?],
-        crate::Document::Composition(v)=>v.parts.into_iter().map(|part|match part {crate::composition::Part::Text(v)=>Ok(text(v)),crate::composition::Part::Card(v)=>card_preview(&v,true)}).collect::<Result<Vec<_>,Error>>()?,
+        crate::Document::Card(v)=>vec![card_preview(&v,true,c.now)?],
+        crate::Document::Composition(v)=>v.parts.into_iter().map(|part|match part {crate::composition::Part::Text(v)=>Ok(text(v)),crate::composition::Part::Card(v)=>card_preview(&v,true,c.now)}).collect::<Result<Vec<_>,Error>>()?,
         _=>return Err(Error::Invalid),
     };
     serde_json::to_string(&values).map_err(|_|Error::Invalid)
@@ -272,6 +278,15 @@ mod tests {
         }
         for mode in ["weekly","monthly","yearly"] {let s=form("Recurring checklist",mode,&[],&[&["Milk; eggs","true"]]);assert!(preview(&s).is_ok(),"{s}");}
         for (mode,fields) in [("text",vec!["Hello; world"]),("link",vec!["https://example.test/a?q=2"]),("wifi",vec!["Network","p:a;s"])] {let s=form("QR code",mode,&fields,&[]);assert!(preview(&s).is_ok(),"{s}");}
+    }
+    #[test]
+    fn recurring_preview_matches_the_timeline_card() {
+        let source="checklist::recurr::weekly::Flat\n-r- Bins\n- Milk;";
+        let v:Value=serde_json::from_str(&preview(&json!({"source":source,"now":1780000000u64,"timezone":"UTC"}).to_string()).unwrap()).unwrap();
+        assert_eq!(v["kind"],"recurring");
+        assert!(v["date"].as_str().unwrap().starts_with("Weekly \u{b7} resets "));
+        assert_eq!(v["items"][0]["persistent"],true);
+        assert_eq!(v["items"][1]["persistent"],false);
     }
     #[test]
     fn contextual_previews_keep_timezone_and_redaction_semantics() {
