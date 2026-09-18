@@ -101,6 +101,21 @@ impl Recurrence {
     pub fn next_reset(&self, after: u64) -> Result<u64, Error> {
         Ok(self.period_at(after.max(self.anchor_at))?.end)
     }
+    /// Interval and next reset in the recurrence's own zone, for a card footer.
+    pub fn reset_label(&self, at: u64) -> Result<String, Error> {
+        let end = self.next_reset(at)?;
+        let local = timestamp(end)?.to_zoned(zone(&self.timezone)?);
+        let pattern = match self.interval {
+            Interval::Weekly => "%A %-I:%M %p",
+            Interval::Monthly => "%b %-d, %-I:%M %p",
+            Interval::Yearly => "%b %-d %Y, %-I:%M %p",
+        };
+        Ok(format!(
+            "{} · resets {}",
+            self.interval.name(),
+            local.strftime(pattern)
+        ))
+    }
     /// Active interval [start,end), including the initial partial interval.
     /// Calculates at most three calendar candidates; missed cycles are not replayed.
     pub fn period_at(&self, at: u64) -> Result<Period, Error> {
@@ -169,6 +184,31 @@ mod tests {
             let day = if year == 2028 { 29 } else { 28 };
             assert_eq!(after, at("UTC", &format!("{year}-02-{day}T00:01:00")));
         }
+    }
+    #[test]
+    fn the_card_footer_names_the_interval_and_its_next_reset_in_the_captured_zone() {
+        let start = at("America/Chicago", "2026-09-15T09:41:00");
+        assert_eq!(
+            Recurrence::new(Interval::Weekly, "America/Chicago", start)
+                .unwrap()
+                .reset_label(start)
+                .unwrap(),
+            "Weekly · resets Tuesday 12:01 AM"
+        );
+        assert_eq!(
+            Recurrence::new(Interval::Monthly, "America/Chicago", start)
+                .unwrap()
+                .reset_label(start)
+                .unwrap(),
+            "Monthly · resets Oct 15, 12:01 AM"
+        );
+        assert_eq!(
+            Recurrence::new(Interval::Yearly, "America/Chicago", start)
+                .unwrap()
+                .reset_label(start)
+                .unwrap(),
+            "Yearly · resets Sep 15 2027, 12:01 AM"
+        );
     }
     #[test]
     fn weekly_dates_use_bundled_rules_and_preserve_wall_time_through_dst() {

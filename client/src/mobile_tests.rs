@@ -775,6 +775,35 @@ fn forwarding_preserves_text_and_notes_and_snapshots_current_checklist_state() {
     assert_eq!(rejected["ok"], false);
 }
 #[test]
+fn a_recurring_list_reaches_the_timeline_with_its_reset_and_persistent_rows() {
+    let (_dir, _server, mut alice, _bob, now) = crate::claims::tests::pair();
+    let request = "84".repeat(32);
+    run(
+        &mut alice,
+        json!({"command":"post","peer":"self","request":request,"timestamp":now,"rich":true,"timezone":"America/Chicago","text":"checklist::recurr::weekly::The weekly reset\n-r- Water the plants\n- Buy a notebook;"}),
+    );
+    let timeline = run(&mut alice, json!({"command":"timeline","peer":"self"}));
+    let message = &timeline["messages"][0];
+    let card = &message["parts"][0];
+    assert_eq!(card["kind"], "recurring");
+    assert!(card["date"].as_str().unwrap().starts_with("Weekly · resets "));
+    assert_eq!(card["items"][0]["persistent"], true);
+    assert_eq!(card["items"][1]["persistent"], false);
+    assert_eq!(card["items"][0]["enabled"], true);
+    let action = json!({"command":"card_action","peer":"self","author":message["author"],"message":request,"card":card["id"],"item":card["items"][0]["id"],"checked":true,"timestamp":now});
+    run(&mut alice, action.clone());
+    let checked = run(&mut alice, json!({"command":"timeline","peer":"self"}));
+    let card = &checked["messages"][0]["parts"][0];
+    assert_eq!(card["items"][0]["checked"], true);
+    // The period's reset clears a recurring check; nothing unchecks it by hand.
+    assert_eq!(card["items"][0]["enabled"], false);
+    let mut undo = action;
+    undo["checked"] = json!(false);
+    let rejected: Value =
+        serde_json::from_str(&alice.mobile_command(&undo.to_string())).unwrap();
+    assert_eq!(rejected["ok"], false);
+}
+#[test]
 fn mobile_task_undo_is_available_only_for_our_recent_completion() {
     let (_dir, _server, mut alice, _bob, now) = crate::claims::tests::pair();
     let request = "83".repeat(32);

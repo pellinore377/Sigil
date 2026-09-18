@@ -15,11 +15,23 @@ const val MotionInline = 180
 const val MotionMillis = 240
 const val MotionSettle = 360
 const val MotionStagger = 80
+// One mechanical half-turn, and the single expiry cue: two staggered waves, a halo pulse and a bell shake.
+const val MotionFlap = 680
+const val MotionRing = 1100
+const val MotionRingStagger = 180
+const val MotionCue = 1300
+const val MotionBell = 740
+const val MotionBellDelay = 250
 const val MotionLoop = 1000
 
 val MotionStandardEasing: Easing = FastOutSlowInEasing
 val MotionEnterEasing: Easing = LinearOutSlowInEasing
 val MotionExitEasing: Easing = FastOutLinearInEasing
+// The reference flap: almost linear through the vertical, eased at both ends.
+val MotionFlapEasing: Easing = CubicBezierEasing(.35f, .01f, .65f, 1f)
+// CSS ease-out and ease-in-out, as the reference's expiry cue uses them.
+val MotionOutEasing: Easing = CubicBezierEasing(0f, 0f, .58f, 1f)
+val MotionInOutEasing: Easing = CubicBezierEasing(.42f, 0f, .58f, 1f)
 
 data class MotionPolicy(val reduced: Boolean = false) {
     fun <T> tween(durationMillis: Int = MotionMillis, delayMillis: Int = 0, easing: Easing = MotionStandardEasing): TweenSpec<T> =

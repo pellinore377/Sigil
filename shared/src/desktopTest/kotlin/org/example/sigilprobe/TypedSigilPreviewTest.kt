@@ -29,6 +29,17 @@ class TypedSigilPreviewTest {
         ui.waitUntil(5000) { ui.onAllNodesWithTag("typed-sigil-preview").fetchSemanticsNodes().isEmpty() }
     }
 
+    // The preview and the timeline card must agree on a recurring list: its own kind, its pins and its reset footer.
+    @Test fun a_recurring_checklist_previews_as_one() {
+        ui.setContent { MaterialTheme { CompositionLocalProvider(LocalStructuredPreview provides { ContentDecoder.part(NativeCore.structuredPreview(it)) }) {
+            Box(Modifier.width(400.dp)) { TypedSigilPreview("checklist::recurr::weekly::Flat chores\n-r- Bins out\n- Hoover;") }
+        } } }
+        ui.waitUntil(5000) { ui.onAllNodesWithTag("typed-sigil-preview").fetchSemanticsNodes().isNotEmpty() }
+        ui.onNodeWithText("Flat chores").assertExists()
+        ui.onAllNodesWithContentDescription("Kept through resets").assertCountEquals(1)
+        ui.onNodeWithText("Weekly · resets ",substring=true).assertExists()
+    }
+
     @Test fun exact_acknowledgment_binds_only_armed_source_and_cancel_discards_pending_launch() {
         val launch=PreviewLaunch()
         val bounds=Rect(0f,300f,200f,450f)
