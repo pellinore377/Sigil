@@ -301,12 +301,6 @@ internal fun ConversationPage(chat: ChatSummary, state: MessengerState, draft: T
             CompositionLocalProvider(LocalPreviewLaunch provides previewLaunch) {
             Column(Modifier.fillMaxWidth()) {
             val context = editing?.let { "Editing" to it.text } ?: reply?.let { (state.people[it.author] ?: if (it.mine) "You" else chat.name) to it.text } ?: thread?.let { "Reply in thread" to null }
-            state.transfers.filter { it.peer == chat.id && !it.draft }.forEach { transfer ->
-                Row(Modifier.fillMaxWidth().padding(start = 20.dp), verticalAlignment = Alignment.CenterVertically) {
-                    Column(Modifier.weight(1f)) { Text(transfer.name, maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.bodySmall); Text(if (transfer.phase == "Staging") "Importing…" else "Sending attachment…", style = MaterialTheme.typography.labelSmall) }
-                    Symbol("close", "Cancel attachment") { command("file_cancel", mapOf("request" to transfer.request)) }
-                }
-            }
             context?.let { (title, text) -> ContextChip(title, text) { reply = null; editing = null; setThread(null) } }
             val inputCommand: Command = { action, fields ->
                 command(action, if (action in listOf("attachment_pick", "record_start")) fields + mapOf("reply_author" to reply?.author, "reply_message" to reply?.id, "thread_author" to thread?.author, "thread_message" to thread?.id) else fields)
@@ -383,10 +377,13 @@ internal fun MessageBubble(message: ChatMessage, grouped: Boolean, followed: Boo
                 // The quoted block is the timeline ground set into the bubble.
                 message.reply?.let { quoted ->
                     val name = message.replyAuthor?.let { LocalMediaSender.current(message.copy(author = it, mine = message.replyMine)) }
-                    Surface(Modifier.fillMaxWidth().testTag("reply-quote"), shape = RoundedCornerShape(12.dp), color = LocalContentColor.current.copy(alpha = .1f)) {
+                    // A quote that wraps tightens its bottom corners to 5dp.
+                    var wrapped by remember(quoted) { mutableStateOf(false) }
+                    val bottom = if (wrapped) 5.dp else 12.dp
+                    Surface(Modifier.fillMaxWidth().testTag("reply-quote"), shape = RoundedCornerShape(12.dp, 12.dp, bottom, bottom), color = LocalContentColor.current.copy(alpha = .1f)) {
                         Column(Modifier.padding(horizontal = 12.dp, vertical = 8.dp)) {
                             if (name != null) Text(name, style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.SemiBold), maxLines = 1, overflow = TextOverflow.Ellipsis)
-                            Text(quoted, style = MaterialTheme.typography.bodySmall, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                            Text(quoted, style = MaterialTheme.typography.bodySmall, maxLines = 4, overflow = TextOverflow.Ellipsis, onTextLayout = { wrapped = it.lineCount > 1 })
                         }
                     }
                     Spacer(Modifier.height(8.dp))
@@ -520,7 +517,7 @@ internal fun VerificationDialog(chat: ChatSummary, busy: Boolean, command: Comma
 // What the next message answers or replaces, as the pill above the writing field.
 @Composable
 internal fun ContextChip(title: String, text: String?, close: () -> Unit) {
-    Surface(Modifier.fillMaxWidth().padding(start = 8.dp, end = 8.dp, top = 8.dp).testTag("context-chip"), shape = RoundedCornerShape(20.dp), color = MaterialTheme.colorScheme.surfaceContainerHigh) {
+    Surface(Modifier.fillMaxWidth().padding(start = 8.dp, end = 8.dp, top = 8.dp).testTag("context-chip"), shape = RoundedCornerShape(20.dp), color = MaterialTheme.colorScheme.surfaceContainer) {
         Row(Modifier.padding(start = 14.dp, end = 4.dp, top = 4.dp, bottom = 4.dp), verticalAlignment = Alignment.CenterVertically) {
             Column(Modifier.weight(1f).padding(vertical = 4.dp)) {
                 Text(title, style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.SemiBold), maxLines = 1, overflow = TextOverflow.Ellipsis)

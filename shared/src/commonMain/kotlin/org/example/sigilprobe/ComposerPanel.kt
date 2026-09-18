@@ -233,7 +233,7 @@ internal fun ComposerPanel(draft: TextFieldState, analyze: (String) -> String, e
                 }
 
                 Spacer(Modifier.width(8.dp))
-                val sendIcon=if(panel in listOf("One-time location","Real-time location","Drop a pin"))"send" else if(contextual)"check" else if(voice.peer==peer && voice.phase=="Save failed")"refresh" else if(voice.peer==peer && voice.phase=="Recording")"stop" else if(helpQuery!=null)"help" else if (hasAttachment || hasStructured || hasText) "send" else "graphic_eq"
+                val sendIcon=if(panel in listOf("One-time location","Real-time location","Drop a pin"))"send" else if(contextual)"check" else if(voice.peer==peer && voice.phase=="Save failed")"refresh" else if(voice.peer==peer && voice.phase=="Recording")"graphic_eq" else if(helpQuery!=null)"help" else if (hasAttachment || hasStructured || hasText) "send" else "graphic_eq"
                 val sendLabel=if(contextual)confirmation.action?.label ?: "Complete attachment" else if(voice.peer==peer && voice.phase=="Save failed")"Retry saving recording" else if(voice.peer==peer && voice.phase=="Recording")"Stop recording" else if(helpQuery!=null)"Open help" else if (editingCaption) "Save caption" else if (voiceReady) "Send voice message" else if (attachmentDrafts.isNotEmpty()) "Send attachments" else if(hasStructured)"Send message" else if (hasText) if (requestContact != null) "Send request" else "Send message" else "Voice message"
                 SigilFilledIconButton({ if(contextual){confirmation.action?.takeIf {it.enabled}?.invoke?.invoke()} else if (hasAttachment) {
                         val caption = draft.text.toString(); pendingCaption = caption
@@ -262,7 +262,7 @@ internal fun escapeField(value: String) = value.replace("\\", "\\\\").replace(";
 // Filled counterpart to SigilIconButton; disabled ink follows the palette, not Material's own alphas.
 @Composable
 /// One tonal step off the ground, away from it in whichever direction the mode runs.
-private fun sendTone(scheme: androidx.compose.material3.ColorScheme) =
+internal fun sendTone(scheme: androidx.compose.material3.ColorScheme) =
     androidx.compose.ui.graphics.lerp(scheme.background,
         if (scheme.background.luminance() < .5f) androidx.compose.ui.graphics.Color.White else androidx.compose.ui.graphics.Color.Black,
         if (scheme.background.luminance() < .5f) .217f else .081f)
@@ -350,9 +350,12 @@ internal fun VoicePanel(command: Command, peer: String, voice: VoiceState, close
     val starting = active && voice.phase == "Starting"
     val live = recording && !voice.paused
     fun start() = command("record_start", mapOf("peer" to peer))
+    // The stop is SigilText's red on this ground, inked for contrast.
+    val stopRed = textColor("red", scheme.surface)
+    val stopInk = if (stopRed.luminance() < .4f) androidx.compose.ui.graphics.Color.White else androidx.compose.ui.graphics.Color(0xff1a0605)
     Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).wrapContentHeight(unbounded = true).then(naturalPanelHeight()).padding(start = 8.dp, end = 8.dp, top = 8.dp)
         .semantics { liveRegion = LiveRegionMode.Polite; stateDescription = if (!recording) "Stopped" else if (voice.paused) "Paused" else "Recording" }, verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        Surface(onClick = { if (!recording && !starting) start() }, enabled = !recording && !starting, shape = RoundedCornerShape(20.dp), color = scheme.surfaceContainerHigh,
+        Surface(onClick = { if (!recording && !starting) start() }, enabled = !recording && !starting, shape = RoundedCornerShape(20.dp), color = scheme.surfaceContainer,
             modifier = Modifier.fillMaxWidth().height(148.dp).testTag("voice-stage").semantics { contentDescription = if (recording || starting) "Recording" else "Tap to record your voice" }) {
             Box(contentAlignment = Alignment.Center) {
                 if (recording) Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -372,10 +375,10 @@ internal fun VoicePanel(command: Command, peer: String, voice: VoiceState, close
             else VoiceAction("close", "Cancel", Modifier.weight(1f), scheme.surfaceContainer, scheme.onSurface) { command("record_cancel", emptyMap()); close() }
             // The centre control is the microphone until it is live, then the stop that ends into the draft.
             VoiceAction(if (recording) "stop" else "mic", if (recording) "Stop" else "Record", Modifier.weight(1.2f),
-                if (recording) scheme.errorContainer else scheme.surfaceContainerHigh, if (recording) scheme.onErrorContainer else scheme.onSurface, enabled = !starting, labelled = false) {
+                if (recording) stopRed else sendTone(scheme), if (recording) stopInk else scheme.onSurface, enabled = !starting, labelled = false) {
                 if (recording) command("record_stop", emptyMap()) else start()
             }
-            VoiceAction("check", "Attach", Modifier.weight(1f), scheme.surfaceContainerHigh, scheme.onSurface, enabled = recording && voice.seconds > 0) { command("record_stop", emptyMap()) }
+            VoiceAction("check", "Attach", Modifier.weight(1f), sendTone(scheme), scheme.onSurface, enabled = recording && voice.seconds > 0) { command("record_stop", emptyMap()) }
         }
     }
 }
@@ -385,7 +388,7 @@ private fun VoiceAction(icon: String, label: String, modifier: Modifier, color: 
     Surface(action, modifier.fillMaxHeight().semantics { role = Role.Button; contentDescription = label }, enabled, shape = RoundedCornerShape(20.dp),
         color = if (enabled) color else MaterialTheme.colorScheme.surfaceContainer, contentColor = if (enabled) ink else MaterialTheme.colorScheme.onSurface.copy(alpha = .38f)) {
         Row(Modifier.fillMaxSize(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.Center) {
-            Glyph(icon, 22)
+            Glyph(icon, 22, filled = icon == "stop")
             if (labelled) Text(label, Modifier.padding(start = 8.dp), style = MaterialTheme.typography.labelLarge, maxLines = 1)
         }
     }
@@ -394,8 +397,8 @@ private fun VoiceAction(icon: String, label: String, modifier: Modifier, color: 
 // The draft is one pill: play squircle, waveform, length and its own discard, mirroring the bubble it becomes.
 @Composable
 private fun VoiceDraft(voice: VoiceState, modifier: Modifier, play: () -> Unit, discard: () -> Unit, seek: (Long) -> Unit) {
-    Surface(modifier, shape = RoundedCornerShape(20.dp), color = MaterialTheme.colorScheme.surfaceContainerHigh) {
-        Row(Modifier.padding(start = 8.dp, end = 4.dp, top = 4.dp, bottom = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+    Surface(modifier, shape = RoundedCornerShape(20.dp), color = MaterialTheme.colorScheme.surfaceContainer) {
+        Row(Modifier.padding(start = 4.dp, end = 4.dp, top = 4.dp, bottom = 4.dp), verticalAlignment = Alignment.CenterVertically) {
             AudioPlayback(voice.position, voice.duration.takeIf { it > 0 } ?: voice.seconds * 1000, voice.playing, voice.levels,
                 enabled = voice.phase == "Ready", preview = true, modifier = Modifier.weight(1f), play = play, seek = seek)
             Symbol("close", "Discard voice message", discard)

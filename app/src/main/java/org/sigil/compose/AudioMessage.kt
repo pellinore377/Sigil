@@ -4,15 +4,11 @@ import org.sigil.SigilIconButton
 
 import android.media.MediaPlayer
 import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.verticalScroll
-import androidx.compose.foundation.rememberScrollState
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.platform.LocalDensity
-import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.Lifecycle
@@ -24,12 +20,13 @@ import org.sigil.Glyph
 import org.sigil.NativeCore
 import org.sigil.AudioPlayback
 import org.sigil.AudioWaveform
-import org.sigil.SigilTextButton
+import org.sigil.PlaySquircle
 
 @Composable
 internal fun AudioMessage(message: ChatMessage) {
     val context = LocalContext.current
-    var requested by remember(message.id) { mutableStateOf(false) }
+    // A memo loads on sight so the bubble carries its real waveform and length; play stays explicit.
+    var requested by remember(message.id) { mutableStateOf(true) }
     var ready by remember(message.id) { mutableStateOf(false) }
     var failed by remember(message.id) { mutableStateOf(false) }
     LaunchedEffect(message.id, requested) {
@@ -40,15 +37,15 @@ internal fun AudioMessage(message: ChatMessage) {
         } catch (cancelled: CancellationException) { throw cancelled }
         catch (_: Exception) { failed = true; requested = false }
     }
-    Column(Modifier.widthIn(min = 220.dp, max = 300.dp).testTag("audio-message")) {
+    // One fixed frame for every state, so loading and playing never resize the bubble.
+    Column(Modifier.widthIn(max = 300.dp).fillMaxWidth().padding(start = 6.dp, end = 14.dp, top = 6.dp, bottom = 6.dp).testTag("audio-message")) {
         if (ready) InlineAudio(message)
-        else Row(verticalAlignment = Alignment.CenterVertically) {
-            SigilIconButton({ requested = true }, enabled = !requested) { Glyph(if (failed) "refresh" else "play_arrow", 28, if (failed) "Retry audio" else "Play audio message") }
-            Column(Modifier.weight(1f)) {
-                Text(if (message.attachment!!.name == "Voice message.aac") "Voice message" else message.attachment!!.name, style = MaterialTheme.typography.bodyMedium, maxLines = 2)
-                if (requested) LinearProgressIndicator(Modifier.fillMaxWidth().padding(top = 8.dp))
-                else Text(if (failed) "Couldn't load audio" else "Tap to play", style = MaterialTheme.typography.labelSmall)
-            }
+        // Unloaded, the bubble already has the player's anatomy; play decrypts and prepares it.
+        else Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            if (failed) SigilIconButton({ requested = true }) { Glyph("refresh", 24, "Retry audio") }
+            else PlaySquircle({ requested = true }, false, !requested, false)
+            AudioWaveform(emptyList(), Modifier.weight(1f).height(32.dp))
+            if (failed) Text("Couldn't load", style = MaterialTheme.typography.labelMedium)
         }
     }
 }
@@ -64,17 +61,11 @@ private fun InlineAudio(message: ChatMessage) {
     var failed by remember(message.id) { mutableStateOf(false) }
     var duration by remember(message.id) { mutableLongStateOf(0) }
     var position by remember(message.id) { mutableLongStateOf(0) }
-    var expanded by remember(message.id) { mutableStateOf(false) }
-    var speed by remember(message.id) { mutableFloatStateOf(1f) }
     var levels by remember(message.id) { mutableStateOf<List<Float>>(emptyList()) }
     var seeking by remember(message.id) { mutableStateOf(false) }
-    var inlineHeight by remember { mutableStateOf(80.dp) }
-    var playbackIssue by remember { mutableStateOf<String?>(null) }
-    val density = LocalDensity.current
     DisposableEffect(player, lifecycle) {
         player.setOnPreparedListener {
             duration = it.duration.toLong().coerceAtLeast(0); ready = true
-            if (lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED)) { it.start(); playing = true }
         }
         player.setOnCompletionListener { playing = false; position = duration }
         player.setOnSeekCompleteListener { seeking = false; position = it.currentPosition.toLong() }
@@ -96,26 +87,6 @@ private fun InlineAudio(message: ChatMessage) {
     }
     fun seek(value: Long) { position = value; seeking = true; player.seekTo(value, MediaPlayer.SEEK_CLOSEST) }
     if (failed) Text("Couldn't play this audio", style = MaterialTheme.typography.bodySmall)
-    else if (!ready) Box(Modifier.fillMaxWidth().height(inlineHeight), contentAlignment = Alignment.Center) { LinearProgressIndicator(Modifier.fillMaxWidth()) }
-    else if (!expanded) AudioPlayback(position, duration, playing, levels, modifier = Modifier.onSizeChanged { inlineHeight = with(density) { it.height.toDp() } }, play = ::play, seek = ::seek, expand = { expanded = true })
-    else Spacer(Modifier.fillMaxWidth().height(inlineHeight))
-    if (expanded) androidx.compose.ui.window.Dialog({ expanded = false }) {
-        Surface(shape = androidx.compose.foundation.shape.RoundedCornerShape(24.dp)) {
-            Column(Modifier.fillMaxWidth().heightIn(max = 600.dp).verticalScroll(rememberScrollState()).padding(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                Text(if (message.attachment!!.name == "Voice message.aac") "Voice message" else message.attachment!!.name, style = MaterialTheme.typography.titleMedium)
-                if (levels.isNotEmpty()) AudioWaveform(levels, Modifier.fillMaxWidth().height(96.dp), position.toFloat() / duration.coerceAtLeast(1))
-                AudioPlayback(position, duration, playing, levels, enabled = ready && !failed, play = ::play, seek = ::seek)
-                @OptIn(ExperimentalLayoutApi::class)
-                FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    listOf(1f, 1.5f, 2f).forEach { rate -> FilterChip(speed == rate, {
-                        try { player.playbackParams = player.playbackParams.setSpeed(rate); if (!playing) player.pause(); speed = rate; playbackIssue = null }
-                        catch (_: Exception) { playbackIssue = "Playback speed is unavailable for this file." }
-                    }, label = { Text("${rate}×") }, shape = androidx.compose.foundation.shape.RoundedCornerShape(16.dp)) }
-                }
-                playbackIssue?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
-                if (message.attachment!!.caption.isNotBlank()) org.sigil.MessageText(message.attachment!!.caption, NativeCore::analyze)
-                SigilTextButton({ expanded = false }, Modifier.align(Alignment.End)) { Text("Close") }
-            }
-        }
-    }
+    else if (!ready) Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) { PlaySquircle({}, false, false, false); AudioWaveform(emptyList(), Modifier.weight(1f).height(32.dp)) }
+    else AudioPlayback(position, duration, playing, levels, play = ::play, seek = ::seek)
 }

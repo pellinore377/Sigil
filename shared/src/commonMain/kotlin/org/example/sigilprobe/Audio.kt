@@ -31,7 +31,7 @@ fun audioTime(milliseconds: Long): String {
 
 @Composable
 fun AudioPlayback(position: Long, duration: Long, playing: Boolean, levels: List<Float> = emptyList(), enabled: Boolean = true,
-    preview: Boolean = false, modifier: Modifier = Modifier, play: () -> Unit, seek: (Long) -> Unit, expand: (() -> Unit)? = null) {
+    preview: Boolean = false, modifier: Modifier = Modifier, play: () -> Unit, seek: (Long) -> Unit) {
     var seeking by remember { mutableStateOf<Long?>(null) }
     val current = seeking ?: position
     val motionPolicy = LocalMotion.current
@@ -72,13 +72,12 @@ fun AudioPlayback(position: Long, duration: Long, playing: Boolean, levels: List
         }
         // Idle shows the length; once playback or a scrub moves, the position.
         Text(audioTime(if (playing || current > 0) current else duration), style = MaterialTheme.typography.labelMedium, modifier = Modifier.testTag("audio-time"))
-        if (expand != null) Symbol("open_in_full", "Expand audio", expand)
     }
 }
 
 // A tonal squircle in the ink of whatever surface holds it, so the same control sits on a bubble or a draft pill.
 @Composable
-internal fun PlaySquircle(play: () -> Unit, playing: Boolean, enabled: Boolean, preview: Boolean) {
+fun PlaySquircle(play: () -> Unit, playing: Boolean, enabled: Boolean, preview: Boolean) {
     val motionPolicy = LocalMotion.current
     val ink = LocalContentColor.current
     Surface(play, Modifier.semantics { role = Role.Button }, enabled, shape = RoundedCornerShape(14.dp),
