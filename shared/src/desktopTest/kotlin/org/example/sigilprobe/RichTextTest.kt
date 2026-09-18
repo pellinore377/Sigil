@@ -19,11 +19,12 @@ class RichTextTest {
         assertEquals(10, code.spans.single().end)
         assertTrue(visibleCodeBlocks(value.copy(spans = listOf(RichSpan(0, 13, reveal = "spoiler")))).isEmpty())
     }
-    @Test fun hidden_text_has_no_semantic_content_or_link_until_revealed() {
+    @Test fun concealed_text_is_laid_out_as_written_and_its_link_stays_inert_until_revealed() {
         val value = RichText("A secret end", listOf(RichSpan(2, 8, reveal = "spoiler", link = "https://example.com/secret")))
         var revealed = -1
         val hidden = richPresentation(value, emptySet(), FontFamily.Monospace, Color.White, Color.Black) { revealed = it }
-        assertEquals("A Hidden text end", hidden.text)
+        // The veil is drawn over the real text; a tap on it uncovers rather than following the link.
+        assertEquals(value.text, hidden.text)
         val link = hidden.getLinkAnnotations(0, hidden.length).single().item as LinkAnnotation.Clickable
         link.linkInteractionListener!!.onClick(link)
         assertEquals(2, revealed)
@@ -73,12 +74,13 @@ class RichTextTest {
         assertEquals(listOf(0, 4, 5), graphemeCuts("\uD83C\uDDEC\uD83C\uDDE7x"))
         assertEquals(listOf(0, 2, 3), graphemeCuts("e\u0301x"))
     }
-    @Test fun concealed_spans_carry_no_visible_ink_and_no_link_decoration() {
+    @Test fun concealed_spans_carry_no_placeholder_and_no_link_decoration() {
         val value = RichText("A secret end", listOf(RichSpan(2, 8, reveal = "scratch")))
         val shown = richPresentation(value, emptySet(), FontFamily.Monospace, Color.White, Color.Black) {}
-        assertEquals("A Scratch to reveal end", shown.text)
-        assertEquals(Color.Transparent, shown.spanStyles.single().item.color)
-        assertNull((shown.getLinkAnnotations(0, shown.length).single().item as LinkAnnotation.Clickable).styles)
+        assertEquals(value.text, shown.text)
+        assertTrue(shown.spanStyles.none { it.item.color == Color.Transparent })
+        // A touch on the ink brushes a spot rather than opening it, so there is no link to decorate.
+        assertTrue(shown.getLinkAnnotations(0, shown.length).isEmpty())
     }
     @Test fun every_named_shade_remains_readable_on_light_and_dark_bubbles() {
         for (surface in listOf(Color.White, Color.Black, Color(0xffe7dfea), Color(0xff302b35))) {

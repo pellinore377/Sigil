@@ -176,15 +176,18 @@ internal fun AndroidAttachment(message: ChatMessage) {
         } catch (cancelled: CancellationException) { throw cancelled }
         catch (_: Exception) { failed = true; requested = false }
     }
+    val captioned = file.caption.isNotBlank() && (image || playable)
+    val frameShape = if (captioned) androidx.compose.ui.graphics.RectangleShape else androidx.compose.foundation.shape.RoundedCornerShape(20.dp)
+    val captionBlock: (@Composable () -> Unit)? = if (!captioned) null else { { Box(Modifier.padding(horizontal = 14.dp, vertical = 10.dp)) { org.sigil.MessageText(file.caption, org.sigil.NativeCore::analyze) } } }
     Column(Modifier.widthIn(max = 300.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
         val picture = bitmap
-        if (playable) org.sigil.ImageMessageFrame(picture?.width ?: 16, picture?.height ?: 9) { frame -> Box(frame.clip(androidx.compose.foundation.shape.RoundedCornerShape(18.dp)).background(MaterialTheme.colorScheme.surfaceContainerHigh).clickable(enabled = !requested || ready) { if (ready) opened = true else { openWhenReady = true; requested = true } }, contentAlignment = Alignment.Center) {
+        if (playable) org.sigil.ImageMessageFrame(picture?.width ?: 16, picture?.height ?: 9, frameShape, captionBlock) { frame -> Box(frame.clip(frameShape).background(MaterialTheme.colorScheme.surfaceContainerHigh).clickable(enabled = !requested || ready) { if (ready) opened = true else { openWhenReady = true; requested = true } }, contentAlignment = Alignment.Center) {
             picture?.let { Image(it.asImageBitmap(), file.name, Modifier.fillMaxSize(), contentScale = ContentScale.Fit) }
             if (requested && !ready) CircularProgressIndicator(Modifier.size(32.dp))
             else Surface(shape = androidx.compose.foundation.shape.CircleShape, color = androidx.compose.ui.graphics.Color.Black.copy(alpha = .6f), contentColor = androidx.compose.ui.graphics.Color.White) { Box(Modifier.size(48.dp), contentAlignment = Alignment.Center) { Glyph(if (failed) "refresh" else "play_arrow", 28, if (failed) "Retry video" else "Play video") } }
         } }
-        else if (picture != null) org.sigil.ImageMessageFrame(picture.width, picture.height) { frame -> Box(frame.clickable { opened = true }) { Image(picture.asImageBitmap(), file.name, Modifier.fillMaxSize(), contentScale = ContentScale.Fit); if (file.mediaType == "image/gif") org.sigil.GifChip(Modifier.align(Alignment.TopStart)) } }
-        else if (image) org.sigil.ImageMessageFrame(imageWidth,imageHeight) { frame ->
+        else if (picture != null) org.sigil.ImageMessageFrame(picture.width, picture.height, frameShape, captionBlock) { frame -> Box(frame.clickable { opened = true }) { Image(picture.asImageBitmap(), file.name, Modifier.fillMaxSize(), contentScale = ContentScale.Fit); if (file.mediaType == "image/gif") org.sigil.GifChip(Modifier.align(Alignment.TopStart)) } }
+        else if (image) org.sigil.ImageMessageFrame(imageWidth,imageHeight, frameShape, captionBlock) { frame ->
             Box(frame.background(MaterialTheme.colorScheme.surfaceContainerHigh),contentAlignment=Alignment.Center) {
                 if(failed) SigilIconButton({requested=true}) {Glyph("refresh",28,"Retry image")}
                 else CircularProgressIndicator(Modifier.size(28.dp))

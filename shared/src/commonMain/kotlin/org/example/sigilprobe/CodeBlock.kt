@@ -8,6 +8,7 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.*
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.graphics.takeOrElse
@@ -15,7 +16,9 @@ import androidx.compose.ui.text.*
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 
-private const val CodeLineCap = 24
+// Panel, ink and token hues read from the reference screenshot.
+private val CodePanelDark = Color(0xff242428)
+private val CodeInkDark = Color(0xffbec3cc)
 
 internal fun visibleCodeBlocks(value: RichText) = value.blocks.filter { block ->
     block.kind == "code" && block.start >= 0 && block.end <= value.text.length && block.start < block.end &&
@@ -28,36 +31,32 @@ internal fun richSlice(value: RichText, start: Int, end: Int) = RichText(value.t
     value.motion.mapNotNull { run ->run.copy(units=run.units.filter {it.first>=start && it.second<=end}.map {it.first-start to it.second-start}).takeIf {it.units.isNotEmpty()} })
 
 @Composable
-internal fun CodeBlock(value: RichText, language: String) = CodePanel(value, language, false)
+internal fun CodeBlock(value: RichText, language: String, modifier: Modifier = Modifier, shape: Shape = RoundedCornerShape(12.dp)) = CodePanel(value, language, false, modifier, shape)
 
 @Composable
-internal fun AsciiArt(value: RichText) = CodePanel(value, "", true)
+internal fun AsciiArt(value: RichText) = CodePanel(value, "", true, Modifier, RoundedCornerShape(12.dp))
 
 // An opaque panel, not an alpha wash: the block must read identically on a primary bubble and on a surfaceVariant one.
 @Composable
-private fun CodePanel(value: RichText, language: String, hug: Boolean) {
+private fun CodePanel(value: RichText, language: String, hug: Boolean, modifier: Modifier, shape: Shape) {
     val scheme = MaterialTheme.colorScheme
-    val panel = lerp(scheme.background, scheme.onBackground, if (scheme.background.luminance() < .18f) .07f else .90f)
-    val ink = listOf(scheme.onBackground, scheme.background).maxByOrNull { contrastWith(it, panel) } ?: scheme.onBackground
-    val lines = remember(value.text) { value.text.count { it == '\n' } + if (value.text.endsWith('\n')) 0 else 1 }
-    val hidden = lines - CodeLineCap
-    val caption = language.takeIf { it.isNotEmpty() }?.replaceFirstChar { it.uppercase() }
-    Column(Modifier.then(if (hug) Modifier.widthIn(max = 280.dp) else Modifier.fillMaxWidth()).clip(RoundedCornerShape(12.dp)).background(panel)
-        .padding(horizontal = 12.dp, vertical = if (hug) 8.dp else 10.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+    val dark = scheme.background.luminance() < .18f
+    val panel = if (dark) CodePanelDark else lerp(scheme.background, scheme.onBackground, .055f)
+    val ink = if (dark) CodeInkDark else scheme.onBackground
+    val label = language.takeIf { it.isNotEmpty() }?.lowercase()
+    Box(modifier.then(if (hug) Modifier else Modifier.fillMaxWidth()).clip(shape).background(panel)
+        .padding(start = 14.dp, end = 14.dp, top = 12.dp, bottom = if (label == null) 12.dp else 10.dp)) {
         CompositionLocalProvider(LocalMessageSurface provides panel, LocalContentColor provides ink) {
-            Box(Modifier.then(if (hug) Modifier else Modifier.fillMaxWidth()).horizontalScroll(rememberScrollState())) { CodeText(value, false, CodeLineCap) }
-            if (caption != null || hidden > 0) Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                if (hidden > 0) Text("+$hidden more ${if (hidden == 1) "line" else "lines"}", style = MaterialTheme.typography.labelSmall, color = ink.copy(alpha = .55f), maxLines = 1)
-                Spacer(Modifier.weight(1f))
-                if (caption != null) Text(caption, style = MaterialTheme.typography.labelSmall, color = ink.copy(alpha = .55f), maxLines = 1)
+            Column(Modifier.then(if (hug) Modifier else Modifier.fillMaxWidth())) {
+                CodeText(value, true, Int.MAX_VALUE)
+                if (label != null) Box(Modifier.fillMaxWidth().padding(top = 8.dp)) {
+                    Text(label, Modifier.align(Alignment.CenterEnd).clip(RoundedCornerShape(5.dp))
+                        .background(lerp(panel, ink, .10f)).padding(horizontal = 6.dp, vertical = 2.dp),
+                        style = MaterialTheme.typography.labelSmall, color = ink.copy(alpha = .55f), maxLines = 1)
+                }
             }
         }
     }
-}
-
-private fun contrastWith(a: Color, b: Color): Float {
-    val x = a.luminance(); val y = b.luminance()
-    return (maxOf(x, y) + .05f) / (minOf(x, y) + .05f)
 }
 
 @Composable
@@ -69,11 +68,23 @@ private fun CodeText(value: RichText, wrap: Boolean, maxLines: Int) {
             append(value.text)
             value.codeTokens.forEach { token ->
                 if (token.start >= 0 && token.end <= length && token.start < token.end) {
-                    val color = when (token.role) { "keyword" -> "purple2"; "number" -> "blue2"; "string" -> "green2"; "comment" -> "gray2"; else -> null }
-                    if (color != null) addStyle(SpanStyle(color = textColor(color, background)), token.start, token.end)
+                    codeInk(token.role, background)?.let { addStyle(SpanStyle(color = it), token.start, token.end) }
                 }
             }
         }
     }
     Text(text, style = MaterialTheme.typography.bodyMedium.copy(fontFamily = LocalCodeFont.current), color = foreground, softWrap = wrap, maxLines = maxLines, overflow = TextOverflow.Clip)
+}
+
+/** Token hues sampled from the reference screenshot, with themed equivalents on a light panel. */
+private fun codeInk(role: String, background: Color): Color? {
+    val dark = background.luminance() < .3f
+    return when (role) {
+        "keyword" -> if (dark) Color(0xffbf95b7) else textColor("purple2", background)
+        "function" -> if (dark) Color(0xff93aec4) else textColor("blue2", background)
+        "string" -> if (dark) Color(0xffa8c48f) else textColor("green2", background)
+        "number" -> if (dark) Color(0xffd08a71) else textColor("orange2", background)
+        "comment" -> if (dark) Color(0xff6c7177) else textColor("gray2", background)
+        else -> null
+    }
 }

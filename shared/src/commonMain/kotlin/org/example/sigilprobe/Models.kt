@@ -25,9 +25,9 @@ data class DiagramEdge(val from: Int, val to: Int, val label: RichText, val dash
 data class DiagramEntry(val date: RichText, val label: RichText)
 data class CardItem(val id: String, val text: String, val checked: Boolean, val enabled: Boolean, val count: Long? = null, val rich: RichText? = null)
 data class RichText(val text: String, val spans: List<RichSpan> = emptyList(), val blocks: List<RichBlock> = emptyList(), val codeTokens: List<CodeToken> = emptyList(), val motion: List<TextMotion> = emptyList())
-data class TextMotion(val kind:String,val duration:Int,val cycles:Int,val displacement:Int,val rotation:Int,val scale:Int,val stagger:Int,val particles:Int,val units:List<Pair<Int,Int>>,
-    val easing:List<Float> = emptyList(),val particleLifetime:Int=650,val stiffness:Int=180,val damping:Int=24)
-data class RichSpan(val start: Int, val end: Int, val flags: Set<String> = emptySet(), val colors: List<String> = emptyList(), val size: Int = 0, val reveal: String = "", val link: String? = null)
+data class TextMotion(val kind:String,val duration:Int,val mode:String,val amplitude:Float,val stagger:Int,val particles:Int,val lineScope:Boolean,
+    val caret:String,val substitutions:String,val units:List<Pair<Int,Int>>)
+data class RichSpan(val start: Int, val end: Int, val flags: Set<String> = emptySet(), val colors: List<String> = emptyList(), val size: Int = 0, val reveal: String = "", val link: String? = null, val redaction: Int = 0)
 data class RichBlock(val start: Int, val end: Int, val kind: String, val level: Int = 0, val language: String = "")
 data class CodeToken(val start: Int, val end: Int, val role: String)
 data class AttachmentDetails(val name: String, val mediaType: String, val bytes: Long, val caption: String = "", val draft: Boolean = false)

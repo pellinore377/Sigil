@@ -138,8 +138,11 @@ internal val formSpecs=mapOf(
 }
 @Composable internal fun BuilderPreview(part:MessagePart) {
     val message=remember(part){ChatMessage("preview","preview","",true,"","sent",false,emptyList(),emptyList(),null,true,parts=listOf(part))}
-    Surface(shape=RoundedCornerShape(20.dp),color=MaterialTheme.colorScheme.primary) {
-        CompositionLocalProvider(LocalMessageSurface provides MaterialTheme.colorScheme.primary,LocalRecipeScale provides null) {
+    // The preview is the bubble it becomes: same ground, same ink, same outgoing materials.
+    val outgoing=LocalOutgoingBubble.current
+    val ink=LocalOutgoingInk.current
+    Surface(shape=RoundedCornerShape(20.dp),color=outgoing,contentColor=ink) {
+        CompositionLocalProvider(LocalMessageSurface provides outgoing,LocalContentColor provides ink,LocalMaterialOutgoing provides true,LocalRecipeScale provides null) {
             Box(Modifier.padding(horizontal=14.dp,vertical=10.dp)) {MessageCards(message,{""},null)}
         }
     }

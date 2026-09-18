@@ -38,7 +38,7 @@ internal fun DiagramCard(diagram: DiagramContent) {
     val large = diagram.nodes.size > 12 || diagram.edges.size > 24 || diagram.width > 480 || diagram.height > 400
     // The preview box takes the fitted aspect so a tall diagram stops leaving dead side margins.
     val plotZoom = min(280f / diagram.width, 220f / diagram.height).coerceIn(.0001f, 1f).coerceAtLeast(.65f)
-    Column(Modifier.widthIn(max = 280.dp).animateContentSize(LocalMotion.current.tween(MotionMillis)), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+    Column(Modifier.widthIn(max = MessageCardMaxWidth).animateContentSize(LocalMotion.current.tween(MotionMillis)), verticalArrangement = Arrangement.spacedBy(8.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) { Glyph(diagramGlyph(diagram.kind), 20); Text("Diagram", style = MaterialTheme.typography.labelMedium) }
         RichMessageText(diagram.title, style = MaterialTheme.typography.titleMedium)
         if (diagram.kind == "timeline") diagram.entries.take(2).forEach { entry -> Column { RichMessageText(entry.date, style = MaterialTheme.typography.labelMedium); RichMessageText(entry.label, Modifier.heightIn(max = 72.dp).clipToBounds(), MaterialTheme.typography.bodyMedium) } }

@@ -16,7 +16,7 @@ import androidx.compose.ui.unit.dp
 @Composable
 internal fun ContactCard(contact: ContactContent,open: (() -> Unit)?) {
     val nameCap=with(LocalDensity.current) { MaterialTheme.typography.titleMedium.lineHeight.toDp()*2 }
-    Column(Modifier.widthIn(min=200.dp,max=320.dp),verticalArrangement=Arrangement.spacedBy(8.dp)) {
+    Column(Modifier.widthIn(min=MessageCardMinWidth,max=MessageCardMaxWidth),verticalArrangement=Arrangement.spacedBy(8.dp)) {
         Row(verticalAlignment=Alignment.CenterVertically,horizontalArrangement=Arrangement.spacedBy(8.dp)) { Glyph("person",20);Text("Contact",style=MaterialTheme.typography.labelMedium) }
         Row(Modifier.fillMaxWidth(),verticalAlignment=Alignment.CenterVertically,horizontalArrangement=Arrangement.spacedBy(12.dp)) {
             ContactAvatar(contact.name,48)

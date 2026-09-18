@@ -46,7 +46,7 @@ internal fun ChartCard(chart: ChartContent) {
     val surface = LocalMessageSurface.current.takeOrElse { MaterialTheme.colorScheme.surface }
     val colors = remember(chart, surface) { chartPalette(chart.points.size, surface) }
     val line = with(LocalDensity.current) { MaterialTheme.typography.bodyMedium.lineHeight.toDp() }
-    Column(Modifier.widthIn(min = 200.dp, max = 280.dp).animateContentSize(LocalMotion.current.tween(MotionMillis)), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+    Column(Modifier.widthIn(min = MessageCardMinWidth, max = MessageCardMaxWidth).animateContentSize(LocalMotion.current.tween(MotionMillis)), verticalArrangement = Arrangement.spacedBy(8.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) { Glyph(chartGlyph(chart.kind), 20); Text("Chart", style = MaterialTheme.typography.labelMedium) }
         RichMessageText(chart.title, style = MaterialTheme.typography.titleMedium)
         ChartPlot(chart, emptySet(), selected, { selected = it }, Modifier.fillMaxWidth().height(200.dp))

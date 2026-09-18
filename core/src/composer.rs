@@ -52,6 +52,19 @@ fn markdown(source: &str, offsets: &[usize], escapes: bool) -> String {
             )
             .unwrap();
         }
+        // A bullet marker is hidden and redrawn by the editor; ordered markers stay as typed.
+        if !code {
+            if let Event::Start(Tag::Item) = event {
+                let marker = raw
+                    .find(|c: char| c == '-' || c == '*' || c == '+')
+                    .filter(|at| raw[..*at].chars().all(char::is_whitespace))
+                    .map(|at| range.start + at);
+                if let Some(at) = marker {
+                    // Only the marker glyph: the editor swaps it for a bullet of equal length.
+                    writeln!(result, "{},{},0,0,13", offsets[at], offsets[at + 1]).unwrap();
+                }
+            }
+        }
         let (prefix, suffix, style) = match event {
             Event::Start(Tag::Strong) => (2, 2, 1),
             Event::Start(Tag::Emphasis) => (1, 1, 2),

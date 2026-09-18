@@ -36,7 +36,7 @@ private fun MessagePart.previewEffects(): List<String> = buildList {
     utility?.let { it.rich?.let(::add); it.secondary?.let(::add); addAll(it.details) }
 }.flatMap { it.motion }.map { it.kind }
 
-@Composable internal fun TypedSigilPreview(source: String, modifier: Modifier = Modifier, open: ((PreviewIntent, String) -> Unit)? = null) {
+@Composable internal fun TypedSigilPreview(source: String, modifier: Modifier = Modifier, open: ((PreviewIntent, String) -> Unit)? = null, onVisible: ((Boolean) -> Unit)? = null) {
     val resolve = LocalStructuredPreview.current
     var resolved by remember { mutableStateOf<MessagePart?>(null) }
     var resolvedSource by remember { mutableStateOf("") }
@@ -46,17 +46,20 @@ private fun MessagePart.previewEffects(): List<String> = buildList {
         resolved = withContext(Dispatchers.Default) { resolve(source) }
         resolvedSource = source
     }
-    DraftPreviewContent(resolved,source,source==resolvedSource,modifier,open)
+    DraftPreviewContent(resolved,source,source==resolvedSource,modifier,open,onVisible)
 }
 
 @Composable internal fun StructuredDraftPreview(part:MessagePart,source:String) {
     DraftPreviewContent(part,source,true,Modifier,null)
 }
 
-@Composable private fun DraftPreviewContent(resolved:MessagePart?,source:String,current:Boolean,modifier:Modifier,open:((PreviewIntent,String)->Unit)?) {
+@Composable private fun DraftPreviewContent(resolved:MessagePart?,source:String,current:Boolean,modifier:Modifier,open:((PreviewIntent,String)->Unit)?,onVisible:((Boolean)->Unit)?=null) {
     val parts = resolved?.previewLeaves().orEmpty()
     val cards = parts.filter { it.kind != "text" }
     val effects = parts.flatMap { it.previewEffects() }.distinct()
+    // The bar below drops its top inset while something sits here, so the footer's padding stays even.
+    SideEffect { onVisible?.invoke(cards.isNotEmpty() || effects.isNotEmpty()) }
+    DisposableEffect(onVisible) { onDispose { onVisible?.invoke(false) } }
     val motion = LocalMotion.current
     val launch = LocalPreviewLaunch.current
     DisposableEffect(launch) { onDispose { launch?.source = ""; launch?.bounds = Rect.Zero; launch?.panel = Rect.Zero; launch?.visibleOrigins?.clear() } }
@@ -74,7 +77,7 @@ private fun MessagePart.previewEffects(): List<String> = buildList {
                     else BuilderPreview(part)
                 }
             }
-            if (effects.isNotEmpty()) Row(Modifier.padding(horizontal = 12.dp, vertical = 4.dp).clearAndSetSemantics { contentDescription = "Animated text: ${effects.joinToString()}" },
+            if (effects.isNotEmpty()) Row(Modifier.padding(start = 12.dp, end = 12.dp, top = 8.dp).clearAndSetSemantics { contentDescription = "Animated text: ${effects.joinToString()}" },
                 verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 Glyph("motion_photos_on", 18)
                 Text(effects.joinToString(" · ") { it.replaceFirstChar(Char::uppercase) }, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)

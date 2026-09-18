@@ -25,7 +25,7 @@ import androidx.compose.ui.window.*
 @Composable
 internal fun TableCard(table: TableContent) {
     val width = (table.columns.size * 160).dp
-    Column(Modifier.widthIn(min = 200.dp, max = 280.dp).animateContentSize(LocalMotion.current.tween(MotionMillis)), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+    Column(Modifier.widthIn(min = MessageCardMinWidth, max = MessageCardMaxWidth).animateContentSize(LocalMotion.current.tween(MotionMillis)), verticalArrangement = Arrangement.spacedBy(8.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) { Glyph("table", 20); Text("Table", style = MaterialTheme.typography.labelMedium) }
         Column(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState())) {
             TableHeader(table, width, false, null) {}

@@ -4,6 +4,7 @@ package org.sigil
 import androidx.compose.animation.*
 import androidx.compose.animation.core.*
 import androidx.compose.foundation.*
+import androidx.compose.ui.graphics.luminance
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.grid.*
 import androidx.compose.foundation.lazy.LazyRow
@@ -40,6 +41,7 @@ internal fun ComposerPanel(draft: TextFieldState, analyze: (String) -> String, e
     var pendingBuilder by remember(peer) { mutableStateOf<Triple<String, String, Long>?>(null) }
     var pendingIntent by remember(peer) { mutableStateOf<Pair<PreviewIntent, String>?>(null) }
     var stagedPreview by remember(peer) {mutableStateOf<MessagePart?>(null)}
+    var previewShown by remember(peer) {mutableStateOf(false)}
     var stagedPreviewSource by remember(peer) {mutableStateOf("")}
     var stagedSource by rememberSaveable(peer) { mutableStateOf("") }
     var stagedKind by rememberSaveable(peer) { mutableStateOf("") }
@@ -187,7 +189,7 @@ internal fun ComposerPanel(draft: TextFieldState, analyze: (String) -> String, e
             }
             }
             Column(Modifier.fillMaxWidth().heightIn(max=minOf(if(hasStructured)320.dp else 240.dp,available)).verticalScroll(rememberScrollState()).padding(start=8.dp,end=8.dp,top=if(hasStructured || hasAttachment)8.dp else 0.dp),verticalArrangement=Arrangement.spacedBy(12.dp)) {
-                    if(panel.isEmpty() && !hasStructured && !hasAttachment && !editingCaption && !notes) TypedSigilPreview(draft.text.toString(),open={intent,original->pendingIntent=intent to original;change(intent.tool)})
+                    if(panel.isEmpty() && !hasStructured && !hasAttachment && !editingCaption && !notes) TypedSigilPreview(draft.text.toString(),open={intent,original->pendingIntent=intent to original;change(intent.tool)},onVisible={previewShown=it})
                     if(hasStructured && panel.isEmpty()) {
                         Row(verticalAlignment=Alignment.CenterVertically,horizontalArrangement=Arrangement.spacedBy(8.dp)) {Glyph(createItems.firstOrNull {it.first==stagedKind}?.second ?: "description",18);Text(stagedKind,Modifier.weight(1f),style=MaterialTheme.typography.labelMedium,maxLines=1,overflow=TextOverflow.Ellipsis);if(stagedQuery==null && stagedContact==null)Symbol("edit","Edit $stagedKind") {change(stagedKind)};Symbol("close","Remove $stagedKind") {stagedSource="";stagedKind="";stagedQuery?.let {command("service",mapOf("action" to "discard","request" to it))};stagedQuery=null;stagedContact=null;stagedPreview=null}}
                         stagedPreview?.let {if(stagedSource.isNotEmpty()){if(stagedPreviewSource==stagedSource)StructuredDraftPreview(it,stagedSource+draft.text.toString().takeIf {it.isNotBlank()}?.let {"\n\n$it"}.orEmpty())}else BuilderPreview(it)}
@@ -222,7 +224,8 @@ internal fun ComposerPanel(draft: TextFieldState, analyze: (String) -> String, e
                         Symbol("delete", "Discard voice message") { command("record_cancel", emptyMap()) }
                     }
             }
-            ComposerBar {
+            val barTop by animateDpAsState(if (previewShown) 0.dp else 8.dp, motionPolicy.tween(MotionMillis), label = "Composer bar inset")
+            ComposerBar(top = barTop) {
                 Crossfade(if (panel.isEmpty()) "add" else "close", animationSpec = motionPolicy.tween(MotionMillis), label = "Attach toggle") { icon ->
                     Symbol(icon, if (icon == "add") "Attachments" else "Close attachment panel") {
                         if (panel.isEmpty()) change("Attachments") else { if (panel == "Voice") command("record_stop", emptyMap()); change("") }
@@ -233,6 +236,7 @@ internal fun ComposerPanel(draft: TextFieldState, analyze: (String) -> String, e
                     Composer(draft, analyze, Modifier.fillMaxWidth(), showTools = false, focusRequester = editor, namedFormatting = !hasAttachment && !editingCaption, showSource = showSource, onFocus = { if (panel == "Voice") command("record_stop", emptyMap()); if (panel == "Attachments") {keyboardPending=true;panel=""} })
                 }
 
+                Spacer(Modifier.width(8.dp))
                 val sendIcon=if(panel in listOf("One-time location","Real-time location","Drop a pin"))"send" else if(contextual)"check" else if(voice.peer==peer && voice.phase=="Save failed")"refresh" else if(voice.peer==peer && voice.phase=="Recording")"stop" else if(helpQuery!=null)"help" else if (hasAttachment || hasStructured || hasText) "send" else "graphic_eq"
                 val sendLabel=if(contextual)confirmation.action?.label ?: "Complete attachment" else if(voice.peer==peer && voice.phase=="Save failed")"Retry saving recording" else if(voice.peer==peer && voice.phase=="Recording")"Stop recording" else if(helpQuery!=null)"Open help" else if (editingCaption) "Save caption" else if (voiceReady) "Send voice message" else if (attachmentDrafts.isNotEmpty()) "Send attachments" else if(hasStructured)"Send message" else if (hasText) if (requestContact != null) "Send request" else "Send message" else "Voice message"
                 SigilFilledIconButton({ if(contextual){confirmation.action?.takeIf {it.enabled}?.invoke?.invoke()} else if (hasAttachment) {
@@ -261,11 +265,18 @@ internal fun escapeField(value: String) = value.replace("\\", "\\\\").replace(";
 
 // Filled counterpart to SigilIconButton; disabled ink follows the palette, not Material's own alphas.
 @Composable
+/// One tonal step off the ground, away from it in whichever direction the mode runs.
+private fun sendTone(scheme: androidx.compose.material3.ColorScheme) =
+    androidx.compose.ui.graphics.lerp(scheme.background,
+        if (scheme.background.luminance() < .5f) androidx.compose.ui.graphics.Color.White else androidx.compose.ui.graphics.Color.Black,
+        if (scheme.background.luminance() < .5f) .217f else .081f)
+@Composable
 internal fun SigilFilledIconButton(onClick: () -> Unit, modifier: Modifier = Modifier, enabled: Boolean = true, content: @Composable () -> Unit) {
     val scheme = MaterialTheme.colorScheme
     Surface(onClick, modifier.semantics { role = Role.Button }, enabled, shape = SigilButtonShape,
-        color = if (enabled) scheme.primary else scheme.surfaceVariant,
-        contentColor = if (enabled) scheme.onPrimary else scheme.onSurfaceVariant.copy(alpha = .38f)) {
+        // The send control is one tonal step off the footer, not the accent.
+        color = if (enabled) sendTone(scheme) else scheme.surfaceContainer,
+        contentColor = if (enabled) scheme.onSurface else scheme.onSurface.copy(alpha = .38f)) {
         Box(Modifier.size(48.dp), contentAlignment = Alignment.Center) { content() }
     }
 }
@@ -356,7 +367,7 @@ private fun VoiceDraft(voice: VoiceState, modifier: Modifier, play: () -> Unit, 
 }
 
 @Composable
-internal fun ComposerBar(content: @Composable RowScope.() -> Unit) {
+internal fun ComposerBar(top: androidx.compose.ui.unit.Dp = 8.dp, content: @Composable RowScope.() -> Unit) {
     val occlusion = LocalMaterialOcclusion.current
-    Row(Modifier.fillMaxWidth().onGloballyPositioned { occlusion?.input = it.boundsInWindow() }.padding(8.dp), verticalAlignment = Alignment.Bottom, horizontalArrangement = Arrangement.spacedBy(8.dp), content = content)
+    Row(Modifier.fillMaxWidth().onGloballyPositioned { occlusion?.input = it.boundsInWindow() }.padding(start = 8.dp, end = 8.dp, top = top, bottom = 8.dp), verticalAlignment = Alignment.Bottom, content = content)
 }

@@ -43,6 +43,10 @@ val LocalAppearance = staticCompositionLocalOf { Appearance() }
 internal val LocalGlobalBackground = staticCompositionLocalOf { Color(0xff111111) }
 internal val LocalGlobalWorkspace = staticCompositionLocalOf { Color(0xff111111) }
 val LocalGlobalAccent = staticCompositionLocalOf { Color(0xff555555) }
+/// The outgoing bubble is its own tone, not a Material role: in light mode it is darker
+/// than the ground while every other container stays lighter.
+internal val LocalOutgoingBubble = staticCompositionLocalOf { Color(0xff484848) }
+internal val LocalOutgoingInk = staticCompositionLocalOf { Color.White }
 val LocalCodeFont = staticCompositionLocalOf<FontFamily> { FontFamily.Monospace }
 val LocalSystemAppearance = staticCompositionLocalOf<(Boolean) -> Unit> { {} }
 val LocalTextPlatformStyle = staticCompositionLocalOf<PlatformTextStyle?> { null }
@@ -87,11 +91,13 @@ internal fun SigilTheme(appearance: Appearance, chat: ChatTheme? = null, dynamic
     val transition = updateTransition(ThemeTarget(seed, dark, chatKey, chat != null), label = "Appearance")
     val tint by transition.animateFloat(transitionSpec = { motionPolicy.tween(MotionInline, if (targetState.chat != null && initialState.chat != targetState.chat) MotionMillis else 0) }, label = "Conversation tint") { if (it.tinted) 1f else 0f }
     val palettes = remember(palette) { linkedMapOf<Pair<Int, Boolean>, List<Color>>() }
-    val colors = (0..8).map { index ->
+    val colors = (0..10).map { index ->
         transition.animateColor(transitionSpec = { motionPolicy.tween(MotionInline, if (targetState.chat != null && initialState.chat != targetState.chat) MotionMillis else 0) }, label = "Theme color") { target ->
             palettes.getOrPut(target.seed to target.dark) {
                 if (palettes.size >= 4) palettes.remove(palettes.keys.first())
+                // An older core returns nine entries; fall back to the tonal container.
                 palette(target.seed, target.dark).split(',').map { Color(0xff000000L or it.toLong(16)) }
+                    .let { if (it.size >= 11) it else it + listOf(it[6], it[7]) }
             }[index]
         }.value
     }
@@ -106,11 +112,16 @@ internal fun SigilTheme(appearance: Appearance, chat: ChatTheme? = null, dynamic
         surfaceContainerHighest = colors[6], surfaceContainerLow = colors[0], surfaceContainerLowest = lerp(colors[0], Color.Black, if (dark) .26f else .075f),
         inverseSurface = colors[1], inverseOnSurface = colors[0], inversePrimary = colors[0],
     )
+    val outgoingBubble = colors[9]
+    val outgoingInk = colors[10]
     val family = if (appearance.font == "Newsreader") FontFamily(
         Font(Res.font.newsreader), Font(Res.font.newsreader_italic, style = FontStyle.Italic)
     ) else FontFamily(Font(Res.font.google_sans_flex), Font(Res.font.google_sans_flex_semibold, FontWeight.SemiBold))
     val textPlatformStyle = LocalTextPlatformStyle.current
-    fun style(size: Int, line: Int, weight: FontWeight = FontWeight.Normal) = TextStyle(fontFamily = family, fontSize = (size * appearance.textScale).sp, lineHeight = (line * appearance.textScale).sp, fontWeight = weight,
+    // Newsreader's cap height is .67em, so shared leading reads as slack at text sizes; display sizes are already tight.
+    val leading = if (appearance.font == "Newsreader") 1.30f else Float.MAX_VALUE
+    fun style(size: Int, line: Int, weight: FontWeight = FontWeight.Normal) = TextStyle(fontFamily = family, fontSize = (size * appearance.textScale).sp,
+        lineHeight = (minOf(line.toFloat(), size * leading) * appearance.textScale).sp, fontWeight = weight,
         platformStyle = textPlatformStyle, lineHeightStyle = LineHeightStyle(LineHeightStyle.Alignment.Center, LineHeightStyle.Trim.Both))
     val typography = Typography(
         displayLarge = style(52, 60), displayMedium = style(44, 52), displaySmall = style(36, 44),
@@ -122,7 +133,7 @@ internal fun SigilTheme(appearance: Appearance, chat: ChatTheme? = null, dynamic
     val globalSeed=if(appearance.dynamic)dynamicAccent ?: appearance.accent else appearance.accent
     val globalAccent=remember(globalSeed,dark,palette) {Color(0xff000000L or palette(globalSeed,dark).split(',')[4].toLong(16))}
     val globalBackground = remember(globalSeed, dark, palette) { Color(0xff000000L or palette(globalSeed, dark).split(",")[0].toLong(16)) }
-    CompositionLocalProvider(LocalGlobalBackground provides globalBackground, LocalGlobalWorkspace provides lerp(globalBackground, Color.Black, if (dark) .26f else .075f), LocalGlobalAccent provides globalAccent, LocalCodeFont provides FontFamily(Font(Res.font.google_sans_code)), LocalChatTint provides tint, LocalAppearance provides appearance, LocalMotion provides motionPolicy) {
+    CompositionLocalProvider(LocalOutgoingBubble provides outgoingBubble, LocalOutgoingInk provides outgoingInk, LocalGlobalBackground provides globalBackground, LocalGlobalWorkspace provides lerp(globalBackground, Color.Black, if (dark) .26f else .075f), LocalGlobalAccent provides globalAccent, LocalCodeFont provides FontFamily(Font(Res.font.google_sans_code)), LocalChatTint provides tint, LocalAppearance provides appearance, LocalMotion provides motionPolicy) {
         MaterialTheme(colorScheme = scheme, typography = typography) {
             CompositionLocalProvider(LocalContentColor provides scheme.onBackground, LocalTextSelectionColors provides TextSelectionColors(scheme.primary, scheme.primary.copy(alpha = .3f)), content = content)
         }

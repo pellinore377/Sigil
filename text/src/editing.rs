@@ -184,6 +184,8 @@ pub fn text_source(text: &crate::Text) -> Option<String> {
         } else { literal(body) };
         if let Some(url) = &e.link { source = format!("[{source}]({})",url.replace('(',"\\(").replace(')',"\\)")); }
         let mut tokens = Vec::new();
+        // A redaction has no secret to print: a filler of the removed length keeps the bar's size through a round trip.
+        if let Some(removed) = e.redaction { source = "\u{2022}".repeat(usize::from(removed)); tokens.push("redact".into()); }
         for (enabled,token) in [(e.underline,"underline"),(e.mono,"mono"),(e.mark,"mark")] { if enabled { tokens.push(token.into()); } }
         if let Some(paint) = &e.paint { tokens.push(match paint {
             crate::Paint::Solid { color } => String::from(*color),

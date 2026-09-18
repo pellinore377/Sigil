@@ -27,7 +27,7 @@ class UtilityPresentationTest {
         ui.onNodeWithText("Code",substring=false).assertDoesNotExist()
         ui.onNodeWithContentDescription("Copy code").assertDoesNotExist()
         val code=bounds(hasText(body))
-        val language=bounds(hasText("Rust"))
+        val language=bounds(hasText("rust"))
         assertTrue(code.bottom<=language.top,"The language label sits under the code, not over it")
         assertTrue(language.right>=code.right-8f,"The language label is pinned to the trailing edge")
         ui.onNode(hasText(body)).assertHasNoClickAction()

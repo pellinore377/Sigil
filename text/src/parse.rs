@@ -34,6 +34,8 @@ pub fn editor_spans(source: &str) -> Result<Vec<EditorSpan>, Error> {
 struct Edit {
     range: Range<usize>,
     replacement: &'static str,
+    /// Graphemes a redaction removed; zero for a plain deletion.
+    graphemes: u16,
 }
 struct Syntax<'a> {
     source: &'a str,
@@ -41,6 +43,28 @@ struct Syntax<'a> {
     code: Vec<bool>,
     spans: Vec<SourceSpan>,
     edits: Vec<Edit>,
+}
+/// CommonMark continues a quotation onto an unmarked line; a message should not.
+/// A blank line after the last marked line closes the quotation instead.
+fn strict_quotes(source: &str) -> String {
+    let marked = |line: &str| line.trim_start_matches(' ').starts_with('>');
+    let lines: Vec<&str> = source.split('\n').collect();
+    let mut fenced = false;
+    let mut out = String::with_capacity(source.len() + 8);
+    for (index, line) in lines.iter().enumerate() {
+        if line.trim_start_matches(' ').starts_with("```") || line.trim_start_matches(' ').starts_with("~~~") {
+            fenced = !fenced;
+        }
+        out.push_str(line);
+        if index + 1 < lines.len() {
+            out.push('\n');
+            let next = lines[index + 1];
+            if !fenced && marked(line) && !next.trim().is_empty() && !marked(next) {
+                out.push('\n');
+            }
+        }
+    }
+    out
 }
 fn options() -> Options {
     Options::ENABLE_STRIKETHROUGH | Options::ENABLE_TASKLISTS
@@ -88,11 +112,11 @@ fn chain(
     (at > start).then_some((at, effects, redact))
 }
 impl Syntax<'_> {
-    fn edit(&mut self, range: Range<usize>, replacement: &'static str) -> Result<(), Error> {
+    fn edit(&mut self, range: Range<usize>, replacement: &'static str, graphemes: u16) -> Result<(), Error> {
         if self.edits.len() == 4096 {
             return Err(Error::Limit);
         }
-        self.edits.push(Edit { range, replacement });
+        self.edits.push(Edit { range, replacement, graphemes });
         Ok(())
     }
     fn redacted(&self, range: &Range<usize>) -> bool {
@@ -122,9 +146,9 @@ impl Syntax<'_> {
                         && !self.code[i]
                 });
                 if let Some(close) = close {
-                    self.edit(at..at + 2, "")?;
+                    self.edit(at..at + 2, "", 0)?;
                     self.scan(at + 2, close, depth + 1)?;
-                    self.edit(close..close + 2, "")?;
+                    self.edit(close..close + 2, "", 0)?;
                     if at + 2 < close {
                         if self.spans.len() == 1024 {
                             return Err(Error::Limit);
@@ -147,7 +171,7 @@ impl Syntax<'_> {
                     continue;
                 }
                 if let Some((prefix, _, _)) = chain(self.source, at + 1, end, &self.eligible) {
-                    self.edit(at..at + 1, "")?;
+                    self.edit(at..at + 1, "", 0)?;
                     at = prefix;
                     continue;
                 }
@@ -175,12 +199,20 @@ impl Syntax<'_> {
                     let after =
                         stop + usize::from(stop < end && self.source.as_bytes()[stop] == b';');
                     if redact {
-                        self.edit(at..after, if content < stop { "[REDACTED]" } else { "" })?;
+                        // One placeholder in the body; the count it replaced travels with the span for the renderer.
+                        let graphemes = if content < stop {
+                            unicode_segmentation::UnicodeSegmentation::graphemes(&self.source[content..stop], true)
+                                .count()
+                                .min(usize::from(u16::MAX)) as u16
+                        } else {
+                            0
+                        };
+                        self.edit(at..after, if content < stop { "[REDACTED]" } else { "" }, graphemes)?;
                     } else {
-                        self.edit(at..content, "")?;
+                        self.edit(at..content, "", 0)?;
                         self.scan(content, stop, depth + 1)?;
                         if after > stop {
-                            self.edit(stop..after, "")?;
+                            self.edit(stop..after, "", 0)?;
                         }
                     }
                     if content < stop && effects != Effects::default() {
@@ -305,7 +337,7 @@ pub fn parse(source: &str, limits: Limits) -> Result<Text, Error> {
     if source.len() > limits.source_bytes {
         return Err(Error::Limit);
     }
-    let source = source.replace("\r\n", "\n").replace('\r', "\n");
+    let source = strict_quotes(&source.replace("\r\n", "\n").replace('\r', "\n"));
     if source
         .chars()
         .any(|c| c.is_control() && !matches!(c, '\n' | '\t'))
@@ -446,6 +478,9 @@ pub fn parse(source: &str, limits: Limits) -> Result<Text, Error> {
                         syntax.edits.iter().find(|e| overlap(&e.range, &part))
                     {
                         if part.start == edit.range.start {
+                            if edit.graphemes > 0 {
+                                effects.redaction = Some(edit.graphemes);
+                            }
                             edit.replacement
                         } else {
                             ""

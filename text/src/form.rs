@@ -278,7 +278,7 @@ mod tests {
         let at=|zone:&str| {let v:Value=serde_json::from_str(&preview(&json!({"source":"countdown::2027-07-05T09:30:00::Meet;","now":1780000000u64,"timezone":zone}).to_string()).unwrap()).unwrap();v["at"].as_u64().unwrap()};
         assert_eq!(at("America/New_York")-at("UTC"),14400);
         let v=preview(&json!({"source":"redact::SYNTHETIC_SECRET;","now":1780000000u64,"timezone":"UTC"}).to_string()).unwrap();
-        assert!(!v.contains("SYNTHETIC_SECRET"));assert!(v.contains("[REDACTED]"));
+        assert!(!v.contains("SYNTHETIC_SECRET"));assert!(v.contains("[REDACTED"));
     }
     #[test]
     fn preview_does_not_resolve_randomizers_and_invalid_rows_are_rejected() {

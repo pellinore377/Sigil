@@ -127,6 +127,10 @@ pub(crate) fn highlight(source: &str, language: &str, base: u32) -> Vec<Token> {
                     .any(|word| word == &source[start..i])
                 {
                     role = Some("keyword");
+                } else if bytes.get(i) == Some(&b'(')
+                    || rust && bytes.get(i) == Some(&b'!') && bytes.get(i + 1) == Some(&b'(')
+                {
+                    role = Some("function");
                 }
             }
         }
