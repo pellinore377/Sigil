@@ -50,4 +50,10 @@ class ReplyPresentationTest {
         assertEquals("GIF",attachmentLabel(AttachmentDetails("a.gif","image/gif",1)))
         assertEquals("Pdf",attachmentLabel(AttachmentDetails("a.pdf","application/pdf",1)))
     }
+    @Test fun card_quotes_carry_the_create_glyph_and_a_result_where_there_is_one() {
+        assertEquals("Poll" to "ballot",cardQuote(listOf(MessagePart("p","poll","Lunch?"))))
+        assertEquals("4/5" to "star",cardQuote(listOf(MessagePart("u","card","",utility=UtilityContent("rating",display="4/5")))))
+        assertEquals("Rating" to "star",cardQuote(listOf(MessagePart("u","card","",utility=UtilityContent("rating")))))
+        assertNull(cardQuote(listOf(MessagePart("t","text","hi"))))
+    }
 }
