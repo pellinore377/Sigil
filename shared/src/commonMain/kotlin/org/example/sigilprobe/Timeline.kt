@@ -185,6 +185,8 @@ internal fun ConversationPage(chat: ChatSummary, state: MessengerState, draft: T
     // The held bubble itself, moved out of its list item into the menu's slot while the menu is open, and back when it closes.
     val heldContent = remember { mutableStateOf<(@Composable () -> Unit)?>(null) }
     var pageBounds by remember { mutableStateOf(Rect.Zero) }
+    // Where the presented menu lands in the window, so the bubble's travel is planned in its coordinates.
+    var menuPage by remember { mutableStateOf(Rect.Zero) }
     val footerHost = LocalFooterHost.current
     val navigationInset = WindowInsets.navigationBars.getBottom(LocalDensity.current)
     // The header and composer blur and dim with the page while the menu is open.
@@ -388,7 +390,7 @@ internal fun ConversationPage(chat: ChatSummary, state: MessengerState, draft: T
         val menuBody: @Composable BoxScope.() -> Unit = {
         selected?.let { (message, origin) ->
             val band = Rect(pageBounds.left, footerHost?.headerBottom ?: pageBounds.top, pageBounds.right, pageBounds.bottom - navigationInset - with(LocalDensity.current) { ((footerHost?.height ?: 0.dp) + 16.dp).toPx() })
-            MessageMenu(message, origin, menu, footerHost?.overlayBounds ?: pageBounds, band, { CompositionLocalProvider(LocalMaterialTimeline provides materialTimeline.takeIf { materialOverlay != null }) { heldContent.value?.invoke() } },
+            MessageMenu(message, origin, menu, if (footerHost != null) menuPage else pageBounds, band, { CompositionLocalProvider(LocalMaterialTimeline provides materialTimeline.takeIf { materialOverlay != null }) { heldContent.value?.invoke() } },
                 { materialTimeline.bubbles[message.author + message.id] = it }, { selected = null; heldContent.value = null }) { action, value ->
                 when (action) {
                     "reply" -> respond(message, false)
@@ -411,7 +413,7 @@ internal fun ConversationPage(chat: ChatSummary, state: MessengerState, draft: T
         }
         // The menu is presented over the page, above the blurred layer, through the same host the viewers use.
         if (footerHost == null) menuBody()
-        else if (selected != null) Presented({ selected = null; heldContent.value = null }) { Box(Modifier.fillMaxSize()) { menuBody() } }
+        else if (selected != null) Presented({ selected = null; heldContent.value = null }) { Box(Modifier.fillMaxSize().onGloballyPositioned { menuPage = it.boundsInWindow() }) { menuBody() } }
         cardDetails?.let { CardDetails(it) { cardDetails = null } }
     }
 }
@@ -564,6 +566,8 @@ private fun BoxScope.MessageMenu(message: ChatMessage, origin: Rect, progress: A
         transformOrigin = TransformOrigin(if (message.mine) 1f else 0f, .5f)
     }
     Box(Modifier.matchParentSize().pointerInput(Unit) { detectTapGestures { finish() } }.background(scheme.scrim.copy(alpha = .5f * progress.value.coerceIn(0f, 1f)))) {
+        // The sandwich lives in the band between header and composer; the bubble's travel is clipped to it, so it passes beneath the chrome.
+        Box(Modifier.matchParentSize().drawWithContent { clipRect(0f, band.top - page.top, size.width, band.bottom - page.top) { this@drawWithContent.drawContent() } }) {
         Layout({
             Surface(enter, shape = RoundedCornerShape(28.dp), color = scheme.surfaceContainerHigh) {
                 Row(Modifier.padding(horizontal = 4.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -607,6 +611,7 @@ private fun BoxScope.MessageMenu(message: ChatMessage, origin: Rect, progress: A
                 slot.placeRelative(left, slotTop)
                 actions.placeRelative(x(actions.width), slotTop + slot.height + gap)
             }
+        }
         }
     }
 }
