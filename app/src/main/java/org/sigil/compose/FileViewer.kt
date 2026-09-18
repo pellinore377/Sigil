@@ -59,14 +59,14 @@ internal fun FileViewer(message: ChatMessage,format: String,close: () -> Unit) {
     }
     val shown=page
     DisposableEffect(shown) { onDispose { shown?.close() } }
-    Dialog(close,DialogProperties(usePlatformDefaultWidth=false)) {
-        Surface(Modifier.fillMaxSize()) {
-            Column(Modifier.fillMaxSize().safeDrawingPadding().padding(16.dp),verticalArrangement=Arrangement.spacedBy(12.dp)) {
-                Row(verticalAlignment=Alignment.CenterVertically) {
-                    SigilIconButton(close) { Glyph("close",24,"Close file") }
-                    Text(file.name,Modifier.weight(1f),style=MaterialTheme.typography.titleMedium,maxLines=2)
-                    if(shown is FilePreview.Text) SigilIconButton({clipboard.setText(AnnotatedString(shown.text))},enabled=!loading && !failed) { Glyph("content_copy",24,"Copy visible text") }
-                }
+    val saver=rememberAttachmentSaver(message)
+    val kind=attachmentKind(file.name,file.mediaType)
+    Dialog(close,DialogProperties(usePlatformDefaultWidth=false,decorFitsSystemWindows=false)) {
+        DocumentViewerChrome(file.name,kind.chip,file.bytes,close,saver.save,saver.saving,caption=file.caption,actions={
+            if(shown is FilePreview.Text) SigilIconButton({clipboard.setText(AnnotatedString(shown.text))},enabled=!loading && !failed) { Glyph("content_copy",24,"Copy visible text") }
+        }) {
+            saver.Notice()
+            Column(Modifier.fillMaxSize().padding(horizontal=16.dp,vertical=8.dp),verticalArrangement=Arrangement.spacedBy(12.dp)) {
                 when(format) {
                     "spreadsheet" -> Text("Cell values · formatting and charts are not shown. Formulas are not recalculated.",style=MaterialTheme.typography.bodySmall)
                     "three_mf" -> Text("Geometry preview · textures and manufacturing details are not shown.",style=MaterialTheme.typography.bodySmall)
@@ -80,11 +80,7 @@ internal fun FileViewer(message: ChatMessage,format: String,close: () -> Unit) {
                         SigilTextButton({NativeFileProvider.open(context,message)}) { Text("Open externally") }
                     }
                     else when(shown) {
-                        is FilePreview.Text -> key(offsets.last()) {
-                            SelectionContainer(Modifier.fillMaxSize().verticalScroll(rememberScrollState())) {
-                                Text(shown.text,Modifier.fillMaxWidth(),fontFamily=LocalCodeFont.current,style=MaterialTheme.typography.bodyMedium)
-                            }
-                        }
+                        is FilePreview.Text -> key(offsets.last()) { TextDocumentView(shown.text,kind==AttachmentKind.Markdown) }
                         is FilePreview.Table -> FileTable(shown) { sheet=it;row=0;column=0 }
                         is FilePreview.Mesh -> Image(shown.bitmap.asImageBitmap(),"3D geometry preview",Modifier.fillMaxSize(),contentScale=ContentScale.Fit)
                         null -> Unit
@@ -121,7 +117,6 @@ internal fun FileViewer(message: ChatMessage,format: String,close: () -> Unit) {
                     }
                     null -> Unit
                 }
-                if(file.caption.isNotBlank()) Box(Modifier.heightIn(max=120.dp).verticalScroll(rememberScrollState())) { MessageText(file.caption,NativeCore::analyze) }
             }
         }
     }

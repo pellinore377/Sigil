@@ -247,13 +247,23 @@ private val stamped=setOf("post","place","group_create","react","pin","read","ma
         download(file)
         browserFileSave(handle,file.peer,file.author,file.message,file.draft,file.bytes.toDouble()).awaitBrowser<JsAny?>()
     }
+    // Delivered files keep their object URL across rows, so scrolling back never decrypts a file again.
+    val fileUrls=LinkedHashMap<String,String>()
     suspend fun loadFile(file:WebFile):String {
+        val key=if(file.draft.isEmpty())"${file.peer}/${file.author}/${file.message}" else null
+        key?.let {fileUrls.remove(it)}?.let {fileUrls[key]=it;return it}
         download(file)
         val promise=browserFileUrl(file.peer,file.author,file.message,file.draft,file.bytes.toDouble(),file.type)
         var claimed=false
-        try {val value=promise.awaitBrowser<JsString>().toString();claimed=true;return value}
+        try {
+            val value=promise.awaitBrowser<JsString>().toString();claimed=true
+            if(key!=null) {
+                fileUrls[key]=value
+                while(fileUrls.size>48) {val oldest=fileUrls.entries.first();fileUrls.remove(oldest.key);browserRevokeFileUrl(oldest.value)}
+            }
+            return value
+        }
         finally {if(!claimed)promise.then<JsAny?>({browserRevokeFileUrl(it.toString());null},{null})}
-
     }
     suspend fun refresh() {
 state=StateDecoder.state(execute("state"),state,::clock);if(state.phase=="connected"){timeline();transfers();calls.refresh(execute("calls"),::clock,{calendar(it).substringBeforeLast(", ")});if(state.storage!=null)storage(execute("storage"));if((BrowserDate.now()/1000).toLong()>=accessNext){account(execute("account_access"));accessNext=(BrowserDate.now()/1000).toLong()+300}}}

@@ -1,0 +1,99 @@
+package org.sigil
+
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.selection.SelectionContainer
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.*
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.layout.boundsInWindow
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+
+internal val ViewerHeaderShape = RoundedCornerShape(24.dp)
+private val ViewerCaptionShape = RoundedCornerShape(28.dp)
+
+// The timeline's floating glass header, over whatever the page shows beneath it.
+@Composable internal fun ViewerHeader(backdrop: ChromeBackdrop, modifier: Modifier = Modifier, extent: (androidx.compose.ui.unit.Dp) -> Unit = {}, content: @Composable RowScope.() -> Unit) {
+    val density = androidx.compose.ui.platform.LocalDensity.current
+    // The page learns how far the pill reaches, so nothing lands behind the glass.
+    FloatingChrome(backdrop, modifier.padding(top = WindowInsets.statusBars.asPaddingValues().calculateTopPadding() + 12.dp).widthIn(max = 920.dp).fillMaxWidth().padding(horizontal = 12.dp).height(pageHeaderHeight())
+        .onGloballyPositioned { extent(with(density) { it.boundsInWindow().bottom.toDp() }) }, ViewerHeaderShape) {
+        Row(Modifier.fillMaxSize().padding(horizontal = 8.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically, content = content)
+    }
+}
+
+// The caption, in the pill the image viewer uses for its bar.
+@Composable internal fun ViewerCaption(caption: String, modifier: Modifier = Modifier) {
+    Surface(modifier.padding(bottom = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding() + 12.dp).widthIn(max = 680.dp).padding(horizontal = 16.dp), shape = ViewerCaptionShape,
+        color = MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = .94f), contentColor = MaterialTheme.colorScheme.onSurface) {
+        Text(caption, Modifier.padding(horizontal = 18.dp, vertical = 12.dp), style = MaterialTheme.typography.bodyLarge, maxLines = 4, overflow = TextOverflow.Ellipsis)
+    }
+}
+
+// The image viewer's shape for a file: the timeline header naming and offering it, floating over the page itself.
+@Composable fun DocumentViewerChrome(name: String, kind: String, bytes: Long, close: () -> Unit, download: (() -> Unit)?, downloading: Boolean = false, caption: String? = null,
+    actions: @Composable RowScope.() -> Unit = {}, content: @Composable BoxScope.() -> Unit) {
+    val scheme = MaterialTheme.colorScheme
+    val backdrop = rememberChromeBackdrop()
+    var reach by androidx.compose.runtime.remember { androidx.compose.runtime.mutableStateOf(112.dp) }
+    val top = reach + 12.dp
+    val bottom = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding() + if (caption.isNullOrBlank()) 12.dp else 84.dp
+    Box(Modifier.fillMaxSize().background(scheme.background)) {
+        CompositionLocalProvider(LocalContentColor provides scheme.onBackground) {
+            Box(Modifier.fillMaxSize().captureBackdrop(backdrop)) { Box(Modifier.fillMaxSize().padding(top = top, bottom = bottom), content = content) }
+            ViewerHeader(backdrop, Modifier.align(Alignment.TopCenter), { reach = it }) {
+                Symbol("chevron_left", "Back", close)
+                Column(Modifier.weight(1f).padding(start = 10.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    Text(name, style = MaterialTheme.typography.titleLarge, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    Text("$kind · ${attachmentSize(bytes)}", style = MaterialTheme.typography.labelMedium, color = scheme.onSurfaceVariant, maxLines = 1)
+                }
+                actions()
+                download?.let { Symbol("download", if (downloading) "Saving file" else "Save file", it) }
+            }
+            if (!caption.isNullOrBlank()) ViewerCaption(caption, Modifier.align(Alignment.BottomCenter))
+        }
+    }
+}
+
+// Plain text or Markdown, selectable, on the reader's ground.
+@Composable fun TextDocumentView(text: String, markdown: Boolean, modifier: Modifier = Modifier) {
+    SelectionContainer(modifier.fillMaxSize().verticalScroll(rememberScrollState())) {
+        Text(if (markdown) markdownPreview(text, 1.3f) else AnnotatedString(text), Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 16.dp),
+            style = if (markdown) MaterialTheme.typography.bodyLarge else MaterialTheme.typography.bodyMedium.copy(fontFamily = FontFamily.Monospace))
+    }
+}
+
+// Cells in a ruled grid that scrolls both ways; the first row is the header when there is more than one.
+@Composable fun TableDocumentView(cells: List<List<String>>, modifier: Modifier = Modifier) {
+    val columns = cells.maxOfOrNull { it.size } ?: 0
+    val scheme = MaterialTheme.colorScheme
+    val rule = scheme.outlineVariant
+    val scroll = rememberScrollState()
+    LazyColumn(modifier.fillMaxSize().horizontalScroll(scroll).padding(12.dp)) {
+        itemsIndexed(cells) { r, row ->
+            Row(Modifier.then(if (r == 0 && cells.size > 1) Modifier.background(scheme.surfaceContainer) else Modifier)) {
+                for (c in 0 until columns) {
+                    Text(row.getOrNull(c).orEmpty(), Modifier.width(140.dp).border(.5.dp, rule).padding(horizontal = 8.dp, vertical = 6.dp),
+                        style = MaterialTheme.typography.bodySmall, fontWeight = if (r == 0 && cells.size > 1) FontWeight.SemiBold else FontWeight.Normal, maxLines = 3, overflow = TextOverflow.Ellipsis, fontSize = 12.sp)
+                }
+            }
+        }
+    }
+}

@@ -189,7 +189,8 @@ private suspend fun historyBitmap(context:android.content.Context,message:ChatMe
 internal fun AndroidAttachment(message: ChatMessage) {
     val file = message.attachment ?: return
     if (file.mediaType == "image/gif" && file.bytes <= 16 * 1024 * 1024 && Build.VERSION.SDK_INT >= 28) { GifAttachment(message); return }
-    if (file.mediaType.startsWith("audio/")) { AudioMessage(message); return }
+    if (file.mediaType.startsWith("audio/") && file.name == "Voice message.aac") { AudioMessage(message); return }
+    if (!(file.mediaType.startsWith("image/") && file.bytes <= 16 * 1024 * 1024) && !file.mediaType.startsWith("video/")) { AndroidFileCard(message); return }
     val context = LocalContext.current
     val imageCache=LocalImageCache.current
     val image = file.mediaType.startsWith("image/") && file.bytes <= 16 * 1024 * 1024
