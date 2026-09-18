@@ -26,7 +26,7 @@ import androidx.compose.ui.unit.dp
 
 fun audioTime(milliseconds: Long): String {
     val seconds = milliseconds.coerceAtLeast(0) / 1000
-    return "${seconds / 60}:${(seconds % 60).toString().padStart(2, '0')}"
+    return "${(seconds / 60).toString().padStart(2, '0')}:${(seconds % 60).toString().padStart(2, '0')}"
 }
 
 @Composable
@@ -39,16 +39,10 @@ fun AudioPlayback(position: Long, duration: Long, playing: Boolean, levels: List
     val settled by animateFloatAsState(target, motionPolicy.tween(MotionFeedback), label = "Playback position")
     val seekInteractions = remember { MutableInteractionSource() }
     val focused by seekInteractions.collectIsFocusedAsState()
-    Row(modifier, verticalAlignment = Alignment.CenterVertically) {
-        SigilIconButton(play, enabled = enabled) {
-            Crossfade(playing, animationSpec = motionPolicy.tween(MotionExit), label = "Playback state") { on ->
-                Glyph(if (on) "pause" else "play_arrow", 24,
-                    if (preview) if (on) "Pause voice preview" else "Play voice preview" else if (on) "Pause audio message" else "Play audio message")
-            }
-        }
-        Column(Modifier.weight(1f)) {
-            Box(Modifier.fillMaxWidth().height(48.dp).background(if (focused) LocalContentColor.current.copy(alpha = .08f) else Color.Transparent, RoundedCornerShape(12.dp)), contentAlignment = Alignment.Center) {
-                AudioWaveform(levels, Modifier.fillMaxWidth().height(40.dp)
+    Row(modifier, verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        PlaySquircle(play, playing, enabled, preview)
+        Box(Modifier.weight(1f).height(48.dp).background(if (focused) LocalContentColor.current.copy(alpha = .08f) else Color.Transparent, RoundedCornerShape(12.dp)), contentAlignment = Alignment.Center) {
+                AudioWaveform(levels, Modifier.fillMaxWidth().height(32.dp)
                     .testTag(if (preview) "voice-preview-seek" else "audio-seek")
                     .semantics {
                         contentDescription = "Playback position"
@@ -75,11 +69,26 @@ fun AudioPlayback(position: Long, duration: Long, playing: Boolean, levels: List
                             onDragEnd={seeking?.let(seek);seeking=null},onDragCancel={seeking=null}
                         ) {change,_->change.consume();seeking=(change.position.x/size.width*duration).toLong().coerceIn(0,duration)}
                     },if (seeking != null) target else settled)
-
-            }
-            Text("${audioTime(current)} / ${audioTime(duration)}", style = MaterialTheme.typography.labelSmall)
         }
+        // Idle shows the length; once playback or a scrub moves, the position.
+        Text(audioTime(if (playing || current > 0) current else duration), style = MaterialTheme.typography.labelMedium, modifier = Modifier.testTag("audio-time"))
         if (expand != null) Symbol("open_in_full", "Expand audio", expand)
+    }
+}
+
+// A tonal squircle in the ink of whatever surface holds it, so the same control sits on a bubble or a draft pill.
+@Composable
+internal fun PlaySquircle(play: () -> Unit, playing: Boolean, enabled: Boolean, preview: Boolean) {
+    val motionPolicy = LocalMotion.current
+    val ink = LocalContentColor.current
+    Surface(play, Modifier.semantics { role = Role.Button }, enabled, shape = RoundedCornerShape(14.dp),
+        color = ink.copy(alpha = if (enabled) .14f else .06f), contentColor = ink.copy(alpha = if (enabled) 1f else .38f)) {
+        Box(Modifier.size(40.dp), contentAlignment = Alignment.Center) {
+            Crossfade(playing, animationSpec = motionPolicy.tween(MotionExit), label = "Playback state") { on ->
+                Glyph(if (on) "pause" else "play_arrow", 24,
+                    if (preview) if (on) "Pause voice preview" else "Play voice preview" else if (on) "Pause audio message" else "Play audio message", filled = true)
+            }
+        }
     }
 }
 

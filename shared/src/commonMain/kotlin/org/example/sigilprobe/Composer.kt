@@ -164,7 +164,7 @@ internal fun TextFieldState.format(marker: String, range: TextRange = selection)
 }
 
 @Composable
-fun Composer(state: TextFieldState, analyze: (String) -> String, modifier: Modifier = Modifier, showTools: Boolean = true, focusRequester: FocusRequester? = null, onFocus: () -> Unit = {}, enabled: Boolean = true, namedFormatting: Boolean = true, showSource: Boolean? = null) {
+fun Composer(state: TextFieldState, analyze: (String) -> String, modifier: Modifier = Modifier, showTools: Boolean = true, focusRequester: FocusRequester? = null, onFocus: () -> Unit = {}, enabled: Boolean = true, namedFormatting: Boolean = true, showSource: Boolean? = null, placeholder: String = "Message") {
     var internalSourceMode by remember { mutableStateOf(false) }
     val sourceMode = showSource ?: internalSourceMode
     var editorFocused by remember { mutableStateOf(false) }
@@ -222,7 +222,7 @@ fun Composer(state: TextFieldState, analyze: (String) -> String, modifier: Modif
             inputTransformation = if (sourceMode) InputTransformation.maxLength(16_384)
                 else preserveBoundaries(editorAnalysis).then(InputTransformation.maxLength(16_384)),
             outputTransformation = if (sourceMode) null else output,
-            decorator = { inner -> Box(contentAlignment = androidx.compose.ui.Alignment.CenterStart) { if (source.isEmpty()) Text("Message", color = MaterialTheme.colorScheme.onSurfaceVariant, style = MaterialTheme.typography.bodyLarge); inner() } },
+            decorator = { inner -> Box(contentAlignment = androidx.compose.ui.Alignment.CenterStart) { if (source.isEmpty()) Text(placeholder, color = MaterialTheme.colorScheme.onSurfaceVariant, style = MaterialTheme.typography.bodyLarge); inner() } },
             textStyle = MaterialTheme.typography.bodyLarge.copy(color = MaterialTheme.colorScheme.onSurface),
             lineLimits = TextFieldLineLimits.MultiLine(maxHeightInLines = 4))
         }
