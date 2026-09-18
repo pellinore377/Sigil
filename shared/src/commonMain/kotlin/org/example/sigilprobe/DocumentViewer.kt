@@ -8,6 +8,7 @@ import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.lazy.LazyListScope
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.selection.SelectionContainer
@@ -94,32 +95,39 @@ private val ViewerCaptionShape = RoundedCornerShape(28.dp)
     }
 }
 
-// Cells in a ruled grid that scrolls both ways. A tap picks a cell out in the theme's colour; holding it offers a copy.
-@Composable fun TableDocumentView(cells: List<List<String>>, modifier: Modifier = Modifier, footer: (@Composable () -> Unit)? = null) {
+// The sheet as a window onto the grid: numbered rows and columns, zebra rows, cells that scroll both ways.
+// A tap marks a cell with a border in the theme's colour; holding it offers a copy.
+@Composable fun TableDocumentView(cells: List<List<String>>, modifier: Modifier = Modifier, firstRow: Int = 0, footer: (@Composable () -> Unit)? = null) {
     val columns = cells.maxOfOrNull { it.size } ?: 0
     val scheme = MaterialTheme.colorScheme
-    val rule = scheme.outlineVariant
     val clipboard = LocalClipboardManager.current
     var selected by remember(cells) { mutableStateOf<Pair<Int, Int>?>(null) }
     var menu by remember(cells) { mutableStateOf(false) }
-    val scroll = rememberScrollState()
-    LazyColumn(modifier.fillMaxSize().horizontalScroll(scroll).padding(12.dp)) {
-        itemsIndexed(cells) { r, row ->
-            Row(Modifier.then(if (r == 0 && cells.size > 1) Modifier.background(scheme.surfaceContainer) else Modifier)) {
-                for (c in 0 until columns) {
-                    val picked = selected == r to c
-                    Box(Modifier.width(140.dp).border(.5.dp, rule).background(if (picked) scheme.primaryContainer else androidx.compose.ui.graphics.Color.Transparent)
-                        .combinedClickable(onClick = { selected = r to c; menu = false }, onLongClick = { selected = r to c; menu = true })) {
-                        Text(row.getOrNull(c).orEmpty(), Modifier.padding(horizontal = 8.dp, vertical = 6.dp), style = MaterialTheme.typography.bodySmall,
-                            color = if (picked) scheme.onPrimaryContainer else scheme.onBackground,
-                            fontWeight = if (r == 0 && cells.size > 1) FontWeight.SemiBold else FontWeight.Normal, maxLines = 3, overflow = TextOverflow.Ellipsis, fontSize = 12.sp)
-                        if (picked) DropdownMenu(menu, { menu = false }) {
-                            DropdownMenuItem({ Text("Copy") }, { clipboard.setText(AnnotatedString(row.getOrNull(c).orEmpty())); menu = false }, leadingIcon = { Glyph("content_copy", 20) })
+    Box(modifier.fillMaxSize().horizontalScroll(rememberScrollState())) {
+        LazyColumn(Modifier.width((48 + columns * 160).dp)) {
+            stickyHeader {
+                Row(Modifier.background(scheme.surfaceContainer)) {
+                    Text("#", Modifier.width(48.dp).padding(8.dp), style = MaterialTheme.typography.labelLarge)
+                    repeat(columns) { Text("${it + 1}", Modifier.width(160.dp).padding(8.dp), style = MaterialTheme.typography.labelLarge) }
+                }
+            }
+            itemsIndexed(cells) { r, row ->
+                Row(Modifier.background(scheme.onSurface.copy(alpha = if (r % 2 == 0) .025f else .055f))) {
+                    Text("${firstRow + r + 1}", Modifier.width(48.dp).padding(8.dp), style = MaterialTheme.typography.labelMedium)
+                    for (c in 0 until columns) {
+                        val value = row.getOrNull(c).orEmpty()
+                        val picked = selected == r to c
+                        Box(Modifier.width(160.dp).heightIn(min = 56.dp).then(if (picked) Modifier.border(2.dp, scheme.primary) else Modifier)
+                            .combinedClickable(onClick = { selected = r to c; menu = false }, onLongClick = { selected = r to c; menu = true })) {
+                            Text(value, Modifier.padding(12.dp), maxLines = 4, style = MaterialTheme.typography.bodyMedium)
+                            if (picked) DropdownMenu(menu, { menu = false }) {
+                                DropdownMenuItem({ Text("Copy") }, { clipboard.setText(AnnotatedString(value)); menu = false }, leadingIcon = { Glyph("content_copy", 20) })
+                            }
                         }
                     }
                 }
             }
+            footer?.let { item { Box(Modifier.padding(12.dp)) { it() } } }
         }
-        footer?.let { item { Box(Modifier.padding(vertical = 12.dp)) { it() } } }
     }
 }
