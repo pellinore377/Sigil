@@ -31,22 +31,28 @@ FROM web-tools AS web-build
 WORKDIR /src
 ENV CFLAGS_wasm32_unknown_unknown="-std=gnu2x"
 COPY --from=source /src /src
-RUN cargo build --locked --release --target wasm32-unknown-unknown -p sigil-core -p sigil-browser -p sigil-browser-events && wasm-bindgen target/wasm32-unknown-unknown/release/sigil_browser_events.wasm --target web --out-dir target/web && wasm-bindgen target/wasm32-unknown-unknown/release/sigil_core.wasm --target web --out-dir target/web && wasm-bindgen target/wasm32-unknown-unknown/release/sigil_browser.wasm --target web --out-dir target/web
+RUN --mount=type=cache,target=/src/target/wasm32-unknown-unknown --mount=type=cache,target=/src/target/release cargo build --locked --release --target wasm32-unknown-unknown -p sigil-core -p sigil-browser -p sigil-browser-events && wasm-bindgen target/wasm32-unknown-unknown/release/sigil_browser_events.wasm --target web --out-dir target/web && wasm-bindgen target/wasm32-unknown-unknown/release/sigil_core.wasm --target web --out-dir target/web && wasm-bindgen target/wasm32-unknown-unknown/release/sigil_browser.wasm --target web --out-dir target/web
 COPY build.gradle.kts settings.gradle.kts gradle.properties ./
 COPY app app
 COPY shared shared
 COPY materials materials
-RUN cargo build --locked --manifest-path materials/Cargo.toml --release --target wasm32-unknown-unknown --lib && wasm-bindgen materials/target/wasm32-unknown-unknown/release/sigil_materials.wasm --target web --out-dir target/web
+RUN --mount=type=cache,target=/src/materials/target cargo build --locked --manifest-path materials/Cargo.toml --release --target wasm32-unknown-unknown --lib && wasm-bindgen materials/target/wasm32-unknown-unknown/release/sigil_materials.wasm --target web --out-dir target/web
 COPY browser-maps browser-maps
-RUN cargo build --locked --manifest-path browser-maps/Cargo.toml --release --target wasm32-unknown-unknown --lib && wasm-bindgen browser-maps/target/wasm32-unknown-unknown/release/sigil_browser_maps.wasm --target web --out-dir target/web
+RUN --mount=type=cache,target=/src/browser-maps/target cargo build --locked --manifest-path browser-maps/Cargo.toml --release --target wasm32-unknown-unknown --lib && wasm-bindgen browser-maps/target/wasm32-unknown-unknown/release/sigil_browser_maps.wasm --target web --out-dir target/web
 COPY kotlin-js-store kotlin-js-store
 COPY licenses licenses
-RUN /opt/gradle-8.13/bin/gradle --no-daemon -Pkotlin.daemon.jvmargs=-Xmx6g :shared:wasmJsBrowserDistribution --console=plain
+RUN --mount=type=cache,target=/root/.gradle --mount=type=cache,target=/src/build --mount=type=cache,target=/src/shared/build /opt/gradle-8.13/bin/gradle --no-daemon -Pkotlin.daemon.jvmargs=-Xmx6g :shared:wasmJsBrowserDistribution --console=plain && cp -r shared/build/dist/wasmJs/productionExecutable /web
+
+# A bundle built on the developer's machine, selected with --build-arg WEB_SOURCE=web-prebuilt.
+FROM scratch AS web-prebuilt
+COPY prebuilt-web /web
+ARG WEB_SOURCE=web-build
+FROM ${WEB_SOURCE} AS web-final
 
 FROM debian:bookworm-slim@sha256:5ae3c39ebd15e229dcedd5cee596b2497182493d41ff162e824ba13fc1b2b867
 RUN mkdir -p /var/lib/sigil && chown 65532:65532 /var/lib/sigil && chmod 700 /var/lib/sigil
 COPY --from=build /usr/local/bin/sigil-server /usr/local/bin/sigil-server
-COPY --from=web-build /src/shared/build/dist/wasmJs/productionExecutable /usr/share/sigil/web
+COPY --from=web-final /web /usr/share/sigil/web
 COPY licenses/Server-ThirdParty.txt licenses/Crypto-ThirdParty.txt licenses/Client-ThirdParty.txt licenses/Text-ThirdParty.txt licenses/Integrations-ThirdParty.txt licenses/Calls-ThirdParty.txt /usr/share/doc/sigil/
 COPY licenses/Web-ThirdParty.txt licenses/Newsreader.txt licenses/GoogleSansFlex.txt licenses/GoogleSansCode.txt licenses/GoogleSansCode-Trademarks.md licenses/MaterialSymbols.txt /usr/share/doc/sigil/
 USER 65532:65532

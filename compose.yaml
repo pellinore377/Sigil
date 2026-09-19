@@ -1,7 +1,7 @@
 services:
   sigil:
     image: ghcr.io/pellinore377/sigil:latest
-    pull_policy: always
+    pull_policy: never
     platform: linux/amd64
     environment:
       SIGIL_LOG_CIPHERTEXT: "false"
