@@ -17,11 +17,12 @@ impl Queue {
         } else {
             (0, 0)
         };
+        // A 1080p keyframe alone runs to a few hundred fragments; the queue holds a moment of that.
         if queued_bytes
             .saturating_add(self.bytes)
             .saturating_add(bytes)
-            > 65536
-            || queued_packets.saturating_add(self.packets) >= 128
+            > 1024 * 1024
+            || queued_packets.saturating_add(self.packets) >= 1024
         {
             return false;
         }
@@ -116,12 +117,12 @@ mod tests {
         }
         assert!(!queue.admit(None, 1));
         let at = Instant::now();
-        assert!(!queue.admit(Some((at, 65536, 64)), 1));
+        assert!(!queue.admit(Some((at, 1024 * 1024, 512)), 1));
         assert!(queue.admit(Some((at, 0, 0)), 1024));
         assert!(queue.admit(Some((at, 0, 0)), 1024));
-        assert!(!queue.admit(Some((at, 64000, 127)), 1024));
+        assert!(!queue.admit(Some((at, 1024 * 1000, 1023)), 1024));
         let later = at + std::time::Duration::from_millis(1);
-        for _ in 0..128 {
+        for _ in 0..1024 {
             assert!(queue.admit(Some((later, 0, 0)), 0));
         }
         assert!(!queue.admit(Some((later, 0, 0)), 0));

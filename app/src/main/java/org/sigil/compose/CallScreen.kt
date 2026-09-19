@@ -32,7 +32,7 @@ internal class CallScreen(context: Context, private val projection: MediaProject
         val nextHeight = maxOf(16, (h * scale).toInt() / 2 * 2)
         if (width == nextWidth && height == nextHeight) return
         try {
-            val next = Vp8Encoder(nextWidth, nextHeight, 0, send) { error -> close(); ended(error) }
+            val next = Vp8Encoder(nextWidth, nextHeight, 0, 30, send) { error -> close(); ended(error) }
             try {
                 if (display == null) display = projection.createVirtualDisplay("Sigil screen", nextWidth, nextHeight, density, DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR, next.surface, null, handler)
                 else { display?.surface = null; display?.resize(nextWidth, nextHeight, density); display?.surface = next.surface }

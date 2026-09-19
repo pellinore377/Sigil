@@ -120,7 +120,7 @@ async fn case(str0m: bool, lossy: bool, bad_fingerprint: bool, reconnect: bool, 
         let mut ssrcs = std::collections::BTreeMap::new();
         for seq in (round * 150)..((round + 1) * 150u16) {
             for (i, track) in tracks.iter().enumerate() {
-                let pt = if i == 0 { 111 } else { 96 };
+                let pt = if i == 0 { 111 } else { 98 };
                 let mut payload = vec![0u8; 400];
                 payload[0] = 0x10;
                 payload[1] = i as u8;
@@ -150,7 +150,7 @@ async fn case(str0m: bool, lossy: bool, bad_fingerprint: bool, reconnect: bool, 
                     u16::from_be_bytes(p.payload[2..4].try_into().unwrap()),
                     p.seq
                 );
-                assert_eq!(p.pt, if p.payload[1] == 0 { 111 } else { 96 });
+                assert_eq!(p.pt, if p.payload[1] == 0 { 111 } else { 98 });
                 assert_ne!(p.ssrc, 0);
                 assert_eq!(*ssrcs.entry(p.payload[1]).or_insert(p.ssrc), p.ssrc);
                 assert!(
