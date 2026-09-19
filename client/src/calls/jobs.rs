@@ -147,7 +147,7 @@ fn current(db: &Connection, key: &StorageKey, job: &Job, now: u64) -> Result<(),
                         && v.until == job.wire.expires
                 })
         }
-        Body::Join(proof) => {
+        Body::Join(proof) | Body::JoinReady(proof, _) => {
             record.phase == Phase::Joining
                 && record
                     .own
@@ -578,6 +578,15 @@ impl ClientStore {
                     }
                     state.roster.roster.members.sort_by_key(|m| m.id);
                     state.participants.sort_by_key(|p| p.member.id);
+                    for ready in current.joining_ready.drain(..) {
+                        if state.roster.roster.members.iter().any(|m| m.id == ready.member)
+                            && ready.verify(&state.roster.roster).is_ok()
+                        {
+                            state.ready.retain(|r| r.member != ready.member);
+                            state.ready.push(ready);
+                        }
+                    }
+                    state.ready.sort_by_key(|r| r.member);
                     state.roster = current
                         .state
                         .roster

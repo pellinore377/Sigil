@@ -76,6 +76,12 @@ struct Record {
     ring_until: Option<u64>,
     invites: Vec<Invite>,
     joining: Vec<Attestation>,
+    /// Readiness that arrived inside a join, committed with the roster that admits its member.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    joining_ready: Vec<Ready>,
+    /// Tracks declared with the answer-time lease; the first media handle reuses that lease.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    early: Option<Tracks>,
     pins: Vec<(Id, Member)>,
     commits: Vec<SignedRoster>,
     announced: Option<Id>,
@@ -504,6 +510,8 @@ impl ClientStore {
             ring_until: None,
             invites: Vec::new(),
             joining: Vec::new(),
+            joining_ready: Vec::new(),
+            early: None,
             pins: vec![(proof.fingerprint().map_err(failure)?, proof.member)],
             commits: vec![roster],
             announced: None,
@@ -550,6 +558,10 @@ impl ClientStore {
         Ok(())
     }
     pub fn answer_call(&mut self, id: Id, accept: bool, now: u64) -> Result<(), Error> {
+        self.answer_call_with(id, accept, Tracks { audio: true, camera: false, screen: false }, now)
+    }
+    /// Answering declares readiness for the tracks the call will open with, so the join carries it.
+    pub fn answer_call_with(&mut self, id: Id, accept: bool, tracks: Tracks, now: u64) -> Result<(), Error> {
         let own = self.own_device_binding()?;
         let tx = self
             .db
@@ -583,12 +595,31 @@ impl ClientStore {
             record.own = Some(proof.clone());
             record.phase = Phase::Joining;
             record.ring_until = None;
+            // Readiness is scoped to the call, not the roster revision, so it can travel with the join
+            // and the owner commits membership and readiness in one state.
+            record.lease = sigil_calls::random_id().map_err(failure)?;
+            record.ready_sequence = record.ready_sequence.checked_add(1).ok_or(Error::Limit)?;
+            // Signed against the roster the owner will commit for us: ours added, one revision on.
+            let mut admitting = record.state.roster.roster.clone();
+            admitting.previous = Some(admitting.digest().map_err(failure)?);
+            admitting.revision += 1;
+            admitting.members.push(proof.member.clone());
+            admitting.members.sort_by_key(|m| m.id);
+            let ready = Ready::sign(
+                &admitting,
+                record.ready_sequence,
+                record.lease,
+                tracks,
+                &record.key(&self.key)?,
+            )
+            .map_err(failure)?;
+            record.early = Some(tracks);
             jobs::queue(
                 &tx,
                 &self.key,
                 &record,
                 owner,
-                control::Body::Join(proof),
+                control::Body::JoinReady(proof, ready),
                 now,
             )?;
         } else {

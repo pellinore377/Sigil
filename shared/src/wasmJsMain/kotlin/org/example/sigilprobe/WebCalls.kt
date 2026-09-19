@@ -131,7 +131,7 @@ internal class WebCalls(private val scope:CoroutineScope,private val command:sus
                             }
                         }
                         val id=if(action in setOf("call_start","call_redial")){command(action,mapOf((if(action=="call_start")"peer" else "call") to fields[if(action=="call_start")"peer" else "call"],"request" to browserRequestId(),"timestamp" to (CallClock.now()/1000).toLong())).string("call")}
-                        else (fields["call"] as String).also {if(action=="call_answer")command("call_answer",mapOf("call" to it,"accept" to true))}
+                        else (fields["call"] as String).also {if(action=="call_answer")command("call_answer",mapOf("call" to it,"accept" to true,"video" to video))}
                         if(current!=generation){command("call_leave",mapOf("call" to id));return@launch}
                         desired=id;wake()
                     }catch(cancelled:CancellationException){throw cancelled}

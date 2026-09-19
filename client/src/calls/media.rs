@@ -36,6 +36,20 @@ impl ClientStore {
         let now = crate::conversations::time_floor(&tx, &self.key, now)?;
         let mut record = load(&tx, &self.key, &id)?;
         record.authorize(&tx, &self.key, now)?;
+        // The lease declared with the answer serves the first handle; the refresh takes it from there.
+        if record.owner_peer.is_some() && record.early.take() == Some(tracks) {
+            let media = Media {
+                call: id,
+                lease: record.lease,
+                state: None,
+                sender: None,
+                receivers: BTreeMap::new(),
+                assembly: sigil_calls::Assembly::default(),
+            };
+            save(&tx, &self.key, &record)?;
+            tx.commit()?;
+            return Ok(media);
+        }
         record.lease = sigil_calls::random_id().map_err(failure)?;
         record.shares.clear();
         let declared = ready(&tx, &self.key, &mut record, tracks, now)?;
@@ -301,7 +315,7 @@ fn enabled(record: &Record, sender: Id, kind: sigil_calls::MediaKind) -> bool {
 /// owner will commit for it. Sending both together saves a full round trip.
 type Declaration = Option<(Id, sigil_calls::Sender)>;
 
-fn ready(
+pub(super) fn ready(
     tx: &Transaction<'_>,
     key: &StorageKey,
     record: &mut Record,

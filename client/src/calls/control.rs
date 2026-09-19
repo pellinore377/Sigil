@@ -13,6 +13,8 @@ pub(super) enum Body {
     Invite(State),
     DirectInvite(State),
     Join(Attestation),
+    /// A join with the callee's readiness declared at answer time, so the owner commits both in one state.
+    JoinReady(Attestation, Ready),
     State(State),
     Ready(Ready),
     Shares(Vec<Share>),
@@ -65,6 +67,51 @@ fn parse(raw: &[u8]) -> Result<Option<Wire>, Error> {
     Ok(Some(value))
 }
 /// Invitations deserve a push; other call controls ride the active call loop.
+/// Records a participant's join; false means the control is stale and is only retained.
+fn accept_join(record: &mut Record, fingerprint: Id, peer_id: &Id, now: u64, proof: Attestation) -> Result<bool, Error> {
+    if record.owner_peer.is_some() {
+        return Err(Error::InvalidEvent);
+    }
+    proof.verify(&record.state.roster.roster).map_err(failure)?;
+    if proof.fingerprint().map_err(failure)? != fingerprint {
+        return Err(Error::InvalidEvent);
+    }
+    if let Some(prior) = record
+        .state
+        .participants
+        .iter()
+        .find(|p| p.fingerprint().ok() == Some(fingerprint))
+    {
+        if prior.member != proof.member {
+            return Err(Error::Conflict);
+        }
+        return Ok(false);
+    }
+    if !record
+        .invites
+        .iter()
+        .any(|i| i.peer == *peer_id && i.fingerprint == fingerprint && i.until > now)
+    {
+        return Ok(false);
+    }
+    if let Some(old) = record
+        .joining
+        .iter()
+        .find(|p| p.fingerprint().ok() == Some(fingerprint))
+    {
+        if old.member != proof.member {
+            return Err(Error::Conflict);
+        }
+        return Ok(false);
+    }
+    if record.state.participants.len() + record.joining.len() >= 8 {
+        return Err(Error::Limit);
+    }
+    record.joining.push(proof);
+    record.invites.retain(|i| i.peer != *peer_id);
+    Ok(true)
+}
+
 pub(crate) fn is_invite(raw: &[u8]) -> bool {
     matches!(parse(raw), Ok(Some(wire)) if matches!(wire.body, Body::Invite(_) | Body::DirectInvite(_)))
 }
@@ -225,6 +272,8 @@ pub(crate) fn install(
                 ring_until: Some(wire.expires),
                 invites: Vec::new(),
                 joining: Vec::new(),
+                joining_ready: Vec::new(),
+                early: None,
                 pins: Vec::new(),
                 commits: Vec::new(),
                 announced: None,
@@ -332,6 +381,13 @@ pub(crate) fn install(
                     }
                     record.phase = Phase::Active;
                     record.ring_until = None;
+                    // An owner that did not carry the answer-time readiness gets it the ordinary way.
+                    let own_id = own.member.id;
+                    if let Some(tracks) = record.early {
+                        if !record.state.ready.iter().any(|r| r.member == own_id) {
+                            super::media::ready(tx, key, &mut record, tracks, now)?;
+                        }
+                    }
                 } else if record.phase == Phase::Active {
                     record.finish(Phase::Left);
                 }
@@ -402,46 +458,16 @@ pub(crate) fn install(
             }
         }
         Body::Join(proof) => {
-            if record.owner_peer.is_some() {
-                return Err(Error::InvalidEvent);
-            }
-            proof.verify(&record.state.roster.roster).map_err(failure)?;
-            if proof.fingerprint().map_err(failure)? != known.fingerprint {
-                return Err(Error::InvalidEvent);
-            }
-            if let Some(prior) = record
-                .state
-                .participants
-                .iter()
-                .find(|p| p.fingerprint().ok() == Some(known.fingerprint))
-            {
-                if prior.member != proof.member {
-                    return Err(Error::Conflict);
-                }
+            if !accept_join(&mut record, known.fingerprint, peer_id, now, proof)? {
                 return Ok(Some(marker));
             }
-            if !record
-                .invites
-                .iter()
-                .any(|i| i.peer == *peer_id && i.fingerprint == known.fingerprint && i.until > now)
-            {
+        }
+        Body::JoinReady(proof, ready) => {
+            if !accept_join(&mut record, known.fingerprint, peer_id, now, proof)? {
                 return Ok(Some(marker));
             }
-            if let Some(old) = record
-                .joining
-                .iter()
-                .find(|p| p.fingerprint().ok() == Some(known.fingerprint))
-            {
-                if old.member != proof.member {
-                    return Err(Error::Conflict);
-                }
-                return Ok(Some(marker));
-            }
-            if record.state.participants.len() + record.joining.len() >= 8 {
-                return Err(Error::Limit);
-            }
-            record.joining.push(proof);
-            record.invites.retain(|i| i.peer != *peer_id);
+            record.joining_ready.retain(|r| r.member != ready.member);
+            record.joining_ready.push(ready);
         }
         Body::Ready(ready) => {
             if record.owner_peer.is_some() {
