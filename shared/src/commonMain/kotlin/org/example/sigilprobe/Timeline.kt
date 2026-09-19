@@ -345,7 +345,8 @@ internal fun ConversationPage(chat: ChatSummary, state: MessengerState, draft: T
                                     .pointerInput(message.id) { awaitPointerEventScope { while (true) { val event = awaitPointerEvent(); if (event.type == PointerEventType.Press && event.buttons.isSecondaryPressed) hold() } } }) {
                                     CompositionLocalProvider(LocalMaterialPress provides { hold() },LocalItemVisible provides onScreen) {
                                     // While the menu shows its copy, the row's bubble stays composed but unseen, so nothing reloads when it returns.
-                                    Box(Modifier.alpha(if (held) 0f else 1f)) {
+                                    // The row's bubble crossfades with the menu's copy over the first stretch of the travel, so what lies under the chrome never pops.
+                                    Box(Modifier.alpha(if (held) 1f - (menu.value / .15f).coerceIn(0f, 1f) else 1f)) {
                                     if(materialKey in animated) MessageMotion(message.id,textMotion.state(materialKey),onScreen && selected==null,animated.getValue(materialKey)) {
                                         bubbleContent(message, grouped, followed, cmd)
                                     } else bubbleContent(message, grouped, followed, cmd)
@@ -496,12 +497,13 @@ internal fun MessageDetails(message: ChatMessage, expanded: Boolean, receipt: Bo
     if (receipt) Row(Modifier.padding(top = 4.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(5.dp)) {
         DeliveryReceipt(message, chat, people)
         AnimatedVisibility(expanded, enter = enterSlide, exit = exitSlide, label = "Message details") { details() }
-    } else AnimatedVisibility(expanded, enter = expandVertically(motionPolicy.enter(MotionQuick)) + enterSlide,
-        exit = exitSlide + shrinkVertically(motionPolicy.exit(MotionQuick, MotionQuick)), label = "Details row") {
+    } else AnimatedVisibility(expanded, enter = expandVertically(motionPolicy.enter(MotionQuick)) + fadeIn(motionPolicy.enter(MotionQuick)),
+        exit = shrinkVertically(motionPolicy.exit(MotionQuick, MotionQuick)) + fadeOut(motionPolicy.exit(MotionQuick)), label = "Details row") {
+        // The row opens like the last message's: the state sits still while the time and lock slide in from the right and push it; the whole row leaves on close.
+        val shown = remember { MutableTransitionState(false) }.apply { targetState = expanded }
         Row(Modifier.padding(top = 4.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(5.dp)) {
-            // Static here, so the state rides in and out with the row instead of fading on its own.
             if (message.mine) DeliveryReceipt(message, chat, people, animated = false)
-            details()
+            AnimatedVisibility(shown, enter = enterSlide, exit = exitSlide, label = "Message details") { details() }
         }
     }
 }
@@ -578,6 +580,7 @@ private fun BoxScope.MessageMenu(message: ChatMessage, origin: Rect, progress: A
                 }
             }
             Box(Modifier.onGloballyPositioned { val b = it.boundsInWindow(); positioned(b); bubbleTop = b.top }
+                .graphicsLayer { alpha = (progress.value / .15f).coerceIn(0f, 1f) }
                 .drawWithContent { if (bubbleTop.isNaN()) drawContent() else clipRect(0f, band.top - bubbleTop, size.width, band.bottom - bubbleTop) { this@drawWithContent.drawContent() } }) { content() }
             // As wide as its longest label, with the same inset either side.
             Surface(enter.width(IntrinsicSize.Max), shape = RoundedCornerShape(24.dp), color = scheme.surfaceContainerHigh) {
