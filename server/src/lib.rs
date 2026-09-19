@@ -398,9 +398,9 @@ async fn authenticate(State(state): State<AppState>, request: Request, next: Nex
     next.run(request).await
 }
 
-async fn with_store<T: Send + 'static>(
+async fn with_store<T: Send + 'static, F: FnOnce(&mut Store) -> Result<T, StoreError> + Send + 'static>(
     state: AppState,
-    operation: impl FnOnce(&mut Store) -> Result<T, StoreError> + Send + 'static,
+    operation: F,
 ) -> Result<T, StoreError> {
     let permit = state
         .database_slot
@@ -416,7 +416,9 @@ async fn with_store<T: Send + 'static>(
         let result = operation(&mut store);
         let ran = queued.elapsed().as_millis() - waited;
         if waited + ran > 40 {
-            eprintln!("sigil.slow_store wait={waited}ms run={ran}ms");
+            // The closure's type names its call site; no request content is involved.
+            let site = std::any::type_name::<F>().replace("::{{closure}}", "").rsplit("::").take(2).collect::<Vec<_>>().join("<");
+            eprintln!("sigil.slow_store wait={waited}ms run={ran}ms site={site}");
         }
         result
     })
@@ -558,7 +560,7 @@ mod tests {
         request.abort();
         assert!(tokio::time::timeout(
             Duration::from_millis(20),
-            with_store::<()>(state.clone(), |_| panic!("cancelled waiter ran")),
+            with_store::<(), _>(state.clone(), |_| panic!("cancelled waiter ran")),
         )
         .await
         .is_err());
