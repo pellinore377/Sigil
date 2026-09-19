@@ -49,6 +49,8 @@ internal class FooterHost {
     var menu by mutableFloatStateOf(0f)
     var panel: (@Composable (ChromeBackdrop?) -> Unit)? by mutableStateOf(null)
     var chrome: ChromeBackdrop? by mutableStateOf(null)
+    // The composer's own chrome, without the panel above it or the insets beneath.
+    var composerHeight by mutableStateOf(0.dp)
 }
 internal val LocalFooterHost = staticCompositionLocalOf<FooterHost?> { null }
 @Composable
@@ -343,7 +345,7 @@ fun SigilApp(palette: (Int, Boolean) -> String, analyze: (String) -> String, sta
                         Box(Modifier.widthIn(max = 920.dp).fillMaxWidth().onSizeChanged { if (footer.content != null) footer.height = with(density) { it.height.toDp() } }.padding(horizontal = 12.dp).windowInsetsPadding(WindowInsets.ime.union(WindowInsets.navigationBars)).padding(bottom = 8.dp).zIndex(3f)) {
                             Column(Modifier.fillMaxWidth()) {
                                 footer.panel?.invoke(backdrop)
-                                if (footer.content != null) FloatingChrome(backdrop, Modifier.testTag("conversation-footer").onGloballyPositioned { materialOcclusion.footer = it.boundsInWindow() }, RoundedCornerShape(24.dp)) { footer.content?.invoke() }
+                                if (footer.content != null) FloatingChrome(backdrop, Modifier.onSizeChanged { footer.composerHeight = with(density) { it.height.toDp() } }.testTag("conversation-footer").onGloballyPositioned { materialOcclusion.footer = it.boundsInWindow() }, RoundedCornerShape(24.dp)) { footer.content?.invoke() }
                             }
                         }
                         }

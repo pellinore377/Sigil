@@ -183,6 +183,8 @@ internal suspend fun authorizedThumbnail(cache:ImageCache?,prepare:suspend()->Pr
         delay(1000)
     }
 }
+// Pictures the timeline has already decoded, by message, so a card composed again shows them without a reload.
+private val recentPictures = object : LinkedHashMap<String, Bitmap>(16, .75f, true) { override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, Bitmap>?) = size > 32 }
 internal suspend fun historyBitmap(context:android.content.Context,message:ChatMessage,cache:ImageCache?) = authorizedThumbnail(
     cache.takeUnless {message.attachment?.draft==true},
     prepare={withContext(Dispatchers.IO){prepareMedia(context,message)}},
@@ -200,9 +202,12 @@ internal fun AndroidAttachment(message: ChatMessage) {
     var imageWidth by rememberSaveable(message.peer,message.author,message.id) { mutableIntStateOf(0) }
     var imageHeight by rememberSaveable(message.peer,message.author,message.id) { mutableIntStateOf(0) }
     var requested by remember(message.id) { mutableStateOf(image) }
-    var ready by remember(message.id) { mutableStateOf(false) }
+    var ready by remember(message.id) { mutableStateOf(recentPictures.containsKey("${message.peer}/${message.author}/${message.id}")) }
     var failed by remember(message.id) { mutableStateOf(false) }
-    var bitmap by remember(message.id) { mutableStateOf<Bitmap?>(null) }
+    // A picture already shown lands at once in a fresh composition, such as the menu's copy, instead of fading in again.
+    val pictureKey = "${message.peer}/${message.author}/${message.id}"
+    var bitmap by remember(message.id) { mutableStateOf(recentPictures[pictureKey]) }
+    LaunchedEffect(bitmap) { bitmap?.let { recentPictures[pictureKey] = it } }
     var opened by remember(message.id) { mutableStateOf(false) }
     var openWhenReady by remember(message.id) { mutableStateOf(false) }
     // The video frame takes the file's own shape before anything is decoded, so its poster lands without a resize.

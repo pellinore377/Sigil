@@ -12,6 +12,7 @@ import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.gestures.detectVerticalDragGestures
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.layout
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.layout.positionInWindow
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -65,7 +66,7 @@ private sealed class SheetRow(val group: Int) { class Cells(val cells: List<Emoj
 
 // The sheet: a search field, eight-across rows between hairline rules, and category chips pinned along the bottom.
 // Scrolling the rows past their top hands the overshoot to `grow`, so the surface holding the sheet can rise; `grow` returns what it took.
-@Composable internal fun EmojiSheet(modifier: Modifier, grow: (Float) -> Float, settle: () -> Unit = {}, pick: (String) -> Unit) {
+@Composable internal fun EmojiSheet(modifier: Modifier, grow: (Float) -> Float, settle: () -> Unit = {}, searchFocused: () -> Unit = {}, pick: (String) -> Unit) {
     LaunchedEffect(Unit) { EmojiCatalog.load() }
     val entries = EmojiCatalog.entries
     val recents = EmojiCatalog.recents
@@ -118,7 +119,7 @@ private sealed class SheetRow(val group: Int) { class Cells(val cells: List<Emoj
             Glyph("search", 20, null)
             Box(Modifier.weight(1f)) {
                 if (query.isEmpty()) Text("Search emoji", color = scheme.onSurface.copy(alpha = .55f), style = MaterialTheme.typography.bodyMedium)
-                BasicTextField(query, { query = it }, Modifier.fillMaxWidth().onFocusChanged { if (it.isFocused) searching = true }.semantics { contentDescription = "Search emoji" },
+                BasicTextField(query, { query = it }, Modifier.fillMaxWidth().onFocusChanged { if (it.isFocused) { searching = true; searchFocused() } }.semantics { contentDescription = "Search emoji" },
                     singleLine = true, textStyle = LocalTextStyle.current.copy(color = LocalContentColor.current), cursorBrush = SolidColor(LocalContentColor.current), keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search))
             }
             if (searching || query.isNotEmpty()) Box(Modifier.clip(RoundedCornerShape(8.dp)).clickable { query = ""; searching = false; focus.clearFocus() }.padding(2.dp)) { Glyph("close", 20, "Leave search") }
@@ -185,7 +186,13 @@ private sealed class SheetRow(val group: Int) { class Cells(val cells: List<Emoj
             fun settle() { val target = if (extra > reach / 2f) reach else 0f; scope.launch { androidx.compose.animation.core.animate(extra, target) { value, _ -> extra = value } } }
             val height = minOf(peek + with(density) { extra.toDp() }, full, maxHeight - ime - 24.dp).coerceAtLeast(120.dp)
             Box(Modifier.fillMaxSize().onGloballyPositioned { top = it.positionInWindow().y }.background(MaterialTheme.colorScheme.scrim.copy(alpha = .42f)).clickable(remember { MutableInteractionSource() }, null) { close() })
-            FloatingChrome(chrome, Modifier.align(Alignment.BottomCenter).widthIn(max = 920.dp).fillMaxWidth().padding(horizontal = 6.dp).imePadding().height(height), RoundedCornerShape(topStart = 24.dp, topEnd = 24.dp)) {
+            // The same clamp in layout: the drawer's top never passes the header while the keyboard is still moving.
+            val imeInsets = WindowInsets.ime
+            FloatingChrome(chrome, Modifier.align(Alignment.BottomCenter).widthIn(max = 920.dp).fillMaxWidth().padding(horizontal = 6.dp).imePadding().height(height).layout { measurable, constraints ->
+                val limit = if (headerBottom > top) (maxHeight.roundToPx() - imeInsets.getBottom(this) - (headerBottom - top).toInt() - 12.dp.roundToPx()).coerceAtLeast(0) else constraints.maxHeight
+                val placeable = measurable.measure(constraints.copy(maxHeight = minOf(constraints.maxHeight, limit), minHeight = minOf(constraints.minHeight, limit)))
+                layout(placeable.width, placeable.height) { placeable.place(0, 0) }
+            }, RoundedCornerShape(topStart = 24.dp, topEnd = 24.dp)) {
                 Column(Modifier.fillMaxSize().navigationBarsPadding()) {
                     // The handle drags the drawer: up to grow, down to shrink, and further down past its peek to let it go.
                     Box(Modifier.fillMaxWidth().height(24.dp).pointerInput(Unit) {

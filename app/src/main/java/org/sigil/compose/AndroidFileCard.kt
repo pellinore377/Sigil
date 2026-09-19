@@ -25,6 +25,8 @@ import org.json.JSONObject
 import org.sigil.*
 
 // Glimpses already read stay with the session; a row scrolled back does not open its file again.
+// Messages whose file is known to be on hand, so a card composed again starts ready.
+private val readyKeys = HashSet<String>()
 private val peeks = object : LinkedHashMap<String, FilePeek>(16, .75f, true) {
     override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, FilePeek>?) = size > 96
 }
@@ -38,7 +40,7 @@ private const val AutoFetchBytes = 8L * 1024 * 1024
     val key = "${message.peer}/${message.author}/${message.id}"
     var peek by remember(message.id) { mutableStateOf(peeks[key]) }
     var requested by remember(message.id) { mutableStateOf(file.bytes <= AutoFetchBytes && kind != AttachmentKind.File) }
-    var ready by remember(message.id) { mutableStateOf(false) }
+    var ready by remember(message.id) { mutableStateOf(key in readyKeys) }
     var glimpsing by remember(message.id) { mutableStateOf(false) }
     var failed by remember(message.id) { mutableStateOf(false) }
     var opened by remember(message.id) { mutableStateOf(false) }
@@ -48,7 +50,7 @@ private const val AutoFetchBytes = 8L * 1024 * 1024
         failed = false
         try {
             while (!withContext(Dispatchers.IO) { prepare(context, message) }) delay(1000)
-            ready = true
+            ready = true; readyKeys += key
             if (peek == null && kind != AttachmentKind.File) {
                 glimpsing = true
                 peek = withContext(Dispatchers.IO) { runCatching { androidPeek(context, message, kind) }.getOrNull() }?.also { peeks[key] = it }
