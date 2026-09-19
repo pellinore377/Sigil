@@ -271,7 +271,7 @@ state=StateDecoder.state(execute("state"),state,::clock);if(state.phase=="connec
         try {initializeBrowser().awaitBrowser<JsAny?>();startBrowser().awaitBrowser<JsAny?>();refresh();linking=execute("device_link",mapOf("action" to "status")).takeUnless{it.string("stage")=="none"};ready=true
             try{initializeNotificationWasm().awaitBrowser<JsAny?>();notificationsReady=webNotificationsSupported();if(state.phase!="connected" && notificationsReady)webNotificationsDisable().awaitBrowser<JsAny?>()}catch(_:Exception){}
         }
-        catch(_:Exception){startupError="Could not open this browser device. Close other Sigil tabs and reload. A current browser with private storage and cross-origin isolation is required."}
+        catch(e:Exception){startupError="Could not open this browser device. Close other Sigil tabs and reload. A current browser with private storage and cross-origin isolation is required."+(e.message?.take(160)?.let{" ($it)"}?:"")}
     }
     LaunchedEffect(ready) {
         var nextSync=0L

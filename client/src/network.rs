@@ -272,7 +272,7 @@ impl HttpsClient {
             .timeout_global(extended)
             .timeout_recv_response(extended)
             .build();
-        let started = std::time::Instant::now();
+        let started = crate::clock::Instant::now();
         let outcome = self.agent.run(request).map_err(|_| Error::Transport);
         crate::perf::mark("http GET mailbox/wait", started);
         let mut response = outcome?;
@@ -510,7 +510,7 @@ impl HttpsClient {
     fn send(&self, request: Request<&[u8]>) -> Result<Response<Body>, Error> {
         // Method and path only: the timing log never carries a query or a body.
         let label = format!("http {} {}", request.method(), request.uri().path());
-        let started = std::time::Instant::now();
+        let started = crate::clock::Instant::now();
         let outcome = self.agent.run(request).map_err(|_| Error::Transport);
         crate::perf::mark(&label, started);
         let mut response = outcome?;

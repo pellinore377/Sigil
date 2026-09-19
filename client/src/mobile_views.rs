@@ -162,7 +162,7 @@ impl ClientStore {
         )
     }
     pub(super) fn mobile_summary(&mut self, peer: &str, chat: &mut Value) -> Result<(), Error> {
-        let t = std::time::Instant::now();
+        let t = crate::clock::Instant::now();
         let conversation = self.mobile_conversation(peer)?;
         let prefs = self.conversation_preferences(conversation)?;
         let (_, own) = structured::account_context(&self.db, &self.key)?;
@@ -230,7 +230,7 @@ impl ClientStore {
         chat["read_receipts"] = json!(prefs.read_receipts);
         chat["typing_indicators"] = json!(prefs.typing_indicators);
         chat["presence_sharing"] = json!(prefs.presence_sharing);
-        let act = std::time::Instant::now();
+        let act = crate::clock::Instant::now();
         let activity = self.conversation_activity(conversation, now)?;
         crate::perf::mark("summary.activity", act);
         chat["presence"] = json!(activity

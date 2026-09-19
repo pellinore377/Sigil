@@ -581,7 +581,7 @@ impl ClientStore {
             .collect()
     }
     fn mobile_state(&mut self) -> Result<Value, Error> {
-        let whole = std::time::Instant::now();
+        let whole = crate::clock::Instant::now();
         let phase = self.enrollment_kind()?;
         if phase != "connected" {
             return Ok(json!({"phase":phase,"server":self.enrollment_server()?}));
@@ -594,7 +594,7 @@ impl ClientStore {
         let mut chats = Vec::new();
         let mut seen = std::collections::BTreeSet::new();
         for peer in &peers {
-            let each = std::time::Instant::now();
+            let each = crate::clock::Instant::now();
             let conversation = self.direct_conversation(peer.id)?;
             if !seen.insert(conversation) {
                 continue;
@@ -627,7 +627,7 @@ impl ClientStore {
                     chat["name"] = json!(name);
                 }
             }
-            let summary = std::time::Instant::now();
+            let summary = crate::clock::Instant::now();
             self.mobile_summary(&display, &mut chat)?;
             crate::perf::mark("state.summary", summary);
             crate::perf::mark("state.peer", each);
@@ -635,7 +635,7 @@ impl ClientStore {
                 json!(chat["latest_message"].is_null() && chat["ui"]["opened"] != "true");
             chats.push(chat);
         }
-        let rest = std::time::Instant::now();
+        let rest = crate::clock::Instant::now();
         self.mobile_contact_chats(&mut chats)?;
         crate::perf::mark("state.contacts", rest);
         let mut chat = json!({"id":"self","address":session.address,"name":"Note to Self","self":true,"verified":true,"devices":[], "timestamp":0,"preview":""});
@@ -645,7 +645,7 @@ impl ClientStore {
         if !chat["latest_message"].is_null() {
             chats.push(chat);
         }
-        let groups = std::time::Instant::now();
+        let groups = crate::clock::Instant::now();
         chats.extend(self.mobile_groups()?);
         crate::perf::mark("state.groups", groups);
         let invitations = self.mobile_group_invitations()?;
@@ -1790,7 +1790,7 @@ impl ClientStore {
                     (None, None) => None,
                     _ => return Err(Error::InvalidEvent),
                 };
-                let scan = std::time::Instant::now();
+                let scan = crate::clock::Instant::now();
                 let page = if let Some(query) = query {
                     self.recent_conversation_search(
                         conversation,
@@ -1802,7 +1802,7 @@ impl ClientStore {
                     self.recent_conversation_page(conversation, before, conversations::now())?
                 };
                 crate::perf::mark("timeline.scan", scan);
-                let render = std::time::Instant::now();
+                let render = crate::clock::Instant::now();
                 let mut messages = Vec::new();
                 for message in page.messages {
                     if if let Some(thread) = &thread {
@@ -1891,7 +1891,7 @@ impl ClientStore {
                         "kind":views::body_kind(message.body.as_ref()), "parts":self.mobile_parts(conversation, message.body.as_ref())?}));
                 }
                 crate::perf::mark("timeline.render", render);
-                let act = std::time::Instant::now();
+                let act = crate::clock::Instant::now();
                 let activity = self.conversation_activity(conversation, conversations::now())?;
                 crate::perf::mark("timeline.activity", act);
                 let preload = crate::timeline_preload::preload(visible_end.unwrap_or(0) as usize);
