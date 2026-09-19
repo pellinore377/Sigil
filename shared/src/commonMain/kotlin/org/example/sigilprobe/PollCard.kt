@@ -10,6 +10,7 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import kotlinx.coroutines.delay
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.platform.LocalDensity
@@ -27,8 +28,14 @@ import kotlin.math.roundToInt
     val voters=part.voters
     val leading=if(part.closed && voters!=null)part.items.mapNotNull {it.count}.maxOrNull()?.takeIf {it>0L} else null
     val lines=with(LocalDensity.current){MaterialTheme.typography.bodyMedium.lineHeight.toDp()*3}
+    // A vote shows at the tap and stands until the stored poll agrees, or for a few seconds if it never does.
+    var pending by remember(part.id){mutableStateOf<Set<String>?>(null)}
+    LaunchedEffect(part.items) {pending?.let {chosen->if(part.items.all {(it.id in chosen)==it.checked})pending=null}}
+    LaunchedEffect(pending) {if(pending!=null) {delay(8000);pending=null}}
+    val shown=part.items.map {item->pending?.let {item.copy(checked=item.id in it)} ?: item}
     fun act(item:CardItem) {
-        val choices=if(part.multiple)part.items.filter {if(it.id==item.id)!it.checked else it.checked}.map {it.id} else if(item.checked)emptyList() else listOf(item.id)
+        val choices=if(part.multiple)shown.filter {if(it.id==item.id)!it.checked else it.checked}.map {it.id} else if(item.checked)emptyList() else listOf(item.id)
+        pending=choices.toSet()
         command?.invoke("card_action",mapOf("peer" to message.peer,"author" to message.author,"message" to message.id,"card" to part.id,"choices" to choices))
     }
     CardFrame("ballot","Poll") {
@@ -37,7 +44,7 @@ import kotlin.math.roundToInt
         else {
             Text(listOf(if(part.closed)"Final results"else if(part.multiple)"Choose any"else"Choose one","${part.items.size} options").joinToString(" · "),style=MaterialTheme.typography.labelMedium)
             Column(verticalArrangement=Arrangement.spacedBy(if(compact)4.dp else 6.dp)) {
-                (if(expanded)part.items else part.items.take(5)).forEach {item->key(item.id) {
+                (if(expanded)shown else shown.take(5)).forEach {item->key(item.id) {
                     val votes=item.count?:0L
                     val share=if(voters!=null && voters>0L)(votes.toFloat()/voters).coerceIn(0f,1f)else 0f
                     val amount by animateFloatAsState(share,motion.tween(MotionMillis),label="Poll result")

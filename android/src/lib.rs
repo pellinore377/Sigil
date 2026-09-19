@@ -132,6 +132,31 @@ fn check(env: &mut JNIEnv<'_>, directory: &JString<'_>, key: &JByteArray<'_>) ->
     Some(())
 }
 
+/// The keyless twin of stageFile: stages a chunk on a pooled store, or fails when the key is not yet known.
+#[no_mangle]
+pub extern "system" fn Java_org_sigil_storage_NativeStorage_stageFileCached(
+    mut env: JNIEnv,
+    _: JObject,
+    directory: JString,
+    request: JString,
+    index: jint,
+    data: JByteArray,
+) -> jboolean {
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| -> Option<()> {
+        if index < 0 || env.get_array_length(&data).ok()? > 1024 * 1024 {
+            return None;
+        }
+        let request = String::from(env.get_string(&request).ok()?);
+        if request.len() != 64 {
+            return None;
+        }
+        let mut store = open_known(&mut env, &directory)?;
+        let bytes = Zeroizing::new(env.convert_byte_array(&data).ok()?);
+        store.mobile_file_stage(&request, index as u32, &bytes).ok()
+    }));
+    if result.ok().flatten().is_some() { JNI_TRUE } else { JNI_FALSE }
+}
+
 #[no_mangle]
 pub extern "system" fn Java_org_sigil_storage_NativeStorage_stageFile(
     mut env: JNIEnv,

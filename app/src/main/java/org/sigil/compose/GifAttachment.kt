@@ -73,9 +73,10 @@ internal fun GifAttachment(message: ChatMessage) {
         finally { (drawable as? AnimatedImageDrawable)?.stop(); bytes?.fill(0) }
     }
     @Composable fun picture(modifier: Modifier) {
+    val fills = LocalFillsTile.current
         val image = drawable
         if (image == null) Box(modifier) { if (failed) SigilTextButton({ retry++ }) { Text("Retry GIF") } else LinearProgressIndicator(Modifier.fillMaxWidth()) }
-        else AndroidView({ ImageView(it).apply { scaleType = ImageView.ScaleType.FIT_CENTER; contentDescription = message.attachment!!.name } }, modifier.semantics { contentDescription = message.attachment!!.name },
+        else AndroidView({ ImageView(it).apply { scaleType = if (fills) ImageView.ScaleType.CENTER_CROP else ImageView.ScaleType.FIT_CENTER; contentDescription = message.attachment!!.name } }, modifier.semantics { contentDescription = message.attachment!!.name },
             onReset = null, onRelease = { view -> if (image.callback === view) { (image as? AnimatedImageDrawable)?.stop(); image.callback = null } },
             update = { view ->
                 if (view.drawable !== image) view.setImageDrawable(image)
@@ -83,7 +84,7 @@ internal fun GifAttachment(message: ChatMessage) {
             })
     }
     val captioned = message.attachment!!.caption.isNotBlank()
-    ImageMessageFrame(imageWidth,imageHeight,
+    MediaFrame(imageWidth,imageHeight,
         if (captioned) androidx.compose.ui.graphics.RectangleShape else androidx.compose.foundation.shape.RoundedCornerShape(20.dp),
         if (!captioned) null else { { Box(Modifier.fillMaxWidth().background(org.sigil.LocalBubbleGround.current).padding(horizontal = 14.dp, vertical = 10.dp)) { MessageText(message.attachment!!.caption, NativeCore::analyze) } } }) { frame ->
         Box(frame.combinedClickable(onLongClick = org.sigil.LocalMaterialPress.current) {
@@ -97,7 +98,7 @@ internal fun GifAttachment(message: ChatMessage) {
             expanded = true
         }) {
             if (!expanded) picture(Modifier.fillMaxSize())
-            else poster?.let { Image(it.asImageBitmap(), message.attachment!!.name, Modifier.fillMaxSize(), contentScale = ContentScale.Fit) }
+            else poster?.let { Image(it.asImageBitmap(), message.attachment!!.name, Modifier.fillMaxSize(), contentScale = if (LocalFillsTile.current) ContentScale.Crop else ContentScale.Fit) }
             GifChip(Modifier.align(Alignment.TopStart))
         }
     }
