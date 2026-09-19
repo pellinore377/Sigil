@@ -391,7 +391,8 @@ impl ClientStore {
             }
             Err(e) => return Err(e),
         }
-        if now < intent.started {
+        // A clock correction of a few seconds must not strand what was queued just before it.
+        if now.saturating_add(60) < intent.started {
             return Err(Error::Expired);
         }
         let text = Direct::from_bytes(&intent.text).map_err(|_| Error::InvalidStore)?;

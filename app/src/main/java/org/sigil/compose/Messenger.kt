@@ -37,7 +37,7 @@ class Messenger(application: Application) : AndroidViewModel(application) {
         private set
     var signOutIssue by mutableStateOf<String?>(null)
         private set
-    internal val calls = NativeCalls(application, { history, active -> state = state.copy(calls = history, call = active) }, { state = state.copy(issue = it) })
+    internal val calls = NativeCalls(application, { history, active -> state = state.copy(calls = history, call = active) }, { state = state.copy(issue = it) }, { if (syncIssue != null && state.issue == syncIssue) { state = state.copy(issue = null); syncIssue = null } })
     private val files = NativeFiles(application, scope, { uploads, sent ->
         state = state.copy(transfers = uploads)
         if (sent) { loadTimeline(); syncWake.trySend(Unit); scope.launch { serialized(false) { refresh() } } }

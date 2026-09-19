@@ -100,7 +100,9 @@ internal class WebCalls(private val scope:CoroutineScope,private val command:sus
                     }
                 }
             }catch(cancelled:CancellationException){throw cancelled}
-            catch(_:Exception){if(current==generation){reconnect();issue("Could not connect call media. Retrying…")}}
+            catch(e:Exception){browserTimingLog("SigilTiming call connect_error=${e.message?.take(120)}");if(current==generation){
+                // Our own roster is still on its way to the server: try again on the next pass, without the backoff or the banner.
+                if(e.message?.contains("Call state is unavailable or changed")==true)reconnect(backoff=false) else {reconnect();issue("Could not connect call media. Retrying…")}}}
             finally{if(current==generation)connecting=false}
         }
     }
