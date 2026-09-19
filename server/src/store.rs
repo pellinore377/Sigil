@@ -9,7 +9,7 @@ use std::{
 };
 
 const APPLICATION_ID: i64 = 0x5349474c;
-pub const SCHEMA_VERSION: i64 = 36;
+pub const SCHEMA_VERSION: i64 = 37;
 
 #[derive(Debug)]
 pub enum StoreError {
@@ -230,6 +230,10 @@ impl Store {
             transaction.execute_batch("CREATE INDEX IF NOT EXISTS recovery_objects_size ON recovery_objects(account_id,length(data));
                 CREATE INDEX IF NOT EXISTS attachment_account_size ON attachments(account_id,reserved_bytes+stored_bytes);
                 CREATE INDEX IF NOT EXISTS mailbox_live_size ON mailbox(recipient,expires_at,length(payload)) WHERE payload IS NOT NULL;")?;
+        }
+        if version < 37 {
+            // Polling walks only live rows, not every row a device has ever collected.
+            transaction.execute_batch("CREATE INDEX IF NOT EXISTS mailbox_live_sequence ON mailbox(recipient,sequence) WHERE payload IS NOT NULL;")?;
         }
         transaction.pragma_update(None, "user_version", SCHEMA_VERSION)?;
         transaction.commit()?;

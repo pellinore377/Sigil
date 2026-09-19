@@ -328,6 +328,7 @@ enum Command {
         interactive: Option<bool>,
         call_setup: Option<bool>,
         wake: Option<bool>,
+        busy: Option<bool>,
     },
     Flush {},
     WatchTarget {},
@@ -1619,14 +1620,16 @@ impl ClientStore {
                 interactive,
                 call_setup,
                 wake,
+                busy,
             } => {
                 let started = crate::clock::Instant::now();
+                let busy = busy == Some(true);
                 let result = if call_setup == Some(true) {
                     self.sync_call_setup_online()?
                 } else if wake == Some(true) {
-                    self.sync_wake_online()?
+                    self.sync_wake_online_deferring(busy)?
                 } else if interactive == Some(true) {
-                    self.sync_foreground_online()?
+                    self.sync_foreground_online_deferring(busy)?
                 } else {
                     self.sync_due_online()?
                 };
@@ -1727,6 +1730,15 @@ impl ClientStore {
                     .as_ref()
                     .map(|step| step.timings.iter().map(|(name, ms)| ((*name).into(), (*ms).into())).collect())
                     .unwrap_or_default();
+                // Whether anything the screen shows could have moved; a quiet pass need not rebuild it.
+                let changed = result.step.as_ref().is_some_and(|step| {
+                    !step.incoming.is_empty() || step.acknowledged > 0 || !step.acknowledgements.is_empty()
+                        || step.sends.iter().any(|i| i.result.is_ok()) || step.outbound.iter().any(|i| i.result.is_ok())
+                        || step.retries.iter().any(|i| i.result.is_ok()) || step.retry_controls.iter().any(|i| i.result.is_ok())
+                        || !step.group_outbound.is_empty() || !step.groups.is_empty() || !step.invitations.is_empty()
+                        || !step.history.is_empty() || !step.calls.is_empty()
+                        || step.revoked_devices > 0 || step.structured > 0 || step.conversation_copies > 0 || step.delivery_receipts > 0 || step.failure.is_some()
+                }) || generated || recovered;
                 let pending = pending || generated || recovered;
                 let next_at = if recovered {
                     conversations::now()
@@ -1736,7 +1748,7 @@ impl ClientStore {
                     result.next_at.min(contact_next)
                 };
                 Ok(
-                    json!({"next_at":next_at,"ran":result.step.is_some(),"pending":pending || waiting.is_some(),"issue":issue,"ms":started.elapsed().as_millis() as u64,"timings":timings,"lanes":lanes}),
+                    json!({"next_at":next_at,"ran":result.step.is_some(),"changed":changed,"pending":pending || waiting.is_some(),"issue":issue,"ms":started.elapsed().as_millis() as u64,"timings":timings,"lanes":lanes}),
                 )
             }
             Command::Publish {} => {

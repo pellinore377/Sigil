@@ -248,11 +248,16 @@ impl ClientStore {
             Some((super::recovery::Operation::Upload, head)) => head,
             _ => return Err(Error::Unprepared),
         };
-        // The pending objects go up together; each success is acknowledged in order, so a failure leaves the prefix durable.
+        // The first object goes alone, so a server that is refusing is asked once; the rest go up together.
+        // Each success is acknowledged in order, so a failure leaves the prefix durable.
         let objects = self.pending_recovery_objects()?;
-        for (object, outcome) in objects.iter().zip(network.upload_recovery_objects(&objects)) {
-            outcome?;
-            self.acknowledge_recovery_object(head, object.id())?;
+        if let Some((first, rest)) = objects.split_first() {
+            network.upload_recovery_object(first)?;
+            self.acknowledge_recovery_object(head, first.id())?;
+            for (object, outcome) in rest.iter().zip(network.upload_recovery_objects(rest)) {
+                outcome?;
+                self.acknowledge_recovery_object(head, object.id())?;
+            }
         }
         if !self.pending_recovery_objects()?.is_empty() {
             return Ok(None);

@@ -908,6 +908,24 @@ impl HttpsClient {
     }
     /// Acknowledges several deliveries in order over the pooled connection.
     pub fn acknowledge_deliveries(&self, sequences: &[i64]) -> Vec<Result<(), Error>> {
+        if sequences.is_empty() {
+            return Vec::new();
+        }
+        // One request for the page; a server without the route answers 404 and gets one DELETE each.
+        let page = &sequences[..sequences.len().min(sigil_protocol::mailbox::MAX_ACKNOWLEDGE)];
+        let batched = self
+            .request(Method::POST, "/client/v0/mailbox/acknowledge", Some(&sigil_protocol::mailbox::Acknowledge { sequences: page.to_vec() }))
+            .and_then(|response| self.empty(response));
+        match batched {
+            Ok(()) => {
+                let mut results: Vec<Result<(), Error>> = page.iter().map(|_| Ok(())).collect();
+                results.extend(self.acknowledge_deliveries(&sequences[page.len()..]));
+                return results;
+            }
+            Err(Error::Status { code: 404, .. }) => {}
+            Err(Error::Transport) => return sequences.iter().map(|_| Err(Error::Transport)).collect(),
+            Err(_) => {}
+        }
         // Sequential on purpose: a parallel fan-out opens one TLS connection per
         // delivery, which times out on constrained networks and then wedges every
         // acknowledgement behind it. Stop early once the link itself looks down.

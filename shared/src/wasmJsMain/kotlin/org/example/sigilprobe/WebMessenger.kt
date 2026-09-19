@@ -291,7 +291,7 @@ state=StateDecoder.state(execute("state"),state,::clock);if(state.phase=="connec
                     // Durations only, like the Android SigilTiming log; no content.
                     browserTimingLog("SigilTiming sync ${(BrowserDate.now()-startedAt).toLong()}ms native=${result["ms"]?.jsonPrimitive?.longOrNull?:0} ran=${result.bool("ran")} wake=$force lanes=${result["lanes"]} ${result["timings"]}")
                     nextSync=result.long("next_at")
-                    if((result.bool("ran") || nudged) && !sending)mutex.withLock {if(!sending)refresh()}
+                    if(((result.bool("ran") && (result["changed"]?.jsonPrimitive?.booleanOrNull ?: true)) || nudged) && !sending)mutex.withLock {if(!sending)refresh()}
                     val issue=result.optional("issue")
                     if(issue!=null || result.bool("ran")){if(state.issue==syncIssue || issue!=null)state=state.copy(issue=issue);syncIssue=issue}
                 } catch(cancelled:CancellationException){throw cancelled}
