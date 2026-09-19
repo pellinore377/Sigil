@@ -16,7 +16,7 @@ import org.sigil.storage.StorageKeyProvider
 import java.nio.ByteBuffer
 import java.security.SecureRandom
 
-internal class NativeCalls(private val app: Application, private val update: (List<CallSummary>, ActiveCall?) -> Unit, private val issue: (String) -> Unit) {
+internal class NativeCalls(private val app: Application, private val update: (List<CallSummary>, ActiveCall?) -> Unit, private val issue: (String) -> Unit, private val synced: () -> Unit = {}) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private var desired: String? = null
     private var history = emptyList<CallSummary>()
@@ -176,6 +176,8 @@ internal class NativeCalls(private val app: Application, private val update: (Li
                 val fast = setup && SystemClock.elapsedRealtime() < maintenanceAt
                 val result = native("sync", mapOf("interactive" to true, "call_setup" to fast))
                 if (!fast && result.optBoolean("ran")) maintenanceAt = SystemClock.elapsedRealtime() + 5000
+                // The message loop is mostly turned away while a call is being set up, so its stale banner clears from here.
+                if (result.optBoolean("ran") && result.isNull("issue")) synced()
                 refresh(native("calls"))
                 val call = history.find { it.id == id }
                 if (call == null || call.phase in listOf("ended", "left", "declined")) { end(); return }
