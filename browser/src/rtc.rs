@@ -192,6 +192,7 @@ pub async fn browser_call_connect(id: String, frames: Function) -> Result<(), Js
         }
         let offer = promise(invoke(&pc, "createOffer", &[])?).await?;
         promise(invoke(&pc, "setLocalDescription", &[offer])?).await?;
+        let gathering_from = js_sys::Date::now();
         let mut complete = false;
         for _ in 0..200 {
             if !current(generation) {
@@ -232,6 +233,7 @@ pub async fn browser_call_connect(id: String, frames: Function) -> Result<(), Js
                 })
                 .collect::<Result<Vec<_>, JsValue>>()?,
         };
+        let gathered_at = js_sys::Date::now();
         let answer = control(
             serde_json::json!({"operation":"call_connect","call":id,"sdp":sdp,"layout":layout}),
         )
@@ -239,6 +241,14 @@ pub async fn browser_call_connect(id: String, frames: Function) -> Result<(), Js
         if !current(generation) {
             return Err(fail("Call interrupted"));
         }
+        // Durations only, and the candidate kinds the offer carried.
+        let kinds: Vec<&str> = ["typ host", "typ srflx", "typ relay"].into_iter().filter(|k| sdp.contains(k)).collect();
+        web_sys::console::log_1(&JsValue::from_str(&format!(
+            "SigilTiming call transport gather={:.0}ms connect={:.0}ms candidates={}",
+            gathered_at - gathering_from,
+            js_sys::Date::now() - gathered_at,
+            kinds.join("+")
+        )));
         let message = Closure::<dyn FnMut(web_sys::MessageEvent)>::new(move |event| {
             incoming(generation, event)
         });

@@ -44,6 +44,7 @@ internal class Vp8Encoder(val width: Int, val height: Int, private val rotation:
         } catch (error: Exception) { codec.release(); throw error }
         worker = Thread({
             val info = MediaCodec.BufferInfo()
+            var counted = 0L; var since = android.os.SystemClock.elapsedRealtime()
             try {
                 while (running.get()) {
                     val index = codec.dequeueOutputBuffer(info, 10000)
@@ -56,6 +57,9 @@ internal class Vp8Encoder(val width: Int, val height: Int, private val rotation:
                                 ByteBuffer.wrap(bytes).putShort(rotation.toShort()).putShort(width.toShort()).putShort(height.toShort())
                                 requireNotNull(codec.getOutputBuffer(index)).apply { position(info.offset); limit(info.offset + info.size) }.get(bytes, 6, info.size)
                                 send(info.presentationTimeUs.coerceAtLeast(0), info.flags and MediaCodec.BUFFER_FLAG_KEY_FRAME != 0, bytes)
+                                counted++
+                                val at = android.os.SystemClock.elapsedRealtime()
+                                if (at - since >= 5000) { android.util.Log.i("SigilTiming", "video out fps=${counted * 1000 / (at - since)}"); counted = 0; since = at }
                             } finally { bytes.fill(0) }
                         }
                     } finally { codec.releaseOutputBuffer(index, false) }
@@ -144,6 +148,7 @@ internal class CallVideoDecoder(private val surface: Surface, private val geomet
             try { previous?.stop() } catch (_: Exception) {}
             try { previous?.release() } catch (_: Exception) {}
         }
+        var shown = 0L; var shownSince = android.os.SystemClock.elapsedRealtime()
         fun drainOutput() {
             val active = codec ?: return
             val info = MediaCodec.BufferInfo()
@@ -152,6 +157,9 @@ internal class CallVideoDecoder(private val surface: Surface, private val geomet
                 if (output == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) continue
                 if (output < 0) break
                 active.releaseOutputBuffer(output, running.get())
+                shown++
+                val at = android.os.SystemClock.elapsedRealtime()
+                if (at - shownSince >= 5000) { android.util.Log.i("SigilTiming", "video in ${dimensions?.width}x${dimensions?.height} fps=${shown * 1000 / (at - shownSince)}"); shown = 0; shownSince = at }
             }
         }
         try {

@@ -35,8 +35,12 @@ struct Capture {
     height: u32,
     rate: u32,
     frames: u64,
+    /// Frames encoded since the last log line, and when that line was written.
+    counted: u32,
+    since: f64,
     timer: i32,
     _tick: Closure<dyn FnMut()>,
+    _step: Option<Closure<dyn FnMut(JsValue, JsValue)>>,
     _output: Closure<dyn FnMut(JsValue, JsValue)>,
     _error: Closure<dyn FnMut(JsValue)>,
 }
@@ -63,6 +67,8 @@ struct Viewer {
     last: u64,
     interval: u64,
     awaiting_key: bool,
+    counted: u32,
+    since: f64,
     _output: Closure<dyn FnMut(JsValue)>,
     _error: Closure<dyn FnMut(JsValue)>,
 }
@@ -213,37 +219,52 @@ pub async fn video_camera_start(video: HtmlVideoElement, front: bool) -> Result<
             return Err(e);
         }
     };
-    // Hardware encoding for the full capture; a browser without it steps down to 720p at 30 in software.
-    let mut config = serde_json::json!({
-        "codec": VIDEO_CODEC, "width": width, "height": height,
-        "bitrate": bitrate(width, height, rate), "framerate": rate, "latencyMode": "realtime",
-        "hardwareAcceleration": "prefer-hardware"
-    });
-    let supported = match js_sys::Reflect::get(&js_sys::global(), &"VideoEncoder".into())
-        .ok()
-        .and_then(|ctor| js_sys::Reflect::get(&ctor, &"isConfigSupported".into()).ok())
-        .and_then(|f| f.dyn_into::<js_sys::Function>().ok())
-        .and_then(|f| object(config.clone()).ok().and_then(|c| f.call1(&JsValue::UNDEFINED, &c).ok()))
-    {
-        Some(promise) => match JsFuture::from(promise.unchecked_into::<js_sys::Promise>()).await {
-            Ok(result) => get(&result, "supported").ok().and_then(|v| v.as_bool()).unwrap_or(true),
-            Err(_) => true,
-        },
-        None => true,
+    // The best mode the browser will encode in real time: hardware first, then software at the
+    // capture's rate, then down the ladder. Nothing is upscaled past what the camera delivers.
+    let supported = |config: &serde_json::Value| -> Option<js_sys::Promise> {
+        js_sys::Reflect::get(&js_sys::global(), &"VideoEncoder".into())
+            .ok()
+            .and_then(|ctor| js_sys::Reflect::get(&ctor, &"isConfigSupported".into()).ok())
+            .and_then(|f| f.dyn_into::<js_sys::Function>().ok())
+            .and_then(|f| object(config.clone()).ok().and_then(|c| f.call1(&JsValue::UNDEFINED, &c).ok()))
+            .map(|p| p.unchecked_into::<js_sys::Promise>())
     };
-    let (width, height, rate) = if supported {
-        (width, height, rate)
-    } else {
-        let (w, h) = if width >= height { (1280, 720) } else { (720, 1280) };
-        config = serde_json::json!({
+    let ladder: [(u32, u32, u32, &str); 6] = [
+        (1920, 1080, 60, "prefer-hardware"),
+        (1920, 1080, 60, "no-preference"),
+        (1920, 1080, 30, "no-preference"),
+        (1280, 720, 60, "no-preference"),
+        (1280, 720, 30, "no-preference"),
+        (640, 480, 30, "no-preference"),
+    ];
+    let portrait = height > width;
+    let mut chosen = None;
+    for (w, h, r, acceleration) in ladder {
+        let (w, h) = if portrait { (h, w) } else { (w, h) };
+        if w > width.max(640) || h > height.max(640) || r > rate.max(30) {
+            continue;
+        }
+        let config = serde_json::json!({
             "codec": VIDEO_CODEC, "width": w, "height": h,
-            "bitrate": bitrate(w, h, 30), "framerate": 30, "latencyMode": "realtime"
+            "bitrate": bitrate(w, h, r), "framerate": r, "latencyMode": "realtime",
+            "hardwareAcceleration": acceleration
         });
-        (w, h, 30)
-    };
+        let ok = match supported(&config) {
+            Some(promise) => match JsFuture::from(promise).await {
+                Ok(result) => get(&result, "supported").ok().and_then(|v| v.as_bool()).unwrap_or(false),
+                Err(_) => false,
+            },
+            None => true,
+        };
+        if ok {
+            chosen = Some((w, h, r, acceleration, config));
+            break;
+        }
+    }
+    let (width, height, rate, acceleration, config) = chosen.ok_or_else(|| fail("This browser cannot encode call video"))?;
     canvas.set_width(width);
     canvas.set_height(height);
-    web_sys::console::log_1(&JsValue::from_str(&format!("SigilTiming video out {width}x{height}@{rate} {}kbps hardware={supported}", bitrate(width, height, rate) / 1000)));
+    web_sys::console::log_1(&JsValue::from_str(&format!("SigilTiming video out {width}x{height}@{rate} {}kbps {acceleration}", bitrate(width, height, rate) / 1000)));
     invoke(&encoder, "configure", &[object(config)?])?;
     let tick = Closure::<dyn FnMut()>::new(move || {
         let _ = CAPTURE.with(|slot| -> Result<(), JsValue> {
@@ -279,6 +300,14 @@ pub async fn video_camera_start(video: HtmlVideoElement, front: bool) -> Result<
             )?;
             let keyframe = capture.frames % u64::from(capture.rate) == 0 || FORCE_KEY.with(Cell::take);
             capture.frames += 1;
+            capture.counted += 1;
+            let at = js_sys::Date::now();
+            if at - capture.since >= 5000.0 {
+                let fps = f64::from(capture.counted) * 1000.0 / (at - capture.since);
+                web_sys::console::log_1(&JsValue::from_str(&format!("SigilTiming video out fps={fps:.0} queue={}", number(&capture.encoder, "encodeQueueSize").unwrap_or(0.0))));
+                capture.counted = 0;
+                capture.since = at;
+            }
             let result = invoke(
                 &capture.encoder,
                 "encode",
@@ -288,10 +317,43 @@ pub async fn video_camera_start(video: HtmlVideoElement, front: bool) -> Result<
             result.map(|_| ())
         });
     });
-    let timer = window.set_interval_with_callback_and_timeout_and_arguments_0(
-        tick.as_ref().unchecked_ref(),
-        (1000 / rate) as i32,
-    )?;
+    // Encode each camera frame as it lands rather than on a timer, when the browser can say so.
+    let paced = js_sys::Reflect::has(&video, &"requestVideoFrameCallback".into()).unwrap_or(false);
+    let timer = if paced {
+        0
+    } else {
+        window.set_interval_with_callback_and_timeout_and_arguments_0(
+            tick.as_ref().unchecked_ref(),
+            (1000 / rate) as i32,
+        )?
+    };
+    let step = if paced {
+        let generation = GENERATION.with(Cell::get);
+        let step: Closure<dyn FnMut(JsValue, JsValue)> = Closure::new(move |_now: JsValue, _meta: JsValue| {
+            if GENERATION.with(Cell::get) != generation {
+                return;
+            }
+            CAPTURE.with(|slot| {
+                let slot = slot.borrow();
+                if let Some(capture) = slot.as_ref() {
+                    if let Some(tick) = capture._tick.as_ref().dyn_ref::<js_sys::Function>() {
+                        let _ = tick.call0(&JsValue::UNDEFINED);
+                    }
+                }
+            });
+            CAPTURE.with(|slot| {
+                let slot = slot.borrow();
+                if let Some(capture) = slot.as_ref() {
+                    if let Some(step) = capture._step.as_ref() {
+                        let _ = invoke(&capture.video, "requestVideoFrameCallback", &[step.as_ref().clone()]);
+                    }
+                }
+            });
+        });
+        Some(step)
+    } else {
+        None
+    };
     CAPTURE.with(|slot| {
         *slot.borrow_mut() = Some(Capture {
             stream,
@@ -303,11 +365,22 @@ pub async fn video_camera_start(video: HtmlVideoElement, front: bool) -> Result<
             height,
             rate,
             frames: 0,
+            counted: 0,
+            since: js_sys::Date::now(),
             timer,
             _tick: tick,
+            _step: step,
             _output: output,
             _error: error,
         })
+    });
+    CAPTURE.with(|slot| {
+        let slot = slot.borrow();
+        if let Some(capture) = slot.as_ref() {
+            if let Some(step) = capture._step.as_ref() {
+                let _ = invoke(&capture.video, "requestVideoFrameCallback", &[step.as_ref().clone()]);
+            }
+        }
     });
     Ok(())
 }
@@ -351,6 +424,19 @@ pub fn video_attach(sender: String, canvas: HtmlCanvasElement) -> Result<(), JsV
             );
             viewer.context.restore();
             let _ = invoke(&frame, "close", &[]);
+            drop(viewers);
+            VIEWERS.with(|viewers| {
+                if let Some(viewer) = viewers.borrow_mut().get_mut(&key) {
+                    viewer.counted += 1;
+                    let at = js_sys::Date::now();
+                    if at - viewer.since >= 5000.0 {
+                        let fps = f64::from(viewer.counted) * 1000.0 / (at - viewer.since);
+                        web_sys::console::log_1(&JsValue::from_str(&format!("SigilTiming video in {width}x{height} fps={fps:.0}")));
+                        viewer.counted = 0;
+                        viewer.since = at;
+                    }
+                }
+            });
             result.map(|_| ())
         });
     });
@@ -376,6 +462,8 @@ pub fn video_attach(sender: String, canvas: HtmlCanvasElement) -> Result<(), JsV
                 last: 0,
                 interval: 0,
                 awaiting_key: false,
+                counted: 0,
+                since: js_sys::Date::now(),
                 _output: output,
                 _error: error,
             },
@@ -454,8 +542,8 @@ pub fn video_receive(sender: String, frame: Uint8Array) -> Result<bool, JsValue>
                 "configure",
                 &[object(serde_json::json!({
                     "codec": VIDEO_CODEC, "codedWidth": width, "codedHeight": height,
-                    // Some hardware decoders hand back blank frames; call video is small.
-                    "hardwareAcceleration": "prefer-software", "optimizeForLatency": true
+                    // The browser picks; 1080p at 60 in software is a full core, hardware is free.
+                    "hardwareAcceleration": "no-preference", "optimizeForLatency": true
                 }))?],
             )?;
             viewer.decoder = Some(decoder);
