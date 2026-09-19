@@ -29,6 +29,7 @@ class Messenger(application: Application) : AndroidViewModel(application) {
     private val syncWake = Channel<Unit>(Channel.CONFLATED)
     @Volatile private var forceSync = false
     private var submittingPost = false
+    private var shownEarly: String? = null
     private var busyOperations = 0
     var signOutStage by mutableStateOf(NativeSignOut.stage(application))
         private set
@@ -369,6 +370,17 @@ class Messenger(application: Application) : AndroidViewModel(application) {
             if (submittingPost) return
             submittingPost = true
             state = state.copy(busy = true)
+            // A plain message is on screen and the composer is clear before any work runs; the stored message lands on the same key.
+            val text = fields["text"] as? String; val peer = fields["peer"] as? String
+            val author = state.messages.firstOrNull { it.mine }?.author
+            if (text != null && peer != null && author != null && "::" !in text && post?.first != fields && state.selected == peer && !state.historical && state.threadTarget == null) {
+                val raw = request(name, fields); post = fields.toMap() to raw
+                val requestId = JSONObject(raw).getString("request"); val now = System.currentTimeMillis() / 1000
+                val shown = ChatMessage(requestId, author, text, true, clock(now), "Sending", false, emptyList(), emptyList(), fields["reply_message"] as? String, true, timestamp = now, peer = peer)
+                state = state.copy(messages = listOf(shown) + state.messages, sent = state.sent + 1, sentText = text, sentMessage = requestId)
+                recentTimelines[peer] = state.messages
+                shownEarly = requestId
+            }
         }
         scope.launch {
             try {
@@ -382,18 +394,6 @@ class Messenger(application: Application) : AndroidViewModel(application) {
                     val raw = if (retry) post!!.second else if (name == "group_create" && groupCreate?.first == fields) groupCreate!!.second else request(name, fields).also {
                         if (name == "post") post = fields.toMap() to it
                         if (name == "group_create") groupCreate = fields.toMap() to it
-                    }
-                    // A sent message takes its place in the timeline at once, under its request id, so the stored one lands on the same key.
-                    if (name == "post" && !retry) {
-                        val text = fields["text"] as? String; val peer = fields["peer"] as? String
-                        val author = state.messages.firstOrNull { it.mine }?.author
-                        if (text != null && peer != null && author != null && state.selected == peer && !state.historical && state.threadTarget == null) {
-                            val requestId = JSONObject(raw).getString("request"); val now = System.currentTimeMillis() / 1000
-                            if (state.messages.none { it.id == requestId }) {
-                                state = state.copy(messages = listOf(ChatMessage(requestId, author, text, true, clock(now), "Sending", false, emptyList(), emptyList(), fields["reply_message"] as? String, true, timestamp = now, peer = peer)) + state.messages)
-                                recentTimelines[peer] = state.messages
-                            }
-                        }
                     }
                     val alreadyQueued = retry && execute("post_status", mapOf("peer" to fields["peer"], "request" to JSONObject(raw).getString("request"))).getBoolean("queued")
                     if (name == "recover_account") recoveryPreference(true)
@@ -426,7 +426,9 @@ class Messenger(application: Application) : AndroidViewModel(application) {
                     result.optional("authorization_url")?.let { authorizationUrl = it }
                     if (name in listOf("post", "edit")) {
                         post = null
-                        state = state.copy(sent = state.sent + 1, sentText = fields["text"] as? String, sentMessage = if (name == "post") JSONObject(raw).getString("request") else null)
+                        val requestId = if (name == "post") JSONObject(raw).getString("request") else null
+                        if (shownEarly == requestId) shownEarly = null
+                        else state = state.copy(sent = state.sent + 1, sentText = fields["text"] as? String, sentMessage = requestId)
                         loadTimeline()
                     }
                     // Send after the timeline shows the message; the flush pass reports only its own issue.
