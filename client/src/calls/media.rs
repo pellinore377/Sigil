@@ -12,7 +12,13 @@ pub struct Media {
     pub(super) lease: Id,
     state: Option<Id>,
     sender: Option<sigil_calls::Sender>,
-    receivers: BTreeMap<Id, (u64, sigil_calls::Receiver)>,
+    /// The sender key as last shared, re-signed rather than replaced when only readiness changes.
+    share: Option<sigil_calls::KeyShare>,
+    /// The roster the receivers were established under; only a new roster discards them.
+    roster: Option<Id>,
+    /// Each member's receiver challenge as last seen; a new one anywhere means fresh keys.
+    challenges: Vec<(Id, Id)>,
+    receivers: BTreeMap<Id, (u64, sigil_calls::Receiver, sigil_calls::Context)>,
     assembly: sigil_calls::Assembly,
 }
 impl Media {
@@ -43,6 +49,9 @@ impl ClientStore {
                 lease: record.lease,
                 state: None,
                 sender: None,
+                share: None,
+                roster: Some(record.state.roster.roster.digest().map_err(failure)?),
+                challenges: challenges(&record.state),
                 receivers: BTreeMap::new(),
                 assembly: sigil_calls::Assembly::default(),
             };
@@ -52,16 +61,19 @@ impl ClientStore {
         }
         record.lease = sigil_calls::random_id().map_err(failure)?;
         record.shares.clear();
-        let declared = ready(&tx, &self.key, &mut record, tracks, now)?;
-        let (state, sender) = match declared {
-            Some((digest, sender)) => (Some(digest), Some(sender)),
-            None => (None, None),
+        let declared = ready(&tx, &self.key, &mut record, tracks, None, now)?;
+        let (state, sender, share) = match declared {
+            Some((digest, sender, key)) => (Some(digest), sender, Some(key)),
+            None => (None, None, None),
         };
         let media = Media {
             call: id,
             lease: record.lease,
             state,
             sender,
+            share,
+            roster: Some(record.state.roster.roster.digest().map_err(failure)?),
+            challenges: challenges(&record.state),
             receivers: BTreeMap::new(),
             assembly: sigil_calls::Assembly::default(),
         };
@@ -84,21 +96,29 @@ impl ClientStore {
         if record.lease != media.lease {
             return Err(Error::Obsolete);
         }
-        let declared = ready(&tx, &self.key, &mut record, tracks, now)?;
+        // Tracks changing on the same roster keep the sender key; the members already hold it.
+        let reuse = media.share.clone().filter(|_| media.sender.is_some());
+        let declared = ready(&tx, &self.key, &mut record, tracks, reuse, now)?;
         save(&tx, &self.key, &record)?;
         tx.commit()?;
         match declared {
-            Some((digest, sender)) => {
+            Some((digest, sender, key)) => {
                 media.state = Some(digest);
-                media.sender = Some(sender);
+                media.share = Some(key);
+                if let Some(sender) = sender {
+                    media.sender = Some(sender);
+                    media.receivers.clear();
+                    media.assembly.clear();
+                }
             }
             None => {
                 media.state = None;
                 media.sender = None;
+                media.share = None;
+                media.receivers.clear();
+                media.assembly.clear();
             }
         }
-        media.receivers.clear();
-        media.assembly.clear();
         Ok(())
     }
     pub fn refresh_call_media(&mut self, media: &mut Media, now: u64) -> Result<usize, Error> {
@@ -116,12 +136,19 @@ impl ClientStore {
             return Err(Error::Obsolete);
         }
         let own = record.own_id()?;
+        // Readiness for this lease must be in the signed state; a later declaration for the same
+        // lease (a track change) may still be on its way without stopping media meanwhile.
         if !record.state.ready.iter().any(|r| {
-            r.member == own && r.sequence == record.ready_sequence && r.challenge == media.lease
+            r.member == own && r.sequence <= record.ready_sequence && r.challenge == media.lease
         }) {
             return Err(Error::Unprepared);
         }
         let digest = record.state.digest().map_err(failure)?;
+        let roster_digest = record.state.roster.roster.digest().map_err(failure)?;
+        let current = challenges(&record.state);
+        // Keys stay valid only while the members and every receiver challenge are the ones they were
+        // issued for: a track toggle re-signs them, a new member or a fresh handle rotates them.
+        let same_keys = media.roster == Some(roster_digest) && media.challenges == current;
         let mut replacement = None;
         // The owner's fan-out for this state lacking our key means it never got it.
         let unshared = record.owner_peer.is_some()
@@ -129,17 +156,26 @@ impl ClientStore {
             && !record.shares.iter().any(|s| s.key.context.sender == own);
         if media.state != Some(digest) || media.sender.is_none() || unshared {
             record.generation = record.generation.checked_add(1).ok_or(Error::Limit)?;
-            let (sender, key) = sigil_calls::Sender::generate(sigil_calls::Context {
-                call: record.id(),
-                roster: record.state.roster.roster.digest().map_err(failure)?,
-                sender: own,
-                incarnation: sigil_calls::random_id().map_err(failure)?,
-            })
-            .map_err(failure)?;
+            // A state that only changed readiness keeps the sender key: the same members already hold it,
+            // and frames bind the roster, not the state. A new roster or a missing share starts fresh.
+            let reuse = media.share.clone().filter(|_| same_keys && !unshared && media.sender.is_some());
+            let (sender, key) = match reuse {
+                Some(key) => (None, key),
+                None => {
+                    let (sender, key) = sigil_calls::Sender::generate(sigil_calls::Context {
+                        call: record.id(),
+                        roster: roster_digest,
+                        sender: own,
+                        incarnation: sigil_calls::random_id().map_err(failure)?,
+                    })
+                    .map_err(failure)?;
+                    (Some(sender), key)
+                }
+            };
             let share = Share::sign(
                 &record.state,
                 record.generation,
-                key,
+                key.clone(),
                 &record.key(&self.key)?,
             )
             .map_err(failure)?;
@@ -156,39 +192,53 @@ impl ClientStore {
                 )?;
             }
             save(&tx, &self.key, &record)?;
-            replacement = Some(sender);
+            replacement = Some((sender, key));
         }
         let mut incoming = Vec::new();
+        let mut bumps = Vec::new();
         for share in &record.shares {
             let sender = share.key.context.sender;
             if sender == own {
                 continue;
             }
             share.verify(&record.state).map_err(failure)?;
-            if media.state != Some(digest)
-                || media
-                    .receivers
-                    .get(&sender)
-                    .is_none_or(|(generation, _)| *generation < share.generation)
-            {
-                incoming.push((
+            match media.receivers.get(&sender) {
+                // The same key re-signed for a new state keeps its receiver and its replay window.
+                Some((generation, _, context)) if *context == share.key.context => {
+                    if *generation < share.generation {
+                        bumps.push((sender, share.generation));
+                    }
+                }
+                Some((generation, _, _)) if *generation >= share.generation && media.state == Some(digest) => {}
+                _ => incoming.push((
                     sender,
                     share.generation,
                     sigil_calls::Receiver::new(&share.key).map_err(failure)?,
-                ));
+                    share.key.context,
+                )),
             }
         }
         tx.commit()?;
-        if let Some(sender) = replacement {
-            media.sender = Some(sender);
-            if media.state != Some(digest) {
+        if let Some((sender, key)) = replacement {
+            if let Some(sender) = sender {
+                media.sender = Some(sender);
+            }
+            media.share = Some(key);
+            if media.state != Some(digest) && !same_keys {
                 media.receivers.clear();
                 media.assembly.clear();
             }
             media.state = Some(digest);
+            media.roster = Some(roster_digest);
+            media.challenges = current;
         }
-        for (id, generation, receiver) in incoming {
-            media.receivers.insert(id, (generation, receiver));
+        for (id, generation) in bumps {
+            if let Some(entry) = media.receivers.get_mut(&id) {
+                entry.0 = generation;
+            }
+        }
+        for (id, generation, receiver, context) in incoming {
+            media.receivers.insert(id, (generation, receiver, context));
         }
         Ok(record)
     }
@@ -311,15 +361,21 @@ fn enabled(record: &Record, sender: Id, kind: sigil_calls::MediaKind) -> bool {
             sigil_calls::MediaKind::Screen => r.tracks.screen,
         })
 }
+/// Every member's receiver challenge in a state, in member order.
+fn challenges(state: &State) -> Vec<(Id, Id)> {
+    state.ready.iter().map(|r| (r.member, r.challenge)).collect()
+}
+
 /// A declaration of readiness, plus the sender key signed against the state the
 /// owner will commit for it. Sending both together saves a full round trip.
-type Declaration = Option<(Id, sigil_calls::Sender)>;
+type Declaration = Option<(Id, Option<sigil_calls::Sender>, sigil_calls::KeyShare)>;
 
 pub(super) fn ready(
     tx: &Transaction<'_>,
     key: &StorageKey,
     record: &mut Record,
     tracks: Tracks,
+    reuse: Option<sigil_calls::KeyShare>,
     now: u64,
 ) -> Result<Declaration, Error> {
     record.ready_sequence = record.ready_sequence.checked_add(1).ok_or(Error::Limit)?;
@@ -342,7 +398,7 @@ pub(super) fn ready(
     jobs::queue(tx, key, record, owner, control::Body::Ready(ready.clone()), now)?;
     Ok(match anticipated(record, &ready) {
         Some(state) => {
-            let declared = declare(tx, key, record, &state, now)?;
+            let declared = declare(tx, key, record, &state, reuse, now)?;
             Some(declared)
         }
         None => None,
@@ -370,18 +426,25 @@ fn declare(
     key: &StorageKey,
     record: &mut Record,
     state: &State,
+    reuse: Option<sigil_calls::KeyShare>,
     now: u64,
-) -> Result<(Id, sigil_calls::Sender), Error> {
+) -> Result<(Id, Option<sigil_calls::Sender>, sigil_calls::KeyShare), Error> {
     let own = record.own_id()?;
     record.generation = record.generation.checked_add(1).ok_or(Error::Limit)?;
-    let (sender, share_key) = sigil_calls::Sender::generate(sigil_calls::Context {
-        call: record.id(),
-        roster: record.state.roster.roster.digest().map_err(failure)?,
-        sender: own,
-        incarnation: sigil_calls::random_id().map_err(failure)?,
-    })
-    .map_err(failure)?;
-    let share = Share::sign(state, record.generation, share_key, &record.key(key)?)
+    let (sender, share_key) = match reuse {
+        Some(key) => (None, key),
+        None => {
+            let (sender, key) = sigil_calls::Sender::generate(sigil_calls::Context {
+                call: record.id(),
+                roster: record.state.roster.roster.digest().map_err(failure)?,
+                sender: own,
+                incarnation: sigil_calls::random_id().map_err(failure)?,
+            })
+            .map_err(failure)?;
+            (Some(sender), key)
+        }
+    };
+    let share = Share::sign(state, record.generation, share_key.clone(), &record.key(key)?)
         .map_err(failure)?;
     let digest = state.digest().map_err(failure)?;
     record.shares.retain(|s| s.key.context.sender != own);
@@ -397,5 +460,5 @@ fn declare(
             now,
         )?;
     }
-    Ok((digest, sender))
+    Ok((digest, sender, share_key))
 }

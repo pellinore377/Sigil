@@ -385,7 +385,7 @@ pub(crate) fn install(
                     let own_id = own.member.id;
                     if let Some(tracks) = record.early {
                         if !record.state.ready.iter().any(|r| r.member == own_id) {
-                            super::media::ready(tx, key, &mut record, tracks, now)?;
+                            super::media::ready(tx, key, &mut record, tracks, None, now)?;
                         }
                     }
                 } else if record.phase == Phase::Active {
