@@ -30,15 +30,13 @@ struct Session {
     pending: usize,
     decoding: bool,
     frames: Function,
-    playback: JsValue,
     _message: Closure<dyn FnMut(web_sys::MessageEvent)>,
     _track: Closure<dyn FnMut(JsValue)>,
 }
 impl Drop for Session {
     fn drop(&mut self) {
         let _ = set(&self.pc, "ontrack", &JsValue::NULL);
-        let _ = set(&self.playback, "srcObject", &JsValue::NULL);
-        let _ = invoke(&self.playback, "remove", &[]);
+        stop_playback();
         let _ = set(&self.channel, "onmessage", &JsValue::NULL);
         let _ = invoke(&self.channel, "close", &[]);
         let _ = invoke(&self.pc, "close", &[]);
@@ -47,7 +45,7 @@ impl Drop for Session {
 }
 /// Retransmission deadline for media fragments, in milliseconds.
 const CHANNEL_LIFETIME: u16 = 120;
-thread_local! {static SESSION:RefCell<Option<Session>>=const {RefCell::new(None)};static GENERATION:Cell<u64>=const {Cell::new(0)};static MICROPHONE:RefCell<Option<JsValue>>=const {RefCell::new(None)};static MUTED:Cell<bool>=const {Cell::new(false)};}
+thread_local! {static SESSION:RefCell<Option<Session>>=const {RefCell::new(None)};static GENERATION:Cell<u64>=const {Cell::new(0)};static MICROPHONE:RefCell<Option<JsValue>>=const {RefCell::new(None)};static MUTED:Cell<bool>=const {Cell::new(false)};static PLAYBACK:RefCell<Vec<JsValue>>=const {RefCell::new(Vec::new())};}
 pub(crate) fn invoke(value: &JsValue, name: &str, args: &[JsValue]) -> Result<JsValue, JsValue> {
     let args = args.iter().collect::<Array>();
     get(value, name)?
@@ -227,27 +225,52 @@ pub fn browser_call_supported() -> bool {
             .map(|w| w.navigator().media_devices().is_ok())
             .unwrap_or(false)
 }
-/// Plays every remote audio track the browser hands us, natively.
-fn play_remote(pc: &JsValue) -> Result<(JsValue, Closure<dyn FnMut(JsValue)>), JsValue> {
-    let document = web_sys::window()
-        .and_then(|w| w.document())
-        .ok_or_else(|| fail("Missing document"))?;
-    let element = document.create_element("audio")?;
-    set(&element, "autoplay", &true.into())?;
-    document.body().ok_or_else(|| fail("Missing body"))?.append_child(&element)?;
-    let playback: JsValue = element.clone().into();
-    let sink = playback.clone();
+/// Plays every remote audio track the browser hands us, natively. The answer comes from an SFU
+/// and carries no stream identity, so each track is wrapped in a stream of its own rather than
+/// taken from the event.
+fn play_remote(pc: &JsValue) -> Result<Closure<dyn FnMut(JsValue)>, JsValue> {
     let handler = Closure::<dyn FnMut(JsValue)>::new(move |event: JsValue| {
-        if let Ok(streams) = get(&event, "streams") {
-            if let Ok(stream) = Reflect::get(&streams, &0.into()) {
-                if !stream.is_undefined() {
-                    let _ = set(&sink, "srcObject", &stream);
-                }
+        let attach = || -> Result<(), JsValue> {
+            let track = get(&event, "track")?;
+            if get(&track, "kind")?.as_string().as_deref() != Some("audio") {
+                return Ok(());
             }
+            let document = web_sys::window()
+                .and_then(|w| w.document())
+                .ok_or_else(|| fail("Missing document"))?;
+            let element = document.create_element("audio")?;
+            set(&element, "autoplay", &true.into())?;
+            let stream = Reflect::construct(
+                &get(&js_sys::global(), "MediaStream")?.dyn_into::<Function>()?,
+                &Array::of1(&Array::of1(&track)),
+            )?;
+            set(&element, "srcObject", &stream)?;
+            document
+                .body()
+                .ok_or_else(|| fail("Missing body"))?
+                .append_child(&element)?;
+            let _ = invoke(&element, "play", &[]);
+            PLAYBACK.with(|slot| slot.borrow_mut().push(element.into()));
+            Ok(())
+        };
+        if attach().is_err() {
+            web_sys::console::log_1(&JsValue::from_str(
+                "SigilTiming call playback attach failed",
+            ));
         }
     });
     set(pc, "ontrack", handler.as_ref())?;
-    Ok((playback, handler))
+    Ok(handler)
+}
+/// Stops and removes every playback element the call created.
+fn stop_playback() {
+    PLAYBACK.with(|slot| {
+        for element in slot.borrow_mut().drain(..) {
+            let _ = invoke(&element, "pause", &[]);
+            let _ = set(&element, "srcObject", &JsValue::NULL);
+            let _ = invoke(&element, "remove", &[]);
+        }
+    });
 }
 #[wasm_bindgen]
 /// The frame callback must copy or decode its bytes before returning.
@@ -297,7 +320,7 @@ pub async fn browser_call_connect(id: String, frames: Function) -> Result<(), Js
         )?;
         set(&channel, "binaryType", &"arraybuffer".into())?;
         let microphone = microphone().await;
-        let (playback, track_handler) = play_remote(&pc)?;
+        let track_handler = play_remote(&pc)?;
         let mut uploads = Vec::new();
         let mut downloads = Vec::new();
         for kind in [MediaKind::Audio, MediaKind::Camera, MediaKind::Screen] {
@@ -431,7 +454,6 @@ pub async fn browser_call_connect(id: String, frames: Function) -> Result<(), Js
                 pending: 0,
                 decoding: false,
                 frames,
-                playback,
                 _message: message,
                 _track: track_handler,
             })

@@ -41,11 +41,23 @@ struct Room {
     roster: SignedRoster,
     peers: BTreeMap<Id, Peer>,
 }
+/// Packet counts by media kind, for telling apart the places a packet can go missing.
+#[derive(Default, Clone, Debug, serde::Serialize)]
+pub struct Traffic {
+    pub rtp_in: [u64; 3],
+    pub channel_in: [u64; 3],
+    pub rtp_out: [u64; 3],
+    pub channel_out: [u64; 3],
+    pub rejected: [u64; 3],
+    pub unrouted: [u64; 3],
+    pub no_payload_type: [u64; 3],
+}
 pub struct Forwarder {
     address: SocketAddr,
     rooms: BTreeMap<Id, Room>,
     max_rooms: usize,
     dropped: u64,
+    traffic: Traffic,
 }
 /// Media fragments may be retransmitted, but only briefly: the buffering a peer can
 /// ask us to hold stays bounded, and a late fragment is useless past its frame anyway.
@@ -72,6 +84,7 @@ impl Forwarder {
             rooms: BTreeMap::new(),
             max_rooms,
             dropped: 0,
+            traffic: Traffic::default(),
         })
     }
     /// The service must authorize the call's owner before installing its signed roster.
@@ -287,6 +300,10 @@ impl Forwarder {
                                     p.pt() == packet.header.payload_type
                                         && p.spec().codec == codec(kind)
                                 });
+                                self.traffic.rtp_in[kind as usize] += 1;
+                                if !valid {
+                                    self.traffic.rejected[kind as usize] += 1;
+                                }
                                 if valid && packet.payload.len() <= 1500 {
                                     packets.push((
                                         *id,
@@ -343,6 +360,7 @@ impl Forwarder {
                             match crate::channel::Packet::decode(&data.data) {
                                 Ok(packet) if packet.sender == *id => {
                                     let kind = packet.kind;
+                                    self.traffic.channel_in[kind as usize] += 1;
                                     packets.push((
                                         *id,
                                         peer.sequence,
@@ -410,6 +428,7 @@ impl Forwarder {
                         .iter()
                         .find(|r| r.sender == source && r.kind == kind)
                     else {
+                        self.traffic.unrouted[kind as usize] += 1;
                         continue;
                     };
                     // A browser takes audio as ordinary RTP so the browser itself decodes and plays it;
@@ -421,7 +440,9 @@ impl Forwarder {
                                 && packet.data.encode().ok().is_some_and(|bytes| {
                                     channel.write(true, &bytes).unwrap_or(false)
                                 });
-                            if !sent {
+                            if sent {
+                                self.traffic.channel_out[kind as usize] += 1;
+                            } else {
                                 self.dropped = self.dropped.saturating_add(1);
                             }
                         }
@@ -438,6 +459,9 @@ impl Forwarder {
                             })
                             .map(|p| p.pt())
                     });
+                    if pt.is_none() {
+                        self.traffic.no_payload_type[kind as usize] += 1;
+                    }
                     if let Some(pt) = pt {
                         if let Some(stream) = peer.rtc.direct_api().stream_tx_by_mid(mid, None) {
                             let sample = stream
@@ -474,6 +498,7 @@ impl Forwarder {
                                 .marker(packet.data.marker)
                                 .nackable(kind != MediaKind::Audio),
                             );
+                            self.traffic.rtp_out[kind as usize] += 1;
                         }
                     }
                 }
@@ -492,5 +517,8 @@ impl Forwarder {
     }
     pub fn dropped_packets(&self) -> u64 {
         self.dropped
+    }
+    pub fn traffic(&self) -> &Traffic {
+        &self.traffic
     }
 }
