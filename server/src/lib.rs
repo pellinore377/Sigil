@@ -287,10 +287,16 @@ async fn security_headers(request: Request, next: Next) -> Response {
 async fn timeouts(request: Request, next: Next) -> Response {
     let limit = if request.uri().path() == mailbox::WAIT_PATH { mailbox::WAIT_DEADLINE } else { 5 };
     let (method, path) = (request.method().clone(), request.uri().path().to_owned());
+    let started = std::time::Instant::now();
     let response = match tokio::time::timeout(Duration::from_secs(limit), next.run(request)).await {
         Ok(response) => response,
         Err(_) => error(StatusCode::REQUEST_TIMEOUT, "timeout", "Request timed out"),
     };
+    // Path only, durations only: what an ordinary request costs when it is slow.
+    let elapsed = started.elapsed().as_millis();
+    if elapsed > 80 && path != mailbox::WAIT_PATH {
+        eprintln!("sigil.slow_request {} {} {}ms", method, path, elapsed);
+    }
     // Path only: no query strings, credentials or bodies.
     if response.status().is_server_error() {
         eprintln!("sigil.server_error {} {} {}", response.status().as_u16(), method, path);
@@ -402,10 +408,17 @@ async fn with_store<T: Send + 'static>(
         .acquire_owned()
         .await
         .map_err(|_| StoreError::Busy)?;
+    let queued = std::time::Instant::now();
     tokio::task::spawn_blocking(move || {
         let _permit = permit;
         let mut store = state.store.lock().map_err(|_| StoreError::InvalidData)?;
-        operation(&mut store)
+        let waited = queued.elapsed().as_millis();
+        let result = operation(&mut store);
+        let ran = queued.elapsed().as_millis() - waited;
+        if waited + ran > 40 {
+            eprintln!("sigil.slow_store wait={waited}ms run={ran}ms");
+        }
+        result
     })
     .await
     .map_err(|_| StoreError::InvalidData)?

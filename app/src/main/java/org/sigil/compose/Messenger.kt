@@ -190,7 +190,7 @@ class Messenger(application: Application) : AndroidViewModel(application) {
                             if (state.issue == syncIssue || issue != null) state = state.copy(issue = issue)
                             syncIssue = issue
                         }
-                        if (result.getBoolean("ran") || nudged) serialized(false) { refresh() }
+                        if ((result.getBoolean("ran") && result.optBoolean("changed", true)) || nudged) serialized(false) { refresh() }
                         NativeSync.presence(getApplication(), state.call?.call?.phase in listOf("active", "joining"))
                     }
                     // Rust also persists backoff; an IO failure must not create a busy loop.
@@ -366,6 +366,7 @@ class Messenger(application: Application) : AndroidViewModel(application) {
         val setting = (fields["value"] as? Map<*, *>)?.get("UiSetting") as? Map<*, *>
         val preference = if (name == "organize") (setting?.get("key") as? String)?.let { (fields["peer"] as? String) to it } else null
         if (preference != null) pendingUiSettings[preference] = setting?.get("value")
+        NativeSync.lastInteraction = android.os.SystemClock.elapsedRealtime()
         // A reaction shows on the message at the tap; the stored one confirms it.
         if (name == "react") {
             val emoji = fields["emoji"] as? String; val active = fields["active"] as? Boolean

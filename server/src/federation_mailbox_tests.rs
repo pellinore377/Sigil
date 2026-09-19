@@ -678,3 +678,46 @@ async fn mailbox_wait_returns_on_new_mail_and_empties_on_timeout() {
     assert_eq!(response.status(), 200);
     assert!(started.elapsed() < std::time::Duration::from_secs(2));
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn acknowledging_a_page_releases_every_delivery_in_one_request() {
+    use axum::{body::Body, http::Request};
+    use tower::ServiceExt;
+    let dir = tempfile::tempdir().unwrap();
+    let (mut s, key) = trusted(&dir.path().join("s.db"));
+    let now = crate::enrollment::now().unwrap();
+    let (c, p) = s.begin_federation_refresh("remote.example", now).unwrap();
+    s.finish_federation_refresh(c.revision, &p, Some(sigil_protocol::federation::Discovery { version: 0, server: "remote.example".into(), current: key.descriptor().clone(), rotation: None }), now).unwrap();
+    let token = enroll(&mut s, "recipient", now);
+    let other = enroll(&mut s, "bystander", now);
+    let target = s.session(&token, now).unwrap().device_id;
+    let elsewhere = s.session(&other, now).unwrap().device_id;
+    s.allow_federated_sender(&token, sender(1), now).unwrap();
+    s.allow_federated_sender(&other, sender(1), now).unwrap();
+    for n in 1..=3 {
+        receive(&mut s, &key, &message(&target, &sender(1), n, now + 1000), now, n).unwrap();
+    }
+    receive(&mut s, &key, &message(&elsewhere, &sender(1), 9, now + 1000), now, 9).unwrap();
+    let mine = s.mailbox(&token, now).unwrap();
+    let theirs = s.mailbox(&other, now).unwrap();
+    assert_eq!((mine.len(), theirs.len()), (3, 1));
+    let admin = crate::auth::AdminToken::load_or_create(&dir.path().join("admin")).unwrap();
+    let (app, state) = crate::application(s, admin);
+    let post = |token: &str, body: String| {
+        Request::post("/client/v0/mailbox/acknowledge")
+            .header("authorization", format!("Bearer {token}"))
+            .header("x-sigil-client", "1")
+            .header("content-type", "application/json")
+            .body(Body::from(body))
+            .unwrap()
+    };
+    // Two of mine, one that is not mine, one that never existed: the page succeeds and only mine go.
+    let body = serde_json::json!({ "sequences": [mine[0].sequence, mine[1].sequence, theirs[0].sequence, 999_999] }).to_string();
+    assert_eq!(app.clone().oneshot(post(&token, body)).await.unwrap().status(), 204);
+    let left = state.store.lock().unwrap().mailbox(&token, now).unwrap();
+    assert_eq!(left.len(), 1);
+    assert_eq!(left[0].sequence, mine[2].sequence);
+    assert_eq!(state.store.lock().unwrap().mailbox(&other, now).unwrap().len(), 1);
+    assert_eq!(app.clone().oneshot(post(&token, r#"{"sequences":[]}"#.into())).await.unwrap().status(), 422);
+    assert_eq!(app.oneshot(post(&token, serde_json::json!({ "sequences": vec![1; 17] }).to_string())).await.unwrap().status(), 422);
+}

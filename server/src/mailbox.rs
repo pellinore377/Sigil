@@ -18,7 +18,7 @@ use rusqlite::{OptionalExtension, TransactionBehavior};
 use sha2::{Digest, Sha256};
 use sigil_protocol::{
     accounts::valid_credential,
-    mailbox::{Delivery, MAX_BODY, MAX_PAYLOAD_HEX, Receipt, Submit},
+    mailbox::{Acknowledge, Delivery, MAX_ACKNOWLEDGE, MAX_BODY, MAX_PAYLOAD_HEX, Receipt, Submit},
 };
 use std::time::Duration;
 use tokio::sync::broadcast::error::RecvError;
@@ -99,10 +99,15 @@ impl Store {
                 "invalid encrypted payload, identifier, or expiry (maximum 7 days)",
             ));
         }
+        let started = std::time::Instant::now();
+        let mut marks: Vec<(&str, u128)> = Vec::new();
+        let mut mark = |name: &'static str| marks.push((name, started.elapsed().as_millis()));
         let tx = self
             .0
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        mark("begin");
         let sender = authorize(&tx, credential, now)?;
+        mark("auth");
         if tx.query_row(
             "SELECT EXISTS(SELECT 1 FROM federation_outbox WHERE sender=?1 AND message_id=?2)",
             (&sender, &request.message_id),
@@ -114,6 +119,7 @@ impl Store {
             return Err(StoreError::NotFound);
         }
         crate::admission::check(&tx, &sender, &request.recipient_device)?;
+        mark("admit");
         let recovery = proof
             .map(|proof| recovery_reserve(&tx, &sender, &request, proof, now))
             .transpose()?
@@ -132,7 +138,9 @@ impl Store {
                 expires_at: expiry as u64,
             });
         }
+        mark("previous");
         crate::storage_budget::for_device(&tx, &sender, crate::storage_budget::MAILBOX, now)?;
+        mark("budget");
         let pending: u32 = tx.query_row(
             "SELECT count(*) FROM mailbox WHERE recipient=?1 AND payload IS NOT NULL AND expires_at>?2",
             (&request.recipient_device,now as i64),
@@ -147,7 +155,9 @@ impl Store {
         if revoked {
             return Err(StoreError::NotFound);
         }
+        mark("pending");
         let used = crate::recovery::used(&tx, &account, now)?;
+        mark("used");
         let quota = crate::admin::quota(&tx, &account)?;
         let peer_pending: u32 = tx.query_row(
             "SELECT count(*) FROM mailbox WHERE recipient=?1 AND sender=?2 AND payload IS NOT NULL AND expires_at>?3",
@@ -182,10 +192,16 @@ impl Store {
         }
         tx.execute("INSERT INTO mailbox(sender,message_id,recipient,payload,payload_hash,expires_at) VALUES(?1,?2,?3,?4,?5,?6)", (&sender,&request.message_id,&request.recipient_device,&request.payload,hash.as_slice(),request.expires_at as i64))?;
         let sequence = tx.last_insert_rowid();
+        mark("insert");
         if !silent {
             crate::push::enqueue(&tx, &request.recipient_device, now)?;
         }
+        mark("push");
         tx.commit()?;
+        mark("commit");
+        if started.elapsed().as_millis() > 60 {
+            eprintln!("sigil.slow_submit {:?}", marks);
+        }
         Ok(Receipt {
             sequence,
             expires_at: request.expires_at,
@@ -211,10 +227,13 @@ impl Store {
         if after < 0 {
             return Err(StoreError::Invalid("Invalid mailbox cursor"));
         }
+        let started = std::time::Instant::now();
         let tx = self
             .0
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let begun = started.elapsed().as_millis();
         let device = authorize(&tx, credential, now)?;
+        let authorized = started.elapsed().as_millis();
         let values = {
             let mut statement = tx.prepare("SELECT sequence,coalesce(sender,remote_device),message_id,payload,expires_at,remote_server,remote_account FROM mailbox WHERE recipient=?1 AND payload IS NOT NULL AND expires_at>?2 AND sequence>?3 AND (sender IS NOT NULL OR (EXISTS(SELECT 1 FROM federation_senders s WHERE s.grant_id=mailbox.remote_grant) AND NOT EXISTS(SELECT 1 FROM federation_peers p WHERE p.server=mailbox.remote_server AND p.error='retired'))) ORDER BY sequence LIMIT 16")?;
             let rows = statement
@@ -240,7 +259,12 @@ impl Store {
                 .collect::<Result<Vec<_>, _>>()?;
             rows
         };
+        let queried = started.elapsed().as_millis();
         tx.commit()?;
+        let total = started.elapsed().as_millis();
+        if total > 40 {
+            eprintln!("sigil.slow_poll begin={begun}ms auth={authorized}ms query={queried}ms commit={total}ms rows={}", values.len());
+        }
         Ok(values)
     }
 
@@ -263,6 +287,32 @@ impl Store {
             return Err(StoreError::NotFound);
         }
         crate::federation_mailbox::release_payload(&tx, sequence)?;
+        tx.commit()?;
+        Ok(())
+    }
+    /// One transaction for a page of acknowledgements; a sequence that is not this device's is skipped, as a lone DELETE would report not found.
+    pub fn acknowledge_messages(
+        &mut self,
+        credential: &str,
+        sequences: &[i64],
+        now: u64,
+    ) -> Result<(), StoreError> {
+        if sequences.is_empty() || sequences.len() > MAX_ACKNOWLEDGE {
+            return Err(StoreError::Invalid("acknowledge one to sixteen deliveries"));
+        }
+        let tx = self
+            .0
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let device = authorize(&tx, credential, now)?;
+        for sequence in sequences {
+            if tx.query_row(
+                "SELECT EXISTS(SELECT 1 FROM mailbox WHERE sequence=?1 AND recipient=?2)",
+                (sequence, &device),
+                |r| r.get::<_, bool>(0),
+            )? {
+                crate::federation_mailbox::release_payload(&tx, *sequence)?;
+            }
+        }
         tx.commit()?;
         Ok(())
     }
@@ -355,6 +405,7 @@ pub(crate) fn routes() -> Router<AppState> {
         .route("/client/v0/mailbox", get(poll))
         .route(WAIT_PATH, get(wait))
         .route("/client/v0/mailbox/{sequence}", delete(ack))
+        .route("/client/v0/mailbox/acknowledge", post(ack_many))
         .layer(RequestBodyLimitLayer::new(MAX_BODY))
         .route_layer(middleware::from_fn(native_only))
 }
@@ -505,6 +556,28 @@ async fn wait(
                 Ok(Err(RecvError::Closed)) | Err(_) => return empty(),
             }
         }
+    }
+}
+async fn ack_many(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    body: Result<Json<Acknowledge>, JsonRejection>,
+) -> Response {
+    let token = match bearer(&headers) {
+        Ok(v) => v,
+        Err(e) => return store_error(e),
+    };
+    let request = match body {
+        Ok(Json(v)) => v,
+        Err(e) => return error(e.status(), "invalid_request", "Invalid acknowledgement"),
+    };
+    match with_store(state, move |store| {
+        store.acknowledge_messages(&token, &request.sequences, now()?)
+    })
+    .await
+    {
+        Ok(()) => StatusCode::NO_CONTENT.into_response(),
+        Err(e) => store_error(e),
     }
 }
 async fn ack(

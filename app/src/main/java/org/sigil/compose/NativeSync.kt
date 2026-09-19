@@ -17,6 +17,8 @@ import org.sigil.storage.StorageKeyProvider
 import java.io.File
 
 internal object NativeSync {
+    /// When the person last drove a command, for deferring maintenance during use.
+    @Volatile var lastInteraction = 0L
     private const val PERIODIC = 21
     private const val PENDING = 22
     private const val DEFERRED = 23
@@ -56,7 +58,9 @@ internal object NativeSync {
     suspend fun run(context: Context, interactive: Boolean = false, callSetup: Boolean = false, wake: Boolean = false): JSONObject = withContext(Dispatchers.IO) {
         sync.withLock {
             check(!NativeSignOut.pending(context))
-            val request = JSONObject().put("command", "sync").put("interactive", interactive).put("call_setup", callSetup).put("wake", wake).toString()
+            // While the person is actively using the app, the pass leaves its minute-by-minute maintenance for a quieter moment.
+            val busy = interactive && android.os.SystemClock.elapsedRealtime() - lastInteraction < 15_000
+            val request = JSONObject().put("command", "sync").put("interactive", interactive).put("call_setup", callSetup).put("wake", wake).put("busy", busy).toString()
             val started = android.os.SystemClock.elapsedRealtime()
             val result = StorageKeyProvider(context).withKey { directory, key -> JSONObject(NativeStorage.execute(directory.path, key, request)) }
             check(result.getBoolean("ok"))

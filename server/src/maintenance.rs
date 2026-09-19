@@ -27,6 +27,8 @@ impl Store {
             crate::federation_mailbox::release_payload(&tx, *sequence)?;
         }
         let mut changed = expired.len();
+        // Collected rows stay a month past expiry as replay tombstones, then go.
+        changed += tx.execute("DELETE FROM mailbox WHERE sequence IN (SELECT sequence FROM mailbox WHERE payload IS NULL AND expires_at<=?1 AND expires_at>0 ORDER BY sequence LIMIT ?2)", (now.saturating_sub(30 * 86400) as i64, BATCH as i64))?;
         changed += tx.execute("UPDATE recovery_objects SET data=NULL WHERE rowid IN (SELECT r.rowid FROM recovery_objects r JOIN deleted_accounts d ON d.account=r.account_id WHERE r.data IS NOT NULL LIMIT 64)", [])?;
         changed += tx.execute(
             "DELETE FROM web_sessions WHERE expires<=?1 OR touched<=?2",

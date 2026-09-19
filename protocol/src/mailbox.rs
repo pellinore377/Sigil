@@ -17,6 +17,14 @@ pub struct Submit {
     pub expires_at: u64,
 }
 
+/// Up to sixteen deliveries acknowledged in one request; ones the server no longer holds are simply skipped.
+pub const MAX_ACKNOWLEDGE: usize = 16;
+#[derive(Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct Acknowledge {
+    pub sequences: Vec<i64>,
+}
+
 #[derive(Debug, Deserialize, Serialize, PartialEq, Eq)]
 pub struct Receipt {
     pub sequence: i64,

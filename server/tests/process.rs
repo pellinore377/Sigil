@@ -278,7 +278,7 @@ fn running_server_expires_idle_payloads_in_background() {
     let db = rusqlite::Connection::open(data.join("sigil.db")).unwrap();
     db.execute_batch("INSERT INTO accounts(id,username) VALUES('account','synthetic'); INSERT INTO devices(id,account_id,label,expires_at) VALUES('device','account','Synthetic',999999);
     WITH RECURSIVE n(x) AS (VALUES(1) UNION ALL SELECT x+1 FROM n WHERE x<130)
-    INSERT INTO mailbox(sender,message_id,recipient,payload,payload_hash,expires_at) SELECT 'device',printf('%064x',x),'device','abab',zeroblob(32),1 FROM n;").unwrap();
+    INSERT INTO mailbox(sender,message_id,recipient,payload,payload_hash,expires_at) SELECT 'device',printf('%064x',x),'device','abab',zeroblob(32),CASE WHEN x<=65 THEN 1 ELSE strftime('%s','now')-1 END FROM n;").unwrap();
     drop(store);
     drop(lock);
     let server = Server::start(&data);
@@ -297,10 +297,16 @@ fn running_server_expires_idle_payloads_in_background() {
         assert!(Instant::now() < deadline, "idle payloads were not expired");
         std::thread::sleep(Duration::from_millis(25));
     }
-    assert_eq!(
-        db.query_row("SELECT count(*) FROM mailbox", [], |r| r.get::<_, u32>(0))
-            .unwrap(),
-        130
-    );
+    // Recently expired rows stay as tombstones; ones a month past expiry are pruned.
+    let deadline = Instant::now() + Duration::from_secs(6);
+    loop {
+        let rows: u32 = db.query_row("SELECT count(*) FROM mailbox", [], |r| r.get(0)).unwrap();
+        if rows == 65 {
+            break;
+        }
+        assert!(Instant::now() < deadline, "stale tombstones were not pruned: {rows}");
+        std::thread::sleep(Duration::from_millis(25));
+    }
+    assert_eq!(db.query_row("SELECT min(expires_at)>1 FROM mailbox", [], |r| r.get::<_, bool>(0)).unwrap(), true);
     server.stop();
 }
