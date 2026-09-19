@@ -5,6 +5,8 @@
 #
 #   ./deploy-server.sh              build, deploy, wait for health
 #   ./deploy-server.sh --skip-tests skip the server test run
+#   ./deploy-server.sh --fast       also build the web bundle here instead of on
+#                                   the build host, which is most of the wait
 #
 # Configure with an untracked deploy-server.conf beside this script, or the
 # environment:
@@ -25,19 +27,42 @@ stack=${SIGIL_STACK_DIR:?set SIGIL_STACK_DIR, or create deploy-server.conf}
 service=${SIGIL_SERVICE:-sigil}
 image=${SIGIL_IMAGE:-ghcr.io/pellinore377/sigil:latest}
 
-if [[ ${1:-} != --skip-tests ]]; then
+fast=
+tests=1
+for argument in "$@"; do
+  case $argument in
+    --fast) fast=1 ;;
+    --skip-tests) tests= ;;
+    *) printf 'unknown option: %s\n' "$argument" >&2; exit 2 ;;
+  esac
+done
+
+if [ -n "$tests" ]; then
   printf 'Running server tests\n'
   cargo test -q -p sigil-server
 fi
 
+# The web bundle is the long pole: building it here reuses this machine's warm
+# Gradle and Cargo caches instead of a cold container.
+rm -rf "$source/prebuilt-web"
+mkdir -p "$source/prebuilt-web"
+if [ -n "$fast" ]; then
+  printf 'Building the web bundle locally\n'
+  (cd "$source" && gradle --quiet :shared:wasmJsBrowserDistribution)
+  cp -r "$source/shared/build/dist/wasmJs/productionExecutable/." "$source/prebuilt-web/"
+else
+  : > "$source/prebuilt-web/.keep"
+fi
+
 printf 'Copying sources to the build host\n'
 rsync -a --delete --delete-excluded \
+  --include 'prebuilt-web/***' \
   --exclude '.git/' --exclude 'target/' --exclude 'build/' --exclude '.gradle/' \
   --exclude '*/target/' --exclude 'app/build/' \
   "$source/" "$host:$remote/"
 
 printf 'Building %s\n' "$image"
-ssh "$host" "cd '$remote' && DOCKER_BUILDKIT=1 docker build --tag '$image' ."
+ssh "$host" "cd '$remote' && DOCKER_BUILDKIT=1 docker build ${fast:+--build-arg WEB_SOURCE=web-prebuilt} --tag '$image' ."
 
 printf 'Restarting the stack\n'
 ssh "$host" "cd '$stack' && docker compose up -d"
