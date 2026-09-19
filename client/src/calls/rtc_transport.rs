@@ -74,17 +74,33 @@ impl PeerConnectionEventHandler for Handler {
     async fn on_track(&self, track: Arc<dyn TrackRemote>) {
         let packets = self.packets.clone();
         tokio::spawn(async move {
+            crate::perf::note("call track opened".into());
+            let mut seen = 0u64;
+            let mut refused = 0u64;
             while let Some(event) = track.poll().await {
                 if let TrackRemoteEvent::OnRtpPacket(packet) = event {
                     if packet.payload.len() <= 2048 {
-                        let _ = packets.try_send(Packet {
-                            ssrc: packet.header.ssrc,
-                            sequence: packet.header.sequence_number,
-                            payload: packet.payload.to_vec(),
-                        });
+                        seen += 1;
+                        if packets
+                            .try_send(Packet {
+                                ssrc: packet.header.ssrc,
+                                sequence: packet.header.sequence_number,
+                                payload: packet.payload.to_vec(),
+                            })
+                            .is_err()
+                        {
+                            refused += 1;
+                        }
+                        if seen % 100 == 1 {
+                            crate::perf::note(format!(
+                                "call track ssrc={} seen={seen} refused={refused}",
+                                packet.header.ssrc
+                            ));
+                        }
                     }
                 }
             }
+            crate::perf::note(format!("call track closed seen={seen}"));
         });
     }
 }
@@ -130,6 +146,7 @@ struct Tally {
     rejected: u64,
     opened: u64,
     refused: u64,
+    stalled: u64,
     reported: Option<crate::clock::Instant>,
 }
 /// An authenticated frame whose RTP sequence numbers have already been reserved.
@@ -495,7 +512,13 @@ impl ClientStore {
         if self.rtc_connection_state(call, now)? != "connected" {
             return Err(Error::Unprepared);
         }
-        self.refresh_call_media(&mut call.media, now)?;
+        if let Err(error) = self.refresh_call_media(&mut call.media, now) {
+            call.tally.stalled += 1;
+            if call.tally.stalled % 50 == 1 {
+                crate::perf::note(format!("call rx stalled={} {error:?}", call.tally.stalled));
+            }
+            return Err(error);
+        }
         let mut frames = Vec::new();
         let mut bytes = 0;
         let clock = crate::clock::Instant::now();
