@@ -69,7 +69,8 @@ internal class WebCalls(private val scope:CoroutineScope,private val command:sus
                         val refreshed=runCatching{control("call_refresh",call.id).long("receivers")}
                         val receivers=refreshed.getOrDefault(0)
                         // Durations and counts only: how far media setup has come, and why it has not.
-                        if(state!="connected" || receivers<members.size)browserTimingLog("SigilTiming call transport=$state receivers=$receivers members=${members.size}"+(refreshed.exceptionOrNull()?.let{" refresh_error=${it.message?.take(80)}"}?:""))
+                        val audio=runCatching{browserCallAudioStats().awaitBrowser<JsString>().toString()}.getOrDefault("unavailable")
+                        if(state!="connected" || receivers<members.size || audio.startsWith("sent=0 ") || audio.contains("received=0"))browserTimingLog("SigilTiming call transport=$state receivers=$receivers members=${members.size} audio=$audio"+(refreshed.exceptionOrNull()?.let{" refresh_error=${it.message?.take(80)}"}?:""))
                         // Media that the worker no longer holds, or that belongs to an older roster, is rebuilt at once rather than polled forever.
                         if(refreshed.exceptionOrNull()?.message?.let{it.contains("No call is active")||it.contains("membership changed")}==true){reconnect(backoff=false);break}
                         if(state=="connected" && receivers>=members.size && members.isNotEmpty()){

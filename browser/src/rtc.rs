@@ -176,6 +176,42 @@ pub fn browser_call_release() {
         let _ = invoke(&track, "stop", &[]);
     }
 }
+/// Counts only: how much audio the browser's own pipeline has actually sent and received.
+#[wasm_bindgen]
+pub async fn browser_call_audio_stats() -> String {
+    async fn read() -> Result<String, JsValue> {
+        let pc = SESSION
+            .with(|slot| slot.borrow().as_ref().map(|s| s.pc.clone()))
+            .ok_or_else(|| fail("No call is active"))?;
+        let report = promise(invoke(&pc, "getStats", &[])?).await?;
+        let counts = std::rc::Rc::new(Cell::new([0.0f64; 3]));
+        let sink = counts.clone();
+        let visit = Closure::<dyn FnMut(JsValue)>::new(move |entry: JsValue| {
+            if get(&entry, "kind").ok().and_then(|v| v.as_string()).as_deref() != Some("audio") {
+                return;
+            }
+            let number = |name: &str| get(&entry, name).ok().and_then(|v| v.as_f64()).unwrap_or(0.0);
+            let mut totals = sink.get();
+            match get(&entry, "type").ok().and_then(|v| v.as_string()).as_deref() {
+                Some("outbound-rtp") => totals[0] += number("packetsSent"),
+                Some("inbound-rtp") => {
+                    totals[1] += number("packetsReceived");
+                    totals[2] += number("packetsLost");
+                }
+                _ => return,
+            }
+            sink.set(totals);
+        });
+        invoke(&report, "forEach", &[visit.as_ref().clone()])?;
+        drop(visit);
+        let totals = counts.get();
+        Ok(format!(
+            "sent={:.0} received={:.0} lost={:.0}",
+            totals[0], totals[1], totals[2]
+        ))
+    }
+    read().await.unwrap_or_else(|_| "unavailable".into())
+}
 /// Calls need a peer connection, a worker transform for the keys, and a capture device.
 #[wasm_bindgen]
 pub fn browser_call_supported() -> bool {
