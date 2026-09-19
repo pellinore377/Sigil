@@ -197,6 +197,71 @@ fn visit(
     }
     Ok(())
 }
+/// Like `visit`, handing the op's id to the closure as well.
+fn visit_with_id(
+    db: &Connection,
+    key: &StorageKey,
+    sql: &str,
+    at: &Id,
+    mut f: impl FnMut(Id, Entry) -> Result<(), Error>,
+) -> Result<(), Error> {
+    let mut stmt = db.prepare(sql)?;
+    let mut rows = stmt.query([at.as_slice()])?;
+    while let Some(row) = rows.next()? {
+        let id: Vec<u8> = row.get(0)?;
+        let raw: Vec<u8> = row.get(1)?;
+        let id: Id = id.try_into().map_err(|_| Error::InvalidStore)?;
+        f(id, open(key, &id, &raw)?)?;
+    }
+    Ok(())
+}
+/// Replays only the given ops, oldest first.
+fn visit_ids(
+    db: &Connection,
+    key: &StorageKey,
+    ids: &std::collections::BTreeSet<Id>,
+    mut f: impl FnMut(Id, Entry) -> Result<(), Error>,
+) -> Result<(), Error> {
+    let mut stmt = db.prepare("SELECT CASE WHEN length(state)<=574000 THEN state END FROM conversation_ops WHERE id=?1")?;
+    for id in ids {
+        let raw: Option<Vec<u8>> = stmt.query_row([id.as_slice()], |r| r.get(0)).optional()?;
+        if let Some(raw) = raw {
+            f(*id, open(key, id, &raw)?)?;
+        }
+    }
+    Ok(())
+}
+/// A fold over a log only ever depends on a few winning ops. The cache keeps their ids per scope and kind, stamped with the
+/// log's newest id and length, so a read replays those few instead of decrypting the whole log; any change to the log misses.
+fn fold_stamp(db: &Connection, scopes: &[Id], kind: i64) -> Result<Vec<u8>, Error> {
+    let mut stamp = Vec::new();
+    for at in scopes {
+        let (last, count): (Option<Vec<u8>>, i64) = db.query_row(
+            "SELECT max(id),count(*) FROM conversation_ops WHERE scope=?1 AND kind=?2",
+            rusqlite::params![at.as_slice(), kind],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )?;
+        stamp.extend(last.unwrap_or_default());
+        stamp.extend(count.to_le_bytes());
+    }
+    Ok(stamp)
+}
+fn fold_cached(db: &Connection, at: &Id, kind: i64, stamp: &[u8]) -> Result<Option<std::collections::BTreeSet<Id>>, Error> {
+    let row: Option<(Vec<u8>, Vec<u8>)> = db
+        .query_row("SELECT last,ids FROM fold_cache WHERE scope=?1 AND kind=?2", rusqlite::params![at.as_slice(), kind], |r| Ok((r.get(0)?, r.get(1)?)))
+        .optional()?;
+    Ok(row.filter(|(last, _)| last == stamp).map(|(_, ids)| {
+        ids.chunks_exact(32).filter_map(|c| c.try_into().ok()).collect()
+    }))
+}
+fn fold_remember(db: &Connection, at: &Id, kind: i64, stamp: &[u8], ids: &std::collections::BTreeSet<Id>) -> Result<(), Error> {
+    let mut blob = Vec::with_capacity(ids.len() * 32);
+    for id in ids {
+        blob.extend_from_slice(id);
+    }
+    db.execute("INSERT OR REPLACE INTO fold_cache VALUES(?1,?2,?3,?4)", rusqlite::params![at.as_slice(), kind, stamp, blob])?;
+    Ok(())
+}
 #[cfg(test)]
 fn entries(db: &Connection, key: &StorageKey, sql: &str, at: &Id) -> Result<Vec<Entry>, Error> {
     let mut result = Vec::new();
@@ -804,48 +869,87 @@ pub(crate) fn preferences(
         ui: std::collections::BTreeMap::new(),
     };
     let mut latest = std::collections::BTreeMap::new();
+    let mut latest_ids: std::collections::BTreeMap<(u8, Id), Id> = std::collections::BTreeMap::new();
     let mut drafts: std::collections::BTreeMap<Id, (Version, String)> =
         std::collections::BTreeMap::new();
+    let mut draft_ids: std::collections::BTreeMap<Id, Id> = std::collections::BTreeMap::new();
     let mut observed: std::collections::BTreeMap<Id, u64> = std::collections::BTreeMap::new();
-    for conv in [
-        Some(conversation),
-        (conversation != [0; 32]).then_some([0; 32]),
-    ]
-    .into_iter()
-    .flatten()
-    {
-        visit(db,key,"SELECT id,CASE WHEN length(state)<=574000 THEN state END FROM conversation_ops WHERE scope=?1 AND kind=1 ORDER BY id",&scope(key,&conv)?,|e|{
-            if e.conversation!=conv {return Err(Error::InvalidStore);}
-            if e.author!=own{return Ok(());}
-            let rank=(e.conversation!=[0;32],order(&e.operation));
-            let Action::Private{value,..}=e.operation.action else{return Ok(())};
-            let tag=match &value {
-                Private::Clear{observed} if conv==conversation=>{for version in observed {let prior=result.cleared.entry(version.device).or_default();*prior=(*prior).max(version.counter);}return Ok(());}
-                Private::Draft{text,observed:seen} if conv==conversation=>{
-                    let version=e.operation.version;
-                    let prior=drafts.entry(version.device).or_insert((version.clone(),text.clone()));
-                    if version.counter>prior.0.counter {*prior=(version,text.clone());}
-                    for v in seen {let max=observed.entry(v.device).or_default();*max=(*max).max(v.counter);}
-                    return Ok(());
+    let mut winners = std::collections::BTreeSet::new();
+    let scopes: Vec<Id> = [Some(conversation), (conversation != [0; 32]).then_some([0; 32])].into_iter().flatten().collect();
+    // Every op that shaped the result is a winner; a superseded winner leaves the set.
+    let mut absorb = |id: Id, e: Entry| -> Result<(), Error> {
+        let conv = e.conversation;
+        if e.author != own {
+            return Ok(());
+        }
+        let rank = (conv != [0; 32], order(&e.operation));
+        let Action::Private { value, .. } = e.operation.action else { return Ok(()) };
+        let tag = match &value {
+            Private::Clear { observed } if conv == conversation => {
+                for version in observed {
+                    let prior = result.cleared.entry(version.device).or_default();
+                    if version.counter > *prior { *prior = version.counter; winners.insert(id); }
                 }
-                Private::ConversationPin(_) if conv==conversation=>(0,[0;32]),
-                Private::Unread(_) if conv==conversation=>(1,[0;32]),
-                Private::Snooze(_) if conv==conversation=>(2,[0;32]),
-                Private::Hidden(_) if conv==conversation=>(3,[0;32]),
-                Private::CollectionsEnabled(_)=>(4,[0;32]),
-                Private::ReadReceipts(_)=>(5,[0;32]),
-                Private::TypingIndicators(_)=>(6,[0;32]),
-                Private::PresenceSharing(_)=>(7,[0;32]),
-                Private::RecoveryRetention(_) if conv==[0;32]=>(10,[0;32]),
-                Private::Collection{id,..}=>(8,*id),
-                Private::CollectionMember{id,..} if conv==conversation=>(9,*id),
-                Private::UiSetting{key,..}=>(11,Sha256::digest(key.as_bytes()).into()),
-                _=>return Ok(()),
-            };
-            let prior=latest.entry(tag).or_insert((rank.clone(),value.clone()));
-            if rank>prior.0 {*prior=(rank,value);}
-            Ok(())
-        })?;
+                return Ok(());
+            }
+            Private::Draft { text, observed: seen } if conv == conversation => {
+                let version = e.operation.version;
+                let device = version.device;
+                match drafts.get(&device) {
+                    Some(prior) if version.counter <= prior.0.counter => {}
+                    _ => {
+                        drafts.insert(device, (version.clone(), text.clone()));
+                        if let Some(old) = draft_ids.insert(device, id) { winners.remove(&old); }
+                        winners.insert(id);
+                    }
+                }
+                for v in seen {
+                    let max = observed.entry(v.device).or_default();
+                    if v.counter > *max { *max = v.counter; winners.insert(id); }
+                }
+                return Ok(());
+            }
+            Private::ConversationPin(_) if conv == conversation => (0, [0; 32]),
+            Private::Unread(_) if conv == conversation => (1, [0; 32]),
+            Private::Snooze(_) if conv == conversation => (2, [0; 32]),
+            Private::Hidden(_) if conv == conversation => (3, [0; 32]),
+            Private::CollectionsEnabled(_) => (4, [0; 32]),
+            Private::ReadReceipts(_) => (5, [0; 32]),
+            Private::TypingIndicators(_) => (6, [0; 32]),
+            Private::PresenceSharing(_) => (7, [0; 32]),
+            Private::RecoveryRetention(_) if conv == [0; 32] => (10, [0; 32]),
+            Private::Collection { id, .. } => (8, *id),
+            Private::CollectionMember { id, .. } if conv == conversation => (9, *id),
+            Private::UiSetting { key, .. } => (11, Sha256::digest(key.as_bytes()).into()),
+            _ => return Ok(()),
+        };
+        let replaced = match latest.get(&tag) {
+            Some((prior, _)) if rank <= *prior => false,
+            _ => { latest.insert(tag, (rank, value)); true }
+        };
+        if replaced {
+            if let Some(old) = latest_ids.insert(tag, id) { winners.remove(&old); }
+            winners.insert(id);
+        }
+        Ok(())
+    };
+    let scoped: Vec<Id> = scopes.iter().map(|c| scope(key, c)).collect::<Result<_, _>>()?;
+    let stamp = fold_stamp(db, &scoped, 1)?;
+    let cache_at = scoped[0];
+    let cached = fold_cached(db, &cache_at, 1, &stamp)?;
+    match &cached {
+        Some(ids) => visit_ids(db, key, ids, &mut absorb)?,
+        None => for (conv, at) in scopes.iter().zip(&scoped) {
+            let conv = *conv;
+            visit_with_id(db, key, "SELECT id,CASE WHEN length(state)<=574000 THEN state END FROM conversation_ops WHERE scope=?1 AND kind=1 ORDER BY id", at, |id, e| {
+                if e.conversation != conv { return Err(Error::InvalidStore); }
+                absorb(id, e)
+            })?;
+        },
+    }
+    drop(absorb);
+    if cached.is_none() {
+        fold_remember(db, &cache_at, 1, &stamp, &winners)?;
     }
     for (_, (_, value)) in latest {
         match value {
@@ -901,15 +1005,38 @@ impl ClientStore {
     ) -> Result<Vec<Activity>, Error> {
         let now = time_floor(&self.db, &self.key, now)?;
         let mut latest = std::collections::BTreeMap::new();
-        visit(&self.db,&self.key,"SELECT id,CASE WHEN length(state)<=574000 THEN state END FROM conversation_ops WHERE scope=?1 AND kind=2 ORDER BY id",&scope(&self.key,&conversation)?,|e|{
-            if e.conversation!=conversation {return Err(Error::InvalidStore);}
+        let mut latest_ids: std::collections::BTreeMap<(Id, u8), Id> = std::collections::BTreeMap::new();
+        let mut winners = std::collections::BTreeSet::new();
+        // Only the newest op per author and kind counts, so those are the winners a replay needs.
+        let mut absorb = |id: Id, e: Entry| -> Result<(), Error> {
             let (kind,active,until,status)=match e.operation.action {Action::Typing{active,until}=>(0,active,until,None),Action::Presence{online,until,activity}=>(1,online,until,activity),_=>return Ok(())};
             let rank=order(&e.operation);
             let active=active && now<until && now<e.seen.saturating_add(if kind==0 {30}else{120});
-            let v=latest.entry((e.author,kind)).or_insert((rank.clone(),active,status));
-            if rank>v.0 {*v=(rank,active,status);}
+            let key=(e.author,kind);
+            let replaced = match latest.get(&key) {
+                Some((prior, _, _)) if rank <= *prior => false,
+                _ => { latest.insert(key, (rank, active, status)); true }
+            };
+            if replaced {
+                if let Some(old) = latest_ids.insert(key, id) { winners.remove(&old); }
+                winners.insert(id);
+            }
             Ok(())
-        })?;
+        };
+        let at = scope(&self.key, &conversation)?;
+        let stamp = fold_stamp(&self.db, &[at], 2)?;
+        let cached = fold_cached(&self.db, &at, 2, &stamp)?;
+        match &cached {
+            Some(ids) => visit_ids(&self.db, &self.key, ids, &mut absorb)?,
+            None => visit_with_id(&self.db,&self.key,"SELECT id,CASE WHEN length(state)<=574000 THEN state END FROM conversation_ops WHERE scope=?1 AND kind=2 ORDER BY id",&at,|id, e|{
+                if e.conversation!=conversation {return Err(Error::InvalidStore);}
+                absorb(id, e)
+            })?,
+        }
+        drop(absorb);
+        if cached.is_none() {
+            fold_remember(&self.db, &at, 2, &stamp, &winners)?;
+        }
         let mut result = std::collections::BTreeMap::new();
         for ((author, kind), (_, active, status)) in latest {
             let v = result.entry(author).or_insert(Activity {

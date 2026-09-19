@@ -267,6 +267,8 @@ pub extern "system" fn Java_org_sigil_storage_NativeStorage_mapResource(
         .unwrap_or(std::ptr::null_mut())
 }
 
+extern "C" { fn __android_log_write(prio: i32, tag: *const std::os::raw::c_char, text: *const std::os::raw::c_char) -> i32; }
+
 #[no_mangle]
 pub extern "system" fn Java_org_sigil_storage_NativeStorage_execute(
     mut env: JNIEnv,
@@ -276,9 +278,20 @@ pub extern "system" fn Java_org_sigil_storage_NativeStorage_execute(
     request: JString,
 ) -> jstring {
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| -> Option<String> {
+        let opened = std::time::Instant::now();
         let mut store = open(&mut env, &directory, &key)?;
+        let open_ms = opened.elapsed().as_millis();
         let request = Zeroizing::new(String::from(env.get_string(&request).ok()?));
-        Some(store.mobile_command(&request))
+        let ran = std::time::Instant::now();
+        let response = store.mobile_command(&request);
+        let run_ms = ran.elapsed().as_millis();
+        if let Ok(tag) = std::ffi::CString::new("SigilTiming") {
+            let marks = sigil_client::perf::drain().join(" ");
+            if let Ok(line) = std::ffi::CString::new(format!("native open={open_ms}ms run={run_ms}ms {marks}")) {
+                unsafe { __android_log_write(4, tag.as_ptr(), line.as_ptr()); }
+            }
+        }
+        Some(response)
     }));
     let response = result.ok().flatten().unwrap_or_else(|| {
         r#"{"ok":false,"error":"Cannot open native storage. Stored keys have not been reset."}"#

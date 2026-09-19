@@ -580,6 +580,7 @@ impl ClientStore {
             .collect()
     }
     fn mobile_state(&mut self) -> Result<Value, Error> {
+        let whole = std::time::Instant::now();
         let phase = self.enrollment_kind()?;
         if phase != "connected" {
             return Ok(json!({"phase":phase,"server":self.enrollment_server()?}));
@@ -587,9 +588,12 @@ impl ClientStore {
         let session = self.connection_session()?.ok_or(Error::Unprepared)?;
         let fingerprint = device_fingerprint(&self.own_device_binding()?)?;
         let peers = self.mobile_peers()?;
+        crate::perf::note(format!("peers={}", peers.len()));
+        crate::perf::mark("state.setup", whole);
         let mut chats = Vec::new();
         let mut seen = std::collections::BTreeSet::new();
         for peer in &peers {
+            let each = std::time::Instant::now();
             let conversation = self.direct_conversation(peer.id)?;
             if !seen.insert(conversation) {
                 continue;
@@ -622,12 +626,17 @@ impl ClientStore {
                     chat["name"] = json!(name);
                 }
             }
+            let summary = std::time::Instant::now();
             self.mobile_summary(&display, &mut chat)?;
+            crate::perf::mark("state.summary", summary);
+            crate::perf::mark("state.peer", each);
             chat["contact_only"] =
                 json!(chat["latest_message"].is_null() && chat["ui"]["opened"] != "true");
             chats.push(chat);
         }
+        let rest = std::time::Instant::now();
         self.mobile_contact_chats(&mut chats)?;
+        crate::perf::mark("state.contacts", rest);
         let mut chat = json!({"id":"self","address":session.address,"name":"Note to Self","self":true,"verified":true,"devices":[], "timestamp":0,"preview":""});
         let avatar = transport::hex(&self.account_reference()?);
         chat["avatar"] = json!(avatar);
@@ -635,8 +644,11 @@ impl ClientStore {
         if !chat["latest_message"].is_null() {
             chats.push(chat);
         }
+        let groups = std::time::Instant::now();
         chats.extend(self.mobile_groups()?);
+        crate::perf::mark("state.groups", groups);
         let invitations = self.mobile_group_invitations()?;
+        crate::perf::mark("state.total", whole);
         chats.sort_by_key(|v| {
             (
                 std::cmp::Reverse(v["pinned"].as_bool().unwrap_or(false)),
@@ -1760,6 +1772,7 @@ impl ClientStore {
                     (None, None) => None,
                     _ => return Err(Error::InvalidEvent),
                 };
+                let scan = std::time::Instant::now();
                 let page = if let Some(query) = query {
                     self.recent_conversation_search(
                         conversation,
@@ -1770,6 +1783,8 @@ impl ClientStore {
                 } else {
                     self.recent_conversation_page(conversation, before, conversations::now())?
                 };
+                crate::perf::mark("timeline.scan", scan);
+                let render = std::time::Instant::now();
                 let mut messages = Vec::new();
                 for message in page.messages {
                     if if let Some(thread) = &thread {
@@ -1857,7 +1872,10 @@ impl ClientStore {
                         "editable":message.body.as_ref().is_some_and(Body::editable),
                         "kind":views::body_kind(message.body.as_ref()), "parts":self.mobile_parts(conversation, message.body.as_ref())?}));
                 }
+                crate::perf::mark("timeline.render", render);
+                let act = std::time::Instant::now();
                 let activity = self.conversation_activity(conversation, conversations::now())?;
+                crate::perf::mark("timeline.activity", act);
                 let preload = crate::timeline_preload::preload(visible_end.unwrap_or(0) as usize);
                 Ok(
                     json!({"peer":peer,"messages":messages,"next":page.next,"people":self.mobile_names(&peer)?,

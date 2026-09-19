@@ -76,7 +76,7 @@ mod outbound;
 pub use outbound::OutboundAttempt;
 
 pub type Id = [u8; 32];
-pub const DATABASE_VERSION: u32 = 84;
+pub const DATABASE_VERSION: u32 = 85;
 #[derive(Debug)]
 pub enum Error {
     Storage(rusqlite::Error),
@@ -132,6 +132,17 @@ impl From<network::Error> for Error {
     fn from(value: network::Error) -> Self {
         Self::Network(value)
     }
+}
+
+/// Coarse timings of the current command, drained and logged by the platform layer.
+pub mod perf {
+    use std::sync::Mutex;
+    static LOG: Mutex<Vec<String>> = Mutex::new(Vec::new());
+    pub fn mark(label: &str, started: std::time::Instant) {
+        if let Ok(mut log) = LOG.lock() { log.push(format!("{label}={}ms", started.elapsed().as_millis())); }
+    }
+    pub fn note(text: String) { if let Ok(mut log) = LOG.lock() { log.push(text); } }
+    pub fn drain() -> Vec<String> { LOG.lock().map(|mut l| std::mem::take(&mut *l)).unwrap_or_default() }
 }
 
 pub struct ClientStore {
@@ -508,6 +519,10 @@ impl ClientStore {
         if version < 84 {
             // A call job whose recipient cannot be claimed waits instead of retrying every poll.
             tx.execute_batch("CREATE TABLE IF NOT EXISTS call_job_backoff(id BLOB PRIMARY KEY, until INTEGER NOT NULL, attempts INTEGER NOT NULL DEFAULT 0); PRAGMA user_version=84;")?;
+        }
+        if version < 85 {
+            // The ops that decide a preference or activity fold, so reads replay a few instead of the whole log.
+            tx.execute_batch("CREATE TABLE IF NOT EXISTS fold_cache(scope BLOB NOT NULL, kind INTEGER NOT NULL, last BLOB NOT NULL, ids BLOB NOT NULL, PRIMARY KEY(scope,kind)); PRAGMA user_version=85;")?;
         }
         if version < 63 {
             conversations::migrate(&tx, &key)?;

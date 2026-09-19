@@ -415,7 +415,8 @@ class Messenger(application: Application) : AndroidViewModel(application) {
                     // Send after the timeline shows the message; the flush pass reports only its own issue.
                     if (name == "post") { val flush = native(request("flush")); android.util.Log.i("SigilTiming", "flush result ${flush.optJSONArray("outbound")}"); if (flush.getInt("sent") > 0) loadTimeline(); flush.optString("issue").takeIf { it.isNotEmpty() && !flush.isNull("issue") }?.let { state = state.copy(issue = it) } }
                 }
-                if (name != "post") refresh()
+                // Typing and draft commands change nothing the inbox shows; everything else refreshes the snapshot once.
+                if (name !in listOf("post", "typing", "draft")) refresh()
                 if (preference != null && pendingUiSettings[preference] == setting?.get("value")) pendingUiSettings.remove(preference)
             }
             } finally { if (name == "post") { submittingPost = false; state = state.copy(busy = busyOperations > 0) } }
@@ -534,11 +535,13 @@ class Messenger(application: Application) : AndroidViewModel(application) {
     }
     private suspend fun native(raw: String): JSONObject = withContext(Dispatchers.IO) {
         val started = android.os.SystemClock.elapsedRealtime()
+        var keyed = 0L
         val result = StorageKeyProvider(getApplication()).withKey { directory, key ->
+            keyed = android.os.SystemClock.elapsedRealtime() - started
             JSONObject(NativeStorage.execute(directory.path, key, raw))
         }
         // Durations only; command names are not message content.
-        android.util.Log.i("SigilTiming", "${JSONObject(raw).optString("command")} ${android.os.SystemClock.elapsedRealtime() - started}ms")
+        android.util.Log.i("SigilTiming", "${JSONObject(raw).optString("command")} ${android.os.SystemClock.elapsedRealtime() - started}ms key=${keyed}ms")
         if (!result.getBoolean("ok")) throw NativeFailure(result.getString("error"))
         result.getJSONObject("value")
     }
