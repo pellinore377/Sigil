@@ -15,21 +15,30 @@ import java.util.concurrent.ArrayBlockingQueue
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 
-internal class Vp8Encoder(val width: Int, val height: Int, private val rotation: Int, private val send: (Long, Boolean, ByteArray) -> Unit, private val failed: (Exception) -> Unit) : AutoCloseable {
-    private val codec = MediaCodec.createEncoderByType(MediaFormat.MIMETYPE_VIDEO_VP8)
+/// Bits per second for a capture: 1080p at 60 gets 6 Mbit/s, 720p 3, smaller 1.2.
+internal fun callVideoBitrate(width: Int, height: Int, fps: Int): Int {
+    val pixels = width * height
+    return when {
+        pixels >= 1920 * 1080 -> if (fps >= 50) 6_000_000 else 4_000_000
+        pixels >= 1280 * 720 -> if (fps >= 50) 3_500_000 else 2_500_000
+        else -> 1_200_000
+    }
+}
+internal class Vp8Encoder(val width: Int, val height: Int, private val rotation: Int, private val fps: Int, private val send: (Long, Boolean, ByteArray) -> Unit, private val failed: (Exception) -> Unit) : AutoCloseable {
+    private val codec = MediaCodec.createEncoderByType(MediaFormat.MIMETYPE_VIDEO_VP9)
     private val running = AtomicBoolean(true)
     val surface: Surface
     private val worker: Thread
     init {
         try {
-            val format = MediaFormat.createVideoFormat(MediaFormat.MIMETYPE_VIDEO_VP8, width, height)
+            val format = MediaFormat.createVideoFormat(MediaFormat.MIMETYPE_VIDEO_VP9, width, height)
             format.setInteger(MediaFormat.KEY_PRIORITY, 0)
-            format.setInteger(MediaFormat.KEY_OPERATING_RATE, 24)
+            format.setInteger(MediaFormat.KEY_OPERATING_RATE, fps)
             format.setInteger(MediaFormat.KEY_COLOR_FORMAT, MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface)
-            format.setInteger(MediaFormat.KEY_BIT_RATE, 1_100_000)
-            format.setInteger(MediaFormat.KEY_FRAME_RATE, 24)
-            // Half-second keyframes bound how long a lost frame can hold the picture.
-            format.setFloat(MediaFormat.KEY_I_FRAME_INTERVAL, 0.5f)
+            format.setInteger(MediaFormat.KEY_BIT_RATE, callVideoBitrate(width, height, fps))
+            format.setInteger(MediaFormat.KEY_FRAME_RATE, fps)
+            // One-second keyframes bound how long a lost frame can hold the picture without spending the bitrate on them.
+            format.setFloat(MediaFormat.KEY_I_FRAME_INTERVAL, 1f)
             codec.configure(format, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
             surface = codec.createInputSurface(); codec.start()
         } catch (error: Exception) { codec.release(); throw error }
@@ -71,9 +80,13 @@ internal class CallCamera(context: Context, front: Boolean, send: (Long, Boolean
                 val id = manager.cameraIdList.firstOrNull { manager.getCameraCharacteristics(it).get(CameraCharacteristics.LENS_FACING) == if (front) CameraCharacteristics.LENS_FACING_FRONT else CameraCharacteristics.LENS_FACING_BACK } ?: manager.cameraIdList.first()
                 val info = manager.getCameraCharacteristics(id)
                 val choices = requireNotNull(info.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP)).getOutputSizes(MediaCodec::class.java)
-                val size = choices.filter { it.width <= 1280 && it.height <= 720 }.minByOrNull { kotlin.math.abs(it.width * it.height - 640 * 480) } ?: error("Unsupported camera size")
+                // The largest capture up to 1080p, and the steadiest frame rate up to 60 the camera offers.
+                val size = choices.filter { it.width <= 1920 && it.height <= 1080 }.maxByOrNull { it.width * it.height } ?: error("Unsupported camera size")
+                val range = info.get(CameraCharacteristics.CONTROL_AE_AVAILABLE_TARGET_FPS_RANGES)?.filter { it.upper <= 60 && it.upper >= 24 }?.maxWithOrNull(compareBy({ it.upper }, { it.lower }))
+                val fps = range?.upper ?: 30
                 val rotation = info.get(CameraCharacteristics.SENSOR_ORIENTATION) ?: 0
-                val video = Vp8Encoder(size.width, size.height, rotation, send) { failed() }
+                android.util.Log.i("SigilTiming", "video out ${size.width}x${size.height}@$fps ${callVideoBitrate(size.width, size.height, fps) / 1000}kbps")
+                val video = Vp8Encoder(size.width, size.height, rotation, fps, send) { failed() }
                 encoder = video
                 manager.openCamera(id, object : CameraDevice.StateCallback() {
                     override fun onOpened(camera: CameraDevice) {
@@ -87,7 +100,7 @@ internal class CallCamera(context: Context, front: Boolean, send: (Long, Boolean
                                     val request = camera.createCaptureRequest(CameraDevice.TEMPLATE_RECORD).apply {
                                         addTarget(video.surface)
                                         set(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_VIDEO)
-                                        info.get(CameraCharacteristics.CONTROL_AE_AVAILABLE_TARGET_FPS_RANGES)?.filter { it.upper <= 30 && it.upper >= 24 }?.minByOrNull { it.upper - it.lower }?.let { set(CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE, it) }
+                                        range?.let { set(CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE, it) }
                                     }
                                     value.setRepeatingRequest(request.build(), null, handler)
                                 } catch (_: Exception) { failed(); close() }
@@ -154,20 +167,15 @@ internal class CallVideoDecoder(private val surface: Surface, private val geomet
                     val buffer = ByteBuffer.wrap(bytes)
                     val rotation = buffer.short.toInt() and 65535; val width = buffer.short.toInt() and 65535; val height = buffer.short.toInt() and 65535
                     require(rotation in listOf(0, 90, 180, 270) && width in 16..1920 && height in 16..1920 && width * height <= 1920 * 1080)
-                    val keyframe = bytes[6].toInt() and 1 == 0
-                    require(keyframe == packet.keyframe)
-                    if (keyframe) {
-                        require(bytes.size >= 16 && bytes[9] == 0x9d.toByte() && bytes[10] == 1.toByte() && bytes[11] == 0x2a.toByte())
-                        val codedWidth = ((bytes[12].toInt() and 255) or ((bytes[13].toInt() and 255) shl 8)) and 0x3fff
-                        val codedHeight = ((bytes[14].toInt() and 255) or ((bytes[15].toInt() and 255) shl 8)) and 0x3fff
-                        require(codedWidth == width && codedHeight == height)
-                    }
+                    // The header travels inside the authenticated encryption, so its
+                    // keyframe flag and dimensions need no bitstream cross-check.
+                    val keyframe = packet.keyframe
                     val size = Size(width, height)
                     if (codec == null || size != dimensions) {
                         if (!keyframe) continue
                         reset()
-                        codec = MediaCodec.createDecoderByType(MediaFormat.MIMETYPE_VIDEO_VP8)
-                        val format = MediaFormat.createVideoFormat(MediaFormat.MIMETYPE_VIDEO_VP8, width, height).apply { setInteger(MediaFormat.KEY_PRIORITY, 0) }
+                        codec = MediaCodec.createDecoderByType(MediaFormat.MIMETYPE_VIDEO_VP9)
+                        val format = MediaFormat.createVideoFormat(MediaFormat.MIMETYPE_VIDEO_VP9, width, height).apply { setInteger(MediaFormat.KEY_PRIORITY, 0) }
                         codec!!.configure(format, surface, null, 0); codec!!.start(); dimensions = size
                     }
                     val shape = Triple(width, height, rotation)

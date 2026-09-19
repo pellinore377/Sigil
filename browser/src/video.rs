@@ -1,5 +1,6 @@
-//! Browser call video: camera capture and VP8 WebCodecs over the sealed frame path.
-//! Frames carry the Android header (rotation, width, height, big-endian u16) before VP8 data.
+//! Browser call video: camera capture and VP9 WebCodecs over the sealed frame path.
+//! Frames carry the Android header (rotation, width, height, big-endian u16) before the
+//! encoded frame.
 use crate::rtc::{construct, invoke, object};
 use crate::{fail, get};
 use js_sys::{Array, Function, Reflect, Uint8Array};
@@ -9,7 +10,21 @@ use wasm_bindgen::{prelude::*, JsCast};
 use wasm_bindgen_futures::JsFuture;
 use web_sys::*;
 
-const RATE: u32 = 24;
+/// VP9 profile 0, level 1.0, eight bit: the WebCodecs spelling of the wire codec.
+const VIDEO_CODEC: &str = "vp09.00.10.08";
+/// Frames per second to ask the camera for; the encoder follows what it actually delivers.
+const RATE: u32 = 60;
+/// Bits per second for a capture: 1080p at 60 gets 6 Mbit/s, 720p 3, smaller 1.2.
+fn bitrate(width: u32, height: u32, rate: u32) -> u32 {
+    let pixels = width * height;
+    if pixels >= 1920 * 1080 {
+        if rate >= 50 { 6_000_000 } else { 4_000_000 }
+    } else if pixels >= 1280 * 720 {
+        if rate >= 50 { 3_500_000 } else { 2_500_000 }
+    } else {
+        1_200_000
+    }
+}
 struct Capture {
     stream: MediaStream,
     video: HtmlVideoElement,
@@ -18,6 +33,7 @@ struct Capture {
     encoder: JsValue,
     width: u32,
     height: u32,
+    rate: u32,
     frames: u64,
     timer: i32,
     _tick: Closure<dyn FnMut()>,
@@ -106,7 +122,7 @@ pub async fn video_camera_start(video: HtmlVideoElement, front: bool) -> Result<
     constraints.set_audio(&false.into());
     constraints.set_video(&object(serde_json::json!({
         "facingMode": if front { "user" } else { "environment" },
-        "width": {"ideal": 640}, "height": {"ideal": 480}, "frameRate": {"ideal": RATE}
+        "width": {"ideal": 1920}, "height": {"ideal": 1080}, "frameRate": {"ideal": RATE}
     }))?);
     let stream = JsFuture::from(
         window
@@ -135,10 +151,11 @@ pub async fn video_camera_start(video: HtmlVideoElement, front: bool) -> Result<
     let settings = invoke(&track, "getSettings", &[]).unwrap_or(JsValue::UNDEFINED);
     let mut width = number(&settings, "width").unwrap_or(640.0) as u32 & !1;
     let mut height = number(&settings, "height").unwrap_or(480.0) as u32 & !1;
-    if !(16..=1280).contains(&width) || !(16..=1280).contains(&height) {
+    if !(16..=1920).contains(&width) || !(16..=1920).contains(&height) || width * height > 1920 * 1080 {
         width = 640;
         height = 480;
     }
+    let rate = (number(&settings, "frameRate").unwrap_or(30.0).round() as u32).clamp(15, 60);
     video.set_muted(true);
     video.set_attribute("playsinline", "")?;
     video.set_src_object(Some(&stream));
@@ -196,14 +213,38 @@ pub async fn video_camera_start(video: HtmlVideoElement, front: bool) -> Result<
             return Err(e);
         }
     };
-    invoke(
-        &encoder,
-        "configure",
-        &[object(serde_json::json!({
-            "codec": "vp8", "width": width, "height": height,
-            "bitrate": 1_100_000, "framerate": RATE, "latencyMode": "realtime"
-        }))?],
-    )?;
+    // Hardware encoding for the full capture; a browser without it steps down to 720p at 30 in software.
+    let mut config = serde_json::json!({
+        "codec": VIDEO_CODEC, "width": width, "height": height,
+        "bitrate": bitrate(width, height, rate), "framerate": rate, "latencyMode": "realtime",
+        "hardwareAcceleration": "prefer-hardware"
+    });
+    let supported = match js_sys::Reflect::get(&js_sys::global(), &"VideoEncoder".into())
+        .ok()
+        .and_then(|ctor| js_sys::Reflect::get(&ctor, &"isConfigSupported".into()).ok())
+        .and_then(|f| f.dyn_into::<js_sys::Function>().ok())
+        .and_then(|f| object(config.clone()).ok().and_then(|c| f.call1(&JsValue::UNDEFINED, &c).ok()))
+    {
+        Some(promise) => match JsFuture::from(promise.unchecked_into::<js_sys::Promise>()).await {
+            Ok(result) => get(&result, "supported").ok().and_then(|v| v.as_bool()).unwrap_or(true),
+            Err(_) => true,
+        },
+        None => true,
+    };
+    let (width, height, rate) = if supported {
+        (width, height, rate)
+    } else {
+        let (w, h) = if width >= height { (1280, 720) } else { (720, 1280) };
+        config = serde_json::json!({
+            "codec": VIDEO_CODEC, "width": w, "height": h,
+            "bitrate": bitrate(w, h, 30), "framerate": 30, "latencyMode": "realtime"
+        });
+        (w, h, 30)
+    };
+    canvas.set_width(width);
+    canvas.set_height(height);
+    web_sys::console::log_1(&JsValue::from_str(&format!("SigilTiming video out {width}x{height}@{rate} {}kbps hardware={supported}", bitrate(width, height, rate) / 1000)));
+    invoke(&encoder, "configure", &[object(config)?])?;
     let tick = Closure::<dyn FnMut()>::new(move || {
         let _ = CAPTURE.with(|slot| -> Result<(), JsValue> {
             let mut slot = slot.borrow_mut();
@@ -236,7 +277,7 @@ pub async fn video_camera_start(video: HtmlVideoElement, front: bool) -> Result<
                 &capture.canvas,
                 &object(serde_json::json!({"timestamp": timestamp}))?,
             )?;
-            let keyframe = capture.frames % (RATE as u64 / 2) == 0 || FORCE_KEY.with(Cell::take);
+            let keyframe = capture.frames % u64::from(capture.rate) == 0 || FORCE_KEY.with(Cell::take);
             capture.frames += 1;
             let result = invoke(
                 &capture.encoder,
@@ -249,7 +290,7 @@ pub async fn video_camera_start(video: HtmlVideoElement, front: bool) -> Result<
     });
     let timer = window.set_interval_with_callback_and_timeout_and_arguments_0(
         tick.as_ref().unchecked_ref(),
-        (1000 / RATE) as i32,
+        (1000 / rate) as i32,
     )?;
     CAPTURE.with(|slot| {
         *slot.borrow_mut() = Some(Capture {
@@ -260,6 +301,7 @@ pub async fn video_camera_start(video: HtmlVideoElement, front: bool) -> Result<
             encoder,
             width,
             height,
+            rate,
             frames: 0,
             timer,
             _tick: tick,
@@ -411,8 +453,8 @@ pub fn video_receive(sender: String, frame: Uint8Array) -> Result<bool, JsValue>
                 &decoder,
                 "configure",
                 &[object(serde_json::json!({
-                    "codec": "vp8", "codedWidth": width, "codedHeight": height,
-                    // Some hardware VP8 decoders hand back blank frames; call video is small.
+                    "codec": VIDEO_CODEC, "codedWidth": width, "codedHeight": height,
+                    // Some hardware decoders hand back blank frames; call video is small.
                     "hardwareAcceleration": "prefer-software", "optimizeForLatency": true
                 }))?],
             )?;

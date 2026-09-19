@@ -58,7 +58,7 @@ fn codec(kind: MediaKind) -> Codec {
     if kind == MediaKind::Audio {
         Codec::Opus
     } else {
-        Codec::Vp8
+        Codec::Vp9
     }
 }
 impl Forwarder {
@@ -135,7 +135,7 @@ impl Forwarder {
             .set_ice_lite(true)
             .clear_codecs()
             .enable_opus(true)
-            .enable_vp8(true)
+            .enable_vp9(true)
             .build(clock);
         rtc.add_local_candidate(
             str0m::Candidate::host(self.address, "udp").map_err(|_| Error::Invalid)?,
@@ -231,7 +231,7 @@ impl Forwarder {
                         peer.window = now;
                     }
                     peer.bytes = peer.bytes.saturating_add(bytes.len());
-                    if peer.bytes <= 1024 * 1024 {
+                    if peer.bytes <= 3 * 1024 * 1024 {
                         let _ = peer.rtc.handle_input(input);
                     } else {
                         self.dropped = self.dropped.saturating_add(1);
