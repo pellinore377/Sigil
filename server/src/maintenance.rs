@@ -19,9 +19,13 @@ impl Store {
         if now > i64::MAX as u64 {
             return Err(StoreError::InvalidData);
         }
+        let started = std::time::Instant::now();
+        let mut marks: Vec<(&str, u128)> = Vec::new();
+        let mut mark = |name: &'static str| marks.push((name, started.elapsed().as_millis()));
         let tx = self
             .0
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        mark("begin");
         let expired:Vec<i64>=tx.prepare("SELECT sequence FROM mailbox WHERE payload IS NOT NULL AND expires_at<=?1 ORDER BY expires_at,sequence LIMIT ?2")?.query_map((now as i64,BATCH as i64),|r|r.get(0))?.collect::<Result<_,_>>()?;
         for sequence in &expired {
             crate::federation_mailbox::release_payload(&tx, *sequence)?;
@@ -48,16 +52,30 @@ impl Store {
         }
         changed+=tx.execute("UPDATE prekeys SET bundle=NULL WHERE id IN (SELECT id FROM prekeys WHERE bundle IS NOT NULL AND expires_at<=?1 ORDER BY expires_at,id LIMIT ?2)",(now as i64,BATCH as i64))?;
         changed+=tx.execute("DELETE FROM invitations WHERE id IN (SELECT id FROM invitations WHERE expires_at<=?1 ORDER BY expires_at,id LIMIT ?2)",(now as i64,BATCH as i64))?;
+        mark("mailbox");
         changed+=tx.execute("DELETE FROM oidc_flows WHERE id IN (SELECT id FROM oidc_flows WHERE expires<=?1 LIMIT 64)",[now as i64])?;
         changed+=tx.execute("DELETE FROM oidc_grants WHERE token_hash IN (SELECT token_hash FROM oidc_grants WHERE expires<=?1 LIMIT 64)",[now as i64])?;
         changed += tx.execute("DELETE FROM link_relay WHERE id IN (SELECT id FROM link_relay WHERE expires<=?1 LIMIT 64)",[now as i64])?;
+        mark("tables");
         changed += crate::attachments::cleanup(&tx, now)?;
+        mark("attachments");
         changed += crate::contact_requests::cleanup(&tx, now)?;
         changed += crate::push_delivery::cleanup(&tx, now)?;
+        mark("push");
         changed += crate::federation_admission::cleanup(&tx, now)?;
         changed += crate::federation_mailbox::cleanup(&tx)?;
         changed += crate::federation_outbox::cleanup(&tx, now)?;
-        tx.commit()?;
+        mark("federation");
+        // A tick that found nothing writes nothing, so the disk is not asked to sync every second.
+        if changed == 0 {
+            tx.rollback()?;
+        } else {
+            tx.commit()?;
+        }
+        mark("commit");
+        if started.elapsed().as_millis() > 40 {
+            eprintln!("sigil.slow_expire changed={changed} {marks:?}");
+        }
         Ok(changed)
     }
 }

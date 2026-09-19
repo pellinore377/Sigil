@@ -324,3 +324,14 @@ fn relay_configuration_redacts_secrets_and_rejects_ambiguous_endpoints() {
     changed.turn_secret = SecretUpdate::Keep;
     assert!(store.configure_calls(changed).is_err());
 }
+
+#[test]
+fn idle_snapshot_reads_the_clock_without_writing_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut store = Store::open(&dir.path().join("sigil.db")).unwrap();
+    let before: u64 = store.0.query_row("SELECT clock FROM call_configuration WHERE id=1", [], |r| r.get::<_, i64>(0).map(|v| v as u64)).unwrap();
+    store.call_snapshot(before + 100).unwrap();
+    store.call_snapshot(before + 200).unwrap();
+    let after: u64 = store.0.query_row("SELECT clock FROM call_configuration WHERE id=1", [], |r| r.get::<_, i64>(0).map(|v| v as u64)).unwrap();
+    assert_eq!(after, before);
+}

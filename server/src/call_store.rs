@@ -41,6 +41,14 @@ fn clock(db: &Connection, now: u64) -> Result<u64, StoreError> {
         })?,
     )
 }
+/// With no calls on record there is nothing a backwards wall clock could revive, so the idle snapshot loop reads the clock instead of committing it four times a second.
+fn clock_for_snapshot(db: &Connection, now: u64) -> Result<u64, StoreError> {
+    if db.query_row("SELECT EXISTS(SELECT 1 FROM calls)", [], |r| r.get::<_, bool>(0))? {
+        return clock(db, now);
+    }
+    let stored: u64 = db.query_row("SELECT clock FROM call_configuration WHERE id=1", [], |r| unsigned(r, 0))?;
+    Ok(stored.max(now))
+}
 fn cleanup(db: &Connection, now: u64) -> Result<(), StoreError> {
     db.execute("DELETE FROM calls WHERE id IN (SELECT id FROM calls WHERE expires<=?1 ORDER BY expires LIMIT 64)",[sql(now)?])?;
     db.execute("UPDATE calls SET closed=1 WHERE closed=0 AND NOT EXISTS(SELECT 1 FROM devices d JOIN accounts a ON a.id=d.account_id WHERE d.id=calls.device AND d.revoked=0 AND d.expires_at>?1 AND a.disabled=0)",[sql(now)?])?;
@@ -244,7 +252,7 @@ impl Store {
         let tx = self
             .0
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
-        let now = clock(&tx, now)?;
+        let now = clock_for_snapshot(&tx, now)?;
         cleanup(&tx, now)?;
         let value = snapshot(&tx, now)?;
         tx.commit()?;
