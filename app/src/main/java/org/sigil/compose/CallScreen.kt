@@ -12,7 +12,7 @@ internal class CallScreen(context: Context, private val projection: MediaProject
     private val thread = HandlerThread("Sigil screen").apply { start() }
     private val handler = Handler(thread.looper)
     private var display: VirtualDisplay? = null
-    private var encoder: Vp8Encoder? = null
+    private var encoder: CallEncoder? = null
     private val density = context.resources.displayMetrics.densityDpi
     private var width = 0
     private var height = 0
@@ -32,7 +32,7 @@ internal class CallScreen(context: Context, private val projection: MediaProject
         val nextHeight = maxOf(16, (h * scale).toInt() / 2 * 2)
         if (width == nextWidth && height == nextHeight) return
         try {
-            val next = Vp8Encoder(nextWidth, nextHeight, 0, 30, send) { error -> close(); ended(error) }
+            val next = CallEncoder(nextWidth, nextHeight, 0, 30, send) { error -> close(); ended(error) }
             try {
                 if (display == null) display = projection.createVirtualDisplay("Sigil screen", nextWidth, nextHeight, density, DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR, next.surface, null, handler)
                 else { display?.surface = null; display?.resize(nextWidth, nextHeight, density); display?.surface = next.surface }

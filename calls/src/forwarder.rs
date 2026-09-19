@@ -58,7 +58,7 @@ fn codec(kind: MediaKind) -> Codec {
     if kind == MediaKind::Audio {
         Codec::Opus
     } else {
-        Codec::Vp9
+        Codec::Av1
     }
 }
 impl Forwarder {
@@ -135,7 +135,7 @@ impl Forwarder {
             .set_ice_lite(true)
             .clear_codecs()
             .enable_opus(true)
-            .enable_vp9(true)
+            .enable_av1(true)
             .build(clock);
         rtc.add_local_candidate(
             str0m::Candidate::host(self.address, "udp").map_err(|_| Error::Invalid)?,
