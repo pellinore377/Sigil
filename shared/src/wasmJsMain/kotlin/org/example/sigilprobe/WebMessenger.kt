@@ -134,7 +134,6 @@ private val stamped=setOf("post","place","group_create","react","pin","read","ma
     suspend fun execute(name:String,fields:Map<String,Any?> = emptyMap())=native(request(name,fields))
     val locations=remember {WebLocations()}
     val calls=remember {WebCalls(scope,{name,fields->mutex.withLock{execute(name,fields)}},{wake.trySend(Unit)},{message->state=state.copy(issue=message)})}
-    LaunchedEffect(Unit){calls.initialize()}
     DisposableEffect(Unit){val listener:(org.w3c.dom.events.Event)->Unit={calls.close();locations.stop();locations.live=false};window.addEventListener("pagehide",listener);onDispose{window.removeEventListener("pagehide",listener);calls.close()}}
     suspend fun notificationStatus() {
         if(!notificationsReady)return
@@ -270,7 +269,7 @@ private val stamped=setOf("post","place","group_create","react","pin","read","ma
     suspend fun refresh() {
 state=StateDecoder.state(execute("state"),state,::clock);if(state.phase=="connected"){timeline();transfers();calls.refresh(execute("calls"),::clock,{calendar(it).substringBeforeLast(", ")});if(state.storage!=null)storage(execute("storage"));if((BrowserDate.now()/1000).toLong()>=accessNext){account(execute("account_access"));accessNext=(BrowserDate.now()/1000).toLong()+300}}}
     LaunchedEffect(Unit) {
-        try {val t0=BrowserDate.now();initializeBrowser().awaitBrowser<JsAny?>();videoReady=runCatching{browserVideoSupported()}.getOrDefault(false);val t1=BrowserDate.now();startBrowser().awaitBrowser<JsAny?>();val t2=BrowserDate.now();refresh();val t3=BrowserDate.now();linking=execute("device_link",mapOf("action" to "status")).takeUnless{it.string("stage")=="none"};ready=true
+        try {val t0=BrowserDate.now();initializeBrowser().awaitBrowser<JsAny?>();videoReady=runCatching{browserVideoSupported()}.getOrDefault(false);calls.initialize();val t1=BrowserDate.now();startBrowser().awaitBrowser<JsAny?>();val t2=BrowserDate.now();refresh();val t3=BrowserDate.now();linking=execute("device_link",mapOf("action" to "status")).takeUnless{it.string("stage")=="none"};ready=true
             // Durations only: where a slow start sat, and whether the tab was visible while it did.
             browserTimingLog("SigilTiming startup init=${(t1-t0).toLong()}ms worker=${(t2-t1).toLong()}ms state=${(t3-t2).toLong()}ms link=${(BrowserDate.now()-t3).toLong()}ms visible=${browserDocument.visibilityState}")
             try{initializeNotificationWasm().awaitBrowser<JsAny?>();notificationsReady=webNotificationsSupported();if(state.phase!="connected" && notificationsReady)webNotificationsDisable().awaitBrowser<JsAny?>()}catch(_:Exception){}

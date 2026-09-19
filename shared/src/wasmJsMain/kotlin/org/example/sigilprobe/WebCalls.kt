@@ -33,7 +33,8 @@ internal class WebCalls(private val scope:CoroutineScope,private val command:sus
     private var retry=0.0
     private var failures=0
     private var maintenance:Job?=null
-    fun initialize(){available=runCatching{browserCallSupported()}.getOrDefault(false)}
+    /** Must run after the browser module is initialized: the probe is one of its exports. */
+    fun initialize(){val probe=runCatching{browserCallSupported()};available=probe.getOrDefault(false);if(!available)browserTimingLog("SigilTiming call unsupported error=${probe.exceptionOrNull()?.message?.take(80)?:"none"}")}
     private suspend fun control(operation:String,call:String?=null,tracks:Boolean=false):JsonObject {
         val raw=buildJsonObject {put("operation",operation);call?.let{put("call",it)};if(tracks)put("tracks",buildJsonObject{put("audio",!muted);put("camera",video);put("screen",false)})}
         return Json.parseToJsonElement(browserCallControl(raw.toString()).awaitBrowser<JsString>().toString()).jsonObject
