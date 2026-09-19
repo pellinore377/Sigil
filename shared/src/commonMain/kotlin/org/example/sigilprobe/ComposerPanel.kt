@@ -406,7 +406,7 @@ internal fun VoicePanel(command: Command, peer: String, voice: VoiceState, attac
     Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).wrapContentHeight(unbounded = true).then(naturalPanelHeight()).padding(start = 8.dp, end = 8.dp, top = 8.dp)
         .semantics { liveRegion = LiveRegionMode.Polite; stateDescription = if (!recording) "Stopped" else if (voice.paused) "Paused" else "Recording" }, verticalArrangement = Arrangement.spacedBy(8.dp)) {
         Surface(onClick = { if (!recording && !starting) start() }, enabled = !recording && !starting, shape = RoundedCornerShape(20.dp), color = scheme.surfaceContainer,
-            modifier = Modifier.fillMaxWidth().height(148.dp).testTag("voice-stage").semantics { contentDescription = if (recording || starting) "Recording" else if (ready) "Recorded" else "Tap to record your voice" }) {
+            modifier = Modifier.fillMaxWidth().height(172.dp).testTag("voice-stage").semantics { contentDescription = if (recording || starting) "Recording" else if (ready) "Recorded" else "Tap to record your voice" }) {
             Box(contentAlignment = Alignment.Center) {
                 if (ready) Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(12.dp)) {
                     Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
