@@ -112,7 +112,7 @@ pub extern "system" fn Java_org_sigil_storage_NativeStorage_openCall(
             let mut active = ACTIVE.lock().ok()?;
             let slot = active.as_mut().filter(|(id, _)| *id == token)?;
             slot.1 = Some(Arc::new(Mutex::new(NativeCall {
-                store,
+                store: store.into_inner(),
                 call: value,
                 send_lanes: Arc::new(SendLanes::default()),
             })));

@@ -219,6 +219,8 @@ class Messenger(application: Application) : AndroidViewModel(application) {
         NativeNotifications.foreground(getApplication(), value)
         if (value) state = state.copy(notifications = NativeNotifications.settings(getApplication()))
         foreground = value; files.enabled = value && state.phase == "connected"
+        // Out of sight, the pooled stores and the key they hold are dropped; the next command unwraps it again.
+        if (!value) NativeStorage.closeStore()
         NativeSync.enable(getApplication(), state.phase == "connected")
         if (value) { nextSync = 0; published = false; syncWake.trySend(Unit); scope.launch { serialized(false) { refresh() } } }
         else { if (state.voice.phase == "Recording") voice.stop(); voice.pausePreview(); if (state.phase == "connected") NativeSync.enqueue(getApplication()) }
@@ -339,7 +341,10 @@ class Messenger(application: Application) : AndroidViewModel(application) {
                 anchor = (fields["author"] as? String)?.let { author -> (fields["message"] as? String)?.let { author to it } }
                 val target = (fields["thread_author"] as? String)?.let { author -> (fields["thread_message"] as? String)?.let { ThreadTarget(author, it) } }
                 timelineFilter = mapOf("category" to (fields["category"] as? String ?: "Timeline")) + if (target == null) emptyMap() else mapOf("thread_author" to target.author, "thread_message" to target.id)
-                state = state.copy(selected = fields["peer"] as String, messages = emptyList(), historical = anchor != null, threadTarget = target, timelineLoaded=false); resetPreload()
+                // A conversation seen before opens on what it last showed, then refreshes beneath it.
+                val peer = fields["peer"] as String
+                val recalled = if (anchor == null && target == null && timelineFilter == defaultTimelineFilter) recentTimelines[peer] else null
+                state = state.copy(selected = peer, messages = recalled.orEmpty(), historical = anchor != null, threadTarget = target, timelineLoaded = recalled != null); resetPreload()
             }
             "timeline_filter" -> {
                 val filter = fields.filter { (key, value) -> key != "peer" && value != null }
@@ -377,6 +382,18 @@ class Messenger(application: Application) : AndroidViewModel(application) {
                     val raw = if (retry) post!!.second else if (name == "group_create" && groupCreate?.first == fields) groupCreate!!.second else request(name, fields).also {
                         if (name == "post") post = fields.toMap() to it
                         if (name == "group_create") groupCreate = fields.toMap() to it
+                    }
+                    // A sent message takes its place in the timeline at once, under its request id, so the stored one lands on the same key.
+                    if (name == "post" && !retry) {
+                        val text = fields["text"] as? String; val peer = fields["peer"] as? String
+                        val author = state.messages.firstOrNull { it.mine }?.author
+                        if (text != null && peer != null && author != null && state.selected == peer && !state.historical && state.threadTarget == null) {
+                            val requestId = JSONObject(raw).getString("request"); val now = System.currentTimeMillis() / 1000
+                            if (state.messages.none { it.id == requestId }) {
+                                state = state.copy(messages = listOf(ChatMessage(requestId, author, text, true, clock(now), "Sending", false, emptyList(), emptyList(), fields["reply_message"] as? String, true, timestamp = now, peer = peer)) + state.messages)
+                                recentTimelines[peer] = state.messages
+                            }
+                        }
                     }
                     val alreadyQueued = retry && execute("post_status", mapOf("peer" to fields["peer"], "request" to JSONObject(raw).getString("request"))).getBoolean("queued")
                     if (name == "recover_account") recoveryPreference(true)
@@ -536,7 +553,9 @@ class Messenger(application: Application) : AndroidViewModel(application) {
     private suspend fun native(raw: String): JSONObject = withContext(Dispatchers.IO) {
         val started = android.os.SystemClock.elapsedRealtime()
         var keyed = 0L
-        val result = StorageKeyProvider(getApplication()).withKey { directory, key ->
+        val provider = StorageKeyProvider(getApplication())
+        // The pooled store answers without the key; the first command after a cold or backgrounded start unwraps it once.
+        val result = NativeStorage.executeCached(provider.directory.path, raw)?.let { JSONObject(it) } ?: provider.withKey { directory, key ->
             keyed = android.os.SystemClock.elapsedRealtime() - started
             JSONObject(NativeStorage.execute(directory.path, key, raw))
         }
@@ -548,7 +567,15 @@ class Messenger(application: Application) : AndroidViewModel(application) {
     private fun pendingUi(peer: String?, stored: Map<String, String>) = stored + pendingUiSettings.mapNotNull { (key, value) ->
         if (key.first == peer && value is String) key.second to value else null
     }
+    // Refreshes coalesce: a request that arrives while one is running is answered by a single run after it.
+    private var refreshing = false
+    private var refreshAgain = false
     private suspend fun refresh() {
+        if (refreshing) { refreshAgain = true; return }
+        refreshing = true
+        try { do { refreshAgain = false; refreshOnce() } while (refreshAgain) } finally { refreshing = false }
+    }
+    private suspend fun refreshOnce() {
         val value = execute("state", mapOf("calls" to true))
         val phase = value.getString("phase")
         files.enabled = foreground && phase == "connected"
@@ -586,6 +613,9 @@ class Messenger(application: Application) : AndroidViewModel(application) {
         if (timelineJob?.isActive == true) { viewportChase = true; return }
         loadTimeline()
     }
+    // The messages each conversation last showed, so reopening it is immediate.
+    private val recentTimelines = HashMap<String, List<ChatMessage>>()
+    private val defaultTimelineFilter = mapOf("category" to "Timeline")
     private fun loadTimeline() {
         val peer = state.selected ?: return
         val filter = timelineFilter; val initialAnchor = anchor
@@ -629,7 +659,10 @@ class Messenger(application: Application) : AndroidViewModel(application) {
                     message.optJSONArray("parts")?.objects()?.map(decodePart).orEmpty(), message.optional("thread_preview"), message.optional("reply_author"), message.optBoolean("reply_mine"), message.optional("reply_message"), message.optJSONObject("reply_attachment")?.let { AttachmentDetails(it.getString("name"), it.getString("media_type"), it.getLong("length"), it.optString("caption")) }, message.optJSONArray("reply_parts")?.objects()?.map(decodePart).orEmpty())
             }
             before = if (timeline.isNull("next")) null else timeline.getLong("next")
-            if (timelinePublishes(messages.size, onScreen, timelineWant, before == null)) state = state.copy(selected = peer, messages = messages.toList(), more = before != null,timelineLoaded=true,timelineBuffer=buffer)
+            if (timelinePublishes(messages.size, onScreen, timelineWant, before == null)) {
+                state = state.copy(selected = peer, messages = messages.toList(), more = before != null,timelineLoaded=true,timelineBuffer=buffer)
+                if (initialAnchor == null && filter == defaultTimelineFilter) recentTimelines[peer] = state.messages
+            }
             if (before == null) return
             yield()
         } while (messages.size < timelineWant)
