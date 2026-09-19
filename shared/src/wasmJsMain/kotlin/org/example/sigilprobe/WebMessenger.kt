@@ -268,7 +268,9 @@ private val stamped=setOf("post","place","group_create","react","pin","read","ma
     suspend fun refresh() {
 state=StateDecoder.state(execute("state"),state,::clock);if(state.phase=="connected"){timeline();transfers();calls.refresh(execute("calls"),::clock,{calendar(it).substringBeforeLast(", ")});if(state.storage!=null)storage(execute("storage"));if((BrowserDate.now()/1000).toLong()>=accessNext){account(execute("account_access"));accessNext=(BrowserDate.now()/1000).toLong()+300}}}
     LaunchedEffect(Unit) {
-        try {initializeBrowser().awaitBrowser<JsAny?>();startBrowser().awaitBrowser<JsAny?>();refresh();linking=execute("device_link",mapOf("action" to "status")).takeUnless{it.string("stage")=="none"};ready=true
+        try {val t0=BrowserDate.now();initializeBrowser().awaitBrowser<JsAny?>();val t1=BrowserDate.now();startBrowser().awaitBrowser<JsAny?>();val t2=BrowserDate.now();refresh();val t3=BrowserDate.now();linking=execute("device_link",mapOf("action" to "status")).takeUnless{it.string("stage")=="none"};ready=true
+            // Durations only: where a slow start sat, and whether the tab was visible while it did.
+            browserTimingLog("SigilTiming startup init=${(t1-t0).toLong()}ms worker=${(t2-t1).toLong()}ms state=${(t3-t2).toLong()}ms link=${(BrowserDate.now()-t3).toLong()}ms visible=${browserDocument.visibilityState}")
             try{initializeNotificationWasm().awaitBrowser<JsAny?>();notificationsReady=webNotificationsSupported();if(state.phase!="connected" && notificationsReady)webNotificationsDisable().awaitBrowser<JsAny?>()}catch(_:Exception){}
         }
         catch(e:Exception){startupError="Could not open this browser device. Close other Sigil tabs and reload. A current browser with private storage and cross-origin isolation is required."+(e.message?.take(160)?.let{" ($it)"}?:"")}
